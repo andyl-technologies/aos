@@ -100,15 +100,15 @@ fn max_advance_keeps_preemption_pending_until_its_run_ceiling_is_published() {
     )
     .unwrap_or_else(|error| panic!("owning ceiling should publish: {error}"));
 
-    assert_eq!(state.max_advance_icount(), Ok(80));
+    assert_eq!(state.max_advance_icount(), Ok(100));
     assert_eq!(slot.consumed_preemption_sequence(), sequence);
     TEST_PREEMPTION_COMMAND.with_borrow(|command| {
         assert_eq!(
             *command,
             Some((
-                80,
-                50,
-                100,
+                4000,
+                2500,
+                5000,
                 crate::QEMU_PREEMPTION_KIND_INTERRUPT_AT,
                 0,
                 41,
@@ -119,7 +119,7 @@ fn max_advance_keeps_preemption_pending_until_its_run_ceiling_is_published() {
 }
 
 #[test]
-fn max_advance_keeps_unaligned_window_inside_logical_bounds() {
+fn max_advance_preserves_unaligned_exact_tick_window() {
     TEST_PREEMPTION_COMMAND.with_borrow_mut(|command| *command = None);
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 4000, None)
@@ -169,18 +169,18 @@ fn max_advance_keeps_unaligned_window_inside_logical_bounds() {
     )
     .unwrap_or_else(|error| panic!("test live state should validate: {error}"));
 
-    // At 50 logical ticks per instruction, offset 1 maps at=3001 to raw 60;
-    // the inclusive [2500, 4000] window rounds inward to raw [50, 79].
+    // The raw budget stays instruction-aligned while QEMU receives the exact
+    // fractional command and authorization window.
     assert_eq!(crucible_shmem::TICKS_PER_INSTRUCTION, 50);
-    assert_eq!(state.max_advance_icount(), Ok(60));
+    assert_eq!(state.max_advance_icount(), Ok(79));
     assert_eq!(slot.consumed_preemption_sequence(), sequence);
     TEST_PREEMPTION_COMMAND.with_borrow(|command| {
         assert_eq!(
             *command,
             Some((
-                60,
-                50,
-                79,
+                3001,
+                2500,
+                4000,
                 crate::QEMU_PREEMPTION_KIND_INTERRUPT_AT,
                 0,
                 41,
@@ -192,30 +192,62 @@ fn max_advance_keeps_unaligned_window_inside_logical_bounds() {
 }
 
 #[test]
-fn preemption_window_conversion_rejects_empty_interval_and_raw_origin_underflow() {
-    let deadline = logical_preemption_deadline_to_raw(2, 1)
-        .unwrap_or_else(|error| panic!("deadline conversion should succeed: {error}"));
-    let ceiling = logical_preemption_ceiling_to_raw(49, 1)
-        .unwrap_or_else(|error| panic!("ceiling conversion should succeed: {error}"));
-    assert_eq!(
-        PreemptionWindow::new(deadline, SchedulerCeiling::new(ceiling)),
-        Err(PreemptionError::InvalidWindow {
-            deadline_icount: 1,
-            ceiling_icount: 0,
+fn preemption_at_ten_ps_before_first_retirement_is_forwarded_exactly() {
+    super::TEST_ICOUNT_RAW.set(0);
+    super::TEST_SIM_TICK.set(0);
+    TEST_PREEMPTION_COMMAND.with_borrow_mut(|command| *command = None);
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 10, None)
+        .unwrap_or_else(|error| panic!("ten-picosecond grant should authorize: {error}"));
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("ten-picosecond grant should publish: {error}"));
+    let sequence = slot
+        .publish_preemption_command(crucible_shmem::SchedulerPreemptionCommand {
+            at_tick: 10,
+            deadline_tick: 10,
+            ceiling_tick: 10,
+            kind: SchedulerPreemptionKind::VcpuSwitch {
+                from_vcpu: 0,
+                to_vcpu: 1,
+            },
         })
-    );
-    assert!(matches!(
-        logical_preemption_deadline_to_raw(0, 1),
-        Err(LiveVcpuTimeCallbackError::PreemptionIcountBeforeRawOrigin { .. })
-    ));
-}
+        .unwrap_or_else(|error| panic!("fractional command should publish: {error}"));
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 2))
+        .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
+    let header = RegionHeader::new(layout);
+    let exact_deadline = ExactDeadlineReader::require(Some(test_clock_deadline_ps))
+        .unwrap_or_else(|error| panic!("deadline capability should validate: {error}"));
+    let queued_idle_advance = QueuedIdleAdvance::require(Some(test_queue_idle_advance))
+        .unwrap_or_else(|error| panic!("advance capability should validate: {error}"));
+    let injector = PluginPreemptionInjector::require(Some(capture_preemption))
+        .unwrap_or_else(|error| panic!("preemption capability should validate: {error}"));
+    let (teardown_sender, teardown_receiver) = mpsc::channel();
+    std::mem::forget(teardown_receiver);
+    let state = LiveVcpuTimeCallbackState::new(
+        test_icount_raw,
+        super::super::test_support::test_force_vcpu_exit,
+        super::super::test_support::test_idle_wake_wait(),
+        super::super::test_support::test_request_vmstop,
+        injector,
+        2,
+        0,
+        exact_deadline,
+        queued_idle_advance,
+        super::super::test_support::test_virtual_timer_witness(),
+        Box::new(TestFaultCommandBridge::empty()),
+        &header,
+        &slot,
+        Arc::new(LiveCallbackQuiescence::new()),
+        LiveRuntimeTeardownRouter::new(teardown_sender),
+    )
+    .unwrap_or_else(|error| panic!("live state should validate: {error}"));
 
-#[test]
-fn preemption_deadline_conversion_handles_maximum_logical_tick() {
-    let deadline = logical_preemption_deadline_to_raw(u64::MAX, 0)
-        .unwrap_or_else(|error| panic!("maximum deadline should convert: {error}"));
-    assert_eq!(
-        deadline,
-        u64::MAX / crucible_shmem::TICKS_PER_INSTRUCTION + 1
-    );
+    assert_eq!(state.max_advance_icount(), Ok(0));
+    assert_eq!(slot.consumed_preemption_sequence(), sequence);
+    TEST_PREEMPTION_COMMAND.with_borrow(|command| {
+        assert_eq!(
+            *command,
+            Some((10, 10, 10, crate::QEMU_PREEMPTION_KIND_VCPU_SWITCH, 0, 1, 0))
+        );
+    });
 }

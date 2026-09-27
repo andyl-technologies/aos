@@ -1,4 +1,4 @@
-From d938be44016e900ec9694db31203ecdeecfc7c6e Mon Sep 17 00:00:00 2001
+From 5bf808077f31e34e9622a3460d32926ca3586d0a Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -1877,7 +1877,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
  
  uint8_t cpu_ldb_code_mmu(CPUArchState *env, vaddr addr,
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3613b18511d3a58a745da71cdf862c53e6f34d3b 100644
+index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..aa3aa6b2b706774b80c7cc11c9b8142934697512 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -24,11 +24,15 @@
@@ -2225,7 +2225,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3613b18511d3a58a745da71cdf862c53
      return qatomic_read(&timers_state.qemu_icount_bias) + icount_to_ns(icount);
  }
  
-@@ -139,6 +431,125 @@ int64_t icount_get_raw(void)
+@@ -139,6 +431,105 @@ int64_t icount_get_raw(void)
      return icount;
  }
  
@@ -2282,26 +2282,6 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3613b18511d3a58a745da71cdf862c53
 +           CRUCIBLE_SIM_TICKS_PER_INSTRUCTION + tick_bias;
 +}
 +
-+int64_t icount_crucible_sim_tick_at_raw(uint64_t raw_icount)
-+{
-+    int64_t tick_bias;
-+    int64_t legacy_bias;
-+    unsigned start;
-+
-+    do {
-+        start = seqlock_read_begin(&timers_state.vm_clock_seqlock);
-+        tick_bias = qatomic_read(&timers_state.crucible_sim_tick_bias);
-+        legacy_bias = qatomic_read(&timers_state.qemu_icount_bias);
-+    } while (seqlock_read_retry(&timers_state.vm_clock_seqlock, start));
-+
-+    if (legacy_bias != 0 || tick_bias < 0 ||
-+        raw_icount > (uint64_t)(INT64_MAX - tick_bias) /
-+                     CRUCIBLE_SIM_TICKS_PER_INSTRUCTION) {
-+        return -1;
-+    }
-+    return (int64_t)raw_icount * CRUCIBLE_SIM_TICKS_PER_INSTRUCTION + tick_bias;
-+}
-+
 +int64_t icount_get_observed(void)
 +{
 +    CPUState *cpu = current_cpu;
@@ -2351,7 +2331,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3613b18511d3a58a745da71cdf862c53
  /* Return the virtual CPU time, based on the instruction counter.  */
  int64_t icount_get(void)
  {
-@@ -153,8 +564,100 @@ int64_t icount_get(void)
+@@ -153,8 +544,100 @@ int64_t icount_get(void)
      return icount;
  }
  
@@ -2452,7 +2432,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3613b18511d3a58a745da71cdf862c53
      return icount << qatomic_read(&timers_state.icount_time_shift);
  }
  
-@@ -224,6 +727,25 @@ static void icount_adjust_vm(void *opaque)
+@@ -224,6 +707,25 @@ static void icount_adjust_vm(void *opaque)
  
  int64_t icount_round(int64_t count)
  {
@@ -2478,7 +2458,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3613b18511d3a58a745da71cdf862c53
      int shift = qatomic_read(&timers_state.icount_time_shift);
      return (count + (1 << shift) - 1) >> shift;
  }
-@@ -331,6 +853,16 @@ void icount_start_warp_timer(void)
+@@ -331,6 +833,16 @@ void icount_start_warp_timer(void)
          }
      }
  
@@ -2495,7 +2475,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3613b18511d3a58a745da71cdf862c53
      /* We want to use the earliest deadline from ALL vm_clocks */
      clock = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT);
      deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
-@@ -421,15 +953,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -421,15 +933,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      bool sleep = qemu_opt_get_bool(opts, "sleep", true);
      bool align = qemu_opt_get_bool(opts, "align", false);
      long time_shift = -1;
@@ -2523,7 +2503,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3613b18511d3a58a745da71cdf862c53
      if (align && !sleep) {
          error_setg(errp, "align=on and sleep=off are incompatible");
          return false;
-@@ -450,6 +994,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -450,6 +974,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      }
  
      icount_sleep = sleep;
@@ -2784,10 +2764,10 @@ index 16a301b6dc0ba515ecbc4073b28968f0a0604d14..b74307a0ba8684fe0c68fcfe5817fcc2
  
 diff --git a/accel/tcg/tcg-accel-ops-preemption.c b/accel/tcg/tcg-accel-ops-preemption.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..515e669a735cb8e10359564155bfb55920523f08
+index 0000000000000000000000000000000000000000..64a0a5db661128340846bd948505d7aa18e5641f
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-preemption.c
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,302 @@
 +/*
 + * QEMU TCG Crucible commanded preemption injection.
 + */
@@ -2795,6 +2775,9 @@ index 0000000000000000000000000000000000000000..515e669a735cb8e10359564155bfb559
 +#include "qemu/osdep.h"
 +#include "qemu/accel.h"
 +#include "qemu/error-report.h"
++#include "qemu/module.h"
++#include "migration/qemu-file.h"
++#include "migration/vmstate.h"
 +#include "plugins/qemu-plugin.h"
 +#include "exec/cpu-common.h"
 +#include "exec/icount.h"
@@ -2808,7 +2791,6 @@ index 0000000000000000000000000000000000000000..515e669a735cb8e10359564155bfb559
 +    __attribute__((weak));
 +
 +typedef struct CrucibleSimPreemptionCommand {
-+    /* The plugin command is in raw retired instructions, not sim ps ticks. */
 +    bool pending;
 +    uint64_t at_tick;
 +    unsigned int kind;
@@ -2818,6 +2800,108 @@ index 0000000000000000000000000000000000000000..515e669a735cb8e10359564155bfb559
 +} CrucibleSimPreemptionCommand;
 +
 +static CrucibleSimPreemptionCommand crucible_sim_preemption_command;
++
++static int crucible_sim_preemption_validate_vcpu(uint32_t vcpu);
++
++static bool crucible_sim_preemption_vmstate_needed(void *opaque)
++{
++    return icount_crucible_sim_mode();
++}
++
++static int crucible_sim_preemption_vmstate_pre_save(void *opaque)
++{
++    CrucibleSimPreemptionCommand *command = opaque;
++    int64_t current_tick = icount_crucible_sim_tick_observed();
++
++    if (!command->pending) {
++        memset(command, 0, sizeof(*command));
++        return 0;
++    }
++    if (current_tick < 0 || command->at_tick < (uint64_t)current_tick) {
++        return -EINVAL;
++    }
++    return 0;
++}
++
++static int crucible_sim_preemption_vmstate_post_load(void *opaque,
++                                                    int version_id)
++{
++    CrucibleSimPreemptionCommand *command = opaque;
++
++    if (version_id != 1) {
++        return -EINVAL;
++    }
++    if (!command->pending) {
++        return command->at_tick == 0 && command->kind == 0 &&
++               command->arg0 == 0 && command->arg1 == 0 &&
++               command->arg2 == 0 ? 0 : -EINVAL;
++    }
++    if (command->at_tick > INT64_MAX || command->arg2 != 0) {
++        return -EINVAL;
++    }
++    switch (command->kind) {
++    case QEMU_PLUGIN_PREEMPTION_KIND_VCPU_SWITCH:
++        return command->arg0 != command->arg1 &&
++               crucible_sim_preemption_validate_vcpu(command->arg0) == 0 &&
++               crucible_sim_preemption_validate_vcpu(command->arg1) == 0 ?
++               0 : -EINVAL;
++    case QEMU_PLUGIN_PREEMPTION_KIND_INTERRUPT_AT:
++        return crucible_sim_det_ipi_deliver_commanded &&
++               command->arg1 <= UINT8_MAX &&
++               crucible_sim_preemption_validate_vcpu(command->arg0) == 0 ?
++               0 : -EINVAL;
++    default:
++        return -EINVAL;
++    }
++}
++
++static bool crucible_sim_preemption_fingerprint(QEMUFile *file,
++                                               const void *opaque,
++                                               Error **errp)
++{
++    const CrucibleSimPreemptionCommand *command = opaque;
++
++    qemu_put_byte(file, command->pending);
++    qemu_put_be64(file, command->pending ? command->at_tick : 0);
++    qemu_put_be32(file, command->pending ? command->kind : 0);
++    qemu_put_be32(file, command->pending ? command->arg0 : 0);
++    qemu_put_be32(file, command->pending ? command->arg1 : 0);
++    qemu_put_be32(file, command->pending ? command->arg2 : 0);
++    return true;
++}
++
++static const CrucibleFingerprintProjection crucible_sim_preemption_projection = {
++    .schema = "crucible.qemu.sim-preemption.v1",
++    .version = 1,
++    .save = crucible_sim_preemption_fingerprint,
++};
++
++static const VMStateDescription vmstate_crucible_sim_preemption = {
++    .name = "crucible/sim-preemption",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = crucible_sim_preemption_vmstate_needed,
++    .pre_save = crucible_sim_preemption_vmstate_pre_save,
++    .post_load = crucible_sim_preemption_vmstate_post_load,
++    .crucible_fingerprint_projection = &crucible_sim_preemption_projection,
++    .fields = (const VMStateField[]) {
++        VMSTATE_BOOL(pending, CrucibleSimPreemptionCommand),
++        VMSTATE_UINT64(at_tick, CrucibleSimPreemptionCommand),
++        VMSTATE_UINT32(kind, CrucibleSimPreemptionCommand),
++        VMSTATE_UINT32(arg0, CrucibleSimPreemptionCommand),
++        VMSTATE_UINT32(arg1, CrucibleSimPreemptionCommand),
++        VMSTATE_UINT32(arg2, CrucibleSimPreemptionCommand),
++        VMSTATE_END_OF_LIST()
++    },
++};
++
++static void crucible_sim_preemption_vmstate_register(void)
++{
++    vmstate_register(NULL, 0, &vmstate_crucible_sim_preemption,
++                     &crucible_sim_preemption_command);
++}
++
++type_init(crucible_sim_preemption_vmstate_register)
 +
 +static bool crucible_sim_preemption_mode(void)
 +{
@@ -2836,15 +2920,14 @@ index 0000000000000000000000000000000000000000..515e669a735cb8e10359564155bfb559
 +                                                   uint64_t deadline_tick,
 +                                                   uint64_t ceiling_tick)
 +{
-+    int64_t current_raw = icount_get_raw_observed();
-+    int64_t logical_ceiling = icount_crucible_sim_tick_at_raw(ceiling_tick);
++    int64_t current_tick = icount_crucible_sim_tick_observed();
 +    uint64_t published_ceiling = crucible_sim_shmem_logical_ceiling();
 +
-+    if (current_raw < 0 || logical_ceiling < 0 ||
-+        (uint64_t)logical_ceiling > published_ceiling ||
-+        deadline_tick > ceiling_tick ||
++    if (current_tick < 0 || deadline_tick > ceiling_tick ||
++        ceiling_tick > published_ceiling ||
++        ceiling_tick > INT64_MAX ||
 +        at_tick < deadline_tick || at_tick > ceiling_tick ||
-+        at_tick < (uint64_t)current_raw) {
++        at_tick < (uint64_t)current_tick) {
 +        return -1;
 +    }
 +    return 0;
@@ -2899,23 +2982,24 @@ index 0000000000000000000000000000000000000000..515e669a735cb8e10359564155bfb559
 +
 +int64_t crucible_sim_preemption_clamp_cpu_budget(int64_t cpu_budget)
 +{
-+    int64_t current_raw;
++    int64_t current_tick;
 +    uint64_t remaining_instructions;
 +
 +    if (!crucible_sim_preemption_command.pending || cpu_budget <= 0) {
 +        return cpu_budget;
 +    }
-+    current_raw = icount_get_raw_observed();
-+    if (current_raw < 0) {
-+        error_report("Crucible preemption observed negative raw icount");
++    current_tick = icount_crucible_sim_tick_observed();
++    if (current_tick < 0) {
++        error_report("Crucible preemption observed negative logical time");
 +        abort();
 +    }
-+    if ((uint64_t)current_raw >= crucible_sim_preemption_command.at_tick) {
++    if ((uint64_t)current_tick >= crucible_sim_preemption_command.at_tick) {
 +        return 0;
 +    }
 +
 +    remaining_instructions =
-+        crucible_sim_preemption_command.at_tick - (uint64_t)current_raw;
++        (crucible_sim_preemption_command.at_tick - (uint64_t)current_tick) /
++        CRUCIBLE_SIM_TICKS_PER_INSTRUCTION;
 +    if (remaining_instructions > (uint64_t)INT64_MAX ||
 +        (uint64_t)cpu_budget <= remaining_instructions) {
 +        return cpu_budget;
@@ -2923,47 +3007,38 @@ index 0000000000000000000000000000000000000000..515e669a735cb8e10359564155bfb559
 +    return (int64_t)remaining_instructions;
 +}
 +
-+uint64_t crucible_sim_preemption_next_logical_tick(void)
++uint64_t crucible_sim_preemption_next_tick(void)
 +{
-+    int64_t logical_tick;
-+
-+    if (!crucible_sim_preemption_command.pending) {
-+        return UINT64_MAX;
-+    }
-+    logical_tick = icount_crucible_sim_tick_at_raw(
-+        crucible_sim_preemption_command.at_tick);
-+    if (logical_tick < 0) {
-+        error_report("Crucible preemption deadline exceeds sim clock range");
-+        abort();
-+    }
-+    return (uint64_t)logical_tick;
++    return crucible_sim_preemption_command.pending ?
++        crucible_sim_preemption_command.at_tick : UINT64_MAX;
 +}
 +
 +bool crucible_sim_preemption_apply_due(CPUState **cpu)
 +{
 +    CrucibleSimPreemptionCommand command;
 +    CPUState *target_cpu;
-+    int64_t current_raw;
++    int64_t current_tick;
 +
 +    if (!crucible_sim_preemption_command.pending) {
 +        return false;
 +    }
 +
-+    current_raw = icount_get_raw_observed();
-+    if (current_raw < 0 ||
-+        (uint64_t)current_raw < crucible_sim_preemption_command.at_tick) {
++    current_tick = icount_crucible_sim_tick_observed();
++    if (current_tick < 0 ||
++        (uint64_t)current_tick < crucible_sim_preemption_command.at_tick) {
 +        return false;
 +    }
-+    if ((uint64_t)current_raw > crucible_sim_preemption_command.at_tick) {
-+        error_report("Crucible preemption missed commanded raw icount: "
++    if ((uint64_t)current_tick > crucible_sim_preemption_command.at_tick) {
++        error_report("crucible preemption missed commanded tick: "
 +                     "current=%" PRIu64 " commanded=%" PRIu64,
-+                     (uint64_t)current_raw,
++                     (uint64_t)current_tick,
 +                     crucible_sim_preemption_command.at_tick);
 +        abort();
 +    }
 +
 +    command = crucible_sim_preemption_command;
-+    crucible_sim_preemption_command.pending = false;
++    memset(&crucible_sim_preemption_command, 0,
++           sizeof(crucible_sim_preemption_command));
 +
 +    switch (command.kind) {
 +    case QEMU_PLUGIN_PREEMPTION_KIND_VCPU_SWITCH:
@@ -2996,7 +3071,7 @@ index 0000000000000000000000000000000000000000..515e669a735cb8e10359564155bfb559
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..7a6bc177fd83af0c77b669dd2da23a6fab5b02a9 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..ae2862387d6b711557d7d1f1d55c9db7f48e6fdd 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -27,45 +27,1636 @@
@@ -3773,7 +3848,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..7a6bc177fd83af0c77b669dd2da23a6f
 +{
 +    return qemu_crucible_fault_next_boundary_deadline(
 +               CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) != UINT64_MAX ||
-+           crucible_sim_preemption_next_logical_tick() != UINT64_MAX ||
++           crucible_sim_preemption_next_tick() != UINT64_MAX ||
 +           (!qemu_crucible_fault_lifecycle_virtual_timers_paused() &&
 +            qemu_clock_deadline_ps_all(QEMU_CLOCK_VIRTUAL,
 +                                       QEMU_TIMER_ATTR_ALL) >= 0);
@@ -3787,7 +3862,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..7a6bc177fd83af0c77b669dd2da23a6f
 +    }
 +    return MIN(qemu_crucible_fault_next_boundary_deadline(
 +                   CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY),
-+               crucible_sim_preemption_next_logical_tick());
++               crucible_sim_preemption_next_tick());
 +}
 +
 +static bool rr_crucible_sim_boundary_deadline_due(void)
@@ -50845,10 +50920,10 @@ index d6d13ad37f978ea8dcf816b66d06f3bf9645ffd7..8bc71b897f77ecbe385f3ea65e12fd83
                           TYPE_CHARDEV_SOCKET)
  
 diff --git a/include/exec/icount.h b/include/exec/icount.h
-index 7a26b40084dbf8c14560607f3350b89b49fa41bd..a324aa5e15938e7d0681ac1c27040113043e19cf 100644
+index 7a26b40084dbf8c14560607f3350b89b49fa41bd..c016940034cb255e730c377b0c0753bfbe8b1c79 100644
 --- a/include/exec/icount.h
 +++ b/include/exec/icount.h
-@@ -46,8 +46,39 @@ void icount_update(CPUState *cpu);
+@@ -46,8 +46,36 @@ void icount_update(CPUState *cpu);
  /* get raw icount value */
  int64_t icount_get_raw(void);
  
@@ -50877,9 +50952,6 @@ index 7a26b40084dbf8c14560607f3350b89b49fa41bd..a324aa5e15938e7d0681ac1c27040113
 +/* current sim logical tick, including an executing vCPU's retired prefix */
 +int64_t icount_crucible_sim_tick_observed(void);
 +
-+/* project raw icount with the current idle-jump bias */
-+int64_t icount_crucible_sim_tick_at_raw(uint64_t raw_icount);
-+
  /* return the virtual CPU time in ns, based on the instruction counter. */
  int64_t icount_get(void);
 +
@@ -50888,7 +50960,7 @@ index 7a26b40084dbf8c14560607f3350b89b49fa41bd..a324aa5e15938e7d0681ac1c27040113
  /*
   * convert an instruction counter value to ns, based on the icount shift.
   * This shift is set as a fixed value with the icount "shift" option
-@@ -68,6 +99,17 @@ bool icount_configure(QemuOpts *opts, Error **errp);
+@@ -68,6 +96,17 @@ bool icount_configure(QemuOpts *opts, Error **errp);
  /* used by tcg vcpu thread to calc icount budget */
  int64_t icount_round(int64_t count);
  
@@ -59395,7 +59467,7 @@ index 0000000000000000000000000000000000000000..ce6c686a533830194d46eaf0f036d0ff
 +#endif /* SYSTEM_CRUCIBLE_SIM_IPI_H */
 diff --git a/include/system/crucible-sim-preemption.h b/include/system/crucible-sim-preemption.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..252936374e7bc61cffa3c809a90bb2ad4297723b
+index 0000000000000000000000000000000000000000..7fdbaf05a28166efade32274a1e3845b029a623e
 --- /dev/null
 +++ b/include/system/crucible-sim-preemption.h
 @@ -0,0 +1,22 @@
@@ -59417,7 +59489,7 @@ index 0000000000000000000000000000000000000000..252936374e7bc61cffa3c809a90bb2ad
 +                                    unsigned int kind, uint32_t arg0,
 +                                    uint32_t arg1, uint32_t arg2);
 +int64_t crucible_sim_preemption_clamp_cpu_budget(int64_t cpu_budget);
-+uint64_t crucible_sim_preemption_next_logical_tick(void);
++uint64_t crucible_sim_preemption_next_tick(void);
 +bool crucible_sim_preemption_apply_due(CPUState **cpu);
 +
 +#endif /* SYSTEM_CRUCIBLE_SIM_PREEMPTION_H */

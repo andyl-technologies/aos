@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "c55d505af8986586730ea4eef174ecba67fc58b074763fd0a8e3b3d2bb497b5c";
+  sha256 = "98d5eb065e300efbf1daa37d349890151ea25b72ec6e15713e2ca0a5af1a539b";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -26,8 +26,8 @@
     "continuation. Preserve inactive and instruction-only PMU migration,"
     "ordinary-QEMU compatibility, and the GPL/Apache process boundary."
   ];
-  commit = "d938be44016e900ec9694db31203ecdeecfc7c6e";
-  tree = "f4597f5a17157adbf24f6718ad49d9cb9588f8a9";
+  commit = "5bf808077f31e34e9622a3460d32926ca3586d0a";
+  tree = "68d4a600d73796a1f4b83e367cae7f11ad8af6b1";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -36,7 +36,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "fe6261f68a88f42bcc1f321184c87fde57b732c2fdc8349e6ea76c950fcd894d";
+  bundleSha256 = "0a4837b119d62111cee4417c483d02ded5bcb2bf21807cf245e35e9fc926b903";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

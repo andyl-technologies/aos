@@ -33,26 +33,6 @@ pub enum LiveVcpuTimeCallbackError {
         /// Underlying mailbox publication or acknowledgement error.
         source: PreemptionMailboxError,
     },
-    /// A logical preemption icount precedes the restored raw-icount origin.
-    #[error(
-        "preemption {field} icount {logical_icount} precedes logical raw origin {logical_icount_offset}"
-    )]
-    PreemptionIcountBeforeRawOrigin {
-        /// Command field whose logical icount could not be translated.
-        field: &'static str,
-        /// Scheduler-authored logical icount.
-        logical_icount: u64,
-        /// Logical offset added to QEMU's raw retired count.
-        logical_icount_offset: u64,
-    },
-    /// A raw-only QEMU preemption command cannot express an exact inter-retirement tick.
-    #[error("preemption {field} tick {logical_icount} falls between retired instructions")]
-    PreemptionIcountBetweenRetirements {
-        /// Command field whose tick requires a time-only preemption API.
-        field: &'static str,
-        /// Scheduler-authored exact tick.
-        logical_icount: u64,
-    },
     /// A process attempted more than one launch-continuation restore.
     #[error(
         "logical restore continuation generation {requested_generation} follows already-applied generation {applied_generation}"
