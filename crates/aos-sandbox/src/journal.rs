@@ -4752,9 +4752,10 @@ mod tests {
             let preflight = authority
                 .preflight_global_capacity_reservation_v1(&prepared, &admission)
                 .unwrap();
-            authority
+            let (_, committed_reservation) = authority
                 .commit_global_capacity_reservation_v1(&preflight, prepared, &admission)
                 .unwrap();
+            assert_eq!(committed_reservation.reservation_id(), reservation_id);
             assert_eq!(
                 authority.get(b"owner").unwrap(),
                 Some(b"admitted".as_slice())
@@ -4880,6 +4881,128 @@ mod tests {
             ),
             Err(JournalError::ForeignAuthorityNamespace)
         ));
+    }
+
+    #[test]
+    fn source_provider_native_capacity_preserves_near_limit_terminal_space() {
+        let mut request = source_provider_capacity_request();
+        request.terminal_records = 2;
+        request.poison_records = 2;
+        let limits_with_terminal_slots = |slots: usize| JournalLimits {
+            // Admission retains one owner and one reservation row. The held
+            // terminal branch needs two further slots until settlement.
+            maximum_materialized_records: 2 + slots,
+            ..JournalLimits::default()
+        };
+        let admission = |prepared: &super::PreparedGlobalCapacityReservationV1| {
+            transaction(
+                11,
+                vec![
+                    JournalRecord::put(
+                        RecordNamespace::SourceProviderAuthority,
+                        b"owner".to_vec(),
+                        b"admitted".to_vec(),
+                    ),
+                    prepared.record().clone(),
+                ],
+            )
+        };
+
+        let too_small = TestDirectory::new("source-provider-capacity-one-terminal-slot");
+        fs::set_permissions(&too_small.0, fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(&too_small.0).unwrap().uid();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            &too_small.0,
+            "protected.journal",
+            limits_with_terminal_slots(1),
+            uid,
+        )
+        .unwrap();
+        let authority = journal
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+        let prepared = authority
+            .prepare_global_capacity_reservation_v1(request, [11; 16])
+            .unwrap();
+        assert!(matches!(
+            authority.preflight_global_capacity_reservation_v1(&prepared, &admission(&prepared)),
+            Err(JournalError::LimitExceeded(
+                "outstanding global capacity reservations"
+            ))
+        ));
+        assert_eq!(authority.records().unwrap().count(), 0);
+        drop(authority);
+        assert_eq!(journal.snapshot_sequence(), 1);
+        drop(journal);
+
+        let enough = TestDirectory::new("source-provider-capacity-two-terminal-slots");
+        fs::set_permissions(&enough.0, fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(&enough.0).unwrap().uid();
+        let limits = limits_with_terminal_slots(2);
+        let (mut journal, _) =
+            Journal::open_protected_at_uid(&enough.0, "protected.journal", limits, uid).unwrap();
+        let mut authority = journal
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+        let prepared = authority
+            .prepare_global_capacity_reservation_v1(request, [11; 16])
+            .unwrap();
+        let admission = admission(&prepared);
+        let preflight = authority
+            .preflight_global_capacity_reservation_v1(&prepared, &admission)
+            .unwrap();
+        let (_, reservation) = authority
+            .commit_global_capacity_reservation_v1(&preflight, prepared, &admission)
+            .unwrap();
+        let competing = transaction(
+            12,
+            vec![JournalRecord::put(
+                RecordNamespace::SourceProviderAuthority,
+                b"competing".to_vec(),
+                vec![1],
+            )],
+        );
+        assert!(matches!(
+            authority.commit(&competing),
+            Err(JournalError::LimitExceeded(
+                "outstanding global capacity reservations"
+            ))
+        ));
+        assert_eq!(authority.get(b"competing").unwrap(), None);
+
+        let terminal = transaction(
+            13,
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::SourceProviderAuthority,
+                    b"owner".to_vec(),
+                    b"settled".to_vec(),
+                ),
+                reservation.settlement_record(),
+            ],
+        );
+        let preflight = authority
+            .preflight_reserved_terminal_v1(&reservation, &terminal)
+            .unwrap();
+        authority
+            .commit_reserved_terminal_v1(&preflight, reservation, &terminal)
+            .unwrap();
+        drop(authority);
+        drop(journal);
+
+        let (mut reopened, _) =
+            Journal::open_protected_at_uid(&enough.0, "protected.journal", limits, uid).unwrap();
+        let authority = reopened
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+        authority
+            .validate_global_capacity_reservation_set_v1(&Default::default())
+            .unwrap();
+        assert_eq!(
+            authority.get(b"owner").unwrap(),
+            Some(b"settled".as_slice())
+        );
+        assert_eq!(authority.get(b"competing").unwrap(), None);
     }
 
     #[test]
