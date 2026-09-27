@@ -477,6 +477,7 @@
       test -s "$runtime_trace"
       ${pkgs.grep}/bin/grep -Fxq 'PASS' "$result"
       ${pkgs.grep}/bin/grep -Fxq 'diagnostic_mode=phase4-partition-probe' "$result"
+      ${pkgs.grep}/bin/grep -Fxq 'phase4_partition_span_ps=1000000' "$result"
       ${pkgs.grep}/bin/grep -Fq 'phase4_partition_exact_match=true' "$result"
     '';
   };
