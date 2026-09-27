@@ -199,9 +199,16 @@ in
                   continue
               target = target_root / relative
               target.parent.mkdir(parents=True, exist_ok=True)
-              target.write_text(
-                  source.read_text().replace("org.objectweb.asm", "org.jetbrains.asm4")
-              )
+              text = source.read_text().replace("org.objectweb.asm", "org.jetbrains.asm4")
+              if relative.name == "ClassReader.java":
+                  # The Kotlin compiler only reads annotations from JDK 8
+                  # classes. ASM 4 can parse their constant pool and skips
+                  # method bodies, but rejects the class version by default.
+                  version_check = "readShort(6) > Opcodes.V1_7"
+                  if text.count(version_check) != 1:
+                      raise SystemExit("Unexpected ASM 4 class version check")
+                  text = text.replace(version_check, "readShort(6) > 52")
+              target.write_text(text)
           PY
 
           python3 - kotlin idea asm <<'PY'
@@ -326,11 +333,12 @@ in
           test ! -s smoke.log
 
           cat > Asm4Smoke.java <<'JAVA'
+          import org.jetbrains.asm4.ClassReader;
           import org.jetbrains.asm4.ClassWriter;
           import org.jetbrains.asm4.Opcodes;
 
           final class Asm4Smoke {
-              public static void main(String[] args) {
+              public static void main(String[] args) throws Exception {
                   ClassWriter writer = new ClassWriter(0);
                   writer.visit(Opcodes.V1_6, Opcodes.ACC_PUBLIC,
                           "Asm4Generated", null, "java/lang/Object", null);
@@ -340,10 +348,14 @@ in
                           || generated[1] != (byte) 0xfe) {
                       throw new AssertionError("ASM 4 did not emit a Java class");
                   }
+                  ClassReader reader = new ClassReader("Asm4Smoke");
+                  if (!"Asm4Smoke".equals(reader.getClassName())) {
+                      throw new AssertionError("ASM 4 did not read a Java 8 class");
+                  }
               }
           }
           JAVA
-          ${buildJdk}/bin/javac -proc:none -cp classes/asm4 \
+          ${buildJdk}/bin/javac -source 8 -target 8 -proc:none -cp classes/asm4 \
             -d smoke-classes Asm4Smoke.java
           ${buildJdk}/bin/java -cp smoke-classes:classes/asm4 Asm4Smoke
         '';
