@@ -389,7 +389,73 @@ in
           # This was fixed upstream in JDK 11.0.8+ but never backported to JDK 9/10.
           if [ -f make/common/MakeBase.gmk ]; then
             sed -i 's/$(eval -include $(call DependOnVariableFileName, $1, $2))/$(if $(wildcard $(call DependOnVariableFileName, $1, $2)),$(eval include $(call DependOnVariableFileName, $1, $2)))/' make/common/MakeBase.gmk
-          fi
+          fi${
+            if isDarwinCross && major == 10
+            then ''
+
+              # Clang treats an empty C parameter list as a zero-argument
+              # prototype; the implementation and callers pass JNIEnv.
+              encodingHeader=src/java.base/share/native/libjava/jni_util.h
+              test "$(grep -Fc 'void initializeEncoding();' "$encodingHeader")" -eq 1
+              sed -i 's/void initializeEncoding();/void initializeEncoding(JNIEnv *env);/' "$encodingHeader"
+
+              # The dlsym result is assigned to main_fptr's two-argument
+              # function pointer; use that signature in the explicit cast.
+              launcherSource=src/java.base/macosx/native/libjli/java_md_macosx.c
+              test "$(grep -Fc 'main_fptr = (int (*)())dlsym' "$launcherSource")" -eq 1
+              sed -i 's/main_fptr = (int (\*)())dlsym/main_fptr = (int (*)(int, char **))dlsym/' "$launcherSource"
+
+              # The printing helper takes the same JNI arguments at its
+              # declaration, definition, and three call sites.
+              printerSource=src/java.desktop/macosx/native/libawt_lwawt/awt/CPrinterJob.m
+              test "$(grep -Fc 'createDefaultNSPrintInfo();' "$printerSource")" -eq 1
+              sed -i 's/createDefaultNSPrintInfo();/createDefaultNSPrintInfo(JNIEnv* env, jstring printer);/' "$printerSource"
+
+              # Modern Clang supplies bool in C23, C++, and Objective-C;
+              # the macOS debugger's old compatibility typedef conflicts.
+              debuggerHeader=src/jdk.hotspot.agent/macosx/native/libsaproc/libproc.h
+              test "$(grep -Fc '#ifndef bool' "$debuggerHeader")" -eq 1
+              sed -i 's/#ifndef bool/#if !defined(__cplusplus) \&\& !defined(__OBJC__) \&\& (!defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L) \&\& !defined(bool)/' "$debuggerHeader"
+
+              # AWT stores typed callbacks in unions through AnyFunc. Clang's
+              # current C mode no longer treats AnyFunc() as an open signature;
+              # cast only the four generic initializer entries explicitly.
+              graphicsHeader=src/java.desktop/share/native/libawt/java2d/loops/GraphicsPrimitiveMgr.h
+              test "$(grep -Fc '{FUNC}' "$graphicsHeader")" -eq 4
+              sed -i 's/{FUNC}/{(AnyFunc *)(FUNC)}/g' "$graphicsHeader"
+
+              # MediaLib loads four different function signatures through
+              # one table. Use their upstream prototypes at each call site.
+              mediaSource=src/java.desktop/share/native/libawt/awt/medialib/awt_ImagingLib.c
+              python3 - "$mediaSource" <<'PY'
+              from pathlib import Path
+              import sys
+
+              path = Path(sys.argv[1])
+              source = path.read_text()
+              include = '#include "awt_ImagingLib.h"\n'
+              if source.count(include) != 1:
+                  raise SystemExit("unexpected MediaLib header layout")
+              source = source.replace(include, include + '#include "mlib_image_proto.h"\n')
+
+              signatures = {
+                  "MLIB_CONVKERNCVT": "ImageConvKernelConvert",
+                  "MLIB_CONVMxN": "ImageConvMxN",
+                  "MLIB_AFFINE": "ImageAffine",
+                  "MLIB_LOOKUP": "ImageLookUp",
+              }
+              for slot, function in signatures.items():
+                  old = f"(*sMlibFns[{slot}].fptr)"
+                  new = f"((__typeof__(&__mlib_{function}))sMlibFns[{slot}].fptr)"
+                  if source.count(old) != 2:
+                      raise SystemExit(f"unexpected MediaLib calls for {slot}")
+                  source = source.replace(old, new)
+
+              path.write_text(source)
+              PY
+            ''
+            else ""
+          }
         '';
       }
       {
