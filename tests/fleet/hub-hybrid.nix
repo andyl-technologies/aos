@@ -798,7 +798,7 @@ in {
       }, abort_response
 
       complete_path = "multipart/fleet-complete-probe.bin"
-      complete_bytes = b"fleet external multipart completion\n"
+      complete_size = 8 * 1024 * 1024
       complete_create_status, complete_create_response = external_binding_plan(
           published_revision,
           {"kind": "create_multipart", "path": complete_path},
@@ -808,8 +808,8 @@ in {
       complete_upload_id = json.loads(complete_create_response)["outcome"]["upload_id"]
       encoded_upload_id = urllib.parse.quote(complete_upload_id, safe="")
       client.succeed(
-          f"printf '%s' {shlex.quote(base64.b64encode(complete_bytes).decode())} | "
-          "${pkgs.coreutils}/bin/base64 -d > /tmp/hybrid-external-multipart-part"
+          f"${pkgs.coreutils}/bin/head -c {complete_size} /dev/zero "
+          "> /tmp/hybrid-external-multipart-part"
       )
       part_url = (
           f"https://s3.fleet.test/fleet-s3/tenant/registry/{complete_path}"
@@ -836,8 +836,40 @@ in {
       assert complete_status == "200", (complete_status, complete_response)
       completed_object = json.loads(complete_response)["outcome"]["object"]
       assert completed_object["key"] == f"registry/{complete_path}", completed_object
-      assert completed_object["size"] == len(complete_bytes), completed_object
-      print("hybrid external S3 multipart create, abort, and complete: passed")
+      assert completed_object["size"] == complete_size, completed_object
+      print("hybrid external S3 large multipart create, abort, and complete: passed")
+
+      # A provider outage must fail the signed work request, then allow a new
+      # plan to recover once the same binding becomes reachable again.
+      s3.succeed(
+          "${pkgs.nginx}/bin/nginx -s stop -c /var/lib/hybrid-s3/nginx.conf "
+          "-p /var/lib/hybrid-s3/"
+      )
+      s3.wait_until_succeeds(
+          "test ! -e /var/lib/hybrid-s3/nginx.pid", timeout=30
+      )
+      unavailable_status, _ = external_binding_plan(
+          published_revision, head_operation, "5b" * 16
+      )
+      assert int(unavailable_status) >= 500, unavailable_status
+      s3.succeed(
+          "${pkgs.nginx}/bin/nginx -c /var/lib/hybrid-s3/nginx.conf "
+          "-p /var/lib/hybrid-s3/ -g 'daemon off;' "
+          "> /var/lib/hybrid-s3/nginx.log 2>&1 < /dev/null & "
+          "echo $! > /var/lib/hybrid-s3/nginx-process.pid"
+      )
+      client.wait_until_succeeds(
+          f"{CURL} -sS -o /dev/null -w '%{{http_code}}' "
+          "https://s3.fleet.test/fleet-s3/absent | "
+          f"{GREP} -Eq '^(403|404)$'",
+          timeout=60,
+      )
+      recovered_status, recovered_response = external_binding_plan(
+          published_revision, head_operation, "5c" * 16
+      )
+      assert recovered_status == "200", (recovered_status, recovered_response)
+      assert json.loads(recovered_response)["outcome"]["kind"] == "head"
+      print("hybrid external S3 outage and signed-work recovery: passed")
       git_status, git_response = external_binding_plan(
           published_revision,
           {"kind": "inspect_git_object", "oid": git_oid},
