@@ -29,7 +29,6 @@ in
         name = "configure";
         script = ''
           export CARGO_HOME="$TMPDIR/cargo"
-          cd source
           mkdir -p "$CARGO_HOME" .cargo
           sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
             > .cargo/config.toml
@@ -39,7 +38,6 @@ in
         name = "run-current-coverage-contracts";
         script = ''
           set -eu
-          cd source
           target="$TMPDIR/basic-block-coverage-target"
           cargo test --frozen --offline --target-dir "$target" \
             --manifest-path crates/Cargo.toml -p crucible \
