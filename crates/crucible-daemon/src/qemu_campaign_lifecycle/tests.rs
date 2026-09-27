@@ -817,6 +817,10 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
         self.completed_quanta
     }
 
+    fn event_log_offset(&self) -> Result<crucible::EventLogOffset, SchedulerError> {
+        Ok(crucible::EventLogOffset::default())
+    }
+
     fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
         (self.terminal_after_replay && self.completed_quanta > 0).then(|| {
             crucible::QuantumTerminalVerdict::Failed(vec![String::from(
@@ -2101,6 +2105,54 @@ fn fresh_runner_enables_live_signal_promotion_after_start_materialization() {
         observed.lock().expect("promotion observations").as_slice(),
         [true]
     );
+}
+
+#[test]
+fn private_checkpoint_replay_reconstructs_a_selected_origin_and_reaps_on_failure() {
+    let (input, _, _) = selected_after_genesis_input();
+    let selected = input.start().configuration().clone();
+    let proof = QemuSavepointReplayProof::from_reached_boundary(
+        &selected,
+        1,
+        VirtualTime { ticks: 1 },
+        &[],
+    )
+    .expect("selected-origin checkpoint target");
+    let target = crate::qemu_campaign_driver::QemuSelectedResumeBoundary::new(selected, proof);
+
+    for cleanup_error in [false, true] {
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mut runner = QemuFreshExecutionRunner::new(
+            FakeFreshLifecycleFactory {
+                order: Arc::clone(&order),
+                cleanup_error,
+                terminal_after_replay: false,
+                checkpoint_ready: true,
+            },
+            QemuFreshModeledDriver::new(),
+        );
+        let result = runner.replay_checkpoint_boundary(&input, &fresh_runner_context(), &target);
+
+        if cleanup_error {
+            assert!(matches!(
+                result,
+                Err(AttemptWorkerFailure::Terminal(
+                    QemuFreshExecutionRunnerError::Cleanup(_)
+                ))
+            ));
+        } else {
+            assert_eq!(
+                result.expect("selected-origin replay proof"),
+                proof
+                    .with_event_log_offset(crucible::EventLogOffset::default())
+                    .expect("empty offset")
+            );
+        }
+        assert_eq!(
+            order.lock().expect("private replay order").as_slice(),
+            ["begin", "replay", "shutdown"]
+        );
+    }
 }
 
 #[test]

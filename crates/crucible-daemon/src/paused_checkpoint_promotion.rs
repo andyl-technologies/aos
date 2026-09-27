@@ -169,6 +169,21 @@ pub(crate) trait ProductionPausedCheckpointReplayFactory {
         cancellation: &ExecutionCancellation,
         resources: AttemptResourceLimits,
     ) -> Result<crate::QemuSavepointReplayProof, QemuVmRealizationError>;
+
+    /// Replays an ordinary attempt to a source checkpoint's exact boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when independent full-world replay
+    /// cannot reproduce the target boundary or cleanly reap its QEMU children.
+    fn replay_checkpoint_boundary(
+        &mut self,
+        attempt: &CrucibleAttemptExecution,
+        run_state_root: &Path,
+        cancellation: &ExecutionCancellation,
+        resources: AttemptResourceLimits,
+        target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
+    ) -> Result<crate::QemuSavepointReplayProof, QemuVmRealizationError>;
 }
 
 /// Newly admitted node-specific replay session before either QEMU path starts.
@@ -306,8 +321,8 @@ pub(crate) enum PausedCheckpointPromotionPreparationError {
     /// Fat/thin realization, comparison, or mandatory cleanup failed.
     #[error(transparent)]
     Realization(#[from] QemuVmRealizationError),
-    /// Independent execution did not reproduce the captured stop boundary.
-    #[error("savepoint capture does not match an independent attempt-stop replay")]
+    /// Independent execution did not reproduce the captured checkpoint boundary.
+    #[error("checkpoint does not match an independent full-world replay")]
     SavepointReplayMismatch,
 }
 
@@ -538,7 +553,7 @@ where
             };
             if matches!(
                 promotion_basis.map(|basis| basis.start_mode()),
-                Some(AttemptStartMode::SavepointCapture { .. })
+                Some(AttemptStartMode::SavepointCapture { .. } | AttemptStartMode::Execute)
             ) {
                 let (initial, post_selection) = execution_start_parts(&execution);
                 let installed = install_attempt_production_exact_checkpoint(
@@ -551,17 +566,30 @@ where
                 )
                 .map_err(PausedCheckpointPromotionPreparationError::from)
                 .map_err(Box::new)?;
-                let replay = factory
-                    .replay_savepoint_capture(
+                let basis = promotion_basis.ok_or(
+                    PausedCheckpointPromotionRecoveryResolutionError::ExecutionBasisMismatch,
+                )?;
+                let replay = match basis.start_mode() {
+                    AttemptStartMode::SavepointCapture { .. } => factory
+                        .replay_savepoint_capture(
+                            &execution,
+                            run_state_root,
+                            &cancellation,
+                            basis.resources(),
+                        )
+                        .map_err(PausedCheckpointPromotionPreparationError::from),
+                    AttemptStartMode::Execute => replay_checkpoint_causal_boundary(
+                        factory,
                         &execution,
                         run_state_root,
                         &cancellation,
-                        promotion_basis
-                            .ok_or(PausedCheckpointPromotionRecoveryResolutionError::ExecutionBasisMismatch)?
-                            .resources(),
-                    )
-                    .map_err(PausedCheckpointPromotionPreparationError::from)
-                    .map_err(Box::new)?;
+                        basis.resources(),
+                        installed.configuration(),
+                        installed.scheduler(),
+                    ),
+                    _ => Err(PausedCheckpointPromotionPreparationError::SavepointReplayMismatch),
+                }
+                .map_err(Box::new)?;
                 validate_savepoint_replay_boundary(
                     replay,
                     installed.configuration(),
@@ -711,7 +739,22 @@ where
                 installed.scheduler(),
             )?;
         }
-        AttemptStartMode::Execute => {}
+        AttemptStartMode::Execute => {
+            let replay = replay_checkpoint_causal_boundary(
+                factory,
+                target.attempt,
+                target.run_state_root,
+                target.cancellation,
+                target.resources,
+                installed.configuration(),
+                installed.scheduler(),
+            )?;
+            validate_savepoint_replay_boundary(
+                replay,
+                installed.configuration(),
+                installed.scheduler(),
+            )?;
+        }
         AttemptStartMode::SelectedSavepoint { .. } => {}
     }
     let mut targets = installed.take_node_restore_admissions().ok_or_else(|| {
@@ -904,6 +947,32 @@ fn validate_savepoint_replay_boundary(
     } else {
         Err(PausedCheckpointPromotionPreparationError::SavepointReplayMismatch)
     }
+}
+
+fn replay_checkpoint_causal_boundary<F: ProductionPausedCheckpointReplayFactory>(
+    factory: &mut F,
+    attempt: &CrucibleAttemptExecution,
+    run_state_root: &Path,
+    cancellation: &ExecutionCancellation,
+    resources: AttemptResourceLimits,
+    configuration: &Configuration,
+    scheduler: &crucible::SingleSchedulerCheckpoint,
+) -> Result<crate::QemuSavepointReplayProof, PausedCheckpointPromotionPreparationError> {
+    let source = crate::QemuSavepointReplayProof::from_reached_boundary(
+        configuration,
+        scheduler.quanta(),
+        scheduler.frontier(),
+        scheduler.retained_event_log_entries(),
+    )
+    .map_err(|_| PausedCheckpointPromotionPreparationError::SavepointReplayMismatch)?;
+    if !source.matches_checkpoint(configuration, scheduler) {
+        return Err(PausedCheckpointPromotionPreparationError::SavepointReplayMismatch);
+    }
+    let target =
+        crate::qemu_campaign_driver::QemuSelectedResumeBoundary::new(configuration.clone(), source);
+    factory
+        .replay_checkpoint_boundary(attempt, run_state_root, cancellation, resources, &target)
+        .map_err(Into::into)
 }
 
 fn map_production_target_error(

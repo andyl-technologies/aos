@@ -259,6 +259,12 @@ impl ProductionVmLifecycleLoop {
         Ok((bytes, segments))
     }
 
+    /// Returns the exact segmented event-log offset at the current boundary.
+    #[must_use]
+    pub fn event_log_offset(&self) -> crucible::EventLogOffset {
+        self.inner.loop_impl().event_log().offset()
+    }
+
     /// Returns the absolute scheduler-quantum coordinate at the current boundary.
     #[must_use]
     pub fn completed_quanta(&self) -> u64 {

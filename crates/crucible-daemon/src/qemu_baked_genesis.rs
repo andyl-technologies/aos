@@ -466,7 +466,7 @@ where
         );
         let outcome = runner
             .execute(attempt, &context)
-            .map_err(map_savepoint_replay_failure)?;
+            .map_err(map_private_checkpoint_replay_failure)?;
         match outcome.product() {
             AttemptExecutionProduct::PreparedSemantic(_) => {}
             AttemptExecutionProduct::ExactCheckpoint(_) => {
@@ -485,21 +485,53 @@ where
                 message: error.to_string(),
             })
     }
+
+    fn replay_checkpoint_boundary(
+        &mut self,
+        attempt: &CrucibleAttemptExecution,
+        run_state_root: &std::path::Path,
+        cancellation: &ExecutionCancellation,
+        resources: AttemptResourceLimits,
+        target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
+    ) -> Result<QemuSavepointReplayProof, QemuVmRealizationError> {
+        let lifecycle = self
+            .savepoint_replay_config
+            .as_ref()
+            .ok_or_else(|| QemuVmRealizationError::InvalidCheckpoint {
+                role: "checkpoint causal replay",
+                message: String::from("packaged lifecycle replay configuration is unavailable"),
+            })?
+            .clone()
+            .with_run_state_root(run_state_root.join("checkpoint-causal-replay"));
+        let factory =
+            QemuAttemptProductionVmLifecycleFactory::new(lifecycle, self.resources.clone());
+        let mut runner = QemuFreshExecutionRunner::new(factory, crate::QemuFreshModeledDriver);
+        let context = AttemptExecutionContext::new(
+            resources,
+            ExecutionRetentionIntent::Discard,
+            cancellation.clone(),
+            ExecutionCheckpointRequest::default(),
+            crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
+        );
+        runner
+            .replay_checkpoint_boundary(attempt, &context, target)
+            .map_err(map_private_checkpoint_replay_failure)
+    }
 }
 
-fn map_savepoint_replay_failure<E: std::fmt::Display>(
+fn map_private_checkpoint_replay_failure<E: std::fmt::Display>(
     failure: AttemptWorkerFailure<E>,
 ) -> QemuVmRealizationError {
     match failure {
         AttemptWorkerFailure::Retryable(error) => QemuVmRealizationError::ExecutorUnavailable {
-            operation: "replay savepoint capture attempt",
+            operation: "replay private checkpoint attempt",
             message: error.to_string(),
         },
         AttemptWorkerFailure::Canceled(_) => QemuVmRealizationError::Canceled {
-            operation: "replay savepoint capture attempt",
+            operation: "replay private checkpoint attempt",
         },
         AttemptWorkerFailure::Terminal(error) => QemuVmRealizationError::Executor {
-            operation: "replay savepoint capture attempt",
+            operation: "replay private checkpoint attempt",
             message: error.to_string(),
         },
     }

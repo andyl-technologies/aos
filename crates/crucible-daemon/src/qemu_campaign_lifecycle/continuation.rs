@@ -74,6 +74,143 @@ pub(super) fn production_lifecycle_config_for_continuations(
     Ok(config)
 }
 
+impl<F> QemuFreshExecutionRunner<F, crate::QemuFreshModeledDriver>
+where
+    F: QemuFreshAttemptLifecycleFactory,
+{
+    /// Replays an ordinary attempt to one private exact-checkpoint boundary.
+    ///
+    /// The proof is captured before shutdown appends observational teardown
+    /// entries. No public observation or checkpoint is published by this path.
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified failure when start replay, the exact target
+    /// boundary, or QEMU shutdown cannot be authenticated.
+    pub(crate) fn replay_checkpoint_boundary(
+        &mut self,
+        input: &CrucibleAttemptExecution,
+        context: &AttemptExecutionContext,
+        target: &crate::qemu_campaign_driver::QemuSelectedResumeBoundary,
+    ) -> Result<
+        crate::QemuSavepointReplayProof,
+        AttemptWorkerFailure<
+            QemuFreshExecutionRunnerError<F::Error, crate::QemuFreshModeledDriverError>,
+        >,
+    > {
+        let continuations = validated_attempt_continuations(input).map_err(|()| {
+            AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::InvalidContinuationInput)
+        })?;
+        if !self
+            .lifecycles
+            .configure_attempt_continuations(&continuations)
+        {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::ContinuationInputUnsupported,
+            ));
+        }
+        if let Some(checkpoint) = context.resume_checkpoint() {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::ResumeCheckpointUnsupported(checkpoint),
+            ));
+        }
+
+        let scenario = input.scenario().scenario_def();
+        let (start, start_signal_fault_replay) = match input.start() {
+            CrucibleResolvedAttemptStart::AfterAttempt {
+                base,
+                base_signal_fault_replay,
+                ..
+            } => (base.configuration(), base_signal_fault_replay),
+            start @ (CrucibleResolvedAttemptStart::Discover { .. }
+            | CrucibleResolvedAttemptStart::Branch { .. }) => {
+                (start.configuration(), input.signal_fault_replay())
+            }
+        };
+        if let Some(decision) = unsupported_fresh_replay_decision(start, start_signal_fault_replay)
+        {
+            return Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::StartDecisionUnsupported {
+                    configuration: start.id(),
+                    decision,
+                },
+            ));
+        }
+
+        self.lifecycles.configure_authenticated_start(input.start());
+        let mut lifecycle = self
+            .lifecycles
+            .start_fresh_lifecycle(
+                &scenario,
+                input.scenario(),
+                start,
+                start_signal_fault_replay,
+                context,
+            )
+            .map_err(map_fresh_lifecycle_failure)?;
+        let driven = materialize_fresh_start::<F::Error, crate::QemuFreshModeledDriverError>(
+            &mut lifecycle,
+            input,
+            start,
+            context,
+            false,
+        )
+        .and_then(|materialization| {
+            replay_selected_origins::<F::Error, crate::QemuFreshModeledDriverError>(
+                &mut lifecycle,
+                input,
+                context,
+                materialization,
+            )
+        })
+        .and_then(|materialization| {
+            if input.attempt().stop().accepts_next_choice() {
+                lifecycle.enable_signal_fault_campaign_promotion();
+            }
+            let mut facade = QemuFreshAttemptLifecycle::new(&mut lifecycle);
+            let outcome = crate::qemu_campaign_driver::replay_modeled_attempt_to_boundary(
+                &mut facade,
+                input,
+                context,
+                materialization,
+                target,
+            )
+            .map_err(map_fresh_driver_failure)?;
+            match outcome {
+                QemuFreshDriveOutcome::Observation(pending) => {
+                    let offset = lifecycle.event_log_offset().map_err(|error| {
+                        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Driver(
+                            crate::QemuFreshModeledDriverError::Scheduler(error),
+                        ))
+                    })?;
+                    crate::QemuSavepointReplayProof::from_checkpoint_replay_boundary(
+                        pending, offset,
+                    )
+                    .map_err(|error| {
+                        AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Driver(error))
+                    })
+                }
+                QemuFreshDriveOutcome::CheckpointRequested(_) => {
+                    Err(AttemptWorkerFailure::Terminal(
+                        QemuFreshExecutionRunnerError::UnsolicitedCheckpoint,
+                    ))
+                }
+            }
+        });
+        let cleanup = lifecycle.shutdown();
+        match (driven, cleanup) {
+            (Ok(proof), Ok(_)) => Ok(proof),
+            (Err(failure), Ok(_)) => Err(failure),
+            (Ok(_), Err(cleanup)) => Err(AttemptWorkerFailure::Terminal(
+                QemuFreshExecutionRunnerError::Cleanup(cleanup),
+            )),
+            (Err(failure), Err(cleanup)) => Err(AttemptWorkerFailure::Terminal(
+                cleanup_after_fresh_runner_failure(failure, cleanup),
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ProductionContinuationPlan {
     Unchanged,
