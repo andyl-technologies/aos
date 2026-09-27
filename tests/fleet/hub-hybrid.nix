@@ -1040,6 +1040,27 @@ in {
       })
       assert first_bytes[94] < 0.5, first_bytes
 
+      # Client TTFB includes time queued before the Worker handler runs.
+      def page_worker_timings():
+          log = worker.succeed(
+              f"{GREP} 'route_class=instance_page' /var/lib/hybrid-worker/wrangler.log"
+          )
+          return [
+              (int(origin), int(total))
+              for origin, total in re.findall(
+                  r"elapsed_ms=(\d+) worker_elapsed_ms=(\d+)", log
+              )
+          ]
+
+      baseline_worker_timings = page_worker_timings()
+      assert len(baseline_worker_timings) >= 100, len(baseline_worker_timings)
+      baseline_origin_ms = sorted(origin for origin, _ in baseline_worker_timings[-100:])
+      baseline_worker_ms = sorted(total for _, total in baseline_worker_timings[-100:])
+      print("hybrid baseline instance page Worker stage milliseconds:", {
+          "origin_p95": baseline_origin_ms[94],
+          "worker_p95": baseline_worker_ms[94],
+      })
+
       def refresh_session_token():
           return json.loads(client.succeed(textwrap.dedent(f"""
               set -eu
@@ -1702,6 +1723,14 @@ in {
           loaded_first_bytes[23] < 0.5
           and loaded_first_bytes[23] <= first_bytes[94] * 1.25
       )
+      loaded_worker_timings = page_worker_timings()
+      assert len(loaded_worker_timings) >= len(baseline_worker_timings) + 25
+      loaded_origin_ms = sorted(origin for origin, _ in loaded_worker_timings[-25:])
+      loaded_worker_ms = sorted(total for _, total in loaded_worker_timings[-25:])
+      print("hybrid loaded instance page Worker stage milliseconds:", {
+          "origin_p95": loaded_origin_ms[23],
+          "worker_p95": loaded_worker_ms[23],
+      })
 
       parallel_ticket_ids = [upload["uploadTicketId"] for upload in parallel_uploads]
       assert all(
@@ -1971,6 +2000,16 @@ in {
               r"response_bytes=(\d+) source_bytes=(\d+)", boundary_log
           )
       ]
+      outbound_plan_bytes = [
+          int(size) for size in re.findall(r"request_bytes=(\d+)", boundary_log)
+      ]
+      assert len(outbound_plan_bytes) >= len(transferred), boundary_log
+      print("hybrid Native-to-Worker storage boundary:", {
+          "completed_calls": len(transferred),
+          "outbound_plan_bytes": sum(outbound_plan_bytes),
+          "inbound_result_bytes": sum(response for response, _ in transferred),
+          "object_bytes_processed_at_worker": sum(source for _, source in transferred),
+      })
       compact_verifications = [
           response for response, source in transferred
           if source == cache_size and response < 2048

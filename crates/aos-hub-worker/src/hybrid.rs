@@ -1066,6 +1066,7 @@ async fn proxy_with_upload_phase(
     env: &Env,
     upload_phase: Option<&str>,
 ) -> Result<Response> {
+    let request_started_ms = js_sys::Date::now();
     let public_url = request.url()?;
     if public_url.path().starts_with("/_internal/storage/") {
         return Response::error("storage executor unavailable", 503);
@@ -1210,14 +1211,22 @@ async fn proxy_with_upload_phase(
     let Some(body) = read_bounded_response(response, MAX_CONTROL_RESPONSE_BYTES).await? else {
         return Response::error("hybrid control response is too large", 502);
     };
+    let route_class = if assertion.method == "GET" && assertion.path_and_query == "/-/instance" {
+        "instance_page"
+    } else {
+        "other"
+    };
+    let worker_elapsed_ms = (js_sys::Date::now() - request_started_ms).max(0.0) as u64;
     worker::console_log!(
-        "hybrid_origin_request id={} method={} status={} request_bytes={} response_bytes={} elapsed_ms={}",
+        "hybrid_origin_request id={} method={} status={} route_class={} request_bytes={} response_bytes={} elapsed_ms={} worker_elapsed_ms={}",
         assertion.request_id,
         assertion.method,
         status,
+        route_class,
         request_body_bytes,
         body.len(),
         origin_elapsed_ms,
+        worker_elapsed_ms,
     );
     headers.delete("content-length")?;
     Ok(Response::from_body(if body.is_empty() {
