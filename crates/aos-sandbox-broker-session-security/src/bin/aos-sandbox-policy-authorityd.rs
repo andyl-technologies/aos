@@ -53,7 +53,7 @@ use aos_sandbox::policy_compiler::{
     CacheSignerRootSettlementStateV2, ClosedCacheReadbackRootChallengeV1,
     ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, ClosedSourceTerminalClaimV1,
     ControllerEffectAckChallengeV1, PinnedSourceHoldReadbackSignerV1, PolicyDeploymentInputsV1,
-    RootV8HeldTerminalStepV1, StagedClosedPolicyRootBaseV2,
+    ROOT_V8_SETTLED_QUERY_MAGIC, RootV8HeldTerminalStepV1, StagedClosedPolicyRootBaseV2,
     abandon_fixed_cache_signer_challenge_v2,
     acknowledge_and_verify_fixed_closed_root_v8_terminal_v1,
     acknowledge_fixed_closed_root_effect_v1, acknowledge_fixed_closed_root_v8_effect_v1,
@@ -61,12 +61,14 @@ use aos_sandbox::policy_compiler::{
     admit_fixed_cache_readback_pin_v1, admit_fixed_controller_hold_pin_v1,
     admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
     admit_fixed_source_hold_pin_v1, compact_fixed_cache_signer_root_journal_v2,
-    decode_policy_deployment_sources_v1, read_fixed_cache_signer_challenge_v2,
-    read_fixed_inert_closed_policy_binding_hold_v1, read_fixed_policy_cache_hold_v1,
-    record_fixed_cache_signer_root_settlement_v2, recover_fixed_cache_signer_abandonment_v2,
-    recover_fixed_cache_signer_root_history_v2, recover_fixed_cache_signer_root_settlement_v2,
-    recover_fixed_closed_policy_binding_decision_v2, recover_fixed_closed_root_effect_ack_v1,
-    recover_fixed_closed_root_v8_effect_ack_v1, recover_fixed_closed_root_v8_terminal_custody_v1,
+    decode_policy_deployment_sources_v1, encode_root_v8_settled_reply_v1,
+    read_fixed_cache_signer_challenge_v2, read_fixed_inert_closed_policy_binding_hold_v1,
+    read_fixed_policy_cache_hold_v1, record_fixed_cache_signer_root_settlement_v2,
+    recover_fixed_cache_signer_abandonment_v2, recover_fixed_cache_signer_root_history_v2,
+    recover_fixed_cache_signer_root_settlement_v2, recover_fixed_closed_policy_binding_decision_v2,
+    recover_fixed_closed_root_effect_ack_v1, recover_fixed_closed_root_v8_effect_ack_v1,
+    recover_fixed_closed_root_v8_predecessor_settlement_v1,
+    recover_fixed_closed_root_v8_terminal_custody_v1,
     recover_fixed_closed_root_v8_verified_terminal_v1,
     recover_fixed_committed_source_held_binding_v2, release_fixed_closed_policy_controller_hold_v1,
     release_fixed_closed_policy_source_domain_hold_v1,
@@ -182,6 +184,7 @@ enum HeadRequestMode {
     RootV8TerminalReplay,
     RootV8TerminalRelease,
     RootV8TerminalReleaseReplay,
+    RootV8SettledGrant,
     ClosedBindingStage,
     ClosedBindingPreview,
     ClosedBindingSignerFlight,
@@ -666,6 +669,7 @@ fn serve_held_binding_request(
             | HeadRequestMode::RootV8TerminalReplay
             | HeadRequestMode::RootV8TerminalRelease
             | HeadRequestMode::RootV8TerminalReleaseReplay
+            | HeadRequestMode::RootV8SettledGrant
             | HeadRequestMode::ClosedBindingSourceCasReplay
     ) {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "replay only").into());
@@ -698,6 +702,7 @@ fn serve_held_binding_request(
         HeadRequestMode::RootV8TerminalReleaseReplay => {
             serve_root_v8_terminal_release_replay(stream, &request[8..24])
         }
+        HeadRequestMode::RootV8SettledGrant => serve_root_v8_settled_grant(stream, &request[8..24]),
         HeadRequestMode::ClosedBindingSourceCasReplay => serve_closed_source_cas_replay_v8(
             stream,
             &request[8..24],
@@ -897,6 +902,7 @@ fn read_head_request(
         Some(magic) if magic == ROOT_V8_RELEASE_REPLAY_QUERY_MAGIC => {
             HeadRequestMode::RootV8TerminalReleaseReplay
         }
+        Some(magic) if magic == ROOT_V8_SETTLED_QUERY_MAGIC => HeadRequestMode::RootV8SettledGrant,
         Some(magic) if magic == POLICY_BINDING_STAGE_QUERY_MAGIC_V4 => {
             HeadRequestMode::ClosedBindingStage
         }
@@ -969,6 +975,7 @@ fn read_head_request(
             | HeadRequestMode::RootV8TerminalReplay
             | HeadRequestMode::RootV8TerminalRelease
             | HeadRequestMode::RootV8TerminalReleaseReplay
+            | HeadRequestMode::RootV8SettledGrant
     ) {
         if request[8..24] == [0; 16] {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "zero Q04 query nonce").into());
@@ -985,6 +992,7 @@ fn read_head_request(
             | HeadRequestMode::RootV8TerminalReplay
             | HeadRequestMode::RootV8TerminalRelease
             | HeadRequestMode::RootV8TerminalReleaseReplay
+            | HeadRequestMode::RootV8SettledGrant
             | HeadRequestMode::ClosedBindingSourceCasReplay
     ) {
         root_custody_gate()?;
@@ -1067,6 +1075,10 @@ fn serve_current_head(
     }
     if matches!(mode, HeadRequestMode::RootV8TerminalReleaseReplay) {
         serve_root_v8_terminal_release_replay(stream, &request[8..24])?;
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::RootV8SettledGrant) {
+        serve_root_v8_settled_grant(stream, &request[8..24])?;
         return Ok(());
     }
     if matches!(mode, HeadRequestMode::ClosedBindingSourceCasReplay) {
@@ -2121,6 +2133,19 @@ fn serve_root_v8_terminal_release_replay(
     Ok(())
 }
 
+fn serve_root_v8_settled_grant(
+    stream: &mut std::os::unix::net::UnixStream,
+    client_nonce: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    let (binding, epoch) = read_held_root_ack_claim(stream, true)?;
+    let marker = recover_fixed_closed_root_v8_predecessor_settlement_v1(binding, epoch)?;
+    let nonce: [u8; 16] = client_nonce.try_into()?;
+    stream.write_all(&encode_root_v8_settled_reply_v1(
+        nonce, binding, epoch, marker,
+    )?)?;
+    Ok(())
+}
+
 fn serve_root_v8_terminal(
     stream: &mut std::os::unix::net::UnixStream,
     client_nonce: &[u8],
@@ -3055,6 +3080,7 @@ fn select_project_source<'a>(
         | HeadRequestMode::RootV8TerminalReplay
         | HeadRequestMode::RootV8TerminalRelease
         | HeadRequestMode::RootV8TerminalReleaseReplay
+        | HeadRequestMode::RootV8SettledGrant
         | HeadRequestMode::ClosedBindingSourceCasReplay => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "held Q04 recovery has no project source",
@@ -3605,6 +3631,7 @@ mod tests {
             ROOT_V8_TERMINAL_REPLAY_QUERY_MAGIC,
             ROOT_V8_RELEASE_QUERY_MAGIC,
             ROOT_V8_RELEASE_REPLAY_QUERY_MAGIC,
+            ROOT_V8_SETTLED_QUERY_MAGIC,
         ] {
             let (mut client, mut server) = UnixStream::pair().expect("local Root ACK socket");
             let mut request = [0; REQUEST_BYTES];
@@ -3628,6 +3655,7 @@ mod tests {
                     | HeadRequestMode::RootV8TerminalReplay
                     | HeadRequestMode::RootV8TerminalRelease
                     | HeadRequestMode::RootV8TerminalReleaseReplay
+                    | HeadRequestMode::RootV8SettledGrant
             ));
 
             request[8..24].fill(0);
@@ -3635,6 +3663,16 @@ mod tests {
             client.write_all(&request).expect("zero Root ACK nonce");
             assert!(read_head_request(&mut server, || Ok(())).is_err());
         }
+
+        let (mut client, mut server) = UnixStream::pair().expect("local Root grant socket");
+        let mut request = [0; REQUEST_BYTES];
+        request[..8].copy_from_slice(ROOT_V8_SETTLED_QUERY_MAGIC);
+        request[8..24].fill(7);
+        request[24] = 1;
+        client
+            .write_all(&request)
+            .expect("reserved Root grant query");
+        assert!(read_head_request(&mut server, || Ok(())).is_err());
     }
 
     #[test]

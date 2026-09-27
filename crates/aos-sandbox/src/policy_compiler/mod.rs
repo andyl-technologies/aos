@@ -34,6 +34,7 @@ mod public_create_source;
 mod resources;
 mod root_challenge_record;
 mod root_v8_released_proof;
+mod root_v8_settled_grant;
 mod source_hold_pin;
 mod source_hold_readback;
 mod source_hold_readback_v2;
@@ -217,6 +218,10 @@ pub use resources::{
 pub use root_v8_released_proof::{
     POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2, RootV8ReleasedProofV1, read_root_v8_released_proof_v1,
     validate_untrusted_root_v8_release_reply_frame_v1,
+};
+pub use root_v8_settled_grant::{
+    ROOT_V8_SETTLED_QUERY_MAGIC, RootV8SettledGrantV1, encode_root_v8_settled_reply_v1,
+    query_fixed_root_v8_settled_grant_v1,
 };
 pub use source_hold_pin::{SourceHoldPinErrorV1, admit_fixed_source_hold_pin_v1};
 pub use source_hold_readback::{
