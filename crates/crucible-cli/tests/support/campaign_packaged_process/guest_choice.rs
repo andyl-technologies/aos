@@ -14,7 +14,7 @@ use crucible_campaign::{
 use crucible_core::{FramePredicate, LinkId, RegexProgram};
 use crucible_daemon::{
     AttemptExecutionKey, AttemptExecutionOrigin, AttemptRuntimeState, ExactCheckpointStore,
-    visit_directory_attempt_states_bounded,
+    CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5, visit_directory_attempt_states_bounded,
 };
 use crucible_session::engine::{LinkDef, LinkLossProbability, MarkerId};
 
@@ -503,7 +503,7 @@ fn create_guest_choice_campaign(
     fs::write(
         &lineage_input,
         format!(
-            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = {qemu_build:?}\nscenario_schema = 3\nexact_closure_schema = 5\n[protocol_versions]\ncontrol = 3\nshared-memory = 26\n",
+            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = {qemu_build:?}\nscenario_schema = {CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5}\nexact_closure_schema = 5\n[protocol_versions]\ncontrol = 3\nshared-memory = 26\n",
             json_string(compiled, "scenario")?,
             json_string(compiled, "scenario_artifact")?,
             json_string(compiled, "genesis")?,
