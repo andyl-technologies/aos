@@ -87,6 +87,23 @@
     if builtins.compareVersions bootstrapVersion "8.0.0" >= 0
     then callHelper ./_bazel-maven-bootstrap.nix {includeModernLibraries = true;}
     else helperScope.bazelMavenBootstrap;
+  errorProneCheckApi =
+    if builtins.compareVersions bootstrapVersion "9.0.0" >= 0
+    then callHelper ./_bazel-error-prone-check-api.nix {version = "2.41.0";}
+    else helperScope.bazelErrorProneCheckApi;
+  javaFormat =
+    if builtins.compareVersions bootstrapVersion "9.0.0" >= 0
+    then callHelper ./_bazel-google-java-format.nix {version = "1.27.0";}
+    else helperScope.bazelGoogleJavaFormat;
+  errorProneCore =
+    if builtins.compareVersions bootstrapVersion "9.0.0" >= 0
+    then
+      callHelper ./_bazel-error-prone-core.nix {
+        version = "2.41.0";
+        bazelErrorProneCheckApi = errorProneCheckApi;
+        bazelGoogleJavaFormat = javaFormat;
+      }
+    else helperScope.bazelErrorProneCore;
   mavenSourceRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = callHelper ./_bazel-maven-bootstrap.nix {
       includeModernLibraries = true;
@@ -200,10 +217,10 @@ in
     passthru.offlineAsm = helperScope.bazelAsm;
     passthru.offlineJacoco = helperScope.bazelJacoco;
     passthru.offlineErrorProne = [
-      helperScope.bazelErrorProneCore
-      helperScope.bazelErrorProneCheckApi
+      errorProneCore
+      errorProneCheckApi
       helperScope.bazelErrorProneDataflow
-      helperScope.bazelGoogleJavaFormat
+      javaFormat
     ];
     passthru.offlineSource8Prepared = helperScope.bazelSource8Prepared;
     passthru.offlineNettyModules = helperScope.bazelNetty119;
@@ -336,13 +353,15 @@ in
             > derived/maven/MAVEN_CANONICAL_REPO_NAME
 
           python3 ${./generate-bazel-bootstrap-resources.py} --source-root .
-          # Source checkouts generate this text template as a Bazel action;
-          # the initial bootstrap archive must carry it before Bazel can run.
-          cp src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt \
-            tools/jdk/java_stub_template.txt
-          sed -i '1s|^#!/usr/bin/env bash$|#!${bash}/bin/bash|' \
-            src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt \
-            tools/jdk/java_stub_template.txt
+          ${lib.optionalString (builtins.compareVersions bootstrapVersion "9.0.0" < 0) (lib.removeSuffix "\n" ''
+            # Source checkouts generate this text template as a Bazel action;
+            # the initial bootstrap archive must carry it before Bazel can run.
+            cp src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt \
+              tools/jdk/java_stub_template.txt
+            sed -i '1s|^#!/usr/bin/env bash$|#!${bash}/bin/bash|' \
+              src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt \
+              tools/jdk/java_stub_template.txt
+          '')}
           for pythonSource in \
             src/main/java/com/google/devtools/build/lib/rules/python/PyRuntimeInfo.java \
             tools/python/toolchain.bzl; do

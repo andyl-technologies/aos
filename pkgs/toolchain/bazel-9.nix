@@ -2,6 +2,7 @@
 {
   mkDerivation,
   mkManualUpstream,
+  callPackage,
   fetchurl,
   lib,
   stdenv,
@@ -26,7 +27,7 @@
   xz,
   file,
   patchelf,
-  bazel-bootstrap,
+  qemu-img,
   bootstrapTools,
   gcc-libs,
   llvm,
@@ -41,6 +42,16 @@
     reason = "Bazel source and repository dependencies form one curated artifact graph that requires maintainer review.";
     successorUnit = "bazel-9";
   };
+  # Bootstrap tools execute on the Linux build host for every output target.
+  bootstrapArguments =
+    builtins.intersectAttrs
+    (builtins.functionArgs (import ./bazel-bootstrap.nix))
+    buildPackages;
+  bazelBootstrap9 = callPackage ./bazel-bootstrap.nix (bootstrapArguments
+    // {
+      inherit buildPackages;
+      bootstrapVersion = "9.2.0";
+    });
   mkBazel = import ./_bazel.nix {
     inherit
       mkDerivation
@@ -68,15 +79,18 @@
       xz
       file
       patchelf
-      bazel-bootstrap
+      qemu-img
       bootstrapTools
       gcc-libs
       llvm
       ;
+    bazel-bootstrap = bazelBootstrap9;
+    nativeBazelBootstrap = bazelBootstrap9;
   };
 in
   mkBazel {
     inherit (upstream) version update;
+    source = bazelBootstrap9.passthru.offlineSource;
     srcHash = "sha256-ga8CszEo7BkixrYCEt8/thULqpa7M9Mv+gIOX+1H/vw=";
-    vendorDepsHash = "sha256-pD976akvFsYAqJMgAzxCgUlqsVgtjne2XgpCCEALc2g=";
+    vendorDepsHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
   }
