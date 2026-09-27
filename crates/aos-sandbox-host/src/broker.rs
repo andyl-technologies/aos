@@ -2149,7 +2149,7 @@ where
                 HostError::State("Guardian launch lost its immutable binding".to_owned())
             })?;
             let payload = payload.bind(binding)?;
-            match proposed.admit_guardian(
+            let admission = proposed.admit_guardian(
                 request.fence(),
                 request_id,
                 request_digest,
@@ -2158,20 +2158,14 @@ where
                 &admitted,
                 sealed_effect,
                 &self.authority,
-            )? {
-                Admission::New | Admission::Pending => {}
-                Admission::Complete(_) => {
-                    return Err(HostError::Fence(
-                        "completed replay status contradicts authenticated effect",
-                    ));
-                }
-            }
+            )?;
+            ensure_pending_runtime_admission(admission)?;
             Some((spec, payload))
         } else if composite_stop {
             let execution = self
                 .prepare_composite_stop_execution(&request, request_digest)
                 .await?;
-            match proposed.admit_composite_stop(
+            let admission = proposed.admit_composite_stop(
                 request.fence(),
                 request_id,
                 request_digest,
@@ -2180,17 +2174,11 @@ where
                 &admitted,
                 sealed_effect,
                 &self.authority,
-            )? {
-                Admission::New | Admission::Pending => {}
-                Admission::Complete(_) => {
-                    return Err(HostError::Fence(
-                        "completed replay status contradicts authenticated effect",
-                    ));
-                }
-            }
+            )?;
+            ensure_pending_runtime_admission(admission)?;
             None
         } else {
-            match proposed.admit(
+            let admission = proposed.admit(
                 request.fence(),
                 request_id,
                 request_digest,
@@ -2199,14 +2187,8 @@ where
                 &admitted,
                 sealed_effect,
                 &self.authority,
-            )? {
-                Admission::New | Admission::Pending => {}
-                Admission::Complete(_) => {
-                    return Err(HostError::Fence(
-                        "completed replay status contradicts authenticated effect",
-                    ));
-                }
-            }
+            )?;
+            ensure_pending_runtime_admission(admission)?;
             None
         };
         self.commit_state(&proposed)?;
@@ -3334,6 +3316,15 @@ fn composite_stop_pending() -> HostError {
 
 fn request_mismatch() -> HostError {
     HostError::Authority(aos_sandbox_broker::BrokerAdmissionError::RequestMismatch)
+}
+
+fn ensure_pending_runtime_admission(admission: Admission) -> Result<()> {
+    match admission {
+        Admission::New | Admission::Pending => Ok(()),
+        Admission::Complete(_) => Err(HostError::Fence(
+            "completed replay status contradicts authenticated effect",
+        )),
+    }
 }
 
 const fn closed_launch_backend_available(nspawn_available: bool, guardian_available: bool) -> bool {
