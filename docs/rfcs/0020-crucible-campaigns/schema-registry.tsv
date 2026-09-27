@@ -424,6 +424,7 @@ crucible.qemu.vmstate.virtio-crucible-start-on-kick	1	qemu-patch::vmstate	device
 crucible.qemu.vmstate.configuration-crucible-owner-generation	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.cpu-crucible-hardware-error	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.cpu-crucible-clock	2	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.crucible-sim-preemption	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 
 # Audited DAG, formal trace, evaluator, and release evidence formats
 crucible.dag-store.scenario-def	2	crucible::model::store_artifacts	physical-record	gate:campaign-model,gate:content-address
