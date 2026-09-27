@@ -1418,6 +1418,11 @@ in {
       inherit (lib) fetchgit fetchurl;
       inherit buildPackages;
     };
+    bootstrap.kotlin-november = import ./pkgs/toolchain/_kotlin-bootstrap-november-2013.nix {
+      inherit (buildPackages) mkDerivation;
+      inherit (lib) fetchgit fetchurl;
+      inherit buildPackages;
+    };
     image-matrix = testing.mkImageMatrix {
       systems = discoverSystems;
       sourceIdentity = toString pkgs.aos.src;
