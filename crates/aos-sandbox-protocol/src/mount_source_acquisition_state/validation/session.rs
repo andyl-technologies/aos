@@ -91,7 +91,7 @@ pub(super) fn validate_session_reachability(table: &SourceAcquisitionTableV2) ->
         if let Some(witness) = &session.barrier_idle_replacement {
             let predecessor = table
                 .provider_sessions
-                .get(&witness.dead_execution.old_session_id)
+                .get(&witness.predecessor_head.current_session_id)
                 .ok_or_else(|| state_error("barrier-idle predecessor session is missing"))?;
             let root = table
                 .provider_attempts
@@ -134,24 +134,11 @@ pub(super) fn validate_session_reachability(table: &SourceAcquisitionTableV2) ->
                 || record_digest(&StoredRecordV2::ProviderHead {
                     value: *witness.predecessor_head.clone(),
                 })? != witness.predecessor_head.record_digest
-                || witness.dead_execution.old_session_record_digest != predecessor.record_digest
-                || witness.dead_execution.node_id != predecessor.node_id
-                || witness.dead_execution.process_execution_digest
-                    != predecessor.provider_execution.process_execution_digest
-                || witness.dead_execution.old_kernel_boot_id != predecessor.kernel_boot_id
-                || witness.dead_execution.provider_process_instance
-                    != predecessor.provider_process_instance
-                || witness.dead_execution.observed_kernel_boot_id != session.kernel_boot_id
-                || match witness.dead_execution.proof_kind {
-                    DeadProviderExecutionProofKindV2::PidfdExited => {
-                        witness.dead_execution.observed_kernel_boot_id != predecessor.kernel_boot_id
-                    }
-                    DeadProviderExecutionProofKindV2::BootReplaced => {
-                        witness.dead_execution.observed_kernel_boot_id == predecessor.kernel_boot_id
-                    }
-                }
-                || witness.dead_execution.death_evidence_digest
-                    != death_digest(&witness.dead_execution)?
+                || !barrier_idle_observation_matches(
+                    &witness.predecessor_observation,
+                    predecessor,
+                    session,
+                )?
                 || session_successor_distance(table, root.session_id, session.session_id)?
                     != witness.replacement_count
             {
@@ -160,6 +147,114 @@ pub(super) fn validate_session_reachability(table: &SourceAcquisitionTableV2) ->
         }
     }
     Ok(())
+}
+
+fn barrier_idle_observation_matches(
+    observation: &BarrierIdlePredecessorObservationV2,
+    predecessor: &SourceProviderSessionV2,
+    successor: &SourceProviderSessionV2,
+) -> Result<bool> {
+    Ok(match observation {
+        BarrierIdlePredecessorObservationV2::Dead { execution } => {
+            execution.old_session_id == predecessor.session_id
+                && execution.old_session_record_digest == predecessor.record_digest
+                && execution.node_id == predecessor.node_id
+                && execution.process_execution_digest
+                    == predecessor.provider_execution.process_execution_digest
+                && execution.old_kernel_boot_id == predecessor.kernel_boot_id
+                && execution.provider_process_instance == predecessor.provider_process_instance
+                && execution.observed_kernel_boot_id == successor.kernel_boot_id
+                && match execution.proof_kind {
+                    DeadProviderExecutionProofKindV2::PidfdExited => {
+                        execution.observed_kernel_boot_id == predecessor.kernel_boot_id
+                    }
+                    DeadProviderExecutionProofKindV2::BootReplaced => {
+                        execution.observed_kernel_boot_id != predecessor.kernel_boot_id
+                    }
+                }
+                && execution.death_evidence_digest == death_digest(execution)?
+        }
+        BarrierIdlePredecessorObservationV2::Live => {
+            live_barrier_predecessor_matches(
+                predecessor.node_id,
+                predecessor.kernel_boot_id,
+                predecessor.provider_process_instance,
+                &predecessor.provider_execution,
+                successor.node_id,
+                successor.kernel_boot_id,
+                successor.provider_process_instance,
+                &successor.provider_execution,
+            )
+        }
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn live_barrier_predecessor_matches(
+    predecessor_node: [u8; 16],
+    predecessor_boot: [u8; 16],
+    predecessor_instance: [u8; 16],
+    predecessor_execution: &ProviderExecutionSnapshotV2,
+    successor_node: [u8; 16],
+    successor_boot: [u8; 16],
+    successor_instance: [u8; 16],
+    successor_execution: &ProviderExecutionSnapshotV2,
+) -> bool {
+    predecessor_node == successor_node
+        && predecessor_boot == successor_boot
+        && predecessor_instance == successor_instance
+        && predecessor_execution == successor_execution
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_barrier_successor_rejects_execution_and_session_substitution() {
+        let execution = ProviderExecutionSnapshotV2 {
+            pid: 11,
+            tgid: 11,
+            ppid: 1,
+            start_time_ticks: 22,
+            cgroup_id: 33,
+            real_uid: 44,
+            effective_uid: 44,
+            saved_uid: 44,
+            filesystem_uid: 44,
+            real_gid: 55,
+            effective_gid: 55,
+            saved_gid: 55,
+            filesystem_gid: 55,
+            process_execution_digest: [66; 32],
+        };
+        let matches = |node, boot, instance, candidate: &ProviderExecutionSnapshotV2| {
+            live_barrier_predecessor_matches(
+                [1; 16],
+                [2; 16],
+                [3; 16],
+                &execution,
+                node,
+                boot,
+                instance,
+                candidate,
+            )
+        };
+
+        assert!(matches([1; 16], [2; 16], [3; 16], &execution));
+        assert!(!matches([9; 16], [2; 16], [3; 16], &execution));
+        assert!(!matches([1; 16], [9; 16], [3; 16], &execution));
+        assert!(!matches([1; 16], [2; 16], [9; 16], &execution));
+        assert!(!matches(
+            [1; 16],
+            [2; 16],
+            [3; 16],
+            &ProviderExecutionSnapshotV2 {
+                start_time_ticks: 23,
+                ..execution
+            },
+        ));
+    }
 }
 
 pub(super) fn validate_session(session: &SourceProviderSessionV2) -> Result<()> {

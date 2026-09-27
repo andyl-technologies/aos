@@ -25,8 +25,8 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
     /// Joins a fresh authenticated carrier to the protected predecessor head.
     ///
     /// A pending request requires kernel-proven predecessor death before its
-    /// attempt is abandoned. An idle recovery barrier receives the narrower
-    /// death witness and remains closed until signed terminal settlement.
+    /// attempt is abandoned. An idle recovery barrier preserves the exact
+    /// live or dead predecessor observation until signed terminal settlement.
     ///
     /// # Errors
     ///
@@ -117,10 +117,7 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
                             }
                             Ok(Some(pending.id))
                         } else {
-                            let death = death.ok_or_else(|| {
-                                state_error("barrier-idle predecessor death is not proven")
-                            })?;
-                            table.replace_dead_barrier_idle_session_v2(
+                            table.replace_barrier_idle_session_v2(
                                 journal,
                                 session,
                                 death,
@@ -152,18 +149,18 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
 }
 
 impl SourceAcquisitionTableV2 {
-    /// Replaces a dead idle recovery carrier without releasing its barrier.
+    /// Replaces an idle recovery carrier without releasing its barrier.
     ///
     /// # Errors
     ///
-    /// Rejects a changed protected head, absent death evidence, an unrelated
-    /// recovery root, or a successor that rolls back authority history.
+    /// Rejects a changed protected head, indeterminate predecessor execution,
+    /// an unrelated recovery root, or a successor that rolls back authority.
     #[doc(hidden)]
-    pub(crate) fn replace_dead_barrier_idle_session_v2(
+    pub(crate) fn replace_barrier_idle_session_v2(
         &mut self,
         journal: &mut ProtectedJournalAuthority<'_>,
         live_successor: &mut CurrentRootMountSourceProviderSessionV1,
-        predecessor_death: DeadProviderExecutionV1,
+        predecessor_death: Option<DeadProviderExecutionV1>,
         holder_authority_id: [u8; 16],
         provider_authority_id: [u8; 16],
     ) -> Result<()> {
@@ -225,8 +222,16 @@ impl SourceAcquisitionTableV2 {
             .filter(|session| session.record_digest == current_head.current_session_record_digest)
             .cloned()
             .ok_or_else(|| state_error("barrier-idle predecessor session is absent"))?;
-        let (protected_death, durable_death) =
-            durable_death_for_predecessor(&predecessor, predecessor_death)?;
+        let (protected_death, predecessor_observation) = match predecessor_death {
+            Some(death) => {
+                let (protected, durable) = durable_death_for_predecessor(&predecessor, death)?;
+                (
+                    Some(protected),
+                    BarrierIdlePredecessorObservationV2::Dead { execution: durable },
+                )
+            }
+            None => (None, BarrierIdlePredecessorObservationV2::Live),
+        };
         let plan = live_successor
             .barrier_idle_replacement_mount_provider_session_plan_v2(
                 journal,
@@ -256,7 +261,7 @@ impl SourceAcquisitionTableV2 {
             root_attempt: barrier.root_attempt,
             predecessor_head: Box::new(current_head.clone()),
             replacement_count,
-            dead_execution: durable_death,
+            predecessor_observation,
         });
         successor.record_digest = [0; 32];
         let successor = match seal(StoredRecordV2::ProviderSession { value: successor })? {

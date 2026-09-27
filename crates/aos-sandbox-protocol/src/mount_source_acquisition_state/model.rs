@@ -699,7 +699,7 @@ pub struct SourceProviderSessionV2 {
     pub session_id: [u8; 32],
     pub revision: u64,
     pub predecessor_session_id: Option<[u8; 32]>,
-    /// Retains death and barrier identity when an idle recovery carrier dies.
+    /// Retains the exact predecessor observation while an idle barrier persists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub barrier_idle_replacement: Option<BarrierIdleReplacementWitnessV2>,
     pub scope: ProviderScopeV2,
@@ -736,18 +736,31 @@ pub struct SourceProviderSessionV2 {
     pub record_digest: [u8; 32],
 }
 
-/// Witnesses a death-proven successor that preserves an unresolved barrier.
+/// Witnesses a successor that preserves an unresolved recovery barrier.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BarrierIdleReplacementWitnessV2 {
     /// The original abandoned attempt; its record may later be terminalized.
     pub root_attempt: RecordRefV2,
-    /// Exact protected head read before the death-proven replacement.
+    /// Exact protected head read before the replacement.
     pub predecessor_head: Box<SourceProviderHeadV2>,
     /// Successor distance from the original attempt's session.
     pub replacement_count: u64,
-    /// Kernel-backed death evidence for the immediate predecessor session.
-    pub dead_execution: DeadProviderExecutionProjectionV2,
+    /// Observation authorizing replacement of the immediate predecessor.
+    pub predecessor_observation: BarrierIdlePredecessorObservationV2,
+}
+
+/// Separates a dead Provider from a still-live Provider after Mount restart.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub enum BarrierIdlePredecessorObservationV2 {
+    /// Kernel-backed death evidence for the predecessor Provider execution.
+    Dead {
+        /// Exact death projection bound to the protected predecessor session.
+        execution: DeadProviderExecutionProjectionV2,
+    },
+    /// The exact predecessor Provider execution was pinned alive at transition.
+    Live,
 }
 
 /// Retains the exact historical outcome signer and its selection-floor trust.

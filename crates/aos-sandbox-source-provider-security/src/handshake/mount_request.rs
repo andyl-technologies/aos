@@ -411,7 +411,12 @@ impl CurrentRootMountSourceProviderSessionV1 {
         )
     }
 
-    /// Captures a death-proven successor while preserving an idle barrier.
+    /// Captures a live- or death-proven successor while preserving an idle barrier.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed protected state, an indeterminate or mismatched Provider
+    /// execution, a non-idle barrier, or a stale authenticated carrier.
     #[allow(clippy::too_many_arguments)]
     #[doc(hidden)]
     pub fn barrier_idle_replacement_mount_provider_session_plan_v2(
@@ -424,10 +429,22 @@ impl CurrentRootMountSourceProviderSessionV1 {
         predecessor_session_record: Vec<u8>,
         predecessor_session_id: ObjectDigest,
         predecessor_session_binding: ObjectDigest,
-        predecessor_death: crate::DeadProviderExecutionProjectionV2,
+        predecessor_death: Option<crate::DeadProviderExecutionProjectionV2>,
         predecessor_request_sequence: u64,
         predecessor_response_sequence: u64,
     ) -> Result<CurrentMountProviderSessionPlanV2, SourceProviderSecurityError> {
+        if predecessor_death.is_none()
+            && self
+                .try_prove_mount_provider_execution_dead_v2(
+                    journal,
+                    &journal_snapshot,
+                    &predecessor_session_key,
+                    &predecessor_session_record,
+                )?
+                .is_some()
+        {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
         self.replacement_mount_provider_session_plan_inner(
             journal,
             journal_snapshot,
@@ -437,7 +454,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             predecessor_session_record,
             predecessor_session_id,
             predecessor_session_binding,
-            Some(predecessor_death),
+            predecessor_death,
             false,
             true,
             predecessor_request_sequence,
@@ -488,8 +505,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         });
         let predecessor_state_matches = retained_head.is_some_and(|head| {
             if barrier_idle_replacement {
-                predecessor_death.is_some()
-                    && head.pending_attempt.is_none()
+                head.pending_attempt.is_none()
                     && head.recovery_barrier.is_some()
                     && head.next_request_sequence == head.next_response_sequence
             } else if predecessor_death.is_some() || recovery_supersession {
@@ -513,6 +529,14 @@ impl CurrentRootMountSourceProviderSessionV1 {
             || retained_session.is_none_or(|stored| {
                 stored.session_binding != *predecessor_session_binding.as_bytes()
                     || stored.session_id != predecessor_id
+                    || (barrier_idle_replacement
+                        && predecessor_death.is_none()
+                        && (stored.node_id != session.node_id
+                            || stored.kernel_boot_id != session.root_boot_id
+                            || stored.provider_process_instance
+                                != session.provider_process_instance
+                            || stored.provider_execution.process_execution_digest
+                                != *session.provider_execution_digest.as_bytes()))
             })
             || journal
                 .validate_mount_source_acquisition_snapshot(&journal_snapshot)
