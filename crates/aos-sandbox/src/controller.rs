@@ -103,6 +103,17 @@ impl ControllerRequestScopeV1 {
     pub const fn digest(self) -> ObjectDigest {
         self.0
     }
+
+    /// Commits one authenticated public request under this controller scope.
+    #[must_use]
+    pub fn public_request_digest(
+        self,
+        principal: aos_sandbox_core::PrincipalId,
+        project: aos_sandbox_core::ProjectId,
+        canonical_request: &[u8],
+    ) -> [u8; 32] {
+        public_controller_request_digest(self, principal, project, canonical_request)
+    }
 }
 
 /// Bounds synchronous admission and each reconciliation activation.

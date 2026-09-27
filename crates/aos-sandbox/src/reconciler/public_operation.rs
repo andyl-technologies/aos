@@ -279,6 +279,10 @@ impl DurablePublicOperationV1 {
         self.method
     }
 
+    pub(super) const fn accepted_generation(self) -> u64 {
+        self.accepted_generation
+    }
+
     pub(super) const fn into_admission(
         self,
         authorization: PublicOperationAuthorizationV1,
@@ -489,7 +493,7 @@ fn timestamp(seconds: i64) -> Timestamp {
     }
 }
 
-fn resource_version(
+pub(super) fn resource_version(
     operation_id: OperationId,
     operation_record: &[u8],
     effect_records: &[&[u8]],

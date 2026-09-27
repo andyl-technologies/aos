@@ -44,6 +44,8 @@ mod operator_recovery;
 mod policy_plan;
 mod public_mutation;
 
+pub(crate) use public_mutation::resource_version as admitted_public_resource_version_v1;
+
 #[cfg(target_os = "linux")]
 pub(crate) use operator_recovery::repair_sandbox_successor_projection_v1;
 

@@ -1,7 +1,7 @@
 //! Query-time canonical project-policy source for a parentless public Create.
 //!
 //! The controller journal already retains the exact canonical publisher
-//! revision bytes. This join checks the accepted operation, its current
+//! revision bytes. This join checks the live admitted operation, its current
 //! sandbox projection, and the publisher's current revision in one protected
 //! journal claim. It is a source observation, not a compiler layer or a
 //! durable AOSPCB01 binding.
@@ -10,7 +10,6 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aos_proto::aos::sandbox::v1::{Operation, OperationPhase};
 use aos_sandbox_core::model::CacheDomain;
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, RevocationScopeId, SandboxId};
 use sha2::{Digest as _, Sha256};
@@ -21,6 +20,7 @@ use crate::cache_residency::{
 };
 #[cfg(target_os = "linux")]
 use crate::cache_residency::{CacheResidencyWriterReadbackV2, DormantCacheOwnerV1};
+use crate::controller::ControllerRequestScopeV1;
 use crate::controller_query::PublicOperationMethodV1;
 #[cfg(target_os = "linux")]
 use crate::controller_service::journal::production_journal_limits;
@@ -41,8 +41,8 @@ use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
 use crate::reconciler::{
-    ReconcilerError, public_operation_resource_from_journal_v1,
-    recovered_public_operation_admission_v1,
+    EffectPlan, ReconcilerError, checked_live_create_sandbox_admission_revision_v1,
+    live_create_sandbox_admission_revision_v1, recovered_public_operation_admission_v1,
 };
 use crate::{Journal, JournalError};
 
@@ -115,7 +115,7 @@ impl CurrentCreatePolicyBarrierHeadsV2 {
 
 /// Retains exact canonical publisher bytes under a current Create selector.
 ///
-/// This read-only value expires with the accepted operation, projection,
+/// This read-only value expires with the admitted operation, projection,
 /// publisher, cache-domain, or revocation head. Before any compiler binding
 /// or effect, the caller must rejoin those heads under protected custody.
 pub struct CurrentCreateProjectPolicySourceV1 {
@@ -439,11 +439,76 @@ fn request_is_inherited(input: &PolicyCompilerInputV1) -> bool {
             .all(|limit| limit.value() == HardLimitValueV1::Inherit)
 }
 
+/// Selects an admitted parentless Create by operation and project.
+///
+/// Exactly one durable Sandbox projection must name this operation. The
+/// configured controller request scope and retained effect plan must match
+/// the immutable admission digest. The selected identity is then rejoined to
+/// current publisher policy under the same Controller writer. This is not a
+/// held four-owner or Root decision.
+///
+/// # Errors
+///
+/// Returns an error for unsafe journal authority, mismatched scoped effect or
+/// operation/projection/policy, missing project revocation binding, parented
+/// Create, expired current policy, or noncanonical protected state.
+pub fn current_parentless_create_project_source_for_operation_v1(
+    journal: &mut Journal,
+    operation: OperationId,
+    project: ProjectId,
+    scope: ControllerRequestScopeV1,
+    effect_plan: &EffectPlan,
+) -> Result<CurrentCreateProjectPolicySourceV1, CurrentCreatePolicySourceErrorV1> {
+    journal.ensure_protected_authority()?;
+    let (revision, generation) =
+        checked_live_create_sandbox_admission_revision_v1(journal, operation, scope, effect_plan)?
+            .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+    let (sandbox, projection_revision) = PublicProjectionStoreV1::new(journal)
+        .one_parentless_create_sandbox(operation, project)?
+        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+    let context = effect_plan
+        .public_mutation_context()?
+        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+    let crate::cli_model::DormantSandboxRequestKindV1::Create(request) =
+        context.validated_request()?
+    else {
+        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+    };
+    let projection = PublicProjectionStoreV1::new(journal)
+        .get(PublicProjectionKindV1::Sandbox, *sandbox.as_bytes())?
+        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+    let PublicProjectionResourceV1::Sandbox(resource) = projection.resource() else {
+        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+    };
+    let desired = resource
+        .desired
+        .as_option()
+        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+    if !request.parent_sandbox_id.is_empty()
+        || request.project_id.as_slice() != project.as_bytes()
+        || desired.specification.as_option() != request.specification.as_option()
+        || desired.requested_policy.as_option() != request.requested_policy.as_option()
+    {
+        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+    }
+    let source = current_parentless_create_project_source_v1(journal, operation, sandbox)?;
+    if source.project() != project
+        || source.projection_revision() != projection_revision
+        || source.operation_revision() != revision
+        || source.accepted_generation() != generation
+    {
+        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+    }
+    Ok(source)
+}
+
 /// Joins one parentless public Create to exact current canonical policy bytes.
 ///
-/// The publisher policy is a resolved core policy, not a PolicyLayerV1. This
-/// function makes no claim about project/request/ancestor layer provenance.
-/// It rejects parented Create until an authenticated ancestry source exists.
+/// The caller supplies an independently selected Sandbox identity. A production
+/// effect should use [`current_parentless_create_project_source_for_operation_v1`]
+/// to recover that identity from the admitted projection instead of guessing it.
+/// The publisher policy is a resolved core policy, not a `PolicyLayerV1`;
+/// this function cannot establish project/request/ancestor layer provenance.
 ///
 /// # Errors
 ///
@@ -462,10 +527,9 @@ pub fn current_parentless_create_project_source_v1(
 
     let admission = recovered_public_operation_admission_v1(journal, operation)?
         .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    let public_operation = public_operation_resource_from_journal_v1(journal, operation)?
-        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    let (operation_revision, accepted_generation) =
-        accepted_create_operation_revision(&public_operation, operation)?;
+    let (operation_revision, accepted_generation, request_digest) =
+        live_create_sandbox_admission_revision_v1(journal, operation)?
+            .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
 
     let projection = PublicProjectionStoreV1::new(journal)
         .get(PublicProjectionKindV1::Sandbox, *sandbox.as_bytes())?
@@ -476,6 +540,13 @@ pub fn current_parentless_create_project_source_v1(
     if projection.operation() != operation
         || sandbox_resource.sandbox_id.as_slice() != sandbox.as_bytes()
         || !sandbox_resource.parent_sandbox_id.is_empty()
+        || sandbox_resource.resource_version
+            != crate::production_operation_compiler::admitted_public_resource_version_v1(
+                operation,
+                PublicOperationMethodV1::CreateSandbox,
+                1,
+                request_digest,
+            )
     {
         return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
     }
@@ -571,32 +642,6 @@ pub fn current_parentless_create_project_source_v1(
         canonical_policy,
         commitment,
     })
-}
-
-fn accepted_create_operation_revision(
-    public_operation: &Operation,
-    operation: OperationId,
-) -> Result<(ObjectDigest, u64), CurrentCreatePolicySourceErrorV1> {
-    if public_operation.operation_id.as_slice() != operation.as_bytes()
-        || public_operation.method != PublicOperationMethodV1::CreateSandbox.as_str()
-        || public_operation.phase.as_known() != Some(OperationPhase::OPERATION_PHASE_ACCEPTED)
-        || public_operation.accepted_generation == 0
-    {
-        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
-    }
-    let revision: [u8; 32] = public_operation
-        .resource_version
-        .as_slice()
-        .try_into()
-        .map_err(|_| CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    if revision == [0; 32] {
-        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
-    }
-
-    Ok((
-        ObjectDigest::from_bytes(revision),
-        public_operation.accepted_generation,
-    ))
 }
 
 /// Holds the matching physical Cache partition inside an already-held source cut.
@@ -1449,7 +1494,7 @@ fn current_source_domain_ancestry(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::{Cell, RefCell};
+    use std::cell::Cell;
 
     use aos_sandbox_core::model::{
         CacheDomainKind, LimitDimension, RevocationMode, RevocationPolicy,
@@ -1538,17 +1583,6 @@ mod tests {
         payload.extend_from_slice(&key.sign(&signed).to_bytes());
     }
 
-    fn fixture_accepted_create(operation: OperationId) -> Operation {
-        Operation {
-            operation_id: operation.as_bytes().to_vec(),
-            resource_version: vec![2; 32],
-            method: PublicOperationMethodV1::CreateSandbox.as_str().to_owned(),
-            phase: OperationPhase::OPERATION_PHASE_ACCEPTED.into(),
-            accepted_generation: 7,
-            ..Default::default()
-        }
-    }
-
     fn fixture_held_source(
         operation: OperationId,
         operation_revision: ObjectDigest,
@@ -1578,38 +1612,15 @@ mod tests {
     }
 
     #[test]
-    fn held_controller_source_cut_rejects_stale_accepted_create() {
+    fn held_controller_source_cut_rejects_changed_admission_revision() {
         let operation = OperationId::from_bytes([1; 16]);
-        let current = RefCell::new(fixture_accepted_create(operation));
+        let revision = Cell::new(ObjectDigest::from_bytes([2; 32]));
         let ancestry = ObjectDigest::from_bytes([10; 32]);
 
         let result = with_rechecked_create_ancestry(
-            || {
-                let resource = current.borrow();
-                let (revision, generation) =
-                    accepted_create_operation_revision(&resource, operation)?;
-                Ok(fixture_held_source(operation, revision, generation))
-            },
+            || Ok(fixture_held_source(operation, revision.get(), 1)),
             |_| Ok(ancestry),
-            |_, _| {
-                current.borrow_mut().phase = OperationPhase::OPERATION_PHASE_PREPARING.into();
-            },
-        );
-        assert!(matches!(
-            result,
-            Err(CurrentCreatePolicySourceErrorV1::NotCurrent)
-        ));
-
-        *current.borrow_mut() = fixture_accepted_create(operation);
-        let result = with_rechecked_create_ancestry(
-            || {
-                let resource = current.borrow();
-                let (revision, generation) =
-                    accepted_create_operation_revision(&resource, operation)?;
-                Ok(fixture_held_source(operation, revision, generation))
-            },
-            |_| Ok(ancestry),
-            |_, _| current.borrow_mut().resource_version = vec![3; 32],
+            |_, _| revision.set(ObjectDigest::from_bytes([3; 32])),
         );
         assert!(matches!(
             result,
@@ -1632,6 +1643,37 @@ mod tests {
             result,
             Err(CurrentCreatePolicySourceErrorV1::NotCurrent)
         ));
+    }
+
+    #[test]
+    fn held_controller_source_cut_rejects_changed_projection_or_publisher() {
+        let operation = OperationId::from_bytes([1; 16]);
+        let revision = ObjectDigest::from_bytes([2; 32]);
+        let ancestry = ObjectDigest::from_bytes([10; 32]);
+
+        for change_publisher in [false, true] {
+            let changed = Cell::new(false);
+            let result = with_rechecked_create_ancestry(
+                || {
+                    let mut source = fixture_held_source(operation, revision, 7);
+                    if changed.get() {
+                        if change_publisher {
+                            source.policy_digest = ObjectDigest::from_bytes([12; 32]);
+                        } else {
+                            source.projection_revision = ObjectDigest::from_bytes([12; 32]);
+                        }
+                        source.commitment = ObjectDigest::from_bytes([13; 32]);
+                    }
+                    Ok(source)
+                },
+                |_| Ok(ancestry),
+                |_, _| changed.set(true),
+            );
+            assert!(matches!(
+                result,
+                Err(CurrentCreatePolicySourceErrorV1::NotCurrent)
+            ));
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -1748,45 +1790,6 @@ mod tests {
             ))
         ));
         assert_eq!(calls.get(), 3);
-    }
-
-    #[test]
-    fn accepted_create_selector_binds_exact_protected_operation_revision() {
-        let operation = OperationId::from_bytes([1; 16]);
-        let mut resource = Operation {
-            operation_id: operation.as_bytes().to_vec(),
-            resource_version: vec![2; 32],
-            method: PublicOperationMethodV1::CreateSandbox.as_str().to_owned(),
-            phase: OperationPhase::OPERATION_PHASE_ACCEPTED.into(),
-            accepted_generation: 7,
-            ..Default::default()
-        };
-
-        assert_eq!(
-            accepted_create_operation_revision(&resource, operation).expect("accepted Create"),
-            (ObjectDigest::from_bytes([2; 32]), 7)
-        );
-
-        resource.phase = OperationPhase::OPERATION_PHASE_PREPARING.into();
-        assert!(accepted_create_operation_revision(&resource, operation).is_err());
-        resource.phase = OperationPhase::OPERATION_PHASE_ACCEPTED.into();
-
-        resource.operation_id = vec![3; 16];
-        assert!(accepted_create_operation_revision(&resource, operation).is_err());
-        resource.operation_id = operation.as_bytes().to_vec();
-
-        resource.resource_version = vec![0; 32];
-        assert!(accepted_create_operation_revision(&resource, operation).is_err());
-        resource.resource_version = vec![2; 31];
-        assert!(accepted_create_operation_revision(&resource, operation).is_err());
-        resource.resource_version = vec![2; 32];
-
-        resource.accepted_generation = 0;
-        assert!(accepted_create_operation_revision(&resource, operation).is_err());
-        resource.accepted_generation = 7;
-
-        resource.method = PublicOperationMethodV1::DeleteSandbox.as_str().to_owned();
-        assert!(accepted_create_operation_revision(&resource, operation).is_err());
     }
 
     #[test]
