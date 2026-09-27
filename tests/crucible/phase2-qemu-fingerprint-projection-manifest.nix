@@ -233,15 +233,17 @@ in
             # refreshing these digests.
             # The input queue registers at sim machine-done: ordinary TCG omits
             # it, and sim profiles place it after the realized device rows.
-            query_manifest q35-machine 37 \
-              cf014a1c94e7bd5aacfc2cc3eabe5b254a6bb908ad501a14eac95a37db305478 \
+            # The preemption section remains in QMP's registry outside sim;
+            # its VMState needed predicate only controls serialized state.
+            query_manifest q35-machine 38 \
+              94adff71fe3c733555b09a011aba7145d4568e75a9c21295067c9667b32df54d \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel tcg -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1
 
-            query_manifest aarch64-machine 16 \
-              2cb8b07647bcdc73c9547d0b1290e377c3ac5893f44c4fbf020afc3931b1cdaf \
+            query_manifest aarch64-machine 17 \
+              cc04633a677c8220cc2933c21953b78627e5564d10229909bd304b91b94b7ce6 \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57 \
               -accel tcg -nodefaults -no-user-config -display none \
@@ -497,10 +499,10 @@ in
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel tcg -nodefaults -no-user-config -display none \
               -S -qmp stdio > "$out/q35-missing-rng.json"
-            ! jq -e -s '
-              any(.[]; .return.sections? == 38 and
+            jq -e -s '
+              any(.[]; .return.sections? == 37 and
                 .return.digest? ==
-                  "8d5dd529839adc86248c11b8a9afe55488a396b5b0e9597ecc0dae61b40c7a8a")
+                  "8b2c359bb48ee1791217fbeb9b7ce16fda2318dfaf4f146bf2e42fa74a6ae048")
             ' "$out/q35-missing-rng.json" > /dev/null
 
             {
@@ -529,9 +531,9 @@ in
             gate=gate:qemu-fingerprint-projection-manifest
             schema_version=4
             q35_machine_sections=38
-            q35_machine_digest=8d5dd529839adc86248c11b8a9afe55488a396b5b0e9597ecc0dae61b40c7a8a
+            q35_machine_digest=94adff71fe3c733555b09a011aba7145d4568e75a9c21295067c9667b32df54d
             aarch64_machine_sections=17
-            aarch64_machine_digest=75ca96091e6678ad2215539781219223ea92ffbcc0456f9b60aed39b0fd6275d
+            aarch64_machine_digest=cc04633a677c8220cc2933c21953b78627e5564d10229909bd304b91b94b7ce6
             q35_production_fault_sections=40
             q35_production_fault_digest=a4a03ede093eacfaa1c16996ed8247656d907205a41243d7caad045b253cbc78
             q35_production_fault_smp4_sections=49
