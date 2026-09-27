@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginRoundRobin",
-  taskIds ? ["T-PLUG-24"],
-  openTaskIds ? [],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-24"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
