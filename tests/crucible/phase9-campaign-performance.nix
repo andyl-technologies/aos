@@ -111,11 +111,19 @@ pkgs.mkDerivation {
         if baseline_path:
             baseline = fields(pathlib.Path(baseline_path).read_text())
             assert set(baseline) == {
-                "schema", "reference_host_profile_sha256", "baseline_planner_queue_ns",
+                "schema", "reference_host_profile_sha256",
+                "reference_scaling_result_sha256", "reference_scaling_serial_sha256",
+                "reference_scaling_host_sha256", "baseline_planner_queue_ns",
                 "baseline_guest_continuation_ns", "max_planner_queue_ratio_ppm",
             }, baseline
             assert baseline["schema"] == "crucible.campaign-performance.baseline.v1"
             assert baseline["reference_host_profile_sha256"] == reference_sha
+            for name in (
+                "reference_scaling_result_sha256",
+                "reference_scaling_serial_sha256",
+                "reference_scaling_host_sha256",
+            ):
+                assert re.fullmatch(r"[0-9a-f]{64}", baseline[name]), (name, baseline[name])
             baseline_planner = int(baseline["baseline_planner_queue_ns"])
             baseline_guest = int(baseline["baseline_guest_continuation_ns"])
             ratio_ceiling = int(baseline["max_planner_queue_ratio_ppm"])
@@ -161,6 +169,9 @@ pkgs.mkDerivation {
           exit 0
         fi
         baseline_sha=$(sha256sum "$out/evidence/reference-baseline.env" | cut -d ' ' -f 1)
+        reference_result_sha=$(sed -n 's/^reference_scaling_result_sha256=//p' "$out/evidence/reference-baseline.env")
+        reference_serial_sha=$(sed -n 's/^reference_scaling_serial_sha256=//p' "$out/evidence/reference-baseline.env")
+        reference_host_sha=$(sed -n 's/^reference_scaling_host_sha256=//p' "$out/evidence/reference-baseline.env")
         cat > "$out/result" <<RESULT
         PASS
         gate=gate:campaign-performance
@@ -172,6 +183,9 @@ pkgs.mkDerivation {
         reference_host_profile_schema=crucible.campaign-performance.reference-host.v1
         reference_host_profile_sha256=$reference_sha
         reference_baseline_sha256=$baseline_sha
+        reference_scaling_result_sha256=$reference_result_sha
+        reference_scaling_serial_sha256=$reference_serial_sha
+        reference_scaling_host_sha256=$reference_host_sha
         durable_metadata_budget_authenticated=true
         serial_sha256=$serial_sha
         host_reference_sha256=$host_sha
