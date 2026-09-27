@@ -142,6 +142,10 @@ pub trait Unit {
     default_service = "org.freedesktop.systemd1"
 )]
 pub trait Service {
+    /// Cgroup containing the live processes of this service.
+    #[zbus(property)]
+    fn control_group(&self) -> zbus::Result<String>;
+
     /// Exit status (or signal number) of the service's main process.
     #[zbus(property)]
     fn exec_main_status(&self) -> zbus::Result<i32>;

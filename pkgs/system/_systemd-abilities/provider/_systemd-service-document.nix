@@ -1089,6 +1089,10 @@
       inherit aliases facets links;
       inherit units;
       enabled = value.enabled;
+      readiness_mechanism =
+        if (value.readiness or null) == null
+        then null
+        else value.readiness.mechanism;
     };
 in {
   inherit realizationFor serviceIdentityFor;

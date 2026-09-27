@@ -296,6 +296,7 @@ mod tests {
             prerequisites: Vec::new(),
             aliases: Vec::new(),
             enabled: true,
+            readiness_mechanism: None,
         };
 
         assert!(render_service(&realization).is_err());
@@ -339,6 +340,7 @@ mod tests {
                 },
             }],
             enabled: true,
+            readiness_mechanism: None,
         };
 
         let rendered = render_service(&realization).expect("public alias renders");

@@ -520,6 +520,12 @@
         canonicalOrder = true;
       };
       enabled = types.boolean;
+      readiness_mechanism = types.optional (types.enum [
+        "process-running"
+        "process-signal"
+        "socket-accepting"
+        "successful-exit"
+      ]);
     };
   };
 

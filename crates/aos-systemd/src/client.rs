@@ -1343,6 +1343,29 @@ impl PinnedSystemdManager {
         Ok(UnitActiveState::from_systemd(&unit.active_state().await?))
     }
 
+    /// Returns the cgroup of an exact loaded service unit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the manager or unit identity changed, the unit is
+    /// not a service, or its cgroup property cannot be read.
+    pub async fn service_control_group_exact(
+        &self,
+        name: &str,
+        expected_identity: &str,
+    ) -> Result<String> {
+        self.exact_unit(name, expected_identity).await?;
+        let service = ServiceProxy::builder(&self.conn)
+            .destination(self.incarnation.owner.clone())?
+            .path(expected_identity)?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        let control_group = service.control_group().await?;
+        self.exact_unit(name, expected_identity).await?;
+        Ok(control_group)
+    }
+
     /// Reports whether one exact loaded unit needs a manager reload.
     ///
     /// The property is read without a proxy cache from the canonical unit

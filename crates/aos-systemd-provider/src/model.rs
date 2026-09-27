@@ -236,6 +236,16 @@ pub(crate) struct ServiceRealization {
     pub(crate) prerequisites: Vec<ResourceReference>,
     pub(crate) aliases: Vec<RealizedServiceAlias>,
     pub(crate) enabled: bool,
+    pub(crate) readiness_mechanism: Option<ServiceReadinessMechanism>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ServiceReadinessMechanism {
+    ProcessRunning,
+    ProcessSignal,
+    SocketAccepting,
+    SuccessfulExit,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

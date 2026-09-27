@@ -777,6 +777,7 @@ mod tests {
             prerequisites: Vec::new(),
             aliases: Vec::new(),
             enabled: true,
+            readiness_mechanism: None,
         }
     }
 

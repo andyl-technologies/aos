@@ -488,6 +488,7 @@ in
   assert resource.value.lifecycle.description == "Example service";
   assert resource.value.logging.standard_output == "structured";
   assert resource.realization.schema == "aos.systemd.service-realization/v1";
+  assert resource.realization.readiness_mechanism == null;
   assert primary.systemd_unit.unit_name == unitName;
   assert unitName == "example.service";
   assert builtins.length (directives "StartLimitIntervalSec" unitSection) == 1;
