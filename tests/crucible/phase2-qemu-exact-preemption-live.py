@@ -89,6 +89,17 @@ def wait_for_socket(path, process):
     raise TimeoutError("QMP socket was not ready")
 
 
+def wait_for_migration(qmp, label):
+    for _ in range(200):
+        status = qmp.command("query-migrate")["status"]
+        if status == "completed":
+            return
+        if status in {"failed", "cancelled"}:
+            raise RuntimeError(f"{label} migration ended with {status}")
+        time.sleep(0.025)
+    raise TimeoutError(f"{label} migration did not complete")
+
+
 def snapshot_and_restore(arm_binary, plugin, directory):
     socket_path = directory / "source.sock"
     vmstate_path = directory / "pending.vmstate"
@@ -112,15 +123,7 @@ def snapshot_and_restore(arm_binary, plugin, directory):
             else:
                 raise TimeoutError("source did not pause at tick 7")
             qmp.command("migrate", {"uri": f"file:{vmstate_path}"})
-            for _ in range(200):
-                status = qmp.command("query-migrate")["status"]
-                if status == "completed":
-                    break
-                if status in {"failed", "cancelled"}:
-                    raise RuntimeError(f"migration ended with {status}")
-                time.sleep(0.025)
-            else:
-                raise TimeoutError("source migration did not complete")
+            wait_for_migration(qmp, "source")
             qmp.command("quit")
         finally:
             qmp.close()
@@ -156,10 +159,15 @@ def snapshot_and_restore(arm_binary, plugin, directory):
         wait_for_socket(destination_socket, destination)
         qmp = Qmp(str(destination_socket))
         try:
+            # The QMP socket can accept commands before incoming VMState loads.
+            wait_for_migration(qmp, "destination")
             qmp.command("cont")
         finally:
             qmp.close()
-        destination_output, _ = destination.communicate(timeout=10)
+        try:
+            destination_output, _ = destination.communicate(timeout=10)
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(f"destination timed out; output={error.output!r}") from error
     finally:
         if destination.poll() is None:
             destination.kill()
