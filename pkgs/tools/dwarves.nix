@@ -83,6 +83,7 @@ in
     };
 
     inherit version;
+    cacheCCompilers = true;
 
     src = fetchurl {
       urls = [

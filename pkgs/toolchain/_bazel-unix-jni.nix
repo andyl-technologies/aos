@@ -5,8 +5,9 @@
   buildPackages,
   stdenv,
   bazelSource,
+  sourceVersion ? "7.7.1",
 }: let
-  version = "7.7.1";
+  version = sourceVersion;
   buildJdk = buildPackages.openjdk-21;
   isX86 = stdenv.hostPlatform.system == "x86_64-linux";
   isArm = stdenv.hostPlatform.system == "aarch64-linux";
@@ -51,7 +52,12 @@ in
             mkdir objects
             set --
 
-            for source in \
+            native_common_source="${
+              if builtins.compareVersions version "9.0.0" >= 0
+              then "src/main/native/common.cc"
+              else ""
+            }"
+            for source in $native_common_source \
               src/main/native/process.cc \
               src/main/native/unix_jni.cc \
               src/main/native/unix_jni_linux.cc \

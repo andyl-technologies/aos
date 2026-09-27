@@ -1366,7 +1366,7 @@
   # ---------------------------------------------------------------------------
   # fetchgit
   # ---------------------------------------------------------------------------
-  # fetchgit { url; rev; hash; ref?; sparsePaths?; sparsePatterns?; git?; caCertificates?; coreutils?; }
+  # fetchgit { url; rev; hash; ref?; fetchCommit?; sparsePaths?; sparsePatterns?; git?; caCertificates?; coreutils?; }
   #
   # Fixed-output derivation that clones a Git repository at a specific revision.
   # Sparse checkout avoids downloading excluded blobs, such as bundled JARs.
@@ -1380,6 +1380,7 @@
     system ? defaultSystem,
     storeDir ? "/nix/store",
     deepClone ? false,
+    fetchCommit ? false,
     leaveDotGit ? false,
     ref ? null,
     sparsePaths ? [],
@@ -1413,27 +1414,41 @@
           export PATH="${gitPath}/bin:${coreutilsPath}/bin:$PATH"
           export GIT_SSL_CAINFO="${caCertificatesPath}/etc/ssl/certs/ca-bundle.crt"
 
-          git clone ${
-            if deepClone
-            then ""
-            else "--depth 1"
-          } \
-            ${
-            if sparsePaths == [] && sparsePatterns == []
-            then ""
-            else "--filter=blob:none --sparse --no-checkout"
-          } \
-            ${
-            if ref == null
-            then ""
-            else "--branch ${escapeShellArg ref}"
-          } \
-            ${
-            if fetchSubmodules
-            then "--recurse-submodules"
-            else ""
-          } \
-            "${url}" "$out"
+          ${
+            if fetchCommit
+            then ''
+              git init "$out"
+              git -C "$out" remote add origin "${url}"
+              git -C "$out" fetch --depth 1 ${
+                if sparsePaths == [] && sparsePatterns == []
+                then ""
+                else "--filter=blob:none"
+              } origin "${rev}"
+            ''
+            else ''
+              git clone ${
+                if deepClone
+                then ""
+                else "--depth 1"
+              } \
+                ${
+                if sparsePaths == [] && sparsePatterns == []
+                then ""
+                else "--filter=blob:none --sparse --no-checkout"
+              } \
+                ${
+                if ref == null
+                then ""
+                else "--branch ${escapeShellArg ref}"
+              } \
+                ${
+                if fetchSubmodules
+                then "--recurse-submodules"
+                else ""
+              } \
+                "${url}" "$out"
+            ''
+          }
 
           cd "$out"
           ${
@@ -1443,7 +1458,12 @@
             then ''git sparse-checkout set -- ${sparseArguments}''
             else ""
           }
-          git checkout "${rev}"
+          git checkout "${
+            if fetchCommit
+            then "FETCH_HEAD"
+            else rev
+          }"
+          test "$(git rev-parse HEAD)" = "${rev}"
           ${
             if fetchSubmodules
             then "git submodule update --init --recursive"
@@ -1467,6 +1487,7 @@
     };
   in
     assert sparsePaths == [] || sparsePatterns == [];
+    assert !fetchCommit || (ref == null && !deepClone);
       annotateFixedOutput drv {
         kind = "git";
         hashMode = "recursive";

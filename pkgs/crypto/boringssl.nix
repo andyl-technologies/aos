@@ -108,6 +108,7 @@ in
     };
 
     inherit version;
+    cacheCCompilers = true;
 
     src = fetchurl {
       urls = ["https://github.com/google/boringssl/archive/refs/tags/${version}.tar.gz"];
