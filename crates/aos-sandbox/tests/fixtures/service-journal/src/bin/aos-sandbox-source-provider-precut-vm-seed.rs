@@ -335,7 +335,6 @@ fn prepare_cut(
         &signed,
         &request,
         &session,
-        &authority,
         negotiated_capabilities.proof_class_capabilities(),
         negotiated_capabilities.supports_recursive(),
         negotiated_capabilities.supports_kernel_coupled(),
@@ -448,7 +447,6 @@ fn reserved_attempt(
     signed: &SignedSourceProviderRequestV1,
     request: &aos_sandbox_source_provider_protocol::AcquireSourceRequestV1,
     session: &HolderSessionHeadRecordV1,
-    authority: &AuthorityHeadRecordV1,
     proof_class_capabilities: u8,
     supports_recursive: bool,
     supports_kernel_coupled: bool,
@@ -477,7 +475,9 @@ fn reserved_attempt(
         deadline_seconds: request.deadline_seconds(),
         verified_at_seconds: now,
         completed_at_seconds: None,
-        current_valid_until_seconds: authority.valid_until_seconds,
+        // The signed deadline is a conservative bound on the recorded fixture
+        // verification window; it never claims a longer live session lifetime.
+        current_valid_until_seconds: request.deadline_seconds(),
         proof_class_capabilities,
         supports_recursive,
         supports_kernel_coupled,
