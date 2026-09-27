@@ -1890,11 +1890,30 @@ impl Journal {
     ///
     /// # Errors
     ///
-    /// Returns an error for an unprotected or poisoned journal or malformed
-    /// retained global reservation provenance.
+    /// Returns an error for an unprotected or poisoned journal, malformed
+    /// reservation provenance, or foreign committed history or state.
     pub fn claim_source_provider_native_terminal_authority_v1(
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
+        self.ensure_protected_authority()?;
+        capacity_reservation::validate_all_reservations(&self.state)?;
+        let namespace = RecordNamespace::SourceProviderAuthority;
+        let has_foreign_history = self.committed_namespaces.iter().any(|committed_namespace| {
+            *committed_namespace != namespace
+                && *committed_namespace != RecordNamespace::GlobalCapacityReservation
+        });
+        let has_foreign_state = self.state.keys().any(|(record_namespace, _)| {
+            *record_namespace != namespace
+                && *record_namespace != RecordNamespace::GlobalCapacityReservation
+        });
+        // Deleted foreign rows still taint this generation until compaction.
+        if has_foreign_history
+            || has_foreign_state
+            || !capacity_reservation::all_reservations_owned_by(&self.state, namespace)?
+        {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+
         self.claim_global_capacity_reservation_authority(
             GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal,
         )
@@ -4881,6 +4900,48 @@ mod tests {
             ),
             Err(JournalError::ForeignAuthorityNamespace)
         ));
+    }
+
+    #[test]
+    fn source_provider_native_claim_rejects_foreign_state_and_deleted_history() {
+        for (label, delete_foreign) in [("retained", false), ("deleted", true)] {
+            let directory = TestDirectory::new(label);
+            let (mut journal, _) = protected_open(&directory.0).unwrap();
+            journal
+                .commit(&transaction(
+                    21,
+                    vec![JournalRecord::put(
+                        RecordNamespace::Effect,
+                        b"foreign".to_vec(),
+                        vec![1],
+                    )],
+                ))
+                .unwrap();
+            if delete_foreign {
+                journal
+                    .commit(&transaction(
+                        22,
+                        vec![JournalRecord::delete(
+                            RecordNamespace::Effect,
+                            b"foreign".to_vec(),
+                        )],
+                    ))
+                    .unwrap();
+                assert!(journal.records(RecordNamespace::Effect).next().is_none());
+            }
+
+            assert!(matches!(
+                journal.claim_source_provider_native_terminal_authority_v1(),
+                Err(JournalError::ForeignAuthorityNamespace)
+            ));
+            drop(journal);
+
+            let (mut reopened, _) = protected_open(&directory.0).unwrap();
+            assert!(matches!(
+                reopened.claim_source_provider_native_terminal_authority_v1(),
+                Err(JournalError::ForeignAuthorityNamespace)
+            ));
+        }
     }
 
     #[test]
