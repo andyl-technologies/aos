@@ -157,6 +157,7 @@ fn production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
         6_275,
         &input,
         &baked,
+        Arc::clone(&artifacts),
         checkpoint,
         0x98,
     );
@@ -199,6 +200,7 @@ fn production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
         6_375,
         &input,
         &baked,
+        Arc::clone(&artifacts),
         checkpoint,
         0x99,
     );
@@ -402,6 +404,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         7_275,
         &input,
         &baked,
+        Arc::clone(&artifacts),
         checkpoint,
         0xa8,
     );
@@ -444,6 +447,7 @@ fn production_single_node_hot_fork_matches_thin_and_exact() {
         7_375,
         &input,
         &baked,
+        Arc::clone(&artifacts),
         checkpoint,
         0xa9,
     );
@@ -1054,6 +1058,7 @@ fn production_hot_fork_meets_whole_world_performance_ratchets() {
             9_275 + u32::try_from(index).expect("corpus project") * 100,
             &input,
             &baked,
+            Arc::clone(&artifacts),
             checkpoint,
             0xd0 + u8::try_from(index).expect("corpus byte"),
         );
@@ -1298,6 +1303,7 @@ fn promote_exact_checkpoint(
     project_id_start: u32,
     source_input: &CrucibleAttemptExecution,
     baked: &ProductionBakedGenesisCheckpoint,
+    artifacts: Arc<dyn DagStore>,
     raw: ExactCheckpointId,
     execution_byte: u8,
 ) -> (ExactCheckpointStore, ExactCheckpointId) {
@@ -1306,9 +1312,11 @@ fn promote_exact_checkpoint(
     let resources = ComposedQemuAttemptResourceGuardFactory::new(
         SharedQemuAttemptHostResourceFactory::new(open_host(paths, lane, project_id_start)),
     );
+    let replay_config = lifecycle_config(paths, paths.run_state_root.join(lane), artifacts);
     let mut replay_factory =
         ProductionBakedGenesisReplayCatalogFactory::new([baked.clone()], resources)
-            .expect("build production baked-genesis replay catalog");
+            .expect("build production baked-genesis replay catalog")
+            .with_savepoint_replay_config(replay_config);
     let promoted = promote_test_checkpoint_for_resume(
         &checkpoints,
         raw,
