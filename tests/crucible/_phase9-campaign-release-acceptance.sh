@@ -28,6 +28,11 @@ require_file() {
         || fail "required input is not a nonempty regular non-symlink file: $1"
 }
 
+require_regular_file() {
+    test -f "$1" && test ! -L "$1" \
+        || fail "required input is not a regular non-symlink file: $1"
+}
+
 require_digest() {
     printf '%s\n' "$1" | grep -Eq '^[0-9a-f]{64}$' \
         || fail "evidence digest is not lowercase SHA-256: $1"
@@ -70,6 +75,33 @@ verify_e2e_evidence() {
     require_file "$canonical"
     require_file "$artifact"
     require_file "$journal"
+
+    # A successful producer may emit empty stdout or quiet-profile pressure
+    # status, but the raw files themselves must survive release packaging.
+    require_file "$evidence/allowed-cpus"
+    require_file "$evidence/canonical-identities.tsv"
+    require_file "$evidence/reproduction-artifacts.sha256"
+    require_file "$evidence/replay.jsonl"
+    require_directory "$evidence/replay-pressure"
+    require_file "$evidence/replay-pressure/pids"
+    require_regular_file "$evidence/replay-pressure/status"
+    require_directory "$evidence/profiles"
+    for profile in \
+        quiet-single-core \
+        randomized-worker-two-core \
+        loaded-io-stall-four-core
+    do
+        profile_evidence="$evidence/profiles/$profile"
+        require_directory "$profile_evidence"
+        require_file "$profile_evidence/profile.env"
+        require_regular_file "$profile_evidence/store-populate.log"
+        require_file "$profile_evidence/verify.jsonl"
+        require_file "$profile_evidence/reduction-artifacts.sha256"
+        require_file "$profile_evidence/reproduction.crucible"
+        require_directory "$profile_evidence/pressure"
+        require_regular_file "$profile_evidence/pressure/pids"
+        require_regular_file "$profile_evidence/pressure/status"
+    done
 
     test "$(sed -n '1p' "$result")" = PASS \
         || fail "e2e native evidence does not report PASS"
