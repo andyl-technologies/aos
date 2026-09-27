@@ -13,7 +13,7 @@
   serviceFields =
     builtins.removeAttrs
     serviceManagement.types.serviceDeclarationFields
-    ["service" "enabled"];
+    ["service" "enabled" "activation_owner"];
   featureModuleFor = name: definition: let
     fieldType =
       if definition ? type
@@ -77,6 +77,11 @@
             type = lib.abilities.types.boolean;
             default = true;
             description = "Ask the selected manager to start this service automatically.";
+          };
+          options.activationOwner = lib.mkOption {
+            type = serviceManagement.types.serviceDeclarationFields.activation_owner.type;
+            default = "ability";
+            description = "Select the owner that establishes this service at stage entry.";
           };
           options.consumerInstance = lib.mkOption {
             type = lib.abilities.types.localKey;

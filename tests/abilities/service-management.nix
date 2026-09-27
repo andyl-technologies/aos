@@ -1014,6 +1014,7 @@
             baseline_access = "declared-devices-only";
             rules = [];
           };
+          config.aos.services."policy-owner.main".activationOwner = "image";
           config.aos.services."policy-owner.main".resources.processes.kind = "unbounded";
         };
       }
@@ -1599,6 +1600,7 @@ in
   == {
     service = "main";
     enabled = true;
+    activation_owner = "image";
     baseline_access = "declared-devices-only";
     rules = [];
   };
@@ -1613,12 +1615,16 @@ in
   == {
     service = "main";
     enabled = true;
+    activation_owner = "image";
     open_files = {
       kind = "maximum";
       value = 128;
     };
     processes.kind = "unbounded";
   };
+  assert composedServiceFixedPoint.config.aos.abilities.requests."policy-owner:main-lifecycle".parameters.activation_owner
+  == "image";
+  assert !(sourceComposedService.config.aos.abilities.requests."aos:demo-lifecycle".parameters ? activation_owner);
   assert composedServiceFixedPoint.config.aos.services."policy-owner.main".ownerPort == 5511;
   assert composedServiceFixedPoint.config.aos.services."policy-owner.main".extensionMode == "strict";
   assert ownerOfServiceOption "ownerPort" == "policy-owner";

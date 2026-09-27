@@ -296,7 +296,7 @@
     };
 
   facetProjectionFor = selected: let
-    requestFields = builtins.removeAttrs selected.requestType._abilitySchema.fields ["service" "enabled"];
+    requestFields = builtins.removeAttrs selected.requestType._abilitySchema.fields ["service" "enabled" "activation_owner"];
     requestFieldNames = builtins.attrNames requestFields;
     configuredPolicyFacet =
       builtins.filter
@@ -329,7 +329,7 @@
         }
         ++ nested)
       (builtins.filter
-        (fieldName: fieldName != "service" && fieldName != "enabled")
+        (fieldName: fieldName != "service" && fieldName != "enabled" && fieldName != "activation_owner")
         (builtins.attrNames serviceResourceFields));
   in
     if builtins.length configuredPolicyFacet == 1
@@ -377,12 +377,13 @@
           value = {
             kind = "aos.service.instance";
             lifetime = "instance";
+            activationOwner = entry.parameters.activation_owner or "ability";
             value = {
               inherit (entry.parameters) service;
               enabled = entry.parameters.enabled or false;
               ${projection.facet} =
                 if projection.field == null
-                then builtins.removeAttrs entry.parameters ["service" "enabled"]
+                then builtins.removeAttrs entry.parameters ["service" "enabled" "activation_owner"]
                 else entry.parameters.${projection.field};
             };
           };

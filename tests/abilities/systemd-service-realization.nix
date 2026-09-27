@@ -184,6 +184,26 @@
       };
     };
   };
+  imageOwnedConsumerModule = {
+    config.aos.abilities =
+      consumerModule.config.aos.abilities
+      // {
+        requests = builtins.mapAttrs (_: request:
+          request // {parameters = request.parameters // {activation_owner = "image";};})
+        consumerModule.config.aos.abilities.requests;
+      };
+  };
+  conflictingOwnerConsumerModule = {
+    config.aos.abilities =
+      imageOwnedConsumerModule.config.aos.abilities
+      // {
+        requests =
+          imageOwnedConsumerModule.config.aos.abilities.requests
+          // {
+            logging = consumerModule.config.aos.abilities.requests.logging;
+          };
+      };
+  };
   baseBindings = {
     environment = {
       authority = "test";
@@ -236,7 +256,7 @@
       };
     };
   };
-  evaluate = bindings: abilityResolution:
+  evaluateWith = consumer: bindings: abilityResolution:
     lib.evalModules {
       inherit lib;
       modules = [
@@ -249,7 +269,7 @@
         (lib.abilities.authenticatedPackageModuleRecordFor pkgs.systemd)
         {
           name = "consumer";
-          module = consumerModule;
+          module = consumer;
         }
       ];
       selectedProviderModules = [
@@ -263,6 +283,7 @@
         };
       };
     };
+  evaluate = evaluateWith consumerModule;
   initial = evaluate baseBindings.bindings {
     requests = {};
     requirements = {};
@@ -279,6 +300,16 @@
       };
     };
   evaluation = evaluate resolvedBindings {
+    requests.${serviceEffectsRequest} = effectsChild.declaration;
+    requirements.${effectsChild.declaration.requirement} =
+      initial.config.aos.abilities.compositionRequirements.${effectsChild.declaration.requirement};
+  };
+  imageOwnedEvaluation = evaluateWith imageOwnedConsumerModule resolvedBindings {
+    requests.${serviceEffectsRequest} = effectsChild.declaration;
+    requirements.${effectsChild.declaration.requirement} =
+      initial.config.aos.abilities.compositionRequirements.${effectsChild.declaration.requirement};
+  };
+  conflictingOwnerEvaluation = evaluateWith conflictingOwnerConsumerModule resolvedBindings {
     requests.${serviceEffectsRequest} = effectsChild.declaration;
     requirements.${effectsChild.declaration.requirement} =
       initial.config.aos.abilities.compositionRequirements.${effectsChild.declaration.requirement};
@@ -562,6 +593,9 @@ in
   assert templates "SocketGroup" socketSection != [];
   assert templates "RemoveOnStop" socketSection == ["yes"];
   assert builtins.length evaluation.config.systemd.providerUnitPlans == 1;
+  assert resource.activationOwner == "ability";
+  assert (builtins.head (builtins.attrValues imageOwnedEvaluation.config.aos.abilities.resolvedResources)).activationOwner == "image";
+  assert !(builtins.tryEval (builtins.deepSeq conflictingOwnerEvaluation.config.aos.abilities.desiredResources true)).success;
   assert builtins.isAttrs (builtins.fromJSON (builtins.head evaluation.config.systemd.providerUnitPlans).input);
   assert guarantees."core:service-template-exact-reuse".name == "aos.guarantee.service-template-exact-reuse";
   assert lifecycleImplementation.guarantees == ["core:service-template-exact-reuse"];

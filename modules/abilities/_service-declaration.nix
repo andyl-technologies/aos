@@ -416,6 +416,11 @@
   in
     {inherit (declaration) service;}
     // (
+      if (declaration.activation_owner or "ability") == "image"
+      then {activation_owner = "image";}
+      else {}
+    )
+    // (
       if feature == "template_definition"
       then {}
       else {inherit (declaration) enabled;}
@@ -697,6 +702,11 @@
             {
               inherit (checked) service enabled;
             }
+            // (
+              if (checked.activation_owner or "ability") == "image"
+              then {activation_owner = "image";}
+              else {}
+            )
             // feature.parameters;
         };
       })

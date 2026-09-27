@@ -346,23 +346,25 @@
 
   fragmentEntries = builtins.concatLists (builtins.map (group:
     builtins.map (key: let
-      fragment =
+      fragment = group.result.resourceFragments.${key};
+      checkedFragment =
         exactAttrs
         "resource fragment '${key}' from '${group.implementationKey}'"
         ["kind" "lifetime" "value"]
-        group.result.resourceFragments.${key};
+        (builtins.removeAttrs fragment ["activationOwner"]);
       matchingBindings = builtins.filter (entry: entry.binding.slot == key) group.entries;
     in
       if matchingBindings == []
       then fail "resource fragment '${key}' does not match a selected binding slot"
-      else {
-        inherit key fragment group matchingBindings;
-        resource = {
-          provider = group.provider;
-          inherit key;
-        };
-        aggregation = group.interface.aggregation;
-      })
+      else
+        builtins.seq checkedFragment {
+          inherit key fragment group matchingBindings;
+          resource = {
+            provider = group.provider;
+            inherit key;
+          };
+          aggregation = group.interface.aggregation;
+        })
     (builtins.attrNames group.result.resourceFragments))
   provisionGroups);
   fragmentsByResource = groupBy (entry: resourceIdentityKey entry.resource) fragmentEntries;
@@ -400,6 +402,7 @@
     values = builtins.map (entry: entry.fragment.value) entries;
     kinds = builtins.map (entry: entry.fragment.kind) entries;
     lifetimes = builtins.map (entry: entry.fragment.lifetime) entries;
+    activationOwners = builtins.map (entry: entry.fragment.activationOwner or "ability") entries;
     controllerCandidates =
       builtins.filter
       (entry:
@@ -437,6 +440,8 @@
     then fail "resource '${builtins.toJSON first.resource}' has conflicting kinds"
     else if !(builtins.all (lifetime: lifetime == first.fragment.lifetime) lifetimes)
     then fail "resource '${builtins.toJSON first.resource}' has conflicting lifetimes"
+    else if !(builtins.all (owner: owner == builtins.head activationOwners) activationOwners)
+    then fail "resource '${builtins.toJSON first.resource}' has conflicting activation owners"
     else if builtins.length controllerCandidates != 1
     then
       fail
@@ -445,6 +450,7 @@
       inherit (first) resource;
       kind = first.fragment.kind;
       lifetime = first.fragment.lifetime;
+      activationOwner = builtins.head activationOwners;
       value = mergeMaps "resource '${first.key}'" values;
       controller = builtins.head controllerCandidates;
     };
@@ -711,7 +717,7 @@
     builtins.map (resource: {
       name = "resource-${resourceIdentityKey resource.resource}";
       value = {
-        inherit (resource) resource kind lifetime value;
+        inherit (resource) resource kind lifetime value activationOwner;
         controller = resource.controller.bindingName;
         realization = composition.result.realizations.${resource.resource.key};
       };

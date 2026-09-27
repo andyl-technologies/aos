@@ -235,6 +235,17 @@ pub struct SourceStageOutput {
     pub lifetime: ResourceLifetime,
 }
 
+/// Identifies the authority that establishes a source-stage resource.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SourceActivationOwner {
+    /// The checked ability plan establishes the resource.
+    #[default]
+    Ability,
+    /// The image establishes the resource before stage admission.
+    Image,
+}
+
 /// Retains one checked module-system resource projection.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -245,6 +256,9 @@ pub struct SourceStageResolvedResource {
     pub kind: InterfaceName,
     /// Declares the resource retention boundary.
     pub lifetime: ResourceLifetime,
+    /// Names the authority that establishes this resource at stage entry.
+    #[serde(default)]
+    pub activation_owner: SourceActivationOwner,
     /// Retains the exact semantic desired resource value.
     pub value: AbilityValue,
     /// Retains the selected provider's typed backend realization.
@@ -1572,6 +1586,7 @@ mod tests {
                         resource: resource.resource.clone(),
                         kind: resource.kind.clone(),
                         lifetime: resource.lifetime,
+                        activation_owner: SourceActivationOwner::Ability,
                         value: resource.value.clone(),
                         realization: resource.realization.clone(),
                         revision: Some(resource.revision),

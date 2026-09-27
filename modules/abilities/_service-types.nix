@@ -98,6 +98,10 @@
   serviceBaseFields = {
     service = localKey;
     enabled = types.boolean;
+    activation_owner = {
+      type = types.enum ["ability" "image"];
+      optional = true;
+    };
   };
   feature = fields: optional:
     (types.record {
@@ -155,7 +159,12 @@
   } [];
   lifecycle = request lifecycleFeature;
   templateDefinition = types.record {
-    fields = {service = localKey;} // lifecycleFeature._serviceFeatureFields;
+    fields =
+      {
+        service = localKey;
+        inherit (serviceBaseFields) activation_owner;
+      }
+      // lifecycleFeature._serviceFeatureFields;
     optional = lifecycleFeature._serviceFeatureOptional;
   };
   dependenciesFeature = feature {

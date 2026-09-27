@@ -6,6 +6,7 @@
   interfaceDocumentFromDeclaration,
   interfaceIdentity,
 }: let
+  serviceTypes = import ../_service-types.nix {inherit types;};
   localKeys = types.list {
     element = types.localKey;
     maxItems = 256;
@@ -59,6 +60,7 @@
   serviceFields = {
     service = types.localKey;
     enabled = types.boolean;
+    inherit (serviceTypes.serviceDeclarationFields) activation_owner;
   };
   request = fields:
     types.record {

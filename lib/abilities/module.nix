@@ -1397,6 +1397,11 @@
       type = lifetimeType;
       description = "Retention lifetime declared by the owning interface.";
     };
+    activationOwner = mkOption {
+      type = abilityTypes.enum ["ability" "image"];
+      default = "ability";
+      description = "Owner responsible for establishing this resource at stage entry.";
+    };
     value = mkOption {
       type = canonicalValueType;
       description = "Provider-neutral desired value checked against the resource interface type.";
@@ -1422,6 +1427,10 @@
     lifetime = mkOption {
       type = lifetimeType;
     };
+    activationOwner = mkOption {
+      type = abilityTypes.enum ["ability" "image"];
+      default = "ability";
+    };
     value = mkOption {
       type = canonicalValueType;
     };
@@ -1432,7 +1441,7 @@
 
   resolveResource = _: authored: {
     inherit (authored) resource;
-    inherit (authored) kind controller lifetime value realization;
+    inherit (authored) kind controller lifetime activationOwner value realization;
   };
 
   resourceIdentityKey = resource:

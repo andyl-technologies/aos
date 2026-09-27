@@ -551,6 +551,16 @@ impl<'a> SourceComposition<'a> {
         environment: aos_ability_model::EnvironmentId,
         platform: PlatformIdentity,
     ) -> Result<EnvironmentDocument> {
+        ensure!(
+            self.fixed_point
+                .resolved_resources
+                .values()
+                .all(|resource| {
+                    resource.activation_owner
+                        == aos_ability_plan::source_stage::SourceActivationOwner::Ability
+                }),
+            "image-owned resources require fresh native resource observation before source-stage admission"
+        );
         let mut artifacts_by_content = BTreeMap::new();
         for artifact in self.catalog.package_outputs.values() {
             if let Some(existing) = artifacts_by_content.insert(artifact.content, artifact.clone())
