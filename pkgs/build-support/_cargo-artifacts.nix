@@ -9,7 +9,7 @@
   mkDerivation,
 }: let
   generatedDirectory = name:
-    builtins.elem name [".git" ".direnv" ".worktrees" "target"]
+    builtins.elem name [".git" ".direnv" ".worktrees" ".crucible" "target"]
     || lib.hasPrefix "result-" name
     || lib.hasPrefix "target-" name;
 

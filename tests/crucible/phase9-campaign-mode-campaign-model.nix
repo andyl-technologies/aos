@@ -22,6 +22,7 @@
     in
       base
       != ".git"
+      && base != ".crucible"
       && base != "target"
       && (
         pathString

@@ -21,6 +21,7 @@
     in
       base
       != ".git"
+      && base != ".crucible"
       && base != "target"
       && base != "__pycache__"
       && !lib.hasSuffix ".pyc" base
