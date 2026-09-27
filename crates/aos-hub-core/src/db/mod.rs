@@ -9867,8 +9867,10 @@ impl Database {
                  WHERE existing.binding_id = b.id
                    AND (existing.prefix = '' OR ?5 = ''
                      OR existing.prefix = ?5
-                     OR substr(existing.prefix, 1, length(?5) + 1) = ?5 || '/'
-                     OR substr(?5, 1, length(existing.prefix) + 1) = existing.prefix || '/'))",
+                     OR (substr(existing.prefix, 1, length(?5)) = ?5
+                       AND substr(existing.prefix, length(?5) + 1, 1) = '/')
+                     OR (substr(?5, 1, length(existing.prefix)) = existing.prefix
+                       AND substr(?5, length(existing.prefix) + 1, 1) = '/')))",
                 &vals![
                     registry_id,
                     cache_id,
@@ -9911,8 +9913,10 @@ impl Database {
                          WHERE existing.binding_id = ?1
                            AND (existing.prefix = '' OR ?2 = ''
                              OR existing.prefix = ?2
-                             OR substr(existing.prefix, 1, length(?2) + 1) = ?2 || '/'
-                             OR substr(?2, 1, length(existing.prefix) + 1) = existing.prefix || '/')
+                             OR (substr(existing.prefix, 1, length(?2)) = ?2
+                               AND substr(existing.prefix, length(?2) + 1, 1) = '/')
+                             OR (substr(?2, 1, length(existing.prefix)) = existing.prefix
+                               AND substr(?2, length(existing.prefix) + 1, 1) = '/'))
                          LIMIT 1",
                         &vals![input.binding_id, prefix],
                     )
@@ -9936,8 +9940,10 @@ impl Database {
                      WHERE existing.binding_id = ?1
                        AND (existing.prefix = '' OR ?2 = ''
                          OR existing.prefix = ?2
-                         OR substr(existing.prefix, 1, length(?2) + 1) = ?2 || '/'
-                         OR substr(?2, 1, length(existing.prefix) + 1) = existing.prefix || '/')
+                         OR (substr(existing.prefix, 1, length(?2)) = ?2
+                           AND substr(existing.prefix, length(?2) + 1, 1) = '/')
+                         OR (substr(?2, 1, length(existing.prefix)) = existing.prefix
+                           AND substr(?2, length(existing.prefix) + 1, 1) = '/'))
                      LIMIT 1",
                     &vals![input.binding_id, prefix],
                 )

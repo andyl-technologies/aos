@@ -173,6 +173,16 @@ impl Dialect {
             // sqlite and postgres share ON CONFLICT, so no upsert rewrite.
             _ => sql.to_string(),
         };
+        let sql = if self == Dialect::Mysql {
+            // MySQL and MariaDB use these CAST target names. Rewrite them
+            // before generic DDL types turn TEXT and BLOB into column types.
+            let sql = replace_word(&sql, "AS BIGINT", "AS SIGNED");
+            let sql = replace_word(&sql, "AS VARCHAR", "AS CHAR");
+            let sql = replace_word(&sql, "AS TEXT", "AS CHAR");
+            replace_word(&sql, "AS BLOB", "AS BINARY")
+        } else {
+            sql
+        };
         let sql = self.rewrite_ddl_types(&sql);
         let sql = self.quote_reserved(&sql);
         Ok(self.rewrite_placeholders(&sql))
