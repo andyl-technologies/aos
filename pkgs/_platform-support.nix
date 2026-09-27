@@ -744,8 +744,8 @@ let
       note = "Use Linux-native rustc/cargo for bootstrap and emit Darwin-hosted rustc/cargo plus both Darwin stdlibs.";
     };
     workerd = {
-      blockers = ["remove-linux-binary-seed" "darwin-bazel" "target-runtime-tests"];
-      note = "Replace the x86_64 Linux npm binary seed with the from-source workerd build.";
+      blockers = ["darwin-bazel" "darwin-runtime-dependencies" "target-runtime-tests"];
+      note = "Port the source-built workerd and Pyodide toolchains to Darwin before runtime tests.";
     };
   };
 
