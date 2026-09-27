@@ -447,7 +447,22 @@ fn world_fork_native_matrix_completes_the_canonical_gate() -> Result<(), Box<dyn
     else {
         return Err("world-fork-atomicity must run exact daemon library tests".into());
     };
-    assert_eq!(selectors.len(), 5);
+    assert_eq!(selectors.len(), 9);
+    let registered = selectors
+        .iter()
+        .map(|selector| selector.name)
+        .collect::<BTreeSet<_>>();
+    for required in [
+        "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness",
+        "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_missing_child_file_with_live_qemu_source",
+        "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_aliased_child_files_with_live_qemu_source",
+        "qemu_hot_fork_world_factory::tests::native_acceptance::final_audit::production_hot_fork_resource_roots_are_clean_after_packaged_flights",
+    ] {
+        assert!(
+            registered.contains(required),
+            "missing native audit {required}"
+        );
+    }
     assert_eq!(
         nix_source,
         "tests/crucible/phase7-qemu-hot-fork-atomic-world-vm.nix"
