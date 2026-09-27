@@ -189,7 +189,6 @@ let
     "icu"
     "inetutils"
     "ipmitool"
-    "iperf3"
     "jemalloc"
     "jq"
     "krb5"
@@ -568,6 +567,8 @@ let
     "getent"
     "glibc"
     "hdparm"
+    # The complete iperf3 build retains SCTP through Linux lksctp-tools.
+    "iperf3"
     "iproute2"
     "ipset"
     "iptables"
