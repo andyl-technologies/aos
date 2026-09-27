@@ -1211,6 +1211,15 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(super) fn require_negotiated_client_method(
+        &mut self,
+        method: aos_proto::aos::sandbox::local::v1::BrokerMethod,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        require_negotiated_method(&self.transcript, method)?;
+        self.owner
+            .revalidate_transport(&self.transcript, self.socket.peer())
+    }
+
     /// Reauthenticates the original signed H/T pair under live Host-session custody.
     pub(super) fn historical_host_terminal_no_apply_archive(
         &mut self,
@@ -2083,6 +2092,16 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.owner
             .prepare_effect_handoff(currentness, self.socket.peer())
     }
+}
+
+fn require_negotiated_method(
+    transcript: &VerifiedBrokerSessionTranscriptV1,
+    method: aos_proto::aos::sandbox::local::v1::BrokerMethod,
+) -> Result<(), BrokerSessionSecurityError> {
+    if !transcript.negotiated_methods().contains(&method) {
+        return Err(BrokerSessionSecurityError::UnnegotiatedMethod);
+    }
+    Ok(())
 }
 
 pub(super) fn protected_boottime_nanoseconds() -> Result<u64, BrokerSessionSecurityError> {

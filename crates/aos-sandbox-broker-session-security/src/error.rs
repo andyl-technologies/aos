@@ -13,6 +13,9 @@ pub enum BrokerSessionSecurityError {
         /// Stable field class, never content from the manifest.
         field: &'static str,
     },
+    /// The signed hello transcript did not negotiate the requested method.
+    #[error("broker method is not negotiated")]
+    UnnegotiatedMethod,
     /// A protected endpoint path is not an absolute fixed path.
     #[error("invalid protected endpoint directory path")]
     DirectoryPath,

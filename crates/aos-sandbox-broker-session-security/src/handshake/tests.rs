@@ -155,6 +155,32 @@ fn local_peer_expectation() -> RemotePeerExpectation {
 }
 
 #[test]
+fn signed_transcript_rejects_unnegotiated_output_methods() {
+    let fixture = Fixture::new();
+    let (client_carrier, broker_carrier) = carrier_pair(false);
+    let (client, _) = finish_handshake(&fixture, client_carrier, broker_carrier);
+
+    assert!(
+        require_negotiated_method(
+            &client._transcript,
+            BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES,
+        )
+        .is_ok()
+    );
+    for method in [
+        BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT,
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT,
+        BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT,
+        BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT,
+    ] {
+        assert_eq!(
+            require_negotiated_method(&client._transcript, method),
+            Err(BrokerSessionSecurityError::UnnegotiatedMethod)
+        );
+    }
+}
+
+#[test]
 fn mandatory_sequence_one_error_proves_both_traffic_keys() {
     for descriptor in [false, true] {
         let fixture = Fixture::new();
