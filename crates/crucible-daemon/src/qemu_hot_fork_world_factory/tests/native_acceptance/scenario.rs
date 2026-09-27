@@ -354,7 +354,7 @@ fn equivalence_selectables(world: &World) -> Result<ScenarioSelectables, Box<dyn
         retry_domain,
         ChoiceValue::Integer(IntegerValue::Unsigned(3)),
         ChoiceClassContext::new(BTreeSet::new())?,
-        BTreeSet::from([String::from("hot-fork-equivalence")]),
+        BTreeSet::new(),
         true,
     )?;
     Ok(ScenarioSelectables::new(
