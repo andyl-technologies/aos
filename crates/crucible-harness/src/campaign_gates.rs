@@ -234,6 +234,22 @@ const WORLD_FORK_ATOMICITY_SELECTORS: &[ExactSelector] = &[
         source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/failures.rs",
         name: "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_across_repository_publication_retry",
     },
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/isolation_negative.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness",
+    },
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/isolation_native_negative.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_missing_child_file_with_live_qemu_source",
+    },
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/isolation_native_negative.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_aliased_child_files_with_live_qemu_source",
+    },
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/final_audit.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::final_audit::production_hot_fork_resource_roots_are_clean_after_packaged_flights",
+    },
 ];
 
 const HOT_FORK_ISOLATION_SELECTORS: &[ExactSelector] = &[
