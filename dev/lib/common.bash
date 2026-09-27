@@ -16,9 +16,9 @@ Commands:
   release <arguments>       Run the existing release CLI without shared caches
   cache usage               Show disk use by backend
   cache prune [--before TIME|--days N] [--max-gib N] [--dry-run] [--compact]
-  cache clear [go|bazel|rust|all]
+  cache clear [go|bazel|rust|accache|all]
   cache <init|doctor|verify-mount|status>
-  cache <go|bazel|rust> <status|entries|builds|prune|compact|clear|help>
+  cache <go|bazel|rust|accache> <status|entries|builds|prune|compact|clear|help>
   cache rust intermediates [--limit N]
   completion bash           Print Bash completion setup
   help
@@ -34,10 +34,12 @@ Development builds enable all four options by default:
   --[no-]bazel-cache        Share Bazel disk action artifacts
   --[no-]rust-target-cache  Persist Cargo's target directory
   --[no-]rust-incremental   Enable rustc incremental compilation
+  --[no-]accache            Share compiler action artifacts (default on)
   --cache-dir PATH          Host cache root (or set AOS_DEV_CACHE_DIR)
   --release, --no-cache     Disable all shared caches and use ordinary builds
-The default host cache root is /var/tmp/aos-dev-cache-UID. The exact paths
-inside Nix sandboxes default to /aos-build-cache/{go,bazel,rust}; set
+The default host cache root is \${XDG_CACHE_HOME:-\$HOME/.cache}/aos-dev.
+Private/nontraversable parents fall back to /var/tmp/aos-dev-cache-UID.
+The paths inside Nix sandboxes default to /aos-build-cache/{go,bazel,rust}; set
 AOS_DEV_GO_CACHE_DIR, AOS_DEV_BAZEL_CACHE_DIR, or AOS_DEV_RUST_TARGET_DIR
 to choose each path. aos-dev maps them to the corresponding host directory.
 These variables name sandbox paths, not host paths. Initialize the host root
@@ -50,9 +52,17 @@ sandbox-paths mounts. 'cache doctor' checks local setup without building;
 source-built bootstrap Bash and coreutils, so ordinary compiler and dev-shell
 changes do not make the probe rebuild the current toolchain.
 
-Only mkGoPackage, mkBazelPackage, and mkCargoPackage use these cache settings.
-Generic C/C++ builds and language toolchains keep ordinary identities. Cargo
-target trees are keyed by build contract and shared across source revisions;
+Accache defaults on for supported nonincremental mkCargoPackage actions.
+Incremental actions pass through unchanged; use --no-rust-incremental to cache
+application Rust actions as well as dependencies. AOS_DEV_ACCACHE_DIR and
+AOS_DEV_ACCACHE_STATE_DIR select separate sandbox data and metadata paths.
+Stats, explanations, provenance, C/C++ opt-in, and coverage are documented in
+tools/accache/README.md. No daemon starts. Release mode disables this too.
+
+Go, Bazel, and Cargo builders use these cache settings. Opted-in CMake application
+recipes also use accache; generic C/C++ builds and language toolchains keep
+ordinary identities. Cargo target trees are keyed by build contract and shared
+across source revisions;
 rustc incremental compilation is a separate option. Go and Bazel cache keys
 are opaque. 'cache <backend> entries' lists stored records; 'builds' lists
 direct aos-dev outputs and their Nix derivers from a local journal. It cannot
@@ -86,13 +96,17 @@ aos_dev_nix_build() {
     # Only directory caches need a sandbox mount. The Rust incremental flag
     # also works with Cargo's ordinary per-build target directory.
     if [[ $aos_dev_go_cache == true || $aos_dev_bazel_cache == true || \
-          $aos_dev_rust_target_cache == true ]]; then
+          $aos_dev_rust_target_cache == true || ${aos_dev_accache:-false} == true ]]; then
       if [[ ${aos_dev_cache_ready:-0} != 1 ]]; then
         aos_dev_cache_check_nix
         aos_dev_cache_prepare
         aos_dev_cache_ready=1
       fi
       command+=("${aos_dev_cache_nix_options[@]}")
+    fi
+    if [[ ${aos_dev_accache:-false} == true ]]; then
+      command+=(--argstr sharedAccacheDir "$aos_dev_accache_path")
+      command+=(--argstr sharedAccacheStateDir "$aos_dev_accache_state_path")
     fi
     [[ $aos_dev_go_cache == true ]] && \
       command+=(--argstr sharedGoCacheDir "$aos_dev_go_cache_path")
