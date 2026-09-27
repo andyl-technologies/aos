@@ -1,6 +1,7 @@
 ##! perl-ipc-run — Subprocess and pipeline management for Perl
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
   perl-io-tty,
@@ -8,7 +9,7 @@
 }: let
   version = "20231003.0";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-ipc-run";
     inherit version;
     src = fetchurl {
