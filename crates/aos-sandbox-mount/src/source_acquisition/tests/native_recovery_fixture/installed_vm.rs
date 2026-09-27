@@ -42,21 +42,6 @@ const MOUNT_JOURNAL: &str = "mount.journal";
 const PROVIDER_SOCKET: &str = "/run/aos/source-provider/control.sock";
 const PROVIDER_ROOT: &str = "/var/lib/aos/source-provider";
 
-fn fixed_mount_limits() -> JournalLimits {
-    // Match the closed policy in mount_manager_startup::owner; borrow_fixed
-    // rejects even a structurally valid journal opened with different limits.
-    JournalLimits {
-        maximum_journal_bytes: 4 * 1024 * 1024 * 1024,
-        maximum_record_bytes: 16 * 1024 * 1024,
-        maximum_key_bytes: 1024,
-        maximum_records_per_transaction: 4_096,
-        maximum_transaction_bytes: 64 * 1024 * 1024,
-        maximum_transactions: 1_000_000,
-        maximum_materialized_bytes: 512 * 1024 * 1024,
-        maximum_materialized_records: 1_000_000,
-    }
-}
-
 fn install_startup_policy() {
     fs::create_dir_all(MOUNT_ROOT).expect("fixed Mount root");
     fs::set_permissions(MOUNT_ROOT, fs::Permissions::from_mode(0o700))
@@ -269,9 +254,12 @@ fn fixed_owner_native_recovery_vm_cut() {
     let mut root = handshake();
     wait_for(initial_ready);
 
-    let (mut journal, _) =
-        Journal::open_protected_at(Path::new(MOUNT_ROOT), MOUNT_JOURNAL, fixed_mount_limits())
-            .expect("fixed Mount journal");
+    let (mut journal, _) = Journal::open_protected_at(
+        Path::new(MOUNT_ROOT),
+        MOUNT_JOURNAL,
+        JournalLimits::default(),
+    )
+    .expect("fixed Mount journal");
     let mut source =
         FixedMountSourceAcquisitionOwnerV2::borrow_existing_fixed_journal(&mut journal)
             .expect("empty fixed Mount source owner");
@@ -346,7 +334,7 @@ fn fixed_owner_native_recovery_vm_cut() {
     let (mut journal, _) = Journal::open_existing_protected_at(
         Path::new(MOUNT_ROOT),
         MOUNT_JOURNAL,
-        fixed_mount_limits(),
+        JournalLimits::default(),
     )
     .expect("reopen pre-cut fixed Mount journal");
     let mut source =
@@ -390,7 +378,7 @@ fn fixed_owner_native_recovery_vm_cut() {
     let (mut journal, _) = Journal::open_existing_protected_at(
         Path::new(MOUNT_ROOT),
         MOUNT_JOURNAL,
-        fixed_mount_limits(),
+        JournalLimits::default(),
     )
     .expect("cold reopen before Mount terminal CAS");
     let mut source =
@@ -420,7 +408,7 @@ fn fixed_owner_native_recovery_vm_cut() {
     let (mut journal, _) = Journal::open_existing_protected_at(
         Path::new(MOUNT_ROOT),
         MOUNT_JOURNAL,
-        fixed_mount_limits(),
+        JournalLimits::default(),
     )
     .expect("cold reopen after Mount terminal CAS");
     let graph = validate_protected_graph(&journal);
