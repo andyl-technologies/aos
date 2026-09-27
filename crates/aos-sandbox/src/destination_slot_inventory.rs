@@ -390,6 +390,7 @@ impl crate::mount_inventory_snapshot::InventorySnapshotKind for DestinationSlotI
 type SnapshotRecord = crate::mount_inventory_snapshot::SnapshotRecord<DestinationSlotInventoryKind>;
 type SnapshotHistory =
     crate::mount_inventory_snapshot::SnapshotHistory<DestinationSlotInventoryKind>;
+#[cfg(test)]
 use crate::mount_inventory_snapshot::SnapshotDecision;
 
 fn same_sequence_equivocates(

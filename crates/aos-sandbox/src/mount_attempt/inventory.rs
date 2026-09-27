@@ -254,6 +254,7 @@ impl crate::mount_inventory_snapshot::InventorySnapshotKind for MountResourceInv
 
 type SnapshotRecord = crate::mount_inventory_snapshot::SnapshotRecord<MountResourceInventoryKind>;
 type SnapshotHistory = crate::mount_inventory_snapshot::SnapshotHistory<MountResourceInventoryKind>;
+#[cfg(test)]
 use crate::mount_inventory_snapshot::SnapshotDecision;
 
 pub(crate) fn record_snapshot(
