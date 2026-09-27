@@ -162,6 +162,13 @@ impl NativeAcquireCompletionRecordV2 {
         attempt: &AttemptRecordV1,
         acquisition: &AcquisitionRecordV1,
     ) -> Result<(), LedgerFormatErrorV1> {
+        validate_native_provider_phase(
+            self.state,
+            acquisition.state,
+            acquisition.lease_id.is_some(),
+            acquisition.proof_class,
+        )?;
+
         if self.provider_id != acquisition.provider.authority_id()
             || self.holder_id != acquisition.holder.authority_id()
             || attempt.provider != acquisition.provider
@@ -183,15 +190,14 @@ impl NativeAcquireCompletionRecordV2 {
             || self.root_request_id != attempt.request_id
             || self.typed_request_digest != attempt.typed_request_digest
             || self.binding_digest != acquisition.normalized_intent.binding_digest()
-            || acquisition.proof_class != 1
-            || (self.state == NativeAcquireCompletionStateV2::Active
-                && acquisition.state != ProviderAcquisitionStateV1::Active)
-            || (acquisition.state == ProviderAcquisitionStateV1::Active
-                && !matches!(
-                    self.state,
-                    NativeAcquireCompletionStateV2::Active
-                        | NativeAcquireCompletionStateV2::CleanupRequired
-                ))
+            || !acquisition.normalized_intent.kernel_coupled()
+            || acquisition
+                .lease_attempt_digest
+                .is_some_and(|attempt| attempt != self.attempt_digest)
+            || acquisition
+                .lease_history
+                .iter()
+                .any(|lease| lease.attempt_digest != self.attempt_digest)
             || (acquisition.state == ProviderAcquisitionStateV1::Active
                 && (acquisition.source_root != Some(self.original_root)
                     || acquisition.lease_attempt_digest != Some(self.attempt_digest)))
@@ -248,6 +254,33 @@ impl NativeAcquireCompletionRecordV2 {
 
         Ok(())
     }
+}
+
+// A selected reservation deliberately has no proof until the exact lease and
+// native Active marker share one Provider commit. Acceptance alone is not proof.
+fn validate_native_provider_phase(
+    native: NativeAcquireCompletionStateV2,
+    acquisition: ProviderAcquisitionStateV1,
+    lease_present: bool,
+    proof_class: u8,
+) -> Result<(), LedgerFormatErrorV1> {
+    let active = acquisition == ProviderAcquisitionStateV1::Active;
+    let expected_proof_class = if lease_present { 1 } else { 0 };
+    if proof_class != expected_proof_class
+        || (native == NativeAcquireCompletionStateV2::Active && !active)
+        || (active
+            && !matches!(
+                native,
+                NativeAcquireCompletionStateV2::Active
+                    | NativeAcquireCompletionStateV2::CleanupRequired
+            ))
+    {
+        return Err(LedgerFormatErrorV1::Corrupt(
+            "native Provider phase/proof class",
+        ));
+    }
+
+    Ok(())
 }
 
 /// Classifies exact cross-journal recovery without granting completion authority.
@@ -643,5 +676,34 @@ mod tests {
         }
 
         assert!(spent.validate_successor(&original).is_err());
+    }
+
+    #[test]
+    fn native_provider_phase_join_requires_unproved_reservation_and_atomic_active() {
+        use NativeAcquireCompletionStateV2 as Native;
+        use ProviderAcquisitionStateV1 as Acquisition;
+
+        // These are strict graph-join projections, not signed lease artifacts
+        // or a fixed-owner positive completion qualification.
+        for native in [Native::Prepared, Native::Spent, Native::CleanupRequired] {
+            assert!(
+                validate_native_provider_phase(native, Acquisition::Applying, false, 0).is_ok()
+            );
+            assert!(
+                validate_native_provider_phase(native, Acquisition::Applying, false, 1).is_err()
+            );
+        }
+        assert!(
+            validate_native_provider_phase(Native::Active, Acquisition::Applying, false, 0)
+                .is_err()
+        );
+        for native in [Native::Prepared, Native::Spent] {
+            assert!(validate_native_provider_phase(native, Acquisition::Active, true, 1).is_err());
+        }
+        for native in [Native::Active, Native::CleanupRequired] {
+            assert!(validate_native_provider_phase(native, Acquisition::Active, true, 1).is_ok());
+            assert!(validate_native_provider_phase(native, Acquisition::Active, true, 0).is_err());
+            assert!(validate_native_provider_phase(native, Acquisition::Active, true, 2).is_err());
+        }
     }
 }

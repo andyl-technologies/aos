@@ -246,6 +246,9 @@ mod tests {
                 panic!("wrong native family");
             };
             current.validate_successor(record).unwrap();
+            if current == *record {
+                return;
+            }
         }
         let mut id = [0; 16];
         id.copy_from_slice(&crate::format::record_digest(&bytes).unwrap().as_bytes()[..16]);
