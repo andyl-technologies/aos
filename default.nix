@@ -2049,6 +2049,7 @@ in {
         inherit pkgs lib;
         mkSystem = mkFixtureSystem;
       };
+      initrd-source-stage = serverSystem.config.system.build.initrdSourceStageBundle;
       host-source-stage = serverSystem.config.system.build.hostSourceStageBundle;
       base-lib-roots = import ./tests/build/base-lib-roots.nix {
         inherit pkgs;
@@ -2071,7 +2072,7 @@ in {
     in
       {
         inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-dev-cache-identity accache;
-        inherit artifact-consumption base-lib-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe host-source-stage initrd-stage-contract kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
+        inherit artifact-consumption base-lib-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe host-source-stage initrd-source-stage initrd-stage-contract kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
         # These checks inspect realized closures, so keep them out of the pure evaluation layer.
         inherit config-eval config-materialize darling-harness;
         config-manifest = config-manifest;
