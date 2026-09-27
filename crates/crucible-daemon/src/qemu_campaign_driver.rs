@@ -77,13 +77,14 @@ use network_fault_boundary::{
 };
 use observation_candidate::{
     build_observation_candidate, build_observation_candidate_with_supplemental,
+    campaign_measurements, property_verdicts,
 };
 use resume_progress::report_first_restored_guest_marker;
 use selection_projection::{
     has_unselected_discovery, is_next_choice_stop, produced_selections_after_start,
     validate_live_network_preselection,
 };
-use stop_boundary::{policy_timeout_at, reached_requested_stop};
+use stop_boundary::{policy_timeout_at, reached_requested_stop, requested_attempt_stop_frontier};
 
 /// Maximum scheduler entries retained by one in-memory fresh-attempt projection.
 pub const MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES: usize = 1_000_000;
@@ -1958,35 +1959,6 @@ fn drive_modeled_attempt_inner(
     }
 }
 
-fn requested_attempt_stop_frontier(requested: &StopCondition) -> Option<VirtualTime> {
-    match requested {
-        StopCondition::Bounded {
-            primary,
-            virtual_time_picoseconds,
-            ..
-        } => requested_attempt_stop_frontier(primary)
-            .map(|frontier| frontier.ticks)
-            .into_iter()
-            .chain(*virtual_time_picoseconds)
-            .min()
-            .map(|ticks| VirtualTime { ticks }),
-        StopCondition::VirtualTimePicoseconds(deadline) => Some(VirtualTime { ticks: *deadline }),
-        StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_picoseconds,
-            ..
-        } => Some(VirtualTime {
-            ticks: *virtual_time_picoseconds,
-        }),
-        StopCondition::NextChoice
-        | StopCondition::NextChoiceOrExecutionQuanta { .. }
-        | StopCondition::NamedBoundary(_)
-        | StopCondition::EventCount(_)
-        | StopCondition::Terminal
-        | StopCondition::ExecutionQuanta(_)
-        | StopCondition::Observation(_) => None,
-    }
-}
-
 fn modeled_stop_outcome(
     lifecycle: &mut (impl QemuModeledAttemptLifecycle + ?Sized),
     context: &AttemptExecutionContext,
@@ -2848,101 +2820,6 @@ pub(crate) fn build_finding_candidate_boundary_evidence(
         policy_timeout,
         paired_reproduced_coverage: None,
     })
-}
-
-fn campaign_measurements(
-    pending: &QemuFreshPendingObservation,
-    configuration: crucible_campaign::ConfigurationId,
-) -> Result<crate::CrucibleMeasurementPublication, QemuFreshModeledDriverError> {
-    let definitions = pending.input.scenario().measurements();
-    let mut node_icounts = BTreeMap::new();
-    for entry in &pending.event_log {
-        if let (Some(node), Some(retired)) = (&entry.time().stamp.node, entry.time().stamp.retired) {
-            node_icounts
-                .entry(node.clone())
-                .and_modify(|value: &mut crucible::Icount| {
-                    *value = (*value).max(retired);
-                })
-                .or_insert(retired);
-        }
-    }
-    let terminal = MeasurementTerminalState {
-        scenario_ready_at: pending
-            .event_log
-            .iter()
-            .find(|entry| entry.event_payload().kind() == "scenario_ready")
-            .map(SchedulerEventLogEntry::at),
-        at: pending
-            .event_log
-            .last()
-            .map_or(pending.terminal_at, |entry| {
-                pending.terminal_at.max(entry.at())
-            }),
-        node_icounts,
-        scheduler_quiescent: pending
-            .terminal_quiescence
-            .as_ref()
-            .is_some_and(SchedulerQuiescence::is_quiescent),
-    };
-    let publication = match &pending.stop {
-        ModeledStop::ObservationReached { evidence, .. } => {
-            evaluate_crucible_observation_measurement_publication(
-                pending.input.lineage().scenario(),
-                configuration,
-                definitions,
-                pending.event_log.clone(),
-                terminal,
-                *evidence,
-                MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
-            )
-        }
-        _ => evaluate_crucible_measurement_publication(
-            pending.input.lineage().scenario(),
-            configuration,
-            definitions,
-            pending.event_log.clone(),
-            terminal,
-            MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
-        ),
-    };
-    publication.map_err(QemuFreshModeledDriverError::Measurements)
-}
-
-fn property_verdicts(
-    report: &crucible::HostAssertionReport,
-    supplemental: Option<&(GuardedCampaignFindingOracleEvaluation, ContentId)>,
-) -> Result<PropertyVerdictSet, QemuFreshModeledDriverError> {
-    let mut properties = BTreeMap::new();
-    for outcome in report.outcomes() {
-        let verdict = match outcome.kind {
-            HostAssertionOutcomeKind::Passed | HostAssertionOutcomeKind::Satisfied => {
-                PropertyVerdict::Passed
-            }
-            HostAssertionOutcomeKind::Violated | HostAssertionOutcomeKind::NeverReachedFail => {
-                PropertyVerdict::Failed
-            }
-            HostAssertionOutcomeKind::Warning
-            | HostAssertionOutcomeKind::NeverEvaluated
-            | HostAssertionOutcomeKind::NeverTriggered
-            | HostAssertionOutcomeKind::NeverReachedWarn => PropertyVerdict::Inconclusive,
-        };
-        let evidence = PropertyEvidence::new(verdict, BTreeSet::new())?;
-        if properties
-            .insert(outcome.assertion.name.clone(), evidence)
-            .is_some()
-        {
-            return Err(QemuFreshModeledDriverError::LimitExceeded {
-                limit: "fresh-campaign-duplicate-property-outcome",
-            });
-        }
-    }
-    if let Some((evaluation, source)) = supplemental {
-        properties.insert(
-            evaluation.property().to_owned(),
-            PropertyEvidence::new(PropertyVerdict::Failed, BTreeSet::from([*source]))?,
-        );
-    }
-    PropertyVerdictSet::new(properties).map_err(Into::into)
 }
 
 fn stop_outcome(
