@@ -460,10 +460,30 @@
     inherit rootfsDeps;
     testScript = blockRecoveryTestScript;
   };
+  partitionDiagnostic = testing.mkVMTest {
+    name = "crucible-phase4-qemu-clock-partition-diagnostic";
+    memory = 8192;
+    timeout = 1200;
+    inherit rootfsDeps;
+    testScript = ''
+      set -eu
+      ${attemptHostSetupScript}
+
+      export CRUCIBLE_PHASE4_PARTITION_PROBE=1
+      result=/tmp/phase4-clock-partition-result
+      runtime_trace=/tmp/phase4-clock-partition-reference.summary
+      ${productionFlightCommand} "$runtime_trace" > "$result"
+      cat "$result"
+      test -s "$runtime_trace"
+      ${pkgs.grep}/bin/grep -Fxq 'PASS' "$result"
+      ${pkgs.grep}/bin/grep -Fxq 'diagnostic_mode=phase4-partition-probe' "$result"
+      ${pkgs.grep}/bin/grep -Fq 'phase4_partition_exact_match=true' "$result"
+    '';
+  };
   exposedGate =
     gate
     // {
-      inherit blockRecoveryDiagnostic;
+      inherit blockRecoveryDiagnostic partitionDiagnostic;
       passthru =
         (gate.passthru or {})
         // {
@@ -476,6 +496,7 @@
             testScript
             blockRecoveryDiagnostic
             blockRecoveryTestScript
+            partitionDiagnostic
             ;
         };
     };
