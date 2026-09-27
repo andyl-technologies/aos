@@ -1012,9 +1012,11 @@ in
               ) > full-upstream-test-suite.inventory
               test -s full-upstream-test-suite.inventory
               test "$(wc -l < full-upstream-test-suite.inventory)" -eq 1552
+              # Thorough migration includes COLO cases whose cumulative run
+              # time can exceed Meson's 480-second per-test limit in this VM.
               if (
                 cd build
-                ./pyvenv/bin/meson test --no-rebuild -t 1 \
+                ./pyvenv/bin/meson test --no-rebuild -t 2 \
                   --setup thorough --num-processes "$NIX_BUILD_CORES" \
                   --verbose --logbase check-report-thorough
               ) > full-upstream-test-suite.log 2>&1; then
@@ -1327,7 +1329,9 @@ in
               test -f "$kernel_image"
               serial_log="$TMPDIR/qemu-full-test-vm.serial.log"
               qemu_log="$TMPDIR/qemu-full-test-vm.qemu.log"
-              if ${qemuTestRunner}/bin/qemu-system-x86_64 \
+              # Bound the whole guest if a test or shutdown stalls.
+              if ${coreutils}/bin/timeout -k 30 3600 \
+                ${qemuTestRunner}/bin/qemu-system-x86_64 \
                 -machine q35,accel=kvm \
                 -cpu host \
                 -m 16384 \
@@ -1403,6 +1407,9 @@ in
             if applyCruciblePatch && !fullUpstreamTestSuiteOnly
             then ''
               build/tests/unit/test-rcu-list --tap -p /rcu/hot-fork/barrier
+              # A nested poll must retain the active BH until callback accounting ends.
+              build/tests/unit/test-aio --tap -p /aio/bh/callback-delete/nested
+              build/tests/unit/test-aio --tap -p /aio/bh/callback-delete/nested-oneshot
               build/tests/unit/test-aio --tap \
                 -p /aio/hot-fork/async-worker-barrier \
                 > aio-hot-fork-tests.tap

@@ -1,4 +1,4 @@
-From 5bf808077f31e34e9622a3460d32926ca3586d0a Mon Sep 17 00:00:00 2001
+From 87c47bfbb53934f8fcd691194276780856331c8a Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -19,6 +19,11 @@ Project an authenticated 4 GHz x86 TSC and retain calendar clock epochs.
 Reject malformed clock state and active PPC PMU migration before guest
 continuation. Preserve inactive and instruction-only PMU migration,
 ordinary-QEMU compatibility, and the GPL/Apache process boundary.
+
+Keep a bottom half alive while a nested poll drains its owner, retain the
+hot-fork inventory row through callback accounting, preserve the ARM timer
+horizon in picosecond mode, and avoid fw_cfg device lookup when no deferred
+service is pending. Wait for NBD export deletion in the upstream iotest.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -33292,18 +33297,19 @@ index 814b99a43d20408d5541aa7f19e1f9d2da3ad578..8eb3b4c4d82a40735060560d418ffa14
          VMSTATE_VIRTIO_DEVICE,
          VMSTATE_END_OF_LIST()
 diff --git a/hw/nvram/fw_cfg.c b/hw/nvram/fw_cfg.c
-index b057d870c004110fdfbe4b34da55719acbf69c7a..61876a5ed800b02acb58c50c31ff011942ee149a 100644
+index b057d870c004110fdfbe4b34da55719acbf69c7a..5cd7745c4d5f3ff16f54cbe3ab1b7e2da6444b54 100644
 --- a/hw/nvram/fw_cfg.c
 +++ b/hw/nvram/fw_cfg.c
-@@ -39,6 +39,7 @@
+@@ -39,6 +39,8 @@
  #include "qemu/option.h"
  #include "qemu/config-file.h"
  #include "qemu/cutils.h"
++#include "qemu/atomic.h"
 +#include "qemu/timer.h"
  #include "qapi/error.h"
  #include "hw/acpi/aml-build.h"
  #include "hw/core/loader.h"
-@@ -57,6 +58,7 @@
+@@ -57,6 +59,7 @@
  #define FW_CFG_DMA_CTL_WRITE   0x10
  
  #define FW_CFG_DMA_SIGNATURE 0x51454d5520434647ULL /* "QEMU CFG" */
@@ -33311,7 +33317,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..61876a5ed800b02acb58c50c31ff0119
  
  struct FWCfgEntry {
      uint32_t len;
-@@ -331,6 +333,167 @@ static void fw_cfg_data_mem_write(void *opaque, hwaddr addr,
+@@ -331,6 +334,173 @@ static void fw_cfg_data_mem_write(void *opaque, hwaddr addr,
      } while (i);
  }
  
@@ -33367,6 +33373,10 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..61876a5ed800b02acb58c50c31ff0119
 +               s, address, length, device_writes_ram);
 +}
 +
++/* A positive hint still resolves the device, so teardown cannot leave a
++ * stale deadline. A negative hint avoids the QOM scan during boot. */
++static bool fw_cfg_crucible_service_may_be_pending;
++
 +static void fw_cfg_crucible_ticket_clear(FWCfgState *s)
 +{
 +    s->crucible_service_pending = false;
@@ -33378,6 +33388,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..61876a5ed800b02acb58c50c31ff0119
 +           sizeof(s->crucible_service_ticket));
 +    memset(s->crucible_service_payload, 0,
 +           sizeof(s->crucible_service_payload));
++    qatomic_set(&fw_cfg_crucible_service_may_be_pending, false);
 +}
 +
 +static void fw_cfg_crucible_service_complete(FWCfgState *s)
@@ -33468,7 +33479,8 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..61876a5ed800b02acb58c50c31ff0119
 +{
 +    FWCfgState *s;
 +
-+    if (phase != CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY) {
++    if (phase != CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY ||
++        !qatomic_read(&fw_cfg_crucible_service_may_be_pending)) {
 +        return UINT64_MAX;
 +    }
 +    s = fw_cfg_find();
@@ -33479,7 +33491,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..61876a5ed800b02acb58c50c31ff0119
  static void fw_cfg_dma_transfer(FWCfgState *s)
  {
      dma_addr_t len;
-@@ -355,14 +518,6 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
+@@ -355,14 +525,6 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
      dma.length = be32_to_cpu(dma.length);
      dma.control = be32_to_cpu(dma.control);
  
@@ -33494,7 +33506,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..61876a5ed800b02acb58c50c31ff0119
      if (dma.control & FW_CFG_DMA_CTL_READ) {
          read = 1;
          write = 0;
-@@ -376,6 +531,69 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
+@@ -376,6 +538,70 @@ static void fw_cfg_dma_transfer(FWCfgState *s)
          dma.length = 0;
      }
  
@@ -33544,6 +33556,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..61876a5ed800b02acb58c50c31ff0119
 +        }
 +        if (service == QEMU_CRUCIBLE_FW_CFG_SERVICE_DEFERRED) {
 +            memcpy(s->crucible_service_payload, after, dma.length);
++            qatomic_set(&fw_cfg_crucible_service_may_be_pending, true);
 +            s->crucible_service_pending = true;
 +            s->crucible_service_control = dma.control;
 +            s->crucible_service_entry = entry;
@@ -33564,7 +33577,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..61876a5ed800b02acb58c50c31ff0119
      dma.control = 0;
  
      while (dma.length > 0 && !(dma.control & FW_CFG_DMA_CTL_ERROR)) {
-@@ -556,6 +774,11 @@ static void fw_cfg_reset(DeviceState *d)
+@@ -556,6 +782,11 @@ static void fw_cfg_reset(DeviceState *d)
  {
      FWCfgState *s = FW_CFG(d);
  
@@ -33576,7 +33589,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..61876a5ed800b02acb58c50c31ff0119
      /* we never register a read callback for FW_CFG_SIGNATURE */
      fw_cfg_select(s, FW_CFG_SIGNATURE);
  }
-@@ -662,6 +885,169 @@ static const VMStateDescription vmstate_fw_cfg_dma = {
+@@ -662,6 +893,170 @@ static const VMStateDescription vmstate_fw_cfg_dma = {
      },
  };
  
@@ -33709,6 +33722,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..61876a5ed800b02acb58c50c31ff0119
 +        fw_cfg_crucible_ticket_clear(s);
 +    }
 +    if (staged->pending) {
++        qatomic_set(&fw_cfg_crucible_service_may_be_pending, true);
 +        s->crucible_service_pending = true;
 +        s->crucible_service_control = staged->control;
 +        s->crucible_service_entry = staged->entry;
@@ -33746,7 +33760,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..61876a5ed800b02acb58c50c31ff0119
  static const VMStateDescription vmstate_fw_cfg_acpi_mr = {
      .name = "fw_cfg/acpi_mr",
      .version_id = 1,
-@@ -676,10 +1062,57 @@ static const VMStateDescription vmstate_fw_cfg_acpi_mr = {
+@@ -676,10 +1071,57 @@ static const VMStateDescription vmstate_fw_cfg_acpi_mr = {
      },
  };
  
@@ -33804,7 +33818,7 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..61876a5ed800b02acb58c50c31ff0119
      .fields = (const VMStateField[]) {
          VMSTATE_UINT16(cur_entry, FWCfgState),
          VMSTATE_UINT16_HACK(cur_offset, FWCfgState, is_version_1),
-@@ -1317,6 +1750,12 @@ static void fw_cfg_register_types(void)
+@@ -1317,6 +1759,12 @@ static void fw_cfg_register_types(void)
      type_register_static(&fw_cfg_info);
      type_register_static(&fw_cfg_io_info);
      type_register_static(&fw_cfg_mem_info);
@@ -121566,7 +121580,7 @@ index 0000000000000000000000000000000000000000..30a7b924fa5470418c8db76b21f1c337
 +    return -EINVAL;
 +}
 diff --git a/target/arm/helper.c b/target/arm/helper.c
-index af45234ad2a7e86bbc02f6faa6c5534436133e1b..864db0dde4aac05a4bfe03b460181faceee64d19 100644
+index af45234ad2a7e86bbc02f6faa6c5534436133e1b..52c858baceb66da67a8b388b1e281c6a10478707 100644
 --- a/target/arm/helper.c
 +++ b/target/arm/helper.c
 @@ -8,6 +8,7 @@
@@ -121609,7 +121623,7 @@ index af45234ad2a7e86bbc02f6faa6c5534436133e1b..864db0dde4aac05a4bfe03b460181fac
  static void switch_mode(CPUARMState *env, int mode);
  #ifndef CONFIG_USER_ONLY
  static void gt_recalc_timer(ARMCPU *cpu, int timeridx);
-@@ -1351,11 +1370,70 @@ static CPAccessResult gt_sel2timer_access(CPUARMState *env,
+@@ -1351,11 +1370,75 @@ static CPAccessResult gt_sel2timer_access(CPUARMState *env,
      }
  }
  
@@ -121650,7 +121664,12 @@ index af45234ad2a7e86bbc02f6faa6c5534436133e1b..864db0dde4aac05a4bfe03b460181fac
 +    uint64_t period_ns = gt_cntfrq_period_ns(cpu);
 +
 +    if (qemu_timer_tcg_ps_enabled()) {
-+        timer_mod_ps_wide(timer, arm_gt_ticks_to_ps(cpu, ticks));
++        __int128 deadline_ps = arm_gt_ticks_to_ps(cpu, ticks);
++        __int128 horizon_ps = (__int128)INT64_MAX *
++                              PICOSECONDS_PER_NANOSECOND;
++
++        /* Preserve the legacy far-future comparator saturation in ps mode. */
++        timer_mod_ps_wide(timer, MIN(deadline_ps, horizon_ps));
 +    } else if (ticks > INT64_MAX / period_ns) {
 +        timer_mod_ns(timer, INT64_MAX);
 +    } else {
@@ -121682,7 +121701,7 @@ index af45234ad2a7e86bbc02f6faa6c5534436133e1b..864db0dde4aac05a4bfe03b460181fac
  }
  
  static void gt_update_gicv5_ppi(CPUARMState *env, int timeridx, bool level)
-@@ -1395,8 +1473,14 @@ static void gt_update_irq(ARMCPU *cpu, int timeridx)
+@@ -1395,8 +1478,14 @@ static void gt_update_irq(ARMCPU *cpu, int timeridx)
       * We update both the GICv5 PPI and the external-GIC irq line
       * (whichever of the two mechanisms is unused will do nothing)
       */
@@ -121699,7 +121718,7 @@ index af45234ad2a7e86bbc02f6faa6c5534436133e1b..864db0dde4aac05a4bfe03b460181fac
      trace_arm_gt_update_irq(timeridx, irqstate);
  }
  
-@@ -1501,6 +1585,15 @@ uint64_t gt_direct_access_timer_offset(CPUARMState *env, int timeridx)
+@@ -1501,6 +1590,15 @@ uint64_t gt_direct_access_timer_offset(CPUARMState *env, int timeridx)
  static void gt_recalc_timer(ARMCPU *cpu, int timeridx)
  {
      ARMGenericTimer *gt = &cpu->env.cp15.c14_timer[timeridx];
@@ -121715,7 +121734,7 @@ index af45234ad2a7e86bbc02f6faa6c5534436133e1b..864db0dde4aac05a4bfe03b460181fac
  
      if (gt->ctl & 1) {
          /*
-@@ -1508,7 +1601,30 @@ static void gt_recalc_timer(ARMCPU *cpu, int timeridx)
+@@ -1508,7 +1606,30 @@ static void gt_recalc_timer(ARMCPU *cpu, int timeridx)
           * reset timer to when ISTATUS next has to change
           */
          uint64_t offset = gt_indirect_access_timer_offset(&cpu->env, timeridx);
@@ -121747,7 +121766,7 @@ index af45234ad2a7e86bbc02f6faa6c5534436133e1b..864db0dde4aac05a4bfe03b460181fac
          /* Note that this must be unsigned 64 bit arithmetic: */
          int istatus = count - offset >= gt->cval;
          uint64_t nexttick;
-@@ -1539,32 +1655,99 @@ static void gt_recalc_timer(ARMCPU *cpu, int timeridx)
+@@ -1539,32 +1660,99 @@ static void gt_recalc_timer(ARMCPU *cpu, int timeridx)
                  nexttick = UINT64_MAX;
              }
          }
@@ -121856,7 +121875,7 @@ index af45234ad2a7e86bbc02f6faa6c5534436133e1b..864db0dde4aac05a4bfe03b460181fac
      timer_del(cpu->gt_timer[timeridx]);
  }
  
-@@ -2012,53 +2195,83 @@ static void gt_hv_ctl_write(CPUARMState *env, const ARMCPRegInfo *ri,
+@@ -2012,53 +2200,83 @@ static void gt_hv_ctl_write(CPUARMState *env, const ARMCPRegInfo *ri,
      gt_ctl_write(env, ri, GTIMER_HYPVIRT, value);
  }
  
@@ -121947,7 +121966,7 @@ index af45234ad2a7e86bbc02f6faa6c5534436133e1b..864db0dde4aac05a4bfe03b460181fac
  }
  
  static const ARMCPRegInfo generic_timer_cp_reginfo[] = {
-@@ -8607,6 +8820,7 @@ void arm_log_exception(CPUState *cs)
+@@ -8607,6 +8825,7 @@ void arm_log_exception(CPUState *cs)
              [EXCP_VINMI] = "Virtual IRQ NMI",
              [EXCP_VFNMI] = "Virtual FIQ NMI",
              [EXCP_MON_TRAP] = "Monitor Trap",
@@ -121955,7 +121974,7 @@ index af45234ad2a7e86bbc02f6faa6c5534436133e1b..864db0dde4aac05a4bfe03b460181fac
          };
  
          if (idx >= 0 && idx < ARRAY_SIZE(excnames)) {
-@@ -9185,6 +9399,20 @@ static void arm_cpu_do_interrupt_aarch32(CPUState *cs)
+@@ -9185,6 +9404,20 @@ static void arm_cpu_do_interrupt_aarch32(CPUState *cs)
              offset = 8;
          }
          break;
@@ -121976,7 +121995,7 @@ index af45234ad2a7e86bbc02f6faa6c5534436133e1b..864db0dde4aac05a4bfe03b460181fac
      case EXCP_SMC:
          new_mode = ARM_CPU_MODE_MON;
          addr = 0x08;
-@@ -9488,6 +9716,12 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
+@@ -9488,6 +9721,12 @@ static void arm_cpu_do_interrupt_aarch64(CPUState *cs)
          env->exception.syndrome = syn_serror(env->cp15.vsesr_el2 & 0x1ffffff);
          env->cp15.esr_el[new_el] = env->exception.syndrome;
          break;
@@ -121989,7 +122008,7 @@ index af45234ad2a7e86bbc02f6faa6c5534436133e1b..864db0dde4aac05a4bfe03b460181fac
      default:
          cpu_abort(cs, "Unhandled exception 0x%x\n", cs->exception_index);
      }
-@@ -9624,6 +9858,30 @@ void arm_cpu_do_interrupt(CPUState *cs)
+@@ -9624,6 +9863,30 @@ void arm_cpu_do_interrupt(CPUState *cs)
      CPUARMState *env = &cpu->env;
      unsigned int new_el = env->exception.target_el;
      uint64_t last_pc = cs->cc->get_pc(cs);
@@ -122020,7 +122039,7 @@ index af45234ad2a7e86bbc02f6faa6c5534436133e1b..864db0dde4aac05a4bfe03b460181fac
  
      assert(!arm_feature(env, ARM_FEATURE_M));
  
-@@ -9675,6 +9933,15 @@ void arm_cpu_do_interrupt(CPUState *cs)
+@@ -9675,6 +9938,15 @@ void arm_cpu_do_interrupt(CPUState *cs)
  
      arm_call_el_change_hook(cpu);
  
@@ -128164,6 +128183,48 @@ index db43589fa2fba025804b29fcade3482724542a6c..9accb43cce8e8e4053b040360d1b4fdf
  #endif /* !CONFIG_USER_ONLY */
  
  /* pool based memory allocation */
+diff --git a/tests/qemu-iotests/205 b/tests/qemu-iotests/205
+index 2370e1a138b1583af1842904eaeaec0b31a6f533..d6f974824c84bf5006d45f273c7501aabbc69974 100755
+--- a/tests/qemu-iotests/205
++++ b/tests/qemu-iotests/205
+@@ -59,6 +59,11 @@ class TestNbdServerRemove(iotests.QMPTestCase):
+             return self.vm.qmp('nbd-server-remove', name=name, mode=mode)
+ 
+     def assertExportNotFound(self, name):
++        # Removal completes after the last NBD client releases its reference.
++        deleted = self.vm.event_wait('BLOCK_EXPORT_DELETED')
++        self.assertIsNotNone(deleted)
++        self.assertEqual(deleted['data']['id'], name)
++
+         result = self.vm.qmp('nbd-server-remove', name=name)
+         self.assert_qmp(result, 'error/desc', "Export 'exp' is not found")
+ 
+@@ -130,10 +135,10 @@ class TestNbdServerRemove(iotests.QMPTestCase):
+         self.assert_qmp(result, 'return', {})
+ 
+         self.assertReadFailed(qio.cmd('read 0 512'))
+-        self.assertExportNotFound('exp')
+-
+         qio.close()
+ 
++        self.assertExportNotFound('exp')
++
+     def test_remove_during_connect_safe_hard(self):
+         qio = QemuIoInteractive('-r', '-f', 'raw', nbd_uri)
+         self.assertReadOk(qio.cmd('read 0 512'))
+@@ -146,10 +151,11 @@ class TestNbdServerRemove(iotests.QMPTestCase):
+         result = self.remove_export('exp', 'hard')
+         self.assert_qmp(result, 'return', {})
+ 
+-        self.assertExportNotFound('exp')
+         self.assertReadFailed(qio.cmd('read 0 512'))
+         qio.close()
+ 
++        self.assertExportNotFound('exp')
++
+ 
+ if __name__ == '__main__':
+     iotests.main(supported_fmts=['raw'],
 diff --git a/tests/qtest/crucible-exact-tb-exit.py b/tests/qtest/crucible-exact-tb-exit.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..74f76ce9c42cee9ebd27167bc4ee13b493f3b2a9
@@ -139268,7 +139329,7 @@ index 09ac56da9ebf8c1f75b14c62fd37eef102693e77..7b482ca2fab9e776e69a9c4e460f88a4
  struct QEMUTimerList {
      QEMUTimer active_timers;
 diff --git a/tests/unit/test-aio.c b/tests/unit/test-aio.c
-index b3ca4d8a596ea045d11cf7cc9c241e7ef04f61e1..9cfdc591dacc8c00c0b0c7c89a9549971b3d9978 100644
+index b3ca4d8a596ea045d11cf7cc9c241e7ef04f61e1..6e635d5f9e406c81fe9ddd2cb57fe589cd259483 100644
 --- a/tests/unit/test-aio.c
 +++ b/tests/unit/test-aio.c
 @@ -20,6 +20,8 @@
@@ -139340,7 +139401,101 @@ index b3ca4d8a596ea045d11cf7cc9c241e7ef04f61e1..9cfdc591dacc8c00c0b0c7c89a954997
  static void dummy_io_handler_read(EventNotifier *e)
  {
  }
-@@ -830,12 +885,140 @@ static void test_worker_thread_co_enter(void)
+@@ -195,6 +250,93 @@ static void test_bh_delete_from_cb(void)
+     g_assert(!aio_poll(ctx, false));
+ }
+ 
++static void bh_nested_delete_cb(void *opaque)
++{
++    BHTestData *data = opaque;
++    QemuBhHotForkInventory inventory;
++    bool found_active = false;
++
++    qemu_bh_delete(data->bh);
++    aio_poll(ctx, false);
++
++    qemu_bh_hot_fork_inventory(&inventory);
++    for (size_t i = 0; i < inventory.entry_count; i++) {
++        const QemuBhHotForkInventoryEntry *entry = &inventory.entries[i];
++
++        if (strcmp(entry->name, "nested-callback-delete") == 0) {
++            g_assert_cmpuint(entry->active_callbacks, ==, 1);
++            g_assert_true(entry->deleted);
++            found_active = true;
++        }
++    }
++    g_assert_true(found_active);
++    qemu_bh_hot_fork_inventory_destroy(&inventory);
++
++    data->n++;
++    data->bh = NULL;
++}
++
++static void test_bh_nested_delete_from_cb(void)
++{
++    BHTestData data = { .n = 0 };
++    QemuBhHotForkInventory inventory;
++
++    data.bh = aio_bh_new_full(ctx, bh_nested_delete_cb, &data,
++                              "nested-callback-delete", NULL);
++    qemu_bh_schedule(data.bh);
++    aio_poll(ctx, false);
++
++    g_assert_cmpint(data.n, ==, 1);
++    g_assert_null(data.bh);
++    qemu_bh_hot_fork_inventory(&inventory);
++    for (size_t i = 0; i < inventory.entry_count; i++) {
++        g_assert_cmpstr(inventory.entries[i].name, !=,
++                        "nested-callback-delete");
++    }
++    qemu_bh_hot_fork_inventory_destroy(&inventory);
++}
++
++static void bh_nested_oneshot_cb(void *opaque)
++{
++    int *runs = opaque;
++    QemuBhHotForkInventory inventory;
++    bool found_active = false;
++
++    aio_poll(ctx, false);
++
++    qemu_bh_hot_fork_inventory(&inventory);
++    for (size_t i = 0; i < inventory.entry_count; i++) {
++        const QemuBhHotForkInventoryEntry *entry = &inventory.entries[i];
++
++        if (strcmp(entry->name, "nested-oneshot-callback") == 0) {
++            g_assert_cmpuint(entry->active_callbacks, ==, 1);
++            g_assert_true(entry->oneshot);
++            found_active = true;
++        }
++    }
++    g_assert_true(found_active);
++    qemu_bh_hot_fork_inventory_destroy(&inventory);
++    (*runs)++;
++}
++
++static void test_bh_nested_oneshot(void)
++{
++    QemuBhHotForkInventory inventory;
++    int runs = 0;
++
++    aio_bh_schedule_oneshot_full(ctx, bh_nested_oneshot_cb, &runs,
++                                 "nested-oneshot-callback");
++    aio_poll(ctx, false);
++
++    g_assert_cmpint(runs, ==, 1);
++    qemu_bh_hot_fork_inventory(&inventory);
++    for (size_t i = 0; i < inventory.entry_count; i++) {
++        g_assert_cmpstr(inventory.entries[i].name, !=,
++                        "nested-oneshot-callback");
++    }
++    qemu_bh_hot_fork_inventory_destroy(&inventory);
++}
++
+ static void test_bh_delete_from_cb_many(void)
+ {
+     BHTestData data1 = { .n = 0, .max = 1 };
+@@ -830,12 +972,140 @@ static void test_worker_thread_co_enter(void)
      g_assert(!aio_poll(ctx, false));
  }
  
@@ -139481,7 +139636,18 @@ index b3ca4d8a596ea045d11cf7cc9c241e7ef04f61e1..9cfdc591dacc8c00c0b0c7c89a954997
  
      while (g_main_context_iteration(NULL, false));
  
-@@ -852,9 +1035,15 @@ int main(int argc, char **argv)
+@@ -845,6 +1115,10 @@ int main(int argc, char **argv)
+     g_test_add_func("/aio/bh/cancel",               test_bh_cancel);
+     g_test_add_func("/aio/bh/delete",               test_bh_delete);
+     g_test_add_func("/aio/bh/callback-delete/one",  test_bh_delete_from_cb);
++    g_test_add_func("/aio/bh/callback-delete/nested",
++                    test_bh_nested_delete_from_cb);
++    g_test_add_func("/aio/bh/callback-delete/nested-oneshot",
++                    test_bh_nested_oneshot);
+     g_test_add_func("/aio/bh/callback-delete/many", test_bh_delete_from_cb_many);
+     g_test_add_func("/aio/bh/flush",                test_bh_flush);
+     g_test_add_func("/aio/event/add-remove",        test_set_event_notifier);
+@@ -852,9 +1126,15 @@ int main(int argc, char **argv)
      g_test_add_func("/aio/event/wait/no-flush-cb",  test_wait_event_notifier_noflush);
      g_test_add_func("/aio/event/flush",             test_flush_event_notifier);
      g_test_add_func("/aio/timer/schedule",          test_timer_schedule);
@@ -149554,7 +149720,7 @@ index 1985843233efa577ce4c0228856514daa2830549..22dd5695d7f4409c79abf7546600cfca
  }
  
 diff --git a/util/async.c b/util/async.c
-index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30f0152185 100644
+index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da3308171205953349 100644
 --- a/util/async.c
 +++ b/util/async.c
 @@ -31,14 +31,187 @@
@@ -149745,12 +149911,13 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
  /***********************************************************/
  /* bottom halves (can be seen as timers which expire ASAP) */
  
-@@ -68,21 +241,357 @@ struct QEMUBH {
+@@ -68,21 +241,363 @@ struct QEMUBH {
      QSLIST_ENTRY(QEMUBH) next;
      unsigned flags;
      MemReentrancyGuard *reentrancy_guard;
 +    uint64_t crucible_hot_fork_id;
 +    uint32_t crucible_hot_fork_active_callbacks;
++    uint32_t crucible_hot_fork_refs;
 +    bool crucible_hot_fork_name_valid;
 +    char crucible_hot_fork_name[QEMU_BH_HOT_FORK_NAME_MAX + 1];
 +    QTAILQ_ENTRY(QEMUBH) crucible_hot_fork_node;
@@ -149805,8 +149972,13 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
 +    crucible_hot_fork_bh_changed();
 +}
 +
-+static void crucible_hot_fork_bh_free(QEMUBH *bh)
++static void crucible_hot_fork_bh_unref(QEMUBH *bh)
 +{
++    if (qatomic_fetch_dec(&bh->crucible_hot_fork_refs) != 1) {
++        return;
++    }
++
++    /* Keep a deleted BH in the inventory until its callback has settled. */
 +    qemu_mutex_lock(&crucible_hot_fork_aio_lock);
 +    QTAILQ_REMOVE(&crucible_hot_fork_bhs, bh, crucible_hot_fork_node);
 +    crucible_hot_fork_bh_changed();
@@ -150103,7 +150275,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
          /*
           * At this point the bottom half becomes visible to aio_bh_poll().
           * This insertion thus synchronizes with QSLIST_MOVE_ATOMIC in
-@@ -105,6 +614,7 @@ static void aio_bh_enqueue(QEMUBH *bh, unsigned new_flags)
+@@ -105,6 +620,7 @@ static void aio_bh_enqueue(QEMUBH *bh, unsigned new_flags)
           */
          icount_notify_exit();
      }
@@ -150111,7 +150283,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
  }
  
  /* Only called from aio_bh_poll() and aio_ctx_finalize() */
-@@ -122,8 +632,11 @@ static QEMUBH *aio_bh_dequeue(BHList *head, unsigned *flags)
+@@ -122,8 +638,11 @@ static QEMUBH *aio_bh_dequeue(BHList *head, unsigned *flags)
       * Synchronizes with qatomic_fetch_or() in aio_bh_enqueue(), ensuring that
       * the removal finishes before BH_PENDING is reset.
       */
@@ -150123,7 +150295,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
      return bh;
  }
  
-@@ -131,6 +644,8 @@ void aio_bh_schedule_oneshot_full(AioContext *ctx, QEMUBHFunc *cb,
+@@ -131,20 +650,27 @@ void aio_bh_schedule_oneshot_full(AioContext *ctx, QEMUBHFunc *cb,
                                    void *opaque, const char *name)
  {
      QEMUBH *bh;
@@ -150132,9 +150304,10 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
      bh = g_new(QEMUBH, 1);
      *bh = (QEMUBH){
          .ctx = ctx,
-@@ -138,13 +653,17 @@ void aio_bh_schedule_oneshot_full(AioContext *ctx, QEMUBHFunc *cb,
+         .cb = cb,
          .opaque = opaque,
          .name = name,
++        .crucible_hot_fork_refs = 1,
      };
 +    crucible_hot_fork_bh_register(bh, name);
      aio_bh_enqueue(bh, BH_SCHEDULED | BH_ONESHOT);
@@ -150150,24 +150323,30 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
      bh = g_new(QEMUBH, 1);
      *bh = (QEMUBH){
          .ctx = ctx,
-@@ -153,6 +672,8 @@ QEMUBH *aio_bh_new_full(AioContext *ctx, QEMUBHFunc *cb, void *opaque,
+@@ -152,7 +678,10 @@ QEMUBH *aio_bh_new_full(AioContext *ctx, QEMUBHFunc *cb, void *opaque,
+         .opaque = opaque,
          .name = name,
          .reentrancy_guard = reentrancy_guard,
++        .crucible_hot_fork_refs = 1,
      };
 +    crucible_hot_fork_bh_register(bh, name);
 +    qemu_async_worker_hot_fork_admission_end();
      return bh;
  }
  
-@@ -160,6 +681,7 @@ void aio_bh_call(QEMUBH *bh)
+@@ -160,8 +689,11 @@ void aio_bh_call(QEMUBH *bh)
  {
      bool last_engaged_in_io = false;
  
 +    qemu_async_worker_hot_fork_admission_begin();
      /* Make a copy of the guard-pointer as cb may free the bh */
      MemReentrancyGuard *reentrancy_guard = bh->reentrancy_guard;
++    /* A nested poll may delete the BH before this callback returns. */
++    qatomic_inc(&bh->crucible_hot_fork_refs);
      if (reentrancy_guard) {
-@@ -170,11 +692,20 @@ void aio_bh_call(QEMUBH *bh)
+         last_engaged_in_io = reentrancy_guard->engaged_in_io;
+         if (reentrancy_guard->engaged_in_io) {
+@@ -170,11 +702,21 @@ void aio_bh_call(QEMUBH *bh)
          reentrancy_guard->engaged_in_io = true;
      }
  
@@ -150184,11 +150363,12 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
      if (reentrancy_guard) {
          reentrancy_guard->engaged_in_io = last_engaged_in_io;
      }
++    crucible_hot_fork_bh_unref(bh);
 +    qemu_async_worker_hot_fork_admission_end();
  }
  
  /* Multiple occurrences of aio_bh_poll cannot be called concurrently. */
-@@ -184,6 +715,10 @@ int aio_bh_poll(AioContext *ctx)
+@@ -184,6 +726,10 @@ int aio_bh_poll(AioContext *ctx)
      BHListSlice *s;
      int ret = 0;
  
@@ -150199,12 +150379,12 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
      /* Synchronizes with QSLIST_INSERT_HEAD_ATOMIC in aio_bh_enqueue().  */
      QSLIST_MOVE_ATOMIC(&slice.bh_list, &ctx->bh_list);
  
-@@ -220,10 +755,11 @@ int aio_bh_poll(AioContext *ctx)
+@@ -220,10 +766,11 @@ int aio_bh_poll(AioContext *ctx)
              aio_bh_call(bh);
          }
          if (flags & (BH_DELETED | BH_ONESHOT)) {
 -            g_free(bh);
-+            crucible_hot_fork_bh_free(bh);
++            crucible_hot_fork_bh_unref(bh);
          }
      }
  
@@ -150212,7 +150392,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
      return ret;
  }
  
-@@ -241,7 +777,13 @@ void qemu_bh_schedule(QEMUBH *bh)
+@@ -241,7 +788,13 @@ void qemu_bh_schedule(QEMUBH *bh)
   */
  void qemu_bh_cancel(QEMUBH *bh)
  {
@@ -150227,7 +150407,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
  }
  
  /* This func is async.The bottom half will do the delete action at the finial
-@@ -305,6 +847,12 @@ static gboolean
+@@ -305,6 +858,12 @@ static gboolean
  aio_ctx_prepare(GSource *source, gint    *timeout)
  {
      AioContext *ctx = (AioContext *) source;
@@ -150240,7 +150420,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
  
      qatomic_set(&ctx->notify_me, qatomic_read(&ctx->notify_me) | 1);
  
-@@ -322,7 +870,9 @@ aio_ctx_prepare(GSource *source, gint    *timeout)
+@@ -322,7 +881,9 @@ aio_ctx_prepare(GSource *source, gint    *timeout)
          *timeout = 0;
      }
  
@@ -150251,7 +150431,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
  }
  
  static gboolean
-@@ -331,6 +881,11 @@ aio_ctx_check(GSource *source)
+@@ -331,6 +892,11 @@ aio_ctx_check(GSource *source)
      AioContext *ctx = (AioContext *) source;
      QEMUBH *bh;
      BHListSlice *s;
@@ -150263,7 +150443,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
  
      /* Finish computing the timeout before clearing the flag.  */
      qatomic_store_release(&ctx->notify_me, qatomic_read(&ctx->notify_me) & ~1);
-@@ -339,7 +894,8 @@ aio_ctx_check(GSource *source)
+@@ -339,7 +905,8 @@ aio_ctx_check(GSource *source)
      QSLIST_FOREACH_RCU(bh, &ctx->bh_list, next) {
          int flags = qatomic_load_acquire(&bh->flags);
          if ((flags & (BH_SCHEDULED | BH_DELETED)) == BH_SCHEDULED) {
@@ -150273,7 +150453,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
          }
      }
  
-@@ -347,11 +903,15 @@ aio_ctx_check(GSource *source)
+@@ -347,11 +914,15 @@ aio_ctx_check(GSource *source)
          QSLIST_FOREACH_RCU(bh, &s->bh_list, next) {
              int flags = qatomic_load_acquire(&bh->flags);
              if ((flags & (BH_SCHEDULED | BH_DELETED)) == BH_SCHEDULED) {
@@ -150291,7 +150471,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
  }
  
  static gboolean
-@@ -362,7 +922,14 @@ aio_ctx_dispatch(GSource     *source,
+@@ -362,7 +933,14 @@ aio_ctx_dispatch(GSource     *source,
      AioContext *ctx = (AioContext *) source;
  
      assert(callback == NULL);
@@ -150306,7 +150486,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
      return true;
  }
  
-@@ -377,6 +944,8 @@ aio_ctx_finalize(GSource *source)
+@@ -377,6 +955,8 @@ aio_ctx_finalize(GSource *source)
          return;
      }
  
@@ -150315,16 +150495,16 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
      thread_pool_free_aio(ctx->thread_pool);
  
  #ifdef CONFIG_LINUX_AIO
-@@ -409,7 +978,7 @@ aio_ctx_finalize(GSource *source)
+@@ -409,7 +989,7 @@ aio_ctx_finalize(GSource *source)
              abort();
          }
  
 -        g_free(bh);
-+        crucible_hot_fork_bh_free(bh);
++        crucible_hot_fork_bh_unref(bh);
      }
  
      aio_set_event_notifier(ctx, &ctx->notifier, NULL, NULL, NULL);
-@@ -420,38 +989,115 @@ aio_ctx_finalize(GSource *source)
+@@ -420,38 +1000,115 @@ aio_ctx_finalize(GSource *source)
      aio_context_destroy(ctx);
      /* aio_context_destroy() still needs the lock */
      qemu_lockcnt_destroy(&ctx->list_lock);
@@ -150444,7 +150624,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
      return ctx->linux_aio;
  }
  
-@@ -464,6 +1110,12 @@ LinuxAioState *aio_get_linux_aio(AioContext *ctx)
+@@ -464,6 +1121,12 @@ LinuxAioState *aio_get_linux_aio(AioContext *ctx)
  
  void aio_notify(AioContext *ctx)
  {
@@ -150457,7 +150637,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
      /*
       * Write e.g. ctx->bh_list before writing ctx->notified.  Pairs with
       * smp_mb() in aio_notify_accept().
-@@ -481,6 +1133,13 @@ void aio_notify(AioContext *ctx)
+@@ -481,6 +1144,13 @@ void aio_notify(AioContext *ctx)
      }
  }
  
@@ -150471,7 +150651,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
  void aio_notify_accept(AioContext *ctx)
  {
      qatomic_set(&ctx->notified, false);
-@@ -545,6 +1204,7 @@ static void co_schedule_bh_cb(void *opaque)
+@@ -545,6 +1215,7 @@ static void co_schedule_bh_cb(void *opaque)
  
          /* Protected by write barrier in qemu_aio_coroutine_enter */
          qatomic_set(&co->scheduled, NULL);
@@ -150479,7 +150659,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
          qemu_aio_coroutine_enter(ctx, co);
      }
  }
-@@ -555,6 +1215,8 @@ AioContext *aio_context_new(Error **errp)
+@@ -555,6 +1226,8 @@ AioContext *aio_context_new(Error **errp)
      int ret;
      AioContext *ctx;
  
@@ -150488,7 +150668,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
      /*
       * ctx is freed by g_source_unref() (e.g. aio_context_unref()). ctx's
       * resources are freed as follows:
-@@ -582,6 +1244,7 @@ AioContext *aio_context_new(Error **errp)
+@@ -582,6 +1255,7 @@ AioContext *aio_context_new(Error **errp)
       * you add any new resources to AioContext, it's probably best to acquire
       * them before aio_context_setup().
       */
@@ -150496,7 +150676,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
      if (!aio_context_setup(ctx, errp)) {
          event_notifier_cleanup(&ctx->notifier);
          goto fail;
-@@ -617,17 +1280,21 @@ AioContext *aio_context_new(Error **errp)
+@@ -617,17 +1291,21 @@ AioContext *aio_context_new(Error **errp)
      ctx->thread_pool_max = THREAD_POOL_MAX_THREADS_DEFAULT;
  
      register_aiocontext(ctx);
@@ -150518,7 +150698,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
      trace_aio_co_schedule(ctx, co);
      const char *scheduled = qatomic_cmpxchg(&co->scheduled, NULL,
                                             __func__);
-@@ -638,6 +1305,7 @@ void aio_co_schedule(AioContext *ctx, Coroutine *co)
+@@ -638,6 +1316,7 @@ void aio_co_schedule(AioContext *ctx, Coroutine *co)
                  __func__, scheduled);
          abort();
      }
@@ -150526,7 +150706,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
  
      /* The coroutine might run and release the last ctx reference before we
       * invoke qemu_bh_schedule().  Take a reference to keep ctx alive until
-@@ -650,6 +1318,7 @@ void aio_co_schedule(AioContext *ctx, Coroutine *co)
+@@ -650,6 +1329,7 @@ void aio_co_schedule(AioContext *ctx, Coroutine *co)
      qemu_bh_schedule(ctx->co_schedule_bh);
  
      aio_context_unref(ctx);
@@ -150534,7 +150714,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..604ea3ef16624df7443392b9c5c01e30
  }
  
  typedef struct AioCoRescheduleSelf {
-@@ -740,6 +1409,7 @@ void qemu_set_current_aio_context(AioContext *ctx)
+@@ -740,6 +1420,7 @@ void qemu_set_current_aio_context(AioContext *ctx)
  {
      assert(!get_my_aiocontext());
      set_my_aiocontext(ctx);
