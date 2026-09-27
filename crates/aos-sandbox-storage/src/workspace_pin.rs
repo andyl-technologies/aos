@@ -38,6 +38,7 @@ use hmac::{Hmac, Mac as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::record_cursor::Decoder;
 use crate::root_policy::{PortableRootAttributesV1, WorkspaceRootPolicyV1};
 use crate::{CatalogBindingV1, StorageStateError};
 
@@ -988,54 +989,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
             == 0
 }
 
-struct Decoder<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
 impl<'a> Decoder<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
-
-    fn take(&mut self, length: usize) -> Result<&'a [u8], StorageStateError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(StorageStateError::CorruptRecord)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(StorageStateError::CorruptRecord)?;
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], StorageStateError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| StorageStateError::CorruptRecord)
-    }
-
-    fn u8(&mut self) -> Result<u8, StorageStateError> {
-        self.take(1)?
-            .first()
-            .copied()
-            .ok_or(StorageStateError::CorruptRecord)
-    }
-
-    fn u16(&mut self) -> Result<u16, StorageStateError> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-
-    fn u32(&mut self) -> Result<u32, StorageStateError> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-
-    fn u64(&mut self) -> Result<u64, StorageStateError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-
     fn string(&mut self) -> Result<String, StorageStateError> {
         let length = usize::from(self.u16()?);
         if length == 0 || length > MAXIMUM_STRING_BYTES {
@@ -1090,10 +1044,6 @@ impl<'a> Decoder<'a> {
             }
             _ => Err(StorageStateError::CorruptRecord),
         }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.offset == self.bytes.len()
     }
 }
 

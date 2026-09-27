@@ -133,6 +133,7 @@ mod pin_observer;
 mod pin_worker;
 mod pin_worker_runtime;
 pub mod process;
+mod record_cursor;
 pub mod request;
 #[allow(
     dead_code,

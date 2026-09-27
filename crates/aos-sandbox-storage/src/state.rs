@@ -34,6 +34,7 @@ use crate::catalog_transition::{
     VerifiedPhysicalCatalogSnapshotV1,
 };
 use crate::guest_root_attempt::GuestRootPublicationAttemptV1;
+use crate::record_cursor::Decoder as Cursor;
 use crate::resolver::protected_catalog::{
     StorageResolverPolicyBindingV1, StorageResolverPolicyCatalogBindingV1,
 };
@@ -5546,53 +5547,13 @@ fn optional_nonzero_array<const N: usize>(
     }
 }
 
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
 impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
-    fn take(&mut self, length: usize) -> Result<&'a [u8], StorageStateError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(StorageStateError::CorruptRecord)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(StorageStateError::CorruptRecord)?;
-        self.offset = end;
-        Ok(value)
-    }
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], StorageStateError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| StorageStateError::CorruptRecord)
-    }
-    fn u8(&mut self) -> Result<u8, StorageStateError> {
-        Ok(self.array::<1>()?[0])
-    }
-    fn u16(&mut self) -> Result<u16, StorageStateError> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-    fn u32(&mut self) -> Result<u32, StorageStateError> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-    fn u64(&mut self) -> Result<u64, StorageStateError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
     fn u32_bytes(&mut self, maximum: usize) -> Result<&'a [u8], StorageStateError> {
         let length = usize::try_from(self.u32()?).map_err(|_| StorageStateError::CorruptRecord)?;
         if length > maximum {
             return Err(StorageStateError::CorruptRecord);
         }
         self.take(length)
-    }
-    fn remaining(&self) -> usize {
-        self.bytes.len() - self.offset
     }
 }
 
