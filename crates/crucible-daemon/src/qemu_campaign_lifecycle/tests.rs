@@ -2136,7 +2136,7 @@ fn private_checkpoint_replay_reconstructs_a_selected_origin_and_reaps_on_failure
         if cleanup_error {
             assert!(matches!(
                 result,
-                Err(AttemptWorkerFailure::Terminal(
+                Err(failure) if matches!(*failure, AttemptWorkerFailure::Terminal(
                     QemuFreshExecutionRunnerError::Cleanup(_)
                 ))
             ));

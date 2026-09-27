@@ -515,7 +515,7 @@ where
         );
         runner
             .replay_checkpoint_boundary(attempt, &context, target)
-            .map_err(map_private_checkpoint_replay_failure)
+            .map_err(|failure| map_private_checkpoint_replay_failure(*failure))
     }
 }
 
