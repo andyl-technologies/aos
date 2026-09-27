@@ -38,6 +38,7 @@
     host = {
       local-filesystems = "local-fs.target";
       multi-user = "multi-user.target";
+      host-stage-executed = "aos-ability-host-controller.service";
     };
     initrd = {
       initrd-filesystems = "initrd-fs.target";
@@ -66,6 +67,7 @@
     host = {
       local-filesystems = milestones.localFilesystems;
       multi-user = milestones.multiUser;
+      host-stage-executed = milestones.hostStageExecuted;
     };
     initrd = {
       initrd-filesystems = milestones.initrdFilesystems;

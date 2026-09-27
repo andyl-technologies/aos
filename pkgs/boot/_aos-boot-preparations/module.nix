@@ -71,6 +71,8 @@
   bootStorageUnlocked = systemMilestone "boot-storage-unlocked" milestones.bootStorageUnlocked;
   localFilesystems = systemMilestone "local-filesystems" milestones.localFilesystems;
   hostStageReceived = systemMilestone "host-stage-received" milestones.hostStageReceived;
+  hostStageExecution = systemMilestone "host-stage-executed" milestones.hostStageExecuted;
+  multiUser = systemMilestone "multi-user" milestones.multiUser;
   switchRootReadiness = resultOf "switch-root" "resource";
   sysrootReadiness = resultOf "sysroot" "resource";
   varReadiness = resultOf "var" "resource";
@@ -84,6 +86,8 @@
   bootIdentityReadiness = resultOf "boot-identity" "resource";
   bootStorageUnlockedReadiness = resultOf "boot-storage-unlocked" "resource";
   localFilesystemsReadiness = resultOf "local-filesystems" "resource";
+  hostStageReceivedReadiness = resultOf "host-stage-received" "resource";
+  multiUserReadiness = resultOf "multi-user" "resource";
   service = {
     key,
     description,
@@ -221,6 +225,7 @@
     environment ? null,
     activationOwner ? "ability",
     readinessMechanism ? "successful-exit",
+    startTimeoutMillis ? 90000,
   }:
     {
       inherit consumerInstance;
@@ -241,14 +246,14 @@
         restart_delay_millis = 0;
         configuration_change_action = "restart";
         remain_after_exit = true;
-        start_timeout_millis = 90000;
+        start_timeout_millis = startTimeoutMillis;
         stop_timeout_millis = 90000;
       };
       inherit dependencies;
       readiness = {
         mechanism = readinessMechanism;
         signal_scope = "none";
-        timeout_millis = 90000;
+        timeout_millis = startTimeoutMillis;
       };
     }
     // lib.optionalAttrs (environment != null) {inherit environment;}
@@ -385,6 +390,38 @@
       // {
         after = [localFilesystemsReadiness];
         requires = [localFilesystemsReadiness];
+      };
+  };
+  hostController = handoffService {
+    key = "aos-ability-host-controller";
+    description = "Execute the sealed host-stage ability plan";
+    activationOwner = "image";
+    readinessMechanism = "process-running";
+    startTimeoutMillis = 600000;
+    arguments =
+      [
+        "__ability-stage-run"
+        "--stage"
+        "host"
+        "--root"
+        "/"
+        "--image-profile"
+        "/var/lib/profiles/image"
+        "--received-source-stage-bundle"
+        config.aos.boot.stageInputPaths.receivedInitrd.bundle
+        "--received-static-contract-identity-file"
+        config.aos.boot.stageInputPaths.receivedInitrd.identity
+        "--received-static-contract"
+        config.aos.boot.stageInputPaths.receivedInitrd.contract
+      ]
+      ++ stageInputs "host";
+    dependencies =
+      emptyDependencies
+      // {
+        after = [hostStageReceivedReadiness localFilesystemsReadiness];
+        before = [multiUserReadiness];
+        requires = [hostStageReceivedReadiness localFilesystemsReadiness];
+        required_by = [multiUserReadiness];
       };
   };
   substrateEnvironment = {
@@ -683,8 +720,8 @@
     etcOverlaySetup
   ];
   handoffInitrdServices = [initrdController initrdHandoffBarrier];
-  handoffHostProducers = [localFilesystems hostStageReceived];
-  handoffHostServices = [hostReceiver];
+  handoffHostProducers = [localFilesystems hostStageReceived hostStageExecution multiUser];
+  handoffHostServices = [hostReceiver hostController];
   handoffPreparationResources =
     builtins.sort
     (left: right: builtins.toJSON left < builtins.toJSON right)
