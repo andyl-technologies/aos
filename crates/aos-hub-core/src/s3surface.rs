@@ -239,9 +239,11 @@ impl S3Surface {
             }
             _ => bail!("object-store binding has an invalid typed endpoint host"),
         };
-        let host = match coordinates.port {
-            Some(port) => format!("{host}:{port}"),
-            None => host,
+        // URL parsers remove a scheme's default port before Fetch sends the
+        // request. Sign the same Host value that the origin will receive.
+        let host = match (coordinates.scheme, coordinates.port) {
+            ("https", Some(443)) | ("http", Some(80)) | (_, None) => host,
+            (_, Some(port)) => format!("{host}:{port}"),
         };
         if host.is_empty() {
             bail!("binding '{}' has an empty endpoint host", coordinates.name);
@@ -1249,8 +1251,23 @@ mod tests {
         let surface = S3Surface::from_binding(&b, "reg", None).unwrap().unwrap();
         assert!(!surface.is_writable());
         let get = surface.object_url(Method::Get, "info/refs", 1).unwrap();
-        assert_eq!(get, "https://cdn.example.com:443/my-bucket/reg/info/refs");
+        assert_eq!(get, "https://cdn.example.com/my-bucket/reg/info/refs");
         assert!(surface.object_url(Method::Put, "info/refs", 1).is_err());
+    }
+
+    #[test]
+    fn private_binding_signs_the_normalized_default_port() {
+        let b = binding("s3", "private", Some("https://s3.example.com:443"));
+        let surface = S3Surface::from_binding(&b, "registry", Some("AKID:secret:auto"))
+            .unwrap()
+            .unwrap();
+        let head = surface
+            .object_url(Method::Head, "exists", 1_700_000_000)
+            .unwrap();
+
+        assert!(head.starts_with("https://s3.example.com/my-bucket/registry/exists?"));
+        assert!(!head.contains("s3.example.com:443"));
+        assert_eq!(url::Url::parse(&head).unwrap().as_str(), head);
     }
 
     #[test]

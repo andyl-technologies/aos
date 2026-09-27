@@ -665,6 +665,10 @@ in {
       head_status, head_response = external_binding_plan(
           published_revision, head_operation, "f" * 32
       )
+      if head_status != "200":
+          print("external S3 HEAD Worker diagnostics:", worker.succeed(
+              "${pkgs.coreutils}/bin/tail -n 80 /var/lib/hybrid-worker/wrangler.log"
+          ))
       assert head_status == "200", (head_status, head_response)
       head_result = json.loads(head_response)
       assert head_result["outcome"]["kind"] == "head", head_result
