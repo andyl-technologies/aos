@@ -132,6 +132,11 @@ enum TerminalLifecycleMode {
         source_frontier: u64,
         terminal_frontier: u64,
     },
+    ResumeChoice {
+        source_frontier: u64,
+        choice_frontier: u64,
+        terminal_frontier: u64,
+    },
 }
 
 impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
@@ -159,6 +164,19 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
                     source_frontier
                 } else if self.frontier.ticks == source_frontier {
                     source_frontier.saturating_add(1)
+                } else {
+                    terminal_frontier
+                }
+            }
+            TerminalLifecycleMode::ResumeChoice {
+                source_frontier,
+                choice_frontier,
+                terminal_frontier,
+            } => {
+                if self.frontier.ticks < source_frontier {
+                    source_frontier
+                } else if self.frontier.ticks == source_frontier {
+                    choice_frontier
                 } else {
                     terminal_frontier
                 }
@@ -210,6 +228,9 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
             TerminalLifecycleMode::Terminal => Some(QuantumTerminalVerdict::Passed),
             TerminalLifecycleMode::VirtualTime { .. } => None,
             TerminalLifecycleMode::Resume {
+                terminal_frontier, ..
+            }
+            | TerminalLifecycleMode::ResumeChoice {
                 terminal_frontier, ..
             } => {
                 (self.frontier.ticks >= terminal_frontier).then_some(QuantumTerminalVerdict::Passed)
@@ -335,6 +356,9 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
             TerminalLifecycleMode::Terminal => true,
             TerminalLifecycleMode::VirtualTime { .. } => false,
             TerminalLifecycleMode::Resume {
+                terminal_frontier, ..
+            }
+            | TerminalLifecycleMode::ResumeChoice {
                 terminal_frontier, ..
             } => self.frontier.ticks >= terminal_frontier,
         };
@@ -654,6 +678,9 @@ impl QemuFreshAttemptLifecycleFactory for ResumeLifecycleFactory {
                     TerminalLifecycleMode::Resume {
                         source_frontier, ..
                     } => source_frontier.saturating_add(1),
+                    TerminalLifecycleMode::ResumeChoice {
+                        choice_frontier, ..
+                    } => choice_frontier,
                     TerminalLifecycleMode::Terminal | TerminalLifecycleMode::VirtualTime { .. } => {
                         0
                     }
@@ -1648,7 +1675,9 @@ fn selection_free_resume_applies_an_earlier_final_stop_after_source_admission() 
 
 #[test]
 fn selection_free_resume_completes_at_the_requested_next_choice() {
-    let source_frontier = VirtualTime { ticks: 5 };
+    // The source precedes the request's 2,050 ps trap. Its 2,100 ps stop
+    // becomes visible before the terminal fixture boundary.
+    let source_frontier = VirtualTime { ticks: 2_000 };
     let checkpoint_directory = tempfile::TempDir::new().expect("checkpoint directory");
     let checkpoints = exact_checkpoint_store(&checkpoint_directory);
     let (request, node) = checkpoint_request();
@@ -1668,9 +1697,10 @@ fn selection_free_resume_completes_at_the_requested_next_choice() {
         QemuObservedFreshAttemptLifecycleFactory::with_evidence(ResumeLifecycleFactory {
             node,
             starts: Arc::clone(&starts),
-            mode: TerminalLifecycleMode::Resume {
+            mode: TerminalLifecycleMode::ResumeChoice {
                 source_frontier: source_frontier.ticks,
-                terminal_frontier: 9,
+                choice_frontier: 2_100,
+                terminal_frontier: 2_101,
             },
             offer_continuation_choice: true,
         });
@@ -1684,6 +1714,7 @@ fn selection_free_resume_completes_at_the_requested_next_choice() {
     assert!(resume.source_savepoint().is_some());
     assert!(resume.continuation().is_some());
     assert_eq!(completed.observations().len(), 2);
+    assert_eq!(completed.observations()[1].virtual_time_ticks(), 2_100);
     assert_eq!(completed.branch_request_count(), 0);
     assert_eq!(
         completed.terminal().observation().stop(),

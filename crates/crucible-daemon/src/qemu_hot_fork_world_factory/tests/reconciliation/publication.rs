@@ -152,7 +152,10 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
     )
     .expect("compatibility profile");
     let epoch = DaemonEpoch::from_bytes([0x72; 16]).expect("daemon epoch");
-    let resources = AttemptResourceLimits::new(8, 8 << 30, 8 << 30, 64).expect("attempt resources");
+    // The three-node scheduler must advance every node to the 100 ps
+    // guest-choice stop before publishing the observation.
+    let resources =
+        AttemptResourceLimits::new(8, 8 << 30, 8 << 30, 512).expect("attempt resources");
     let request = SubmitAttemptRequest::new(
         AssignmentId::from_bytes([0x73; 16]).expect("assignment"),
         epoch,
@@ -168,7 +171,7 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
         MemoryAssignmentLedger::default(),
         admission,
         epoch,
-        ExecutorCapacity::new(1, 8, 8 << 30, 8 << 30, 64).expect("executor capacity"),
+        ExecutorCapacity::new(1, 8, 8 << 30, 8 << 30, 512).expect("executor capacity"),
     );
     let submitted =
         ExecutorService::submit_attempt(&mut supervisor, &request).expect("submit exact discovery");
