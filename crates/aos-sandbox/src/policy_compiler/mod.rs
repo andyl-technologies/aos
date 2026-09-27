@@ -19,6 +19,7 @@ mod controller_effect_ack_readback;
 mod controller_effect_ack_readback_v8;
 mod controller_hold_pin;
 mod controller_hold_readback;
+mod controller_project_admission_readback;
 mod controller_readback_session;
 mod controller_root_receipt_readback_v8;
 mod controller_v8_readback_envelope;
@@ -27,17 +28,24 @@ mod deployment_head;
 mod model;
 mod namespace;
 mod owner_pin_transaction;
+mod project_admission_root;
+#[cfg(test)]
+pub(crate) use project_admission_root::test_root_project_reservation_cancellation_v1;
+#[cfg(test)]
+pub(crate) use project_admission_root::test_source_project_admission_outcome_v1;
 mod project_source_v2;
 mod protected_journal;
 mod protected_owner;
 mod public_create_source;
 mod resources;
 mod root_challenge_record;
+mod root_project_admission_proof;
 mod root_v8_released_proof;
 mod root_v8_settled_grant;
 mod source_hold_pin;
 mod source_hold_readback;
 mod source_hold_readback_v2;
+mod source_project_admission_readback;
 #[cfg(target_os = "linux")]
 mod source_signer_readback;
 #[cfg(target_os = "linux")]
@@ -125,6 +133,12 @@ pub use controller_hold_readback::{
     encode_controller_hold_signer_credential_v1, sign_fixed_controller_hold_readback_v1,
     verify_controller_hold_readback_v1,
 };
+pub use controller_project_admission_readback::{
+    CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1, ControllerProjectAdmissionChallengeV1,
+    ControllerProjectAdmissionReadbackErrorV1, VerifiedControllerProjectAdmissionV1,
+    sign_fixed_controller_project_admission_readback_v1,
+    verify_controller_project_admission_readback_v1,
+};
 pub use controller_readback_session::{
     ClosedControllerReadbackSessionErrorV1, ClosedControllerRootChallengeV1,
     ClosedControllerRootObservationV1, with_fixed_closed_controller_readback_session_v1,
@@ -168,6 +182,19 @@ pub use namespace::{
     NamespaceDestinationV1, NamespaceExecutionClassV1, NamespaceGraphSchemaV1, NamespaceModelError,
     NamespacePlanV1, NamespacePresentationFeatureV1, NamespaceRuleV1, NamespaceSourceClassV1,
     PortableNamespaceGraphV1, ViewExecutionV1,
+};
+pub use project_admission_root::{
+    RootProjectAdmissionIntentV1, RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionOutcomeV1,
+    RootProjectAdmissionStageV1, RootProjectReservationCancellationV1,
+    abort_fixed_root_project_admission_v1, admit_fixed_root_project_source_from_owner_proofs_v1,
+    cancel_fixed_root_project_reservation_v1, fixed_root_project_admission_recovery_required_v1,
+    prepare_fixed_root_project_admission_intent_v1, project_admission_client_nonce_v1,
+    recover_fixed_root_current_project_admission_stage_v1,
+    recover_fixed_root_project_admission_intent_v1,
+    recover_fixed_root_project_admission_outcome_v1, recover_fixed_root_project_admission_stage_v1,
+    recover_fixed_root_project_reservation_cancellation_v1,
+    recover_fixed_root_project_source_pin_v1, recover_fixed_root_unstaged_project_intent_v1,
+    stage_fixed_root_project_admission_v1,
 };
 pub use project_source_v2::{
     AdmittedSignedProjectPolicySourceV2, SignedProjectPolicyHeadV2,
@@ -218,6 +245,25 @@ pub use resources::{
     HardResourceProfileV1, HardResourceScopeV1, PORTABLE_LIMIT_DIMENSIONS, ResolvedHardLimitV1,
     ResolvedHardLimitValueV1, UnlimitedProvenanceV1,
 };
+pub use root_project_admission_proof::{
+    ROOT_PROJECT_ADMISSION_ABORT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_COMMIT_QUERY_MAGIC,
+    ROOT_PROJECT_ADMISSION_CURRENT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_INTENT_QUERY_MAGIC,
+    ROOT_PROJECT_ADMISSION_INTENT_REPLAY_MAGIC, ROOT_PROJECT_ADMISSION_OUTCOME_QUERY_MAGIC,
+    ROOT_PROJECT_ADMISSION_STAGE_QUERY_MAGIC, ROOT_PROJECT_RESERVATION_CANCEL_MAGIC,
+    ROOT_PROJECT_RESERVATION_CANCEL_QUERY_MAGIC, RootProjectAdmissionOutcomeProofV1,
+    RootProjectReservationCancellationProofV1, abort_fixed_root_project_admission_over_socket_v1,
+    cancel_fixed_root_project_reservation_over_socket_v1,
+    encode_root_current_project_admission_stage_reply_v1,
+    encode_root_project_admission_outcome_reply_v1, encode_root_project_admission_stage_reply_v1,
+    encode_root_project_admission_terminal_reply_v1, encode_root_project_intent_replay_reply_v1,
+    encode_root_project_intent_reply_v1, encode_root_project_reservation_cancel_reply_v1,
+    prepare_fixed_root_project_intent_over_socket_v1,
+    query_fixed_root_current_project_admission_stage_v1,
+    query_fixed_root_project_admission_outcome_v1, query_fixed_root_project_intent_v1,
+    query_fixed_root_project_reservation_cancellation_v1,
+    stage_fixed_root_project_admission_over_socket_v1,
+    submit_fixed_root_project_admission_over_socket_v1,
+};
 pub use root_v8_released_proof::{
     POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2, RootV8ReleasedProofV1, read_root_v8_released_proof_v1,
     validate_untrusted_root_v8_release_reply_frame_v1,
@@ -236,9 +282,22 @@ pub use source_hold_readback::{
 pub use source_hold_readback_v2::{
     SOURCE_HOLD_READBACK_BYTES_V2, verify_source_hold_readback_with_names_v2,
 };
+pub use source_project_admission_readback::{
+    SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1, SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1,
+    SourceProjectAdmissionChallengeErrorV1, preflight_source_project_admission_v1,
+    read_source_project_admission_status_v1, read_source_project_reservation_status_v1,
+    record_current_source_project_admission_challenge_v1,
+    record_source_project_abort_only_challenge_v1,
+    require_current_source_project_admission_challenge_v1, reserve_source_project_admission_v1,
+    settle_current_source_project_admission_challenge_v1, settle_source_project_reservation_v1,
+    verify_source_project_admission_readback_v1, verify_source_project_reservation_readback_v1,
+    verify_source_project_retirement_readback_v1,
+};
 #[cfg(target_os = "linux")]
 pub use source_signer_readback::{
-    SourceSignerReadbackErrorV1, sign_fixed_source_signer_readback_v1,
+    SourceSignerReadbackErrorV1, sign_fixed_source_project_admission_readback_v1,
+    sign_fixed_source_project_reservation_readback_v1,
+    sign_fixed_source_project_retirement_readback_v1, sign_fixed_source_signer_readback_v1,
     sign_fixed_source_signer_readback_v2,
 };
 #[cfg(target_os = "linux")]

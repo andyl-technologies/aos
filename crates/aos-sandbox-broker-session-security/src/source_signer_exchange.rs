@@ -20,12 +20,20 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::time::Duration;
 
-use aos_sandbox::journal::{ProtectedJournalNamesV1, SourceDomainPolicyHoldV1};
+use aos_sandbox::journal::{
+    ProtectedJournalNamesV1, SourceDomainPolicyHoldV1, SourceProjectAdmissionChallengeV1,
+    SourceProjectAdmissionReservationV1,
+};
 use aos_sandbox::policy_compiler::{
     PinnedSourceHoldReadbackSignerV1, SOURCE_HOLD_READBACK_BYTES_V1, SOURCE_HOLD_READBACK_BYTES_V2,
+    SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1, SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1,
     SourceHoldReadbackChallengeV1, StagedClosedPolicySignerChallengeV2,
-    sign_fixed_source_signer_readback_v1, sign_fixed_source_signer_readback_v2,
-    verify_current_source_hold_readback_v1, verify_source_hold_readback_with_names_v2,
+    sign_fixed_source_project_admission_readback_v1,
+    sign_fixed_source_project_reservation_readback_v1,
+    sign_fixed_source_project_retirement_readback_v1, sign_fixed_source_signer_readback_v1,
+    sign_fixed_source_signer_readback_v2, verify_current_source_hold_readback_v1,
+    verify_source_hold_readback_with_names_v2, verify_source_project_admission_readback_v1,
+    verify_source_project_reservation_readback_v1, verify_source_project_retirement_readback_v1,
 };
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use rustix::net::sockopt::{socket_acceptconn, socket_peercred};
@@ -40,9 +48,17 @@ const REQUEST_MAGIC: &[u8; 8] = b"AOSSSR01";
 const REPLY_MAGIC: &[u8; 8] = b"AOSSSP01";
 const REQUEST_NAMES_MAGIC: &[u8; 8] = b"AOSSSR02";
 const REPLY_NAMES_MAGIC: &[u8; 8] = b"AOSSSP02";
+const REQUEST_PROJECT_MAGIC: &[u8; 8] = b"AOSSSR03";
+const REPLY_PROJECT_MAGIC: &[u8; 8] = b"AOSSSP03";
+const REQUEST_RETIREMENT_MAGIC: &[u8; 8] = b"AOSSSR04";
+const REPLY_RETIREMENT_MAGIC: &[u8; 8] = b"AOSSSP04";
+const REQUEST_RESERVATION_MAGIC: &[u8; 8] = b"AOSSSR05";
+const REPLY_RESERVATION_MAGIC: &[u8; 8] = b"AOSSSP05";
 const REQUEST_BYTES: usize = 72;
 const REPLY_BYTES: usize = 8 + SOURCE_HOLD_READBACK_BYTES_V1;
 const REPLY_NAMES_BYTES: usize = 8 + SOURCE_HOLD_READBACK_BYTES_V2;
+const REPLY_PROJECT_BYTES: usize = 8 + SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1;
+const REPLY_RESERVATION_BYTES: usize = 8 + SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1;
 const FLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -68,11 +84,7 @@ pub fn request_root_source_signer_readback_v1(
     if project.as_bytes() == &[0; 16] || signer_uid == 0 || socket_gid == 0 {
         return Err(invalid_data("invalid Source signer request identity"));
     }
-    require_socket_path_custody(signer_uid, socket_gid)?;
-    let mut stream = UnixStream::connect(SOURCE_SIGNER_SOCKET_PATH_V1)?;
-    require_socket_path_custody(signer_uid, socket_gid)?;
-    stream.set_read_timeout(Some(REPLY_TIMEOUT))?;
-    stream.set_write_timeout(Some(FLIGHT_TIMEOUT))?;
+    let mut stream = connect_source_signer(signer_uid, socket_gid)?;
 
     let request = encode_request(challenge, project);
     stream.write_all(&request)?;
@@ -105,11 +117,7 @@ pub fn request_root_source_signer_readback_with_names_v2(
     if project.as_bytes() == &[0; 16] || signer_uid == 0 || socket_gid == 0 {
         return Err(invalid_data("invalid Source signer request identity"));
     }
-    require_socket_path_custody(signer_uid, socket_gid)?;
-    let mut stream = UnixStream::connect(SOURCE_SIGNER_SOCKET_PATH_V1)?;
-    require_socket_path_custody(signer_uid, socket_gid)?;
-    stream.set_read_timeout(Some(REPLY_TIMEOUT))?;
-    stream.set_write_timeout(Some(FLIGHT_TIMEOUT))?;
+    let mut stream = connect_source_signer(signer_uid, socket_gid)?;
 
     let mut request = encode_request(challenge, project);
     request[..8].copy_from_slice(REQUEST_NAMES_MAGIC);
@@ -156,6 +164,141 @@ pub fn request_root_staged_q04_source_readback_v2(
         signer_uid,
         socket_gid,
     )
+}
+
+/// Requests an independent Source-only pre-Q04 ancestry readback as Root.
+///
+/// The expected AOSQPA01 row must come from the Controller-retained Source
+/// writer. The signer independently replays its read-only idmapped view and
+/// Root compares the reply to its pinned Source key and stage challenge.
+///
+/// # Errors
+///
+/// Rejects unsafe socket custody, wrong signer, stale row or ancestry,
+/// malformed framing, transport loss, or substituted names.
+pub fn request_root_source_project_admission_readback_v1(
+    challenge: SourceHoldReadbackChallengeV1,
+    expected: SourceProjectAdmissionChallengeV1,
+    reservation_digest: ObjectDigest,
+    signer: &PinnedSourceHoldReadbackSignerV1,
+    signer_uid: u32,
+    socket_gid: u32,
+) -> io::Result<[u8; SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1]> {
+    let project = expected.project();
+    if project.as_bytes() == &[0; 16]
+        || signer_uid == 0
+        || socket_gid == 0
+        || expected.nonce() != challenge.nonce()
+        || expected.cut() != challenge.cut()
+    {
+        return Err(invalid_data("invalid Source project-admission challenge"));
+    }
+    let mut stream = connect_source_signer(signer_uid, socket_gid)?;
+    let mut request = encode_request(challenge, project);
+    request[..8].copy_from_slice(REQUEST_PROJECT_MAGIC);
+    stream.write_all(&request)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let packet = read_project_reply(&mut stream)?;
+    verify_source_project_admission_readback_v1(
+        &packet,
+        signer,
+        challenge,
+        project,
+        expected,
+        reservation_digest,
+    )
+    .map_err(io::Error::other)?;
+    Ok(packet)
+}
+
+/// Requests a Source-only exact-row retirement proof as Root.
+///
+/// This separate signer mode never attests current ancestry and cannot be
+/// substituted for an admission packet. Root uses it only for durable abort.
+///
+/// # Errors
+///
+/// Rejects foreign signer/socket custody, changed row/names, malformed frame,
+/// or signature mismatch against the pinned Source-only role.
+pub fn request_root_source_project_retirement_readback_v1(
+    challenge: SourceHoldReadbackChallengeV1,
+    expected: SourceProjectAdmissionChallengeV1,
+    reservation_digest: ObjectDigest,
+    signer: &PinnedSourceHoldReadbackSignerV1,
+    signer_uid: u32,
+    socket_gid: u32,
+) -> io::Result<[u8; SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1]> {
+    if expected.nonce() != challenge.nonce()
+        || expected.cut() != challenge.cut()
+        || signer_uid == 0
+        || socket_gid == 0
+    {
+        return Err(invalid_data("invalid Source project-retirement challenge"));
+    }
+    let mut stream = connect_source_signer(signer_uid, socket_gid)?;
+    let mut request = encode_request(challenge, expected.project());
+    request[..8].copy_from_slice(REQUEST_RETIREMENT_MAGIC);
+    stream.write_all(&request)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let packet = read_project_retirement_reply(&mut stream)?;
+    verify_source_project_retirement_readback_v1(
+        &packet,
+        signer,
+        challenge,
+        expected.project(),
+        expected,
+        reservation_digest,
+    )
+    .map_err(io::Error::other)?;
+    Ok(packet)
+}
+
+/// Reads an independently signed exact Source reservation before Root stage.
+///
+/// Root supplies the Controller-held typed row but accepts it only after the
+/// fixed Source signer replays the same unconsumed row and physical names.
+///
+/// # Errors
+///
+/// Rejects changed custody, row, signer pin, framing, or transport.
+pub fn request_root_source_project_reservation_readback_v1(
+    expected: SourceProjectAdmissionReservationV1,
+    signer: &PinnedSourceHoldReadbackSignerV1,
+    signer_uid: u32,
+    socket_gid: u32,
+) -> io::Result<[u8; SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1]> {
+    if signer_uid == 0 || socket_gid == 0 {
+        return Err(invalid_data("invalid Source reservation signer identity"));
+    }
+    let challenge =
+        SourceHoldReadbackChallengeV1::new(expected.client_nonce(), expected.record_digest())
+            .map_err(io::Error::other)?;
+    let mut stream = connect_source_signer(signer_uid, socket_gid)?;
+    let mut request = encode_request(challenge, expected.project());
+    request[..8].copy_from_slice(REQUEST_RESERVATION_MAGIC);
+    stream.write_all(&request)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let mut reply = [0; REPLY_RESERVATION_BYTES];
+    stream.read_exact(&mut reply)?;
+    let mut trailing = [0];
+    if &reply[..8] != REPLY_RESERVATION_MAGIC || stream.read(&mut trailing)? != 0 {
+        return Err(invalid_data("invalid Source reservation reply"));
+    }
+    let packet: [u8; SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1] = reply[8..]
+        .try_into()
+        .map_err(|_| invalid_data("invalid Source reservation packet length"))?;
+    verify_source_project_reservation_readback_v1(&packet, signer, expected)
+        .map_err(io::Error::other)?;
+    Ok(packet)
+}
+
+fn connect_source_signer(signer_uid: u32, socket_gid: u32) -> io::Result<UnixStream> {
+    require_socket_path_custody(signer_uid, socket_gid)?;
+    let stream = UnixStream::connect(SOURCE_SIGNER_SOCKET_PATH_V1)?;
+    require_socket_path_custody(signer_uid, socket_gid)?;
+    stream.set_read_timeout(Some(REPLY_TIMEOUT))?;
+    stream.set_write_timeout(Some(FLIGHT_TIMEOUT))?;
+    Ok(stream)
 }
 
 fn encode_request(
@@ -219,6 +362,34 @@ fn read_names_reply(stream: &mut UnixStream) -> io::Result<[u8; SOURCE_HOLD_READ
     reply[8..]
         .try_into()
         .map_err(|_| invalid_data("invalid Source signer names packet length"))
+}
+
+fn read_project_reply(
+    stream: &mut UnixStream,
+) -> io::Result<[u8; SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1]> {
+    let mut reply = [0; REPLY_PROJECT_BYTES];
+    stream.read_exact(&mut reply)?;
+    let mut trailing = [0];
+    if &reply[..8] != REPLY_PROJECT_MAGIC || stream.read(&mut trailing)? != 0 {
+        return Err(invalid_data("invalid Source project-admission reply"));
+    }
+    reply[8..]
+        .try_into()
+        .map_err(|_| invalid_data("invalid Source project-admission packet length"))
+}
+
+fn read_project_retirement_reply(
+    stream: &mut UnixStream,
+) -> io::Result<[u8; SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1]> {
+    let mut reply = [0; REPLY_PROJECT_BYTES];
+    stream.read_exact(&mut reply)?;
+    let mut trailing = [0];
+    if &reply[..8] != REPLY_RETIREMENT_MAGIC || stream.read(&mut trailing)? != 0 {
+        return Err(invalid_data("invalid Source project-retirement reply"));
+    }
+    reply[8..]
+        .try_into()
+        .map_err(|_| invalid_data("invalid Source project-retirement packet length"))
 }
 
 fn require_socket_path_custody(signer_uid: u32, socket_gid: u32) -> io::Result<()> {
@@ -315,9 +486,46 @@ fn serve_request(
     if stream.read(&mut trailing)? != 0 {
         return Err(invalid_data("trailing Source signer request bytes").into());
     }
-    let (challenge, project, with_names) = decode_request_mode(&request)?;
+    let (challenge, project, mode) = decode_request_mode(&request)?;
     let signing_key = credentials.signing_key()?;
-    if with_names {
+    if mode == SourceSignerRequestModeV1::ProjectAdmission {
+        let packet = sign_fixed_source_project_admission_readback_v1(
+            controller_uid,
+            project,
+            challenge,
+            credentials.generation(),
+            &signing_key,
+        )?;
+        let mut reply = [0; REPLY_PROJECT_BYTES];
+        reply[..8].copy_from_slice(REPLY_PROJECT_MAGIC);
+        reply[8..].copy_from_slice(&packet);
+        stream.write_all(&reply)?;
+    } else if mode == SourceSignerRequestModeV1::ProjectReservation {
+        let packet = sign_fixed_source_project_reservation_readback_v1(
+            controller_uid,
+            challenge.nonce(),
+            project,
+            challenge.cut(),
+            credentials.generation(),
+            &signing_key,
+        )?;
+        let mut reply = [0; REPLY_RESERVATION_BYTES];
+        reply[..8].copy_from_slice(REPLY_RESERVATION_MAGIC);
+        reply[8..].copy_from_slice(&packet);
+        stream.write_all(&reply)?;
+    } else if mode == SourceSignerRequestModeV1::ProjectRetirement {
+        let packet = sign_fixed_source_project_retirement_readback_v1(
+            controller_uid,
+            project,
+            challenge,
+            credentials.generation(),
+            &signing_key,
+        )?;
+        let mut reply = [0; REPLY_PROJECT_BYTES];
+        reply[..8].copy_from_slice(REPLY_RETIREMENT_MAGIC);
+        reply[8..].copy_from_slice(&packet);
+        stream.write_all(&reply)?;
+    } else if mode == SourceSignerRequestModeV1::HeldNames {
         let packet = sign_fixed_source_signer_readback_v2(
             controller_uid,
             project,
@@ -348,15 +556,38 @@ fn serve_request(
 
 fn decode_request_mode(
     request: &[u8; REQUEST_BYTES],
-) -> io::Result<(SourceHoldReadbackChallengeV1, ProjectId, bool)> {
-    let with_names = &request[..8] == REQUEST_NAMES_MAGIC;
-    if !with_names && &request[..8] != REQUEST_MAGIC {
-        return Err(invalid_data("foreign Source signer request"));
-    }
+) -> io::Result<(
+    SourceHoldReadbackChallengeV1,
+    ProjectId,
+    SourceSignerRequestModeV1,
+)> {
+    let mode = match request.get(..8) {
+        Some(magic) if magic == REQUEST_MAGIC => SourceSignerRequestModeV1::Held,
+        Some(magic) if magic == REQUEST_NAMES_MAGIC => SourceSignerRequestModeV1::HeldNames,
+        Some(magic) if magic == REQUEST_PROJECT_MAGIC => {
+            SourceSignerRequestModeV1::ProjectAdmission
+        }
+        Some(magic) if magic == REQUEST_RETIREMENT_MAGIC => {
+            SourceSignerRequestModeV1::ProjectRetirement
+        }
+        Some(magic) if magic == REQUEST_RESERVATION_MAGIC => {
+            SourceSignerRequestModeV1::ProjectReservation
+        }
+        _ => return Err(invalid_data("foreign Source signer request")),
+    };
     let mut canonical = *request;
     canonical[..8].copy_from_slice(REQUEST_MAGIC);
     let (challenge, project) = decode_request(&canonical)?;
-    Ok((challenge, project, with_names))
+    Ok((challenge, project, mode))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SourceSignerRequestModeV1 {
+    Held,
+    HeldNames,
+    ProjectAdmission,
+    ProjectRetirement,
+    ProjectReservation,
 }
 
 #[cfg(test)]
@@ -378,7 +609,37 @@ mod tests {
         names[..8].copy_from_slice(REQUEST_NAMES_MAGIC);
         assert_eq!(
             decode_request_mode(&names).expect("names request"),
-            (challenge, project, true)
+            (challenge, project, SourceSignerRequestModeV1::HeldNames)
+        );
+        let mut project_admission = bytes;
+        project_admission[..8].copy_from_slice(REQUEST_PROJECT_MAGIC);
+        assert_eq!(
+            decode_request_mode(&project_admission).expect("project admission request"),
+            (
+                challenge,
+                project,
+                SourceSignerRequestModeV1::ProjectAdmission
+            )
+        );
+        let mut retirement = bytes;
+        retirement[..8].copy_from_slice(REQUEST_RETIREMENT_MAGIC);
+        assert_eq!(
+            decode_request_mode(&retirement).expect("project retirement request"),
+            (
+                challenge,
+                project,
+                SourceSignerRequestModeV1::ProjectRetirement
+            )
+        );
+        let mut reservation = bytes;
+        reservation[..8].copy_from_slice(REQUEST_RESERVATION_MAGIC);
+        assert_eq!(
+            decode_request_mode(&reservation).expect("project reservation request"),
+            (
+                challenge,
+                project,
+                SourceSignerRequestModeV1::ProjectReservation
+            )
         );
 
         let mut foreign = bytes;

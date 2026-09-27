@@ -459,6 +459,7 @@ in {
           "aos-sandbox-mountd.service"
           "aos-netd.service"
         ]
+        ++ lib.optional policyAuthority.enable "aos-sandbox-policy-authorityd.service"
         ++ lib.optional policyAuthority.enable "aos-sandbox-cache-journal-view.service"
         ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service"
         ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service"
@@ -472,6 +473,7 @@ in {
           "aos-netd.service"
           "local-fs.target"
         ]
+        ++ lib.optional policyAuthority.enable "aos-sandbox-policy-authorityd.service"
         ++ lib.optional policyAuthority.enable "aos-sandbox-cache-journal-view.service"
         ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service"
         ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service"

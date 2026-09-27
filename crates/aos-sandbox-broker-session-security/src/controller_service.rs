@@ -2146,6 +2146,10 @@ impl ProductionEffectExecutor {
             ProtectedSourceDomainJournalOwnerV1::open_fixed_protected_for_uid(controller_uid)?;
         aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(&mut source_domains)?
             .replay()?;
+        crate::project_admission_coordinator::recover_source_project_admission_v1(
+            &mut source_domains,
+        )
+        .map_err(ControllerRuntimeError::ProjectAdmissionRecovery)?;
 
         Ok(Self {
             sessions,
@@ -2196,7 +2200,8 @@ impl ProductionEffectExecutor {
         operation_id: OperationId,
         plan: &EffectPlan,
         journal: &mut Journal,
-    ) -> Result<(), EffectFailure> {
+    ) -> Result<aos_sandbox::policy_compiler::CurrentCreateProjectPolicySourceV1, EffectFailure>
+    {
         // A generic lifecycle recovery must never become a Create receipt.
         if self.pending_source_commit.is_some() {
             return Err(EffectFailure::Retryable(
@@ -3906,7 +3911,7 @@ fn require_current_parentless_create_source(
     scope: ControllerRequestScopeV1,
     effect_plan: &EffectPlan,
     journal: &mut Journal,
-) -> Result<(), EffectFailure> {
+) -> Result<aos_sandbox::policy_compiler::CurrentCreateProjectPolicySourceV1, EffectFailure> {
     aos_sandbox::policy_compiler::current_parentless_create_project_source_for_operation_v1(
         journal,
         operation,
@@ -3916,8 +3921,7 @@ fn require_current_parentless_create_source(
     )
     .map_err(|error| {
         EffectFailure::Retryable(format!("admitted Create source is not current: {error}"))
-    })?;
-    Ok(())
+    })
 }
 
 const fn is_lifecycle_mutation(request: &DormantSandboxRequestKindV1) -> bool {
@@ -4171,9 +4175,30 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         if plan.public_mutation_method()
             == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CreateSandbox)
         {
-            // The public effect reaches this exact admitted Source selector but
-            // cannot yet construct the held four-owner V8 compiler input.
-            self.require_current_create_effect(operation_id, plan, journal)?;
+            let source = self.require_current_create_effect(operation_id, plan, journal)?;
+            let progress =
+                crate::project_admission_coordinator::advance_create_project_admission_v1(
+                    journal,
+                    &mut self.source_domains,
+                    &source,
+                    self.request_scope,
+                    plan,
+                )
+                .map_err(|error| {
+                    EffectFailure::Retryable(format!(
+                        "protected project admission is pending: {error}"
+                    ))
+                })?;
+            if matches!(
+                progress,
+                crate::project_admission_coordinator::ProjectAdmissionProgressV1::RetiredPrior
+            ) {
+                return Err(EffectFailure::Retryable(
+                    "prior project admission was retired; retry exact Create".to_owned(),
+                ));
+            }
+            // V2 source admission is a prerequisite, not the held four-owner
+            // compiler publication or a public Create completion.
             return Err(EffectFailure::Retryable(
                 CREATE_Q04_AUTHORITY_PENDING.to_owned(),
             ));
@@ -5634,6 +5659,9 @@ impl SystemdReadyNotifier {
 /// Reports activation, recovery, reconciliation, or serving failure.
 #[derive(Debug, thiserror::Error)]
 pub enum ControllerRuntimeError {
+    /// Pre-Q04 project admission could not be replayed to an exact Root outcome.
+    #[error("controller project-admission recovery failed: {0}")]
+    ProjectAdmissionRecovery(std::io::Error),
     /// Protected public TLS credentials are missing, unsafe, or invalid.
     #[error(transparent)]
     PublicSession(#[from] aos_sandbox::public_api_session::PublicApiSessionError),
