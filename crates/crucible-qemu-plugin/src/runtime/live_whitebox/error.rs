@@ -36,7 +36,7 @@ pub enum LiveWhiteboxError {
     /// A second logical restore attempted to reuse the consumed catalog.
     #[error("live selectable restore continuation was already applied")]
     SelectableRestoreAlreadyApplied,
-    /// A selectable message arrived without a negotiated v3 catalog plan.
+    /// A selectable message arrived without a negotiated v4 catalog plan.
     #[error("live selectable doorbell message arrived without a catalog plan")]
     SelectableNotConfigured,
     /// The mapped setup region could not expose this VM's marker queue.
