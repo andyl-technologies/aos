@@ -61,8 +61,8 @@ struct WorkerR2BucketAdapter {
 }
 
 /// Executes admitted external-storage reads through the same S3 signing path
-/// used by Worker-only mode. Unsupported operations remain unavailable until
-/// their provider-specific idempotency and identity checks are implemented.
+/// used by Worker-only mode. Mutations remain unavailable until their
+/// provider-specific idempotency and identity checks are implemented.
 ///
 /// # Errors
 ///
@@ -76,10 +76,6 @@ pub(crate) async fn execute_external_storage_work(
     let now = aos_hub_core::clock::now_unix_secs();
     let deployment_id = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     publication.snapshot.authorizes(plan, &deployment_id, now)?;
-    let StorageWorkOperation::Head { path } = &plan.operation else {
-        return Ok(None);
-    };
-
     let credential = if publication.snapshot.access_mode == "private" {
         let selector = plan
             .credential_references
@@ -98,39 +94,107 @@ pub(crate) async fn execute_external_storage_work(
         now,
     )?;
 
-    let url = surface.object_url(S3Method::Head, path, now)?;
-    let response = WorkerEgressClient::direct()
-        .send(&url, "HEAD", None, None, None, None, None)
-        .await
-        .context("external storage HEAD failed")?;
-    let outcome = if response.status_code() == 404 {
-        StorageWorkOutcome::NotFound
-    } else {
-        anyhow::ensure!(
-            response.status_code() == 200,
-            "external storage HEAD returned HTTP {}",
-            response.status_code()
-        );
-        let size = response
-            .headers()
-            .get("content-length")?
-            .context("external storage HEAD has no Content-Length")?
-            .parse::<u64>()
-            .context("external storage HEAD has an invalid Content-Length")?;
-        let etag = response
-            .headers()
-            .get("etag")?
-            .context("external storage HEAD has no ETag")?;
-        let etag = aos_hub_core::surface_write::strong_if_match_etag(&etag)?;
-        StorageWorkOutcome::Head {
-            object: StorageObjectIdentity {
-                key: plan.object_key(path)?,
-                size,
-                etag,
-            },
-        }
+    let egress = Arc::new(WorkerEgressClient::direct());
+    let fetcher = S3SurfaceFetch {
+        surface,
+        egress: Arc::clone(&egress),
     };
-    Ok(Some(storage_work_result(plan, outcome, 0)))
+    let (outcome, source_bytes) = match &plan.operation {
+        StorageWorkOperation::Head { path } => {
+            let url = fetcher.surface.object_url(S3Method::Head, path, now)?;
+            let response = egress
+                .send(&url, "HEAD", None, None, None, None, None)
+                .await
+                .context("external storage HEAD failed")?;
+            let outcome = if response.status_code() == 404 {
+                StorageWorkOutcome::NotFound
+            } else {
+                anyhow::ensure!(
+                    response.status_code() == 200,
+                    "external storage HEAD returned HTTP {}",
+                    response.status_code()
+                );
+                let size = response
+                    .headers()
+                    .get("content-length")?
+                    .context("external storage HEAD has no Content-Length")?
+                    .parse::<u64>()
+                    .context("external storage HEAD has an invalid Content-Length")?;
+                let etag = response
+                    .headers()
+                    .get("etag")?
+                    .context("external storage HEAD has no ETag")?;
+                let etag = aos_hub_core::surface_write::strong_if_match_etag(&etag)?;
+                StorageWorkOutcome::Head {
+                    object: StorageObjectIdentity {
+                        key: plan.object_key(path)?,
+                        size,
+                        etag,
+                    },
+                }
+            };
+            (outcome, 0)
+        }
+        StorageWorkOperation::InspectSha256 {
+            path,
+            expected_sha256,
+            max_source_bytes,
+        } => {
+            let Some(evidence) = fetcher
+                .inventory_evidence_bounded(path, *max_source_bytes)
+                .await?
+            else {
+                return Ok(Some(storage_work_result(
+                    plan,
+                    StorageWorkOutcome::NotFound,
+                    0,
+                )));
+            };
+            let sha256 = hex::encode(evidence.sha256);
+            if let Some(expected) = expected_sha256 {
+                anyhow::ensure!(
+                    sha256.eq_ignore_ascii_case(expected),
+                    "external object SHA-256 does not match the plan"
+                );
+            }
+            let size = u64::try_from(evidence.size).context("external object size is negative")?;
+            let etag = evidence
+                .strong_etag
+                .context("external object has no strong ETag")?;
+            (
+                StorageWorkOutcome::Sha256Evidence {
+                    object: StorageObjectIdentity {
+                        key: plan.object_key(path)?,
+                        size,
+                        etag,
+                    },
+                    sha256,
+                },
+                size,
+            )
+        }
+        StorageWorkOperation::InspectMetadata { path } => {
+            let Some((bytes, source)) =
+                read_bounded_source(&fetcher, plan, path, MAX_METADATA_BYTES).await?
+            else {
+                return Ok(Some(storage_work_result(
+                    plan,
+                    StorageWorkOutcome::NotFound,
+                    0,
+                )));
+            };
+            let source_bytes = source.size;
+            (
+                StorageWorkOutcome::Metadata {
+                    source,
+                    content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                },
+                source_bytes,
+            )
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(storage_work_result(plan, outcome, source_bytes)))
 }
 
 /// Executes a signed, validated storage plan against the deployment R2 bucket.
@@ -815,7 +879,7 @@ fn project_git_loose(
 }
 
 async fn read_bounded_source(
-    fetcher: &R2SurfaceFetch,
+    fetcher: &dyn SurfaceFetch,
     plan: &StorageWorkPlan,
     path: &str,
     maximum: usize,

@@ -569,15 +569,35 @@ in {
       )
       assert absent_status == "200", (absent_status, absent_response)
       assert json.loads(absent_response)["outcome"]["kind"] == "not_found"
-      unsupported_status, _ = external_binding_plan(
+      hash_status, hash_response = external_binding_plan(
           published_revision,
           {
               "kind": "inspect_sha256",
               "path": "exists",
-              "expected_sha256": None,
+              "expected_sha256": hashlib.sha256(s3_object).hexdigest(),
               "max_source_bytes": 1024,
           },
           "d" * 32,
+      )
+      assert hash_status == "200", (hash_status, hash_response)
+      hash_result = json.loads(hash_response)
+      assert hash_result["outcome"]["kind"] == "sha256_evidence", hash_result
+      assert hash_result["outcome"]["sha256"] == hashlib.sha256(s3_object).hexdigest()
+      assert hash_result["source_bytes"] == len(s3_object), hash_result
+      metadata_status, metadata_response = external_binding_plan(
+          published_revision,
+          {"kind": "inspect_metadata", "path": "exists"},
+          "b" * 32,
+      )
+      assert metadata_status == "200", (metadata_status, metadata_response)
+      metadata_result = json.loads(metadata_response)
+      assert metadata_result["outcome"]["kind"] == "metadata", metadata_result
+      assert base64.b64decode(metadata_result["outcome"]["content_base64"]) == s3_object
+      assert metadata_result["source_bytes"] == len(s3_object), metadata_result
+      unsupported_status, _ = external_binding_plan(
+          published_revision,
+          {"kind": "inspect_git_object", "oid": "0" * 40},
+          "a" * 32,
       )
       assert unsupported_status == "501", unsupported_status
       revoke_issued_at = max(binding_issued_at + 1, int(time.time()))
@@ -597,7 +617,7 @@ in {
       assert revoked_status == "409", revoked_status
       replay_status, _ = post_binding_control(publish_binding)
       assert replay_status == "503", replay_status
-      print("hybrid S3 HEAD, binding revocation, and replay fence: passed")
+      print("hybrid S3 HEAD, inspection, binding revocation, and replay fence: passed")
 
       now = int(time.time())
       plan = {
