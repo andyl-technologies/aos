@@ -1131,12 +1131,16 @@ in
       pname = "crucible-phase1-content-address";
       version = "0";
       src = crucibleSrc;
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
 
       buildDeps =
         [
           pkgs.coreutils
+          pkgs.pkg-config
           pkgs.rust
           pkgs.sed
+          pkgs.sqlite
         ]
         ++ dependencies;
 
