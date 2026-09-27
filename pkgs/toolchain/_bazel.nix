@@ -32,6 +32,7 @@
   file,
   patchelf,
   bazel-bootstrap,
+  nativeBazelBootstrap ? null,
   qemu-img ? null,
   bootstrapTools,
   gcc-libs,
@@ -175,22 +176,22 @@
     then buildPackages.patchelf
     else patchelf;
   buildBazelBootstrap =
-    if isCross
+    if nativeBazelBootstrap != null
+    then nativeBazelBootstrap
+    else if isCross
     then buildPackages.bazel-bootstrap
     else bazel-bootstrap;
   buildProguard = buildBazelBootstrap.passthru.offlineProguard;
   sourceRemoteJavaTools = import ./_bazel-remote-java-tools.nix {
-    inherit mkDerivation buildPackages;
+    inherit buildPackages;
+    mkDerivation = buildPackages.mkDerivation;
     bazelSource = src;
     bazelBootstrap = buildBazelBootstrap;
     bazelAsm = buildBazelBootstrap.passthru.offlineAsm;
     bazelJacoco = buildBazelBootstrap.passthru.offlineJacoco;
     bazelProguard = buildProguard;
     bazelErrorProne = buildBazelBootstrap.passthru.offlineErrorProne;
-    mavenRepositories = builtins.attrValues (lib.filterAttrs (
-        name: path: path != null && lib.strings.hasPrefix "rules_jvm_external++maven+" name
-      )
-      buildBazelBootstrap.passthru.offlineRepositories);
+    mavenRepositories = [buildBazelBootstrap.passthru.offlineMavenJars];
   };
   buildQemuImg =
     if isCross
@@ -1277,26 +1278,26 @@ in
 
     buildDeps =
       [
-        bash
-        coreutils
-        which
-        zip
-        unzip
-        gawk
-        python3
-        openjdk-21
-        gcc
-        binutils
-        grep
-        gzip
-        patch
-        diffutils
-        findutils
-        sed
-        tar
-        xz
-        file
-        patchelf
+        buildBash
+        buildCoreutils
+        buildWhich
+        buildZip
+        buildUnzip
+        buildGawk
+        buildPython3
+        buildOpenjdk
+        buildGcc
+        buildBinutils
+        buildGrep
+        buildGzip
+        buildPatch
+        buildDiffutils
+        buildFindutils
+        buildSed
+        buildTar
+        buildXz
+        buildFile
+        buildPatchelf
       ]
       ++ lib.optional (source != null) buildQemuImg
       ++ lib.optionals (source != null && version == "7.7.1") [buildProguard buildOpenjdk8];

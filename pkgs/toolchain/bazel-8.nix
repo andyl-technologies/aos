@@ -42,7 +42,16 @@
     reason = "Bazel source and repository dependencies form one curated artifact graph that requires maintainer review.";
     successorUnit = "bazel-9";
   };
-  bazelBootstrap8 = callPackage ./bazel-bootstrap.nix {bootstrapVersion = "8.6.0";};
+  # The bootstrap runs on the Linux build machine even for Darwin outputs.
+  bootstrapArguments =
+    builtins.intersectAttrs
+    (builtins.functionArgs (import ./bazel-bootstrap.nix))
+    buildPackages;
+  bazelBootstrap8 = callPackage ./bazel-bootstrap.nix (bootstrapArguments
+    // {
+      inherit buildPackages;
+      bootstrapVersion = "8.6.0";
+    });
   mkBazel = import ./_bazel.nix {
     inherit
       mkDerivation
@@ -76,6 +85,7 @@
       llvm
       ;
     bazel-bootstrap = bazelBootstrap8;
+    nativeBazelBootstrap = bazelBootstrap8;
   };
 in
   mkBazel {

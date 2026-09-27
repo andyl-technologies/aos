@@ -931,6 +931,10 @@ let
     "toolchain/_bazel-netty-tcnative-native.nix" = "cross-build-helper";
     "toolchain/_bazel-netty-transport-extras.nix" = "native-build-helper";
     "toolchain/_bazel-offline-modules.nix" = "target-independent-source";
+    "toolchain/_bazel-netty-93-native-repositories.nix" = "native-build-helper";
+    "toolchain/_bazel-netty-93-repositories.nix" = "native-build-helper";
+    "toolchain/_bazel-proguard.nix" = "native-build-helper";
+    "toolchain/_bazel-remote-java-tools.nix" = "native-build-helper";
     "toolchain/_bazel-pcollections-sources.nix" = "target-independent-source";
     "toolchain/_bazel-pcollections.nix" = "native-build-helper";
     "toolchain/_bazel-platforms-source.nix" = "target-independent-source";
