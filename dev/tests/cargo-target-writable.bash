@@ -39,6 +39,7 @@ test "$(cat "$cross_output/tool")" = 'cached tool'
 header_inode=$(stat -c %i "$output/read only.h")
 aos_prepare_cargo_build_outputs "$target"
 test "$(stat -c %i "$output/read only.h")" = "$header_inode"
+aos_prepare_cargo_build_outputs "$target//"
 
 printf 'rebuilt header\n' > "$scratch/new-header"
 cp "$scratch/new-header" "$output/read only.h"

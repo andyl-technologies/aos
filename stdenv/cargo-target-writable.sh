@@ -1,7 +1,11 @@
 # Prepare Cargo build-script outputs for reuse by a different Nix build UID.
 # The caller holds the target's source lock throughout the build.
 aos_prepare_cargo_build_outputs() (
-  aos_target_dir=${1%/}
+  aos_target_dir=$1
+
+  while [ "${aos_target_dir%/}" != "$aos_target_dir" ]; do
+    aos_target_dir=${aos_target_dir%/}
+  done
 
   case $aos_target_dir in
     / | '')
@@ -31,6 +35,12 @@ aos_prepare_cargo_build_outputs() (
       # tree. find itself does not follow symlinks within an output directory.
       aos_component=$aos_output_dir
       while [ "$aos_component" != "$aos_target_dir" ]; do
+        case $aos_component in
+          / | '')
+            echo "shared Cargo build output escapes its target: $aos_output_dir" >&2
+            return 1
+            ;;
+        esac
         if [ -L "$aos_component" ]; then
           echo "shared Cargo build output crosses a symlink: $aos_component" >&2
           return 1
