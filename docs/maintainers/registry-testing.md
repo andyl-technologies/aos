@@ -204,7 +204,7 @@ aos-release-signer show
 ## Publish the first or a later edge release
 
 The prepared first-release profile uses
-`2026.9.0-dev.20260917.1`. For every later edge release, update
+`2026.9.0-dev.20260927.1`. For every later edge release, update
 `aos.system.version` in the testing profile to the next calendar SemVer
 `YYYY.M.P-dev.YYYYMMDD.N` through the reviewed source-update workflow before
 building. That value is the disk version and the OCI signed release identity;
