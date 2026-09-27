@@ -943,15 +943,18 @@ pub fn with_current_create_cache_signer_terminal_barrier_v6<Prepared, Output>(
 /// Cache, and physical guards are held. Cache then completes its final
 /// postflight before `release` may send a signed Root release command. The
 /// callback must return only after authenticating typed Root Released custody.
-/// Cache performs another postflight and durably retires its hold before this
-/// function returns. The result preserves both the actual held row sampled
-/// under Cache's writer and the exact released row read back after commit.
+/// Controller then durably floors the exact Root marker and held Cache/Source
+/// rows before Cache may retire its hold. Cache performs another postflight
+/// and durably retires its hold before this function returns. The result
+/// preserves the actual held row sampled under Cache's writer and the exact
+/// released row read back after commit.
 /// Source and Controller remain held; public Create and Apply remain closed.
 ///
 /// # Errors
 ///
-/// Rejects changed owner custody, failed callbacks, or unsuccessful Cache
-/// retirement. A failed callback leaves the Cache hold active.
+/// Rejects changed owner custody, failed callbacks, ambiguous Controller floor,
+/// or unsuccessful Cache retirement. A failed floor leaves Cache held so exact
+/// Root Released custody and the floor can be replayed on recovery.
 #[cfg(target_os = "linux")]
 #[allow(clippy::too_many_arguments)]
 pub fn with_current_create_cache_signer_release_barrier_v7<Prepared>(
@@ -992,6 +995,9 @@ pub fn with_current_create_cache_signer_release_barrier_v7<Prepared>(
                 cut.validate_released_root_proof(controller, &cache_readback, output)?;
                 cut.revalidate(controller, source_domains, operation, sandbox)
                     .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+                cut.record_pre_release_floor(controller, source_domains, &cache_readback, output)?;
+                cut.revalidate(controller, source_domains, operation, sandbox)
+                    .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
                 Ok((output, actual_held))
             }))
         })
@@ -1003,7 +1009,10 @@ pub fn with_current_create_cache_signer_release_barrier_v7<Prepared>(
 ///
 /// The callback must replay exact Root Released evidence after Cache's final
 /// postflight. This path commits no new release and returns the canonical
-/// Cache released row retained by its writer. Public Create remains closed.
+/// Cache released row retained by its writer. The prior Controller floor must
+/// match Root's marker and the actual held Source and Cache rows; Cache's
+/// pending V8 marker authenticates the historical held row. Public Create
+/// remains closed.
 ///
 /// # Errors
 ///
@@ -1034,7 +1043,7 @@ pub fn with_current_create_cache_signer_released_barrier_v8<Prepared>(
     let cut = HeldCreateSourceCut::begin(controller, source_domains, operation, sandbox)?;
 
     cache
-        .with_released_cache_owner_readback_v5(physical, |held| {
+        .with_released_cache_owner_readback_v5(physical, |held, historical_cache_held| {
             let heads = cut.cache_heads(held)?;
             let cache_readback = held.clone();
             let prepared = inspect(controller, source_domains, &cut.source, heads, held)?;
@@ -1043,6 +1052,12 @@ pub fn with_current_create_cache_signer_released_barrier_v8<Prepared>(
                     .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
                 let proof = replay(controller, source_domains, prepared)?;
                 cut.validate_released_root_proof(controller, &cache_readback, proof)?;
+                cut.require_pre_release_floor(
+                    controller,
+                    source_domains,
+                    historical_cache_held,
+                    proof,
+                )?;
                 cut.revalidate(controller, source_domains, operation, sandbox)
                     .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
                 Ok(proof)
@@ -1165,6 +1180,62 @@ impl HeldCreateSourceCut {
             return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
         }
         Ok(())
+    }
+
+    fn record_pre_release_floor(
+        &self,
+        controller: &mut Journal,
+        source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+        cache: &CacheResidencyWriterReadbackV2,
+        proof: RootV8ReleasedProofV1,
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+        let source_held = self.current_source_hold(source_domains)?;
+        let cache_held = cache.hold();
+
+        // The Controller journal verifies exact postcommit readback before returning.
+        controller.record_controller_policy_v8_pre_release_floor_v1(
+            self.controller_hold,
+            proof.ack(),
+            proof.release_marker_digest(),
+            cache_held,
+            source_held,
+        )?;
+        Ok(())
+    }
+
+    fn require_pre_release_floor(
+        &self,
+        controller: &Journal,
+        source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+        cache_held: CachePolicyHoldV1,
+        proof: RootV8ReleasedProofV1,
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+        let source_held = self.current_source_hold(source_domains)?;
+        if !cache_held.is_held() {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        let floor = controller
+            .controller_policy_v8_pre_release_floor_v1()?
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        if floor.root_release_marker_digest() != proof.release_marker_digest()
+            || floor.cache_held_digest() != cache_held.record_digest()?
+            || floor.source_held_digest() != source_held.record_digest()?
+        {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        Ok(())
+    }
+
+    fn current_source_hold(
+        &self,
+        source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    ) -> Result<SourceDomainPolicyHoldV1, CacheResidencyProtectedJournalErrorV1> {
+        let row = source_domains
+            .closed_policy_source_hold_v1()
+            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?
+            .filter(|row| *row == self.source_hold && row.is_held())
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        Ok(row)
     }
 }
 

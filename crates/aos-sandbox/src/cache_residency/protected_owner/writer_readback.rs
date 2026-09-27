@@ -131,7 +131,7 @@ impl CacheResidencyProtectedOwnerV1 {
     {
         self.with_cache_owner_terminal_cut(
             physical,
-            |readback| {
+            |readback, _| {
                 let (prepared, finish) = inspect(readback)?;
                 Ok((prepared, finish, Ok))
             },
@@ -177,7 +177,7 @@ impl CacheResidencyProtectedOwnerV1 {
         Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
         Finalize: FnOnce(Output) -> Result<Final, CacheResidencyProtectedJournalErrorV1>,
     {
-        self.with_cache_owner_terminal_cut(physical, inspect, true, true)
+        self.with_cache_owner_terminal_cut(physical, |readback, _| inspect(readback), true, true)
     }
 
     /// Replays an already released Cache hold under the same typed owner cut.
@@ -196,6 +196,7 @@ impl CacheResidencyProtectedOwnerV1 {
         physical: &DormantCacheOwnerV1,
         inspect: impl FnOnce(
             &CacheResidencyWriterReadbackV2,
+            CachePolicyHoldV1,
         )
             -> Result<(Prepared, Finish), CacheResidencyProtectedJournalErrorV1>,
     ) -> Result<(Output, CachePolicyHoldV1), CacheResidencyProtectedJournalErrorV1>
@@ -204,8 +205,9 @@ impl CacheResidencyProtectedOwnerV1 {
     {
         self.with_cache_owner_terminal_cut(
             physical,
-            |readback| {
-                let (prepared, finish) = inspect(readback)?;
+            |readback, historical_held| {
+                let held = historical_held.ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+                let (prepared, finish) = inspect(readback, held)?;
                 Ok((prepared, finish, Ok))
             },
             false,
@@ -218,6 +220,7 @@ impl CacheResidencyProtectedOwnerV1 {
         physical: &DormantCacheOwnerV1,
         inspect: impl FnOnce(
             &CacheResidencyWriterReadbackV2,
+            Option<CachePolicyHoldV1>,
         ) -> Result<
             (Prepared, Finish, Finalize),
             CacheResidencyProtectedJournalErrorV1,
@@ -244,10 +247,11 @@ impl CacheResidencyProtectedOwnerV1 {
             self.owner_uid,
         )?;
         let hold_witness = hold_journal.protected_writer_name_witness()?;
-        let hold = if expected_held {
-            hold_journal.held_cache_policy_hold_for_writer()?
+        let (hold, historical_held) = if expected_held {
+            (hold_journal.held_cache_policy_hold_for_writer()?, None)
         } else {
-            hold_journal.v8_pending_cache_policy_release_for_writer()?.1
+            let (prior, released) = hold_journal.v8_pending_cache_policy_release_for_writer()?;
+            (released, Some(prior))
         };
         let state_witness = self
             .state_journal
@@ -296,7 +300,7 @@ impl CacheResidencyProtectedOwnerV1 {
             physical_snapshot
                 .revalidate()
                 .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-            inspect(&readback)
+            inspect(&readback, historical_held)
         });
 
         let revalidate = |hold_journal: &mut Journal| {
@@ -309,12 +313,14 @@ impl CacheResidencyProtectedOwnerV1 {
                 Journal::cache_policy_hold_limits(),
             )?;
             hold_journal.validate_protected_writer_name_witness(&hold_witness)?;
-            let current = if expected_held {
-                hold_journal.held_cache_policy_hold_for_writer()?
+            let (current, prior) = if expected_held {
+                (hold_journal.held_cache_policy_hold_for_writer()?, None)
             } else {
-                hold_journal.v8_pending_cache_policy_release_for_writer()?.1
+                let (prior, released) =
+                    hold_journal.v8_pending_cache_policy_release_for_writer()?;
+                (released, Some(prior))
             };
-            if current != hold {
+            if current != hold || prior != historical_held {
                 return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
             }
             physical_snapshot
@@ -840,6 +846,39 @@ mod tests {
                 .expect("hold replay after failed final continuation"),
             Some(expected),
         );
+    }
+
+    #[test]
+    fn ambiguous_controller_floor_after_root_release_keeps_cache_held() {
+        let (directory, uid, expected) = super::super::tests::live_cache_hold_fixture();
+        let root_released = Cell::new(false);
+
+        let result = with_fixture_after_final(
+            directory.path(),
+            uid,
+            |_| {
+                Ok(((), |_| {
+                    root_released.set(true);
+                    Ok(())
+                }))
+            },
+            |_| -> Result<(), _> {
+                assert!(root_released.get());
+                Err(JournalError::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "Controller floor reply lost",
+                ))
+                .into())
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            Journal::read_cache_policy_hold_at(directory.path(), uid)
+                .expect("hold replay after ambiguous floor"),
+            Some(expected),
+        );
+        assert!(Journal::read_v8_pending_cache_policy_release_at(directory.path(), uid).is_err());
     }
 
     #[test]
