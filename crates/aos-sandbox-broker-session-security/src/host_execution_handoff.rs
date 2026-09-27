@@ -326,8 +326,10 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
                     )?;
                     verify_query_content(
                         request.content_fields(),
+                        request.specification_digest(),
                         effect.issue().operation(),
                         effect.admission().specification_bytes(),
+                        effect.admission().specification_digest(),
                     )?;
                     Some(effect)
                 }
@@ -341,14 +343,19 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
                         if same_operation {
                             verify_query_content(
                                 request.content_fields(),
+                                request.specification_digest(),
                                 EffectOperationV1::AuthorizeExecution,
                                 admission.specification_bytes(),
+                                admission.specification_digest(),
                             )?;
                             return Err(HostExecutionHandoffErrorV1::RecoveryRequired);
                         }
                         // A control query may precede its effect while the
                         // earlier Authorize admission already occupies this ID.
                         if !request.content_fields().is_control_marker() {
+                            return Err(HostExecutionHandoffErrorV1::Conflict);
+                        }
+                        if request.specification_digest() != admission.specification_digest() {
                             return Err(HostExecutionHandoffErrorV1::Conflict);
                         }
                     }
@@ -810,8 +817,10 @@ fn validate_effect_identity(
 
 fn verify_query_content(
     requested: HostExecutionSpecContentFieldsV1,
+    requested_specification_digest: ObjectDigest,
     operation: EffectOperationV1,
     specification_bytes: &[u8],
+    admitted_specification_digest: ObjectDigest,
 ) -> Result<(), HostExecutionHandoffErrorV1> {
     // The decoder checks Query's request-specific attempt; retained readback
     // compares only the stable content that was persisted for the Apply.
@@ -821,7 +830,10 @@ fn verify_query_content(
         HOST_EXECUTION_CONTROL_CONTENT_V1
     };
     let retained = HostExecutionSpecContentFieldsV1::for_grant(content);
-    if requested.bytes() != retained.bytes() || requested.digest() != retained.digest() {
+    if requested.bytes() != retained.bytes()
+        || requested.digest() != retained.digest()
+        || requested_specification_digest != admitted_specification_digest
+    {
         return Err(HostExecutionHandoffErrorV1::Conflict);
     }
     Ok(())
@@ -1115,22 +1127,42 @@ mod tests {
         let changed_size = HostExecutionSpecContentFieldsV1::for_grant(b"shorter bytes");
 
         assert!(
-            verify_query_content(matching, EffectOperationV1::AuthorizeExecution, persisted)
-                .is_ok()
+            verify_query_content(
+                matching,
+                ObjectDigest::from_bytes([5; 32]),
+                EffectOperationV1::AuthorizeExecution,
+                persisted,
+                ObjectDigest::from_bytes([5; 32]),
+            )
+            .is_ok()
         );
         assert!(matches!(
             verify_query_content(
                 changed_digest,
+                ObjectDigest::from_bytes([5; 32]),
                 EffectOperationV1::AuthorizeExecution,
                 persisted,
+                ObjectDigest::from_bytes([5; 32]),
             ),
             Err(HostExecutionHandoffErrorV1::Conflict)
         ));
         assert!(matches!(
             verify_query_content(
                 changed_size,
+                ObjectDigest::from_bytes([5; 32]),
                 EffectOperationV1::AuthorizeExecution,
-                persisted
+                persisted,
+                ObjectDigest::from_bytes([5; 32]),
+            ),
+            Err(HostExecutionHandoffErrorV1::Conflict)
+        ));
+        assert!(matches!(
+            verify_query_content(
+                matching,
+                ObjectDigest::from_bytes([6; 32]),
+                EffectOperationV1::AuthorizeExecution,
+                persisted,
+                ObjectDigest::from_bytes([5; 32]),
             ),
             Err(HostExecutionHandoffErrorV1::Conflict)
         ));
@@ -1146,9 +1178,24 @@ mod tests {
             columns: 80,
         };
 
-        assert!(verify_query_content(marker, operation, persisted).is_ok());
+        assert!(
+            verify_query_content(
+                marker,
+                ObjectDigest::from_bytes([5; 32]),
+                operation,
+                persisted,
+                ObjectDigest::from_bytes([5; 32]),
+            )
+            .is_ok()
+        );
         assert!(matches!(
-            verify_query_content(specification, operation, persisted),
+            verify_query_content(
+                specification,
+                ObjectDigest::from_bytes([5; 32]),
+                operation,
+                persisted,
+                ObjectDigest::from_bytes([5; 32]),
+            ),
             Err(HostExecutionHandoffErrorV1::Conflict)
         ));
     }

@@ -40,7 +40,8 @@ pub use host_execution::{
     CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1,
     canonical_host_execution_apply_semantics_v1, canonical_host_execution_query_semantics_v1,
     host_execution_apply_content_grant_v1, host_execution_apply_grant_v1,
-    host_execution_query_content_grant_v1, host_execution_query_grant_v1,
+    host_execution_query_content_grant_v1, host_execution_query_content_grant_v2,
+    host_execution_query_grant_v1,
 };
 pub use host_execution_argument::{
     CanonicalHostExecutionArgumentSemanticsV1, HostExecutionArgumentSemanticErrorV1,

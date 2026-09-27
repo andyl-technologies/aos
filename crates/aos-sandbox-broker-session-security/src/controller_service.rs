@@ -3961,8 +3961,11 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                     | aos_sandbox::controller_query::PublicOperationMethodV1::CancelExecution
             )
         ) {
-            let intent =
-                execution::ControllerExecutionIntentV1::from_request(operation_id, &context)?;
+            let intent = execution::ControllerExecutionIntentV1::from_request(
+                operation_id,
+                &context,
+                journal,
+            )?;
             let mut sessions = self.sessions.lock().map_err(|_| {
                 EffectFailure::Retryable("broker session lock is poisoned".to_owned())
             })?;
@@ -4115,8 +4118,11 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                     | aos_sandbox::controller_query::PublicOperationMethodV1::CancelExecution
             )
         ) {
-            let intent =
-                execution::ControllerExecutionIntentV1::from_request(operation_id, &context)?;
+            let intent = execution::ControllerExecutionIntentV1::from_request(
+                operation_id,
+                &context,
+                journal,
+            )?;
             let mut sessions = self.sessions.lock().map_err(|_| {
                 EffectFailure::Retryable("broker session lock is poisoned".to_owned())
             })?;

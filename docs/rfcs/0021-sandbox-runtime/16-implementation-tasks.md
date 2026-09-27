@@ -9520,3 +9520,15 @@ classification and protected Create-spec check still precede reservation.
 This private ledger step does not complete the ordered cross-owner Create
 handoff, Storage physical output backing, Host launch, or an Observe grant.
 Public Create and Observe dispatch remain closed.
+
+### Host execution Query semantic specification binding (source qualified)
+
+Existing method-27 Query now requires binding version 2 and the domain-separated
+digest of the exact admitted execution specification. The Controller binds that
+digest to its signed Query grant and request attempt; Host compares it with its
+protected admission before returning an existing effect or admission readback.
+Legacy Query binding versions and substituted digests fail closed. This does
+not authorize Host Apply, public Create, Observe dispatch, or `RUNNING`.
+
+The original one-shot argument handoff, physical Storage backing, ordered
+cross-owner barrier, and installed Host/guest qualification remain open.

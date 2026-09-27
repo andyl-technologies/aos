@@ -9,6 +9,7 @@
 //! || operation_id:16 || execution_id:16 || source_commitment:32
 //! || action:u8 || action_arguments || transfer_version:u8
 //! || content_bytes:u64be || content_digest:32
+//! Query v2 additionally binds `query_binding_version:u8 || execution_spec_digest:32`.
 //! ```
 
 use aos_sandbox_core::runtime_backend::EffectOperationV1;
@@ -188,13 +189,53 @@ pub fn canonical_host_execution_query_semantics_v1(
     request: &ValidatedHostExecutionQueryV1,
     assignment: BrokerAssignment,
 ) -> Result<CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1> {
-    host_execution_query_content_grant_v1(
+    host_execution_query_content_grant_v2(
         assignment,
         request.operation_id(),
         request.execution_id(),
         request.source_commitment(),
         request.content_fields(),
+        request.specification_digest(),
     )
+}
+
+/// Compiles the version-two Query grant for the retained semantic specification.
+///
+/// # Errors
+///
+/// Rejects an unspecified locator, invalid content size, or zero spec digest.
+pub fn host_execution_query_content_grant_v2(
+    assignment: BrokerAssignment,
+    operation_id: [u8; 16],
+    execution_id: ExecutionId,
+    source_commitment: ObjectDigest,
+    content: HostExecutionSpecContentFieldsV1,
+    specification_digest: ObjectDigest,
+) -> Result<CanonicalHostExecutionSemanticsV1, HostExecutionSemanticErrorV1> {
+    validate_locator(operation_id, execution_id, source_commitment)?;
+    if content.bytes() == 0
+        || content.bytes() > MAXIMUM_HOST_EXECUTION_SPEC_BYTES as u64
+        || specification_digest.as_bytes() == &[0; 32]
+    {
+        return Err(HostExecutionSemanticErrorV1::InvalidAction);
+    }
+    let mut bytes = common_bytes(
+        2,
+        assignment,
+        operation_id,
+        execution_id.as_bytes(),
+        source_commitment,
+    );
+    bytes.push(1);
+    bytes.extend_from_slice(&content.bytes().to_be_bytes());
+    bytes.extend_from_slice(&content.digest());
+    bytes.push(2);
+    bytes.extend_from_slice(specification_digest.as_bytes());
+    Ok(CanonicalHostExecutionSemanticsV1 {
+        verb: BrokerVerb::HostQueryExecution,
+        target: BrokerGrantTarget::Assignment,
+        commitment: BrokerArgumentCommitment::for_canonical_bytes(&bytes),
+    })
 }
 
 /// Compiles a Query grant bound to the exact Apply content for this operation.
@@ -420,6 +461,52 @@ mod tests {
                 3,
                 content.bind_query_attempt([6; 16], operation, execution, source)
             )
+        );
+    }
+
+    #[test]
+    fn query_v2_grant_binds_semantic_specification_and_rejects_v1_grant() {
+        let operation = [7; 16];
+        let execution = ExecutionId::from_bytes([8; 16]);
+        let source = ObjectDigest::from_bytes([9; 32]);
+        let content = HostExecutionSpecContentFieldsV1::for_grant(b"exact content");
+        let digest = ObjectDigest::from_bytes([5; 32]);
+        let grant = |specification_digest| {
+            host_execution_query_content_grant_v2(
+                assignment(3),
+                operation,
+                execution,
+                source,
+                content,
+                specification_digest,
+            )
+            .unwrap()
+            .commitment()
+        };
+
+        assert_ne!(grant(digest), grant(ObjectDigest::from_bytes([6; 32])));
+        assert_ne!(
+            grant(digest),
+            host_execution_query_content_grant_v1(
+                assignment(3),
+                operation,
+                execution,
+                source,
+                content,
+            )
+            .unwrap()
+            .commitment()
+        );
+        assert!(
+            host_execution_query_content_grant_v2(
+                assignment(3),
+                operation,
+                execution,
+                source,
+                content,
+                ObjectDigest::from_bytes([0; 32]),
+            )
+            .is_err()
         );
     }
 }

@@ -83,6 +83,7 @@ pub fn decode_host_execution_terminal_result_v1(
 
 const SPEC_ATTEMPT_DOMAIN: &[u8] = b"aos.sandbox.host.execution-spec-attempt.v1\0";
 const QUERY_SPEC_ATTEMPT_DOMAIN: &[u8] = b"aos.sandbox.host.execution-query-spec-attempt.v1\0";
+const QUERY_SPEC_ATTEMPT_DOMAIN_V2: &[u8] = b"aos.sandbox.host.execution-query-spec-attempt.v2\0";
 
 /// Binds one sealed content reference to an authenticated Apply or Query attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -144,6 +145,30 @@ impl HostExecutionSpecContentFieldsV1 {
                 source_commitment,
                 self.bytes,
                 self.digest,
+            ),
+            ..self
+        }
+    }
+
+    /// Binds a version-two Query to the admitted semantic specification digest.
+    #[must_use]
+    pub fn bind_query_attempt_v2(
+        self,
+        request_id: [u8; 16],
+        operation_id: [u8; 16],
+        execution_id: ExecutionId,
+        source_commitment: ObjectDigest,
+        specification_digest: ObjectDigest,
+    ) -> Self {
+        Self {
+            attempt_commitment: query_spec_attempt_commitment_v2(
+                request_id,
+                operation_id,
+                execution_id,
+                source_commitment,
+                self.bytes,
+                self.digest,
+                specification_digest,
             ),
             ..self
         }
@@ -248,6 +273,27 @@ fn query_spec_attempt_commitment_v1(
     attempt.finalize().into()
 }
 
+fn query_spec_attempt_commitment_v2(
+    request_id: [u8; 16],
+    operation_id: [u8; 16],
+    execution_id: ExecutionId,
+    source_commitment: ObjectDigest,
+    bytes: u64,
+    digest: [u8; 32],
+    specification_digest: ObjectDigest,
+) -> [u8; 32] {
+    let mut attempt = Sha256::new();
+    attempt.update(QUERY_SPEC_ATTEMPT_DOMAIN_V2);
+    attempt.update(request_id);
+    attempt.update(operation_id);
+    attempt.update(execution_id.as_bytes());
+    attempt.update(source_commitment.as_bytes());
+    attempt.update(bytes.to_be_bytes());
+    attempt.update(digest);
+    attempt.update(specification_digest.as_bytes());
+    attempt.finalize().into()
+}
+
 /// Carries a validated intent without granting execution authority.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ValidatedHostExecutionApplyV1 {
@@ -349,6 +395,7 @@ pub struct ValidatedHostExecutionQueryV1 {
     execution_id: ExecutionId,
     source_commitment: ObjectDigest,
     content: HostExecutionSpecContentFieldsV1,
+    specification_digest: ObjectDigest,
 }
 
 impl ValidatedHostExecutionQueryV1 {
@@ -375,6 +422,11 @@ impl ValidatedHostExecutionQueryV1 {
     /// Returns the exact Apply content reference bound to this readback.
     pub const fn content_fields(&self) -> HostExecutionSpecContentFieldsV1 {
         self.content
+    }
+
+    /// Returns the admitted semantic execution-specification digest.
+    pub const fn specification_digest(&self) -> ObjectDigest {
+        self.specification_digest
     }
 }
 
@@ -565,16 +617,26 @@ pub fn decode_host_execution_query_v1(
         &request.source_operation_commitment,
         "source_operation_commitment",
     )?);
+    if request.query_binding_version != 2 {
+        return Err(ProtocolValidationError::InvalidField(
+            "query binding version",
+        ));
+    }
+    let specification_digest = ObjectDigest::from_bytes(exact_nonzero::<32>(
+        &request.execution_spec_digest,
+        "execution_spec_digest",
+    )?);
     let content = HostExecutionSpecContentFieldsV1 {
         bytes: content_bytes,
         digest: content_digest,
         attempt_commitment: [0; 32],
     }
-    .bind_query_attempt(
+    .bind_query_attempt_v2(
         *header.request_id(),
         operation_id,
         execution_id,
         source_commitment,
+        specification_digest,
     );
     if content.attempt_commitment() != attempt_commitment {
         return Err(ProtocolValidationError::InvalidField(
@@ -587,6 +649,7 @@ pub fn decode_host_execution_query_v1(
         execution_id,
         source_commitment,
         content,
+        specification_digest,
     })
 }
 
@@ -807,11 +870,12 @@ mod content_tests {
     }
 
     fn query(content: &[u8]) -> QueryHostExecutionRequestV1 {
-        let content = HostExecutionSpecContentFieldsV1::for_grant(content).bind_query_attempt(
+        let content = HostExecutionSpecContentFieldsV1::for_grant(content).bind_query_attempt_v2(
             [1; 16],
             [2; 16],
             ExecutionId::from_bytes([3; 16]),
             ObjectDigest::from_bytes([4; 32]),
+            ObjectDigest::from_bytes([5; 32]),
         );
         QueryHostExecutionRequestV1 {
             header: Some(RequestHeader {
@@ -829,6 +893,8 @@ mod content_tests {
             spec_content_bytes: content.bytes(),
             spec_content_digest: content.digest().to_vec(),
             spec_transfer_version: 1,
+            query_binding_version: 2,
+            execution_spec_digest: vec![5; 32],
             spec_attempt_commitment: content.attempt_commitment().to_vec(),
             ..Default::default()
         }
@@ -971,6 +1037,50 @@ mod content_tests {
             decode_query(&unknown_version),
             Err(ProtocolValidationError::InvalidField(
                 "spec transfer version"
+            ))
+        ));
+
+        let mut old_binding = request.clone();
+        old_binding.query_binding_version = 0;
+        old_binding.execution_spec_digest.clear();
+        assert!(matches!(
+            decode_query(&old_binding),
+            Err(ProtocolValidationError::InvalidField(
+                "query binding version"
+            ))
+        ));
+
+        let mut unknown_binding = request.clone();
+        unknown_binding.query_binding_version = 3;
+        assert!(matches!(
+            decode_query(&unknown_binding),
+            Err(ProtocolValidationError::InvalidField(
+                "query binding version"
+            ))
+        ));
+
+        let mut old_attempt = request.clone();
+        let legacy_content = HostExecutionSpecContentFieldsV1::for_grant(b"canonical content")
+            .bind_query_attempt(
+                [1; 16],
+                [2; 16],
+                ExecutionId::from_bytes([3; 16]),
+                ObjectDigest::from_bytes([4; 32]),
+            );
+        old_attempt.spec_attempt_commitment = legacy_content.attempt_commitment().to_vec();
+        assert!(matches!(
+            decode_query(&old_attempt),
+            Err(ProtocolValidationError::InvalidField(
+                "spec attempt commitment"
+            ))
+        ));
+
+        let mut wrong_specification = request.clone();
+        wrong_specification.execution_spec_digest = vec![6; 32];
+        assert!(matches!(
+            decode_query(&wrong_specification),
+            Err(ProtocolValidationError::InvalidField(
+                "spec attempt commitment"
             ))
         ));
 

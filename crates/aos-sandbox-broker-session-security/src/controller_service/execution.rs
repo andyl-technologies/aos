@@ -59,7 +59,7 @@ use aos_sandbox_protocol::host_execution::{
     decode_host_execution_terminal_result_v1,
 };
 use aos_sandbox_protocol::semantics::{
-    host_execution_apply_grant_v1, host_execution_query_content_grant_v1,
+    host_execution_apply_grant_v1, host_execution_query_content_grant_v2,
 };
 use buffa::Message as _;
 use ed25519_dalek::VerifyingKey;
@@ -92,7 +92,7 @@ pub(crate) struct ControllerExecutionIntentV1 {
     execution_id: [u8; 16],
     action: ControllerExecutionActionV1,
     specification: Option<ExecutionSpecV1>,
-    observation_specification_digest: Option<ObjectDigest>,
+    specification_digest: ObjectDigest,
     source_operation_commitment: [u8; 32],
 }
 
@@ -459,6 +459,7 @@ impl ControllerExecutionIntentV1 {
     pub(crate) fn from_request(
         operation_id: OperationId,
         context: &PublicMutationEffectV1,
+        journal: &Journal,
     ) -> Result<Self, EffectFailure> {
         let request = context
             .validated_request()
@@ -500,6 +501,14 @@ impl ControllerExecutionIntentV1 {
         let execution_id: [u8; 16] = execution_id.as_slice().try_into().map_err(|_| {
             EffectFailure::Permanent("execution effect identity is invalid".to_owned())
         })?;
+        let retained = load_controller_execution_spec_attempt_v1(
+            journal,
+            ExecutionId::from_bytes(execution_id),
+        )
+        .map_err(retryable)?
+        .ok_or_else(|| {
+            EffectFailure::Retryable("protected Create specification is absent".to_owned())
+        })?;
 
         let source_operation_commitment: [u8; 32] = Sha256::new()
             .chain_update(PUBLIC_REQUEST_DIGEST_DOMAIN)
@@ -517,7 +526,7 @@ impl ControllerExecutionIntentV1 {
             execution_id,
             action,
             specification: None,
-            observation_specification_digest: None,
+            specification_digest: retained.specification_digest(),
             source_operation_commitment,
         })
     }
@@ -696,13 +705,14 @@ impl ControllerExecutionIntentV1 {
             .chain_update(context.canonical_request())
             .finalize()
             .into();
+        let specification_digest = execution_spec_digest_v1(&specification);
         Ok(Self {
             operation_id,
             projection_operation_id: operation_id,
             execution_id: *specification.execution().as_bytes(),
             action: ControllerExecutionActionV1::Authorize,
             specification: Some(specification),
-            observation_specification_digest: None,
+            specification_digest,
             source_operation_commitment,
         })
     }
@@ -746,16 +756,15 @@ impl ControllerExecutionIntentV1 {
             ));
         };
         if self.action == ControllerExecutionActionV1::Observe
-            && (self.observation_specification_digest.is_none()
-                || (kind == ExecutionAuthorizationKindV1::Apply
-                    && (projection.operation() != self.projection_operation_id
-                        || !matches!(
-                            execution.phase.as_known(),
-                            Some(
-                                ExecutionPhase::EXECUTION_PHASE_REQUESTED
-                                    | ExecutionPhase::EXECUTION_PHASE_RUNNING
-                            )
-                        ))))
+            && kind == ExecutionAuthorizationKindV1::Apply
+            && (projection.operation() != self.projection_operation_id
+                || !matches!(
+                    execution.phase.as_known(),
+                    Some(
+                        ExecutionPhase::EXECUTION_PHASE_REQUESTED
+                            | ExecutionPhase::EXECUTION_PHASE_RUNNING
+                    )
+                ))
         {
             return Err(EffectFailure::Retryable(
                 "execution Observe source is not current".to_owned(),
@@ -824,12 +833,13 @@ impl ControllerExecutionIntentV1 {
             ),
             ExecutionAuthorizationKindV1::Query => {
                 let content = self.descriptor_content()?;
-                host_execution_query_content_grant_v1(
+                host_execution_query_content_grant_v2(
                     assignment,
                     *self.operation_id.as_bytes(),
                     ExecutionId::from_bytes(self.execution_id),
                     ObjectDigest::from_bytes(self.source_operation_commitment),
                     HostExecutionSpecContentFieldsV1::for_grant(&content),
+                    self.specification_digest,
                 )
             }
         }
@@ -949,11 +959,12 @@ impl ControllerExecutionIntentV1 {
                 request.encode_to_vec()
             }
             ExecutionAuthorizationKindV1::Query => {
-                let content = stable_content.bind_query_attempt(
+                let content = stable_content.bind_query_attempt_v2(
                     coordinates.request_id(),
                     *self.operation_id.as_bytes(),
                     ExecutionId::from_bytes(self.execution_id),
                     ObjectDigest::from_bytes(self.source_operation_commitment),
+                    self.specification_digest,
                 );
                 let request = QueryHostExecutionRequestV1 {
                     header: Some(header).into(),
@@ -963,6 +974,8 @@ impl ControllerExecutionIntentV1 {
                     spec_content_bytes: content.bytes(),
                     spec_content_digest: content.digest().to_vec(),
                     spec_transfer_version: 1,
+                    query_binding_version: 2,
+                    execution_spec_digest: self.specification_digest.as_bytes().to_vec(),
                     spec_attempt_commitment: content.attempt_commitment().to_vec(),
                     ..Default::default()
                 };
@@ -1150,6 +1163,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn query_classifier_requires_v2_specification_binding() {
+        let intent = ControllerExecutionIntentV1 {
+            operation_id: OperationId::from_bytes([1; 16]),
+            projection_operation_id: OperationId::from_bytes([1; 16]),
+            execution_id: [2; 16],
+            action: ControllerExecutionActionV1::Cancel,
+            specification: None,
+            specification_digest: ObjectDigest::from_bytes([5; 32]),
+            source_operation_commitment: [3; 32],
+        };
+        let content =
+            HostExecutionSpecContentFieldsV1::for_grant(HOST_EXECUTION_CONTROL_CONTENT_V1)
+                .bind_query_attempt_v2(
+                    [4; 16],
+                    *intent.operation_id.as_bytes(),
+                    ExecutionId::from_bytes(intent.execution_id),
+                    ObjectDigest::from_bytes(intent.source_operation_commitment),
+                    intent.specification_digest,
+                );
+        let request = QueryHostExecutionRequestV1 {
+            header: Some(RequestHeader {
+                request_id: vec![4; 16],
+                ..Default::default()
+            })
+            .into(),
+            operation_id: intent.operation_id.as_bytes().to_vec(),
+            execution_id: intent.execution_id.to_vec(),
+            source_operation_commitment: intent.source_operation_commitment.to_vec(),
+            spec_content_bytes: content.bytes(),
+            spec_content_digest: content.digest().to_vec(),
+            spec_transfer_version: 1,
+            spec_attempt_commitment: content.attempt_commitment().to_vec(),
+            query_binding_version: 2,
+            execution_spec_digest: intent.specification_digest.as_bytes().to_vec(),
+            ..Default::default()
+        };
+
+        assert!(query_body_matches_intent(&intent, &request.encode_to_vec()));
+
+        let mut old = request.clone();
+        old.query_binding_version = 0;
+        old.execution_spec_digest.clear();
+        assert!(!query_body_matches_intent(&intent, &old.encode_to_vec()));
+
+        let mut wrong_specification = request;
+        wrong_specification.execution_spec_digest = vec![6; 32];
+        assert!(!query_body_matches_intent(
+            &intent,
+            &wrong_specification.encode_to_vec(),
+        ));
+    }
+
+    #[test]
     fn retained_create_cannot_prepare_host_authorization() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("controller.journal");
@@ -1161,7 +1227,7 @@ mod tests {
             execution_id: [2; 16],
             action: ControllerExecutionActionV1::Authorize,
             specification: None,
-            observation_specification_digest: None,
+            specification_digest: ObjectDigest::from_bytes([10; 32]),
             source_operation_commitment: [3; 32],
         };
 
@@ -1286,7 +1352,7 @@ mod tests {
             execution_id: [2; 16],
             action: ControllerExecutionActionV1::Authorize,
             specification: None,
-            observation_specification_digest: None,
+            specification_digest: ObjectDigest::from_bytes([10; 32]),
             source_operation_commitment: [3; 32],
         };
         let directory = tempfile::tempdir().unwrap();
@@ -1365,7 +1431,7 @@ mod tests {
             execution_id,
             action: ControllerExecutionActionV1::Observe,
             specification: None,
-            observation_specification_digest: Some(ObjectDigest::from_bytes([10; 32])),
+            specification_digest: ObjectDigest::from_bytes([10; 32]),
             source_operation_commitment: [11; 32],
         };
         let completion = ControllerExecutionCompletionV1 {
@@ -1529,18 +1595,12 @@ fn classify_outcome(
                 }
             }
             let (phase, terminal) = if intent.action == ControllerExecutionActionV1::Observe {
-                let specification_digest =
-                    intent.observation_specification_digest.ok_or_else(|| {
-                        EffectFailure::Permanent(
-                            "Host Observe has no retained specification binding".to_owned(),
-                        )
-                    })?;
                 let phase = decode_observe_completion_phase_v1(
                     &body.completion_bytes,
                     *intent.operation_id.as_bytes(),
                     intent.source_operation_commitment,
                     intent.execution_id,
-                    specification_digest,
+                    intent.specification_digest,
                     body.observation_sequence,
                 )
                 .map_err(|error| match error {
@@ -1727,34 +1787,39 @@ fn request_matches_intent(
                 && request.terminal_columns == columns
                 && request.signal_number == signal_number
         }
-        ExecutionAuthorizationKindV1::Query => {
-            let Ok(request) = QueryHostExecutionRequestV1::decode_from_slice(exact_body) else {
-                return false;
-            };
-            let Some(request_id) = request
-                .header
-                .as_option()
-                .and_then(|header| header.request_id.as_slice().try_into().ok())
-            else {
-                return false;
-            };
-            let Ok(content) = intent.descriptor_content() else {
-                return false;
-            };
-            let fields = HostExecutionSpecContentFieldsV1::for_grant(&content).bind_query_attempt(
-                request_id,
-                *intent.operation_id.as_bytes(),
-                ExecutionId::from_bytes(intent.execution_id),
-                ObjectDigest::from_bytes(intent.source_operation_commitment),
-            );
-            request.encode_to_vec() == exact_body
-                && request.operation_id == intent.operation_id.as_bytes()
-                && request.execution_id == intent.execution_id
-                && request.source_operation_commitment == intent.source_operation_commitment
-                && request.spec_content_bytes == fields.bytes()
-                && request.spec_content_digest == fields.digest().to_vec()
-                && request.spec_transfer_version == 1
-                && request.spec_attempt_commitment == fields.attempt_commitment().to_vec()
-        }
+        ExecutionAuthorizationKindV1::Query => query_body_matches_intent(intent, exact_body),
     }
+}
+
+fn query_body_matches_intent(intent: &ControllerExecutionIntentV1, exact_body: &[u8]) -> bool {
+    let Ok(request) = QueryHostExecutionRequestV1::decode_from_slice(exact_body) else {
+        return false;
+    };
+    let Some(request_id) = request
+        .header
+        .as_option()
+        .and_then(|header| header.request_id.as_slice().try_into().ok())
+    else {
+        return false;
+    };
+    let Ok(content) = intent.descriptor_content() else {
+        return false;
+    };
+    let fields = HostExecutionSpecContentFieldsV1::for_grant(&content).bind_query_attempt_v2(
+        request_id,
+        *intent.operation_id.as_bytes(),
+        ExecutionId::from_bytes(intent.execution_id),
+        ObjectDigest::from_bytes(intent.source_operation_commitment),
+        intent.specification_digest,
+    );
+    request.encode_to_vec() == exact_body
+        && request.operation_id == intent.operation_id.as_bytes()
+        && request.execution_id == intent.execution_id
+        && request.source_operation_commitment == intent.source_operation_commitment
+        && request.spec_content_bytes == fields.bytes()
+        && request.spec_content_digest == fields.digest().to_vec()
+        && request.spec_transfer_version == 1
+        && request.query_binding_version == 2
+        && request.execution_spec_digest.as_slice() == intent.specification_digest.as_bytes()
+        && request.spec_attempt_commitment == fields.attempt_commitment().to_vec()
 }

@@ -1127,6 +1127,18 @@ where
         if header.request_id() != &request_id {
             return Err(HostError::Fence("Host execution request identity differs"));
         }
+        if let HostExecutionGrantRequestV1::Query(query) = &request {
+            if let Some(admission) = claim
+                .load_admission(query.execution_id())
+                .map_err(|_| HostError::Fence("Host execution admission is unavailable"))?
+            {
+                if query.specification_digest() != admission.specification_digest() {
+                    return Err(HostError::Fence(
+                        "Host execution Query specification differs from admission",
+                    ));
+                }
+            }
+        }
         let runtime_witness_request_id = self
             .state
             .runtime_witness_request_id(assignment.sandbox().as_bytes())

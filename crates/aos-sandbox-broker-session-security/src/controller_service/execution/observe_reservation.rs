@@ -38,7 +38,7 @@ fn intent_from_reservation(reservation: &ObserveReservation) -> ControllerExecut
         execution_id: *reservation.execution().as_bytes(),
         action: ControllerExecutionActionV1::Observe,
         specification: None,
-        observation_specification_digest: Some(reservation.specification_digest()),
+        specification_digest: reservation.specification_digest(),
         source_operation_commitment: reservation.source_operation_commitment(),
     }
 }
@@ -48,7 +48,7 @@ fn matches_intent(reservation: &ObserveReservation, intent: &ControllerExecution
         && intent.specification.is_none()
         && reservation.create_operation() == intent.projection_operation_id
         && reservation.observe_operation() == intent.operation_id
-        && Some(reservation.specification_digest()) == intent.observation_specification_digest
+        && reservation.specification_digest() == intent.specification_digest
         && reservation.source_operation_commitment() == intent.source_operation_commitment
 }
 
@@ -432,7 +432,7 @@ mod tests {
             execution_id: [2; 16],
             action: ControllerExecutionActionV1::Authorize,
             specification: None,
-            observation_specification_digest: None,
+            specification_digest: ObjectDigest::from_bytes([5; 32]),
             source_operation_commitment: [3; 32],
         };
         let mut receipt_bytes = [4; RECEIPT_BYTES];
@@ -497,7 +497,7 @@ mod tests {
             execution_id: *reservation.execution().as_bytes(),
             action: ControllerExecutionActionV1::Observe,
             specification: None,
-            observation_specification_digest: Some(reservation.specification_digest()),
+            specification_digest: reservation.specification_digest(),
             source_operation_commitment: reservation.source_operation_commitment(),
         };
         let recovered = recover_child_reservation(&journal, reservation.execution())
@@ -698,7 +698,7 @@ mod tests {
             execution_id: [2; 16],
             action: ControllerExecutionActionV1::Authorize,
             specification: None,
-            observation_specification_digest: None,
+            specification_digest: ObjectDigest::from_bytes([5; 32]),
             source_operation_commitment: [3; 32],
         };
         let mut receipt = [4; RECEIPT_BYTES];
@@ -724,7 +724,7 @@ mod tests {
 
         let unreserved = ControllerExecutionIntentV1 {
             action: ControllerExecutionActionV1::Observe,
-            observation_specification_digest: Some(ObjectDigest::from_bytes([5; 32])),
+            specification_digest: ObjectDigest::from_bytes([5; 32]),
             ..authorize
         };
         assert!(matches!(

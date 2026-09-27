@@ -1076,13 +1076,21 @@ mod execution_spec_content_tests {
         );
 
         let query_fields = HostExecutionSpecContentFieldsV1::for_grant(content)
-            .bind_query_attempt([5; 16], [2; 16], execution, source);
+            .bind_query_attempt_v2(
+                [5; 16],
+                [2; 16],
+                execution,
+                source,
+                ObjectDigest::from_bytes([6; 32]),
+            );
         let query = QueryHostExecutionRequestV1 {
             header: Some(header([5; 16])).into(),
             operation_id: vec![2; 16],
             execution_id: vec![3; 16],
             source_operation_commitment: vec![4; 32],
             spec_transfer_version: 1,
+            query_binding_version: 2,
+            execution_spec_digest: vec![6; 32],
             spec_content_bytes: query_fields.bytes(),
             spec_content_digest: query_fields.digest().to_vec(),
             spec_attempt_commitment: query_fields.attempt_commitment().to_vec(),

@@ -220,6 +220,8 @@ message QueryHostExecutionRequestV1 {
   bytes spec_content_digest = 6; // Exact Apply content digest for this operation.
   uint32 spec_transfer_version = 7; // Exactly 1 for sealed content readback.
   bytes spec_attempt_commitment = 8; // Binds this readback to its request header and locator.
+  uint32 query_binding_version = 9; // Exactly 2; binds the semantic execution-spec digest.
+  bytes execution_spec_digest = 10; // Domain-separated digest of the admitted canonical spec.
 }
 
 // Transport-only final Controller source for a future one-shot Guest ARG_MAX
