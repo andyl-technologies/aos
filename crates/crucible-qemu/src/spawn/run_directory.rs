@@ -1,5 +1,6 @@
 //! Pinned authority over one prepared QEMU run directory and its launch artifacts.
 
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::fd::{AsFd, OwnedFd};
@@ -7,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use rustix::fs::{FileType, Mode, OFlags, fchmod, fchown, fstat, open, openat};
+use sha2::{Digest as _, Sha256};
 
 use super::materialization::{
     PreparedDeviceStateMaterialization, PreparedExactCheckpointMaterialization,
@@ -25,6 +27,10 @@ use crate::launch::{
 
 const MAXIMUM_RUNTIME_LIVENESS_TRACE_TAIL_BYTES: u64 = 60 * 1024;
 const MAXIMUM_RUNTIME_LIVENESS_TRACE_TAIL_LINES: usize = 512;
+const MAXIMUM_RR_STREAM_TRACE_BYTES: u64 = 32 * 1024 * 1024;
+const MAXIMUM_RR_STREAM_TRACE_LINES: usize = 500_000;
+const MAXIMUM_RR_STREAM_ROW_BYTES: u64 = 512;
+const RETAINED_RR_STREAM_TAIL_ROWS: usize = 32;
 
 /// Pinned authority over one pre-provisioned QEMU run directory.
 ///
@@ -347,6 +353,112 @@ impl QemuPreparedRunDirectory {
             MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES,
             MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES,
         )
+    }
+
+    /// Authenticates a large RR trace while retaining only its final rows.
+    ///
+    /// The diagnostic keeps the original whole-file reader's 4 MiB limit
+    /// unchanged. This separate bounded pass verifies every row and hashes the
+    /// pinned file before rechecking its named inode and size after QEMU reap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] if trace admission, a row, the complete read,
+    /// or post-read identity verification fails.
+    pub fn summarize_rr_control_boundary_trace_after_reap(&self) -> Result<String, QemuSpawnError> {
+        let file_name = crate::QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME;
+        let authenticated = self.open_authenticated_diagnostic_trace_after_reap(
+            file_name,
+            &self.rr_control_boundary_trace_identity,
+            Some(MAXIMUM_RR_STREAM_TRACE_BYTES),
+        )?;
+        let mut reader = BufReader::new(File::from(authenticated.descriptor));
+        let mut digest = Sha256::new();
+        let mut tail = VecDeque::with_capacity(RETAINED_RR_STREAM_TAIL_ROWS);
+        let mut row_count = 0usize;
+
+        loop {
+            let mut bytes = Vec::new();
+            let length = (&mut reader)
+                .take(MAXIMUM_RR_STREAM_ROW_BYTES + 1)
+                .read_until(b'\n', &mut bytes)
+                .map_err(|source| QemuSpawnError::Io {
+                    operation: "stream pinned RR control-boundary trace",
+                    source,
+                })?;
+            if length == 0 {
+                break;
+            }
+            if bytes.last() != Some(&b'\n') || length as u64 > MAXIMUM_RR_STREAM_ROW_BYTES {
+                return Err(QemuSpawnError::DiagnosticTraceMalformed {
+                    file: file_name,
+                    line: row_count + 1,
+                    reason: "row exceeds 512 bytes or lacks a final newline",
+                });
+            }
+
+            digest.update(&bytes);
+            let row =
+                String::from_utf8(bytes).map_err(|source| QemuSpawnError::DiagnosticTraceUtf8 {
+                    file: file_name,
+                    source,
+                })?;
+            let row = row.trim_end_matches('\n');
+            if !valid_rr_control_boundary_row(row) {
+                return Err(QemuSpawnError::DiagnosticTraceMalformed {
+                    file: file_name,
+                    line: row_count + 1,
+                    reason: "row does not match the RR control-boundary trace schema",
+                });
+            }
+
+            row_count += 1;
+            if row_count > MAXIMUM_RR_STREAM_TRACE_LINES {
+                return Err(QemuSpawnError::DiagnosticTraceLines {
+                    file: file_name,
+                    actual: row_count,
+                    maximum: MAXIMUM_RR_STREAM_TRACE_LINES,
+                });
+            }
+            if tail.len() == RETAINED_RR_STREAM_TAIL_ROWS {
+                tail.pop_front();
+            }
+            tail.push_back(row.to_owned());
+        }
+        if row_count == 0 {
+            return Err(QemuSpawnError::DiagnosticTraceLines {
+                file: file_name,
+                actual: 0,
+                maximum: MAXIMUM_RR_STREAM_TRACE_LINES,
+            });
+        }
+
+        let consumed = reader
+            .stream_position()
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "inspect consumed RR control-boundary trace length",
+                source,
+            })?;
+        if consumed != authenticated.bytes {
+            return Err(QemuSpawnError::DiagnosticTraceChanged { file: file_name });
+        }
+        self.revalidate_authenticated_diagnostic_trace_after_read(
+            file_name,
+            authenticated.identity,
+            authenticated.metadata.st_size,
+            authenticated.credentials,
+        )?;
+
+        let retained_rows = tail.len();
+        Ok(format!(
+            "bytes={} sha256={:x} rows={} tail_rows={} omitted_rows={}\n{}",
+            authenticated.bytes,
+            digest.finalize(),
+            row_count,
+            retained_rows,
+            row_count - retained_rows,
+            tail.into_iter().collect::<Vec<_>>().join("\n")
+        ))
     }
 
     /// Retains the bounded runtime-determinism trace after QEMU has been reaped.
@@ -1129,6 +1241,45 @@ fn open_prepared_vmstate(directory: &OwnedFd, path: &Path) -> Result<OwnedFd, Qe
             }
         }
     })
+}
+
+fn valid_rr_control_boundary_row(row: &str) -> bool {
+    let mut fields = row.split_ascii_whitespace();
+    if fields.next() != Some("crucible_sim_rr_control_boundary") {
+        return false;
+    }
+    let Some(phase) = fields.next().and_then(|field| field.strip_prefix("phase=")) else {
+        return false;
+    };
+    if phase.is_empty()
+        || !phase
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'-')
+    {
+        return false;
+    }
+
+    for key in ["request=", "ack=", "complete="] {
+        let Some(value) = fields.next().and_then(|field| field.strip_prefix(key)) else {
+            return false;
+        };
+        if value.parse::<u64>().is_err() {
+            return false;
+        }
+    }
+    let Some(token) = fields
+        .next()
+        .and_then(|field| field.strip_prefix("token=0x"))
+    else {
+        return false;
+    };
+    if u64::from_str_radix(token, 16).is_err() {
+        return false;
+    }
+    let Some(state) = fields.next().and_then(|field| field.strip_prefix("state=")) else {
+        return false;
+    };
+    state.parse::<u32>().is_ok() && fields.next().is_none()
 }
 
 fn validate_diagnostic_trace_metadata(

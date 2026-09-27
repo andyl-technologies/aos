@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crucible::ContentHash;
+use sha2::Digest as _;
 
 use crate::launch::{
     MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES, MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES,
@@ -97,6 +98,92 @@ fn retained_control_boundary_trace_accepts_only_the_prepared_inode() -> Result<(
             .prepared
             .retain_rr_control_boundary_trace_after_reap(),
         Err(QemuSpawnError::DiagnosticTraceChanged { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn streamed_control_boundary_trace_hashes_all_rows_and_retains_only_the_tail()
+-> Result<(), Box<dyn Error>> {
+    let fixture = TraceRetentionFixture::new()?;
+    fixture.prepared.prepare_rr_control_boundary_trace()?;
+    let row = "crucible_sim_rr_control_boundary phase=request request=1 ack=0 complete=0 token=0x0 state=2\n";
+    let trace = row.repeat(50_000);
+    std::fs::write(fixture.trace_path(), &trace)?;
+    assert!(u64::try_from(trace.len())? > MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES);
+
+    assert!(matches!(
+        fixture
+            .prepared
+            .retain_rr_control_boundary_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceLength { .. })
+    ));
+    let summary = fixture
+        .prepared
+        .summarize_rr_control_boundary_trace_after_reap()?;
+    let (header, tail) = summary.split_once('\n').ok_or("missing RR summary tail")?;
+    let digest = sha2::Sha256::digest(trace.as_bytes());
+    assert_eq!(
+        header,
+        format!(
+            "bytes={} sha256={digest:x} rows=50000 tail_rows=32 omitted_rows=49968",
+            trace.len()
+        )
+    );
+    assert_eq!(tail.lines().count(), 32);
+    assert!(tail.lines().all(|retained| retained == row.trim_end()));
+    Ok(())
+}
+
+#[test]
+fn streamed_control_boundary_trace_rejects_replacement_malformed_and_oversize()
+-> Result<(), Box<dyn Error>> {
+    let fixture = TraceRetentionFixture::new()?;
+    fixture.prepared.prepare_rr_control_boundary_trace()?;
+    std::fs::write(
+        fixture.trace_path(),
+        b"crucible_sim_rr_control_boundary phase=request request=x ack=0 complete=0 token=0x0 state=2\n",
+    )?;
+    assert!(matches!(
+        fixture
+            .prepared
+            .summarize_rr_control_boundary_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceMalformed { line: 1, .. })
+    ));
+
+    std::fs::write(
+        fixture.trace_path(),
+        b"crucible_sim_rr_control_boundary phase=request request=1 ack=0 complete=0 token=0x0 state=2",
+    )?;
+    assert!(matches!(
+        fixture
+            .prepared
+            .summarize_rr_control_boundary_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceMalformed { line: 1, .. })
+    ));
+
+    let replaced = fixture.trace_path().with_extension("replaced");
+    std::fs::rename(fixture.trace_path(), replaced)?;
+    std::fs::write(
+        fixture.trace_path(),
+        b"crucible_sim_rr_control_boundary phase=request request=1 ack=0 complete=0 token=0x0 state=2\n",
+    )?;
+    std::fs::set_permissions(fixture.trace_path(), std::fs::Permissions::from_mode(0o600))?;
+    assert!(matches!(
+        fixture
+            .prepared
+            .summarize_rr_control_boundary_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceChanged { .. })
+    ));
+
+    let oversized = TraceRetentionFixture::new()?;
+    oversized.prepared.prepare_rr_control_boundary_trace()?;
+    write_sparse_trace(&oversized.trace_path(), 32 * 1024 * 1024 + 1)?;
+    assert!(matches!(
+        oversized
+            .prepared
+            .summarize_rr_control_boundary_trace_after_reap(),
+        Err(QemuSpawnError::DiagnosticTraceLength { .. })
     ));
     Ok(())
 }

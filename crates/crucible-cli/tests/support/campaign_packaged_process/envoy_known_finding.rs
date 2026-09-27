@@ -65,7 +65,15 @@ fn public_five_node_envoy_network_retains_known_failure() -> Result<(), Box<dyn 
         &mut service,
         envoy_network::initial_discovery_attempt(&lineage, &policy)?,
         Duration::from_secs(900),
-    )?;
+    );
+    let discovery = match discovery {
+        Ok(discovery) => discovery,
+        Err(error) => {
+            // Reap the service before printing its pinned QEMU trace diagnostics.
+            let _ = service.stop();
+            return Err(error);
+        }
+    };
     assert_eq!(
         discovery["attempt"]["configuration"],
         generated["configuration"]
