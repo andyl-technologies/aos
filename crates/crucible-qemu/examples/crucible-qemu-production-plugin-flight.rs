@@ -10,6 +10,8 @@
 //! exported summary contains their full-file hashes and bounded row context.
 //! Setting `CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY=1` runs the
 //! block-recovery subflight alone for focused failure diagnosis.
+//! Setting `CRUCIBLE_PHASE4_PARTITION_PROBE=1` compares coarse and fine
+//! post-selection scheduler steps across an exact virtual-timer wake.
 //!
 //! ```text
 //! crucible-qemu-production-plugin-flight QEMU PLUGIN KERNEL IDLE_INITRD BLOCK_INITRD FIRMWARE CGROUP_ROOT RUN_ROOT REFERENCE_TRACE_SUMMARY_OUT
@@ -47,6 +49,9 @@ mod block_recovery_hot_fork;
 #[path = "crucible-qemu-production-plugin-flight/runtime_trace.rs"]
 mod runtime_trace;
 
+#[path = "crucible-qemu-production-plugin-flight/partition_probe.rs"]
+mod partition_probe;
+
 const MEMORY_BYTES: u64 = 512 * 1024 * 1024;
 const DISK_BYTES: u64 = 1024 * 1024 * 1024;
 const RR_SWITCH_QUANTUM: u64 = 4096;
@@ -80,6 +85,7 @@ const MAXIMUM_HOT_FORK_RING_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const PRODUCTION_RUNTIME_TRACE_BYTES: u64 = 256 * 1024 * 1024;
 const BLOCK_RECOVERY_ONLY_ENVIRONMENT: &str =
     "CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY";
+const PHASE4_PARTITION_PROBE_ENVIRONMENT: &str = "CRUCIBLE_PHASE4_PARTITION_PROBE";
 
 fn main() -> ExitCode {
     match run() {
@@ -164,8 +170,46 @@ fn run() -> Result<(), Box<dyn Error>> {
         // host seconds. Keep a finite per-advance guard with measured headroom.
         .with_completion_timeout(Duration::from_secs(300));
 
-    let reference = run_once(&mut factory, &config, qemu, false)?;
-    let hostile = run_once(&mut factory, &config, qemu, true)?;
+    if std::env::var_os(PHASE4_PARTITION_PROBE_ENVIRONMENT).is_some() {
+        let coarse = run_once(
+            &mut factory,
+            &config,
+            qemu,
+            false,
+            Some(partition_probe::POST_SELECTION_SPAN_PS),
+        )?;
+        let fine = run_once(
+            &mut factory,
+            &config,
+            qemu,
+            false,
+            Some(partition_probe::FINE_STEP_PS),
+        )?;
+        fs::write(reference_trace_output, coarse.diagnostics.trace.report())?;
+        compare_boundaries("partitioned replay", &coarse.boundaries, &fine.boundaries)?;
+        if !idle_evidence_matches_across_runs(&coarse.idle, &fine.idle) {
+            return Err(format!(
+                "partitioned replay did not start from the same authenticated timer wake: coarse={:?} fine={:?}",
+                coarse.idle, fine.idle,
+            )
+            .into());
+        }
+        partition_probe::compare(
+            coarse
+                .partition_probe
+                .as_ref()
+                .ok_or("missing coarse partition probe")?,
+            fine.partition_probe
+                .as_ref()
+                .ok_or("missing fine partition probe")?,
+        )?;
+        println!("PASS");
+        println!("diagnostic_mode=phase4-partition-probe");
+        return Ok(());
+    }
+
+    let reference = run_once(&mut factory, &config, qemu, false, None)?;
+    let hostile = run_once(&mut factory, &config, qemu, true, None)?;
     fs::write(reference_trace_output, reference.diagnostics.trace.report())?;
     compare_boundaries(
         "host-preempted restart",
@@ -416,6 +460,7 @@ struct FlightRun {
     boundaries: Vec<BoundaryEvidence>,
     instruction_exact: InstructionExactEvidence,
     idle: IdleEvidence,
+    partition_probe: Option<partition_probe::PartitionProbe>,
     on_demand_acknowledgements: usize,
     shutdown: QemuShutdownReport,
     diagnostics: RuntimeDeterminismDiagnostics,
@@ -831,6 +876,7 @@ fn run_once(
     config: &QemuLiveNodeStepGateConfig,
     qemu: &Path,
     hostile: bool,
+    partition_step_ps: Option<u64>,
 ) -> Result<FlightRun, Box<dyn Error>> {
     let mut owner = factory.begin(4, MEMORY_BYTES, DISK_BYTES)?;
     let mut directory = owner.prepare_generation_run_directory(config.resource_requirements())?;
@@ -977,6 +1023,23 @@ fn run_once(
         }
     };
 
+    let partition_probe = match partition_step_ps
+        .map(|step| partition_probe::run(&mut node, idle.deadline, step))
+        .transpose()
+    {
+        Ok(probe) => probe,
+        Err(error) => {
+            let shutdown = node.shutdown_child();
+            drop(node);
+            drop(directory);
+            let finish = owner.finish();
+            return Err(format!(
+                "post-selection partition probe failed: {error}; shutdown={shutdown:?}; finish={finish:?}"
+            )
+            .into());
+        }
+    };
+
     let shutdown = node.shutdown_child()?;
     drop(node);
     if !shutdown.reaped || shutdown.leaked {
@@ -1008,6 +1071,7 @@ fn run_once(
         boundaries,
         instruction_exact,
         idle,
+        partition_probe,
         shutdown,
         diagnostics: RuntimeDeterminismDiagnostics {
             baseline: runtime_baseline,
