@@ -248,6 +248,20 @@ pub(super) fn provider_acquisition_is_valid(
 pub(super) fn validate_attempt_revision(attempt: &SourceProviderQueryAttemptV2) -> Result<()> {
     let expected = match &attempt.state {
         ProviderAttemptStateV2::Reserved => 1,
+        ProviderAttemptStateV2::NativeNoDispatchSettled { prior_state, .. } => {
+            if !matches!(
+                prior_state.as_ref(),
+                ProviderAttemptStateV2::AbandonedIndeterminate {
+                    resolution: None,
+                    ..
+                }
+            ) {
+                return Err(state_error(
+                    "native no-dispatch settlement has invalid prior state",
+                ));
+            }
+            3
+        }
         ProviderAttemptStateV2::DispositionConsumed { .. } => 2,
         ProviderAttemptStateV2::AbandonedIndeterminate { resolution, .. } => {
             if resolution.is_some() {
@@ -270,6 +284,131 @@ pub(super) fn validate_attempt_revision(attempt: &SourceProviderQueryAttemptV2) 
     if attempt.revision != expected {
         return Err(state_error(
             "SourceProvider attempt revision contradicts state",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_native_no_dispatch_settlement(
+    attempt: &SourceProviderQueryAttemptV2,
+    table: &SourceAcquisitionTableV2,
+) -> Result<()> {
+    let ProviderAttemptStateV2::NativeNoDispatchSettled {
+        prior_state,
+        canonical_query,
+        signed_settlement,
+        settlement_session_id,
+    } = &attempt.state
+    else {
+        return Ok(());
+    };
+    let (successor_session_id, predecessor_valid) = match prior_state.as_ref() {
+        ProviderAttemptStateV2::AbandonedIndeterminate {
+            dead_execution,
+            successor_session_id,
+            recovery_root_attempt_id,
+            outcome_may_exist,
+            resolution: None,
+        } => (
+            *successor_session_id,
+            *recovery_root_attempt_id == attempt.attempt_id
+                && *outcome_may_exist
+                && dead_execution.old_session_id == attempt.session_id
+                && dead_execution.old_session_record_digest == attempt.session_record_digest
+                && dead_execution.death_evidence_digest == death_digest(dead_execution)?,
+        ),
+        ProviderAttemptStateV2::SupersededIndeterminate {
+            successor_session_id,
+            recovery_root_attempt_id,
+            outcome_may_exist,
+        } => (
+            *successor_session_id,
+            *recovery_root_attempt_id == attempt.attempt_id && *outcome_may_exist,
+        ),
+        _ => {
+            return Err(state_error(
+                "native no-dispatch predecessor is not indeterminate",
+            ));
+        }
+    };
+    let ProviderQueryOwnerV2::Acquire { acquisition_id } = attempt.owner else {
+        return Err(state_error("native no-dispatch settlement is not Acquire"));
+    };
+    let query = RecoveryCurrentnessQueryV1::from_canonical_bytes(canonical_query)
+        .map_err(|_| state_error("native no-dispatch query is malformed"))?;
+    let signed = SignedNativeRecoveryUnavailableV1::from_canonical_bytes(signed_settlement)
+        .map_err(|_| state_error("native no-dispatch settlement is malformed"))?;
+    let settlement_session = table
+        .provider_sessions
+        .get(settlement_session_id)
+        .ok_or_else(|| state_error("native no-dispatch settlement session is missing"))?;
+    let signer_snapshot = &settlement_session.signers[3];
+    let signer = SourceProviderSigningKeyV1::new(
+        signer_snapshot.authority_id,
+        signer_snapshot.authority_generation,
+        ObjectDigest::from_bytes(signer_snapshot.authority_digest),
+        signer_snapshot.key_id,
+        signer_snapshot.key_generation,
+        ObjectDigest::from_bytes(signer_snapshot.public_key_fingerprint),
+        SourceProviderKeyUsageV1::ProviderOutcome,
+    )
+    .map_err(|_| state_error("native no-dispatch settlement signer is invalid"))?;
+    let head = table
+        .provider_heads
+        .get(&(
+            attempt.scope.holder_authority_id,
+            attempt.scope.provider_authority_id,
+        ))
+        .ok_or_else(|| state_error("native no-dispatch owner head is missing"))?;
+    let row = table
+        .acquisitions
+        .get(&acquisition_id)
+        .ok_or_else(|| state_error("native no-dispatch owner acquisition is missing"))?;
+    let mut prior = attempt.clone();
+    prior.revision = 2;
+    prior.state = prior_state.as_ref().clone();
+    prior.record_digest = *query.original_attempt_digest().as_bytes();
+    let prior_record = StoredRecordV2::ProviderQueryAttempt { value: prior };
+    let terminal_reference = RecordRefV2 {
+        id: attempt.attempt_id,
+        revision: attempt.revision,
+        record_digest: attempt.record_digest,
+    };
+    if attempt.revision != 3
+        || !predecessor_valid
+        || successor_session_id == attempt.session_id
+        || table
+            .provider_sessions
+            .get(&successor_session_id)
+            .is_none_or(|session| session.predecessor_session_id != Some(attempt.session_id))
+        || session_successor_distance(table, successor_session_id, *settlement_session_id).is_err()
+        || session_successor_distance(table, *settlement_session_id, head.current_session_id)
+            .is_err()
+        || record_digest(&prior_record)? != *query.original_attempt_digest().as_bytes()
+        || query.session_binding().as_bytes() != &settlement_session.session_binding
+        || query.authorities()
+            != (
+                attempt.scope.provider_authority_id,
+                attempt.scope.holder_authority_id,
+            )
+        || query.acquisition_id().as_bytes() != &acquisition_id
+        || query.original_signed_request_digest().as_bytes() != &attempt.signed_request_digest
+        || settlement_session.scope != attempt.scope
+        || signed
+            .verify_for_query(&query, &signer, &signer_snapshot.public_key)
+            .is_err()
+        || row.phase != SourceAcquisitionPhaseV2::Faulted
+        || row.faulted_from != Some(SourceAcquisitionPhaseV2::PendingQuery)
+        || row.fault_digest != Some(native_recovery_settlement_digest_v2(signed_settlement))
+        || row.acquire_lineage.root != terminal_reference
+        || row.acquire_lineage.tail != terminal_reference
+        || row.acquire_terminal_attempt.is_some()
+        || row.evidence.is_some()
+        || !matches!(row.recovery, AcquisitionRecoveryV2::Ready)
+        || head.recovery_barrier.is_some()
+    {
+        return Err(state_error(
+            "native no-dispatch settlement contradicts protected graph",
         ));
     }
     Ok(())

@@ -104,6 +104,18 @@ pub const MAXIMUM_RESERVED_PROVIDER_ATTEMPT_BYTES: usize = MAXIMUM_PROVIDER_ATTE
     - MAXIMUM_AOSMSA02_ENVELOPE_BYTES;
 pub const MAXIMUM_LINEAGE_ATTEMPTS: usize = 64;
 
+const NATIVE_RECOVERY_SETTLEMENT_DOMAIN: &[u8] =
+    b"aos.sandbox.mount.native-recovery-settlement.v2\0";
+
+/// Commits the exact signed Provider no-dispatch proof retained as a fault.
+#[must_use]
+pub fn native_recovery_settlement_digest_v2(signed_settlement: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(NATIVE_RECOVERY_SETTLEMENT_DOMAIN);
+    hasher.update(signed_settlement);
+    hasher.finalize().into()
+}
+
 const MAXIMUM_SIGNED_INVENTORY_RESULT_BYTES: usize =
     432 + 344 * aos_sandbox_source_provider_protocol::MAXIMUM_INVENTORY_ENTRIES;
 
@@ -369,6 +381,8 @@ pub enum MutationTagV2 {
     Fault = 13,
     StartupCustodyRebind = 14,
     BackendRecoveryReplacement = 15,
+    NativeNoDispatchSettlement = 16,
+    BarrierIdleReplacement = 17,
 }
 
 pub(crate) fn state_error(message: &'static str) -> MountSourceAcquisitionStateError {

@@ -9,8 +9,8 @@ use ed25519_dalek::SigningKey;
 
 use super::format::{
     MutationTagV2, RecordKindV2, acquisition_key, holder_sequence_key, key_kind,
-    mount_source_consumption_companion_digest_v2, provider_attempt_key, provider_head_key,
-    provider_session_key, transaction_id,
+    mount_source_consumption_companion_digest_v2, native_recovery_settlement_digest_v2,
+    provider_attempt_key, provider_head_key, provider_session_key, transaction_id,
 };
 use super::{
     ProviderAttemptStateV2, ProviderMethodV2, checked_cold_provider_request, lifecycle,
@@ -198,6 +198,36 @@ fn v2_transaction_and_companion_digests_separate_operations() {
         None,
     );
     assert_ne!(admission, inventory);
+    let native_settlement = transaction_id(
+        MutationTagV2::NativeNoDispatchSettlement,
+        [1; 16],
+        [2; 16],
+        1,
+        1,
+        Some([3; 32]),
+        Some(1),
+        None,
+        None,
+        None,
+    );
+    let idle_replacement = transaction_id(
+        MutationTagV2::BarrierIdleReplacement,
+        [1; 16],
+        [2; 16],
+        1,
+        1,
+        Some([3; 32]),
+        Some(1),
+        None,
+        None,
+        None,
+    );
+    assert_ne!(admission, native_settlement);
+    assert_ne!(native_settlement, idle_replacement);
+    assert_ne!(
+        native_recovery_settlement_digest_v2(b"signed settlement"),
+        native_recovery_settlement_digest_v2(b"changed settlement")
+    );
 
     let put = mount_source_consumption_companion_digest_v2(40, b"key", Some(b"value"));
     assert_ne!(

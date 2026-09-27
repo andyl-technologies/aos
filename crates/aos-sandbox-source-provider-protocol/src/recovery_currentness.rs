@@ -821,6 +821,22 @@ mod tests {
                 )
                 .is_err()
         );
+        let wrong_key = SigningKey::from_bytes(&[19; 32]);
+        let wrong_signer = SourceProviderSigningKeyV1::for_signing_key(
+            [4; 16],
+            10,
+            digest(11),
+            [20; 16],
+            14,
+            SourceProviderKeyUsageV1::ProviderOutcome,
+            &wrong_key,
+        )
+        .unwrap();
+        assert!(
+            decoded
+                .verify_for_query(&query, &wrong_signer, wrong_key.verifying_key().as_bytes())
+                .is_err()
+        );
 
         let mut tampered = bytes.clone();
         tampered[304] = UNAVAILABLE_STATUS;

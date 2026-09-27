@@ -45,6 +45,7 @@ pub(super) fn validate_attempt(
     validate_attempt_revision(attempt)?;
     validate_provider_request(attempt, session, table)?;
     validate_attempt_checkpoint(attempt, session)?;
+    validate_native_no_dispatch_settlement(attempt, table)?;
     validate_consumed_result(attempt, session)?;
     validate_indeterminate_attempt(attempt, table)
 }

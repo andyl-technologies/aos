@@ -28,6 +28,7 @@ pub(super) fn validate_recovery_graph(table: &SourceAcquisitionTableV2) -> Resul
         )?;
         if replacement_attempts
             .into_iter()
+            .flatten()
             .any(|id| !covered_abandoned_attempts.insert(id))
             || barrier.required_session_id != head.current_session_id
             || barrier.replacement_count == 0
@@ -282,6 +283,7 @@ pub(super) fn validate_recovery_graph(table: &SourceAcquisitionTableV2) -> Resul
                     recovery_session_chain(table, root, inventory.session_id, replacement_count)?;
                 if replacement_attempts
                     .into_iter()
+                    .flatten()
                     .any(|id| !covered_abandoned_attempts.insert(id))
                 {
                     return Err(state_error(
@@ -530,7 +532,7 @@ pub(super) fn recovery_session_chain(
     root: &SourceProviderQueryAttemptV2,
     terminal_session_id: [u8; 32],
     expected_replacement_count: u64,
-) -> Result<Vec<[u8; 32]>> {
+) -> Result<Vec<Option<[u8; 32]>>> {
     if expected_replacement_count == 0 {
         return Err(state_error(
             "provider recovery has no successor-session transition",
@@ -559,24 +561,41 @@ pub(super) fn recovery_session_chain(
                     && *recovery_root_attempt_id == root.attempt_id
             )
         });
-        let replacement = matches
-            .next()
-            .ok_or_else(|| state_error("provider recovery session edge lacks death evidence"))?;
-        if matches.next().is_some()
-            || (predecessor == root.session_id && replacement.attempt_id != root.attempt_id)
-            || (predecessor != root.session_id
-                && (!matches!(replacement.owner, ProviderQueryOwnerV2::Inventory)
-                    || !matches!(
-                        &replacement.intent,
-                        ProviderIntentV2::Inventory { value }
-                            if value.recovery_root_attempt_id == Some(root.attempt_id)
-                    )))
-        {
-            return Err(state_error(
-                "provider recovery session edge has an invalid attempt witness",
-            ));
+        let replacement = matches.next();
+        if matches.next().is_some() {
+            return Err(state_error("provider recovery session edge is ambiguous"));
         }
-        replacements.push(replacement.attempt_id);
+        match (replacement, &session.barrier_idle_replacement) {
+            (Some(attempt), None)
+                if (predecessor == root.session_id && attempt.attempt_id == root.attempt_id)
+                    || (predecessor != root.session_id
+                        && matches!(attempt.owner, ProviderQueryOwnerV2::Inventory)
+                        && matches!(
+                            &attempt.intent,
+                            ProviderIntentV2::Inventory { value }
+                                if value.recovery_root_attempt_id == Some(root.attempt_id)
+                        )) =>
+            {
+                replacements.push(Some(attempt.attempt_id));
+            }
+            (None, Some(witness))
+                if predecessor != root.session_id
+                    && witness.root_attempt.id == root.attempt_id
+                    && witness.root_attempt.revision == root.revision
+                    && witness.root_attempt.record_digest == root.record_digest
+                    && witness.replacement_count
+                        == u64::try_from(replacements.len() + 1).map_err(|_| {
+                            state_error("provider recovery replacement count exceeds u64")
+                        })? =>
+            {
+                replacements.push(None);
+            }
+            _ => {
+                return Err(state_error(
+                    "provider recovery session edge has an invalid death witness",
+                ));
+            }
+        }
     }
     let count = u64::try_from(replacements.len())
         .map_err(|_| state_error("provider recovery replacement count exceeds u64"))?;

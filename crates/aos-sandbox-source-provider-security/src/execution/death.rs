@@ -206,6 +206,24 @@ impl DeadProviderExecutionV1 {
         process_instance: [u8; 16],
         process_execution_digest: ObjectDigest,
     ) -> Result<Self, SourceProviderSecurityError> {
+        Self::observe_from_current_custody(
+            old_boot_id,
+            old_process_id,
+            old_start_time_ticks,
+            process_instance,
+            process_execution_digest,
+        )?
+        .ok_or(SourceProviderSecurityError::DeathNotEstablished)
+    }
+
+    /// Returns `None` only for a pinned, exact live predecessor process.
+    pub(crate) fn observe_from_current_custody(
+        old_boot_id: [u8; 16],
+        old_process_id: u32,
+        old_start_time_ticks: u64,
+        process_instance: [u8; 16],
+        process_execution_digest: ObjectDigest,
+    ) -> Result<Option<Self>, SourceProviderSecurityError> {
         let current = CurrentKernelBootV1::capture()?;
         if current.boot_id() != old_boot_id {
             return Self::cross_boot(
@@ -217,9 +235,10 @@ impl DeadProviderExecutionV1 {
                     process_instance,
                     process_execution_digest,
                 },
-            );
+            )
+            .map(Some);
         }
-        Self::same_boot_recovered(
+        Self::observe_same_boot_recovered(
             &current,
             old_process_id,
             old_start_time_ticks,
@@ -290,13 +309,13 @@ impl DeadProviderExecutionV1 {
         })
     }
 
-    fn same_boot_recovered(
+    fn observe_same_boot_recovered(
         current: &CurrentKernelBootV1,
         old_process_id: u32,
         old_start_time_ticks: u64,
         process_instance: [u8; 16],
         process_execution_digest: ObjectDigest,
-    ) -> Result<Self, SourceProviderSecurityError> {
+    ) -> Result<Option<Self>, SourceProviderSecurityError> {
         let process_id = NonZeroU32::new(old_process_id)
             .ok_or(SourceProviderSecurityError::DeathNotEstablished)?;
         current.revalidate()?;
@@ -311,8 +330,13 @@ impl DeadProviderExecutionV1 {
                     let identity = pidfd
                         .process_identity()
                         .map_err(|_| SourceProviderSecurityError::DeathNotEstablished)?;
-                    identity.pid() == old_process_id
-                        && identity.start_time_ticks() != old_start_time_ticks
+                    if identity.pid() != old_process_id {
+                        return Err(SourceProviderSecurityError::DeathNotEstablished);
+                    }
+                    identity.start_time_ticks() != old_start_time_ticks
+                        || !pidfd
+                            .is_alive()
+                            .map_err(|_| SourceProviderSecurityError::DeathNotEstablished)?
                 }
             }
             Err(aos_sandbox_linux::Error::Syscall { source, .. })
@@ -320,17 +344,19 @@ impl DeadProviderExecutionV1 {
             {
                 true
             }
-            Err(_) => false,
+            Err(_) => return Err(SourceProviderSecurityError::DeathNotEstablished),
         };
         current.revalidate()?;
-        if !death_established
-            || process_instance == [0; 16]
+        if process_instance == [0; 16]
             || old_start_time_ticks == 0
             || process_execution_digest.as_bytes() == &[0; 32]
         {
             return Err(SourceProviderSecurityError::DeathNotEstablished);
         }
-        Ok(Self {
+        if !death_established {
+            return Ok(None);
+        }
+        Ok(Some(Self {
             evidence: DeathEvidenceV1::SameBoot {
                 boot_id: current.boot_id(),
                 observed_at_seconds: crate::handshake::current_unix_seconds()?,
@@ -339,7 +365,7 @@ impl DeadProviderExecutionV1 {
                 process_instance,
                 process_execution_digest,
             },
-        })
+        }))
     }
 
     pub(super) fn cross_boot(
@@ -386,6 +412,97 @@ fn death_projection_commitment(projection: &DeadProviderExecutionProjectionV2) -
     hasher.update(projection.process_instance);
     hasher.update(projection.process_execution_digest.as_bytes());
     ObjectDigest::from_bytes(hasher.finalize().into())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU32;
+    use std::process::Command;
+    use std::time::Duration;
+
+    use aos_sandbox_core::ObjectDigest;
+    use aos_sandbox_linux::pidfd::PidFd;
+
+    use super::{CurrentKernelBootV1, DeadProviderExecutionV1, RecoveredProviderExecutionV1};
+
+    #[test]
+    fn death_proof_child_process() {
+        if std::env::var_os("AOS_SOURCE_PROVIDER_DEATH_PROOF_CHILD").is_some() {
+            std::thread::sleep(Duration::from_secs(10));
+        }
+    }
+
+    #[test]
+    fn recovered_death_requires_old_process_exit() {
+        let executable = std::env::current_exe().expect("current test executable");
+        let mut child = Command::new(executable)
+            .arg("--exact")
+            .arg("execution::death::tests::death_proof_child_process")
+            .env("AOS_SOURCE_PROVIDER_DEATH_PROOF_CHILD", "1")
+            .spawn()
+            .expect("spawn test executable child");
+        let process_id = NonZeroU32::new(child.id()).expect("child PID");
+        let pidfd = PidFd::open(process_id).expect("pin child process");
+        let identity = pidfd.process_identity().expect("observe child identity");
+        let boot = CurrentKernelBootV1::capture().expect("capture kernel boot");
+        let process_instance = [7; 16];
+        let execution_digest = ObjectDigest::from_bytes([8; 32]);
+
+        assert!(
+            DeadProviderExecutionV1::observe_same_boot_recovered(
+                &boot,
+                process_id.get(),
+                identity.start_time_ticks(),
+                process_instance,
+                execution_digest,
+            )
+            .expect("exact live observation")
+            .is_none()
+        );
+        assert!(
+            DeadProviderExecutionV1::observe_same_boot_recovered(
+                &boot,
+                0,
+                identity.start_time_ticks(),
+                process_instance,
+                execution_digest,
+            )
+            .is_err(),
+            "an unobservable predecessor is not a live-session witness"
+        );
+
+        child.kill().expect("stop child");
+        child.wait().expect("reap child");
+        let proof = DeadProviderExecutionV1::observe_same_boot_recovered(
+            &boot,
+            process_id.get(),
+            identity.start_time_ticks(),
+            process_instance,
+            execution_digest,
+        )
+        .expect("observe exited exact process")
+        .expect("prove exited exact process");
+        assert!(proof.matches(
+            boot.boot_id(),
+            process_id.get(),
+            identity.start_time_ticks(),
+            process_instance,
+        ));
+    }
+
+    #[test]
+    fn cross_boot_death_rejects_unchanged_boot_identity() {
+        let boot = CurrentKernelBootV1::capture().expect("capture kernel boot");
+        let recovered = RecoveredProviderExecutionV1 {
+            old_boot_id: boot.boot_id(),
+            process_id: std::process::id(),
+            start_time_ticks: 1,
+            process_instance: [7; 16],
+            process_execution_digest: ObjectDigest::from_bytes([8; 32]),
+        };
+
+        assert!(DeadProviderExecutionV1::cross_boot(&boot, recovered).is_err());
+    }
 }
 
 fn full_execution_digest(execution: &ProcessExecutionEvidenceV1) -> ObjectDigest {

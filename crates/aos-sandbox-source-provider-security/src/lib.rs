@@ -72,6 +72,7 @@ pub use execution::{
 };
 pub use handshake::{
     AcquireReceiptFactsV1, AuthenticatedRootMountCatalogCurrentnessV1,
+    AuthenticatedRootMountNativeRecoveryUnavailableV1, AuthenticatedRootMountRecoveryObservationV2,
     AuthenticatedRootMountRecoveryUnavailableV1, AuthorizedMountAcquireVerificationFloorV2,
     AuthorizedMountProviderOutcomeV2, CapturedMountProviderRecoveryOutcomeV2,
     CommittedProviderOutcomeV1, CommittedReopenedMountSourceRootV2,

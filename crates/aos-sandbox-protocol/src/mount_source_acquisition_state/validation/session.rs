@@ -88,6 +88,76 @@ pub(super) fn validate_session_reachability(table: &SourceAcquisitionTableV2) ->
                 "provider session is unreachable from durable state",
             ));
         }
+        if let Some(witness) = &session.barrier_idle_replacement {
+            let predecessor = table
+                .provider_sessions
+                .get(&witness.dead_execution.old_session_id)
+                .ok_or_else(|| state_error("barrier-idle predecessor session is missing"))?;
+            let root = table
+                .provider_attempts
+                .get(&witness.root_attempt.id)
+                .ok_or_else(|| state_error("barrier-idle recovery root is missing"))?;
+            let original_digest = match &root.state {
+                ProviderAttemptStateV2::AbandonedIndeterminate { .. } => root.record_digest,
+                ProviderAttemptStateV2::NativeNoDispatchSettled {
+                    canonical_query, ..
+                } => {
+                    let query = RecoveryCurrentnessQueryV1::from_canonical_bytes(canonical_query)
+                        .map_err(|_| state_error("barrier-idle root query is invalid"))?;
+                    *query.original_attempt_digest().as_bytes()
+                }
+                _ => return Err(state_error("barrier-idle root is not recoverable")),
+            };
+            if session.predecessor_session_id != Some(predecessor.session_id)
+                || predecessor.scope != session.scope
+                || witness.root_attempt.revision != 2
+                || witness.root_attempt.record_digest != original_digest
+                || root.scope != session.scope
+                || witness.predecessor_head.scope != session.scope
+                || witness.predecessor_head.current_session_id != predecessor.session_id
+                || witness.predecessor_head.current_session_record_digest
+                    != predecessor.record_digest
+                || witness.predecessor_head.pending_attempt.is_some()
+                || witness.predecessor_head.next_request_sequence
+                    != witness.predecessor_head.next_response_sequence
+                || witness
+                    .predecessor_head
+                    .recovery_barrier
+                    .as_ref()
+                    .is_none_or(|barrier| {
+                        barrier.root_attempt != witness.root_attempt
+                            || barrier.required_session_id != predecessor.session_id
+                            || barrier.recovery_inventory_tail.is_some()
+                            || barrier.replacement_count.checked_add(1)
+                                != Some(witness.replacement_count)
+                    })
+                || record_digest(&StoredRecordV2::ProviderHead {
+                    value: *witness.predecessor_head.clone(),
+                })? != witness.predecessor_head.record_digest
+                || witness.dead_execution.old_session_record_digest != predecessor.record_digest
+                || witness.dead_execution.node_id != predecessor.node_id
+                || witness.dead_execution.process_execution_digest
+                    != predecessor.provider_execution.process_execution_digest
+                || witness.dead_execution.old_kernel_boot_id != predecessor.kernel_boot_id
+                || witness.dead_execution.provider_process_instance
+                    != predecessor.provider_process_instance
+                || witness.dead_execution.observed_kernel_boot_id != session.kernel_boot_id
+                || match witness.dead_execution.proof_kind {
+                    DeadProviderExecutionProofKindV2::PidfdExited => {
+                        witness.dead_execution.observed_kernel_boot_id != predecessor.kernel_boot_id
+                    }
+                    DeadProviderExecutionProofKindV2::BootReplaced => {
+                        witness.dead_execution.observed_kernel_boot_id == predecessor.kernel_boot_id
+                    }
+                }
+                || witness.dead_execution.death_evidence_digest
+                    != death_digest(&witness.dead_execution)?
+                || session_successor_distance(table, root.session_id, session.session_id)?
+                    != witness.replacement_count
+            {
+                return Err(state_error("barrier-idle session witness is inconsistent"));
+            }
+        }
     }
     Ok(())
 }
@@ -115,6 +185,7 @@ pub(super) fn validate_session(session: &SourceProviderSessionV2) -> Result<()> 
         || session.root_mount_process_instance == [0; 16]
         || session.provider_process_instance == [0; 16]
         || session.record_digest == [0; 32]
+        || (session.barrier_idle_replacement.is_some() && session.predecessor_session_id.is_none())
     {
         return Err(state_error(
             "SourceProvider session has an invalid scalar field",
