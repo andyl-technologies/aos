@@ -433,6 +433,7 @@ in rec {
     qemuWhiteboxGuestWrite = import ./phase2-qemu-whitebox-guest-write.nix {inherit pkgs lib;};
     qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {inherit pkgs lib;};
     qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
+    qemuPauseIpiLive = import ./phase2-qemu-pause-ipi-live.nix {inherit pkgs lib;};
     qemuAarch64DetIpiAdapter = import ./phase2-qemu-aarch64-det-ipi-adapter.nix {inherit pkgs lib;};
     qemuVcpuIntrospect = import ./phase2-qemu-vcpu-introspect.nix {inherit pkgs lib;};
     qemuPreemptionInject = import ./phase2-qemu-preemption-inject.nix {inherit pkgs lib;};

@@ -18,6 +18,7 @@
   # halted during the short boot prefix, so a shortened fixture cannot prove a
   # real RR handoff even though the exported cursor is already valid.
   simS11 = import ./phase0-s11.nix {inherit pkgs lib;};
+  pauseIpiLive = import ./phase2-qemu-pause-ipi-live.nix {inherit pkgs lib;};
 
   taskList = builtins.concatStringsSep "," taskIds;
 
@@ -67,6 +68,10 @@
       }
     ]
     ++ failuresFor "tests/crucible/phase0-s11.nix" phase0S11 [
+      {
+        label = "S11 exercises guest PAUSE under spinlock contention";
+        needle = ''__asm__ __volatile__("pause" ::: "memory")'';
+      }
       {
         label = "S11 production sim accelerator parameter";
         needle = ''accelerator ? "sim,thread=single"'';
@@ -249,6 +254,13 @@ in
             require_line "$s11_result" "mismatch_localization_rr_cursor_negative_test=true"
             cp "$s11_result" "$out/s11-sim-multi-vcpu-fingerprint.result"
 
+            pause_ipi_result="${pauseIpiLive}/result"
+            require_line "$pause_ipi_result" "PASS"
+            require_line "$pause_ipi_result" "pause_both_vcpus=true"
+            require_line "$pause_ipi_result" "all_vcpus_idle_after_hlt=true"
+            require_line "$pause_ipi_result" "same_source_event_trace_match=true"
+            cp "$pause_ipi_result" "$out/pause-ipi-live.result"
+
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
@@ -270,6 +282,7 @@ in
             rejects_unpinned_rr_switch_quantum=true
             multi_vcpu_fingerprint=checks.crucible.phase0.s11MultiVcpuFingerprint
             live_smp_guest=covered
+            live_pause_ipi=covered
             exact_horizon=covered
             RESULT
           '';

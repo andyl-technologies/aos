@@ -180,6 +180,7 @@
 
           static void lock_spin(void) {
             while (__sync_lock_test_and_set(&spinlock, 1) != 0) {
+              __asm__ __volatile__("pause" ::: "memory");
               sched_yield();
             }
           }

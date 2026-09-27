@@ -507,11 +507,11 @@ produce live patched-QEMU architectural or device evidence.
   preserve phase ownership, authenticate the backend-refined application
   coordinate, and prove halted-node lifecycle mutation and replay through the
   production runtime.
-- [x] **T-QEMU-0110** Implement
+- [ ] **T-QEMU-0110** Implement
   [`crucible-release-halted-rr-turn`](14-qemu-fault-patches/61-release-halted-rr-turn.md):
-  release all-halted partial RR turns to the canonical idle boundary and commit
-  helper-authenticated multi-vCPU `PAUSE` yields before host work, with live SMP
-  progress and a site-authenticated early-yield negative control.
+  release all-halted partial RR turns to the canonical idle boundary, bound
+  counted multi-vCPU `PAUSE` loops by the RR quantum and exact deadlines, and
+  prove directed IPI wake and live SMP progress under the current policy.
 - [x] **T-QEMU-0111** Implement
   [`crucible-accelerator-service-schema`](14-qemu-fault-patches/62-accelerator-service-schema.md):
   admit the versioned ratio-valued accelerator capacity field through QEMU's
