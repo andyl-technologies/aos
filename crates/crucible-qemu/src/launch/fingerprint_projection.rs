@@ -136,7 +136,7 @@ const UI_INPUT_QUEUE: ProjectionRow = row!(
     DEVICE,
     "ui-input-queue"
 );
-const TIMER: ProjectionRow = versioned_row!("timer", 0, "timer", 2, VOLATILE, "cpu-timers", 5);
+const TIMER: ProjectionRow = versioned_row!("timer", 0, "timer", 2, VOLATILE, "cpu-timers", 6);
 const CPU_COMMON: ProjectionRow = row!("cpu_common", 0, "cpu_common", 1, VOLATILE, "cpu-common");
 const X86_CPU: ProjectionRow = versioned_row!("cpu", 0, "cpu", 12, VOLATILE, "x86-cpu", 2);
 const AARCH64_CPU: ProjectionRow = versioned_row!("cpu", 0, "cpu", 22, VOLATILE, "aarch64-cpu", 2);
@@ -449,7 +449,7 @@ mod tests {
         assert_eq!(q35.sections, 40);
         assert_eq!(
             q35.digest,
-            "a4a03ede093eacfaa1c16996ed8247656d907205a41243d7caad045b253cbc78"
+            "0aaf340ee7377d96537eff5ed8937f5b0b9f4a51e379dc8f8dc0f178b5b50129"
         );
 
         let aarch64 = expected_manifest_for_shape(base_shape(FaultCapabilityScope::Aarch64))
@@ -457,7 +457,7 @@ mod tests {
         assert_eq!(aarch64.sections, 19);
         assert_eq!(
             aarch64.digest,
-            "be9cf23506b592c68f6d85d52a93ba85fbc1404d07583a6a5dd6892b23d37e54"
+            "f3a98c8815ffaf4d58a25a7e31aa8ed5d2b6e3b9d02ee2a4286e4d7532e5277a"
         );
         assert_projection_row(
             &aarch64,
@@ -481,8 +481,8 @@ mod tests {
             .find(|row| row.id == "timer")
             .ok_or("missing timer projection")?;
 
-        assert_eq!(timer.projection_schema, "crucible.qemu.cpu-timers.v5");
-        assert_eq!(timer.projection_version, 5);
+        assert_eq!(timer.projection_schema, "crucible.qemu.cpu-timers.v6");
+        assert_eq!(timer.projection_version, 6);
         Ok(())
     }
 
@@ -504,7 +504,7 @@ mod tests {
         assert_eq!(manifest.sections, 44);
         assert_eq!(
             manifest.digest,
-            "75d6b392d6936607f1749b26103b9f4d866caffc05508fdfb13767b143a5614d"
+            "63a2ac36a95e46ecc82ff2150dd66120d0c34ca4c85d037b1f1fd7f854f6077d"
         );
         Ok(())
     }
@@ -582,7 +582,7 @@ mod tests {
         assert_eq!(manifest.sections, 48);
         assert_eq!(
             manifest.digest,
-            "d8d67ae0a2b23d3511a65977433d24c33b195207a9fb0f8577037159739243bb"
+            "a208b2a814e0cc8a9161418995a75a020be5d3807ca49768c66ef98f828b01d5"
         );
         Ok(())
     }
@@ -605,7 +605,7 @@ mod tests {
         assert_eq!(manifest.sections, 51);
         assert_eq!(
             manifest.digest,
-            "dcf5c186f987bacda5c490e79664c913746fca70093912f59a3206303fd3ab34"
+            "2b8c49b6640c50ca75b2f7155fcb74a8aca0f67e9eae25cdd6b6a116c24cfdeb"
         );
         Ok(())
     }
@@ -628,7 +628,7 @@ mod tests {
         assert_eq!(manifest.sections, 26);
         assert_eq!(
             manifest.digest,
-            "ecdcb8fa549e4a1842102353836bfa546cf070e760b7f81280989120248a97c1"
+            "c1f00e5b71f40bc7f45d525e3741674ace3407e27b021d6ab77df82e40ec982c"
         );
         Ok(())
     }
@@ -643,7 +643,7 @@ mod tests {
         assert_eq!(q35.sections, 49);
         assert_eq!(
             q35.digest,
-            "9a76f574fa41517627871b7d9393b8ec91a544414bca76488eeea375648a450e"
+            "01289da5247c25409ab9497679513dfe612fb8847d5754fea4f981af6e640202"
         );
 
         let identities = q35
@@ -685,7 +685,7 @@ mod tests {
         assert_eq!(aarch64.sections, 25);
         assert_eq!(
             aarch64.digest,
-            "d323823b6af3491e3f475a7b97ea08a565775f28217b342fe7e923fa2611d016"
+            "7d05885eed659714ed7c7c2d78450b38d67244e9c711b4ad55852113600e4313"
         );
         assert_eq!(
             aarch64.rows.last().map(|row| row.id.as_str()),
