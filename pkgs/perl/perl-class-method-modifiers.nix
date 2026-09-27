@@ -1,12 +1,13 @@
 ##! perl-class-method-modifiers — Moose-style method modifiers for Perl
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
 }: let
   version = "2.15";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-class-method-modifiers";
     inherit version;
     src = fetchurl {
