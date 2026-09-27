@@ -206,6 +206,10 @@ const HOT_FORK_SCALING_SELECTORS: &[ExactSelector] = &[
         source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/equivalence.rs",
         name: "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_meets_whole_world_performance_ratchets",
     },
+    ExactSelector {
+        source: "crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests/native_acceptance/final_audit.rs",
+        name: "qemu_hot_fork_world_factory::tests::native_acceptance::final_audit::production_hot_fork_resource_roots_are_clean_after_packaged_flights",
+    },
 ];
 
 const HOT_CHECKPOINT_MANAGER_PRESSURE_SELECTORS: &[ExactSelector] = &[ExactSelector {
