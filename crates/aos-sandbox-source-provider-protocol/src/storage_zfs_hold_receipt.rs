@@ -58,6 +58,11 @@ pub enum StorageZfsHoldReceiptErrorV1 {
 }
 
 /// Pins Storage's catalog, authority, journal, and physical readback heads.
+///
+/// A Storage-issued journal digest commits the current materialized records
+/// and sequence, not append history. Its physical digest commits both
+/// bracketing hold observations and the confined reader measurement under a
+/// separate domain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageZfsHoldHeadV1 {
     catalog_generation: u64,

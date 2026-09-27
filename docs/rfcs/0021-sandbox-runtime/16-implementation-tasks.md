@@ -8678,6 +8678,12 @@ from Storage's authenticated Snapshot result, not the Provider row, and checks
 the row's handle, format version, GUIDs, hold lineage, root policy, and portable
 content digest against that unchanged cut and the confined reader. It returns
 only a nonauthorizing Storage sample; no production socket consumes it.
+The separately provisioned `AOSZHK01` Storage role key can derive an unsigned
+`AOSZHR01` head only after exact credential recheck. That head binds the
+unchanged catalog and materialized-journal cut to both ZFS hold observations
+and the confined reader's measured tree and mount identity. No receipt is
+signed: the Provider attempt is not authenticated to Storage, and the reader
+has already detached its mount without transferring a SourceRoot descriptor.
 
 Storage writes and fsyncs a single exclusive launch marker in its root-owned,
 mode-0700 StateDirectory before connecting to the reader socket. A restart

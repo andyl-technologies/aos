@@ -43,7 +43,10 @@ use aos_sandbox_protocol::{
     MAXIMUM_RESPONSE_BYTES, PeerCredentials, PeerPolicy, ValidatedStorageWorkspace,
     decode_storage_resource_inventory_response,
 };
-use aos_sandbox_source_provider_protocol::{StorageLiveExportSourceV1, ZfsHeldSnapshotProofV1};
+use aos_sandbox_source_provider_protocol::{
+    StorageLiveExportSourceV1, StorageZfsHoldHeadV1, StorageZfsHoldReceiptErrorV1,
+    StorageZfsHoldSignerV1, ZfsHeldSnapshotProofV1,
+};
 use buffa::Message as _;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use sha2::{Digest as _, Sha256};
@@ -108,6 +111,8 @@ const GUEST_ROOT_PUBLISHER_SOCKET: &str = "/run/aos/sandbox-guest-root-publisher
 const STARTUP_CATALOG_OBSERVATION_NANOSECONDS: u64 = 10_000_000_000;
 const STARTUP_CATALOG_WORKER_NANOSECONDS: u64 = 9_000_000_000;
 const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
+const ZFS_HOLD_RECEIPT_PHYSICAL_DOMAIN: &[u8] =
+    b"aos.sandbox.storage.zfs-hold.receipt-physical.v1\0";
 
 /// Rejects a retained Repair hold before startup observation can dispatch.
 ///
@@ -270,6 +275,58 @@ pub(crate) struct StorageHeldSnapshotReadbackV1 {
     pub(crate) measured_tree: crate::process::HeldSnapshotReaderObservationV1,
     /// Fresh ZFS hold/GUID readback after the detached measurement quiesced.
     pub(crate) post_measurement_observation_digest: ObjectDigest,
+}
+
+impl StorageHeldSnapshotReadbackV1 {
+    /// Derives a nonauthorizing receipt head from the unchanged Storage cut.
+    ///
+    /// The physical commitment covers both ZFS hold observations and the
+    /// confined reader's exact measured mount and tree. It is not a signed
+    /// SourceRoot: the reader has already detached its mount and returned no FD.
+    pub(crate) fn receipt_head(
+        &self,
+        signer: StorageZfsHoldSignerV1,
+    ) -> Result<StorageZfsHoldHeadV1, StorageZfsHoldReceiptErrorV1> {
+        let (_, authority_generation, authority_digest) = signer.authority();
+        StorageZfsHoldHeadV1::new(
+            self.cut.catalog.generation(),
+            self.cut.catalog.digest(),
+            authority_generation,
+            authority_digest,
+            self.cut.authority_sequence,
+            self.cut.materialized_state_digest,
+            held_snapshot_receipt_physical_digest(
+                self.physical_observation_digest,
+                self.post_measurement_observation_digest,
+                &self.measured_tree,
+            ),
+        )
+    }
+}
+
+fn held_snapshot_receipt_physical_digest(
+    before: ObjectDigest,
+    after: ObjectDigest,
+    measured: &crate::process::HeldSnapshotReaderObservationV1,
+) -> ObjectDigest {
+    ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(ZFS_HOLD_RECEIPT_PHYSICAL_DOMAIN)
+            .chain_update(before.as_bytes())
+            .chain_update(after.as_bytes())
+            .chain_update(measured.content_digest.as_bytes())
+            .chain_update(measured.tree_digest.as_bytes())
+            .chain_update(measured.tree_size.to_be_bytes())
+            .chain_update(measured.mount_id.to_be_bytes())
+            .chain_update(measured.root_device.to_be_bytes())
+            .chain_update(measured.root_inode.to_be_bytes())
+            .chain_update(measured.nodes.to_be_bytes())
+            .chain_update(measured.file_bytes.to_be_bytes())
+            .chain_update(measured.mounted_snapshot_guid.to_be_bytes())
+            .chain_update(measured.identity.identity_tree_digest.as_bytes())
+            .finalize()
+            .into(),
+    )
 }
 
 fn identity_observation_matches_snapshot_metadata(
@@ -3377,6 +3434,61 @@ mod tests {
         CatalogPlanV1, ManagedDatasetRoot, PlannedDataset, ProjectAncestorPolicyV1,
         ReservationPolicy, ResolvedDataset, StorageDomainsV1, WorkspaceSpacePolicyV1,
     };
+
+    #[test]
+    fn receipt_physical_commitment_binds_both_holds_and_confined_mount_identity() {
+        let before = ObjectDigest::from_bytes([1; 32]);
+        let after = ObjectDigest::from_bytes([2; 32]);
+        let measured = crate::process::HeldSnapshotReaderObservationV1 {
+            content_digest: ObjectDigest::from_bytes([3; 32]),
+            tree_digest: ObjectDigest::from_bytes([4; 32]),
+            tree_size: 5,
+            mount_id: 6,
+            root_device: 7,
+            root_inode: 8,
+            nodes: 9,
+            file_bytes: 10,
+            mounted_snapshot_guid: 11,
+            identity: HeldSnapshotIdentityObservationV1 {
+                root_attributes: PortableRootAttributesV1::new(0, 0, 0o755).unwrap(),
+                maximum_portable_uid: 0,
+                maximum_portable_gid: 0,
+                distinct_inode_count: 1,
+                directory_entry_count: 0,
+                identity_tree_digest: ObjectDigest::from_bytes([12; 32]),
+            },
+        };
+        let expected = held_snapshot_receipt_physical_digest(before, after, &measured);
+
+        assert_ne!(
+            expected,
+            held_snapshot_receipt_physical_digest(
+                ObjectDigest::from_bytes([13; 32]),
+                after,
+                &measured
+            )
+        );
+        assert_ne!(
+            expected,
+            held_snapshot_receipt_physical_digest(
+                before,
+                ObjectDigest::from_bytes([14; 32]),
+                &measured
+            )
+        );
+        let mut different_mount = measured;
+        different_mount.mount_id += 1;
+        assert_ne!(
+            expected,
+            held_snapshot_receipt_physical_digest(before, after, &different_mount)
+        );
+        let mut different_tree = measured;
+        different_tree.content_digest = ObjectDigest::from_bytes([15; 32]);
+        assert_ne!(
+            expected,
+            held_snapshot_receipt_physical_digest(before, after, &different_tree)
+        );
+    }
 
     #[test]
     fn held_snapshot_identity_must_match_the_unchanged_protected_metadata() {

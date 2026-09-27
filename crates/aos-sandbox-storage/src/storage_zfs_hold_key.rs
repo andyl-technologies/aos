@@ -12,15 +12,15 @@
 //! the exact credential directory, file identity, and bytes. Signing remains
 //! unavailable until an authenticated broker carrier conveys the Provider's
 //! owner-minted challenge, exact attempt, and holder session. Storage also
-//! needs a protected mapping for the AOSPCZ01 pool GUID, hold generation,
-//! active-hold digest, root policy, and content digest. The key exposes no
-//! signing method while either proof is absent.
+//! derives a nonauthorizing AOSZHR01 head from its protected journal cut and
+//! confined physical readback. The key exposes no signing method while
+//! authenticated attempt and SourceRoot descriptor custody are absent.
 
 use std::path::PathBuf;
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::storage_zfs_hold_receipt::{
-    StorageZfsHoldSignerV1, StorageZfsHoldVerifierV1,
+    StorageZfsHoldHeadV1, StorageZfsHoldSignerV1, StorageZfsHoldVerifierV1,
 };
 use ed25519_dalek::SigningKey;
 use zeroize::Zeroizing;
@@ -28,6 +28,7 @@ use zeroize::Zeroizing;
 use crate::operator_recovery_credentials::{
     FileIdentity, PinnedCredential, open_directory, read_credential,
 };
+use crate::runtime::StorageHeldSnapshotReadbackV1;
 use crate::service::StorageServiceError;
 
 const CREDENTIAL_NAME: &str = "storage-zfs-hold-key-v1";
@@ -96,6 +97,26 @@ impl StorageZfsHoldKeyV1 {
     pub const fn verifier(&self) -> StorageZfsHoldVerifierV1 {
         self.verifier
     }
+
+    /// Derives an unsigned head only while this dedicated role key remains current.
+    ///
+    /// No Provider attempt, SourceRoot descriptor, or receipt signature is
+    /// accepted or emitted here. Key rotation requires a new Storage process.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed key custody or an invalid protected readback head.
+    pub(crate) fn receipt_head(
+        &self,
+        readback: &StorageHeldSnapshotReadbackV1,
+    ) -> Result<StorageZfsHoldHeadV1, StorageServiceError> {
+        self.recheck()?;
+        let head = readback
+            .receipt_head(self.signer)
+            .map_err(|_| invalid("Storage ZFS hold receipt head is invalid"))?;
+        self.recheck()?;
+        Ok(head)
+    }
 }
 
 fn decode_key_record(
@@ -153,6 +174,11 @@ fn invalid(message: &str) -> StorageServiceError {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+    use rustix::fs::{Mode, OFlags};
+    use tempfile::TempDir;
+
     use super::*;
 
     fn record() -> [u8; KEY_BYTES] {
@@ -184,5 +210,51 @@ mod tests {
                 assert!(decode_key_record(&changed).is_err(), "byte {index}");
             }
         }
+    }
+
+    #[test]
+    fn dedicated_role_rejects_cross_role_or_missing_signer_authority() {
+        let (signer, verifier, seed) = decode_key_record(&record()).unwrap();
+        assert_eq!(
+            verifier.projection(),
+            (
+                signer,
+                SigningKey::from_bytes(&seed).verifying_key().to_bytes()
+            )
+        );
+
+        let mut source_role = record();
+        source_role[..8].copy_from_slice(b"AOSSPK01");
+        assert!(decode_key_record(&source_role).is_err());
+
+        let mut live_export_role = record();
+        live_export_role[..8].copy_from_slice(b"AOSSLK01");
+        assert!(decode_key_record(&live_export_role).is_err());
+
+        for range in [16..32, 32..40, 40..72, 72..88, 88..96] {
+            let mut missing = record();
+            missing[range].fill(0);
+            assert!(decode_key_record(&missing).is_err());
+        }
+    }
+
+    #[test]
+    fn credential_reader_rejects_insecure_mode_and_alias() {
+        let directory = TempDir::new().unwrap();
+        let key_path = directory.path().join(CREDENTIAL_NAME);
+        std::fs::write(&key_path, record()).unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let descriptor = rustix::fs::open(
+            directory.path(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        assert!(read_credential(&descriptor, CREDENTIAL_NAME, KEY_BYTES).is_err());
+
+        let alternate = directory.path().join("alternate-key");
+        std::fs::rename(&key_path, &alternate).unwrap();
+        symlink(&alternate, &key_path).unwrap();
+        assert!(read_credential(&descriptor, CREDENTIAL_NAME, KEY_BYTES).is_err());
     }
 }
