@@ -111,6 +111,26 @@ pub fn read_root_v8_released_proof_v1(
     decode_reply(&frame, nonce, binding, epoch)
 }
 
+/// Validates an untrusted R8X frame without granting Root release custody.
+///
+/// This pure wire check shares the production decoder so a server can test
+/// cross-crate frame compatibility. `true` means that the bytes claim a
+/// released phase; only [`read_root_v8_released_proof_v1`] authenticates the
+/// fixed Root socket and may produce release evidence.
+///
+/// # Errors
+///
+/// Rejects a wrong frame length, version, nonce, claim, phase, or encoding.
+pub fn validate_untrusted_root_v8_release_reply_frame_v1(
+    frame: &[u8],
+    nonce: [u8; 16],
+    binding: ObjectDigest,
+    epoch: u64,
+) -> io::Result<bool> {
+    let exact: &[u8; REPLY_BYTES] = frame.try_into().map_err(|_| invalid_reply())?;
+    decode_reply(exact, nonce, binding, epoch).map(|proof| proof.is_some())
+}
+
 fn decode_reply(
     frame: &[u8; REPLY_BYTES],
     nonce: [u8; 16],

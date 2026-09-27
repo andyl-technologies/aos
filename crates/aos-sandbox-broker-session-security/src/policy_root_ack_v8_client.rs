@@ -51,6 +51,8 @@ use std::time::Duration;
 
 use aos_sandbox::cache_residency::CacheResidencyWriterReadbackV2;
 use aos_sandbox::journal::{ControllerPolicyV8EffectAckV1, Journal};
+#[cfg(test)]
+use aos_sandbox::policy_compiler::validate_untrusted_root_v8_release_reply_frame_v1;
 use aos_sandbox::policy_compiler::{
     CONTROLLER_V8_EFFECT_ACK_READBACK_BYTES_V1, CONTROLLER_V8_FINAL_RELEASE_BYTES_V1,
     CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1, ControllerEffectAckChallengeV1,
@@ -961,19 +963,6 @@ fn read_release_stage(
     }
 }
 
-#[cfg(test)]
-fn read_release_reply(
-    stream: &mut std::os::unix::net::UnixStream,
-    nonce: [u8; 16],
-    binding: ObjectDigest,
-    epoch: u64,
-) -> io::Result<Option<RootV8TerminalTransportV1>> {
-    let mut frame = [0; ROOT_V8_RELEASE_FRAME_BYTES];
-    stream.read_exact(&mut frame)?;
-    require_eof(stream)?;
-    decode_release_frame(ROOT_V8_RELEASE_REPLY_MAGIC, &frame, nonce, binding, epoch)
-}
-
 fn read_terminal_challenge(
     stream: &mut std::os::unix::net::UnixStream,
     nonce: [u8; 16],
@@ -1098,41 +1087,41 @@ mod tests {
     #[test]
     fn release_replay_frame_rejects_cross_version_and_noncanonical_custody() {
         let binding = ObjectDigest::from_bytes([1; 32]);
-        let frame =
-            encode_release_frame(ROOT_V8_RELEASE_REPLY_MAGIC, [2; 16], binding, 3, None).unwrap();
+        let frame = encode_root_v8_release_reply([2; 16], binding, 3, None).unwrap();
         assert_eq!(
-            decode_release_frame(ROOT_V8_RELEASE_REPLY_MAGIC, &frame, [2; 16], binding, 3).unwrap(),
-            None,
+            validate_untrusted_root_v8_release_reply_frame_v1(&frame, [2; 16], binding, 3).unwrap(),
+            false,
         );
         assert!(
-            decode_release_frame(ROOT_V8_RELEASE_STAGE_MAGIC, &frame, [2; 16], binding, 3).is_err()
+            validate_untrusted_root_v8_release_reply_frame_v1(&frame, [3; 16], binding, 3).is_err()
+        );
+        let mut wrong_version = frame;
+        wrong_version[..8].copy_from_slice(ROOT_V8_RELEASE_STAGE_MAGIC);
+        assert!(
+            validate_untrusted_root_v8_release_reply_frame_v1(&wrong_version, [2; 16], binding, 3,)
+                .is_err()
         );
         let mut malformed = frame;
         malformed[64] = 2;
         assert!(
-            decode_release_frame(ROOT_V8_RELEASE_REPLY_MAGIC, &malformed, [2; 16], binding, 3)
+            validate_untrusted_root_v8_release_reply_frame_v1(&malformed, [2; 16], binding, 3)
                 .is_err()
         );
         let mut malformed = frame;
         malformed[397] = 1;
         assert!(
-            decode_release_frame(ROOT_V8_RELEASE_REPLY_MAGIC, &malformed, [2; 16], binding, 3)
+            validate_untrusted_root_v8_release_reply_frame_v1(&malformed, [2; 16], binding, 3)
                 .is_err()
         );
-
-        let (mut client, mut root) = std::os::unix::net::UnixStream::pair().unwrap();
-        root.write_all(&frame).unwrap();
-        root.shutdown(std::net::Shutdown::Write).unwrap();
-        assert_eq!(
-            read_release_reply(&mut client, [2; 16], binding, 3).unwrap(),
-            None,
+        assert!(
+            validate_untrusted_root_v8_release_reply_frame_v1(
+                &[frame.as_slice(), &[1]].concat(),
+                [2; 16],
+                binding,
+                3,
+            )
+            .is_err()
         );
-
-        let (mut client, mut root) = std::os::unix::net::UnixStream::pair().unwrap();
-        root.write_all(&frame).unwrap();
-        root.write_all(&[1]).unwrap();
-        root.shutdown(std::net::Shutdown::Write).unwrap();
-        assert!(read_release_reply(&mut client, [2; 16], binding, 3).is_err());
     }
 
     #[test]
@@ -1153,23 +1142,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            decode_release_frame(
-                ROOT_V8_RELEASE_REPLY_MAGIC,
+            validate_untrusted_root_v8_release_reply_frame_v1(
                 &frame,
                 [2; 16],
                 binding,
                 ack.epoch(),
             )
             .unwrap(),
-            Some(released),
+            true,
         );
-        assert!(decode_release_frame(b"AOSPHR8V", &frame, [2; 16], binding, ack.epoch()).is_err());
+        assert_eq!(
+            &frame[429..461],
+            released.release_marker_digest().unwrap().as_bytes()
+        );
+        let mut old_version = frame;
+        old_version[..8].copy_from_slice(b"AOSPHR8V");
+        assert!(
+            validate_untrusted_root_v8_release_reply_frame_v1(
+                &old_version,
+                [2; 16],
+                binding,
+                ack.epoch(),
+            )
+            .is_err()
+        );
 
         let mut missing_marker = frame;
         missing_marker[429..461].fill(0);
         assert!(
-            decode_release_frame(
-                ROOT_V8_RELEASE_REPLY_MAGIC,
+            validate_untrusted_root_v8_release_reply_frame_v1(
                 &missing_marker,
                 [2; 16],
                 binding,
@@ -1181,8 +1182,7 @@ mod tests {
         let mut claimed_held = frame;
         claimed_held[64] = 1;
         assert!(
-            decode_release_frame(
-                ROOT_V8_RELEASE_REPLY_MAGIC,
+            validate_untrusted_root_v8_release_reply_frame_v1(
                 &claimed_held,
                 [2; 16],
                 binding,
@@ -1231,18 +1231,6 @@ mod tests {
 
         let mut byte = [0];
         assert_eq!(root.read(&mut byte).unwrap(), 0);
-    }
-
-    #[test]
-    fn pending_release_reply_timeout_never_becomes_released() {
-        let (mut client, _root) = UnixStream::pair().unwrap();
-        client
-            .set_read_timeout(Some(Duration::from_millis(20)))
-            .unwrap();
-        assert!(
-            read_release_reply(&mut client, [2; 16], ObjectDigest::from_bytes([1; 32]), 3,)
-                .is_err()
-        );
     }
 
     #[test]

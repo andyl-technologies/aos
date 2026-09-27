@@ -207,6 +207,7 @@ pub use resources::{
 };
 pub use root_v8_released_proof::{
     POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2, RootV8ReleasedProofV1, read_root_v8_released_proof_v1,
+    validate_untrusted_root_v8_release_reply_frame_v1,
 };
 pub use source_hold_pin::{SourceHoldPinErrorV1, admit_fixed_source_hold_pin_v1};
 pub use source_hold_readback::{

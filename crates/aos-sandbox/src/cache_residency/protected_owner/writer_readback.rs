@@ -181,8 +181,9 @@ impl CacheResidencyProtectedOwnerV1 {
     /// Replays an already released Cache hold under the same typed owner cut.
     ///
     /// This recovery path never commits a release. It verifies the released
-    /// row, complete Cache replay, physical flock, and all writer names before
-    /// and after the callback, retaining Controller and Source externally.
+    /// row and complete Cache replay before the callback, then revalidates
+    /// writer names, the exact hold row, and physical custody afterward.
+    /// Controller and Source are retained externally.
     ///
     /// # Errors
     ///
