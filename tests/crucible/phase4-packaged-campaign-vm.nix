@@ -480,9 +480,9 @@
           test "$(${pkgs.grep}/bin/grep -Fxc \
             "$lifecycle_selector: test" /tmp/campaign-lifecycle-list.log || true)" -eq 1
 
-          # Discovery, two choice scans, and three bounded attempts can use
-          # their full independent waits before the host watchdog fires.
-          if ! ${pkgs.coreutils}/bin/timeout -k 5 2400 \
+          # Two selectable waits and three cold branch replays need a host
+          # watchdog beyond their measured execution times.
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 3600 \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
             "$lifecycle_selector" --nocapture > "$lifecycle_log" 2>&1; then
             cat "$lifecycle_log"

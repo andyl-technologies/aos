@@ -8,6 +8,9 @@ use crucible_cas::content_store::{ContentId, ObjectKind};
 // source discovery on the same clock reaches its marker near 555 ms.
 const LIFECYCLE_SELECTABLE_WAIT: Duration = Duration::from_secs(600);
 
+// Cold replay of one guest-choice branch takes 341-400 host seconds on TCG.
+const LIFECYCLE_BRANCH_OBSERVATION_WAIT: Duration = Duration::from_secs(600);
+
 #[test]
 #[ignore = "requires packaged QEMU, cgroup-v2, and ext4 project quota inside the VM check"]
 fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Error>> {
@@ -401,7 +404,7 @@ fn wait_for_public_request_observation(
     request: &str,
     value: &str,
 ) -> Result<Value, Box<dyn Error>> {
-    let deadline = Instant::now() + GUEST_CHOICE_ATTEMPT_WAIT;
+    let deadline = Instant::now() + LIFECYCLE_BRANCH_OBSERVATION_WAIT;
     wait_for_process_observation(deadline, || {
         if let Some(status) = service.child.try_wait()? {
             return Err(
