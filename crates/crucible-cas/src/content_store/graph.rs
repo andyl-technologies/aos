@@ -2365,6 +2365,7 @@ fn validate_capability_edges(
     nodes: &BTreeMap<StoreNodeId, StoreNodeSpec>,
     built: &BTreeMap<StoreNodeId, Arc<dyn ImmutableBlobBackend>>,
 ) -> Result<(), StoreError> {
+    let mut deferred_by_kind = BTreeMap::new();
     for (id, node) in nodes {
         let children: Vec<&StoreNodeId> = match node {
             StoreNodeSpec::Tiered { tiers } => tiers
@@ -2399,17 +2400,93 @@ fn validate_capability_edges(
                 .get(child)
                 .ok_or_else(|| invalid_graph(child.as_str(), GraphViolation::MissingNode))?;
             let capabilities = backend.capabilities();
-            if !capabilities.durable
-                || (capabilities.deferred_write
-                    && requirements
-                        .values()
-                        .any(|requirement| !requirement.allows_deferred_write()))
-            {
+            if !capabilities.durable {
                 return Err(invalid_graph(id.as_str(), GraphViolation::UnsupportedChild));
+            }
+
+            // A route may defer one kind while acknowledging another kind
+            // immediately. Validate each requirement against its write path.
+            for (kind, requirement) in requirements {
+                if !requirement.allows_deferred_write()
+                    && can_defer_put(child, *kind, nodes, built, &mut deferred_by_kind)?
+                {
+                    return Err(invalid_graph(id.as_str(), GraphViolation::UnsupportedChild));
+                }
             }
         }
     }
     Ok(())
+}
+
+fn can_defer_put(
+    id: &StoreNodeId,
+    kind: ObjectKind,
+    nodes: &BTreeMap<StoreNodeId, StoreNodeSpec>,
+    built: &BTreeMap<StoreNodeId, Arc<dyn ImmutableBlobBackend>>,
+    deferred_by_kind: &mut BTreeMap<(StoreNodeId, ObjectKind), bool>,
+) -> Result<bool, StoreError> {
+    let key = (id.clone(), kind);
+    if let Some(&deferred) = deferred_by_kind.get(&key) {
+        return Ok(deferred);
+    }
+
+    let capabilities = built
+        .get(id)
+        .ok_or_else(|| invalid_graph(id.as_str(), GraphViolation::MissingNode))?
+        .capabilities();
+    if !capabilities.deferred_write {
+        deferred_by_kind.insert(key, false);
+        return Ok(false);
+    }
+
+    let node = nodes
+        .get(id)
+        .ok_or_else(|| invalid_graph(id.as_str(), GraphViolation::MissingNode))?;
+    let children: Vec<&StoreNodeId> = match node {
+        StoreNodeSpec::WriteBack { .. } => {
+            deferred_by_kind.insert(key, true);
+            return Ok(true);
+        }
+        StoreNodeSpec::Routed { routes } => vec![
+            routes
+                .get(&kind)
+                .ok_or_else(|| invalid_graph(id.as_str(), GraphViolation::RouteCoverage))?,
+        ],
+        StoreNodeSpec::Tiered { tiers } => tiers
+            .iter()
+            .filter(|tier| tier.writable)
+            .map(|tier| &tier.child)
+            .collect(),
+        StoreNodeSpec::WriteThrough { children } => children.iter().collect(),
+        StoreNodeSpec::ReadThrough { source, .. } => vec![source],
+        StoreNodeSpec::Verified { child }
+        | StoreNodeSpec::DurabilityPolicy { child, .. }
+        | StoreNodeSpec::LogicalQuota { child, .. }
+        | StoreNodeSpec::PhysicalQuota { child, .. }
+        | StoreNodeSpec::Metrics { child }
+        | StoreNodeSpec::Namespaced { child, .. }
+        | StoreNodeSpec::ProfileValidated { child, .. } => vec![child],
+        StoreNodeSpec::Memory { .. }
+        | StoreNodeSpec::Directory { .. }
+        | StoreNodeSpec::Sqlite { .. }
+        | StoreNodeSpec::CompressedDirectory { .. }
+        | StoreNodeSpec::EncryptedDirectory { .. }
+        | StoreNodeSpec::CompressedEncryptedDirectory { .. }
+        | StoreNodeSpec::Packed { .. }
+        | StoreNodeSpec::S3 { .. } => {
+            deferred_by_kind.insert(key, true);
+            return Ok(true);
+        }
+    };
+
+    for child in children {
+        if can_defer_put(child, kind, nodes, built, deferred_by_kind)? {
+            deferred_by_kind.insert(key, true);
+            return Ok(true);
+        }
+    }
+    deferred_by_kind.insert(key, false);
+    Ok(false)
 }
 
 fn invalid_graph(node: &str, violation: GraphViolation) -> StoreError {

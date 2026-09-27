@@ -127,7 +127,10 @@ in
               -p "$package" \
               --lib "$test_name" \
               -- --list)
-            printf '%s\n' "$listing" | grep -Fqx "$test_name: test"
+            if ! printf '%s\n' "$listing" | grep -Fqx "$test_name: test"; then
+              printf 'required composition test is absent: %s\n' "$test_name" >&2
+              return 1
+            fi
             cargo test \
               --frozen \
               --offline \
@@ -141,6 +144,13 @@ in
           # Cover the admitted specialized layers through their real graph
           # implementations; each exact name is first required to list once.
           for cas_test in \
+            content_store::tests::tier::tiered_reads_promote_only_verified_objects \
+            content_store::tests::tier::tier_policy_separates_read_write_and_promotion_roles \
+            content_store::tests::tier::read_through_cache_failure_does_not_hide_authenticated_source_bytes \
+            content_store::tests::tier::closed_store_graph_routes_shared_leaves_and_is_introspectable \
+            content_store::tests::tier::durability_policy_rejects_duplicate_receipts_and_unadmitted_deferral \
+            content_store::tests::tier::capabilities_and_composed_failures_are_truthful \
+            content_store::tests::tier::partial_write_through_is_retryable \
             content_store::tests::graph_authorization::profile_and_namespace_boundaries_compose_at_the_graph_root \
             content_store::tests::compressed_directory_is_a_bounded_versioned_graph_leaf \
             content_store::tests::encrypted_directory_graph_identity_excludes_secret_key_material \
@@ -149,16 +159,36 @@ in
             content_store::tests::quotas::sqlite_physical_quota_binds_the_database_and_wal_root \
             content_store::tests::write_back::durable_write_back_survives_restart_and_exposes_exact_retention_roots \
             content_store::tests::write_back::write_back_journal_recovers_torn_tail_and_rejects_corruption \
+            content_store::tests::packed::packed_inventory_deletes_logical_entries_without_removing_live_pack_bytes \
             content_store::tests::packed::packed_store_graph_is_admitted_and_requires_an_isolated_persistent_root \
             content_store::s3::tests::behavior::graph_binds_exact_endpoint_capability_and_canonical_configuration
           do
             run_exact_lib_test crucible-cas "$cas_test"
           done
 
+          # Fault-hook tests are compiled only with the explicit recovery
+          # feature. Require each exact test to list before exercising it.
+          for recovery_test in \
+            content_store::tests::tier::corrupt_tier_copy_fails_closed_then_repairs_from_authenticated_lower_tier \
+            content_store::tests::packed::pack_index_interruption_recovers_old_generation_and_retries
+          do
+            recovery_listing=$(cargo test \
+              --frozen --offline --target-dir "$target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-cas --features destructive-recovery-faults \
+              --lib "$recovery_test" -- --list)
+            printf '%s\n' "$recovery_listing" | grep -Fqx "$recovery_test: test"
+            cargo test \
+              --frozen --offline --target-dir "$target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-cas --features destructive-recovery-faults \
+              --lib "$recovery_test" -- --exact --test-threads=1
+          done
+
           # Exercise the daemon owner's restart, interrupted journal, quota,
           # cache, write-back-root, packed, and S3 global-GC paths.
           for daemon_test in \
-            campaign_bootstrap::tests::deployment_contracts::default_sqlite_store_reopens_and_rejects_a_loose_object_layout \
+            campaign_bootstrap::tests::deployment_contracts::default_sqlite_store_reopens \
             campaign_gc::tests::policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy \
             campaign_gc::tests::write_back_roots_retain_exact_pending_objects_and_refs_retain_closures \
             campaign_gc::tests::direct_transfer_root_promoted_to_hot_root_revalidates_its_closure \
@@ -217,11 +247,13 @@ in
           tasks=${builtins.concatStringsSep "," taskIds}
           gate=gate:campaign-store-composition
           allowed_transparent_layer_orders=6
+          composed_routes=mirrored-fact,tiered-ram,deferred-finding
           routes=true
           tiers=true
           tier_promotion_cache_eviction=true
           write_through=true
           write_back=true
+          write_back_pending_gc_roots_across_restart=true
           public_store_owner=true
           same_campaign_direct_and_split_process=true
           independent_coordinator_executor_restart=true
@@ -237,6 +269,8 @@ in
           s3_faults_preserve_multiple_refs_and_transfer_gc=true
           paused_derived_s3_write_back_fault_recovery_gc=true
           packed_restart_and_repack=true
+          packed_shared_leaf_repack_after_transfer=true
+          packed_interrupted_index_recovery=true
           sqlite_restart_and_gc=true
           specialized_layers=sqlite,compressed,encrypted,compressed-encrypted,logical-quota,physical-quota,namespaced,profile-validated,s3
           RESULT

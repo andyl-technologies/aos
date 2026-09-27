@@ -1102,22 +1102,52 @@ fn durability_policy_rejects_duplicate_receipts_and_unadmitted_deferral() {
         })
     ));
 
+    let fanout = node_id("shared-route-fanout");
+    let routed = node_id("routed");
+    let immediate = node_id("immediate");
     let write_back = node_id("write-back");
     let staging = node_id("staging");
     let destination = node_id("destination");
     let deferred_config = |allow_deferred_write| StoreGraphConfig {
         root: policy.clone(),
-        admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
+        admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact, ObjectKind::Finding]),
         nodes: BTreeMap::from([
             (
                 policy.clone(),
                 StoreNodeSpec::DurabilityPolicy {
-                    child: write_back.clone(),
-                    requirements: BTreeMap::from([(
-                        ObjectKind::Finding,
-                        DurabilityRequirement::new(1, allow_deferred_write)
-                            .expect("deferred requirement"),
-                    )]),
+                    child: fanout.clone(),
+                    requirements: BTreeMap::from([
+                        (
+                            ObjectKind::CampaignFact,
+                            DurabilityRequirement::new(1, false).expect("immediate requirement"),
+                        ),
+                        (
+                            ObjectKind::Finding,
+                            DurabilityRequirement::new(1, allow_deferred_write)
+                                .expect("deferred requirement"),
+                        ),
+                    ]),
+                },
+            ),
+            (
+                fanout.clone(),
+                StoreNodeSpec::WriteThrough {
+                    children: vec![routed.clone(), routed.clone()],
+                },
+            ),
+            (
+                routed.clone(),
+                StoreNodeSpec::Routed {
+                    routes: BTreeMap::from([
+                        (ObjectKind::CampaignFact, immediate.clone()),
+                        (ObjectKind::Finding, write_back.clone()),
+                    ]),
+                },
+            ),
+            (
+                immediate.clone(),
+                StoreNodeSpec::Directory {
+                    root: temp.path().join("immediate"),
                 },
             ),
             (
@@ -1152,6 +1182,14 @@ fn durability_policy_rejects_duplicate_receipts_and_unadmitted_deferral() {
         })
     ));
     let deferred = StoreGraph::build(deferred_config(true)).expect("admitted deferred policy");
+    let fact_bytes = b"immediate routed campaign fact";
+    let fact = ContentId::for_bytes(ObjectKind::CampaignFact, 1, fact_bytes);
+    assert_eq!(
+        put_bytes(&deferred, fact, fact_bytes)
+            .expect("strict immediate route")
+            .durable_placements(),
+        1
+    );
     let finding_bytes = b"journaled durable staging";
     let finding = ContentId::for_bytes(ObjectKind::Finding, 1, finding_bytes);
     assert_eq!(
