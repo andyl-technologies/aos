@@ -95,7 +95,7 @@
     dependencies,
   }: {
     inherit consumerInstance;
-    activationOwner = "deferred-image";
+    activationOwner = "manager";
     service = key;
     manager_identity = managerIdentity key;
     lifecycle = {
@@ -344,7 +344,7 @@
   initrdHandoffBarrier = handoffService {
     key = "aos-ability-initrd-handoff-barrier";
     description = "Authenticate released initrd ability ownership";
-    activationOwner = "deferred-image";
+    activationOwner = "manager";
     arguments =
       [
         "__ability-stage-validate"
@@ -470,7 +470,7 @@
   }:
     {
       inherit consumerInstance;
-      activationOwner = "deferred-image";
+      activationOwner = "manager";
       service = key;
       manager_identity = managerIdentity key;
       lifecycle = {

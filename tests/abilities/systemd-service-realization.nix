@@ -193,12 +193,12 @@
         consumerModule.config.aos.abilities.requests;
       };
   };
-  deferredImageConsumerModule = {
+  managerOwnedConsumerModule = {
     config.aos.abilities =
       consumerModule.config.aos.abilities
       // {
         requests = builtins.mapAttrs (_: request:
-          request // {parameters = request.parameters // {activation_owner = "deferred-image";};})
+          request // {parameters = request.parameters // {activation_owner = "manager";};})
         consumerModule.config.aos.abilities.requests;
       };
   };
@@ -318,7 +318,7 @@
     requirements.${effectsChild.declaration.requirement} =
       initial.config.aos.abilities.compositionRequirements.${effectsChild.declaration.requirement};
   };
-  deferredImageEvaluation = evaluateWith deferredImageConsumerModule resolvedBindings {
+  managerOwnedEvaluation = evaluateWith managerOwnedConsumerModule resolvedBindings {
     requests.${serviceEffectsRequest} = effectsChild.declaration;
     requirements.${effectsChild.declaration.requirement} =
       initial.config.aos.abilities.compositionRequirements.${effectsChild.declaration.requirement};
@@ -333,9 +333,9 @@
   imageOwnedResource = builtins.head (builtins.attrValues imageOwnedEvaluation.config.aos.abilities.desiredResources);
   imageOwnedStageResources =
     (lib.abilities.sourceStageFixedPoint imageOwnedEvaluation.config.aos.abilities).resolvedResources;
-  deferredImageResource = builtins.head (builtins.attrValues deferredImageEvaluation.config.aos.abilities.desiredResources);
-  deferredStageResources =
-    (lib.abilities.sourceStageFixedPoint deferredImageEvaluation.config.aos.abilities).resolvedResources;
+  managerOwnedResource = builtins.head (builtins.attrValues managerOwnedEvaluation.config.aos.abilities.desiredResources);
+  managerStageResources =
+    (lib.abilities.sourceStageFixedPoint managerOwnedEvaluation.config.aos.abilities).resolvedResources;
   unitName = resource.realization.systemd_unit.unit_name;
   primary = builtins.head (builtins.filter
     (unit: unit.systemd_unit.unit_name == unitName)
@@ -451,26 +451,26 @@
     dependencyRenderer.realizationFor
     serviceManagement.interfaces.lifecycle.identity
     (resourceWithDependencies [dependencyReference]);
-  defaultTargetReference = {
+  activationTargetReference = {
     _type = "aos-request-output-reference";
-    request = "system:default-target";
+    request = "system:multi-user-target";
     output = "resource";
   };
-  defaultTargetIdentity = {
+  activationTargetIdentity = {
     kind = "unit";
     unit_name = "multi-user.target";
   };
-  duplicateActivationRenderer = import ../../pkgs/system/_systemd-abilities/provider/_systemd-service-document.nix {
+  explicitActivationRenderer = import ../../pkgs/system/_systemd-abilities/provider/_systemd-service-document.nix {
     inherit lib;
     serviceFacets = [];
     unitNameForReference = reference:
-      if reference == defaultTargetReference
-      then defaultTargetIdentity
+      if reference == activationTargetReference
+      then activationTargetIdentity
       else null;
     resolvePlanningOutput = value: value;
   };
-  duplicateActivation =
-    duplicateActivationRenderer.realizationFor
+  explicitActivation =
+    explicitActivationRenderer.realizationFor
     serviceManagement.interfaces.lifecycle.identity
     (imageOwnedResource
       // {
@@ -480,7 +480,7 @@
             dependencies =
               (imageOwnedResource.value.dependencies or {})
               // {
-                wanted_by = [defaultTargetReference];
+                wanted_by = [activationTargetReference];
               };
           };
       });
@@ -572,9 +572,9 @@ in
   assert resource.realization.links == [];
   assert imageOwnedResource.realization.activation_owner == "image";
   assert builtins.length (builtins.attrNames imageOwnedStageResources) == 1;
-  assert deferredImageResource.realization.activation_owner == "deferred-image";
-  assert deferredImageResource.realization.links == imageOwnedResource.realization.links;
-  assert deferredStageResources == {};
+  assert managerOwnedResource.realization.activation_owner == "manager";
+  assert managerOwnedResource.realization.links == imageOwnedResource.realization.links;
+  assert managerStageResources == {};
   assert imageOwnedResource.realization.links
   == [
     {
@@ -597,14 +597,6 @@ in
         kind = "unit";
         unit_name = "example-api.socket";
       };
-      relationship = "wants";
-    }
-    {
-      parent = {
-        kind = "unit";
-        unit_name = "multi-user.target";
-      };
-      child = imageOwnedResource.realization.systemd_unit;
       relationship = "wants";
     }
   ];
@@ -643,7 +635,13 @@ in
   != (builtins.head (directives "User" matchedDirectoryService)).value;
   assert !unrepresentedDependency.success;
   assert neutralPrerequisite.schema == "aos.systemd.service-realization/v1";
-  assert duplicateActivation.links == imageOwnedResource.realization.links;
+  assert builtins.length explicitActivation.links == builtins.length imageOwnedResource.realization.links + 1;
+  assert builtins.elem {
+    parent = activationTargetIdentity;
+    child = imageOwnedResource.realization.systemd_unit;
+    relationship = "wants";
+  }
+  explicitActivation.links;
   assert effectsRequest.parameters.kind == "service";
   assert effectsRequest.parameters.desired.service == "main";
   assert conditionImplementation.guarantees

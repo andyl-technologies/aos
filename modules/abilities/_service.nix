@@ -81,7 +81,7 @@
           options.activationOwner = lib.mkOption {
             type = serviceManagement.types.serviceDeclarationFields.activation_owner.type;
             default = "ability";
-            description = "Select ability execution, an image-owned stage-entry root, or an image-owned service started after stage execution.";
+            description = "Select ability execution, an observed image-owned stage-entry root, or a service started by the image manager outside the stage transaction.";
           };
           options.consumerInstance = lib.mkOption {
             type = lib.abilities.types.localKey;

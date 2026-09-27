@@ -38,6 +38,7 @@
   integrityFailure = systemMilestone "integrity-failure" milestones.bootIntegrityFailure;
 
   verificationService = {
+    activationOwner = "manager";
     lifecycle = {
       description = "Verify the complete dm-verity root before persistent state";
       execution_model = "oneshot";

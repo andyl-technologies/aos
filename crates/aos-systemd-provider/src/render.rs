@@ -267,9 +267,10 @@ mod tests {
 
     use super::{render_service, validate_relative_path, validate_unit_name};
     use crate::model::{
-        RealizedServiceAlias, SERVICE_REALIZATION_SCHEMA, ServiceActivationOwner,
-        ServiceFacetIdentity, ServiceRealization, ServiceUnitIdentity, SystemdSection,
-        SystemdSectionName, SystemdUnitDocument, SystemdUnitIdentity,
+        RealizedServiceAlias, RealizedServiceLink, SERVICE_REALIZATION_SCHEMA,
+        ServiceActivationOwner, ServiceFacetIdentity, ServiceLinkRelationship, ServiceRealization,
+        ServiceUnitIdentity, SystemdSection, SystemdSectionName, SystemdUnitDocument,
+        SystemdUnitIdentity,
     };
 
     #[test]
@@ -373,5 +374,23 @@ mod tests {
         assert_eq!(rendered.links.len(), 1);
         assert_eq!(rendered.links[0].path, "example-compat.service");
         assert_eq!(rendered.links[0].target, "example.service");
+
+        let mut manager_owned = realization;
+        manager_owned.activation_owner = ServiceActivationOwner::Manager;
+        manager_owned.links.push(RealizedServiceLink {
+            parent: ServiceUnitIdentity::Unit {
+                unit_name: "multi-user.target".to_string(),
+            },
+            child: ServiceUnitIdentity::Unit {
+                unit_name: "example.service".to_string(),
+            },
+            relationship: ServiceLinkRelationship::Wants,
+        });
+
+        let rendered = render_service(&manager_owned).expect("explicit manager link renders");
+        assert!(rendered.links.iter().any(|link| {
+            link.path == "multi-user.target.wants/example.service"
+                && link.target == "../example.service"
+        }));
     }
 }

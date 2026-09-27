@@ -50,12 +50,12 @@
   abilities.compositionRequirements;
   retainedCompositionOutputs =
     filterAttrs (name: _: builtins.elem name retainedRequestNames) abilities.compositionOutputs;
-  # The image manager starts deferred services only after this runner exits.
-  # Including them here would schedule their effects inside the runner while
-  # their unit ordering waits for that same runner to finish.
+  # The image manager starts its own services outside this transaction. Some
+  # prepare the runner; others wait for it to finish. Neither may be scheduled
+  # as an effect inside the runner's source plan.
   retainedResources = filterAttrs (_: resource:
     (resource.activationOwner or "ability")
-    != "deferred-image"
+    != "manager"
     && ((resource.controller or null)
       == null
       || builtins.hasAttr resource.controller retainedBindings))

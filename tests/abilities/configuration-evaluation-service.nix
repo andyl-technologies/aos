@@ -148,7 +148,7 @@ in
       ignore_failure = false;
     }
   ];
-  assert bootCommitLifecycle.activation_owner == "deferred-image";
+  assert bootCommitLifecycle.activation_owner == "manager";
   assert bootCommitDependencies.after
   == [
     (resultOf "aos:esp-ready" "resource")
@@ -159,6 +159,7 @@ in
   == [
     (resultOf "aos:esp-ready" "resource")
     (resultOf "aos:aos-graph-compile-lifecycle" "resource")
+    (resultOf "aos:aos-activate-lifecycle" "resource")
   ];
   assert bootCommitDependencies.before
   == [(resultOf "aos:multi-user" "resource")];

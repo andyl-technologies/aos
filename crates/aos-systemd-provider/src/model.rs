@@ -246,7 +246,7 @@ pub(crate) struct ServiceRealization {
 pub(crate) enum ServiceActivationOwner {
     Ability,
     Image,
-    DeferredImage,
+    Manager,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

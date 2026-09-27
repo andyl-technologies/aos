@@ -57,16 +57,12 @@ the host bundle, and replays its own durable execution journal. The image now
 starts that runner after host receipt and before the multi-user milestone.
 Checked-plan preflight, configuration activation, and boot commit are deferred
 until the runner exits; moving their work into one ordered host transaction
-remains a cutover task. The
-typed service owner now determines installation links: image-owned services
-have boot target links, while ability-owned services and their sockets start
-through checked effects. The remaining cutover must separate services that
-start after a stage controller exits from the effects executed inside that
-controller and replace the current activation service. Initrd services ordered
-after controller exit now use deferred image ownership and are omitted from
-the controller's source plan while retaining their manager boot links. Other
-post-controller services still need the same cutover. Image-owned service
-roots now require a selected native
+remains a cutover task. Typed ownership separates observed image roots,
+manager-started boot units, and ability effects. Manager-owned initrd storage,
+identity, verification, and post-controller services stay in the rendered boot
+graph but outside the source plan. Their target links come from explicit
+service dependencies; there is no implicit multi-user start link. Image-owned
+service roots require a selected native
 handler to confirm the rendered unit files, loaded definitions, manager
 freshness, active state, and exact resource revision before admission. The
 root-observation protocol, initrd source-plan

@@ -224,6 +224,9 @@ in
       "/dev/disk/by-partlabel/ESP-B"
     ];
   };
+  assert transactionStorageLifecycle.activation_owner == "manager";
+  assert mountLifecycle.activation_owner == "manager";
+  assert unlockLifecycle.activation_owner == "manager";
   assert transactionStorageDependencies.after
   == [
     (storageMilestone "device-settle")
