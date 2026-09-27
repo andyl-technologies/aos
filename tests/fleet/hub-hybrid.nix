@@ -1713,6 +1713,28 @@ in {
       try:
           client.succeed("\n".join(parallel_commands), timeout=180)
       except Exception:
+          upload_errors = {}
+          for index in range(len(parallel_uploads)):
+              response = client.succeed(
+                  f"cat /tmp/hybrid-parallel-{index}.response 2>/dev/null || true"
+              ).strip()
+              if not response:
+                  continue
+              try:
+                  error = json.loads(response).get("error")
+              except (ValueError, AttributeError):
+                  error = response[:160]
+              if error:
+                  detail = str(error)[:300]
+                  if any(secret in detail.lower() for secret in (
+                      "bearer", "token", "secret", "signature", "cookie", "password"
+                  )):
+                      detail = "[sensitive error redacted]"
+                  upload_errors[index] = detail
+          print("hybrid parallel upload errors:", upload_errors)
+          print("hybrid Native warnings after parallel upload failure:", native.succeed(
+              "journalctl -u aos-hub.service -p warning --no-pager -n 80"
+          ))
           print("hybrid Worker memory after parallel upload failure:", worker.succeed(
               "cat /proc/meminfo | head -n 8"
           ))
