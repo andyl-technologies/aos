@@ -176,8 +176,8 @@ in
   assert !(activationDisabled.config.aos.abilities.requests ? "aos:aos-activate-lifecycle");
   assert !(allDisabled.config.aos.abilities.requests ? "aos:host-stage-executed");
   assert initrd.config.aos.abilities.requests == {};
-  assert abilities.requests."aos:aos-graph-compile-lifecycle".parameters.activation_owner == "deferred-image";
-  assert abilities.requests."aos:aos-activate-lifecycle".parameters.activation_owner == "deferred-image";
+  assert abilities.requests."aos:aos-graph-compile-lifecycle".parameters.activation_owner == "manager";
+  assert abilities.requests."aos:aos-activate-lifecycle".parameters.activation_owner == "manager";
   assert builtins.elem "/run/aos/test-manifest.json"
   (builtins.head abilities.requests."aos:aos-activate-lifecycle".parameters.start).executable.arguments;
   assert builtins.all (resource:

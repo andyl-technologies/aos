@@ -837,20 +837,11 @@
         inherit child relationship;
       })
       values;
-    defaultActivation = {
-      parent = {
-        kind = "unit";
-        unit_name = "multi-user.target";
-      };
-      inherit child;
-      relationship = "wants";
-    };
   in
     if !value.enabled || activationOwner == "ability"
     then []
     else
-      [defaultActivation]
-      ++ targets "wants" (dependencies.wanted_by or [])
+      targets "wants" (dependencies.wanted_by or [])
       ++ targets "requires" (dependencies.required_by or []);
 
   socketIdentity = resource: socketsByName: name: {
@@ -1068,7 +1059,6 @@
       ]
       else [])
     socketUnits;
-    # The implicit boot target may also be requested by a service feature.
     links = lib.unique (builtins.sort
       (left: right: builtins.toJSON left < builtins.toJSON right)
       (installationLinks serviceIdentity value activationOwner ++ socketInstallationLinks));

@@ -26,6 +26,13 @@
     parameters.milestone = milestones.hostStageExecuted;
   };
   hostStageExecutedReadiness = resultOf "host-stage-executed" "resource";
+  multiUser = serviceManagement.forProducer {
+    inherit consumerInstance;
+    key = "multi-user";
+    interface = serviceManagement.interfaces.systemMilestoneReadiness;
+    parameters.milestone = milestones.multiUser;
+  };
+  multiUserReadiness = resultOf "multi-user" "resource";
 
   command = artifact: entryPoint: arguments: {
     executable = {
@@ -140,7 +147,7 @@
   activationPreflight = service {
     service = "aos-graph-compile";
     enabled = true;
-    activationOwner = "deferred-image";
+    activationOwner = "manager";
     manager_identity = {
       name = "aos-graph-compile";
       aliases = [];
@@ -161,6 +168,7 @@
       defaultDependencies
       // {
         after = [hostStageExecutedReadiness];
+        requires = [hostStageExecutedReadiness];
         prerequisites = [
           hostStageExecutedReadiness
           (resultOf "configuration-evaluation-lifecycle" "resource")
@@ -185,7 +193,7 @@
   activate = service {
     service = "aos-activate";
     enabled = true;
-    activationOwner = "deferred-image";
+    activationOwner = "manager";
     manager_identity = {
       name = "aos-activate";
       aliases = [];
@@ -211,6 +219,8 @@
       defaultDependencies
       // {
         after = [(resultOf "aos-graph-compile-lifecycle" "resource")];
+        requires = [(resultOf "aos-graph-compile-lifecycle" "resource")];
+        wanted_by = [multiUserReadiness];
         prerequisites = [
           (resultOf "package-profile-convergence-lifecycle" "resource")
           (resultOf "aos-graph-compile-lifecycle" "resource")
@@ -253,7 +263,7 @@ in {
     }
     (serviceManagement.producerModule {
       inherit config lib;
-      producers = [hostStageExecuted];
+      producers = [hostStageExecuted multiUser];
       enabled = graphEnabled || activationEnabled;
     })
     (lib.mkIf activationEnabled {

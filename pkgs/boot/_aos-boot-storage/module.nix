@@ -70,6 +70,7 @@
   }:
     {
       inherit consumerInstance;
+      activationOwner = "manager";
       service = key;
       manager_identity = {
         name = key;

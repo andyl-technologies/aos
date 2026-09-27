@@ -30,6 +30,7 @@
   verityReadiness = resultOf "verity-root" "resource";
 
   serviceDefinition = {
+    activationOwner = "manager";
     lifecycle = {
       description = "Encrypt and TPM2-seal persistent state";
       execution_model = "oneshot";

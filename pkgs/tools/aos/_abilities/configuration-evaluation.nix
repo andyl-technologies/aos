@@ -289,7 +289,7 @@
     serviceName = "image-boot-commit";
     managerName = "aos-image-boot-commit";
     description = "Commit a successful image transition";
-    activationOwner = "deferred-image";
+    activationOwner = "manager";
     command = packageRuntimeCommand (
       ["commit"]
       ++ lib.optional cfg.measuredBoot "--require-attestation-quote"
@@ -297,7 +297,7 @@
     serviceDependencies = dependencies {
       after = [mountEsp activationPreflight activation];
       before = [multiUserReadiness];
-      requires = [mountEsp activationPreflight];
+      requires = [mountEsp activationPreflight activation];
       wantedBy = [multiUserReadiness];
     };
     enabled = true;

@@ -520,7 +520,7 @@
         canonicalOrder = true;
       };
       enabled = types.boolean;
-      activation_owner = types.enum ["ability" "image" "deferred-image"];
+      activation_owner = types.enum ["ability" "image" "manager"];
       socket_start_units = types.list {
         element = types.string {
           maxLength = 255;
