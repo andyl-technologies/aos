@@ -7,6 +7,7 @@ mkdir -p "$scratch/bin"
 cat > "$scratch/bin/nix-instantiate" <<'MOCK'
 #!@BASH@
 case " $* " in
+  *' category packages '*' crossSystem x86_64-darwin '*) printf 'alpha\nbeta\ndarwin-runtimes' ;;
   *' category packages '*) printf 'alpha\nbeta' ;;
   *' category checks '*' scope build.aos-dev-cli '*) printf 'build.aos-dev-cli' ;;
   *' category checks '*' scope build.aos-dev '*) : ;;
@@ -87,6 +88,13 @@ test "$(bash "$root/aos-dev" list check build.aos-dev)" = $'build.aos-dev-cli\nb
 test "$(bash "$root/aos-dev" list check build.aos-dev-cli)" = 'build.aos-dev-cli'
 test "$(bash "$root/aos-dev" --release build package alpha --no-out-link)" = /tmp/aos-dev-test-output
 grep -Fq -- '-A pkgs.alpha --no-out-link' "$AOS_DEV_TEST_LOG"
+if bash "$root/aos-dev" --release build package darwin-runtimes --no-out-link >/dev/null 2>&1; then
+  echo 'cross-only package was accepted without its target' >&2
+  exit 1
+fi
+test "$(bash "$root/aos-dev" --release build package darwin-runtimes \
+  --argstr crossSystem x86_64-darwin --no-out-link)" = /tmp/aos-dev-test-output
+grep -Fq -- '-A pkgs.darwin-runtimes --argstr crossSystem x86_64-darwin --no-out-link' "$AOS_DEV_TEST_LOG"
 if grep -Fq -- 'sharedBuildCache' "$AOS_DEV_TEST_LOG"; then
   echo 'release command enabled shared cache' >&2
   exit 1
