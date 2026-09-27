@@ -216,6 +216,9 @@
           /sysroot/nix/store/${libselinuxBasename}/lib/libselinux.so.1
         ${pkgs.grep}/bin/grep -q AOS_SHADOWED_POLICY \
           /sysroot/nix/store/${policyBasename}/etc/selinux/aos/policy/policy.33
+        # /run survives switch-root; serial output can be lost if journald fails.
+        printf 'helper bind denied; DSO and policy shadowed\n' \
+          > /run/aos-protected-root-adversary.ok
         echo "AOS protected-root adversary: helper bind denied; DSO and policy shadowed"
       '';
     };
@@ -620,11 +623,13 @@ in
                     in stdout + stderr
                 ), (method, status, stdout, stderr)
 
-        boot_log = await_serial(
+        await_serial(
             protected,
             "Finished Prepare protected AOS sandbox Network roots",
         )
-        assert "helper bind denied; DSO and policy shadowed" in boot_log
+        protected.wait_until_succeeds(
+            "test -f /run/aos-protected-root-adversary.ok"
+        )
         await_serial(protected, "Reached target Multi-User System")
         protected.wait_until_succeeds("test -S /run/aos/sandbox-network/control.sock")
         protected.wait_until_succeeds(
