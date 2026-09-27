@@ -234,7 +234,6 @@ impl ActivatedOperationCompiler for ProductionOperationCompilerV1 {
             }
             _ => public_mutation::compile_public_mutation(
                 journal,
-                peer,
                 &authorized,
                 canonical_request,
                 request_digest,
