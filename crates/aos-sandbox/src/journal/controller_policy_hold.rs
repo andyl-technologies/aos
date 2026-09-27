@@ -888,6 +888,29 @@ fn v8_root_receipt_transaction(
     )
 }
 
+fn v8_root_receipt_capacity_transaction(
+    hold: ControllerPolicyHoldV1,
+) -> Result<JournalTransaction, JournalError> {
+    // Preflight only: the real receipt has this exact key and encoded length.
+    // No synthetic Root row is committed or exposed as authority.
+    let digest = Sha256::new()
+        .chain_update(V8_ROOT_RECEIPT_TRANSACTION_DOMAIN)
+        .chain_update(b"capacity-preflight\0")
+        .chain_update(hold.encode()?)
+        .finalize();
+    let id = digest[..16]
+        .try_into()
+        .map_err(|_| JournalError::ProtectedBoundary)?;
+    JournalTransaction::new(
+        id,
+        vec![JournalRecord::put(
+            RecordNamespace::ControllerPolicyHold,
+            V8_ROOT_RECEIPT_KEY.to_vec(),
+            vec![0; V8_ROOT_RECEIPT_RECORD_BYTES],
+        )],
+    )
+}
+
 fn ensure_controller(journal: &Journal) -> Result<(), JournalError> {
     journal.ensure_protected_authority()?;
     if journal
@@ -941,14 +964,22 @@ impl Journal {
             ObjectDigest::from_bytes([1; 32]),
             ObjectDigest::from_bytes([1; 32]),
         )?)?;
+        let v8_root_receipt = v8_root_receipt_capacity_transaction(hold)?;
         let release = transaction(ControllerPolicyHoldV1 {
             held: false,
             ..hold
         })?;
         // All later Controller commits are fenced, so this reserves the
-        // bounded journal room for one effect ACK and exact cold release.
+        // bounded journal room for the V8 Root receipt and cold release.
         self.preflight_transactions_with_capacity_scope(
-            &[acquire.clone(), ack, attempt, v8_ack, release],
+            &[
+                acquire.clone(),
+                ack,
+                attempt,
+                v8_ack,
+                v8_root_receipt,
+                release,
+            ],
             None,
             false,
             true,
@@ -1935,22 +1966,71 @@ mod tests {
     }
 
     #[test]
-    fn acquisition_reserves_capacity_for_exact_cold_release() {
+    fn acquisition_reserves_capacity_for_v8_root_receipt_and_cold_release() {
+        for maximum_transactions in [1, 5] {
+            let directory = TestDirectory::new();
+            let uid = fs::metadata(&directory.0).unwrap().uid();
+            let limits = JournalLimits {
+                maximum_transactions,
+                ..JournalLimits::default()
+            };
+            let (mut controller, _) =
+                Journal::open_protected_at_uid(&directory.0, "controller.journal", limits, uid)
+                    .expect("protected Controller");
+
+            assert!(
+                controller
+                    .acquire_controller_policy_hold_v1(hold())
+                    .is_err()
+            );
+            assert_eq!(controller.controller_policy_hold_v1().unwrap(), None);
+        }
+
+        let hold = hold();
+        let attempt =
+            ControllerPolicyV8AttemptV1::new(hold, ObjectDigest::from_bytes([28; 32])).unwrap();
+        let ack = ControllerPolicyV8EffectAckV1::new(
+            attempt,
+            13,
+            [14; 16],
+            ObjectDigest::from_bytes([15; 32]),
+            ObjectDigest::from_bytes([16; 32]),
+        )
+        .unwrap();
+        let receipt = v8_root_receipt(ack);
+        assert_eq!(
+            crate::journal::encoded_transaction_record_bytes(
+                &v8_root_receipt_capacity_transaction(hold).unwrap()
+            )
+            .unwrap(),
+            crate::journal::encoded_transaction_record_bytes(
+                &v8_root_receipt_transaction(receipt).unwrap()
+            )
+            .unwrap(),
+        );
+
         let directory = TestDirectory::new();
         let uid = fs::metadata(&directory.0).unwrap().uid();
         let limits = JournalLimits {
-            maximum_transactions: 1,
+            maximum_transactions: 6,
             ..JournalLimits::default()
         };
         let (mut controller, _) =
             Journal::open_protected_at_uid(&directory.0, "controller.journal", limits, uid)
                 .expect("protected Controller");
-
-        assert!(
-            controller
-                .acquire_controller_policy_hold_v1(hold())
-                .is_err()
+        controller.acquire_controller_policy_hold_v1(hold).unwrap();
+        controller
+            .record_controller_policy_v8_attempt_v1(attempt)
+            .unwrap();
+        controller
+            .acknowledge_controller_policy_v8_effect_v1(ack)
+            .unwrap();
+        controller
+            .record_controller_policy_v8_root_receipt_v1(receipt)
+            .unwrap();
+        assert_eq!(
+            controller.controller_policy_v8_root_receipt_v1().unwrap(),
+            Some(receipt)
         );
-        assert_eq!(controller.controller_policy_hold_v1().unwrap(), None);
     }
 }
