@@ -37,13 +37,8 @@ pub(in crate::policy_compiler::binding_v2) fn verify_released_terminal_without_d
 ) -> Result<(), PolicyCompilerJournalErrorV1> {
     // The binding decision calls this verifier. Read its prior chain without
     // calling the decision again, then verify the pinned Controller signature.
-    let released = released_cut_without_decision(authority, binding, epoch)
+    current_released_terminal_without_public_decision(authority, binding, epoch)
         .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-    let ack = current_ack_for_cut(authority, binding, epoch, &released)
-        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-    current_terminal_for_cut(authority, ack, &released)
-        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
-        .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
     Ok(())
 }
 
@@ -174,25 +169,15 @@ pub(super) fn current_terminal(
     current_terminal_for_cut(authority, ack, &held)
 }
 
-fn current_released_terminal(
+fn current_released_terminal_without_public_decision(
     authority: &ProtectedJournalAuthority<'_>,
     binding: ObjectDigest,
     epoch: u64,
 ) -> Result<RootV8VerifiedTerminalV1, RootV8EffectAckErrorV1> {
-    let released = released_cut(authority, binding, epoch)?;
+    let released = custody_cut(authority, binding, epoch, true)?;
     let ack = current_ack_for_cut(authority, binding, epoch, &released)?;
-    let terminal = current_terminal_for_cut(authority, ack, &released)?
-        .ok_or(RootV8EffectAckErrorV1::Stale)?;
-    let (head, next_epoch, count) = current_root_binding_chain(authority)?;
-    let hold =
-        current_hold(authority, head, next_epoch, count)?.ok_or(RootV8EffectAckErrorV1::Stale)?;
-    if hold.held
-        || !release_marker_matches(authority, binding, epoch, hold)
-            .map_err(RootV8EffectAckErrorV1::Root)?
-    {
-        return Err(RootV8EffectAckErrorV1::Stale);
-    }
-    Ok(terminal)
+    current_terminal_for_cut(authority, ack, &released)?
+        .ok_or(RootV8EffectAckErrorV1::Stale)
 }
 
 fn current_terminal_for_cut(
@@ -279,7 +264,7 @@ pub(super) fn current_terminal_custody(
         Ok(current_terminal(authority, binding, epoch)?.map(RootV8TerminalCustodyV1::Held))
     } else {
         Ok(Some(RootV8TerminalCustodyV1::Released(
-            current_released_terminal(authority, binding, epoch)?,
+            current_released_terminal_without_public_decision(authority, binding, epoch)?,
         )))
     }
 }

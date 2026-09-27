@@ -363,23 +363,7 @@ fn held_cut(
     binding: ObjectDigest,
     epoch: u64,
 ) -> Result<HeldCut, RootV8EffectAckErrorV1> {
-    custody_cut(authority, binding, epoch, false, true)
-}
-
-fn released_cut(
-    authority: &ProtectedJournalAuthority<'_>,
-    binding: ObjectDigest,
-    epoch: u64,
-) -> Result<HeldCut, RootV8EffectAckErrorV1> {
-    custody_cut(authority, binding, epoch, true, true)
-}
-
-fn released_cut_without_decision(
-    authority: &ProtectedJournalAuthority<'_>,
-    binding: ObjectDigest,
-    epoch: u64,
-) -> Result<HeldCut, RootV8EffectAckErrorV1> {
-    custody_cut(authority, binding, epoch, true, false)
+    custody_cut(authority, binding, epoch, false)
 }
 
 fn custody_cut(
@@ -387,14 +371,15 @@ fn custody_cut(
     binding: ObjectDigest,
     epoch: u64,
     released: bool,
-    verify_release: bool,
 ) -> Result<HeldCut, RootV8EffectAckErrorV1> {
-    let (decision, proposed, qualified) = if verify_release {
-        recover_closed_binding_decision_with_proof_from_authority(authority, binding, epoch)?
-    } else {
+    let (decision, proposed, qualified) = if released {
+        // The released terminal verifier checks the signed receipt after
+        // this cut; calling the public decision here would recurse.
         recover_closed_binding_decision_with_proof_from_authority_inner(
             authority, binding, epoch, false,
         )?
+    } else {
+        recover_closed_binding_decision_with_proof_from_authority(authority, binding, epoch)?
     };
     let expected_decision = if released {
         matches!(
@@ -1049,6 +1034,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(released, RootV8TerminalCustodyV1::Released(terminal));
+        assert!(matches!(
+            recover_closed_binding_decision_with_proof_from_authority(
+                &authority,
+                fixture.binding_head,
+                fixture.binding.handoff_epoch,
+            ),
+            Ok((ClosedPolicyBindingDecisionV2::CommittedReleased(_), _, _))
+        ));
         assert!(
             current_ack(
                 &authority,

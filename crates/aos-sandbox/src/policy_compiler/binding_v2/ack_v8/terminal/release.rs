@@ -151,7 +151,7 @@ pub(in crate::policy_compiler::binding_v2) fn release_verified_terminal_in_autho
     let preflight = authority.preflight_transactions(std::slice::from_ref(&transaction))?;
     authority.validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))?;
     authority.commit(&transaction)?;
-    let released = current_released_terminal(authority, binding, epoch)?;
+    let released = current_released_terminal_without_public_decision(authority, binding, epoch)?;
     if released != expected {
         return Err(RootV8EffectAckErrorV1::Stale);
     }
