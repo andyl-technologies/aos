@@ -492,6 +492,14 @@ fn begin_initial_discovery(
 /// value only after it has validated the public or durable state it needs.
 fn wait_for_process_observation<T>(
     deadline: Instant,
+    observe: impl FnMut() -> Result<Option<T>, Box<dyn Error>>,
+) -> Result<Option<T>, Box<dyn Error>> {
+    wait_for_process_observation_with_interval(deadline, PROCESS_OBSERVATION_INTERVAL, observe)
+}
+
+fn wait_for_process_observation_with_interval<T>(
+    deadline: Instant,
+    interval: Duration,
     mut observe: impl FnMut() -> Result<Option<T>, Box<dyn Error>>,
 ) -> Result<Option<T>, Box<dyn Error>> {
     loop {
@@ -503,7 +511,7 @@ fn wait_for_process_observation<T>(
         if remaining.is_zero() {
             return Ok(None);
         }
-        thread::sleep(PROCESS_OBSERVATION_INTERVAL.min(remaining));
+        thread::sleep(interval.min(remaining));
     }
 }
 

@@ -517,22 +517,30 @@ fn retry_finite_branch_submission(
     let deadline = Instant::now() + wait;
     let mut snapshot = read_snapshot()?;
     let mut stale_retries = 0;
+    let mut last_unavailable = None;
 
     loop {
-        let output = submit(&snapshot)?;
+        // The CLI response is the readiness signal. Retain the last unavailable
+        // response so a timeout reports the service's actual failure.
+        let output = wait_for_process_observation_with_interval(deadline, backoff, || {
+            let output = submit(&snapshot)?;
+            if is_finite_branch_temporarily_unavailable(&output) {
+                // The canonical request and snapshot stay fixed across retries;
+                // an already accepted request returns its prior result.
+                last_unavailable = Some(output);
+                return Ok(None);
+            }
+            Ok(Some(output))
+        })?
+        .or_else(|| last_unavailable.take())
+        .ok_or("finite branch retry ended without a service response")?;
+
         if is_stale_snapshot_response(&output) {
             stale_retries += 1;
             if stale_retries == MAX_STALE_BRANCH_RETRIES {
                 return Err("finite branch remained stale across bounded snapshot reads".into());
             }
             snapshot = read_snapshot()?;
-            continue;
-        }
-
-        if is_finite_branch_temporarily_unavailable(&output) && Instant::now() < deadline {
-            // Keep the same canonical request and snapshot. If it was accepted
-            // before the response failed, the repository returns its prior result.
-            std::thread::sleep(backoff.min(deadline.saturating_duration_since(Instant::now())));
             continue;
         }
 
