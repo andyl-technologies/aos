@@ -584,6 +584,7 @@ impl ChallengeRecordV1 {
         right.receipt_digest = ObjectDigest::from_bytes([0; 32]);
         left == right
     }
+
     pub(crate) fn matches_current(self, current: CurrentZfsHoldChallengeContextV1) -> bool {
         self.challenge.nonce == current.nonce
             && self.provider_id == current.provider_id
