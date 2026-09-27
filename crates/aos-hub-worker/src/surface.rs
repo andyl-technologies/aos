@@ -26,8 +26,8 @@ use worker::{Bucket, Env};
 
 use aos_hub_core::db::{BindingWriteRevisionRecord, Database, SurfacePlacementRecord};
 use aos_hub_core::fetch::{
-    DocumentationInspection, OriginFetch, StreamedRead, SurfaceFetch, SurfaceListPage,
-    SurfaceListedEvidence, SurfaceObjectEvidence, SurfaceProvider,
+    DocumentationInspection, OriginFetch, StreamedRead, SurfaceDeliveryHead, SurfaceFetch,
+    SurfaceListPage, SurfaceListedEvidence, SurfaceObjectEvidence, SurfaceProvider,
 };
 use aos_hub_core::hybrid_ingress::HybridDeliveryTarget;
 use aos_hub_core::s3surface::{Method as S3Method, S3Surface};
@@ -36,9 +36,9 @@ use aos_hub_core::storage_credential::{
     DatabaseStorageCredentialResolver, StorageCredentialResolver,
 };
 use aos_hub_core::storage_work::{
-    StorageBindingPublication, StorageDocumentationPage, StorageGitObjectProjection,
-    StorageObjectIdentity, StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan,
-    StorageWorkResult, MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES,
+    StorageBindingPublication, StorageCredentialSelector, StorageDocumentationPage,
+    StorageGitObjectProjection, StorageObjectIdentity, StorageWorkOperation, StorageWorkOutcome,
+    StorageWorkPlan, StorageWorkResult, MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES,
     MAX_OCI_HASH_RANGE_BYTES, MAX_OCI_RANGE_BYTES,
 };
 use aos_hub_core::surface_write::{
@@ -1968,6 +1968,97 @@ pub(crate) async fn hybrid_delivery_head(
     Ok(())
 }
 
+async fn hybrid_s3_delivery_fetcher(
+    env: &Env,
+    target: &HybridDeliveryTarget,
+) -> Result<S3SurfaceFetch> {
+    let binding = target
+        .external_binding
+        .as_ref()
+        .context("external delivery has no binding fence")?;
+    let publication = crate::hybrid_binding::resolve_for_delivery(
+        env,
+        binding.binding_id,
+        binding.binding_resource_version,
+    )
+    .await?;
+    let deployment_id = env.var("HUB_DEPLOYMENT_ID")?.to_string();
+    let now = aos_hub_core::clock::now_unix_secs();
+    let credential = if publication.snapshot.access_mode == "private" {
+        let reference = publication
+            .snapshot
+            .credentials
+            .iter()
+            .find(|reference| reference.purpose == "read")
+            .context("external delivery binding has no read credential")?;
+        Some(publication.credential_text(
+            &StorageCredentialSelector {
+                purpose: "read".into(),
+                generation: reference.generation,
+            },
+            &deployment_id,
+            now,
+        )?)
+    } else {
+        None
+    };
+    let surface = S3Surface::from_snapshot(
+        &publication.snapshot,
+        &deployment_id,
+        "",
+        credential.as_ref().map(|value| value.as_str()),
+        now,
+    )?;
+    Ok(S3SurfaceFetch {
+        surface,
+        egress: Arc::new(WorkerEgressClient::direct()),
+    })
+}
+
+/// Opens the exact external object snapshot admitted by the Native origin.
+///
+/// # Errors
+///
+/// Returns an error when the binding, object, size, or strong ETag changed.
+pub(crate) async fn hybrid_s3_delivery_read(
+    env: &Env,
+    target: &HybridDeliveryTarget,
+    range: Option<(u64, u64)>,
+) -> Result<StreamedRead> {
+    let fetcher = hybrid_s3_delivery_fetcher(env, target).await?;
+    let read = fetcher
+        .fetch_stream(&target.object_key, range)
+        .await?
+        .context("authorized S3 delivery object disappeared")?;
+    anyhow::ensure!(
+        read.total == target.object_size
+            && read.strong_etag.as_deref() == Some(target.object_etag.as_str()),
+        "authorized S3 delivery object changed after Native admission"
+    );
+    Ok(read)
+}
+
+/// Confirms a bodyless HEAD against the exact Native-authorized external snapshot.
+///
+/// # Errors
+///
+/// Returns an error when the binding, object, size, or strong ETag changed.
+pub(crate) async fn hybrid_s3_delivery_head(
+    env: &Env,
+    target: &HybridDeliveryTarget,
+) -> Result<()> {
+    let fetcher = hybrid_s3_delivery_fetcher(env, target).await?;
+    let head = fetcher
+        .delivery_head(&target.object_key)
+        .await?
+        .context("authorized S3 delivery object disappeared")?;
+    anyhow::ensure!(
+        head.size == target.object_size && head.strong_etag == target.object_etag,
+        "authorized S3 delivery object changed after Native admission"
+    );
+    Ok(())
+}
+
 /// Writes one Native-admitted cache body beside the deployment R2 bucket.
 ///
 /// # Errors
@@ -2338,6 +2429,34 @@ struct S3SurfaceFetch {
 
 #[async_trait(?Send)]
 impl SurfaceFetch for S3SurfaceFetch {
+    async fn delivery_head(&self, path: &str) -> Result<Option<SurfaceDeliveryHead>> {
+        let now = aos_hub_core::clock::now_unix_secs();
+        let url = self.surface.object_url(S3Method::Head, path, now)?;
+        let response = self
+            .egress
+            .send(&url, "HEAD", None, None, None, None, None)
+            .await
+            .map_err(|error| anyhow::anyhow!("s3 delivery HEAD: {error}"))?;
+        if response.status_code() == 404 {
+            return Ok(None);
+        }
+        anyhow::ensure!(
+            response.status_code() == 200,
+            "s3 delivery HEAD returned HTTP {}",
+            response.status_code()
+        );
+        let headers = response.headers();
+        let size = headers
+            .get("content-length")?
+            .context("s3 delivery HEAD omitted Content-Length")?
+            .parse::<u64>()?;
+        let strong_etag = headers
+            .get("etag")?
+            .context("s3 delivery HEAD omitted ETag")?;
+        aos_hub_core::surface_write::strong_if_match_etag(&strong_etag)?;
+        Ok(Some(SurfaceDeliveryHead { size, strong_etag }))
+    }
+
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
         let now = aos_hub_core::clock::now_unix_secs();
         let url = self.surface.object_url(S3Method::Get, path, now)?;

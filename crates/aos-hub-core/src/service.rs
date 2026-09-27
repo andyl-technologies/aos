@@ -27697,8 +27697,13 @@ impl RpcService {
             .get("cache-control")
             .cloned()
             .ok_or_else(|| RpcError::FailedPrecondition("image cache policy is absent".into()))?;
+        let external_binding =
+            crate::hybrid_ingress::delivery_binding(&self.db, snapshot.binding_id)
+                .await
+                .map_err(RpcError::surface_read)?;
         let target = HybridDeliveryTarget {
             object_key: snapshot.object_key,
+            external_binding,
             object_size: snapshot.size,
             object_etag: snapshot.strong_etag,
             content_type,
@@ -27852,8 +27857,13 @@ impl RpcService {
             let Some(head) = head else {
                 continue;
             };
+            let external_binding =
+                crate::hybrid_ingress::delivery_binding(&self.db, placement.binding_id)
+                    .await
+                    .map_err(RpcError::surface_read)?;
             let target = HybridDeliveryTarget {
                 object_key: keymap::r2_key(&placement.prefix, path),
+                external_binding,
                 object_size: head.size,
                 object_etag: head.strong_etag,
                 content_type: keymap::content_type(path).into(),

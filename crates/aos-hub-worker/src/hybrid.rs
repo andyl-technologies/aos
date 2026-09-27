@@ -1128,7 +1128,7 @@ async fn proxy_with_upload_phase(
             request_body_bytes,
             origin_elapsed_ms,
         );
-        return deliver_from_r2(env, request.method(), requested_range.as_deref(), target).await;
+        return deliver_storage(env, request.method(), requested_range.as_deref(), target).await;
     }
     let Some(body) = read_bounded_response(response, MAX_CONTROL_RESPONSE_BYTES).await? else {
         return Response::error("hybrid control response is too large", 502);
@@ -1152,7 +1152,7 @@ async fn proxy_with_upload_phase(
     .with_headers(headers))
 }
 
-async fn deliver_from_r2(
+async fn deliver_storage(
     env: &Env,
     method: worker::Method,
     range_header: Option<&str>,
@@ -1173,15 +1173,26 @@ async fn deliver_from_r2(
             (start < target.object_size).then_some((start, end.min(target.object_size - 1)))
         })
     };
-    let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
     let body = if method == worker::Method::Head {
-        if let Err(error) = crate::surface::hybrid_delivery_head(bucket, &target).await {
+        let head = if target.external_binding.is_some() {
+            crate::surface::hybrid_s3_delivery_head(env, &target).await
+        } else {
+            let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
+            crate::surface::hybrid_delivery_head(bucket, &target).await
+        };
+        if let Err(error) = head {
             worker::console_error!("hybrid_delivery_head_failed: {error:#}");
             return Response::error("hybrid delivery unavailable", 503);
         }
         axum::body::Body::empty()
     } else {
-        let read = match crate::surface::hybrid_delivery_read(bucket, &target, served).await {
+        let read = if target.external_binding.is_some() {
+            crate::surface::hybrid_s3_delivery_read(env, &target, served).await
+        } else {
+            let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
+            crate::surface::hybrid_delivery_read(bucket, &target, served).await
+        };
+        let read = match read {
             Ok(read) => read,
             Err(error) => {
                 worker::console_error!("hybrid_delivery_read_failed: {error:#}");

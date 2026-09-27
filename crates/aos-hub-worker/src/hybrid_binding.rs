@@ -32,6 +32,13 @@ struct BindingLookup {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct DeliveryBindingLookup {
+    binding_id: i64,
+    binding_resource_version: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CredentialFence {
     generation: i64,
     secret_version_ref: String,
@@ -121,6 +128,21 @@ impl DurableObject for HybridBindingState {
                 }
                 let Some(publication) = self.resolve(&lookup.revision).await? else {
                     return Response::error("binding snapshot is unavailable", 404);
+                };
+                let headers = Headers::new();
+                headers.set("cache-control", "private, no-store")?;
+                Ok(Response::from_json(&publication)?.with_headers(headers))
+            }
+            (Method::Post, "/resolve-delivery") => {
+                let lookup: DeliveryBindingLookup = request.json().await?;
+                if lookup.binding_id != binding_id || lookup.binding_resource_version <= 0 {
+                    return Response::error("delivery binding lookup is invalid", 400);
+                }
+                let Some(publication) = self
+                    .resolve_delivery(lookup.binding_resource_version)
+                    .await?
+                else {
+                    return Response::error("delivery binding is unavailable", 404);
                 };
                 let headers = Headers::new();
                 headers.set("cache-control", "private, no-store")?;
@@ -337,6 +359,24 @@ impl HybridBindingState {
         }
         Ok(Some(publication))
     }
+
+    async fn resolve_delivery(
+        &self,
+        binding_resource_version: i64,
+    ) -> worker::Result<Option<StorageBindingPublication>> {
+        let Some(watermark) = self
+            .state
+            .storage()
+            .get::<BindingWatermark>("watermark")
+            .await?
+        else {
+            return Ok(None);
+        };
+        if !watermark.active || watermark.binding_resource_version != binding_resource_version {
+            return Ok(None);
+        }
+        self.resolve(&watermark.revision).await
+    }
 }
 
 async fn acquire_gate(gate: Arc<Mutex<()>>) -> OwnedMutexGuard<()> {
@@ -441,6 +481,52 @@ async fn resolve(
         .await
         .map(Some)
         .context("decoding hybrid binding snapshot")
+}
+
+/// Resolves the current publication only when it still matches Native's signed binding version.
+///
+/// # Errors
+///
+/// Returns an error when the Worker binding state is unavailable or malformed.
+pub(crate) async fn resolve_for_delivery(
+    env: &Env,
+    binding_id: i64,
+    binding_resource_version: i64,
+) -> Result<StorageBindingPublication> {
+    if binding_id <= 0 || binding_resource_version <= 0 {
+        bail!("invalid delivery binding identity");
+    }
+    let body = serde_json::to_vec(&DeliveryBindingLookup {
+        binding_id,
+        binding_resource_version,
+    })?;
+    let headers = Headers::new();
+    headers.set(BINDING_ID_HEADER, &binding_id.to_string())?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
+    let request = Request::new_with_init("https://hybrid-binding/resolve-delivery", &init)?;
+    let mut response = stub(env, binding_id)?.fetch_with_request(request).await?;
+    if response.status_code() != 200 {
+        bail!(
+            "delivery binding state returned status {}",
+            response.status_code()
+        );
+    }
+    let publication = response
+        .json::<StorageBindingPublication>()
+        .await
+        .context("decoding delivery binding snapshot")?;
+    let now = aos_hub_core::clock::now_unix_secs();
+    let deployment_id = env.var("HUB_DEPLOYMENT_ID")?.to_string();
+    publication.validate(&deployment_id, now)?;
+    anyhow::ensure!(
+        publication.snapshot.binding_id == binding_id
+            && publication.snapshot.binding_resource_version == binding_resource_version,
+        "delivery binding snapshot changed after Native admission"
+    );
+    Ok(publication)
 }
 
 /// Resolves only the exact snapshot and credential set named by a signed plan.

@@ -89,12 +89,15 @@ pub struct HybridIngressAssertion {
 ///
 /// Native emits this only after the shared delivery route and surface read
 /// authorization succeed. The origin middleware binds it to the signed
-/// request before the Worker reads from R2.
+/// request before the Worker opens the selected object store.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HybridDeliveryTarget {
-    /// Full key in the deployment R2 bucket.
+    /// Full key within the selected binding, excluding its binding-owned prefix.
     pub object_key: String,
+    /// External binding selected by Native, or `None` for deployment R2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_binding: Option<HybridDeliveryBinding>,
     /// Size observed from the selected placement.
     pub object_size: u64,
     /// Strong provider version observed with the size.
@@ -108,6 +111,44 @@ pub struct HybridDeliveryTarget {
     /// Exact HTTP plan for an immutable object, including its selected range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planned_response: Option<HybridPlannedDelivery>,
+}
+
+/// SQL identity and version of an external binding selected for byte delivery.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridDeliveryBinding {
+    /// Binding whose currently published snapshot the Worker must resolve.
+    pub binding_id: i64,
+    /// Binding version observed during Native's placement read.
+    pub binding_resource_version: i64,
+}
+
+/// Resolves the SQL binding fence for a Native-authorized object delivery.
+///
+/// # Errors
+///
+/// Returns an error when the selected binding is missing or unsupported.
+pub(crate) async fn delivery_binding(
+    db: &crate::db::Database,
+    binding_id: i64,
+) -> anyhow::Result<Option<HybridDeliveryBinding>> {
+    use anyhow::Context as _;
+
+    let binding = db
+        .binding(binding_id)
+        .await?
+        .context("delivery placement references a missing binding")?;
+    if binding.is_instance_default && binding.kind == "deployment_r2" {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        !binding.is_instance_default && matches!(binding.kind.as_str(), "s3" | "r2"),
+        "delivery placement uses an unsupported binding"
+    );
+    Ok(Some(HybridDeliveryBinding {
+        binding_id,
+        binding_resource_version: binding.resource_version,
+    }))
 }
 
 /// Immutable object response that the Worker serves from a verified R2 snapshot.
@@ -604,6 +645,10 @@ impl HybridIngressKey {
 
 fn validate_delivery_target(target: &HybridDeliveryTarget) -> Result<(), HybridIngressError> {
     if target.object_key.is_empty()
+        || target
+            .external_binding
+            .as_ref()
+            .is_some_and(|binding| binding.binding_id <= 0 || binding.binding_resource_version <= 0)
         || target.object_key.len() > 2048
         || target.object_key.starts_with('/')
         || target
@@ -816,6 +861,7 @@ mod tests {
         request.method = "GET".into();
         let target = HybridDeliveryTarget {
             object_key: "tenant/cache/nar/abc.nar.zst".into(),
+            external_binding: None,
             object_size: 42,
             object_etag: "\"r2-version\"".into(),
             content_type: "application/octet-stream".into(),
@@ -847,12 +893,49 @@ mod tests {
     }
 
     #[test]
+    fn external_delivery_grant_binds_the_sql_binding_version() {
+        let key = HybridIngressKey::new([7; 32]).unwrap();
+        let mut request = assertion();
+        request.method = "GET".into();
+        let mut target = HybridDeliveryTarget {
+            object_key: "registry/oci/blobs/sha256/abc".into(),
+            external_binding: Some(HybridDeliveryBinding {
+                binding_id: 17,
+                binding_resource_version: 4,
+            }),
+            object_size: 42,
+            object_etag: "\"s3-version\"".into(),
+            content_type: "application/octet-stream".into(),
+            cache_control: "private, no-store".into(),
+            producer_document: false,
+            planned_response: None,
+        };
+
+        let signed = key.sign_delivery(&request, target.clone()).unwrap();
+        assert_eq!(
+            key.verify_delivery(&signed, &request, 110),
+            Ok(target.clone())
+        );
+
+        target
+            .external_binding
+            .as_mut()
+            .unwrap()
+            .binding_resource_version = 0;
+        assert_eq!(
+            key.sign_delivery(&request, target),
+            Err(HybridIngressError::Malformed)
+        );
+    }
+
+    #[test]
     fn delivery_grants_reject_escaped_keys_and_weak_versions() {
         let key = HybridIngressKey::new([7; 32]).unwrap();
         let mut request = assertion();
         request.method = "GET".into();
         let mut target = HybridDeliveryTarget {
             object_key: "tenant/cache/nar/abc.nar.zst".into(),
+            external_binding: None,
             object_size: 42,
             object_etag: "\"r2-version\"".into(),
             content_type: "application/octet-stream".into(),
@@ -888,6 +971,7 @@ mod tests {
         ]);
         let mut target = HybridDeliveryTarget {
             object_key: "tenant/images/sha256/a/object.img".into(),
+            external_binding: None,
             object_size: 42,
             object_etag: "\"r2-version\"".into(),
             content_type: "application/octet-stream".into(),
@@ -949,6 +1033,7 @@ mod tests {
         ]);
         let target = HybridDeliveryTarget {
             object_key: "tenant/oci/blobs/sha256/a".into(),
+            external_binding: None,
             object_size: 42,
             object_etag: "\"r2-version\"".into(),
             content_type: media_type.into(),

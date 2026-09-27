@@ -607,6 +607,8 @@ pub async fn stream_verified_image_from_placements(
 pub(crate) struct VerifiedObjectHead {
     /// Full provider key under the selected placement.
     pub object_key: String,
+    /// Binding selected with the indexed object version.
+    pub binding_id: i64,
     /// Provider-observed complete object size.
     pub size: u64,
     /// Strong provider version that the Worker must recheck on its GET.
@@ -676,6 +678,7 @@ pub(crate) async fn head_verified_image_from_placements(
         return Ok(PlacementReadOutcome::Found(PlacementRead {
             value: VerifiedObjectHead {
                 object_key: crate::keymap::r2_key(&placement.prefix, path),
+                binding_id: placement.binding_id,
                 size: head.size,
                 strong_etag: head.strong_etag,
             },

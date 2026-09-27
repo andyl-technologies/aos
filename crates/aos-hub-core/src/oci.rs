@@ -1095,8 +1095,18 @@ impl RpcService {
             let (Some(content_type), Some(cache_control)) = (content_type, cache_control) else {
                 return unavailable_response("OCI response metadata is incomplete", false);
             };
+            let external_binding =
+                match crate::hybrid_ingress::delivery_binding(&self.db, snapshot.value.binding_id)
+                    .await
+                {
+                    Ok(binding) => binding,
+                    Err(_) => {
+                        return unavailable_response("OCI delivery binding is unavailable", false)
+                    }
+                };
             let target = HybridDeliveryTarget {
                 object_key: snapshot.value.object_key,
+                external_binding,
                 object_size: snapshot.value.size,
                 object_etag: snapshot.value.strong_etag,
                 content_type,

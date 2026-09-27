@@ -88,6 +88,11 @@
     (builtins.toJSON {
       "qualification-v1" = "E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o=";
     });
+  secretVersionManifest = writeFixture
+    "hub-hybrid-fleet-secret-version-manifest"
+    (builtins.toJSON {
+      "native://fleet/external/storage/v1" = "/var/lib/aos-hub/fleet-s3-secret";
+    });
 
   nativeSystem = fixture.hubSystem.extendModules {
     modules = [
@@ -111,11 +116,12 @@
             channelReceiptKey = "hybrid-fleet-channel-receipt-key";
             releasePublicationKeys = "hybrid-fleet-release-publication-keys";
             qualificationKeys = "hybrid-fleet-qualification-keys";
+            secretVersionManifest = "hybrid-fleet-secret-version-manifest";
             tlsCertificate = "hybrid-fleet-certificate";
             tlsPrivateKey = "hybrid-fleet-private-key";
           };
         };
-        aos.security.pki.certificates = [caCertificate];
+        aos.security.pki.certificates = [caCertificate s3CertificatePem];
         aos.firewall.allowedTCP = [443];
         aos.kernel.modules = ["9pnet_virtio" "9p"];
         environment.systemPackages = [pkgs.util-linux];
@@ -133,6 +139,7 @@
           C /run/credentials/@system/hybrid-fleet-channel-receipt-key 0600 root root - ${channelReceiptKey}/value
           C /run/credentials/@system/hybrid-fleet-release-publication-keys 0600 root root - ${releasePublicationKeys}/value
           C /run/credentials/@system/hybrid-fleet-qualification-keys 0600 root root - ${qualificationKeys}/value
+          C /run/credentials/@system/hybrid-fleet-secret-version-manifest 0600 root root - ${secretVersionManifest}/value
           C /run/credentials/@system/hybrid-fleet-certificate 0600 root root - ${serverCertificate}/value
           C /run/credentials/@system/hybrid-fleet-private-key 0600 root root - ${serverPrivateKey}/value
         '';
@@ -479,6 +486,12 @@ in {
       secret_key = re.search(r"Secret key:\s*(\S+)", key_info)
       assert access_key and secret_key, "Garage did not return test key material"
       binding_secret = f"{access_key.group(1)}:{secret_key.group(1)}:garage".encode()
+      native.succeed(
+          "umask 077; "
+          f"printf '%s' {shlex.quote(binding_secret.decode())} "
+          "> /var/lib/aos-hub/fleet-s3-secret; "
+          "chown aos-hub:aos-hub /var/lib/aos-hub/fleet-s3-secret"
+      )
       s3_object = b"fleet external S3 object inspected beside storage"
       client.succeed(
           f"{CURL} -fsS --aws-sigv4 'aws:amz:garage:s3' "
@@ -1163,6 +1176,105 @@ in {
           timeout=180,
       )
       print("hybrid OCI route ready through public Worker")
+
+      external_cache_bytes = b"fleet external S3 delivery through Worker\n"
+      external_cache_path = "web/probe.bin"
+      client.succeed(
+          f"printf '%s' {shlex.quote(base64.b64encode(external_cache_bytes).decode())} | "
+          "${pkgs.coreutils}/bin/base64 -d > /tmp/hybrid-external-cache-object"
+      )
+      client.succeed(
+          f"{CURL} -fsS --aws-sigv4 'aws:amz:garage:s3' "
+          f"-u {shlex.quote(access_key.group(1) + ':' + secret_key.group(1))} "
+          "-X PUT -H 'content-type: application/octet-stream' "
+          "--data-binary @/tmp/hybrid-external-cache-object "
+          f"https://s3.fleet.test/fleet-s3/tenant/caches/fleet-external/{external_cache_path}",
+          timeout=60,
+      )
+      reviewed(
+          "hybrid-external-binding",
+          "binding create --org fleet --name external-s3 "
+          "--stable-id fleet-external-s3 --kind s3 --bucket fleet-s3 "
+          "--prefix tenant --endpoint https://s3.fleet.test "
+          "--region garage --access private",
+      )
+      for purpose in ("delete", "list", "read", "write"):
+          reviewed(
+              f"hybrid-external-{purpose}-credential",
+              f"binding credential set fleet:external-s3 --purpose {purpose} "
+              "--secret-version-ref native://fleet/external/storage/v1 "
+              f"--credential-fingerprint {hashlib.sha256(binding_secret).hexdigest()}",
+          )
+      external_binding = json.loads(client.succeed(hub_command(
+          "binding show fleet:external-s3"
+      )))["data"]["binding"]
+      validated = reviewed(
+          "hybrid-external-credentials-validate",
+          "binding credential validate fleet:external-s3 "
+          f"--if-version {shlex.quote(external_binding['resource_version'])}",
+      )
+      validation_operation_id = validated["data"]["operation"]["operation_id"]
+      client.succeed(hub_command(
+          f"operation watch {shlex.quote(validation_operation_id)} --timeout 2m"
+      ), timeout=180)
+
+      reviewed(
+          "hybrid-external-cache",
+          "cache create fleet/external --name 'Hybrid external objects' --visibility public",
+      )
+      reviewed(
+          "hybrid-external-cache-placement",
+          "placement add cache:fleet/external primary --binding fleet:external-s3 "
+          "--prefix caches/fleet-external --kind complete "
+          "--desired-state active --read enabled",
+      )
+      external_placement = json.loads(client.succeed(hub_command(
+          "placement show cache:fleet/external primary"
+      )))["data"]["placement"]
+      reviewed(
+          "hybrid-external-cache-scan",
+          "placement scan cache:fleet/external primary --wait --timeout 2m "
+          f"--if-version {shlex.quote(external_placement['resource_version'])}",
+          timeout=180,
+      )
+      external_placement = json.loads(client.succeed(hub_command(
+          "placement show cache:fleet/external primary"
+      )))["data"]["placement"]
+      reviewed(
+          "hybrid-external-cache-promote",
+          "placement promote cache:fleet/external primary "
+          f"--if-version {shlex.quote(external_placement['resource_version'])}",
+      )
+      reviewed(
+          "hybrid-external-cache-route",
+          "route add cache:fleet/external --stable-id hybrid-external-cache-route "
+          f"--endpoint hybrid-oci@{oci_generation} --base-path /external-cache "
+          "--mode hub-proxy --placement primary --serves cache --serves web --access public",
+      )
+      external_routes = json.loads(client.succeed(hub_command(
+          "route list cache:fleet/external"
+      )))["data"]["routes"]
+      external_route = next(
+          route for route in external_routes
+          if route["stable_id"] == "hybrid-external-cache-route"
+      )
+      reviewed(
+          "hybrid-external-cache-route-enable",
+          "route enable hybrid-external-cache-route "
+          f"--if-version {shlex.quote(external_route['resource_version'])}",
+      )
+      external_url = "https://aos.andyl.org/external-cache/web/probe.bin"
+      delivered = client.wait_until_succeeds(
+          f"{CURL} -fsS {external_url}", timeout=180,
+      )
+      assert delivered.encode() == external_cache_bytes, delivered
+      ranged = client.succeed(
+          f"{CURL} -fsS -H 'Range: bytes=6-13' {external_url}"
+      )
+      assert ranged.encode() == external_cache_bytes[6:14], ranged
+      head = client.succeed(f"{CURL} -fsSI {external_url}")
+      assert f"content-length: {len(external_cache_bytes)}" in head.lower(), head
+      print("hybrid external S3 delivery through Native authorization and Worker streaming: passed")
 
       cache_size = 1024 * 1024
       cache_path = "web/fleet-probe.bin"

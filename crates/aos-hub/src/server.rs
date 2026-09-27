@@ -1122,6 +1122,7 @@ mod hybrid_ingress_tests {
         let key = Arc::new(HybridIngressKey::new([9; 32]).unwrap());
         let target = HybridDeliveryTarget {
             object_key: "tenant/cache/nar/example.nar.zst".into(),
+            external_binding: None,
             object_size: 64,
             object_etag: "\"object-version\"".into(),
             content_type: "application/octet-stream".into(),
