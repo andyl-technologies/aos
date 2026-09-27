@@ -63,6 +63,7 @@
     entryPoint,
     arguments ? [],
     dependencies,
+    activationOwner ? "manager",
     conditions ? null,
     credentials ? null,
     environment ? null,
@@ -70,7 +71,7 @@
   }:
     {
       inherit consumerInstance;
-      activationOwner = "manager";
+      inherit activationOwner;
       service = key;
       manager_identity = {
         name = key;
@@ -106,6 +107,7 @@
     // lib.optionalAttrs (logging != null) {inherit logging;};
 
   mountEsp = service {
+    activationOwner = "image";
     key = "aos-mount-esp";
     description = "Mount an available booted EFI System Partition";
     entryPoint = "aos-mount-esp";
@@ -164,6 +166,7 @@
     ];
   };
   stageZfsCredential = service {
+    activationOwner = "image";
     key = "aos-stage-zfs-credential";
     description = "Materialize the sealed native ZFS credential from an available ESP";
     entryPoint = "aos-stage-zfs-credential";
@@ -195,6 +198,7 @@
   stagedZfsCredentialReadiness = resultOf "aos-stage-zfs-credential-lifecycle" "resource";
   unlockArguments = [cfg.zfs.poolName cfg.zfs.encryptionRoot] ++ cfg.zfs.expectedDevices;
   zfsUnlock = service {
+    activationOwner = "image";
     key = "aos-zfs-unlock";
     description = "Import and unlock immutable ZFS boot storage";
     entryPoint = "aos-zfs-unlock";
@@ -240,6 +244,7 @@
     };
   };
   transactionStorageMount = service {
+    activationOwner = "image";
     key = "aos-boot-transaction-storage";
     description = "Materialize the ESP-backed boot stage transaction journals";
     entryPoint = "aos-mount-transaction-storage";

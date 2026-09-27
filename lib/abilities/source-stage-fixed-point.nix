@@ -18,38 +18,65 @@
         value = values.${name};
       })
       (builtins.filter (name: predicate name values.${name}) (builtins.attrNames values)));
-  # Package runtime contracts omit build-only implementations, so their
-  # bindings and dependent declarations cannot enter the executable stage.
+  keysFor = names:
+    builtins.listToAttrs (builtins.map (name: {
+        inherit name;
+        value = true;
+      })
+      names);
+  # A manager-owned resource belongs to the image manager's transaction. All
+  # facets in its provider slot must leave the source transaction together;
+  # retaining the requests without their resource would create dangling grants.
+  managerSlots = keysFor (
+    builtins.map (resource: let
+      controller = resource.controller or null;
+      binding =
+        if controller == null
+        then throw "manager-owned source resource has no selected controller"
+        else abilities.bindings.${controller}
+        or (throw "manager-owned source resource has no selected binding '${controller}'");
+    in
+      builtins.toJSON [binding.providerInstance binding.slot])
+    (builtins.filter (resource: (resource.activationOwner or "ability") == "manager")
+      (builtins.attrValues abilities.resolvedResources))
+  );
+  inManagerSlot = binding:
+    builtins.hasAttr (builtins.toJSON [binding.providerInstance binding.slot]) managerSlots;
+  # Package runtime contracts also omit build-only implementations.
   retainedBindings = filterAttrs (_: binding:
-    abilities.implementations.${binding.implementation}.activationAvailable)
+    abilities.implementations.${binding.implementation}.activationAvailable
+    && !(inManagerSlot binding))
   abilities.bindings;
   omittedBindings = filterAttrs (name: _: !(builtins.hasAttr name retainedBindings)) abilities.bindings;
-  retainedRequestNames = builtins.map (binding: binding.request) (builtins.attrValues retainedBindings);
-  retainedRequests = filterAttrs (name: _: builtins.elem name retainedRequestNames) abilities.requests;
+  retainedRequestKeys = keysFor (builtins.map (binding: binding.request) (builtins.attrValues retainedBindings));
+  retainedRequests = filterAttrs (name: _: builtins.hasAttr name retainedRequestKeys) abilities.requests;
   retainedCompositionRequests =
-    filterAttrs (name: _: builtins.elem name retainedRequestNames) abilities.compositionRequests;
-  omittedRequests = filterAttrs (name: _: !(builtins.elem name retainedRequestNames)) abilities.requests;
+    filterAttrs (name: _: builtins.hasAttr name retainedRequestKeys) abilities.compositionRequests;
+  omittedRequests = filterAttrs (name: _: !(builtins.hasAttr name retainedRequestKeys)) abilities.requests;
   omittedCompositionRequests =
-    filterAttrs (name: _: !(builtins.elem name retainedRequestNames)) abilities.compositionRequests;
-  retainedActorNames =
+    filterAttrs (name: _: !(builtins.hasAttr name retainedRequestKeys)) abilities.compositionRequests;
+  retainedActors = keysFor (
     builtins.map (binding: binding.providerInstance) (builtins.attrValues retainedBindings)
     ++ builtins.map (request: request.consumer)
-    (builtins.attrValues retainedRequests ++ builtins.attrValues retainedCompositionRequests);
-  omittedActorNames =
+    (builtins.attrValues retainedRequests ++ builtins.attrValues retainedCompositionRequests)
+  );
+  omittedActors = keysFor (
     builtins.map (binding: binding.providerInstance) (builtins.attrValues omittedBindings)
     ++ builtins.map (request: request.consumer)
-    (builtins.attrValues omittedRequests ++ builtins.attrValues omittedCompositionRequests);
+    (builtins.attrValues omittedRequests ++ builtins.attrValues omittedCompositionRequests)
+  );
   retainedInstances = filterAttrs (name: _:
-    !(builtins.elem name omittedActorNames) || builtins.elem name retainedActorNames)
+    !(builtins.hasAttr name omittedActors) || builtins.hasAttr name retainedActors)
   abilities.instances;
   retainedInstanceIdentities =
     filterAttrs (name: _: builtins.hasAttr name retainedInstances) abilities.instanceIdentities;
+  retainedCompositionRequirementKeys =
+    keysFor (builtins.map (request: request.requirement) (builtins.attrValues retainedCompositionRequests));
   retainedCompositionRequirements = filterAttrs (name: _:
-    builtins.any (request: request.requirement == name)
-    (builtins.attrValues retainedCompositionRequests))
+    builtins.hasAttr name retainedCompositionRequirementKeys)
   abilities.compositionRequirements;
   retainedCompositionOutputs =
-    filterAttrs (name: _: builtins.elem name retainedRequestNames) abilities.compositionOutputs;
+    filterAttrs (name: _: builtins.hasAttr name retainedRequestKeys) abilities.compositionOutputs;
   # The image manager starts its own services outside this transaction. Some
   # prepare the runner; others wait for it to finish. Neither may be scheduled
   # as an effect inside the runner's source plan.
@@ -60,6 +87,12 @@
       == null
       || builtins.hasAttr resource.controller retainedBindings))
   abilities.resolvedResources;
+  mixedManagerSlots = builtins.filter (resource:
+    (resource.activationOwner or "ability")
+    != "manager"
+    && resource.controller != null
+    && inManagerSlot abilities.bindings.${resource.controller})
+  (builtins.attrValues abilities.resolvedResources);
 
   normalizeOwnedValue = owner: value:
     if owner == null
@@ -358,25 +391,28 @@
       );
     };
 in
-  {
-    inherit
-      (abilities)
-      environment
-      compositionPendingRequests
-      ;
-    instanceIdentities = retainedInstanceIdentities;
-    bindings = builtins.mapAttrs projectBinding retainedBindings;
-    compositionRequirements =
-      builtins.mapAttrs projectCompositionRequirement retainedCompositionRequirements;
-    requirements = projectedRequirements;
-    instances = builtins.mapAttrs projectInstance retainedInstances;
-    requests = builtins.mapAttrs projectRootRequest retainedRequests;
-    compositionRequests = builtins.mapAttrs projectCompositionRequest retainedCompositionRequests;
-    compositionOutputs = projectedOutputs;
-    resolvedResources = builtins.mapAttrs projectResolvedResource retainedResources;
-  }
-  // (
-    if abilities.resolvedExecutionObserver == null
-    then {}
-    else {executionObserver = abilities.resolvedExecutionObserver;}
-  )
+  if mixedManagerSlots != []
+  then throw "source-stage provider slot mixes manager-owned and stage-owned resources"
+  else
+    {
+      inherit
+        (abilities)
+        environment
+        compositionPendingRequests
+        ;
+      instanceIdentities = retainedInstanceIdentities;
+      bindings = builtins.mapAttrs projectBinding retainedBindings;
+      compositionRequirements =
+        builtins.mapAttrs projectCompositionRequirement retainedCompositionRequirements;
+      requirements = projectedRequirements;
+      instances = builtins.mapAttrs projectInstance retainedInstances;
+      requests = builtins.mapAttrs projectRootRequest retainedRequests;
+      compositionRequests = builtins.mapAttrs projectCompositionRequest retainedCompositionRequests;
+      compositionOutputs = projectedOutputs;
+      resolvedResources = builtins.mapAttrs projectResolvedResource retainedResources;
+    }
+    // (
+      if abilities.resolvedExecutionObserver == null
+      then {}
+      else {executionObserver = abilities.resolvedExecutionObserver;}
+    )

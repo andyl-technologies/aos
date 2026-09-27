@@ -334,8 +334,7 @@
   imageOwnedStageResources =
     (lib.abilities.sourceStageFixedPoint imageOwnedEvaluation.config.aos.abilities).resolvedResources;
   managerOwnedResource = builtins.head (builtins.attrValues managerOwnedEvaluation.config.aos.abilities.desiredResources);
-  managerStageResources =
-    (lib.abilities.sourceStageFixedPoint managerOwnedEvaluation.config.aos.abilities).resolvedResources;
+  managerStageGraph = lib.abilities.sourceStageFixedPoint managerOwnedEvaluation.config.aos.abilities;
   unitName = resource.realization.systemd_unit.unit_name;
   primary = builtins.head (builtins.filter
     (unit: unit.systemd_unit.unit_name == unitName)
@@ -574,7 +573,10 @@ in
   assert builtins.length (builtins.attrNames imageOwnedStageResources) == 1;
   assert managerOwnedResource.realization.activation_owner == "manager";
   assert managerOwnedResource.realization.links == imageOwnedResource.realization.links;
-  assert managerStageResources == {};
+  assert managerStageGraph.resolvedResources == {};
+  assert managerStageGraph.bindings == {};
+  assert managerStageGraph.requests == {};
+  assert managerStageGraph.compositionRequests == {};
   assert imageOwnedResource.realization.links
   == [
     {

@@ -30,7 +30,7 @@
 
   setup = {
     inherit consumerInstance;
-    activationOwner = "manager";
+    activationOwner = "image";
     service = serviceName;
     manager_identity = {
       name = serviceName;

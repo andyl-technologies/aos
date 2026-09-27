@@ -59,10 +59,11 @@ Checked-plan preflight, configuration activation, and boot commit are deferred
 until the runner exits. Activation consumes the evaluator's manifest through
 its own checked durable transaction; it does not rerun the host source plan.
 Typed ownership separates observed image roots,
-manager-started boot units, and ability effects. Manager-owned initrd storage,
-identity, verification, and post-controller services stay in the rendered boot
-graph but outside the source plan. Their target links come from explicit
-service dependencies; there is no implicit multi-user start link. Image-owned
+manager-started boot units, and ability effects. Early initrd storage,
+identity, and verification services are image-owned roots; post-controller
+services remain manager-owned in the rendered boot graph and outside the source
+plan. Their target links come from explicit service dependencies; there is no
+implicit multi-user start link. Image-owned
 service roots require a selected native
 handler to confirm the rendered unit files, loaded definitions, manager
 freshness, active state, and exact resource revision before admission. The
