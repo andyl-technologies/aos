@@ -581,7 +581,8 @@ pub trait QuantumLoop {
     ///
     /// The returned tuple contains the canonical network fault decisions
     /// appended while admitting the frames, the updated configuration, and the
-    /// corresponding unified event-log append.
+    /// corresponding unified event-log append. `emission_times` preserves the
+    /// original logical timestamp of frames held across a VM counter rebase.
     ///
     /// # Errors
     ///
@@ -591,6 +592,7 @@ pub trait QuantumLoop {
     fn append_backend_network_outputs(
         &mut self,
         _outputs: Vec<BackendNetworkOutput>,
+        _emission_times: &BTreeMap<(NodeId, u64), VirtualTime>,
     ) -> Result<
         (
             Vec<Decision>,
@@ -617,6 +619,7 @@ pub trait QuantumLoop {
         _outputs: Vec<BackendNetworkOutput>,
         _parent: &Configuration,
         _selection: &SelectionDecision,
+        _emission_times: &BTreeMap<(NodeId, u64), VirtualTime>,
     ) -> Result<
         (
             Vec<Decision>,
@@ -641,9 +644,10 @@ pub trait QuantumLoop {
     fn append_backend_network_outputs_until_choice(
         &mut self,
         outputs: Vec<BackendNetworkOutput>,
+        emission_times: &BTreeMap<(NodeId, u64), VirtualTime>,
     ) -> Result<BackendNetworkAdmission, SchedulerError> {
         let (decisions, discoveries, configuration, append) =
-            self.append_backend_network_outputs(outputs)?;
+            self.append_backend_network_outputs(outputs, emission_times)?;
         Ok(BackendNetworkAdmission::Settled {
             decisions,
             discoveries,

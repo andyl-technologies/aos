@@ -340,6 +340,7 @@ impl QuantumLoop for SingleScheduler {
     fn append_backend_network_outputs(
         &mut self,
         outputs: Vec<BackendNetworkOutput>,
+        emission_times: &BTreeMap<(NodeId, u64), VirtualTime>,
     ) -> Result<
         (
             Vec<Decision>,
@@ -349,7 +350,7 @@ impl QuantumLoop for SingleScheduler {
         ),
         SchedulerError,
     > {
-        match self.admit_backend_network_outputs(outputs, false, None)? {
+        match self.admit_backend_network_outputs(outputs, false, None, emission_times)? {
             BackendNetworkAdmission::Settled {
                 decisions,
                 discoveries,
@@ -367,8 +368,9 @@ impl QuantumLoop for SingleScheduler {
     fn append_backend_network_outputs_until_choice(
         &mut self,
         outputs: Vec<BackendNetworkOutput>,
+        emission_times: &BTreeMap<(NodeId, u64), VirtualTime>,
     ) -> Result<BackendNetworkAdmission, SchedulerError> {
-        self.admit_backend_network_outputs(outputs, true, None)
+        self.admit_backend_network_outputs(outputs, true, None, emission_times)
     }
 
     fn append_backend_network_outputs_after_selection(
@@ -376,6 +378,7 @@ impl QuantumLoop for SingleScheduler {
         outputs: Vec<BackendNetworkOutput>,
         parent: &Configuration,
         selection: &crate::SelectionDecision,
+        emission_times: &BTreeMap<(NodeId, u64), VirtualTime>,
     ) -> Result<
         (
             Vec<Decision>,
@@ -385,7 +388,12 @@ impl QuantumLoop for SingleScheduler {
         ),
         SchedulerError,
     > {
-        match self.admit_backend_network_outputs(outputs, false, Some((parent, selection)))? {
+        match self.admit_backend_network_outputs(
+            outputs,
+            false,
+            Some((parent, selection)),
+            emission_times,
+        )? {
             BackendNetworkAdmission::Settled {
                 decisions,
                 discoveries,
@@ -402,11 +410,31 @@ impl QuantumLoop for SingleScheduler {
 }
 
 impl SingleScheduler {
+    pub(in crate::scheduler) fn network_output_emit_time(
+        &self,
+        output: &BackendNetworkOutput,
+        emission_times: &BTreeMap<(NodeId, u64), VirtualTime>,
+    ) -> Result<SimInstant, SchedulerError> {
+        let emitted = match emission_times.get(&(output.source.clone(), output.sequence)) {
+            Some(at) => SimInstant { ticks: at.ticks },
+            None => self.vm_delivery_time_for_tick(
+                &output.source,
+                SimInstant {
+                    ticks: output.emit_icount.retired,
+                },
+            )?,
+        };
+        Ok(emitted.max(SimInstant {
+            ticks: output.fault_continuation.cursor().release_ticks(),
+        }))
+    }
+
     fn admit_backend_network_outputs(
         &mut self,
         mut outputs: Vec<BackendNetworkOutput>,
         pause_at_choice: bool,
         preselected: Option<(&Configuration, &crate::SelectionDecision)>,
+        emission_times: &BTreeMap<(NodeId, u64), VirtualTime>,
     ) -> Result<BackendNetworkAdmission, SchedulerError> {
         if !self.world_network_decisions.is_empty() {
             return Err(SchedulerError::BoundaryViolation {
@@ -464,16 +492,7 @@ impl SingleScheduler {
                 })?;
             for (route_index, route) in routes.iter().enumerate() {
                 let branch_configuration = self.step_quantum(&recorded)?;
-                let emit_time = self
-                    .vm_delivery_time_for_tick(
-                        &output.source,
-                        SimInstant {
-                            ticks: output.emit_icount.retired,
-                        },
-                    )?
-                    .max(SimInstant {
-                        ticks: output.fault_continuation.cursor().release_ticks(),
-                    });
+                let emit_time = self.network_output_emit_time(output, emission_times)?;
                 let logical_emit_tick = self.network_tick_for_time(emit_time);
                 let frame = crucible_device::Frame::new(
                     logical_emit_tick,
@@ -482,11 +501,12 @@ impl SingleScheduler {
                 )
                 .with_resolved_effects(output.fault_continuation.resolved_frame_effects().clone());
                 if pause_at_choice
-                    && let Some(reservation) = self.preview_live_network_preselection(
+                    && let Some(reservation) = self.preview_live_network_preselection_at(
                         output,
                         route,
                         &branch_configuration,
                         admission_boundary,
+                        emit_time,
                     )?
                 {
                     let remaining = routes[route_index..]
@@ -603,6 +623,18 @@ impl SingleScheduler {
         parent: &Configuration,
         at: VirtualTime,
     ) -> Result<Option<LiveNetworkPreselection>, SchedulerError> {
+        let emit_time = self.network_output_emit_time(output, &BTreeMap::new())?;
+        self.preview_live_network_preselection_at(output, route, parent, at, emit_time)
+    }
+
+    fn preview_live_network_preselection_at(
+        &self,
+        output: &BackendNetworkOutput,
+        route: &BackendNetworkRoute,
+        parent: &Configuration,
+        at: VirtualTime,
+        emit_time: SimInstant,
+    ) -> Result<Option<LiveNetworkPreselection>, SchedulerError> {
         let source_index = self.vm_node_index(&output.source)?;
         let source_counter = self.nodes[source_index].counter.ticks;
         if output.emit_icount.retired > source_counter
@@ -622,16 +654,6 @@ impl SingleScheduler {
                     output.source.name, output.sequence
                 ),
             })?;
-        let emit_time = self
-            .vm_delivery_time_for_tick(
-                &output.source,
-                SimInstant {
-                    ticks: output.emit_icount.retired,
-                },
-            )?
-            .max(SimInstant {
-                ticks: output.fault_continuation.cursor().release_ticks(),
-            });
         let logical_emit_tick = self.network_tick_for_time(emit_time);
         let frame =
             crucible_device::Frame::new(logical_emit_tick, frame_id, output.payload.clone())

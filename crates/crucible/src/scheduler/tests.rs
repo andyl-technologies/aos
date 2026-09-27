@@ -126,6 +126,115 @@ fn pending_network_boundary_release_settles_before_a_far_quantum() {
 }
 
 #[test]
+fn pending_pre_choice_frame_keeps_its_emission_time_across_counter_rebase() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct AdvancingLoop {
+        counter_offset: Rc<Cell<u64>>,
+    }
+
+    impl QuantumLoop for AdvancingLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            Ok(QuantumOutcome {
+                configuration: request.configuration,
+                frontier: VirtualTime { ticks: 10 },
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: Vec::new(),
+                discovered_choices: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: EventLogOffset::default(),
+                scheduler_quiescence: None,
+            })
+        }
+
+        fn backend_network_output_time(
+            &self,
+            _node: &NodeId,
+            at: Icount,
+        ) -> Result<VirtualTime, SchedulerError> {
+            Ok(VirtualTime {
+                ticks: at.retired + self.counter_offset.get(),
+            })
+        }
+    }
+
+    struct RecordingInterceptor(Rc<Cell<usize>>);
+
+    impl BackendNetworkOutputInterceptor<AdvancingLoop, MockSimulationBackend>
+        for RecordingInterceptor
+    {
+        fn intercept_network_outputs(
+            &mut self,
+            _loop_impl: &mut AdvancingLoop,
+            _backend: &mut MockSimulationBackend,
+            _frontier: VirtualTime,
+            _pending_outputs: &mut Vec<BackendNetworkOutput>,
+            outputs: &mut Vec<BackendNetworkOutput>,
+        ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
+            self.0.set(outputs.len());
+            outputs.clear();
+            Ok(Vec::new())
+        }
+    }
+
+    let source = NodeId {
+        name: String::from("source"),
+    };
+    let counter_offset = Rc::new(Cell::new(0));
+    let delivered = Rc::new(Cell::new(0));
+    let mut adapter = BackendQuantumLoop::with_network_output_interceptor(
+        AdvancingLoop {
+            counter_offset: Rc::clone(&counter_offset),
+        },
+        MockSimulationBackend::default(),
+        RecordingInterceptor(Rc::clone(&delivered)),
+    );
+    adapter
+        .network_transaction_parts_mut()
+        .3
+        .push(BackendNetworkOutput {
+            source: source.clone(),
+            destination: NodeId {
+                name: String::from("destination"),
+            },
+            emit_icount: Icount { retired: 10 },
+            sequence: 1,
+            payload: vec![1],
+            route: None,
+            fault_continuation: BackendNetworkFaultContinuation::default(),
+        });
+
+    let frozen = adapter
+        .pending_network_output_times_for_node(&source)
+        .expect("pre-rebase frame time should project");
+    assert_eq!(frozen, vec![(1, VirtualTime { ticks: 10 })]);
+    adapter.retain_pending_network_output_times(&source, frozen);
+    counter_offset.set(100);
+
+    let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.scheduler.pending-rebase",
+        "scenario=pending-rebase",
+    ));
+    adapter
+        .drive_quantum(QuantumRequest {
+            configuration,
+            control: Vec::new(),
+        })
+        .expect("original-time frame should release when the shared frontier reaches it");
+
+    assert_eq!(delivered.get(), 1);
+    assert_eq!(adapter.pending_network_output_count(), 0);
+}
+
+#[test]
 fn equal_boundary_custody_releases_settle_in_priority_order() {
     use std::cell::RefCell;
     use std::rc::Rc;

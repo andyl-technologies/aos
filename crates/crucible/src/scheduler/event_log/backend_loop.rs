@@ -10,6 +10,17 @@ mod preselection;
 use preselection::{BackendPendingPreselection, append_to_outcome};
 pub use settlement::BackendNetworkSettlement;
 
+fn pending_network_output_time<L: QuantumLoop>(
+    loop_impl: &L,
+    frozen_times: &BTreeMap<(NodeId, u64), VirtualTime>,
+    output: &BackendNetworkOutput,
+) -> Result<VirtualTime, SchedulerError> {
+    if let Some(at) = frozen_times.get(&(output.source.clone(), output.sequence)) {
+        return Ok(*at);
+    }
+    loop_impl.backend_network_output_time(&output.source, output.emit_icount)
+}
+
 /// Intercepts committed live-backend network outputs before link resolution.
 ///
 /// The interceptor runs after every output has been translated to scheduler
@@ -59,6 +70,9 @@ pub struct BackendQuantumLoop<L, B, I = NoopBackendNetworkOutputInterceptor> {
     pub(super) backend: B,
     network_output_interceptor: I,
     pending_network_outputs: Vec<BackendNetworkOutput>,
+    // Pending frames may outlive a selectable pause. Their pre-pause emission
+    // times must survive the resumed VM's physical-counter rebase.
+    frozen_network_output_times: BTreeMap<(NodeId, u64), VirtualTime>,
     pending_observations: Vec<ObservableEvent>,
     committed_frontier: VirtualTime,
     continuation_poisoned: bool,
@@ -115,6 +129,7 @@ impl<L, B> BackendQuantumLoop<L, B, NoopBackendNetworkOutputInterceptor> {
             backend,
             network_output_interceptor: NoopBackendNetworkOutputInterceptor,
             pending_network_outputs: Vec::new(),
+            frozen_network_output_times: BTreeMap::new(),
             pending_observations: Vec::new(),
             committed_frontier: VirtualTime { ticks: 0 },
             continuation_poisoned: false,
@@ -126,6 +141,30 @@ impl<L, B> BackendQuantumLoop<L, B, NoopBackendNetworkOutputInterceptor> {
 }
 
 impl<L, B, I> BackendQuantumLoop<L, B, I> {
+    fn retained_network_outputs(&self) -> impl Iterator<Item = &BackendNetworkOutput> {
+        self.pending_network_outputs
+            .iter()
+            .chain(self.preselection.iter().flat_map(|pending| {
+                pending
+                    .pending_network_outputs
+                    .iter()
+                    .chain(&pending.remaining_outputs)
+                    .chain(&pending.remaining_unintercepted_outputs)
+            }))
+    }
+
+    fn prune_frozen_network_output_times(&mut self) {
+        if self.frozen_network_output_times.is_empty() {
+            return;
+        }
+        let active = self
+            .retained_network_outputs()
+            .map(|output| (output.source.clone(), output.sequence))
+            .collect::<BTreeSet<_>>();
+        self.frozen_network_output_times
+            .retain(|key, _| active.contains(key));
+    }
+
     /// Builds an adapter with an exact pre-routing network-output interceptor.
     #[must_use]
     pub const fn with_network_output_interceptor(
@@ -138,6 +177,7 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
             backend,
             network_output_interceptor,
             pending_network_outputs: Vec::new(),
+            frozen_network_output_times: BTreeMap::new(),
             pending_observations: Vec::new(),
             committed_frontier: VirtualTime { ticks: 0 },
             continuation_poisoned: false,
@@ -166,6 +206,7 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
             backend,
             network_output_interceptor,
             pending_network_outputs,
+            frozen_network_output_times: BTreeMap::new(),
             pending_observations: Vec::new(),
             committed_frontier,
             continuation_poisoned: false,
@@ -269,6 +310,41 @@ where
     B: SimulationBackend,
     I: BackendNetworkOutputInterceptor<L, B>,
 {
+    /// Captures existing pending frames' logical emission times before a VM rebase.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] if an unfrozen frame's backend counter cannot
+    /// be projected onto the current scheduler timeline.
+    pub fn pending_network_output_times_for_node(
+        &self,
+        node: &NodeId,
+    ) -> Result<Vec<(u64, VirtualTime)>, SchedulerError> {
+        self.retained_network_outputs()
+            .filter(|output| &output.source == node)
+            .map(|output| {
+                pending_network_output_time(
+                    &self.loop_impl,
+                    &self.frozen_network_output_times,
+                    output,
+                )
+                .map(|at| (output.sequence, at))
+            })
+            .collect()
+    }
+
+    /// Retains a pre-rebase emission time for each already pending VM frame.
+    pub fn retain_pending_network_output_times(
+        &mut self,
+        node: &NodeId,
+        times: Vec<(u64, VirtualTime)>,
+    ) {
+        for (sequence, at) in times {
+            self.frozen_network_output_times
+                .insert((node.clone(), sequence), at);
+        }
+    }
+
     /// Settles scheduler-owned network frames due at the exact current frontier.
     ///
     /// This does not step or drain the backend. It exists for boundary mutations
@@ -295,7 +371,10 @@ where
         }
         let pending_before = self.pending_network_outputs.clone();
         match self.settle_pending_network_outputs_at_current_frontier_inner() {
-            Ok(settlement) => Ok(settlement),
+            Ok(settlement) => {
+                self.prune_frozen_network_output_times();
+                Ok(settlement)
+            }
             Err(error) => {
                 self.pending_network_outputs = pending_before;
                 self.continuation_poisoned = true;
@@ -311,14 +390,17 @@ where
         let mut timed_network_outputs = std::mem::take(&mut self.pending_network_outputs)
             .into_iter()
             .map(|output| {
-                self.loop_impl
-                    .backend_network_output_time(&output.source, output.emit_icount)
-                    .map(|at| {
-                        let resume = VirtualTime {
-                            ticks: output.fault_continuation.cursor().not_before_ticks(),
-                        };
-                        (at.max(resume), output)
-                    })
+                pending_network_output_time(
+                    &self.loop_impl,
+                    &self.frozen_network_output_times,
+                    &output,
+                )
+                .map(|at| {
+                    let resume = VirtualTime {
+                        ticks: output.fault_continuation.cursor().not_before_ticks(),
+                    };
+                    (at.max(resume), output)
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
         timed_network_outputs.sort_by(|(left_at, left), (right_at, right)| {
@@ -408,12 +490,16 @@ where
                 });
             }
             let admission = if self.pause_before_live_network_choice {
-                self.loop_impl
-                    .append_backend_network_outputs_until_choice(network_outputs)?
+                self.loop_impl.append_backend_network_outputs_until_choice(
+                    network_outputs,
+                    &self.frozen_network_output_times,
+                )?
             } else {
-                let (decisions, discoveries, configuration, append) = self
-                    .loop_impl
-                    .append_backend_network_outputs(network_outputs)?;
+                let (decisions, discoveries, configuration, append) =
+                    self.loop_impl.append_backend_network_outputs(
+                        network_outputs,
+                        &self.frozen_network_output_times,
+                    )?;
                 BackendNetworkAdmission::Settled {
                     decisions,
                     discoveries,
@@ -632,6 +718,7 @@ where
         } = prepared;
         let mut staged_interceptor = self.network_output_interceptor.clone();
         let mut staged_pending_network_outputs = self.pending_network_outputs.clone();
+        let mut staged_frozen_network_output_times = self.frozen_network_output_times.clone();
         let mut staged_pending_observations = self.pending_observations.clone();
         let mut staged_preselection = None;
         let mut staged_frontier = self.committed_frontier;
@@ -666,6 +753,7 @@ where
                     backend: &mut self.backend,
                     network_output_interceptor: &mut staged_interceptor,
                     pending_network_outputs: &mut staged_pending_network_outputs,
+                    frozen_network_output_times: &mut staged_frozen_network_output_times,
                     pending_observations: &mut staged_pending_observations,
                     preselection: &mut staged_preselection,
                     pause_before_live_network_choice: self.pause_before_live_network_choice,
@@ -703,8 +791,10 @@ where
         *self.loop_impl.borrow_mut() = staged_scheduler;
         self.network_output_interceptor = staged_interceptor;
         self.pending_network_outputs = staged_pending_network_outputs;
+        self.frozen_network_output_times = staged_frozen_network_output_times;
         self.pending_observations = staged_pending_observations;
         self.preselection = staged_preselection;
+        self.prune_frozen_network_output_times();
         self.committed_frontier = staged_frontier;
         Ok(SchedulerConcurrentQuantumOutcome {
             run_set,
@@ -785,6 +875,7 @@ where
                 backend: &mut self.backend,
                 network_output_interceptor: &mut self.network_output_interceptor,
                 pending_network_outputs: &mut self.pending_network_outputs,
+                frozen_network_output_times: &mut self.frozen_network_output_times,
                 pending_observations: &mut self.pending_observations,
                 preselection: &mut self.preselection,
                 pause_before_live_network_choice: self.pause_before_live_network_choice,
@@ -792,7 +883,13 @@ where
             outcome,
             evidence,
         );
-        completed.map_err(|error| self.poison_continuation(error))
+        match completed {
+            Ok(outcome) => {
+                self.prune_frozen_network_output_times();
+                Ok(outcome)
+            }
+            Err(error) => Err(self.poison_continuation(error)),
+        }
     }
 
     fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
@@ -894,6 +991,7 @@ where
     fn append_backend_network_outputs(
         &mut self,
         outputs: Vec<BackendNetworkOutput>,
+        emission_times: &BTreeMap<(NodeId, u64), VirtualTime>,
     ) -> Result<
         (
             Vec<Decision>,
@@ -903,7 +1001,10 @@ where
         ),
         SchedulerError,
     > {
-        self.loop_impl.append_backend_network_outputs(outputs)
+        let mut retained = emission_times.clone();
+        retained.extend(self.frozen_network_output_times.clone());
+        self.loop_impl
+            .append_backend_network_outputs(outputs, &retained)
     }
 
     fn append_backend_network_outputs_after_selection(
@@ -911,6 +1012,7 @@ where
         outputs: Vec<BackendNetworkOutput>,
         parent: &Configuration,
         selection: &SelectionDecision,
+        emission_times: &BTreeMap<(NodeId, u64), VirtualTime>,
     ) -> Result<
         (
             Vec<Decision>,
@@ -920,8 +1022,10 @@ where
         ),
         SchedulerError,
     > {
+        let mut retained = emission_times.clone();
+        retained.extend(self.frozen_network_output_times.clone());
         self.loop_impl
-            .append_backend_network_outputs_after_selection(outputs, parent, selection)
+            .append_backend_network_outputs_after_selection(outputs, parent, selection, &retained)
     }
 
     fn backend_network_output_time(
@@ -950,8 +1054,11 @@ where
                 .pending_network_outputs
                 .iter()
                 .map(|output| {
-                    self.loop_impl
-                        .backend_network_output_time(&output.source, output.emit_icount)
+                    pending_network_output_time(
+                        &self.loop_impl,
+                        &self.frozen_network_output_times,
+                        output,
+                    )
                         .map(|at| (at, output))
                         .map_err(|error| BackendError::Rejected {
                             message: error.to_string(),
@@ -978,7 +1085,10 @@ where
             }
             let outputs = std::mem::take(&mut self.pending_network_outputs);
             self.loop_impl
-                .append_backend_network_outputs(outputs)
+                .append_backend_network_outputs(
+                    outputs,
+                    &self.frozen_network_output_times,
+                )
                 .map(|(_recorded, _discoveries, _configuration, append)| append.entries)
                 .map_err(|error| BackendError::Rejected {
                     message: error.to_string(),
