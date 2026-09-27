@@ -1,4 +1,4 @@
-//! ESP-backed transaction storage admission for the initrd stage executor.
+//! ESP-backed transaction storage admission for boot stage executors.
 
 use std::path::{Component, Path};
 
@@ -23,6 +23,7 @@ struct Desired {
 #[serde(rename_all = "kebab-case")]
 enum Purpose {
     InitrdStageJournal,
+    HostStageJournal,
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,7 +132,7 @@ impl Backend for BootTransactionStorageBackend {
         _context: &AbilityValue,
         _remaining_millis: u64,
     ) -> Result<()> {
-        bail!("initrd transaction storage remains retained through stage handoff")
+        bail!("boot transaction storage remains retained through stage execution")
     }
 }
 
@@ -144,10 +145,6 @@ fn validate_desired(desired: &Desired) -> Result<()> {
                 .bytes()
                 .all(|byte| { byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-') }),
         "boot transaction-storage name is invalid"
-    );
-    ensure!(
-        desired.purpose == Purpose::InitrdStageJournal,
-        "unsupported boot transaction-storage purpose"
     );
     Ok(())
 }
@@ -180,5 +177,16 @@ mod tests {
         assert!(validate_path("/run/aos-boot-transaction-storage/journal").is_ok());
         assert!(validate_path("/run/../boot").is_err());
         assert!(validate_path("boot").is_err());
+    }
+
+    #[test]
+    fn accepts_both_stage_journal_purposes() {
+        for purpose in [Purpose::InitrdStageJournal, Purpose::HostStageJournal] {
+            validate_desired(&Desired {
+                name: "stage-journal".to_string(),
+                purpose,
+            })
+            .expect("supported stage journal");
+        }
     }
 }

@@ -12,7 +12,7 @@
   requestType = types.record {
     fields = {
       name = types.localKey;
-      purpose = types.enum ["initrd-stage-journal"];
+      purpose = types.enum ["initrd-stage-journal" "host-stage-journal"];
     };
   };
   observationType = types.record {
@@ -33,7 +33,7 @@
     };
   };
   materialize = {
-    description = "Materializes the selected initrd stage transaction journal.";
+    description = "Materializes the selected boot stage transaction journal.";
     semantics = {
       requiredTargetAccess = "exclusive-write";
       stopsProvider = false;
@@ -65,7 +65,7 @@
   };
   declaration = declareInterface {
     name = "aos.boot.transaction-storage-view";
-    description = "Materializes protected transaction storage before mutable host state is available.";
+    description = "Materializes protected transaction storage for a boot stage.";
     abi = 1;
     inherit requestType;
     methods = {inherit materialize;};
