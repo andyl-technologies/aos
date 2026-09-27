@@ -60,9 +60,9 @@ struct WorkerR2BucketAdapter {
     bucket: wasm_bindgen::JsValue,
 }
 
-/// Executes admitted external-storage reads through the same S3 signing path
-/// used by Worker-only mode. Mutations remain unavailable until their
-/// provider-specific idempotency and identity checks are implemented.
+/// Executes admitted external-storage work through the same S3 signing path
+/// used by Worker-only mode. The bounded metadata and probe writes are
+/// idempotent; larger mutations require provider-specific recovery rules.
 ///
 /// # Errors
 ///
@@ -86,6 +86,8 @@ pub(crate) async fn execute_external_storage_work(
         | StorageWorkOperation::InspectDocumentation { .. }
         | StorageWorkOperation::InspectOciRange { .. }
         | StorageWorkOperation::HashOciRange { .. } => "read",
+        StorageWorkOperation::PutMetadata { .. } | StorageWorkOperation::PutProbe { .. } => "write",
+        StorageWorkOperation::DeleteProbe { .. } => "delete",
         _ => return Ok(None),
     };
     let credential = if publication.snapshot.access_mode == "private" {
@@ -107,6 +109,34 @@ pub(crate) async fn execute_external_storage_work(
     )?;
 
     let egress = Arc::new(WorkerEgressClient::direct());
+    if matches!(purpose, "write" | "delete") {
+        let writer = S3Write { surface, egress };
+        let outcome = match &plan.operation {
+            StorageWorkOperation::PutMetadata {
+                path,
+                content_base64,
+                ..
+            } => {
+                let bytes = base64::engine::general_purpose::STANDARD.decode(content_base64)?;
+                writer.write(path, &bytes).await?;
+                StorageWorkOutcome::MetadataWritten
+            }
+            StorageWorkOperation::PutProbe {
+                path,
+                content_base64,
+            } => {
+                let bytes = base64::engine::general_purpose::STANDARD.decode(content_base64)?;
+                writer.write(path, &bytes).await?;
+                StorageWorkOutcome::ProbeAcknowledged
+            }
+            StorageWorkOperation::DeleteProbe { path } => {
+                writer.delete(path).await?;
+                StorageWorkOutcome::ProbeAcknowledged
+            }
+            _ => anyhow::bail!("external mutation purpose differs from its operation"),
+        };
+        return Ok(Some(storage_work_result(plan, outcome, 0)));
+    }
     let fetcher = S3SurfaceFetch {
         surface,
         egress: Arc::clone(&egress),

@@ -531,6 +531,12 @@ in {
           "access_mode": "private",
           "credentials": [
               {
+                  "purpose": "delete",
+                  "generation": 1,
+                  "secret_version_ref": "secret://fleet/external/delete/v1",
+                  "fingerprint": hashlib.sha256(binding_secret).hexdigest(),
+              },
+              {
                   "purpose": "list",
                   "generation": 1,
                   "secret_version_ref": "secret://fleet/external/list/v1",
@@ -540,6 +546,12 @@ in {
                   "purpose": "read",
                   "generation": 1,
                   "secret_version_ref": "secret://fleet/external/read/v1",
+                  "fingerprint": hashlib.sha256(binding_secret).hexdigest(),
+              },
+              {
+                  "purpose": "write",
+                  "generation": 1,
+                  "secret_version_ref": "secret://fleet/external/write/v1",
                   "fingerprint": hashlib.sha256(binding_secret).hexdigest(),
               },
           ],
@@ -552,11 +564,19 @@ in {
               "snapshot": binding_snapshot,
               "materials": [
                   {
+                      "selector": {"purpose": "delete", "generation": 1},
+                      "value_base64": base64.b64encode(binding_secret).decode(),
+                  },
+                  {
                       "selector": {"purpose": "list", "generation": 1},
                       "value_base64": base64.b64encode(binding_secret).decode(),
                   },
                   {
                       "selector": {"purpose": "read", "generation": 1},
+                      "value_base64": base64.b64encode(binding_secret).decode(),
+                  },
+                  {
+                      "selector": {"purpose": "write", "generation": 1},
                       "value_base64": base64.b64encode(binding_secret).decode(),
                   },
               ],
@@ -569,6 +589,12 @@ in {
 
       def external_binding_plan(revision, operation, plan_id):
           issued_at = int(time.time())
+          credential_purpose = {
+              "list_page": "list",
+              "put_metadata": "write",
+              "put_probe": "write",
+              "delete_probe": "delete",
+          }.get(operation["kind"], "read")
           external_plan = {
               "version": 1,
               "plan_id": plan_id,
@@ -582,7 +608,7 @@ in {
               "binding_kind": "s3",
               "binding_snapshot_revision": revision,
               "credential_references": [{
-                  "purpose": "list" if operation["kind"] == "list_page" else "read",
+                  "purpose": credential_purpose,
                   "generation": 1,
               }],
               "placement_prefix": "registry",
@@ -653,6 +679,62 @@ in {
           "size": len(s3_object),
           "etag": metadata_result["outcome"]["source"]["etag"],
       }], list_result
+      narinfo_path = "0" * 32 + ".narinfo"
+      narinfo_bytes = b"fleet narinfo written beside external S3"
+      narinfo_status, narinfo_response = external_binding_plan(
+          published_revision,
+          {
+              "kind": "put_metadata",
+              "path": narinfo_path,
+              "content_base64": base64.b64encode(narinfo_bytes).decode(),
+              "sha256": hashlib.sha256(narinfo_bytes).hexdigest(),
+          },
+          "51" * 16,
+      )
+      assert narinfo_status == "200", (narinfo_status, narinfo_response)
+      assert json.loads(narinfo_response)["outcome"]["kind"] == "metadata_written"
+      narinfo_read_status, narinfo_read_response = external_binding_plan(
+          published_revision,
+          {"kind": "inspect_metadata", "path": narinfo_path},
+          "52" * 16,
+      )
+      assert narinfo_read_status == "200", (narinfo_read_status, narinfo_read_response)
+      assert base64.b64decode(
+          json.loads(narinfo_read_response)["outcome"]["content_base64"]
+      ) == narinfo_bytes
+      probe_path = ".aos-internal/conditional-delete-probes/12345-67890"
+      put_probe_status, put_probe_response = external_binding_plan(
+          published_revision,
+          {
+              "kind": "put_probe",
+              "path": probe_path,
+              "content_base64": base64.b64encode(b"probe").decode(),
+          },
+          "53" * 16,
+      )
+      assert put_probe_status == "200", (put_probe_status, put_probe_response)
+      assert json.loads(put_probe_response)["outcome"]["kind"] == "probe_acknowledged"
+      probe_head_status, probe_head_response = external_binding_plan(
+          published_revision,
+          {"kind": "head", "path": probe_path},
+          "54" * 16,
+      )
+      assert probe_head_status == "200", (probe_head_status, probe_head_response)
+      assert json.loads(probe_head_response)["outcome"]["object"]["size"] == 5
+      delete_probe_status, delete_probe_response = external_binding_plan(
+          published_revision,
+          {"kind": "delete_probe", "path": probe_path},
+          "55" * 16,
+      )
+      assert delete_probe_status == "200", (delete_probe_status, delete_probe_response)
+      assert json.loads(delete_probe_response)["outcome"]["kind"] == "probe_acknowledged"
+      absent_probe_status, absent_probe_response = external_binding_plan(
+          published_revision,
+          {"kind": "head", "path": probe_path},
+          "56" * 16,
+      )
+      assert absent_probe_status == "200", (absent_probe_status, absent_probe_response)
+      assert json.loads(absent_probe_response)["outcome"]["kind"] == "not_found"
       git_status, git_response = external_binding_plan(
           published_revision,
           {"kind": "inspect_git_object", "oid": git_oid},
@@ -744,7 +826,7 @@ in {
       assert revoked_status == "409", revoked_status
       replay_status, _ = post_binding_control(publish_binding)
       assert replay_status == "503", replay_status
-      print("hybrid S3 HEAD, inspection, OCI ranges, binding revocation, and replay fence: passed")
+      print("hybrid S3 reads, bounded writes, OCI ranges, binding revocation, and replay fence: passed")
 
       now = int(time.time())
       plan = {
