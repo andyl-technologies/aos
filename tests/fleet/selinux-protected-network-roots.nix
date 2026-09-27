@@ -227,6 +227,15 @@
           printf '[Service]\nExecStartPre=+${pkgs.coreutils}/bin/touch /run/aos-forbidden-network-prestart\n' \
             > "$directory/override.conf"
         done
+
+        # A dependency add-on must be rejected before it can queue a second
+        # service, even when the protected fragment itself is image-pinned.
+        dependency_unit=/sysroot/var/etc/systemd/system/aos-network-dependency-marker.service
+        printf '[Service]\nType=oneshot\nExecStart=${pkgs.coreutils}/bin/touch /run/aos-forbidden-network-dependency\n' \
+          > "$dependency_unit"
+        mkdir -p /sysroot/var/etc/systemd/system/aos-netd.service.wants
+        ln -s ../aos-network-dependency-marker.service \
+          /sysroot/var/etc/systemd/system/aos-netd.service.wants/aos-network-dependency-marker.service
       '';
     };
 
@@ -477,6 +486,13 @@ in
             "test -S /run/aos/sandbox-network-namespace-inspector/control.sock"
         )
         assert protected.succeed("cat /sys/fs/selinux/enforce").strip() == "1"
+        root_mount = protected.succeed(
+            "${pkgs.util-linux}/bin/findmnt -n -o ID -T /"
+        ).strip()
+        lower_store_mount = protected.succeed(
+            "${pkgs.util-linux}/bin/findmnt -n -o ID -T /nix.lower/store"
+        ).strip()
+        assert root_mount == lower_store_mount, (root_mount, lower_store_mount)
         assert protected.succeed(
             "${pkgs.attr}/bin/getfattr -n security.selinux --only-values /var"
         ).strip("\x00\n") == "system_u:object_r:var_t"
@@ -585,12 +601,25 @@ in
         overridden.execute(
             "${inspectorSocketConnector}/bin/aos-inspector-socket-connect --lifecycle"
         )
-        overridden.wait_until_succeeds(
-            "test $(journalctl -b -o cat --no-pager | "
-            "grep -c 'Refusing unpinned Network service command') -ge 3",
-            timeout=30,
-        )
+        for unit, refusal in (
+            ("aos-netd.service", "Refusing Network unit dependency drop-ins"),
+            (
+                "aos-sandbox-network-namespace-inspector@*.service",
+                "Refusing Network unit configuration drop-ins",
+            ),
+            (
+                "aos-sandbox-network-lifecycle-worker@*.service",
+                "Refusing Network unit configuration drop-ins",
+            ),
+        ):
+            overridden.wait_until_succeeds(
+                "journalctl -b -u '{}' -o cat --no-pager | grep -Fq '{}'".format(
+                    unit, refusal
+                ),
+                timeout=30,
+            )
         overridden.fail("test -e /run/aos-forbidden-network-prestart")
+        overridden.fail("test -e /run/aos-forbidden-network-dependency")
         fragment = overridden.succeed(
             "systemctl show -P FragmentPath aos-netd.service"
         ).strip()
