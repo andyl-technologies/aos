@@ -144,6 +144,10 @@ verify_e2e_evidence() {
         > "$TMPDIR/campaign-release-canonical-identities.tsv"
     test "$(wc -l < "$TMPDIR/campaign-release-canonical-identities.tsv" | tr -d ' ')" -eq 1 \
         || fail "profile canonical results are not byte-identical"
+    tab=$(printf '\t')
+    grep -Eq "^crucible-hash:[0-9a-f]{64}${tab}crucible-hash:[0-9a-f]{64}$" \
+        "$TMPDIR/campaign-release-canonical-identities.tsv" \
+        || fail "profile canonical identities are not two content addresses"
     cmp "$TMPDIR/campaign-release-canonical-identities.tsv" \
         "$evidence/canonical-identities.tsv" \
         || fail "canonical identity inventory differs from retained results"

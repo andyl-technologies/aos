@@ -90,12 +90,18 @@ in
             tcg_only=true
             required_system_features=none
             RESULT
-            printf 'quiet-single-core\tevent-log\tfingerprint\nrandomized-worker-two-core\tevent-log\tfingerprint\nloaded-io-stall-four-core\tevent-log\tfingerprint\n' \
-              > "$evidence/evidence/canonical-results.tsv"
+            canonical_identity="crucible-hash:$(printf '%064d' 0)"
+            for profile in \
+              quiet-single-core randomized-worker-two-core loaded-io-stall-four-core
+            do
+              printf '%s\t%s\t%s\n' "$profile" "$canonical_identity" \
+                "$canonical_identity" >> "$evidence/evidence/canonical-results.tsv"
+            done
             printf 'command journal\n' > "$evidence/evidence/command-journal.tsv"
             printf 'reproduction artifact\n' > "$evidence/evidence/reproduction.crucible"
             printf '24\n25\n26\n27\n' > "$evidence/evidence/allowed-cpus"
-            printf 'event-log\tfingerprint\n' > "$evidence/evidence/canonical-identities.tsv"
+            printf '%s\t%s\n' "$canonical_identity" "$canonical_identity" \
+              > "$evidence/evidence/canonical-identities.tsv"
             printf 'replay transcript\n' > "$evidence/evidence/replay.jsonl"
             mkdir -p "$evidence/evidence/replay-pressure"
             printf 'replay worker\n' > "$evidence/evidence/replay-pressure/pids"
@@ -198,14 +204,42 @@ in
             cp "$test_root/artifacts.original" \
               "$evidence/evidence/reproduction-artifacts.sha256"
 
-            printf 'other-event-log\tfingerprint\n' \
+            printf 'crucible-hash:%064d\t%s\n' 1 "$canonical_identity" \
               > "$evidence/evidence/canonical-identities.tsv"
             if ${pkgs.bash}/bin/bash ${runner} --probe-e2e-evidence "$evidence"; then
               echo 'release acceptance accepted altered canonical identities' >&2
               exit 1
             fi
-            printf 'event-log\tfingerprint\n' \
+            printf '%s\t%s\n' "$canonical_identity" "$canonical_identity" \
               > "$evidence/evidence/canonical-identities.tsv"
+
+            cp "$evidence/evidence/canonical-results.tsv" "$test_root/canonical.valid"
+            cp "$evidence/evidence/canonical-identities.tsv" "$test_root/identities.valid"
+            cp "$evidence/evidence/manifest.env" "$test_root/manifest.valid"
+            cp "$evidence/evidence/result" "$test_root/result.valid"
+            : > "$evidence/evidence/canonical-results.tsv"
+            for profile in \
+              quiet-single-core randomized-worker-two-core loaded-io-stall-four-core
+            do
+              printf '%s\t\t\n' "$profile" \
+                >> "$evidence/evidence/canonical-results.tsv"
+            done
+            printf '\t\n' > "$evidence/evidence/canonical-identities.tsv"
+            canonical_sha="$(sha256sum "$evidence/evidence/canonical-results.tsv" | cut -d ' ' -f 1)"
+            sed "s/^canonical_results_sha256=.*/canonical_results_sha256=$canonical_sha/" \
+              "$test_root/manifest.valid" > "$evidence/evidence/manifest.env"
+            manifest_sha="$(sha256sum "$evidence/evidence/manifest.env" | cut -d ' ' -f 1)"
+            sed -e "s/^canonical_results_sha256=.*/canonical_results_sha256=$canonical_sha/" \
+              -e "s/^manifest_sha256=.*/manifest_sha256=$manifest_sha/" \
+              "$test_root/result.valid" > "$evidence/evidence/result"
+            if ${pkgs.bash}/bin/bash ${runner} --probe-e2e-evidence "$evidence"; then
+              echo 'release acceptance accepted empty canonical identities' >&2
+              exit 1
+            fi
+            cp "$test_root/canonical.valid" "$evidence/evidence/canonical-results.tsv"
+            cp "$test_root/identities.valid" "$evidence/evidence/canonical-identities.tsv"
+            cp "$test_root/manifest.valid" "$evidence/evidence/manifest.env"
+            cp "$test_root/result.valid" "$evidence/evidence/result"
 
             ln -s "$evidence/evidence/result" "$evidence/evidence/unlisted-symlink"
             if ${pkgs.bash}/bin/bash ${runner} --probe-e2e-evidence "$evidence"; then
