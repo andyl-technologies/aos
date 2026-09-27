@@ -225,6 +225,22 @@ fn challenge_request(
     .expect("publisher request")
 }
 
+fn metadata_request(registered: &RegisteredFixture, challenge: u8) -> PublisherAdmissionRequestV1 {
+    let mut draft = challenge_draft(
+        registered,
+        challenge,
+        0x71,
+        0x73,
+        registered.registration.fields().principal,
+    );
+    draft.protocol_version = ProtocolVersion::new(1, 1);
+    draft.claim.content = descriptor_for_bytes(
+        MediaType::new(PortableMediaType::Tree.as_str()).expect("tree media type"),
+        b"tree object",
+    );
+    PublisherAdmissionRequestV1::new(draft).expect("valid source-only metadata request")
+}
+
 fn register_challenge_samples(
     registered: &mut RegisteredFixture,
     request: &PublisherAdmissionRequestV1,
@@ -533,6 +549,33 @@ fn challenge_registration_replays_exact_timestamps_and_rejects_reuse_or_stale_he
     assert!(matches!(
         registered.sessions.receive(instance),
         Err(PublisherSessionError::Transport(SeqpacketError::WouldBlock))
+    ));
+}
+
+#[test]
+fn source_only_metadata_profile_cannot_register_a_live_challenge() {
+    let mut registered = registered_fixture();
+    let instance = registered.registration.fields().instance;
+    let request = metadata_request(&registered, 0x90);
+    let ingress_limits = config(&registered.local).ingress_limits;
+
+    assert!(matches!(
+        register_challenge_samples(&mut registered, &request, Vec::new()),
+        Err(PublisherControlError::Protocol(
+            aos_sandbox_core::RegistryError::IncompatibleProtocol { .. }
+        ))
+    ));
+    assert!(
+        PublisherIngressStore::load(&mut registered.local.journal, ingress_limits)
+            .expect("replay ingress")
+            .challenge(instance, request.challenge())
+            .expect("read challenge")
+            .is_none(),
+        "a source-only request cannot leave a pending production challenge"
+    );
+    assert!(matches!(
+        registered.sessions.receive(instance),
+        Err(PublisherSessionError::Retired)
     ));
 }
 

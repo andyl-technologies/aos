@@ -256,7 +256,7 @@ fn other_media_types_and_unsupported_protocols_are_not_raw_publication() {
     );
     for version in [
         ProtocolVersion::new(0, 0),
-        ProtocolVersion::new(1, 1),
+        ProtocolVersion::new(1, 2),
         ProtocolVersion::new(2, 0),
     ] {
         let mut input = draft();
@@ -265,6 +265,75 @@ fn other_media_types_and_unsupported_protocols_are_not_raw_publication() {
             PublisherDomainPlan::new(input),
             Err(InvalidPublisherDomainPlan::Registry(_))
         ));
+    }
+}
+
+#[test]
+fn portable_metadata_profile_binds_each_view_graph_role() {
+    for (media, role) in [
+        (PortableMediaType::Content, PublisherObjectRole::Content),
+        (PortableMediaType::Directory, PublisherObjectRole::Directory),
+        (PortableMediaType::Tree, PublisherObjectRole::Tree),
+        (PortableMediaType::View, PublisherObjectRole::View),
+    ] {
+        let mut input = draft();
+        input.protocol_version = ProtocolVersion::new(1, 1);
+        input.request.content = descriptor_for_bytes(
+            MediaType::new(media.as_str()).unwrap(),
+            b"same object bytes",
+        );
+
+        assert_eq!(
+            PublisherObjectRole::for_descriptor(&input.request.content),
+            Ok(role)
+        );
+        assert!(PublisherDomainPlan::new(input).is_ok());
+    }
+
+    let mut input = draft();
+    input.protocol_version = ProtocolVersion::new(1, 1);
+    input.request.content = descriptor_for_bytes(
+        MediaType::new(PortableMediaType::Policy.as_str()).unwrap(),
+        b"same object bytes",
+    );
+    assert_eq!(
+        PublisherDomainPlan::new(input),
+        Err(InvalidPublisherDomainPlan::InvalidObjectRole)
+    );
+
+    let mut input = draft();
+    input.protocol_version = ProtocolVersion::new(1, 1);
+    input.request.content = descriptor_for_bytes(
+        MediaType::new("application/vnd.example.unknown.v1").unwrap(),
+        b"same object bytes",
+    );
+    assert_eq!(
+        PublisherDomainPlan::new(input),
+        Err(InvalidPublisherDomainPlan::InvalidObjectRole)
+    );
+
+    let mut input = draft();
+    input.protocol_version = ProtocolVersion::new(1, 1);
+    input.required_features = vec![FeatureRef::new("org.example.unimplemented", 1, 0).unwrap()];
+    assert!(matches!(
+        PublisherDomainPlan::new(input),
+        Err(InvalidPublisherDomainPlan::Registry(_))
+    ));
+}
+
+#[test]
+fn raw_content_profile_still_rejects_tree_media() {
+    for media in [
+        PortableMediaType::Directory,
+        PortableMediaType::Tree,
+        PortableMediaType::View,
+    ] {
+        let mut input = draft();
+        input.request.content = descriptor_for_bytes(MediaType::new(media.as_str()).unwrap(), b"x");
+        assert_eq!(
+            PublisherDomainPlan::new(input),
+            Err(InvalidPublisherDomainPlan::NotRawContent)
+        );
     }
 }
 

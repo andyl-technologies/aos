@@ -396,10 +396,18 @@ publisher-authority-bindings-v1 = [
   root-registry-generation: positive-u64,
 ]
 
+; Protocol 1.1 is a source-only portable-object profile. Production negotiation
+; remains at 1.0 until source release, root ownership, and effects are qualified.
+; The historical "content" field carries the complete descriptor in either
+; profile. 1.0 requires raw content; 1.1 admits only View, tree, directory, or
+; raw content. The descriptor media type determines the publication category;
+; tree graph edges are independently checked by the View compiler.
+publisher-protocol-version-v1 = [major: 1, minor: 0..1]
+
 ; application/vnd.aos.sandbox.publisher-domain-plan.v1+cbor
 publisher-domain-plan-v1 = [
   version: 1,
-  publisher-protocol-version: [major: 1, minor: 0],
+  publisher-protocol-version: publisher-protocol-version-v1,
   target: publisher-target-v1,
   request: [
     holder: id,
@@ -417,7 +425,7 @@ publisher-domain-plan-v1 = [
   required-features: [*64 feature],
 ]
 
-; Publisher protocol 1.0 request/hash preimage, not a stored object media type.
+; Publisher protocol 1.0/1.1 request/hash preimage, not a stored object media type.
 ; The derived request-commitment and detached signature are deliberately absent.
 ; Capability/resource handles and the challenge must be nonzero. Authentication,
 ; currentness, challenge consumption, and reservations are controller decisions,
@@ -427,7 +435,7 @@ publisher-admission-request-v1 = [
   capability: id,
   cache-resource: id,
   challenge: bytes .size 32,
-  publisher-protocol-version: [major: 1, minor: 0],
+  publisher-protocol-version: publisher-protocol-version-v1,
   target: publisher-target-v1,
   claim: [
     holder: id,

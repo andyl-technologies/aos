@@ -18,7 +18,10 @@ pub use join::{
 };
 
 use aos_sandbox_core::ownership_lease::RawPairedClockSample;
-use aos_sandbox_core::{Operation, PublisherInstanceId, ResourceKind, Selector};
+use aos_sandbox_core::{
+    Operation, ProtocolId, PublisherAdmissionRequestV1, PublisherInstanceId, RegistryError,
+    ResourceKind, Selector, negotiate_protocol,
+};
 use aos_sandbox_linux::pidfd::PidFd;
 use aos_sandbox_linux::{
     boot::KernelBootId, cgroup::RetainedCgroupAnchor, seqpacket::RecordSubjectListener,
@@ -69,6 +72,9 @@ pub enum PublisherControlError {
     /// The incoming publisher request is malformed or noncanonical.
     #[error(transparent)]
     Request(#[from] aos_sandbox_core::CanonicalCborError),
+    /// The request uses a source-only profile unavailable to live publisher control.
+    #[error(transparent)]
+    Protocol(#[from] RegistryError),
     /// Trusted registration configuration contains invalid limits or identities.
     #[error("invalid publisher control configuration")]
     InvalidConfiguration,
@@ -93,6 +99,18 @@ pub enum PublisherControlError {
     /// The controller journal is unavailable or poisoned.
     #[error(transparent)]
     Journal(#[from] JournalError),
+}
+
+fn validate_live_request_profile(
+    request: &PublisherAdmissionRequestV1,
+) -> Result<(), PublisherControlError> {
+    // Structural decoding accepts source-only profiles. Live admission must
+    // independently enforce the advertised production protocol ceiling.
+    negotiate_protocol(
+        ProtocolId::PublisherAuthority,
+        request.plan().fields().protocol_version,
+    )?;
+    Ok(())
 }
 
 pub(crate) fn register<T>(

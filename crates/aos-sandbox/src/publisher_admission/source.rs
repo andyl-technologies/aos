@@ -2,14 +2,14 @@
 //!
 //! A content digest, pathname, descriptor, or producer signature is not release
 //! authority. This registry retains controller decisions that explicitly permit
-//! one authenticated holder to move one exact raw-content object into one exact
+//! one authenticated holder to move one exact portable object into one exact
 //! project cache domain. Revocation denies new admissions but cannot cancel an
 //! already retained completion permit.
 
 use std::collections::BTreeMap;
 
 use aos_sandbox_core::{
-    ObjectDescriptor, ObjectDigest, PrincipalId, ProjectId, ResourceId,
+    ObjectDescriptor, ObjectDigest, PrincipalId, ProjectId, PublisherObjectRole, ResourceId,
     model::{CacheDomain, CacheDomainKind},
 };
 
@@ -57,7 +57,8 @@ impl SourceReleaseV1 {
     /// # Errors
     ///
     /// Returns [`SourceReleaseError::InvalidRelease`] for sentinel identities,
-    /// invalid validity, or a non-project destination domain.
+    /// invalid validity, a non-project destination domain, or a descriptor
+    /// outside the closed View graph publication roles.
     #[allow(clippy::too_many_arguments)]
     pub fn active(
         holder: PrincipalId,
@@ -95,7 +96,8 @@ impl SourceReleaseV1 {
     /// # Errors
     ///
     /// Returns [`SourceReleaseError::InvalidRelease`] for sentinel identities,
-    /// malformed validity, non-project domain, or a digest mismatch.
+    /// malformed validity, non-project domain, unsupported descriptor role, or
+    /// a digest mismatch.
     pub fn validate(self) -> Result<Self, SourceReleaseError> {
         validate_nonzero(&[
             ("source release", self.release_digest.as_bytes()),
@@ -113,7 +115,8 @@ impl SourceReleaseV1 {
             ("source release policy", self.release_policy.as_bytes()),
         ])
         .map_err(|_| SourceReleaseError::InvalidRelease)?;
-        if self.not_before_seconds >= self.expires_seconds
+        if PublisherObjectRole::for_descriptor(&self.content).is_err()
+            || self.not_before_seconds >= self.expires_seconds
             || self.cache_domain.kind() != CacheDomainKind::Project
             || self.release_digest != source_release_digest(&self)
         {
@@ -352,5 +355,60 @@ pub(super) fn domain_code(domain: CacheDomain) -> u8 {
         CacheDomainKind::Project => 2,
         CacheDomainKind::TrustDomain => 3,
         CacheDomainKind::Public => 4,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_sandbox_core::{CacheDomainId, MediaType, PortableMediaType};
+
+    use super::*;
+
+    fn release(content: ObjectDescriptor) -> Result<SourceReleaseV1, SourceReleaseError> {
+        SourceReleaseV1::active(
+            PrincipalId::from_bytes([1; 16]),
+            ProjectId::from_bytes([2; 16]),
+            ResourceId::from_bytes([3; 16]),
+            CacheDomain::new(CacheDomainKind::Project, CacheDomainId::from_bytes([4; 16])),
+            content,
+            ObjectDigest::from_bytes([5; 32]),
+            ObjectDigest::from_bytes([6; 32]),
+            10,
+            20,
+        )
+    }
+
+    fn descriptor(media: PortableMediaType) -> ObjectDescriptor {
+        ObjectDescriptor::new(
+            MediaType::new(media.as_str()).unwrap(),
+            ObjectDigest::from_bytes([7; 32]),
+            3,
+        )
+    }
+
+    #[test]
+    fn source_release_binds_exact_media_role_even_when_content_digest_matches() {
+        let tree = release(descriptor(PortableMediaType::Tree)).unwrap();
+        let directory = release(descriptor(PortableMediaType::Directory)).unwrap();
+        assert_ne!(tree.release_digest, directory.release_digest);
+        assert_eq!(
+            tree.authorize(
+                tree.holder,
+                tree.project,
+                tree.cache_resource,
+                tree.cache_domain,
+                &directory.content,
+                15,
+            ),
+            Err(SourceReleaseError::ScopeMismatch)
+        );
+    }
+
+    #[test]
+    fn source_release_rejects_media_outside_the_view_graph() {
+        assert_eq!(
+            release(descriptor(PortableMediaType::Policy)),
+            Err(SourceReleaseError::InvalidRelease)
+        );
     }
 }

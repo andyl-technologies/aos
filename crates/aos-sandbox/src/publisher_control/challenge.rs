@@ -66,6 +66,7 @@ where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
     let request = decode_publisher_admission_request_v1(record.payload(), request_limits())?;
+    validate_live_request_profile(&request)?;
     let boot = KernelBootId::current()?.into_bytes();
     let observed = clock().map_err(|_| PublisherControlError::Clock)?;
     validate_clock(observed, boot, config.clock_provenance)?;
@@ -305,6 +306,7 @@ fn retires_session(error: &PublisherControlError) -> bool {
     matches!(
         error,
         PublisherControlError::Request(_)
+            | PublisherControlError::Protocol(_)
             | PublisherControlError::Kernel(_)
             | PublisherControlError::Session(_)
             | PublisherControlError::Journal(_)

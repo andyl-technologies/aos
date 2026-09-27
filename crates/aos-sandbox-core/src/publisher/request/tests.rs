@@ -206,6 +206,9 @@ fn allocation_and_protocol_bounds_apply_before_a_request_can_be_used() {
     );
     let mut changed = draft();
     changed.protocol_version = ProtocolVersion::new(1, 1);
+    assert!(PublisherAdmissionRequestV1::new(changed).is_ok());
+    let mut changed = draft();
+    changed.protocol_version = ProtocolVersion::new(1, 2);
     assert!(matches!(
         PublisherAdmissionRequestV1::new(changed),
         Err(InvalidPublisherAdmissionRequest::Plan(

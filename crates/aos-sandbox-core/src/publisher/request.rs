@@ -65,7 +65,7 @@ pub struct PublisherAdmissionClaimV1 {
     pub operation: OperationId,
     /// Reservation identity to resolve or allocate in the controller ledger.
     pub reservation: PublicationReservationId,
-    /// Complete raw-content descriptor to materialize.
+    /// Complete object descriptor for the selected publisher profile.
     pub content: ObjectDescriptor,
     /// Commitment identifying the controller-owned source-authorization record.
     pub source_authorization: ObjectDigest,

@@ -174,6 +174,40 @@ fn substituted_request_and_missing_challenge_close_holder_without_admission() {
 }
 
 #[test]
+fn source_only_metadata_profile_cannot_join_a_live_holder() {
+    let mut fixture = join_fixture();
+    // The holder-specific identity is checked later; version rejection must
+    // occur before any registered challenge can be treated as authority.
+    let mut draft = challenge_draft(
+        &fixture.registered,
+        0x90,
+        1,
+        0x93,
+        fixture.registered.registration.fields().principal,
+    );
+    draft.protocol_version = ProtocolVersion::new(1, 1);
+    draft.claim.content = descriptor_for_bytes(
+        MediaType::new(PortableMediaType::Tree.as_str()).expect("tree media type"),
+        b"tree object",
+    );
+    draft.capability = fixture.request.capability();
+    draft.claim.holder = fixture.registered.local.scope.holder;
+    draft.claim.channel = fixture.request.plan().fields().request.channel;
+    let request = PublisherAdmissionRequestV1::new(draft).expect("holder-bound metadata request");
+
+    send_holder(&mut fixture.holder, &request);
+    assert!(matches!(
+        join_now(&mut fixture),
+        Err(PublisherJoinError::Control(
+            PublisherControlError::Protocol(
+                aos_sandbox_core::RegistryError::IncompatibleProtocol { .. }
+            )
+        ))
+    ));
+    assert_holder_closed(&mut fixture);
+}
+
+#[test]
 fn identical_principal_on_another_holder_channel_cannot_forward_possession() {
     let mut fixture = join_fixture();
     let endpoint = provision_samples(

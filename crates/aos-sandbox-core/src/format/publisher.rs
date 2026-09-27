@@ -208,7 +208,7 @@ pub(super) fn decode_authority(
 )]
 mod tests {
     use super::*;
-    use crate::{FeatureRef, MediaType, ObjectDescriptor};
+    use crate::{FeatureRef, MediaType, ObjectDescriptor, PortableMediaType};
 
     fn draft() -> PublisherDomainPlanDraft {
         PublisherDomainPlanDraft {
@@ -281,6 +281,47 @@ mod tests {
             "09".repeat(16),
             "0a".repeat(16),
             hex::encode(b"application/vnd.aos.sandbox.content.v1"),
+            "0b".repeat(32),
+            "0c".repeat(32),
+            "0d".repeat(32),
+            "0e".repeat(32),
+            "0f".repeat(16),
+        );
+        let expected = hex::decode(expected_hex).unwrap();
+        assert_eq!(encode_publisher_domain_plan(&plan), expected);
+        assert_eq!(
+            decode_publisher_domain_plan(&expected, DecodeLimits::default()).unwrap(),
+            plan
+        );
+    }
+
+    #[test]
+    fn source_only_tree_profile_has_a_distinct_canonical_golden() {
+        let mut fields = draft();
+        fields.protocol_version = ProtocolVersion::new(1, 1);
+        fields.request.content = ObjectDescriptor::new(
+            MediaType::new(PortableMediaType::Tree.as_str()).unwrap(),
+            ObjectDigest::from_bytes([11; 32]),
+            3,
+        );
+        let plan = PublisherDomainPlan::new(fields).unwrap();
+        let expected_hex = format!(
+            concat!(
+                "88018201018650{}50{}50{}50{}820150{}5820{}",
+                "8850{}5820{}50{}50{}847828{}015820{}035820{}5820{}191000",
+                "865820{}010250{}03042019012c80"
+            ),
+            "01".repeat(16),
+            "02".repeat(16),
+            "03".repeat(16),
+            "04".repeat(16),
+            "05".repeat(16),
+            "06".repeat(32),
+            "07".repeat(16),
+            "08".repeat(32),
+            "09".repeat(16),
+            "0a".repeat(16),
+            "6170706c69636174696f6e2f766e642e616f732e73616e64626f782e747265652e76312b63626f72",
             "0b".repeat(32),
             "0c".repeat(32),
             "0d".repeat(32),
