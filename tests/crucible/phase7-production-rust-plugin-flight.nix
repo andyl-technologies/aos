@@ -359,10 +359,14 @@
     fi
     ${pkgs.grep}/bin/grep -Fq \
       'test result: ok. 1 passed; 0 failed; 0 ignored;' "$lifecycle_log"
-    # Libtest appends the first --nocapture line to the test-name prefix.
-    test "$(${pkgs.grep}/bin/grep -Fxc \
-      'test qemu_campaign_lifecycle::tests::host_parallel_native::production_lifecycle_host_parallel_rounds_are_canonical_and_recoverable ... PASS' \
+    # QEMU stderr may split libtest's test-name prefix from its PASS line.
+    test "$(${pkgs.grep}/bin/grep -Ec \
+      '^test qemu_campaign_lifecycle::tests::host_parallel_native::production_lifecycle_host_parallel_rounds_are_canonical_and_recoverable \.\.\. ' \
       "$lifecycle_log")" -eq 1
+    test_name='test qemu_campaign_lifecycle::tests::host_parallel_native::production_lifecycle_host_parallel_rounds_are_canonical_and_recoverable ... '
+    if ! ${pkgs.grep}/bin/grep -Fqx "$test_name"PASS "$lifecycle_log"; then
+      test "$(${pkgs.grep}/bin/grep -Fxc 'PASS' "$lifecycle_log")" -eq 1
+    fi
     for evidence in \
       production_vm_lifecycle_path=true \
       production_host_parallel_requested_runs=2 \
