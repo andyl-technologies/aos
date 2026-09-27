@@ -855,15 +855,16 @@ mod eventfd_identity_tests {
     use super::eventfd_identity_token_from_fdinfo;
 
     #[test]
-    fn accepts_kernel_id_zero_as_one_based_token() {
+    fn accepts_kernel_id_zero_as_one_based_token() -> std::io::Result<()> {
         assert_eq!(
-            eventfd_identity_token_from_fdinfo("eventfd-id: 0\n").unwrap(),
+            eventfd_identity_token_from_fdinfo("eventfd-id: 0\n")?,
             1
         );
         assert_eq!(
-            eventfd_identity_token_from_fdinfo("eventfd-id: 7\n").unwrap(),
+            eventfd_identity_token_from_fdinfo("eventfd-id: 7\n")?,
             8
         );
+        Ok(())
     }
 
     #[test]
