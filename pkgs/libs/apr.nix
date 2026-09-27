@@ -29,6 +29,15 @@ in
           # The released configure script hardcodes this host path in libtool.
           sed -i 's|/usr/bin/file|${buildPackages.file}/bin/file|g' configure
           ${
+            if stdenv.isCross && stdenv.hostPlatform.isLinux
+            then ''
+              # APR discards the target /dev/zero cache result during an mmap
+              # run test, then selects a pthread lock absent from its header.
+              sed -i '/^[[:space:]]*if test "$cross_compiling" = yes; then :$/ {N; s/  ac_cv_file__dev_zero=no/  :/;}' configure
+            ''
+            else ""
+          }
+          ${
             if stdenv.isCross && stdenv.hostPlatform.isDarwin
             then ''
               # Its cross default assumes GNU strerror_r, unlike macOS.
@@ -122,6 +131,10 @@ in
           sed -i 's|/bin/sh|${bash}/bin/bash|g' \
             "$out/bin/apr-1-config" \
             "$out/build-1/mkdir.sh" \
+            "$out/build-1/libtool"
+          # The compiler wrapper supplies target search paths to downstream
+          # links; libtool must not retain the build compiler in APR's closure.
+          sed -i 's|^sys_lib_search_path_spec=.*|sys_lib_search_path_spec=""|' \
             "$out/build-1/libtool"
         '';
       }

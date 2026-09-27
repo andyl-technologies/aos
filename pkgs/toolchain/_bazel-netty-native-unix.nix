@@ -6,8 +6,12 @@
   buildPackages,
   stdenv,
   bazelNettyTransportExtras,
+  version ? "4.1.93.Final",
+  sourceRev ? "69270b102a6339ef3279e3f0755526db001850ef",
+  sourceHash ? "sha256-i3v2q6KPv8Llei3qweCwum0IjLvqfIz4U8gAiK9fgKc=",
+  jniUtilVersion ? "0.0.6.Final",
+  jniUtilHash ? "sha256-CbvbrDHP2QIubN18npILENi0ui+CZD24wzoDvC8qGJM=",
 }: let
-  version = "4.1.93.Final";
   buildJdk = buildPackages.openjdk-21;
   classifier =
     if stdenv.hostPlatform.system == "x86_64-linux"
@@ -21,9 +25,9 @@
     else throw "Netty Unix JNI source build has no target for ${stdenv.hostPlatform.system}";
   source = fetchgit {
     url = "https://github.com/netty/netty.git";
-    rev = "69270b102a6339ef3279e3f0755526db001850ef";
-    name = "netty-4.1.93-native-source-only";
-    hash = "sha256-i3v2q6KPv8Llei3qweCwum0IjLvqfIz4U8gAiK9fgKc=";
+    rev = sourceRev;
+    name = "netty-${version}-native-source-only";
+    hash = sourceHash;
     deepClone = true;
     git = buildPackages.git-minimal;
     caCertificates = buildPackages.ca-certificates;
@@ -37,8 +41,8 @@
     ];
   };
   jniUtilSource = fetchurl {
-    urls = ["https://repo.maven.apache.org/maven2/io/netty/netty-jni-util/0.0.6.Final/netty-jni-util-0.0.6.Final-sources.jar"];
-    hash = "sha256-CbvbrDHP2QIubN18npILENi0ui+CZD24wzoDvC8qGJM=";
+    urls = ["https://repo.maven.apache.org/maven2/io/netty/netty-jni-util/${jniUtilVersion}/netty-jni-util-${jniUtilVersion}-sources.jar"];
+    hash = jniUtilHash;
   };
 in
   mkDerivation {

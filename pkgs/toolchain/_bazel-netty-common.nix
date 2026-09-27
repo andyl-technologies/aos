@@ -8,12 +8,14 @@
   bazelLegacyJavaHttp,
   bazelBlockHound,
   bazelByteBuddy,
+  version ? "4.1.93.Final",
+  sourceHash ? "sha256-k9qffGL04PABw9D+0OHqJ8NVVqbqcywHlsriSozuWbU=",
+  osgiAnnotations ? null,
 }: let
-  version = "4.1.93.Final";
   buildJdk = buildPackages.openjdk-17;
   nettySource = fetchurl {
     urls = ["https://repo.maven.apache.org/maven2/io/netty/netty-common/${version}/netty-common-${version}-sources.jar"];
-    hash = "sha256-k9qffGL04PABw9D+0OHqJ8NVVqbqcywHlsriSozuWbU=";
+    hash = sourceHash;
   };
   svmSource = fetchurl {
     urls = ["https://repo.maven.apache.org/maven2/com/oracle/substratevm/svm/19.3.6/svm-19.3.6-sources.jar"];
@@ -25,18 +27,27 @@ in
     inherit version;
     src = nettySource;
 
-    buildDeps = [
-      buildJdk
-      bazelMavenBootstrap
-      bazelLog4j
-      bazelLegacyJavaHttp
-      bazelBlockHound
-      bazelByteBuddy
-      buildPackages.findutils
-      buildPackages.python3
-      buildPackages.unzip
-    ];
-    runtimeDeps = [];
+    buildDeps =
+      [
+        buildJdk
+        bazelMavenBootstrap
+        bazelLog4j
+        bazelLegacyJavaHttp
+        bazelBlockHound
+        bazelByteBuddy
+        buildPackages.findutils
+        buildPackages.python3
+        buildPackages.unzip
+      ]
+      ++ (
+        if osgiAnnotations == null
+        then []
+        else [osgiAnnotations]
+      );
+    runtimeDeps =
+      if osgiAnnotations == null
+      then []
+      else [osgiAnnotations];
 
     phases = [
       {
@@ -88,6 +99,13 @@ in
           classpath="$classpath:${bazelBlockHound}/share/java/blockhound-1.0.6.RELEASE.jar"
           classpath="$classpath:${bazelByteBuddy}/share/java/byte-buddy-dep-1.10.22.jar"
           classpath="$classpath:${bazelByteBuddy}/share/java/byte-buddy-shaded-asm-1.10.22.jar:svm-classes"
+          ${
+            if osgiAnnotations == null
+            then ""
+            else ''
+              classpath="$classpath:${osgiAnnotations}/maven/org/osgi/osgi.annotation/8.1.0/osgi.annotation-8.1.0.jar"
+            ''
+          }
 
           find netty-source/io -name '*.java' -print > netty-sources
           # Netty uses sun.misc.Unsafe; --release 8 hides that JDK API.
