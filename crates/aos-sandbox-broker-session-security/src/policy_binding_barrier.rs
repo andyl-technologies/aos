@@ -947,6 +947,83 @@ pub(crate) fn recover_fixed_parentless_create_root_cache_v8_release_v1(
     .map_err(io::Error::other)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum V8OwnerReleaseStep {
+    ReleaseRootCache,
+    RecoverRootCache,
+    SettleSourceController,
+}
+
+// The Cache row is only a routing hint. Every effect rechecks fixed names and
+// authority itself; an ambiguous release may advance only by Root replay.
+fn run_v8_owner_release_steps(
+    cache_hold: CachePolicyHoldV1,
+    mut run: impl FnMut(V8OwnerReleaseStep) -> io::Result<()>,
+) -> io::Result<()> {
+    if cache_hold.is_held() && run(V8OwnerReleaseStep::ReleaseRootCache).is_err() {
+        run(V8OwnerReleaseStep::RecoverRootCache)?;
+    }
+    run(V8OwnerReleaseStep::SettleSourceController)
+}
+
+/// Releases the held Root/Cache cut and settles Source, then Controller.
+///
+/// Cache's current row selects the entry point only; the selected path checks
+/// its fixed named writer, pending marker, Root peer, and exact owner claims.
+/// After an ambiguous held release, recovery accepts only an authenticated
+/// Root Released replay. A cold retry after Cache release enters the same
+/// Source/Controller settlement barrier, including after Source is retired.
+/// No Root successor, public Create, or Apply authority is issued here.
+///
+/// # Errors
+///
+/// Rejects an absent or changed Cache row, failed Root release/replay, or any
+/// failed owner postflight or durable settlement.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn release_and_settle_fixed_parentless_create_v8_owners_v1(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<()> {
+    let cache_hold = cache
+        .closed_policy_hold_v1()
+        .map_err(io::Error::other)?
+        .ok_or_else(invalid_cut)?;
+    run_v8_owner_release_steps(cache_hold, |step| match step {
+        V8OwnerReleaseStep::ReleaseRootCache => release_fixed_parentless_create_root_cache_v8_v1(
+            controller,
+            source_domains,
+            cache,
+            physical,
+            operation,
+            sandbox,
+        )
+        .map(|_| ()),
+        V8OwnerReleaseStep::RecoverRootCache => {
+            recover_fixed_parentless_create_root_cache_v8_release_v1(
+                controller,
+                source_domains,
+                cache,
+                physical,
+                operation,
+                sandbox,
+            )
+            .map(|_| ())
+        }
+        V8OwnerReleaseStep::SettleSourceController => settle_fixed_parentless_create_v8_owners_v1(
+            controller,
+            source_domains,
+            cache,
+            physical,
+            operation,
+            sandbox,
+        ),
+    })
+}
+
 /// Retires Source, then Controller, after exact Root and Cache V8 release.
 ///
 /// The fixed Root socket supplies typed Released custody. The sandbox barrier
@@ -1743,12 +1820,96 @@ fn invalid_cut() -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+
+    use aos_sandbox::journal::CachePolicyHoldV1;
     use aos_sandbox::policy_compiler::{
         ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasObservationV2,
     };
-    use aos_sandbox_core::ObjectDigest;
+    use aos_sandbox_core::{ObjectDigest, ProjectId};
 
-    use super::verify_exact_held_replay;
+    use super::{V8OwnerReleaseStep, run_v8_owner_release_steps, verify_exact_held_replay};
+
+    fn held_cache_row() -> CachePolicyHoldV1 {
+        CachePolicyHoldV1::new(
+            ProjectId::from_bytes([1; 16]),
+            ObjectDigest::from_bytes([2; 32]),
+            ObjectDigest::from_bytes([3; 32]),
+            ObjectDigest::from_bytes([4; 32]),
+            5,
+        )
+        .expect("typed held Cache row")
+    }
+
+    #[test]
+    fn v8_owner_release_schedules_replay_before_later_settlement() {
+        let mut visited = Vec::new();
+        run_v8_owner_release_steps(held_cache_row(), |step| {
+            visited.push(step);
+            if step == V8OwnerReleaseStep::ReleaseRootCache {
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "ambiguous Root reply",
+                ))
+            } else {
+                Ok(())
+            }
+        })
+        .expect("recovery step permits later settlement");
+        assert_eq!(
+            visited.as_slice(),
+            &[
+                V8OwnerReleaseStep::ReleaseRootCache,
+                V8OwnerReleaseStep::RecoverRootCache,
+                V8OwnerReleaseStep::SettleSourceController,
+            ]
+        );
+
+        visited.clear();
+        assert!(
+            run_v8_owner_release_steps(held_cache_row(), |step| {
+                visited.push(step);
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Root not released",
+                ))
+            })
+            .is_err()
+        );
+        assert_eq!(
+            visited.as_slice(),
+            &[
+                V8OwnerReleaseStep::ReleaseRootCache,
+                V8OwnerReleaseStep::RecoverRootCache,
+            ]
+        );
+    }
+
+    #[test]
+    fn v8_owner_release_does_not_hide_source_or_controller_failure() {
+        let mut visited = Vec::new();
+        assert!(
+            run_v8_owner_release_steps(held_cache_row(), |step| {
+                visited.push(step);
+                if step == V8OwnerReleaseStep::SettleSourceController {
+                    Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "owner postflight",
+                    ))
+                } else {
+                    Ok(())
+                }
+            })
+            .is_err()
+        );
+        assert_eq!(
+            visited.as_slice(),
+            &[
+                V8OwnerReleaseStep::ReleaseRootCache,
+                V8OwnerReleaseStep::SettleSourceController,
+            ]
+        );
+    }
 
     #[test]
     fn ambiguous_held_cas_replay_rejects_absent_released_and_substituted_record() {
