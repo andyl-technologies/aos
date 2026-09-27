@@ -43,7 +43,7 @@ use aos_sandbox_protocol::{
     MAXIMUM_RESPONSE_BYTES, PeerCredentials, PeerPolicy, ValidatedStorageWorkspace,
     decode_storage_resource_inventory_response,
 };
-use aos_sandbox_source_provider_protocol::StorageLiveExportSourceV1;
+use aos_sandbox_source_provider_protocol::{StorageLiveExportSourceV1, ZfsHeldSnapshotProofV1};
 use buffa::Message as _;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use sha2::{Digest as _, Sha256};
@@ -492,6 +492,32 @@ impl StorageBrokerRuntime {
             measured_tree,
             post_measurement_observation_digest,
         })
+    }
+
+    /// Checks a native Provider row against Storage's unchanged protected cut and measured bytes.
+    ///
+    /// This private result carries no root descriptor or signing authority. A
+    /// future authenticated Storage carrier may use it only as input to a
+    /// separate receipt and descriptor-custody protocol; it cannot open Acquire.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale or mismatched claim, or any held-snapshot readback failure.
+    pub(crate) fn observe_native_held_snapshot_claim(
+        &mut self,
+        claim: &ZfsHeldSnapshotProofV1,
+    ) -> Result<StorageHeldSnapshotReadbackV1, StorageRuntimeError> {
+        let selector = StorageHeldSnapshotSelectorV1::from_native_claim(claim)?;
+        let readback = self.observe_held_snapshot_readback(selector)?;
+        if !readback.cut.matches_native_claim(
+            claim,
+            readback.pool_guid,
+            readback.measured_tree.content_digest,
+            readback.measured_tree.mounted_snapshot_guid,
+        ) {
+            return Err(StorageRuntimeError::Admission(StorageBrokerError::Request));
+        }
+        Ok(readback)
     }
 
     /// Observes one authenticated, read-only method-41 candidate.

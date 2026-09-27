@@ -8673,6 +8673,11 @@ returns only a request-bound digest and mount identity. Storage's dormant held
 readback keeps its sole journal cut while it observes the GUID and hold and
 measures the bytes. A successful path observes the GUID and hold again after
 reader quiescence and rechecks the protected catalog and policy heads.
+The private native-claim bridge now derives the opaque snapshot version handle
+from Storage's authenticated Snapshot result, not the Provider row, and checks
+the row's handle, format version, GUIDs, hold lineage, root policy, and portable
+content digest against that unchanged cut and the confined reader. It returns
+only a nonauthorizing Storage sample; no production socket consumes it.
 
 Storage writes and fsyncs a single exclusive launch marker in its root-owned,
 mode-0700 StateDirectory before connecting to the reader socket. A restart
@@ -8696,8 +8701,9 @@ ZFS/KVM qualification before any production authority is enabled. No
 `/dev/zfs` node is exposed to the one-shot reader; its private `/dev` and
 mount namespace do not change the fact that CAP_SYS_ADMIN remains an
 initial-user-namespace capability. The syscall and descriptor boundary still
-requires a confinement review before activation of any authority. No
-authenticated broker carrier yet conveys the owner-minted Provider challenge,
+requires a confinement review before activation of any authority. The Q04
+Source-journal signer cannot substitute for the distinct Storage ZFS-hold role.
+No authenticated broker carrier yet conveys the owner-minted Provider challenge,
 attempt, holder session, and trusted Storage current head. The signed receipt,
 read-only SourceRoot descriptor custody, and Provider replay/MAC gates do not
 yet compose. The Provider's one-way durable spend transition remains

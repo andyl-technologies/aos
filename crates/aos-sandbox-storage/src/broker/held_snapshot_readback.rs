@@ -16,6 +16,7 @@ use std::collections::BTreeSet;
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::semantics::CatalogBindingV1;
+use aos_sandbox_source_provider_protocol::ZfsHeldSnapshotProofV1;
 use sha2::{Digest as _, Sha256};
 
 use crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1;
@@ -31,14 +32,27 @@ const ACTIVE_HOLD_DOMAIN: &[u8] = b"aos.sandbox.storage.native-active-hold.v1\0"
 pub(crate) struct StorageHeldSnapshotSelectorV1 {
     /// The opaque protected dataset handle.
     pub(crate) storage_handle: [u8; 32],
-    /// The opaque immutable snapshot handle.
-    pub(crate) version_handle: [u8; 32],
     /// The catalogued source dataset GUID.
     pub(crate) source_guid: u64,
     /// The catalogued immutable snapshot GUID.
     pub(crate) snapshot_guid: u64,
     /// The exact durable OpenZFS hold identity.
     pub(crate) hold_id: HoldId,
+}
+
+impl StorageHeldSnapshotSelectorV1 {
+    /// Selects by the claim's physical identity, never by an asserted version handle.
+    pub(crate) fn from_native_claim(
+        claim: &ZfsHeldSnapshotProofV1,
+    ) -> Result<Self, StorageBrokerError> {
+        Ok(Self {
+            storage_handle: claim.storage_handle(),
+            source_guid: claim.dataset_guid(),
+            snapshot_guid: claim.snapshot_guid(),
+            hold_id: HoldId::from_bytes(claim.hold_id())
+                .map_err(|_| StorageBrokerError::Request)?,
+        })
+    }
 }
 
 /// Carries a freshly reloaded catalog identity but no SourceRoot authority.
@@ -50,6 +64,7 @@ pub(crate) struct StorageHeldSnapshotCatalogCutV1 {
     pub(crate) storage_version: u64,
     /// The latest committed HoldSnapshot transition for this exact hold.
     pub(crate) hold_generation: u64,
+    pub(crate) hold_id: HoldId,
     /// Commits the operation and result that established the active hold.
     pub(crate) active_hold_digest: ObjectDigest,
     /// The source Create/Clone catalog's canonical root-policy commitment.
@@ -67,6 +82,27 @@ impl StorageHeldSnapshotCatalogCutV1 {
             return Err(StorageBrokerError::Request);
         }
         Ok(())
+    }
+
+    /// Compares every native row field with the protected cut and physical measurement.
+    pub(crate) fn matches_native_claim(
+        &self,
+        claim: &ZfsHeldSnapshotProofV1,
+        observed_pool_guid: u64,
+        observed_content_digest: ObjectDigest,
+        mounted_snapshot_guid: u64,
+    ) -> bool {
+        self.snapshot.dataset().storage_handle() == claim.storage_handle()
+            && self.storage_version == claim.storage_version()
+            && observed_pool_guid == claim.pool_guid()
+            && self.snapshot.dataset().guid() == claim.dataset_guid()
+            && self.snapshot.guid() == claim.snapshot_guid()
+            && self.hold_id.as_bytes() == claim.hold_id()
+            && self.hold_generation == claim.hold_generation()
+            && self.active_hold_digest == claim.active_hold_digest()
+            && self.root_policy_digest == claim.root_policy_digest()
+            && observed_content_digest == claim.read_only_content_digest()
+            && mounted_snapshot_guid == claim.snapshot_guid()
     }
 }
 
@@ -104,6 +140,7 @@ impl StorageAdmissionCoordinator {
             metadata,
             storage_version,
             hold_generation,
+            hold_id: selector.hold_id,
             active_hold_digest,
             root_policy_digest,
             catalog: journal.physical().binding(),
@@ -251,7 +288,6 @@ fn select_from_verified_journal(
         || source.storage_handle() != selector.storage_handle
         || result.object_guid() != Some(selector.snapshot_guid)
         || result.storage_handle() != Some(selector.storage_handle)
-        || result.immutable_version_handle() != Some(selector.version_handle)
         || !physical.roots().contains(source.root())
         || !physical
             .holds()
@@ -282,11 +318,16 @@ fn select_from_verified_journal(
     {
         return Err(StorageBrokerError::Request);
     }
+    // The Snapshot operation is the sole authority for the opaque version
+    // handle. AOSPCZ01 does not carry it, and a caller must not supply it.
+    let version_handle = result
+        .immutable_version_handle()
+        .ok_or(StorageBrokerError::Request)?;
     let snapshot = ResolvedSnapshot::from_catalog(
         source.clone(),
         destination.component(),
         selector.snapshot_guid,
-        selector.version_handle,
+        version_handle,
     )
     .map_err(|_| StorageBrokerError::Request)?;
     Ok((snapshot, metadata))
@@ -521,7 +562,6 @@ mod tests {
             VerifiedStorageResolverJournalV1::held_snapshot_for_test(physical, operations);
         let selector = StorageHeldSnapshotSelectorV1 {
             storage_handle: source.storage_handle(),
-            version_handle: snapshot.version_handle(),
             source_guid: source.guid(),
             snapshot_guid: snapshot.guid(),
             hold_id,
@@ -535,7 +575,87 @@ mod tests {
         let (snapshot, metadata) = select_from_verified_journal(&journal, selector).unwrap();
 
         assert_eq!(snapshot.guid(), selector.snapshot_guid);
+        assert_eq!(snapshot.version_handle(), [6; 32]);
         assert_eq!(metadata.source_dataset_guid(), selector.source_guid);
+    }
+
+    #[test]
+    fn native_claim_joins_protected_hold_and_measured_content_without_authorizing_acquire() {
+        let (journal, selector) = fixture(Fault::default());
+        let (snapshot, metadata) = select_from_verified_journal(&journal, selector).unwrap();
+        let (hold_generation, active_hold_digest) =
+            current_hold_lineage(&journal, &snapshot, selector.hold_id).unwrap();
+        let root_policy_digest = source_root_policy_digest(&journal, metadata).unwrap();
+        let cut = StorageHeldSnapshotCatalogCutV1 {
+            snapshot,
+            metadata,
+            storage_version: 1,
+            hold_generation,
+            hold_id: selector.hold_id,
+            active_hold_digest,
+            root_policy_digest,
+            catalog: journal.physical().binding(),
+            authority_sequence: 61,
+            materialized_state_digest: ObjectDigest::from_bytes([15; 32]),
+        };
+        let content_digest = ObjectDigest::from_bytes([21; 32]);
+        let claim = ZfsHeldSnapshotProofV1::new(
+            selector.storage_handle,
+            cut.storage_version,
+            44,
+            selector.source_guid,
+            selector.snapshot_guid,
+            selector.hold_id.as_bytes(),
+            cut.hold_generation,
+            cut.active_hold_digest,
+            cut.root_policy_digest,
+            content_digest,
+        )
+        .unwrap();
+
+        assert_eq!(
+            StorageHeldSnapshotSelectorV1::from_native_claim(&claim).unwrap(),
+            selector
+        );
+        assert!(cut.matches_native_claim(&claim, 44, content_digest, selector.snapshot_guid));
+        assert!(!cut.matches_native_claim(&claim, 45, content_digest, selector.snapshot_guid));
+        assert!(!cut.matches_native_claim(&claim, 44, content_digest, 34));
+        assert!(!cut.matches_native_claim(
+            &claim,
+            44,
+            ObjectDigest::from_bytes([22; 32]),
+            selector.snapshot_guid
+        ));
+
+        let stale_hold = ZfsHeldSnapshotProofV1::new(
+            selector.storage_handle,
+            cut.storage_version,
+            44,
+            selector.source_guid,
+            selector.snapshot_guid,
+            selector.hold_id.as_bytes(),
+            cut.hold_generation + 1,
+            cut.active_hold_digest,
+            cut.root_policy_digest,
+            content_digest,
+        )
+        .unwrap();
+        assert!(!cut.matches_native_claim(&stale_hold, 44, content_digest, selector.snapshot_guid));
+
+        let wrong_hold = ZfsHeldSnapshotProofV1::new(
+            selector.storage_handle,
+            cut.storage_version,
+            44,
+            selector.source_guid,
+            selector.snapshot_guid,
+            [9; 16],
+            cut.hold_generation,
+            cut.active_hold_digest,
+            cut.root_policy_digest,
+            content_digest,
+        )
+        .unwrap();
+        assert!(!cut.matches_native_claim(&wrong_hold, 44, content_digest, selector.snapshot_guid));
     }
 
     #[test]
@@ -652,6 +772,7 @@ mod tests {
             metadata,
             storage_version: 1,
             hold_generation,
+            hold_id: selector.hold_id,
             active_hold_digest,
             root_policy_digest,
             catalog: journal.physical().binding(),
