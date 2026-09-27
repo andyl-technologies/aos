@@ -87,6 +87,12 @@ impl RootV8VerifiedTerminalV1 {
     pub const fn controller_uid(self) -> u32 {
         self.controller_uid
     }
+
+    /// Returns the digest of the exact canonical AOSPC88T journal row.
+    #[must_use]
+    pub fn record_digest(self) -> ObjectDigest {
+        ObjectDigest::from_bytes(Sha256::digest(terminal_record(self.signed_receipt)).into())
+    }
 }
 
 fn terminal_cut(
@@ -110,16 +116,7 @@ fn terminal_cut(
 fn terminal_transaction(
     signed_receipt: [u8; CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1],
 ) -> Result<JournalTransaction, RootV8EffectAckErrorV1> {
-    let mut row = [0; RECORD_BYTES];
-    row[..8].copy_from_slice(MAGIC);
-    row[8..10].copy_from_slice(&1_u16.to_be_bytes());
-    row[16..16 + CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1].copy_from_slice(&signed_receipt);
-    let checksum = Sha256::new()
-        .chain_update(CHECKSUM_DOMAIN)
-        .chain_update(&row[..RECORD_BYTES - 32])
-        .finalize();
-    row[RECORD_BYTES - 32..].copy_from_slice(&checksum);
-
+    let row = terminal_record(signed_receipt);
     let digest = Sha256::new()
         .chain_update(TRANSACTION_DOMAIN)
         .chain_update(row)
@@ -135,6 +132,21 @@ fn terminal_transaction(
             row.to_vec(),
         )],
     )?)
+}
+
+fn terminal_record(
+    signed_receipt: [u8; CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1],
+) -> [u8; RECORD_BYTES] {
+    let mut row = [0; RECORD_BYTES];
+    row[..8].copy_from_slice(MAGIC);
+    row[8..10].copy_from_slice(&1_u16.to_be_bytes());
+    row[16..16 + CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1].copy_from_slice(&signed_receipt);
+    let checksum = Sha256::new()
+        .chain_update(CHECKSUM_DOMAIN)
+        .chain_update(&row[..RECORD_BYTES - 32])
+        .finalize();
+    row[RECORD_BYTES - 32..].copy_from_slice(&checksum);
+    row
 }
 
 fn decode_terminal(

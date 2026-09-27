@@ -1,4 +1,4 @@
-//! Shared framing for the two distinct Controller V8 signed readbacks.
+//! Shared framing for the distinct Controller V8 signed readbacks.
 //!
 //! ```text
 //! magic[8] | version:u16=1 | reserved[6]=0 | signer-generation:u64 |
@@ -23,11 +23,12 @@ pub(super) const HEADER_BYTES: usize = 84;
 /// Bounds its Ed25519 signature.
 pub(super) const SIGNATURE_BYTES: usize = 64;
 
-/// Selects only the two compiled Controller V8 receipt formats.
+/// Selects one compiled Controller V8 receipt or final command format.
 #[derive(Clone, Copy)]
 pub(super) enum ControllerV8ReadbackProtocol {
     EffectAck,
     RootReceipt,
+    FinalRelease,
 }
 
 impl ControllerV8ReadbackProtocol {
@@ -35,6 +36,7 @@ impl ControllerV8ReadbackProtocol {
         match self {
             Self::EffectAck => b"AOSCTE08",
             Self::RootReceipt => b"AOSCTR08",
+            Self::FinalRelease => b"AOSCTF08",
         }
     }
 
@@ -42,6 +44,7 @@ impl ControllerV8ReadbackProtocol {
         match self {
             Self::EffectAck => 320,
             Self::RootReceipt => ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1,
+            Self::FinalRelease => 476,
         }
     }
 
@@ -49,6 +52,7 @@ impl ControllerV8ReadbackProtocol {
         match self {
             Self::EffectAck => b"aos.sandbox.controller-policy-v8-effect-ack.readback.v1\0/var/lib/aos/sandboxd/controller.journal\0",
             Self::RootReceipt => b"aos.sandbox.controller-policy-v8-root-receipt.readback.v1\0/var/lib/aos/sandboxd/controller.journal\0",
+            Self::FinalRelease => b"aos.sandbox.controller-policy-v8-final-release.command.v1\0/var/lib/aos/sandboxd/controller.journal\0",
         }
     }
 
@@ -174,6 +178,16 @@ mod tests {
                 &key,
             )
             .unwrap();
+        let final_release = sign_packet::<{ HEADER_BYTES + 476 + SIGNATURE_BYTES }>(
+            ControllerV8ReadbackProtocol::FinalRelease,
+            &[9; 476],
+            6,
+            7,
+            challenge,
+            2,
+            &key,
+        )
+        .unwrap();
 
         assert!(
             verify_packet(
@@ -199,6 +213,26 @@ mod tests {
             verify_packet(
                 ControllerV8ReadbackProtocol::RootReceipt,
                 &ack,
+                &signer,
+                challenge,
+                6
+            )
+            .is_err()
+        );
+        assert!(
+            verify_packet(
+                ControllerV8ReadbackProtocol::RootReceipt,
+                &final_release,
+                &signer,
+                challenge,
+                6
+            )
+            .is_err()
+        );
+        assert!(
+            verify_packet(
+                ControllerV8ReadbackProtocol::FinalRelease,
+                &receipt,
                 &signer,
                 challenge,
                 6

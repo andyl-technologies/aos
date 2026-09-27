@@ -35,7 +35,12 @@ use crate::policy_compiler::source_hold_readback::PinnedSourceHoldReadbackSigner
 
 use super::*;
 
+mod final_release;
 mod terminal;
+
+pub use final_release::{
+    CONTROLLER_V8_FINAL_RELEASE_BYTES_V1, sign_fixed_controller_v8_final_release_v1,
+};
 
 pub use terminal::{
     RootV8TerminalCustodyV1, RootV8VerifiedTerminalV1,
@@ -103,6 +108,15 @@ pub enum RootV8HeldTerminalStepV1 {
     Acknowledged(RootV8EffectAckV1),
     /// Requests Controller's signed readback of that retained Root receipt.
     RootReceipt(ControllerEffectAckChallengeV1),
+    /// Sends the verified terminal and requests a final signed release command.
+    FinalRelease {
+        /// Names Root's fresh challenge for the final Controller command.
+        challenge: ControllerEffectAckChallengeV1,
+        /// Commits the exact durable AOSPC88T row under Root's writer.
+        terminal_digest: ObjectDigest,
+        /// Retains the exact terminal whose hold may be released.
+        terminal: RootV8VerifiedTerminalV1,
+    },
 }
 
 const ACK_KEY: &[u8] = b"\0aos-policy-compiler-root-v8-effect-ack-v1\0";
@@ -614,6 +628,76 @@ pub fn acknowledge_and_verify_fixed_closed_root_v8_terminal_v1(
     )
 }
 
+/// Completes the V8 terminal and releases its exact Root hold under one writer.
+///
+/// The caller's final exchange must return a distinct Controller-signed
+/// AOSCTF08 command produced only after the earlier owners' final postflight.
+/// Root verifies its pinned signer, fresh challenge, exact terminal, Cache
+/// quota, and held proof before atomically writing AOSPC88L and the released
+/// AOSPCH01 row. This grants no Cache, Source, Controller, or public Apply.
+///
+/// # Errors
+///
+/// Rejects stale or changed custody, malformed signed commands, transport
+/// loss, or failed durable Root release and readback.
+pub fn acknowledge_verify_and_release_fixed_closed_root_v8_terminal_v1(
+    binding: ObjectDigest,
+    epoch: u64,
+    uid: u32,
+    credential: &[u8],
+    mut exchange: impl FnMut(RootV8HeldTerminalStepV1) -> io::Result<Vec<u8>>,
+) -> Result<RootV8TerminalCustodyV1, RootV8EffectAckErrorV1> {
+    let (mut journal, _) = Journal::open_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    let terminal = acknowledge_and_verify_in_authority(
+        &mut authority,
+        binding,
+        epoch,
+        uid,
+        credential,
+        super::super::controller_readback_session::fresh_root_nonce,
+        super::super::controller_readback_session::fresh_root_nonce,
+        &mut exchange,
+    )?;
+    release_verified_terminal_after_command_in_authority(
+        &mut authority,
+        terminal,
+        uid,
+        super::super::controller_readback_session::fresh_root_nonce,
+        |challenge, terminal_digest| {
+            exchange(RootV8HeldTerminalStepV1::FinalRelease {
+                challenge,
+                terminal_digest,
+                terminal,
+            })
+        },
+    )
+}
+
+fn release_verified_terminal_after_command_in_authority(
+    authority: &mut ProtectedJournalAuthority<'_>,
+    terminal: RootV8VerifiedTerminalV1,
+    uid: u32,
+    fresh_nonce: impl FnOnce() -> io::Result<[u8; 16]>,
+    exchange: impl FnOnce(ControllerEffectAckChallengeV1, ObjectDigest) -> io::Result<Vec<u8>>,
+) -> Result<RootV8TerminalCustodyV1, RootV8EffectAckErrorV1> {
+    let ack = terminal.ack();
+    let binding = ack.binding();
+    let epoch = ack.epoch();
+    let nonce = fresh_nonce()?;
+    let (challenge, terminal_digest) =
+        final_release::challenge_for_terminal(authority, terminal, uid, nonce)?;
+    let snapshot = authority.snapshot()?;
+    let packet = exchange(challenge, terminal_digest)?;
+    final_release::verify_final_command(authority, terminal, challenge, uid, &packet)?;
+    authority.validate_snapshot_for_effect(&snapshot)?;
+    terminal::release::release_verified_terminal_in_authority(authority, binding, epoch, terminal)
+}
+
 fn acknowledge_and_verify_in_authority(
     authority: &mut ProtectedJournalAuthority<'_>,
     binding: ObjectDigest,
@@ -778,7 +862,7 @@ mod tests {
     use crate::policy_compiler::source_hold_readback::encode_source_hold_readback_signer_credential_v1;
     use ed25519_dalek::SigningKey;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
     use std::path::Path;
 
     struct V8RootFixture {
@@ -954,6 +1038,9 @@ mod tests {
                     .unwrap()
                     .to_vec())
                 }
+                RootV8HeldTerminalStepV1::FinalRelease { .. } => {
+                    panic!("held-only terminal must not request release")
+                }
             },
         )
         .unwrap();
@@ -1119,6 +1206,143 @@ mod tests {
         assert!(
             retirement_records_for_successor(&authority, fixture.binding_head, 2).is_err(),
             "a lost release marker cannot turn a V8 predecessor into an inert one"
+        );
+    }
+
+    #[test]
+    fn signed_final_command_releases_root_under_writer_and_cold_replays() {
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = prepare_v8_root_fixture(directory.path());
+        let mut root = super::super::tests::open_test_root(directory.path());
+        let mut authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        let terminal = complete_test_terminal(&mut authority, &fixture, [31; 16], [32; 16]);
+        let digest = terminal.record_digest();
+        assert_eq!(
+            digest,
+            ObjectDigest::from_bytes(
+                Sha256::digest(authority.get(terminal::TERMINAL_KEY).unwrap().unwrap()).into()
+            )
+        );
+
+        let released = release_verified_terminal_after_command_in_authority(
+            &mut authority,
+            terminal,
+            1234,
+            || Ok([33; 16]),
+            |challenge, challenged_digest| {
+                assert_eq!(challenged_digest, digest);
+                assert!(matches!(
+                    Journal::open_protected_at_uid(
+                        directory.path(),
+                        "closed-binding.journal",
+                        policy_authority_journal_limits(),
+                        fs::metadata(directory.path()).unwrap().uid(),
+                    ),
+                    Err(JournalError::AlreadyLocked)
+                ));
+                Ok(final_release::sign_test_final_command(
+                    terminal.ack(),
+                    digest,
+                    fixture.binding.project,
+                    fixture.binding.physical_partition,
+                    fixture.binding.physical_cache_head,
+                    fixture.ack.cache_quota(),
+                    1234,
+                    challenge,
+                    4,
+                    &fixture.controller_key,
+                )
+                .to_vec())
+            },
+        )
+        .unwrap();
+        assert_eq!(released, RootV8TerminalCustodyV1::Released(terminal));
+        drop(authority);
+        drop(root);
+
+        let mut reopened = super::super::tests::open_test_root(directory.path());
+        let authority = reopened
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        assert_eq!(
+            terminal::current_terminal_custody(
+                &authority,
+                fixture.binding_head,
+                fixture.binding.handoff_epoch,
+            )
+            .unwrap(),
+            Some(released),
+        );
+    }
+
+    #[test]
+    fn failed_or_foreign_final_command_cannot_release_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = prepare_v8_root_fixture(directory.path());
+        let mut root = super::super::tests::open_test_root(directory.path());
+        let mut authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        let terminal = complete_test_terminal(&mut authority, &fixture, [41; 16], [42; 16]);
+
+        assert!(
+            release_verified_terminal_after_command_in_authority(
+                &mut authority,
+                terminal,
+                1234,
+                || Ok([43; 16]),
+                |_, _| Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "lost final command"
+                )),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            terminal::current_terminal_custody(
+                &authority,
+                fixture.binding_head,
+                fixture.binding.handoff_epoch,
+            )
+            .unwrap(),
+            Some(RootV8TerminalCustodyV1::Held(terminal)),
+        );
+
+        assert!(
+            release_verified_terminal_after_command_in_authority(
+                &mut authority,
+                terminal,
+                1234,
+                || Ok([44; 16]),
+                |challenge, digest| {
+                    let mut packet = final_release::sign_test_final_command(
+                        terminal.ack(),
+                        digest,
+                        fixture.binding.project,
+                        fixture.binding.physical_partition,
+                        fixture.binding.physical_cache_head,
+                        fixture.ack.cache_quota(),
+                        1234,
+                        challenge,
+                        4,
+                        &fixture.controller_key,
+                    );
+                    packet[420] ^= 1;
+                    Ok(packet.to_vec())
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(
+            terminal::current_terminal_custody(
+                &authority,
+                fixture.binding_head,
+                fixture.binding.handoff_epoch,
+            )
+            .unwrap(),
+            Some(RootV8TerminalCustodyV1::Held(terminal)),
         );
     }
 
@@ -1481,6 +1705,9 @@ mod tests {
                     )
                     .unwrap()
                     .to_vec())
+                }
+                RootV8HeldTerminalStepV1::FinalRelease { .. } => {
+                    panic!("held-only terminal must not request release")
                 }
             },
         )

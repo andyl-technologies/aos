@@ -5,8 +5,9 @@
 //! AOSPC88T-digest[32] | released-AOSPCH01-digest[32] | SHA-256[32]
 //! ```
 //!
-//! This primitive has no live caller. A later held socket continuation must
-//! complete every earlier owner postflight before invoking it.
+//! The distinct held V8 release socket calls this primitive only after it
+//! verifies Controller's signed final command. Public Create remains closed
+//! until the caller retains and postchecks every earlier owner.
 
 use aos_sandbox_core::ObjectDigest;
 use sha2::Sha256;
@@ -120,9 +121,9 @@ pub(in crate::policy_compiler::binding_v2) fn release_marker_matches(
 
 /// Releases only the verified Root hold under a caller-retained writer.
 ///
-/// This is intentionally unwired from the socket. It must be called only
-/// after the Controller, Source, and Cache writers complete postflight while
-/// their guards and this Root writer are still held.
+/// The held release socket reaches this after verifying the exact signed
+/// Controller final command. Its caller must retain Controller, Source, and
+/// Cache writers through their final postflight while this Root writer holds.
 ///
 /// # Errors
 ///
