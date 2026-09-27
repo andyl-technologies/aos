@@ -2456,6 +2456,43 @@ in {
       )))["data"]["plan"]
       assert any(candidate["store_hash"] == gc_store_hash for candidate in gc_detail["candidates"]), gc_detail
       assert len(gc_detail["placement_actions"]) >= 2, gc_detail
+
+      reviewed(
+          "hybrid-cache-gc-new-root",
+          f"cache root create fleet/objects {gc_store_hash} "
+          "--reason 'rooted after GC plan review'",
+      )
+      stale_gc_result = json.loads(client.succeed(
+          hub_command(
+              "cache gc run fleet/objects",
+              " ".join([
+                  "--plan-id", shlex.quote(gc_delete_plan["plan_id"]),
+                  "--confirm-hash", shlex.quote(gc_delete_plan["confirmation_hash"]),
+                  "--idempotency-key hybrid-cache-gc-stale-root --yes",
+              ]),
+          ) + " || true"
+      ))
+      assert "failed_precondition" in stale_gc_result.get("error", ""), stale_gc_result
+      for path in (f"{gc_store_hash}.narinfo", gc_nar_path):
+          assert probe_work({"kind": "head", "path": path})["kind"] == "head"
+
+      root_id = native.succeed(
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          "-c \"SELECT root.id FROM manual_retention_roots root "
+          "JOIN binary_caches cache ON cache.id = root.cache_id "
+          f"WHERE cache.slug = 'fleet/objects' AND root.store_hash = '{gc_store_hash}' "
+          "AND root.deleted_at IS NULL\""
+      ).strip()
+      assert re.fullmatch(r"[0-9a-f-]{32,64}", root_id), root_id
+      reviewed(
+          "hybrid-cache-gc-new-root-delete",
+          f"cache root delete fleet/objects {shlex.quote(root_id)}",
+      )
+      session_token = refresh_session_token()
+      gc_delete_plan = json.loads(client.succeed(hub_command(
+          "cache gc plan create fleet/objects"
+      ), timeout=180))["data"]["plan"]
+
       gc_operation = json.loads(client.succeed(hub_command(
           "cache gc run fleet/objects",
           " ".join([
@@ -2469,6 +2506,15 @@ in {
           f"cache gc runs watch fleet/objects {shlex.quote(gc_operation_id)} --timeout 3m"
       ), timeout=240))["data"]
       assert gc_run["terminal"], gc_run
+      replayed_gc_operation = json.loads(client.succeed(hub_command(
+          "cache gc run fleet/objects",
+          " ".join([
+              "--plan-id", shlex.quote(gc_delete_plan["plan_id"]),
+              "--confirm-hash", shlex.quote(gc_delete_plan["confirmation_hash"]),
+              "--idempotency-key hybrid-cache-gc-run --yes",
+          ]),
+      )))["data"]["operation"]
+      assert replayed_gc_operation["operation_id"] == gc_operation_id
       gc_jobs = json.loads(client.succeed(hub_command(
           f"cache gc jobs list fleet/objects {shlex.quote(gc_operation_id)}"
       )))["data"]["jobs"]
