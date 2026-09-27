@@ -120,6 +120,14 @@ macro_rules! versioned_row {
 }
 
 const X86_APIC: ProjectionRow = versioned_row!("apic", 0, "apic", 3, VOLATILE, "x86-apic", 3);
+const SIM_PREEMPTION: ProjectionRow = row!(
+    "crucible/sim-preemption",
+    0,
+    "crucible/sim-preemption",
+    1,
+    DEVICE,
+    "sim-preemption"
+);
 const UI_INPUT_QUEUE: ProjectionRow = row!(
     "ui-input-queue",
     0,
@@ -324,6 +332,7 @@ fn expected_manifest_for_shape(
             rows.extend(
                 (0..u32::from(shape.smp_vcpus)).map(|instance| X86_APIC.with_instance(instance)),
             );
+            rows.push(SIM_PREEMPTION);
             rows.push(TIMER);
             if shape.shmem_block {
                 rows.push(SHMEM_CONTROL);
@@ -349,6 +358,7 @@ fn expected_manifest_for_shape(
             rows.extend_from_slice(Q35_BODY_AFTER_SERIAL);
         }
         FaultCapabilityScope::Aarch64 => {
+            rows.push(SIM_PREEMPTION);
             rows.push(TIMER);
             if shape.shmem_block {
                 rows.push(SHMEM_CONTROL);
@@ -436,18 +446,27 @@ mod tests {
     fn base_manifests_match_real_qemu_registry() -> Result<(), &'static str> {
         let q35 = expected_manifest_for_shape(base_shape(FaultCapabilityScope::X86_64))
             .ok_or("missing x86 manifest")?;
-        assert_eq!(q35.sections, 39);
+        assert_eq!(q35.sections, 40);
         assert_eq!(
             q35.digest,
-            "27f97617c43789906601aa79ecb32322acff7a1f6fefb59a1f710412ad8ce513"
+            "a4a03ede093eacfaa1c16996ed8247656d907205a41243d7caad045b253cbc78"
         );
 
         let aarch64 = expected_manifest_for_shape(base_shape(FaultCapabilityScope::Aarch64))
             .ok_or("missing AArch64 manifest")?;
-        assert_eq!(aarch64.sections, 18);
+        assert_eq!(aarch64.sections, 19);
         assert_eq!(
             aarch64.digest,
-            "11398adc7ed565b957d8b03466a2a40a940626720586521a2cf4f030804157a7"
+            "be9cf23506b592c68f6d85d52a93ba85fbc1404d07583a6a5dd6892b23d37e54"
+        );
+        assert_projection_row(
+            &aarch64,
+            0,
+            "crucible/sim-preemption",
+            0,
+            1,
+            "crucible.qemu.sim-preemption.v1",
+            1,
         );
         Ok(())
     }
@@ -482,10 +501,10 @@ mod tests {
         })
         .ok_or("missing Envoy manifest")?;
 
-        assert_eq!(manifest.sections, 43);
+        assert_eq!(manifest.sections, 44);
         assert_eq!(
             manifest.digest,
-            "4c5cd68de0d491f3375dc3c1a764dda70207bbcc1b5398963f23129096434c81"
+            "75d6b392d6936607f1749b26103b9f4d866caffc05508fdfb13767b143a5614d"
         );
         Ok(())
     }
@@ -560,10 +579,10 @@ mod tests {
         })
         .ok_or("missing combined q35 manifest")?;
 
-        assert_eq!(manifest.sections, 47);
+        assert_eq!(manifest.sections, 48);
         assert_eq!(
             manifest.digest,
-            "d07cf541cc87ae7e3a8b13e46c0c2b54e45133390f839f87e3ca4c7e382b52bb"
+            "d8d67ae0a2b23d3511a65977433d24c33b195207a9fb0f8577037159739243bb"
         );
         Ok(())
     }
@@ -583,10 +602,10 @@ mod tests {
         })
         .ok_or("missing production q35 manifest")?;
 
-        assert_eq!(manifest.sections, 50);
+        assert_eq!(manifest.sections, 51);
         assert_eq!(
             manifest.digest,
-            "d9fe9e6ccb25d002ea42317138be742bc64e41368b80837b9778bff1548b3e60"
+            "dcf5c186f987bacda5c490e79664c913746fca70093912f59a3206303fd3ab34"
         );
         Ok(())
     }
@@ -606,10 +625,10 @@ mod tests {
         })
         .ok_or("missing combined AArch64 manifest")?;
 
-        assert_eq!(manifest.sections, 25);
+        assert_eq!(manifest.sections, 26);
         assert_eq!(
             manifest.digest,
-            "d4257e1cd2fead9b2504cd6868aae0826d5ad9e6d763b5c5d33978028371e6ae"
+            "ecdcb8fa549e4a1842102353836bfa546cf070e760b7f81280989120248a97c1"
         );
         Ok(())
     }
@@ -621,16 +640,16 @@ mod tests {
             ..base_shape(FaultCapabilityScope::X86_64)
         })
         .ok_or("missing four-vCPU x86 manifest")?;
-        assert_eq!(q35.sections, 48);
+        assert_eq!(q35.sections, 49);
         assert_eq!(
             q35.digest,
-            "08d0091dc985394a3ce85bee2f9131914018520149324ec3e760c57688452a19"
+            "9a76f574fa41517627871b7d9393b8ec91a544414bca76488eeea375648a450e"
         );
 
         let identities = q35
             .rows
             .iter()
-            .take(14)
+            .take(15)
             .map(|row| (row.id.as_str(), row.instance))
             .collect::<Vec<_>>();
         assert_eq!(
@@ -640,6 +659,7 @@ mod tests {
                 ("apic", 1),
                 ("apic", 2),
                 ("apic", 3),
+                ("crucible/sim-preemption", 0),
                 ("timer", 0),
                 ("cpu_common", 0),
                 ("cpu", 0),
@@ -662,10 +682,10 @@ mod tests {
             ..base_shape(FaultCapabilityScope::Aarch64)
         })
         .ok_or("missing four-vCPU AArch64 manifest")?;
-        assert_eq!(aarch64.sections, 24);
+        assert_eq!(aarch64.sections, 25);
         assert_eq!(
             aarch64.digest,
-            "6a2da7fa57e6b35c6aed4ba9df660e4d13442fdfd9f6b78961f938fde52dfcb3"
+            "d323823b6af3491e3f475a7b97ea08a565775f28217b342fe7e923fa2611d016"
         );
         assert_eq!(
             aarch64.rows.last().map(|row| row.id.as_str()),
@@ -703,6 +723,15 @@ mod tests {
 
         // The digest pins every ordered row; these assertions expose each changed provider.
         assert_projection_row(&envoy, 0, "apic", 0, 3, "crucible.qemu.x86-apic.v3", 3);
+        assert_projection_row(
+            &envoy,
+            1,
+            "crucible/sim-preemption",
+            0,
+            1,
+            "crucible.qemu.sim-preemption.v1",
+            1,
+        );
         for (index, instance) in [(0, 0), (1, 1), (2, 2), (3, 3)] {
             assert_projection_row(
                 &production,
@@ -714,11 +743,20 @@ mod tests {
                 3,
             );
         }
+        assert_projection_row(
+            &production,
+            4,
+            "crucible/sim-preemption",
+            0,
+            1,
+            "crucible.qemu.sim-preemption.v1",
+            1,
+        );
 
         for (manifest, offset) in [(&envoy, 0), (&production, 9)] {
             assert_projection_row(
                 manifest,
-                5 + offset,
+                6 + offset,
                 "fw_cfg",
                 0,
                 2,
@@ -727,7 +765,7 @@ mod tests {
             );
             assert_projection_row(
                 manifest,
-                11 + offset,
+                12 + offset,
                 "mc146818rtc",
                 0,
                 3,
@@ -736,7 +774,7 @@ mod tests {
             );
             assert_projection_row(
                 manifest,
-                12 + offset,
+                13 + offset,
                 "0000:00:1f.0/ICH9LPC",
                 0,
                 1,
@@ -745,7 +783,7 @@ mod tests {
             );
             assert_projection_row(
                 manifest,
-                15 + offset,
+                16 + offset,
                 "ioapic",
                 0,
                 3,
@@ -754,7 +792,7 @@ mod tests {
             );
             assert_projection_row(
                 manifest,
-                16 + offset,
+                17 + offset,
                 "hpet",
                 0,
                 2,
@@ -763,7 +801,7 @@ mod tests {
             );
             assert_projection_row(
                 manifest,
-                17 + offset,
+                18 + offset,
                 "i8254",
                 0,
                 3,
@@ -774,7 +812,7 @@ mod tests {
 
         assert_projection_row(
             &envoy,
-            36,
+            37,
             "0000:00:01.0/virtio-rng",
             0,
             3,
@@ -783,7 +821,7 @@ mod tests {
         );
         assert_projection_row(
             &envoy,
-            40,
+            41,
             "crucible-fault",
             0,
             1,
@@ -792,7 +830,7 @@ mod tests {
         );
         assert_projection_row(
             &production,
-            45,
+            46,
             "0000:00:01.0/virtio-rng",
             0,
             3,
@@ -801,7 +839,7 @@ mod tests {
         );
         assert_projection_row(
             &production,
-            47,
+            48,
             "crucible-fault",
             0,
             1,

@@ -247,8 +247,8 @@ in
               -accel tcg -nodefaults -no-user-config -display none \
               -device virtio-rng-pci,bus=pcie.0,addr=0x1
 
-            query_manifest q35-production-fault 39 \
-              27f97617c43789906601aa79ecb32322acff7a1f6fefb59a1f710412ad8ce513 \
+            query_manifest q35-production-fault 40 \
+              a4a03ede093eacfaa1c16996ed8247656d907205a41243d7caad045b253cbc78 \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -256,8 +256,8 @@ in
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -plugin ./fault-manifest-plugin.so
 
-            query_manifest q35-production-fault-smp4 48 \
-              08d0091dc985394a3ce85bee2f9131914018520149324ec3e760c57688452a19 \
+            query_manifest q35-production-fault-smp4 49 \
+              9a76f574fa41517627871b7d9393b8ec91a544414bca76488eeea375648a450e \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed -smp 4 \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -265,8 +265,8 @@ in
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -plugin ./fault-manifest-plugin.so
 
-            query_manifest aarch64-production-fault 18 \
-              11398adc7ed565b957d8b03466a2a40a940626720586521a2cf4f030804157a7 \
+            query_manifest aarch64-production-fault 19 \
+              be9cf23506b592c68f6d85d52a93ba85fbc1404d07583a6a5dd6892b23d37e54 \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -274,8 +274,8 @@ in
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -plugin ./fault-manifest-plugin.so
 
-            query_manifest aarch64-production-fault-smp4 24 \
-              6a2da7fa57e6b35c6aed4ba9df660e4d13442fdfd9f6b78961f938fde52dfcb3 \
+            query_manifest aarch64-production-fault-smp4 25 \
+              d323823b6af3491e3f475a7b97ea08a565775f28217b342fe7e923fa2611d016 \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off -smp 4 \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -283,8 +283,8 @@ in
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -plugin ./fault-manifest-plugin.so
 
-            query_manifest q35-production-9p 40 \
-              98f419caea9050a47dd353699c67e9af62d0f1027937b89acf57121353a5c463 \
+            query_manifest q35-production-9p 41 \
+              aa787f6df04ec1f2c3355902d9c55c6a280cd121eb8237d8f05bb5bff6dfb627 \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -294,8 +294,8 @@ in
               -device virtio-9p-pci,fsdev=crucible-9p-fsdev0,mount_tag=crucible,id=crucible-9p-device0,bus=pcie.0,addr=0x4 \
               -plugin ./fault-manifest-plugin.so
 
-            query_manifest q35-production-network 40 \
-              afa6a7f2bae3da419e7928d6ef05c148f5faf847c3085cb7d90fa7892d0823bd \
+            query_manifest q35-production-network 41 \
+              12b939a7bcd4d961e315ba4018653d66779ba73a573e28e4ecd1b325a49bd459 \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -305,8 +305,8 @@ in
               -device virtio-net-pci,netdev=crucible-netdev0,id=crucible-net-device0,mac=52:54:00:12:34:56,bus=pcie.0,addr=0x5 \
               -plugin ./fault-manifest-plugin.so
 
-            query_manifest q35-production-accelerator 40 \
-              d7256e8c12f25546401d0c274feba5c403c3e067e96b57d3acd5fc03ad73c6bb \
+            query_manifest q35-production-accelerator 41 \
+              021ff4dca86901d9007aacacf846b09acb02af1553bb7f20fab1a8c5ee59640d \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -315,8 +315,8 @@ in
               -device virtio-crucible-accelerator-pci,id=crucible-accelerator0,disable-legacy=on,bus=pcie.0,addr=0x6 \
               -plugin ./fault-manifest-plugin.so
 
-            query_manifest q35-production-debug-channel 40 \
-              216e19ec8f1509837dabd945b793654d56aaa0b9a52d05750ac3834577d36c0d \
+            query_manifest q35-production-debug-channel 41 \
+              7663a0a9a981012a21ed3d2a701cc9eca9c4fbd2bab9d7be1f8f0cf6ed7351a3 \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -327,8 +327,8 @@ in
               -device virtserialport,bus=crucible-debug-serial.0,chardev=crucible-debug-activation,name=org.aos.crucible.debug \
               -plugin ./fault-manifest-plugin.so
 
-            query_manifest q35-production-shmem 41 \
-              b42e4b4b6709662fc5eda7b304f608beca0e54ce5395fce3ad6345d00d2a8510 \
+            query_manifest q35-production-shmem 42 \
+              8196a0e9cdbecedba7a996806460c08f52176dc2f7e45c1d4a9f789c9d8a86c3 \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -338,8 +338,8 @@ in
               -device virtio-blk-pci,drive=crucible-blk0,id=crucible-blk-device0,ioeventfd=off,bus=pcie.0,addr=0x3 \
               -plugin ./fault-manifest-plugin.so
 
-            query_manifest aarch64-production-shmem 20 \
-              1dd6ba3c4ef4d693f3494e6cc3758c07dc54dc3c0720d8c4e6b05052b1ade5ff \
+            query_manifest aarch64-production-shmem 21 \
+              aa86fdc41053723472192ec26aa11fb9e9408293d255680a0c69cae9f5e4d471 \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -349,8 +349,8 @@ in
               -device virtio-blk-pci,drive=crucible-blk0,id=crucible-blk-device0,ioeventfd=off,bus=pcie.0,addr=0x3 \
               -plugin ./fault-manifest-plugin.so
 
-            query_manifest q35-production-root-block 40 \
-              b7436212f1ec4a77130cb7f8ad39cda594103a4e62c6c65c81d47e59f030e4c6 \
+            query_manifest q35-production-root-block 41 \
+              0a7fa68c7694f3ffe064e608dfbb24323345cb08d65a2a6e7607710e1cfd40b3 \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -360,8 +360,8 @@ in
               -device virtio-blk-pci,drive=crucible-root,id=crucible-root-device,bus=pcie.0,addr=0x2 \
               -plugin ./fault-manifest-plugin.so
 
-            query_manifest q35-production-console 40 \
-              e2fd759e114056dc0bd2086aa01fe4f4e5edc735d1b24eba23ad26e35fbec492 \
+            query_manifest q35-production-console 41 \
+              560870d25305ba7aaac26ff78bc360fbfb2254549019aefa04569fe82ad8dad0 \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -369,8 +369,8 @@ in
               -device virtio-rng-pci,bus=pcie.0,addr=0x1 \
               -plugin ./fault-manifest-plugin.so
 
-            query_manifest aarch64-production-root-block 19 \
-              9d1ebe4ed13db96d6929a4417e16561840892299d25902bfead40896d62b13a5 \
+            query_manifest aarch64-production-root-block 20 \
+              610d1c312766a9af7abc52b60bdcaf0df996d6cc4450bf52d2fb78dde337a8bf \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -380,8 +380,8 @@ in
               -device virtio-blk-pci,drive=crucible-root,id=crucible-root-device,bus=pcie.0,addr=0x2 \
               -plugin ./fault-manifest-plugin.so
 
-            query_manifest aarch64-production-9p 19 \
-              b3fe917b765ef05ba919e6579f80a8ef0cbc4fbc404b964c04283c4be619a24f \
+            query_manifest aarch64-production-9p 20 \
+              75858d1cd749aadb1ea5b18309b53b6010c41e6bbaf412081c69d27eea17f791 \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -391,8 +391,8 @@ in
               -device virtio-9p-pci,fsdev=crucible-9p-fsdev0,mount_tag=crucible,id=crucible-9p-device0,bus=pcie.0,addr=0x4 \
               -plugin ./fault-manifest-plugin.so
 
-            query_manifest aarch64-production-network 19 \
-              9378d3a93f48c75952606e26fcc4c0cfb452da996f708d042ae2caa0ecfd851e \
+            query_manifest aarch64-production-network 20 \
+              9173e95247c2f567cbe801cae433a49f644bc67d74e8c34e2ff1017ebd3bac30 \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -402,8 +402,8 @@ in
               -device virtio-net-pci,netdev=crucible-netdev0,id=crucible-net-device0,mac=52:54:00:12:34:56,bus=pcie.0,addr=0x5 \
               -plugin ./fault-manifest-plugin.so
 
-            query_manifest aarch64-production-accelerator 19 \
-              00dfcae1e8a3d67250c40a753d09d6fc3a887db1cb2380936de9ed7fa538b6a8 \
+            query_manifest aarch64-production-accelerator 20 \
+              358c18227a5f454e699ff50395966e1223bd596c53029d3b45364f61ba50e95d \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -412,8 +412,8 @@ in
               -device virtio-crucible-accelerator-pci,id=crucible-accelerator0,disable-legacy=on,bus=pcie.0,addr=0x6 \
               -plugin ./fault-manifest-plugin.so
 
-            query_manifest aarch64-production-debug-channel 19 \
-              26c0d30b0fdfdba5b265a988a25152819618da862f626ccb318165e07e8fb30b \
+            query_manifest aarch64-production-debug-channel 20 \
+              3d59cfbb507f6c71225e71844d48799d88f58af3b42bc02448880f957b5136d2 \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -424,8 +424,8 @@ in
               -device virtserialport,bus=crucible-debug-serial.0,chardev=crucible-debug-activation,name=org.aos.crucible.debug \
               -plugin ./fault-manifest-plugin.so
 
-            query_manifest aarch64-production-console 18 \
-              11398adc7ed565b957d8b03466a2a40a940626720586521a2cf4f030804157a7 \
+            query_manifest aarch64-production-console 19 \
+              be9cf23506b592c68f6d85d52a93ba85fbc1404d07583a6a5dd6892b23d37e54 \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -437,16 +437,16 @@ in
 
             # Word splitting is deliberate: every token above is one canonical
             # QEMU argv element and contains no whitespace.
-            query_manifest q35-production-all-combined 47 \
-              d07cf541cc87ae7e3a8b13e46c0c2b54e45133390f839f87e3ca4c7e382b52bb \
+            query_manifest q35-production-all-combined 48 \
+              d8d67ae0a2b23d3511a65977433d24c33b195207a9fb0f8577037159739243bb \
               ${qemuPackage}/bin/qemu-system-x86_64 \
               -machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed \
               -accel sim,thread=single -icount shift=0,sleep=off \
               -nodefaults -no-user-config -display none -serial null \
               $common_all_devices -plugin ./fault-manifest-plugin.so
 
-            query_manifest aarch64-production-all-combined 25 \
-              d4257e1cd2fead9b2504cd6868aae0826d5ad9e6d763b5c5d33978028371e6ae \
+            query_manifest aarch64-production-all-combined 26 \
+              ecdcb8fa549e4a1842102353836bfa546cf070e760b7f81280989120248a97c1 \
               ${qemuPackage}/bin/qemu-system-aarch64 \
               -machine virt-9.2 -cpu cortex-a57,pmu=off \
               -accel sim,thread=single -icount shift=0,sleep=off \
@@ -532,31 +532,31 @@ in
             q35_machine_digest=8d5dd529839adc86248c11b8a9afe55488a396b5b0e9597ecc0dae61b40c7a8a
             aarch64_machine_sections=17
             aarch64_machine_digest=75ca96091e6678ad2215539781219223ea92ffbcc0456f9b60aed39b0fd6275d
-            q35_production_fault_sections=39
-            q35_production_fault_digest=ee6010553d7a7d1a8ee4740b5f5f265f87539ab7ae492eaae5b8b84562d787bc
-            q35_production_fault_smp4_sections=48
-            q35_production_fault_smp4_digest=3a59da71dc11e4fe2f146574977be521b3cb160bc5aadd584cbef5afde25569f
-            aarch64_production_fault_sections=18
-            aarch64_production_fault_digest=9b3f3e1b09e31333bd6a44b4dd87b00f7cea73e06612be6ef2b41a65dd885c3a
-            aarch64_production_fault_smp4_sections=24
-            aarch64_production_fault_smp4_digest=394588ec1ff0acef7dba6260f9b54b30d9802b12971bd900423b96197f6e02fc
-            q35_production_9p_sections=40
-            q35_production_network_sections=40
-            q35_production_accelerator_sections=40
-            q35_production_debug_channel_sections=40
-            q35_production_shmem_sections=41
-            aarch64_production_shmem_sections=20
-            q35_production_root_block_sections=40
-            q35_production_console_sections=40
-            aarch64_production_root_block_sections=19
-            aarch64_production_9p_sections=19
-            aarch64_production_network_sections=19
-            aarch64_production_accelerator_sections=19
-            aarch64_production_debug_channel_sections=19
-            q35_production_all_combined_sections=47
-            q35_production_all_combined_digest=3ae28b0d8f1e20fb1791f058a57a807b0dbe69c5c7349885e5bf6e9744a4b27c
-            aarch64_production_all_combined_sections=25
-            aarch64_production_all_combined_digest=a6461b16ae8c401844bb60ea8c0bff4b23ac4bc1a99413e4a85cf397e691fd64
+            q35_production_fault_sections=40
+            q35_production_fault_digest=a4a03ede093eacfaa1c16996ed8247656d907205a41243d7caad045b253cbc78
+            q35_production_fault_smp4_sections=49
+            q35_production_fault_smp4_digest=9a76f574fa41517627871b7d9393b8ec91a544414bca76488eeea375648a450e
+            aarch64_production_fault_sections=19
+            aarch64_production_fault_digest=be9cf23506b592c68f6d85d52a93ba85fbc1404d07583a6a5dd6892b23d37e54
+            aarch64_production_fault_smp4_sections=25
+            aarch64_production_fault_smp4_digest=d323823b6af3491e3f475a7b97ea08a565775f28217b342fe7e923fa2611d016
+            q35_production_9p_sections=41
+            q35_production_network_sections=41
+            q35_production_accelerator_sections=41
+            q35_production_debug_channel_sections=41
+            q35_production_shmem_sections=42
+            aarch64_production_shmem_sections=21
+            q35_production_root_block_sections=41
+            q35_production_console_sections=41
+            aarch64_production_root_block_sections=20
+            aarch64_production_9p_sections=20
+            aarch64_production_network_sections=20
+            aarch64_production_accelerator_sections=20
+            aarch64_production_debug_channel_sections=20
+            q35_production_all_combined_sections=48
+            q35_production_all_combined_digest=d8d67ae0a2b23d3511a65977433d24c33b195207a9fb0f8577037159739243bb
+            aarch64_production_all_combined_sections=26
+            aarch64_production_all_combined_digest=ecdcb8fa549e4a1842102353836bfa546cf070e760b7f81280989120248a97c1
             missing_expected_device_changes_manifest=true
             unexpected_unowned_device_fails_closed=true
             fixed_pci_address_collision_rejected=true
