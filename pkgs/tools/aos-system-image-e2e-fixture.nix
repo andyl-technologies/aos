@@ -265,7 +265,8 @@ in
           done <<< "$keygen"
           test -n "$public_key"
           key="$HOME/.config/apm/keys/image-e2e-release.key"
-          ${aos.apr}/bin/apr create image-e2e --trust-key "$public_key" --key "$key"
+          ${aos.apr}/bin/apr create image-e2e --trust-key "$public_key" \
+            --trust-key-id initial --key-id initial --key "$key"
           ${aos.apr}/bin/apr release 2026.3.0 \
             --registry image-e2e \
             --store-path '${sysroot}' \
@@ -288,6 +289,7 @@ in
             --image-uki '${ukiImage}/systemd-bootx64.efi' \
             --channel stable \
             --init-channel \
+            --key-id initial \
             --key "$key" \
             --cache-url http://127.0.0.1:8799/flat-cache \
             --upload-url "file://$destination/surface"

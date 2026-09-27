@@ -1416,6 +1416,19 @@ in
         >/tmp/disposable-registry-show.json
       disposable_registry_version=$(resource_version \
         /tmp/disposable-registry-show.json)
+      retained_plan disposable-registry-purge \
+        registry container gc purge-fence plan analytics/disposable \
+        --action begin --if-version "$disposable_registry_version" \
+        --idempotency-key disposable-registry-purge-plan
+      purge_plan_id=$(${pkgs.jq}/bin/jq -er .data.plan.plan_id \
+        /tmp/disposable-registry-purge-retained-plan.json)
+      purge_confirm_hash=$(${pkgs.jq}/bin/jq -er .data.plan.confirmation_hash \
+        /tmp/disposable-registry-purge-retained-plan.json)
+      hub_cli_into /tmp/disposable-registry-purge-apply.json \
+        registry container gc purge-fence apply \
+        --plan-id "$purge_plan_id" --confirm-hash "$purge_confirm_hash" \
+        --if-version 1 --idempotency-key disposable-registry-purge-apply \
+        --yes
       reviewed disposable-registry-delete registry delete analytics/disposable \
         --if-version "$disposable_registry_version" \
         >/tmp/disposable-registry-delete.json
