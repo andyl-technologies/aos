@@ -13,7 +13,7 @@ use aos_provider_protocol::{
 use aos_systemd::{PinnedSystemdManager, UnitActiveState};
 
 use crate::HandlerRole;
-use crate::model::ServiceRealization;
+use crate::model::{ServiceReadinessMechanism, ServiceRealization};
 use crate::render::{RenderedService, render_service};
 use crate::semantic::resolve_unit_identity;
 
@@ -58,6 +58,21 @@ pub(super) async fn observe(
     let active_state = manager
         .active_state_exact(&rendered.primary_unit, &unit_identity)
         .await?;
+    // A one-shot controller remains activating while it establishes the
+    // resources it owns. Its own live process is the stage-entry evidence.
+    let own_process_running = if realization.enabled
+        && active_state == UnitActiveState::Activating
+        && realization.readiness_mechanism == Some(ServiceReadinessMechanism::ProcessRunning)
+    {
+        let unit_cgroup = manager
+            .service_control_group_exact(&rendered.primary_unit, &unit_identity)
+            .await?;
+        let process_cgroups =
+            fs::read_to_string("/proc/self/cgroup").context("reading observer process cgroups")?;
+        process_belongs_to_unit(&unit_cgroup, &process_cgroups)
+    } else {
+        false
+    };
     let mut manager_current = !manager
         .needs_daemon_reload_exact(&rendered.primary_unit, &unit_identity)
         .await?;
@@ -81,7 +96,7 @@ pub(super) async fn observe(
     }
     let files_match = files_before && files_after;
     let state_matches = if realization.enabled {
-        active_state.is_active()
+        active_state.is_active() || own_process_running
     } else {
         active_state == UnitActiveState::Inactive
     };
@@ -101,10 +116,39 @@ pub(super) async fn observe(
             "loaded_from_image": loaded_from_image,
             "manager_current": manager_current,
             "active_state": active_state.label(),
+            "own_process_running": own_process_running,
         }))?,
     };
     validate_root_resource_observation(&request, &result)?;
     Ok(result)
+}
+
+fn process_belongs_to_unit(unit_cgroup: &str, process_cgroups: &str) -> bool {
+    if !unit_cgroup.starts_with('/')
+        || unit_cgroup == "/"
+        || unit_cgroup.ends_with('/')
+        || unit_cgroup.contains("//")
+    {
+        return false;
+    }
+
+    process_cgroups.lines().any(|line| {
+        let mut fields = line.splitn(3, ':');
+        let (Some(hierarchy), Some(controllers), Some(process_cgroup)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            return false;
+        };
+        let is_systemd_hierarchy = (hierarchy == "0" && controllers.is_empty())
+            || controllers
+                .split(',')
+                .any(|controller| controller == "name=systemd");
+        is_systemd_hierarchy
+            && (process_cgroup == unit_cgroup
+                || process_cgroup
+                    .strip_prefix(unit_cgroup)
+                    .is_some_and(|suffix| suffix.starts_with('/')))
+    })
 }
 
 fn companion_units<'a>(rendered: &'a RenderedService, primary_source: &str) -> Vec<&'a str> {
@@ -142,7 +186,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::symlink;
 
-    use super::{companion_units, fragment_matches, static_files_match};
+    use super::{companion_units, fragment_matches, process_belongs_to_unit, static_files_match};
     use crate::render::{RenderedService, RenderedServiceLink, RenderedServiceUnit};
 
     #[test]
@@ -203,5 +247,34 @@ mod tests {
             companion_units(&rendered, "worker@.service"),
             ["worker.socket"]
         );
+    }
+
+    #[test]
+    fn activating_service_requires_the_observer_in_its_own_cgroup() {
+        let unit = "/system.slice/bootstrap.service";
+        assert!(process_belongs_to_unit(
+            unit,
+            "0::/system.slice/bootstrap.service\n"
+        ));
+        assert!(process_belongs_to_unit(
+            unit,
+            "0::/system.slice/bootstrap.service/child\n"
+        ));
+        assert!(process_belongs_to_unit(
+            unit,
+            "5:name=systemd:/system.slice/bootstrap.service\n"
+        ));
+        assert!(!process_belongs_to_unit(
+            unit,
+            "0::/system.slice/bootstrap.service-other\n"
+        ));
+        assert!(!process_belongs_to_unit(
+            unit,
+            "0::/system.slice/another.service\n"
+        ));
+        assert!(!process_belongs_to_unit(
+            "/",
+            "0::/system.slice/bootstrap.service\n"
+        ));
     }
 }
