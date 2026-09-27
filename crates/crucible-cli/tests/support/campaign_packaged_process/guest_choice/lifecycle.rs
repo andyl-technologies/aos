@@ -27,7 +27,9 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
     assert_eq!(created_report["unexplored_attempts"], 0);
 
     grant_and_start_guest_choice_campaign(&fixture)?;
-    let (parent, configuration) = wait_for_public_discovery(&fixture, &mut service, &compiled)?;
+    // Initial NextChoice discovers an opportunity on the genesis configuration;
+    // a distinct child artifact is not published until a branch is selected.
+    let (parent, configuration) = wait_for_public_genesis(&fixture, &mut service, &compiled)?;
     let recovery = wait_for_choice_with_timeout(
         &fixture,
         "network.recovery-policy",
@@ -278,12 +280,14 @@ fn prepare_steering_policy(
     Ok(policy_id)
 }
 
-fn wait_for_public_discovery(
+fn wait_for_public_genesis(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     compiled: &Value,
 ) -> Result<(String, String), Box<dyn Error>> {
     let genesis = json_string(compiled, "genesis_artifact")?;
+    let genesis_id = crucible_campaign::ConfigurationArtifactId::parse(&genesis)?;
+    let genesis_configuration = json_string(compiled, "genesis")?;
     let deadline = Instant::now() + Duration::from_secs(900);
     wait_for_process_observation(deadline, || {
         if let Some(status) = service.child.try_wait()? {
@@ -314,7 +318,7 @@ fn wait_for_public_discovery(
         let entries = graph["entries"]
             .as_array()
             .ok_or("public graph omitted entries")?;
-        let mut discovered = None;
+        let mut found_genesis = false;
         let mut choice_index_anchors = 0;
         for entry in entries {
             if is_choice_index_anchor(entry)? {
@@ -337,21 +341,21 @@ fn wait_for_public_discovery(
             }
             let object = parse_json_output(object_output, "inspect public graph object")?;
             let object = &object["object"];
-            if object["kind"] != "configuration" || object["object"] == genesis {
+            if object["kind"] != "configuration"
+                || object["object"] != genesis_id.content_id().to_string()
+            {
                 continue;
             }
-            let candidate = (
-                json_string(object, "object")?,
-                json_string(object, "configuration")?,
-            );
-            if discovered.replace(candidate).is_some() {
-                return Err("public discovery produced multiple child configurations".into());
+            if found_genesis {
+                return Err("public graph repeated the genesis configuration".into());
             }
+            assert_eq!(json_string(object, "configuration")?, genesis_configuration);
+            found_genesis = true;
         }
         assert_eq!(choice_index_anchors, 1);
-        Ok(discovered)
+        Ok(found_genesis.then(|| (genesis.clone(), genesis_configuration.clone())))
     })?
-    .ok_or_else(|| "public discovery did not publish a child configuration".into())
+    .ok_or_else(|| "public graph did not authenticate the genesis configuration".into())
 }
 
 fn is_choice_index_anchor(entry: &Value) -> Result<bool, Box<dyn Error>> {
