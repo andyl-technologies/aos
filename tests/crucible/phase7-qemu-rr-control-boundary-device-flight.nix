@@ -18,8 +18,9 @@
       pkgs.protobuf
       pkgs.rust
       pkgs.sed
+      pkgs.sqlite
     ];
-    runtimeDeps = [pkgs.openssl];
+    runtimeDeps = [pkgs.openssl pkgs.sqlite];
 
     phases = [
       {
