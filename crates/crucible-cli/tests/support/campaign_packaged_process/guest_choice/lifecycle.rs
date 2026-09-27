@@ -644,6 +644,41 @@ mod retry_tests {
     }
 
     #[test]
+    fn finite_branch_refreshes_snapshot_only_after_stale_response() {
+        let mut snapshots = 0;
+        let mut submitted = Vec::new();
+        let result = retry_finite_branch_submission(
+            || {
+                snapshots += 1;
+                Ok(format!("snapshot-{snapshots}"))
+            },
+            |snapshot| {
+                submitted.push(snapshot.to_owned());
+                Ok(match submitted.len() {
+                    1 => output(
+                        4,
+                        "",
+                        "crucible: campaign branch failed: campaign service is temporarily unavailable\n",
+                    ),
+                    2 => output(
+                        4,
+                        "",
+                        "crucible: campaign branch failed: campaign request used stale snapshot\n",
+                    ),
+                    _ => output(0, "{\"accepted\":true}\n", ""),
+                })
+            },
+            Duration::from_secs(1),
+            Duration::ZERO,
+        )
+        .expect("explicit stale response should refresh the snapshot");
+
+        assert_eq!(result["accepted"], true);
+        assert_eq!(snapshots, 2);
+        assert_eq!(submitted, ["snapshot-1", "snapshot-1", "snapshot-2"]);
+    }
+
+    #[test]
     fn finite_branch_preserves_persistent_unavailable_response() {
         let mut submissions = 0;
         let error = retry_finite_branch_submission(
