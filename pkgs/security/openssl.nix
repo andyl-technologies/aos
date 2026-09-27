@@ -22,6 +22,11 @@ in
   mkDerivation {
     pname = "openssl";
     inherit version;
+    outputs = ["out" "static"];
+
+    # Runtime closures must not retain the archive output through metadata or
+    # compatibility links. Headers and pkg-config keep their existing paths.
+    outputChecks.out.disallowedReferences = ["static"];
 
     src = fetchurl {
       urls = [
@@ -97,6 +102,31 @@ in
               find "$out" -type f \( -name '*.so*' -o -name '*.dylib*' -o -name '*.a' -o -perm -u+x \) \
                 -exec sed -i "s|$_hash|eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|g" {} + 2>/dev/null || true
             fi
+
+            # Config-mode consumers explicitly select openssl.static. Keeping
+            # this static-aware metadata in out would restore the archive
+            # closure even if the archives themselves had moved.
+            mkdir -p "$static/lib"
+            mv "$out/lib/libcrypto.a" "$out/lib/libssl.a" "$static/lib/"
+            mv "$out/lib/cmake" "$static/lib/cmake"
+            cmake_config="$static/lib/cmake/OpenSSL/OpenSSLConfig.cmake"
+            sed -i \
+              -e 's|^set(OPENSSL_LIBRARY_DIR .*|set(OPENSSL_LIBRARY_DIR "'"$out"'/lib")|' \
+              -e 's|^set(OPENSSL_INCLUDE_DIR .*|set(OPENSSL_INCLUDE_DIR "'"$out"'/include")|' \
+              -e 's|^set(OPENSSL_MODULES_DIR .*|set(OPENSSL_MODULES_DIR "'"$out"'/lib/ossl-modules")|' \
+              -e 's|^set(OPENSSL_RUNTIME_DIR .*|set(OPENSSL_RUNTIME_DIR "'"$out"'/bin")|' \
+              -e 's|^  set(OPENSSL_LIBCRYPTO_STATIC .*|  set(OPENSSL_LIBCRYPTO_STATIC "'"$static"'/lib/libcrypto.a")|' \
+              -e 's|^  set(OPENSSL_LIBSSL_STATIC .*|  set(OPENSSL_LIBSSL_STATIC "'"$static"'/lib/libssl.a")|' \
+              "$cmake_config"
+
+            # Fail on upstream metadata changes instead of shipping an
+            # apparently successful split with an invalid static target.
+            grep -Fq "set(OPENSSL_INCLUDE_DIR \"$out/include\")" "$cmake_config"
+            grep -Fq "set(OPENSSL_LIBRARY_DIR \"$out/lib\")" "$cmake_config"
+            grep -Fq "set(OPENSSL_MODULES_DIR \"$out/lib/ossl-modules\")" "$cmake_config"
+            grep -Fq "set(OPENSSL_RUNTIME_DIR \"$out/bin\")" "$cmake_config"
+            grep -Fq "set(OPENSSL_LIBCRYPTO_STATIC \"$static/lib/libcrypto.a\")" "$cmake_config"
+            grep -Fq "set(OPENSSL_LIBSSL_STATIC \"$static/lib/libssl.a\")" "$cmake_config"
           ''
           + (
             if isDarwin
@@ -123,6 +153,11 @@ in
       self,
       pkgs,
     }: {
+      output-split = import ./_openssl-output-check.nix {
+        inherit pkgs;
+        openssl = self;
+      };
+
       link = testing.mkLinkCheck {
         pname = "lib-openssl";
         library = self;
