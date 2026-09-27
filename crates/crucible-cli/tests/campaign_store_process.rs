@@ -13,8 +13,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt, symlink};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::Arc;
@@ -1456,29 +1457,37 @@ fn wait_for_campaign_socket(
 ) -> Result<(), Box<dyn Error>> {
     let deadline = Instant::now() + timeout;
     loop {
+        if let Some(status) = service.child.try_wait()? {
+            // `try_wait` reaps the process; Drop must not signal a reused PID.
+            service.kill_on_drop = false;
+            return Err(
+                format!("campaign service exited before its socket was ready: {status}").into(),
+            );
+        }
+
         match fs::metadata(path) {
-            Ok(metadata) if metadata.file_type().is_socket() => return Ok(()),
+            Ok(metadata) if metadata.file_type().is_socket() => match UnixStream::connect(path) {
+                Ok(_) => return Ok(()),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+                    ) => {}
+                Err(error) => return Err(format!("campaign socket connect failed: {error}").into()),
+            },
             Ok(_) => return Err("campaign endpoint is not a Unix socket".into()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if let Some(status) = service.child.try_wait()? {
-                    // `try_wait` reaps the process; Drop must not signal a reused PID.
-                    service.kill_on_drop = false;
-                    return Err(format!(
-                        "campaign service exited before binding its socket: {status}"
-                    )
-                    .into());
-                }
-                if Instant::now() >= deadline {
-                    return Err(format!(
-                        "campaign endpoint was not bound before the readiness deadline: {}",
-                        path.display()
-                    )
-                    .into());
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
+
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "campaign endpoint was not connectable before the readiness deadline: {}",
+                path.display()
+            )
+            .into());
+        }
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -1508,9 +1517,74 @@ fn campaign_socket_wait_reports_exited_service_without_waiting_for_deadline()
     assert!(
         error
             .to_string()
-            .contains("campaign service exited before binding its socket")
+            .contains("campaign service exited before its socket was ready")
     );
     assert!(!service.kill_on_drop);
+    Ok(())
+}
+
+#[test]
+fn campaign_socket_wait_rejects_a_stale_socket_inode() -> Result<(), Box<dyn Error>> {
+    const READY_CHILD: &str = "CRUCIBLE_CAMPAIGN_SOCKET_READY_TEST_CHILD";
+    if let Some(ready_path) = std::env::var_os(READY_CHILD) {
+        fs::write(ready_path, b"ready")?;
+        let mut proceed = [0u8; 1];
+        std::io::stdin().read_exact(&mut proceed)?;
+        return Ok(());
+    }
+
+    let temporary = tempfile::tempdir()?;
+    let socket = temporary.path().join("stale.sock");
+    let ready = temporary.path().join("child-ready");
+    let listener = std::os::unix::net::UnixListener::bind(&socket)?;
+    drop(listener);
+
+    let child = Command::new(std::env::current_exe()?)
+        .arg("campaign_socket_wait_rejects_a_stale_socket_inode")
+        .env(READY_CHILD, &ready)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut service = CampaignServiceChild {
+        child,
+        #[cfg(feature = "packaged-midpoint-flight")]
+        daemon_url: String::new(),
+        stderr: NamedTempFile::new_in(temporary.path())?,
+        kill_on_drop: true,
+    };
+
+    let child_deadline = Instant::now() + Duration::from_secs(5);
+    while !ready.exists() {
+        if let Some(status) = service.child.try_wait()? {
+            service.kill_on_drop = false;
+            return Err(format!("stale-socket test child exited before ready: {status}").into());
+        }
+        if Instant::now() >= child_deadline {
+            return Err("stale-socket test child did not become ready".into());
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let error =
+        wait_for_campaign_socket(&socket, Duration::from_millis(100), &mut service).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("campaign endpoint was not connectable before the readiness deadline")
+    );
+    assert!(service.child.try_wait()?.is_none());
+
+    service
+        .child
+        .stdin
+        .as_mut()
+        .ok_or("stale-socket test child stdin disappeared")?
+        .write_all(b"x")?;
+    service.child.stdin.take();
+    let status = wait_for_exit(&mut service.child, Duration::from_secs(5))?;
+    service.kill_on_drop = false;
+    assert!(status.success());
     Ok(())
 }
 

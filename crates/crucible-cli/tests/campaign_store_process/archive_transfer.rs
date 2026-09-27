@@ -248,7 +248,14 @@ pub(super) fn run_public_offline_archive_transfer(
     if pause_source_before_transfer {
         create.args(["--start-command", START_COMMAND]);
     }
-    run_json(&mut create, "create archive source campaign")?;
+    if let Err(error) = run_json(&mut create, "create archive source campaign") {
+        let service_status = service.child.try_wait()?;
+        return Err(format!(
+            "{error}; service_status={service_status:?}; service_stderr={}",
+            service.stderr_tail()
+        )
+        .into());
+    }
     let source_snapshot = json_string(&campaign_status(source)?, "snapshot")?;
     let mut derived_snapshots = Vec::new();
     let mut parent = (CAMPAIGN.to_string(), source_snapshot.clone());
