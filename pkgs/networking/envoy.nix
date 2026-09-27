@@ -1351,13 +1351,13 @@ in
       ];
     preBazelBuild = ''
                 ${lib.optionalString isSameTripleLinuxCross ''
-          # Execution-platform generators linked by rules_go do not retain
-          # the compiler launcher's runtime RPATH. The Bazel shell wrapper
-          # supplies the matching GCC runtime when those generators execute.
-          sed -i \
-            's|export LD_LIBRARY_PATH="|export LD_LIBRARY_PATH="${targetCxxLibraryDirectory}:|' \
-            "$TMPDIR/bazel-tools/bash-with-path"
-        ''}
+        # Execution-platform generators linked by rules_go do not retain
+        # the compiler launcher's runtime RPATH. The Bazel shell wrapper
+        # supplies the matching GCC runtime when those generators execute.
+        sed -i \
+          's|export LD_LIBRARY_PATH="|export LD_LIBRARY_PATH="${targetCxxLibraryDirectory}:|' \
+          "$TMPDIR/bazel-tools/bash-with-path"
+      ''}
                 # GCC 16 no longer supplies integer types through transitive headers.
                 yaml_emitter="$TMPDIR/repo-overrides/com_github_jbeder_yaml_cpp/src/emitterutils.cpp"
                 test -f "$yaml_emitter"
