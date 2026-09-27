@@ -2360,6 +2360,77 @@ async fn delete_hybrid_probe(
 mod tests {
     use super::*;
     use aos_hub_core::storage_work::{StorageCredentialReference, StorageObjectIdentity};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn retries_transient_read_work_without_replaying_mutations() {
+        let issued_at = aos_hub_core::clock::now_unix_secs();
+        let mut plan = StorageWorkPlan {
+            version: 1,
+            plan_id: "a".repeat(32),
+            deployment_id: "deployment-1".into(),
+            issued_at,
+            expires_at: issued_at + 30,
+            placement_id: 4,
+            placement_resource_version: 2,
+            binding_id: 3,
+            binding_resource_version: 1,
+            binding_kind: "deployment_r2".into(),
+            binding_snapshot_revision: None,
+            credential_references: Vec::new(),
+            placement_prefix: "registry".into(),
+            operation: StorageWorkOperation::Head {
+                path: "object".into(),
+            },
+        };
+        let result = StorageWorkResult {
+            plan_id: plan.plan_id.clone(),
+            placement_id: plan.placement_id,
+            placement_resource_version: plan.placement_resource_version,
+            binding_id: plan.binding_id,
+            binding_resource_version: plan.binding_resource_version,
+            source_bytes: 0,
+            outcome: StorageWorkOutcome::NotFound,
+        };
+        let response_body = serde_json::to_vec(&result).unwrap();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let server_attempts = Arc::clone(&attempts);
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::post(move || {
+                let attempts = Arc::clone(&server_attempts);
+                let response_body = response_body.clone();
+                async move {
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                    if attempt % 2 == 1 {
+                        (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Vec::new())
+                    } else {
+                        (axum::http::StatusCode::OK, response_body)
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let mut client = RemoteStorageWorkClient::new(
+            "https://worker.example",
+            plan.deployment_id.clone(),
+            b"hybrid-storage-test-key-with-thirty-two-bytes",
+        )
+        .unwrap();
+        client.endpoint = format!("http://{address}/");
+        assert!(client.execute(&plan).await.is_ok());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+
+        plan.operation = StorageWorkOperation::CreateMultipart {
+            path: "object".into(),
+        };
+        assert!(client.execute(&plan).await.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        server.abort();
+    }
 
     #[test]
     fn external_plan_names_only_the_acknowledged_snapshot_and_required_credential() {

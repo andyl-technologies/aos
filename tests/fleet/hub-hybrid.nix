@@ -2530,17 +2530,20 @@ in {
       for path in (f"{gc_store_hash}.narinfo", gc_nar_path):
           assert probe_work({"kind": "head", "path": path})["kind"] == "head"
 
-      root_id = native.succeed(
-          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
-          "-c \"SELECT root.id FROM manual_retention_roots root "
+      root_record = native.succeed(
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At -F '|' "
+          "-c \"SELECT root.id, root.resource_version FROM manual_retention_roots root "
           "JOIN binary_caches cache ON cache.id = root.cache_id "
           f"WHERE cache.slug = 'fleet/objects' AND root.store_hash = '{gc_store_hash}' "
           "AND root.deleted_at IS NULL\""
       ).strip()
+      root_id, root_version = root_record.split("|", 1)
       assert re.fullmatch(r"[0-9a-f-]{32,64}", root_id), root_id
+      assert root_version.isdecimal(), root_version
       reviewed(
           "hybrid-cache-gc-new-root-delete",
-          f"cache root delete fleet/objects {shlex.quote(root_id)}",
+          f"cache root delete fleet/objects {shlex.quote(root_id)} "
+          f"--if-version {root_version}",
       )
       session_token = refresh_session_token()
       gc_delete_plan = json.loads(client.succeed(hub_command(
