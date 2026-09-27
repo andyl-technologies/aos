@@ -34,7 +34,7 @@ in
           }
           {
             targetName = "crucible_qemu_plugin";
-            targetKind = "lib";
+            targetKind = "cdylib";
             crateDir = "crucible-qemu-plugin";
             destination = "crucible-qemu-plugin-lib";
           }
