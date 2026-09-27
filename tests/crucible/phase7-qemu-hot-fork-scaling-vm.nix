@@ -447,6 +447,9 @@ in
         simultaneous_source_retirement=after-last-lease-release \
         /tmp/simultaneous-siblings-result
       require_exact_test_marker \
+        thin_fallback_after_source_retirement=authenticated \
+        /tmp/simultaneous-siblings-result
+      require_exact_test_marker \
         simultaneous_source_private_growth_limit_kib=16384 \
         /tmp/simultaneous-siblings-result
       for sibling_count in 1 2 4 8 16; do

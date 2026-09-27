@@ -118,7 +118,13 @@ fn release_acceptance_requires_automated_local_evidence() -> Result<(), Box<dyn 
         contract.executable_evidence.required_gates,
         EXECUTABLE_GATES
     );
-    assert_eq!(contract.executable_evidence.required_claim_gates.len(), 34);
+    assert_eq!(contract.executable_evidence.required_claim_gates.len(), 35);
+    assert!(
+        contract
+            .executable_evidence
+            .required_claim_gates
+            .contains(&"gate:hot-fork-product-audit".to_owned())
+    );
 
     assert_eq!(contract.e2e_evidence.gate, "gate:e2e-determinism");
     assert_eq!(

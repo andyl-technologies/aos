@@ -1241,6 +1241,7 @@ in rec {
         "checks.crucible.phase5.gates.campaignStoreComposition" = phase5.gates.campaignStoreComposition;
         "checks.crucible.phase5.gates.campaignStoreEquivalence" = phase5.gates.campaignStoreEquivalence;
         "checks.crucible.phase5.gates.campaignPolicyTimeoutVm" = phase5.gates.campaignPolicyTimeoutVm;
+        "checks.crucible.phase6.qemuHotForkProductAudit" = phase6.qemuHotForkProductAudit;
         "checks.crucible.phase7.gates.hotForkIsolation.rawGate" = phase7.gates.hotForkIsolation.rawGate;
         "checks.crucible.phase7.gates.hotForkScaling.rawGate" = phase7.gates.hotForkScaling.rawGate;
         "checks.crucible.phase7.gates.hostCloneCost.rawGate" = phase7.gates.hostCloneCost.rawGate;
@@ -1974,6 +1975,15 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase6.qemuHotForkReadiness";
       taskIds = [];
+    };
+    qemuHotForkProductAudit = import ./phase6-qemu-hot-fork-product-audit.nix {
+      inherit pkgs;
+      attrPath = "checks.crucible.phase6.qemuHotForkProductAudit";
+      taskIds = ["T-CAM-6.9"];
+      readiness = phase6.qemuHotForkReadiness;
+      nativeAtomic = phase7.qemuHotForkAtomicWorldVm;
+      nativeEquivalence = phase7.qemuHotForkEquivalenceVm;
+      nativeScaling = phase7.gates.hotForkScaling.rawGate;
     };
     qemuHotForkChildVm = import ./phase6-qemu-hot-fork-child-vm.nix {
       inherit pkgs lib;
@@ -3172,6 +3182,7 @@ in rec {
           phase5.gates.exactClosureStreaming
           phase5.gates.campaignExactMaintenanceTransfer
           phase5.gates.campaignPolicyTimeoutVm
+          phase6.qemuHotForkProductAudit
           phase7.gates.hotForkIsolation
           phase7.gates.hotForkScaling
           phase7.gates.hostCloneCost
@@ -3260,6 +3271,21 @@ in rec {
             gate = "gate:hot-fork-scaling";
             result = phase7.gates.hotForkScaling.rawGate;
             requiredLines = ["gate=gate:hot-fork-scaling"];
+          }
+          {
+            gate = "gate:hot-fork-product-audit";
+            result = phase6.qemuHotForkProductAudit;
+            requiredLines = [
+              "gate=gate:hot-fork-product-audit"
+              "tasks=T-CAM-6.9"
+              "representative_product=nginx,curl,block,ninep"
+              "live_template_quiescence_and_mapping_admitted=true"
+              "private_child_resources_and_rejection_authenticated=true"
+              "dirty_page_growth_and_descriptor_leaks_bounded=true"
+              "exact_restore_and_thin_replay_equivalent=true"
+              "fallback_paths_authenticated=exact,thin"
+              "final_process_descriptor_memory_disk_store_audit=true"
+            ];
           }
           {
             gate = "gate:campaign-performance";

@@ -2072,6 +2072,12 @@ are documented in §05.5 and RFC-0010 §11.
 
 T-CAM-6.9 remains an automated packaged representative-product audit. Hot fork
 remains non-default until that gate and the Phase 7 stress matrix pass.
+`checks.crucible.phase6.qemuHotForkProductAudit` now authenticates the retained
+nginx/curl, block, and 9p product evidence from the packaged readiness,
+atomic-world, equivalence, and scaling flights; it requires live source
+preparation, private child resources, rejection, dirty-page and descriptor
+bounds, exact/thin equivalence and fallback, and final cleanup. The task remains open until
+that aggregate and its producer flights pass on the final QEMU artifact.
 
 **Exit:** the automated structural, equivalence, scaling, isolation, ABI, and
 license gates accept the frozen artifact. Product enablement still requires the

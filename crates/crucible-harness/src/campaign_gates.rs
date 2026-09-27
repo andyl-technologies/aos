@@ -765,6 +765,64 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
         "checks.crucible.phase7.gates.hotForkIsolation.rawGate",
     ),
     automated(
+        "gate:hot-fork-product-audit",
+        "crucible-daemon",
+        &[
+            CampaignGateTarget {
+                package: "crucible-daemon",
+                kind: CampaignGateTargetKind::LibExactAggregate {
+                    selectors: WORLD_FORK_ATOMICITY_SELECTORS,
+                    producer_nix_source: "tests/crucible/phase7-qemu-hot-fork-atomic-world-vm.nix",
+                    producer_nix_attr: "checks.crucible.phase7.gates.worldForkAtomicity",
+                    producer_gate: "gate:world-fork-atomicity",
+                    aggregate_nix_source: "tests/crucible/phase6-qemu-hot-fork-product-audit.nix",
+                    evidence_input: "nativeAtomic",
+                    evidence: &[
+                        "source=two-running-one-permanently-failed",
+                        "io=block,ninep",
+                        "native_negative_isolation_matrix=private-ring-omitted,qmp-control-aliased,console-diagnostics-aliased,writable-disk-backing-aliased,network-omitted,ninep-aliased,host-continuation-identity-aliased",
+                    ],
+                    ignored: true,
+                },
+            },
+            CampaignGateTarget {
+                package: "crucible-daemon",
+                kind: CampaignGateTargetKind::LibExactAggregate {
+                    selectors: HOT_FORK_EQUIVALENCE_SELECTORS,
+                    producer_nix_source: "tests/crucible/phase7-qemu-hot-fork-equivalence-vm.nix",
+                    producer_nix_attr: "checks.crucible.phase7.qemuHotForkEquivalenceVm",
+                    producer_gate: "gate:hot-fork-equivalence",
+                    aggregate_nix_source: "tests/crucible/phase6-qemu-hot-fork-product-audit.nix",
+                    evidence_input: "nativeEquivalence",
+                    evidence: &[
+                        "reference_tiers=thin-replay,exact-checkpoint",
+                        "child_boundary_matches_capture=true",
+                    ],
+                    ignored: true,
+                },
+            },
+            CampaignGateTarget {
+                package: "crucible-daemon",
+                kind: CampaignGateTargetKind::LibExactAggregate {
+                    selectors: HOT_FORK_SCALING_SELECTORS,
+                    producer_nix_source: "tests/crucible/phase7-qemu-hot-fork-scaling-vm.nix",
+                    producer_nix_attr: "checks.crucible.phase7.gates.hotForkScaling.rawGate",
+                    producer_gate: "gate:hot-fork-scaling",
+                    aggregate_nix_source: "tests/crucible/phase6-qemu-hot-fork-product-audit.nix",
+                    evidence_input: "nativeScaling",
+                    evidence: &[
+                        "known_dirty_guest_pages=1024",
+                        "source_descriptors_leaked=0",
+                        "hot_checkpoint_fallback_authentication=exact-checkpoint-id",
+                        "thin_fallback_after_source_retirement=authenticated",
+                    ],
+                    ignored: true,
+                },
+            },
+        ],
+        "checks.crucible.phase6.qemuHotForkProductAudit",
+    ),
+    automated(
         "gate:hot-fork-scaling",
         "crucible-daemon",
         &[
