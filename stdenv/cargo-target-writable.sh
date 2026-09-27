@@ -54,10 +54,14 @@ aos_prepare_cargo_build_outputs() (
       # chmod on an inode owned by the previous UID cannot repair it.
       find "$aos_output_dir" -type f ! -writable -exec "$CONFIG_SHELL" -c '
         set -eu
+        aos_remove_replacement() {
+          rm -f -- "$aos_replacement"
+        }
+
         for aos_file do
           aos_parent=${aos_file%/*}
           aos_replacement=$(mktemp "$aos_parent/.aos-cargo-write-XXXXXXXX")
-          trap '\''rm -f -- "$aos_replacement"'\'' EXIT
+          trap aos_remove_replacement EXIT
           cp --preserve=mode,timestamps -- "$aos_file" "$aos_replacement"
           chmod u+w -- "$aos_replacement"
           mv -f -- "$aos_replacement" "$aos_file"
