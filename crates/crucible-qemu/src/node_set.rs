@@ -1980,6 +1980,42 @@ fn validate_retained_hot_fork_token(
     Ok(())
 }
 
+/// Projects a physically parked selectable through one scheduler catch-up RUN.
+fn parked_selectable_step(
+    node: &NodeId,
+    pending: &SelectablePlanPendingRequest,
+    ceiling: VirtualTime,
+) -> Result<StepObservation, BackendError> {
+    let boundary_tick_ps = pending
+        .trap_tick_ps()
+        .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
+        .ok_or_else(|| BackendError::Rejected {
+            message: format!(
+                "QEMU node `{}` selectable pause boundary overflowed",
+                node.name
+            ),
+        })?;
+    if ceiling.ticks < boundary_tick_ps {
+        return Err(BackendError::Rejected {
+            message: format!(
+                "QEMU node `{}` cannot project its selectable pause at {} behind scheduler ceiling {}",
+                node.name, boundary_tick_ps, ceiling.ticks,
+            ),
+        });
+    }
+    // The guest remains physically stopped while peer nodes bring the
+    // conservative scheduler frontier up to this choice boundary.
+    Ok(StepObservation {
+        requested_ceiling: ceiling,
+        reached: ceiling,
+        outcome: crucible::AdvanceOutcome::Paused {
+            at: Icount {
+                retired: boundary_tick_ps,
+            },
+        },
+    })
+}
+
 impl SimulationBackend for QemuNodeSet {
     fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
         let node = {
@@ -2015,13 +2051,8 @@ impl SimulationBackend for QemuNodeSet {
                 },
             });
         }
-        if self.pending_selectable_requests.contains_key(node) {
-            return Err(BackendError::Rejected {
-                message: format!(
-                    "QEMU node `{}` cannot step with an unresolved selectable request",
-                    node.name,
-                ),
-            });
+        if let Some(pending) = self.pending_selectable_requests.get(node) {
+            return parked_selectable_step(node, pending, ceiling);
         }
         self.arm_selected_fault_event_staging(node)?;
         let mut previous = SimulationBackend::now(self.node_mut(node)?);
@@ -2404,6 +2435,39 @@ mod tests {
                 .expect("request survives failed delivery"),
             first
         );
+    }
+
+    #[test]
+    fn retained_selectable_projects_a_quiescent_scheduler_catch_up_step() {
+        let node = NodeId {
+            name: String::from("choice-node"),
+        };
+        let request = SelectionRequest::new(7, "product.test.selectable", "instance-a", None, 128)
+            .expect("selection request");
+        let pending = SelectablePlanPendingRequest::new(request, 41, 2_050, 0, 0x1000);
+        let mut nodes = QemuNodeSet::new();
+        nodes
+            .pending_selectable_requests
+            .insert(node.clone(), pending);
+        let retained = nodes
+            .pending_selectable_requests
+            .get(&node)
+            .expect("retained selectable");
+
+        let ceiling = VirtualTime { ticks: 2_250 };
+        let stepped = parked_selectable_step(&node, retained, ceiling).expect("parked step");
+        assert_eq!(stepped.requested_ceiling, ceiling);
+        assert_eq!(stepped.reached, ceiling);
+        assert_eq!(
+            stepped.outcome,
+            crucible::AdvanceOutcome::Paused {
+                at: Icount { retired: 2_100 },
+            }
+        );
+        assert_eq!(nodes.pending_selectable_requests.len(), 1);
+
+        let earlier = parked_selectable_step(&node, retained, VirtualTime { ticks: 2_099 });
+        assert!(matches!(earlier, Err(BackendError::Rejected { .. })));
     }
 
     #[cfg(target_os = "linux")]

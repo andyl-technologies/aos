@@ -395,11 +395,6 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
     }
 
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
-        if !self.active_pending.is_empty() {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from("selectable lifecycle stepped with a pending request"),
-            });
-        }
         if request.configuration != self.frontier {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -421,7 +416,11 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
         })?;
         outcome.configuration = request.configuration.clone();
         self.frontier = request.configuration;
-        self.active_pending = self.pending.pop_front().unwrap_or_default();
+        if let Some(new_pending) = self.pending.pop_front()
+            && !new_pending.is_empty()
+        {
+            self.active_pending = new_pending;
+        }
         Ok(outcome)
     }
 
@@ -449,7 +448,7 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
     fn drain_pending_selectable_requests(
         &mut self,
     ) -> Result<Vec<crucible_qemu::QemuNodeSelectablePendingRequest>, SchedulerError> {
-        Ok(std::mem::take(&mut self.active_pending))
+        Ok(self.active_pending.clone())
     }
 
     fn apply_selectable_reply(
@@ -457,7 +456,7 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
         parent: &crucible::Configuration,
         decision: crucible::SelectionDecision,
         selected: &crucible::Configuration,
-        _pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
+        pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
         reply: &crucible_protocol::SelectionReply,
     ) -> Result<Vec<crucible::SchedulerEventLogEntry>, SchedulerError> {
         if parent != &self.frontier
@@ -467,6 +466,7 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
                 message: String::from("selectable lifecycle rejected an inconsistent transition"),
             });
         }
+        self.active_pending.retain(|candidate| candidate != pending);
         self.replies.push(reply.clone());
         self.frontier = selected.clone();
         Ok(self.reply_entries.pop_front().unwrap_or_default())
@@ -2801,7 +2801,7 @@ fn pending_guest_choice_stops_without_reply_and_retains_scenario_discovery() {
             configuration.clone(),
             Vec::new(),
             EventLogOffset::default(),
-            1,
+            2_100,
         )]),
         completed_coordinates: VecDeque::from([0]),
         pending: VecDeque::from([vec![pending_guest_request(node, None)]]),
@@ -2831,6 +2831,51 @@ fn pending_guest_choice_stops_without_reply_and_retains_scenario_discovery() {
 }
 
 #[test]
+fn pending_guest_choice_waits_for_the_global_frontier() {
+    let (input, node) = input_with_guest_selectable(StopCondition::NextChoice);
+    let mut configuration = starting_configuration(&input);
+    let mut discoveries = RetainedChoiceDiscoveries::default();
+    let mut owner = PendingSelectableLifecycle {
+        frontier: configuration.clone(),
+        outcomes: VecDeque::new(),
+        completed_coordinates: VecDeque::new(),
+        pending: VecDeque::new(),
+        active_pending: vec![pending_guest_request(node, None)],
+        reply_entries: VecDeque::new(),
+        replies: Vec::new(),
+        completed_quanta: 0,
+        drives: 0,
+    };
+    let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+
+    let early = resolve_pending_guest_choices_at_configuration(
+        &mut lifecycle,
+        &input,
+        &context(),
+        &mut configuration,
+        &mut discoveries,
+        Some(VirtualTime { ticks: 2_050 }),
+    )
+    .expect("future choice remains parked");
+    assert!(early.is_empty());
+    assert!(discoveries.discoveries.is_empty());
+
+    let ready = resolve_pending_guest_choices_at_configuration(
+        &mut lifecycle,
+        &input,
+        &context(),
+        &mut configuration,
+        &mut discoveries,
+        Some(VirtualTime { ticks: 2_100 }),
+    )
+    .expect("choice becomes visible at its stopped boundary");
+    assert!(ready.is_empty());
+    assert_eq!(discoveries.discoveries.len(), 1);
+    assert_eq!(owner.active_pending.len(), 1);
+    assert!(owner.replies.is_empty());
+}
+
+#[test]
 fn pending_guest_choice_applies_and_replies_with_exact_default() {
     let (input, node) = input_with_guest_selectable(StopCondition::EventCount(1));
     let configuration = starting_configuration(&input);
@@ -2844,7 +2889,7 @@ fn pending_guest_choice_applies_and_replies_with_exact_default() {
         .expect("choice event");
     let mut owner = PendingSelectableLifecycle {
         frontier: configuration.clone(),
-        outcomes: VecDeque::from([outcome(configuration, event.entries, event.offset, 41)]),
+        outcomes: VecDeque::from([outcome(configuration, event.entries, event.offset, 2_100)]),
         completed_coordinates: VecDeque::from([0]),
         pending: VecDeque::from([vec![pending_guest_request(node, None)]]),
         active_pending: Vec::new(),
@@ -2949,7 +2994,7 @@ fn zero_progress_choice_discovery_does_not_consume_execution_quanta() {
                 EventLogOffset::default(),
                 0,
             ),
-            outcome(configuration, Vec::new(), EventLogOffset::default(), 1),
+            outcome(configuration, Vec::new(), EventLogOffset::default(), 2_100),
         ]),
         completed_coordinates: VecDeque::from([0, 1]),
         pending: VecDeque::from([vec![pending_guest_request(node, None)], Vec::new()]),

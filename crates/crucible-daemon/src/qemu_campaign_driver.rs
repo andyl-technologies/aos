@@ -34,6 +34,7 @@ use crucible_campaign::{
 };
 use crucible_cas::content_store::ContentId;
 use crucible_protocol::SelectionReply;
+use crucible_protocol::selectable_catalog_plan::SELECTABLE_NATIVE_HANDOFF_TICKS_PS;
 use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuParkedCampaignMarker};
 use thiserror::Error;
 
@@ -1570,12 +1571,15 @@ fn drive_modeled_attempt_inner(
             },
         );
     }
+    // A request retained by an authenticated start is already at that start's
+    // boundary. Requests discovered by RUNs need global-frontier admission.
     let initial_reply_entries = resolve_pending_guest_choices_at_configuration(
         lifecycle,
         input,
         context,
         &mut configuration,
         &mut discoveries,
+        None,
     )?;
     observed_event_count = observed_event_count
         .checked_add(initial_reply_entries.len())
@@ -2034,6 +2038,7 @@ fn resolve_pending_guest_choices(
         context,
         &mut outcome.configuration,
         discoveries,
+        Some(outcome.frontier),
     )?;
     outcome.event_log_entries.extend(entries);
     Ok(())
@@ -2045,12 +2050,32 @@ fn resolve_pending_guest_choices_at_configuration(
     context: &AttemptExecutionContext,
     configuration: &mut Configuration,
     discoveries: &mut RetainedChoiceDiscoveries,
+    visibility_frontier: Option<VirtualTime>,
 ) -> Result<Vec<SchedulerEventLogEntry>, AttemptWorkerFailure<QemuFreshModeledDriverError>> {
     let pending = lifecycle
         .drain_pending_selectable_requests()
         .map_err(classify_scheduler_error)?;
     let mut continuations = Vec::with_capacity(pending.len());
     for pending in pending {
+        if let Some(frontier) = visibility_frontier {
+            let boundary_tick_ps = pending
+                .pending()
+                .trap_tick_ps()
+                .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
+                .ok_or_else(|| {
+                    classify_scheduler_error(SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "guest selectable from `{}` has an overflowing logical stop boundary",
+                            pending.node().name,
+                        ),
+                    })
+                })?;
+            if frontier.ticks < boundary_tick_ps {
+                // The VM is physically parked ahead of the shared frontier.
+                // Leave the request owned by QEMU until peer nodes catch up.
+                continue;
+            }
+        }
         let discovery = resolve_guest_selectable(
             input.lineage().scenario(),
             input.scenario(),
