@@ -842,10 +842,13 @@ pub(super) fn require_no_compaction(
     Ok(())
 }
 
-fn transaction(hold: ControllerPolicyHoldV1) -> Result<JournalTransaction, JournalError> {
-    let bytes = hold.encode()?;
+fn single_record_transaction(
+    domain: &[u8],
+    key: &[u8],
+    bytes: &[u8],
+) -> Result<JournalTransaction, JournalError> {
     let digest = Sha256::new()
-        .chain_update(TRANSACTION_DOMAIN)
+        .chain_update(domain)
         .chain_update(bytes)
         .finalize();
     let id: [u8; 16] = digest[..16]
@@ -855,91 +858,43 @@ fn transaction(hold: ControllerPolicyHoldV1) -> Result<JournalTransaction, Journ
         id,
         vec![JournalRecord::put(
             RecordNamespace::ControllerPolicyHold,
-            KEY.to_vec(),
+            key.to_vec(),
             bytes.to_vec(),
         )],
     )
 }
 
+fn transaction(hold: ControllerPolicyHoldV1) -> Result<JournalTransaction, JournalError> {
+    single_record_transaction(TRANSACTION_DOMAIN, KEY, &hold.encode()?)
+}
+
 fn ack_transaction(ack: ControllerPolicyEffectAckV1) -> Result<JournalTransaction, JournalError> {
-    let bytes = ack.encode()?;
-    let digest = Sha256::new()
-        .chain_update(ACK_TRANSACTION_DOMAIN)
-        .chain_update(bytes)
-        .finalize();
-    let id = digest[..16]
-        .try_into()
-        .map_err(|_| JournalError::ProtectedBoundary)?;
-    JournalTransaction::new(
-        id,
-        vec![JournalRecord::put(
-            RecordNamespace::ControllerPolicyHold,
-            ACK_KEY.to_vec(),
-            bytes.to_vec(),
-        )],
-    )
+    single_record_transaction(ACK_TRANSACTION_DOMAIN, ACK_KEY, &ack.encode()?)
 }
 
 fn v8_attempt_transaction(
     attempt: ControllerPolicyV8AttemptV1,
 ) -> Result<JournalTransaction, JournalError> {
-    let bytes = attempt.encode()?;
-    let digest = Sha256::new()
-        .chain_update(V8_ATTEMPT_TRANSACTION_DOMAIN)
-        .chain_update(bytes)
-        .finalize();
-    let id = digest[..16]
-        .try_into()
-        .map_err(|_| JournalError::ProtectedBoundary)?;
-    JournalTransaction::new(
-        id,
-        vec![JournalRecord::put(
-            RecordNamespace::ControllerPolicyHold,
-            V8_ATTEMPT_KEY.to_vec(),
-            bytes.to_vec(),
-        )],
+    single_record_transaction(
+        V8_ATTEMPT_TRANSACTION_DOMAIN,
+        V8_ATTEMPT_KEY,
+        &attempt.encode()?,
     )
 }
 
 fn v8_ack_transaction(
     ack: ControllerPolicyV8EffectAckV1,
 ) -> Result<JournalTransaction, JournalError> {
-    let bytes = ack.encode()?;
-    let digest = Sha256::new()
-        .chain_update(V8_ACK_TRANSACTION_DOMAIN)
-        .chain_update(bytes)
-        .finalize();
-    let id = digest[..16]
-        .try_into()
-        .map_err(|_| JournalError::ProtectedBoundary)?;
-    JournalTransaction::new(
-        id,
-        vec![JournalRecord::put(
-            RecordNamespace::ControllerPolicyHold,
-            V8_ACK_KEY.to_vec(),
-            bytes.to_vec(),
-        )],
-    )
+    single_record_transaction(V8_ACK_TRANSACTION_DOMAIN, V8_ACK_KEY, &ack.encode()?)
 }
 
 fn v8_root_receipt_transaction(
     receipt: RootV8EffectAckV1,
 ) -> Result<JournalTransaction, JournalError> {
-    let bytes = encode_v8_root_receipt(receipt)?;
-    let digest = Sha256::new()
-        .chain_update(V8_ROOT_RECEIPT_TRANSACTION_DOMAIN)
-        .chain_update(bytes)
-        .finalize();
-    let id = digest[..16]
-        .try_into()
-        .map_err(|_| JournalError::ProtectedBoundary)?;
-    JournalTransaction::new(
-        id,
-        vec![JournalRecord::put(
-            RecordNamespace::ControllerPolicyHold,
-            V8_ROOT_RECEIPT_KEY.to_vec(),
-            bytes.to_vec(),
-        )],
+    single_record_transaction(
+        V8_ROOT_RECEIPT_TRANSACTION_DOMAIN,
+        V8_ROOT_RECEIPT_KEY,
+        &encode_v8_root_receipt(receipt)?,
     )
 }
 
