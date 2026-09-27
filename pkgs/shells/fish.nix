@@ -23,13 +23,15 @@
 }: let
   version = "4.9.2";
 
+  isLinux = stdenv.hostPlatform.isLinux;
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   nativeCargoTarget = lib.toUpper (builtins.replaceStrings ["-"] ["_"] stdenv.buildPlatform.config);
   rustForBuild =
-    if isLinuxCross
+    if stdenv.isCross
     then rust.passthru.buildTool
     else rust;
-  crossRustCmakeFlags = lib.optionalString isLinuxCross (
+  crossRustCmakeFlags = lib.optionalString stdenv.isCross (
     lib.concatMapStrings (flag: " " + flag) [
       "-DRust_COMPILER=${rustForBuild}/bin/rustc"
       "-DRust_CARGO=${rustForBuild}/bin/cargo"
@@ -51,21 +53,22 @@ in
     inherit version src;
 
     buildDeps =
-      [rust cmake ninja gettext pkg-config python3]
+      [(if isDarwinCross then rustForBuild else rust) cmake ninja gettext pkg-config python3]
       ++ lib.optionals isLinuxCross [rustForBuild];
-    runtimeDeps = [
-      pcre2
-      ncurses
-      coreutils
-      grep
-      sed
-      gawk
-      gettext
-      procps-ng
-      getent
-    ];
+    runtimeDeps =
+      [
+        pcre2
+        ncurses
+        coreutils
+        grep
+        sed
+        gawk
+        gettext
+        getent
+      ]
+      ++ lib.optionals isLinux [procps-ng];
     propagatedDeps = [];
-    disallowedReferences = [cargoDeps rust];
+    disallowedReferences = [cargoDeps] ++ lib.optionals (!isDarwinCross) [rust];
 
     phases = [
       {
@@ -80,7 +83,9 @@ in
         script = ''
           sed -i "s|/usr/bin/e|${coreutils}/bin/e|" src/highlight/highlight.rs
           sed -i "s|/usr/bin|${coreutils}/bin|" tests/checks/vars_as_commands.fish
-          sed -i "s|ps -o|${procps-ng}/bin/ps -o|" tests/checks/jobs.fish
+          ${lib.optionalString isLinux ''
+            sed -i "s|ps -o|${procps-ng}/bin/ps -o|" tests/checks/jobs.fish
+          ''}
 
           sed -i "s|command grep|command ${grep}/bin/grep|g" share/functions/grep.fish
           for file in share/functions/*.fish share/completions/*.fish; do
@@ -127,7 +132,7 @@ in
           offline = true
           EOF
 
-          ${lib.optionalString isLinuxCross ''
+          ${lib.optionalString stdenv.isCross ''
             # Cargo runs build scripts on the builder. Their linker must not
             # inherit the target compiler's headers, libraries, or hardening.
             mkdir -p .aos-build-tools
