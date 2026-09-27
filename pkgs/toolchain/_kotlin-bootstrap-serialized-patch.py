@@ -34,6 +34,14 @@ replace(
     '"file"',
 )
 
+# Classfile PSI has no text mirror in the headless environment. Keep the
+# warning useful without asking IntelliJ to decompile a binary class.
+replace(
+    "compiler/frontend.java/src/org/jetbrains/jet/lang/resolve/java/JavaTypeTransformer.java",
+    "psiClass.getText()",
+    "psiClass.getQualifiedName()",
+)
+
 # Enumerating an entire Java package traverses virtual filesystem roots.
 # Package metadata only describes declarations from the Kotlin source files.
 replace(

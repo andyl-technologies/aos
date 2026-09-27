@@ -4,6 +4,8 @@
   goCacheDir,
   bazelCacheDir,
   rustCacheDir,
+  accacheCacheDir ? null,
+  accacheStateDir ? null,
 }: let
   aos = import ../default.nix {};
   # The bootstrap Bash and coreutils are i686 binaries, usable directly on
@@ -29,7 +31,10 @@ in
         # A normal build umask must still create directories writable by the
         # next nixbld UID. This catches missing default ACLs on the host.
         umask 022
-        for cache_dir in ${shellQuote goCacheDir} ${shellQuote bazelCacheDir} ${shellQuote rustCacheDir}; do
+        for cache_dir in ${builtins.concatStringsSep " " (map shellQuote (
+          [goCacheDir bazelCacheDir rustCacheDir]
+          ++ builtins.filter (path: path != null) [accacheCacheDir accacheStateDir]
+        ))}; do
           probe="$cache_dir/.aos-dev-acl-$$"
           ${coreutils}/bin/mkdir "$probe" || exit 1
           mode=$(${coreutils}/bin/stat -c %a "$probe")

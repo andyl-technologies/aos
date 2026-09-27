@@ -1,16 +1,46 @@
 # Derivations see stable backend paths inside the sandbox, independent of the
-# host cache root. /var/tmp is traversable by nixbld users even when a
-# developer's home directory is private, and survives normal reboots.
-aos_dev_cache_dir=${AOS_DEV_CACHE_DIR:-/var/tmp/aos-dev-cache-$(id -u)}
+# host cache root. Prefer XDG storage when Nix can reach its parents. Private
+# homes use the existing /var/tmp layout without requiring sudo or a mount.
+aos_dev_default_cache_dir() {
+  local candidate=${XDG_CACHE_HOME:-$HOME/.cache}/aos-dev parent mode
+  parent=${candidate%/*}
+  while [[ $parent == /* && $parent != / ]]; do
+    if [[ -e $parent ]]; then
+      mode=$(stat -Lc '%a' "$parent" 2>/dev/null) || break
+      # Every Nix build UID must be able to traverse the source. A configured
+      # group/ACL or host bind alias can instead be selected explicitly with
+      # AOS_DEV_CACHE_DIR; do not guess membership or change home permissions.
+      [[ $mode =~ ^[0-7]+$ ]] && (( (8#$mode & 1) != 0 )) || break
+    fi
+    parent=${parent%/*}
+    [[ -n $parent ]] || parent=/
+  done
+  if [[ $parent == / ]]; then
+    printf '%s\n' "$candidate"
+  else
+    printf '/var/tmp/aos-dev-cache-%s\n' "$(id -u)"
+  fi
+}
+
+aos_dev_cache_dir=${AOS_DEV_CACHE_DIR:-$(aos_dev_default_cache_dir)}
 aos_dev_go_cache_path=${AOS_DEV_GO_CACHE_DIR:-/aos-build-cache/go}
 aos_dev_bazel_cache_path=${AOS_DEV_BAZEL_CACHE_DIR:-/aos-build-cache/bazel}
 aos_dev_rust_cache_path=${AOS_DEV_RUST_TARGET_DIR:-/aos-build-cache/rust}
+aos_dev_accache_path=${AOS_DEV_ACCACHE_DIR:-/aos-build-cache/accache}
+aos_dev_accache_state_path=${AOS_DEV_ACCACHE_STATE_DIR:-/aos-build-cache/accache-state}
 
 aos_dev_cache_validate_sandbox_paths() {
   # Each backend is mounted separately. A developer may choose the exact path
   # that the corresponding language builder sees inside the Nix sandbox.
-  local path
-  for path in "$aos_dev_go_cache_path" "$aos_dev_bazel_cache_path" "$aos_dev_rust_cache_path"; do
+  local path other
+  local -a cache_paths=("$aos_dev_go_cache_path" "$aos_dev_bazel_cache_path" "$aos_dev_rust_cache_path")
+  if [[ ${aos_dev_accache:-false} == true ]]; then
+    cache_paths+=("$aos_dev_accache_path" "$aos_dev_accache_state_path")
+  fi
+  for path in "${cache_paths[@]}"; do
+    for other in "${cache_paths[@]}"; do
+      [[ $path == "$other" || $path != "$other/"* ]] || aos_dev_error 'sandbox cache paths must not be nested'
+    done
     [[ $path == /* && $path != / && $path != /nix && $path != /nix/* && \
        ! $path =~ [[:space:]] && $path != *'/../'* && $path != *'/./'* ]] || \
       aos_dev_error "sandbox cache path must be an absolute path without spaces or dot segments: $path"
@@ -19,6 +49,12 @@ aos_dev_cache_validate_sandbox_paths() {
      $aos_dev_go_cache_path != "$aos_dev_rust_cache_path" && \
      $aos_dev_bazel_cache_path != "$aos_dev_rust_cache_path" ]] || \
     aos_dev_error 'sandbox cache paths must be distinct'
+  if [[ ${aos_dev_accache:-false} == true ]]; then
+    for path in "$aos_dev_go_cache_path" "$aos_dev_bazel_cache_path" "$aos_dev_rust_cache_path"; do
+      [[ $path != "$aos_dev_accache_path" && $path != "$aos_dev_accache_state_path" ]] || aos_dev_error 'sandbox cache paths must be distinct'
+    done
+    [[ $aos_dev_accache_path != "$aos_dev_accache_state_path" ]] || aos_dev_error 'accache data and state paths must be distinct'
+  fi
 }
 
 aos_dev_cache_check_nix() {
@@ -28,8 +64,10 @@ aos_dev_cache_check_nix() {
   local configuration trusted paths username group mapping backend sandbox_path
   local -a mappings=()
   aos_dev_cache_validate_sandbox_paths
-  for backend in go bazel rust; do
+  for backend in go bazel rust accache accache-state; do
     case $backend in
+      accache) sandbox_path=$aos_dev_accache_path; [[ ${aos_dev_accache:-false} == true ]] || continue ;;
+      accache-state) sandbox_path=$aos_dev_accache_state_path; [[ ${aos_dev_accache:-false} == true ]] || continue ;;
       go) sandbox_path=$aos_dev_go_cache_path; [[ ${1:-} == all || $aos_dev_go_cache == true ]] || continue ;;
       bazel) sandbox_path=$aos_dev_bazel_cache_path; [[ ${1:-} == all || $aos_dev_bazel_cache == true ]] || continue ;;
       rust) sandbox_path=$aos_dev_rust_cache_path; [[ ${1:-} == all || $aos_dev_rust_target_cache == true ]] || continue ;;
@@ -64,6 +102,8 @@ aos_dev_cache_check_nix() {
   if [[ $aos_dev_go_cache_path == /aos-build-cache/go && \
      $aos_dev_bazel_cache_path == /aos-build-cache/bazel && \
      $aos_dev_rust_cache_path == /aos-build-cache/rust && \
+     ( ${aos_dev_accache:-false} == false || ( $aos_dev_accache_path == /aos-build-cache/accache && \
+     $aos_dev_accache_state_path == /aos-build-cache/accache-state ) ) && \
      " $paths " == *" /aos-build-cache=$aos_dev_cache_dir "* ]]; then
     return
   fi
@@ -87,7 +127,7 @@ aos_dev_cache_prepare() {
 
   local path
   for path in "$aos_dev_cache_dir" "$aos_dev_cache_dir/go" "$aos_dev_cache_dir/bazel" \
-      "$aos_dev_cache_dir/rust"; do
+      "$aos_dev_cache_dir/rust" "$aos_dev_cache_dir/accache" "$aos_dev_cache_dir/accache-state"; do
     [[ ! -L $path ]] || aos_dev_error "cache setup refuses symlink: $path"
     # /var/tmp is shared. Refuse a path pre-created by another user instead
     # of changing its mode.
@@ -96,15 +136,15 @@ aos_dev_cache_prepare() {
 
   aos_dev_require_command setfacl
   aos_dev_require_command getfacl
-  mkdir -p "$aos_dev_cache_dir"/{go,bazel,rust}
+  mkdir -p "$aos_dev_cache_dir"/{go,bazel,rust,accache,accache-state}
   # Nix builds run under different nixbld UIDs. All artifact trees must
   # support writers from all of those users.
   # Default ACLs make new cache entries writable across UIDs without changing
   # the build's umask. A permissive build umask also changes test fixtures and
   # can invalidate tests that check private credential directories.
   chmod 0755 "$aos_dev_cache_dir"
-  chmod 0777 "$aos_dev_cache_dir/go" "$aos_dev_cache_dir/bazel" "$aos_dev_cache_dir/rust"
-  for path in "$aos_dev_cache_dir/go" "$aos_dev_cache_dir/bazel" "$aos_dev_cache_dir/rust"; do
+  chmod 0777 "$aos_dev_cache_dir/"{go,bazel,rust,accache,accache-state}
+  for path in "$aos_dev_cache_dir/"{go,bazel,rust,accache,accache-state}; do
     if ! aos_dev_cache_has_default_acl "$path" && \
         [[ -n $(find "$path" -mindepth 1 ! -name '.aos-cache.lock' -print -quit) ]]; then
       aos_dev_error "existing cache entries under '$path' lack inherited permissions; run cache clear ${path##*/}, then cache init"
@@ -134,6 +174,11 @@ aos_dev_cache_verify_mount() {
 
 aos_dev_cache_probe_once() {
   local log status interrupted=false
+  local -a compiler_probe_options=()
+  if [[ ${aos_dev_accache:-false} == true ]]; then
+    compiler_probe_options=(--argstr accacheCacheDir "$aos_dev_accache_path"
+      --argstr accacheStateDir "$aos_dev_accache_state_path")
+  fi
   log=$(mktemp)
 
   # Nix may report a user interruption with exit status 1 instead of 130.
@@ -143,7 +188,7 @@ aos_dev_cache_probe_once() {
       --argstr goCacheDir "$aos_dev_go_cache_path" \
       --argstr bazelCacheDir "$aos_dev_bazel_cache_path" \
       --argstr rustCacheDir "$aos_dev_rust_cache_path" \
-      "$@" --no-out-link "${aos_dev_cache_nix_options[@]}" \
+      "${compiler_probe_options[@]}" "$@" --no-out-link "${aos_dev_cache_nix_options[@]}" \
       2>&1 >/dev/null | tee "$log" >&2; then
     rm -f -- "$log"
     return 0
@@ -184,7 +229,11 @@ aos_dev_cache_command() {
       [[ -d $aos_dev_cache_dir ]] || aos_dev_error 'run cache init first'
       [[ -w $aos_dev_cache_dir ]] || aos_dev_error 'cache directory is not writable'
       aos_dev_require_command getfacl
-      for path in "$aos_dev_cache_dir/go" "$aos_dev_cache_dir/bazel" "$aos_dev_cache_dir/rust"; do
+      local -a doctor_paths=("$aos_dev_cache_dir/"{go,bazel,rust})
+      if [[ ${aos_dev_accache:-false} == true ]]; then
+        doctor_paths+=("$aos_dev_cache_dir/"{accache,accache-state})
+      fi
+      for path in "${doctor_paths[@]}"; do
         aos_dev_cache_has_default_acl "$path" || \
           aos_dev_error "shared cache permissions are incomplete at '$path'; run cache init"
       done
@@ -203,7 +252,7 @@ aos_dev_cache_command() {
     usage) aos_dev_cache_usage ;;
     prune) shift; aos_dev_cache_prune "$@" ;;
     clear) shift; aos_dev_cache_clear "$@" ;;
-    go|bazel|rust) aos_dev_cache_backend_command "$action" "${@:2}" ;;
+    go|bazel|rust|accache) aos_dev_cache_backend_command "$action" "${@:2}" ;;
     *) aos_dev_error "unknown cache command '$action'" ;;
   esac
 }
