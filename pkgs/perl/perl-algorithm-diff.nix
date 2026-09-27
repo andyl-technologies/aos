@@ -1,12 +1,13 @@
 ##! perl-algorithm-diff — Intelligent differences between Perl sequences
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
 }: let
   version = "1.1903";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-algorithm-diff";
     inherit version;
     src = fetchurl {
