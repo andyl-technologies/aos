@@ -104,6 +104,29 @@ in
             --lib content_store::s3 \
             -- --test-threads=1
 
+          packed_test=archive_transfer::public_worked_network_archive_survives_packed_repack_outage_and_corruption
+          packed_listing=$(cargo test \
+            --frozen --offline --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-cli --test campaign_store_process \
+            "$packed_test" -- --list)
+          printf '%s\n' "$packed_listing" | grep -Fqx "$packed_test: test"
+          if ! cargo test \
+            --frozen --offline --target-dir "$target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-cli --test campaign_store_process \
+            "$packed_test" -- --exact --nocapture --test-threads=1 \
+            > "$TMPDIR/packed-worked-network.log" 2>&1; then
+            cat "$TMPDIR/packed-worked-network.log" >&2
+            exit 1
+          fi
+          grep -Fq 'packed_worked_network_archive_repack_outage_corruption_gc=true' \
+            "$TMPDIR/packed-worked-network.log"
+          grep -Fq 'archive_transfer_imported_campaign_authenticated=true' \
+            "$TMPDIR/packed-worked-network.log"
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' \
+            "$TMPDIR/packed-worked-network.log"
+
           garage_config="$TMPDIR/garage.toml"
           garage_root="$TMPDIR/garage"
           mkdir -p "$garage_root/meta" "$garage_root/data"
@@ -251,7 +274,9 @@ in
           trap - EXIT
 
           mkdir -p "$out/evidence"
+          cp "$TMPDIR/packed-worked-network.log" "$out/evidence/packed-worked-network.log"
           cp "$TMPDIR/live-s3-product.log" "$out/evidence/live-s3-product.log"
+          packed_sha256=$(sha256sum "$out/evidence/packed-worked-network.log" | cut -d ' ' -f 1)
           product_sha256=$(sha256sum "$out/evidence/live-s3-product.log" | cut -d ' ' -f 1)
           cat > "$out/result" <<RESULT
           PASS
@@ -265,6 +290,9 @@ in
           s3_live_conformance=true
           s3_live_worked_network_outage_credential_recovery=true
           s3_live_product_evidence_sha256=$product_sha256
+          packed_worked_network_archive_repack_outage_corruption_gc=true
+          packed_worked_network_imported_campaign_retained=true
+          packed_worked_network_evidence_sha256=$packed_sha256
           RESULT
         '';
       }

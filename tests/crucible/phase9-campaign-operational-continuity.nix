@@ -3,8 +3,10 @@
   lib,
   attrPath ? "checks.crucible.phase9.gates.campaignOperationalContinuity",
   taskIds ? ["T-CAM-9.3"],
+  campaignStoreEquivalence,
   campaignStoreComposition,
   campaignColdContinuity,
+  campaignExactMaintenanceTransfer,
   campaignMidpointDebug,
   campaignServiceModuleContract,
   dependencies ? [],
@@ -26,8 +28,10 @@ in
         pkgs.grep
         pkgs.rust
         pkgs.sed
+        campaignStoreEquivalence
         campaignStoreComposition
         campaignColdContinuity
+        campaignExactMaintenanceTransfer
         campaignMidpointDebug
         campaignServiceModuleContract
 
@@ -87,6 +91,32 @@ in
             ${campaignServiceModuleContract}/result \
             state_directory_service_owned=true
 
+          require_result_line ${campaignStoreEquivalence}/result PASS
+          require_result_line \
+            ${campaignStoreEquivalence}/result \
+            check=checks.crucible.phase5.gates.campaignStoreEquivalence
+          require_result_line \
+            ${campaignStoreEquivalence}/result \
+            s3_live_worked_network_outage_credential_recovery=true
+          require_result_line \
+            ${campaignStoreEquivalence}/result \
+            packed_worked_network_archive_repack_outage_corruption_gc=true
+          require_result_line \
+            ${campaignStoreEquivalence}/result \
+            packed_worked_network_imported_campaign_retained=true
+          s3_evidence=${campaignStoreEquivalence}/evidence/live-s3-product.log
+          packed_evidence=${campaignStoreEquivalence}/evidence/packed-worked-network.log
+          test -f "$s3_evidence"
+          test -f "$packed_evidence"
+          s3_sha256=$(sha256sum "$s3_evidence" | cut -d ' ' -f 1)
+          packed_sha256=$(sha256sum "$packed_evidence" | cut -d ' ' -f 1)
+          require_result_line \
+            ${campaignStoreEquivalence}/result \
+            "s3_live_product_evidence_sha256=$s3_sha256"
+          require_result_line \
+            ${campaignStoreEquivalence}/result \
+            "packed_worked_network_evidence_sha256=$packed_sha256"
+
           require_result_line ${campaignStoreComposition}/result PASS
           require_result_line \
             ${campaignStoreComposition}/result \
@@ -94,6 +124,15 @@ in
           require_result_line \
             ${campaignStoreComposition}/result \
             independent_coordinator_executor_restart=true
+          require_result_line \
+            ${campaignStoreComposition}/result \
+            tiers=true
+          require_result_line \
+            ${campaignStoreComposition}/result \
+            tier_promotion_cache_eviction=true
+          require_result_line \
+            ${campaignStoreComposition}/result \
+            write_back=true
           require_result_line \
             ${campaignStoreComposition}/result \
             global_gc=true
@@ -109,6 +148,9 @@ in
           require_result_line \
             ${campaignStoreComposition}/result \
             paused_derived_s3_write_back_fault_recovery_gc=true
+          require_result_line \
+            ${campaignStoreComposition}/result \
+            packed_restart_and_repack=true
 
           require_result_line ${campaignColdContinuity}/result PASS
           require_result_line \
@@ -120,6 +162,23 @@ in
           require_result_line \
             ${campaignColdContinuity}/result \
             exact_checkpoint_closure_authenticated=true
+
+          require_result_line ${campaignExactMaintenanceTransfer}/result PASS
+          require_result_line \
+            ${campaignExactMaintenanceTransfer}/result \
+            gate=gate:campaign-exact-maintenance-transfer
+          for transfer_claim in \
+            source_active_world_exact_pause_restart=true \
+            recipient_executable_archive_authenticated=true \
+            recipient_exact_pin_import_authenticated=true \
+            recipient_campaign_resume=true \
+            incompatible_provenance_rejected_before_guest=true
+          do
+            require_result_line ${campaignExactMaintenanceTransfer}/result "$transfer_claim"
+          done
+          transfer_evidence=${campaignExactMaintenanceTransfer}/evidence/exact-maintenance-transfer-vm.output
+          test -f "$transfer_evidence"
+          sha256sum -c ${campaignExactMaintenanceTransfer}/evidence.sha256
 
           require_result_line ${campaignMidpointDebug}/result PASS
           require_result_line \
@@ -213,17 +272,33 @@ in
           grep -Fq \
             'archive_transfer_derived_refs_retained=2' \
             "$out/evidence/directory-archive-transfer.output"
+          grep -Fq \
+            'archive_transfer_imported_campaign_authenticated=true' \
+            "$out/evidence/directory-archive-transfer.output"
           run_exact_process_test \
             archive_transfer::public_archive_transfer_is_backend_neutral_across_compressed_stores \
             compressed-archive-transfer
           grep -Fq \
             'archive_transfer_derived_refs_retained=2' \
             "$out/evidence/compressed-archive-transfer.output"
+          grep -Fq \
+            'archive_transfer_imported_campaign_authenticated=true' \
+            "$out/evidence/compressed-archive-transfer.output"
 
+          cp ${campaignStoreEquivalence}/result \
+            "$out/evidence/campaign-store-equivalence.result"
+          cp ${campaignStoreEquivalence}/evidence/live-s3-product.log \
+            "$out/evidence/live-s3-product.log"
+          cp ${campaignStoreEquivalence}/evidence/packed-worked-network.log \
+            "$out/evidence/packed-worked-network.log"
           cp ${campaignStoreComposition}/result \
             "$out/evidence/campaign-store-composition.result"
           cp ${campaignColdContinuity}/result \
             "$out/evidence/campaign-cold-continuity.result"
+          cp ${campaignExactMaintenanceTransfer}/result \
+            "$out/evidence/campaign-exact-maintenance-transfer.result"
+          cp "$transfer_evidence" \
+            "$out/evidence/exact-maintenance-transfer-vm.output"
           mkdir -p "$out/evidence/campaign-midpoint-debug"
           cp ${campaignMidpointDebug}/result \
             "$out/evidence/campaign-midpoint-debug/result"
@@ -238,7 +313,7 @@ in
               evidence_sha256=$(sha256sum "$evidence_file" | cut -d ' ' -f 1)
               printf '%s  %s\n' "$evidence_sha256" "$evidence_name"
             done > "$out/evidence.sha256"
-          test "$(wc -l < "$out/evidence.sha256" | tr -d ' ')" -eq 13
+          test "$(wc -l < "$out/evidence.sha256" | tr -d ' ')" -eq 18
           evidence_digest=$(sha256sum "$out/evidence.sha256" | cut -d ' ' -f 1)
 
           cat > "$out/result" <<RESULT
@@ -255,10 +330,18 @@ in
           public_composed_store_process=true
           composed_store_derived_refs_after_gc_restart=2
           public_archive_transfer_process=true
+          public_archive_import_process=true
           archive_transfer_derived_refs_retained=2
+          exact_maintenance_transfer_and_import=true
+          incompatible_provenance_rejected_before_guest=true
+          s3_live_worked_network_outage_credential_recovery=true
+          packed_worked_network_archive_repack_outage_corruption_gc=true
+          packed_worked_network_imported_campaign_retained=true
+          tier_promotion_cache_eviction=true
           active_publication_transfer_write_back_gc=true
           s3_faults_preserve_multiple_refs_and_transfer_gc=true
           paused_derived_s3_write_back_fault_recovery_gc=true
+          representative_storage_fault_matrix=true
           public_finding_midpoint_debug=true
           authenticated_replay_violation_boundary=true
           authenticated_replay_selection_sequence=fast,q7

@@ -112,6 +112,31 @@ fn public_worked_network_archive_survives_packed_repack_outage_and_corruption()
     }
     reopened.stop()?;
 
+    let mut imported = destination.start_service(None)?;
+    assert_eq!(
+        campaign_status_named(&destination, "imported-worked-network")?["snapshot"],
+        source_heads[0].1.as_str()
+    );
+    imported.stop()?;
+
+    let destination_plan = run_json(
+        &mut destination.gc_command("plan"),
+        "plan imported packed product GC",
+    )?;
+    let destination_apply = run_json(
+        &mut destination.gc_command("apply"),
+        "apply imported packed product GC",
+    )?;
+    assert_eq!(destination_apply["plan"], destination_plan["plan"]);
+    let mut retained_import = destination.start_service(None)?;
+    assert_eq!(
+        campaign_status_named(&destination, "imported-worked-network")?["snapshot"],
+        source_heads[0].1.as_str()
+    );
+    retained_import.stop()?;
+
+    println!("packed_worked_network_archive_repack_outage_corruption_gc=true");
+
     Ok(())
 }
 
@@ -309,7 +334,12 @@ fn run_public_offline_archive_transfer(
         .arg(&destination.peer_policy)
         .arg("--destination-store")
         .arg(&destination.store)
-        .args(["--archive", "offline-copy"])
+        .args([
+            "--archive",
+            "offline-copy",
+            "--campaign",
+            "imported-worked-network",
+        ])
         .output()?;
     require_success(&output, "transfer offline archive")?;
     let preflight: Value = serde_json::from_slice(&output.stderr)?;
@@ -333,6 +363,7 @@ fn run_public_offline_archive_transfer(
     );
     assert_eq!(completion["phase"], "complete");
     assert_eq!(completion["authenticated"], true);
+    assert_eq!(completion["campaign"], "imported-worked-network");
 
     let inspected = run_json(
         command(&[
@@ -358,6 +389,13 @@ fn run_public_offline_archive_transfer(
             .is_some_and(|classes| classes.iter().any(|class| class == "trace"))
     );
 
+    let mut imported = destination.start_service(None)?;
+    assert_eq!(
+        campaign_status_named(destination, "imported-worked-network")?["snapshot"],
+        snapshot.as_str()
+    );
+    imported.stop()?;
+
     let mut restarted = source.start_service(None)?;
     for (derived, snapshot) in DERIVED_CAMPAIGNS.into_iter().zip(&derived_snapshots) {
         let retained = campaign_status_named(source, derived)?;
@@ -366,6 +404,7 @@ fn run_public_offline_archive_transfer(
     restarted.stop()?;
 
     println!("archive_transfer_derived_refs_retained=2");
+    println!("archive_transfer_imported_campaign_authenticated=true");
 
     Ok(())
 }

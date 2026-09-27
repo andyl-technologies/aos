@@ -219,6 +219,7 @@ in
           allowed_transparent_layer_orders=6
           routes=true
           tiers=true
+          tier_promotion_cache_eviction=true
           write_through=true
           write_back=true
           public_store_owner=true

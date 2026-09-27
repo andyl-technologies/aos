@@ -3108,8 +3108,10 @@ in rec {
       };
       campaignOperationalContinuity = import ./phase9-campaign-operational-continuity.nix {
         inherit pkgs lib;
+        campaignStoreEquivalence = phase5.gates.campaignStoreEquivalence.rawGate;
         campaignStoreComposition = phase5.gates.campaignStoreComposition.rawGate;
         campaignColdContinuity = phase5.gates.campaignColdContinuity.rawGate;
+        campaignExactMaintenanceTransfer = phase5.gates.campaignExactMaintenanceTransfer;
         inherit campaignMidpointDebug campaignServiceModuleContract;
         dependencies = [];
       };
