@@ -1136,6 +1136,7 @@ mod tests {
                 assert_eq!(measured.identity.root_attributes.gid(), 0);
                 assert_eq!(measured.identity.maximum_portable_uid, 42);
                 assert_eq!(measured.identity.maximum_portable_gid, 43);
+                assert_eq!(measured.identity.root_attributes.mode(), 0o755);
                 assert_eq!(
                     measured.identity.distinct_inode_count,
                     u64::from(measured.nodes)
@@ -1145,6 +1146,10 @@ mod tests {
                     measured.identity.distinct_inode_count
                 );
                 assert_ne!(measured.identity.identity_tree_digest.as_bytes(), &[0; 32]);
+                assert_eq!(
+                    measured.identity.identity_tree_digest.to_string(),
+                    "sha256:d96f62fc5f9c09ace8b0e2ce8ec2d746df8aeee6d0d0661c7019a9e2924f76b7",
+                );
             }
             "wrong-pool" | "wrong-snapshot" => {
                 assert!(observation.is_err());

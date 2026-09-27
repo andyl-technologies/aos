@@ -9,6 +9,17 @@
 //! sorted depth-first order. Every node contributes its kind, length-prefixed
 //! root-relative byte path, portable UID, GID, and low twelve mode bits.
 //! Unsupported identity-bearing xattrs, symlinks, and hardlinks close the walk.
+//!
+//! For a root `(d, "", UID 0, GID 0, mode 0755)` containing one file
+//! `(f, "payload", UID 42, GID 43, mode 0644)`, the preimage starts with
+//! `b"aos.sandbox.storage.held-snapshot-identity-tree.v1\0"`, then these
+//! two node records:
+//!
+//! ```text
+//! 64 00000000 00000000 00000000 01ed
+//! 66 00000007 7061796c6f6164 0000002a 0000002b 01a4
+//! SHA-256 d96f62fc5f9c09ace8b0e2ce8ec2d746df8aeee6d0d0661c7019a9e2924f76b7
+//! ```
 
 use std::ffi::OsString;
 use std::io::Read as _;
@@ -653,6 +664,48 @@ mod tests {
                 .identity_observation()
                 .unwrap()
                 .identity_tree_digest,
+        );
+    }
+
+    #[test]
+    fn identity_tree_digest_matches_the_documented_root_and_file_vector() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let file_path = directory.path().join("payload");
+        std::fs::write(&file_path, b"bytes").unwrap();
+
+        let mut root_stat =
+            rustix::fs::fstat(&std::fs::File::open(directory.path()).unwrap()).unwrap();
+        root_stat.st_uid = 0;
+        root_stat.st_gid = 0;
+        root_stat.st_mode = (root_stat.st_mode & !0o7777) | 0o755;
+
+        let mut file_stat = rustix::fs::fstat(&std::fs::File::open(&file_path).unwrap()).unwrap();
+        file_stat.st_uid = 42;
+        file_stat.st_gid = 43;
+        file_stat.st_mode = (file_stat.st_mode & !0o7777) | 0o644;
+
+        let mut walker = PhysicalTreeWalker::default();
+        walker.identity_hasher.update(IDENTITY_TREE_DOMAIN);
+        walker
+            .record_identity_node(Path::new(""), b'd', &root_stat)
+            .unwrap();
+        walker
+            .record_identity_node(Path::new("payload"), b'f', &file_stat)
+            .unwrap();
+        walker.nodes = 2;
+        walker.directory_entry_count = 1;
+
+        let observation = walker.identity_observation().unwrap();
+        assert_eq!(observation.root_attributes.uid(), 0);
+        assert_eq!(observation.root_attributes.gid(), 0);
+        assert_eq!(observation.root_attributes.mode(), 0o755);
+        assert_eq!(observation.maximum_portable_uid, 42);
+        assert_eq!(observation.maximum_portable_gid, 43);
+        assert_eq!(observation.distinct_inode_count, 2);
+        assert_eq!(observation.directory_entry_count, 1);
+        assert_eq!(
+            observation.identity_tree_digest.to_string(),
+            "sha256:d96f62fc5f9c09ace8b0e2ce8ec2d746df8aeee6d0d0661c7019a9e2924f76b7",
         );
     }
 
