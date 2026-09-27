@@ -67,7 +67,9 @@ pub(crate) use host_currentness_fence::HostCurrentnessFenceV1;
 pub(crate) use host_execution_fence::HostExecutionFenceV1;
 pub use source_domain_challenge::SourceDomainChallengeV1;
 pub(crate) use source_domain_challenge::replay_source_domain_challenge_v1;
-pub use source_domain_policy_hold::SourceDomainPolicyHoldV1;
+pub use source_domain_policy_hold::{
+    SourceDomainPolicyHoldV1, SourceDomainPolicyV8PendingSettlementV1,
+};
 mod mount_source_consumption;
 pub use mount_source_consumption::{
     MountSourceConsumptionCommitReceipt, MountSourceConsumptionCompanionProjectionV2,

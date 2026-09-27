@@ -131,6 +131,20 @@ impl ProtectedSourceDomainJournalOwnerV1 {
         self.journal.source_domain_policy_hold_v1()
     }
 
+    /// Reads the exact pending V8 Source settlement marker under this writer.
+    ///
+    /// The marker is nonauthorizing and remains until a future verified Root
+    /// successor grant retires it; this readback never clears custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed or mismatched protected Source state.
+    pub fn pending_closed_policy_source_v8_settlement_v1(
+        &self,
+    ) -> Result<Option<crate::journal::SourceDomainPolicyV8PendingSettlementV1>, JournalError> {
+        self.journal.source_domain_policy_v8_pending_settlement_v1()
+    }
+
     /// Rechecks the fixed journal and lock names against this retained writer.
     pub(crate) fn require_fixed_named_writer_v1(&self) -> Result<(), JournalError> {
         self.require_named_writer_at(
@@ -1212,7 +1226,8 @@ pub(crate) fn source_domain_journal_limits() -> JournalLimits {
         maximum_transaction_bytes: 1024 * 1024 * 1024,
         maximum_transactions: 1_000_000,
         maximum_materialized_bytes: 2 * 1024 * 1024 * 1024,
-        maximum_materialized_records: MAXIMUM_CROSS_DOMAIN_REPLAY_MEMBERS,
+        // The V8 pending marker must not reduce the existing replay-member bound.
+        maximum_materialized_records: MAXIMUM_CROSS_DOMAIN_REPLAY_MEMBERS + 1,
     }
 }
 
