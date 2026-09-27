@@ -23,8 +23,8 @@ use aos_hub_core::storage_work::{
     StorageBindingControl, StorageCapabilities, StorageCredentialProbeRequest, StorageWorkKey,
     MAX_BINDING_CONTROL_BYTES, MAX_CREDENTIAL_PROBE_BYTES, MAX_PLAN_BYTES, MAX_RESULT_BYTES,
     MAX_VERIFY_SOURCE_BYTES, STORAGE_BINDING_CONTROL_PATH, STORAGE_CAPABILITIES_CHALLENGE,
-    STORAGE_CAPABILITIES_PATH, STORAGE_CREDENTIAL_PROBE_PATH, STORAGE_WORK_PATH,
-    STORAGE_WORK_SIGNATURE_HEADER,
+    STORAGE_CAPABILITIES_PATH, STORAGE_CREDENTIAL_PROBE_FAILURE_STAGES,
+    STORAGE_CREDENTIAL_PROBE_PATH, STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
 };
 use base64::Engine as _;
 use futures_util::lock::{Mutex, OwnedMutexGuard};
@@ -908,7 +908,20 @@ async fn probe_storage_credential(mut request: Request, env: &Env) -> Result<Res
     .await
     {
         Ok(evidence) => evidence,
-        Err(_) => return Response::error("credential provider probe failed", 503),
+        Err(error) => {
+            let message = error.to_string();
+            let stage = STORAGE_CREDENTIAL_PROBE_FAILURE_STAGES
+                .iter()
+                .copied()
+                .find(|stage| *stage == message)
+                .unwrap_or("provider request failed");
+            worker::console_error!(
+                "hybrid_credential_probe_failed purpose={} stage={}",
+                credential.purpose,
+                stage,
+            );
+            return Response::error(stage, 503);
+        }
     };
     let headers = Headers::new();
     headers.set("content-type", "application/json")?;

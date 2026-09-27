@@ -147,10 +147,13 @@ pub(crate) async fn probe_storage_credential(
             (200..300).contains(&status)
         }
         "write" => {
-            let recovery_url = surface.list_multipart_uploads_url(&path, now)?;
+            let recovery_url = surface
+                .list_multipart_uploads_url(&path, now)
+                .context("multipart recovery URL construction failed")?;
             let mut recovery = egress
                 .send(&recovery_url, "GET", None, None, None, None, None)
-                .await?;
+                .await
+                .context("multipart recovery request failed")?;
             let recovery_status = recovery.status_code();
             statuses.insert("multipartRecoveryListStatus".into(), recovery_status.into());
             anyhow::ensure!(
@@ -162,28 +165,36 @@ pub(crate) async fn probe_storage_credential(
                 1024 * 1024,
                 "credential multipart recovery listing",
             )
-            .await?;
+            .await
+            .context("multipart recovery response failed")?;
             let recovery_xml = std::str::from_utf8(&recovery_body)
                 .context("credential multipart recovery listing is not UTF-8")?;
-            let abandoned = surface.parse_exact_multipart_uploads(&path, recovery_xml)?;
+            let abandoned = surface
+                .parse_exact_multipart_uploads(&path, recovery_xml)
+                .context("multipart recovery listing parse failed")?;
             statuses.insert("recoveredMultipartUploads".into(), abandoned.len().into());
             for upload_id in abandoned {
-                let abort_url = surface.multipart_url(
-                    "abort",
-                    &path,
-                    Some(&upload_id),
-                    None,
-                    aos_hub_core::clock::now_unix_secs(),
-                )?;
+                let abort_url = surface
+                    .multipart_url(
+                        "abort",
+                        &path,
+                        Some(&upload_id),
+                        None,
+                        aos_hub_core::clock::now_unix_secs(),
+                    )
+                    .context("multipart recovery abort URL construction failed")?;
                 let abort = egress
                     .send(&abort_url, "DELETE", None, None, None, None, None)
-                    .await?;
+                    .await
+                    .context("multipart recovery abort request failed")?;
                 anyhow::ensure!(
                     (200..300).contains(&abort.status_code()),
                     "multipart recovery abort was rejected"
                 );
             }
-            let create_url = surface.multipart_url("create", &path, None, None, now)?;
+            let create_url = surface
+                .multipart_url("create", &path, None, None, now)
+                .context("multipart create URL construction failed")?;
             let mut response = egress
                 .send(
                     &create_url,
@@ -194,7 +205,8 @@ pub(crate) async fn probe_storage_credential(
                     None,
                     None,
                 )
-                .await?;
+                .await
+                .context("multipart create request failed")?;
             let create_status = response.status_code();
             statuses.insert("multipartCreateStatus".into(), create_status.into());
             if (200..300).contains(&create_status) {
@@ -203,21 +215,26 @@ pub(crate) async fn probe_storage_credential(
                     1024 * 1024,
                     "credential multipart-create probe",
                 )
-                .await?;
+                .await
+                .context("multipart create response failed")?;
                 let upload_id = aos_hub_core::s3surface::parse_multipart_upload_id(
                     std::str::from_utf8(&body)
                         .context("credential multipart-create response is not UTF-8")?,
-                )?;
-                let abort_url = surface.multipart_url(
-                    "abort",
-                    &path,
-                    Some(&upload_id),
-                    None,
-                    aos_hub_core::clock::now_unix_secs(),
-                )?;
+                )
+                .context("multipart create response parse failed")?;
+                let abort_url = surface
+                    .multipart_url(
+                        "abort",
+                        &path,
+                        Some(&upload_id),
+                        None,
+                        aos_hub_core::clock::now_unix_secs(),
+                    )
+                    .context("multipart probe abort URL construction failed")?;
                 let abort = egress
                     .send(&abort_url, "DELETE", None, None, None, None, None)
-                    .await?;
+                    .await
+                    .context("multipart probe abort request failed")?;
                 let abort_status = abort.status_code();
                 statuses.insert("multipartAbortStatus".into(), abort_status.into());
                 (200..300).contains(&abort_status)

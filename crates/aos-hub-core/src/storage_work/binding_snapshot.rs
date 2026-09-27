@@ -20,6 +20,26 @@ pub const MAX_BINDING_CONTROL_BYTES: usize = 64 * 1024;
 pub const STORAGE_CREDENTIAL_PROBE_PATH: &str = "/_internal/storage/v1/credential-probe";
 /// Maximum body size for a signed credential probe request.
 pub const MAX_CREDENTIAL_PROBE_BYTES: usize = 16 * 1024;
+/// Closed, nonsecret failure stages that the Worker may return for a probe.
+pub const STORAGE_CREDENTIAL_PROBE_FAILURE_STAGES: &[&str] = &[
+    "multipart recovery URL construction failed",
+    "multipart recovery request failed",
+    "multipart recovery listing was rejected",
+    "multipart recovery response failed",
+    "credential multipart recovery listing is not UTF-8",
+    "multipart recovery listing parse failed",
+    "multipart recovery abort URL construction failed",
+    "multipart recovery abort request failed",
+    "multipart recovery abort was rejected",
+    "multipart create URL construction failed",
+    "multipart create request failed",
+    "multipart create response failed",
+    "credential multipart-create response is not UTF-8",
+    "multipart create response parse failed",
+    "multipart probe abort URL construction failed",
+    "multipart probe abort request failed",
+    "provider request failed",
+];
 
 /// One short-lived credential probe; it never enters published binding state.
 #[derive(Serialize, Deserialize)]

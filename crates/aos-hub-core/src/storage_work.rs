@@ -68,7 +68,8 @@ pub use binding_snapshot::{
     StorageBindingAcknowledgement, StorageBindingControl, StorageBindingPublication,
     StorageBindingSnapshot, StorageCredentialMaterial, StorageCredentialProbeRequest,
     StorageCredentialReference, StorageCredentialSelector, MAX_BINDING_CONTROL_BYTES,
-    MAX_CREDENTIAL_PROBE_BYTES, STORAGE_BINDING_CONTROL_PATH, STORAGE_CREDENTIAL_PROBE_PATH,
+    MAX_CREDENTIAL_PROBE_BYTES, STORAGE_BINDING_CONTROL_PATH,
+    STORAGE_CREDENTIAL_PROBE_FAILURE_STAGES, STORAGE_CREDENTIAL_PROBE_PATH,
 };
 
 /// One frozen staged object consumed by an OCI blob composition.

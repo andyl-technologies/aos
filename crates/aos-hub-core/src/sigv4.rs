@@ -234,9 +234,9 @@ pub fn presign_delete_url(p: &PresignParams<'_>) -> Result<String> {
 
 /// Builds a presigned S3 multipart-operation URL.
 ///
-/// `method` is restricted to `POST`, `PUT`, or `DELETE`; `query` is the exact
-/// operation query (`uploads`, `uploadId`, and optionally `partNumber`) folded
-/// into the signature.
+/// `method` is restricted to the closed multipart operations: bucket-level
+/// `GET` recovery listing, `POST` creation, `PUT` part upload, and `DELETE`
+/// abort. The operation query is folded into the signature.
 ///
 /// # Errors
 ///
@@ -248,7 +248,7 @@ pub fn presign_multipart_url(
     query: &[(&str, String)],
 ) -> Result<String> {
     anyhow::ensure!(
-        matches!(method, "POST" | "PUT" | "DELETE"),
+        matches!(method, "GET" | "POST" | "PUT" | "DELETE"),
         "invalid S3 multipart method"
     );
     let upload_id = query
@@ -260,6 +260,15 @@ pub fn presign_multipart_url(
         .find(|(key, _)| *key == "partNumber")
         .and_then(|(_, value)| value.parse::<u32>().ok());
     let valid = match method {
+        "GET" => {
+            query.len() == 3
+                && query[0].0 == "uploads"
+                && query[0].1.is_empty()
+                && query[1].0 == "prefix"
+                && !query[1].1.is_empty()
+                && query[2].0 == "max-uploads"
+                && query[2].1 == "1000"
+        }
         "POST" => {
             (query.len() == 1 && query[0].0 == "uploads" && query[0].1.is_empty())
                 || (query.len() == 1 && upload_id.is_some_and(|id| !id.is_empty()))
@@ -503,6 +512,39 @@ mod tests {
         assert!(part_one.contains("uploadId=upload-a"));
         assert_ne!(create, part_one);
         assert_ne!(part_one, part_two);
+    }
+
+    #[test]
+    fn multipart_recovery_listing_is_bounded_and_signed() {
+        let p = params("bucket.example", "20240101T000000Z");
+        let listing = presign_multipart_url(
+            &p,
+            "GET",
+            &[
+                ("uploads", String::new()),
+                (
+                    "prefix",
+                    "tenant/.aos/credential-probes/write/1/token".into(),
+                ),
+                ("max-uploads", "1000".into()),
+            ],
+        )
+        .unwrap();
+
+        assert!(listing.contains("uploads="));
+        assert!(listing.contains("max-uploads=1000"));
+        assert!(listing.contains("prefix=tenant%2F.aos%2Fcredential-probes"));
+        assert!(presign_multipart_url(&p, "GET", &[("uploads", String::new())]).is_err());
+        assert!(presign_multipart_url(
+            &p,
+            "GET",
+            &[
+                ("uploads", String::new()),
+                ("prefix", "tenant/probe".into()),
+                ("max-uploads", "1001".into()),
+            ],
+        )
+        .is_err());
     }
 
     #[test]

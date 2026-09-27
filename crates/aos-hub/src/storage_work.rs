@@ -28,8 +28,8 @@ use aos_hub_core::storage_work::{
     MAX_DOCUMENTATION_ROWS, MAX_GIT_INSPECTION_BATCH, MAX_GIT_INSPECTION_CONTENT_BYTES,
     MAX_METADATA_BYTES, MAX_OCI_HASH_RANGE_BYTES, MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES,
     MAX_VERIFY_SOURCE_BYTES, STORAGE_BINDING_CONTROL_PATH, STORAGE_CAPABILITIES_CHALLENGE,
-    STORAGE_CAPABILITIES_PATH, STORAGE_CREDENTIAL_PROBE_PATH, STORAGE_WORK_PATH,
-    STORAGE_WORK_SIGNATURE_HEADER,
+    STORAGE_CAPABILITIES_PATH, STORAGE_CREDENTIAL_PROBE_FAILURE_STAGES,
+    STORAGE_CREDENTIAL_PROBE_PATH, STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
 };
 use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceDeleteOutcome,
@@ -201,11 +201,20 @@ impl RemoteStorageWorkClient {
             .send()
             .await
             .context("sending credential probe to storage Worker")?;
-        anyhow::ensure!(
-            response.status() == reqwest::StatusCode::OK,
-            "storage Worker rejected credential probe with HTTP {}",
-            response.status()
-        );
+        if response.status() != reqwest::StatusCode::OK {
+            let status = response.status();
+            let body = read_bounded_response(response, 256)
+                .await
+                .unwrap_or_default();
+            let stage = std::str::from_utf8(&body)
+                .ok()
+                .map(str::trim)
+                .filter(|stage| STORAGE_CREDENTIAL_PROBE_FAILURE_STAGES.contains(stage));
+            anyhow::bail!(
+                "storage Worker rejected credential probe with HTTP {status} at {}",
+                stage.unwrap_or("unclassified stage")
+            );
+        }
         let body = read_bounded_response(response, 4096).await?;
         serde_json::from_slice(&body).context("decoding storage Worker credential evidence")
     }
