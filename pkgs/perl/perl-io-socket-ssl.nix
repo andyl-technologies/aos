@@ -1,6 +1,7 @@
 ##! perl-io-socket-ssl — TLS sockets for Perl
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
   perl-mozilla-ca,
@@ -9,7 +10,7 @@
 }: let
   version = "2.083";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-io-socket-ssl";
     inherit version;
     src = fetchurl {

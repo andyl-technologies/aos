@@ -1,12 +1,13 @@
 ##! perl-time-duration — English expressions of time durations
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
 }: let
   version = "1.21";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-time-duration";
     inherit version;
     src = fetchurl {
