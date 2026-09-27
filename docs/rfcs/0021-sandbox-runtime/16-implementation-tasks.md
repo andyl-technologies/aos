@@ -9553,6 +9553,25 @@ This private ledger step does not complete the ordered cross-owner Create
 handoff, Storage physical output backing, Host launch, or an Observe grant.
 Public Create and Observe dispatch remain closed.
 
+### Controller V8 Root ACK receipt (historical, no Apply)
+
+The closed parentless Create precursor now writes a canonical `AOSQ8R01`
+Controller journal row from Root's authenticated `AOSPC88A` reply. Controller,
+Source, the protected Cache writers, and the physical Cache flock remain held
+through the Root exchange and Controller commit. The row retains the complete
+Root ACK and replays only alongside the exact held Create, `AOSQ8A01` attempt,
+and `AOSQ8K01` ACK. A lost Controller write can be retried against Root's exact
+historical replay; identical cold Controller replay is idempotent, while a
+different Root row or broken predecessor chain fails closed. It creates no
+Effect record and cannot release any owner or open public Create or Apply.
+
+Root commits its ACK under its writer, then releases that writer before sending
+the reply. This receipt therefore proves a historical exact Root decision, not
+a simultaneous Controller/Source/Cache/Root writer cut at the Controller commit.
+A full versioned effect gate still needs Root writer continuity or an equivalent
+versioned custody protocol across Controller persistence, ordered owner release
+and crash recovery, and a separately qualified public Create/Apply admission.
+
 ### Host execution Query semantic specification binding (source qualified)
 
 Existing method-27 Query now requires binding version 2 and the domain-separated

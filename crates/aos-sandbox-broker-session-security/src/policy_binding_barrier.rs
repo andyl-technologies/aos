@@ -719,11 +719,13 @@ pub fn acknowledge_fixed_parentless_create_v8_effect_v1(
     .map_err(io::Error::other)?
 }
 
-/// Obtains Root's protected V8 ACK under the retained all-owner held barrier.
+/// Retains Root's protected V8 ACK under the earlier-owner held barrier.
 ///
 /// The Controller-signed AOSQ8K01 digest is compared to exact historical
 /// AOSPCP02 replay while Controller, Source, protected Cache, and physical
-/// Cache writers remain held. This does not release any owner or open Create.
+/// Cache writers remain held. The exact Root reply is then durably retained in
+/// Controller custody. Root has released its writer before sending that reply;
+/// this historical receipt does not release any owner or open Create.
 ///
 /// # Errors
 ///
@@ -778,7 +780,11 @@ pub fn acknowledge_fixed_parentless_create_root_v8_effect_v1(
         |controller, _, prepared| -> io::Result<_> {
             let ack = prepared?;
             with_process_controller_hold_signer_v1(|generation, key| {
-                acknowledge_held_root_v8_effect(controller, ack, generation, key)
+                let receipt = acknowledge_held_root_v8_effect(controller, ack, generation, key)?;
+                controller
+                    .record_controller_policy_v8_root_receipt_v1(receipt)
+                    .map_err(io::Error::other)?;
+                Ok(receipt)
             })
         },
     )

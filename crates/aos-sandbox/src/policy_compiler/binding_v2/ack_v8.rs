@@ -74,7 +74,7 @@ impl From<JournalError> for RootV8EffectAckErrorV1 {
     }
 }
 
-/// Retains one exact no-Apply Root receipt while every owner stays held.
+/// Retains one exact no-Apply Root receipt before Root releases its writer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RootV8EffectAckV1 {
     binding: ObjectDigest,

@@ -9,8 +9,9 @@
 //! AOSPHQ8R | client-nonce[16] | reserved[8]=0 | binding[32] | epoch:u64 | EOF
 //! ```
 //!
-//! Both live and cold paths leave all owner holds intact. An ambiguous live
-//! response can return only the exact durable Root row from replay.
+//! Controller, Source, and Cache writers remain held during both paths. Root
+//! releases its own writer before replying. An ambiguous live response can
+//! return only the exact durable Root row from replay.
 
 use std::io::{self, Read as _, Write as _};
 use std::time::Duration;
