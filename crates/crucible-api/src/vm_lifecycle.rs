@@ -166,6 +166,7 @@ pub struct ProductionVmLifecycleConfig {
     completion_timeout: Duration,
     unbounded_advance_completion: bool,
     coverage: QemuLaunchPluginSwitch,
+    rr_control_boundary_trace: bool,
     debug_gateway_executable: Option<PathBuf>,
     debug: Option<ProductionVmDebugConfig>,
     branch: Option<ProductionVmBranchConfig>,
@@ -235,6 +236,7 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
             .field("maximum_host_workers", &self.maximum_host_workers)
             .field("completion_timeout", &self.completion_timeout)
             .field("coverage", &self.coverage)
+            .field("rr_control_boundary_trace", &self.rr_control_boundary_trace)
             .field("debug", &self.debug)
             .field("branch", &self.branch)
             .field(

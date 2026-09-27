@@ -83,6 +83,7 @@ pub const QEMU_CONSOLE_SOCKET_FILE_NAME: &str = "crucible-console.sock";
 pub const QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME: &str = "crucible-rr-control-boundary.trace";
 pub(crate) const QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION: &str =
     "enable=crucible_sim_rr_control_boundary";
+pub(crate) const QEMU_IDLE_PREFIX_TRACE_SELECTION: &str = "enable=crucible_sim_idle_*";
 pub(crate) const MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES: u64 = 4 * 1024 * 1024;
 pub(crate) const MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES: usize = 65_536;
 /// Fixed child-relative file used by the runtime-determinism diagnostic trace.
@@ -886,11 +887,16 @@ impl QemuLaunchCommandBuilder {
             args.extend(["-gdb".to_owned(), gdbstub.qemu_endpoint().to_owned()]);
         }
         if self.rr_control_boundary_trace {
+            let selection = if std::env::var_os("CRUCIBLE_PHASE7_IDLE_TRACE").is_some() {
+                QEMU_IDLE_PREFIX_TRACE_SELECTION
+            } else {
+                QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION
+            };
             args.extend([
                 "-D".to_owned(),
                 QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME.to_owned(),
                 "-trace".to_owned(),
-                QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION.to_owned(),
+                selection.to_owned(),
             ]);
         } else if self.runtime_determinism_trace {
             args.extend([

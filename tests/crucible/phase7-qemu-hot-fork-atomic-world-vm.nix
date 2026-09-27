@@ -5,10 +5,12 @@
   attrPath ? "checks.crucible.phase7.gates.worldForkAtomicity",
   taskIds ? [],
   campaignComposition ? null,
+  prefixOnly ? false,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  qemuAtomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   guest = import ./_nginx-curl-http-200-guest.nix {inherit pkgs;};
   scenario = pkgs.writeTextFile {
     name = "crucible-e2e-determinism-scenario";
@@ -72,12 +74,14 @@
     if campaignComposition == null
     then "/tmp/atomic-world-result"
     else "$out/result";
-  runtimeInputs = [
-    pkgs.coreutils
-    pkgs.e2fsprogs
-    pkgs.grep
-    pkgs.util-linux
-  ];
+  runtimeInputs =
+    [
+      pkgs.coreutils
+      pkgs.e2fsprogs
+      pkgs.grep
+      pkgs.util-linux
+    ]
+    ++ lib.optionals prefixOnly [pkgs.gawk pkgs.findutils];
   runtimeScript = ''
     set -eu
     cleanup_attempt_mount() {
@@ -138,6 +142,7 @@
     export CRUCIBLE_ATOMIC_WORLD_RUN_STATE=/tmp/run-state
     export CRUCIBLE_ATOMIC_WORLD_UID=65534
     export CRUCIBLE_ATOMIC_WORLD_GID=65534
+    ${lib.optionalString prefixOnly "export CRUCIBLE_PHASE7_IDLE_TRACE=1"}
 
     run_case() {
       name="$1"
@@ -185,6 +190,97 @@
       fi
     }
 
+    ${lib.optionalString prefixOnly ''
+      prefix_case=qemu_hot_fork_world_factory::tests::native_acceptance::production_source_idle_prefix_reaches_exact_tick
+      run_case "$prefix_case"
+      trace_paths=$(${pkgs.findutils}/bin/find /tmp/run-state/idle-prefix-traces \
+        -type f -name '*.trace' -print)
+      test -n "$trace_paths"
+      ${pkgs.gawk}/bin/gawk '
+        NR <= 12 { print "PHASE7_TRACE_HEAD " $0 }
+        /crucible_sim_idle_prefix/ {
+          prefixes++
+          if (first_positive == "" && $0 ~ /pending_prefix=[1-9]/) {
+            first_positive = $0
+          }
+        }
+        /crucible_sim_idle_stage/ { stages++ }
+        END {
+          print "PHASE7_TRACE_COUNTS prefixes=" prefixes + 0 \
+                " stages=" stages + 0
+          if (first_positive != "") {
+            print "PHASE7_TRACE_FIRST_POSITIVE " first_positive
+          }
+        }
+      ' $trace_paths
+      trace_evidence=$(${pkgs.gawk}/bin/gawk '
+        function value(name,    field, pair) {
+          for (field = 1; field <= NF; field++) {
+            split($field, pair, "=")
+            if (pair[1] == name) return pair[2]
+          }
+          return ""
+        }
+        FNR == 1 { phase = 0 }
+        /crucible_sim_idle_prefix/ {
+          cached = value("cached_raw") + 0
+          prefix = value("pending_prefix") + 0
+          committed = value("committed_raw") + 0
+          if (prefix > 0 && committed == cached + prefix &&
+              value("result") == "0") {
+            target = value("target_tick")
+            expected_raw = committed
+            phase = 1
+            positive_prefixes++
+          } else {
+            phase = 0
+          }
+        }
+        /crucible_sim_idle_stage phase=icount-after-bias/ {
+          if (phase == 1 && value("target_tick") == target &&
+              value("raw") + 0 == expected_raw &&
+              value("virtual_ps") == target) {
+            phase = 2
+          } else {
+            phase = 0
+          }
+        }
+        /crucible_sim_idle_stage phase=icount-after-timers/ {
+          if (phase == 2 && value("target_tick") == target &&
+              value("raw") + 0 == expected_raw &&
+              value("virtual_ps") == target) {
+            exact_completions++
+            if (exact_completions == 1) {
+              witness = "cached_raw=" cached " pending_prefix=" prefix \
+                        " committed_raw=" committed " target_tick=" target
+            }
+          }
+          phase = 0
+        }
+        END {
+          if (positive_prefixes == 0 || exact_completions == 0) {
+            print "PHASE7_TRACE_REJECT positive_prefixes=" positive_prefixes + 0 \
+                  " exact_completions=" exact_completions + 0 > "/dev/stderr"
+            exit 1
+          }
+          print "PHASE7_IN_FLIGHT_PREFIX_EXACT=" exact_completions
+          print "PHASE7_IDLE_PREFIX_WITNESS " witness
+        }
+      ' $trace_paths)
+      ${pkgs.grep}/bin/grep -Fq 'idle_prefix_source_quanta=5' \
+        "/tmp/$prefix_case.log"
+      {
+        echo 'gate=gate:qemu-idle-prefix-exact'
+        echo 'PHASE7_IDLE_PREFIX_EXACT_PASS'
+        printf '%s\n' "$trace_evidence"
+        echo 'qemu_atomic_commit=${qemuAtomicPatch.commit}'
+        echo 'check=${attrPath}'
+      } > ${resultPath}
+      cat ${resultPath}
+      ${pkgs.util-linux}/bin/umount /tmp/attempts
+      trap - EXIT HUP INT TERM
+      exit 0
+    ''}
     atomic_case=qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically
     run_case "$atomic_case"
     require_case_marker "$atomic_case" \
@@ -271,21 +367,26 @@
     trap - EXIT HUP INT TERM
   '';
   authoritativeGate = testing.mkVMTest {
-    name = "crucible-qemu-hot-fork-atomic-world";
+    name =
+      if prefixOnly
+      then "crucible-qemu-idle-prefix-exact"
+      else "crucible-qemu-hot-fork-atomic-world";
     memory = 8192;
-    rootfsDeps = [
-      flight
-      guest
-      scenario
-      pkgs.crucible
-      pkgs.qemu-crucible
-      pkgs.crucible-qemu-plugin
-      pkgs.linux
-      pkgs.e2fsprogs
-      pkgs.coreutils
-      pkgs.util-linux
-      pkgs.grep
-    ];
+    rootfsDeps =
+      [
+        flight
+        guest
+        scenario
+        pkgs.crucible
+        pkgs.qemu-crucible
+        pkgs.crucible-qemu-plugin
+        pkgs.linux
+        pkgs.e2fsprogs
+        pkgs.coreutils
+        pkgs.util-linux
+        pkgs.grep
+      ]
+      ++ lib.optionals prefixOnly [pkgs.gawk pkgs.findutils];
     testScript = runtimeScript;
   };
 in

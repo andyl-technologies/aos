@@ -2870,6 +2870,9 @@ in rec {
       attrPath = "checks.crucible.phase7.qemuHotForkAtomicWorldVm";
       taskIds = ["T-CAM-7.4"];
     };
+    qemuIdlePrefixExact = import ./phase7-qemu-idle-prefix-exact.nix {
+      inherit pkgs lib;
+    };
     qemuFullUpstreamTestSuite = assert pkgs.qemu-crucible-full-test-suite.passthru.qemuBuildIdentity == pkgs.qemu-crucible.passthru.qemuBuildIdentity;
       pkgs.qemu-crucible-full-test-suite;
     adversarialExampleVerify = import ./phase7-adversarial-example-verify.nix {
@@ -2965,7 +2968,7 @@ in rec {
       worldForkAtomicity = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.worldForkAtomicity";
         gate = phase7.qemuHotForkAtomicWorldVm;
-        dependencies = [phase7.qemuHotForkAtomicWorldVm];
+        dependencies = [phase7.qemuIdlePrefixExact phase7.qemuHotForkAtomicWorldVm];
       };
       perfBench = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.perfBench";

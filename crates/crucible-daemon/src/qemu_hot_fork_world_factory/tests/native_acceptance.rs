@@ -5,7 +5,7 @@
 
 use std::fs;
 use std::os::unix::fs::MetadataExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -101,6 +101,83 @@ impl NativeGatePaths {
             child_gid: required_number("CRUCIBLE_ATOMIC_WORLD_GID"),
         }
     }
+}
+
+#[test]
+#[ignore = "requires the packaged patched QEMU, cgroup v2, and project quotas"]
+fn production_source_idle_prefix_reaches_exact_tick() {
+    let paths = NativeGatePaths::from_environment();
+    let fixture = fs::read_to_string(&paths.fixture).expect("read representative scenario");
+    let artifacts: Arc<dyn DagStore> = Arc::new(LocalDagStore::new(&paths.artifacts));
+    let (source, artifacts) =
+        scenario::build(&fixture, artifacts, &paths.kernel, &paths.root_image)
+            .expect("build source scenario");
+    let source_input = execution_input_for_scenario(source.clone());
+    let source_context = native_execution_context(&source_input, 0x70);
+
+    let source_host = open_host(&paths, "source", 1_000);
+    let source_config = lifecycle_config(&paths, paths.run_state_root.join("source"), artifacts);
+    let mut source_factory = QemuAttemptProductionVmLifecycleFactory::new(
+        source_config,
+        ComposedQemuAttemptResourceGuardFactory::new(source_host),
+    );
+    let mut source_lifecycle = source_factory
+        .begin_fresh(&source.scenario_def(), &source, &source_context)
+        .expect("launch production source world");
+    let mut configuration = Configuration::genesis(source.scenario_def());
+
+    // The fifth 50-ms interval reaches the callback window with a live CPU prefix.
+    for quantum in 0..5 {
+        let outcome = source_lifecycle
+            .drive_quantum(QuantumRequest {
+                configuration,
+                control: Vec::new(),
+            })
+            .expect("drive production source world through idle advance");
+        eprintln!(
+            "idle-prefix phase=source-quantum-exit quantum={quantum} frontier={}",
+            outcome.frontier.ticks
+        );
+        configuration = outcome.configuration;
+    }
+
+    // The attempt owner deletes its generation directories during shutdown.
+    let trace_directory = paths.run_state_root.join("idle-prefix-traces");
+    let trace_count = copy_idle_prefix_traces(&paths.storage_root.join("source"), &trace_directory);
+    QemuFreshAttemptLifecycleOwner::shutdown(&mut source_lifecycle).expect("shutdown source world");
+    assert!(
+        trace_count > 0,
+        "source world did not emit an RR diagnostic trace"
+    );
+    println!("idle_prefix_source_quanta=5");
+}
+
+fn copy_idle_prefix_traces(storage_root: &Path, trace_directory: &Path) -> usize {
+    fs::create_dir(trace_directory).expect("create retained idle trace directory");
+    let mut pending_directories = vec![storage_root.to_path_buf()];
+    let mut copied = 0;
+
+    while let Some(directory) = pending_directories.pop() {
+        for entry in fs::read_dir(directory).expect("read source attempt directory") {
+            let entry = entry.expect("read source attempt entry");
+            let kind = entry.file_type().expect("read source attempt entry type");
+            if kind.is_dir() {
+                pending_directories.push(entry.path());
+            } else if kind.is_file()
+                && entry.file_name().to_str()
+                    == Some(crucible_qemu::QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME)
+            {
+                fs::copy(
+                    entry.path(),
+                    trace_directory.join(format!("{copied}.trace")),
+                )
+                .expect("retain source idle trace before owner cleanup");
+                copied += 1;
+            }
+        }
+    }
+
+    copied
 }
 
 #[test]
@@ -408,6 +485,12 @@ fn lifecycle_config(
     .with_kernel_cmdline_prefix("console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init")
     .with_signal_artifacts(Arc::clone(&artifacts))
     .with_world_artifacts(artifacts);
+
+    let config = if std::env::var_os("CRUCIBLE_PHASE7_IDLE_TRACE").is_some() {
+        config.with_rr_control_boundary_trace()
+    } else {
+        config
+    };
 
     native_lifecycle_bounds(config)
 }
