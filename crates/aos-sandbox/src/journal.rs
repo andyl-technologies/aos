@@ -62,6 +62,7 @@ pub use controller_policy_hold::{
 pub(crate) use controller_policy_hold::{
     ControllerPolicyV8PreReleaseFloorV1, ControllerPolicyV8ReleaseEvidenceV1,
     ControllerPolicyV8SettlementV1, controller_v8_root_receipt_record_digest_v1,
+    v8_root_receipt_matches_ack,
 };
 pub(crate) use host_currentness_fence::HostCurrentnessFenceV1;
 pub(crate) use host_execution_fence::HostExecutionFenceV1;

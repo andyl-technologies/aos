@@ -15,7 +15,7 @@ use std::path::Path;
 
 use aos_sandbox_core::ObjectDigest;
 
-use crate::journal::ControllerPolicyV8EffectAckV1;
+use crate::journal::{ControllerPolicyV8EffectAckV1, v8_root_receipt_matches_ack};
 
 use super::{ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1, RootV8EffectAckV1};
 
@@ -64,18 +64,8 @@ impl RootV8ReleasedProofV1 {
         expected: ControllerPolicyV8EffectAckV1,
         controller_uid: u32,
     ) -> bool {
-        let hold = expected.attempt().hold();
-        self.ack.binding() == hold.binding()
-            && self.ack.epoch() == hold.epoch()
-            && self.ack.operation() == hold.operation()
-            && self.ack.sandbox() == hold.sandbox()
-            && self.ack.accepted_generation() == expected.accepted_generation()
-            && self.ack.effect_transaction() == expected.effect_transaction()
-            && self.ack.terminal() == expected.attempt().terminal()
-            && self.ack.proof() == expected.root_proof()
-            && self.ack.quota() == expected.cache_quota()
-            && self.ack.controller_uid() == controller_uid
-            && expected.record_digest().ok() == Some(self.ack.controller_ack())
+        self.ack.controller_uid() == controller_uid
+            && v8_root_receipt_matches_ack(self.ack, expected).unwrap_or(false)
     }
 }
 

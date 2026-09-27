@@ -739,7 +739,7 @@ fn current(
     Ok(hold)
 }
 
-fn v8_root_receipt_matches_ack(
+pub(crate) fn v8_root_receipt_matches_ack(
     receipt: RootV8EffectAckV1,
     ack: ControllerPolicyV8EffectAckV1,
 ) -> Result<bool, JournalError> {
