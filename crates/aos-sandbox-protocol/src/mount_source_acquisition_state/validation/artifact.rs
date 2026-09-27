@@ -246,7 +246,17 @@ pub(super) fn provider_acquisition_is_valid(
 }
 
 pub(super) fn validate_attempt_revision(attempt: &SourceProviderQueryAttemptV2) -> Result<()> {
-    let expected = match &attempt.state {
+    let expected = expected_attempt_revision(&attempt.state, attempt.attempt_id)?;
+    if attempt.revision != expected {
+        return Err(state_error(
+            "SourceProvider attempt revision contradicts state",
+        ));
+    }
+    Ok(())
+}
+
+fn expected_attempt_revision(state: &ProviderAttemptStateV2, attempt_id: [u8; 32]) -> Result<u64> {
+    Ok(match state {
         ProviderAttemptStateV2::Reserved => 1,
         ProviderAttemptStateV2::NativeNoDispatchSettled { prior_state, .. } => {
             if !matches!(
@@ -254,7 +264,7 @@ pub(super) fn validate_attempt_revision(attempt: &SourceProviderQueryAttemptV2) 
                 ProviderAttemptStateV2::AbandonedIndeterminate {
                     resolution: None,
                     ..
-                }
+                } | ProviderAttemptStateV2::SupersededIndeterminate { .. }
             ) {
                 return Err(state_error(
                     "native no-dispatch settlement has invalid prior state",
@@ -265,11 +275,11 @@ pub(super) fn validate_attempt_revision(attempt: &SourceProviderQueryAttemptV2) 
         ProviderAttemptStateV2::DispositionConsumed { .. } => 2,
         ProviderAttemptStateV2::AbandonedIndeterminate { resolution, .. } => {
             if resolution.is_some() {
-                if match &attempt.state {
+                if match state {
                     ProviderAttemptStateV2::AbandonedIndeterminate {
                         recovery_root_attempt_id,
                         ..
-                    } => *recovery_root_attempt_id != attempt.attempt_id,
+                    } => *recovery_root_attempt_id != attempt_id,
                     _ => true,
                 } {
                     return Err(state_error("only a recovery root may retain resolution"));
@@ -280,13 +290,57 @@ pub(super) fn validate_attempt_revision(attempt: &SourceProviderQueryAttemptV2) 
             }
         }
         ProviderAttemptStateV2::SupersededIndeterminate { .. } => 2,
-    };
-    if attempt.revision != expected {
-        return Err(state_error(
-            "SourceProvider attempt revision contradicts state",
-        ));
+    })
+}
+
+#[cfg(test)]
+mod native_settlement_revision_tests {
+    use super::*;
+
+    #[test]
+    fn native_settlement_accepts_both_indeterminate_predecessors_only() {
+        let attempt_id = [3; 32];
+        let superseded = ProviderAttemptStateV2::SupersededIndeterminate {
+            successor_session_id: [4; 32],
+            recovery_root_attempt_id: attempt_id,
+            outcome_may_exist: true,
+        };
+        let abandoned = ProviderAttemptStateV2::AbandonedIndeterminate {
+            dead_execution: DeadProviderExecutionProjectionV2 {
+                proof_kind: DeadProviderExecutionProofKindV2::PidfdExited,
+                old_session_id: [6; 32],
+                old_session_record_digest: [7; 32],
+                node_id: [8; 16],
+                old_kernel_boot_id: [9; 16],
+                provider_process_instance: [10; 16],
+                process_execution_digest: [11; 32],
+                observed_kernel_boot_id: [9; 16],
+                death_evidence_digest: [12; 32],
+            },
+            successor_session_id: [4; 32],
+            recovery_root_attempt_id: attempt_id,
+            outcome_may_exist: true,
+            resolution: None,
+        };
+        let wrap = |prior_state| ProviderAttemptStateV2::NativeNoDispatchSettled {
+            prior_state: Box::new(prior_state),
+            canonical_query: Vec::new(),
+            signed_settlement: Vec::new(),
+            settlement_session_id: [5; 32],
+        };
+
+        assert_eq!(
+            expected_attempt_revision(&wrap(superseded), attempt_id),
+            Ok(3)
+        );
+        assert_eq!(
+            expected_attempt_revision(&wrap(abandoned), attempt_id),
+            Ok(3)
+        );
+        assert!(
+            expected_attempt_revision(&wrap(ProviderAttemptStateV2::Reserved), attempt_id).is_err()
+        );
     }
-    Ok(())
 }
 
 pub(super) fn validate_native_no_dispatch_settlement(
