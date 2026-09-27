@@ -88,23 +88,13 @@ fn run() -> Result<()> {
         .collect();
     checked_ledger(validate_prospective_records(records(&current)))?;
 
-    let (mutated, capacity) =
+    let (mutated, capacity, changed) =
         prepare_cut(&current, &signed_bytes, &publication_bytes, &held_bytes)?;
     checked_ledger(validate_prospective_transition(
         records(&current),
         records(&mutated),
     ))?;
 
-    let changed: Vec<(Vec<u8>, Vec<u8>)> = mutated
-        .iter()
-        .filter(|(key, value)| current.get(*key) != Some(*value))
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
-    if changed.len() != 4 {
-        return Err(
-            "pre-cut must change exactly attempt, acquisition, session, and history".into(),
-        );
-    }
     let transaction_id = transaction_id(&changed)?;
     let prepared = authority.prepare_global_capacity_reservation_v1(capacity, transaction_id)?;
     let mut journal_records: Vec<_> = changed
@@ -213,6 +203,7 @@ fn prepare_cut(
 ) -> Result<(
     BTreeMap<Vec<u8>, Vec<u8>>,
     GlobalCapacityReservationRequestV1,
+    Vec<(Vec<u8>, Vec<u8>)>,
 )> {
     let signed = SignedSourceProviderRequestV1::from_canonical_bytes(signed_bytes)?;
     if signed.to_canonical_bytes() != signed_bytes
@@ -411,29 +402,41 @@ fn prepare_cut(
         holder_id: session.holder.authority_id(),
         acquisition_id: request.acquisition_id(),
     };
+    // Preserve production reserve-acquire order in the transaction identity.
+    let changed = vec![
+        (attempt_key(&attempt_identity), encode_attempt(&attempt)),
+        (
+            acquisition_key(&acquisition_identity),
+            encode_acquisition(&acquisition),
+        ),
+        (
+            session_key(
+                session.provider.authority_id(),
+                session.holder.authority_id(),
+            ),
+            encode_session(&session),
+        ),
+        (
+            session_history_key(
+                session.provider.authority_id(),
+                session.holder.authority_id(),
+                session.session_binding,
+            ),
+            encode_session_history(&session),
+        ),
+    ];
+    if changed
+        .iter()
+        .any(|(key, value)| current.get(key) == Some(value))
+    {
+        return Err("pre-cut must change attempt, acquisition, session, and history".into());
+    }
     let mut prospective = current.clone();
-    prospective.insert(attempt_key(&attempt_identity), encode_attempt(&attempt));
-    prospective.insert(
-        acquisition_key(&acquisition_identity),
-        encode_acquisition(&acquisition),
-    );
-    prospective.insert(
-        session_key(
-            session.provider.authority_id(),
-            session.holder.authority_id(),
-        ),
-        encode_session(&session),
-    );
-    prospective.insert(
-        session_history_key(
-            session.provider.authority_id(),
-            session.holder.authority_id(),
-            session.session_binding,
-        ),
-        encode_session_history(&session),
-    );
+    for (key, value) in &changed {
+        prospective.insert(key.clone(), value.clone());
+    }
     let capacity = capacity_request(&acquisition, &attempt, &session)?;
-    Ok((prospective, capacity))
+    Ok((prospective, capacity, changed))
 }
 
 fn unique<T>(slot: &mut Option<T>, value: T) -> Result<()> {
