@@ -16,7 +16,10 @@ use aos_ability_plan::{
     SourceStageBundle,
 };
 use aos_contract::Sha256Digest;
-use aos_provider_protocol::{RootObservationRequest, RootObservationResult};
+use aos_provider_protocol::{
+    RootObservationRequest, RootObservationResult, RootResourceObservationRequest,
+    RootResourceObservationResult,
+};
 use serde::{Deserialize, Serialize};
 
 use super::source_root_inventory::{observe_source_roots, verify_recorded_source_roots};
@@ -38,6 +41,8 @@ struct SourceStageAdmissionRecord {
     admission: SourceStageAdmission,
     requests: Vec<RootObservationRequest>,
     responses: Vec<RootObservationResult>,
+    resource_requests: Vec<RootResourceObservationRequest>,
+    resource_responses: Vec<RootResourceObservationResult>,
 }
 
 /// Carries the exact executable plan and retained stage-entry commitment.
@@ -116,6 +121,8 @@ pub(crate) fn load_or_admit_source_stage(
             admission,
             requests: current.requests.clone(),
             responses: current.responses.clone(),
+            resource_requests: current.resource_requests.clone(),
+            resource_responses: current.resource_responses.clone(),
         };
         let bytes = aos_contract::canonical::to_vec(&record)?;
         ensure!(
@@ -136,8 +143,14 @@ pub(crate) fn load_or_admit_source_stage(
         aos_contract::canonical::to_vec(&record)? == retained_bytes,
         "retained source-stage admission changed during admission"
     );
-    let historical =
-        verify_recorded_source_roots(&template, &record.requests, &record.responses, boot_id)?;
+    let historical = verify_recorded_source_roots(
+        &template,
+        &record.requests,
+        &record.responses,
+        &record.resource_requests,
+        &record.resource_responses,
+        boot_id,
+    )?;
     ensure!(
         record.template == template.digest()
             && historical == *record.admission.observed_environment(),
@@ -186,8 +199,14 @@ pub(crate) fn validate_retained_source_stage(
         record.template == template.digest(),
         "retained source-stage admission names another image template"
     );
-    let historical =
-        verify_recorded_source_roots(&template, &record.requests, &record.responses, boot_id)?;
+    let historical = verify_recorded_source_roots(
+        &template,
+        &record.requests,
+        &record.responses,
+        &record.resource_requests,
+        &record.resource_responses,
+        boot_id,
+    )?;
     ensure!(
         historical == *record.admission.observed_environment(),
         "retained root exchanges differ from the admitted inventory"

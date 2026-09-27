@@ -1361,6 +1361,24 @@ impl PinnedSystemdManager {
         Ok(unit.need_daemon_reload().await?)
     }
 
+    /// Returns the fragment and drop-ins loaded for one exact unit object.
+    ///
+    /// The values come from the pinned manager without a proxy cache, so a
+    /// caller can compare its loaded definition with the image's unit tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start_unit_exact`], plus failures
+    /// while reading the unit's definition paths.
+    pub async fn unit_definition_paths_exact(
+        &self,
+        name: &str,
+        expected_identity: &str,
+    ) -> Result<(String, Vec<String>)> {
+        let unit = self.exact_unit(name, expected_identity).await?;
+        Ok((unit.fragment_path().await?, unit.drop_in_paths().await?))
+    }
+
     /// Returns a unit's active state after checking its object and loaded revision.
     ///
     /// # Errors

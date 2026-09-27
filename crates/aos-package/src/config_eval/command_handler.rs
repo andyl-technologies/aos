@@ -31,8 +31,9 @@ use aos_provider_protocol::{
     InvocationDisposition as HandlerInvocationDisposition,
     InvocationPurpose as HandlerInvocationPurpose, InvocationResult, MAX_HANDLER_RESULT_BYTES,
     REQUEST_SCHEMA, RESOURCE_CONTEXT_SCHEMA, RESULT_SCHEMA, RecoveryMethods, ResourceContext,
-    ResourceSpec, RootObservationRequest, RootObservationResult, native_context_digest,
-    resource_set_digest, validate_root_observation,
+    ResourceSpec, RootObservationRequest, RootObservationResult, RootResourceObservationRequest,
+    RootResourceObservationResult, native_context_digest, resource_set_digest,
+    validate_root_observation, validate_root_resource_observation,
 };
 use serde::{Deserialize, Serialize};
 
@@ -611,6 +612,37 @@ pub(crate) fn observe_selected_root_handler(
     )?;
     let observation: RootObservationResult = decode(&output)?;
     validate_root_observation(request, &observation).map_err(err)?;
+    Ok(observation)
+}
+
+/// Invokes the selected package's read-only image-resource observer.
+///
+/// # Errors
+///
+/// Returns an error when the resource request selects another handler, its
+/// executable cannot be authenticated, or its response changes the selected
+/// boot, resource, or revision.
+pub(crate) fn observe_selected_resource_root_handler(
+    package: &VerifiedPackageContract,
+    interface: &aos_ability_model::InterfaceKey,
+    implementation: &ProviderImplementationReference,
+    request: &RootResourceObservationRequest,
+) -> Result<RootResourceObservationResult, io::Error> {
+    if request.root.interface != *interface || request.root.implementation != *implementation {
+        return Err(invalid(
+            "resource root observation request differs from the selected handler",
+        ));
+    }
+    let handler = authenticate(package, interface, implementation)?;
+    let output = invoke(
+        &handler.executable,
+        "observe-resource-root",
+        &encode(request)?,
+        &FixedBudgetControl::new(request.root.control.attempt_remaining_millis),
+        &[],
+    )?;
+    let observation: RootResourceObservationResult = decode(&output)?;
+    validate_root_resource_observation(request, &observation).map_err(err)?;
     Ok(observation)
 }
 

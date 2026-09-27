@@ -125,6 +125,9 @@ pub trait Unit {
     /// Filesystem path of the unit's fragment (its main unit file).
     #[zbus(property)]
     fn fragment_path(&self) -> zbus::Result<String>;
+    /// Filesystem paths of all loaded unit drop-ins.
+    #[zbus(property)]
+    fn drop_in_paths(&self) -> zbus::Result<Vec<String>>;
     /// Whether systemd has detected unit files newer than its loaded state.
     #[zbus(property)]
     fn need_daemon_reload(&self) -> zbus::Result<bool>;

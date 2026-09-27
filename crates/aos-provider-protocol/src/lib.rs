@@ -23,10 +23,16 @@ use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
 mod root_observation;
+mod root_resource_observation;
 
 pub use root_observation::{
     ROOT_OBSERVATION_REQUEST_SCHEMA, ROOT_OBSERVATION_RESULT_SCHEMA, RootObservationRequest,
     RootObservationResult, boot_scoped_handler_root, validate_boot_id, validate_root_observation,
+};
+pub use root_resource_observation::{
+    ROOT_RESOURCE_OBSERVATION_REQUEST_SCHEMA, ROOT_RESOURCE_OBSERVATION_RESULT_SCHEMA,
+    RootResourceObservationRequest, RootResourceObservationResult,
+    validate_root_resource_observation,
 };
 
 /// Selects the version-1 command-handler ABI on an authenticated executable.

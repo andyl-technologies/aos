@@ -551,16 +551,6 @@ impl<'a> SourceComposition<'a> {
         environment: aos_ability_model::EnvironmentId,
         platform: PlatformIdentity,
     ) -> Result<EnvironmentDocument> {
-        ensure!(
-            self.fixed_point
-                .resolved_resources
-                .values()
-                .all(|resource| {
-                    resource.activation_owner
-                        == aos_ability_plan::source_stage::SourceActivationOwner::Ability
-                }),
-            "image-owned resources require fresh native resource observation before source-stage admission"
-        );
         let mut artifacts_by_content = BTreeMap::new();
         for artifact in self.catalog.package_outputs.values() {
             if let Some(existing) = artifacts_by_content.insert(artifact.content, artifact.clone())
@@ -597,7 +587,11 @@ impl<'a> SourceComposition<'a> {
             .fixed_point
             .resolved_resources
             .values()
-            .filter(|resource| resource.controller.is_none())
+            .filter(|resource| {
+                resource.controller.is_none()
+                    || resource.activation_owner
+                        == aos_ability_plan::source_stage::SourceActivationOwner::Image
+            })
             .map(|resource| resource.resource_revision())
             .collect::<Result<Vec<_>>>()?;
         published_resources.sort_by(|left, right| left.resource.cmp(&right.resource));
@@ -610,8 +604,9 @@ impl<'a> SourceComposition<'a> {
             policy_revision: self.revision,
             providers,
             artifacts: artifacts_by_content.into_values().collect(),
-            // Pure planning publications have no lifecycle controller and
-            // therefore are not changes for effectful activation.
+            // Stage entry must observe image-owned current resources before
+            // admitting this sealed environment. Pure publications need no
+            // lifecycle controller or native observation.
             resources: published_resources,
             controllers: Vec::new(),
             guarantees: Vec::new(),

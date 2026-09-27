@@ -23,6 +23,7 @@ mod schema;
 mod static_contract;
 #[cfg(unix)]
 mod static_contract_store;
+mod static_expression;
 mod transition_authority;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -58,6 +59,7 @@ pub use static_contract::{
 pub use static_contract_store::{
     validate_static_ability_artifacts, validate_static_ability_artifacts_at_store_root,
 };
+pub use static_expression::resolve_static_expression;
 pub use transition_authority::{
     CheckedTransitionAuthority, TransitionAuthorityError, TransitionAuthorityInputs,
 };
