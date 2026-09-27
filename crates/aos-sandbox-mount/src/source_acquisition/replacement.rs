@@ -87,23 +87,6 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
                                 &journal.snapshot()?,
                                 &provider_session_key(predecessor.session_id),
                                 &predecessor_record,
-                                predecessor.kernel_boot_id,
-                                predecessor.provider_execution.pid,
-                                predecessor.provider_execution.tgid,
-                                predecessor.provider_execution.ppid,
-                                predecessor.provider_execution.start_time_ticks,
-                                predecessor.provider_execution.cgroup_id,
-                                [
-                                    predecessor.provider_execution.real_uid,
-                                    predecessor.provider_execution.effective_uid,
-                                    predecessor.provider_execution.saved_uid,
-                                    predecessor.provider_execution.filesystem_uid,
-                                    predecessor.provider_execution.real_gid,
-                                    predecessor.provider_execution.effective_gid,
-                                    predecessor.provider_execution.saved_gid,
-                                    predecessor.provider_execution.filesystem_gid,
-                                ],
-                                predecessor.provider_process_instance,
                             )
                             .map_err(|_| state_error("old Provider liveness is indeterminate"))?;
                         if let Some(pending) = head.pending_attempt {

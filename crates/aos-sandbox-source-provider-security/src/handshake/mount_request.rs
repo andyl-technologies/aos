@@ -106,31 +106,14 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// the exact protected session record is current and kernel liveness is
     /// determinate. Exit, PID reuse, or changed boot identity yields `Some`;
     /// an exact pinned live predecessor yields `None`.
-    #[allow(clippy::too_many_arguments)]
     pub fn try_prove_mount_provider_execution_dead_v2(
         &mut self,
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         journal_snapshot: &aos_sandbox::ProtectedJournalSnapshot,
         retained_session_key: &[u8],
         retained_session_record: &[u8],
-        old_boot_id: [u8; 16],
-        old_provider_process_id: u32,
-        old_provider_tgid: u32,
-        old_provider_parent_pid: u32,
-        old_provider_start_time_ticks: u64,
-        old_provider_cgroup_id: u64,
-        old_provider_credentials: [u32; 8],
-        old_provider_process_instance: [u8; 16],
     ) -> Result<Option<crate::DeadProviderExecutionV1>, SourceProviderSecurityError> {
         self.revalidate()?;
-        let execution_digest = mount_provider_execution_digest(
-            old_provider_process_id,
-            old_provider_tgid,
-            old_provider_parent_pid,
-            old_provider_start_time_ticks,
-            old_provider_cgroup_id,
-            old_provider_credentials,
-        );
         let state = validated_mount_state(journal).map_err(|error| self.poison(error))?;
         let retained = match aos_sandbox_protocol::mount_source_acquisition_state::decode_mount_source_state_record_v2(
             retained_session_key,
@@ -139,30 +122,31 @@ impl CurrentRootMountSourceProviderSessionV1 {
             Ok(aos_sandbox_protocol::mount_source_acquisition_state::StoredRecordV2::ProviderSession { value }) => value,
             _ => return Err(self.poison(SourceProviderSecurityError::SessionContinuity)),
         };
+        let execution = retained.provider_execution;
+        let execution_digest = mount_provider_execution_digest(
+            execution.pid,
+            execution.tgid,
+            execution.ppid,
+            execution.start_time_ticks,
+            execution.cgroup_id,
+            [
+                execution.real_uid,
+                execution.effective_uid,
+                execution.saved_uid,
+                execution.filesystem_uid,
+                execution.real_gid,
+                execution.effective_gid,
+                execution.saved_gid,
+                execution.filesystem_gid,
+            ],
+        );
         if retained_session_key.is_empty()
             || retained_session_record.is_empty()
-            || old_boot_id == [0; 16]
-            || old_provider_process_id == 0
-            || old_provider_start_time_ticks == 0
-            || old_provider_process_instance == [0; 16]
-            || retained.kernel_boot_id != old_boot_id
-            || retained.provider_process_instance != old_provider_process_instance
-            || retained.provider_execution.pid != old_provider_process_id
-            || retained.provider_execution.tgid != old_provider_tgid
-            || retained.provider_execution.ppid != old_provider_parent_pid
-            || retained.provider_execution.start_time_ticks != old_provider_start_time_ticks
-            || retained.provider_execution.cgroup_id != old_provider_cgroup_id
-            || [
-                retained.provider_execution.real_uid,
-                retained.provider_execution.effective_uid,
-                retained.provider_execution.saved_uid,
-                retained.provider_execution.filesystem_uid,
-                retained.provider_execution.real_gid,
-                retained.provider_execution.effective_gid,
-                retained.provider_execution.saved_gid,
-                retained.provider_execution.filesystem_gid,
-            ] != old_provider_credentials
-            || retained.provider_execution.process_execution_digest != *execution_digest.as_bytes()
+            || retained.kernel_boot_id == [0; 16]
+            || execution.pid == 0
+            || execution.start_time_ticks == 0
+            || retained.provider_process_instance == [0; 16]
+            || execution.process_execution_digest != *execution_digest.as_bytes()
             || state.provider_sessions.get(&retained.session_id) != Some(&retained)
             || journal
                 .validate_mount_source_acquisition_snapshot(journal_snapshot)
@@ -172,10 +156,10 @@ impl CurrentRootMountSourceProviderSessionV1 {
             return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
         crate::DeadProviderExecutionV1::observe_from_current_custody(
-            old_boot_id,
-            old_provider_process_id,
-            old_provider_start_time_ticks,
-            old_provider_process_instance,
+            retained.kernel_boot_id,
+            execution.pid,
+            execution.start_time_ticks,
+            retained.provider_process_instance,
             execution_digest,
         )
         .map_err(|error| self.poison(error))
