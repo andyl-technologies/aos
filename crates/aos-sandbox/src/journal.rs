@@ -2262,6 +2262,7 @@ impl Journal {
     /// Effect fence is held.
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        cache_policy_hold::require_valid_compaction(self)?;
         host_settlement_admission_gate::require_no_compaction(&self.state)?;
         host_currentness_fence::require_no_compaction(&self.state)?;
         host_execution_fence::require_no_compaction(&self.state)?;

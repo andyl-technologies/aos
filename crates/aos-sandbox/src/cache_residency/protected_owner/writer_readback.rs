@@ -146,8 +146,10 @@ impl CacheResidencyProtectedOwnerV1 {
     /// The first callback and terminal continuation have the same ordering as
     /// v3. After Cache postflight, `finalize` runs with all four journal writers
     /// and the physical owner still held. A second postflight must pass before
-    /// the already-open hold journal durably records the released phase.
-    /// The returned released hold is read back from that same protected writer.
+    /// the already-open hold journal durably records the released phase and
+    /// pending V8 settlement together. The returned released hold is read back
+    /// from that same protected writer. The pending row fences another Cache
+    /// hold until a future authenticated Root settlement clears it.
     /// This local primitive does not verify a Root receipt or open public Create.
     ///
     /// # Errors
@@ -181,8 +183,9 @@ impl CacheResidencyProtectedOwnerV1 {
     /// Replays an already released Cache hold under the same typed owner cut.
     ///
     /// This recovery path never commits a release. It verifies the released
-    /// row and complete Cache replay before the callback, then revalidates
-    /// writer names, the exact hold row, and physical custody afterward.
+    /// row, its pending V8 settlement, and complete Cache replay before the
+    /// callback, then revalidates writer names, the exact pair, and physical
+    /// custody afterward.
     /// Controller and Source are retained externally.
     ///
     /// # Errors
@@ -241,10 +244,11 @@ impl CacheResidencyProtectedOwnerV1 {
             self.owner_uid,
         )?;
         let hold_witness = hold_journal.protected_writer_name_witness()?;
-        let hold = hold_journal
-            .cache_policy_hold_for_writer()?
-            .filter(|hold| hold.is_held() == expected_held)
-            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        let hold = if expected_held {
+            hold_journal.held_cache_policy_hold_for_writer()?
+        } else {
+            hold_journal.v8_pending_cache_policy_release_for_writer()?.1
+        };
         let state_witness = self
             .state_journal
             .as_ref()
@@ -305,7 +309,12 @@ impl CacheResidencyProtectedOwnerV1 {
                 Journal::cache_policy_hold_limits(),
             )?;
             hold_journal.validate_protected_writer_name_witness(&hold_witness)?;
-            if hold_journal.cache_policy_hold_for_writer()? != Some(hold) {
+            let current = if expected_held {
+                hold_journal.held_cache_policy_hold_for_writer()?
+            } else {
+                hold_journal.v8_pending_cache_policy_release_for_writer()?.1
+            };
+            if current != hold {
                 return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
             }
             physical_snapshot
@@ -323,7 +332,7 @@ impl CacheResidencyProtectedOwnerV1 {
         if retire_hold {
             revalidate(&mut hold_journal)?;
             let value = finalized?;
-            let released = hold_journal.release_held_cache_policy_hold_for_writer(hold)?;
+            let released = hold_journal.release_v8_held_cache_policy_hold_for_writer(hold)?;
             Ok((value, released))
         } else {
             finalized.map(|value| (value, hold))
@@ -523,7 +532,7 @@ where
             return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
         }
         let value = finalized?;
-        let released = hold_journal.release_held_cache_policy_hold_for_writer(hold)?;
+        let released = hold_journal.release_v8_held_cache_policy_hold_for_writer(hold)?;
         Ok((value, Some(released)))
     } else {
         finalized.map(|value| (value, None))
@@ -766,6 +775,11 @@ mod tests {
         assert_eq!(
             released.record_digest().unwrap(),
             replayed.record_digest().unwrap()
+        );
+        assert_eq!(
+            Journal::read_v8_pending_cache_policy_release_at(directory.path(), uid)
+                .expect("V8 pending Cache settlement"),
+            (expected, released)
         );
     }
 
