@@ -192,6 +192,29 @@ pub(crate) async fn execute_external_storage_work(
                 source_bytes,
             )
         }
+        StorageWorkOperation::InspectGitObject { oid } => {
+            let (projection, source_bytes) = inspect_git_object(&fetcher, plan, oid).await?;
+            let Some(projection) = projection else {
+                return Ok(Some(storage_work_result(
+                    plan,
+                    StorageWorkOutcome::NotFound,
+                    source_bytes,
+                )));
+            };
+            (
+                StorageWorkOutcome::GitObject {
+                    source: projection.source,
+                    oid: projection.oid,
+                    object_kind: projection.object_kind,
+                    content_base64: projection.content_base64,
+                },
+                source_bytes,
+            )
+        }
+        StorageWorkOperation::InspectGitObjects { oids } => {
+            let (outcome, source_bytes) = inspect_git_objects(&fetcher, plan, oids).await?;
+            (outcome, source_bytes)
+        }
         _ => return Ok(None),
     };
     Ok(Some(storage_work_result(plan, outcome, source_bytes)))
@@ -320,38 +343,7 @@ pub(crate) async fn execute_r2_storage_work(
             )
         }
         StorageWorkOperation::InspectGitObjects { oids } => {
-            let mut shards = std::collections::BTreeMap::<&str, Vec<&str>>::new();
-            for oid in oids {
-                shards.entry(&oid[..2]).or_default().push(oid);
-            }
-            let inspections = futures_util::future::try_join_all(
-                shards
-                    .into_iter()
-                    .map(|(shard, oids)| inspect_git_shard(&fetcher, plan, shard, oids)),
-            )
-            .await?;
-            let mut objects = Vec::with_capacity(oids.len());
-            let mut source_bytes = 0_u64;
-            let mut missing = false;
-            for (projections, observed_bytes) in inspections {
-                source_bytes = source_bytes
-                    .checked_add(observed_bytes)
-                    .context("Git batch source byte count overflowed")?;
-                for projection in projections {
-                    match projection {
-                        Some(projection) => objects.push(projection),
-                        None => missing = true,
-                    }
-                }
-            }
-            if missing {
-                return Ok(storage_work_result(
-                    plan,
-                    StorageWorkOutcome::NotFound,
-                    source_bytes,
-                ));
-            }
-            (StorageWorkOutcome::GitObjects { objects }, source_bytes)
+            inspect_git_objects(&fetcher, plan, oids).await?
         }
         StorageWorkOperation::InspectMetadata { path } => {
             let Some((bytes, source)) =
@@ -750,8 +742,45 @@ async fn compose_oci_blob(
     })
 }
 
+async fn inspect_git_objects(
+    fetcher: &dyn SurfaceFetch,
+    plan: &StorageWorkPlan,
+    oids: &[String],
+) -> Result<(StorageWorkOutcome, u64)> {
+    let mut shards = std::collections::BTreeMap::<&str, Vec<&str>>::new();
+    for oid in oids {
+        shards.entry(&oid[..2]).or_default().push(oid);
+    }
+    let inspections = futures_util::future::try_join_all(
+        shards
+            .into_iter()
+            .map(|(shard, oids)| inspect_git_shard(fetcher, plan, shard, oids)),
+    )
+    .await?;
+    let mut objects = Vec::with_capacity(oids.len());
+    let mut source_bytes = 0_u64;
+    let mut missing = false;
+    for (projections, observed_bytes) in inspections {
+        source_bytes = source_bytes
+            .checked_add(observed_bytes)
+            .context("Git batch source byte count overflowed")?;
+        for projection in projections {
+            match projection {
+                Some(projection) => objects.push(projection),
+                None => missing = true,
+            }
+        }
+    }
+    let outcome = if missing {
+        StorageWorkOutcome::NotFound
+    } else {
+        StorageWorkOutcome::GitObjects { objects }
+    };
+    Ok((outcome, source_bytes))
+}
+
 async fn inspect_git_object(
-    fetcher: &R2SurfaceFetch,
+    fetcher: &dyn SurfaceFetch,
     plan: &StorageWorkPlan,
     oid: &str,
 ) -> Result<(Option<StorageGitObjectProjection>, u64)> {
@@ -804,7 +833,7 @@ async fn inspect_git_object(
 }
 
 async fn inspect_git_shard(
-    fetcher: &R2SurfaceFetch,
+    fetcher: &dyn SurfaceFetch,
     plan: &StorageWorkPlan,
     shard: &str,
     oids: Vec<&str>,

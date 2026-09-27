@@ -285,6 +285,7 @@ in {
       import statistics
       import textwrap
       import time
+      import zlib
 
       CURL = "${pkgs.curl}/bin/curl --noproxy '*' --cacert /etc/ssl/certs/ca-certificates.crt"
       GREP = "${pkgs.grep}/bin/grep"
@@ -487,6 +488,31 @@ in {
           "https://s3.fleet.test/fleet-s3/tenant/registry/exists",
           timeout=60,
       )
+      metadata_path = "releases/fleet-metadata"
+      client.succeed(
+          f"{CURL} -fsS --aws-sigv4 'aws:amz:garage:s3' "
+          f"-u {shlex.quote(access_key.group(1) + ':' + secret_key.group(1))} "
+          "-X PUT -H 'content-type: application/octet-stream' "
+          f"--data-binary {shlex.quote(s3_object.decode())} "
+          f"https://s3.fleet.test/fleet-s3/tenant/registry/{metadata_path}",
+          timeout=60,
+      )
+      git_content = b"fleet S3 Git projection"
+      git_plain = b"blob " + str(len(git_content)).encode() + b"\0" + git_content
+      git_oid = hashlib.sha256(git_plain).hexdigest()
+      git_loose = zlib.compress(git_plain)
+      client.succeed(
+          f"printf '%s' {shlex.quote(base64.b64encode(git_loose).decode())} | "
+          "${pkgs.coreutils}/bin/base64 -d > /tmp/hybrid-git-loose"
+      )
+      client.succeed(
+          f"{CURL} -fsS --aws-sigv4 'aws:amz:garage:s3' "
+          f"-u {shlex.quote(access_key.group(1) + ':' + secret_key.group(1))} "
+          "-X PUT -H 'content-type: application/octet-stream' "
+          "--data-binary @/tmp/hybrid-git-loose "
+          f"https://s3.fleet.test/fleet-s3/tenant/registry/objects/{git_oid[:2]}/{git_oid[2:]}",
+          timeout=60,
+      )
       binding_issued_at = int(time.time())
       binding_snapshot = {
           "version": 1,
@@ -588,7 +614,7 @@ in {
       assert hash_result["source_bytes"] == len(s3_object), hash_result
       metadata_status, metadata_response = external_binding_plan(
           published_revision,
-          {"kind": "inspect_metadata", "path": "exists"},
+          {"kind": "inspect_metadata", "path": metadata_path},
           "b" * 32,
       )
       assert metadata_status == "200", (metadata_status, metadata_response)
@@ -596,10 +622,32 @@ in {
       assert metadata_result["outcome"]["kind"] == "metadata", metadata_result
       assert base64.b64decode(metadata_result["outcome"]["content_base64"]) == s3_object
       assert metadata_result["source_bytes"] == len(s3_object), metadata_result
+      git_status, git_response = external_binding_plan(
+          published_revision,
+          {"kind": "inspect_git_object", "oid": git_oid},
+          "a" * 32,
+      )
+      assert git_status == "200", (git_status, git_response)
+      git_result = json.loads(git_response)
+      assert git_result["outcome"]["kind"] == "git_object", git_result
+      assert git_result["outcome"]["oid"] == git_oid, git_result
+      assert git_result["outcome"]["object_kind"] == "blob", git_result
+      assert base64.b64decode(git_result["outcome"]["content_base64"]) == git_content
+      assert git_result["source_bytes"] == len(git_loose), git_result
+      batch_status, batch_response = external_binding_plan(
+          published_revision,
+          {"kind": "inspect_git_objects", "oids": [git_oid]},
+          "9" * 32,
+      )
+      assert batch_status == "200", (batch_status, batch_response)
+      batch_result = json.loads(batch_response)
+      assert batch_result["outcome"]["kind"] == "git_objects", batch_result
+      assert len(batch_result["outcome"]["objects"]) == 1, batch_result
+      assert batch_result["outcome"]["objects"][0]["oid"] == git_oid
       unsupported_status, _ = external_binding_plan(
           published_revision,
-          {"kind": "inspect_git_object", "oid": "0" * 40},
-          "a" * 32,
+          {"kind": "list_page", "prefix": "", "cursor": None, "limit": 1},
+          "8" * 32,
       )
       assert unsupported_status == "501", unsupported_status
       revoke_issued_at = max(binding_issued_at + 1, int(time.time()))
