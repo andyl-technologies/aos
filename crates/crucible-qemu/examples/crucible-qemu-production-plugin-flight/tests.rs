@@ -80,7 +80,8 @@ fn runtime_diagnostics(trace: String) -> RuntimeDeterminismDiagnostics {
             rr_current_vcpu: 0,
             rr_position_in_quantum: 7,
         },
-        trace,
+        trace: runtime_trace::summarize(&mut std::io::Cursor::new(trace), 160_000, 8_000_000)
+            .expect("test runtime trace should validate"),
     }
 }
 
@@ -205,35 +206,50 @@ fn runtime_comparator_reports_the_first_post_boundary_tuple() {
         compare_runtime_determinism_diagnostics([("reference", &reference), ("hostile", &hostile)]);
 
     assert!(report.contains("first_split=reference/hostile index=0"));
-    assert!(report.contains("target_tick: 9000000"));
-    assert!(report.contains("target_tick: 9000001"));
+    assert!(report.contains("preceding=[]"));
+    assert!(report.contains("differing=("));
+    assert!(report.contains("target_tick=9000000"));
+    assert!(report.contains("target_tick=9000001"));
 }
 
 #[test]
-fn runtime_comparator_rejects_empty_post_boundary_trace() {
-    let reference =
-        runtime_diagnostics(runtime_trace(9_000_000).replace("raw=160000", "raw=159999"));
-    let candidate = runtime_diagnostics(runtime_trace(9_000_000));
+fn runtime_stream_rejects_empty_post_boundary_trace() {
+    let trace = runtime_trace(9_000_000).replace("raw=160000", "raw=159999");
+    let error = runtime_trace::summarize(&mut std::io::Cursor::new(trace), 160_000, 8_000_000)
+        .expect_err("an empty post-boundary suffix must fail closed");
 
-    let report = compare_runtime_determinism_diagnostics([
-        ("reference", &reference),
-        ("hostile", &candidate),
-    ]);
-
-    assert!(report.contains("reference_post_8m_trace_empty"));
-    assert!(!report.contains("post_8m_native_sequences_identical=true"));
+    assert!(
+        error
+            .to_string()
+            .contains("post-8M native runtime trace is empty")
+    );
 }
 
 #[test]
-fn post_boundary_trace_excludes_the_same_raw_count_before_eight_million_picoseconds() {
+fn runtime_stream_excludes_same_raw_count_before_eight_million_picoseconds() {
     let trace = runtime_trace(9_000_000).replace("raw=159999", "raw=160000");
-    let records =
-        parse_qemu_runtime_determinism_trace(&trace).expect("runtime trace should decode");
+    let summary = runtime_trace::summarize(&mut std::io::Cursor::new(trace), 160_000, 8_000_000)
+        .expect("runtime trace should validate");
 
-    let suffix = post_final_busy_boundary(&records, 160_000);
+    assert_eq!(summary.post_boundary_rows, 3);
+    assert_eq!(summary.prefix[0].sequence(), 2);
+}
 
-    assert_eq!(suffix.len(), 3);
-    assert_eq!(suffix[0].sequence(), 2);
+#[test]
+fn runtime_stream_rejects_malformed_or_unbounded_rows() {
+    let malformed = runtime_trace(9_000_000).replace("seq=3", "seq=7");
+    let error = runtime_trace::summarize(&mut std::io::Cursor::new(malformed), 160_000, 8_000_000)
+        .expect_err("noncontiguous sequence must fail closed");
+    assert!(error.to_string().contains("sequence 7 did not follow 2"));
+
+    let oversized = format!("{}\n", "x".repeat(4096));
+    let error = runtime_trace::summarize(&mut std::io::Cursor::new(oversized), 160_000, 8_000_000)
+        .expect_err("oversized row must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("row exceeded its fixed byte ceiling")
+    );
 }
 
 #[test]

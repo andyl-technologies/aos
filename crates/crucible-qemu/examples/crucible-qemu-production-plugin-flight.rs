@@ -6,12 +6,13 @@
 //! idle timer wake. A separate real block recovery subflight proves the causal
 //! recovery transition, exact settled write, and hot-fork preparation.
 //! Successful runs emit only typed shared-memory and node-level evidence.
-//! Native traces are retained only after clean reap.
+//! Native traces are validated through pinned files after clean reap; the
+//! exported summary contains their full-file hashes and bounded row context.
 //! Setting `CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY=1` runs the
 //! block-recovery subflight alone for focused failure diagnosis.
 //!
 //! ```text
-//! crucible-qemu-production-plugin-flight QEMU PLUGIN KERNEL IDLE_INITRD BLOCK_INITRD FIRMWARE CGROUP_ROOT RUN_ROOT REFERENCE_TRACE_OUT
+//! crucible-qemu-production-plugin-flight QEMU PLUGIN KERNEL IDLE_INITRD BLOCK_INITRD FIRMWARE CGROUP_ROOT RUN_ROOT REFERENCE_TRACE_SUMMARY_OUT
 //! ```
 
 #![forbid(unsafe_code)]
@@ -35,14 +36,16 @@ use crucible_protocol::{SelectionReply, SelectionReplyStatus};
 use crucible_qemu::{
     BoundedSchedulerPreemptionEvidence, LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory,
     QemuLiveNodeIdentity, QemuLiveNodeStepGateConfig, QemuLogicalTimeCalibration, QemuNode,
-    QemuNodeIdleState, QemuProductionFreshLaunchAdmission, QemuRuntimeDeterminismTraceRecord,
-    QemuShutdownReport, QemuVirtualTimerFireWitness, QmpHotForkTemplateOutcome,
-    launch_qemu_production_fresh_node, parse_qemu_runtime_determinism_trace,
+    QemuNodeIdleState, QemuProductionFreshLaunchAdmission, QemuShutdownReport,
+    QemuVirtualTimerFireWitness, QmpHotForkTemplateOutcome, launch_qemu_production_fresh_node,
 };
 use crucible_shmem::FingerprintSample;
 
 #[path = "crucible-qemu-production-plugin-flight/block_recovery_hot_fork.rs"]
 mod block_recovery_hot_fork;
+
+#[path = "crucible-qemu-production-plugin-flight/runtime_trace.rs"]
+mod runtime_trace;
 
 const MEMORY_BYTES: u64 = 512 * 1024 * 1024;
 const DISK_BYTES: u64 = 1024 * 1024 * 1024;
@@ -72,6 +75,9 @@ const READINESS_REPLY_CAPACITY: usize = 128;
 const FLIGHT_NODE_ID: &str = "plugin-flight-node";
 const SETUP_COMPLETE_MARKER: &str = "lifecycle.setup_complete";
 const MAXIMUM_HOT_FORK_RING_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+// The readiness flight produced a 95.6-million-byte trace through idle wake.
+// Reserve a finite product-only ceiling and validate through a pinned stream.
+const PRODUCTION_RUNTIME_TRACE_BYTES: u64 = 256 * 1024 * 1024;
 const BLOCK_RECOVERY_ONLY_ENVIRONMENT: &str =
     "CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY";
 
@@ -108,7 +114,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     ] = arguments.as_slice()
     else {
         return Err(
-            "expected QEMU PLUGIN KERNEL IDLE_INITRD BLOCK_INITRD FIRMWARE CGROUP_ROOT RUN_ROOT REFERENCE_TRACE_OUT".into(),
+            "expected QEMU PLUGIN KERNEL IDLE_INITRD BLOCK_INITRD FIRMWARE CGROUP_ROOT RUN_ROOT REFERENCE_TRACE_SUMMARY_OUT".into(),
         );
     };
     let host = LinuxQemuAttemptHostConfig::new(
@@ -153,11 +159,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         // Full hot-fork preparation stages a connected child console.
         .with_console_capture()
         .with_runtime_determinism_trace()
-        .with_completion_timeout(Duration::from_secs(60));
+        .with_runtime_determinism_trace_budget(PRODUCTION_RUNTIME_TRACE_BYTES)?
+        // The exact four-vCPU guest authenticated readiness after about 110
+        // host seconds. Keep a finite per-advance guard with measured headroom.
+        .with_completion_timeout(Duration::from_secs(300));
 
     let reference = run_once(&mut factory, &config, qemu, false)?;
     let hostile = run_once(&mut factory, &config, qemu, true)?;
-    fs::write(reference_trace_output, &reference.diagnostics.trace)?;
+    fs::write(reference_trace_output, reference.diagnostics.trace.report())?;
     compare_boundaries(
         "host-preempted restart",
         &reference.boundaries,
@@ -198,6 +207,28 @@ fn run() -> Result<(), Box<dyn Error>> {
         )
         .into());
     }
+
+    // Keep the validated, bounded evidence visible if the independent block
+    // recovery subflight fails before the normal result file is emitted.
+    eprintln!(
+        "PRODUCTION_PLUGIN_RUNTIME_TRACE_REFERENCE_SUMMARY_BEGIN\n{}\
+         PRODUCTION_PLUGIN_RUNTIME_TRACE_REFERENCE_SUMMARY_END",
+        reference.diagnostics.trace.report()
+    );
+    eprintln!(
+        "PRODUCTION_PLUGIN_RUNTIME_TRACE_HOSTILE_SUMMARY_BEGIN\n{}\
+         PRODUCTION_PLUGIN_RUNTIME_TRACE_HOSTILE_SUMMARY_END",
+        hostile.diagnostics.trace.report()
+    );
+    eprintln!(
+        "production_runtime_trace_comparison={}",
+        runtime_trace::compare(
+            "reference",
+            &reference.diagnostics.trace,
+            "hostile",
+            &hostile.diagnostics.trace,
+        )?
+    );
 
     let block_recovery_hot_fork = block_recovery_hot_fork::run(
         &mut factory,
@@ -393,7 +424,7 @@ struct FlightRun {
 #[derive(Debug)]
 struct RuntimeDeterminismDiagnostics {
     baseline: RuntimeDeterminismBaseline,
-    trace: String,
+    trace: runtime_trace::RuntimeTraceSummary,
 }
 
 #[derive(Debug)]
@@ -756,95 +787,17 @@ fn compare_runtime_determinism_diagnostics(
         })
         .collect::<Vec<_>>()
         .join("; ");
-    let (reference_name, reference) = variants[0];
-    let reference_records = match parse_qemu_runtime_determinism_trace(&reference.trace) {
-        Ok(records) => records,
-        Err(error) => {
-            return format!("baselines=[{baselines}]; {reference_name}_trace_error={error}");
-        }
-    };
-    let reference_boundary = match final_busy_raw_boundary(&reference.baseline) {
-        Ok(raw) => raw,
-        Err(error) => return format!("baselines=[{baselines}]; {reference_name}_{error}"),
-    };
-    let reference_suffix = post_final_busy_boundary(&reference_records, reference_boundary);
-    if reference_suffix.is_empty() {
-        return format!("baselines=[{baselines}]; {reference_name}_post_8m_trace_empty");
-    }
-    let mut comparisons = Vec::with_capacity(variants.len() - 1);
-    let mut identical = true;
-
-    for (candidate_name, candidate) in variants.into_iter().skip(1) {
-        let candidate_records = match parse_qemu_runtime_determinism_trace(&candidate.trace) {
-            Ok(records) => records,
-            Err(error) => {
-                identical = false;
-                comparisons.push(format!("{candidate_name}_trace_error={error}"));
-                continue;
-            }
-        };
-        let candidate_boundary = match final_busy_raw_boundary(&candidate.baseline) {
-            Ok(raw) => raw,
-            Err(error) => {
-                identical = false;
-                comparisons.push(format!("{candidate_name}_{error}"));
-                continue;
-            }
-        };
-        let candidate_suffix = post_final_busy_boundary(&candidate_records, candidate_boundary);
-        if candidate_suffix.is_empty() {
-            identical = false;
-            comparisons.push(format!("{candidate_name}_post_8m_trace_empty"));
-            continue;
-        }
-        let common = reference_suffix.len().min(candidate_suffix.len());
-        let first_difference = (0..common).find(|&index| {
-            normalized_runtime_record(reference_suffix[index])
-                != normalized_runtime_record(candidate_suffix[index])
-        });
-        if let Some(index) = first_difference {
-            identical = false;
-            comparisons.push(format!(
-                "first_split={reference_name}/{candidate_name} \
-                 index={index} reference={:?} candidate={:?} reference_context={:?} \
-                 candidate_context={:?}",
-                reference_suffix[index],
-                candidate_suffix[index],
-                bounded_trace_context(&reference_suffix, index),
-                bounded_trace_context(&candidate_suffix, index),
-            ));
-            continue;
-        }
-        if reference_suffix.len() != candidate_suffix.len() {
-            identical = false;
-            comparisons.push(format!(
-                "first_split={reference_name}/{candidate_name} \
-                 common_rows={common} reference_rows={} candidate_rows={} \
-                 reference_tail={:?} candidate_tail={:?}",
-                reference_suffix.len(),
-                candidate_suffix.len(),
-                reference_suffix.last(),
-                candidate_suffix.last(),
-            ));
-        } else {
-            comparisons.push(format!(
-                "comparison={reference_name}/{candidate_name} \
-                 post_8m_native_sequences_identical=true rows={common}"
-            ));
-        }
-    }
-
-    if identical {
-        format!(
-            "baselines=[{baselines}]; post_8m_native_sequences_identical=true rows={}",
-            reference_suffix.len()
+    let [(reference_name, reference), (candidate_name, candidate)] = variants;
+    format!(
+        "baselines=[{baselines}]; {}",
+        runtime_trace::compare(
+            reference_name,
+            &reference.trace,
+            candidate_name,
+            &candidate.trace,
         )
-    } else {
-        format!(
-            "baselines=[{baselines}]; comparisons=[{}]",
-            comparisons.join("; ")
-        )
-    }
+        .unwrap_or_else(|error| format!("runtime_trace_comparison_error={error}"))
+    )
 }
 
 fn describe_runtime_baseline(baseline: &RuntimeDeterminismBaseline) -> String {
@@ -871,47 +824,6 @@ fn final_busy_raw_boundary(baseline: &RuntimeDeterminismBaseline) -> Result<u64,
         ));
     }
     Ok(calibration.raw_icount)
-}
-
-fn post_final_busy_boundary(
-    records: &[QemuRuntimeDeterminismTraceRecord],
-    raw_boundary: u64,
-) -> Vec<QemuRuntimeDeterminismTraceRecord> {
-    records
-        .iter()
-        .copied()
-        .filter(|record| {
-            let virtual_ps = match record {
-                QemuRuntimeDeterminismTraceRecord::Idle(record) => record.virtual_ps,
-                QemuRuntimeDeterminismTraceRecord::Timer(record) => record.current_ps,
-            };
-            record.raw_icount() >= raw_boundary && virtual_ps >= TARGETS[TARGETS.len() - 1] as i64
-        })
-        .collect()
-}
-
-fn normalized_runtime_record(
-    record: QemuRuntimeDeterminismTraceRecord,
-) -> QemuRuntimeDeterminismTraceRecord {
-    match record {
-        QemuRuntimeDeterminismTraceRecord::Idle(mut record) => {
-            record.sequence = 0;
-            QemuRuntimeDeterminismTraceRecord::Idle(record)
-        }
-        QemuRuntimeDeterminismTraceRecord::Timer(mut record) => {
-            record.sequence = 0;
-            QemuRuntimeDeterminismTraceRecord::Timer(record)
-        }
-    }
-}
-
-fn bounded_trace_context(
-    records: &[QemuRuntimeDeterminismTraceRecord],
-    index: usize,
-) -> &[QemuRuntimeDeterminismTraceRecord] {
-    let start = index.saturating_sub(1);
-    let end = (index + 2).min(records.len());
-    &records[start..end]
 }
 
 fn run_once(
@@ -1047,7 +959,7 @@ fn run_once(
             drop(node);
             let trace = match &shutdown {
                 Ok(report) if report.reaped && !report.leaked => directory
-                    .retain_runtime_determinism_trace_after_reap()
+                    .retain_runtime_liveness_trace_tail_after_reap()
                     .map_err(|error| error.to_string()),
                 _ => Err(String::from(
                     "trace unavailable because clean QEMU reap was not proven",
@@ -1067,13 +979,30 @@ fn run_once(
 
     let shutdown = node.shutdown_child()?;
     drop(node);
-    let trace = if shutdown.reaped && !shutdown.leaked {
-        directory.retain_runtime_determinism_trace_after_reap()?
-    } else {
-        String::new()
-    };
+    if !shutdown.reaped || shutdown.leaked {
+        return Err(format!(
+            "QEMU did not cleanly reap after authenticated idle wake: {shutdown:?}"
+        )
+        .into());
+    }
+    let raw_boundary = final_busy_raw_boundary(&runtime_baseline)?;
+    let trace_result = directory
+        .inspect_runtime_determinism_trace_after_reap(PRODUCTION_RUNTIME_TRACE_BYTES, |reader| {
+            runtime_trace::summarize(reader, raw_boundary, TARGETS[TARGETS.len() - 1] as i64)
+        });
     drop(directory);
-    owner.finish()?;
+    let finish_result = owner.finish();
+    let trace = match (trace_result, finish_result) {
+        (Ok(trace), Ok(())) => trace,
+        (Err(error), finish) => {
+            return Err(format!(
+                "runtime trace validation failed after authenticated idle wake: \
+                 error={error}; idle={idle:?}; shutdown={shutdown:?}; finish={finish:?}"
+            )
+            .into());
+        }
+        (Ok(_), Err(error)) => return Err(error.into()),
+    };
     Ok(FlightRun {
         on_demand_acknowledgements: boundaries.len() + idle.on_demand_acknowledgements,
         boundaries,

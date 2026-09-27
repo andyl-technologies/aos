@@ -73,7 +73,10 @@ pub(super) fn run(
             BlockDurabilityConfig::write_through(BLOCK_BYTES),
         )
         .with_console_capture()
-        .with_completion_timeout(Duration::from_secs(60));
+        // The packaged guest repeatedly exceeded 60 host seconds before its
+        // first advance completed. Keep a finite host panic with measured
+        // headroom; virtual-time and marker ceilings remain independent.
+        .with_completion_timeout(Duration::from_secs(300));
     let config = if diagnostic_liveness_trace {
         config.with_runtime_liveness_trace()
     } else {
@@ -100,17 +103,22 @@ pub(super) fn run(
     // Apply recovery only after the guest has opened the device. This makes
     // the recovery interval causal: the kernel's earlier probe traffic cannot
     // cross a transition that the host has not started yet.
-    let recovery_started_tick = await_recovery_readiness(&mut node)?;
-    let block = node
-        .shared_block_device()
-        .ok_or("block recovery subflight omitted its live device")?;
-    block
-        .apply_storage_boundary_mutations(&[], &[(recovery_transition(), recovery_started_tick)])?;
-    let recovery_deadline_tick = recovery_started_tick
-        .checked_add(virtual_nanos_to_ticks(RECOVERY_NANOS)?)
-        .ok_or("block recovery deadline overflowed virtual time")?;
+    let primary = (|| {
+        let recovery_started_tick = await_recovery_readiness(&mut node)?;
+        let block = node
+            .shared_block_device()
+            .ok_or("block recovery subflight omitted its live device")?;
+        block.apply_storage_boundary_mutations(
+            &[],
+            &[(recovery_transition(), recovery_started_tick)],
+        )?;
+        let recovery_deadline_tick = recovery_started_tick
+            .checked_add(virtual_nanos_to_ticks(RECOVERY_NANOS)?)
+            .ok_or("block recovery deadline overflowed virtual time")?;
 
-    let primary = exercise_recovery_and_prepare_hot_fork(&mut node, recovery_deadline_tick);
+        let evidence = exercise_recovery_and_prepare_hot_fork(&mut node, recovery_deadline_tick)?;
+        Ok::<_, Box<dyn Error>>((recovery_started_tick, evidence))
+    })();
     let shutdown = node.shutdown_child().map_err(|error| error.to_string());
     drop(node);
     let trace = match &shutdown {
@@ -127,7 +135,7 @@ pub(super) fn run(
     drop(directory);
     let finish = owner.finish().map_err(|error| error.to_string());
 
-    let primary = primary.map_err(|error| {
+    let (recovery_started_tick, primary) = primary.map_err(|error| {
         let trace = trace.map_or_else(String::new, |trace| match trace {
             Ok(trace) => format!(
                 "; retained_qmp_monitor_trace_tail_begin\n{trace}\n\

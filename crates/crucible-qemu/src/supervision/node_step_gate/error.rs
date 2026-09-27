@@ -7,6 +7,14 @@ use thiserror::Error;
 /// Error returned by the live [`QemuNode`] bounded-step gate.
 #[derive(Debug, Error)]
 pub enum QemuLiveNodeStepGateError {
+    /// A caller requested a runtime trace outside the finite admission range.
+    #[error("runtime trace budget {requested} must be within 1..={maximum} bytes")]
+    InvalidRuntimeTraceBudget {
+        /// Rejected byte ceiling.
+        requested: u64,
+        /// Maximum supported byte ceiling.
+        maximum: u64,
+    },
     /// A scheduled ceiling reached or exceeded the busy cap.
     #[error(
         "scheduled ceiling {ceiling_icount} reaches busy cap {busy_cap_icount}; the guest would idle and forfeit determinism"

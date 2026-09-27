@@ -1,7 +1,7 @@
 //! Pinned authority over one prepared QEMU run directory and its launch artifacts.
 
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -365,6 +365,57 @@ impl QemuPreparedRunDirectory {
             MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES,
             MAXIMUM_RUNTIME_DETERMINISM_TRACE_LINES,
         )
+    }
+
+    /// Inspects an authenticated runtime trace with bounded reader memory.
+    ///
+    /// The callback must consume the entire pinned file. The named inode and
+    /// size are rechecked after it returns, so a replaced or extended trace
+    /// cannot become accepted evidence. The complete file remains in the run
+    /// directory until the caller finishes the attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns the callback's error or a [`QemuSpawnError`] converted into
+    /// `E` when the trace exceeds its admitted limit, is not fully consumed,
+    /// or changes identity during inspection.
+    pub fn inspect_runtime_determinism_trace_after_reap<T, E>(
+        &self,
+        maximum_bytes: u64,
+        inspect: impl FnOnce(&mut dyn BufRead) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<QemuSpawnError>,
+    {
+        let authenticated = self
+            .open_authenticated_diagnostic_trace_after_reap(
+                crate::QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+                &self.runtime_determinism_trace_identity,
+                Some(maximum_bytes),
+            )
+            .map_err(E::from)?;
+        let mut reader = BufReader::new(File::from(authenticated.descriptor));
+        let value = inspect(&mut reader)?;
+        let consumed = reader.stream_position().map_err(|source| {
+            E::from(QemuSpawnError::Io {
+                operation: "inspect consumed runtime trace length",
+                source,
+            })
+        })?;
+        if consumed != authenticated.bytes {
+            return Err(E::from(QemuSpawnError::DiagnosticTraceChanged {
+                file: crate::QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+            }));
+        }
+
+        self.revalidate_authenticated_diagnostic_trace_after_read(
+            crate::QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+            authenticated.identity,
+            authenticated.metadata.st_size,
+            authenticated.credentials,
+        )
+        .map_err(E::from)?;
+        Ok(value)
     }
 
     /// Retains the authenticated tail of an oversized QMP monitor trace.

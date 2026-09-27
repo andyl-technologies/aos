@@ -133,6 +133,87 @@ fn retained_runtime_trace_accepts_only_its_prepared_inode() -> Result<(), Box<dy
 }
 
 #[test]
+fn streamed_runtime_trace_rejects_replacement_oversize_and_partial_reads()
+-> Result<(), Box<dyn Error>> {
+    let trace = b"crucible_sim_determinism_timer seq=1 timer=3 list=1 scope=global owner=rr expire_ps=10 current_ps=10 raw=80\n";
+    let fixture = TraceRetentionFixture::new()?;
+    fixture.prepared.prepare_runtime_determinism_trace()?;
+    std::fs::write(fixture.runtime_trace_path(), trace)?;
+
+    let retained = fixture
+        .prepared
+        .inspect_runtime_determinism_trace_after_reap(u64::try_from(trace.len())?, |reader| {
+            let mut bytes = Vec::new();
+            reader
+                .read_to_end(&mut bytes)
+                .map_err(|source| QemuSpawnError::Io {
+                    operation: "read pinned runtime trace",
+                    source,
+                })?;
+            Ok::<_, QemuSpawnError>(bytes)
+        })?;
+    assert_eq!(retained, trace);
+
+    let partial = fixture
+        .prepared
+        .inspect_runtime_determinism_trace_after_reap(u64::try_from(trace.len())?, |_reader| {
+            Ok::<_, QemuSpawnError>(())
+        });
+    assert!(matches!(
+        partial,
+        Err(QemuSpawnError::DiagnosticTraceChanged { .. })
+    ));
+
+    let oversize = fixture
+        .prepared
+        .inspect_runtime_determinism_trace_after_reap(8, |_reader| Ok::<_, QemuSpawnError>(()));
+    assert!(matches!(
+        oversize,
+        Err(QemuSpawnError::DiagnosticTraceLength { .. })
+    ));
+
+    let replaced = fixture
+        .prepared
+        .inspect_runtime_determinism_trace_after_reap(u64::try_from(trace.len())?, |reader| {
+            let mut bytes = Vec::new();
+            reader
+                .read_to_end(&mut bytes)
+                .map_err(|source| QemuSpawnError::Io {
+                    operation: "read pinned runtime trace",
+                    source,
+                })?;
+            std::fs::rename(
+                fixture.runtime_trace_path(),
+                fixture.runtime_trace_path().with_extension("prior"),
+            )
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "rename runtime trace",
+                source,
+            })?;
+            std::fs::write(fixture.runtime_trace_path(), trace).map_err(|source| {
+                QemuSpawnError::Io {
+                    operation: "replace runtime trace",
+                    source,
+                }
+            })?;
+            std::fs::set_permissions(
+                fixture.runtime_trace_path(),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "secure replacement runtime trace",
+                source,
+            })?;
+            Ok::<_, QemuSpawnError>(bytes)
+        });
+    assert!(
+        matches!(replaced, Err(QemuSpawnError::DiagnosticTraceChanged { .. })),
+        "unexpected replacement verdict: {replaced:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn retained_runtime_liveness_tail_bounds_an_oversized_authenticated_trace()
 -> Result<(), Box<dyn Error>> {
     let fixture = TraceRetentionFixture::new()?;

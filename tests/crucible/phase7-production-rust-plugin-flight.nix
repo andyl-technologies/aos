@@ -102,6 +102,16 @@
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
             -p crucible-qemu --lib \
+            spawn::tests::streamed_runtime_trace_rejects_replacement_oversize_and_partial_reads
+          cargo test --frozen --offline \
+            --manifest-path crates/Cargo.toml \
+            --target-dir "$TMPDIR/target" \
+            -p crucible-qemu --lib \
+            runtime_trace_budget_rejects_unbounded_or_empty_admission
+          cargo test --frozen --offline \
+            --manifest-path crates/Cargo.toml \
+            --target-dir "$TMPDIR/target" \
+            -p crucible-qemu --lib \
             supervision::runtime_determinism_trace::tests
           cargo test --frozen --offline --release --no-run \
             --message-format=json-render-diagnostics \
@@ -154,7 +164,7 @@
     mkdir -m 700 /tmp/attempts/run
   '';
   productionFlightCommand = ''
-    ${pkgs.coreutils}/bin/timeout -k 15 600 \
+    ${pkgs.coreutils}/bin/timeout -k 15 900 \
       ${flight}/bin/crucible-qemu-production-plugin-flight \
       ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
       ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
@@ -172,12 +182,22 @@
     ${attemptHostSetupScript}
 
     result=/tmp/production-plugin-result
-    runtime_trace=/tmp/production-reference-runtime-determinism.trace
+    runtime_trace=/tmp/production-reference-runtime-determinism.summary
     ${productionFlightCommand} "$runtime_trace" > "$result"
     test -f "$runtime_trace"
     test ! -L "$runtime_trace"
     test -s "$runtime_trace"
-    runtime_trace_sha256=$(${pkgs.coreutils}/bin/sha256sum "$runtime_trace" | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)
+    ${pkgs.grep}/bin/grep -Fxq 'schema=crucible-runtime-trace-summary-v1' "$runtime_trace"
+    test "$(${pkgs.grep}/bin/grep -Ec '^bytes=[1-9][0-9]*$' "$runtime_trace")" -eq 1
+    runtime_trace_bytes=$(${pkgs.grep}/bin/grep -E '^bytes=[1-9][0-9]*$' "$runtime_trace" | ${pkgs.coreutils}/bin/cut -d = -f 2)
+    test "$runtime_trace_bytes" -gt 0
+    test "$runtime_trace_bytes" -le 268435456
+    printf 'reference_runtime_trace_bytes=%s\n' "$runtime_trace_bytes" >> "$result"
+    ${pkgs.grep}/bin/grep -Eq '^rows=[1-9][0-9]*$' "$runtime_trace"
+    ${pkgs.grep}/bin/grep -Eq '^post_8m_rows=[1-9][0-9]*$' "$runtime_trace"
+    ${pkgs.grep}/bin/grep -Eq '^post_8m_normalized_sha256=[0-9a-f]{64}$' "$runtime_trace"
+    test "$(${pkgs.grep}/bin/grep -Ec '^raw_sha256=[0-9a-f]{64}$' "$runtime_trace")" -eq 1
+    runtime_trace_sha256=$(${pkgs.grep}/bin/grep -E '^raw_sha256=[0-9a-f]{64}$' "$runtime_trace" | ${pkgs.coreutils}/bin/cut -d = -f 2)
     printf 'reference_runtime_trace_sha256=%s\n' "$runtime_trace_sha256" >> "$result"
     cat "$result"
     for evidence in \
@@ -288,7 +308,9 @@
     test "$rounding_delta" -lt "$retirement_step_ps"
     test "$armed_raw_icount" = "$fired_raw_icount"
     test "$armed_deadline_tick" = "$published_wake"
-    test "$setup_marker_icount" -le "$armed_raw_icount"
+    # The marker and deadline are logical picosecond ticks; raw icount is a
+    # separate retired-instruction count and cannot be compared to the marker.
+    test "$setup_marker_icount" -le "$armed_deadline_tick"
     test "$published_wake" = "$post_wake"
     test "$witness_completed" = 1
     test "$witness_reserved" = 0
@@ -373,9 +395,9 @@
       production_host_parallel_authenticated_exact_recovery=true; do
       ${pkgs.grep}/bin/grep -Fx "$evidence" "$lifecycle_log" >> "$result"
     done
-    printf '%s\n' PRODUCTION_PLUGIN_RUNTIME_TRACE_BEGIN
+    printf '%s\n' PRODUCTION_PLUGIN_RUNTIME_TRACE_SUMMARY_BEGIN
     ${pkgs.coreutils}/bin/base64 "$runtime_trace"
-    printf '%s\n' PRODUCTION_PLUGIN_RUNTIME_TRACE_END
+    printf '%s\n' PRODUCTION_PLUGIN_RUNTIME_TRACE_SUMMARY_END
     printf '%s\n' PRODUCTION_PLUGIN_RESULT_BEGIN
     cat "$result"
     printf '%s\n' PRODUCTION_PLUGIN_RESULT_END
@@ -420,11 +442,17 @@
   gate = testing.mkVMTest {
     name = "crucible-production-rust-plugin-flight";
     memory = 8192;
+    # Two sequential plugin variants precede the separately bounded host
+    # parallel subflight; the 120-second headless default cannot contain them.
+    timeout = 3000;
     inherit rootfsDeps testScript;
   };
   blockRecoveryDiagnostic = testing.mkVMTest {
     name = "crucible-production-rust-plugin-block-recovery-diagnostic";
     memory = 8192;
+    # The inner advance has a finite 300-second host panic; leave enough time
+    # for rootfs boot, guest setup, clean QEMU reap, and retained diagnostics.
+    timeout = 600;
     inherit rootfsDeps;
     testScript = blockRecoveryTestScript;
   };

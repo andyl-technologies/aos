@@ -366,7 +366,8 @@ pub use supervision::{
     QemuRuntimeDeterminismIdlePhase, QemuRuntimeDeterminismIdleRecord,
     QemuRuntimeDeterminismTimerOwner, QemuRuntimeDeterminismTimerRecord,
     QemuRuntimeDeterminismTimerScope, QemuRuntimeDeterminismTraceError,
-    QemuRuntimeDeterminismTraceRecord, QemuSharedBlockDevice, launch_qemu_production_fresh_node,
-    parse_qemu_rr_control_boundary_trace, parse_qemu_runtime_determinism_trace,
-    run_qemu_live_hot_fork_child_gate, run_qemu_live_hot_fork_child_stress_gate,
+    QemuRuntimeDeterminismTraceRecord, QemuRuntimeDeterminismTraceValidator, QemuSharedBlockDevice,
+    launch_qemu_production_fresh_node, parse_qemu_rr_control_boundary_trace,
+    parse_qemu_runtime_determinism_trace, run_qemu_live_hot_fork_child_gate,
+    run_qemu_live_hot_fork_child_stress_gate,
 };
