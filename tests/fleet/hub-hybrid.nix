@@ -1205,7 +1205,7 @@ in {
       print("hybrid OCI route ready through public Worker")
 
       external_cache_bytes = b"fleet external S3 delivery through Worker\n"
-      external_cache_path = "web/probe.bin"
+      external_cache_path = "nar/fleet-external-probe.nar.zst"
       client.succeed(
           f"printf '%s' {shlex.quote(base64.b64encode(external_cache_bytes).decode())} | "
           "${pkgs.coreutils}/bin/base64 -d > /tmp/hybrid-external-cache-object"
@@ -1284,7 +1284,7 @@ in {
           "hybrid-external-cache-route",
           "route add cache:fleet/external --stable-id hybrid-external-cache-route "
           f"--endpoint hybrid-oci@{oci_generation} --base-path /external-cache "
-          "--mode hub-proxy --placement primary --serves cache --serves web --access public",
+          "--mode hub-proxy --placement primary --serves cache --access public",
       )
       external_routes = json.loads(client.succeed(hub_command(
           "route list cache:fleet/external"
@@ -1298,7 +1298,7 @@ in {
           "route enable hybrid-external-cache-route "
           f"--if-version {shlex.quote(external_route['resource_version'])}",
       )
-      external_url = "https://aos.andyl.org/external-cache/web/probe.bin"
+      external_url = f"https://aos.andyl.org/external-cache/{external_cache_path}"
       delivered = client.wait_until_succeeds(
           f"{CURL} -fsS {external_url}", timeout=180,
       )
