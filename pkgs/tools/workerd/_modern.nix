@@ -224,7 +224,7 @@ in
         ++ lib.optionals isArmCross ["+local_repository+aos_arm64_toolchain"];
       # Native and ARM64 analysis produce the same pinned dependency snapshot;
       # local toolchain repositories are regenerated for the selected target.
-      depsHash = "sha256-7vU7V20b8HnQHqpzW+2SuwkZihPmZMoUIpbfWZt+8TQ=";
+      depsHash = "sha256-W+UNuGP5iVKCl8xXowDLG135m/MgbUHV2jhCOx3Cp5Q=";
       bazelTarget = "//src/workerd/server:workerd";
       bazelFlags =
         [
@@ -246,6 +246,7 @@ in
       fetchPostPatch = configureEnvironment;
       postFetch = ''
         ${python3}/bin/python3 ${./clean-bazel-tool-downloads.py} "$bazelOut/external"
+        ${python3}/bin/python3 ${./strip-opaque-deps.py} "$bazelOut/external"
       '';
       preBazelBuild =
         configureEnvironment
