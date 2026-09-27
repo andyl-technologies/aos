@@ -15,7 +15,7 @@ in
         name = "basic-block-coverage";
         sqliteRequired = true;
         cargoBuildCommands = [
-          "test --frozen --offline --release --no-run -p crucible --test gate_basic_block_coverage"
+          "test --frozen --offline --release --no-run -p crucible --features test-support --test gate_basic_block_coverage"
           "test --frozen --offline --release --no-run -p crucible-qemu --lib"
           "test --frozen --offline --release --no-run -p crucible-qemu-plugin --lib"
         ];
