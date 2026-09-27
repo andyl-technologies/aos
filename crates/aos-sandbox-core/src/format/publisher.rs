@@ -208,7 +208,7 @@ pub(super) fn decode_authority(
 )]
 mod tests {
     use super::*;
-    use crate::{FeatureRef, MediaType, ObjectDescriptor};
+    use crate::{FeatureRef, MediaType, ObjectDescriptor, PortableMediaType};
 
     fn draft() -> PublisherDomainPlanDraft {
         PublisherDomainPlanDraft {
@@ -300,7 +300,7 @@ mod tests {
         let mut fields = draft();
         fields.protocol_version = ProtocolVersion::new(1, 1);
         fields.request.content = ObjectDescriptor::new(
-            MediaType::new("application/vnd.aos.sandbox.tree.v1").unwrap(),
+            MediaType::new(PortableMediaType::Tree.as_str()).unwrap(),
             ObjectDigest::from_bytes([11; 32]),
             3,
         );
@@ -308,7 +308,7 @@ mod tests {
         let expected_hex = format!(
             concat!(
                 "88018201018650{}50{}50{}50{}820150{}5820{}",
-                "8850{}5820{}50{}50{}847823{}015820{}035820{}5820{}191000",
+                "8850{}5820{}50{}50{}847828{}015820{}035820{}5820{}191000",
                 "865820{}010250{}03042019012c80"
             ),
             "01".repeat(16),
@@ -321,7 +321,7 @@ mod tests {
             "08".repeat(32),
             "09".repeat(16),
             "0a".repeat(16),
-            "6170706c69636174696f6e2f766e642e616f732e73616e64626f782e747265652e7631",
+            "6170706c69636174696f6e2f766e642e616f732e73616e64626f782e747265652e76312b63626f72",
             "0b".repeat(32),
             "0c".repeat(32),
             "0d".repeat(32),

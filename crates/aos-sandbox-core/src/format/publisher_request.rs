@@ -244,7 +244,7 @@ mod tests {
     use super::*;
     use crate::model::{CacheDomain, CacheDomainKind};
     use crate::{
-        CacheDomainId, MediaType, NodeId, ProjectId, PublisherInstanceId,
+        CacheDomainId, MediaType, NodeId, PortableMediaType, ProjectId, PublisherInstanceId,
         PublisherRequestCommitment, RevocationScopeId,
     };
 
@@ -342,14 +342,14 @@ mod tests {
         let mut fields = draft();
         fields.protocol_version = ProtocolVersion::new(1, 1);
         fields.claim.content = ObjectDescriptor::new(
-            MediaType::new("application/vnd.aos.sandbox.tree.v1").unwrap(),
+            MediaType::new(PortableMediaType::Tree.as_str()).unwrap(),
             ObjectDigest::from_bytes([11; 32]),
             3,
         );
         let expected = hex::decode(format!(
             concat!(
                 "8b0150{}50{}5820{}8201018650{}50{}50{}50{}820150{}5820{}",
-                "8750{}5820{}50{}50{}847823{}015820{}035820{}191000",
+                "8750{}5820{}50{}50{}847828{}015820{}035820{}191000",
                 "865820{}010250{}03042019012c80"
             ),
             "10".repeat(16),
@@ -365,7 +365,7 @@ mod tests {
             "08".repeat(32),
             "09".repeat(16),
             "0a".repeat(16),
-            "6170706c69636174696f6e2f766e642e616f732e73616e64626f782e747265652e7631",
+            "6170706c69636174696f6e2f766e642e616f732e73616e64626f782e747265652e76312b63626f72",
             "0b".repeat(32),
             "0c".repeat(32),
             "0e".repeat(32),
