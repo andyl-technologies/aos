@@ -52,8 +52,9 @@ retains the admission record before journaling effects, requires the same
 provider assignments when resuming, and checks the admitted plan and journal
 again at host receipt. The image also retains a separate host-stage source
 bundle and static contract, and its fixed point selects a distinct durable
-stage journal. The host receiver currently authenticates only the initrd
-handoff; executing the host-stage bundle remains a cutover task. The
+stage journal. The host-stage runner now receives the initrd handoff, admits
+the host bundle, and replays its own durable execution journal. Boot services
+do not yet start that runner, so host execution remains a cutover task. The
 cutover must distinguish image-owned boot services from ability-owned services
 in the same typed service configuration, observe the live boot roots at stage
 entry, and remove their duplicate transitions before the host runner owns the

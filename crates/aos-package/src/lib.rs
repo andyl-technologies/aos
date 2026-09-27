@@ -756,15 +756,27 @@ pub enum PackageCommand {
         #[arg(long)]
         out: PathBuf,
     },
-    /// Hidden: complete initrd ability work and release journal ownership.
+    /// Hidden: execute a sealed boot-stage source plan.
     #[command(name = "__ability-stage-run", hide = true)]
     AbilityStageRun {
         /// Execution stage owned by this controller.
         #[arg(long)]
         stage: String,
-        /// Mounted root that will become the host root.
+        /// Mounted host root for initrd, or `/` for host execution.
         #[arg(long)]
         root: PathBuf,
+        /// Durable image profile used to authenticate host execution.
+        #[arg(long = "image-profile")]
+        image_profile: Option<PathBuf>,
+        /// Received initrd source bundle required before host execution.
+        #[arg(long = "received-source-stage-bundle")]
+        received_source_stage_bundle: Option<PathBuf>,
+        /// Store identity file of the received initrd static contract.
+        #[arg(long = "received-static-contract-identity-file")]
+        received_static_contract_identity_file: Option<PathBuf>,
+        /// Image copy of the received initrd static contract.
+        #[arg(long = "received-static-contract")]
+        received_static_contract: Option<PathBuf>,
         /// Checked source bundle carrying the exact executable plan.
         #[arg(long = "source-stage-bundle")]
         source_stage_bundle: PathBuf,
@@ -3564,6 +3576,10 @@ pub async fn run(
     if let PackageCommand::AbilityStageRun {
         stage,
         root,
+        image_profile,
+        received_source_stage_bundle,
+        received_static_contract_identity_file,
+        received_static_contract,
         source_stage_bundle,
         static_contract_identity_file,
         static_contract,
@@ -3572,13 +3588,54 @@ pub async fn run(
         let static_contract_identity = config_eval::stage_handoff::read_static_contract_identity(
             &static_contract_identity_file,
         )?;
-        return config_eval::stage_handoff::run_initrd_stage(
-            stage,
-            root,
-            source_stage_bundle,
-            &static_contract_identity,
-            static_contract,
-        );
+        return match stage.as_str() {
+            "initrd" => {
+                if image_profile.is_some()
+                    || received_source_stage_bundle.is_some()
+                    || received_static_contract_identity_file.is_some()
+                    || received_static_contract.is_some()
+                {
+                    bail!("initrd stage runner received host-only inputs")
+                }
+                config_eval::stage_handoff::run_initrd_stage(
+                    stage,
+                    root,
+                    source_stage_bundle,
+                    &static_contract_identity,
+                    static_contract,
+                )
+            }
+            "host" => {
+                if root != Path::new("/") {
+                    bail!("host stage runner requires the running root")
+                }
+                let image_profile = image_profile
+                    .as_deref()
+                    .context("host stage requires an image profile")?;
+                let initrd_bundle = received_source_stage_bundle
+                    .as_deref()
+                    .context("host stage requires the received initrd source bundle")?;
+                let initrd_identity_file = received_static_contract_identity_file
+                    .as_deref()
+                    .context("host stage requires the received initrd contract identity")?;
+                let initrd_contract = received_static_contract
+                    .as_deref()
+                    .context("host stage requires the received initrd static contract")?;
+                let initrd_identity = config_eval::stage_handoff::read_static_contract_identity(
+                    &initrd_identity_file,
+                )?;
+                config_eval::stage_handoff::run_host_stage(
+                    &image_profile,
+                    &initrd_bundle,
+                    &initrd_identity,
+                    &initrd_contract,
+                    &source_stage_bundle,
+                    &static_contract_identity,
+                    &static_contract,
+                )
+            }
+            _ => bail!("ability stage runner supports only initrd or host"),
+        };
     }
     if let PackageCommand::AbilityStageValidate {
         from_stage,

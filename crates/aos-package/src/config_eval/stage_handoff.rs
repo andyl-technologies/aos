@@ -5,7 +5,13 @@
 //! in preserved `/run`. The host authenticates its
 //! running immutable image and the image-embedded copy of the initrd static
 //! contract, checks the exact released journal head, and then appends the
-//! receiving record. No process-private handle crosses the stage boundary.
+//! receiving record. The host then admits and executes its separately sealed
+//! source stage under a distinct durable journal. No process-private handle
+//! crosses the stage boundary.
+
+mod host;
+
+pub use host::run_host_stage;
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read as _, Write as _};
@@ -30,13 +36,11 @@ use crate::types::ImageGeneration;
 const CHECKPOINT_SCHEMA: &str = "aos.ability.stage-handoff-checkpoint/v1";
 const JOURNAL_EVENT_SCHEMA: &str = "aos.ability.stage-handoff-event/v1";
 const TRANSACTION_ROOT: &str = "ability-stage-transactions";
-const INITRD_TRANSACTION_ROOT: &str = "initrd";
 const JOURNAL_FILE: &str = "execution.journal";
 const RETAINED_CHECKPOINT_FILE: &str = "release-checkpoint.json";
 const BOOT_ID_PATH: &str = "/proc/sys/kernel/random/boot_id";
 const INITRD_CHECKPOINT_PATH: &str = "/run/aos/ability-stage-handoff/initrd.json";
 const TRANSACTION_STORAGE_INTERFACE: &str = "aos.boot.transaction-storage-view";
-const TRANSACTION_STORAGE_PURPOSE: &str = "initrd-stage-journal";
 const CONTENT_OBJECT_INTERFACE: &str = "aos.artifact.content-addressed-object";
 const AUTHORIZED_INPUT_COMMIT_PREFIX: &str = "commit-authorized-input-";
 const ARTIFACT_RESOURCE_OUTPUT: &str = "artifact-resource";
@@ -104,7 +108,8 @@ pub fn run_initrd_stage(
         &contract_bytes,
         StaticAbilityExecutionStage::Initrd,
     )?;
-    let transaction_storage = selected_transaction_storage(&source_stage_bytes)?;
+    let transaction_storage =
+        selected_transaction_storage(&source_stage_bytes, StaticAbilityExecutionStage::Initrd)?;
 
     run_initrd_stage_with(
         &transaction_storage,
@@ -306,7 +311,8 @@ impl StageCheckpoint {
         );
         validate_boot_id(&self.boot_id)?;
         ensure!(
-            self.transaction == transaction_for_boot(&self.boot_id)?,
+            self.transaction
+                == transaction_for_boot(StaticAbilityExecutionStage::Initrd, &self.boot_id)?,
             "stage checkpoint transaction differs from its boot identity"
         );
         ensure!(
@@ -342,6 +348,18 @@ enum StageEvent {
         source_stage_bundle_sha256: Sha256Digest,
         source_stage_admission_sha256: Sha256Digest,
     },
+    HostPrepared {
+        schema: String,
+        boot_id: String,
+        transaction: TransactionId,
+        transaction_storage: ResourceReference,
+        transaction_root: String,
+        image: ImageIdentity,
+        static_ability_contract_identity: String,
+        static_ability_contract_sha256: Sha256Digest,
+        source_stage_bundle_sha256: Sha256Digest,
+        source_stage_admission_sha256: Sha256Digest,
+    },
     SourceCompleted {
         schema: String,
         transaction: TransactionId,
@@ -362,7 +380,7 @@ enum StageEvent {
 impl StageEvent {
     fn execution_digest(&self) -> Result<Sha256Digest> {
         let Self::SourceCompleted { execution, .. } = self else {
-            bail!("stage event is not an initrd completion")
+            bail!("stage event is not a source-stage completion")
         };
         canonical_value_digest(execution)
     }
@@ -386,7 +404,19 @@ impl JournalPayload for StageEvent {
                     && *source_stage == ExecutionStage::Initrd
                     && *receiver_stage == ExecutionStage::Host
                     && validate_boot_id(boot_id).is_ok()
-                    && transaction_for_boot(boot_id).is_ok_and(|expected| &expected == transaction)
+                    && transaction_for_boot(StaticAbilityExecutionStage::Initrd, boot_id)
+                        .is_ok_and(|expected| &expected == transaction)
+            }
+            Self::HostPrepared {
+                schema,
+                boot_id,
+                transaction,
+                ..
+            } => {
+                schema == JOURNAL_EVENT_SCHEMA
+                    && validate_boot_id(boot_id).is_ok()
+                    && transaction_for_boot(StaticAbilityExecutionStage::Host, boot_id)
+                        .is_ok_and(|expected| &expected == transaction)
             }
             Self::SourceCompleted {
                 schema, execution, ..
@@ -418,7 +448,7 @@ impl StageExecutionEvidence {
     fn validate(&self) -> Result<()> {
         ensure!(
             self.terminal == TerminalResult::Succeeded,
-            "initrd ability stage did not establish its target state"
+            "boot ability stage did not establish its target state"
         );
         ensure!(
             self.retained_resources.windows(2).all(|pair| {
@@ -428,7 +458,7 @@ impl StageExecutionEvidence {
                     .then_with(|| pair[0].output.cmp(&pair[1].output))
                     .is_lt()
             }),
-            "initrd stage retained resources are not strictly canonical"
+            "boot stage retained resources are not strictly canonical"
         );
         Ok(())
     }
@@ -543,8 +573,13 @@ struct TransactionStorageRealization {
 
 fn selected_transaction_storage(
     source_stage_bundle_bytes: &[u8],
+    stage: StaticAbilityExecutionStage,
 ) -> Result<TransactionStorageSelection> {
     let checked = super::source_stage::decode_source_stage(source_stage_bundle_bytes)?;
+    let purpose = format!(
+        "{}-stage-journal",
+        super::transaction_store::boot_stage_name(stage)
+    );
     ensure!(
         checked
             .template()
@@ -552,8 +587,8 @@ fn selected_transaction_storage(
             .environment()
             .environment
             .stage
-            == ExecutionStage::Initrd,
-        "source ability stage does not select the initrd environment"
+            == execution_stage(stage),
+        "source ability stage does not select the requested environment"
     );
 
     let resources = checked
@@ -572,15 +607,15 @@ fn selected_transaction_storage(
                     .as_json()
                     .get("purpose")
                     .and_then(serde_json::Value::as_str)
-                    == Some(TRANSACTION_STORAGE_PURPOSE)
+                    == Some(purpose.as_str())
         })
         .collect::<Vec<_>>();
     let [revision] = matching_resources.as_slice() else {
-        bail!("resolved initrd stage does not select exactly one transaction-storage view")
+        bail!("resolved boot stage does not select exactly one transaction-storage view")
     };
     ensure!(
         revision.lifetime == ResourceLifetime::Transaction,
-        "initrd transaction-storage view has the wrong lifetime"
+        "boot transaction-storage view has the wrong lifetime"
     );
 
     let matching_bindings = checked
@@ -606,19 +641,19 @@ fn selected_transaction_storage(
         })
         .collect::<Vec<_>>();
     let [binding] = matching_bindings.as_slice() else {
-        bail!("resolved initrd transaction-storage view has no exact checked caller binding")
+        bail!("resolved boot transaction-storage view has no exact checked caller binding")
     };
 
     let materialized = revision
         .realization
         .literal_value()
-        .context("initrd transaction-storage realization is unresolved")?;
+        .context("boot transaction-storage realization is unresolved")?;
     let realization: TransactionStorageRealization =
         serde_json::from_value(materialized.as_json().clone())
-            .context("decoding initrd transaction-storage realization")?;
+            .context("decoding boot transaction-storage realization")?;
     ensure!(
         realization.schema == "aos.boot.transaction-storage-realization/v1",
-        "unsupported initrd transaction-storage realization"
+        "unsupported boot transaction-storage realization"
     );
     let root = PathBuf::from(realization.path);
     validate_transaction_storage_path(&root)?;
@@ -706,14 +741,18 @@ fn run_initrd_stage_with(
     .context("authenticating initrd static ability contract")?;
     let contract_digest = sha256_digest(contract_bytes);
 
-    let transaction = transaction_for_boot(boot_id)?;
+    let transaction = transaction_for_boot(StaticAbilityExecutionStage::Initrd, boot_id)?;
     let transaction_root = transaction_storage
         .root
         .to_str()
         .context("selected transaction-storage path is not UTF-8")?
         .to_string();
     let source_stage_bundle_sha256 = sha256_digest(source_stage_bundle_bytes);
-    let transaction_dir = prepare_transaction_directory(&transaction_storage.root, &transaction)?;
+    let transaction_dir = prepare_transaction_directory(
+        &transaction_storage.root,
+        StaticAbilityExecutionStage::Initrd,
+        &transaction,
+    )?;
     let admitted = super::source_stage_admission::load_or_admit_source_stage(
         source_stage_bundle_bytes,
         &packages,
@@ -749,11 +788,12 @@ fn run_initrd_stage_with(
                 None,
                 &transaction,
                 || {
-                    execute_source_initrd_stage(
+                    execute_source_stage(
                         &admitted,
                         &packages,
                         &transaction_storage.root,
                         transaction.clone(),
+                        StaticAbilityExecutionStage::Initrd,
                     )
                 },
                 |_| Ok(()),
@@ -767,11 +807,12 @@ fn run_initrd_stage_with(
                 None,
                 &transaction,
                 || {
-                    execute_source_initrd_stage(
+                    execute_source_stage(
                         &admitted,
                         &packages,
                         &transaction_storage.root,
                         transaction.clone(),
+                        StaticAbilityExecutionStage::Initrd,
                     )
                 },
                 |_| Ok(()),
@@ -784,7 +825,13 @@ fn run_initrd_stage_with(
                 Some(second.body()),
                 &transaction,
                 || bail!("settled initrd stage attempted to invoke handlers again"),
-                |execution| validate_source_initrd_stage_evidence(&admitted.checked, execution),
+                |execution| {
+                    validate_source_stage_evidence(
+                        &admitted.checked,
+                        execution,
+                        StaticAbilityExecutionStage::Initrd,
+                    )
+                },
             )?;
             (second.digest(), completed)
         }
@@ -793,7 +840,13 @@ fn run_initrd_stage_with(
                 Some(second.body()),
                 &transaction,
                 || bail!("received initrd stage attempted to invoke handlers again"),
-                |execution| validate_source_initrd_stage_evidence(&admitted.checked, execution),
+                |execution| {
+                    validate_source_stage_evidence(
+                        &admitted.checked,
+                        execution,
+                        StaticAbilityExecutionStage::Initrd,
+                    )
+                },
             )?;
             bail!("initrd stage journal ownership was already received by the host")
         }
@@ -846,11 +899,11 @@ where
             ..
         } = existing
         else {
-            bail!("initrd stage journal does not record source execution")
+            bail!("boot stage journal does not record source execution")
         };
         ensure!(
             completed_transaction == transaction,
-            "initrd stage completion names another transaction"
+            "boot stage completion names another transaction"
         );
         execution.validate()?;
         validate_existing(execution)?;
@@ -866,9 +919,17 @@ where
     })
 }
 
-fn validate_source_initrd_stage_evidence(
+fn execution_stage(stage: StaticAbilityExecutionStage) -> ExecutionStage {
+    match stage {
+        StaticAbilityExecutionStage::Initrd => ExecutionStage::Initrd,
+        StaticAbilityExecutionStage::Host => ExecutionStage::Host,
+    }
+}
+
+fn validate_source_stage_evidence(
     checked: &aos_ability_plan::CheckedSourceStageAdmission,
     execution: &StageExecutionEvidence,
+    stage: StaticAbilityExecutionStage,
 ) -> Result<()> {
     ensure!(
         checked
@@ -877,43 +938,44 @@ fn validate_source_initrd_stage_evidence(
             .environment()
             .environment
             .stage
-            == ExecutionStage::Initrd,
-        "source ability stage does not select the initrd environment"
+            == execution_stage(stage),
+        "source ability stage does not select the requested environment"
     );
     ensure!(
         execution.plan == checked.plan().id() && execution.admission == checked.digest(),
-        "retained initrd execution differs from the admitted source plan"
+        "retained boot-stage execution differs from the admitted source plan"
     );
     for retained in &execution.retained_resources {
         ensure!(
             retained.operation.plan == checked.plan().id(),
-            "retained initrd resource names another plan"
+            "retained boot-stage resource names another plan"
         );
         let operation = checked
             .plan()
             .operation(&retained.operation.operation)
-            .context("retained initrd resource names an unknown operation")?;
+            .context("retained boot-stage resource names an unknown operation")?;
         let method = checked
             .plan()
             .operation_method(operation)
-            .context("retained initrd resource has no checked method")?;
+            .context("retained boot-stage resource has no checked method")?;
         let output = method
             .outputs
             .get(&retained.output)
-            .context("retained initrd resource names an unknown output")?;
+            .context("retained boot-stage resource names an unknown output")?;
         ensure!(
             output.is_retained_resource(),
-            "retained initrd resource names a non-retained output"
+            "retained boot-stage resource names a non-retained output"
         );
     }
     execution.validate()
 }
 
-fn execute_source_initrd_stage(
+fn execute_source_stage(
     admitted: &super::source_stage_admission::AdmittedSourceStage,
     packages: &crate::package_contract::VerifiedPackageContractSet,
     transaction_root: &Path,
     transaction: TransactionId,
+    stage: StaticAbilityExecutionStage,
 ) -> Result<StageExecutionEvidence> {
     let checked = &admitted.checked;
     ensure!(
@@ -923,15 +985,15 @@ fn execute_source_initrd_stage(
             .environment()
             .environment
             .stage
-            == ExecutionStage::Initrd,
-        "source ability stage does not select the initrd environment"
+            == execution_stage(stage),
+        "source ability stage does not select the requested environment"
     );
 
     let supported_features = super::native_activation::supported_native_ability_features()?;
     let dispatcher =
         super::handler_dispatch::HandlerDispatcher::for_static_plan(checked.plan(), packages)
-            .context("constructing initrd handler dispatcher")?;
-    let stage_directory = super::transaction_store::source_stage_directory(transaction_root);
+            .context("constructing boot-stage handler dispatcher")?;
+    let stage_directory = super::transaction_store::source_stage_directory(transaction_root, stage);
     let mut session = super::transaction_store::AbilityTransactionSession::open_source_stage(
         checked.plan(),
         transaction.clone(),
@@ -943,15 +1005,15 @@ fn execute_source_initrd_stage(
         admitted.environment.clone(),
         packages.clone(),
     )
-    .context("opening durable initrd ability transaction")?;
+    .context("opening durable boot-stage ability transaction")?;
 
     let current_policy = super::ability_policy::SourceStageAdmissionPolicy::new(checked.plan())?;
     let cancellation = super::cancellation::AbilityCancellationGuard::install()
-        .context("installing initrd ability cancellation listeners")?;
+        .context("installing boot-stage ability cancellation listeners")?;
     let mut observer = super::execution_observer::AbilityExecutionBoundaryObserver::load(
         admitted.template.fixed_point().execution_observer.as_ref(),
     )
-    .context("opening initrd execution observation channel")?;
+    .context("opening boot-stage execution observation channel")?;
     let terminal = dispatcher.run_static_to_terminal(
         &mut session,
         current_policy,
@@ -1056,8 +1118,11 @@ fn retain_host_handoff_evidence(image_profile: &Path, release: &ValidatedRelease
         stage_journal_limits().max_file_bytes,
         "received initrd stage journal",
     )?;
-    let destination =
-        prepare_transaction_directory(image_profile, &release.checkpoint.transaction)?;
+    let destination = prepare_transaction_directory(
+        image_profile,
+        StaticAbilityExecutionStage::Initrd,
+        &release.checkpoint.transaction,
+    )?;
     let admission_bytes = read_trusted_file(
         &release.admission_path,
         super::source_stage_admission::ADMISSION_RECORD_MAX_BYTES,
@@ -1190,8 +1255,11 @@ fn load_validated_release(
     );
 
     let transaction_root = Path::new(&checkpoint.transaction_root);
-    let transaction_dir =
-        existing_transaction_directory(transaction_root, &checkpoint.transaction)?;
+    let transaction_dir = existing_transaction_directory(
+        transaction_root,
+        StaticAbilityExecutionStage::Initrd,
+        &checkpoint.transaction,
+    )?;
     let journal_path = transaction_dir.join(JOURNAL_FILE);
     let admission_path = transaction_dir.join(super::source_stage_admission::ADMISSION_RECORD_FILE);
     let admitted_plan = super::source_stage_admission::validate_retained_source_stage(
@@ -1202,6 +1270,7 @@ fn load_validated_release(
     )?;
     let stage_transaction = super::transaction_store::source_stage_transaction_directory(
         transaction_root,
+        StaticAbilityExecutionStage::Initrd,
         &checkpoint.transaction,
     );
     let stage_transactions = stage_transaction
@@ -1219,6 +1288,7 @@ fn load_validated_release(
     }
     let plan_path = super::transaction_store::source_stage_plan_bundle_path(
         transaction_root,
+        StaticAbilityExecutionStage::Initrd,
         &checkpoint.transaction,
     );
     let retained_plan = read_trusted_file(
@@ -1339,7 +1409,11 @@ fn validate_source_records(
             && canonical_value_digest(execution)? == checkpoint.execution_sha256,
         "initrd stage completion differs from the released checkpoint"
     );
-    validate_source_initrd_stage_evidence(admitted_plan, execution)?;
+    validate_source_stage_evidence(
+        admitted_plan,
+        execution,
+        StaticAbilityExecutionStage::Initrd,
+    )?;
     execution.authorized_input_artifact()?;
     Ok(())
 }
@@ -1394,28 +1468,30 @@ fn validate_received_record(
 
 fn prepare_transaction_directory(
     transaction_root: &Path,
+    stage: StaticAbilityExecutionStage,
     transaction: &TransactionId,
 ) -> Result<PathBuf> {
     validate_transaction_storage_path(transaction_root)?;
     ensure_private_directory(transaction_root, false)?;
     let root = transaction_root.join(TRANSACTION_ROOT);
     ensure_private_directory(&root, true)?;
-    let initrd = root.join(INITRD_TRANSACTION_ROOT);
-    ensure_private_directory(&initrd, true)?;
-    let transaction_dir = initrd.join(transaction.0.as_str());
+    let stage_root = root.join(super::transaction_store::boot_stage_name(stage));
+    ensure_private_directory(&stage_root, true)?;
+    let transaction_dir = stage_root.join(transaction.0.as_str());
     ensure_private_directory(&transaction_dir, true)?;
-    sync_directory(&initrd)?;
+    sync_directory(&stage_root)?;
     Ok(transaction_dir)
 }
 
 fn existing_transaction_directory(
     transaction_root: &Path,
+    stage: StaticAbilityExecutionStage,
     transaction: &TransactionId,
 ) -> Result<PathBuf> {
     validate_transaction_storage_path(transaction_root)?;
     let transaction_dir = transaction_root
         .join(TRANSACTION_ROOT)
-        .join(INITRD_TRANSACTION_ROOT)
+        .join(super::transaction_store::boot_stage_name(stage))
         .join(transaction.0.as_str());
     ensure_private_directory(&transaction_dir, false)?;
     Ok(transaction_dir)
@@ -1533,9 +1609,16 @@ fn read_boot_id(path: &Path) -> Result<String> {
     Ok(boot_id.to_string())
 }
 
-fn transaction_for_boot(boot_id: &str) -> Result<TransactionId> {
+fn transaction_for_boot(
+    stage: StaticAbilityExecutionStage,
+    boot_id: &str,
+) -> Result<TransactionId> {
     validate_boot_id(boot_id)?;
-    let key = format!("initrd-{}", boot_id.replace('-', ""));
+    let key = format!(
+        "{}-{}",
+        super::transaction_store::boot_stage_name(stage),
+        boot_id.replace('-', "")
+    );
     Ok(TransactionId(LocalKey::new(key)?))
 }
 
@@ -1581,6 +1664,84 @@ mod tests {
     }
 
     #[test]
+    fn boot_stages_have_distinct_durable_transaction_namespaces() -> Result<()> {
+        let boot_id = "01234567-89ab-cdef-0123-456789abcdef";
+        let initrd = transaction_for_boot(StaticAbilityExecutionStage::Initrd, boot_id)?;
+        let host = transaction_for_boot(StaticAbilityExecutionStage::Host, boot_id)?;
+        let root = Path::new("/run/aos-boot-transaction-storage/aos");
+
+        assert_ne!(initrd, host);
+        assert_eq!(initrd.0.as_str(), "initrd-0123456789abcdef0123456789abcdef");
+        assert_eq!(host.0.as_str(), "host-0123456789abcdef0123456789abcdef");
+        assert_ne!(
+            super::super::transaction_store::source_stage_directory(
+                root,
+                StaticAbilityExecutionStage::Initrd,
+            ),
+            super::super::transaction_store::source_stage_directory(
+                root,
+                StaticAbilityExecutionStage::Host,
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn host_preparation_rejects_an_initrd_transaction_identity() -> Result<()> {
+        let boot_id = "01234567-89ab-cdef-0123-456789abcdef";
+        let transaction_storage: ResourceReference = serde_json::from_value(serde_json::json!({
+            "interface": {
+                "name": TRANSACTION_STORAGE_INTERFACE,
+                "abi": 1,
+                "descriptor": format!("sha256:{}", "0".repeat(64)),
+            },
+            "resource": {
+                "provider": {
+                    "environment": {
+                        "authority": "test",
+                        "key": "host",
+                        "stage": "host",
+                    },
+                    "key": "boot-storage",
+                },
+                "key": "host-stage-journal",
+            },
+            "operations": ["observe"],
+            "lifetime": "transaction",
+        }))?;
+        let prepared = StageEvent::HostPrepared {
+            schema: JOURNAL_EVENT_SCHEMA.to_string(),
+            boot_id: boot_id.to_string(),
+            transaction: transaction_for_boot(StaticAbilityExecutionStage::Host, boot_id)?,
+            transaction_storage,
+            transaction_root: "/run/aos-boot-transaction-storage/aos/host-stage-journal"
+                .to_string(),
+            image: ImageIdentity {
+                toplevel: "/nix/store/00000000000000000000000000000000-test".to_string(),
+                module_abi: 1,
+                base_lib_abi_hash: "test".to_string(),
+            },
+            static_ability_contract_identity:
+                "/nix/store/00000000000000000000000000000000-contract/contract.json".to_string(),
+            static_ability_contract_sha256: sha256_digest(b"contract"),
+            source_stage_bundle_sha256: sha256_digest(b"bundle"),
+            source_stage_admission_sha256: sha256_digest(b"admission"),
+        };
+        prepared.validate_for_journal(stage_journal_limits())?;
+
+        let mut wrong_stage = prepared;
+        if let StageEvent::HostPrepared { transaction, .. } = &mut wrong_stage {
+            *transaction = transaction_for_boot(StaticAbilityExecutionStage::Initrd, boot_id)?;
+        }
+        assert!(
+            wrong_stage
+                .validate_for_journal(stage_journal_limits())
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn static_contract_identity_file_names_one_exact_store_member() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("static-contract-identity");
@@ -1614,7 +1775,7 @@ mod tests {
                     },
                     "key": "boot-storage",
                 },
-                "key": TRANSACTION_STORAGE_PURPOSE,
+                "key": "initrd-stage-journal",
             },
             "operations": ["observe"],
             "lifetime": "transaction",
@@ -1723,7 +1884,10 @@ mod tests {
 
     #[test]
     fn restart_after_source_completion_never_invokes_handlers() -> Result<()> {
-        let transaction = transaction_for_boot("01234567-89ab-cdef-0123-456789abcdef")?;
+        let transaction = transaction_for_boot(
+            StaticAbilityExecutionStage::Initrd,
+            "01234567-89ab-cdef-0123-456789abcdef",
+        )?;
         let execution = StageExecutionEvidence {
             plan: PlanId(sha256_digest(b"plan")),
             admission: sha256_digest(b"bundle"),
