@@ -2164,7 +2164,7 @@ mod tests {
         })
         .unwrap();
 
-        for version in [0, 4, u8::MAX] {
+        for version in [0, RESERVED_OBSERVE_EFFECT_VERSION + 1, u8::MAX] {
             for canonical in [&generic, &authority] {
                 let mut unknown_version = canonical.clone();
                 unknown_version[0] = version;
