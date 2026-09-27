@@ -325,7 +325,7 @@ in rec {
         gate = import ./phase1-campaign-model.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase1.gates.campaignModel";
-          taskIds = ["T-CAM-1.1" "T-CAM-1.2" "T-CAM-1.3" "T-CAM-1.4" "T-CAM-1.5" "T-CAM-1.6" "T-CAM-3.1"];
+          taskIds = ["T-CAM-1.1" "T-CAM-1.2" "T-CAM-1.3" "T-CAM-1.4" "T-CAM-1.5" "T-CAM-1.6" "T-CAM-1.7" "T-CAM-3.1"];
           dependencies = [contentAddress.rawGate];
         };
         dependencies = [contentAddress];
