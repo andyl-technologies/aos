@@ -1,12 +1,13 @@
 ##! perl-parse-yapp — LALR parser generator for Perl
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
 }: let
   version = "1.21";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-parse-yapp";
     inherit version;
     src = fetchurl {
