@@ -243,16 +243,8 @@ in
         ];
 
       postPatch = prepareSource;
-      fetchPostPatch =
-        configureEnvironment
-        + ''
-          export CARGO_HOME="$TMPDIR/aos-cargo-home"
-          mkdir -p "$CARGO_HOME"
-          export CARGO_BAZEL_ISOLATED=false
-        '';
+      fetchPostPatch = configureEnvironment;
       postFetch = ''
-        test -d "$CARGO_HOME/git"
-        cp -a "$CARGO_HOME" "$bazelOut/external/repository_cache/aos-cargo-home"
         ${python3}/bin/python3 ${./clean-bazel-tool-downloads.py} "$bazelOut/external"
         ${python3}/bin/python3 ${./strip-opaque-deps.py} "$bazelOut/external"
       '';
@@ -273,14 +265,6 @@ in
           patch -d "$TMPDIR/repo-overrides/+http+ncrypto" -p1 < ${./ncrypto-climits.patch}
         ''
         + ''
-          # The fixed-output fetch populated Cargo's git and registry cache.
-          # Re-analysis must use that exact cache with network access disabled.
-          export CARGO_HOME="$TMPDIR/aos-cargo-home"
-          cp -a "$bazelOut/external/repository_cache/aos-cargo-home" "$CARGO_HOME"
-          chmod -R u+w "$CARGO_HOME"
-          export CARGO_NET_OFFLINE=true
-          export CARGO_BAZEL_ISOLATED=false
-
           sed -i '1s|^#!/usr/bin/env bash$|#!${bash}/bin/bash|' tools/unix/workspace-status.sh
           # Patch the generator templates before Bazel creates executable launchers.
           sed -i '1s|^#!/usr/bin/env bash$|#!${bash}/bin/bash|' \
