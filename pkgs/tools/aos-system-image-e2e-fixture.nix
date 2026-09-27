@@ -266,7 +266,16 @@ in
           test -n "$public_key"
           key="$HOME/.config/apm/keys/image-e2e-release.key"
           ${aos.apr}/bin/apr create image-e2e --trust-key "$public_key" \
-            --trust-key-id initial --key-id initial --key "$key"
+            --trust-key-id initial --key "$key"
+          mkdir -p "$HOME/.config/apm/registries.d"
+          cat > "$HOME/.config/apm/registries.d/image-e2e.toml" <<CONFIG
+          [registry]
+          name = "image-e2e"
+          url = "file://$HOME/.local/share/apm/registries/image-e2e"
+
+          [registry.signing_keys]
+          initial = "$key"
+          CONFIG
           ${aos.apr}/bin/apr release 2026.3.0 \
             --registry image-e2e \
             --store-path '${sysroot}' \
@@ -290,7 +299,6 @@ in
             --channel stable \
             --init-channel \
             --key-id initial \
-            --key "$key" \
             --cache-url http://127.0.0.1:8799/flat-cache \
             --upload-url "file://$destination/surface"
           printf '%s\n' "$public_key" > "$destination/trust-key"
