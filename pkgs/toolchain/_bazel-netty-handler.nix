@@ -10,12 +10,13 @@
   bazelBouncycastle,
   bazelNettyHandlerApis,
   bazelConscryptJava,
+  version ? "4.1.93.Final",
+  sourceHash ? "sha256-apQZ0XWlQ+luHcZ9S8HOYXkPBVYbOSgawV2TdHbNq+c=",
 }: let
-  version = "4.1.93.Final";
   buildJdk = buildPackages.openjdk-17;
   source = fetchurl {
     urls = ["https://repo.maven.apache.org/maven2/io/netty/netty-handler/${version}/netty-handler-${version}-sources.jar"];
-    hash = "sha256-apQZ0XWlQ+luHcZ9S8HOYXkPBVYbOSgawV2TdHbNq+c=";
+    hash = sourceHash;
   };
 in
   mkDerivation {

@@ -12,12 +12,18 @@ aos_dev_cache_validate_tree() {
     [[ ! -L $path ]] || aos_dev_error "cache maintenance refuses symlink: $path"
     [[ -d $path ]] || aos_dev_error "cache directory is incomplete: $path; run cache init"
   done
+  # Older initialized caches may predate accache. Optional roots must still
+  # be real directories before any command traverses them.
+  for path in "$aos_dev_cache_dir/"{accache,accache-state}; do
+    [[ ! -L $path ]] || aos_dev_error "cache maintenance refuses symlink: $path"
+    [[ ! -e $path || -d $path ]] || aos_dev_error "cache root is not a directory: $path"
+  done
 }
 
 aos_dev_cache_usage() {
   aos_dev_cache_validate_tree
   local backend
-  for backend in go bazel rust; do
+  for backend in go bazel rust accache accache-state; do
     if [[ -d $aos_dev_cache_dir/$backend ]]; then
       du -sh "$aos_dev_cache_dir/$backend"
     fi
@@ -28,7 +34,8 @@ aos_dev_cache_prune() {
   # Apply one retention policy to every backend. Rust is always pruned by
   # whole target tree so Cargo's fingerprints and outputs stay coherent.
   local backend
-  for backend in go bazel rust; do
+  for backend in go bazel rust accache; do
+    [[ -d $aos_dev_cache_dir/$backend ]] || continue
     aos_dev_cache_backend_prune "$backend" "$@"
   done
 }
@@ -205,12 +212,18 @@ aos_dev_cache_clear() {
   local -a selected=()
 
   case $backend in
-    all) selected=(go bazel rust) ;;
-    go|bazel|rust) selected=("$backend") ;;
+    all)
+      selected=(go bazel rust)
+      [[ ! -d $aos_dev_cache_dir/accache ]] || selected+=(accache)
+      ;;
+    go|bazel|rust|accache) selected=("$backend") ;;
     *) aos_dev_error "unknown cache backend '$backend'" ;;
   esac
 
   for backend in "${selected[@]}"; do
+    [[ -d $aos_dev_cache_dir/$backend ]] || continue
+    # accache-state is deliberately excluded: unlinking a held action lock
+    # allows a new writer to lock a different inode for the same action.
     if [[ $backend == rust ]]; then
       while IFS= read -r -d '' tree; do
         if ! aos_dev_cache_remove_rust_tree "$tree"; then
