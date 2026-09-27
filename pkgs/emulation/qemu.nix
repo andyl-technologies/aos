@@ -345,6 +345,7 @@
       glib
       pixman
       zlib
+      zstd
       libslirp
       dtc
     ]
@@ -398,7 +399,7 @@
       ])
       fullUpstreamTestGuestRoots);
   fullUpstreamTestHarnessMutationMaterial = ''
-    mutation_version=1
+    mutation_version=2
     mutation_scope=post-build-test-harness-only
     temp_root=$TMPDIR
     qemu_machine_temp_policy=explicit-environment
@@ -407,7 +408,7 @@
     guest_shebang_allowlist=tests/functional/aarch64/test_device_passthrough.py:20,60:/bin/bash;tests/lcitool/libvirt-ci/lcitool/ansible/playbooks/update/templates/gitlab-runner.j2:1:/bin/sh
     remaining_var_tmp_allowlist=tests/docker/Makefile.include:container-mount-only
     meson_thorough_report=build/meson-logs/check-report-thorough.junit.xml
-    meson_report_compatibility=build/meson-logs/check-report.junit.xml:absolute-symlink-for-generated-make-target
+    meson_runner=all-configured-tests:thorough:no-rebuild
     test_shebang_scope=all-files-under-tests-python-scripts
     test_python=build/pyvenv/bin/python3
     test_perl=${buildPerl}/bin/perl
@@ -889,12 +890,6 @@ in
                 "$docker_makefile_hash" "$docker_makefile_hash" \
                 '/var/tmp/qemu' 'container mount path; unchanged and not host-executed' \
                 >> "$mutation_manifest"
-              printf 'compatibility-symlink\t%s\t%s\t%s\t%s\t%s\n' \
-                build/meson-logs/check-report.junit.xml \
-                absent generated-by-meson absent \
-                'absolute link to setup-suffixed report; test selection unchanged' \
-                >> "$mutation_manifest"
-
               mutation_manifest_hash=$(sha256sum "$mutation_manifest" | cut -d ' ' -f 1)
               test -n "$mutation_manifest_hash"
 
@@ -920,7 +915,9 @@ in
                 "$guest_root/var/tmp"
               chmod 1777 "$guest_root/tmp" "$guest_root/var/tmp"
 
-              grep -h '^/nix/store/' qemu-full-test-closure-* \
+              # exportReferencesGraph files stay in the unpack parent after
+              # the QEMU source phase changes into qemu-${version}.
+              grep -h '^/nix/store/' ../qemu-full-test-closure-* \
                 | LC_ALL=C sort -u > "$TMPDIR/qemu-full-test-closure-paths"
               test -s "$TMPDIR/qemu-full-test-closure-paths"
               while IFS= read -r closure_path; do
@@ -996,33 +993,36 @@ in
               test -f build/meson-info/intro-tests.json
               test -f build/Makefile.mtest
 
-              # QEMU 11's check target is generated from Meson's complete
-              # configured test inventory. Thorough mode includes the slow,
-              # thorough, and optional suites that quick mode filters out.
-              # Functional tests must use only assets already present in the
-              # source or build tree; absent upstream assets remain explicit
-              # skips in the JUnit evidence.
+              # QEMU's generated Make test wrapper invokes Meson with
+              # --no-rebuild. Run that configured inventory directly: the
+              # test-only shebang rewrites must not regenerate the already
+              # compiled build graph in the smaller guest tool closure.
+              # Thorough mode includes slow and optional tests. Missing
+              # upstream functional assets remain explicit JUnit skips.
               export QEMU_TEST_NO_DOWNLOAD=1
               thorough_junit=build/meson-logs/check-report-thorough.junit.xml
-              compatibility_junit=build/meson-logs/check-report.junit.xml
-              test ! -e "$compatibility_junit"
-              test ! -L "$compatibility_junit"
-              ln -s "$PWD/$thorough_junit" "$compatibility_junit"
-              if make -j$NIX_BUILD_CORES V=1 SPEED=thorough \
-                check-report.junit.xml > full-upstream-test-suite.log 2>&1; then
+              (
+                cd build
+                ./pyvenv/bin/meson test --no-rebuild --setup thorough --list
+              ) > full-upstream-test-suite.inventory
+              test -s full-upstream-test-suite.inventory
+              test "$(wc -l < full-upstream-test-suite.inventory)" -eq 1552
+              if (
+                cd build
+                ./pyvenv/bin/meson test --no-rebuild -t 1 \
+                  --setup thorough --num-processes "$NIX_BUILD_CORES" \
+                  --verbose --logbase check-report-thorough
+              ) > full-upstream-test-suite.log 2>&1; then
                 suite_status=0
               else
                 suite_status=$?
               fi
               cat full-upstream-test-suite.log
               if [ "$suite_status" -ne 0 ]; then
-                echo "QEMU's complete configured test target failed with status $suite_status" >&2
+                echo "QEMU's complete configured Meson tests failed with status $suite_status" >&2
                 exit "$suite_status"
               fi
 
-              test -L "$compatibility_junit"
-              test "$(readlink "$compatibility_junit")" = "$PWD/$thorough_junit"
-              test build/check-report.junit.xml -ef "$thorough_junit"
               junit=$thorough_junit
               test -s "$junit"
               ${buildPython}/bin/python3 - "$junit" \
@@ -1066,9 +1066,10 @@ in
                   )
 
               # Meson groups tests without TAP subcases in the common `qemu`
-              # suite. Every other suite represents one of the 1,548
+              # suite. Every other suite represents one of the 1,552
               # configured top-level test invocations, even when it contains
-              # multiple TAP subcases.
+              # multiple TAP subcases. Four picosecond adapter unit tests
+              # extend the previous 1,548-test inventory.
               top_level_tests = 0
               top_level_skipped = []
               for suite in suites:
@@ -1092,10 +1093,10 @@ in
               top_level_skipped.sort()
               skip_inventory = "".join(f"{name}\n" for name in top_level_skipped)
               skip_inventory_hash = hashlib.sha256(skip_inventory.encode()).hexdigest()
-              if top_level_tests != 1548:
+              if top_level_tests != 1552:
                   raise SystemExit(
                       "QEMU configured test count drifted: "
-                      f"expected 1548, observed {top_level_tests}"
+                      f"expected 1552, observed {top_level_tests}"
                   )
               if len(top_level_skipped) != 367:
                   raise SystemExit(
@@ -1134,6 +1135,8 @@ in
               mkdir -p "$out/nix-support" "$out/share/aos/crucible"
               cp full-upstream-test-suite.log \
                 "$out/share/aos/crucible/full-upstream-test-suite.log"
+              cp full-upstream-test-suite.inventory \
+                "$out/share/aos/crucible/full-upstream-test-suite.inventory"
               cp full-upstream-test-suite.summary \
                 "$out/share/aos/crucible/full-upstream-test-suite.summary"
               cp full-upstream-test-suite.skipped \
@@ -1168,8 +1171,8 @@ in
               PASS
               gate=gate:qemu-full-upstream-test-suite
               attr_path=checks.crucible.phase7.qemuFullUpstreamTestSuite
-              upstream_runner=make
-              upstream_target=check-report.junit.xml
+              upstream_runner=meson-test-no-rebuild
+              upstream_target=all-configured-tests
               meson_test_setup=thorough
               selection=all-configured-tests
               functional_asset_policy=no-download
@@ -1349,7 +1352,7 @@ in
               test "$guest_test_status" = 0
               test -s "$out/result"
               grep -F -x -q PASS "$out/result"
-              grep -F -x -q 'tests=1548' "$out/result"
+              grep -F -x -q 'tests=1552' "$out/result"
               grep -F -x -q 'failed=0' "$out/result"
               grep -F -x -q 'errors=0' "$out/result"
               grep -F -x -q 'skipped=367' "$out/result"
