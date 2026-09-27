@@ -25,6 +25,7 @@ in
     buildDeps = [
       pkgs.bash
       pkgs.coreutils
+      pkgs.findutils
       pkgs.grep
       pkgs.sed
       e2eDeterminism
