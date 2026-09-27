@@ -313,6 +313,7 @@ fn production_managed_source_keeps_bounded_native_siblings_live() {
         .load_configuration_artifact(basis.source_artifact())
         .expect("canonical thin fallback remains available after source retirement");
     assert!(cgroup_processes(&paths.cgroup_root.join("simultaneous-source")).is_empty());
+    println!("thin_fallback_after_source_retirement=authenticated");
     println!("simultaneous_sibling_counts=1,2,4,8,16");
     println!("simultaneous_source_boundary=authenticated-canonical-genesis");
     println!(
