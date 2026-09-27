@@ -461,6 +461,34 @@ fn idle_loop_rejects_raw_late_inbound_delivery_before_publishing() {
 }
 
 #[test]
+fn idle_loop_rejects_unrepresentable_timer_before_publishing() {
+    extern "C" fn unrepresentable_deadline() -> i64 {
+        -2
+    }
+
+    let slot = NodeSlot::new(KIND_VM);
+    let clock = owned_clock(10);
+    publish_ceiling(&slot, ceiling(0, 20));
+    let before = slot.snapshot();
+
+    assert_eq!(
+        PluginIdleHotLoop::begin_idle(
+            &slot,
+            &clock,
+            &deadline_reader(unrepresentable_deadline),
+            None,
+            None,
+        ),
+        Err(IdleHotLoopError::ReadExactDeadline {
+            source: ExactDeadlineError::UnrepresentableDeadline,
+        })
+    );
+
+    assert_eq!(slot.snapshot(), before);
+    assert_eq!(clock.current_icount(), 10);
+}
+
+#[test]
 fn idle_loop_rejects_release_before_scheduler_authorizes_wake() {
     let slot = NodeSlot::new(KIND_VM);
     let clock = owned_clock(10);
