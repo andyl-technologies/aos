@@ -384,7 +384,7 @@ in
             require_handoff_unit aos-ability-initrd-controller.service
             initrd_controller=unit-graph/etc/systemd/system/aos-ability-initrd-controller.service
             test -f "$initrd_controller"
-            grep -Fx "Before=mount-var.service" "$initrd_controller" >/dev/null
+            ! grep -Fx "Before=mount-var.service" "$initrd_controller" >/dev/null
             grep -Fx "Before=initrd-fs.target" "$initrd_controller" >/dev/null
             grep -Fx "Before=initrd-switch-root.target" "$initrd_controller" >/dev/null
             grep -Fx "RemainAfterExit=yes" "$initrd_controller" >/dev/null
@@ -468,15 +468,20 @@ in
               "$receiver_unit" >/dev/null
             grep -F '"--static-contract" "/usr/lib/aos/initrd/static-ability-contract.json"' \
               "$receiver_unit" >/dev/null
-            for dependent in \
-              aos-eval.service \
-              aos-graph-compile.service \
-              aos-config.target; do
-              grep -F "After=aos-ability-host-receiver.service" \
-                "$root_system_units/$dependent" >/dev/null
-            done
+            host_controller_unit="$root_system_units/aos-ability-host-controller.service"
+            test -f "$host_controller_unit"
+            grep -Fx "After=aos-ability-host-receiver.service" \
+              "$host_controller_unit" >/dev/null
+            grep -Fx "Requires=aos-ability-host-receiver.service" \
+              "$host_controller_unit" >/dev/null
+            grep -Fx "After=aos-ability-host-receiver.service" \
+              "$root_system_units/aos-eval.service" >/dev/null
             grep -Fx "Requires=aos-ability-host-receiver.service" \
               "$root_system_units/aos-eval.service" >/dev/null
+            grep -Fx "After=aos-ability-host-controller.service" \
+              "$root_system_units/aos-graph-compile.service" >/dev/null
+            grep -Fx "Requires=aos-ability-host-controller.service" \
+              "$root_system_units/aos-graph-compile.service" >/dev/null
             ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
               image-assembly-attachments \
               ${assembly} initrd-stage-contract-check unit-graph
