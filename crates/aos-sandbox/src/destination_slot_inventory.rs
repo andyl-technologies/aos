@@ -11,16 +11,15 @@ use std::os::fd::OwnedFd;
 use std::path::Path;
 
 use aos_proto::aos::sandbox::local::v1::{
-    Audience, BrokerClientHello, BrokerMethod, DestinationSlotLifecycle,
-    InventoryDestinationSlotsRequest, RequestHeader,
+    Audience, BrokerMethod, DestinationSlotLifecycle, InventoryDestinationSlotsRequest,
+    RequestHeader,
 };
-use aos_sandbox_core::{ObjectDigest, OperationId, ProtocolId, ProtocolVersion};
+use aos_sandbox_core::{ObjectDigest, OperationId, ProtocolVersion};
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, ValidatedAttachmentAnchorInventoryRecord,
     ValidatedDestinationSlotInventory, ValidatedDestinationSlotInventoryRecord, ValidatedHeader,
     decode_destination_slot_inventory_request, decode_destination_slot_inventory_response,
-    decode_response_envelope, decode_server_hello, encode_unauthed_request_envelope,
 };
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -30,14 +29,13 @@ use crate::attachment_slot_state::{
 };
 use crate::mount_attempt::{MountAttemptError, mount_controller_state_digest};
 use crate::mount_preparation::transport;
-use crate::mount_preparation::{
-    MountCatalogPreparationError, MountServiceIdentity, ServiceExecution, request_id,
-};
-use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
+use crate::mount_preparation::{MountCatalogPreparationError, MountServiceIdentity, request_id};
+use crate::{Journal, RecordNamespace};
+#[cfg(test)]
+use crate::{JournalRecord, JournalTransaction};
 
 pub(crate) mod authenticated;
 pub use authenticated::DestinationSlotInventoryObservationFenceV1;
-mod format;
 
 const NAMESPACE: RecordNamespace = RecordNamespace::DestinationSlotInventory;
 const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(2, 0);
@@ -47,9 +45,8 @@ const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINA
 const RESPONSE_BYTES: u32 = 15 * 1024 * 1024;
 const QUERY_WINDOW_NANOSECONDS: u64 = 10_000_000_000;
 const MAXIMUM_QUERY_BYTES: usize = 4 * 1024;
-const MAXIMUM_RECORD_BYTES: usize = 16 * 1024 * 1024 - 1024;
+#[cfg(test)]
 const KEY: &[u8] = b"latest";
-const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.destination-slot-inventory.transaction.v1\0";
 
 /// Reports whether a validated destination-slot snapshot committed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -197,86 +194,11 @@ impl DestinationSlotInventoryClient {
             ..Default::default()
         }
         .encode_to_vec();
-        let request = decode_inventory_request_body(&request_body)?;
-        let packet =
-            encode_unauthed_request_envelope(ProtocolId::MountBroker, METHOD, &request_body)?;
-        let hello = BrokerClientHello {
-            protocol_major: CARRIER_VERSION.major().into(),
-            protocol_minor: CARRIER_VERSION.minor().into(),
-            audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
-            maximum_response_bytes: RESPONSE_BYTES,
-            required_methods: vec![METHOD.into()],
-            ..Default::default()
-        };
-        let deadline = transport::exchange_deadline(request_deadline)
-            .map_err(MountAttemptError::Preparation)?;
-
-        transport::send(&mut self.socket, &hello.encode_to_vec(), deadline)
-            .map_err(MountAttemptError::Preparation)?;
-        let response = transport::receive(
+        crate::mount_inventory_snapshot::query_mount_inventory::<DestinationSlotInventoryKind>(
             &mut self.socket,
-            aos_sandbox_protocol::MAXIMUM_HANDSHAKE_BYTES,
-            deadline,
-        )
-        .map_err(MountAttemptError::Preparation)?;
-        let (hello_bytes, subject, _) = response.into_parts();
-        let mount =
-            ServiceExecution::new(&self.expected_mount, subject).map_err(map_service_error)?;
-        let session = decode_server_hello(
-            &hello_bytes,
-            ProtocolId::MountBroker,
-            Audience::AUDIENCE_NODE_CONTROLLER,
-            CARRIER_VERSION,
-            &[],
-            &[METHOD],
-            RESPONSE_BYTES,
-        )?;
-        session.validate_header(&request)?;
-        let decoded = session.decode_request(&packet, 0)?;
-        if decoded.authorization().is_some() || decoded.body() != request_body.as_slice() {
-            return Err(aos_sandbox_protocol::ProtocolValidationError::InvalidField(
-                "destination-slot inventory request packet",
-            )
-            .into());
-        }
-
-        mount
-            .recheck(&self.expected_mount)
-            .map_err(map_service_error)?;
-        transport::send(&mut self.socket, &packet, deadline)
-            .map_err(MountAttemptError::Preparation)?;
-        let response = transport::receive(&mut self.socket, RESPONSE_BYTES as usize, deadline)
-            .map_err(MountAttemptError::Preparation)?;
-        mount
-            .validate_response(&self.expected_mount, response.subject())
-            .map_err(map_service_error)?;
-        let envelope = decode_response_envelope(
-            response.payload(),
-            request.request_id(),
-            METHOD,
-            &[],
-            response.descriptors().len(),
-            session.maximum_response_bytes(),
-            request.maximum_response_bytes(),
-        )?;
-        if let Some(error) = envelope.error() {
-            return Err(MountAttemptError::BrokerRejected {
-                code: error.code(),
-                retryable: error.retryable(),
-            });
-        }
-        let response_body = envelope.body().to_vec();
-        let inventory = decode_destination_slot_inventory_response(
-            &response_body,
-            request.maximum_response_bytes(),
-        )?;
-        transport::check_deadline(deadline).map_err(MountAttemptError::Preparation)?;
-
-        Ok(QuerySuccess {
+            &self.expected_mount,
             request_body,
-            response_body,
-            inventory,
-        })
+        )
     }
 }
 
@@ -417,147 +339,58 @@ impl CurrentDestinationSlotReconciliationV1 {
     }
 }
 
-struct QuerySuccess {
-    request_body: Vec<u8>,
-    response_body: Vec<u8>,
-    inventory: ValidatedDestinationSlotInventory,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct SnapshotRecord {
-    request_id: [u8; 16],
-    controller_state_digest: [u8; 32],
-    request_body: Vec<u8>,
-    response_body: Vec<u8>,
-    digest: [u8; 32],
-}
-
-impl SnapshotRecord {
-    fn from_query(
-        controller_state_digest: [u8; 32],
-        request_body: Vec<u8>,
-        response_body: Vec<u8>,
-    ) -> Result<(Self, ValidatedDestinationSlotInventory), MountAttemptError> {
-        let request = decode_inventory_request_body(&request_body)?;
-        let inventory = decode_destination_slot_inventory_response(
-            &response_body,
-            request.maximum_response_bytes(),
-        )?;
-        let mut record = Self {
-            request_id: *request.request_id(),
-            controller_state_digest,
-            request_body,
-            response_body,
-            digest: [0; 32],
-        };
-        record.digest = record.compute_digest();
-        record.validate()?;
-        Ok((record, inventory))
-    }
-
-    fn encoded_len(&self) -> usize {
-        format::FIXED_RECORD_BYTES
-            .saturating_add(self.request_body.len())
-            .saturating_add(self.response_body.len())
-    }
-
-    fn validate(&self) -> Result<ValidatedDestinationSlotInventory, MountAttemptError> {
-        if self.request_id == [0; 16]
-            || self.controller_state_digest == [0; 32]
-            || self.request_body.is_empty()
-            || self.request_body.len() > MAXIMUM_QUERY_BYTES
-            || self.response_body.is_empty()
-            || self.response_body.len() > RESPONSE_BYTES as usize
-            || self.encoded_len() > MAXIMUM_RECORD_BYTES
-            || self.compute_digest() != self.digest
-        {
-            return Err(MountAttemptError::CorruptState);
-        }
-
-        let request = decode_inventory_request_body(&self.request_body)?;
-        if request.request_id() != &self.request_id {
-            return Err(MountAttemptError::CorruptState);
-        }
-        decode_destination_slot_inventory_response(
-            &self.response_body,
-            request.maximum_response_bytes(),
-        )
-        .map_err(|_| MountAttemptError::CorruptState)
-    }
-
-    fn transaction(&self) -> Result<JournalTransaction, MountAttemptError> {
-        let mut transaction_id: [u8; 16] = Sha256::new()
-            .chain_update(TRANSACTION_DOMAIN)
-            .chain_update(self.digest)
-            .finalize()[..16]
-            .try_into()
-            .map_err(|_| MountAttemptError::CorruptState)?;
-        if transaction_id == [0; 16] {
-            transaction_id[15] = 1;
-        }
-        Ok(JournalTransaction::new(
-            transaction_id,
-            vec![JournalRecord::put(NAMESPACE, KEY.to_vec(), self.encode())],
-        )?)
-    }
-}
-
-struct SnapshotHistory {
-    record: Option<(SnapshotRecord, ValidatedDestinationSlotInventory)>,
-}
+type QuerySuccess =
+    crate::mount_inventory_snapshot::QuerySuccess<ValidatedDestinationSlotInventory>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SnapshotDecision {
-    Replay,
-    Unchanged,
-    Record,
-}
+pub(crate) struct DestinationSlotInventoryKind;
 
-impl SnapshotHistory {
-    fn load(journal: &mut Journal) -> Result<Self, MountAttemptError> {
-        journal.ensure_healthy()?;
-        let mut record = None;
+impl crate::mount_inventory_snapshot::InventorySnapshotKind for DestinationSlotInventoryKind {
+    type Inventory = ValidatedDestinationSlotInventory;
 
-        for (key, value) in journal.records(NAMESPACE) {
-            if record.is_some() || key != KEY || value.len() > MAXIMUM_RECORD_BYTES {
-                return Err(MountAttemptError::CorruptState);
-            }
-            let decoded = SnapshotRecord::decode(value)?;
-            let inventory = decoded.validate()?;
-            record = Some((decoded, inventory));
-        }
+    const MAGIC: &'static [u8; 8] = b"AOSDSI01";
+    const DIGEST_DOMAIN: &'static [u8] = b"aos.sandbox.destination-slot-inventory.v1\0";
+    const TRANSACTION_DOMAIN: &'static [u8] =
+        b"aos.sandbox.destination-slot-inventory.transaction.v1\0";
+    const NAMESPACE: RecordNamespace = NAMESPACE;
+    const METHOD: BrokerMethod = METHOD;
+    const REQUEST_PACKET_FIELD: &'static str = "destination-slot inventory request packet";
 
-        Ok(Self { record })
+    fn decode_request(bytes: &[u8]) -> Result<ValidatedHeader, MountAttemptError> {
+        decode_inventory_request_body(bytes)
     }
 
-    fn outcome(
-        &self,
-        candidate: &SnapshotRecord,
-        inventory: &ValidatedDestinationSlotInventory,
-    ) -> Result<SnapshotDecision, MountAttemptError> {
-        let Some((current, current_inventory)) = &self.record else {
-            return Ok(SnapshotDecision::Record);
-        };
-        if current == candidate {
-            return Ok(SnapshotDecision::Replay);
-        }
-        if current.request_id == candidate.request_id
-            || inventory.journal_sequence() < current_inventory.journal_sequence()
-            || same_sequence_equivocates(inventory, current_inventory)
-            || (inventory.broker_instance_id() == current_inventory.broker_instance_id()
-                && inventory.kernel_boot_id() != current_inventory.kernel_boot_id())
-        {
-            return Err(MountAttemptError::Conflict);
-        }
-        if current.controller_state_digest == candidate.controller_state_digest
-            && current_inventory == inventory
-        {
-            return Ok(SnapshotDecision::Unchanged);
-        }
+    fn decode_response(
+        bytes: &[u8],
+        maximum_bytes: u32,
+    ) -> Result<Self::Inventory, MountAttemptError> {
+        Ok(decode_destination_slot_inventory_response(
+            bytes,
+            maximum_bytes,
+        )?)
+    }
 
-        Ok(SnapshotDecision::Record)
+    fn journal_sequence(inventory: &Self::Inventory) -> u64 {
+        inventory.journal_sequence()
+    }
+
+    fn broker_instance_id(inventory: &Self::Inventory) -> &[u8; 16] {
+        inventory.broker_instance_id()
+    }
+
+    fn kernel_boot_id(inventory: &Self::Inventory) -> &[u8; 16] {
+        inventory.kernel_boot_id()
+    }
+
+    fn same_sequence_equivocates(candidate: &Self::Inventory, current: &Self::Inventory) -> bool {
+        same_sequence_equivocates(candidate, current)
     }
 }
+
+type SnapshotRecord = crate::mount_inventory_snapshot::SnapshotRecord<DestinationSlotInventoryKind>;
+type SnapshotHistory =
+    crate::mount_inventory_snapshot::SnapshotHistory<DestinationSlotInventoryKind>;
+use crate::mount_inventory_snapshot::SnapshotDecision;
 
 fn same_sequence_equivocates(
     candidate: &ValidatedDestinationSlotInventory,
@@ -602,34 +435,13 @@ fn persist_snapshot(
     record: SnapshotRecord,
     inventory: ValidatedDestinationSlotInventory,
 ) -> Result<DurableDestinationSlotInventorySnapshotV1, MountAttemptError> {
-    let (record, inventory, outcome) = match history.outcome(&record, &inventory)? {
-        SnapshotDecision::Replay => (
-            record,
-            inventory,
-            DestinationSlotInventorySnapshotOutcomeV1::Replay,
-        ),
-        SnapshotDecision::Unchanged => {
-            let (current, current_inventory) =
-                history.record.ok_or(MountAttemptError::CorruptState)?;
-            (
-                current,
-                current_inventory,
-                DestinationSlotInventorySnapshotOutcomeV1::Replay,
-            )
-        }
-        SnapshotDecision::Record => {
-            journal.commit(&record.transaction()?)?;
-            (
-                record,
-                inventory,
-                DestinationSlotInventorySnapshotOutcomeV1::Recorded,
-            )
-        }
+    let (record, inventory, recorded) =
+        crate::mount_inventory_snapshot::persist_snapshot(journal, history, record, inventory)?;
+    let outcome = if recorded {
+        DestinationSlotInventorySnapshotOutcomeV1::Recorded
+    } else {
+        DestinationSlotInventorySnapshotOutcomeV1::Replay
     };
-    let committed = SnapshotHistory::load(journal)?;
-    if committed.record.as_ref().map(|value| &value.0) != Some(&record) {
-        return Err(MountAttemptError::CorruptState);
-    }
 
     Ok(DurableDestinationSlotInventorySnapshotV1 {
         record,
@@ -937,13 +749,6 @@ fn synthetic_credentials() -> PeerCredentials {
         uid: 1,
         gid: 1,
         pid: Some(1),
-    }
-}
-
-fn map_service_error(error: MountCatalogPreparationError) -> MountAttemptError {
-    match error {
-        MountCatalogPreparationError::MountIdentity => MountAttemptError::MountIdentity,
-        other => MountAttemptError::Preparation(other),
     }
 }
 

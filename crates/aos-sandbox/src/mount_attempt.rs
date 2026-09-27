@@ -64,6 +64,8 @@ mod completion;
 mod format;
 mod inventory;
 #[cfg(test)]
+pub(crate) use inventory::MountResourceInventoryKind;
+#[cfg(test)]
 mod tests;
 
 pub use completion::{

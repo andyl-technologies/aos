@@ -99,6 +99,8 @@ pub mod local_sessions;
 #[cfg(target_os = "linux")]
 pub mod mount_attempt;
 #[cfg(target_os = "linux")]
+mod mount_inventory_snapshot;
+#[cfg(target_os = "linux")]
 pub mod mount_manager_source_inventory;
 #[cfg(target_os = "linux")]
 pub mod mount_manager_startup;
