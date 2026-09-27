@@ -13,9 +13,14 @@ aos_dev_category() {
 aos_dev_list() {
   local category=${1:-packages}
   local filter=${2:-}
+  local cross_system=${3:-}
   category=$(aos_dev_category "$category") || aos_dev_error "unknown target category '$1'"
 
   aos_dev_require_command nix-instantiate
+  local -a eval_args=()
+  if [[ -n $cross_system ]]; then
+    eval_args=(--argstr crossSystem "$cross_system")
+  fi
   local entries
   # Descend through a check scope while it exists. A partial leaf such as
   # build.aos-dev falls back to the build scope, so completion and filtering
@@ -24,7 +29,8 @@ aos_dev_list() {
     local scope=$filter
     while :; do
       entries=$(cd "$aos_dev_root" && nix-instantiate --eval --raw \
-        --argstr category "$category" --argstr scope "$scope" dev/targets.nix)
+        --argstr category "$category" --argstr scope "$scope" \
+        "${eval_args[@]}" dev/targets.nix)
       if [[ -n $entries || $scope != *.* ]]; then
         printf '%s\n' "$entries" | grep -F -- "$filter" || true
         return
@@ -34,7 +40,7 @@ aos_dev_list() {
   fi
 
   entries=$(cd "$aos_dev_root" && nix-instantiate --eval --raw \
-    --argstr category "$category" dev/targets.nix)
+    --argstr category "$category" "${eval_args[@]}" dev/targets.nix)
 
   if [[ -n $filter ]]; then
     printf '%s\n' "$entries" | grep -F -- "$filter" || true
@@ -78,12 +84,12 @@ aos_dev_target_attr() {
 aos_dev_validate_target() {
   # Most names must be listed exactly. Deep check attrs are evaluated lazily
   # by Nix and can be addressed directly without flattening the whole tree.
-  local category=$1 name=$2
+  local category=$1 name=$2 cross_system=${3:-}
   if [[ $category == checks && $name == *.*.* ]]; then
     return
   fi
   local entries
-  entries=$(aos_dev_list "$category")
+  entries=$(aos_dev_list "$category" "" "$cross_system")
   if ! printf '%s\n' "$entries" | grep -Fxq -- "$name"; then
     printf 'aos-dev: unknown %s target: %s\n' "$category" "$name" >&2
     printf '%s\n' "$entries" | grep -iF -- "${name%%:*}" | head -8 >&2 || true
