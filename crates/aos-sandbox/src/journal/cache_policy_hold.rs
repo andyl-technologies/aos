@@ -27,6 +27,8 @@ use std::{
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use sha2::{Digest as _, Sha256};
 
+use crate::policy_compiler::RootV8SettledGrantV1;
+
 use super::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction,
     ReadOnlyProtectedJournal, RecordNamespace,
@@ -43,6 +45,7 @@ const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.cache-policy-hold-transaction.v1
 const V8_PENDING_MAGIC: &[u8; 8] = b"AOSCPP08";
 const V8_PENDING_CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.cache-policy-v8-pending.v1\0";
 const V8_RELEASE_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.cache-policy-v8-release.v1\0";
+const V8_SETTLEMENT_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.cache-policy-v8-settlement.v1\0";
 const RECORD_BYTES: usize = 168;
 const V8_PENDING_RECORD_BYTES: usize = 152;
 
@@ -372,6 +375,28 @@ fn v8_release_transaction(
     )
 }
 
+fn v8_settlement_transaction(
+    grant: RootV8SettledGrantV1,
+) -> Result<JournalTransaction, JournalError> {
+    let digest = Sha256::new()
+        .chain_update(V8_SETTLEMENT_TRANSACTION_DOMAIN)
+        .chain_update(grant.predecessor().as_bytes())
+        .chain_update(grant.epoch().to_be_bytes())
+        .chain_update(grant.cache_released().as_bytes())
+        .chain_update(grant.settlement().as_bytes())
+        .finalize();
+
+    JournalTransaction::new(
+        digest[..16]
+            .try_into()
+            .map_err(|_| JournalError::ProtectedBoundary)?,
+        vec![JournalRecord::delete(
+            RecordNamespace::DesiredState,
+            V8_PENDING_KEY.to_vec(),
+        )],
+    )
+}
+
 fn current_state(journal: &mut Journal) -> Result<CachePolicyHoldStateV1, JournalError> {
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     let mut records = authority.records()?;
@@ -468,6 +493,61 @@ impl Journal {
         &mut self,
     ) -> Result<(CachePolicyHoldV1, CachePolicyHoldV1), JournalError> {
         v8_released_pair(self.cache_policy_hold_state_for_writer()?)
+    }
+
+    /// Reads one released Cache row against an authenticated Root settlement.
+    ///
+    /// The marker's presence is returned so a retained writer can reject a
+    /// change between its first observation and final postflight. Absence is
+    /// accepted only when Root's exact released-row digest still matches.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed writer names, a held or different row, or malformed
+    /// pending settlement evidence.
+    pub(crate) fn v8_cache_policy_settlement_state_for_writer(
+        &mut self,
+        grant: RootV8SettledGrantV1,
+    ) -> Result<(CachePolicyHoldV1, CachePolicyHoldV1, bool), JournalError> {
+        let state = self.cache_policy_hold_state_for_writer()?;
+        let released = state.hold.ok_or(JournalError::ProtectedBoundary)?;
+        if released.is_held()
+            || released.binding() != grant.predecessor()
+            || released.epoch() != grant.epoch()
+            || released.record_digest()? != grant.cache_released()
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+
+        let held = CachePolicyHoldV1 {
+            held: true,
+            ..released
+        };
+        Ok((held, released, state.v8_pending.is_some()))
+    }
+
+    /// Clears only the pending V8 marker after an exact Root successor grant.
+    ///
+    /// The canonical released row remains durable. Replaying after a lost
+    /// reply performs no second commit, but still checks that row and grant.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale row or grant, or a failed durable deletion and readback.
+    pub(crate) fn clear_v8_pending_cache_settlement_for_writer(
+        &mut self,
+        grant: RootV8SettledGrantV1,
+    ) -> Result<CachePolicyHoldV1, JournalError> {
+        let (_, released, pending) = self.v8_cache_policy_settlement_state_for_writer(grant)?;
+        if pending {
+            self.commit(&v8_settlement_transaction(grant)?)?;
+        }
+        let (_, readback, still_pending) =
+            self.v8_cache_policy_settlement_state_for_writer(grant)?;
+        if still_pending || readback != released {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(readback)
     }
 
     fn cache_policy_hold_state_for_writer(
@@ -829,6 +909,26 @@ mod tests {
         .expect("Cache hold")
     }
 
+    fn settled_grant(released: CachePolicyHoldV1) -> RootV8SettledGrantV1 {
+        let mut bytes = [0_u8; 256];
+        bytes[..8].copy_from_slice(b"AOSPC88S");
+        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        bytes[16..48].copy_from_slice(released.binding().as_bytes());
+        bytes[48..56].copy_from_slice(&released.epoch().to_be_bytes());
+        bytes[56..64].copy_from_slice(&(released.epoch() + 1).to_be_bytes());
+        for (offset, value) in [(64, 6), (96, 7), (160, 8), (192, 9)] {
+            bytes[offset..offset + 32].fill(value);
+        }
+        bytes[128..160].copy_from_slice(released.record_digest().unwrap().as_bytes());
+        let checksum = Sha256::new()
+            .chain_update(b"aos.sandbox.policy-compiler.root-v8-successor-settlement.v1\0")
+            .chain_update(&bytes[..224])
+            .finalize();
+        bytes[224..].copy_from_slice(&checksum);
+        RootV8SettledGrantV1::from_record_bytes_for_test(&bytes)
+            .expect("canonical settled Root grant")
+    }
+
     #[test]
     fn held_cache_cuts_survive_reopen_and_fence_state_and_manifest_writes() {
         let (directory, uid) = fixture();
@@ -1062,6 +1162,88 @@ mod tests {
         );
         assert!(matches!(
             reopened.release_held_cache_policy_hold_for_writer(hold()),
+            Err(JournalError::ProtectedBoundary)
+        ));
+    }
+
+    #[test]
+    fn v8_settlement_clears_only_matching_marker_and_replays_after_reopen() {
+        let (directory, uid) = fixture();
+        initialize_fresh(directory.path(), uid).expect("fresh genesis");
+        Journal::acquire_cache_policy_hold_at(directory.path(), uid, hold()).expect("held cut");
+
+        let mut writer = open(directory.path(), uid).expect("retained Cache writer");
+        let released = writer
+            .release_v8_held_cache_policy_hold_for_writer(hold())
+            .expect("atomic V8 release");
+        let grant = settled_grant(released);
+        let wrong_rows = [
+            CachePolicyHoldV1 {
+                cache_head: ObjectDigest::from_bytes([9; 32]),
+                ..released
+            },
+            CachePolicyHoldV1 {
+                binding: ObjectDigest::from_bytes([9; 32]),
+                ..released
+            },
+            CachePolicyHoldV1 {
+                epoch: released.epoch() + 1,
+                ..released
+            },
+        ];
+        for wrong in wrong_rows {
+            assert!(matches!(
+                writer.clear_v8_pending_cache_settlement_for_writer(settled_grant(wrong)),
+                Err(JournalError::ProtectedBoundary)
+            ));
+        }
+        assert_eq!(
+            writer.v8_pending_cache_policy_release_for_writer().unwrap(),
+            (hold(), released)
+        );
+
+        assert_eq!(
+            writer
+                .clear_v8_pending_cache_settlement_for_writer(grant)
+                .expect("Root settlement clears Cache fence"),
+            released
+        );
+        assert!(writer.v8_pending_cache_policy_release_for_writer().is_err());
+        assert_eq!(
+            writer.cache_policy_hold_for_writer().unwrap(),
+            Some(released)
+        );
+        writer.compact().expect("compaction preserves settled row");
+        drop(writer);
+
+        let mut reopened = open(directory.path(), uid).expect("cold Cache writer");
+        assert_eq!(
+            reopened
+                .clear_v8_pending_cache_settlement_for_writer(grant)
+                .expect("exact cold replay"),
+            released
+        );
+        for wrong in wrong_rows {
+            assert!(matches!(
+                reopened.clear_v8_pending_cache_settlement_for_writer(settled_grant(wrong)),
+                Err(JournalError::ProtectedBoundary)
+            ));
+        }
+        drop(reopened);
+
+        let next = CachePolicyHoldV1::new(
+            hold().project(),
+            hold().partition(),
+            hold().cache_head(),
+            ObjectDigest::from_bytes([10; 32]),
+            hold().epoch() + 1,
+        )
+        .expect("next Cache hold");
+        Journal::acquire_cache_policy_hold_at(directory.path(), uid, next)
+            .expect("settled marker no longer fences next hold");
+        let mut next_writer = open(directory.path(), uid).expect("next retained writer");
+        assert!(matches!(
+            next_writer.clear_v8_pending_cache_settlement_for_writer(grant),
             Err(JournalError::ProtectedBoundary)
         ));
     }

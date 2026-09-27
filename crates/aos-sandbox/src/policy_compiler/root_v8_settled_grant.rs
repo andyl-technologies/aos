@@ -39,6 +39,18 @@ pub struct RootV8SettledGrantV1 {
 }
 
 impl RootV8SettledGrantV1 {
+    /// Builds a grant from a canonical marker for isolated owner journal tests.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed or noncanonical Root settlement bytes.
+    #[cfg(test)]
+    pub(crate) fn from_record_bytes_for_test(bytes: &[u8]) -> io::Result<Self> {
+        let marker =
+            RootV8SuccessorSettlementV1::from_record_bytes(bytes).map_err(io::Error::other)?;
+        Ok(Self { marker })
+    }
+
     /// Returns the settled predecessor binding.
     #[must_use]
     pub const fn predecessor(self) -> ObjectDigest {

@@ -1,4 +1,4 @@
-//! Writer-held typed Cache replay for a future joined owner receipt.
+//! Writer-held typed Cache replay, release, and V8 settlement.
 //!
 //! The four protected journals stay open through the callback. This module
 //! samples time without advancing the clock journal: its normal update path
@@ -16,6 +16,8 @@ use crate::journal::{
 #[cfg(test)]
 use crate::journal::{JournalError, JournalLimits, RecordNamespace, RecoveryReport};
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
+#[cfg(target_os = "linux")]
+use crate::policy_compiler::RootV8SettledGrantV1;
 
 #[cfg(test)]
 use super::root_read_only::ReadOnlyCacheClockV1;
@@ -51,6 +53,64 @@ pub struct CacheResidencyWriterReadbackV2 {
     /// Commits every validated node quota in canonical partition order.
     quota_digest: ObjectDigest,
     node_quotas: Vec<crate::cache_residency::NodeCacheQuotaV1>,
+}
+
+/// Confirms that Cache cleared one exact pending release under retained custody.
+///
+/// Source may require this token before clearing its own pending marker. The
+/// token is minted only after Cache's durable marker deletion and readback.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(target_os = "linux")]
+pub(crate) struct CacheV8SettledClearV1 {
+    predecessor: ObjectDigest,
+    epoch: u64,
+    cache_released: ObjectDigest,
+    settlement: ObjectDigest,
+}
+
+#[cfg(target_os = "linux")]
+impl CacheV8SettledClearV1 {
+    /// Checks that this Cache clear belongs to the same Root settlement.
+    #[must_use]
+    pub(crate) fn matches_grant(self, grant: RootV8SettledGrantV1) -> bool {
+        self.predecessor == grant.predecessor()
+            && self.epoch == grant.epoch()
+            && self.cache_released == grant.cache_released()
+            && self.settlement == grant.settlement()
+    }
+}
+
+#[derive(Clone, Copy)]
+#[cfg(target_os = "linux")]
+enum CacheTerminalCutV1 {
+    HeldReadback,
+    HeldRelease,
+    ReleasedReadback,
+    ReleasedSettlement(RootV8SettledGrantV1),
+}
+
+#[cfg(target_os = "linux")]
+impl CacheTerminalCutV1 {
+    fn read(
+        self,
+        journal: &mut Journal,
+    ) -> Result<(CachePolicyHoldV1, Option<CachePolicyHoldV1>, bool), crate::journal::JournalError>
+    {
+        match self {
+            Self::HeldReadback | Self::HeldRelease => {
+                Ok((journal.held_cache_policy_hold_for_writer()?, None, false))
+            }
+            Self::ReleasedReadback => {
+                let (prior, released) = journal.v8_pending_cache_policy_release_for_writer()?;
+                Ok((released, Some(prior), true))
+            }
+            Self::ReleasedSettlement(grant) => {
+                let (prior, released, pending) =
+                    journal.v8_cache_policy_settlement_state_for_writer(grant)?;
+                Ok((released, Some(prior), pending))
+            }
+        }
+    }
 }
 
 impl CacheResidencyWriterReadbackV2 {
@@ -135,8 +195,8 @@ impl CacheResidencyProtectedOwnerV1 {
                 let (prepared, finish) = inspect(readback)?;
                 Ok((prepared, finish, Ok))
             },
-            true,
-            false,
+            CacheTerminalCutV1::HeldReadback,
+            |value, _| Ok(value),
         )
         .map(|(value, _)| value)
     }
@@ -177,7 +237,12 @@ impl CacheResidencyProtectedOwnerV1 {
         Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
         Finalize: FnOnce(Output) -> Result<Final, CacheResidencyProtectedJournalErrorV1>,
     {
-        self.with_cache_owner_terminal_cut(physical, |readback, _| inspect(readback), true, true)
+        self.with_cache_owner_terminal_cut(
+            physical,
+            |readback, _| inspect(readback),
+            CacheTerminalCutV1::HeldRelease,
+            |value, _| Ok(value),
+        )
     }
 
     /// Replays an already released Cache hold under the same typed owner cut.
@@ -210,12 +275,50 @@ impl CacheResidencyProtectedOwnerV1 {
                 let (prepared, finish) = inspect(readback, held)?;
                 Ok((prepared, finish, Ok))
             },
-            false,
-            false,
+            CacheTerminalCutV1::ReleasedReadback,
+            |value, _| Ok(value),
         )
     }
 
-    fn with_cache_owner_terminal_cut<Prepared, Output, Final, Finish, Finalize>(
+    /// Clears a pending Cache V8 settlement under full typed and physical replay.
+    ///
+    /// The Controller must retain its own writer and Source custody while it
+    /// couriers the peer-checked Root grant. Cache checks that grant against
+    /// its exact released row, revalidates all writer names and physical
+    /// custody after postflight, then deletes only AOSCPP08. `after_clear`
+    /// runs with that writer still held, so Source can clear its marker without
+    /// a new Cache hold appearing in between. An exact replay after a lost
+    /// reply invokes the callback without another Cache commit.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale Cache replay or physical custody, a different Root
+    /// settlement, a held row, or failed durable deletion and readback.
+    pub(crate) fn with_cleared_v8_pending_cache_settlement_v1<R>(
+        &mut self,
+        physical: &DormantCacheOwnerV1,
+        grant: RootV8SettledGrantV1,
+        after_clear: impl FnOnce(
+            CacheV8SettledClearV1,
+        ) -> Result<R, CacheResidencyProtectedJournalErrorV1>,
+    ) -> Result<R, CacheResidencyProtectedJournalErrorV1> {
+        self.with_cache_owner_terminal_cut(
+            physical,
+            |_, _| Ok(((), Ok, Ok)),
+            CacheTerminalCutV1::ReleasedSettlement(grant),
+            |_, _| {
+                after_clear(CacheV8SettledClearV1 {
+                    predecessor: grant.predecessor(),
+                    epoch: grant.epoch(),
+                    cache_released: grant.cache_released(),
+                    settlement: grant.settlement(),
+                })
+            },
+        )
+        .map(|(value, _)| value)
+    }
+
+    fn with_cache_owner_terminal_cut<Prepared, Output, Final, After, Finish, Finalize>(
         &mut self,
         physical: &DormantCacheOwnerV1,
         inspect: impl FnOnce(
@@ -225,9 +328,12 @@ impl CacheResidencyProtectedOwnerV1 {
             (Prepared, Finish, Finalize),
             CacheResidencyProtectedJournalErrorV1,
         >,
-        expected_held: bool,
-        retire_hold: bool,
-    ) -> Result<(Final, CachePolicyHoldV1), CacheResidencyProtectedJournalErrorV1>
+        mode: CacheTerminalCutV1,
+        after_commit: impl FnOnce(
+            Final,
+            CachePolicyHoldV1,
+        ) -> Result<After, CacheResidencyProtectedJournalErrorV1>,
+    ) -> Result<(After, CachePolicyHoldV1), CacheResidencyProtectedJournalErrorV1>
     where
         Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
         Finalize: FnOnce(Output) -> Result<Final, CacheResidencyProtectedJournalErrorV1>,
@@ -247,12 +353,7 @@ impl CacheResidencyProtectedOwnerV1 {
             self.owner_uid,
         )?;
         let hold_witness = hold_journal.protected_writer_name_witness()?;
-        let (hold, historical_held) = if expected_held {
-            (hold_journal.held_cache_policy_hold_for_writer()?, None)
-        } else {
-            let (prior, released) = hold_journal.v8_pending_cache_policy_release_for_writer()?;
-            (released, Some(prior))
-        };
+        let (hold, historical_held, pending) = mode.read(&mut hold_journal)?;
         let state_witness = self
             .state_journal
             .as_ref()
@@ -303,7 +404,7 @@ impl CacheResidencyProtectedOwnerV1 {
             inspect(&readback, historical_held)
         });
 
-        let revalidate = |hold_journal: &mut Journal| {
+        let revalidate = |hold_journal: &mut Journal, expected_pending: bool| {
             clock_guard.revalidate()?;
             self.check_held_writer_names(&state_witness, &authority_witness)?;
             hold_journal.require_protected_named_location(
@@ -313,14 +414,8 @@ impl CacheResidencyProtectedOwnerV1 {
                 Journal::cache_policy_hold_limits(),
             )?;
             hold_journal.validate_protected_writer_name_witness(&hold_witness)?;
-            let (current, prior) = if expected_held {
-                (hold_journal.held_cache_policy_hold_for_writer()?, None)
-            } else {
-                let (prior, released) =
-                    hold_journal.v8_pending_cache_policy_release_for_writer()?;
-                (released, Some(prior))
-            };
-            if current != hold || prior != historical_held {
+            let (current, prior, current_pending) = mode.read(hold_journal)?;
+            if current != hold || prior != historical_held || current_pending != expected_pending {
                 return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
             }
             physical_snapshot
@@ -330,19 +425,33 @@ impl CacheResidencyProtectedOwnerV1 {
             Ok::<(), CacheResidencyProtectedJournalErrorV1>(())
         };
 
-        revalidate(&mut hold_journal)?;
+        revalidate(&mut hold_journal, pending)?;
         let (prepared, finish, finalize) = result?;
         let outcome = finish(prepared);
-        revalidate(&mut hold_journal)?;
+        revalidate(&mut hold_journal, pending)?;
         let finalized = finalize(outcome?);
-        if retire_hold {
-            revalidate(&mut hold_journal)?;
-            let value = finalized?;
-            let released = hold_journal.release_v8_held_cache_policy_hold_for_writer(hold)?;
-            Ok((value, released))
-        } else {
-            finalized.map(|value| (value, hold))
+        let (value, row) = match mode {
+            CacheTerminalCutV1::HeldRelease => {
+                revalidate(&mut hold_journal, pending)?;
+                let value = finalized?;
+                let released = hold_journal.release_v8_held_cache_policy_hold_for_writer(hold)?;
+                (value, released)
+            }
+            CacheTerminalCutV1::ReleasedSettlement(grant) => {
+                revalidate(&mut hold_journal, pending)?;
+                let value = finalized?;
+                let released = hold_journal.clear_v8_pending_cache_settlement_for_writer(grant)?;
+                (value, released)
+            }
+            CacheTerminalCutV1::HeldReadback | CacheTerminalCutV1::ReleasedReadback => {
+                (finalized?, hold)
+            }
+        };
+        let result = after_commit(value, row);
+        if matches!(mode, CacheTerminalCutV1::ReleasedSettlement(_)) {
+            revalidate(&mut hold_journal, false)?;
         }
+        Ok((result?, row))
     }
 
     fn check_held_writer_names(
