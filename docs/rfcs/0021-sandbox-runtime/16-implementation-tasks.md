@@ -9518,6 +9518,13 @@ and live `Reaping` retirement consume this negative evidence through their
 existing calls. A missing bus fails before mutation and does not turn a
 barrier into proof.
 
+An absent or previously removed name also requires a fresh complete manager
+snapshot before `ManagerConfirmed`: capacity, count, canonical unique rows,
+and the exact locked mount/source inventory must agree, with the target absent.
+No notification is sent on this path. A missing bus leaves absence unconfirmed
+for retry; malformed or contradictory manager state poisons the keeper rather
+than treating startup adoption or a prior removal as continuing PID 1 proof.
+
 The dump reports device and inode but not a kernel-unique mount ID. Fresh
 `FDSTORE` therefore remains unconfirmed, and no positive SourceRoot custody,
 source acquisition, or public Create method is enabled. Mount's exact SELinux
