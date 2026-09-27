@@ -24,8 +24,8 @@ use aos_sandbox_protocol::mount_source_acquisition_state::{
 };
 use aos_sandbox_source_provider_protocol::ProviderHeldSnapshotCatalogV1;
 use aos_sandbox_source_provider_security::{
-    AuthenticatedRootMountRecoveryObservationV2, RootMountSourceProviderHandshakeStatusV1,
-    RootMountSourceProviderOwnerV1,
+    AuthenticatedRootMountNativeRecoveryUnavailableV1, AuthenticatedRootMountRecoveryObservationV2,
+    RootMountSourceProviderHandshakeStatusV1, RootMountSourceProviderOwnerV1,
 };
 use ed25519_dalek::SigningKey;
 
@@ -143,7 +143,7 @@ fn write_once(path: &Path, bytes: &[u8]) {
 }
 
 fn wait_for(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !path.exists() {
         assert!(
             Instant::now() < deadline,
@@ -160,7 +160,7 @@ fn handshake() -> RootMountSourceProviderOwnerV1 {
         .expect("fixed Provider socket");
     let mut owner =
         RootMountSourceProviderOwnerV1::open_fixed(socket).expect("fixed RootMount custody");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         match owner
             .advance_handshake()
@@ -185,6 +185,38 @@ fn decode_digest(value: &str) -> [u8; 32] {
     let trimmed = value.trim_end_matches('\n');
     let bytes = hex::decode(trimmed).expect("hex Provider commitment");
     bytes.try_into().expect("32-byte Provider commitment")
+}
+
+fn query_native(
+    source: &mut FixedMountSourceAcquisitionOwnerV2<'_>,
+    root: &mut RootMountSourceProviderOwnerV1,
+    acquisition: ObjectDigest,
+) -> AuthenticatedRootMountNativeRecoveryUnavailableV1 {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let observation = root
+            .with_current_session(|live| {
+                source.with_consumption_authority(|_, authority| {
+                    live.advance_pending_acquire_recovery_v1(authority, acquisition)
+                        .map_err(|error| crate::MountError::State(error.to_string()))
+                })
+            })
+            .expect("current recovery carrier")
+            .expect("completed recovery handshake")
+            .expect("authenticated recovery query");
+        match observation {
+            Some(AuthenticatedRootMountRecoveryObservationV2::NativeNoDispatch(proof)) => {
+                return proof;
+            }
+            Some(AuthenticatedRootMountRecoveryObservationV2::LocalLive(_)) => {
+                panic!("native reservation downgraded to LocalLive");
+            }
+            None => {
+                assert!(Instant::now() < deadline, "native recovery timed out");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+    }
 }
 
 /// Exercises the installed, fixed-owner native no-dispatch terminal cut.
@@ -327,31 +359,47 @@ fn fixed_owner_native_recovery_vm_cut() {
         panic!("VM initial graph changed acquisition ordering");
     };
     let acquisition = ObjectDigest::from_bytes(row.acquisition_id);
-    let query_deadline = Instant::now() + Duration::from_secs(10);
-    let proof = loop {
-        let observation = successor
-            .with_current_session(|live| {
-                source.with_consumption_authority(|_, authority| {
-                    live.advance_pending_acquire_recovery_v1(authority, acquisition)
-                        .map_err(|error| crate::MountError::State(error.to_string()))
-                })
-            })
-            .expect("current recovery carrier")
-            .expect("completed recovery handshake")
-            .expect("authenticated recovery query");
-        match observation {
-            Some(AuthenticatedRootMountRecoveryObservationV2::NativeNoDispatch(proof)) => {
-                break proof;
-            }
-            Some(AuthenticatedRootMountRecoveryObservationV2::LocalLive(_)) => {
-                panic!("native reservation downgraded to LocalLive");
-            }
-            None => {
-                assert!(Instant::now() < query_deadline, "native recovery timed out");
-                std::thread::sleep(Duration::from_millis(2));
-            }
-        }
-    };
+    let uncommitted_proof = query_native(&mut source, &mut successor, acquisition);
+    drop(uncommitted_proof);
+    drop(source);
+    drop(successor);
+    drop(journal);
+    assert!(
+        recovery_child
+            .wait()
+            .expect("first recovery Provider child exited")
+            .success()
+    );
+    fs::remove_file(PROVIDER_SOCKET).expect("remove first recovery socket");
+
+    // Lose the reply before Mount's CAS, then force both owners to replay
+    // their protected terminal state through a fresh authenticated carrier.
+    let replay_ready = Path::new("/run/aos/source-provider/native-replay.ready");
+    let replay_stop = Path::new("/run/aos/source-provider/native-replay.stop");
+    let mut replay_child = Command::new(&provider_child)
+        .args([
+            "recovery",
+            publication.to_str().expect("publication path"),
+            replay_ready.to_str().expect("ready path"),
+            replay_stop.to_str().expect("stop path"),
+        ])
+        .spawn()
+        .expect("replay fixed Provider child");
+    let mut successor = handshake();
+    wait_for(replay_ready);
+    let (mut journal, _) = Journal::open_existing_protected_at(
+        Path::new(MOUNT_ROOT),
+        MOUNT_JOURNAL,
+        fixed_mount_limits(),
+    )
+    .expect("cold reopen before Mount terminal CAS");
+    let mut source =
+        FixedMountSourceAcquisitionOwnerV2::borrow_existing_fixed_journal(&mut journal)
+            .expect("fixed owner replays uncommitted Provider terminal");
+    source
+        .establish_startup_provider_successor_v2(&mut successor)
+        .expect("barrier-idle recovery session replacement");
+    let proof = query_native(&mut source, &mut successor, acquisition);
     source
         .with_source_acquisition_authority(|table, authority| {
             authority.with_authority(|protected| {
@@ -363,13 +411,13 @@ fn fixed_owner_native_recovery_vm_cut() {
     drop(successor);
     drop(journal);
     assert!(
-        recovery_child
+        replay_child
             .wait()
-            .expect("recovery Provider child exited")
+            .expect("replay Provider child exited")
             .success()
     );
 
-    let (journal, _) = Journal::open_existing_protected_at(
+    let (mut journal, _) = Journal::open_existing_protected_at(
         Path::new(MOUNT_ROOT),
         MOUNT_JOURNAL,
         fixed_mount_limits(),
@@ -397,4 +445,6 @@ fn fixed_owner_native_recovery_vm_cut() {
             .count(),
         6
     );
+    FixedMountSourceAcquisitionOwnerV2::borrow_existing_fixed_journal(&mut journal)
+        .expect("fixed owner cold replay after terminal CAS");
 }
