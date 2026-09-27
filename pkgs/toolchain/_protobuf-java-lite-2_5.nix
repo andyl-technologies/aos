@@ -59,6 +59,7 @@ in
           sourceRoot=java/src/main/java
           javac -encoding UTF-8 -source 7 -target 7 -proc:none \
             -sourcepath "$sourceRoot" -d classes \
+            "$sourceRoot/com/google/protobuf/AbstractParser.java" \
             "$sourceRoot/com/google/protobuf/GeneratedMessageLite.java" \
             "$sourceRoot/com/google/protobuf/LazyStringArrayList.java" \
             "$sourceRoot/com/google/protobuf/UnmodifiableLazyStringList.java"
