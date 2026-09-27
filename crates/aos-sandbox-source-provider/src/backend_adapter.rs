@@ -974,14 +974,30 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
             .current_catalog
             .ok_or(ProviderLedgerError::Unavailable)?;
         let (provider_id, holder_id) = query.authorities();
-        self.owner.settle_native_no_dispatch_recovery(
+        let settlement = self.owner.settle_native_no_dispatch_recovery(
             query.acquisition_id(),
             provider_id,
             holder_id,
             query.original_signed_request_digest(),
+            query.digest(),
             publication,
             rows,
-        )
+        )?;
+        self.owner.pending_backend_recovery.retain(|recovery| {
+            !matches!(
+                &recovery.work,
+                ProviderRecoveryWorkV1::ObserveApplying { acquisition_id, .. }
+                    if *acquisition_id == query.acquisition_id()
+            )
+        });
+        let original = query.original_signed_request_digest();
+        if self.owner.priority_mount_retry_digest == Some(*original.as_bytes()) {
+            self.owner.priority_mount_retry_digest = None;
+        }
+        if self.owner.priority_mount_retry_rearm_digest == Some(*original.as_bytes()) {
+            self.owner.priority_mount_retry_rearm_digest = None;
+        }
+        Ok(settlement)
     }
 
     fn retain_backend_recovery(
@@ -1576,14 +1592,34 @@ fn execute_disposition(
         ProviderAdmissionDispositionV1::Acquire(permit)
             if current_catalog.is_some_and(|(_, rows)| rows.starts_with(b"AOSPCZ01")) =>
         {
-            // A protected native row is only selection. No Storage receipt or
-            // SourceRoot descriptor is available to complete this attempt.
+            // The native row forbids dispatch. Keep its exact reservation
+            // Applying until a successor can durably settle it; completing an
+            // ordinary response here would strand a crash-before-send retry.
             ledger
-                .complete_acquire_disposition(
-                    permit,
-                    aos_sandbox_source_provider_protocol::SourceProviderStatus::Unavailable,
-                )
-                .map(PreparedFixedProviderBackendOutcomeV1::Reply)
+                .journal
+                .validate_source_provider_authority_snapshot(&permit.journal_snapshot)?;
+            let plan = permit.plan();
+            let mut matching = ledger.recovered.recovery_work.iter().filter(|work| {
+                matches!(work, ProviderRecoveryWorkV1::ObserveApplying {
+                    acquisition_id,
+                    effect_id,
+                } if *acquisition_id == plan.acquisition_id && *effect_id == plan.effect_id)
+            });
+            let work = matching.next().ok_or(ProviderLedgerError::Equivocation)?;
+            if matching.next().is_some() {
+                return Err(ProviderLedgerError::Equivocation);
+            }
+            Ok(PreparedFixedProviderBackendOutcomeV1::Recovery(
+                FixedProviderBackendRecoveryV1 {
+                    work: work.clone(),
+                    original_request: signed_request.clone(),
+                    descriptor_roles: descriptor_roles.to_vec(),
+                    fresh_request: None,
+                    fresh_request_in_flight: false,
+                    successor_session_ready: false,
+                    quarantined: false,
+                },
+            ))
         }
         ProviderAdmissionDispositionV1::Acquire(permit) => ledger
             .execute_acquire(permit, backend)

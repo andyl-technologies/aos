@@ -1599,6 +1599,7 @@ impl FixedProviderOwnerV1 {
     ) -> Result<bool, ProviderLedgerError> {
         if self.pending_recovery_query_digest != Some(query.digest())
             || self.last_recovery_sequence != query.sequence()
+            || settlement.query_digest != query.digest()
             || self.pending_recovery_plan_digest.is_some()
             || self
                 .pending_recovery_terminal_digests

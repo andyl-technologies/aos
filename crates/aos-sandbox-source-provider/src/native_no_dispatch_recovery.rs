@@ -28,6 +28,7 @@ use crate::{FixedProviderOwnerV1, ProviderLedgerError};
 #[must_use = "a native settlement is not a Mount terminal outcome until sent and consumed"]
 pub struct NativeNoDispatchSettlementV1 {
     pub(crate) digests: NativeRecoveryTerminalDigestsV1,
+    pub(crate) query_digest: ObjectDigest,
     pub(crate) snapshot: ProtectedJournalSnapshot,
 }
 
@@ -48,6 +49,7 @@ impl FixedProviderOwnerV1 {
         expected_provider_id: [u8; 16],
         expected_holder_id: [u8; 16],
         expected_signed_request_digest: ObjectDigest,
+        query_digest: ObjectDigest,
         canonical_publication: &[u8],
         canonical_rows: &[u8],
     ) -> Result<NativeNoDispatchSettlementV1, ProviderLedgerError> {
@@ -296,6 +298,7 @@ impl FixedProviderOwnerV1 {
             }
             Ok(NativeNoDispatchSettlementV1 {
                 digests,
+                query_digest,
                 snapshot: ledger.journal.snapshot()?,
             })
         })
