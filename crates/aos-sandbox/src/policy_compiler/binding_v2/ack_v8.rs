@@ -35,6 +35,13 @@ use crate::policy_compiler::source_hold_readback::PinnedSourceHoldReadbackSigner
 
 use super::*;
 
+mod terminal;
+
+pub use terminal::{
+    RootV8VerifiedTerminalV1, recover_fixed_closed_root_v8_verified_terminal_v1,
+    verify_fixed_closed_root_v8_terminal_v1,
+};
+
 const ACK_KEY: &[u8] = b"\0aos-policy-compiler-root-v8-effect-ack-v1\0";
 const CHALLENGE_KEY: &[u8] = b"\0aos-policy-compiler-root-v8-effect-ack-challenge-v1\0";
 const MAGIC: &[u8; 8] = b"AOSPC88A";
@@ -510,6 +517,23 @@ fn acknowledge_in_authority(
     let cut = effect_cut(binding, epoch, &held, uid, issue);
     let challenge = ControllerEffectAckChallengeV1::new(nonce, cut)?;
     let row = CHALLENGE_CODEC.encode(issue, nonce, cut);
+    let future = terminal::terminal_capacity_transactions()?;
+    let ack_capacity = JournalTransaction::new(
+        [0x88; 16],
+        vec![JournalRecord::put(
+            RecordNamespace::DesiredState,
+            ACK_KEY.to_vec(),
+            vec![0; ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1],
+        )],
+    )?;
+    let planned = [
+        CHALLENGE_CODEC.transaction(row)?,
+        ack_capacity,
+        future[0].clone(),
+        future[1].clone(),
+    ];
+    let preflight = authority.preflight_transactions(&planned)?;
+    authority.validate_preflight_for_effect(&preflight, &planned)?;
     authority.commit(&CHALLENGE_CODEC.transaction(row)?)?;
     if authority.get(CHALLENGE_KEY)? != Some(row.as_slice()) {
         return Err(RootV8EffectAckErrorV1::Stale);
@@ -583,6 +607,7 @@ mod tests {
     };
     use crate::policy_compiler::controller_effect_ack_readback_v8::sign_test_controller_v8_effect_ack_readback_v1;
     use crate::policy_compiler::controller_hold_readback::encode_controller_hold_signer_credential_v1;
+    use crate::policy_compiler::controller_root_receipt_readback_v8::sign_test_controller_v8_root_receipt_readback_v1;
     use crate::policy_compiler::source_hold_readback::encode_source_hold_readback_signer_credential_v1;
     use ed25519_dalek::SigningKey;
     use std::fs;
@@ -815,6 +840,10 @@ mod tests {
             Some(committed)
         );
         assert_eq!(
+            terminal::current_terminal(&authority, binding_head, binding.handoff_epoch).unwrap(),
+            None
+        );
+        assert_eq!(
             acknowledge_in_authority(
                 &mut authority,
                 binding_head,
@@ -826,6 +855,105 @@ mod tests {
             )
             .unwrap(),
             committed
+        );
+
+        assert!(
+            terminal::verify_in_authority(
+                &mut authority,
+                binding_head,
+                binding.handoff_epoch,
+                1234,
+                &controller_pin,
+                || Ok([17; 16]),
+                |challenge| {
+                    let mut packet = sign_test_controller_v8_root_receipt_readback_v1(
+                        committed,
+                        1234,
+                        challenge,
+                        4,
+                        &controller_key,
+                    )
+                    .unwrap();
+                    packet[84] ^= 1;
+                    Ok(packet.to_vec())
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(
+            terminal::current_terminal(&authority, binding_head, binding.handoff_epoch).unwrap(),
+            None
+        );
+        let substituted = RootV8EffectAckV1 {
+            quota: ObjectDigest::from_bytes([99; 32]),
+            ..committed
+        };
+        assert!(
+            terminal::verify_in_authority(
+                &mut authority,
+                binding_head,
+                binding.handoff_epoch,
+                1234,
+                &controller_pin,
+                || Ok([18; 16]),
+                |challenge| {
+                    Ok(sign_test_controller_v8_root_receipt_readback_v1(
+                        substituted,
+                        1234,
+                        challenge,
+                        4,
+                        &controller_key,
+                    )
+                    .unwrap()
+                    .to_vec())
+                },
+            )
+            .is_err()
+        );
+        let terminal = terminal::verify_in_authority(
+            &mut authority,
+            binding_head,
+            binding.handoff_epoch,
+            1234,
+            &controller_pin,
+            || Ok([19; 16]),
+            |challenge| {
+                Ok(sign_test_controller_v8_root_receipt_readback_v1(
+                    committed,
+                    1234,
+                    challenge,
+                    4,
+                    &controller_key,
+                )
+                .unwrap()
+                .to_vec())
+            },
+        )
+        .unwrap();
+        assert_eq!(terminal.ack(), committed);
+        assert_eq!(
+            terminal::verify_in_authority(
+                &mut authority,
+                binding_head,
+                binding.handoff_epoch,
+                1234,
+                &controller_pin,
+                || panic!("exact terminal replay must not spend a nonce"),
+                |_| panic!("exact terminal replay must not sign"),
+            )
+            .unwrap(),
+            terminal
+        );
+        drop(authority);
+        drop(reopened);
+
+        let mut reopened = super::super::tests::open_test_root(directory.path());
+        let mut authority = reopened
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        assert_eq!(
+            terminal::current_terminal(&authority, binding_head, binding.handoff_epoch).unwrap(),
+            Some(terminal)
         );
 
         let mut altered = proof_bytes;

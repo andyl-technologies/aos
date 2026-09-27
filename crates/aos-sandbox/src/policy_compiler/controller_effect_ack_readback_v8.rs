@@ -90,7 +90,7 @@ fn sign_at(
     Ok(packet)
 }
 
-fn require_current_ack(
+pub(super) fn require_current_ack(
     journal: &mut Journal,
     ack: ControllerPolicyV8EffectAckV1,
 ) -> Result<(), ControllerEffectAckReadbackErrorV1> {
