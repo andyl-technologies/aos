@@ -342,12 +342,59 @@ impl Journal {
         if !expected.held || current(&self.state)? != Some(expected) {
             return Err(JournalError::ProtectedBoundary);
         }
+        self.commit_released_source_domain_policy_hold(expected)
+    }
+
+    /// Records an exact V8 Source release after higher-level owner verification.
+    ///
+    /// This journal transition does not verify Root or Cache release. It must
+    /// remain unreachable from public Create until a held cross-owner caller
+    /// supplies that evidence. An exact cold replay is idempotent so a lost
+    /// response after durable sync cannot strand the Source writer.
+    ///
+    /// # Errors
+    ///
+    /// Rejects non-source custody, a non-held expected record, a different
+    /// current hold, or failed durable release and readback.
+    pub(crate) fn retire_source_domain_policy_hold_v8(
+        &mut self,
+        expected: SourceDomainPolicyHoldV1,
+    ) -> Result<(), JournalError> {
+        ensure_source_domain(self)?;
+        if !expected.held {
+            return Err(JournalError::ProtectedBoundary);
+        }
         let released = SourceDomainPolicyHoldV1 {
             held: false,
             ..expected
         };
-        let transaction = transaction(released)?;
-        self.commit_with_capacity_scope(&transaction, None, false, true, false, false, false)?;
+
+        match current(&self.state)? {
+            Some(current) if current == expected => {
+                self.commit_released_source_domain_policy_hold(expected)
+            }
+            Some(current) if current == released => Ok(()),
+            _ => Err(JournalError::ProtectedBoundary),
+        }
+    }
+
+    fn commit_released_source_domain_policy_hold(
+        &mut self,
+        expected: SourceDomainPolicyHoldV1,
+    ) -> Result<(), JournalError> {
+        let released = SourceDomainPolicyHoldV1 {
+            held: false,
+            ..expected
+        };
+        self.commit_with_capacity_scope(
+            &release_transaction(expected)?,
+            None,
+            false,
+            true,
+            false,
+            false,
+            false,
+        )?;
         if current(&self.state)? != Some(released) {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -509,6 +556,66 @@ mod tests {
         reopened
             .commit(&ordinary_transaction(RecordNamespace::DesiredState, 9))
             .expect("source-domain writes restored");
+    }
+
+    #[test]
+    fn v8_retirement_replays_exact_released_source_after_reopen() {
+        let directory = TestDirectory::new();
+        let expected = hold();
+        let mut source = ProtectedSourceDomainJournalOwnerV1::from_test_journal(directory.open());
+        source
+            .acquire_closed_policy_source_hold_v1(expected)
+            .expect("held Source custody");
+
+        source
+            .retire_closed_policy_source_hold_v8(expected)
+            .expect("exact V8 retirement transition");
+        drop(source);
+
+        let mut reopened = ProtectedSourceDomainJournalOwnerV1::from_test_journal(directory.open());
+        assert_eq!(
+            reopened.closed_policy_source_hold_v1().unwrap(),
+            Some(SourceDomainPolicyHoldV1 {
+                held: false,
+                ..expected
+            })
+        );
+        reopened
+            .retire_closed_policy_source_hold_v8(expected)
+            .expect("exact released replay is idempotent");
+        reopened
+            .journal()
+            .commit(&ordinary_transaction(RecordNamespace::DesiredState, 9))
+            .expect("Source writes resume after release");
+    }
+
+    #[test]
+    fn v8_retirement_rejects_wrong_identity_and_phase() {
+        let directory = TestDirectory::new();
+        let expected = hold();
+        let mut source = directory.open();
+        assert!(source.retire_source_domain_policy_hold_v8(expected).is_err());
+        source
+            .acquire_source_domain_policy_hold_v1(expected)
+            .expect("held Source custody");
+
+        let wrong_binding = SourceDomainPolicyHoldV1 {
+            binding: ObjectDigest::from_bytes([6; 32]),
+            ..expected
+        };
+        let released_argument = SourceDomainPolicyHoldV1 {
+            held: false,
+            ..expected
+        };
+        assert!(source.retire_source_domain_policy_hold_v8(wrong_binding).is_err());
+        assert!(source.retire_source_domain_policy_hold_v8(released_argument).is_err());
+        assert_eq!(source.source_domain_policy_hold_v1().unwrap(), Some(expected));
+
+        source
+            .retire_source_domain_policy_hold_v8(expected)
+            .expect("exact V8 retirement transition");
+        assert!(source.retire_source_domain_policy_hold_v8(wrong_binding).is_err());
+        assert!(source.retire_source_domain_policy_hold_v8(released_argument).is_err());
     }
 
     #[test]

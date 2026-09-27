@@ -181,6 +181,23 @@ impl ProtectedSourceDomainJournalOwnerV1 {
         self.journal
             .release_source_domain_policy_hold_after_root_readback_v1(expected)
     }
+
+    /// Records only the Source journal's exact V8 retirement transition.
+    ///
+    /// A future held cross-owner caller must verify Root and Cache release
+    /// before invoking this private method. This wrapper grants no release
+    /// authority by itself and is not connected to public Create or Apply.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale or mismatched Source custody and failed durability.
+    #[allow(dead_code)]
+    pub(crate) fn retire_closed_policy_source_hold_v8(
+        &mut self,
+        expected: SourceDomainPolicyHoldV1,
+    ) -> Result<(), JournalError> {
+        self.journal.retire_source_domain_policy_hold_v8(expected)
+    }
 }
 
 /// Names the common project and subject bound by every joined source domain.
