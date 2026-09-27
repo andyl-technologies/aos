@@ -171,6 +171,11 @@
       # The source classifier also carries the separately packaged processor.
       javaRoot = "com/google/auto/value";
       javaMaxDepth = 1;
+      extraJavaSources = [
+        "com/google/auto/value/extension/memoized/Memoized.java"
+        "com/google/auto/value/extension/serializable/SerializableAutoValue.java"
+        "com/google/auto/value/extension/toprettystring/ToPrettyString.java"
+      ];
       copyResources = false;
     }
     {
@@ -457,6 +462,9 @@
       target = "it/unimi/dsi/fastutil/7.2.1/fastutil-7.2.1.jar";
       sourceUrl = "https://repo.maven.apache.org/maven2/it/unimi/dsi/fastutil/7.2.1/fastutil-7.2.1-sources.jar";
       hash = "sha256-TcWqnsalUZkOujYP3jRhmdHLcZ4Lwcy4GymJKoa0U4A=";
+      excludeTestSources = true;
+      # The source-built ProGuard 6 CLI reads Java 8 classfiles.
+      javaRelease = 8;
     }
     {
       target = "org/brotli/dec/0.1.2/dec-0.1.2.jar";
@@ -815,8 +823,11 @@
         if source ? javaMaxDepth
         then "-maxdepth ${toString source.javaMaxDepth}"
         else ""
-      } -type f -name '*.java' \
+      } -type f -name '*.java' ${if source.excludeTestSources or false then "! -name '*Test.java'" else ""} \
         ! -name module-info.java -print > sources-${toString source.index}.list
+      ${builtins.concatStringsSep "\n" (builtins.map (path: ''
+        printf '%s\n' 'source-${toString source.index}/${path}' >> sources-${toString source.index}.list
+      '') (source.extraJavaSources or []))}
       test -s sources-${toString source.index}.list
       javac ${
         if source.javacApiExport or false

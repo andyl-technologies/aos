@@ -32,6 +32,7 @@
   file,
   patchelf,
   bazel-bootstrap,
+  qemu-img ? null,
   bootstrapTools,
   gcc-libs,
   llvm,
@@ -39,12 +40,17 @@
   version,
   srcHash,
   vendorDepsHash,
+  source ? null,
   update ? null,
   # Major version string for the version check test (e.g. "7.7", "8.6", "9.0")
   versionCheck ? builtins.substring 0 3 version,
 }: let
   isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  bootstrapJavaRuntime =
+    if source == null
+    then "local_jdk_21"
+    else "local_jdk";
   needsDarwinMdns = builtins.compareVersions version "8.0.0" >= 0;
   needsRulesJavaRuntime = builtins.compareVersions version "9.0.0" >= 0;
   darwinIOKitUserSrc =
@@ -119,6 +125,7 @@
     if isCross
     then buildPackages.openjdk-21
     else openjdk-21;
+  buildOpenjdk8 = buildPackages.openjdk-8;
   buildGcc =
     if isCross
     then buildPackages.gcc
@@ -171,6 +178,22 @@
     if isCross
     then buildPackages.bazel-bootstrap
     else bazel-bootstrap;
+  buildProguard = buildBazelBootstrap.passthru.offlineProguard;
+  buildQemuImg =
+    if isCross
+    then buildPackages.qemu-img
+    else qemu-img;
+  sourceRepositoryFlags =
+    if source == null
+    then []
+    else
+      builtins.filter (flag: flag != null) (lib.mapAttrsToList (
+          name: path:
+            if !lib.strings.hasPrefix "rules_jvm_external++maven+" name
+            then null
+            else "--override_repository=${builtins.replaceStrings ["+"] ["~"] name}=${path}"
+        )
+        buildBazelBootstrap.passthru.offlineRepositories);
   buildBootstrapTools =
     if isCross
     then buildPackages.bootstrapTools
@@ -993,12 +1016,16 @@
       scripts/bootstrap/bootstrap.sh
   '';
 
-  src = fetchurl {
-    urls = [
-      "https://github.com/bazelbuild/bazel/releases/download/${version}/bazel-${version}-dist.zip"
-    ];
-    hash = srcHash;
-  };
+  src =
+    if source != null
+    then source
+    else
+      fetchurl {
+        urls = [
+          "https://github.com/bazelbuild/bazel/releases/download/${version}/bazel-${version}-dist.zip"
+        ];
+        hash = srcHash;
+      };
 
   # Fixed-output derivation: vendor all external dependencies using the
   # source-built Java bootstrap runner.
@@ -1017,10 +1044,16 @@
 
                 export PATH="${buildBazelBootstrap}/bin:$PATH"
 
-                # Extract dist zip
+                # Bazel's Git source checkout contains no bundled compiled
+                # release artifacts. Older recipes retain the dist ZIP path.
                 mkdir -p "$TMPDIR/bazel_src"
                 cd "$TMPDIR/bazel_src"
-                unzip -q ${src}
+                if [ -d ${src} ]; then
+                  cp -R ${src}/. .
+                  chmod -R u+w .
+                else
+                  unzip -q ${src}
+                fi
 
                 # Apply reproducibility patch when the target test file exists.
                 if [ -f src/test/shell/bazel/list_source_repository.bzl ]; then
@@ -1088,6 +1121,7 @@
                   --repo_env=PATH="$PATH"
                   --repo_env=CC=${buildGcc}/bin/gcc
                 )
+                ${builtins.concatStringsSep "\n" (map (flag: "VENDOR_FLAGS+=(\"${flag}\")") sourceRepositoryFlags)}
 
                 # Fetch module metadata first — triggers rules_java repo setup so
                 # we can patch _detect_java_version before the actual vendor step.
@@ -1206,28 +1240,31 @@ in
 
     inherit src;
 
-    buildDeps = [
-      bash
-      coreutils
-      which
-      zip
-      unzip
-      gawk
-      python3
-      openjdk-21
-      gcc
-      binutils
-      grep
-      gzip
-      patch
-      diffutils
-      findutils
-      sed
-      tar
-      xz
-      file
-      patchelf
-    ];
+    buildDeps =
+      [
+        bash
+        coreutils
+        which
+        zip
+        unzip
+        gawk
+        python3
+        openjdk-21
+        gcc
+        binutils
+        grep
+        gzip
+        patch
+        diffutils
+        findutils
+        sed
+        tar
+        xz
+        file
+        patchelf
+      ]
+      ++ lib.optional (source != null) buildQemuImg
+      ++ lib.optionals (source != null && version == "7.7.1") [buildProguard buildOpenjdk8];
     runtimeDeps =
       [
         bash
@@ -1249,15 +1286,58 @@ in
       {
         name = "unpack";
         script = ''
-          # Bazel source is a zip, not a tarball
+          # The source checkout is already unpacked; dist ZIPs need extraction.
           mkdir bazel_src
           cd bazel_src
-          unzip -q $src
+          if [ -d "$src" ]; then
+            cp -R "$src"/. .
+            chmod -R u+w .
+          else
+            unzip -q "$src"
+          fi
         '';
       }
       {
         name = "patch";
         script = ''
+                  ${lib.optionalString (source != null) ''
+            # The dist archive bundles an empty Android emulator
+            # snapshot. Recreate it with AOS-built qemu-img and zip.
+            test ! -e tools/android/emulator/snapshots.img.zip
+            ${buildQemuImg}/bin/qemu-img create -f qcow2 \
+              -o compat=0.10,cluster_size=65536 \
+              tools/android/emulator/snapshots.img 500M
+            (cd tools/android/emulator && \
+              ${buildZip}/bin/zip -X -q snapshots.img.zip snapshots.img && \
+              rm snapshots.img)
+          ''}
+                  ${lib.optionalString (source != null && version == "7.7.1") ''
+            # This fastutil trimming action needs only the source-built
+            # ProGuard CLI, so it does not consume Maven's compiled JAR.
+                    cp ${buildProguard}/share/java/proguard-base-${buildProguard.version}.jar \
+                      third_party/aos-proguard.jar
+            if test "$(grep -c 'runtime_deps = \["@maven//:com_guardsquare_proguard_base"\],' third_party/BUILD)" -ne 1; then
+              echo "Bazel ProGuard rule changed" >&2
+              exit 1
+            fi
+                    sed -i \
+                      's|runtime_deps = \["@maven//:com_guardsquare_proguard_base"\],|runtime_deps = [":source_proguard", "@maven//:com_google_code_gson_gson"],|' \
+                      third_party/BUILD
+                    if test "$(grep -Fc '"@rules_java//toolchains:platformclasspath",' third_party/BUILD)" -ne 1; then
+                      echo "Bazel fastutil platform classpath changed" >&2
+                      exit 1
+                    fi
+                    sed -i \
+                      -e '/"@rules_java\/\/toolchains:platformclasspath",/d' \
+                      -e 's|$(execpath @rules_java//toolchains:platformclasspath)|${buildOpenjdk8}/jre/lib/rt.jar|' \
+                      third_party/BUILD
+                    printf '%s\n' \
+              "" \
+              'java_import(' \
+              '    name = "source_proguard",' \
+                      '    jars = [":aos-proguard.jar"],' \
+              ')' >> third_party/BUILD
+          ''}
                   # Apply patches (|| true — patches may not apply to all versions)
                   patch --batch -p1 < ${./bazel-patches/java_toolchain.patch} || true
                   if [ -f src/test/shell/bazel/list_source_repository.bzl ]; then
@@ -1274,7 +1354,9 @@ in
                         -e "s|/usr/local/bin/bash|${buildBash}/bin/bash|g" \
                         -e "s|/usr/bin/bash|${buildBash}/bin/bash|g" \
                         -e "s|/bin/bash|${buildBash}/bin/bash|g" \
-                        -e "s|/usr/bin/env python|${buildPython3}/bin/python3|g" \
+                        -e "s|/usr/bin/env python3|${buildPython3}/bin/python3|g" \
+                        -e "s|/usr/bin/env python\\([^[:alnum:]_]\\)|${buildPython3}/bin/python3\\1|g" \
+                        -e "s|/usr/bin/env python$|${buildPython3}/bin/python3|g" \
                         -e "s|/usr/bin/env bash|${buildBash}/bin/bash|g" \
                         -e "s|/usr/bin/env|${buildCoreutils}/bin/env|g" \
                         -e "s|/bin/true|${buildCoreutils}/bin/true|g" \
@@ -1405,6 +1487,58 @@ in
                   -e "s|/usr/bin/env|${buildCoreutils}/bin/env|g" \
                   "$f" 2>/dev/null || true
               done
+            find ../vendor_dir -type f -name '*.sh' \
+              -exec sed -i "1s|^#!/bin/sh$|#!${buildBash}/bin/bash|" {} +
+
+            ${lib.optionalString (source != null && version == "7.7.1") ''
+              # rules_java's default compiler toolchain names a downloaded JDK.
+              # Use the source-built AOS JDK that local_jdk already exposes.
+              JAVA_TOOLCHAIN=../vendor_dir/rules_java~/toolchains/default_java_toolchain.bzl
+              test "$(grep -Fc 'java_runtime = Label("//toolchains:remotejdk_21")' "$JAVA_TOOLCHAIN")" = 1
+              sed -i \
+                's|java_runtime = Label("//toolchains:remotejdk_21")|java_runtime = Label("@local_jdk//:jdk")|' \
+                "$JAVA_TOOLCHAIN"
+              JAVA_TOOLCHAIN_BUILD=../vendor_dir/rules_java~/toolchains/BUILD
+              test "$(grep -Fc 'actual = ":singlejar_prebuilt_or_cc_binary"' "$JAVA_TOOLCHAIN_BUILD")" = 1
+              sed -i \
+                's|actual = ":singlejar_prebuilt_or_cc_binary"|actual = "@@//src/tools/singlejar:singlejar_local"|' \
+                "$JAVA_TOOLCHAIN_BUILD"
+
+              # The source-built AutoValue processor loads support classes at
+              # execution time, but rules_jvm_external omits those dependencies.
+              MAVEN_BUILD=../vendor_dir/rules_jvm_external~~maven~maven/BUILD
+              cp ${buildBazelBootstrap.passthru.offlineMavenJars}/maven/net/ltgt/gradle/incap/incap/1.0.0/incap-1.0.0.jar \
+                ../vendor_dir/rules_jvm_external~~maven~maven/aos-incap.jar
+              cp ${buildBazelBootstrap.passthru.offlineMavenJars}/maven/com/google/escapevelocity/escapevelocity/1.1/escapevelocity-1.1.jar \
+                ../vendor_dir/rules_jvm_external~~maven~maven/aos-escapevelocity.jar
+              ${buildPython3}/bin/python3 - "$MAVEN_BUILD" <<'PY'
+              import pathlib
+              import sys
+
+              build_file = pathlib.Path(sys.argv[1])
+              contents = build_file.read_text()
+              target = 'jvm_import(\n\tname = "com_google_auto_value_auto_value",'
+              assert contents.count(target) == 1
+              start = contents.index(target)
+              end = contents.index('\n)\n', start) + 3
+              rule = contents[start:end]
+              assert rule.count('deps = [\n\t],') == 1
+              dependencies = (
+                  'deps = [\n'
+                  '\t\t":aos_processor_support",\n'
+                  '\t\t":com_google_auto_auto_common",\n'
+                  '\t\t":com_google_auto_service_auto_service_annotations",\n'
+                  '\t\t":com_google_auto_value_auto_value_annotations",\n'
+                  '\t\t":com_google_guava_guava",\n'
+                  '\t],'
+              )
+              rule = rule.replace('deps = [\n\t],', dependencies)
+              contents = contents[:start] + rule + contents[end:]
+              contents += '\njava_import(name = "aos_processor_support", '
+              contents += 'jars = ["aos-incap.jar", "aos-escapevelocity.jar"])\n'
+              build_file.write_text(contents)
+              PY
+            ''}
 
             ${lib.optionalString (version == "8.6.0") ''
               # The vendored Java aliases select ELF binaries that require
@@ -1526,13 +1660,15 @@ in
               --host_cpu=aarch64
               --noenable_platform_specific_config
             ''}
-              --tool_java_runtime_version=local_jdk_21
-              --java_runtime_version=local_jdk_21
+              --tool_java_runtime_version=${bootstrapJavaRuntime}
+              --java_runtime_version=${bootstrapJavaRuntime}
               --tool_java_language_version=21
               --java_language_version=21
               --extra_toolchains=@bazel_tools//tools/jdk:all
               --vendor_dir=$VENDOR_ABS
               --repository_disable_download
+              ${builtins.concatStringsSep "\n" sourceRepositoryFlags}
+              --repo_env=JAVA_HOME=${buildOpenjdk}
               --nobuild_python_zip
               --incompatible_strict_action_env
               --action_env=PATH=${buildToolsPath}
@@ -1549,6 +1685,21 @@ in
             if [ -n "''${AOS_BAZEL_DISK_CACHE:-}" ]; then
               export EXTRA_BAZEL_ARGS="$EXTRA_BAZEL_ARGS --disk_cache=$AOS_BAZEL_DISK_CACHE"
             fi
+
+            ${lib.optionalString (source != null) ''
+              # A Git checkout lacks the generated Java classes in dist ZIPs.
+              # Start from the already source-built AOS bootstrap runner.
+              mkdir -p derived/maven
+              cp -R ${buildBazelBootstrap.passthru.offlineMavenJars}/maven/. derived/maven/
+              chmod -R u+w derived/maven
+              printf '%s\n' 'filegroup(name = "srcs", srcs = glob(["**/*.jar"]))' \
+                > derived/maven/BUILD.vendor
+              printf '%s\n' 'rules_jvm_external~maven~maven' \
+                > derived/maven/MAVEN_CANONICAL_REPO_NAME
+              cp src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt \
+                tools/jdk/java_stub_template.txt
+              export BAZEL=${buildBazelBootstrap}/bin/bazel
+            ''}
 
             # Run the bootstrap build
             ${buildBash}/bin/bash ./compile.sh

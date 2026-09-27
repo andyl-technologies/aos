@@ -27,6 +27,7 @@
   file,
   patchelf,
   bazel-bootstrap,
+  qemu-img,
   bootstrapTools,
   gcc-libs,
   llvm,
@@ -69,6 +70,7 @@
       file
       patchelf
       bazel-bootstrap
+      qemu-img
       bootstrapTools
       gcc-libs
       llvm
@@ -78,5 +80,6 @@ in
   mkBazel {
     inherit (upstream) version update;
     srcHash = "sha256-YYGzVwwvZX2YmxFB+wwaCOtfCBBspXfcfcUufQI4N5o=";
-    vendorDepsHash = "sha256-UIedT89X6y12snR54HGoZyLuFaHupcSDxu9ZibkzYeA=";
+    vendorDepsHash = "sha256-aOh1Dpt3hTSypx7jKj//K1dSdeNsrtIJlvHiwy2epWQ=";
+    source = buildPackages.bazel-bootstrap.passthru.offlineSource;
   }
