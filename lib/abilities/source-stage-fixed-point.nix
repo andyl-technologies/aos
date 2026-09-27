@@ -75,8 +75,6 @@
   retainedCompositionRequirements = filterAttrs (name: _:
     builtins.hasAttr name retainedCompositionRequirementKeys)
   abilities.compositionRequirements;
-  retainedCompositionOutputs =
-    filterAttrs (name: _: builtins.hasAttr name retainedRequestKeys) abilities.compositionOutputs;
   # The image manager starts its own services outside this transaction. Some
   # prepare the runner; others wait for it to finish. Neither may be scheduled
   # as an effect inside the runner's source plan.
@@ -198,7 +196,7 @@
       else {inherit package;}
     );
   outputDescriptorFor = requestName: outputName: let
-    binding = bindingsByRequest.${requestName}
+    binding = allBindingsByRequest.${requestName}
       or (throw "source-stage output '${requestName}.${outputName}' needs one selected binding");
     implementation = abilities.implementations.${binding.implementation}
       or (throw "source-stage output selects absent implementation '${binding.implementation}'");
@@ -220,7 +218,7 @@
     then let
       reference = "${value.request}.${value.output}";
       descriptor = outputDescriptorFor value.request value.output;
-      outputs = projectedOutputs.${value.request} or {};
+      outputs = resolvedOutputs.${value.request} or {};
       output = outputs.${value.output} or null;
     in
       if builtins.attrNames value != ["_type" "output" "request"]
@@ -290,16 +288,18 @@
     inherit (binding) request providerInstance slot;
     implementation = implementationReference "binding implementation" binding.implementation;
   };
-  bindingEntries = builtins.map (binding: {
-    name = binding.request;
-    value = binding;
-  }) (builtins.attrValues retainedBindings);
-  bindingsByRequest = let
-    selected = builtins.listToAttrs bindingEntries;
+  indexBindingsByRequest = bindings: let
+    entries = builtins.map (binding: {
+      name = binding.request;
+      value = binding;
+    }) (builtins.attrValues bindings);
+    selected = builtins.listToAttrs entries;
   in
-    if builtins.length (builtins.attrNames selected) != builtins.length bindingEntries
+    if builtins.length (builtins.attrNames selected) != builtins.length entries
     then throw "source-stage output has several selected bindings for one request"
     else selected;
+  allBindingsByRequest = indexBindingsByRequest abilities.bindings;
+  bindingsByRequest = indexBindingsByRequest retainedBindings;
   projectCompositionRequirement = _: requirement:
     requirement
     // {
@@ -326,15 +326,20 @@
     })
     referencedRootRequirements);
   projectOutput = requestName: _: output: let
-    binding = bindingsByRequest.${requestName}
+    binding = allBindingsByRequest.${requestName}
       or (throw "source-stage output '${requestName}' has no selected binding");
     owner = (implementationReference "output provider" binding.implementation).package;
   in
     output // {value = normalizeOwnedValue owner output.value;};
-  projectedOutputs =
+  # Planning outputs may be referenced by retained requests even when their
+  # provider is manager-owned. Resolve them from the full fixed point, then
+  # publish only outputs whose requests belong to this source transaction.
+  resolvedOutputs =
     builtins.mapAttrs
     (requestName: outputs: builtins.mapAttrs (projectOutput requestName) outputs)
-    retainedCompositionOutputs;
+    abilities.compositionOutputs;
+  projectedOutputs =
+    filterAttrs (name: _: builtins.hasAttr name retainedRequestKeys) resolvedOutputs;
   projectResolvedResource = name: resource: let
     controller = resource.controller or null;
     binding =

@@ -32,6 +32,7 @@
     };
   evaluated = evaluateStage "initrd";
   hostEvaluated = evaluateStage "host";
+  sourceGraph = lib.abilities.sourceStageFixedPoint evaluated.config.aos.abilities;
   requests = evaluated.config.aos.abilities.requests;
   hostRequests = hostEvaluated.config.aos.abilities.requests;
   implementations = evaluated.config.aos.abilities.implementations;
@@ -111,6 +112,8 @@ in
   assert (request "aos-boot-preparations" "aos-ability-initrd-handoff-barrier-lifecycle").remain_after_exit;
   assert (request "aos-boot-preparations" "aos-ability-initrd-handoff-barrier-lifecycle").activation_owner == "manager";
   assert (request "aos-boot-preparations" "mount-var-lifecycle").activation_owner == "manager";
+  assert !(sourceGraph.requests ? "aos-boot-preparations:mount-var-lifecycle");
+  assert builtins.deepSeq sourceGraph true;
   assert (request "aos-boot-preparations" "aos-config-seed-lifecycle").activation_owner == "manager";
   assert hostRequests."aos-boot-preparations:aos-ability-host-receiver-lifecycle".parameters.remain_after_exit;
   assert hostRequests."aos-boot-preparations:aos-ability-host-receiver-lifecycle".parameters.activation_owner == "image";
