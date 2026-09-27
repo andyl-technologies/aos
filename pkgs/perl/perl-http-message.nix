@@ -1,6 +1,7 @@
 ##! perl-http-message — HTTP message objects for Perl
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
   perl-clone,
@@ -20,7 +21,7 @@
     perl-uri
   ];
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-http-message";
     inherit version dependencies;
     src = fetchurl {
