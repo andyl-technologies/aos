@@ -18,6 +18,8 @@ use sha2::{Digest as _, Sha256};
 pub const HYBRID_INGRESS_HEADER: &str = "x-aos-hybrid-ingress";
 /// Internal response header carrying an exact Worker-side R2 delivery grant.
 pub const HYBRID_DELIVERY_HEADER: &str = "x-aos-hybrid-delivery";
+/// Internal response header carrying Native request processing time in milliseconds.
+pub const HYBRID_NATIVE_DURATION_HEADER: &str = "x-aos-hybrid-native-ms";
 /// Private request header selecting one Worker-owned upload phase.
 pub const HYBRID_UPLOAD_PHASE_HEADER: &str = "x-aos-hybrid-upload-phase";
 /// Maximum required R2 placements in one bounded publication admission.

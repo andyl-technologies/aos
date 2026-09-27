@@ -17,7 +17,8 @@ use aos_hub_core::hybrid_ingress::{
     HybridPublicationPartAdmissionRequest, HybridPublicationPartCompletionRequest,
     HybridPublicationPartPreflight, HybridPublicationPartTag, HybridPublicationUploadAdmission,
     HybridPublicationUploadCompletionRequest, HYBRID_DELIVERY_HEADER, HYBRID_INGRESS_HEADER,
-    HYBRID_UPLOAD_PHASE_HEADER, MAX_HYBRID_OCI_CHUNK_BYTES, MAX_HYBRID_PUBLICATION_PLACEMENTS,
+    HYBRID_NATIVE_DURATION_HEADER, HYBRID_UPLOAD_PHASE_HEADER, MAX_HYBRID_OCI_CHUNK_BYTES,
+    MAX_HYBRID_PUBLICATION_PLACEMENTS,
 };
 use aos_hub_core::storage_work::{
     StorageBindingControl, StorageCapabilities, StorageCredentialProbeRequest, StorageWorkKey,
@@ -1176,6 +1177,10 @@ async fn proxy_with_upload_phase(
     let response = Fetch::Request(upstream).send().await?;
     let origin_elapsed_ms = (js_sys::Date::now() - origin_started_ms).max(0.0) as u64;
     let headers = response.headers().clone();
+    let native_elapsed_ms = headers
+        .get(HYBRID_NATIVE_DURATION_HEADER)?
+        .and_then(|value| value.parse::<u64>().ok());
+    headers.delete(HYBRID_NATIVE_DURATION_HEADER)?;
     if headers.get("x-aos-hybrid-origin")?.as_deref() != Some("1") {
         worker::console_error!(
             "hybrid_origin_identity_missing id={} method={} phase={:?} status={} elapsed_ms={}",
@@ -1217,8 +1222,11 @@ async fn proxy_with_upload_phase(
         "other"
     };
     let worker_elapsed_ms = (js_sys::Date::now() - request_started_ms).max(0.0) as u64;
+    let native_elapsed_log = native_elapsed_ms
+        .map(|duration| duration.to_string())
+        .unwrap_or_else(|| "missing".to_owned());
     worker::console_log!(
-        "hybrid_origin_request id={} method={} status={} route_class={} request_bytes={} response_bytes={} elapsed_ms={} worker_elapsed_ms={}",
+        "hybrid_origin_request id={} method={} status={} route_class={} request_bytes={} response_bytes={} elapsed_ms={} worker_elapsed_ms={} native_elapsed_ms={}",
         assertion.request_id,
         assertion.method,
         status,
@@ -1227,6 +1235,7 @@ async fn proxy_with_upload_phase(
         body.len(),
         origin_elapsed_ms,
         worker_elapsed_ms,
+        native_elapsed_log,
     );
     headers.delete("content-length")?;
     Ok(Response::from_body(if body.is_empty() {
@@ -1396,6 +1405,7 @@ fn is_forwarded_header(name: &str) -> bool {
             name.as_str(),
             "x-aos-hybrid-ingress"
                 | "x-aos-hybrid-delivery"
+                | "x-aos-hybrid-native-ms"
                 | "x-aos-hybrid-upload-phase"
                 | "x-aos-delivery-attestation"
                 | "x-aos-client-ip"

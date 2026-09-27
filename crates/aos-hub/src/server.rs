@@ -8,6 +8,7 @@
 //! route, authorization, placement, range, and response-header contracts.
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::{ConnectInfo, DefaultBodyLimit, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -203,6 +204,8 @@ async fn verify_hybrid_ingress(
 ) -> Response {
     use aos_hub_core::hybrid_ingress::HYBRID_INGRESS_HEADER;
 
+    let started_at = Instant::now();
+
     let values = request
         .headers()
         .get_all(HYBRID_INGRESS_HEADER)
@@ -254,6 +257,7 @@ async fn verify_hybrid_ingress(
                     name,
                     "x-aos-hybrid-ingress"
                         | "x-aos-hybrid-delivery"
+                        | "x-aos-hybrid-native-ms"
                         | "x-aos-delivery-attestation"
                         | "x-aos-client-ip"
                         | "x-aos-console-route"
@@ -328,6 +332,14 @@ async fn verify_hybrid_ingress(
     response
         .headers_mut()
         .insert("x-aos-hybrid-origin", HeaderValue::from_static("1"));
+    // The Worker consumes this timing for hop diagnostics and strips it before
+    // returning the response to the public client.
+    if let Ok(duration) = HeaderValue::from_str(&started_at.elapsed().as_millis().to_string()) {
+        response.headers_mut().insert(
+            aos_hub_core::hybrid_ingress::HYBRID_NATIVE_DURATION_HEADER,
+            duration,
+        );
+    }
     response
 }
 
@@ -1042,7 +1054,7 @@ mod hybrid_ingress_tests {
     use super::*;
     use aos_hub_core::hybrid_ingress::{
         HybridDeliveryTarget, HybridIngressAssertion, HybridIngressKey, HYBRID_DELIVERY_HEADER,
-        HYBRID_INGRESS_HEADER,
+        HYBRID_INGRESS_HEADER, HYBRID_NATIVE_DURATION_HEADER,
     };
     use axum::http::Method;
     use sha2::{Digest as _, Sha256};
@@ -1094,6 +1106,11 @@ mod hybrid_ingress_tests {
         let response = app.clone().oneshot(authenticated).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()["x-aos-hybrid-origin"], "1");
+        assert!(response.headers()[HYBRID_NATIVE_DURATION_HEADER]
+            .to_str()
+            .unwrap()
+            .parse::<u64>()
+            .is_ok());
 
         let upload_path = "/aos.hub.v1.BinaryCacheService/UploadObject/cache/ticket/bmFyL3g";
         let mut upload_assertion = assertion.clone();

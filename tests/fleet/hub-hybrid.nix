@@ -1040,9 +1040,10 @@ in {
           cookie=$({SED} -n 's/^set-cookie: \\([^;]*\\).*/\\1/ip' /tmp/hybrid-login.headers | head -n1)
           test -n "$cookie"
           printf '%s' "$cookie" > /tmp/hybrid-cookie
-          {CURL} -fsS -H 'cf-connecting-ip: 192.0.2.10' \\
+          {CURL} -fsS -D /tmp/hybrid-instance.headers -H 'cf-connecting-ip: 192.0.2.10' \\
             -H "Cookie: $cookie" \\
             https://aos.andyl.org/-/instance | {GREP} -q '<html'
+          ! {GREP} -qi '^x-aos-hybrid-native-ms:' /tmp/hybrid-instance.headers
       """), timeout=120)
       client.succeed(
           f"test \"$({CURL} -s -o /dev/null -w '%{{http_code}}' https://aos.staging.andyl.org/-/instance)\" = 401"
@@ -1078,19 +1079,30 @@ in {
               f"{GREP} 'route_class=instance_page' /var/lib/hybrid-worker/wrangler.log"
           )
           return [
-              (int(origin), int(total))
-              for origin, total in re.findall(
-                  r"elapsed_ms=(\d+) worker_elapsed_ms=(\d+)", log
+              (int(origin), int(total), int(native))
+              for origin, total, native in re.findall(
+                  r"elapsed_ms=(\d+) worker_elapsed_ms=(\d+) native_elapsed_ms=(\d+)", log
               )
           ]
 
       baseline_worker_timings = page_worker_timings()
       assert len(baseline_worker_timings) >= 100, len(baseline_worker_timings)
-      baseline_origin_ms = sorted(origin for origin, _ in baseline_worker_timings[-100:])
-      baseline_worker_ms = sorted(total for _, total in baseline_worker_timings[-100:])
+      baseline_origin_ms = sorted(origin for origin, _, _ in baseline_worker_timings[-100:])
+      baseline_worker_ms = sorted(total for _, total, _ in baseline_worker_timings[-100:])
+      baseline_native_ms = sorted(native for _, _, native in baseline_worker_timings[-100:])
+      baseline_origin_transit_ms = sorted(
+          max(0, origin - native)
+          for origin, _, native in baseline_worker_timings[-100:]
+      )
       print("hybrid baseline instance page Worker stage milliseconds:", {
+          "origin_p50": statistics.median(baseline_origin_ms),
           "origin_p95": baseline_origin_ms[94],
+          "origin_p99": baseline_origin_ms[98],
+          "worker_p50": statistics.median(baseline_worker_ms),
           "worker_p95": baseline_worker_ms[94],
+          "worker_p99": baseline_worker_ms[98],
+          "native_p95": baseline_native_ms[94],
+          "origin_transit_p95": baseline_origin_transit_ms[94],
       })
 
       def refresh_session_token():
@@ -1779,11 +1791,22 @@ in {
       )
       loaded_worker_timings = page_worker_timings()
       assert len(loaded_worker_timings) >= len(baseline_worker_timings) + 25
-      loaded_origin_ms = sorted(origin for origin, _ in loaded_worker_timings[-25:])
-      loaded_worker_ms = sorted(total for _, total in loaded_worker_timings[-25:])
+      loaded_origin_ms = sorted(origin for origin, _, _ in loaded_worker_timings[-25:])
+      loaded_worker_ms = sorted(total for _, total, _ in loaded_worker_timings[-25:])
+      loaded_native_ms = sorted(native for _, _, native in loaded_worker_timings[-25:])
+      loaded_origin_transit_ms = sorted(
+          max(0, origin - native)
+          for origin, _, native in loaded_worker_timings[-25:]
+      )
       print("hybrid loaded instance page Worker stage milliseconds:", {
+          "origin_p50": statistics.median(loaded_origin_ms),
           "origin_p95": loaded_origin_ms[23],
+          "origin_max": loaded_origin_ms[24],
+          "worker_p50": statistics.median(loaded_worker_ms),
           "worker_p95": loaded_worker_ms[23],
+          "worker_max": loaded_worker_ms[24],
+          "native_p95": loaded_native_ms[23],
+          "origin_transit_p95": loaded_origin_transit_ms[23],
       })
 
       parallel_ticket_ids = [upload["uploadTicketId"] for upload in parallel_uploads]
