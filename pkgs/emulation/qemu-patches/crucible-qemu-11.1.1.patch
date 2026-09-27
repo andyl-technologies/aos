@@ -1,4 +1,4 @@
-From f73312efac78e11b87cbd7954679685a076390c0 Mon Sep 17 00:00:00 2001
+From a72372832041751bea042467283f73570f17a890 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -11,6 +11,15 @@ Store converted QEMU_CLOCK_VIRTUAL deadlines internally in picoseconds
 for deterministic sim and ordinary TCG. Preserve generic TCG's long timer
 horizon, carry exact ns-plus-phase device state through migration, and
 ceil-project that state when crossing to a non-TCG accelerator.
+
+Represent ordinary TCG shifts in picoseconds per instruction, retain the
+wide virtual clock horizon, and validate fixed and adaptive clock models
+before accepting migrated timer state. Preserve fractional virtual timer
+phase across adaptive migration and device deadlines.
+
+Keep RISC-V instruction triggers tied to retired instruction counts when
+adaptive icount changes its picosecond shift. Exercise fixed and adaptive
+timers, migration rejection, and fractional device clocks in QEMU tests.
 
 Model sim at 50 ps per retired instruction and carry exact phase through
 CPU budgeting, idle advance, fingerprints, fault events and results.
@@ -1892,18 +1901,20 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
  
  uint8_t cpu_ldb_code_mmu(CPUArchState *env, vaddr addr,
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2c04d8d0c5447a36a691f8d508d8ab800419f3d 100644
+index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a74617ab804cb 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
-@@ -24,11 +24,16 @@
+@@ -24,11 +24,18 @@
  
  #include "qemu/osdep.h"
  #include "qemu/cutils.h"
 +#include "qemu/accel.h"
++#include "block/block-global-state.h"
  #include "migration/vmstate.h"
  #include "qapi/error.h"
  #include "qemu/error-report.h"
  #include "system/cpus.h"
++#include "system/cpu-timers.h"
  #include "system/qtest.h"
 +#include "qemu/accel.h"
 +#include "qemu/plugin.h"
@@ -1912,7 +1923,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2c04d8d0c5447a36a691f8d508d8ab8
  #include "qemu/main-loop.h"
  #include "qemu/option.h"
  #include "qemu/seqlock.h"
-@@ -37,6 +42,14 @@
+@@ -37,6 +44,14 @@
  #include "hw/core/cpu.h"
  #include "exec/icount.h"
  #include "system/cpu-timers-internal.h"
@@ -1927,10 +1938,13 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2c04d8d0c5447a36a691f8d508d8ab8
  
  /*
   * ICOUNT: Instruction Counter
-@@ -47,12 +60,41 @@
+@@ -45,17 +60,45 @@
+  * is TCG-specific, and does not need to be built for other accels.
+  */
  static bool icount_sleep = true;
- /* Arbitrarily pick 1MIPS as the minimum allowable speed.  */
- #define MAX_ICOUNT_SHIFT 10
+-/* Arbitrarily pick 1MIPS as the minimum allowable speed.  */
+-#define MAX_ICOUNT_SHIFT 10
++/* A 1 ps base permits sub-nanosecond ticks and still reaches about 1 MIPS. */
 +static uint64_t crucible_rr_switch_quantum;
 +static bool crucible_rr_snapshot_continuation;
 +
@@ -1968,8 +1982,12 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2c04d8d0c5447a36a691f8d508d8ab8
 +
  static void icount_enable_precise(void)
  {
-     /* Fixed conversion of insn to ns via "shift" option */
-@@ -76,6 +118,284 @@ static int64_t icount_get_executed(CPUState *cpu)
+-    /* Fixed conversion of insn to ns via "shift" option */
++    /* Fixed conversion of instructions to picoseconds via "shift". */
+     use_icount = ICOUNT_PRECISE;
+ }
+ 
+@@ -76,6 +119,284 @@ static int64_t icount_get_executed(CPUState *cpu)
              (cpu->neg.icount_decr.u16.low + cpu->icount_extra));
  }
  
@@ -2254,7 +2272,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2c04d8d0c5447a36a691f8d508d8ab8
  /*
   * Update the global shared timer_state.qemu_icount to take into
   * account executed instructions. This is done by the TCG vCPU
-@@ -86,8 +406,12 @@ static void icount_update_locked(CPUState *cpu)
+@@ -86,8 +407,12 @@ static void icount_update_locked(CPUState *cpu)
      int64_t executed = icount_get_executed(cpu);
      cpu->icount_budget -= executed;
  
@@ -2267,38 +2285,100 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2c04d8d0c5447a36a691f8d508d8ab8
  }
  
  /*
-@@ -123,6 +447,17 @@ static int64_t icount_get_raw_locked(void)
- static int64_t icount_get_locked(void)
+@@ -120,10 +445,74 @@ static int64_t icount_get_raw_locked(void)
+     return qatomic_read(&timers_state.qemu_icount);
+ }
+ 
+-static int64_t icount_get_locked(void)
++static __int128 icount_get_bias_ps_locked(void)
++{
++    int64_t high = qatomic_read(&timers_state.qemu_icount_bias_ps_hi);
++    uint64_t low = qatomic_read(&timers_state.qemu_icount_bias_ps_lo);
++
++    return (__int128)high * ((__int128)1 << 64) + low;
++}
++
++static __int128 icount_add_ps_checked(__int128 left, __int128 right)
++{
++    __int128 result;
++
++    if (__builtin_add_overflow(left, right, &result)) {
++        error_report("Virtual icount picosecond coordinate exceeds range");
++        exit(EXIT_FAILURE);
++    }
++    return result;
++}
++
++static __int128 icount_sub_ps_checked(__int128 left, __int128 right)
++{
++    __int128 result;
++
++    if (__builtin_sub_overflow(left, right, &result)) {
++        error_report("Virtual icount picosecond coordinate exceeds range");
++        exit(EXIT_FAILURE);
++    }
++    return result;
++}
++
++static void icount_set_bias_ps_locked(__int128 bias_ps)
++{
++    unsigned __int128 bits = (unsigned __int128)bias_ps;
++    uint64_t high_bits = bits >> 64;
++    int64_t high = high_bits <= INT64_MAX ?
++        (int64_t)high_bits : -1 - (int64_t)(~high_bits);
++
++    qatomic_set(&timers_state.qemu_icount_bias_ps_hi, high);
++    qatomic_set(&timers_state.qemu_icount_bias_ps_lo, (uint64_t)bits);
++}
++
++static __int128 icount_get_ps_locked(void)
  {
      int64_t icount = icount_get_raw_locked();
+-    return qatomic_read(&timers_state.qemu_icount_bias) + icount_to_ns(icount);
 +
 +    if (icount_crucible_sim_mode()) {
 +        int64_t logical_tick = icount_crucible_sim_tick_locked(icount);
-+        int64_t bias_ns = qatomic_read(&timers_state.qemu_icount_bias);
++        __int128 bias_ps = icount_get_bias_ps_locked();
 +
-+        if (bias_ns != 0) {
-+            error_report("Crucible sim rejects nanosecond icount bias");
++        if (bias_ps != 0) {
++            error_report("Crucible sim rejects icount bias");
 +            abort();
 +        }
-+        return logical_tick / CRUCIBLE_SIM_TICKS_PER_NS;
++        return logical_tick;
 +    }
-     return qatomic_read(&timers_state.qemu_icount_bias) + icount_to_ns(icount);
++    return icount_add_ps_checked(icount_get_bias_ps_locked(),
++                                 icount_to_ps_wide(icount));
++}
++
++static int64_t icount_get_locked(void)
++{
++    __int128 now_ns = icount_get_ps_locked() / PICOSECONDS_PER_NANOSECOND;
++
++    if (now_ns < INT64_MIN || now_ns > INT64_MAX) {
++        error_report("Virtual icount nanosecond projection exceeds API range");
++        exit(EXIT_FAILURE);
++    }
++    return now_ns;
  }
  
-@@ -139,6 +474,105 @@ int64_t icount_get_raw(void)
+ int64_t icount_get_raw(void)
+@@ -139,23 +528,262 @@ int64_t icount_get_raw(void)
      return icount;
  }
  
+-/* Return the virtual CPU time, based on the instruction counter.  */
+-int64_t icount_get(void)
 +int64_t icount_get_raw_observed(void)
-+{
+ {
 +    CPUState *cpu = current_cpu;
-+    int64_t icount;
-+    unsigned start;
-+
-+    do {
+     int64_t icount;
+     unsigned start;
+ 
+     do {
 +        int64_t executed = 0;
 +
-+        start = seqlock_read_begin(&timers_state.vm_clock_seqlock);
+         start = seqlock_read_begin(&timers_state.vm_clock_seqlock);
+-        icount = icount_get_locked();
 +        icount = qatomic_read(&timers_state.qemu_icount);
 +        if (cpu && cpu->running) {
 +            executed = icount_get_executed(cpu);
@@ -2307,17 +2387,17 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2c04d8d0c5447a36a691f8d508d8ab8
 +            }
 +            icount += executed;
 +        }
-+    } while (seqlock_read_retry(&timers_state.vm_clock_seqlock, start));
-+
-+    return icount;
-+}
-+
+     } while (seqlock_read_retry(&timers_state.vm_clock_seqlock, start));
+ 
+     return icount;
+ }
+ 
 +int64_t icount_crucible_sim_tick_observed(void)
 +{
 +    CPUState *cpu = current_cpu;
 +    int64_t raw_icount;
 +    int64_t tick_bias;
-+    int64_t legacy_bias;
++    __int128 icount_bias_ps;
 +    int64_t executed;
 +    unsigned start;
 +
@@ -2326,13 +2406,13 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2c04d8d0c5447a36a691f8d508d8ab8
 +        start = seqlock_read_begin(&timers_state.vm_clock_seqlock);
 +        raw_icount = qatomic_read(&timers_state.qemu_icount);
 +        tick_bias = qatomic_read(&timers_state.crucible_sim_tick_bias);
-+        legacy_bias = qatomic_read(&timers_state.qemu_icount_bias);
++        icount_bias_ps = icount_get_bias_ps_locked();
 +        if (cpu && cpu->running) {
 +            executed = icount_get_executed(cpu);
 +        }
 +    } while (seqlock_read_retry(&timers_state.vm_clock_seqlock, start));
 +
-+    if (legacy_bias != 0 || raw_icount < 0 || tick_bias < 0 || executed < 0 ||
++    if (icount_bias_ps != 0 || raw_icount < 0 || tick_bias < 0 || executed < 0 ||
 +        raw_icount > INT64_MAX - executed ||
 +        raw_icount + executed > (INT64_MAX - tick_bias) /
 +                                CRUCIBLE_SIM_TICKS_PER_INSTRUCTION) {
@@ -2345,18 +2425,20 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2c04d8d0c5447a36a691f8d508d8ab8
 +int64_t icount_get_observed(void)
 +{
 +    CPUState *cpu = current_cpu;
-+    int64_t bias;
++    __int128 bias_ps;
 +    int64_t executed;
 +    int64_t icount;
 +    int64_t tick_bias;
 +    int shift;
++    __int128 now_ns;
++    __int128 now_ps;
 +    unsigned start;
 +
 +    do {
 +        executed = 0;
 +        start = seqlock_read_begin(&timers_state.vm_clock_seqlock);
 +        icount = qatomic_read(&timers_state.qemu_icount);
-+        bias = qatomic_read(&timers_state.qemu_icount_bias);
++        bias_ps = icount_get_bias_ps_locked();
 +        tick_bias = qatomic_read(&timers_state.crucible_sim_tick_bias);
 +        shift = qatomic_read(&timers_state.icount_time_shift);
 +        if (cpu && cpu->running) {
@@ -2369,7 +2451,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2c04d8d0c5447a36a691f8d508d8ab8
 +    }
 +    icount += executed;
 +    if (icount_crucible_sim_mode()) {
-+        if (tick_bias < 0 || bias != 0 ||
++        if (tick_bias < 0 || bias_ps != 0 ||
 +            icount > (INT64_MAX - tick_bias) /
 +                     CRUCIBLE_SIM_TICKS_PER_INSTRUCTION) {
 +            return -1;
@@ -2378,23 +2460,52 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2c04d8d0c5447a36a691f8d508d8ab8
 +                 CRUCIBLE_SIM_TICKS_PER_NS;
 +        return icount;
 +    }
-+    if (shift < 0 || shift >= 63 || icount > (INT64_MAX >> shift)) {
++    if (shift < 0 || shift > ICOUNT_MAX_SHIFT_PS) {
 +        return -1;
 +    }
-+    icount <<= shift;
-+    if (bias > INT64_MAX - icount) {
++    if (__builtin_add_overflow(bias_ps, ((__int128)icount << shift),
++                               &now_ps)) {
 +        return -1;
 +    }
-+    return bias + icount;
++    if (now_ps < 0) {
++        return -1;
++    }
++    now_ns = now_ps / PICOSECONDS_PER_NANOSECOND;
++    if (now_ns > INT64_MAX) {
++        return -1;
++    }
++    return now_ns;
 +}
 +
- /* Return the virtual CPU time, based on the instruction counter.  */
- int64_t icount_get(void)
- {
-@@ -153,8 +587,110 @@ int64_t icount_get(void)
-     return icount;
- }
- 
++__int128 icount_get_ps_wide(void)
++{
++    __int128 time_ps;
++    unsigned start;
++
++    if (!icount_enabled()) {
++        return (__int128)cpu_get_clock() * PICOSECONDS_PER_NANOSECOND;
++    }
++
++    do {
++        start = seqlock_read_begin(&timers_state.vm_clock_seqlock);
++        time_ps = icount_get_ps_locked();
++    } while (seqlock_read_retry(&timers_state.vm_clock_seqlock, start));
++
++    return time_ps;
++}
++
++/* Return the nanosecond projection required by external QEMU clock APIs. */
++int64_t icount_get(void)
++{
++    __int128 now_ns = icount_get_ps_wide() / PICOSECONDS_PER_NANOSECOND;
++
++    if (now_ns < INT64_MIN || now_ns > INT64_MAX) {
++        error_report("Virtual icount nanosecond projection exceeds API range");
++        exit(EXIT_FAILURE);
++    }
++    return now_ns;
++}
++
 +int64_t icount_get_tsc_ticks(void)
 +{
 +    int64_t tick;
@@ -2432,7 +2543,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2c04d8d0c5447a36a691f8d508d8ab8
 +    /* Commit the current CPU's executed prefix before anchoring the ps bias. */
 +    raw_icount = icount_get_raw_locked();
 +    current_tick = icount_crucible_sim_tick_locked(raw_icount);
-+    if (qatomic_read(&timers_state.qemu_icount_bias) != 0 ||
++    if (icount_get_bias_ps_locked() != 0 ||
 +        target_tick < (uint64_t)current_tick ||
 +        target_tick < (uint64_t)raw_icount *
 +                      CRUCIBLE_SIM_TICKS_PER_INSTRUCTION) {
@@ -2474,7 +2585,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2c04d8d0c5447a36a691f8d508d8ab8
 +                       &timers_state.vm_clock_lock);
 +    raw_icount = icount_get_raw_locked();
 +    logical_tick = icount_crucible_sim_tick_locked(raw_icount);
-+    valid = qatomic_read(&timers_state.qemu_icount_bias) == 0 &&
++    valid = icount_get_bias_ps_locked() == 0 &&
 +            delta_ticks <= (uint64_t)(INT64_MAX - logical_tick) &&
 +            (uint64_t)logical_tick <= ceiling &&
 +            delta_ticks <= ceiling - (uint64_t)logical_tick;
@@ -2493,33 +2604,190 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2c04d8d0c5447a36a691f8d508d8ab8
 +    return valid;
 +}
 +
++__int128 icount_to_ps_wide(int64_t icount)
++{
++    int16_t shift = qatomic_read(&timers_state.icount_time_shift);
++
++    if (icount_crucible_sim_mode()) {
++        return (__int128)icount * CRUCIBLE_SIM_TICKS_PER_INSTRUCTION;
++    }
++    g_assert(shift >= 0 && shift <= ICOUNT_MAX_SHIFT_PS);
++    return (__int128)icount * ((__int128)1 << shift);
++}
++
  int64_t icount_to_ns(int64_t icount)
  {
-+    if (icount_crucible_sim_mode()) {
-+        return icount / (CRUCIBLE_SIM_TICKS_PER_NS /
-+                         CRUCIBLE_SIM_TICKS_PER_INSTRUCTION);
+-    return icount << qatomic_read(&timers_state.icount_time_shift);
++    __int128 duration_ns = icount_to_ps_wide(icount) /
++                           PICOSECONDS_PER_NANOSECOND;
++
++    if (duration_ns < INT64_MIN || duration_ns > INT64_MAX) {
++        error_report("Icount duration nanosecond projection exceeds API range");
++        exit(EXIT_FAILURE);
 +    }
-     return icount << qatomic_read(&timers_state.icount_time_shift);
++    return duration_ns;
  }
  
-@@ -331,6 +867,16 @@ void icount_start_warp_timer(void)
+ /*
+@@ -171,6 +799,7 @@ static void icount_adjust(void)
+     int64_t cur_time;
+     int64_t cur_icount;
+     int64_t delta;
++    __int128 cur_ps;
+ 
+     /* If the VM is not running, then do nothing.  */
+     if (!runstate_is_running()) {
+@@ -182,6 +811,7 @@ static void icount_adjust(void)
+     cur_time = REPLAY_CLOCK_LOCKED(REPLAY_CLOCK_VIRTUAL_RT,
+                                    cpu_get_clock_locked());
+     cur_icount = icount_get_locked();
++    cur_ps = icount_get_ps_locked();
+ 
+     delta = cur_icount - cur_time;
+     /* FIXME: This is a very crude algorithm, somewhat prone to oscillation.  */
+@@ -194,15 +824,14 @@ static void icount_adjust(void)
+     }
+     if (delta < 0
+         && timers_state.last_delta - ICOUNT_WOBBLE > delta * 2
+-        && timers_state.icount_time_shift < MAX_ICOUNT_SHIFT) {
++        && timers_state.icount_time_shift < ICOUNT_MAX_SHIFT_PS) {
+         /* The guest is getting too far behind.  Speed time up.  */
+         qatomic_set(&timers_state.icount_time_shift,
+                     timers_state.icount_time_shift + 1);
+     }
+     timers_state.last_delta = delta;
+-    qatomic_set(&timers_state.qemu_icount_bias,
+-                cur_icount - (timers_state.qemu_icount
+-                              << timers_state.icount_time_shift));
++    icount_set_bias_ps_locked(icount_sub_ps_checked(
++        cur_ps, icount_to_ps_wide(timers_state.qemu_icount)));
+     seqlock_write_unlock(&timers_state.vm_clock_seqlock,
+                          &timers_state.vm_clock_lock);
+ }
+@@ -216,16 +845,22 @@ static void icount_adjust_rt(void *opaque)
+ 
+ static void icount_adjust_vm(void *opaque)
+ {
+-    timer_mod(timers_state.icount_vm_timer,
+-                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+-                   NANOSECONDS_PER_SECOND / 10);
++    g_assert(timer_mod_after_ns(timers_state.icount_vm_timer,
++                                NANOSECONDS_PER_SECOND / 10));
+     icount_adjust();
+ }
+ 
+-int64_t icount_round(int64_t count)
++int64_t icount_round_ps(int64_t deadline_ps)
+ {
+-    int shift = qatomic_read(&timers_state.icount_time_shift);
+-    return (count + (1 << shift) - 1) >> shift;
++    int64_t instruction_ps = icount_crucible_sim_mode() ?
++        CRUCIBLE_SIM_TICKS_PER_INSTRUCTION :
++        INT64_C(1) << qatomic_read(&timers_state.icount_time_shift);
++
++    if (deadline_ps <= 0) {
++        return 0;
++    }
++    return deadline_ps / instruction_ps +
++           (deadline_ps % instruction_ps != 0);
+ }
+ 
+ static void icount_warp_rt(void)
+@@ -268,8 +903,9 @@ static void icount_warp_rt(void)
+             }
+             warp_delta = MIN(warp_delta, delta);
+         }
+-        qatomic_set(&timers_state.qemu_icount_bias,
+-                    timers_state.qemu_icount_bias + warp_delta);
++        icount_set_bias_ps_locked(icount_add_ps_checked(
++            icount_get_bias_ps_locked(),
++            (__int128)warp_delta * PICOSECONDS_PER_NANOSECOND));
+     }
+     timers_state.vm_clock_warp_start = -1;
+     seqlock_write_unlock(&timers_state.vm_clock_seqlock,
+@@ -292,7 +928,7 @@ static void icount_timer_cb(void *opaque)
+ void icount_start_warp_timer(void)
+ {
+     int64_t clock;
+-    int64_t deadline;
++    int64_t deadline_ps;
+ 
+     assert(icount_enabled());
+ 
+@@ -331,18 +967,32 @@ void icount_start_warp_timer(void)
          }
      }
  
+-    /* We want to use the earliest deadline from ALL vm_clocks */
 +    if (strcmp(current_accel_name(), "sim") == 0) {
-+        /*
-+         * Sim clock movement must use exact logical ticks, including before
-+         * the plugin acquires time control. Never create an integer-nanosecond
-+         * bias whose fractional phase the host cannot reconstruct.
-+         */
++        /* Sim clock movement is commanded by the deterministic host. */
 +        qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
 +        return;
 +    }
 +
-     /* We want to use the earliest deadline from ALL vm_clocks */
++    /* Include every internal virtual timer at picosecond resolution. */
      clock = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT);
-     deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
-@@ -421,15 +967,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+-    deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+-                                          ~QEMU_TIMER_ATTR_EXTERNAL);
+-    if (deadline < 0) {
++    deadline_ps = qemu_clock_deadline_ps_all(
++        QEMU_CLOCK_VIRTUAL, ~QEMU_TIMER_ATTR_EXTERNAL);
++    if (deadline_ps < 0) {
+         if (!icount_sleep) {
+             warn_report_once("icount sleep disabled and no active timers");
+         }
+         return;
+     }
+ 
+-    if (deadline > 0) {
++    if (trace_event_get_state_backends(TRACE_ICOUNT_VIRTUAL_WARP)) {
++        trace_icount_virtual_warp(
++            qatomic_read(&timers_state.qemu_icount),
++            qatomic_read(&timers_state.qemu_icount_bias_ps_hi),
++            qatomic_read(&timers_state.qemu_icount_bias_ps_lo),
++            deadline_ps, bdrv_has_in_flight(), icount_sleep);
++    }
++
++    if (deadline_ps > 0) {
+         /*
+          * Ensure QEMU_CLOCK_VIRTUAL proceeds even when the virtual CPU goes to
+          * sleep.  Otherwise, the CPU might be waiting for a future timer
+@@ -360,12 +1010,17 @@ void icount_start_warp_timer(void)
+              */
+             seqlock_write_lock(&timers_state.vm_clock_seqlock,
+                                &timers_state.vm_clock_lock);
+-            qatomic_set(&timers_state.qemu_icount_bias,
+-                        timers_state.qemu_icount_bias + deadline);
++            icount_set_bias_ps_locked(icount_add_ps_checked(
++                icount_get_bias_ps_locked(), deadline_ps));
+             seqlock_write_unlock(&timers_state.vm_clock_seqlock,
+                                  &timers_state.vm_clock_lock);
+             qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
+         } else {
++            int64_t deadline_ns = deadline_ps /
++                PICOSECONDS_PER_NANOSECOND +
++                (deadline_ps % PICOSECONDS_PER_NANOSECOND != 0);
++            int64_t host_deadline;
++
+             /*
+              * We do stop VCPUs and only advance QEMU_CLOCK_VIRTUAL after some
+              * "real" time, (related to the time left until the next event) has
+@@ -382,10 +1037,12 @@ void icount_start_warp_timer(void)
+             }
+             seqlock_write_unlock(&timers_state.vm_clock_seqlock,
+                                  &timers_state.vm_clock_lock);
++            host_deadline = (__int128)clock + deadline_ns > INT64_MAX ?
++                INT64_MAX : clock + deadline_ns;
+             timer_mod_anticipate(timers_state.icount_warp_timer,
+-                                 clock + deadline);
++                                 host_deadline);
+         }
+-    } else if (deadline == 0) {
++    } else if (deadline_ps == 0) {
+         qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
+     }
+ }
+@@ -421,15 +1078,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      bool sleep = qemu_opt_get_bool(opts, "sleep", true);
      bool align = qemu_opt_get_bool(opts, "align", false);
      long time_shift = -1;
@@ -2547,7 +2815,16 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2c04d8d0c5447a36a691f8d508d8ab8
      if (align && !sleep) {
          error_setg(errp, "align=on and sleep=off are incompatible");
          return false;
-@@ -450,6 +1008,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -437,7 +1106,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+ 
+     if (strcmp(option, "auto") != 0) {
+         if (qemu_strtol(option, NULL, 0, &time_shift) < 0
+-            || time_shift < 0 || time_shift > MAX_ICOUNT_SHIFT) {
++            || time_shift < 0 || time_shift > ICOUNT_MAX_SHIFT_PS) {
+             error_setg(errp, "icount: Invalid shift value");
+             return false;
+         }
+@@ -450,6 +1119,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      }
  
      icount_sleep = sleep;
@@ -2555,6 +2832,49 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2c04d8d0c5447a36a691f8d508d8ab8
      if (icount_sleep) {
          timers_state.icount_warp_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL_RT,
                                           icount_timer_cb, NULL);
+@@ -459,6 +1129,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+ 
+     if (time_shift >= 0) {
+         timers_state.icount_time_shift = time_shift;
++        timers_state.icount_configured_shift = time_shift;
+         icount_enable_precise();
+         return true;
+     }
+@@ -469,7 +1140,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+      * 125MIPS seems a reasonable initial guess at the guest speed.
+      * It will be corrected fairly quickly anyway.
+      */
+-    timers_state.icount_time_shift = 3;
++    timers_state.icount_time_shift = 13;
+ 
+     /*
+      * Have both realtime and virtual time triggers for speed adjustment.
+@@ -485,12 +1156,22 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+                    qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL_RT) + 1000);
+     timers_state.icount_vm_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                         icount_adjust_vm, NULL);
+-    timer_mod(timers_state.icount_vm_timer,
+-                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+-                   NANOSECONDS_PER_SECOND / 10);
+     return true;
+ }
+ 
++void icount_start_adaptive_vm_timer(void)
++{
++    if (icount_enabled() != ICOUNT_ADAPTATIVE) {
++        return;
++    }
++
++    /* The VM timer must be armed only after its internal unit becomes ps. */
++    g_assert(timers_state.icount_vm_timer);
++    g_assert(!timer_pending(timers_state.icount_vm_timer));
++    g_assert(timer_mod_after_ns(timers_state.icount_vm_timer,
++                                NANOSECONDS_PER_SECOND / 10));
++}
++
+ void icount_notify_exit(void)
+ {
+     assert(icount_enabled());
 diff --git a/accel/tcg/internal-common.h b/accel/tcg/internal-common.h
 index 9e7be2d78dfd6739e01d81bccd03664b4ae0001a..19bf75413a923683c257f3507943371673b747fc 100644
 --- a/accel/tcg/internal-common.h
@@ -2617,7 +2937,7 @@ index 4313864d2c5d24e30dc1cfbcdf9a81eb7eb0e323..bcab8b991987caece86e5f7db7aa6f7c
  #include "exec/log.h"
  #include "exec/page-protection.h"
 diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
-index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..70849a42a2593866f3ecbc29c35ab0816345675a 100644
+index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..4eddc0d431f87ebb53024eeec070253574bc649a 100644
 --- a/accel/tcg/tcg-accel-ops-icount.c
 +++ b/accel/tcg/tcg-accel-ops-icount.c
 @@ -27,6 +27,7 @@
@@ -2628,30 +2948,48 @@ index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..70849a42a2593866f3ecbc29c35ab081
  #include "qemu/guest-random.h"
  #include "hw/core/cpu.h"
  
-@@ -39,16 +40,33 @@ static int64_t icount_get_limit(void)
-     int64_t deadline;
+@@ -36,31 +37,48 @@
+ 
+ static int64_t icount_get_limit(void)
+ {
+-    int64_t deadline;
++    int64_t deadline_ps;
  
      if (replay_mode != REPLAY_MODE_PLAY) {
 +        if (icount_crucible_sim_mode()) {
-+            deadline = qemu_clock_deadline_ps_all(
++            deadline_ps = qemu_clock_deadline_ps_all(
 +                QEMU_CLOCK_VIRTUAL, QEMU_TIMER_ATTR_ALL);
-+            if (deadline < 0) {
++            if (deadline_ps < 0) {
 +                return INT32_MAX;
 +            }
-+            return deadline / CRUCIBLE_SIM_TICKS_PER_INSTRUCTION;
++            return deadline_ps / CRUCIBLE_SIM_TICKS_PER_INSTRUCTION;
 +        }
          /*
           * Include all the timers, because they may need an attention.
           * Too long CPU execution may create unnecessary delay in UI.
           */
-         deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
-                                               QEMU_TIMER_ATTR_ALL);
+-        deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+-                                              QEMU_TIMER_ATTR_ALL);
 -        /* Check realtime timers, because they help with input processing */
 -        deadline = qemu_soonest_timeout(deadline,
 -                qemu_clock_deadline_ns_all(QEMU_CLOCK_REALTIME,
 -                                           QEMU_TIMER_ATTR_ALL));
+-
+-        /*
+-         * Maintain prior (possibly buggy) behaviour where if no deadline
+-         * was set (as there is no QEMU_CLOCK_VIRTUAL timer) or it is more than
+-         * INT32_MAX nanoseconds ahead, we still use INT32_MAX
+-         * nanoseconds.
+-         */
+-        if ((deadline < 0) || (deadline > INT32_MAX)) {
+-            deadline = INT32_MAX;
++        deadline_ps = qemu_clock_deadline_ps_all(QEMU_CLOCK_VIRTUAL,
++                                                 QEMU_TIMER_ATTR_ALL);
 +        if (strcmp(current_accel_name(), "sim") != 0 ||
 +            icount_enabled() != ICOUNT_PRECISE) {
++            int64_t realtime_ns = qemu_clock_deadline_ns_all(
++                QEMU_CLOCK_REALTIME, QEMU_TIMER_ATTR_ALL);
++
 +            /*
 +             * Adaptive icount and non-sim accelerators keep upstream's
 +             * realtime input-processing deadline. Sim fixed-shift icount must
@@ -2659,17 +2997,28 @@ index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..70849a42a2593866f3ecbc29c35ab081
 +             * host speed/load changes the number of guest instructions retired
 +             * before a TB exit.
 +             */
-+            deadline = qemu_soonest_timeout(deadline,
-+                    qemu_clock_deadline_ns_all(QEMU_CLOCK_REALTIME,
-+                                               QEMU_TIMER_ATTR_ALL));
-+        }
++            if (realtime_ns >= 0) {
++                int64_t realtime_ps = realtime_ns > INT64_MAX /
++                    PICOSECONDS_PER_NANOSECOND ? INT64_MAX :
++                    realtime_ns * PICOSECONDS_PER_NANOSECOND;
++
++                deadline_ps = qemu_soonest_timeout(deadline_ps, realtime_ps);
++            }
+         }
  
-         /*
-          * Maintain prior (possibly buggy) behaviour where if no deadline
-@@ -76,6 +94,15 @@ static void icount_notify_aio_contexts(void)
+-        return icount_round(deadline);
++        if (deadline_ps < 0) {
++            return INT32_MAX;
++        }
++        return MIN(icount_round_ps(deadline_ps), INT32_MAX);
+     } else {
+         return replay_get_instructions();
+     }
+@@ -76,7 +94,16 @@ static void icount_notify_aio_contexts(void)
  void icount_handle_deadline(void)
  {
      assert(qemu_in_vcpu_thread());
+-    int64_t deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
 +    if (icount_crucible_sim_mode()) {
 +        int64_t deadline = qemu_clock_deadline_ps_all(
 +            QEMU_CLOCK_VIRTUAL, QEMU_TIMER_ATTR_ALL);
@@ -2679,9 +3028,10 @@ index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..70849a42a2593866f3ecbc29c35ab081
 +        }
 +        return;
 +    }
-     int64_t deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
++    int64_t deadline = qemu_clock_deadline_ps_all(QEMU_CLOCK_VIRTUAL,
                                                    QEMU_TIMER_ATTR_ALL);
  
+     /*
 @@ -93,7 +120,29 @@ void icount_handle_deadline(void)
  int64_t icount_percpu_budget(int cpu_count)
  {
@@ -3115,7 +3465,7 @@ index 0000000000000000000000000000000000000000..64a0a5db661128340846bd948505d7aa
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..b96fb06931f9c4db677cb2399c685e87db70095f 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..6219d89d49396f4188851da54ec6862bbf5ac4ad 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -27,45 +27,1659 @@
@@ -4814,7 +5164,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..b96fb06931f9c4db677cb2399c685e87
 +        /*
 +         * Sim mode rotates vCPUs deterministically via rr_switch_quantum;
 +         * the stock virtual-time kick timer is redundant and would inject
-+         * host-timed nondeterminism into qemu_icount_bias.
++         * host-timed nondeterminism into the picosecond icount bias.
 +         */
 +        return;
 +    }
@@ -6085,7 +6435,7 @@ index aecce605d7b7a27101789158d9d6a5685665d3a9..a42ca5cdd9d755b92d094d815db6793d
  
  #endif /* TCG_ACCEL_OPS_H */
 diff --git a/accel/tcg/tcg-all.c b/accel/tcg/tcg-all.c
-index 7186c10cf02248dc5d20a23fddeb66906ce1ba59..ec7788efd3bebc4858975a507b172f7e767e75f1 100644
+index 7186c10cf02248dc5d20a23fddeb66906ce1ba59..60fb182e617f7c645e7230913593a67dcefed2c7 100644
 --- a/accel/tcg/tcg-all.c
 +++ b/accel/tcg/tcg-all.c
 @@ -27,6 +27,8 @@
@@ -6113,18 +6463,20 @@ index 7186c10cf02248dc5d20a23fddeb66906ce1ba59..ec7788efd3bebc4858975a507b172f7e
  
  DECLARE_INSTANCE_CHECKER(TCGState, TCG_STATE,
                           TYPE_TCG_ACCEL)
-@@ -106,6 +110,10 @@ static int tcg_init_machine(AccelState *as, MachineState *ms)
+@@ -106,6 +110,12 @@ static int tcg_init_machine(AccelState *as, MachineState *ms)
      TCGState *s = TCG_STATE(as);
      unsigned max_threads = 1;
  
 +    qemu_timer_enable_tcg_ps_clock(
 +        icount_crucible_sim_mode() ?
-+            icount_crucible_sim_tick_observed : NULL);
++            icount_crucible_sim_tick_observed : NULL,
++        icount_get_ps_wide);
++    icount_start_adaptive_vm_timer();
 +
  #ifndef CONFIG_USER_ONLY
      CPUClass *cc = CPU_CLASS(object_class_by_name(target_cpu_type()));
      bool mttcg_supported = cc->tcg_ops->mttcg_supported;
-@@ -182,6 +190,26 @@ static int tcg_init_machine(AccelState *as, MachineState *ms)
+@@ -182,6 +192,26 @@ static int tcg_init_machine(AccelState *as, MachineState *ms)
      return 0;
  }
  
@@ -6151,7 +6503,7 @@ index 7186c10cf02248dc5d20a23fddeb66906ce1ba59..ec7788efd3bebc4858975a507b172f7e
  static char *tcg_get_thread(Object *obj, Error **errp)
  {
      TCGState *s = TCG_STATE(obj);
-@@ -286,6 +314,17 @@ static void tcg_accel_class_init(ObjectClass *oc, const void *data)
+@@ -286,6 +316,17 @@ static void tcg_accel_class_init(ObjectClass *oc, const void *data)
                                     tcg_set_one_insn_per_tb);
      object_class_property_set_description(oc, "one-insn-per-tb",
          "Only put one guest insn in each translation block");
@@ -6169,7 +6521,7 @@ index 7186c10cf02248dc5d20a23fddeb66906ce1ba59..ec7788efd3bebc4858975a507b172f7e
  }
  
  static const TypeInfo tcg_accel_type = {
-@@ -297,9 +336,19 @@ static const TypeInfo tcg_accel_type = {
+@@ -297,9 +338,19 @@ static const TypeInfo tcg_accel_type = {
  };
  module_obj(TYPE_TCG_ACCEL);
  
@@ -6190,10 +6542,10 @@ index 7186c10cf02248dc5d20a23fddeb66906ce1ba59..ec7788efd3bebc4858975a507b172f7e
  
  type_init(register_accel_types);
 diff --git a/accel/tcg/trace-events b/accel/tcg/trace-events
-index 0816cafd3361f1979e72ad72c42cc8cb4ecce586..8f44624ab84b9c6aeebbefb3de15c3475a6a4cf3 100644
+index 0816cafd3361f1979e72ad72c42cc8cb4ecce586..41fcc70155758c83d97ea0673d3810d845a47f0d 100644
 --- a/accel/tcg/trace-events
 +++ b/accel/tcg/trace-events
-@@ -1,6 +1,14 @@
+@@ -1,6 +1,15 @@
  # See docs/devel/tracing.rst for syntax documentation.
  
  # TCG related tracing
@@ -6204,6 +6556,7 @@ index 0816cafd3361f1979e72ad72c42cc8cb4ecce586..8f44624ab84b9c6aeebbefb3de15c347
 +crucible_sim_determinism_idle(const char *phase, uint64_t sequence, uint64_t raw, int64_t virtual_ps, int64_t target_tick, int64_t deadline_ps, uint64_t rr_owner, uint64_t rr_cursor, const char *cpu_facts) "phase=%s seq=%" PRIu64 " raw=%" PRIu64 " virtual_ps=%" PRId64 " target_tick=%" PRId64 " deadline_ps=%" PRId64 " rr_owner=%" PRIu64 " rr_cursor=%" PRIu64 " %s"
 +crucible_sim_idle_stage(const char *phase, uint64_t raw, int64_t virtual_ps, int64_t target_tick, int64_t deadline_ps) "phase=%s raw=%" PRIu64 " virtual_ps=%" PRId64 " target_tick=%" PRId64 " deadline_ps=%" PRId64
 +crucible_sim_idle_prefix(int64_t cached_raw, int64_t pending_prefix, int64_t committed_raw, uint64_t target_tick, int result) "cached_raw=%" PRId64 " pending_prefix=%" PRId64 " committed_raw=%" PRId64 " target_tick=%" PRIu64 " result=%d"
++icount_virtual_warp(int64_t raw, int64_t bias_ps_hi, uint64_t bias_ps_lo, int64_t deadline_ps, bool block_io_pending, bool sleep) "raw=%" PRId64 " bias_ps_hi=%" PRId64 " bias_ps_lo=%" PRIu64 " deadline_ps=%" PRId64 " block_io_pending=%d sleep=%d"
 +
  # cpu-exec.c
  exec_tb(void *tb, uintptr_t pc) "tb:%p pc=0x%"PRIxPTR
@@ -10292,10 +10645,32 @@ index f2501d75fbe3a6bee09812a7b879a7235e95a9aa..7088cbd6a51725e2d90450475bf51dca
          /*
           * No need for memory barriers, this works in pair with
 diff --git a/block/io.c b/block/io.c
-index a916b236c3c81fec5870ac5e5a2e07d9a62053ec..8377aa6b75ec54104e088cfbf0b93ead7291a2ea 100644
+index a916b236c3c81fec5870ac5e5a2e07d9a62053ec..63602fadf1eed73c28b1af83d9f51f99f1439801 100644
 --- a/block/io.c
 +++ b/block/io.c
-@@ -3601,6 +3601,12 @@ void coroutine_fn bdrv_co_parent_cb_resize(BlockDriverState *bs)
+@@ -466,6 +466,21 @@ static bool bdrv_drain_all_poll(void)
+     return result;
+ }
+ 
++bool bdrv_has_in_flight(void)
++{
++    BlockDriverState *bs = NULL;
++
++    GLOBAL_STATE_CODE();
++    GRAPH_RDLOCK_GUARD_MAINLOOP();
++
++    while ((bs = bdrv_next_all_states(bs))) {
++        if (qatomic_read(&bs->in_flight)) {
++            return true;
++        }
++    }
++    return false;
++}
++
+ /*
+  * Wait for pending requests to complete across all BlockDriverStates
+  *
+@@ -3601,6 +3616,12 @@ void coroutine_fn bdrv_co_parent_cb_resize(BlockDriverState *bs)
      }
  }
  
@@ -11089,6 +11464,29 @@ index b629575fcf808d6ee0c3e3d724d49d521dc2bb6a..78c06d8272a8f57713b64e99d776e6db
  static int tcp_chr_new_client(Chardev *chr, QIOChannelSocket *sioc)
  {
      SocketChardev *s = SOCKET_CHARDEV(chr);
+diff --git a/docs/devel/tcg-icount.rst b/docs/devel/tcg-icount.rst
+index a1dcd79e0fdd5142d6e876466e397cf8a25d6d89..424662a344ef479b89de1b35609010403995c441 100644
+--- a/docs/devel/tcg-icount.rst
++++ b/docs/devel/tcg-icount.rst
+@@ -29,9 +29,17 @@ is stored in the TimersState of QEMU's timer sub-system. The number of
+ executed instructions can then be used to calculate QEMU_CLOCK_VIRTUAL
+ which represents the amount of elapsed time in the system since
+ execution started. Depending on the icount mode this may either be a
+-fixed number of ns per instruction or adjusted as execution continues
++fixed number of ps per instruction or adjusted as execution continues
+ to keep wall clock time and virtual time in sync.
+ 
++For ordinary TCG, ``-icount shift=N`` assigns ``2^N`` picoseconds to
++each retired instruction. Thus ``shift=0`` is 1 ps per instruction,
++while ``shift=10`` is 1,024 ps per instruction. The internal virtual
++clock and its timer deadlines retain fractional nanoseconds; public
++nanosecond clock APIs project that coordinate down to nanoseconds.
++The Crucible ``sim`` accelerator uses its separate fixed model of
++50 ps per retired instruction and requires ``shift=0``.
++
+ To be able to calculate the number of executed instructions the
+ translator starts by allocating a budget of instructions to be
+ executed. The budget of instructions is limited by how long it will be
 diff --git a/gdbstub/gdbstub.c b/gdbstub/gdbstub.c
 index 0a328b0dd4886ff7a278bbed1bd726c2eb740196..91035ab373024d5a8020db1afe8f313f48e4a9bc 100644
 --- a/gdbstub/gdbstub.c
@@ -20233,6 +20631,31 @@ index d762163ddf51d0bcfdd560b567b4d9debf06dcb0..b3d1facbfb507d53dec72fc46e01e14f
      if (!hpm->memsplit_addr) {
          /* non-contiguous: Memory above 3.75 GB is mapped at RAM_MAP_HIGH */
          hpm->memsplit_addr = FIRMWARE_START;
+diff --git a/hw/hyperv/hv-balloon.c b/hw/hyperv/hv-balloon.c
+index 9dd759f11e8abeaa2f7c8acf9b33f7816daaa478..a986a1507eb37d6bc2b70f647fe494e4b342d6ec 100644
+--- a/hw/hyperv/hv-balloon.c
++++ b/hw/hyperv/hv-balloon.c
+@@ -1070,9 +1070,17 @@ static void hv_balloon_handle_caps_report(HvBalloon *balloon,
+     respCap.suppress_pressure_reports = !balloon->status_report.enabled;
+     hv_balloon_send_packet(vmreq->chan, (struct dm_message *)&respCap);
+ 
+-    timer_mod(&balloon->post_init_timer,
+-              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
+-              HV_BALLOON_POST_INIT_WAIT);
++    if (qemu_timer_tcg_ps_enabled()) {
++        if (!timer_mod_after_ns(&balloon->post_init_timer,
++                                (int64_t)HV_BALLOON_POST_INIT_WAIT * SCALE_MS)) {
++            g_error("Hyper-V balloon post-init deadline exceeds virtual "
++                    "clock range");
++        }
++    } else {
++        timer_mod(&balloon->post_init_timer,
++                  qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
++                  HV_BALLOON_POST_INIT_WAIT);
++    }
+ 
+     HV_BALLOON_STATE_DESC_SET(stdesc, S_POST_INIT_WAIT);
+ }
 diff --git a/hw/i2c/core.c b/hw/i2c/core.c
 index 54f6bdca882060b6f64e032fa52dde22009618be..d4ba38753b9eead3f913cb4fdc6398575023ca6c 100644
 --- a/hw/i2c/core.c
@@ -32136,6 +32559,64 @@ index d12e7cbf9e20ebc31d87185c03a0279ce12f974e..32332219ab8f4f81b19f1f4108e73b29
      int rap, isr, lnkst;
      uint32_t rdra, tdra;
      uint8_t prom[16];
+diff --git a/hw/net/rocker/rocker_of_dpa.c b/hw/net/rocker/rocker_of_dpa.c
+index 3d6f55b51210fe4da2097e09d2db074f1cf1b880..efbe93283466e4ad8bf959d197af5c59b65deb93 100644
+--- a/hw/net/rocker/rocker_of_dpa.c
++++ b/hw/net/rocker/rocker_of_dpa.c
+@@ -135,6 +135,7 @@ typedef struct of_dpa_flow {
+         uint64_t hits;
+         int64_t install_time;
+         int64_t refresh_time;
++        __int128 refresh_time_ps; /* Exact internal MAC/VLAN refresh interval. */
+         uint64_t rx_pkts;
+         uint64_t tx_pkts;
+     } stats;
+@@ -370,6 +371,7 @@ static OfDpaFlow *of_dpa_flow_alloc(uint64_t cookie)
+     flow->mask.tbl_id = 0xffffffff;
+ 
+     flow->stats.install_time = flow->stats.refresh_time = now;
++    flow->stats.refresh_time_ps = qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL);
+ 
+     return flow;
+ }
+@@ -613,7 +615,11 @@ static void of_dpa_bridging_learn(OfDpaFlowContext *fc,
+              * don't match, the end station has moved and the port
+              * needs updating */
+             /* XXX implement the in_port/out_port check */
+-            if (now - flow->stats.refresh_time < refresh_delay) {
++            if (qemu_timer_tcg_ps_enabled()) {
++                if (!of_dpa_refresh_elapsed_ps(&flow->stats.refresh_time_ps)) {
++                    return;
++                }
++            } else if (now - flow->stats.refresh_time < refresh_delay) {
+                 return;
+             }
+             flow->stats.refresh_time = now;
+diff --git a/hw/net/rocker/rocker_of_dpa.h b/hw/net/rocker/rocker_of_dpa.h
+index 01c7a97d0d32ce7c4825439e96f78d7fa71835f7..be8ea0dfc4c238a732e6ff9b54f2c18682604862 100644
+--- a/hw/net/rocker/rocker_of_dpa.h
++++ b/hw/net/rocker/rocker_of_dpa.h
+@@ -17,6 +17,20 @@
+ #ifndef ROCKER_OF_DPA_H
+ #define ROCKER_OF_DPA_H
+ 
++#include "qemu/timer.h"
++
++/* Keep the internal refresh interval exact; published statistics use seconds. */
++static inline bool of_dpa_refresh_elapsed_ps(__int128 *last_ps)
++{
++    __int128 now_ps = qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL);
++
++    if (now_ps - *last_ps < PICOSECONDS_PER_SECOND) {
++        return false;
++    }
++    *last_ps = now_ps;
++    return true;
++}
++
+ World *of_dpa_world_alloc(Rocker *r);
+ 
+ #endif /* ROCKER_OF_DPA_H */
 diff --git a/hw/net/rtl8139.c b/hw/net/rtl8139.c
 index 16479284eea91b9c024dcbd57389fb8052a921b2..3313b757ae9bc0e0d6691c4a333d59f9f5767991 100644
 --- a/hw/net/rtl8139.c
@@ -50695,6 +51176,20 @@ index f0c7ee7542c24507f13787e57d3098db1fecf5d1..be1da32bd91c649e9b5c2271fd727cf7
      bool (*cpu_thread_is_idle)(CPUState *cpu);
  
      /**
+diff --git a/include/block/block-global-state.h b/include/block/block-global-state.h
+index ed89999f0fbcb5cf6792964d671b00f9b9d4ab51..9984a888684bf6cf420ab1992f1662a52c26c860 100644
+--- a/include/block/block-global-state.h
++++ b/include/block/block-global-state.h
+@@ -202,6 +202,9 @@ void bdrv_drain_all_begin_nopoll(void);
+ void bdrv_drain_all_end(void);
+ void GRAPH_UNLOCKED bdrv_drain_all(void);
+ 
++/* Report whether any block node has an unfinished request. */
++bool bdrv_has_in_flight(void);
++
+ void bdrv_aio_cancel(BlockAIOCB *acb);
+ 
+ int bdrv_has_zero_init_1(BlockDriverState *bs);
 diff --git a/include/block/block_int-common.h b/include/block/block_int-common.h
 index 147c08155f7c53b6a1ae360e5bf81187e921976f..d15f5a74803e4002c9a1b9234eada1f6d806d9d7 100644
 --- a/include/block/block_int-common.h
@@ -51000,10 +51495,29 @@ index d6d13ad37f978ea8dcf816b66d06f3bf9645ffd7..8bc71b897f77ecbe385f3ea65e12fd83
                           TYPE_CHARDEV_SOCKET)
  
 diff --git a/include/exec/icount.h b/include/exec/icount.h
-index 7a26b40084dbf8c14560607f3350b89b49fa41bd..e6e13ef999f698b608ce77096c350fcfbed92e78 100644
+index 7a26b40084dbf8c14560607f3350b89b49fa41bd..161fe76aaabd8bacbf5acecbcd3bfe78943042fe 100644
 --- a/include/exec/icount.h
 +++ b/include/exec/icount.h
-@@ -46,8 +46,36 @@ void icount_update(CPUState *cpu);
+@@ -13,7 +13,7 @@
+  * ICountMode: icount enablement state:
+  *
+  * @ICOUNT_DISABLED: Disabled - Do not count executed instructions.
+- * @ICOUNT_PRECISE: Enabled - Fixed conversion of insn to ns via "shift" option
++ * @ICOUNT_PRECISE: Enabled - Fixed conversion of insn to ps via "shift" option
+  * @ICOUNT_ADAPTATIVE: Enabled - Runtime adaptive algorithm to compute shift
+  */
+ typedef enum {
+@@ -22,6 +22,9 @@ typedef enum {
+     ICOUNT_ADAPTATIVE,
+ } ICountMode;
+ 
++/* Picoseconds per instruction are 2^shift in ordinary TCG. */
++#define ICOUNT_MAX_SHIFT_PS 20
++
+ #ifdef CONFIG_TCG
+ extern ICountMode use_icount;
+ #define icount_enabled() (use_icount)
+@@ -46,14 +49,48 @@ void icount_update(CPUState *cpu);
  /* get raw icount value */
  int64_t icount_get_raw(void);
  
@@ -51035,15 +51549,36 @@ index 7a26b40084dbf8c14560607f3350b89b49fa41bd..e6e13ef999f698b608ce77096c350fcf
  /* return the virtual CPU time in ns, based on the instruction counter. */
  int64_t icount_get(void);
 +
++/* Observe the virtual TCG clock in its native picosecond unit. */
++__int128 icount_get_ps_wide(void);
++
 +/* Sim guest TSC runs at a fixed 4 GHz, or uses upstream ticks otherwise. */
 +int64_t icount_get_tsc_ticks(void);
  /*
-  * convert an instruction counter value to ns, based on the icount shift.
+- * convert an instruction counter value to ns, based on the icount shift.
++ * Convert an instruction counter value to ps, based on the icount shift.
   * This shift is set as a fixed value with the icount "shift" option
-@@ -68,6 +96,18 @@ bool icount_configure(QemuOpts *opts, Error **errp);
- /* used by tcg vcpu thread to calc icount budget */
- int64_t icount_round(int64_t count);
+  * (precise mode), or it is constantly approximated and corrected at
+  * runtime in adaptive mode.
+  */
++__int128 icount_to_ps_wide(int64_t icount);
++
++/* Project an instruction duration onto an external nanosecond API. */
+ int64_t icount_to_ns(int64_t icount);
  
+ /**
+@@ -65,8 +102,23 @@ int64_t icount_to_ns(int64_t icount);
+  */
+ bool icount_configure(QemuOpts *opts, Error **errp);
+ 
+-/* used by tcg vcpu thread to calc icount budget */
+-int64_t icount_round(int64_t count);
++/* Arm the adaptive virtual timer after TCG selects picosecond timer units. */
++void icount_start_adaptive_vm_timer(void);
++
++/* Used by the TCG vCPU thread to budget a picosecond deadline. */
++int64_t icount_round_ps(int64_t deadline_ps);
++
 +uint64_t icount_crucible_rr_switch_quantum(void);
 +uint64_t icount_crucible_rr_current_vcpu(void);
 +uint64_t icount_crucible_rr_cursor_position(void);
@@ -51055,10 +51590,9 @@ index 7a26b40084dbf8c14560607f3350b89b49fa41bd..e6e13ef999f698b608ce77096c350fcf
 +CPUState *icount_crucible_rr_select_cpu(CPUState *suggested);
 +bool icount_crucible_rr_commanded_switch(uint32_t from_vcpu,
 +                                         uint32_t to_vcpu);
-+
+ 
  /* if the CPUs are idle, start accounting real time to virtual clock. */
  void icount_start_warp_timer(void);
- void icount_account_warp_timer(void);
 diff --git a/include/exec/translator.h b/include/exec/translator.h
 index 978dee25add2068f82102882d4dd00188b05b301..c0038fd0a71ed12bd2786d440e7ea417c51d9967 100644
 --- a/include/exec/translator.h
@@ -57819,7 +58353,7 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..eff8dc4e5e7a3693797bc130fa0647ff
  /**
   * qemu_thread_atexit_add:
 diff --git a/include/qemu/timer.h b/include/qemu/timer.h
-index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..ac8d43a91385549ef8a7a916d435991faeb77415 100644
+index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..e7fb6f3c1b2b36079c741c5657b8719d37d48f5c 100644
 --- a/include/qemu/timer.h
 +++ b/include/qemu/timer.h
 @@ -6,6 +6,8 @@
@@ -57875,21 +58409,23 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..ac8d43a91385549ef8a7a916d435991f
  };
  
  extern QEMUTimerListGroup main_loop_tlg;
-@@ -105,6 +134,36 @@ extern QEMUTimerListGroup main_loop_tlg;
+@@ -105,6 +134,38 @@ extern QEMUTimerListGroup main_loop_tlg;
   */
  int64_t qemu_clock_get_ns(QEMUClockType type);
  
 +/*
 + * Select TCG picosecond timer storage before the machine creates timers.
-+ * A non-NULL callback supplies sub-nanosecond time. Otherwise the ordinary
-+ * virtual clock is converted once at its external nanosecond boundary.
++ * The exact callback supplies Crucible sim time. The wide callback supplies
++ * ordinary TCG time, including its fractional picosecond phase. Tests may
++ * omit both callbacks to observe the public nanosecond clock instead.
 + */
-+void qemu_timer_enable_tcg_ps_clock(int64_t (*exact_virtual_ps)(void));
++void qemu_timer_enable_tcg_ps_clock(int64_t (*exact_virtual_ps)(void),
++                                    __int128 (*virtual_ps)(void));
 +
 +/* Return whether TCG stores virtual time and timer deadlines in picoseconds. */
 +bool qemu_timer_tcg_ps_enabled(void);
 +
-+/* Return whether the virtual clock has sub-nanosecond source precision. */
++/* Return whether the host-controlled Crucible sim clock is active. */
 +bool qemu_timer_exact_virtual_ps_enabled(void);
 +
 +/* Picosecond coordinate of the TCG virtual clock, or -1 when unavailable. */
@@ -57906,13 +58442,13 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..ac8d43a91385549ef8a7a916d435991f
 +bool qemu_time_join_ps(int64_t time_ns, uint16_t phase_ps,
 +                       __int128 *time_ps);
 +
-+/* Exact time until the next sim virtual timer, or -1 if none exists. */
++/* Exact time until the next TCG virtual timer, or -1 if none exists. */
 +int64_t qemu_clock_deadline_ps_all(QEMUClockType type, int attr_mask);
 +
  /**
   * qemu_clock_get_ms;
   * @type: the clock type
-@@ -652,6 +711,22 @@ static inline void timer_free(QEMUTimer *ts)
+@@ -652,6 +713,22 @@ static inline void timer_free(QEMUTimer *ts)
   */
  void timer_mod_ns(QEMUTimer *ts, int64_t expire_time);
  
@@ -57935,7 +58471,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..ac8d43a91385549ef8a7a916d435991f
  /**
   * timer_mod_anticipate_ns:
   * @ts: the timer
-@@ -665,6 +740,12 @@ void timer_mod_ns(QEMUTimer *ts, int64_t expire_time);
+@@ -665,6 +742,12 @@ void timer_mod_ns(QEMUTimer *ts, int64_t expire_time);
   */
  void timer_mod_anticipate_ns(QEMUTimer *ts, int64_t expire_time);
  
@@ -57948,7 +58484,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..ac8d43a91385549ef8a7a916d435991f
  /**
   * timer_mod:
   * @ts: the timer
-@@ -691,6 +772,38 @@ void timer_mod(QEMUTimer *ts, int64_t expire_timer);
+@@ -691,6 +774,38 @@ void timer_mod(QEMUTimer *ts, int64_t expire_timer);
   */
  void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time);
  
@@ -57987,7 +58523,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..ac8d43a91385549ef8a7a916d435991f
  /**
   * timer_pending:
   * @ts: the timer
-@@ -702,6 +815,9 @@ void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time);
+@@ -702,6 +817,9 @@ void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time);
   */
  bool timer_pending(const QEMUTimer *ts);
  
@@ -57997,7 +58533,7 @@ index 9a62ac8cded11cc5c538117bda6826d33ff3cc76..ac8d43a91385549ef8a7a916d435991f
  /**
   * timer_expired:
   * @ts: the timer
-@@ -717,12 +833,41 @@ bool timer_expired(const QEMUTimer *timer_head, int64_t current_time);
+@@ -717,12 +835,41 @@ bool timer_expired(const QEMUTimer *timer_head, int64_t current_time);
   * timer_expire_time_ns:
   * @ts: the timer
   *
@@ -58365,19 +58901,36 @@ index c3849640df9f61c70f82f0534b42f400c27f424a..f404e899f09212521c1f80b00bde9c84
   * Global state (GS) API. These functions run under the BQL.
   *
 diff --git a/include/system/cpu-timers-internal.h b/include/system/cpu-timers-internal.h
-index 8c262ce139c754764f4a9b8116569d3957ef34c9..fa37fbec49c0ac8e6d7b658190860902593c1579 100644
+index 8c262ce139c754764f4a9b8116569d3957ef34c9..82a071310f4e04613d9a8b25303b3fd8c0b84dc3 100644
 --- a/include/system/cpu-timers-internal.h
 +++ b/include/system/cpu-timers-internal.h
-@@ -49,12 +49,21 @@ typedef struct TimersState {
-     /* Compensate for varying guest execution speed.  */
-     int64_t qemu_icount_bias;
+@@ -41,13 +41,22 @@ typedef struct TimersState {
  
+     int16_t cpu_ticks_enabled;
+ 
+-    /* Conversion factor from emulated instructions to virtual clock ticks.  */
++    /* Conversion factor from emulated instructions to virtual picoseconds. */
+     int16_t icount_time_shift;
++    /* Startup fixed shift; migration never overwrites this local contract. */
++    int16_t icount_configured_shift;
++    uint8_t icount_mode_migration;
++    bool icount_sim_mode_migration;
++    bool icount_model_migration_loaded;
+     /* Icount delta used for shift auto adjust. */
+     int64_t last_delta;
+ 
+-    /* Compensate for varying guest execution speed.  */
+-    int64_t qemu_icount_bias;
++    /* Signed 128-bit picoseconds, atomically read under vm_clock_seqlock. */
++    int64_t qemu_icount_bias_ps_hi;
++    uint64_t qemu_icount_bias_ps_lo;
++
 +    /* Sim-only logical instruction ticks ahead of the raw icount. */
 +    int64_t crucible_sim_tick_bias;
-+
+ 
      int64_t vm_clock_warp_start;
      int64_t cpu_clock_offset;
- 
+@@ -55,6 +64,12 @@ typedef struct TimersState {
      /* Only written by TCG thread */
      int64_t qemu_icount;
  
@@ -113426,7 +113979,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..8807f17e9630670ecc25f34ff3609078
  # @SHUTDOWN:
  #
 diff --git a/qemu-options.hx b/qemu-options.hx
-index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..9085a23fc054e4263095dc806ac965783de98c52 100644
+index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..d0dc1975879b7f65daa8f226992d32a63978b4f2 100644
 --- a/qemu-options.hx
 +++ b/qemu-options.hx
 @@ -232,7 +232,7 @@ SRST
@@ -113438,7 +113991,7 @@ index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..9085a23fc054e4263095dc806ac96578
      "                select accelerator (kvm, xen, hvf, nitro, nvmm, whpx, mshv or tcg; use 'help' for a list)\n"
      "                igd-passthru=on|off (enable Xen integrated Intel graphics passthrough, default=off)\n"
      "                kernel-irqchip=on|off|split controls accelerated irqchip support (default=on)\n"
-@@ -5314,13 +5314,13 @@ SRST
+@@ -5314,15 +5314,18 @@ SRST
  ERST
  
  DEF("icount", HAS_ARG, QEMU_OPTION_icount, \
@@ -113452,9 +114005,15 @@ index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..9085a23fc054e4263095dc806ac96578
 -``-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr=record|replay,rrfile=filename[,rrsnapshot=snapshot]]``
 +``-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr_switch_quantum=N][,rr=record|replay,rrfile=filename[,rrsnapshot=snapshot]]``
      Enable virtual instruction counter. The virtual cpu will execute one
-     instruction every 2^N ns of virtual time. If ``auto`` is specified
+-    instruction every 2^N ns of virtual time. If ``auto`` is specified
++    instruction every 2^N ps of virtual time in ordinary TCG. For
++    example, ``shift=0`` means 1 ps per instruction and ``shift=10``
++    means 1,024 ps per instruction. The ``sim`` accelerator instead
++    uses 50 ps per instruction and requires ``shift=0``. If ``auto`` is specified
      then the virtual cpu speed will be automatically adjusted to keep
-@@ -5348,7 +5348,14 @@ SRST
+     virtual time within a few seconds of real time.
+ 
+@@ -5348,7 +5351,14 @@ SRST
      option. Whenever the guest clock is behind the host clock and if
      ``align=on`` is specified then we print a message to the user to
      inform about the delay. Currently this option does not work when
@@ -113577,7 +114136,7 @@ index 14437b32566b71f2b889215be45eaef22a93b781..d3119bb7d0d49faea64333604c20b852
      } else if (!strcmp(rr, "record")) {
          mode = REPLAY_MODE_RECORD;
 diff --git a/system/cpu-timers.c b/system/cpu-timers.c
-index 9919b46230f1caf8be1a1b6ef00acd94678437ce..744389d38df016641f73053ad3ad4e101e90925d 100644
+index 9919b46230f1caf8be1a1b6ef00acd94678437ce..ae7674abf176d1a3f655c078abb267df920bcc9a 100644
 --- a/system/cpu-timers.c
 +++ b/system/cpu-timers.c
 @@ -25,11 +25,16 @@
@@ -113597,22 +114156,131 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..744389d38df016641f73053ad3ad4e10
  #include "qemu/seqlock.h"
  #include "system/replay.h"
  #include "system/runstate.h"
-@@ -196,17 +201,44 @@ static const VMStateDescription icount_vmstate_shift = {
+@@ -152,9 +157,15 @@ static bool adjust_timers_state_needed(void *opaque)
+     return s->icount_rt_timer != NULL;
+ }
+ 
+-static bool icount_shift_state_needed(void *opaque)
++static int icount_timer_state_pre_load(void *opaque)
+ {
+-    return icount_enabled() == ICOUNT_ADAPTATIVE;
++    TimersState *state = opaque;
++
++    if (!state->icount_model_migration_loaded) {
++        error_report("icount migration timer state precedes clock model");
++        return -EINVAL;
++    }
++    return 0;
+ }
+ 
+ /*
+@@ -165,6 +176,7 @@ static const VMStateDescription icount_vmstate_warp_timer = {
+     .version_id = 1,
+     .minimum_version_id = 1,
+     .needed = warp_timer_state_needed,
++    .pre_load = icount_timer_state_pre_load,
+     .fields = (const VMStateField[]) {
+         VMSTATE_INT64(vm_clock_warp_start, TimersState),
+         VMSTATE_TIMER_PTR(icount_warp_timer, TimersState),
+@@ -174,57 +186,261 @@ static const VMStateDescription icount_vmstate_warp_timer = {
+ 
+ static const VMStateDescription icount_vmstate_adjust_timers = {
+     .name = "timer/icount/timers",
+-    .version_id = 1,
+-    .minimum_version_id = 1,
++    .version_id = 2,
++    .minimum_version_id = 2,
+     .needed = adjust_timers_state_needed,
++    .pre_load = icount_timer_state_pre_load,
+     .fields = (const VMStateField[]) {
+         VMSTATE_TIMER_PTR(icount_rt_timer, TimersState),
+-        VMSTATE_TIMER_PTR(icount_vm_timer, TimersState),
++        VMSTATE_TIMER_NS_PHASE_PTR(icount_vm_timer, TimersState),
+         VMSTATE_END_OF_LIST()
      }
  };
  
-+static int crucible_rr_cursor_state_post_load(void *opaque, int version_id)
+-static const VMStateDescription icount_vmstate_shift = {
+-    .name = "timer/icount/shift",
+-    .version_id = 2,
+-    .minimum_version_id = 2,
+-    .needed = icount_shift_state_needed,
++static int icount_state_pre_save(void *opaque)
++{
++    TimersState *state = opaque;
++
++    state->icount_mode_migration = icount_enabled();
++    state->icount_sim_mode_migration = icount_crucible_sim_mode();
++    return 0;
++}
++
++static int icount_state_pre_load(void *opaque)
++{
++    TimersState *state = opaque;
++
++    state->icount_model_migration_loaded = false;
++    return 0;
++}
++
++static int icount_model_post_load(void *opaque, int version_id)
++{
++    TimersState *state = opaque;
++
++    if (icount_enabled() == ICOUNT_DISABLED ||
++        state->icount_mode_migration != icount_enabled() ||
++        state->icount_sim_mode_migration != icount_crucible_sim_mode()) {
++        error_report("icount migration clock model mismatch");
++        return -EINVAL;
++    }
++    if (state->icount_time_shift < 0 ||
++        state->icount_time_shift > ICOUNT_MAX_SHIFT_PS ||
++        (icount_crucible_sim_mode() && state->icount_time_shift != 0)) {
++        error_report("icount migration has invalid clock coordinates");
++        return -EINVAL;
++    }
++    if (icount_enabled() == ICOUNT_PRECISE &&
++        state->icount_time_shift != state->icount_configured_shift) {
++        error_report("icount migration fixed shift mismatch: source %d, target %d",
++                     state->icount_time_shift, state->icount_configured_shift);
++        return -EINVAL;
++    }
++
++    state->icount_model_migration_loaded = true;
++    return 0;
++}
++
++static const VMStateDescription icount_vmstate_model = {
++    .name = "timer/icount/model",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = icount_state_needed,
++    .post_load = icount_model_post_load,
+     .fields = (const VMStateField[]) {
+         VMSTATE_INT16(icount_time_shift, TimersState),
+-        VMSTATE_INT64(last_delta, TimersState),
++        VMSTATE_UINT8(icount_mode_migration, TimersState),
++        VMSTATE_BOOL(icount_sim_mode_migration, TimersState),
+         VMSTATE_END_OF_LIST()
+     }
+ };
+ 
++static int icount_state_post_load(void *opaque, int version_id)
 +{
 +    TimersState *state = opaque;
 +    uint64_t quantum = icount_crucible_rr_switch_quantum();
 +
++    if (!state->icount_model_migration_loaded || state->qemu_icount < 0) {
++        error_report("icount migration lacks a valid clock model");
++        return -EINVAL;
++    }
 +    if (quantum == 0) {
 +        return 0;
 +    }
 +    if (!state->crucible_rr_cursor_valid ||
 +        state->crucible_rr_cursor_position >= quantum ||
 +        !qemu_get_cpu(state->crucible_rr_current_vcpu) ||
-+        state->qemu_icount_bias != 0 || state->qemu_icount < 0 ||
++        state->qemu_icount_bias_ps_hi != 0 ||
++        state->qemu_icount_bias_ps_lo != 0 || state->qemu_icount < 0 ||
 +        state->crucible_sim_tick_bias < 0 ||
 +        state->qemu_icount > (INT64_MAX - state->crucible_sim_tick_bias) /
 +                             CRUCIBLE_SIM_TICKS_PER_INSTRUCTION) {
@@ -113630,13 +114298,18 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..744389d38df016641f73053ad3ad4e10
      .name = "timer/icount",
 -    .version_id = 1,
 -    .minimum_version_id = 1,
-+    .version_id = 4,
-+    .minimum_version_id = 4,
++    .version_id = 5,
++    .minimum_version_id = 5,
      .needed = icount_state_needed,
-+    .post_load = crucible_rr_cursor_state_post_load,
++    .pre_save = icount_state_pre_save,
++    .pre_load = icount_state_pre_load,
++    .post_load = icount_state_post_load,
      .fields = (const VMStateField[]) {
-         VMSTATE_INT64(qemu_icount_bias, TimersState),
+-        VMSTATE_INT64(qemu_icount_bias, TimersState),
++        VMSTATE_INT64(qemu_icount_bias_ps_hi, TimersState),
++        VMSTATE_UINT64(qemu_icount_bias_ps_lo, TimersState),
          VMSTATE_INT64(qemu_icount, TimersState),
++        VMSTATE_INT64(last_delta, TimersState),
 +        VMSTATE_INT64(crucible_sim_tick_bias, TimersState),
 +        VMSTATE_UINT64(crucible_rr_current_vcpu, TimersState),
 +        VMSTATE_UINT64(crucible_rr_cursor_position, TimersState),
@@ -113644,7 +114317,12 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..744389d38df016641f73053ad3ad4e10
          VMSTATE_END_OF_LIST()
      },
      .subsections = (const VMStateDescription * const []) {
-@@ -217,14 +249,133 @@ static const VMStateDescription icount_vmstate_timers = {
++        /* Stream order is checked again by each timer subsection's pre-load. */
++        &icount_vmstate_model,
+         &icount_vmstate_warp_timer,
+         &icount_vmstate_adjust_timers,
+-        &icount_vmstate_shift,
+         NULL
      }
  };
  
@@ -113733,7 +114411,8 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..744389d38df016641f73053ad3ad4e10
 +        if (icount_mode == ICOUNT_ADAPTATIVE) {
 +            qemu_put_be64(f, s->last_delta);
 +        }
-+        qemu_put_be64(f, s->qemu_icount_bias);
++        qemu_put_be64(f, s->qemu_icount_bias_ps_hi);
++        qemu_put_be64(f, s->qemu_icount_bias_ps_lo);
 +        qemu_put_be64(f, s->qemu_icount);
 +        qemu_put_be64(f, s->crucible_sim_tick_bias);
 +        qemu_put_byte(f, s->crucible_rr_cursor_valid);
@@ -113757,8 +114436,8 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..744389d38df016641f73053ad3ad4e10
 +}
 +
 +static const CrucibleFingerprintProjection cpu_timers_fingerprint = {
-+    .schema = "crucible.qemu.cpu-timers.v5",
-+    .version = 5,
++    .schema = "crucible.qemu.cpu-timers.v6",
++    .version = 6,
 +    .save = cpu_timers_fingerprint_projection,
 +};
 +
@@ -113780,7 +114459,7 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..744389d38df016641f73053ad3ad4e10
          VMSTATE_END_OF_LIST()
      },
      .subsections = (const VMStateDescription * const []) {
-@@ -252,6 +403,17 @@ void qemu_timer_notify_cb(void *opaque, QEMUClockType type)
+@@ -252,6 +468,17 @@ void qemu_timer_notify_cb(void *opaque, QEMUClockType type)
           */
          cpu_exit(current_cpu);
      } else if (first_cpu) {
@@ -120412,7 +121091,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..c6f6acf80b906791b445a7d53a464208
  
      user_register_global_props();
 diff --git a/target/arm/cpregs-pmu.c b/target/arm/cpregs-pmu.c
-index 46df6597b1ab3ff387c634f4eb82ec96156c58df..67ce2762e8aac2ce8d58fc5c28d09411c7214c76 100644
+index 46df6597b1ab3ff387c634f4eb82ec96156c58df..ba6668d1cd4bd1316f96969f90a5d09dafd331f3 100644
 --- a/target/arm/cpregs-pmu.c
 +++ b/target/arm/cpregs-pmu.c
 @@ -34,6 +34,8 @@ static CPAccessResult access_tpm(CPUARMState *env, const ARMCPRegInfo *ri,
@@ -120479,7 +121158,7 @@ index 46df6597b1ab3ff387c634f4eb82ec96156c58df..67ce2762e8aac2ce8d58fc5c28d09411
  static bool instructions_supported(CPUARMState *env)
  {
      /* Precise instruction counting */
-@@ -108,6 +134,17 @@ static int64_t instructions_ns_per(uint64_t icount)
+@@ -108,6 +134,13 @@ static int64_t instructions_ns_per(uint64_t icount)
      assert(icount_enabled() == ICOUNT_PRECISE);
      return icount_to_ns((int64_t)icount);
  }
@@ -120488,16 +121167,12 @@ index 46df6597b1ab3ff387c634f4eb82ec96156c58df..67ce2762e8aac2ce8d58fc5c28d09411
 +{
 +    assert(icount_enabled() == ICOUNT_PRECISE);
 +
-+    if (icount_crucible_sim_mode()) {
-+        return (__int128)icount * CRUCIBLE_SIM_TICKS_PER_INSTRUCTION;
-+    }
-+    return (__int128)icount * icount_to_ns(1) *
-+           PICOSECONDS_PER_NANOSECOND;
++    return (__int128)icount * icount_to_ps_wide(1);
 +}
  #endif
  
  static bool pmuv3p1_events_supported(CPUARMState *env)
-@@ -134,38 +171,49 @@ static int64_t zero_event_ns_per(uint64_t cycles)
+@@ -134,38 +167,49 @@ static int64_t zero_event_ns_per(uint64_t cycles)
      return -1;
  }
  
@@ -120547,7 +121222,7 @@ index 46df6597b1ab3ff387c634f4eb82ec96156c58df..67ce2762e8aac2ce8d58fc5c28d09411
      },
  };
  
-@@ -505,6 +553,16 @@ static void pmccntr_op_start(CPUARMState *env)
+@@ -505,6 +549,16 @@ static void pmccntr_op_start(CPUARMState *env)
      env->cp15.c15_ccnt_delta = cycles;
  }
  
@@ -120564,7 +121239,7 @@ index 46df6597b1ab3ff387c634f4eb82ec96156c58df..67ce2762e8aac2ce8d58fc5c28d09411
  /*
   * If PMCCNTR is enabled, recalculate the delta between the clock and the
   * guest-visible count. A call to pmccntr_op_finish should follow every call to
-@@ -519,15 +577,15 @@ static void pmccntr_op_finish(CPUARMState *env)
+@@ -519,15 +573,15 @@ static void pmccntr_op_finish(CPUARMState *env)
          if (!(env->cp15.c9_pmcr & PMCRLC)) {
              remaining_cycles = (uint32_t)remaining_cycles;
          }
@@ -120589,7 +121264,7 @@ index 46df6597b1ab3ff387c634f4eb82ec96156c58df..67ce2762e8aac2ce8d58fc5c28d09411
              }
          }
  #endif
-@@ -571,20 +629,19 @@ static void pmevcntr_op_finish(CPUARMState *env, uint8_t counter)
+@@ -571,20 +625,19 @@ static void pmevcntr_op_finish(CPUARMState *env, uint8_t counter)
          uint16_t event = env->cp15.c14_pmevtyper[counter] & PMXEVTYPER_EVTCOUNT;
          uint16_t event_idx = supported_event_map[event];
          uint64_t delta = -(env->cp15.c14_pmevcntr[counter] + 1);
@@ -127457,11 +128132,156 @@ index 0ab613a298005ad03531cb0ba70c1e8a8838a457..f57e08638afb7a9acca29ce596efd6ce
          &vmstate_sstc,
          &vmstate_mseccfg,
          NULL
+diff --git a/target/riscv/tcg/debug.c b/target/riscv/tcg/debug.c
+index 5ab29f6945bcf2214b5da1b98e89b1538bbc02db..f99c9a6e8e94a0921df4177b475aaa7a2713bec3 100644
+--- a/target/riscv/tcg/debug.c
++++ b/target/riscv/tcg/debug.c
+@@ -29,6 +29,7 @@
+ #include "qemu/error-report.h"
+ #include "cpu.h"
+ #include "target/riscv/tcg/debug.h"
++#include "target/riscv/tcg/itrigger-timer.h"
+ #include "trace.h"
+ #include "exec/helper-proto.h"
+ #include "exec/watchpoint.h"
+@@ -701,19 +702,15 @@ static bool check_itrigger_priv(CPURISCVState *env, int index)
+ 
+ bool riscv_itrigger_enabled(CPURISCVState *env)
+ {
+-    int count;
+     for (int i = 0; i < env->num_triggers; i++) {
+         if (get_trigger_type(env, i) != TRIGGER_TYPE_INST_CNT) {
+             continue;
+         }
+-        if (check_itrigger_priv(env, i)) {
+-            continue;
+-        }
+-        count = itrigger_get_count(env, i);
+-        if (!count) {
+-            continue;
++
++        /* The TB helper checks privilege and context after each instruction. */
++        if (itrigger_get_count(env, i) > 0) {
++            return true;
+         }
+-        return true;
+     }
+ 
+     return false;
+@@ -733,7 +730,8 @@ void helper_itrigger_match(CPURISCVState *env)
+         if (!count) {
+             continue;
+         }
+-        itrigger_set_count(env, i, count--);
++        count = riscv_itrigger_step_count(count);
++        itrigger_set_count(env, i, count);
+         if (!count) {
+             env->itrigger_enabled = riscv_itrigger_enabled(env);
+             do_trigger_action(env, i);
+@@ -781,8 +779,7 @@ static void riscv_itrigger_update_count(CPURISCVState *env)
+              * the number of executed instructions will be discard and
+              * the count field in itrigger will not change.
+              */
+-            timer_mod(env->itrigger_timer[i],
+-                      current_icount + count);
++            riscv_itrigger_schedule_timer(env->itrigger_timer[i], count);
+         }
+     }
+ }
+@@ -794,7 +791,9 @@ static void riscv_itrigger_timer_cb(void *opaque)
+ 
+ void riscv_itrigger_update_priv(CPURISCVState *env)
+ {
+-    riscv_itrigger_update_count(env);
++    if (!riscv_itrigger_uses_tb_helper(icount_enabled())) {
++        riscv_itrigger_update_count(env);
++    }
+ }
+ 
+ static target_ulong itrigger_validate(CPURISCVState *env,
+@@ -828,12 +827,13 @@ static void itrigger_reg_write(CPURISCVState *env, target_ulong index,
+         new_val = itrigger_validate(env, val);
+         if (new_val != env->tdata1[index]) {
+             env->tdata1[index] = new_val;
+-            if (icount_enabled()) {
++            if (!riscv_itrigger_uses_tb_helper(icount_enabled())) {
+                 env->last_icount = icount_get_raw();
+                 /* set the count to timer */
+-                timer_mod(env->itrigger_timer[index],
+-                          env->last_icount + itrigger_get_count(env, index));
++                riscv_itrigger_schedule_timer(env->itrigger_timer[index],
++                                              itrigger_get_count(env, index));
+             } else {
++                timer_del(env->itrigger_timer[index]);
+                 env->itrigger_enabled = riscv_itrigger_enabled(env);
+             }
+         }
+@@ -853,7 +853,9 @@ static void itrigger_reg_write(CPURISCVState *env, target_ulong index,
+ static int itrigger_get_adjust_count(CPURISCVState *env)
+ {
+     int count = itrigger_get_count(env, env->trigger_cur), executed;
+-    if ((count != 0) && check_itrigger_priv(env, env->trigger_cur)) {
++    if ((count != 0) &&
++        !riscv_itrigger_uses_tb_helper(icount_enabled()) &&
++        check_itrigger_priv(env, env->trigger_cur)) {
+         executed = icount_get_raw() - env->last_icount;
+         count += executed;
+     }
+@@ -1114,4 +1116,5 @@ void riscv_trigger_reset_hold(CPURISCVState *env)
+     }
+ 
+     env->mcontext = 0;
++    env->itrigger_enabled = false;
+ }
+diff --git a/target/riscv/tcg/itrigger-timer.h b/target/riscv/tcg/itrigger-timer.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..89cbf867c52eafaf2e67ba13b8a61366158dcc8f
+--- /dev/null
++++ b/target/riscv/tcg/itrigger-timer.h
+@@ -0,0 +1,38 @@
++/*
++ * RISC-V instruction-count trigger timer
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef RISCV_ITRIGGER_TIMER_H
++#define RISCV_ITRIGGER_TIMER_H
++
++#include "exec/icount.h"
++#include "qemu/timer.h"
++
++static inline bool riscv_itrigger_uses_tb_helper(ICountMode mode)
++{
++    /* Adaptive ps/insn cannot represent a raw-instruction deadline as a timer. */
++    return mode != ICOUNT_PRECISE;
++}
++
++static inline int riscv_itrigger_step_count(int count)
++{
++    g_assert(count > 0);
++    return count - 1;
++}
++
++static inline void riscv_itrigger_schedule_timer(QEMUTimer *timer, int count)
++{
++    __int128 deadline_ps;
++
++    /* The trigger counts instructions, not nanoseconds of virtual time. */
++    if (__builtin_add_overflow(qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL),
++                               icount_to_ps_wide(count), &deadline_ps)) {
++        g_error("RISC-V instruction trigger deadline exceeds virtual "
++                "clock range");
++    }
++    timer_mod_ps_wide(timer, deadline_ps);
++}
++
++#endif /* RISCV_ITRIGGER_TIMER_H */
 diff --git a/target/riscv/tcg/pmu.c b/target/riscv/tcg/pmu.c
-index 1a4658319b11a9a8a0edef18fc8a5abd0027eb31..599ae91a8d5d4144af5c36045e17023fe8f11259 100644
+index 1a4658319b11a9a8a0edef18fc8a5abd0027eb31..c4962e1b214af5e5d47233f33fbcd12593082f4e 100644
 --- a/target/riscv/tcg/pmu.c
 +++ b/target/riscv/tcg/pmu.c
-@@ -294,6 +294,24 @@ static int64_t pmu_icount_ticks_to_ns(int64_t value)
+@@ -294,6 +294,23 @@ static int64_t pmu_icount_ticks_to_ns(int64_t value)
      return ret;
  }
  
@@ -127476,8 +128296,7 @@ index 1a4658319b11a9a8a0edef18fc8a5abd0027eb31..599ae91a8d5d4144af5c36045e17023f
 +        return pmu_sim_ticks_to_ps(value);
 +    }
 +    if (icount_enabled()) {
-+        return (__int128)value * icount_to_ns(1) *
-+               PICOSECONDS_PER_NANOSECOND;
++        return (__int128)value * icount_to_ps_wide(1);
 +    }
 +    return (__int128)(NANOSECONDS_PER_SECOND / RISCV_TIMEBASE_FREQ) *
 +           value * PICOSECONDS_PER_NANOSECOND;
@@ -127486,7 +128305,7 @@ index 1a4658319b11a9a8a0edef18fc8a5abd0027eb31..599ae91a8d5d4144af5c36045e17023f
  int riscv_pmu_update_event_map(CPURISCVState *env, uint64_t value,
                                 uint32_t ctr_idx)
  {
-@@ -375,11 +393,22 @@ static void pmu_timer_trigger_irq(RISCVCPU *cpu,
+@@ -375,11 +392,22 @@ static void pmu_timer_trigger_irq(RISCVCPU *cpu,
      }
  
      counter = &env->pmu_ctrs[ctr_idx];
@@ -127513,7 +128332,7 @@ index 1a4658319b11a9a8a0edef18fc8a5abd0027eb31..599ae91a8d5d4144af5c36045e17023f
          return;
      }
  
-@@ -436,6 +465,40 @@ int riscv_pmu_setup_timer(CPURISCVState *env, uint64_t value, uint32_t ctr_idx)
+@@ -436,6 +464,40 @@ int riscv_pmu_setup_timer(CPURISCVState *env, uint64_t value, uint32_t ctr_idx)
      } else {
          overflow_delta = UINT64_MAX;
      }
@@ -127554,6 +128373,28 @@ index 1a4658319b11a9a8a0edef18fc8a5abd0027eb31..599ae91a8d5d4144af5c36045e17023f
  
      /*
       * QEMU supports only int64_t timers while RISC-V counters are uint64_t.
+diff --git a/target/riscv/tcg/tcg-cpu.c b/target/riscv/tcg/tcg-cpu.c
+index 4af5cd9c7314abe3de07a0d111fe759135e43122..f68c8ea147f0de368c3f82cdfcf5f818169148ae 100644
+--- a/target/riscv/tcg/tcg-cpu.c
++++ b/target/riscv/tcg/tcg-cpu.c
+@@ -38,6 +38,7 @@
+ #include "system/tcg.h"
+ #include "exec/icount.h"
+ #include "target/riscv/tcg/debug.h"
++#include "target/riscv/tcg/itrigger-timer.h"
+ #include "target/riscv/tcg/csr.h"
+ #endif
+ 
+@@ -182,7 +183,8 @@ static TCGTBCPUState riscv_get_tb_cpu_state(CPUState *cs)
+              ? EXT_STATUS_DIRTY : EXT_STATUS_DISABLED;
+     }
+ 
+-    if (cpu->cfg.debug && !icount_enabled()) {
++    if (cpu->cfg.debug &&
++        riscv_itrigger_uses_tb_helper(icount_enabled())) {
+         flags = FIELD_DP32(flags, TB_FLAGS, ITRIGGER, env->itrigger_enabled);
+     }
+ #endif
 diff --git a/target/riscv/time_helper.c b/target/riscv/time_helper.c
 index ede1a4c2a34b9d6da08c3a63f895572d54b1ecf4..a672f57925edaf4dd37f0f0a7a5ec6bcd1ebe236 100644
 --- a/target/riscv/time_helper.c
@@ -128439,7 +129280,7 @@ index 0000000000000000000000000000000000000000..74f76ce9c42cee9ebd27167bc4ee13b4
 +    main()
 diff --git a/tests/qtest/crucible-fingerprint-projection.py b/tests/qtest/crucible-fingerprint-projection.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..5ac6d799b828a0863a85acaf4d0d07ee0493a04c
+index 0000000000000000000000000000000000000000..4d22e9b564952fa95f8d95e7823c1216ff6902c0
 --- /dev/null
 +++ b/tests/qtest/crucible-fingerprint-projection.py
 @@ -0,0 +1,720 @@
@@ -128913,7 +129754,7 @@ index 0000000000000000000000000000000000000000..5ac6d799b828a0863a85acaf4d0d07ee
 +    def check_ps2(live):
 +        baseline_keyboard = capture_section(live, "ps2kbd")
 +        baseline_controller = capture_section(live, "pckbd")
-+        timer_marker = section_marker("timer", 0, 5)
++        timer_marker = section_marker("timer", 0, 6)
 +        if live.last_material.count(timer_marker) != 1:
 +            raise AssertionError(
 +                "production material omitted the current timer projection"
@@ -129159,6 +130000,299 @@ index 0000000000000000000000000000000000000000..5ac6d799b828a0863a85acaf4d0d07ee
 +        run_q35_cases(args.qemu, args.plugin)
 +    else:
 +        run_aarch64_cases(args.qemu, args.plugin)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/qtest/crucible-icount-migration.py b/tests/qtest/crucible-icount-migration.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0ae75732c9502f34a5ed7b9d0c3e43ebbf9dcd31
+--- /dev/null
++++ b/tests/qtest/crucible-icount-migration.py
+@@ -0,0 +1,287 @@
++# Copyright (c) Andyl, Inc.
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Check that icount migration preserves its configured clock model."""
++
++import argparse
++import json
++import os
++import socket
++import struct
++import subprocess
++import tempfile
++import time
++
++
++TIMEOUT_SECONDS = 10
++CASES = (
++    ("fixed-matching", "shift=1,sleep=off,align=off",
++     "shift=1,sleep=off,align=off", None),
++    ("fixed-zero-matching", "shift=0,sleep=off,align=off",
++     "shift=0,sleep=off,align=off", None),
++    ("fixed-mismatch-up", "shift=0,sleep=off,align=off",
++     "shift=1,sleep=off,align=off",
++     "icount migration fixed shift mismatch: source 0, target 1"),
++    ("fixed-mismatch-down", "shift=1,sleep=off,align=off",
++     "shift=0,sleep=off,align=off",
++     "icount migration fixed shift mismatch: source 1, target 0"),
++    ("adaptive-matching", "shift=auto,sleep=on,align=off",
++     "shift=auto,sleep=on,align=off", None),
++    ("adaptive-to-fixed", "shift=auto,sleep=on,align=off",
++     "shift=1,sleep=off,align=off", "icount migration clock model mismatch"),
++)
++
++
++def stop_qemu(process):
++    if process.poll() is None:
++        process.terminate()
++    try:
++        process.wait(timeout=TIMEOUT_SECONDS)
++    except subprocess.TimeoutExpired:
++        process.kill()
++        process.wait(timeout=TIMEOUT_SECONDS)
++    return process.stderr.read().decode(errors="replace")
++
++
++def connect_qmp(path, process):
++    deadline = time.monotonic() + TIMEOUT_SECONDS
++    while time.monotonic() < deadline:
++        if process.poll() is not None:
++            raise RuntimeError("QEMU exited before QMP became available")
++        try:
++            connection = socket.socket(socket.AF_UNIX)
++            connection.settimeout(TIMEOUT_SECONDS)
++            connection.connect(path)
++            stream = connection.makefile("rwb", buffering=0)
++            greeting = json.loads(stream.readline())
++            if "QMP" not in greeting:
++                raise RuntimeError(f"Unexpected QMP greeting: {greeting}")
++            return connection, stream
++        except (FileNotFoundError, ConnectionRefusedError,
++                ConnectionResetError, json.JSONDecodeError):
++            connection.close()
++            time.sleep(0.02)
++    raise RuntimeError("QMP connection timed out")
++
++
++def qmp_call(stream, command, arguments=None):
++    request = {"execute": command}
++    if arguments is not None:
++        request["arguments"] = arguments
++    stream.write(json.dumps(request).encode() + b"\n")
++    while True:
++        line = stream.readline()
++        if not line:
++            raise EOFError("QMP connection closed")
++        response = json.loads(line)
++        if "event" not in response:
++            if "error" in response:
++                raise RuntimeError(f"{command} failed: {response['error']}")
++            return response["return"]
++
++
++def wait_for_migration(stream, process):
++    deadline = time.monotonic() + TIMEOUT_SECONDS
++    while time.monotonic() < deadline:
++        if process.poll() is not None:
++            return "exited"
++        try:
++            status = qmp_call(stream, "query-migrate")["status"]
++        except (BrokenPipeError, EOFError, OSError):
++            return "exited"
++        if status in ("completed", "failed", "cancelled"):
++            return status
++        time.sleep(0.02)
++    raise RuntimeError("migration did not reach a terminal state")
++
++
++def start_qemu(qemu, options, qmp_socket, incoming=None, machine="none"):
++    command = [
++        qemu, "-machine", machine, "-accel", "tcg", "-m", "64M",
++        "-nodefaults", "-display", "none", "-S", "-icount", options,
++        "-qmp", f"unix:{qmp_socket},server=on,wait=off",
++    ]
++    if incoming is not None:
++        command.extend(("-incoming", f"file:{incoming}"))
++    return subprocess.Popen(
++        command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
++    )
++
++
++def adaptive_virtual_timer(snapshot):
++    name = b"timer/icount/timers"
++    marker = bytes((5, len(name))) + name
++    with open(snapshot, "rb") as stream:
++        data = stream.read()
++    if data.count(marker) != 1:
++        raise AssertionError("expected one adaptive timer subsection")
++
++    offset = data.index(marker) + len(marker)
++    version = struct.unpack_from(">I", data, offset)[0]
++    if version != 2:
++        raise AssertionError(f"expected exact adaptive timer v2, got {version}")
++
++    # The first field is the realtime timer's eight-byte ns deadline.
++    active, expiry_ns, phase_ps = struct.unpack_from(">BqH", data, offset + 12)
++    if active != 1 or phase_ps >= 1000:
++        raise AssertionError("invalid active adaptive virtual timer")
++    return expiry_ns, phase_ps
++
++
++def reorder_timer_before_model(source, destination):
++    with open(source, "rb") as stream:
++        data = stream.read()
++
++    model_name = b"timer/icount/model"
++    timer_name = b"timer/icount/timers"
++    model_marker = bytes((5, len(model_name))) + model_name
++    timer_marker = bytes((5, len(timer_name))) + timer_name
++    if data.count(model_marker) != 1 or data.count(timer_marker) != 1:
++        raise AssertionError("expected one of each icount subsection")
++
++    model_start = data.index(model_marker)
++    timer_start = data.index(timer_marker)
++    timer_end = timer_start + len(timer_marker) + 4 + 8 + 11
++    if model_start >= timer_start:
++        raise AssertionError("source icount subsections are out of order")
++
++    reordered = (data[:model_start] + data[timer_start:timer_end]
++                 + data[model_start:timer_start] + data[timer_end:])
++    with open(destination, "wb") as stream:
++        stream.write(reordered)
++
++
++def run_adaptive_phase_case(qemu):
++    options = "shift=auto,sleep=on,align=off"
++    with tempfile.TemporaryDirectory(prefix="crucible-icount-phase-") as root:
++        source_socket = os.path.join(root, "source.sock")
++        target_socket = os.path.join(root, "target.sock")
++        snapshot = os.path.join(root, "source.bin")
++        restored = os.path.join(root, "restored.bin")
++        reordered = os.path.join(root, "reordered.bin")
++
++        source = start_qemu(qemu, options, source_socket, machine="pc")
++        try:
++            connection, stream = connect_qmp(source_socket, source)
++            try:
++                qmp_call(stream, "qmp_capabilities")
++                qmp_call(stream, "cont")
++                time.sleep(1)
++                qmp_call(stream, "stop")
++                qmp_call(stream, "migrate", {"uri": f"file:{snapshot}"})
++                source_status = wait_for_migration(stream, source)
++            finally:
++                stream.close()
++                connection.close()
++        finally:
++            source_stderr = stop_qemu(source)
++        if source_status != "completed":
++            raise AssertionError(f"adaptive source {source_status}: {source_stderr}")
++
++        source_deadline = adaptive_virtual_timer(snapshot)
++        if source_deadline[1] == 0:
++            raise AssertionError("adaptive source timer did not acquire ps phase")
++
++        target = start_qemu(qemu, options, target_socket, snapshot,
++                            machine="pc")
++        try:
++            connection, stream = connect_qmp(target_socket, target)
++            try:
++                qmp_call(stream, "qmp_capabilities")
++                target_status = wait_for_migration(stream, target)
++                if target_status == "completed":
++                    qmp_call(stream, "migrate", {"uri": f"file:{restored}"})
++                    target_status = wait_for_migration(stream, target)
++            finally:
++                stream.close()
++                connection.close()
++        finally:
++            target_stderr = stop_qemu(target)
++        if target_status != "completed":
++            raise AssertionError(f"adaptive target {target_status}: {target_stderr}")
++        if adaptive_virtual_timer(restored) != source_deadline:
++            raise AssertionError("adaptive virtual timer lost ps phase on restore")
++        print("CRUCIBLE_ICOUNT_MIGRATION_PASS case=adaptive-nonzero-phase",
++              flush=True)
++
++        reorder_timer_before_model(snapshot, reordered)
++        reordered_target = start_qemu(qemu, options,
++                                      os.path.join(root, "reordered.sock"),
++                                      reordered, machine="pc")
++        try:
++            reordered_target.wait(timeout=TIMEOUT_SECONDS)
++        finally:
++            reordered_stderr = stop_qemu(reordered_target)
++        if "icount migration timer state precedes clock model" not in reordered_stderr:
++            raise AssertionError(
++                f"reordered timer state was not rejected: {reordered_stderr}"
++            )
++        print("CRUCIBLE_ICOUNT_MIGRATION_PASS case=reordered-timer-rejected",
++              flush=True)
++
++
++def run_case(qemu, name, source_options, target_options, rejection):
++    with tempfile.TemporaryDirectory(prefix="crucible-icount-migration-") as root:
++        source_socket = os.path.join(root, "source.sock")
++        target_socket = os.path.join(root, "target.sock")
++        snapshot = os.path.join(root, "state.bin")
++        source = start_qemu(qemu, source_options, source_socket)
++        try:
++            connection, stream = connect_qmp(source_socket, source)
++            try:
++                qmp_call(stream, "qmp_capabilities")
++                qmp_call(stream, "migrate", {"uri": f"file:{snapshot}"})
++                source_status = wait_for_migration(stream, source)
++            finally:
++                stream.close()
++                connection.close()
++        finally:
++            source_stderr = stop_qemu(source)
++        if source_status != "completed":
++            raise AssertionError(
++                f"{name}: source migration {source_status}: {source_stderr}"
++            )
++
++        target = start_qemu(qemu, target_options, target_socket, snapshot)
++        try:
++            try:
++                connection, stream = connect_qmp(target_socket, target)
++            except RuntimeError:
++                target_status = "exited"
++            else:
++                try:
++                    try:
++                        qmp_call(stream, "qmp_capabilities")
++                        target_status = wait_for_migration(stream, target)
++                    except (BrokenPipeError, EOFError, OSError):
++                        target_status = "exited"
++                finally:
++                    stream.close()
++                    connection.close()
++        finally:
++            target_stderr = stop_qemu(target)
++
++        if rejection is None:
++            if target_status != "completed":
++                raise AssertionError(
++                    f"{name}: expected complete, got {target_status}: "
++                    f"{target_stderr}"
++                )
++        elif target_status == "completed" or rejection not in target_stderr:
++            raise AssertionError(
++                f"{name}: expected {rejection!r}, got {target_status}: "
++                f"{target_stderr}"
++            )
++        print(f"CRUCIBLE_ICOUNT_MIGRATION_PASS case={name}", flush=True)
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--qemu", required=True)
++    args = parser.parse_args()
++    for case in CASES:
++        run_case(args.qemu, *case)
++    run_adaptive_phase_case(args.qemu)
 +
 +
 +if __name__ == "__main__":
@@ -131883,6 +133017,118 @@ index 279a8f5614e961055c26d6c47ef7b8ef77fba98f..db3a6bf1d3b9198b91545b217063c97c
      ret = g_test_run();
  
      qmp_schema_cleanup(&schema);
+diff --git a/tests/qtest/riscv-csr-test.c b/tests/qtest/riscv-csr-test.c
+index 7479a5c5bcc5423fda1c85cf8ec60da8d32d3397..7ba92a72b9ca206d2fc1917713ff54bb076fbd49 100644
+--- a/tests/qtest/riscv-csr-test.c
++++ b/tests/qtest/riscv-csr-test.c
+@@ -15,6 +15,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include <glib/gstdio.h>
+ #include "libqtest.h"
+ 
+ #define CSR_MVENDORID       0xf11
+@@ -71,6 +72,91 @@ static void run_test_seed_csr(void)
+     qtest_quit(qts);
+ }
+ 
++static void put_riscv_insn(uint8_t *image, size_t index, uint32_t insn)
++{
++    for (size_t byte = 0; byte < sizeof(insn); byte++) {
++        image[index * sizeof(insn) + byte] = insn >> (byte * 8);
++    }
++}
++
++static void run_test_adaptive_itrigger(void)
++{
++    /* Set tdata1 to a 100-instruction M-mode trigger. */
++    static const uint32_t setup[] = {
++        0x001002b7, /* lui t0, 0x100: SiFive test device */
++        0x00300313, /* addi t1, zero, 3: trigger type */
++        0x03c31313, /* slli t1, t1, 60 */
++        0x06400393, /* addi t2, zero, 100: instruction count */
++        0x00a39393, /* slli t2, t2, 10 */
++        0x2003e393, /* ori t2, t2, 0x200: M-mode enable */
++        0x00736333, /* or t1, t1, t2 */
++        0x7a001073, /* csrw tselect, zero */
++        0x7a131073, /* csrw tdata1, t1 */
++    };
++    static const uint32_t finish[] = {
++        0x7a102473, /* csrr s0, tdata1 */
++        0x00a45413, /* srli s0, s0, 10 */
++        0x03241413, /* slli s0, s0, 50: isolate 14-bit count */
++        0x03245413, /* srli s0, s0, 50 */
++        0x00041a63, /* bne s0, zero, fail */
++        0x00005337, /* lui t1, 0x5 */
++        0x55530313, /* addi t1, t1, 0x555: pass */
++        0x0062a023, /* sw t1, 0(t0) */
++        0x0000006f, /* spin if test device did not exit */
++        0x00013337, /* fail: lui t1, 0x13 */
++        0x33330313, /* addi t1, t1, 0x333: failure exit code 1 */
++        0x0062a023, /* sw t1, 0(t0) */
++        0x0000006f,
++    };
++    enum { NOP_COUNT = 110 };
++    uint8_t image[(G_N_ELEMENTS(setup) + NOP_COUNT +
++                   G_N_ELEMENTS(finish)) * sizeof(uint32_t)];
++    g_autofree char *image_path = NULL;
++    g_autofree char *loader = NULL;
++    g_autofree char *stderr_text = NULL;
++    g_autoptr(GError) error = NULL;
++    int wait_status;
++    int fd;
++    size_t index = 0;
++
++    for (size_t i = 0; i < G_N_ELEMENTS(setup); i++) {
++        put_riscv_insn(image, index++, setup[i]);
++    }
++    for (size_t i = 0; i < NOP_COUNT; i++) {
++        put_riscv_insn(image, index++, 0x00000013); /* addi zero, zero, 0 */
++    }
++    for (size_t i = 0; i < G_N_ELEMENTS(finish); i++) {
++        put_riscv_insn(image, index++, finish[i]);
++    }
++
++    fd = g_file_open_tmp("riscv-itrigger-XXXXXX", &image_path, &error);
++    g_assert_no_error(error);
++    g_assert_cmpint(fd, >=, 0);
++    close(fd);
++    g_assert_true(g_file_set_contents(image_path, (char *)image,
++                                      sizeof(image), &error));
++    g_assert_no_error(error);
++
++    loader = g_strdup_printf("loader,file=%s,addr=0x80000000,cpu-num=0,"
++                             "force-raw=on", image_path);
++    char *args[] = {
++        (char *)qtest_qemu_binary(NULL),
++        "-machine", "virt", "-bios", "none", "-m", "128M",
++        "-display", "none", "-serial", "none", "-monitor", "none",
++        "-accel", "tcg", "-icount", "shift=auto,sleep=off",
++        "-device", loader, "-no-reboot", NULL,
++    };
++
++    g_assert_true(g_spawn_sync(NULL, args, NULL,
++                               G_SPAWN_STDOUT_TO_DEV_NULL, NULL, NULL,
++                               NULL, &stderr_text, &wait_status, &error));
++    g_assert_no_error(error);
++    g_unlink(image_path);
++    g_test_message("adaptive itrigger guest stderr: %s", stderr_text);
++    g_assert_true(g_spawn_check_wait_status(wait_status, &error));
++    g_assert_no_error(error);
++}
++
+ int main(int argc, char **argv)
+ {
+     g_test_init(&argc, &argv, NULL);
+@@ -78,6 +164,7 @@ int main(int argc, char **argv)
+     if (qtest_has_machine("virt")) {
+         qtest_add_func("/cpu/csr", run_test_csr);
+         qtest_add_func("/cpu/csr/seed", run_test_seed_csr);
++        qtest_add_func("/cpu/itrigger/adaptive", run_test_adaptive_itrigger);
+     }
+ 
+     return g_test_run();
 diff --git a/tests/qtest/usb-hcd-uhci-test.c b/tests/qtest/usb-hcd-uhci-test.c
 index 4446555f0835ba19dc34b22abbba5728211d8bcb..91e78e4fa14c2c40e6916de733a92c440978bf33 100644
 --- a/tests/qtest/usb-hcd-uhci-test.c
@@ -142396,7 +143642,7 @@ index 0000000000000000000000000000000000000000..a56f97cc637d959e34eacb00cb73c9e4
 +}
 diff --git a/tests/unit/test-crucible-fdc-fingerprint.c b/tests/unit/test-crucible-fdc-fingerprint.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..1d865a1b79752d81b75dd7ee08a092a405f45156
+index 0000000000000000000000000000000000000000..8c972db14596c1fc9b9a80e2542bb0587145627c
 --- /dev/null
 +++ b/tests/unit/test-crucible-fdc-fingerprint.c
 @@ -0,0 +1,225 @@
@@ -142617,7 +143863,7 @@ index 0000000000000000000000000000000000000000..1d865a1b79752d81b75dd7ee08a092a4
 +    module_call_init(MODULE_INIT_QOM);
 +    bdrv_init();
 +    qemu_init_main_loop(&error_abort);
-+    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps);
++    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps, NULL);
 +
 +    g_test_init(&argc, &argv, NULL);
 +    g_test_add_func("/crucible/fdc/mutable-state", test_fdc_mutable_state);
@@ -146166,7 +147412,7 @@ index 0000000000000000000000000000000000000000..05bca65903fd80021e579ca94d20b1be
 +}
 diff --git a/tests/unit/test-crucible-i3c-timer.c b/tests/unit/test-crucible-i3c-timer.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..1e15e000c7ecd26315ee8ceb2f080ba1bc98ddc1
+index 0000000000000000000000000000000000000000..ca1c90abe3b22fa2412002e449f07c6768590bb8
 --- /dev/null
 +++ b/tests/unit/test-crucible-i3c-timer.c
 @@ -0,0 +1,238 @@
@@ -146398,7 +147644,7 @@ index 0000000000000000000000000000000000000000..1e15e000c7ecd26315ee8ceb2f080ba1
 +{
 +    module_call_init(MODULE_INIT_QOM);
 +    qemu_init_main_loop(&error_abort);
-+    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps);
++    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps, NULL);
 +    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
 +
 +    g_test_init(&argc, &argv, NULL);
@@ -146410,10 +147656,10 @@ index 0000000000000000000000000000000000000000..1e15e000c7ecd26315ee8ceb2f080ba1
 +}
 diff --git a/tests/unit/test-crucible-idle-wait.c b/tests/unit/test-crucible-idle-wait.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..6bab2a4480b8d927fc42695f5b3a773c400fe430
+index 0000000000000000000000000000000000000000..64c60875c2ef3b040d01f93b8f00f1aafa4cafe2
 --- /dev/null
 +++ b/tests/unit/test-crucible-idle-wait.c
-@@ -0,0 +1,1082 @@
+@@ -0,0 +1,1386 @@
 +/*
 + * Crucible one-shot idle wait tests
 + *
@@ -146428,14 +147674,33 @@ index 0000000000000000000000000000000000000000..6bab2a4480b8d927fc42695f5b3a773c
 +#include "qemu/crucible-idle-wait.h"
 +#include "qemu/thread.h"
 +#include "qemu/timer.h"
++#include "target/riscv/tcg/itrigger-timer.h"
++
++typedef struct Rocker Rocker;
++typedef struct World World;
++#include "hw/net/rocker/rocker_of_dpa.h"
 +
 +static int64_t test_virtual_ps;
++static __int128 test_generic_virtual_ps;
 +static unsigned int test_timer_callbacks;
 +static unsigned int test_witness_completions;
++static __int128 test_itrigger_duration_ps;
++static int64_t test_itrigger_count;
++
++__int128 icount_to_ps_wide(int64_t count)
++{
++    g_assert_cmpint(count, ==, test_itrigger_count);
++    return test_itrigger_duration_ps;
++}
 +
 +static int64_t test_virtual_clock_ps(void)
 +{
 +    return test_virtual_ps;
++}
++
++static __int128 test_generic_virtual_clock_ps(void)
++{
++    return test_generic_virtual_ps;
 +}
 +
 +static void test_timer_callback(void *opaque)
@@ -146483,7 +147748,7 @@ index 0000000000000000000000000000000000000000..6bab2a4480b8d927fc42695f5b3a773c
 +    }
 +
 +    qemu_init_clocks(NULL);
-+    qemu_timer_enable_tcg_ps_clock(NULL);
++    qemu_timer_enable_tcg_ps_clock(NULL, NULL);
 +    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
 +    g_assert_true(qemu_timer_tcg_ps_enabled());
 +    g_assert_false(qemu_timer_exact_virtual_ps_enabled());
@@ -146518,7 +147783,7 @@ index 0000000000000000000000000000000000000000..6bab2a4480b8d927fc42695f5b3a773c
 +    }
 +
 +    qemu_init_clocks(NULL);
-+    qemu_timer_enable_tcg_ps_clock(NULL);
++    qemu_timer_enable_tcg_ps_clock(NULL, NULL);
 +    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
 +    timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, test_timer_callback, NULL);
 +    now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
@@ -146542,6 +147807,63 @@ index 0000000000000000000000000000000000000000..6bab2a4480b8d927fc42695f5b3a773c
 +    timer_free(timer);
 +}
 +
++static void test_generic_tcg_fractional_clock(void)
++{
++    QEMUTimer *timer;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    test_generic_virtual_ps = 1050;
++    qemu_init_clocks(NULL);
++    qemu_timer_enable_tcg_ps_clock(NULL, test_generic_virtual_clock_ps);
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++    timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, test_timer_callback, NULL);
++
++    g_assert_false(qemu_timer_exact_virtual_ps_enabled());
++    g_assert_true(qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL) == 1050);
++    timer_mod_ps_wide(timer, 1080);
++    g_assert_cmpint(qemu_clock_deadline_ps_all(QEMU_CLOCK_VIRTUAL,
++                                               QEMU_TIMER_ATTR_ALL), ==, 30);
++    g_assert_cmpint(qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
++                                               QEMU_TIMER_ATTR_ALL), ==, 1);
++
++    test_generic_virtual_ps = 1079;
++    g_assert_false(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
++    test_generic_virtual_ps = 1080;
++    g_assert_true(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
++    g_assert_cmpuint(test_timer_callbacks, ==, 1);
++    timer_free(timer);
++}
++
++static void test_generic_tcg_relative_overflow(void)
++{
++    const __int128 max_ps = ((__int128)INT64_MAX << 64) | UINT64_MAX;
++    QEMUTimer *timer;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    test_generic_virtual_ps = max_ps - 500;
++    qemu_init_clocks(NULL);
++    qemu_timer_enable_tcg_ps_clock(NULL, test_generic_virtual_clock_ps);
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++    timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, test_timer_callback, NULL);
++
++    g_assert_true(timer_mod_after_ns(timer, 0));
++    g_assert_true(timer_expire_time_ps_wide(timer) == max_ps - 500);
++    g_assert_false(timer_mod_after_ns(timer, 1));
++    g_assert_false(timer_mod_anticipate_after_ns(timer, 1));
++    g_assert_true(timer_expire_time_ps_wide(timer) == max_ps - 500);
++    timer_free(timer);
++}
++
 +static void test_generic_tcg_negative_deadline(void)
 +{
 +    QEMUTimer *timer;
@@ -146559,7 +147881,7 @@ index 0000000000000000000000000000000000000000..6bab2a4480b8d927fc42695f5b3a773c
 +    test_virtual_ps = 0;
 +    test_timer_callbacks = 0;
 +    test_witness_completions = 0;
-+    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps);
++    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps, NULL);
 +    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
 +    qemu_timer_register_crucible_virtual_timer_witness(
 +        negative_witness_begin, negative_witness_complete);
@@ -146592,6 +147914,65 @@ index 0000000000000000000000000000000000000000..6bab2a4480b8d927fc42695f5b3a773c
 +    timer_free(timer);
 +}
 +
++static void test_tcg_timer_extreme_deadlines(void)
++{
++    const __int128 max_ps = ((__int128)INT64_MAX << 64) | UINT64_MAX;
++    const __int128 min_ps = -max_ps - 1;
++    QEMUTimer *timer;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    qemu_init_clocks(NULL);
++    test_virtual_ps = 1;
++    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps, NULL);
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++    timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, test_timer_callback, NULL);
++
++    timer_mod_ps_wide(timer, max_ps);
++    g_assert_cmpint(timerlist_deadline_ns(timer->timer_list), ==, INT64_MAX);
++    g_assert_cmpint(qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
++                                               QEMU_TIMER_ATTR_ALL), ==,
++                    INT64_MAX);
++    g_assert_cmpint(qemu_clock_deadline_ps_all(QEMU_CLOCK_VIRTUAL,
++                                               QEMU_TIMER_ATTR_ALL), ==,
++                    INT64_MAX);
++
++    timer_mod_ps_wide(timer, min_ps);
++    g_assert_cmpint(timerlist_deadline_ns(timer->timer_list), ==, 0);
++    g_assert_cmpint(qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
++                                               QEMU_TIMER_ATTR_ALL), ==, 0);
++    g_assert_cmpint(qemu_clock_deadline_ps_all(QEMU_CLOCK_VIRTUAL,
++                                               QEMU_TIMER_ATTR_ALL), ==, 0);
++    g_assert_cmpuint(timer_expire_time_ns(timer), ==, 0);
++    timer_free(timer);
++}
++
++static void test_tcg_timer_extreme_expiry_projection(void)
++{
++    const __int128 max_ps = ((__int128)INT64_MAX << 64) | UINT64_MAX;
++    QEMUTimer *timer;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_failed();
++        g_test_trap_assert_stderr(
++            "*Virtual timer nanosecond expiry exceeds API range*");
++        return;
++    }
++
++    qemu_init_clocks(NULL);
++    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps, NULL);
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++    timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, test_timer_callback, NULL);
++    timer_mod_ps_wide(timer, max_ps);
++    timer_expire_time_ns(timer);
++    g_assert_not_reached();
++}
++
 +static void test_ns_expiry_projection_never_fires_early(void)
 +{
 +    QEMUTimer *timer;
@@ -146606,7 +147987,7 @@ index 0000000000000000000000000000000000000000..6bab2a4480b8d927fc42695f5b3a773c
 +    }
 +
 +    qemu_init_clocks(NULL);
-+    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps);
++    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps, NULL);
 +    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
 +    timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, test_timer_callback, NULL);
 +
@@ -146643,7 +148024,7 @@ index 0000000000000000000000000000000000000000..6bab2a4480b8d927fc42695f5b3a773c
 +    }
 +
 +    qemu_init_clocks(NULL);
-+    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps);
++    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps, NULL);
 +    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
 +    timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, test_timer_callback, NULL);
 +
@@ -146674,7 +148055,7 @@ index 0000000000000000000000000000000000000000..6bab2a4480b8d927fc42695f5b3a773c
 +
 +    test_virtual_ps = 950;
 +    qemu_init_clocks(NULL);
-+    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps);
++    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps, NULL);
 +    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
 +    timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, test_timer_callback, NULL);
 +
@@ -146687,6 +148068,157 @@ index 0000000000000000000000000000000000000000..6bab2a4480b8d927fc42695f5b3a773c
 +    g_assert_true(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
 +    g_assert_cmpuint(test_timer_callbacks, ==, 1);
 +    timer_free(timer);
++}
++
++static void test_millisecond_timer_delay_preserves_picosecond_phase(void)
++{
++    QEMUTimer *timer;
++    const int64_t start_ps = 1234567357;
++    const int64_t delay_ns = 50 * NANOSECONDS_PER_SECOND;
++    const int64_t deadline_ps = start_ps +
++                                delay_ns * PICOSECONDS_PER_NANOSECOND;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    test_virtual_ps = start_ps;
++    qemu_init_clocks(NULL);
++    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps, NULL);
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++    timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, test_timer_callback, NULL);
++
++    g_assert_true(timer_mod_after_ns(timer, delay_ns));
++    g_assert_true(timer_expire_time_ps_wide(timer) == deadline_ps);
++    test_virtual_ps = deadline_ps - 1;
++    g_assert_false(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
++
++    test_virtual_ps = deadline_ps;
++    g_assert_true(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
++    g_assert_cmpuint(test_timer_callbacks, ==, 1);
++    timer_free(timer);
++}
++
++static void test_riscv_itrigger_phase(bool sim_mode)
++{
++    QEMUTimer *timer;
++    __int128 deadline_ps;
++    __int128 *clock_ps = sim_mode ? NULL : &test_generic_virtual_ps;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    test_virtual_ps = 1050;
++    test_generic_virtual_ps = 1050;
++    test_itrigger_count = 3;
++    test_itrigger_duration_ps = sim_mode ? 150 : 3072;
++    qemu_init_clocks(NULL);
++    qemu_timer_enable_tcg_ps_clock(
++        sim_mode ? test_virtual_clock_ps : NULL,
++        sim_mode ? NULL : test_generic_virtual_clock_ps);
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++    timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, test_timer_callback, NULL);
++
++    g_assert_true(qemu_timer_exact_virtual_ps_enabled() == sim_mode);
++    riscv_itrigger_schedule_timer(timer, 3);
++    deadline_ps = timer_expire_time_ps_wide(timer);
++    g_assert_true(deadline_ps == 1050 + test_itrigger_duration_ps);
++    if (clock_ps) {
++        *clock_ps = deadline_ps - 1;
++    } else {
++        test_virtual_ps = deadline_ps - 1;
++    }
++    g_assert_false(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
++    if (clock_ps) {
++        *clock_ps = deadline_ps;
++    } else {
++        test_virtual_ps = deadline_ps;
++    }
++    g_assert_true(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
++    g_assert_cmpuint(test_timer_callbacks, ==, 1);
++    timer_free(timer);
++}
++
++static void test_riscv_itrigger_sim_phase(void)
++{
++    test_riscv_itrigger_phase(true);
++}
++
++static void test_riscv_itrigger_generic_phase(void)
++{
++    test_riscv_itrigger_phase(false);
++}
++
++static void test_riscv_itrigger_adaptive_shift(void)
++{
++    const int64_t initial_ps_per_instruction = 8192;
++    const int64_t later_ps_per_instruction = 4096;
++    QEMUTimer *old_projected_timer;
++    int remaining = 100;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    test_generic_virtual_ps = 1050;
++    test_itrigger_count = remaining;
++    test_itrigger_duration_ps = remaining * initial_ps_per_instruction;
++    qemu_init_clocks(NULL);
++    qemu_timer_enable_tcg_ps_clock(NULL, test_generic_virtual_clock_ps);
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++    old_projected_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
++                                       test_timer_callback, NULL);
++
++    g_assert_false(riscv_itrigger_uses_tb_helper(ICOUNT_PRECISE));
++    g_assert_true(riscv_itrigger_uses_tb_helper(ICOUNT_ADAPTATIVE));
++    riscv_itrigger_schedule_timer(old_projected_timer, remaining);
++
++    for (int instruction = 0; instruction < 100; instruction++) {
++        test_generic_virtual_ps += instruction < 50 ?
++                                   initial_ps_per_instruction :
++                                   later_ps_per_instruction;
++        remaining = riscv_itrigger_step_count(remaining);
++        if (instruction < 99) {
++            g_assert_cmpint(remaining, >, 0);
++        }
++    }
++
++    g_assert_cmpint(remaining, ==, 0);
++    g_assert_false(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
++    g_assert_cmpuint(test_timer_callbacks, ==, 0);
++    timer_free(old_projected_timer);
++}
++
++static void test_rocker_refresh_preserves_picosecond_phase(void)
++{
++    __int128 last_refresh_ps = 1357;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    test_generic_virtual_ps = last_refresh_ps;
++    qemu_init_clocks(NULL);
++    qemu_timer_enable_tcg_ps_clock(NULL, test_generic_virtual_clock_ps);
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++
++    test_generic_virtual_ps += PICOSECONDS_PER_SECOND - 1;
++    g_assert_false(of_dpa_refresh_elapsed_ps(&last_refresh_ps));
++    g_assert_true(last_refresh_ps == 1357);
++
++    test_generic_virtual_ps++;
++    g_assert_true(of_dpa_refresh_elapsed_ps(&last_refresh_ps));
++    g_assert_true(last_refresh_ps == test_generic_virtual_ps);
++    g_assert_false(of_dpa_refresh_elapsed_ps(&last_refresh_ps));
 +}
 +
 +typedef enum IdleWaitMutation {
@@ -147460,12 +148992,30 @@ index 0000000000000000000000000000000000000000..6bab2a4480b8d927fc42695f5b3a773c
 +                    test_fractional_virtual_timer_fires_without_instruction);
 +    g_test_add_func("/crucible/idle-wait/timer/relative-ns-preserves-ps-phase",
 +                    test_relative_ns_delay_preserves_picosecond_phase);
++    g_test_add_func("/crucible/idle-wait/timer/ms-timer-preserves-ps-phase",
++                    test_millisecond_timer_delay_preserves_picosecond_phase);
++    g_test_add_func("/crucible/device-timer/riscv-itrigger-sim-phase",
++                    test_riscv_itrigger_sim_phase);
++    g_test_add_func("/crucible/device-timer/riscv-itrigger-generic-phase",
++                    test_riscv_itrigger_generic_phase);
++    g_test_add_func("/crucible/device-timer/riscv-itrigger-adaptive-shift",
++                    test_riscv_itrigger_adaptive_shift);
++    g_test_add_func("/crucible/device-timer/rocker-refresh-ps-phase",
++                    test_rocker_refresh_preserves_picosecond_phase);
 +    g_test_add_func("/crucible/idle-wait/timer/generic-tcg-witness-isolation",
 +                    test_generic_tcg_timer_ignores_sim_witness);
 +    g_test_add_func("/crucible/idle-wait/timer/generic-tcg-long-horizon",
 +                    test_generic_tcg_timer_preserves_long_horizon);
++    g_test_add_func("/crucible/idle-wait/timer/generic-tcg-fractional-clock",
++                    test_generic_tcg_fractional_clock);
++    g_test_add_func("/crucible/idle-wait/timer/generic-tcg-relative-overflow",
++                    test_generic_tcg_relative_overflow);
 +    g_test_add_func("/crucible/idle-wait/timer/generic-tcg-negative-deadline",
 +                    test_generic_tcg_negative_deadline);
++    g_test_add_func("/crucible/idle-wait/timer/extreme-deadlines",
++                    test_tcg_timer_extreme_deadlines);
++    g_test_add_func("/crucible/idle-wait/timer/extreme-expiry-projection",
++                    test_tcg_timer_extreme_expiry_projection);
 +    g_test_add_func("/crucible/idle-wait/timer/ns-projection-no-early-fire",
 +                    test_ns_expiry_projection_never_fires_early);
 +    g_test_add_func("/crucible/idle-wait/rr-wake/pending-epoch-aba",
@@ -147498,7 +149048,7 @@ index 0000000000000000000000000000000000000000..6bab2a4480b8d927fc42695f5b3a773c
 +}
 diff --git a/tests/unit/test-crucible-mos6522-clock.c b/tests/unit/test-crucible-mos6522-clock.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..f61831e0c6d115ed79fb169c4eb074450088504e
+index 0000000000000000000000000000000000000000..826f34e7c26bdac48f2dab1190635991a2602a7f
 --- /dev/null
 +++ b/tests/unit/test-crucible-mos6522-clock.c
 @@ -0,0 +1,331 @@
@@ -147822,7 +149372,7 @@ index 0000000000000000000000000000000000000000..f61831e0c6d115ed79fb169c4eb07445
 +    type_register_static(&test_sysbus_device_type_info);
 +    type_register_static(&test_mos6522_type_info);
 +    qemu_init_main_loop(&error_abort);
-+    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps);
++    qemu_timer_enable_tcg_ps_clock(test_virtual_clock_ps, NULL);
 +
 +    g_test_init(&argc, &argv, NULL);
 +    g_test_add_func("/crucible/mos6522/subnanosecond-phase-restore",
@@ -154298,7 +155848,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
      pthread_sigmask(SIG_SETMASK, &oldset, NULL);
  
 diff --git a/util/qemu-timer.c b/util/qemu-timer.c
-index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e67c5b4ea 100644
+index d93a020064fe2a82602c5739f4cb39a930d64a0e..363e810d61fed0f83d5417c61ff52dacd1afdd14 100644
 --- a/util/qemu-timer.c
 +++ b/util/qemu-timer.c
 @@ -23,6 +23,8 @@
@@ -154631,16 +156181,17 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
  /**
   * qemu_clock_ptr:
   * @type: type of clock
-@@ -90,8 +390,139 @@ static inline QEMUClock *qemu_clock_ptr(QEMUClockType type)
+@@ -90,8 +390,152 @@ static inline QEMUClock *qemu_clock_ptr(QEMUClockType type)
      return &qemu_clocks[type];
  }
  
 -static bool timer_expired_ns(const QEMUTimer *timer_head, int64_t current_time)
 +static bool timer_tcg_ps_enabled;
 +static int64_t (*timer_exact_virtual_ps)(void);
++static __int128 (*timer_virtual_ps)(void);
 +
 +bool qemu_timer_tcg_ps_enabled(void)
-+{
+ {
 +    return timer_tcg_ps_enabled;
 +}
 +
@@ -154677,7 +156228,8 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
 +    return true;
 +}
 +
-+void qemu_timer_enable_tcg_ps_clock(int64_t (*exact_virtual_ps)(void))
++void qemu_timer_enable_tcg_ps_clock(int64_t (*exact_virtual_ps)(void),
++                                    __int128 (*virtual_ps)(void))
 +{
 +    QEMUTimerList *timer_list;
 +
@@ -154696,6 +156248,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
 +        qemu_mutex_unlock(&timer_list->active_timers_lock);
 +    }
 +    timer_exact_virtual_ps = exact_virtual_ps;
++    timer_virtual_ps = virtual_ps;
 +    timer_tcg_ps_enabled = true;
 +}
 +
@@ -154719,7 +156272,11 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
 +            return tick;
 +        }
 +
-+        /* Ordinary TCG observes host-backed virtual time at an ns boundary. */
++        if (timer_virtual_ps) {
++            return timer_virtual_ps();
++        }
++
++        /* Unit tests without a TCG clock use the public ns observation. */
 +        now_ns = qemu_clock_get_ns(type);
 +        return (__int128)now_ns * PICOSECONDS_PER_NANOSECOND;
 +    }
@@ -154727,16 +156284,22 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
 +}
 +
 +static int64_t timer_deadline_internal_to_ns(QEMUClockType type,
-+                                              __int128 deadline)
++                                             __int128 expire_time,
++                                             __int128 now)
 +{
-+    if (deadline <= 0) {
++    unsigned __int128 delta;
++
++    if (expire_time <= now) {
 +        return 0;
 +    }
++
++    /* A signed subtraction can overflow across the full timer horizon. */
++    delta = (unsigned __int128)expire_time - (unsigned __int128)now;
 +    if (timer_clock_uses_ps(type)) {
-+        deadline = (deadline + PICOSECONDS_PER_NANOSECOND - 1) /
-+                   PICOSECONDS_PER_NANOSECOND;
++        delta = delta / PICOSECONDS_PER_NANOSECOND +
++                (delta % PICOSECONDS_PER_NANOSECOND != 0);
 +    }
-+    return deadline > INT64_MAX ? INT64_MAX : (int64_t)deadline;
++    return delta > INT64_MAX ? INT64_MAX : (int64_t)delta;
 +}
 +
 +static __int128 timer_ns_to_internal(QEMUClockType type,
@@ -154767,12 +156330,12 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
 +
 +static bool timer_expired_internal(const QEMUTimer *timer_head,
 +                                   __int128 current_time)
- {
++{
 +    timer_validate_unit(timer_head);
      return timer_head && (timer_head->expire_time <= current_time);
  }
  
-@@ -102,24 +533,32 @@ QEMUTimerList *timerlist_new(QEMUClockType type,
+@@ -102,24 +546,32 @@ QEMUTimerList *timerlist_new(QEMUClockType type,
      QEMUTimerList *timer_list;
      QEMUClock *clock = qemu_clock_ptr(type);
  
@@ -154805,7 +156368,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
  }
  
  static void qemu_clock_init(QEMUClockType type, QEMUTimerListNotifyCB *notify_cb)
-@@ -144,9 +583,12 @@ void qemu_clock_notify(QEMUClockType type)
+@@ -144,9 +596,12 @@ void qemu_clock_notify(QEMUClockType type)
  {
      QEMUTimerList *timer_list;
      QEMUClock *clock = qemu_clock_ptr(type);
@@ -154818,7 +156381,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
  }
  
  /* Disabling the clock will wait for related timerlists to stop
-@@ -160,7 +602,10 @@ void qemu_clock_enable(QEMUClockType type, bool enabled)
+@@ -160,7 +615,10 @@ void qemu_clock_enable(QEMUClockType type, bool enabled)
  {
      QEMUClock *clock = qemu_clock_ptr(type);
      QEMUTimerList *tl;
@@ -154830,7 +156393,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
      clock->enabled = enabled;
      if (enabled && !old) {
          qemu_clock_notify(type);
-@@ -169,6 +614,7 @@ void qemu_clock_enable(QEMUClockType type, bool enabled)
+@@ -169,6 +627,7 @@ void qemu_clock_enable(QEMUClockType type, bool enabled)
              qemu_event_wait(&tl->timers_done_ev);
          }
      }
@@ -154838,7 +156401,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
  }
  
  bool timerlist_has_timers(QEMUTimerList *timer_list)
-@@ -184,7 +630,7 @@ bool qemu_clock_has_timers(QEMUClockType type)
+@@ -184,7 +643,7 @@ bool qemu_clock_has_timers(QEMUClockType type)
  
  bool timerlist_expired(QEMUTimerList *timer_list)
  {
@@ -154847,7 +156410,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
  
      if (!qatomic_read(&timer_list->active_timers)) {
          return false;
-@@ -194,10 +640,11 @@ bool timerlist_expired(QEMUTimerList *timer_list)
+@@ -194,10 +653,11 @@ bool timerlist_expired(QEMUTimerList *timer_list)
          if (!timer_list->active_timers) {
              return false;
          }
@@ -154860,18 +156423,17 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
  }
  
  bool qemu_clock_expired(QEMUClockType type)
-@@ -213,8 +660,8 @@ bool qemu_clock_expired(QEMUClockType type)
+@@ -213,8 +673,7 @@ bool qemu_clock_expired(QEMUClockType type)
  
  int64_t timerlist_deadline_ns(QEMUTimerList *timer_list)
  {
 -    int64_t delta;
 -    int64_t expire_time = 0;
-+    __int128 delta;
 +    __int128 expire_time = 0;
  
      if (!qatomic_read(&timer_list->active_timers)) {
          return -1;
-@@ -232,16 +679,17 @@ int64_t timerlist_deadline_ns(QEMUTimerList *timer_list)
+@@ -232,16 +691,14 @@ int64_t timerlist_deadline_ns(QEMUTimerList *timer_list)
          if (!timer_list->active_timers) {
              return -1;
          }
@@ -154880,29 +156442,30 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
      }
  
 -    delta = expire_time - qemu_clock_get_ns(timer_list->clock->type);
-+    delta = expire_time - timer_clock_now_internal(timer_list->clock->type);
- 
-     if (delta <= 0) {
-         return 0;
-     }
- 
+-
+-    if (delta <= 0) {
+-        return 0;
+-    }
+-
 -    return delta;
-+    return timer_deadline_internal_to_ns(timer_list->clock->type, delta);
++    return timer_deadline_internal_to_ns(timer_list->clock->type,
++                                         expire_time,
++                                         timer_clock_now_internal(
++                                             timer_list->clock->type));
  }
  
  /* Calculate the soonest deadline across all timerlists attached
-@@ -252,8 +700,8 @@ int64_t timerlist_deadline_ns(QEMUTimerList *timer_list)
+@@ -252,8 +709,7 @@ int64_t timerlist_deadline_ns(QEMUTimerList *timer_list)
  int64_t qemu_clock_deadline_ns_all(QEMUClockType type, int attr_mask)
  {
      int64_t deadline = -1;
 -    int64_t delta;
 -    int64_t expire_time;
-+    __int128 delta;
 +    __int128 expire_time;
      QEMUTimer *ts;
      QEMUTimerList *timer_list;
      QEMUClock *clock = qemu_clock_ptr(type);
-@@ -276,25 +724,71 @@ int64_t qemu_clock_deadline_ns_all(QEMUClockType type, int attr_mask)
+@@ -276,25 +732,75 @@ int64_t qemu_clock_deadline_ns_all(QEMUClockType type, int attr_mask)
              qemu_mutex_unlock(&timer_list->active_timers_lock);
              continue;
          }
@@ -154911,13 +156474,11 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
          qemu_mutex_unlock(&timer_list->active_timers_lock);
  
 -        delta = expire_time - qemu_clock_get_ns(type);
-+        delta = expire_time - timer_clock_now_internal(type);
-         if (delta <= 0) {
-             delta = 0;
-         }
--        deadline = qemu_soonest_timeout(deadline, delta);
+-        if (delta <= 0) {
+-            delta = 0;
 +        deadline = qemu_soonest_timeout(
-+            deadline, timer_deadline_internal_to_ns(type, delta));
++            deadline, timer_deadline_internal_to_ns(
++                type, expire_time, timer_clock_now_internal(type)));
 +    }
 +    return deadline;
 +}
@@ -154928,7 +156489,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
 +    QEMUTimerList *timer_list;
 +    QEMUClock *clock;
 +
-+    if (!timer_exact_virtual_ps || type != QEMU_CLOCK_VIRTUAL) {
++    if (!timer_tcg_ps_enabled || type != QEMU_CLOCK_VIRTUAL) {
 +        return -1;
 +    }
 +    clock = qemu_clock_ptr(type);
@@ -154938,7 +156499,9 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
 +
 +    QLIST_FOREACH(timer_list, &clock->timerlists, list) {
 +        QEMUTimer *timer;
-+        __int128 delta;
++        __int128 expire_time;
++        __int128 now;
++        unsigned __int128 delta;
 +
 +        if (!qatomic_read(&timer_list->active_timers)) {
 +            continue;
@@ -154954,12 +156517,18 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
 +        }
 +        timer_validate_unit(timer);
 +        /* Only the returned relative delay is bounded to int64_t. */
-+        delta = timer->expire_time - qemu_clock_get_ps_wide(type);
++        expire_time = timer->expire_time;
 +        qemu_mutex_unlock(&timer_list->active_timers_lock);
 +
++        now = qemu_clock_get_ps_wide(type);
++        if (expire_time <= now) {
++            deadline = qemu_soonest_timeout(deadline, 0);
++            continue;
+         }
+-        deadline = qemu_soonest_timeout(deadline, delta);
++        delta = (unsigned __int128)expire_time - (unsigned __int128)now;
 +        deadline = qemu_soonest_timeout(
-+            deadline, delta <= 0 ? 0 :
-+                      delta > INT64_MAX ? INT64_MAX : (int64_t)delta);
++            deadline, delta > INT64_MAX ? INT64_MAX : (int64_t)delta);
      }
      return deadline;
  }
@@ -154976,7 +156545,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
  }
  
  /* Transition function to convert a nanosecond timeout to ms
-@@ -353,6 +847,7 @@ void timer_init_full(QEMUTimer *ts,
+@@ -353,6 +859,7 @@ void timer_init_full(QEMUTimer *ts,
                       int scale, int attributes,
                       QEMUTimerCB *cb, void *opaque)
  {
@@ -154984,7 +156553,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
      if (!timer_list_group) {
          timer_list_group = &main_loop_tlg;
      }
-@@ -362,12 +857,23 @@ void timer_init_full(QEMUTimer *ts,
+@@ -362,12 +869,23 @@ void timer_init_full(QEMUTimer *ts,
      ts->scale = scale;
      ts->attributes = attributes;
      ts->expire_time = -1;
@@ -155009,7 +156578,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
  }
  
  static void timer_del_locked(QEMUTimerList *timer_list, QEMUTimer *ts)
-@@ -375,6 +881,7 @@ static void timer_del_locked(QEMUTimerList *timer_list, QEMUTimer *ts)
+@@ -375,6 +893,7 @@ static void timer_del_locked(QEMUTimerList *timer_list, QEMUTimer *ts)
      QEMUTimer **pt, *t;
  
      ts->expire_time = -1;
@@ -155017,7 +156586,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
      pt = &timer_list->active_timers;
      for(;;) {
          t = *pt;
-@@ -395,8 +902,8 @@ static void timer_fire(CPUState *cpu, run_on_cpu_data data)
+@@ -395,8 +914,8 @@ static void timer_fire(CPUState *cpu, run_on_cpu_data data)
      t->cb(t->opaque);
  }
  
@@ -155028,7 +156597,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
  {
      QEMUTimer **pt, *t;
  
-@@ -416,7 +923,7 @@ static bool timer_mod_ns_locked(QEMUTimerList *timer_list,
+@@ -416,7 +935,7 @@ static bool timer_mod_ns_locked(QEMUTimerList *timer_list,
      if (replay_mode != REPLAY_MODE_NONE &&
          timer_list->clock->type == QEMU_CLOCK_VIRTUAL &&
          !(ts->attributes & QEMU_TIMER_ATTR_EXTERNAL) &&
@@ -155037,7 +156606,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
          async_run_on_cpu(first_cpu, timer_fire,
                           RUN_ON_CPU_HOST_PTR(ts));
          return false;
-@@ -426,12 +933,14 @@ static bool timer_mod_ns_locked(QEMUTimerList *timer_list,
+@@ -426,12 +945,14 @@ static bool timer_mod_ns_locked(QEMUTimerList *timer_list,
      pt = &timer_list->active_timers;
      for (;;) {
          t = *pt;
@@ -155054,7 +156623,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
      ts->next = *pt;
      qatomic_set(pt, ts);
  
-@@ -448,11 +957,16 @@ void timer_del(QEMUTimer *ts)
+@@ -448,44 +969,139 @@ void timer_del(QEMUTimer *ts)
  {
      QEMUTimerList *timer_list = ts->timer_list;
  
@@ -155071,19 +156640,18 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
  }
  
  /* modify the current timer so that it will be fired when current_time
-@@ -460,32 +974,118 @@ void timer_del(QEMUTimer *ts)
+    >= expire_time. The corresponding callback will be called. */
  void timer_mod_ns(QEMUTimer *ts, int64_t expire_time)
- {
-     QEMUTimerList *timer_list = ts->timer_list;
++{
++    QEMUTimerList *timer_list = ts->timer_list;
 +    __int128 internal_expire_time;
-     bool rearm;
- 
++    bool rearm;
++
 +    internal_expire_time = timer_ns_to_internal(
 +        timer_list->clock->type, expire_time);
 +    qemu_async_worker_hot_fork_admission_begin();
-     qemu_mutex_lock(&timer_list->active_timers_lock);
-     timer_del_locked(timer_list, ts);
--    rearm = timer_mod_ns_locked(timer_list, ts, expire_time);
++    qemu_mutex_lock(&timer_list->active_timers_lock);
++    timer_del_locked(timer_list, ts);
 +    rearm = timer_mod_internal_locked(timer_list, ts, internal_expire_time);
 +#ifdef CONFIG_POSIX
 +    crucible_hot_fork_timer_set_pending(ts, true);
@@ -155097,18 +156665,19 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
 +}
 +
 +void timer_mod_ps_wide(QEMUTimer *ts, __int128 expire_time_ps)
-+{
-+    QEMUTimerList *timer_list = ts->timer_list;
-+    bool rearm;
-+
+ {
+     QEMUTimerList *timer_list = ts->timer_list;
+     bool rearm;
+ 
 +    if (!timer_tcg_ps_enabled ||
 +        timer_list->clock->type != QEMU_CLOCK_VIRTUAL) {
 +        error_report("Picosecond timer used outside a TCG virtual clock");
 +        exit(EXIT_FAILURE);
 +    }
 +    qemu_async_worker_hot_fork_admission_begin();
-+    qemu_mutex_lock(&timer_list->active_timers_lock);
-+    timer_del_locked(timer_list, ts);
+     qemu_mutex_lock(&timer_list->active_timers_lock);
+     timer_del_locked(timer_list, ts);
+-    rearm = timer_mod_ns_locked(timer_list, ts, expire_time);
 +    rearm = timer_mod_internal_locked(timer_list, ts, expire_time_ps);
 +#ifdef CONFIG_POSIX
 +    crucible_hot_fork_timer_set_pending(ts, true);
@@ -155155,8 +156724,12 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
 +        return false;
 +    }
 +    if (timer_tcg_ps_enabled && type == QEMU_CLOCK_VIRTUAL) {
-+        deadline = qemu_clock_get_ps_wide(type) +
-+                   (__int128)delay_ns * PICOSECONDS_PER_NANOSECOND;
++        if (__builtin_add_overflow(
++                qemu_clock_get_ps_wide(type),
++                (__int128)delay_ns * PICOSECONDS_PER_NANOSECOND,
++                &deadline)) {
++            return false;
++        }
 +        timer_mod_ps_wide(ts, deadline);
 +    } else {
 +        now = qemu_clock_get_ns(type);
@@ -155195,7 +156768,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
          } else {
              rearm = false;
          }
-@@ -493,6 +1093,52 @@ void timer_mod_anticipate_ns(QEMUTimer *ts, int64_t expire_time)
+@@ -493,6 +1109,56 @@ void timer_mod_anticipate_ns(QEMUTimer *ts, int64_t expire_time)
      if (rearm) {
          timerlist_rearm(timer_list);
      }
@@ -155233,8 +156806,12 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
 +        return false;
 +    }
 +    if (timer_tcg_ps_enabled && type == QEMU_CLOCK_VIRTUAL) {
-+        deadline = qemu_clock_get_ps_wide(type) +
-+                   (__int128)delay_ns * PICOSECONDS_PER_NANOSECOND;
++        if (__builtin_add_overflow(
++                qemu_clock_get_ps_wide(type),
++                (__int128)delay_ns * PICOSECONDS_PER_NANOSECOND,
++                &deadline)) {
++            return false;
++        }
 +    } else {
 +        now = qemu_clock_get_ns(type);
 +        if (now < 0 || delay_ns > INT64_MAX - now) {
@@ -155248,7 +156825,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
  }
  
  void timer_mod(QEMUTimer *ts, int64_t expire_time)
-@@ -507,25 +1153,51 @@ void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time)
+@@ -507,25 +1173,51 @@ void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time)
  
  bool timer_pending(const QEMUTimer *ts)
  {
@@ -155304,7 +156881,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
  
      qemu_event_reset(&timer_list->timers_done_ev);
      if (!timer_list->clock->enabled) {
-@@ -560,10 +1232,10 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
+@@ -560,10 +1252,10 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
       * the checkpoint can be issued at a time until no timers are left and we are
       * done".
       */
@@ -155317,7 +156894,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
              /* No expired timers left.  The checkpoint can be skipped
               * if no timers fired or they were all external.
               */
-@@ -584,13 +1256,68 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
+@@ -584,13 +1276,68 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
          /* remove timer from the list before calling the callback */
          timer_list->active_timers = ts->next;
          ts->next = NULL;
@@ -155386,7 +156963,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
          qemu_mutex_lock(&timer_list->active_timers_lock);
  
          progress = true;
-@@ -599,6 +1326,7 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
+@@ -599,6 +1346,7 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
  
  out:
      qemu_event_set(&timer_list->timers_done_ev);
@@ -155394,7 +156971,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
      return progress;
  }
  
-@@ -639,6 +1367,15 @@ int64_t timerlistgroup_deadline_ns(QEMUTimerListGroup *tlg)
+@@ -639,6 +1387,15 @@ int64_t timerlistgroup_deadline_ns(QEMUTimerListGroup *tlg)
      int64_t deadline = -1;
      QEMUClockType type;
      for (type = 0; type < QEMU_CLOCK_MAX; type++) {
@@ -155410,7 +156987,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
          if (qemu_clock_use_for_deadline(type)) {
              deadline = qemu_soonest_timeout(deadline,
                                              timerlist_deadline_ns(tlg->tl[type]));
-@@ -662,6 +1399,18 @@ int64_t qemu_clock_get_ns(QEMUClockType type)
+@@ -662,6 +1419,18 @@ int64_t qemu_clock_get_ns(QEMUClockType type)
      }
  }
  
@@ -155429,7 +157006,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
  static void qemu_virtual_clock_set_ns(int64_t time)
  {
      return cpus_set_virtual_clock(time);
-@@ -670,6 +1419,8 @@ static void qemu_virtual_clock_set_ns(int64_t time)
+@@ -670,6 +1439,8 @@ static void qemu_virtual_clock_set_ns(int64_t time)
  void qemu_init_clocks(QEMUTimerListNotifyCB *notify_cb)
  {
      QEMUClockType type;
@@ -155438,12 +157015,13 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
      for (type = 0; type < QEMU_CLOCK_MAX; type++) {
          qemu_clock_init(type, notify_cb);
      }
-@@ -681,7 +1432,78 @@ void qemu_init_clocks(QEMUTimerListNotifyCB *notify_cb)
+@@ -681,7 +1452,80 @@ void qemu_init_clocks(QEMUTimerListNotifyCB *notify_cb)
  
  uint64_t timer_expire_time_ns(const QEMUTimer *ts)
  {
 -    return timer_pending(ts) ? ts->expire_time : -1;
 +    __int128 expiry;
++    unsigned __int128 projected_ns;
 +
 +    if (!timer_pending(ts)) {
 +        return UINT64_MAX;
@@ -155453,15 +157031,16 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
 +    if (expiry <= 0) {
 +        return 0;
 +    }
++    projected_ns = (unsigned __int128)expiry;
 +    if (timer_clock_uses_ps(ts->timer_list->clock->type)) {
-+        expiry = (expiry + PICOSECONDS_PER_NANOSECOND - 1) /
-+                 PICOSECONDS_PER_NANOSECOND;
++        projected_ns = projected_ns / PICOSECONDS_PER_NANOSECOND +
++                       (projected_ns % PICOSECONDS_PER_NANOSECOND != 0);
 +    }
-+    if (expiry > UINT64_MAX) {
++    if (projected_ns > UINT64_MAX) {
 +        error_report("Virtual timer nanosecond expiry exceeds API range");
 +        exit(EXIT_FAILURE);
 +    }
-+    return (uint64_t)expiry;
++    return (uint64_t)projected_ns;
 +}
 +
 +uint64_t timer_expire_time_ps(const QEMUTimer *ts)
@@ -155518,7 +157097,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
  }
  
  bool qemu_clock_run_all_timers(void)
-@@ -700,8 +1522,11 @@ bool qemu_clock_run_all_timers(void)
+@@ -700,8 +1544,11 @@ bool qemu_clock_run_all_timers(void)
  
  int64_t qemu_clock_advance_virtual_time(int64_t dest)
  {
@@ -155531,7 +157110,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..535e7fc59974fd355c0595458654a08e
      aio_context = qemu_get_aio_context();
      while (clock < dest) {
          int64_t deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
-@@ -716,5 +1541,6 @@ int64_t qemu_clock_advance_virtual_time(int64_t dest)
+@@ -716,5 +1563,6 @@ int64_t qemu_clock_advance_virtual_time(int64_t dest)
      }
      qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
  

@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "99bdc74cbea360a3ee994a977904d4b8437ac2bdd079a581f054c62e39137b60";
+  sha256 = "417a231652abd8fa913396742294d9addce02b8e605004d4ef741ad2721d51a7";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -17,6 +17,15 @@
     "for deterministic sim and ordinary TCG. Preserve generic TCG's long timer"
     "horizon, carry exact ns-plus-phase device state through migration, and"
     "ceil-project that state when crossing to a non-TCG accelerator."
+    ""
+    "Represent ordinary TCG shifts in picoseconds per instruction, retain the"
+    "wide virtual clock horizon, and validate fixed and adaptive clock models"
+    "before accepting migrated timer state. Preserve fractional virtual timer"
+    "phase across adaptive migration and device deadlines."
+    ""
+    "Keep RISC-V instruction triggers tied to retired instruction counts when"
+    "adaptive icount changes its picosecond shift. Exercise fixed and adaptive"
+    "timers, migration rejection, and fractional device clocks in QEMU tests."
     ""
     "Model sim at 50 ps per retired instruction and carry exact phase through"
     "CPU budgeting, idle advance, fingerprints, fault events and results."
@@ -41,8 +50,8 @@
     "picosecond bias. Keep an opt-in idle-stage and prefix trace so"
     "the exact boundary can be checked without changing replay state."
   ];
-  commit = "f73312efac78e11b87cbd7954679685a076390c0";
-  tree = "e4b37ba95f8edfa87e691c04cfdcf35716d8cc27";
+  commit = "a72372832041751bea042467283f73570f17a890";
+  tree = "20a65c3a225a6f18a34700887c01db7783c03de1";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -51,7 +60,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "f67581b595cdc32bdf922a73d606be13c36b337a062be837c74925b9f376063c";
+  bundleSha256 = "adf7be00ff6716d714fd8ee01fab90e4311b63ea9c3c320430a47d3b4e97c7e3";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
