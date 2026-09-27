@@ -1,12 +1,13 @@
 ##! perl-module-runtime — Runtime module handling for Perl
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
 }: let
   version = "0.016";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-module-runtime";
     inherit version;
     src = fetchurl {
