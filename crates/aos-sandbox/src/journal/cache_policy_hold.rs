@@ -117,6 +117,17 @@ impl CachePolicyHoldV1 {
         self.held
     }
 
+    /// Returns the digest of the exact canonical held or released record.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid Cache hold fields.
+    pub fn record_digest(self) -> Result<ObjectDigest, JournalError> {
+        Ok(ObjectDigest::from_bytes(
+            Sha256::digest(self.encode()?).into(),
+        ))
+    }
+
     fn validate(self) -> Result<(), JournalError> {
         if self.project.as_bytes() == &[0; 16]
             || self.partition.as_bytes() == &[0; 32]
@@ -248,6 +259,12 @@ impl Journal {
     pub(crate) fn held_cache_policy_hold_for_writer(
         &mut self,
     ) -> Result<CachePolicyHoldV1, JournalError> {
+        self.cache_policy_hold_for_writer()?
+            .filter(|hold| hold.is_held())
+            .ok_or(JournalError::ProtectedBoundary)
+    }
+
+    fn cache_policy_hold_for_writer(&mut self) -> Result<Option<CachePolicyHoldV1>, JournalError> {
         let location = self
             .protected
             .as_ref()
@@ -256,9 +273,7 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         self.require_protected_names_current()?;
-        current(self)?
-            .filter(|hold| hold.is_held())
-            .ok_or(JournalError::ProtectedBoundary)
+        current(self)
     }
 }
 
@@ -425,7 +440,9 @@ impl Journal {
     ///
     /// The caller must retain the other Cache writers and physical owner until
     /// its final cross-owner checks have completed. Opening this journal again
-    /// would contend with the writer held by that same callback.
+    /// would contend with the writer held by that same callback. The returned
+    /// canonical released row is read back from this writer after durable sync;
+    /// an exact cold replay returns the same row without another commit.
     ///
     /// # Errors
     ///
@@ -434,8 +451,8 @@ impl Journal {
     pub(crate) fn release_held_cache_policy_hold_for_writer(
         &mut self,
         expected: CachePolicyHoldV1,
-    ) -> Result<(), JournalError> {
-        if !expected.is_held() || self.held_cache_policy_hold_for_writer()? != expected {
+    ) -> Result<CachePolicyHoldV1, JournalError> {
+        if !expected.is_held() {
             return Err(JournalError::ProtectedBoundary);
         }
 
@@ -443,12 +460,21 @@ impl Journal {
             held: false,
             ..expected
         };
-        self.commit(&transaction(HOLD_KEY, &released.encode()?)?)?;
-        self.require_protected_names_current()?;
-        if current(self)? != Some(released) {
+        match self.cache_policy_hold_for_writer()? {
+            Some(current) if current == expected => {
+                self.commit(&transaction(HOLD_KEY, &released.encode()?)?)?;
+            }
+            Some(current) if current == released => {}
+            _ => return Err(JournalError::ProtectedBoundary),
+        }
+
+        let readback = self
+            .cache_policy_hold_for_writer()?
+            .ok_or(JournalError::ProtectedBoundary)?;
+        if readback != released {
             return Err(JournalError::ProtectedBoundary);
         }
-        Ok(())
+        Ok(readback)
     }
 
     /// Retains the exact hold writer through a non-mutating local observation.
@@ -638,21 +664,85 @@ mod tests {
         ));
         assert_eq!(writer.held_cache_policy_hold_for_writer().unwrap(), hold());
 
-        writer
+        let first = writer
             .release_held_cache_policy_hold_for_writer(hold())
             .expect("exact release through retained writer");
+        assert!(!first.is_held());
+        assert_eq!(first.project(), hold().project());
+        assert_eq!(first.partition(), hold().partition());
+        assert_eq!(first.cache_head(), hold().cache_head());
+        assert_eq!(first.binding(), hold().binding());
+        assert_eq!(first.epoch(), hold().epoch());
+        assert_ne!(
+            first.record_digest().unwrap(),
+            hold().record_digest().unwrap()
+        );
         assert!(writer.held_cache_policy_hold_for_writer().is_err());
         drop(writer);
 
-        let released = Journal::read_cache_policy_hold_at(directory.path(), uid)
+        let mut reopened = open(directory.path(), uid).expect("cold retained writer");
+        let released = reopened
+            .release_held_cache_policy_hold_for_writer(hold())
+            .expect("exact cold release replay");
+        assert_eq!(released, first);
+
+        let changed = [
+            CachePolicyHoldV1::new(
+                ProjectId::from_bytes([9; 16]),
+                hold().partition(),
+                hold().cache_head(),
+                hold().binding(),
+                hold().epoch(),
+            ),
+            CachePolicyHoldV1::new(
+                hold().project(),
+                ObjectDigest::from_bytes([9; 32]),
+                hold().cache_head(),
+                hold().binding(),
+                hold().epoch(),
+            ),
+            CachePolicyHoldV1::new(
+                hold().project(),
+                hold().partition(),
+                ObjectDigest::from_bytes([9; 32]),
+                hold().binding(),
+                hold().epoch(),
+            ),
+            CachePolicyHoldV1::new(
+                hold().project(),
+                hold().partition(),
+                hold().cache_head(),
+                ObjectDigest::from_bytes([9; 32]),
+                hold().epoch(),
+            ),
+            CachePolicyHoldV1::new(
+                hold().project(),
+                hold().partition(),
+                hold().cache_head(),
+                hold().binding(),
+                hold().epoch() + 1,
+            ),
+        ];
+        for mismatched in changed {
+            assert!(matches!(
+                reopened.release_held_cache_policy_hold_for_writer(mismatched.unwrap()),
+                Err(JournalError::ProtectedBoundary)
+            ));
+        }
+        assert!(matches!(
+            reopened.release_held_cache_policy_hold_for_writer(released),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        drop(reopened);
+
+        let replayed = Journal::read_cache_policy_hold_at(directory.path(), uid)
             .expect("cold replay")
             .expect("released record");
-        assert!(!released.is_held());
-        assert_eq!(released.project(), hold().project());
-        assert_eq!(released.partition(), hold().partition());
-        assert_eq!(released.cache_head(), hold().cache_head());
-        assert_eq!(released.binding(), hold().binding());
-        assert_eq!(released.epoch(), hold().epoch());
+        assert_eq!(replayed, released);
+        assert_eq!(
+            replayed.record_digest().unwrap(),
+            first.record_digest().unwrap()
+        );
     }
 
     #[test]

@@ -130,6 +130,7 @@ impl CacheResidencyProtectedOwnerV1 {
         Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
     {
         self.with_held_cache_owner_terminal_cut(physical, inspect, Ok, false)
+            .map(|(value, _)| value)
     }
 
     /// Runs a final continuation and retires the exact Cache hold under its writer.
@@ -137,8 +138,9 @@ impl CacheResidencyProtectedOwnerV1 {
     /// The first callback and terminal continuation have the same ordering as
     /// v3. After Cache postflight, `finalize` runs with all four journal writers
     /// and the physical owner still held. A second postflight must pass before
-    /// the already-open hold journal durably records the released phase. This
-    /// local primitive does not verify a Root receipt or open public Create.
+    /// the already-open hold journal durably records the released phase.
+    /// The returned released hold is read back from that same protected writer.
+    /// This local primitive does not verify a Root receipt or open public Create.
     ///
     /// # Errors
     ///
@@ -153,11 +155,16 @@ impl CacheResidencyProtectedOwnerV1 {
         )
             -> Result<(Prepared, Finish), CacheResidencyProtectedJournalErrorV1>,
         finalize: impl FnOnce(Output) -> Result<Final, CacheResidencyProtectedJournalErrorV1>,
-    ) -> Result<Final, CacheResidencyProtectedJournalErrorV1>
+    ) -> Result<(Final, CachePolicyHoldV1), CacheResidencyProtectedJournalErrorV1>
     where
         Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
     {
-        self.with_held_cache_owner_terminal_cut(physical, inspect, finalize, true)
+        let (value, released) =
+            self.with_held_cache_owner_terminal_cut(physical, inspect, finalize, true)?;
+        Ok((
+            value,
+            released.ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?,
+        ))
     }
 
     fn with_held_cache_owner_terminal_cut<Prepared, Output, Final, Finish>(
@@ -169,7 +176,7 @@ impl CacheResidencyProtectedOwnerV1 {
             -> Result<(Prepared, Finish), CacheResidencyProtectedJournalErrorV1>,
         finalize: impl FnOnce(Output) -> Result<Final, CacheResidencyProtectedJournalErrorV1>,
         retire_hold: bool,
-    ) -> Result<Final, CacheResidencyProtectedJournalErrorV1>
+    ) -> Result<(Final, Option<CachePolicyHoldV1>), CacheResidencyProtectedJournalErrorV1>
     where
         Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
     {
@@ -267,10 +274,10 @@ impl CacheResidencyProtectedOwnerV1 {
         if retire_hold {
             revalidate(&mut hold_journal)?;
             let value = finalized?;
-            hold_journal.release_held_cache_policy_hold_for_writer(hold)?;
-            Ok(value)
+            let released = hold_journal.release_held_cache_policy_hold_for_writer(hold)?;
+            Ok((value, Some(released)))
         } else {
-            finalized
+            finalized.map(|value| (value, None))
         }
     }
 
@@ -333,6 +340,7 @@ where
     Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
 {
     with_cache_writer_terminal_cut_at(root, owner_uid, open, check, action, Ok, false)
+        .map(|(value, _)| value)
 }
 
 #[cfg(test)]
@@ -346,7 +354,7 @@ fn with_cache_writer_terminal_cut_at<Prepared, Output, Final, Finish>(
     ) -> Result<(Prepared, Finish), CacheResidencyProtectedJournalErrorV1>,
     finalize: impl FnOnce(Output) -> Result<Final, CacheResidencyProtectedJournalErrorV1>,
     retire_hold: bool,
-) -> Result<Final, CacheResidencyProtectedJournalErrorV1>
+) -> Result<(Final, Option<CachePolicyHoldV1>), CacheResidencyProtectedJournalErrorV1>
 where
     Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
 {
@@ -466,10 +474,10 @@ where
             return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
         }
         let value = finalized?;
-        hold_journal.release_held_cache_policy_hold_for_writer(hold)?;
-        Ok(value)
+        let released = hold_journal.release_held_cache_policy_hold_for_writer(hold)?;
+        Ok((value, Some(released)))
     } else {
-        finalized
+        finalized.map(|value| (value, None))
     }
 }
 
@@ -530,11 +538,11 @@ mod tests {
         )
             -> Result<(Prepared, Finish), CacheResidencyProtectedJournalErrorV1>,
         finalize: impl FnOnce(Output) -> Result<Final, CacheResidencyProtectedJournalErrorV1>,
-    ) -> Result<Final, CacheResidencyProtectedJournalErrorV1>
+    ) -> Result<(Final, CachePolicyHoldV1), CacheResidencyProtectedJournalErrorV1>
     where
         Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
     {
-        with_cache_writer_terminal_cut_at(
+        let (value, released) = with_cache_writer_terminal_cut_at(
             root,
             uid,
             |root, name, limits| Journal::open_protected_at_uid(root, name, limits, uid),
@@ -544,7 +552,11 @@ mod tests {
             action,
             finalize,
             true,
-        )
+        )?;
+        Ok((
+            value,
+            released.ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?,
+        ))
     }
 
     #[test]
@@ -651,7 +663,7 @@ mod tests {
         let (directory, uid, expected) = super::super::tests::live_cache_hold_fixture();
         let stage = Cell::new(0);
 
-        let observed = with_fixture_after_final(
+        let (observed, released) = with_fixture_after_final(
             directory.path(),
             uid,
             |readback| {
@@ -691,15 +703,21 @@ mod tests {
 
         assert_eq!(stage.get(), 3);
         assert_eq!(observed.hold(), expected);
-        let released = Journal::read_cache_policy_hold_at(directory.path(), uid)
-            .expect("cold replay of released hold")
-            .expect("released phase retained");
         assert!(!released.is_held());
         assert_eq!(released.project(), expected.project());
         assert_eq!(released.partition(), expected.partition());
         assert_eq!(released.cache_head(), expected.cache_head());
         assert_eq!(released.binding(), expected.binding());
         assert_eq!(released.epoch(), expected.epoch());
+
+        let replayed = Journal::read_cache_policy_hold_at(directory.path(), uid)
+            .expect("cold replay of released hold")
+            .expect("released phase retained");
+        assert_eq!(released, replayed);
+        assert_eq!(
+            released.record_digest().unwrap(),
+            replayed.record_digest().unwrap()
+        );
     }
 
     #[test]
