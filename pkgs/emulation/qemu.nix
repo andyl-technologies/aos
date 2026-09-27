@@ -1406,6 +1406,13 @@ in
           script =
             if applyCruciblePatch && !fullUpstreamTestSuiteOnly
             then ''
+              ${python3}/bin/python3 tests/unit/test-crucible-rr-halted-neighbor.py \
+                > rr-halted-neighbor.result
+              cat rr-halted-neighbor.result
+              grep -Fxq 'RR_HALTED_NEIGHBOR_PASS' rr-halted-neighbor.result
+              mkdir -p "$out/share/aos/crucible"
+              cp rr-halted-neighbor.result \
+                "$out/share/aos/crucible/rr-halted-neighbor.result"
               build/tests/unit/test-rcu-list --tap -p /rcu/hot-fork/barrier
               # A nested poll must retain the active BH until callback accounting ends.
               build/tests/unit/test-aio --tap -p /aio/bh/callback-delete/nested
@@ -2487,6 +2494,9 @@ in
                   ("time advance services global timers before its barrier",
                    time_advance_timer_pipeline,
                    r"qemu_clock_run_timers\(QEMU_CLOCK_VIRTUAL\);\s*"
+                   r"rr_crucible_sim_trace_idle_stage\(\s*"
+                   r'"rr-after-timers",\s*qatomic_read\('
+                   r"&qemu_plugin_time_advance_target\)\);\s*"
                    r"qatomic_store_release\("
                    r"&qemu_plugin_time_advance_timer_state,\s*"
                    r"QEMU_PLUGIN_TIME_ADVANCE_TIMERS_WAITING\);\s*"
@@ -2809,7 +2819,13 @@ in
                    r"g_assert\(strcmp\(current_accel_name\(\), \"sim\"\) == 0\);"
                    r"\s*g_assert\(first_cpu && cpu == first_cpu &&\s*"
                    r"qemu_cpu_is_self\(first_cpu\)\);\s*"
+                   r"rr_crucible_sim_trace_idle_stage\(\s*"
+                   r'"rr-before-timers",\s*qatomic_read\('
+                   r"&qemu_plugin_time_advance_target\)\);\s*"
                    r"qemu_clock_run_timers\(QEMU_CLOCK_VIRTUAL\);\s*"
+                   r"rr_crucible_sim_trace_idle_stage\(\s*"
+                   r'"rr-after-timers",\s*qatomic_read\('
+                   r"&qemu_plugin_time_advance_target\)\);\s*"
                    r"qatomic_store_release\("
                    r"&qemu_plugin_time_advance_timer_state,\s*"
                    r"QEMU_PLUGIN_TIME_ADVANCE_TIMERS_WAITING\);\s*"

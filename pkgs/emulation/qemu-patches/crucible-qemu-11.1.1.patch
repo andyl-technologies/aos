@@ -1,4 +1,4 @@
-From 87c47bfbb53934f8fcd691194276780856331c8a Mon Sep 17 00:00:00 2001
+From f73312efac78e11b87cbd7954679685a076390c0 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -24,6 +24,16 @@ Keep a bottom half alive while a nested poll drains its owner, retain the
 hot-fork inventory row through callback accounting, preserve the ARM timer
 horizon in picosecond mode, and avoid fw_cfg device lookup when no deferred
 service is pending. Wait for NBD export deletion in the upstream iotest.
+
+Yield a repeated x86 PAUSE at a partial RR turn while preserving the first
+post-handoff lock attempt and the serialized cursor. This gives contended
+firmware spin locks a deterministic handoff without lowering the normal
+4096-instruction quantum. Keep PAUSE in its translated block once no
+runnable peer remains, so the single-CPU and post-startup paths stay fast.
+
+Commit the in-flight CPU retirement prefix before anchoring an idle
+picosecond bias. Keep an opt-in idle-stage and prefix trace so
+the exact boundary can be checked without changing replay state.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -1882,10 +1892,10 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
  
  uint8_t cpu_ldb_code_mmu(CPUArchState *env, vaddr addr,
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..aa3aa6b2b706774b80c7cc11c9b8142934697512 100644
+index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2c04d8d0c5447a36a691f8d508d8ab800419f3d 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
-@@ -24,11 +24,15 @@
+@@ -24,11 +24,16 @@
  
  #include "qemu/osdep.h"
  #include "qemu/cutils.h"
@@ -1897,15 +1907,17 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..aa3aa6b2b706774b80c7cc11c9b81429
  #include "system/qtest.h"
 +#include "qemu/accel.h"
 +#include "qemu/plugin.h"
++#include "tcg-accel-ops-rr.h"
 +#include "tcg-accel-ops-sim-shmem.h"
  #include "qemu/main-loop.h"
  #include "qemu/option.h"
  #include "qemu/seqlock.h"
-@@ -37,6 +41,13 @@
+@@ -37,6 +42,14 @@
  #include "hw/core/cpu.h"
  #include "exec/icount.h"
  #include "system/cpu-timers-internal.h"
 +#include "aos/crucible/crucible_shmem_abi.h"
++#include "trace.h"
 +
 +G_STATIC_ASSERT(CRUCIBLE_SIM_TICKS_PER_NS == CRUCIBLE_SHMEM_TICKS_PER_NS);
 +G_STATIC_ASSERT(CRUCIBLE_SIM_TICKS_PER_INSTRUCTION ==
@@ -1915,7 +1927,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..aa3aa6b2b706774b80c7cc11c9b81429
  
  /*
   * ICOUNT: Instruction Counter
-@@ -47,12 +58,41 @@
+@@ -47,12 +60,41 @@
  static bool icount_sleep = true;
  /* Arbitrarily pick 1MIPS as the minimum allowable speed.  */
  #define MAX_ICOUNT_SHIFT 10
@@ -1957,7 +1969,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..aa3aa6b2b706774b80c7cc11c9b81429
  static void icount_enable_precise(void)
  {
      /* Fixed conversion of insn to ns via "shift" option */
-@@ -76,6 +116,244 @@ static int64_t icount_get_executed(CPUState *cpu)
+@@ -76,6 +118,284 @@ static int64_t icount_get_executed(CPUState *cpu)
              (cpu->neg.icount_decr.u16.low + cpu->icount_extra));
  }
  
@@ -2081,6 +2093,11 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..aa3aa6b2b706774b80c7cc11c9b81429
 +    return NULL;
 +}
 +
++bool icount_crucible_rr_has_runnable_peer(CPUState *cpu)
++{
++    return cpu && icount_crucible_rr_next_runnable(cpu);
++}
++
 +CPUState *icount_crucible_rr_select_cpu(CPUState *suggested)
 +{
 +    CPUState *selected;
@@ -2187,11 +2204,10 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..aa3aa6b2b706774b80c7cc11c9b81429
 +        return;
 +    }
 +
-+    next = CPU_NEXT(cpu);
++    next = icount_crucible_rr_next_runnable(cpu);
 +    if (!next) {
-+        next = first_cpu;
++        next = cpu;
 +    }
-+    g_assert(next);
 +    timers_state.crucible_rr_current_vcpu = next->cpu_index;
 +    timers_state.crucible_rr_cursor_position = 0;
 +    timers_state.crucible_rr_selection_pending = true;
@@ -2199,10 +2215,46 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..aa3aa6b2b706774b80c7cc11c9b81429
 +                                   quantum);
 +}
 +
++static void icount_crucible_rr_pause_handoff(CPUState *cpu)
++{
++    CPUState *next;
++    uint64_t source_retired_delta;
++
++    if (!cpu->crucible_rr_pause_exit) {
++        return;
++    }
++    cpu->crucible_rr_pause_exit = false;
++
++    if (!timers_state.crucible_rr_cursor_valid ||
++        timers_state.crucible_rr_current_vcpu != cpu->cpu_index ||
++        timers_state.crucible_rr_cursor_position < 2) {
++        return;
++    }
++
++    next = icount_crucible_rr_next_runnable(cpu);
++    if (!next) {
++        return;
++    }
++
++    /*
++     * A recipient's first PAUSE remains in its turn, so it can attempt the
++     * following lock operation before the spinner that yielded can reacquire.
++     * A repeated PAUSE gives another runnable vCPU a deterministic chance.
++     * The existing serialized cursor describes the partial-turn handoff.
++     */
++    source_retired_delta = timers_state.crucible_rr_cursor_position;
++    timers_state.crucible_rr_current_vcpu = next->cpu_index;
++    timers_state.crucible_rr_cursor_position = 0;
++    timers_state.crucible_rr_selection_pending = true;
++    qemu_plugin_fire_rr_handoff_cb(cpu->cpu_index, next->cpu_index,
++                                   icount_crucible_rr_switch_quantum(),
++                                   source_retired_delta);
++}
++
  /*
   * Update the global shared timer_state.qemu_icount to take into
   * account executed instructions. This is done by the TCG vCPU
-@@ -86,6 +364,9 @@ static void icount_update_locked(CPUState *cpu)
+@@ -86,8 +406,12 @@ static void icount_update_locked(CPUState *cpu)
      int64_t executed = icount_get_executed(cpu);
      cpu->icount_budget -= executed;
  
@@ -2211,8 +2263,11 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..aa3aa6b2b706774b80c7cc11c9b81429
 +
      qatomic_set(&timers_state.qemu_icount,
                  timers_state.qemu_icount + executed);
++    icount_crucible_rr_pause_handoff(cpu);
  }
-@@ -123,6 +404,17 @@ static int64_t icount_get_raw_locked(void)
+ 
+ /*
+@@ -123,6 +447,17 @@ static int64_t icount_get_raw_locked(void)
  static int64_t icount_get_locked(void)
  {
      int64_t icount = icount_get_raw_locked();
@@ -2230,7 +2285,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..aa3aa6b2b706774b80c7cc11c9b81429
      return qatomic_read(&timers_state.qemu_icount_bias) + icount_to_ns(icount);
  }
  
-@@ -139,6 +431,105 @@ int64_t icount_get_raw(void)
+@@ -139,6 +474,105 @@ int64_t icount_get_raw(void)
      return icount;
  }
  
@@ -2336,7 +2391,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..aa3aa6b2b706774b80c7cc11c9b81429
  /* Return the virtual CPU time, based on the instruction counter.  */
  int64_t icount_get(void)
  {
-@@ -153,8 +544,100 @@ int64_t icount_get(void)
+@@ -153,8 +587,110 @@ int64_t icount_get(void)
      return icount;
  }
  
@@ -2357,6 +2412,9 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..aa3aa6b2b706774b80c7cc11c9b81429
 +
 +int icount_advance_virtual_time_to_tick(uint64_t target_tick)
 +{
++    CPUState *cpu = current_cpu;
++    int64_t cached_raw_icount;
++    int64_t pending_prefix;
 +    int64_t raw_icount;
 +    int64_t current_tick;
 +    int result = 0;
@@ -2369,7 +2427,10 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..aa3aa6b2b706774b80c7cc11c9b81429
 +
 +    seqlock_write_lock(&timers_state.vm_clock_seqlock,
 +                       &timers_state.vm_clock_lock);
-+    raw_icount = qatomic_read(&timers_state.qemu_icount);
++    cached_raw_icount = qatomic_read(&timers_state.qemu_icount);
++    pending_prefix = cpu && cpu->running ? icount_get_executed(cpu) : 0;
++    /* Commit the current CPU's executed prefix before anchoring the ps bias. */
++    raw_icount = icount_get_raw_locked();
 +    current_tick = icount_crucible_sim_tick_locked(raw_icount);
 +    if (qatomic_read(&timers_state.qemu_icount_bias) != 0 ||
 +        target_tick < (uint64_t)current_tick ||
@@ -2384,8 +2445,12 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..aa3aa6b2b706774b80c7cc11c9b81429
 +    seqlock_write_unlock(&timers_state.vm_clock_seqlock,
 +                         &timers_state.vm_clock_lock);
 +
++    trace_crucible_sim_idle_prefix(cached_raw_icount, pending_prefix,
++                                   raw_icount, target_tick, result);
 +    if (result == 0) {
++        rr_crucible_sim_trace_idle_stage("icount-after-bias", target_tick);
 +        qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++        rr_crucible_sim_trace_idle_stage("icount-after-timers", target_tick);
 +        qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
 +    }
 +    return result;
@@ -2437,33 +2502,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..aa3aa6b2b706774b80c7cc11c9b81429
      return icount << qatomic_read(&timers_state.icount_time_shift);
  }
  
-@@ -224,6 +707,25 @@ static void icount_adjust_vm(void *opaque)
- 
- int64_t icount_round(int64_t count)
- {
-+    if (icount_crucible_sim_mode()) {
-+        int64_t logical_tick;
-+        int64_t phase;
-+
-+        if (count <= 0) {
-+            return count;
-+        }
-+        logical_tick = icount_crucible_sim_tick_observed();
-+        if (logical_tick < 0) {
-+            error_report("Crucible sim cannot observe the timer budget tick");
-+            abort();
-+        }
-+        phase = logical_tick % CRUCIBLE_SIM_TICKS_PER_NS;
-+        if (count > INT64_MAX / CRUCIBLE_SIM_TICKS_PER_NS) {
-+            return INT64_MAX;
-+        }
-+        return DIV_ROUND_UP(count * CRUCIBLE_SIM_TICKS_PER_NS - phase,
-+                            CRUCIBLE_SIM_TICKS_PER_INSTRUCTION);
-+    }
-     int shift = qatomic_read(&timers_state.icount_time_shift);
-     return (count + (1 << shift) - 1) >> shift;
- }
-@@ -331,6 +833,16 @@ void icount_start_warp_timer(void)
+@@ -331,6 +867,16 @@ void icount_start_warp_timer(void)
          }
      }
  
@@ -2480,7 +2519,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..aa3aa6b2b706774b80c7cc11c9b81429
      /* We want to use the earliest deadline from ALL vm_clocks */
      clock = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT);
      deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
-@@ -421,15 +933,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -421,15 +967,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      bool sleep = qemu_opt_get_bool(opts, "sleep", true);
      bool align = qemu_opt_get_bool(opts, "align", false);
      long time_shift = -1;
@@ -2508,7 +2547,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..aa3aa6b2b706774b80c7cc11c9b81429
      if (align && !sleep) {
          error_setg(errp, "align=on and sleep=off are incompatible");
          return false;
-@@ -450,6 +974,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -450,6 +1008,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      }
  
      icount_sleep = sleep;
@@ -3076,10 +3115,10 @@ index 0000000000000000000000000000000000000000..64a0a5db661128340846bd948505d7aa
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..ae2862387d6b711557d7d1f1d55c9db7f48e6fdd 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..b96fb06931f9c4db677cb2399c685e87db70095f 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,1636 @@
+@@ -27,45 +27,1659 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -3700,6 +3739,29 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ae2862387d6b711557d7d1f1d55c9db7
 +        target_tick, deadline_ps, icount_crucible_rr_current_vcpu(),
 +        icount_crucible_rr_cursor_position(), cpu_facts);
 +    qemu_crucible_determinism_trace_end();
++}
++
++void rr_crucible_sim_trace_idle_stage(const char *phase,
++                                      int64_t target_tick)
++{
++    int64_t virtual_ps;
++    int64_t deadline_delta;
++    int64_t deadline_ps;
++
++    if (!rr_crucible_sim_mode() ||
++        !trace_event_get_state_backends(TRACE_CRUCIBLE_SIM_IDLE_STAGE)) {
++        return;
++    }
++
++    virtual_ps = qemu_clock_get_ps(QEMU_CLOCK_VIRTUAL);
++    deadline_delta = qemu_clock_deadline_ps_all(QEMU_CLOCK_VIRTUAL,
++                                                QEMU_TIMER_ATTR_ALL);
++    deadline_ps = deadline_delta < 0 || virtual_ps < 0 ? -1 :
++        deadline_delta > INT64_MAX - virtual_ps ? INT64_MAX :
++        virtual_ps + deadline_delta;
++    trace_crucible_sim_idle_stage(
++        phase, (uint64_t)MAX(icount_get_raw_observed(), 0), virtual_ps,
++        target_tick, deadline_ps);
 +}
 +
 +static void rr_crucible_sim_sample_determinism_timer(uint64_t *raw,
@@ -4735,7 +4797,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ae2862387d6b711557d7d1f1d55c9db7
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +1675,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +1698,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -4768,7 +4830,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ae2862387d6b711557d7d1f1d55c9db7
      }
  }
  
-@@ -110,15 +1713,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +1736,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -4902,7 +4964,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ae2862387d6b711557d7d1f1d55c9db7
      }
  }
  
-@@ -140,6 +1859,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +1882,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -4921,7 +4983,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ae2862387d6b711557d7d1f1d55c9db7
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +1915,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +1938,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -4930,7 +4992,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ae2862387d6b711557d7d1f1d55c9db7
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -207,38 +1940,193 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -207,38 +1963,193 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_process_cpu_events_common(cpu);
          }
      }
@@ -5141,7 +5203,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ae2862387d6b711557d7d1f1d55c9db7
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2142,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2165,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -5174,7 +5236,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ae2862387d6b711557d7d1f1d55c9db7
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2184,123 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2207,123 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -5313,7 +5375,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ae2862387d6b711557d7d1f1d55c9db7
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2308,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2331,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -5453,7 +5515,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ae2862387d6b711557d7d1f1d55c9db7
      }
  
      g_assert_not_reached();
-@@ -318,13 +2447,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2470,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -5491,10 +5553,10 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..ae2862387d6b711557d7d1f1d55c9db7
          single_tcg_cpu_thread = cpu->thread;
  
 diff --git a/accel/tcg/tcg-accel-ops-rr.h b/accel/tcg/tcg-accel-ops-rr.h
-index 2a76a296127e81edc61f45a59785a89705daae90..143ba00e2e1f3d8a18ffb72ead79c36d126745f5 100644
+index 2a76a296127e81edc61f45a59785a89705daae90..d3d18000815cfa8a79f8a2437c6876c65fa165ac 100644
 --- a/accel/tcg/tcg-accel-ops-rr.h
 +++ b/accel/tcg/tcg-accel-ops-rr.h
-@@ -10,12 +10,229 @@
+@@ -10,12 +10,231 @@
  #ifndef TCG_ACCEL_OPS_RR_H
  #define TCG_ACCEL_OPS_RR_H
  
@@ -5717,6 +5779,8 @@ index 2a76a296127e81edc61f45a59785a89705daae90..143ba00e2e1f3d8a18ffb72ead79c36d
 +/* Trace one explicitly enabled idle-advance lifecycle transition. */
 +void rr_crucible_sim_trace_idle_advance(const char *phase,
 +                                        int64_t target_tick);
++void rr_crucible_sim_trace_idle_stage(const char *phase,
++                                      int64_t target_tick);
  
  /* start the round robin vcpu thread */
  void rr_start_vcpu_thread(CPUState *cpu);
@@ -6126,10 +6190,10 @@ index 7186c10cf02248dc5d20a23fddeb66906ce1ba59..ec7788efd3bebc4858975a507b172f7e
  
  type_init(register_accel_types);
 diff --git a/accel/tcg/trace-events b/accel/tcg/trace-events
-index 0816cafd3361f1979e72ad72c42cc8cb4ecce586..96e0be0e51bf7550770f6974898ec039b4660ad1 100644
+index 0816cafd3361f1979e72ad72c42cc8cb4ecce586..8f44624ab84b9c6aeebbefb3de15c3475a6a4cf3 100644
 --- a/accel/tcg/trace-events
 +++ b/accel/tcg/trace-events
-@@ -1,6 +1,12 @@
+@@ -1,6 +1,14 @@
  # See docs/devel/tracing.rst for syntax documentation.
  
  # TCG related tracing
@@ -6138,6 +6202,8 @@ index 0816cafd3361f1979e72ad72c42cc8cb4ecce586..96e0be0e51bf7550770f6974898ec039
 +crucible_sim_rr_control_boundary(const char *phase, uint64_t request, uint64_t ack, uint64_t complete, uintptr_t token, unsigned int state) "phase=%s request=%" PRIu64 " ack=%" PRIu64 " complete=%" PRIu64 " token=0x%" PRIxPTR " state=%u"
 +crucible_sim_main_loop_poll_ready(uint64_t generation, int result, int64_t timeout_ns) "generation=%" PRIu64 " result=%d timeout_ns=%" PRId64
 +crucible_sim_determinism_idle(const char *phase, uint64_t sequence, uint64_t raw, int64_t virtual_ps, int64_t target_tick, int64_t deadline_ps, uint64_t rr_owner, uint64_t rr_cursor, const char *cpu_facts) "phase=%s seq=%" PRIu64 " raw=%" PRIu64 " virtual_ps=%" PRId64 " target_tick=%" PRId64 " deadline_ps=%" PRId64 " rr_owner=%" PRIu64 " rr_cursor=%" PRIu64 " %s"
++crucible_sim_idle_stage(const char *phase, uint64_t raw, int64_t virtual_ps, int64_t target_tick, int64_t deadline_ps) "phase=%s raw=%" PRIu64 " virtual_ps=%" PRId64 " target_tick=%" PRId64 " deadline_ps=%" PRId64
++crucible_sim_idle_prefix(int64_t cached_raw, int64_t pending_prefix, int64_t committed_raw, uint64_t target_tick, int result) "cached_raw=%" PRId64 " pending_prefix=%" PRId64 " committed_raw=%" PRId64 " target_tick=%" PRIu64 " result=%d"
 +
  # cpu-exec.c
  exec_tb(void *tb, uintptr_t pc) "tb:%p pc=0x%"PRIxPTR
@@ -50934,7 +51000,7 @@ index d6d13ad37f978ea8dcf816b66d06f3bf9645ffd7..8bc71b897f77ecbe385f3ea65e12fd83
                           TYPE_CHARDEV_SOCKET)
  
 diff --git a/include/exec/icount.h b/include/exec/icount.h
-index 7a26b40084dbf8c14560607f3350b89b49fa41bd..c016940034cb255e730c377b0c0753bfbe8b1c79 100644
+index 7a26b40084dbf8c14560607f3350b89b49fa41bd..e6e13ef999f698b608ce77096c350fcfbed92e78 100644
 --- a/include/exec/icount.h
 +++ b/include/exec/icount.h
 @@ -46,8 +46,36 @@ void icount_update(CPUState *cpu);
@@ -50974,7 +51040,7 @@ index 7a26b40084dbf8c14560607f3350b89b49fa41bd..c016940034cb255e730c377b0c0753bf
  /*
   * convert an instruction counter value to ns, based on the icount shift.
   * This shift is set as a fixed value with the icount "shift" option
-@@ -68,6 +96,17 @@ bool icount_configure(QemuOpts *opts, Error **errp);
+@@ -68,6 +96,18 @@ bool icount_configure(QemuOpts *opts, Error **errp);
  /* used by tcg vcpu thread to calc icount budget */
  int64_t icount_round(int64_t count);
  
@@ -50985,6 +51051,7 @@ index 7a26b40084dbf8c14560607f3350b89b49fa41bd..c016940034cb255e730c377b0c0753bf
 +void icount_crucible_rr_snapshot_resume_prepare(void);
 +void icount_crucible_rr_initialize_genesis(CPUState *cpu);
 +uint64_t icount_crucible_rr_cursor_position_observed(CPUState *cpu);
++bool icount_crucible_rr_has_runnable_peer(CPUState *cpu);
 +CPUState *icount_crucible_rr_select_cpu(CPUState *suggested);
 +bool icount_crucible_rr_commanded_switch(uint32_t from_vcpu,
 +                                         uint32_t to_vcpu);
@@ -51517,7 +51584,7 @@ index 5f3b1327de0aa287c1859bf155a47c8815ebb08d..b726a4cbd5f2dae44f78ecbaefc4a92a
  
  SiFiveUARTState *sifive_uart_create(MemoryRegion *address_space, hwaddr base,
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index b54035fb13b22a530692186b0afbe2718f1fb8b8..f4301baa533cdf54c8d33a00028bca055d6c416a 100644
+index b54035fb13b22a530692186b0afbe2718f1fb8b8..54be5539cf7777b6eb42bdf216956715dce93824 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -63,6 +63,7 @@ typedef int (*WriteCoreDumpFunction)(const void *buf, size_t size,
@@ -51610,10 +51677,12 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..f4301baa533cdf54c8d33a00028bca05
   * @cpu_ases: Pointer to array of CPUAddressSpaces (which define the
   *            AddressSpaces this CPU has)
   * @as: Pointer to the first AddressSpace, for the convenience of targets which
-@@ -508,6 +563,17 @@ struct CPUState {
+@@ -508,6 +563,19 @@ struct CPUState {
      unsigned singlestep_flags;
      int64_t icount_budget;
      int64_t icount_extra;
++    /* Consumed with the same TCG exit; the serialized RR cursor is durable. */
++    bool crucible_rr_pause_exit;
 +    uint64_t crucible_fetch_service_ticks;
 +    uint64_t crucible_memory_service_ticks;
 +    void *crucible_fetch_transaction;
@@ -51628,7 +51697,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..f4301baa533cdf54c8d33a00028bca05
      uint64_t random_seed;
      sigjmp_buf jmp_env;
  
-@@ -738,6 +804,138 @@ enum CPUDumpFlags {
+@@ -738,6 +806,138 @@ enum CPUDumpFlags {
   */
  void cpu_dump_state(CPUState *cpu, FILE *f, int flags);
  
@@ -69352,7 +69421,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..21564ecbc6e746c9454c89348b26a7cfd8c28914 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..724787a6f578119c2871a83d0e305c2e59abbab6 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,39 @@
@@ -69395,7 +69464,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..21564ecbc6e746c9454c89348b26a7cf
  
  /*
   * In system mode we cannot trace the binary being executed so the
-@@ -101,14 +128,886 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
+@@ -101,14 +128,890 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
   */
  static bool has_control;
  static Error *migration_blocker;
@@ -70243,7 +70312,11 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..21564ecbc6e746c9454c89348b26a7cf
 +    (void)data;
 +    g_assert(strcmp(current_accel_name(), "sim") == 0);
 +    g_assert(first_cpu && cpu == first_cpu && qemu_cpu_is_self(first_cpu));
++    rr_crucible_sim_trace_idle_stage(
++        "rr-before-timers", qatomic_read(&qemu_plugin_time_advance_target));
 +    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    rr_crucible_sim_trace_idle_stage(
++        "rr-after-timers", qatomic_read(&qemu_plugin_time_advance_target));
 +    qatomic_store_release(&qemu_plugin_time_advance_timer_state,
 +                          QEMU_PLUGIN_TIME_ADVANCE_TIMERS_WAITING);
 +    barrier = (QEMUBH *)qatomic_load_acquire(
@@ -70285,7 +70358,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..21564ecbc6e746c9454c89348b26a7cf
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1022,1503 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1026,1507 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -70361,7 +70434,9 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..21564ecbc6e746c9454c89348b26a7cf
 +    if (!has_control) {
 +        status = -ENODEV;
 +    } else {
++        rr_crucible_sim_trace_idle_stage("bh-before-advance", target_tick);
 +        status = icount_advance_virtual_time_to_tick(target_tick);
++        rr_crucible_sim_trace_idle_stage("bh-after-advance", target_tick);
 +    }
 +
 +    qatomic_set(&qemu_plugin_time_advance_status, status);
@@ -70468,7 +70543,9 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..21564ecbc6e746c9454c89348b26a7cf
 +        g_assert(!qemu_plugin_time_advance_callback_active);
 +        qemu_plugin_time_advance_callback_active = true;
 +        qemu_plugin_crucible_exact_boundary_enter();
++        rr_crucible_sim_trace_idle_stage("bh-before-completion", target);
 +        cb(status, target, userdata);
++        rr_crucible_sim_trace_idle_stage("bh-after-completion", target);
 +        qemu_plugin_crucible_exact_boundary_leave();
 +        qemu_plugin_time_advance_callback_active = false;
 +    }
@@ -124822,6 +124899,20 @@ index 5c5fa72721637cdf2258291c8d3eeaf2b3b5bc9e..57da2d164d39e02dac8b2fca4f629ccb
  
          case IDX_CTL_CR0_REG:
              return gdb_read_reg_cs64(env->hflags, mem_buf, env->cr[0]);
+diff --git a/target/i386/helper.h b/target/i386/helper.h
+index 3f67098f11f4328ee2f43a56fc054767aa62ecb1..d3a07a53b2f0392c8d8037865039ad42eff7ef92 100644
+--- a/target/i386/helper.h
++++ b/target/i386/helper.h
+@@ -55,6 +55,9 @@ DEF_HELPER_2(sysexit, void, env, int)
+ DEF_HELPER_2(syscall, void, env, int)
+ DEF_HELPER_2(sysret, void, env, int)
+ DEF_HELPER_FLAGS_1(pause, TCG_CALL_NO_WG, noreturn, env)
++#ifndef CONFIG_USER_ONLY
++DEF_HELPER_FLAGS_1(crucible_sim_pause, TCG_CALL_NO_WG, void, env)
++#endif
+ DEF_HELPER_FLAGS_3(raise_interrupt, TCG_CALL_NO_WG, noreturn, env, int, int)
+ DEF_HELPER_FLAGS_2(raise_exception, TCG_CALL_NO_WG, noreturn, env, int)
+ DEF_HELPER_FLAGS_1(icebp, TCG_CALL_NO_WG, noreturn, env)
 diff --git a/target/i386/machine.c b/target/i386/machine.c
 index df0e0c178e436050ecede6d576fc25bc5846692c..3ed0657ac549bec00a5482810ba3547cbc0056aa 100644
 --- a/target/i386/machine.c
@@ -124996,16 +125087,18 @@ index b4fbf8a53746e13c1c5490bdd0205cbb4c524f2d..795d516ae1a36ae88dbd2c2663dd9281
    'monitor.c',
    'cpu-apic.c',
 diff --git a/target/i386/tcg/emit.c.inc b/target/i386/tcg/emit.c.inc
-index 473f415766f93cefbed48d0f556526efb5714370..45a796f9953eb2bea3afcbb9da16fab6bd36e060 100644
+index 473f415766f93cefbed48d0f556526efb5714370..f838806aa2cc25a3f5789ae51e292fbcbc41ae96 100644
 --- a/target/i386/tcg/emit.c.inc
 +++ b/target/i386/tcg/emit.c.inc
-@@ -2808,6 +2808,13 @@ static void gen_PANDN(DisasContext *s, X86DecodedInsn *decode)
+@@ -2808,6 +2808,15 @@ static void gen_PANDN(DisasContext *s, X86DecodedInsn *decode)
  
  static void gen_PAUSE(DisasContext *s, X86DecodedInsn *decode)
  {
 +#ifndef CONFIG_USER_ONLY
 +    if (icount_crucible_sim_mode()) {
-+        /* Sim's exact icount budget and RR quantum bound this hint. */
++        gen_update_cc_op(s);
++        gen_update_eip_next(s);
++        gen_helper_crucible_sim_pause(tcg_env);
 +        return;
 +    }
 +#endif
@@ -125051,10 +125144,10 @@ index b812125efa17c18ef31b3e4fe81cd34d27a37444..08bd8930aa6f6e2fcf09da5f6d24224a
  
  void helper_update_mxcsr(CPUX86State *env)
 diff --git a/target/i386/tcg/misc_helper.c b/target/i386/tcg/misc_helper.c
-index f7342871ded72b73b6998ac506651890aeeefc0e..44378d6cc38b0c7550be4f962ac51c496c6ebd37 100644
+index f7342871ded72b73b6998ac506651890aeeefc0e..b201933cbb2c30ddac2d2c9fe945cea220859958 100644
 --- a/target/i386/tcg/misc_helper.c
 +++ b/target/i386/tcg/misc_helper.c
-@@ -18,6 +18,8 @@
+@@ -18,9 +18,12 @@
   */
  
  #include "qemu/osdep.h"
@@ -125063,7 +125156,11 @@ index f7342871ded72b73b6998ac506651890aeeefc0e..44378d6cc38b0c7550be4f962ac51c49
  #include "qemu/log.h"
  #include "accel/tcg/cpu-loop.h"
  #include "cpu.h"
-@@ -72,6 +74,25 @@ void helper_rdtsc(CPUX86State *env)
++#include "exec/icount.h"
+ #include "exec/helper-proto.h"
+ #include "exec/cputlb.h"
+ #include "helper-tcg.h"
+@@ -72,6 +75,25 @@ void helper_rdtsc(CPUX86State *env)
      cpu_svm_check_intercept_param(env, SVM_EXIT_RDTSC, 0, GETPC());
  
      val = cpu_get_tsc(env) + env->tsc_offset;
@@ -125089,6 +125186,30 @@ index f7342871ded72b73b6998ac506651890aeeefc0e..44378d6cc38b0c7550be4f962ac51c49
      env->regs[R_EAX] = (uint32_t)(val);
      env->regs[R_EDX] = (uint32_t)(val >> 32);
  }
+@@ -102,6 +124,23 @@ G_NORETURN void helper_pause(CPUX86State *env)
+     cpu_loop_exit(cs);
+ }
+ 
++#ifndef CONFIG_USER_ONLY
++void helper_crucible_sim_pause(CPUX86State *env)
++{
++    CPUState *cs = env_cpu(env);
++
++    if (!icount_crucible_rr_has_runnable_peer(cs)) {
++        return;
++    }
++
++    do_end_instruction(env);
++    helper_rechecking_single_step(env);
++    cs->crucible_rr_pause_exit = true;
++    cs->exception_index = EXCP_INTERRUPT;
++    cpu_loop_exit(cs);
++}
++#endif
++
+ uint64_t helper_rdpkru(CPUX86State *env, uint32_t ecx)
+ {
+     if ((env->cr[4] & CR4_PKE_MASK) == 0) {
 diff --git a/target/i386/tcg/seg_helper.c b/target/i386/tcg/seg_helper.c
 index 6d424349a58a388483b2dcbf9d2a9691999d580e..39a3ef90527e739d4b75d9ac1a04c56bdb4c6bd1 100644
 --- a/target/i386/tcg/seg_helper.c
@@ -147808,6 +147929,218 @@ index 0000000000000000000000000000000000000000..1ba2a64a8846c9d33c82b340038f0e8f
 +                    test_parallel_mutable_state);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-rr-halted-neighbor.py b/tests/unit/test-crucible-rr-halted-neighbor.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..47c5b0de1b13d148c6b19af3e0bacdf58a40e4a7
+--- /dev/null
++++ b/tests/unit/test-crucible-rr-halted-neighbor.py
+@@ -0,0 +1,206 @@
++# Copyright (c) Andyl, Inc.
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise production PAUSE and quantum handoffs past a halted RR neighbor."""
++
++import argparse
++import os
++from pathlib import Path
++import shlex
++import subprocess
++import tempfile
++
++
++SOURCE = Path(__file__).resolve().parents[2] / "accel/tcg/icount-common.c"
++
++
++def function_source(source: str, signature: str) -> str:
++    """Extract one production function for a small linked state-machine test."""
++    start = source.index(signature)
++    opening = source.index("{", start)
++    depth = 0
++
++    for index in range(opening, len(source)):
++        if source[index] == "{":
++            depth += 1
++        elif source[index] == "}":
++            depth -= 1
++            if depth == 0:
++                return source[start : index + 1]
++
++    raise AssertionError(f"unterminated production function: {signature}")
++
++
++TEST_PRELUDE = r"""
++#include <assert.h>
++#include <stdbool.h>
++#include <inttypes.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++typedef struct CPUState CPUState;
++struct CPUState {
++    CPUState *next;
++    int cpu_index;
++    bool runnable;
++    bool halted;
++    bool work;
++    bool crucible_rr_pause_exit;
++};
++
++#define CPU_NEXT(cpu) ((cpu)->next)
++#define error_report(...) abort()
++#define g_assert(condition) assert(condition)
++
++static CPUState *first_cpu;
++static struct {
++    bool crucible_rr_cursor_valid;
++    int crucible_rr_current_vcpu;
++    uint64_t crucible_rr_cursor_position;
++    bool crucible_rr_selection_pending;
++} timers_state;
++
++static unsigned int handoff_count;
++static int handoff_from;
++static int handoff_to;
++static uint64_t handoff_position;
++
++static bool cpu_can_run(CPUState *cpu)
++{
++    return cpu->runnable;
++}
++
++static bool cpu_has_work(CPUState *cpu)
++{
++    return cpu->work;
++}
++
++static uint64_t icount_crucible_rr_switch_quantum(void)
++{
++    return 4096;
++}
++
++static void qemu_plugin_fire_rr_handoff_cb(int from, int to,
++                                            uint64_t quantum, uint64_t position)
++{
++    assert(quantum == 4096);
++    handoff_count++;
++    handoff_from = from;
++    handoff_to = to;
++    handoff_position = position;
++}
++"""
++
++
++TEST_MAIN = r"""
++int main(void)
++{
++    CPUState cpu2 = { .cpu_index = 2, .runnable = true };
++    CPUState cpu1 = {
++        .next = &cpu2, .cpu_index = 1, .runnable = true, .halted = true
++    };
++    CPUState cpu0 = {
++        .next = &cpu1, .cpu_index = 0, .runnable = true,
++        .crucible_rr_pause_exit = true
++    };
++
++    first_cpu = &cpu0;
++    timers_state.crucible_rr_cursor_valid = true;
++    timers_state.crucible_rr_current_vcpu = 0;
++    timers_state.crucible_rr_cursor_position = 25;
++
++    assert(icount_crucible_rr_next_runnable(&cpu0) == &cpu2);
++    icount_crucible_rr_pause_handoff(&cpu0);
++    assert(handoff_count == 1);
++    assert(handoff_from == 0 && handoff_to == 2);
++    assert(handoff_position == 25);
++    assert(timers_state.crucible_rr_current_vcpu == 2);
++    assert(timers_state.crucible_rr_cursor_position == 0);
++    assert(timers_state.crucible_rr_selection_pending);
++    assert(!cpu0.crucible_rr_pause_exit);
++
++    handoff_count = 0;
++    cpu2.halted = true;
++    cpu0.crucible_rr_pause_exit = true;
++    timers_state.crucible_rr_current_vcpu = 0;
++    timers_state.crucible_rr_cursor_position = 25;
++    timers_state.crucible_rr_selection_pending = false;
++    icount_crucible_rr_pause_handoff(&cpu0);
++    assert(handoff_count == 0);
++    assert(timers_state.crucible_rr_current_vcpu == 0);
++    assert(timers_state.crucible_rr_cursor_position == 25);
++
++    cpu1.halted = false;
++    cpu0.crucible_rr_pause_exit = true;
++    icount_crucible_rr_pause_handoff(&cpu0);
++    assert(handoff_count == 1);
++    assert(handoff_from == 0 && handoff_to == 1);
++
++    handoff_count = 0;
++    cpu1.halted = true;
++    cpu2.halted = false;
++    timers_state.crucible_rr_current_vcpu = 0;
++    timers_state.crucible_rr_cursor_position = 4095;
++    icount_crucible_rr_account(&cpu0, 1);
++    assert(handoff_count == 1);
++    assert(handoff_from == 0 && handoff_to == 2);
++    assert(handoff_position == 4096);
++    assert(timers_state.crucible_rr_current_vcpu == 2);
++    assert(timers_state.crucible_rr_cursor_position == 0);
++
++    handoff_count = 0;
++    cpu2.halted = true;
++    timers_state.crucible_rr_current_vcpu = 0;
++    timers_state.crucible_rr_cursor_position = 4095;
++    icount_crucible_rr_account(&cpu0, 1);
++    assert(handoff_count == 1);
++    assert(handoff_from == 0 && handoff_to == 0);
++    assert(handoff_position == 4096);
++    assert(timers_state.crucible_rr_current_vcpu == 0);
++    assert(timers_state.crucible_rr_cursor_position == 0);
++
++    puts("RR_HALTED_NEIGHBOR_PASS");
++    return 0;
++}
++"""
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--source", type=Path, default=SOURCE)
++    arguments = parser.parse_args()
++    source = arguments.source.read_text()
++    next_runnable = function_source(
++        source, "static CPUState *icount_crucible_rr_next_runnable("
++    )
++    quantum_handoff = function_source(
++        source, "static void icount_crucible_rr_account("
++    )
++    pause_handoff = function_source(
++        source, "static void icount_crucible_rr_pause_handoff("
++    )
++
++    with tempfile.TemporaryDirectory(prefix="crucible-rr-handoff-") as directory:
++        fixture = Path(directory) / "halted-neighbor.c"
++        binary = Path(directory) / "halted-neighbor"
++        fixture.write_text(
++            "\n\n".join(
++                (TEST_PRELUDE, next_runnable, quantum_handoff, pause_handoff, TEST_MAIN)
++            )
++        )
++        command = [
++            *shlex.split(os.environ.get("CC", "cc")),
++            "-std=c11",
++            "-Wall",
++            "-Wextra",
++            "-Werror",
++            str(fixture),
++            "-o",
++            str(binary),
++        ]
++        subprocess.run(command, check=True)
++        subprocess.run([str(binary)], check=True, timeout=10)
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-slirp-time.c b/tests/unit/test-crucible-slirp-time.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..22e321204c3443ea7d63c9329ea1208d84ff6ea5

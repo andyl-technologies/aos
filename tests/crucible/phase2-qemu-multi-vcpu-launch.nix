@@ -320,7 +320,9 @@ in
       buildDeps = [
         pkgs.rust
         pkgs.sed
+        pkgs.sqlite
       ];
+      runtimeDeps = [pkgs.sqlite];
 
       phases = [
         {

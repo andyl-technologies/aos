@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "07220467b263546865f09fa3f044e495888ad801af024c6cb789e5b99b01d7bd";
+  sha256 = "99bdc74cbea360a3ee994a977904d4b8437ac2bdd079a581f054c62e39137b60";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -30,9 +30,19 @@
     "hot-fork inventory row through callback accounting, preserve the ARM timer"
     "horizon in picosecond mode, and avoid fw_cfg device lookup when no deferred"
     "service is pending. Wait for NBD export deletion in the upstream iotest."
+    ""
+    "Yield a repeated x86 PAUSE at a partial RR turn while preserving the first"
+    "post-handoff lock attempt and the serialized cursor. This gives contended"
+    "firmware spin locks a deterministic handoff without lowering the normal"
+    "4096-instruction quantum. Keep PAUSE in its translated block once no"
+    "runnable peer remains, so the single-CPU and post-startup paths stay fast."
+    ""
+    "Commit the in-flight CPU retirement prefix before anchoring an idle"
+    "picosecond bias. Keep an opt-in idle-stage and prefix trace so"
+    "the exact boundary can be checked without changing replay state."
   ];
-  commit = "87c47bfbb53934f8fcd691194276780856331c8a";
-  tree = "c4d2221e1d2d5e3c91dcc0a99640ade0ad4ee9f4";
+  commit = "f73312efac78e11b87cbd7954679685a076390c0";
+  tree = "e4b37ba95f8edfa87e691c04cfdcf35716d8cc27";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -41,7 +51,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "bde52068cef45ed771055f5d048bbdb645b40ba6ac95930db07943d74fa0c672";
+  bundleSha256 = "f67581b595cdc32bdf922a73d606be13c36b337a062be837c74925b9f376063c";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
