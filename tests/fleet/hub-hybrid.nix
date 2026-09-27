@@ -1562,13 +1562,32 @@ in {
           "/tmp/hybrid-cache-multipart-part-1 > /tmp/hybrid-parallel-object"
       )
       parallel_paths = [f"web/parallel-{index}.bin" for index in range(8)]
-      parallel_uploads = json.loads(client.succeed(
-          f"{CURL} -fsS -X POST -H 'cf-connecting-ip: 192.0.2.10' "
+      parallel_admission_status = client.succeed(
+          f"{CURL} -sS -o /tmp/hybrid-parallel-admission.response "
+          "-w '%{http_code}' -X POST -H 'cf-connecting-ip: 192.0.2.10' "
           f"-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
           f"-H 'Authorization: Bearer {session_token}' "
           f"--data {shlex.quote(json.dumps({'cacheId': 'fleet/objects', 'paths': parallel_paths, 'sizes': [parallel_size] * len(parallel_paths)}))} "
           "https://aos.andyl.org/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
           timeout=60,
+      ).strip()
+      if parallel_admission_status != "200":
+          print("hybrid parallel cache admission status:", parallel_admission_status)
+          print("hybrid parallel cache admission response:", client.succeed(
+              "cat /tmp/hybrid-parallel-admission.response"
+          ))
+          print("Native errors during parallel cache admission:", native.succeed(
+              "journalctl -u aos-hub.service -p warning --no-pager -n 60"
+          ))
+          print("Building cache inventories during admission:", native.succeed(
+              f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+              "-c \"SELECT COUNT(*) FROM cache_inventory_generations inventory "
+              "JOIN binary_caches cache ON cache.id = inventory.cache_id "
+              "WHERE cache.slug = 'fleet/objects' AND inventory.state = 'building'\""
+          ).strip())
+      assert parallel_admission_status == "200", parallel_admission_status
+      parallel_uploads = json.loads(client.succeed(
+          "cat /tmp/hybrid-parallel-admission.response"
       ))["uploads"]
       assert [upload["path"] for upload in parallel_uploads] == parallel_paths, parallel_uploads
       assert all(upload["uploadUrl"] and upload["uploadTicketId"] for upload in parallel_uploads), parallel_uploads
