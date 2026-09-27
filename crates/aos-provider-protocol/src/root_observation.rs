@@ -221,8 +221,9 @@ mod tests {
 
     use aos_ability_model::document::{FreshnessCondition, ProviderState};
     use aos_ability_model::{
-        AbilityValue, IncarnationId, InstanceId, InterfaceKey, InterfaceName,
-        ProviderImplementationReference, RevisionId,
+        AbilityValue, IncarnationId, InstanceId, InterfaceKey, InterfaceName, LocalKey,
+        ProviderImplementationReference, ResourceId, ResourceLifetime, ResourceRevision,
+        RevisionId, ValueExpression,
     };
     use aos_contract::Sha256Digest;
 
@@ -231,6 +232,11 @@ mod tests {
         RootObservationResult, boot_scoped_handler_root, validate_root_observation,
     };
     use crate::InvocationControl;
+    use crate::{
+        ROOT_RESOURCE_OBSERVATION_REQUEST_SCHEMA, ROOT_RESOURCE_OBSERVATION_RESULT_SCHEMA,
+        RootResourceObservationRequest, RootResourceObservationResult,
+        validate_root_resource_observation,
+    };
 
     fn request() -> RootObservationRequest {
         let provider: InstanceId = serde_json::from_value(serde_json::json!({
@@ -332,5 +338,58 @@ mod tests {
         changed = observed;
         changed.freshness.max_age_millis = 1_001;
         assert!(validate_root_observation(&request, &changed).is_err());
+    }
+
+    #[test]
+    fn resource_readiness_requires_the_selected_boot_and_revision() {
+        let root = request();
+        let resource = ResourceRevision {
+            resource: ResourceId {
+                provider: root.provider.clone(),
+                key: LocalKey::new("service").expect("resource key"),
+            },
+            kind: InterfaceName::new("aos.service.instance").expect("resource kind"),
+            lifetime: ResourceLifetime::Instance,
+            value: AbilityValue::new(serde_json::json!({"service":"example"}))
+                .expect("desired value"),
+            realization: ValueExpression::Literal {
+                value: AbilityValue::new(serde_json::json!({"unit":"example.service"}))
+                    .expect("realization"),
+            },
+            revision: RevisionId(Sha256Digest::of_bytes(b"desired service")),
+        };
+        let request = RootResourceObservationRequest {
+            schema: ROOT_RESOURCE_OBSERVATION_REQUEST_SCHEMA.to_string(),
+            root: root.clone(),
+            resource,
+        };
+        let observed = RootResourceObservationResult {
+            schema: ROOT_RESOURCE_OBSERVATION_RESULT_SCHEMA.to_string(),
+            root: result(&root),
+            resource: request.resource.resource.clone(),
+            observed_revision: Some(request.resource.revision),
+            ready: true,
+            evidence: AbilityValue::new(serde_json::json!({"unit":"active"}))
+                .expect("native evidence"),
+        };
+        validate_root_resource_observation(&request, &observed)
+            .expect("exact resource observation");
+
+        let mut changed = observed.clone();
+        changed.observed_revision = Some(RevisionId(Sha256Digest::of_bytes(b"old service")));
+        assert!(validate_root_resource_observation(&request, &changed).is_err());
+
+        changed = observed.clone();
+        changed.root.challenge = Sha256Digest::of_bytes(b"prior boot probe");
+        assert!(validate_root_resource_observation(&request, &changed).is_err());
+
+        changed = observed.clone();
+        changed.resource.key = LocalKey::new("another-service").expect("resource key");
+        assert!(validate_root_resource_observation(&request, &changed).is_err());
+
+        let mut another_provider = request;
+        another_provider.resource.resource.provider.key =
+            LocalKey::new("another-provider").expect("provider key");
+        assert!(validate_root_resource_observation(&another_provider, &observed).is_err());
     }
 }

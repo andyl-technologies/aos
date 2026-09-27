@@ -20,6 +20,7 @@ mod qualification_observer;
 mod readiness;
 mod render;
 mod root_observation;
+mod root_resource_observation;
 mod semantic;
 mod service;
 mod static_assemble;
@@ -193,6 +194,17 @@ async fn run() -> Result<()> {
             let result = tokio::time::timeout(timeout, root_observation::observe(role, request))
                 .await
                 .context("root observation deadline expired")??;
+            write_output(&result)
+        }
+        Some("observe-resource-root") => {
+            let request: aos_provider_protocol::RootResourceObservationRequest =
+                decode_canonical(&bytes)?;
+            let role = HandlerRole::from_handler(request.root.implementation.handler.as_ref())?;
+            let timeout = deadline(request.root.control.attempt_remaining_millis);
+            let result =
+                tokio::time::timeout(timeout, root_resource_observation::observe(role, request))
+                    .await
+                    .context("root resource observation deadline expired")??;
             write_output(&result)
         }
         Some("admit") => {

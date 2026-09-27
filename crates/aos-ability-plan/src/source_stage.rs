@@ -1099,6 +1099,21 @@ impl SourceStageBundle {
         if projected_resources != checked_resources {
             return Err(SourceStageBundleError::FixedPointAuthority);
         }
+        let mut published_resources = self
+            .fixed_point
+            .resolved_resources
+            .values()
+            .filter(|resource| {
+                resource.controller.is_none()
+                    || resource.activation_owner == SourceActivationOwner::Image
+            })
+            .map(SourceStageResolvedResource::resource_revision)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| SourceStageBundleError::FixedPointAuthority)?;
+        published_resources.sort_by(|left, right| left.resource.cmp(&right.resource));
+        if published_resources != binding.environment().resources {
+            return Err(SourceStageBundleError::FixedPointAuthority);
+        }
         Ok(())
     }
 }
@@ -1682,6 +1697,37 @@ mod tests {
                 TransitionError::Transcript(_)
             ))
         ));
+    }
+
+    #[test]
+    fn current_resources_follow_fixed_point_activation_ownership() {
+        let original = bundle();
+        let (_, binding) = original.validate_binding().expect("checked binding");
+        let mut changed = original;
+        let resource = changed
+            .fixed_point
+            .resolved_resources
+            .values_mut()
+            .next()
+            .expect("fixture resource");
+        resource.controller = Some("source-binding-0".to_string());
+        resource.activation_owner = SourceActivationOwner::Ability;
+
+        assert!(matches!(
+            changed.validate_fixed_point(&binding),
+            Err(SourceStageBundleError::FixedPointAuthority)
+        ));
+
+        changed
+            .fixed_point
+            .resolved_resources
+            .values_mut()
+            .next()
+            .expect("fixture resource")
+            .activation_owner = SourceActivationOwner::Image;
+        changed
+            .validate_fixed_point(&binding)
+            .expect("image-owned resource is part of the current inventory");
     }
 
     #[test]
