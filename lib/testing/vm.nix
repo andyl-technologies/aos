@@ -614,12 +614,16 @@
           }
           test -n "$host_cpu"
           ${pkgs.util-linux}/bin/taskset -c "$host_cpu" ${pkgs.coreutils}/bin/true
-          host_model=$(sed -n 's/^model name[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1)
+          # Stop at the first CPU instead of triggering SIGPIPE under pipefail.
+          first_cpuinfo_field() {
+            sed -n "/^$1[[:space:]]*:/ { s/^[^:]*:[[:space:]]*//; p; q; }" /proc/cpuinfo
+          }
+          host_model=$(first_cpuinfo_field 'model name')
           test -n "$host_model"
-          host_family=$(sed -n 's/^cpu family[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1)
-          host_model_number=$(sed -n 's/^model[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1)
-          host_stepping=$(sed -n 's/^stepping[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1)
-          host_microcode=$(sed -n 's/^microcode[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1)
+          host_family=$(first_cpuinfo_field 'cpu family')
+          host_model_number=$(first_cpuinfo_field model)
+          host_stepping=$(first_cpuinfo_field stepping)
+          host_microcode=$(first_cpuinfo_field microcode)
           test -n "$host_family" && test -n "$host_model_number" && test -n "$host_stepping" && test -n "$host_microcode"
           host_boot_id=$(cat /proc/sys/kernel/random/boot_id)
           test -n "$host_boot_id"
