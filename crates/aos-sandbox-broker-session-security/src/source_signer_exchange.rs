@@ -278,15 +278,10 @@ pub fn request_root_source_project_reservation_readback_v1(
     request[..8].copy_from_slice(REQUEST_RESERVATION_MAGIC);
     stream.write_all(&request)?;
     stream.shutdown(std::net::Shutdown::Write)?;
-    let mut reply = [0; REPLY_RESERVATION_BYTES];
-    stream.read_exact(&mut reply)?;
-    let mut trailing = [0];
-    if &reply[..8] != REPLY_RESERVATION_MAGIC || stream.read(&mut trailing)? != 0 {
-        return Err(invalid_data("invalid Source reservation reply"));
-    }
-    let packet: [u8; SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1] = reply[8..]
-        .try_into()
-        .map_err(|_| invalid_data("invalid Source reservation packet length"))?;
+    let packet = read_framed_reply::<
+        REPLY_RESERVATION_BYTES,
+        SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1,
+    >(&mut stream, REPLY_RESERVATION_MAGIC)?;
     verify_source_project_reservation_readback_v1(&packet, signer, expected)
         .map_err(io::Error::other)?;
     Ok(packet)
@@ -341,55 +336,44 @@ fn decode_request(
 }
 
 fn read_reply(stream: &mut UnixStream) -> io::Result<[u8; SOURCE_HOLD_READBACK_BYTES_V1]> {
-    let mut reply = [0; REPLY_BYTES];
-    stream.read_exact(&mut reply)?;
-    let mut trailing = [0];
-    if &reply[..8] != REPLY_MAGIC || stream.read(&mut trailing)? != 0 {
-        return Err(invalid_data("invalid Source signer reply"));
-    }
-    reply[8..]
-        .try_into()
-        .map_err(|_| invalid_data("invalid Source signer packet length"))
+    read_framed_reply::<REPLY_BYTES, SOURCE_HOLD_READBACK_BYTES_V1>(stream, REPLY_MAGIC)
 }
 
 fn read_names_reply(stream: &mut UnixStream) -> io::Result<[u8; SOURCE_HOLD_READBACK_BYTES_V2]> {
-    let mut reply = [0; REPLY_NAMES_BYTES];
-    stream.read_exact(&mut reply)?;
-    let mut trailing = [0];
-    if &reply[..8] != REPLY_NAMES_MAGIC || stream.read(&mut trailing)? != 0 {
-        return Err(invalid_data("invalid Source signer names reply"));
-    }
-    reply[8..]
-        .try_into()
-        .map_err(|_| invalid_data("invalid Source signer names packet length"))
+    read_framed_reply::<REPLY_NAMES_BYTES, SOURCE_HOLD_READBACK_BYTES_V2>(stream, REPLY_NAMES_MAGIC)
 }
 
 fn read_project_reply(
     stream: &mut UnixStream,
 ) -> io::Result<[u8; SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1]> {
-    let mut reply = [0; REPLY_PROJECT_BYTES];
-    stream.read_exact(&mut reply)?;
-    let mut trailing = [0];
-    if &reply[..8] != REPLY_PROJECT_MAGIC || stream.read(&mut trailing)? != 0 {
-        return Err(invalid_data("invalid Source project-admission reply"));
-    }
-    reply[8..]
-        .try_into()
-        .map_err(|_| invalid_data("invalid Source project-admission packet length"))
+    read_framed_reply::<REPLY_PROJECT_BYTES, SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1>(
+        stream,
+        REPLY_PROJECT_MAGIC,
+    )
 }
 
 fn read_project_retirement_reply(
     stream: &mut UnixStream,
 ) -> io::Result<[u8; SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1]> {
-    let mut reply = [0; REPLY_PROJECT_BYTES];
+    read_framed_reply::<REPLY_PROJECT_BYTES, SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1>(
+        stream,
+        REPLY_RETIREMENT_MAGIC,
+    )
+}
+
+fn read_framed_reply<const REPLY: usize, const PACKET: usize>(
+    stream: &mut UnixStream,
+    magic: &[u8; 8],
+) -> io::Result<[u8; PACKET]> {
+    let mut reply = [0; REPLY];
     stream.read_exact(&mut reply)?;
     let mut trailing = [0];
-    if &reply[..8] != REPLY_RETIREMENT_MAGIC || stream.read(&mut trailing)? != 0 {
-        return Err(invalid_data("invalid Source project-retirement reply"));
+    if &reply[..8] != magic || stream.read(&mut trailing)? != 0 {
+        return Err(invalid_data("invalid Source signer reply"));
     }
     reply[8..]
         .try_into()
-        .map_err(|_| invalid_data("invalid Source project-retirement packet length"))
+        .map_err(|_| invalid_data("invalid Source signer packet length"))
 }
 
 fn require_socket_path_custody(signer_uid: u32, socket_gid: u32) -> io::Result<()> {
@@ -593,6 +577,52 @@ enum SourceSignerRequestModeV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn framed_project_replies_require_exact_magic_length_and_eof() {
+        let mut canonical = [0; REPLY_PROJECT_BYTES];
+        canonical[..8].copy_from_slice(REPLY_PROJECT_MAGIC);
+        canonical[8..].fill(7);
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        client.write_all(&canonical).unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        assert_eq!(
+            read_project_reply(&mut server).unwrap(),
+            [7; SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1]
+        );
+
+        for changed in [
+            {
+                let mut changed = canonical.to_vec();
+                changed[0] ^= 1;
+                changed
+            },
+            canonical[..canonical.len() - 1].to_vec(),
+            {
+                let mut changed = canonical.to_vec();
+                changed.push(1);
+                changed
+            },
+        ] {
+            let (mut client, mut server) = UnixStream::pair().unwrap();
+            client.write_all(&changed).unwrap();
+            client.shutdown(std::net::Shutdown::Write).unwrap();
+            assert!(read_project_reply(&mut server).is_err());
+        }
+
+        let mut reservation = [0; REPLY_RESERVATION_BYTES];
+        reservation[..8].copy_from_slice(REPLY_RESERVATION_MAGIC);
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        client.write_all(&reservation).unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        assert!(
+            read_framed_reply::<
+                REPLY_RESERVATION_BYTES,
+                SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1,
+            >(&mut server, REPLY_RESERVATION_MAGIC,)
+            .is_ok()
+        );
+    }
 
     #[test]
     fn request_frame_rejects_foreign_and_noncanonical_source_claims() {
