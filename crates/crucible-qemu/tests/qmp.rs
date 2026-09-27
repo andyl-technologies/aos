@@ -203,7 +203,7 @@ fn hot_fork_child_runtime_is_exact_and_oob() -> Result<(), Box<dyn Error>> {
     let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
-        r#"{"return":{"schema-version":3,"generation":7,"registered":true,"manifest-consistent":true,"plugin-id":12,"process-generation":10,"phase":"workers-held","callbacks-held":true,"mapping-installed":true,"workers-ready":true,"active":false,"failed":false,"parent-process-generation":9,"child-process-generation":10,"template-generation":3,"private-ring-generation":4,"plugin-endpoint-generation":5,"plugin-barrier-generation":6,"control-socket-cookie":7,"wake-eventfd-id":8,"source-mapping-start":4096,"source-mapping-length":4096,"source-mapping-offset":0,"worker-mask":3,"parked-worker-mask":3,"pending-worker-mask":1,"worker-operations-in-flight":0,"readiness-proof-acknowledged":false}}"#,
+        r#"{"return":{"schema-version":4,"generation":7,"registered":true,"manifest-consistent":true,"plugin-id":12,"process-generation":10,"phase":"workers-held","callbacks-held":true,"mapping-installed":true,"workers-ready":true,"active":false,"failed":false,"parent-process-generation":9,"child-process-generation":10,"template-generation":3,"private-ring-generation":4,"plugin-endpoint-generation":5,"plugin-barrier-generation":6,"control-socket-cookie":7,"wake-eventfd-id":8,"source-mapping-start":4096,"source-mapping-length":4096,"source-mapping-offset":0,"worker-mask":3,"parked-worker-mask":3,"pending-worker-mask":1,"worker-operations-in-flight":0,"readiness-proof-acknowledged":false}}"#,
     ]);
     let audit = stream.audit_handle();
     let mut client = QmpClient::connect(stream)?;
@@ -1073,12 +1073,12 @@ fn plugin_endpoint_stage_authenticates_exact_basis_and_releases_qemu_copies()
         .ok_or("nonzero endpoint identity should be valid")?;
     let staged = format!(
         concat!(
-            r#"{{"return":{{"schema-version":4,"generation":1,"template-generation":0,"staged":true,"control-fdname":"{}","wake-fdname":"{}","control-socket-cookie":101,"wake-eventfd-id":202,"control-source-fd":30,"wake-source-fd":31,"control-target-fd":-1,"wake-target-fd":-1,"private-ring-generation":7,"plugin-barrier-generation":0,"worker-mask":0,"parent-resume-worker-mask":0,"child-reinitialize-worker-mask":0,"pending-worker-mask":0,"worker-disposition-planned":false,"replacement-plan-bound":false,"control-unix-stream":true,"wake-eventfd":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#
+            r#"{{"return":{{"schema-version":5,"generation":1,"template-generation":0,"staged":true,"control-fdname":"{}","wake-fdname":"{}","control-socket-cookie":101,"wake-eventfd-id":202,"control-source-fd":30,"wake-source-fd":31,"control-target-fd":-1,"wake-target-fd":-1,"private-ring-generation":7,"plugin-barrier-generation":0,"worker-mask":0,"parent-resume-worker-mask":0,"child-reinitialize-worker-mask":0,"pending-worker-mask":0,"worker-disposition-planned":false,"replacement-plan-bound":false,"control-unix-stream":true,"wake-eventfd":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#
         ),
         control_name.as_str(),
         wake_name.as_str(),
     );
-    let released = r#"{"return":{"schema-version":4,"generation":2,"template-generation":0,"staged":false,"control-socket-cookie":0,"wake-eventfd-id":0,"control-source-fd":-1,"wake-source-fd":-1,"control-target-fd":-1,"wake-target-fd":-1,"private-ring-generation":0,"plugin-barrier-generation":0,"worker-mask":0,"parent-resume-worker-mask":0,"child-reinitialize-worker-mask":0,"pending-worker-mask":0,"worker-disposition-planned":false,"replacement-plan-bound":false,"control-unix-stream":false,"wake-eventfd":false,"disposition-complete":false,"readiness-proof-acknowledged":false}}"#;
+    let released = r#"{"return":{"schema-version":5,"generation":2,"template-generation":0,"staged":false,"control-socket-cookie":0,"wake-eventfd-id":0,"control-source-fd":-1,"wake-source-fd":-1,"control-target-fd":-1,"wake-target-fd":-1,"private-ring-generation":0,"plugin-barrier-generation":0,"worker-mask":0,"parent-resume-worker-mask":0,"child-reinitialize-worker-mask":0,"pending-worker-mask":0,"worker-disposition-planned":false,"replacement-plan-bound":false,"control-unix-stream":false,"wake-eventfd":false,"disposition-complete":false,"readiness-proof-acknowledged":false}}"#;
     let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
@@ -1149,6 +1149,20 @@ fn plugin_endpoint_stage_authenticates_exact_basis_and_releases_qemu_copies()
             .and_then(Value::as_str),
         Some("release")
     );
+
+    let legacy = staged.replacen("\"schema-version\":5", "\"schema-version\":4", 1);
+    let mut legacy_client = QmpClient::connect(scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        &legacy,
+    ]))?;
+    assert!(matches!(
+        legacy_client.query_hot_fork_plugin_endpoints(),
+        Err(QmpError::MalformedTypedResponse {
+            command: QmpCommandKind::HotForkPluginEndpoints,
+            ..
+        })
+    ));
     Ok(())
 }
 
@@ -1343,7 +1357,7 @@ fn contradictory_plugin_endpoint_stage_poisons_the_qmp_client() -> Result<(), Bo
         .ok_or("nonzero endpoint identity should be valid")?;
     let contradictory = format!(
         concat!(
-            r#"{{"return":{{"schema-version":4,"generation":1,"template-generation":0,"staged":true,"control-fdname":"{}","wake-fdname":"{}","control-socket-cookie":101,"wake-eventfd-id":202,"control-source-fd":30,"wake-source-fd":31,"control-target-fd":-1,"wake-target-fd":-1,"private-ring-generation":7,"plugin-barrier-generation":0,"worker-mask":0,"parent-resume-worker-mask":0,"child-reinitialize-worker-mask":0,"pending-worker-mask":0,"worker-disposition-planned":false,"replacement-plan-bound":false,"control-unix-stream":true,"wake-eventfd":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#
+            r#"{{"return":{{"schema-version":5,"generation":1,"template-generation":0,"staged":true,"control-fdname":"{}","wake-fdname":"{}","control-socket-cookie":101,"wake-eventfd-id":202,"control-source-fd":30,"wake-source-fd":31,"control-target-fd":-1,"wake-target-fd":-1,"private-ring-generation":7,"plugin-barrier-generation":0,"worker-mask":0,"parent-resume-worker-mask":0,"child-reinitialize-worker-mask":0,"pending-worker-mask":0,"worker-disposition-planned":false,"replacement-plan-bound":false,"control-unix-stream":true,"wake-eventfd":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#
         ),
         control_name.as_str(),
         wake_name.as_str(),
@@ -1374,7 +1388,7 @@ fn plugin_endpoint_worker_disposition_is_exact_and_empty() -> Result<(), Box<dyn
     let response = |pending_worker_mask, child_reinitialize_worker_mask| {
         format!(
             concat!(
-                r#"{{"return":{{"schema-version":4,"generation":1,"template-generation":4,"staged":true,"control-fdname":"{}","wake-fdname":"{}","control-socket-cookie":101,"wake-eventfd-id":202,"control-source-fd":30,"wake-source-fd":31,"control-target-fd":3,"wake-target-fd":4,"private-ring-generation":7,"plugin-barrier-generation":8,"worker-mask":3,"parent-resume-worker-mask":3,"child-reinitialize-worker-mask":{},"pending-worker-mask":{},"worker-disposition-planned":true,"replacement-plan-bound":true,"control-unix-stream":true,"wake-eventfd":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#
+                r#"{{"return":{{"schema-version":5,"generation":1,"template-generation":4,"staged":true,"control-fdname":"{}","wake-fdname":"{}","control-socket-cookie":101,"wake-eventfd-id":202,"control-source-fd":30,"wake-source-fd":31,"control-target-fd":3,"wake-target-fd":4,"private-ring-generation":7,"plugin-barrier-generation":8,"worker-mask":3,"parent-resume-worker-mask":3,"child-reinitialize-worker-mask":{},"pending-worker-mask":{},"worker-disposition-planned":true,"replacement-plan-bound":true,"control-unix-stream":true,"wake-eventfd":true,"disposition-complete":false,"readiness-proof-acknowledged":false}}}}"#
             ),
             control_name.as_str(),
             wake_name.as_str(),

@@ -796,6 +796,7 @@ pub(super) fn socket_cookie(descriptor: RawFd) -> io::Result<u64> {
     Ok(cookie)
 }
 
+/// Reads the kernel eventfd ID and returns its one-based protocol token.
 pub(crate) fn eventfd_id(descriptor: RawFd) -> io::Result<u64> {
     let path = format!("/proc/self/fdinfo/{descriptor}");
     let mut bytes = Vec::new();
@@ -814,6 +815,10 @@ pub(crate) fn eventfd_id(descriptor: RawFd) -> io::Result<u64> {
             format!("eventfd fdinfo is not UTF-8: {error}"),
         )
     })?;
+    eventfd_identity_token_from_fdinfo(text)
+}
+
+fn eventfd_identity_token_from_fdinfo(text: &str) -> io::Result<u64> {
     let mut identity = None;
     for line in text.lines() {
         let Some(value) = line.strip_prefix("eventfd-id:") else {
@@ -831,13 +836,11 @@ pub(crate) fn eventfd_id(descriptor: RawFd) -> io::Result<u64> {
                 format!("eventfd-id is invalid: {error}"),
             )
         })?;
-        if parsed == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "eventfd-id is zero",
-            ));
-        }
-        identity = Some(parsed);
+        // Linux may allocate eventfd ID zero. One-based tokens preserve zero
+        // as the absent value in the versioned QMP identity contract.
+        identity = Some(parsed.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "eventfd-id exceeds token range")
+        })?);
     }
     identity.ok_or_else(|| {
         io::Error::new(
@@ -845,4 +848,29 @@ pub(crate) fn eventfd_id(descriptor: RawFd) -> io::Result<u64> {
             "descriptor fdinfo contains no eventfd-id",
         )
     })
+}
+
+#[cfg(test)]
+mod eventfd_identity_tests {
+    use super::eventfd_identity_token_from_fdinfo;
+
+    #[test]
+    fn accepts_kernel_id_zero_as_one_based_token() {
+        assert_eq!(
+            eventfd_identity_token_from_fdinfo("eventfd-id: 0\n").unwrap(),
+            1
+        );
+        assert_eq!(
+            eventfd_identity_token_from_fdinfo("eventfd-id: 7\n").unwrap(),
+            8
+        );
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_unrepresentable_kernel_identity() {
+        assert!(eventfd_identity_token_from_fdinfo("eventfd-id: 0\neventfd-id: 1\n").is_err());
+        assert!(eventfd_identity_token_from_fdinfo("eventfd-count: 0\n").is_err());
+        assert!(eventfd_identity_token_from_fdinfo("eventfd-id: invalid\n").is_err());
+        assert!(eventfd_identity_token_from_fdinfo("eventfd-id: 18446744073709551615\n").is_err());
+    }
 }

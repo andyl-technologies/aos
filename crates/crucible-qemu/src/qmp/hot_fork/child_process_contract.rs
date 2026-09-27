@@ -15,9 +15,9 @@ use crate::qmp::{QmpCommandKind, QmpDescriptorName, QmpError};
 pub const QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND: &str =
     "crucible-hot-fork-child-process-contract";
 /// Version of the child process contract status.
-pub const QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION: u32 = 2;
+pub const QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION: u32 = 3;
 
-/// Exact kernel identities and file-size ceiling transferred for one child.
+/// Exact kernel identities, one-based eventfd token, and file-size ceiling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QmpHotForkChildProcessContractIdentity {
     cgroup_device: u64,
@@ -77,7 +77,7 @@ impl QmpHotForkChildProcessContractIdentity {
         self.cgroup_procs_inode
     }
 
-    /// Returns the Linux eventfd identity for sticky cancellation.
+    /// Returns the Linux eventfd ID plus one for sticky cancellation.
     #[must_use]
     pub const fn cancellation_eventfd_id(self) -> u64 {
         self.cancellation_eventfd_id
@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn process_contract_requires_exact_staged_or_absent_shape() {
         let staged = json!({
-            "schema-version": 2,
+            "schema-version": 3,
             "generation": 7,
             "template-generation": 3,
             "staged": true,
@@ -420,6 +420,10 @@ mod tests {
             Some(14)
         );
 
+        let mut legacy = staged.clone();
+        legacy["schema-version"] = json!(2);
+        assert!(parse_hot_fork_child_process_contract_state(&legacy).is_err());
+
         let mut invalid = staged.clone();
         invalid["cgroup-placement-bound"] = json!(false);
         assert!(parse_hot_fork_child_process_contract_state(&invalid).is_err());
@@ -431,7 +435,7 @@ mod tests {
         assert!(parse_hot_fork_child_process_contract_state(&missing_procs).is_err());
 
         let absent = json!({
-            "schema-version": 2,
+            "schema-version": 3,
             "generation": 7,
             "template-generation": 0,
             "staged": false,

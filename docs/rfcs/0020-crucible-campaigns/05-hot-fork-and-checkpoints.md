@@ -752,7 +752,7 @@ The supported launch profile optimizes the complete child-ready path:
 - the live source protocol-ring mapping is now frozen and marked
   `MADV_DONTFORK` by the version-6 plugin barrier, then restored with
   `MADV_DOFORK` before the parent reopens. QEMU and the GPL plugin now register
-  a fixed version-3 child-runtime operation that binds the staged template,
+  a fixed version-4 child-runtime operation that binds the staged template,
   private-ring, endpoint, and plugin-barrier generations; authenticated socket
   and eventfd identities; private-ring device, inode, length, and descriptor;
   the exact source setup-region VMA; replacement control and wake descriptor
