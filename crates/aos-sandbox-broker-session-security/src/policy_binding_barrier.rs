@@ -57,7 +57,9 @@ use crate::policy_authority_client::{
     recover_committed_source_held_binding_v8,
 };
 use crate::policy_root_ack_client::acknowledge_held_root_effect_v1;
-use crate::policy_root_ack_v8_client::acknowledge_held_root_v8_effect;
+use crate::policy_root_ack_v8_client::{
+    acknowledge_held_root_v8_effect, complete_held_root_v8_terminal,
+};
 
 /// Commits one held Q04 cut without opening public Create or effect handoff.
 ///
@@ -739,6 +741,67 @@ pub fn acknowledge_fixed_parentless_create_root_v8_effect_v1(
     operation: OperationId,
     sandbox: SandboxId,
 ) -> io::Result<RootV8EffectAckV1> {
+    with_exact_root_v8_ack_barrier(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |controller, ack| {
+            with_process_controller_hold_signer_v1(|generation, key| {
+                let receipt = acknowledge_held_root_v8_effect(controller, ack, generation, key)?;
+                controller
+                    .record_controller_policy_v8_root_receipt_v1(receipt)
+                    .map_err(io::Error::other)?;
+                Ok(receipt)
+            })
+        },
+    )
+}
+
+/// Completes the V8 Root terminal while every owner writer remains held.
+///
+/// Root keeps its protected writer across its ACK, Controller's durable
+/// AOSQ8R01 record, and the signed AOSCTR08 readback. This terminal grants no
+/// release or Apply authority.
+///
+/// # Errors
+///
+/// Rejects changed owner custody, mismatched Root CAS or Cache quota, stale
+/// signer, or an ambiguous terminal without exact protected cold replay.
+pub fn verify_fixed_parentless_create_root_v8_terminal_v1(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<RootV8EffectAckV1> {
+    with_exact_root_v8_ack_barrier(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |controller, ack| {
+            with_process_controller_hold_signer_v1(|generation, key| {
+                complete_held_root_v8_terminal(controller, ack, generation, key)
+            })
+        },
+    )
+}
+
+fn with_exact_root_v8_ack_barrier<T>(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+    action: impl FnOnce(&mut Journal, ControllerPolicyV8EffectAckV1) -> io::Result<T>,
+) -> io::Result<T> {
     let (controller_hold, source_hold) = held_policy_claims(controller, source_domains)?;
     with_current_create_cache_signer_terminal_barrier_v6(
         controller,
@@ -779,13 +842,7 @@ pub fn acknowledge_fixed_parentless_create_root_v8_effect_v1(
         },
         |controller, _, prepared| -> io::Result<_> {
             let ack = prepared?;
-            with_process_controller_hold_signer_v1(|generation, key| {
-                let receipt = acknowledge_held_root_v8_effect(controller, ack, generation, key)?;
-                controller
-                    .record_controller_policy_v8_root_receipt_v1(receipt)
-                    .map_err(io::Error::other)?;
-                Ok(receipt)
-            })
+            action(controller, ack)
         },
     )
     .map_err(io::Error::other)?

@@ -81,9 +81,10 @@ pub use ack::{
 };
 pub use ack_v8::{
     ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1, RootV8EffectAckErrorV1, RootV8EffectAckV1,
-    RootV8VerifiedTerminalV1, acknowledge_fixed_closed_root_v8_effect_v1,
-    recover_fixed_closed_root_v8_effect_ack_v1, recover_fixed_closed_root_v8_verified_terminal_v1,
-    verify_fixed_closed_root_v8_terminal_v1,
+    RootV8HeldTerminalStepV1, RootV8VerifiedTerminalV1,
+    acknowledge_and_verify_fixed_closed_root_v8_terminal_v1,
+    acknowledge_fixed_closed_root_v8_effect_v1, recover_fixed_closed_root_v8_effect_ack_v1,
+    recover_fixed_closed_root_v8_verified_terminal_v1, verify_fixed_closed_root_v8_terminal_v1,
 };
 
 pub use producer::{

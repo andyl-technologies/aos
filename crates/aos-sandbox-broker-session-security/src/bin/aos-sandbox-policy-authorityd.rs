@@ -22,7 +22,9 @@
 //! custody and checks the Source V2 signed journal/lock identities. It is
 //! preview-only and cannot enter the V4 qualified-CAS path.
 //! A distinct V8 ACK exchange records Controller's signed no-Apply receipt
-//! against the still-held AOSPCP02 CAS; it cannot release any owner.
+//! against the still-held AOSPCP02 CAS; it cannot release any owner. The V8
+//! terminal exchange keeps Root's writer across Controller's durable receipt
+//! and Root's verified AOSPC88T row.
 //! `--show-controller-hold` inspects the protected Controller record;
 //! `--release-controller-hold` checks exact root custody under the fixed
 //! Controller-then-root lock order before unfreezing the Controller journal.
@@ -50,17 +52,20 @@ use aos_sandbox::policy_compiler::{
     CLOSED_POLICY_BINDING_BYTES_V2, CacheSignerRootChallengeStatusV2,
     CacheSignerRootSettlementStateV2, ClosedCacheReadbackRootChallengeV1,
     ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, ClosedSourceTerminalClaimV1,
-    PinnedSourceHoldReadbackSignerV1, PolicyDeploymentInputsV1, StagedClosedPolicyRootBaseV2,
-    abandon_fixed_cache_signer_challenge_v2, acknowledge_fixed_closed_root_effect_v1,
-    acknowledge_fixed_closed_root_v8_effect_v1, admit_fixed_cache_readback_pin_v1,
-    admit_fixed_controller_hold_pin_v1, admit_fixed_policy_deployment_head_v1,
-    admit_fixed_policy_signer_pins_v1, admit_fixed_source_hold_pin_v1,
-    compact_fixed_cache_signer_root_journal_v2, decode_policy_deployment_sources_v1,
-    read_fixed_cache_signer_challenge_v2, read_fixed_inert_closed_policy_binding_hold_v1,
-    read_fixed_policy_cache_hold_v1, record_fixed_cache_signer_root_settlement_v2,
-    recover_fixed_cache_signer_abandonment_v2, recover_fixed_cache_signer_root_history_v2,
-    recover_fixed_cache_signer_root_settlement_v2, recover_fixed_closed_policy_binding_decision_v2,
-    recover_fixed_closed_root_effect_ack_v1, recover_fixed_closed_root_v8_effect_ack_v1,
+    ControllerEffectAckChallengeV1, PinnedSourceHoldReadbackSignerV1, PolicyDeploymentInputsV1,
+    RootV8HeldTerminalStepV1, StagedClosedPolicyRootBaseV2,
+    abandon_fixed_cache_signer_challenge_v2,
+    acknowledge_and_verify_fixed_closed_root_v8_terminal_v1,
+    acknowledge_fixed_closed_root_effect_v1, acknowledge_fixed_closed_root_v8_effect_v1,
+    admit_fixed_cache_readback_pin_v1, admit_fixed_controller_hold_pin_v1,
+    admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
+    admit_fixed_source_hold_pin_v1, compact_fixed_cache_signer_root_journal_v2,
+    decode_policy_deployment_sources_v1, read_fixed_cache_signer_challenge_v2,
+    read_fixed_inert_closed_policy_binding_hold_v1, read_fixed_policy_cache_hold_v1,
+    record_fixed_cache_signer_root_settlement_v2, recover_fixed_cache_signer_abandonment_v2,
+    recover_fixed_cache_signer_root_history_v2, recover_fixed_cache_signer_root_settlement_v2,
+    recover_fixed_closed_policy_binding_decision_v2, recover_fixed_closed_root_effect_ack_v1,
+    recover_fixed_closed_root_v8_effect_ack_v1, recover_fixed_closed_root_v8_verified_terminal_v1,
     recover_fixed_committed_source_held_binding_v2, release_fixed_closed_policy_controller_hold_v1,
     release_fixed_closed_policy_source_domain_hold_v1,
     release_fixed_inert_closed_policy_binding_hold_v1,
@@ -123,7 +128,11 @@ use aos_sandbox_broker_session_security::policy_root_ack_client::{
 use aos_sandbox_broker_session_security::policy_root_ack_v8_client::{
     ROOT_V8_ACK_CHALLENGE_FRAME_BYTES, ROOT_V8_ACK_CHALLENGE_MAGIC, ROOT_V8_ACK_QUERY_MAGIC,
     ROOT_V8_ACK_REPLAY_QUERY_MAGIC, ROOT_V8_ACK_SUBMIT_FRAME_BYTES, ROOT_V8_ACK_SUBMIT_MAGIC,
-    encode_root_v8_ack_reply,
+    ROOT_V8_TERMINAL_ACK_CHALLENGE_MAGIC, ROOT_V8_TERMINAL_ACK_SUBMIT_MAGIC,
+    ROOT_V8_TERMINAL_QUERY_MAGIC, ROOT_V8_TERMINAL_RECEIPT_CHALLENGE_MAGIC,
+    ROOT_V8_TERMINAL_RECEIPT_SUBMIT_FRAME_BYTES, ROOT_V8_TERMINAL_RECEIPT_SUBMIT_MAGIC,
+    ROOT_V8_TERMINAL_REPLAY_QUERY_MAGIC, encode_root_v8_ack_reply, encode_root_v8_terminal_reply,
+    encode_root_v8_terminal_stage_ack,
 };
 use aos_sandbox_broker_session_security::policy_signer_credential::{
     PinnedPolicySignerV1, PolicySignerRoleV1,
@@ -164,6 +173,8 @@ enum HeadRequestMode {
     RootEffectAckReplay,
     RootV8EffectAck,
     RootV8EffectAckReplay,
+    RootV8Terminal,
+    RootV8TerminalReplay,
     ClosedBindingStage,
     ClosedBindingPreview,
     ClosedBindingSignerFlight,
@@ -644,6 +655,8 @@ fn serve_held_binding_request(
             | HeadRequestMode::RootEffectAckReplay
             | HeadRequestMode::RootV8EffectAck
             | HeadRequestMode::RootV8EffectAckReplay
+            | HeadRequestMode::RootV8Terminal
+            | HeadRequestMode::RootV8TerminalReplay
             | HeadRequestMode::ClosedBindingSourceCasReplay
     ) {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "replay only").into());
@@ -663,6 +676,12 @@ fn serve_held_binding_request(
         }
         HeadRequestMode::RootV8EffectAckReplay => {
             serve_root_v8_effect_ack_replay(stream, &request[8..24])
+        }
+        HeadRequestMode::RootV8Terminal => {
+            serve_root_v8_terminal(stream, &request[8..24], controller_uid)
+        }
+        HeadRequestMode::RootV8TerminalReplay => {
+            serve_root_v8_terminal_replay(stream, &request[8..24])
         }
         HeadRequestMode::ClosedBindingSourceCasReplay => serve_closed_source_cas_replay_v8(
             stream,
@@ -853,6 +872,10 @@ fn read_head_request(
         Some(magic) if magic == ROOT_V8_ACK_REPLAY_QUERY_MAGIC => {
             HeadRequestMode::RootV8EffectAckReplay
         }
+        Some(magic) if magic == ROOT_V8_TERMINAL_QUERY_MAGIC => HeadRequestMode::RootV8Terminal,
+        Some(magic) if magic == ROOT_V8_TERMINAL_REPLAY_QUERY_MAGIC => {
+            HeadRequestMode::RootV8TerminalReplay
+        }
         Some(magic) if magic == POLICY_BINDING_STAGE_QUERY_MAGIC_V4 => {
             HeadRequestMode::ClosedBindingStage
         }
@@ -921,6 +944,8 @@ fn read_head_request(
             | HeadRequestMode::RootEffectAckReplay
             | HeadRequestMode::RootV8EffectAck
             | HeadRequestMode::RootV8EffectAckReplay
+            | HeadRequestMode::RootV8Terminal
+            | HeadRequestMode::RootV8TerminalReplay
     ) {
         if request[8..24] == [0; 16] {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "zero Q04 query nonce").into());
@@ -933,6 +958,8 @@ fn read_head_request(
             | HeadRequestMode::RootEffectAckReplay
             | HeadRequestMode::RootV8EffectAck
             | HeadRequestMode::RootV8EffectAckReplay
+            | HeadRequestMode::RootV8Terminal
+            | HeadRequestMode::RootV8TerminalReplay
             | HeadRequestMode::ClosedBindingSourceCasReplay
     ) {
         root_custody_gate()?;
@@ -999,6 +1026,14 @@ fn serve_current_head(
     }
     if matches!(mode, HeadRequestMode::RootV8EffectAckReplay) {
         serve_root_v8_effect_ack_replay(stream, &request[8..24])?;
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::RootV8Terminal) {
+        serve_root_v8_terminal(stream, &request[8..24], controller_uid)?;
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::RootV8TerminalReplay) {
+        serve_root_v8_terminal_replay(stream, &request[8..24])?;
         return Ok(());
     }
     if matches!(mode, HeadRequestMode::ClosedBindingSourceCasReplay) {
@@ -2024,19 +2059,141 @@ fn read_root_v8_effect_ack_submission(
     )
 }
 
+fn serve_root_v8_terminal_replay(
+    stream: &mut std::os::unix::net::UnixStream,
+    client_nonce: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    let (binding, epoch) = read_held_root_ack_claim(stream, true)?;
+    let terminal = recover_fixed_closed_root_v8_verified_terminal_v1(binding, epoch)?;
+    let nonce: [u8; 16] = client_nonce.try_into()?;
+    stream.write_all(&encode_root_v8_terminal_reply(
+        nonce,
+        binding,
+        epoch,
+        terminal.map(|record| record.ack()),
+    )?)?;
+    Ok(())
+}
+
+fn serve_root_v8_terminal(
+    stream: &mut std::os::unix::net::UnixStream,
+    client_nonce: &[u8],
+    controller_uid: u32,
+) -> Result<(), Box<dyn Error>> {
+    let (binding, epoch) = read_held_root_ack_claim(stream, false)?;
+    let nonce: [u8; 16] = client_nonce.try_into()?;
+    let credential = read_optional_pin(Path::new(CREDENTIAL_ROOT), "controller-hold-public-key")?
+        .ok_or_else(|| {
+        io::Error::new(io::ErrorKind::PermissionDenied, "Controller pin absent")
+    })?;
+    stream.set_read_timeout(Some(Duration::from_secs(35)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+    let terminal = acknowledge_and_verify_fixed_closed_root_v8_terminal_v1(
+        binding,
+        epoch,
+        controller_uid,
+        &credential,
+        |step| match step {
+            RootV8HeldTerminalStepV1::EffectAck(challenge) => {
+                write_root_v8_terminal_challenge(
+                    stream,
+                    ROOT_V8_TERMINAL_ACK_CHALLENGE_MAGIC,
+                    nonce,
+                    challenge,
+                )?;
+                read_root_terminal_submission::<ROOT_V8_ACK_SUBMIT_FRAME_BYTES>(
+                    stream,
+                    nonce,
+                    ROOT_V8_TERMINAL_ACK_SUBMIT_MAGIC,
+                    false,
+                )
+            }
+            RootV8HeldTerminalStepV1::Acknowledged(ack) => {
+                stream.write_all(&encode_root_v8_terminal_stage_ack(
+                    nonce, binding, epoch, ack,
+                )?)?;
+                Ok(Vec::new())
+            }
+            RootV8HeldTerminalStepV1::RootReceipt(challenge) => {
+                write_root_v8_terminal_challenge(
+                    stream,
+                    ROOT_V8_TERMINAL_RECEIPT_CHALLENGE_MAGIC,
+                    nonce,
+                    challenge,
+                )?;
+                read_root_terminal_submission::<ROOT_V8_TERMINAL_RECEIPT_SUBMIT_FRAME_BYTES>(
+                    stream,
+                    nonce,
+                    ROOT_V8_TERMINAL_RECEIPT_SUBMIT_MAGIC,
+                    true,
+                )
+            }
+        },
+    )?;
+    stream.write_all(&encode_root_v8_terminal_reply(
+        nonce,
+        binding,
+        epoch,
+        Some(terminal.ack()),
+    )?)?;
+    Ok(())
+}
+
+fn write_root_v8_terminal_challenge(
+    stream: &mut std::os::unix::net::UnixStream,
+    magic: &[u8; 8],
+    nonce: [u8; 16],
+    challenge: ControllerEffectAckChallengeV1,
+) -> io::Result<()> {
+    let mut frame = [0; ROOT_V8_ACK_CHALLENGE_FRAME_BYTES];
+    frame[..8].copy_from_slice(magic);
+    frame[8..24].copy_from_slice(&nonce);
+    frame[24..40].copy_from_slice(&challenge.nonce());
+    frame[40..72].copy_from_slice(challenge.cut().as_bytes());
+    stream.write_all(&frame)
+}
+
+fn read_root_terminal_submission<const N: usize>(
+    stream: &mut std::os::unix::net::UnixStream,
+    nonce: [u8; 16],
+    magic: &[u8; 8],
+    require_end: bool,
+) -> io::Result<Vec<u8>> {
+    read_root_submission::<N>(
+        stream,
+        nonce,
+        magic,
+        require_end,
+        "invalid held Controller receipt",
+    )
+}
+
 fn read_root_ack_submission<const N: usize>(
     stream: &mut std::os::unix::net::UnixStream,
     nonce: [u8; 16],
     magic: &[u8; 8],
 ) -> io::Result<Vec<u8>> {
+    read_root_submission::<N>(stream, nonce, magic, true, "invalid Controller ACK receipt")
+}
+
+fn read_root_submission<const N: usize>(
+    stream: &mut std::os::unix::net::UnixStream,
+    nonce: [u8; 16],
+    magic: &[u8; 8],
+    require_end: bool,
+    invalid_message: &'static str,
+) -> io::Result<Vec<u8>> {
     let mut frame = [0; N];
     stream.read_exact(&mut frame)?;
-    let mut trailing = [0];
-    if &frame[..8] != magic || frame[8..24] != nonce || stream.read(&mut trailing)? != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid Controller ACK receipt",
-        ));
+    if &frame[..8] != magic || frame[8..24] != nonce {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, invalid_message));
+    }
+    if require_end {
+        let mut trailing = [0];
+        if stream.read(&mut trailing)? != 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, invalid_message));
+        }
     }
     Ok(frame[24..].to_vec())
 }
@@ -2776,6 +2933,8 @@ fn select_project_source<'a>(
         | HeadRequestMode::RootEffectAckReplay
         | HeadRequestMode::RootV8EffectAck
         | HeadRequestMode::RootV8EffectAckReplay
+        | HeadRequestMode::RootV8Terminal
+        | HeadRequestMode::RootV8TerminalReplay
         | HeadRequestMode::ClosedBindingSourceCasReplay => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "held Q04 recovery has no project source",
@@ -3322,6 +3481,8 @@ mod tests {
             ROOT_EFFECT_ACK_REPLAY_QUERY_MAGIC_V1,
             ROOT_V8_ACK_QUERY_MAGIC,
             ROOT_V8_ACK_REPLAY_QUERY_MAGIC,
+            ROOT_V8_TERMINAL_QUERY_MAGIC,
+            ROOT_V8_TERMINAL_REPLAY_QUERY_MAGIC,
         ] {
             let (mut client, mut server) = UnixStream::pair().expect("local Root ACK socket");
             let mut request = [0; REQUEST_BYTES];
@@ -3341,6 +3502,8 @@ mod tests {
                     | HeadRequestMode::RootEffectAckReplay
                     | HeadRequestMode::RootV8EffectAck
                     | HeadRequestMode::RootV8EffectAckReplay
+                    | HeadRequestMode::RootV8Terminal
+                    | HeadRequestMode::RootV8TerminalReplay
             ));
 
             request[8..24].fill(0);
@@ -3375,6 +3538,58 @@ mod tests {
         assert!(read(&changed, [7; 16]).is_err());
         assert!(read(&frame[..frame.len() - 1], [7; 16]).is_err());
         assert!(read(&[frame.as_slice(), &[1]].concat(), [7; 16]).is_err());
+    }
+
+    #[test]
+    fn held_v8_terminal_submission_keeps_first_stage_open_and_bounds_final_stage() {
+        let nonce = [7; 16];
+        let mut ack = [0; ROOT_V8_ACK_SUBMIT_FRAME_BYTES];
+        ack[..8].copy_from_slice(ROOT_V8_TERMINAL_ACK_SUBMIT_MAGIC);
+        ack[8..24].copy_from_slice(&nonce);
+        ack[24..].fill(9);
+        let (mut client, mut root) = UnixStream::pair().unwrap();
+        client.write_all(&ack).unwrap();
+        assert_eq!(
+            read_root_terminal_submission::<ROOT_V8_ACK_SUBMIT_FRAME_BYTES>(
+                &mut root,
+                nonce,
+                ROOT_V8_TERMINAL_ACK_SUBMIT_MAGIC,
+                false,
+            )
+            .unwrap(),
+            vec![9; ack.len() - 24]
+        );
+
+        let mut receipt = [0; ROOT_V8_TERMINAL_RECEIPT_SUBMIT_FRAME_BYTES];
+        receipt[..8].copy_from_slice(ROOT_V8_TERMINAL_RECEIPT_SUBMIT_MAGIC);
+        receipt[8..24].copy_from_slice(&nonce);
+        receipt[24..].fill(10);
+        client.write_all(&receipt).unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        assert_eq!(
+            read_root_terminal_submission::<ROOT_V8_TERMINAL_RECEIPT_SUBMIT_FRAME_BYTES>(
+                &mut root,
+                nonce,
+                ROOT_V8_TERMINAL_RECEIPT_SUBMIT_MAGIC,
+                true,
+            )
+            .unwrap(),
+            vec![10; receipt.len() - 24]
+        );
+
+        let (mut client, mut root) = UnixStream::pair().unwrap();
+        client.write_all(&receipt).unwrap();
+        client.write_all(&[1]).unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        assert!(
+            read_root_terminal_submission::<ROOT_V8_TERMINAL_RECEIPT_SUBMIT_FRAME_BYTES>(
+                &mut root,
+                nonce,
+                ROOT_V8_TERMINAL_RECEIPT_SUBMIT_MAGIC,
+                true,
+            )
+            .is_err()
+        );
     }
 
     #[test]

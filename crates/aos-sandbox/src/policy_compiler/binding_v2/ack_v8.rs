@@ -42,6 +42,16 @@ pub use terminal::{
     verify_fixed_closed_root_v8_terminal_v1,
 };
 
+/// Identifies one step of the Root-held V8 terminal socket exchange.
+pub enum RootV8HeldTerminalStepV1 {
+    /// Requests Controller's signed no-Apply effect ACK.
+    EffectAck(ControllerEffectAckChallengeV1),
+    /// Sends the durable Root ACK so Controller can retain its exact receipt.
+    Acknowledged(RootV8EffectAckV1),
+    /// Requests Controller's signed readback of that retained Root receipt.
+    RootReceipt(ControllerEffectAckChallengeV1),
+}
+
 const ACK_KEY: &[u8] = b"\0aos-policy-compiler-root-v8-effect-ack-v1\0";
 const CHALLENGE_KEY: &[u8] = b"\0aos-policy-compiler-root-v8-effect-ack-challenge-v1\0";
 const MAGIC: &[u8; 8] = b"AOSPC88A";
@@ -481,6 +491,76 @@ pub fn acknowledge_fixed_closed_root_v8_effect_v1(
     )
 }
 
+/// Completes both V8 receipt flights beneath one held Root journal writer.
+///
+/// The callback sends the intermediate ACK before responding to the fresh
+/// receipt challenge. Controller must retain its earlier owner writers and
+/// durably store that ACK before it signs the second packet. This function
+/// returns no release authority.
+///
+/// # Errors
+///
+/// Rejects changed Root custody, a mismatched Controller signer or receipt,
+/// ambiguous transport, or failed protected journal durability.
+pub fn acknowledge_and_verify_fixed_closed_root_v8_terminal_v1(
+    binding: ObjectDigest,
+    epoch: u64,
+    uid: u32,
+    credential: &[u8],
+    exchange: impl FnMut(RootV8HeldTerminalStepV1) -> io::Result<Vec<u8>>,
+) -> Result<RootV8VerifiedTerminalV1, RootV8EffectAckErrorV1> {
+    let (mut journal, _) = Journal::open_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+
+    acknowledge_and_verify_in_authority(
+        &mut authority,
+        binding,
+        epoch,
+        uid,
+        credential,
+        super::super::controller_readback_session::fresh_root_nonce,
+        super::super::controller_readback_session::fresh_root_nonce,
+        exchange,
+    )
+}
+
+fn acknowledge_and_verify_in_authority(
+    authority: &mut ProtectedJournalAuthority<'_>,
+    binding: ObjectDigest,
+    epoch: u64,
+    uid: u32,
+    credential: &[u8],
+    fresh_ack_nonce: impl FnOnce() -> io::Result<[u8; 16]>,
+    fresh_terminal_nonce: impl FnOnce() -> io::Result<[u8; 16]>,
+    mut exchange: impl FnMut(RootV8HeldTerminalStepV1) -> io::Result<Vec<u8>>,
+) -> Result<RootV8VerifiedTerminalV1, RootV8EffectAckErrorV1> {
+    let ack = acknowledge_in_authority(
+        authority,
+        binding,
+        epoch,
+        uid,
+        credential,
+        fresh_ack_nonce,
+        |challenge| exchange(RootV8HeldTerminalStepV1::EffectAck(challenge)),
+    )?;
+    if !exchange(RootV8HeldTerminalStepV1::Acknowledged(ack))?.is_empty() {
+        return Err(RootV8EffectAckErrorV1::Stale);
+    }
+    terminal::verify_in_authority(
+        authority,
+        binding,
+        epoch,
+        uid,
+        credential,
+        fresh_terminal_nonce,
+        |challenge| exchange(RootV8HeldTerminalStepV1::RootReceipt(challenge)),
+    )
+}
+
 fn acknowledge_in_authority(
     authority: &mut ProtectedJournalAuthority<'_>,
     binding: ObjectDigest,
@@ -612,40 +692,19 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
 
-    #[test]
-    fn v8_root_ack_codec_rejects_cross_version_and_corruption() {
-        let record = RootV8EffectAckV1 {
-            binding: ObjectDigest::from_bytes([1; 32]),
-            epoch: 2,
-            operation: OperationId::from_bytes([3; 16]),
-            sandbox: SandboxId::from_bytes([4; 16]),
-            accepted_generation: 5,
-            effect_transaction: [6; 16],
-            terminal: ObjectDigest::from_bytes([7; 32]),
-            proof: ObjectDigest::from_bytes([8; 32]),
-            quota: ObjectDigest::from_bytes([9; 32]),
-            controller_ack: ObjectDigest::from_bytes([10; 32]),
-            receipt: ObjectDigest::from_bytes([11; 32]),
-            signer_generation: 12,
-            controller_uid: 13,
-            nonce: [14; 16],
-        };
-        let bytes = record.encode().unwrap();
-        assert_eq!(RootV8EffectAckV1::decode(&bytes).unwrap(), record);
-        for offset in [
-            0, 8, 16, 48, 56, 72, 88, 96, 112, 144, 176, 208, 240, 272, 280, 284, 300,
-        ] {
-            let mut altered = bytes;
-            altered[offset] ^= 1;
-            assert!(RootV8EffectAckV1::decode(&altered).is_err());
-        }
+    struct V8RootFixture {
+        binding: ClosedPolicyRootBindingV2,
+        binding_head: ObjectDigest,
+        controller_key: SigningKey,
+        controller_pin: Vec<u8>,
+        proof_bytes: Vec<u8>,
+        ack: ControllerPolicyV8EffectAckV1,
     }
 
-    #[test]
-    fn v8_root_ack_cold_replay_rejects_rotated_credential_and_forged_proof() {
-        let directory = tempfile::tempdir().unwrap();
-        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    fn prepare_v8_root_fixture(directory: &Path) -> V8RootFixture {
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
         let binding = super::super::tests::cas_fixture();
         let proposed = binding.encode().unwrap();
         let binding_head = closed_policy_binding_digest_v2(&proposed).unwrap();
@@ -685,7 +744,7 @@ mod tests {
         };
         let proof_bytes = proof.encode().unwrap();
 
-        let mut root = super::super::tests::open_test_root(directory.path());
+        let mut root = super::super::tests::open_test_root(directory);
         let mut authority = root
             .claim_protected_authority(RecordNamespace::DesiredState)
             .unwrap();
@@ -747,6 +806,143 @@ mod tests {
             proof.quota,
         )
         .unwrap();
+
+        V8RootFixture {
+            binding,
+            binding_head,
+            controller_key,
+            controller_pin: controller_pin.to_vec(),
+            proof_bytes: proof_bytes.to_vec(),
+            ack,
+        }
+    }
+
+    #[test]
+    fn v8_root_ack_codec_rejects_cross_version_and_corruption() {
+        let record = RootV8EffectAckV1 {
+            binding: ObjectDigest::from_bytes([1; 32]),
+            epoch: 2,
+            operation: OperationId::from_bytes([3; 16]),
+            sandbox: SandboxId::from_bytes([4; 16]),
+            accepted_generation: 5,
+            effect_transaction: [6; 16],
+            terminal: ObjectDigest::from_bytes([7; 32]),
+            proof: ObjectDigest::from_bytes([8; 32]),
+            quota: ObjectDigest::from_bytes([9; 32]),
+            controller_ack: ObjectDigest::from_bytes([10; 32]),
+            receipt: ObjectDigest::from_bytes([11; 32]),
+            signer_generation: 12,
+            controller_uid: 13,
+            nonce: [14; 16],
+        };
+        let bytes = record.encode().unwrap();
+        assert_eq!(RootV8EffectAckV1::decode(&bytes).unwrap(), record);
+        for offset in [
+            0, 8, 16, 48, 56, 72, 88, 96, 112, 144, 176, 208, 240, 272, 280, 284, 300,
+        ] {
+            let mut altered = bytes;
+            altered[offset] ^= 1;
+            assert!(RootV8EffectAckV1::decode(&altered).is_err());
+        }
+    }
+
+    #[test]
+    fn fresh_v8_ack_and_terminal_complete_under_one_root_writer() {
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = prepare_v8_root_fixture(directory.path());
+        let mut root = super::super::tests::open_test_root(directory.path());
+        let mut authority = root
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        let mut stage = 0;
+        let mut committed = None;
+
+        let terminal = acknowledge_and_verify_in_authority(
+            &mut authority,
+            fixture.binding_head,
+            fixture.binding.handoff_epoch,
+            1234,
+            &fixture.controller_pin,
+            || Ok([21; 16]),
+            || Ok([22; 16]),
+            |step| match step {
+                RootV8HeldTerminalStepV1::EffectAck(challenge) => {
+                    assert_eq!(stage, 0);
+                    stage = 1;
+                    Ok(sign_test_controller_v8_effect_ack_readback_v1(
+                        fixture.ack,
+                        1234,
+                        challenge,
+                        4,
+                        &fixture.controller_key,
+                    )
+                    .unwrap()
+                    .to_vec())
+                }
+                RootV8HeldTerminalStepV1::Acknowledged(row) => {
+                    assert_eq!(stage, 1);
+                    assert_eq!(row.controller_ack(), fixture.ack.record_digest().unwrap());
+                    stage = 2;
+                    committed = Some(row);
+                    Ok(Vec::new())
+                }
+                RootV8HeldTerminalStepV1::RootReceipt(challenge) => {
+                    assert_eq!(stage, 2);
+                    stage = 3;
+                    Ok(sign_test_controller_v8_root_receipt_readback_v1(
+                        committed.unwrap(),
+                        1234,
+                        challenge,
+                        4,
+                        &fixture.controller_key,
+                    )
+                    .unwrap()
+                    .to_vec())
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(stage, 3);
+        assert_eq!(Some(terminal.ack()), committed);
+        assert_eq!(
+            terminal::current_terminal(
+                &authority,
+                fixture.binding_head,
+                fixture.binding.handoff_epoch,
+            )
+            .unwrap(),
+            Some(terminal)
+        );
+        drop(authority);
+        drop(root);
+
+        let mut reopened = super::super::tests::open_test_root(directory.path());
+        let authority = reopened
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        assert_eq!(
+            terminal::current_terminal(
+                &authority,
+                fixture.binding_head,
+                fixture.binding.handoff_epoch,
+            )
+            .unwrap(),
+            Some(terminal)
+        );
+    }
+
+    #[test]
+    fn v8_root_ack_cold_replay_rejects_rotated_credential_and_forged_proof() {
+        let directory = tempfile::tempdir().unwrap();
+        let V8RootFixture {
+            binding,
+            binding_head,
+            controller_key,
+            controller_pin,
+            proof_bytes,
+            ack,
+        } = prepare_v8_root_fixture(directory.path());
+        let attempt = ack.attempt();
         let mut cold = super::super::tests::open_test_root(directory.path());
         let mut authority = cold
             .claim_protected_authority(RecordNamespace::DesiredState)
@@ -910,23 +1106,36 @@ mod tests {
             )
             .is_err()
         );
-        let terminal = terminal::verify_in_authority(
+        let mut acknowledged = false;
+        let terminal = acknowledge_and_verify_in_authority(
             &mut authority,
             binding_head,
             binding.handoff_epoch,
             1234,
             &controller_pin,
+            || panic!("historical ACK must not spend another nonce"),
             || Ok([19; 16]),
-            |challenge| {
-                Ok(sign_test_controller_v8_root_receipt_readback_v1(
-                    committed,
-                    1234,
-                    challenge,
-                    4,
-                    &controller_key,
-                )
-                .unwrap()
-                .to_vec())
+            |step| match step {
+                RootV8HeldTerminalStepV1::EffectAck(_) => {
+                    panic!("historical ACK must not request another packet")
+                }
+                RootV8HeldTerminalStepV1::Acknowledged(row) => {
+                    assert_eq!(row, committed);
+                    acknowledged = true;
+                    Ok(Vec::new())
+                }
+                RootV8HeldTerminalStepV1::RootReceipt(challenge) => {
+                    assert!(acknowledged);
+                    Ok(sign_test_controller_v8_root_receipt_readback_v1(
+                        committed,
+                        1234,
+                        challenge,
+                        4,
+                        &controller_key,
+                    )
+                    .unwrap()
+                    .to_vec())
+                }
             },
         )
         .unwrap();
