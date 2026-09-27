@@ -15,6 +15,7 @@
     };
   policyAuthority = brokers.policyAuthority or {enable = false;};
   cacheSignerView = brokers.cacheSignerView or {enable = false;};
+  sourceSignerView = brokers.sourceSignerView or {enable = false;};
   brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
   brokerSessionEndpoints = map (endpoint:
     endpoint
@@ -130,6 +131,12 @@
     "publisher-policy-v1.cbor:/run/credentials/@system/${cfg.credentials.publisherPolicy}"
     "publisher-policy-source-public-key-v1:/run/credentials/@system/${cfg.credentials.publisherPolicySourcePublicKey}"
   ];
+  projectAuthorizationIssuerCredential =
+    lib.optional (cfg.credentials.projectAuthorizationIssuer != null)
+    "project-authorization-issuer-v2:/run/credentials/@system/${cfg.credentials.projectAuthorizationIssuer}";
+  controllerSourceTreeSeedIssuerCredential =
+    lib.optional (cfg.credentials.controllerSourceTreeSeedIssuer != null)
+    "controller-source-tree-seed-issuer-v1:/run/credentials/@system/${cfg.credentials.controllerSourceTreeSeedIssuer}";
 in {
   options.aos.sandbox.controllerService = {
     enable = lib.mkEnableOption "the production unprivileged sandbox node controller";
@@ -223,6 +230,16 @@ in {
           type = lib.types.nullOr lib.serviceTypes.credentialName;
           default = null;
           description = "Dedicated 32-byte Ed25519 verifier for the publisher-policy source.";
+        };
+        projectAuthorizationIssuer = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Optional separately provisioned 80-byte AOSPAK02 project-authorization issuer pin; absence keeps protected project-authorization retention closed.";
+        };
+        controllerSourceTreeSeedIssuer = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Optional separately provisioned 80-byte AOSCSK01 Controller Source-tree seed public verifier; absence keeps fixed-issuer seed verification closed.";
         };
         publicApiEntitlements = lib.mkOption {
           type = lib.types.nullOr lib.serviceTypes.credentialName;
@@ -444,6 +461,7 @@ in {
         ]
         ++ lib.optional policyAuthority.enable "aos-sandbox-cache-journal-view.service"
         ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service"
+        ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service"
         ++ lib.optional ownershipAuthority.enable "aos-sandbox-ownershipd.socket"
         ++ lib.optional cfg.publisherIngress.enable "aos-sandboxd-publisher.socket";
       after =
@@ -456,13 +474,15 @@ in {
         ]
         ++ lib.optional policyAuthority.enable "aos-sandbox-cache-journal-view.service"
         ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service"
+        ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service"
         ++ lib.optional ownershipAuthority.enable "aos-sandbox-ownershipd.socket"
         ++ lib.optional cfg.publisherIngress.enable "aos-sandboxd-publisher.socket";
       unitConfig = {
         RequiresMountsFor = ["/sys/fs/cgroup"];
         BindsTo =
           lib.optional policyAuthority.enable "aos-sandbox-cache-journal-view.service"
-          ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service";
+          ++ lib.optional cacheSignerView.enable "aos-sandbox-cache-signer-views.service"
+          ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service";
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
       };
@@ -490,7 +510,9 @@ in {
           ++ bootstrapCredentials
           ++ operatorRecoveryCredentials
           ++ publisherScopeCredential
-          ++ publisherPolicySourceCredentials;
+          ++ publisherPolicySourceCredentials
+          ++ projectAuthorizationIssuerCredential
+          ++ controllerSourceTreeSeedIssuerCredential;
         Restart = "on-failure";
         RestartSec = "2s";
         TimeoutStartSec = "90s";

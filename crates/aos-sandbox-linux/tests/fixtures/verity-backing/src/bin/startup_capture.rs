@@ -10,7 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::process::Command;
 
     use aos_sandbox_linux::startup_fd_table::{
-        claim_initial_process_fd_table_once, StartupFdCaptureHardLimitsV1,
+        StartupFdCaptureHardLimitsV1, claim_initial_process_fd_table_once,
     };
 
     let mut arguments = env::args_os();

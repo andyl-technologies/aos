@@ -8,9 +8,9 @@
 //!
 //! The bootstrap state machine specializes the mandatory first Network 1.0
 //! `InventoryResources` exchange. [`all_methods`] supplies the dormant uniform
-//! semantic, durability, replay, and recovery composition for every method in
-//! the closed Host, Storage, Mount, and Network profile. Neither path is wired
-//! to production dispatch.
+//! semantic, durability, replay, and recovery composition for methods in the
+//! closed Host, Storage, Mount, and Network profile. Production dispatch
+//! selects only independently qualified method routes.
 
 /// Holds dormant method-complete authenticated semantic composition.
 pub mod all_methods;
@@ -1274,6 +1274,7 @@ fn protocol_id_for_profile(protocol: BrokerSessionProtocolV1) -> ProtocolId {
         BrokerSessionProtocolV1::Host => ProtocolId::HostBroker,
         BrokerSessionProtocolV1::Storage => ProtocolId::StorageBroker,
         BrokerSessionProtocolV1::Mount => ProtocolId::MountBroker,
+        BrokerSessionProtocolV1::MountFuse => ProtocolId::MountFuseBroker,
         BrokerSessionProtocolV1::Network => ProtocolId::NetworkBroker,
     }
 }
@@ -1292,7 +1293,7 @@ fn profile_features_are_negotiated(
     })
 }
 
-fn validate_request_against_profile(
+pub(crate) fn validate_request_against_profile(
     request: &ValidatedBrokerRequestEnvelope,
     profile: &BrokerSessionMethodProfileV1,
 ) -> Result<(), ProtocolValidationError> {

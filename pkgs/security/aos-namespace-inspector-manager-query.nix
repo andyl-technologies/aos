@@ -16,7 +16,7 @@
     filter = path: type:
       type == "directory" || builtins.baseNameOf path == "systemd_v259_properties.def";
   };
-  manifest = manifestDirectory + "/systemd_v259_properties.def";
+  manifest = "${manifestDirectory}/systemd_v259_properties.def";
   fixtureDirectory = builtins.path {
     path = ../../tests/sandbox;
     name = "aos-namespace-inspector-manager-query-fixture-source";
@@ -26,19 +26,19 @@
       || builtins.baseNameOf path == "broker-loader-environment-test.c";
   };
   helperSources = [
-    (helperDirectory + "/main.c")
-    (helperDirectory + "/protocol.c")
-    (helperDirectory + "/systemd-query.c")
-    (helperDirectory + "/fd-table.c")
+    "${helperDirectory}/main.c"
+    "${helperDirectory}/protocol.c"
+    "${helperDirectory}/systemd-query.c"
+    "${helperDirectory}/fd-table.c"
   ];
   brokerSources = [
-    (helperDirectory + "/broker-query.c")
-    (helperDirectory + "/fd-table.c")
+    "${helperDirectory}/broker-query.c"
+    "${helperDirectory}/fd-table.c"
   ];
   fixtureSources = [
-    (fixtureDirectory + "/namespace-inspector-manager-query-fixture.c")
-    (fixtureDirectory + "/namespace-inspector-manager-query-fixture-bus.c")
-    (fixtureDirectory + "/namespace-inspector-manager-query-fixture-cases.c")
+    "${fixtureDirectory}/namespace-inspector-manager-query-fixture.c"
+    "${fixtureDirectory}/namespace-inspector-manager-query-fixture-bus.c"
+    "${fixtureDirectory}/namespace-inspector-manager-query-fixture-cases.c"
   ];
 in
   assert systemd.version == "261.2";
@@ -123,16 +123,18 @@ in
         (source:
           builtins.path {
             path = source;
-            name = builtins.baseNameOf source;
+            # The basename is a store object label, not a reference to its
+            # containing source tree; preserve the context on `path` only.
+            name = builtins.baseNameOf (builtins.unsafeDiscardStringContext source);
           })
         (
           helperSources
           ++ brokerSources
           ++ fixtureSources
           ++ [
-            (helperDirectory + "/helper.h")
-            (fixtureDirectory + "/namespace-inspector-manager-query-fixture.h")
-            (fixtureDirectory + "/broker-loader-environment-test.c")
+            "${helperDirectory}/helper.h"
+            "${fixtureDirectory}/namespace-inspector-manager-query-fixture.h"
+            "${fixtureDirectory}/broker-loader-environment-test.c"
             manifest
             ./aos-namespace-inspector-manager-query.nix
           ]

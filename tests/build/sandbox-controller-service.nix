@@ -212,7 +212,7 @@ in
   assert builtins.elem "aos-sandbox-ownershipd.socket" ownershipService.requires;
   assert builtins.elem "aos-sandbox-ownershipd.socket" ownershipService.after;
   assert ! (hostServiceConfig ? Slice);
-  assert requires "LoadCredential =\n          nodeCredentials\n          ++ cacheReplayCredentials\n          ++ guestRootTemplateCredentials" moduleSource;
+  assert requires "LoadCredential =\n          nodeCredentials\n          ++ cacheReplayCredentials\n          ++ cacheReadbackCredentials\n          ++ controllerHoldCredentials\n          ++ guestRootTemplateCredentials" moduleSource;
   assert requires ''required = true;'' moduleSource;
   assert requires ''aos-sandbox-hostd.service'' moduleSource;
   assert requires ''aos-storaged.service'' moduleSource;

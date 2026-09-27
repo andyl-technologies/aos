@@ -941,6 +941,17 @@ pub enum DormantBrokerRequestPreparationV1 {
     },
 }
 
+impl DormantBrokerRequestPreparationV1 {
+    /// Borrows the exact signed request retained across protected preparation ambiguity.
+    pub(crate) const fn signed_request(&self) -> &AuthenticatedBrokerMethodRequestV1 {
+        match self {
+            Self::Prepared(request) => &request.0,
+            Self::InitializationRecoveryRequired { request, .. }
+            | Self::SuccessorRecoveryRequired { request, .. } => &request.0,
+        }
+    }
+}
+
 /// Classifies descriptor-request preparation without losing FD custody.
 #[must_use = "recover ambiguity before sending any descriptor"]
 pub enum DormantBrokerDescriptorRequestPreparationV1 {
@@ -1020,6 +1031,19 @@ pub enum DormantHostConsumerCgroupResponseProgressV1 {
     Pending(DormantOutstandingBrokerRequestV1),
     /// The signed result and same-session FD pair passed physical readback.
     Readback(crate::ProtectedHostConsumerCgroupTransferV1),
+    /// Protected outcome commit is uncertain; FD custody remains sealed.
+    RecoveryRequired(DormantBrokerDescriptorCommitRecoveryV1),
+    /// Host finalization is uncertain; FD custody remains sealed.
+    HostFinalizationRequired(DormantHostScopeTerminalFinalizationV1),
+}
+
+/// Retains a method-45 signed packet with its exact five received descriptors.
+#[must_use = "retain or recover the signed Host namespace readback"]
+pub enum DormantHostMountScopeIdentityResponseProgressV1 {
+    /// No packet arrived; the same signed request remains outstanding.
+    Pending(DormantOutstandingBrokerRequestV1),
+    /// The signed result and same-record five FDs passed physical readback.
+    Readback(crate::ProtectedHostMountScopeIdentityTransferV1),
     /// Protected outcome commit is uncertain; FD custody remains sealed.
     RecoveryRequired(DormantBrokerDescriptorCommitRecoveryV1),
     /// Host finalization is uncertain; FD custody remains sealed.
@@ -1412,6 +1436,14 @@ impl DormantBrokerOutcomeVerificationV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(crate) fn historical_host_terminal_no_apply_archive(
+        &mut self,
+        source: &aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1,
+    ) -> Result<crate::recovery::AuthenticatedOriginalHostNoApplyJoinV1, BrokerSessionSecurityError>
+    {
+        self.0.historical_host_terminal_no_apply_archive(source)
+    }
+
     /// Returns the current verified Storage transcript binding for this socket.
     ///
     /// # Errors
@@ -1824,17 +1856,26 @@ impl DormantAuthenticatedBrokerSessionV1 {
         DormantBrokerExecutionFailureV1<crate::HostExecutionHandoffErrorV1>,
     > {
         let method = request.0.method();
-        let method_matches = matches!(
+        let method_matches = if matches!(
             method,
-            BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
-                | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
-                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
-                | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
-        ) && request.0.authorization().is_some();
+            BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
+        ) {
+            request.0.authorization().is_none()
+        } else {
+            matches!(
+                method,
+                BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
+                    | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
+                    | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
+                    | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+                    | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
+                    | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
+                    | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
+                    | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+                    | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
+            ) && request.0.authorization().is_some()
+        };
         let (request, context) = self.begin_execution(request, method_matches)?;
         let body = match crate::host_execution_handoff::dispatch_host_execution_handoff_v1(
             host,
@@ -1901,6 +1942,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             request.0.method(),
             BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
         ) && adapter.matches_request(&request.0);
         if !method_matches {
             return Err(DormantBrokerDescriptorExecutionFailureV1::BeforeEffect {
@@ -2013,7 +2055,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
             BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE => {
                 aos_sandbox_protocol::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES.as_slice()
             }
-            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE => {
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
                 aos_sandbox_protocol::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES.as_slice()
             }
             _ => {
@@ -4706,6 +4749,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             method,
             BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
         ) && adapter.matches_request(replay.request());
         if !method_matches {
             return DormantBrokerDescriptorTerminalReplayRecoveryProgressV1::RecoveryRequired {
@@ -5874,7 +5918,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
             BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE => {
                 aos_sandbox_protocol::payload_scope::PAYLOAD_SCOPE_DESCRIPTOR_ROLES.len()
             }
-            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE => {
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
                 aos_sandbox_protocol::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES.len()
             }
             BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP => {
@@ -5983,6 +6028,63 @@ impl DormantAuthenticatedBrokerSessionV1 {
             ) => {
                 Ok(DormantHostConsumerCgroupResponseProgressV1::HostFinalizationRequired(recovery))
             }
+        }
+    }
+
+    /// Receives method 45 with its five FDs in one authenticated session record.
+    ///
+    /// Production hello excludes this method. The result retains the signed
+    /// terminal and physical pins but cannot authorize a Mount effect.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another method, changed session/peer, malformed signed body,
+    /// inexact FD roles, or mismatched current namespace identities.
+    pub fn receive_authenticated_mount_scope_identity_response(
+        &mut self,
+        outstanding: DormantOutstandingBrokerRequestV1,
+    ) -> Result<DormantHostMountScopeIdentityResponseProgressV1, DormantBrokerSessionHandshakeErrorV1>
+    {
+        if outstanding.0.method()
+            != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
+        {
+            return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
+        }
+        let host_peer_pidfd = self.0.retain_authenticated_peer_pidfd()?;
+        let progress = self.receive_authenticated_scope_response(outstanding)?;
+        match progress {
+            DormantBrokerDescriptorResponseProgressV1::Pending(outstanding) => Ok(
+                DormantHostMountScopeIdentityResponseProgressV1::Pending(outstanding),
+            ),
+            DormantBrokerDescriptorResponseProgressV1::Committed(
+                DormantBrokerDescriptorCommitResultV1::Committed(response),
+            ) => {
+                let DormantCommittedBrokerDescriptorResponseV1 {
+                    committed,
+                    descriptors,
+                    ..
+                } = response;
+                let (outcome, currentness) = committed.into_outcome_and_currentness();
+                let readback =
+                    crate::ProtectedHostMountScopeIdentityTransferV1::from_authenticated_response(
+                        outcome,
+                        currentness,
+                        descriptors,
+                        host_peer_pidfd,
+                    )
+                    .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?;
+                Ok(DormantHostMountScopeIdentityResponseProgressV1::Readback(
+                    readback,
+                ))
+            }
+            DormantBrokerDescriptorResponseProgressV1::Committed(
+                DormantBrokerDescriptorCommitResultV1::RecoveryRequired(recovery),
+            ) => Ok(DormantHostMountScopeIdentityResponseProgressV1::RecoveryRequired(recovery)),
+            DormantBrokerDescriptorResponseProgressV1::Committed(
+                DormantBrokerDescriptorCommitResultV1::HostFinalizationRequired(recovery),
+            ) => Ok(
+                DormantHostMountScopeIdentityResponseProgressV1::HostFinalizationRequired(recovery),
+            ),
         }
     }
 

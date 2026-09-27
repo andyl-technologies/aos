@@ -518,6 +518,7 @@ impl BrokerEffectIntentV1 {
                 | BrokerVerb::HostQueryExecution
                 | BrokerVerb::HostReserveExecutionOutput
                 | BrokerVerb::HostQueryExecutionOutput
+                | BrokerVerb::HostObserveStorageOutput
                 | BrokerVerb::HostObserveExecutionArgument
                 | BrokerVerb::HostQueryExecutionArgument
                 | BrokerVerb::HostTerminalNoApply

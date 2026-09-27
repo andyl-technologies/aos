@@ -90,6 +90,11 @@ impl<C> RetainedBrokerExchangeV1<C> {
         self.pending.as_ref().map(|pending| &pending.context)
     }
 
+    /// Updates an unsent request's caller context after a second protected append.
+    pub(crate) fn context_mut(&mut self) -> Option<&mut C> {
+        self.pending.as_mut().map(|pending| &mut pending.context)
+    }
+
     /// Retains a caller-validated preparation and its exact context.
     pub(crate) fn start(&mut self, context: C, preparation: DormantBrokerRequestPreparationV1) {
         self.pending = Some(PendingExchangeV1 {

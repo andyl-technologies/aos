@@ -59,9 +59,14 @@ use crate::{
 };
 
 mod held_snapshot;
+mod held_snapshot_reader;
 mod wire;
 
 pub(crate) use held_snapshot::{HeldSnapshotPhysicalObservationV1, HeldSnapshotWorkerBindingV1};
+pub use held_snapshot_reader::run_inherited_held_snapshot_reader;
+pub(crate) use held_snapshot_reader::{
+    HeldSnapshotReaderObservationV1, SystemdHeldSnapshotReaderV1,
+};
 
 use wire::{
     AtomicSnapshotRequestVerbV1, AtomicSnapshotWorkerRequestV1, MAXIMUM_OBSERVATION_RESPONSE_BYTES,
@@ -1126,31 +1131,54 @@ fn decode_ack(bytes: &[u8]) -> Result<(), ZfsWorkerError> {
 }
 
 fn encode_ready(cgroup: &str) -> Result<Vec<u8>, ZfsWorkerError> {
+    encode_ready_frame(cgroup, READY_MAGIC, WIRE_VERSION)
+}
+
+fn encode_ready_frame(
+    cgroup: &str,
+    magic: &[u8; 8],
+    version: u16,
+) -> Result<Vec<u8>, ZfsWorkerError> {
     let cgroup = cgroup.as_bytes();
     let length = u16::try_from(cgroup.len())
         .map_err(|_| ZfsWorkerError::Protocol("worker cgroup is too long"))?;
     let mut bytes = Vec::with_capacity(12 + cgroup.len());
-    bytes.extend_from_slice(READY_MAGIC);
-    bytes.extend_from_slice(&WIRE_VERSION.to_be_bytes());
+    bytes.extend_from_slice(magic);
+    bytes.extend_from_slice(&version.to_be_bytes());
     bytes.extend_from_slice(&length.to_be_bytes());
     bytes.extend_from_slice(cgroup);
     Ok(bytes)
 }
 
 fn decode_ready(bytes: &[u8]) -> Result<&str, ZfsWorkerError> {
+    let cgroup = decode_ready_frame(bytes, READY_MAGIC, WIRE_VERSION)?;
+    validate_worker_cgroup(cgroup)?;
+    Ok(cgroup)
+}
+
+fn decode_ready_frame<'a>(
+    bytes: &'a [u8],
+    magic: &[u8; 8],
+    version: u16,
+) -> Result<&'a str, ZfsWorkerError> {
     let mut decoder = Decoder::new(bytes);
-    if decoder.take(8)? != READY_MAGIC || decoder.u16()? != WIRE_VERSION {
+    if decoder.take(8)? != magic || decoder.u16()? != version {
         return Err(ZfsWorkerError::Protocol("ready magic or version mismatch"));
     }
     let length = usize::from(decoder.u16()?);
     let cgroup = std::str::from_utf8(decoder.take(length)?)
         .map_err(|_| ZfsWorkerError::Protocol("worker cgroup is not UTF-8"))?;
     decoder.finish()?;
-    validate_worker_cgroup(cgroup)?;
     Ok(cgroup)
 }
 
 fn current_cgroup() -> Result<String, ZfsWorkerError> {
+    let path = current_cgroup_path()?;
+    validate_worker_cgroup(&path)?;
+    Ok(path)
+}
+
+fn current_cgroup_path() -> Result<String, ZfsWorkerError> {
     let mut file = File::open("/proc/self/cgroup")?;
     let mut bytes = Vec::new();
     file.by_ref()
@@ -1165,7 +1193,6 @@ fn current_cgroup() -> Result<String, ZfsWorkerError> {
         .lines()
         .find_map(|line| line.strip_prefix("0::/"))
         .ok_or(ZfsWorkerError::Protocol("unified worker cgroup is absent"))?;
-    validate_worker_cgroup(path)?;
     Ok(path.to_owned())
 }
 

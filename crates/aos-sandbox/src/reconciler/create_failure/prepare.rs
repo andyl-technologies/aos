@@ -37,6 +37,7 @@ use super::{
 const MAGIC: &[u8; 8] = b"AOSCFP01";
 const DOMAIN: &[u8] = b"aos.sandbox.create-failure-prepare.v1\0";
 const HEAD_DOMAIN: &[u8] = b"aos.sandbox.create-failure-prepare-head.v1\0";
+const CAS_DOMAIN: &[u8] = b"aos.sandbox.create-failure-settlement-cas.v1\0";
 const RECORD_DOMAIN: &[u8] = b"aos.sandbox.create-failure-prepare-record.v1\0";
 const VERSION: u16 = 1;
 const BYTES: usize = 8
@@ -136,6 +137,20 @@ impl CreateFailurePrepareV1 {
                 .finalize()
                 .into(),
         )
+    }
+
+    /// Commits the exact prepared floor and three successor record bytes.
+    ///
+    /// Callers may issue this coordinate only after durable CAS and replay
+    /// validation have re-read those exact successor records.
+    pub(super) fn settled_cas_digest(self) -> ObjectDigest {
+        let mut hasher = Sha256::new()
+            .chain_update(CAS_DOMAIN)
+            .chain_update(self.digest().as_bytes());
+        for digest in self.successor {
+            hasher.update(digest.as_bytes());
+        }
+        ObjectDigest::from_bytes(hasher.finalize().into())
     }
 
     pub(super) fn decode(key: &[u8], bytes: &[u8]) -> Result<Self, ReconcilerError> {
@@ -277,6 +292,45 @@ pub(super) fn validate_historical_host_floor_join(
         || preliminary.digest() != floor.host_lease_head
         || sealed.controller_floor != Some(floor.digest())
     {
+        return Err(invalid_settlement());
+    }
+    Ok(())
+}
+
+/// Rejoins a retained Host ACK with an already durable Controller successor.
+///
+/// A Host ACK alone is not evidence that Controller committed its CAS. The
+/// Controller floor and its three successor records must still agree when
+/// cold replay reconstructs this exact settlement.
+#[allow(dead_code, reason = "signed cross-owner ACK transport remains closed")]
+pub(super) fn validate_settled_host_floor_join(
+    journal: &Journal,
+    floor: CreateFailurePrepareV1,
+    preliminary: HostSettlementRecordV1,
+    sealed: HostSettlementRecordV1,
+    retained: HostSettlementRecordV1,
+    protected_host_sequence: u64,
+) -> Result<(), ReconcilerError> {
+    validate_historical_host_floor_join(floor, preliminary, sealed, protected_host_sequence)?;
+    if validate_history(
+        floor.marker,
+        Some(preliminary),
+        Some(sealed),
+        Some(retained),
+        protected_host_sequence,
+    )
+    .map_err(|_| invalid_settlement())?
+        != Some(HostSettlementStageV1::AckRetained)
+        || retained.controller_cas != Some(floor.settled_cas_digest())
+    {
+        return Err(invalid_settlement());
+    }
+
+    validate_all_floors(journal)?;
+    let operation_bytes = journal
+        .get(RecordNamespace::Operation, floor.operation_id.as_bytes())
+        .ok_or_else(invalid_settlement)?;
+    if decode_operation(operation_bytes)?.state != OperationState::FailedBeforeCommit {
         return Err(invalid_settlement());
     }
     Ok(())

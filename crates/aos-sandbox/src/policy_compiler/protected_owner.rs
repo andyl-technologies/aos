@@ -712,9 +712,10 @@ pub(super) fn policy_authority_journal_limits() -> JournalLimits {
         maximum_transaction_bytes: 2 * 1024 * 1024,
         maximum_transactions: 262_144,
         maximum_materialized_bytes: 8 * 1024 * 1024,
-        // Fixed custody plus a bounded window of Cache packet settlements.
-        maximum_materialized_records: MAXIMUM_POLICY_BINDINGS
-            + 11
+        // Each qualified binding retains one separate signer-flight proof.
+        // Fixed custody, both Q04 ACK/challenge pairs, held proof, and Cache settlements fill the rest.
+        maximum_materialized_records: 2 * MAXIMUM_POLICY_BINDINGS
+            + 17
             + super::cache_root_settlement::SETTLEMENT_ARCHIVE_WINDOW as usize,
     }
 }
@@ -733,8 +734,8 @@ mod tests {
         let limits = policy_authority_journal_limits();
         assert_eq!(
             limits.maximum_materialized_records,
-            MAXIMUM_POLICY_BINDINGS
-                + 11
+            2 * MAXIMUM_POLICY_BINDINGS
+                + 17
                 + super::super::cache_root_settlement::SETTLEMENT_ARCHIVE_WINDOW as usize
         );
         assert!(

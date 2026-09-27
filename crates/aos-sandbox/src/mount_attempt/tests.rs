@@ -573,8 +573,13 @@ fn exact_mount_two_zero_apply_and_release_bind_admit_and_resume() {
     let host_scoped_plan =
         mount_plan_with_revocation_scope(assignment, node, prepared.semantics(), 51);
     assert!(
-        bind_signed_mount_plan(fixture.journal_mut(), prepared, host_scoped_plan, &mut clock)
-            .is_err(),
+        bind_signed_mount_plan(
+            fixture.journal_mut(),
+            prepared,
+            host_scoped_plan,
+            &mut clock
+        )
+        .is_err(),
         "Mount Apply accepted the Host revocation scope"
     );
 

@@ -359,6 +359,7 @@ fn every_protocol_has_only_its_exact_supported_version() {
         (BrokerSessionProtocolV1::Storage, (1, 0)),
         (BrokerSessionProtocolV1::Mount, (2, 0)),
         (BrokerSessionProtocolV1::Network, (1, 0)),
+        (BrokerSessionProtocolV1::MountFuse, (3, 0)),
     ] {
         let template = manifest();
         let valid = BrokerSessionSecurityManifestV1::new(
@@ -377,7 +378,11 @@ fn every_protocol_has_only_its_exact_supported_version() {
             [4; 16],
             template.key_pins().clone(),
         );
-        assert!(valid.is_ok());
+        let valid = valid.unwrap();
+        assert_eq!(
+            BrokerSessionSecurityManifestV1::decode(&valid.encode()).unwrap(),
+            valid
+        );
 
         let wrong = BrokerSessionSecurityManifestV1::new(
             protocol,

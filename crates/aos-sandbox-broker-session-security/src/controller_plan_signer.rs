@@ -22,6 +22,8 @@ use rustix::fs::{CWD, Mode, OFlags, openat};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
+use crate::fixed_role_credential::read_optional_fixed_role_credential_v1;
+
 const CREDENTIAL_NAME: &str = "broker-plan-signing-key";
 const POLICY_CREDENTIAL_NAME: &str = "broker-plan-policy.cbor";
 const PUBLIC_KEY_CREDENTIAL_NAME: &str = "broker-plan-public-key";
@@ -150,40 +152,22 @@ impl ControllerBrokerPlanSignerV1 {
             return Err(ControllerBrokerPlanSignerError::Credential);
         }
         let directory = Path::new(&directory);
-        let path = directory.join(CREDENTIAL_NAME);
-        let descriptor = match openat(
-            CWD,
-            &path,
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-            Mode::empty(),
-        ) {
-            Ok(descriptor) => descriptor,
-            Err(rustix::io::Errno::NOENT) => return Ok(None),
-            Err(_) => return Err(ControllerBrokerPlanSignerError::Credential),
+        let Some(seed_bytes) = read_optional_fixed_role_credential_v1(
+            directory,
+            CREDENTIAL_NAME,
+            SEED_BYTES as u64,
+            true,
+        )
+        .map_err(|_| ControllerBrokerPlanSignerError::Credential)?
+        else {
+            return Ok(None);
         };
-        let mut file = File::from(descriptor);
-        let metadata = file
-            .metadata()
-            .map_err(|_| ControllerBrokerPlanSignerError::Credential)?;
-        if !metadata.is_file()
-            || metadata.len() != SEED_BYTES as u64
-            || metadata.nlink() != 1
-            || metadata.mode() & 0o077 != 0
-        {
-            return Err(ControllerBrokerPlanSignerError::Credential);
-        }
-
-        let mut seed = Zeroizing::new([0; SEED_BYTES]);
-        file.read_exact(&mut *seed)
-            .map_err(|_| ControllerBrokerPlanSignerError::Credential)?;
-        let mut trailing = [0];
-        if file
-            .read(&mut trailing)
-            .map_err(|_| ControllerBrokerPlanSignerError::Credential)?
-            != 0
-        {
-            return Err(ControllerBrokerPlanSignerError::Credential);
-        }
+        let seed = Zeroizing::new(
+            seed_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| ControllerBrokerPlanSignerError::Credential)?,
+        );
 
         let signing_key = SigningKey::from_bytes(&seed);
         let expected_public_key = signing_key.verifying_key().to_bytes();

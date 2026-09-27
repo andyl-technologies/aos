@@ -157,9 +157,9 @@ impl InitializerResultV1 {
         let metadata = rustix::fs::fstat(mount.as_fd())?;
         let attributes = portable_root_attributes(&metadata)?;
         let mount_flags = rustix::fs::fstatvfs(mount.as_fd())?.f_flag;
-        let secured_mount = mount_flags.contains(
-            rustix::fs::StatVfsMountFlags::NOSUID | rustix::fs::StatVfsMountFlags::NODEV,
-        ) && !mount_flags.contains(rustix::fs::StatVfsMountFlags::RDONLY);
+        let secured_mount = mount_flags
+            .contains(rustix::fs::StatVfsMountFlags::NOSUID | rustix::fs::StatVfsMountFlags::NODEV)
+            && !mount_flags.contains(rustix::fs::StatVfsMountFlags::RDONLY);
         if self.attempt_id != attempt_id
             || self.request_digest != request_digest(request)
             || self.mount_id == 0

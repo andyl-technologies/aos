@@ -10,7 +10,9 @@ use std::os::fd::OwnedFd;
 use std::pin::Pin;
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
-use aos_sandbox::runtime_execution::DormantRuntimeExecutionClaimV1;
+use aos_sandbox::runtime_execution::{
+    DormantRuntimeExecutionClaimV1, ProtectedHostNoApplySettlementHistoryV1,
+};
 use aos_sandbox_core::{ObjectDigest, ProtocolVersion};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1;
@@ -194,6 +196,35 @@ pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
         protected_boot_id: [u8; 16],
     ) -> Result<HostExecutionGrantReservationV1, DormantHostBrokerCallErrorV1>;
 
+    /// Appends or exactly replays one signed preliminary Host settlement.
+    ///
+    /// A successful response requires its immediate protected admission
+    /// witness; a stage-only crash or expired replay stays quarantined.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale boot, signature-bound request, Host custody, or uncertain
+    /// protected append. Floor and ACK phases remain unavailable.
+    fn commit_no_apply_preliminary_v2(
+        &mut self,
+        claim: &mut DormantRuntimeExecutionClaimV1<'_>,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+    ) -> Result<Option<Vec<u8>>, DormantHostBrokerCallErrorV1>;
+
+    /// Reads an exact protected Host settlement history for a signed query.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale boot, foreign source, or unmatched HostState and journal
+    /// custody. The returned history grants no Controller settlement authority.
+    fn query_no_apply_settlement_v2(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+    ) -> Result<Option<ProtectedHostNoApplySettlementHistoryV1>, DormantHostBrokerCallErrorV1>;
+
     /// Verifies a distinct read-only ATTACH plan and fresh ownership lease.
     ///
     /// # Errors
@@ -212,6 +243,22 @@ pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
         policy: PeerPolicy,
         protected_boot_id: [u8; 16],
     ) -> Result<HostAttachReadOnlyProofV1, DormantHostBrokerCallErrorV1>;
+
+    /// Verifies method 48 and reads the exact protected original Host pair.
+    ///
+    /// The response body is not an authenticated terminal until the caller
+    /// commits and signs it on the same Storage-owned broker session.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an inexact signed Host plan, stale lease or boot, or changed
+    /// protected output custody.
+    fn observe_authenticated_storage_output(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+    ) -> Result<Vec<u8>, DormantHostBrokerCallErrorV1>;
 
     /// Completes an exact Host authorization reservation after protected readback.
     ///
@@ -484,6 +531,46 @@ where
             .map_err(Into::into)
     }
 
+    fn commit_no_apply_preliminary_v2(
+        &mut self,
+        claim: &mut DormantRuntimeExecutionClaimV1<'_>,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+    ) -> Result<Option<Vec<u8>>, DormantHostBrokerCallErrorV1> {
+        let sample = crate::service::trusted_paired_clock_sample()?;
+        if sample.host_boot_id() != protected_boot_id
+            || self
+                .last_boottime_nanoseconds
+                .is_some_and(|floor| sample.boottime_nanoseconds() < floor)
+        {
+            return Err(DormantHostBrokerCallErrorV1::StaleKernel);
+        }
+        self.last_boottime_nanoseconds = Some(sample.boottime_nanoseconds());
+        self.broker
+            .commit_no_apply_preliminary_v2(claim, request, sample.boottime_nanoseconds())
+            .map_err(Into::into)
+    }
+
+    fn query_no_apply_settlement_v2(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+    ) -> Result<Option<ProtectedHostNoApplySettlementHistoryV1>, DormantHostBrokerCallErrorV1> {
+        let sample = crate::service::trusted_paired_clock_sample()?;
+        if sample.host_boot_id() != protected_boot_id
+            || self
+                .last_boottime_nanoseconds
+                .is_some_and(|floor| sample.boottime_nanoseconds() < floor)
+        {
+            return Err(DormantHostBrokerCallErrorV1::StaleKernel);
+        }
+        self.last_boottime_nanoseconds = Some(sample.boottime_nanoseconds());
+        self.broker
+            .query_no_apply_settlement_v2(claim, request, sample.boottime_nanoseconds())
+            .map_err(Into::into)
+    }
+
     fn verify_authenticated_attach_query(
         &mut self,
         claim: &DormantRuntimeExecutionClaimV1<'_>,
@@ -517,6 +604,29 @@ where
                     Ok(sample)
                 },
             )
+            .map_err(Into::into)
+    }
+
+    fn observe_authenticated_storage_output(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+    ) -> Result<Vec<u8>, DormantHostBrokerCallErrorV1> {
+        let last_boottime = &mut self.last_boottime_nanoseconds;
+        self.broker
+            .observe_storage_output(claim, request, protected_boot_id, || {
+                let sample = crate::service::trusted_paired_clock_sample()?;
+                if sample.host_boot_id() != protected_boot_id
+                    || last_boottime.is_some_and(|floor| sample.boottime_nanoseconds() < floor)
+                {
+                    return Err(HostError::Fence(
+                        "Host Storage output readback clock is stale",
+                    ));
+                }
+                *last_boottime = Some(sample.boottime_nanoseconds());
+                Ok(sample)
+            })
             .map_err(Into::into)
     }
 
@@ -792,6 +902,18 @@ where
                         .await?
                         .into_parts()
                 }
+                BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
+                    let request = decode_mount_scope_request(request_body, peer, policy, now)?;
+                    if request.header().request_id() != &request_id
+                        || request.header().protocol_version() != protocol_version
+                    {
+                        return Err(DormantHostBrokerCallErrorV1::StaleKernel);
+                    }
+                    self.broker
+                        .prepare_mount_scope_identity(artifacts, &request, request_body, &mut clock)
+                        .await?
+                        .into_parts()
+                }
                 _ => return Err(DormantHostBrokerCallErrorV1::StaleKernel),
             };
             let response_body_digest: [u8; 32] = Sha256::digest(&response).into();
@@ -1042,6 +1164,21 @@ where
                     }
                     self.broker
                         .reopen_mount_scope_for_terminal_replay(&request, &mut clock)
+                        .await?
+                }
+                BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
+                    let request = decode_mount_scope_request_for_protected_replay(
+                        request_body,
+                        peer,
+                        policy,
+                    )?;
+                    if request.header().request_id() != &request_id
+                        || request.header().protocol_version() != protocol_version
+                    {
+                        return Err(DormantHostBrokerCallErrorV1::StaleKernel);
+                    }
+                    self.broker
+                        .reopen_mount_scope_identity_for_terminal_replay(&request, &mut clock)
                         .await?
                 }
                 _ => return Err(DormantHostBrokerCallErrorV1::StaleKernel),

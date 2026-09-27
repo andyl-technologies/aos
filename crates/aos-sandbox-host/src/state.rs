@@ -7,7 +7,9 @@
 //! ```
 //!
 //! Version 1 records authenticated Guardian-launch, composite-Stop, direct
-//! lifecycle executions, and optional Host-local output observations.
+//! lifecycle executions, and optional Host-local output observations and
+//! authenticated payload-scope handle lineage. Older V1 bodies omit those
+//! optional fields; absence never reconstructs an old handle from a request.
 //! JSON is an internal node-local format, not a portable or wire contract.
 //! Unknown fields, checksum failures, overlong bodies, duplicate identities,
 //! and invalid pending/completed records fail closed during startup.
@@ -43,9 +45,13 @@ use crate::worker::HostRuntimeIdentity;
 use crate::{HostError, Result};
 
 mod existing_output;
+mod no_apply_handoff;
+mod scope_handle;
 pub(crate) mod transition;
 
 use existing_output::DurableExistingOutputObservation;
+pub(crate) use no_apply_handoff::host_execution_receipt_digest;
+use scope_handle::DurableScopeHandle;
 pub(crate) use transition::HostAction;
 use transition::{DurableExecution, ExecutionContext, HostExecutionHandoffRecord};
 
@@ -119,6 +125,7 @@ pub struct HostState {
     requests: BTreeMap<[u8; 16], RequestRecord>,
     observation_sequences: BTreeMap<[u8; 16], u64>,
     scope_replays: BTreeMap<[u8; 32], DurableScopeReplay>,
+    scope_handles: BTreeMap<[u8; 16], DurableScopeHandle>,
     existing_output_observations: BTreeMap<[u8; 16], DurableExistingOutputObservation>,
 }
 
@@ -213,6 +220,8 @@ struct StateWire {
     observation_sequences: Vec<ObservationSequence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     scope_replays: Vec<DurableScopeReplay>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    scope_handles: Vec<DurableScopeHandle>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     existing_output_observations: Vec<DurableExistingOutputObservation>,
 }
@@ -338,6 +347,7 @@ impl HostState {
                 ));
             }
         }
+        self.validate_scope_handles(authority)?;
         for (request_id, observation) in &self.existing_output_observations {
             if request_id != &observation.host_request_id {
                 return Err(HostError::State(
@@ -1675,6 +1685,7 @@ impl HostState {
                 })
                 .collect(),
             scope_replays: self.scope_replays.values().cloned().collect(),
+            scope_handles: self.scope_handles.values().cloned().collect(),
             existing_output_observations: self
                 .existing_output_observations
                 .values()
@@ -1695,6 +1706,11 @@ impl HostState {
         if wire.scope_replays.len() > MAXIMUM_REQUESTS {
             return Err(HostError::State(
                 "durable Host scope replay table exceeds its fixed bound".to_owned(),
+            ));
+        }
+        if wire.scope_handles.len() > MAXIMUM_REQUESTS {
+            return Err(HostError::State(
+                "durable Host scope handle table exceeds its fixed bound".to_owned(),
             ));
         }
         if wire.existing_output_observations.len() > MAXIMUM_REQUESTS {
@@ -1735,6 +1751,18 @@ impl HostState {
             if state.scope_replays.insert(replay.locator, replay).is_some() {
                 return Err(HostError::State(
                     "duplicate durable Host scope replay locator".to_owned(),
+                ));
+            }
+        }
+        for handle in wire.scope_handles {
+            handle.validate_shape()?;
+            if state
+                .scope_handles
+                .insert(handle.source_request_id(), handle)
+                .is_some()
+            {
+                return Err(HostError::State(
+                    "duplicate durable Host scope handle lineage".to_owned(),
                 ));
             }
         }
@@ -2641,7 +2669,9 @@ mod tests {
     use aos_proto::aos::sandbox::local::v1::{
         ApplyRuntimeRequest, Audience, BrokerAuthorizationArtifactsV1, BrokerMethod,
         BrokerRequestEnvelope, Feature, GuardianArmCompanionV1, ResourceLimit, RuntimeAction,
+        TerminalHostExecutionArgumentNoApplyResponseV1,
     };
+    use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
     use aos_sandbox_core::format::{
         encode_broker_authorization_plan, encode_ownership_lease, encode_signature,
         encode_trust_policy,
@@ -2657,7 +2687,13 @@ mod tests {
         PortableMediaType, ProtocolId, ProtocolVersion, RawClockProvenance, RawPairedClockSample,
         RevocationScopeId, SandboxId, TrustScopeId, descriptor_for_bytes, sign_statement,
     };
-    use aos_sandbox_protocol::semantics::host_execution_query_grant_v1;
+    use aos_sandbox_protocol::host_execution_no_apply::{
+        HostExecutionNoApplyRecordFieldsV1, HostExecutionNoApplyRecordV1,
+    };
+    use aos_sandbox_protocol::semantics::{
+        host_execution_argument_no_apply_grant_v1, host_execution_argument_observe_grant_v1,
+        host_execution_query_grant_v1,
+    };
     use aos_sandbox_protocol::session::{
         ValidatedUntrustedAuthorizationArtifacts, decode_request_envelope,
     };
@@ -3455,6 +3491,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn terminal_handoff_presence_fails_closed_for_the_same_create() {
+        let mut request = guardian_request_record();
+        request.action = HostAction::TerminalNoApply.code();
+        request.execution = DurableExecution::HostExecutionHandoff(HostExecutionHandoffRecord {
+            runtime_witness_request_id: [1; 16],
+            runtime_handle: [2; 32],
+            session_binding: [3; 32],
+            signed_request_digest: [4; 32],
+            operation_id: [5; 16],
+            execution_id: [6; 16],
+            source_commitment: [7; 32],
+            semantic_commitment: [8; 32],
+        });
+        let mut state = HostState::default();
+        state.requests.insert(request.request_id, request);
+
+        assert!(state.has_terminal_no_apply_handoff_for_create([5; 16], [6; 16]));
+        assert!(!state.has_terminal_no_apply_handoff_for_create([9; 16], [6; 16]));
+        assert!(!state.has_terminal_no_apply_handoff_for_create([5; 16], [9; 16]));
+    }
+
     fn runtime_proof() -> transition::RuntimeProofSnapshot {
         transition::RuntimeProofSnapshot {
             host_boot_id: [111; 16],
@@ -4155,6 +4213,145 @@ mod tests {
     }
 
     #[test]
+    fn scope_handle_survives_reopen_only_with_authenticated_launch_lineage() {
+        let fixture = AdmissionFixture::new();
+        let authority = fixture.authority();
+        let mut state = HostState::default();
+        append_completed_guardian(&mut state, &fixture, &authority, &guardian_request(103));
+        let old_wire = state.encode().unwrap();
+        assert!(
+            HostState::decode(&old_wire)
+                .unwrap()
+                .scope_handles
+                .is_empty()
+        );
+
+        let GuardianLineage::Complete(lineage) = state
+            .completed_guardian_lineage(&[104; 16], &[105; 16], &authority)
+            .unwrap()
+        else {
+            panic!("completed Guardian launch is required");
+        };
+        let identity = HostRuntimeIdentity::new([104; 16], [105; 16], 1, 1, [106; 32]);
+        let handle = [201; 32];
+        assert!(
+            state
+                .retain_scope_handle(&identity, &lineage, handle, &authority)
+                .unwrap()
+        );
+        assert!(
+            !state
+                .retain_scope_handle(&identity, &lineage, handle, &authority)
+                .unwrap()
+        );
+        assert!(
+            state
+                .retain_scope_handle(&identity, &lineage, [202; 32], &authority)
+                .is_err()
+        );
+
+        let mut reopened = HostState::decode(&state.encode().unwrap()).unwrap();
+        reopened.validate_authenticated(&authority).unwrap();
+        let freeze = lifecycle_request(
+            104,
+            RuntimeAction::RUNTIME_ACTION_FREEZE,
+            [105; 16],
+            1,
+            2,
+            [107; 32],
+        );
+        append_completed_lifecycle(
+            &mut reopened,
+            &fixture,
+            &authority,
+            &freeze,
+            HostAction::Freeze,
+        );
+        let GuardianLineage::Complete(frozen) = reopened
+            .completed_guardian_lineage(&[104; 16], &[105; 16], &authority)
+            .unwrap()
+        else {
+            panic!("same-epoch Freeze must preserve the launch lineage");
+        };
+        let frozen_identity = HostRuntimeIdentity::new([104; 16], [105; 16], 1, 2, [107; 32]);
+        assert_eq!(
+            reopened
+                .current_scope_handle(&frozen_identity, &frozen)
+                .unwrap(),
+            Some(handle)
+        );
+        let mut stripped = reopened.clone();
+        stripped.scope_handles.clear();
+        let stripped = HostState::decode(&stripped.encode().unwrap()).unwrap();
+        assert_eq!(
+            stripped
+                .current_scope_handle(&frozen_identity, &frozen)
+                .unwrap(),
+            None
+        );
+
+        let mut changed_proof = frozen;
+        changed_proof.worker_proof.user_namespace.inode += 1;
+        assert!(
+            reopened
+                .current_scope_handle(&frozen_identity, &changed_proof)
+                .is_err()
+        );
+        let mut changed_boot = frozen;
+        changed_boot.worker_proof.host_boot_id[0] ^= 1;
+        assert!(
+            reopened
+                .current_scope_handle(&frozen_identity, &changed_boot)
+                .is_err()
+        );
+        let mut changed_handle = reopened.clone();
+        changed_handle
+            .scope_handles
+            .get_mut(&lineage.source_request_id)
+            .unwrap()
+            .binding
+            .handle[0] ^= 1;
+        assert!(changed_handle.validate_authenticated(&authority).is_err());
+        let mut signed_wrong_proof = reopened.clone();
+        let wrong_record = signed_wrong_proof
+            .scope_handles
+            .get_mut(&lineage.source_request_id)
+            .unwrap();
+        wrong_record.binding.worker_proof.user_namespace.inode += 1;
+        wrong_record.authentication = authority
+            .seal_execution_record(&lineage.source_request_id, &wrong_record.binding.encode())
+            .unwrap();
+        assert!(
+            signed_wrong_proof
+                .validate_authenticated(&authority)
+                .is_err()
+        );
+        let mut signed_wrong_unit = reopened.clone();
+        let wrong_unit = signed_wrong_unit
+            .scope_handles
+            .get_mut(&lineage.source_request_id)
+            .unwrap();
+        wrong_unit.binding.unit_binding[0] ^= 1;
+        wrong_unit.authentication = authority
+            .seal_execution_record(&lineage.source_request_id, &wrong_unit.binding.encode())
+            .unwrap();
+        assert!(
+            signed_wrong_unit
+                .validate_authenticated(&authority)
+                .is_err()
+        );
+        let mut wrong_purpose = reopened;
+        wrong_purpose
+            .scope_handles
+            .get_mut(&lineage.source_request_id)
+            .unwrap()
+            .authentication = authority
+            .seal_execution_record(&lineage.source_request_id, b"unrelated Host record")
+            .unwrap();
+        assert!(wrong_purpose.validate_authenticated(&authority).is_err());
+    }
+
+    #[test]
     fn pending_terminal_and_replacement_fences_shadow_guardian_lineage() {
         let fixture = AdmissionFixture::new();
         let authority = fixture.authority();
@@ -4585,6 +4782,287 @@ mod tests {
         let mut wrong_request = request;
         wrong_request.action = HostAction::ApplyExecution.code();
         assert!(observation.validate_request(&wrong_request).is_err());
+    }
+
+    #[test]
+    fn signed_grant_host_state_handoffs_complete_before_method42_admission_fixture() {
+        let fixture = AdmissionFixture::new();
+        let authority = fixture.authority();
+        let mut base_request = ApplyRuntimeRequest::decode_from_slice(&runtime_request()).unwrap();
+        base_request.action = RuntimeAction::RUNTIME_ACTION_FREEZE.into();
+        base_request.launch_plan = None.into();
+        base_request.guardian_arm = None.into();
+        let base_bytes = base_request.encode_to_vec();
+        let decoded = decode_runtime_request(
+            &base_bytes,
+            test_peer(),
+            test_policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        let assignment = BrokerAssignment::new(
+            SandboxId::from_bytes(*decoded.fence().sandbox_id()),
+            IncarnationId::from_bytes(*decoded.fence().incarnation_id()),
+            AssignmentEpoch::new(decoded.fence().assignment_epoch()),
+            DesiredGeneration::new(decoded.fence().desired_generation()),
+            ObjectDigest::from_bytes(*decoded.fence().assignment_digest()),
+        )
+        .unwrap();
+        let base = admitted_records(&fixture, &authority, &base_bytes, 1, 300, None);
+        let base_request_id = *decoded.header().request_id();
+        let base_digest: [u8; 32] = Sha256::digest(&base_bytes).into();
+        let mut state = HostState::default();
+        state
+            .admit(
+                decoded.fence(),
+                base_request_id,
+                base_digest,
+                HostAction::Freeze.code(),
+                authority
+                    .seal_fence(decoded.fence().sandbox_id(), &base.fence)
+                    .unwrap(),
+                &base,
+                authority
+                    .seal_effect(&base_request_id, &base.effect)
+                    .unwrap(),
+                &authority,
+            )
+            .unwrap();
+        state
+            .complete(
+                base_request_id,
+                base_digest,
+                authority
+                    .seal_effect(&base_request_id, &base.effect.complete(vec![1]).unwrap())
+                    .unwrap(),
+                vec![1],
+            )
+            .unwrap();
+
+        // This structural source and the bodies below are not method-35 custody
+        // or signed-session packets. The fixture exercises only the signed-grant
+        // HostState handoffs that protected 35 -> 37 -> 39 -> 42 integration must
+        // later supply and rejoin independently.
+        let mut source_bytes = [0; 336];
+        source_bytes[..8].copy_from_slice(b"AOSCIA02");
+        source_bytes[8..40].fill(1);
+        source_bytes[40..56].copy_from_slice(&[7; 16]);
+        source_bytes[56..184].fill(2);
+        source_bytes[184..216].copy_from_slice(assignment.digest().as_bytes());
+        source_bytes[216..248].fill(3);
+        source_bytes[248..264].copy_from_slice(&[50; 16]);
+        source_bytes[264..296].fill(4);
+        source_bytes[296..304].copy_from_slice(&1_000_u64.to_be_bytes());
+        let checksum: [u8; 32] = Sha256::new()
+            .chain_update(b"aos.sandbox.controller-argument-attempt.v1\0")
+            .chain_update(&source_bytes[..304])
+            .finalize()
+            .into();
+        source_bytes[304..].copy_from_slice(&checksum);
+        let source = ControllerExecutionArgumentAttemptV1::decode_canonical(&source_bytes).unwrap();
+        let runtime_handle = ObjectDigest::from_bytes([16; 32]);
+
+        let original_session = [12; 32];
+        let original_signed_request = [13; 32];
+        let terminal_session = [14; 32];
+        let terminal_signed_request = [15; 32];
+        let marker = HostExecutionNoApplyRecordV1::new(HostExecutionNoApplyRecordFieldsV1 {
+            execution_id: *source.execution().as_bytes(),
+            create_operation_id: *source.create_operation().as_bytes(),
+            original_request_id: source.request_id(),
+            terminal_request_id: [9; 16],
+            host_boot_id: source.host_boot_id(),
+            assignment_digest: *source.assignment_digest().as_bytes(),
+            source_record_digest: *source.record_digest().as_bytes(),
+            original_session_binding: original_session,
+            original_signed_request_digest: original_signed_request,
+            terminal_session_binding: terminal_session,
+            terminal_signed_request_digest: terminal_signed_request,
+            runtime_handle: *runtime_handle.as_bytes(),
+            execution_store_binding: [17; 32],
+            commit_sequence: 18,
+        })
+        .unwrap();
+        let response = TerminalHostExecutionArgumentNoApplyResponseV1 {
+            canonical_record: marker.encode_canonical().to_vec(),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let terminal_receipt = host_execution_receipt_digest([9; 16], &response).to_vec();
+
+        for (request_id, action, semantics, session, signed_request, receipt, generation) in [
+            (
+                source.request_id(),
+                HostAction::ObserveExecutionArgument,
+                host_execution_argument_observe_grant_v1(
+                    assignment,
+                    source.request_id(),
+                    &source_bytes,
+                )
+                .unwrap(),
+                original_session,
+                original_signed_request,
+                vec![37],
+                2,
+            ),
+            (
+                [9; 16],
+                HostAction::TerminalNoApply,
+                host_execution_argument_no_apply_grant_v1(
+                    assignment,
+                    [9; 16],
+                    &source_bytes,
+                    original_session,
+                    original_signed_request,
+                )
+                .unwrap(),
+                terminal_session,
+                terminal_signed_request,
+                terminal_receipt.clone(),
+                3,
+            ),
+        ] {
+            let body = source_bytes;
+            let body_digest: [u8; 32] = Sha256::digest(body).into();
+            let grant = BrokerGrant::new(
+                semantics.verb(),
+                semantics.target(),
+                semantics.commitment(),
+                body.len() as u32,
+                0,
+            )
+            .unwrap();
+            let artifacts = fixture.artifacts_for_grant(assignment, grant, generation, 300);
+            let prior_base = state
+                .prior_authorization(assignment.sandbox().as_bytes())
+                .unwrap()
+                .to_vec();
+            let admitted = authority
+                .admit_argument(
+                    &artifacts,
+                    assignment,
+                    request_id,
+                    &body,
+                    semantics,
+                    1_000,
+                    &test_clock(),
+                    &prior_base,
+                )
+                .unwrap();
+            let advanced_base = authority
+                .advance_base_execution_fence(
+                    assignment.sandbox().as_bytes(),
+                    &prior_base,
+                    &admitted,
+                )
+                .unwrap();
+            let handoff = HostExecutionHandoffRecord {
+                runtime_witness_request_id: base_request_id,
+                runtime_handle: *runtime_handle.as_bytes(),
+                session_binding: session,
+                signed_request_digest: signed_request,
+                operation_id: *source.create_operation().as_bytes(),
+                execution_id: *source.execution().as_bytes(),
+                source_commitment: *source.record_digest().as_bytes(),
+                semantic_commitment: *semantics.commitment().digest().as_bytes(),
+            };
+
+            assert_eq!(
+                state
+                    .admit_execution_handoff(
+                        assignment,
+                        request_id,
+                        body_digest,
+                        action,
+                        handoff,
+                        authority
+                            .seal_fence(assignment.sandbox().as_bytes(), &admitted.fence)
+                            .unwrap(),
+                        advanced_base,
+                        &admitted,
+                        authority
+                            .seal_effect(&request_id, &admitted.effect)
+                            .unwrap(),
+                        &authority,
+                    )
+                    .unwrap(),
+                Admission::New
+            );
+            state
+                .complete(
+                    request_id,
+                    body_digest,
+                    authority
+                        .seal_effect(
+                            &request_id,
+                            &admitted.effect.complete(receipt.clone()).unwrap(),
+                        )
+                        .unwrap(),
+                    receipt,
+                )
+                .unwrap();
+            state.validate_authenticated(&authority).unwrap();
+        }
+
+        let reopened = HostState::decode(&state.encode().unwrap()).unwrap();
+        reopened.validate_authenticated(&authority).unwrap();
+        let original_effect = authority
+            .open_effect(
+                &source.request_id(),
+                reopened.effect(&source.request_id()).unwrap(),
+            )
+            .unwrap();
+        let original_handoff = reopened.execution_handoff(&source.request_id()).unwrap();
+        assert!(
+            crate::live_agent::argument_attempt::OriginalHostArgumentIntentV1::from_effect(
+                &source,
+                assignment,
+                &original_effect,
+                original_handoff,
+                runtime_handle,
+            )
+            .unwrap()
+            .matches_original_session(original_session, original_signed_request)
+        );
+        assert!(
+            reopened
+                .completed_no_apply_handoff_digest(
+                    &authority,
+                    &source,
+                    marker,
+                    assignment,
+                    runtime_handle,
+                )
+                .is_ok()
+        );
+
+        let mut wrong_marker_fields = marker.fields();
+        wrong_marker_fields.original_signed_request_digest = [19; 32];
+        let wrong_marker = HostExecutionNoApplyRecordV1::new(wrong_marker_fields).unwrap();
+        assert!(
+            reopened
+                .completed_no_apply_handoff_digest(
+                    &authority,
+                    &source,
+                    wrong_marker,
+                    assignment,
+                    runtime_handle,
+                )
+                .is_err()
+        );
+        let mut wrong_receipt = reopened.clone();
+        wrong_receipt.requests.get_mut(&[9; 16]).unwrap().receipt = Some(vec![1; 32]);
+        assert!(
+            wrong_receipt
+                .completed_no_apply_handoff_digest(
+                    &authority,
+                    &source,
+                    marker,
+                    assignment,
+                    runtime_handle,
+                )
+                .is_err()
+        );
     }
 
     fn envelope_with_version(version: u32, body: &[u8]) -> Vec<u8> {

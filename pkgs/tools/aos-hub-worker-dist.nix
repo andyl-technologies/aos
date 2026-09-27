@@ -27,9 +27,8 @@
 ##! 3. The exact `worker-build` post-processing: rewrite the bindgen glue to
 ##!    import the WASM via a `glue.js` instantiation shim, drop in
 ##!    `worker-build`'s `shim.js` event-handler glue, and bundle the lot into a
-##!    single `shim.mjs` ES module with `esbuild` (the native `esbuild` binary
-##!    from the vendored `pkgs.miniflare` closure; `index.wasm` is kept external,
-##!    so the bundle plus the sibling `index.wasm` are the two deploy modules).
+##!    single `shim.mjs` ES module with source-built `pkgs.esbuild`.
+##!    `index.wasm` remains separate; these are the two deploy modules.
 ##!
 ##! ## wasm-opt
 ##!
@@ -86,7 +85,7 @@
   buildCoreutils = buildPackages.coreutils;
   buildRust = buildPackages.rust;
   buildConsoleDist = buildPackages.aos-hub-console-dist;
-  buildMiniflare = buildPackages.miniflare;
+  buildEsbuild = buildPackages.esbuild;
   nativeRustTarget = stdenv.buildPlatform.config;
   nativeRustCargoPrefix = lib.toUpper (builtins.replaceStrings ["-"] ["_"] nativeRustTarget);
   nativeRustCcPrefix = builtins.replaceStrings ["-"] ["_"] nativeRustTarget;
@@ -160,9 +159,9 @@
       );
   };
 
-  # The native `esbuild` binary inside the vendored miniflare/wrangler closure
-  # (the platform package, not the `#!/usr/bin/env node` JS launcher).
-  esbuildBin = "${buildMiniflare}/lib/node_modules/@esbuild/linux-x64/bin/esbuild";
+  # Bundle with the AOS-built native executable, independent of Wrangler and
+  # its local workerd runtime.
+  esbuildBin = "${buildEsbuild}/bin/esbuild";
   cargoDeps = fetchCargoVendor {
     inherit src;
     name = "aos-vendor-${version}";

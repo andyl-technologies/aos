@@ -10,9 +10,14 @@ use std::path::Path;
 
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::pidfd::PidFdInfo;
+use aos_sandbox_linux::seqpacket::KernelAuthorizedRecordSubject;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_protocol::storage_existing_output::{
     ExistingOutputRequestV1, ExistingOutputResponseV1, RESPONSE_BYTES,
+};
+use aos_sandbox_protocol::storage_held_output_session::{
+    ACK_BYTES, HeldOutputAckV1, HeldOutputBeginV1, HeldOutputProofV1, HeldOutputTerminalModeV1,
+    HeldOutputTerminalV1, PROOF_BYTES,
 };
 use rand::{TryRngCore as _, rngs::OsRng};
 
@@ -193,21 +198,8 @@ impl StorageExistingOutputClientV1 {
         create: [u8; 16],
         record_digest: [u8; 32],
     ) -> Result<ExistingOutputObservationV1> {
-        self.storage_cgroup
-            .validate_current()
-            .map_err(query_error)?;
-        let route = validate_socket_route()?;
-        let mut socket =
-            DescriptorSubjectSocket::connect(Path::new(QUERY_SOCKET)).map_err(query_error)?;
-        let manager = self.verify_activation_peer(&socket)?;
-        if validate_socket_route()? != route {
-            return Err(query_error("socket route changed"));
-        }
-        let mut nonce = [0; 32];
-        OsRng.try_fill_bytes(&mut nonce).map_err(query_error)?;
-        let deadline = boottime()?
-            .checked_add(QUERY_DEADLINE_NANOSECONDS)
-            .ok_or_else(|| query_error("deadline overflow"))?;
+        let (mut socket, route, manager) = self.open_checked_socket()?;
+        let (nonce, deadline) = fresh_challenge()?;
         let request = ExistingOutputRequestV1 {
             nonce,
             deadline_boottime_nanoseconds: deadline,
@@ -224,37 +216,16 @@ impl StorageExistingOutputClientV1 {
             deadline,
         )?;
 
-        let packet = receive_reply(&mut socket, deadline, RESPONSE_BYTES, 0)?;
-        let record = socket.bind_received(packet).map_err(query_error)?;
-        let credentials = record.subject().credentials();
-        if credentials.uid() != 0 || credentials.gid() != 0 || !record.descriptors().is_empty() {
-            return Err(query_error("responder identity is invalid"));
-        }
-        let info = self
-            .storage_cgroup
-            .verify_exact_membership(record.subject().pidfd())
-            .map_err(query_error)?;
-        if info.pid() != credentials.pid().get()
-            || info.thread_group_id() != info.pid()
-            || !record.subject().is_alive().map_err(query_error)?
-        {
-            return Err(query_error("responder execution is invalid"));
-        }
-        let response = ExistingOutputResponseV1::decode(record.payload()).map_err(query_error)?;
+        let (response_bytes, _, _) = self.receive_storage_record(
+            &mut socket,
+            manager,
+            route,
+            deadline,
+            RESPONSE_BYTES,
+            None,
+        )?;
+        let response = ExistingOutputResponseV1::decode(&response_bytes).map_err(query_error)?;
         response.verify_request(request).map_err(query_error)?;
-        let (_, subject, _, _) = record.into_parts();
-        if boottime()? >= deadline
-            || self.verify_activation_peer(&socket)? != manager
-            || validate_socket_route()? != route
-            || self
-                .storage_cgroup
-                .verify_exact_membership(subject.pidfd())
-                .map_err(query_error)?
-                != info
-            || !subject.is_alive().map_err(query_error)?
-        {
-            return Err(query_error("responder changed or deadline elapsed"));
-        }
         Ok(ExistingOutputObservationV1 { request, response })
     }
 
@@ -277,6 +248,153 @@ impl StorageExistingOutputClientV1 {
         let observation = self.query_exchange(execution, create, expected.record_digest())?;
         expected.verify(assignment_digest, &observation.response)?;
         Ok(observation)
+    }
+
+    /// Holds an exact Storage AOSEOR03 row while the caller inspects its cut.
+    ///
+    /// The input is a historical authenticated Storage row, not an accepted
+    /// Create or current Host permit. A successful callback supplies its own
+    /// nonzero settlement digest; Storage treats that value as opaque and only
+    /// releases the read-only hold after a matching terminal exchange. A
+    /// callback error attempts Abort and is returned unchanged. No public
+    /// execution path calls this precursor.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a missing or changed endpoint, wrong live Storage responder,
+    /// stale row/head, malformed or replayed frames, timeout, or a lost ack.
+    pub fn with_held_session<T>(
+        &self,
+        expected: ExistingOutputResponseV1,
+        inspect: impl FnOnce(&HeldOutputProofV1) -> Result<(T, [u8; 32])>,
+    ) -> Result<T> {
+        let (mut socket, route, manager) = self.open_checked_socket()?;
+        let (nonce, deadline) = fresh_challenge()?;
+        let begin = HeldOutputBeginV1 {
+            nonce,
+            deadline_boottime_nanoseconds: deadline,
+            execution: expected.execution,
+            create: expected.create,
+            record_digest: expected.record_digest,
+            expected_journal_sequence: expected.journal_sequence,
+            assignment_digest: expected.assignment_digest,
+            claim_digest: expected.claim_digest,
+            admitted_bytes: expected.admitted_bytes,
+            maximum_stdout_bytes: expected.maximum_stdout_bytes,
+            maximum_stderr_bytes: expected.maximum_stderr_bytes,
+        };
+        if self.verify_activation_peer(&socket)? != manager || validate_socket_route()? != route {
+            return Err(query_error("socket activation peer changed"));
+        }
+        send_request(&mut socket, &begin.encode().map_err(query_error)?, deadline)?;
+
+        let (proof_bytes, storage, proof_subject) =
+            self.receive_storage_record(&mut socket, manager, route, deadline, PROOF_BYTES, None)?;
+        let proof = HeldOutputProofV1::decode(&proof_bytes).map_err(query_error)?;
+        proof.verify_begin(begin).map_err(query_error)?;
+
+        match inspect(&proof) {
+            Ok((value, settlement_digest)) => {
+                let terminal = HeldOutputTerminalV1::new(
+                    begin,
+                    proof,
+                    HeldOutputTerminalModeV1::Settle,
+                    settlement_digest,
+                )
+                .map_err(query_error)?;
+                send_request(
+                    &mut socket,
+                    &terminal.encode().map_err(query_error)?,
+                    deadline,
+                )?;
+                let (ack_bytes, _, _) = self.receive_storage_record(
+                    &mut socket,
+                    manager,
+                    route,
+                    deadline,
+                    ACK_BYTES,
+                    Some((storage, &proof_subject)),
+                )?;
+                let ack = HeldOutputAckV1::decode(&ack_bytes).map_err(query_error)?;
+                ack.verify_terminal(begin, proof, terminal)
+                    .map_err(query_error)?;
+                Ok(value)
+            }
+            Err(error) => {
+                if let Ok(abort) = HeldOutputTerminalV1::new(
+                    begin,
+                    proof,
+                    HeldOutputTerminalModeV1::Abort,
+                    [0; 32],
+                ) {
+                    if let Ok(bytes) = abort.encode() {
+                        let _ = send_request(&mut socket, &bytes, deadline);
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn open_checked_socket(
+        &self,
+    ) -> Result<(DescriptorSubjectSocket, SocketRouteIdentity, PidFdInfo)> {
+        self.storage_cgroup
+            .validate_current()
+            .map_err(query_error)?;
+        let route = validate_socket_route()?;
+        let socket =
+            DescriptorSubjectSocket::connect(Path::new(QUERY_SOCKET)).map_err(query_error)?;
+        let manager = self.verify_activation_peer(&socket)?;
+        if validate_socket_route()? != route {
+            return Err(query_error("socket route changed"));
+        }
+        Ok((socket, route, manager))
+    }
+
+    fn receive_storage_record(
+        &self,
+        socket: &mut DescriptorSubjectSocket,
+        manager: PidFdInfo,
+        route: SocketRouteIdentity,
+        deadline: u64,
+        maximum_bytes: usize,
+        expected_storage: Option<(PidFdInfo, &KernelAuthorizedRecordSubject)>,
+    ) -> Result<(Vec<u8>, PidFdInfo, KernelAuthorizedRecordSubject)> {
+        let packet = receive_reply(socket, deadline, maximum_bytes, 0)?;
+        let record = socket.bind_received(packet).map_err(query_error)?;
+        let credentials = record.subject().credentials();
+        if credentials.uid() != 0 || credentials.gid() != 0 || !record.descriptors().is_empty() {
+            return Err(query_error("responder identity is invalid"));
+        }
+        let storage = self
+            .storage_cgroup
+            .verify_exact_membership(record.subject().pidfd())
+            .map_err(query_error)?;
+        if storage.pid() != credentials.pid().get()
+            || storage.thread_group_id() != storage.pid()
+            || expected_storage.is_some_and(|(expected, subject)| {
+                expected != storage || subject.is_alive().ok() != Some(true)
+            })
+            || !record.subject().is_alive().map_err(query_error)?
+        {
+            return Err(query_error("responder execution changed"));
+        }
+        let bytes = record.payload().to_vec();
+        let (_, subject, _, _) = record.into_parts();
+        if boottime()? >= deadline
+            || self.verify_activation_peer(socket)? != manager
+            || validate_socket_route()? != route
+            || self
+                .storage_cgroup
+                .verify_exact_membership(subject.pidfd())
+                .map_err(query_error)?
+                != storage
+            || !subject.is_alive().map_err(query_error)?
+        {
+            return Err(query_error("responder changed or deadline elapsed"));
+        }
+        Ok((bytes, storage, subject))
     }
 
     fn verify_activation_peer(&self, socket: &DescriptorSubjectSocket) -> Result<PidFdInfo> {
@@ -330,6 +448,15 @@ fn validate_socket_route() -> Result<SocketRouteIdentity> {
         device: metadata.dev(),
         inode: metadata.ino(),
     })
+}
+
+fn fresh_challenge() -> Result<([u8; 32], u64)> {
+    let mut nonce = [0; 32];
+    OsRng.try_fill_bytes(&mut nonce).map_err(query_error)?;
+    let deadline = boottime()?
+        .checked_add(QUERY_DEADLINE_NANOSECONDS)
+        .ok_or_else(|| query_error("deadline overflow"))?;
+    Ok((nonce, deadline))
 }
 
 fn manager_identity_is_valid(

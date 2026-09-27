@@ -858,6 +858,12 @@ struct RawVerityEnableArg {
     reserved2: [u64; 11],
 }
 
+#[repr(C)]
+struct RawFilesystemUuid {
+    length: u8,
+    uuid: [u8; 16],
+}
+
 pub(crate) const OPEN_TREE_CLONE: u32 = 1;
 pub(crate) const OPEN_TREE_CLOEXEC: u32 = libc::O_CLOEXEC as u32;
 pub(crate) const AT_EMPTY_PATH: u32 = 0x1000;
@@ -901,6 +907,8 @@ const NS_GET_NSTYPE: libc::c_ulong = 0xb703;
 const FS_IOC_MEASURE_VERITY: libc::c_ulong = 0xc004_6686;
 // Linux 6.18 `FS_IOC_ENABLE_VERITY`: _IOW('f', 133, struct fsverity_enable_arg).
 const FS_IOC_ENABLE_VERITY: libc::c_ulong = 0x4080_6685;
+// Linux 6.9+ `_IOR(0x15, 0, struct fsuuid2)`; the structure is 17 bytes.
+const FS_IOC_GETFSUUID: libc::c_ulong = 0x8011_1500;
 const PIDFD_GET_MNT_NAMESPACE: libc::c_ulong = 0xff03;
 const PIDFD_GET_NET_NAMESPACE: libc::c_ulong = 0xff04;
 const PIDFD_GET_PID_NAMESPACE: libc::c_ulong = 0xff05;
@@ -1227,6 +1235,33 @@ pub(crate) fn measure_verity(fd: BorrowedFd<'_>) -> Result<VerityMeasurement> {
         length,
         digest: measurement.digest,
     })
+}
+
+pub(crate) fn filesystem_uuid(fd: BorrowedFd<'_>) -> Result<[u8; 16]> {
+    let mut value = RawFilesystemUuid {
+        length: 0,
+        uuid: [0; 16],
+    };
+    // SAFETY: the borrowed readable filesystem descriptor and fixed-size
+    // writable response remain live for the entire ioctl. The UAPI advertises
+    // the response length, which is checked before exposing any UUID bytes.
+    let result = unsafe {
+        libc::ioctl(
+            fd.as_raw_fd(),
+            FS_IOC_GETFSUUID,
+            std::ptr::addr_of_mut!(value),
+        )
+    };
+    if result < 0 {
+        return Err(Error::syscall("ioctl(FS_IOC_GETFSUUID)"));
+    }
+    if result != 0 || usize::from(value.length) != value.uuid.len() {
+        return Err(Error::MalformedKernelResponse {
+            object: "filesystem UUID",
+            message: "unexpected ioctl result or UUID length".to_string(),
+        });
+    }
+    Ok(value.uuid)
 }
 
 pub(crate) fn enable_verity_sha256_4096(fd: BorrowedFd<'_>) -> Result<()> {

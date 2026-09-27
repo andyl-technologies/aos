@@ -782,14 +782,17 @@ mod tests {
     }
 
     fn spec() -> (tempfile::TempDir, GuardianUnitSpec) {
-        let executable_path = std::env::current_exe()
-            .unwrap_or_else(|error| panic!("test executable path failed: {error}"));
+        let directory =
+            tempfile::tempdir().unwrap_or_else(|error| panic!("test directory failed: {error}"));
+        let executable_path = directory.path().join("guardian");
+        std::fs::write(&executable_path, b"guardian-test")
+            .unwrap_or_else(|error| panic!("test executable write failed: {error}"));
+        std::fs::set_permissions(&executable_path, Permissions::from_mode(0o500))
+            .unwrap_or_else(|error| panic!("test executable mode failed: {error}"));
         let executable = File::open(&executable_path)
             .unwrap_or_else(|error| panic!("test executable failed: {error}"));
         let executable = GuardianExecutableDescriptor::from_descriptor(executable.as_fd())
             .unwrap_or_else(|error| panic!("test executable pin failed: {error}"));
-        let directory =
-            tempfile::tempdir().unwrap_or_else(|error| panic!("test directory failed: {error}"));
         let descriptors = credential_descriptors(&directory);
         let spec = GuardianUnitSpec::new(
             SandboxUnitName::from_incarnation([0xab; 16]),

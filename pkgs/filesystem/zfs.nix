@@ -51,6 +51,11 @@ in
       hash = "sha256-Kjxw1Vo3zHFhipWmDoGtZlMCAesRjTd0Hcku/PhIyLE=";
     };
 
+    # Scope OpenZFS 44aa82a's Linux 6.9+ superblock UUID path to the pinned
+    # AOS kernel. It binds immutable pool and dataset GUIDs so Storage can
+    # verify a detached snapshot by descriptor, not its replaceable ZFS name.
+    patches = [./zfs-mounted-fs-uuid.patch];
+
     buildDeps =
       [
         gnumake

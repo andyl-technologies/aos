@@ -194,9 +194,11 @@ fn grouped_transition_replays_exact_guid_observation_at_one_generation() {
     recovered
         .validate_atomic_group_record(&program, request, Some((observation, post_head)))
         .unwrap();
-    assert!(recovered
-        .validate_atomic_group_record(&program, request, None)
-        .is_err());
+    assert!(
+        recovered
+            .validate_atomic_group_record(&program, request, None)
+            .is_err()
+    );
     assert_eq!(
         recovered.atomic_group_member_guids(program.operation()),
         Some(guids.as_slice())

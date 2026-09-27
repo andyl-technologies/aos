@@ -61,9 +61,11 @@ pub mod controller_execution_output_settlement;
 pub mod controller_execution_preissue;
 #[cfg(target_os = "linux")]
 pub mod controller_execution_spec_attempt;
+pub mod controller_no_apply_settlement_cursor;
 pub mod controller_query;
 #[cfg(target_os = "linux")]
 pub mod controller_service;
+pub mod controller_storage_output_reserve_attempt;
 pub mod create_holder_proof;
 #[cfg(target_os = "linux")]
 pub mod destination_slot_effect;
@@ -136,6 +138,7 @@ pub mod publisher_sessions;
 pub mod reconciler;
 #[cfg(target_os = "linux")]
 pub mod resource_inventory;
+mod role_credential;
 pub mod runtime_authority;
 pub mod runtime_execution;
 #[cfg(target_os = "linux")]
@@ -219,16 +222,16 @@ pub use host_catalog_reconciliation::{
     HostCatalogReconciliationV1,
 };
 pub use journal::{
-    CommitResult, ControllerPolicyHoldV1, FixedSourceProviderJournalHandoffV1,
-    GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
-    GlobalCapacityReservationRequestV1, GlobalCapacityReservationV1, IdempotencyKey,
-    IdempotencyOutcome, Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction,
-    MountManagerStartupPolicyReceiptV1, MountSourceAcquisitionJournalAuthorityV2,
-    MountSourceConsumptionCommitReceipt, MountSourceConsumptionCompanionProjectionV2,
-    MountSourceConsumptionJournalAuthorityV1, MountSourceConsumptionPreflight,
-    MountSourceMigrationJournalAuthorityV2, PreparedGlobalCapacityReservationV1,
-    ProtectedJournalAuthority, ProtectedJournalPreflight, ProtectedJournalSnapshot,
-    RecordNamespace, RecoveryReport,
+    CommitResult, ControllerPolicyEffectAckV1, ControllerPolicyHoldV1,
+    FixedSourceProviderJournalHandoffV1, GlobalCapacityReservationPurposeV1,
+    GlobalCapacityReservationRecoveryBindingV1, GlobalCapacityReservationRequestV1,
+    GlobalCapacityReservationV1, IdempotencyKey, IdempotencyOutcome, Journal, JournalError,
+    JournalLimits, JournalRecord, JournalTransaction, MountManagerStartupPolicyReceiptV1,
+    MountSourceAcquisitionJournalAuthorityV2, MountSourceConsumptionCommitReceipt,
+    MountSourceConsumptionCompanionProjectionV2, MountSourceConsumptionJournalAuthorityV1,
+    MountSourceConsumptionPreflight, MountSourceMigrationJournalAuthorityV2,
+    PreparedGlobalCapacityReservationV1, ProtectedJournalAuthority, ProtectedJournalPreflight,
+    ProtectedJournalSnapshot, RecordNamespace, RecoveryReport,
 };
 pub use lifecycle_authority::{
     AtomicStorageLifecyclePublicationErrorV1, compile_atomic_storage_lifecycle_template_v1,

@@ -56,6 +56,19 @@ The closed `AOSPHQ05` Cache readback exchange may durably spend a root challenge
 and verify that signer, but its root-source cut is not the all-owner cut and
 its acknowledgement is not a publication or effect capability.
 
+An initial protected Source ancestry tree needs its own administrative seed.
+The signed project layer cannot issue that seed: its admission already requires
+the current ancestry head, and the publisher policy does not supply the seven
+tree-shape ceilings. A distinct Controller administrative issuer must establish
+the project, all seven ceilings, current publisher and project-authorization
+heads, original request identity, and a monotonic issuer epoch under protected
+custody. Source verifies a separately pinned issuer and the exact current
+Controller heads while the Controller and Source writers are held, then
+atomically appends the typed generation-one tree and a receipt binding it to
+that seed. Cold replay must require the same signature, receipt, heads, and
+anti-rollback floor. A signed seed packet or locally valid tree alone does not
+create ancestry authority and cannot open Create.
+
 ## Execution admission and observation
 
 `CreateExecution` admission commits the accepted command, holder-proven public
@@ -232,6 +245,19 @@ target. This does not prove access to an actual nspawn payload or its installed
 filter and MAC state. All evidence must bind the current boot, immutable
 executable and root pins, exact runtime profile, and trusted deployment
 generation. Missing evidence keeps launch unavailable.
+
+The Host runtime-owner bootstrap manifest also needs an independent deployment
+authority. A manifest checksum and an fs-verity measurement copied into the
+same Host-writable state directory prove only self-consistency. Before the
+protected owner is bootstrapped, a separate privileged publisher must
+authenticate the complete owner-record tuple, sign the exact manifest and
+fs-verity measurement with the current boot, assignment, desired and namespace
+generations, and a monotonic deployment epoch, then publish it without
+replacement. Host must verify an independently pinned signer and rollback
+floor outside its writable state. Restarted journal replay must remain bound
+to that verified deployment cut; a once-read manifest cannot authorize an
+unrelated or substituted journal. No Host launch or readiness claim may use
+the manifest until that producer, consumer, and cold-replay chain is qualified.
 
 ## Completion evidence
 

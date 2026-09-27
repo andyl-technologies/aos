@@ -2,8 +2,9 @@
 //!
 //! [`SystemdFdStore`] implements the systemd file-descriptor-store protocol
 //! directly over `NOTIFY_SOCKET`. A successful mutation includes a systemd
-//! barrier, so callers may durably record the mutation only after PID 1 has
-//! consumed the preceding notification. Descriptors returned through socket
+//! barrier, so callers know PID 1 processed the preceding notification.
+//! Source removal additionally requires complete manager readback before a
+//! terminal custody claim. Descriptors returned through socket
 //! activation are adopted into [`ImportedKernelMount`] values with strict
 //! names and close-on-exec semantics.
 
@@ -23,6 +24,7 @@ use std::time::Duration;
 use aos_sandbox_linux::inherited_fd::claim_systemd_activation_descriptor_range;
 use aos_sandbox_linux::mount::DetachedMount;
 use aos_sandbox_linux::path::ResolvedPath;
+use aos_systemd::fd_store::{FdStoreInspector, FdStoreSnapshot};
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 use rustix::net::sockopt::{Timeout, set_socket_timeout};
 use rustix::net::{
@@ -39,6 +41,8 @@ const SOURCE_NAME_PREFIX: &str = "aos-source-v1-";
 const DIGEST_HEX_LENGTH: usize = 64;
 const MAXIMUM_IMPORTED_DESCRIPTORS: usize = 1_024;
 const BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
+const SOURCE_MANAGER_UNIT: &str = "aos-sandbox-mountd.service";
+const SOURCE_MANAGER_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// An opaque, versioned name used to associate a descriptor with durable state.
 ///
@@ -319,6 +323,64 @@ pub struct SystemdFdStore {
     source_inventory: Mutex<BTreeSet<SourcePinName>>,
     maximum_entries: usize,
     poisoned: AtomicBool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ManagerFdRow {
+    mode: u32,
+    device_major: u32,
+    device_minor: u32,
+    inode: u64,
+    rdevice_major: u32,
+    rdevice_minor: u32,
+    flags: u32,
+}
+
+fn source_manager_rows(
+    snapshot: FdStoreSnapshot,
+    maximum_entries: usize,
+) -> Result<BTreeMap<String, ManagerFdRow>> {
+    if usize::try_from(snapshot.maximum_entries).ok() != Some(maximum_entries)
+        || usize::try_from(snapshot.reported_entries).ok() != Some(snapshot.rows.len())
+        || snapshot.rows.len() > maximum_entries
+    {
+        return Err(state_error(
+            "manager descriptor-store capacity or count differs",
+        ));
+    }
+
+    let mut rows = BTreeMap::new();
+    // systemd's display path may change for the same descriptor; compare the
+    // stable stat metadata while requiring every unrelated named row to stay.
+    for (name, mode, device_major, device_minor, inode, rdevice_major, rdevice_minor, _, flags) in
+        snapshot.rows
+    {
+        if name.starts_with(NAME_PREFIX) {
+            KernelMountName::parse(&name)?;
+        } else {
+            SourcePinName::parse(&name)?;
+        }
+        if inode == 0 || (device_major == 0 && device_minor == 0) {
+            return Err(state_error(
+                "manager descriptor-store row lacks physical identity",
+            ));
+        }
+        let row = ManagerFdRow {
+            mode,
+            device_major,
+            device_minor,
+            inode,
+            rdevice_major,
+            rdevice_minor,
+            flags,
+        };
+        if rows.insert(name, row).is_some() {
+            return Err(state_error(
+                "manager descriptor-store contains a duplicate name",
+            ));
+        }
+    }
+    Ok(rows)
 }
 
 impl SystemdFdStore {
@@ -649,6 +711,71 @@ impl SystemdFdStore {
         ))
     }
 
+    fn remove_source_with_readback(
+        &self,
+        name: &SourcePinName,
+        mut snapshot: impl FnMut() -> Result<FdStoreSnapshot>,
+    ) -> Result<SourceCustodyEvidence> {
+        self.ensure_reconcilable()?;
+        let mounts = self
+            .inventory
+            .lock()
+            .map_err(|_| state_error("descriptor-store inventory lock is poisoned"))?;
+        let mut sources = self
+            .source_inventory
+            .lock()
+            .map_err(|_| state_error("source descriptor-store inventory lock is poisoned"))?;
+        self.ensure_reconcilable()?;
+        let expected_names: BTreeSet<_> = mounts
+            .iter()
+            .map(|mount| mount.as_str().to_owned())
+            .chain(sources.iter().map(|source| source.as_str().to_owned()))
+            .collect();
+
+        if !sources.contains(name) {
+            // Startup adoption and earlier removal are not fresh PID 1 proof.
+            // No notification has been sent, so a failed query is retryable.
+            let observed = match snapshot() {
+                Ok(snapshot) => source_manager_rows(snapshot, self.maximum_entries)
+                    .map_err(|error| self.ambiguous(&error))?,
+                Err(_) => return Ok(SourceCustodyEvidence::Unconfirmed),
+            };
+            if observed.keys().cloned().collect::<BTreeSet<_>>() != expected_names {
+                return Err(self.ambiguous(&state_error(
+                    "manager descriptor-store readback differs from retained inventory",
+                )));
+            }
+            return Ok(SourceCustodyEvidence::ManagerConfirmed);
+        }
+
+        let before = source_manager_rows(snapshot()?, self.maximum_entries)?;
+        if before.keys().cloned().collect::<BTreeSet<_>>() != expected_names {
+            return Err(state_error(
+                "manager descriptor-store readback differs from retained inventory",
+            ));
+        }
+
+        let payload = format!("FDSTOREREMOVE=1\nFDNAME={}", name.as_str());
+        self.notify(payload.as_bytes(), None)?;
+        self.barrier().map_err(|error| self.ambiguous(&error))?;
+
+        let after = snapshot()
+            .and_then(|snapshot| source_manager_rows(snapshot, self.maximum_entries))
+            .map_err(|error| self.ambiguous(&error))?;
+        let mut expected = before.clone();
+        expected.remove(name.as_str());
+        if after == expected {
+            sources.remove(name);
+            return Ok(SourceCustodyEvidence::ManagerConfirmed);
+        }
+        if after == before {
+            return Ok(SourceCustodyEvidence::Unconfirmed);
+        }
+        Err(self.ambiguous(&state_error(
+            "manager descriptor-store readback changed outside the requested removal",
+        )))
+    }
+
     fn notify(&self, payload: &[u8], descriptor: Option<BorrowedFd<'_>>) -> Result<()> {
         let iov = [IoSlice::new(payload)];
         let borrowed = descriptor.into_iter().collect::<Vec<_>>();
@@ -840,23 +967,20 @@ impl SourceDescriptorStore for SystemdFdStore {
     }
 
     fn remove_source(&self, name: &SourcePinName) -> Result<SourceCustodyEvidence> {
-        self.ensure_reconcilable()?;
-        let inventory = self
-            .source_inventory
-            .lock()
-            .map_err(|_| state_error("source descriptor-store inventory lock is poisoned"))?;
-        self.ensure_reconcilable()?;
-        if !inventory.contains(name) {
-            return Ok(SourceCustodyEvidence::ManagerConfirmed);
-        }
-
-        let payload = format!("FDSTOREREMOVE=1\nFDNAME={}", name.as_str());
-        self.notify(payload.as_bytes(), None)?;
-        self.barrier().map_err(|error| self.ambiguous(&error))?;
-        // Without an exact manager query, the process cannot turn its own
-        // removal request into proof of absence. Keep the startup observation
-        // live so every same-process retry remains unconfirmed.
-        Ok(SourceCustodyEvidence::Unconfirmed)
+        let mut inspector = None;
+        self.remove_source_with_readback(name, || {
+            if inspector.is_none() {
+                inspector = Some(
+                    FdStoreInspector::connect(SOURCE_MANAGER_UNIT, SOURCE_MANAGER_QUERY_TIMEOUT)
+                        .map_err(state_error)?,
+                );
+            }
+            inspector
+                .as_ref()
+                .ok_or_else(|| state_error("systemd inspector was not retained"))?
+                .snapshot()
+                .map_err(state_error)
+        })
     }
 }
 
@@ -1194,7 +1318,7 @@ mod tests {
         let name = SourcePinName::from_digest([17; 32]);
 
         let manager = std::thread::spawn(move || {
-            for _ in 0..6 {
+            for _ in 0..2 {
                 let (_, descriptors) = receive_notification(&server);
                 drop(descriptors);
             }
@@ -1204,15 +1328,280 @@ mod tests {
             keeper.store_source(&name, descriptor.as_fd()).unwrap(),
             SourceCustodyEvidence::Unconfirmed
         );
-        assert_eq!(
-            keeper.remove_source(&name).unwrap(),
-            SourceCustodyEvidence::Unconfirmed
-        );
-        assert_eq!(
-            keeper.remove_source(&name).unwrap(),
-            SourceCustodyEvidence::Unconfirmed
-        );
         manager.join().unwrap();
+    }
+
+    fn manager_row(name: &str, inode: u64) -> aos_systemd::fd_store::RawFdStoreRow {
+        (
+            name.to_owned(),
+            0o040755,
+            8,
+            1,
+            inode,
+            0,
+            0,
+            String::new(),
+            0,
+        )
+    }
+
+    fn manager_snapshot(rows: Vec<aos_systemd::fd_store::RawFdStoreRow>) -> FdStoreSnapshot {
+        FdStoreSnapshot {
+            maximum_entries: 3,
+            reported_entries: rows.len() as u32,
+            rows,
+        }
+    }
+
+    #[test]
+    fn source_removal_requires_complete_negative_manager_readback() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notify.sock");
+        let server = socket_with(
+            AddressFamily::UNIX,
+            SocketType::DGRAM,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        bind(&server, &SocketAddrUnix::new(&path).unwrap()).unwrap();
+        let mount = KernelMountName::from_digest([21; 32]);
+        let source = SourcePinName::from_digest([22; 32]);
+        let keeper = SystemdFdStore::from_notify_socket_with_inventories(
+            path.as_os_str(),
+            BTreeSet::from([mount.clone()]),
+            BTreeSet::from([source.clone()]),
+            3,
+        )
+        .unwrap();
+        let removed_name = source.clone();
+        let manager = std::thread::spawn(move || {
+            let (remove, descriptors) = receive_notification(&server);
+            assert_eq!(
+                remove,
+                format!("FDSTOREREMOVE=1\nFDNAME={}", removed_name.as_str())
+            );
+            assert!(descriptors.is_empty());
+            let (barrier, descriptors) = receive_notification(&server);
+            assert_eq!(barrier, "BARRIER=1");
+            drop(descriptors);
+        });
+        let before = manager_snapshot(vec![
+            manager_row(mount.as_str(), 41),
+            manager_row(source.as_str(), 42),
+        ]);
+        let after = manager_snapshot(vec![manager_row(mount.as_str(), 41)]);
+        let mut snapshots = [before, after.clone()].into_iter();
+
+        assert_eq!(
+            keeper
+                .remove_source_with_readback(&source, || Ok(snapshots.next().unwrap()))
+                .unwrap(),
+            SourceCustodyEvidence::ManagerConfirmed
+        );
+        let mut replay_queries = 0;
+        assert_eq!(
+            keeper
+                .remove_source_with_readback(&source, || {
+                    replay_queries += 1;
+                    Ok(after.clone())
+                })
+                .unwrap(),
+            SourceCustodyEvidence::ManagerConfirmed
+        );
+        assert_eq!(replay_queries, 1);
+        manager.join().unwrap();
+    }
+
+    #[test]
+    fn unchanged_manager_readback_retains_source_for_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notify.sock");
+        let server = socket_with(
+            AddressFamily::UNIX,
+            SocketType::DGRAM,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        bind(&server, &SocketAddrUnix::new(&path).unwrap()).unwrap();
+        let source = SourcePinName::from_digest([23; 32]);
+        let keeper = SystemdFdStore::from_notify_socket_with_inventories(
+            path.as_os_str(),
+            BTreeSet::new(),
+            BTreeSet::from([source.clone()]),
+            3,
+        )
+        .unwrap();
+        let manager = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (_, descriptors) = receive_notification(&server);
+                drop(descriptors);
+            }
+        });
+        let snapshot = manager_snapshot(vec![manager_row(source.as_str(), 43)]);
+
+        assert_eq!(
+            keeper
+                .remove_source_with_readback(&source, || Ok(snapshot.clone()))
+                .unwrap(),
+            SourceCustodyEvidence::Unconfirmed
+        );
+        assert!(keeper.source_inventory.lock().unwrap().contains(&source));
+        keeper.ensure_source_reconcilable().unwrap();
+        manager.join().unwrap();
+    }
+
+    #[test]
+    fn changed_unrelated_row_or_failed_postreadback_poisons_custody() {
+        for changed_row in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("notify.sock");
+            let server = socket_with(
+                AddressFamily::UNIX,
+                SocketType::DGRAM,
+                SocketFlags::CLOEXEC,
+                None,
+            )
+            .unwrap();
+            bind(&server, &SocketAddrUnix::new(&path).unwrap()).unwrap();
+            let mount = KernelMountName::from_digest([24; 32]);
+            let source = SourcePinName::from_digest([25; 32]);
+            let keeper = SystemdFdStore::from_notify_socket_with_inventories(
+                path.as_os_str(),
+                BTreeSet::from([mount.clone()]),
+                BTreeSet::from([source.clone()]),
+                3,
+            )
+            .unwrap();
+            let manager = std::thread::spawn(move || {
+                for _ in 0..2 {
+                    let (_, descriptors) = receive_notification(&server);
+                    drop(descriptors);
+                }
+            });
+            let before = manager_snapshot(vec![
+                manager_row(mount.as_str(), 44),
+                manager_row(source.as_str(), 45),
+            ]);
+            let after = manager_snapshot(vec![manager_row(mount.as_str(), 46)]);
+            let mut calls = 0;
+
+            let result = keeper.remove_source_with_readback(&source, || {
+                calls += 1;
+                if calls == 1 {
+                    Ok(before.clone())
+                } else if changed_row {
+                    Ok(after.clone())
+                } else {
+                    Err(state_error("injected manager timeout"))
+                }
+            });
+            assert!(result.unwrap_err().to_string().contains("ambiguous"));
+            assert!(keeper.ensure_source_reconcilable().is_err());
+            assert!(keeper.source_inventory.lock().unwrap().contains(&source));
+            manager.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn malformed_manager_rows_fail_before_removal() {
+        let source = SourcePinName::from_digest([26; 32]);
+        let valid = manager_row(source.as_str(), 47);
+        let duplicate = manager_snapshot(vec![valid.clone(), valid.clone()]);
+        let wrong_count = FdStoreSnapshot {
+            reported_entries: 2,
+            rows: vec![valid.clone()],
+            ..manager_snapshot(Vec::new())
+        };
+        let wrong_capacity = FdStoreSnapshot {
+            maximum_entries: 4,
+            reported_entries: 1,
+            rows: vec![valid],
+            ..manager_snapshot(Vec::new())
+        };
+
+        for snapshot in [duplicate, wrong_count, wrong_capacity] {
+            assert!(source_manager_rows(snapshot, 3).is_err());
+        }
+    }
+
+    #[test]
+    fn incomplete_before_readback_does_not_mutate_or_poison() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("absent-notify.sock");
+        let source = SourcePinName::from_digest([27; 32]);
+        let keeper = SystemdFdStore::from_notify_socket_with_inventories(
+            path.as_os_str(),
+            BTreeSet::new(),
+            BTreeSet::from([source.clone()]),
+            3,
+        )
+        .unwrap();
+
+        let error = keeper
+            .remove_source_with_readback(&source, || Ok(manager_snapshot(Vec::new())))
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("differs from retained inventory")
+        );
+        assert!(keeper.source_inventory.lock().unwrap().contains(&source));
+        keeper.ensure_source_reconcilable().unwrap();
+    }
+
+    #[test]
+    fn absent_source_requires_a_fresh_complete_manager_view() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("absent-notify.sock");
+        let source = SourcePinName::from_digest([28; 32]);
+        let keeper = SystemdFdStore::from_notify_socket_with_inventories(
+            path.as_os_str(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            3,
+        )
+        .unwrap();
+
+        let error = keeper
+            .remove_source_with_readback(&source, || {
+                Ok(manager_snapshot(vec![manager_row(source.as_str(), 48)]))
+            })
+            .unwrap_err();
+
+        assert!(error.to_string().contains("ambiguous"));
+        assert!(keeper.ensure_source_reconcilable().is_err());
+    }
+
+    #[test]
+    fn absent_source_missing_bus_is_unconfirmed_until_fresh_replay() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("absent-notify.sock");
+        let source = SourcePinName::from_digest([29; 32]);
+        let keeper = SystemdFdStore::from_notify_socket_with_inventories(
+            path.as_os_str(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            keeper
+                .remove_source_with_readback(&source, || Err(state_error("missing system bus")))
+                .unwrap(),
+            SourceCustodyEvidence::Unconfirmed
+        );
+        keeper.ensure_source_reconcilable().unwrap();
+
+        assert_eq!(
+            keeper
+                .remove_source_with_readback(&source, || Ok(manager_snapshot(Vec::new())))
+                .unwrap(),
+            SourceCustodyEvidence::ManagerConfirmed
+        );
     }
 
     #[test]

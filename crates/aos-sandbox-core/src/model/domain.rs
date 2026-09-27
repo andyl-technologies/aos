@@ -45,6 +45,9 @@ pub enum InvalidDomainModel {
     /// A non-live consistency class carries an inapplicable source incarnation.
     #[error("attachment source incarnation is incompatible with consistency class")]
     IncompatibleSourceIncarnation,
+    /// FUSE presentation is requested for a mutable or non-immutable source.
+    #[error("FUSE attachment presentation requires an immutable read-only revision")]
+    IncompatiblePresentation,
 }
 
 /// Stores one sandbox's ancestry from root through immediate parent.
@@ -476,6 +479,23 @@ impl AttachmentLease {
     }
 }
 
+/// Selects the implementation family for a logical attachment.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachmentPresentation {
+    /// Uses the existing broker-owned native mount path.
+    #[default]
+    Native,
+    /// Requires a separately authenticated FUSE worker and connection.
+    Fuse,
+}
+
+impl AttachmentPresentation {
+    const fn is_native(&self) -> bool {
+        matches!(self, Self::Native)
+    }
+}
+
 /// Stores a generation-fenced logical attachment request.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AttachmentIntent {
@@ -493,6 +513,8 @@ pub struct AttachmentIntent {
     mutation: ViewMutation,
     mount_attributes: MountAttributes,
     lease: AttachmentLease,
+    #[serde(default, skip_serializing_if = "AttachmentPresentation::is_native")]
+    presentation: AttachmentPresentation,
 }
 
 #[derive(Deserialize)]
@@ -512,6 +534,8 @@ struct AttachmentIntentWire {
     mutation: ViewMutation,
     mount_attributes: MountAttributes,
     lease: AttachmentLease,
+    #[serde(default)]
+    presentation: AttachmentPresentation,
 }
 
 impl<'de> Deserialize<'de> for AttachmentIntent {
@@ -520,7 +544,7 @@ impl<'de> Deserialize<'de> for AttachmentIntent {
         D: Deserializer<'de>,
     {
         let wire = AttachmentIntentWire::deserialize(deserializer)?;
-        Self::new(
+        Self::new_with_presentation(
             wire.id,
             wire.desired_generation,
             wire.consumer_sandbox,
@@ -535,6 +559,7 @@ impl<'de> Deserialize<'de> for AttachmentIntent {
             wire.mutation,
             wire.mount_attributes,
             wire.lease,
+            wire.presentation,
         )
         .map_err(serde::de::Error::custom)
     }
@@ -566,6 +591,50 @@ impl AttachmentIntent {
         mount_attributes: MountAttributes,
         lease: AttachmentLease,
     ) -> Result<Self, InvalidDomainModel> {
+        Self::new_with_presentation(
+            id,
+            desired_generation,
+            consumer_sandbox,
+            consumer_incarnation,
+            expected_namespace_generation,
+            source_view,
+            source_view_revision,
+            source_incarnation,
+            view,
+            destination_slot,
+            consistency,
+            mutation,
+            mount_attributes,
+            lease,
+            AttachmentPresentation::Native,
+        )
+    }
+
+    /// Constructs an attachment with an explicit native or FUSE presentation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors documented by [`Self::new`] and rejects FUSE for a
+    /// mutable or non-immutable source. This selection is desired state, not
+    /// authority to launch a worker or transfer a descriptor.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_presentation(
+        id: AttachmentId,
+        desired_generation: DesiredGeneration,
+        consumer_sandbox: SandboxId,
+        consumer_incarnation: IncarnationId,
+        expected_namespace_generation: NamespaceGeneration,
+        source_view: ViewId,
+        source_view_revision: Revision,
+        source_incarnation: Option<IncarnationId>,
+        view: ObjectDescriptor,
+        destination_slot: AttachmentSlotId,
+        consistency: AttachmentConsistency,
+        mutation: ViewMutation,
+        mount_attributes: MountAttributes,
+        lease: AttachmentLease,
+        presentation: AttachmentPresentation,
+    ) -> Result<Self, InvalidDomainModel> {
         if id.as_bytes() == &[0; 16]
             || desired_generation.get() == 0
             || consumer_sandbox.as_bytes() == &[0; 16]
@@ -591,6 +660,13 @@ impl AttachmentIntent {
         if source_incarnation.is_some() != requires_source_incarnation {
             return Err(InvalidDomainModel::IncompatibleSourceIncarnation);
         }
+        if presentation == AttachmentPresentation::Fuse
+            && (consistency != AttachmentConsistency::ImmutableRevision
+                || mutation != ViewMutation::ReadOnly
+                || mount_attributes.recursive())
+        {
+            return Err(InvalidDomainModel::IncompatiblePresentation);
+        }
         Ok(Self {
             id,
             desired_generation,
@@ -606,6 +682,7 @@ impl AttachmentIntent {
             mutation,
             mount_attributes,
             lease,
+            presentation,
         })
     }
 
@@ -673,6 +750,12 @@ impl AttachmentIntent {
     #[must_use]
     pub const fn mount_attributes(&self) -> MountAttributes {
         self.mount_attributes
+    }
+
+    /// Returns the explicitly selected native or FUSE realization family.
+    #[must_use]
+    pub const fn presentation(&self) -> AttachmentPresentation {
+        self.presentation
     }
 
     /// Returns the current attachment lease.
@@ -794,5 +877,44 @@ mod tests {
         );
 
         assert_eq!(result, Err(InvalidDomainModel::IncompatibleMountAttributes));
+    }
+
+    #[test]
+    fn attachment_json_defaults_to_native_and_rejects_unknown_presentation() {
+        let native = AttachmentIntent::new(
+            AttachmentId::from_bytes([1; 16]),
+            DesiredGeneration::new(1),
+            SandboxId::from_bytes([2; 16]),
+            IncarnationId::from_bytes([3; 16]),
+            NamespaceGeneration::new(1),
+            ViewId::from_bytes([4; 16]),
+            Revision::new(1),
+            None,
+            descriptor(),
+            AttachmentSlotId::from_bytes([5; 16]),
+            AttachmentConsistency::ImmutableRevision,
+            ViewMutation::ReadOnly,
+            MountAttributes::new(true, true, true, true, true, false),
+            lease(),
+        )
+        .unwrap();
+        let mut value = serde_json::to_value(&native).unwrap();
+
+        assert!(value.get("presentation").is_none());
+        assert_eq!(
+            serde_json::from_value::<AttachmentIntent>(value.clone()).unwrap(),
+            native
+        );
+
+        value["presentation"] = serde_json::Value::String("fuse".to_owned());
+        assert_eq!(
+            serde_json::from_value::<AttachmentIntent>(value.clone())
+                .unwrap()
+                .presentation(),
+            AttachmentPresentation::Fuse
+        );
+
+        value["presentation"] = serde_json::Value::String("unknown".to_owned());
+        assert!(serde_json::from_value::<AttachmentIntent>(value).is_err());
     }
 }

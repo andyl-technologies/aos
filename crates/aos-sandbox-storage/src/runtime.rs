@@ -79,6 +79,7 @@ use crate::process::{
 };
 use crate::resolver::protected_catalog::ProtectedStorageResolverPolicyDirectoryV1;
 use crate::root_policy::PortableRootAttributesV1;
+use crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1;
 use crate::workspace_catalog::{
     PendingStorageWorkspaceCatalogV1, StorageWorkspaceCatalogActivationCandidateV1,
     ValidatedPendingStorageWorkspaceCatalogV1,
@@ -265,6 +266,22 @@ pub(crate) struct StorageHeldSnapshotReadbackV1 {
     pub(crate) pool_guid: u64,
     /// The digest of exact worker request, ZFS output, and both pool rows.
     pub(crate) physical_observation_digest: ObjectDigest,
+    /// Exact physical portable bytes measured in the confined reader.
+    pub(crate) measured_tree: crate::process::HeldSnapshotReaderObservationV1,
+    /// Fresh ZFS hold/GUID readback after the detached measurement quiesced.
+    pub(crate) post_measurement_observation_digest: ObjectDigest,
+}
+
+fn identity_observation_matches_snapshot_metadata(
+    observed: crate::held_snapshot_tree::HeldSnapshotIdentityObservationV1,
+    metadata: CheckedSnapshotMetadataRecordV1,
+) -> bool {
+    observed.root_attributes == metadata.root_attributes()
+        && observed.maximum_portable_uid == metadata.maximum_portable_uid()
+        && observed.maximum_portable_gid == metadata.maximum_portable_gid()
+        && observed.distinct_inode_count == metadata.distinct_inode_count()
+        && observed.directory_entry_count == metadata.directory_entry_count()
+        && observed.identity_tree_digest == metadata.identity_tree_digest()
 }
 
 /// Reports one synchronous authorized mutation result.
@@ -337,6 +354,7 @@ pub struct StorageBrokerRuntime {
     workspaces: Option<ValidatedPendingStorageWorkspaceCatalogV1>,
     configuration_binding: ObjectDigest,
     broker_instance_id: [u8; 16],
+    held_reader_state_directory: Option<PathBuf>,
     pin_contract: ZfsHelperContract,
     pin_io: Box<dyn WorkspacePinRuntimeIo + Send>,
     helper: StorageMutationHelper<Box<dyn ZfsProcessBackend + Send>>,
@@ -350,9 +368,10 @@ pub struct StorageBrokerRuntime {
 }
 
 impl StorageBrokerRuntime {
-    /// Reobserves one catalogued hold through the authenticated one-shot worker.
+    /// Reobserves one catalogued hold and measures its immutable bytes.
     ///
-    /// A failed or lost reply is never replayed. The worker has no signing
+    /// Both workers must quiesce while Storage retains its journal cut. A
+    /// failed or lost reply is never replayed. Neither worker has signing
     /// authority; this result must not be interpreted as a SourceRoot receipt.
     ///
     /// # Errors
@@ -402,6 +421,45 @@ impl StorageBrokerRuntime {
             return Err(StorageRuntimeError::Recovery);
         }
 
+        // The reader exits with its detached mount before Storage accepts a
+        // second physical hold observation and the final protected journal cut.
+        let mut reader = crate::process::SystemdHeldSnapshotReaderV1::new(
+            crate::process::open_cgroup_root().map_err(|_| StorageRuntimeError::Recovery)?,
+            self.held_reader_state_directory
+                .as_deref()
+                .ok_or(StorageRuntimeError::Recovery)?,
+        )
+        .map_err(|_| StorageRuntimeError::Recovery)?;
+        let measured_tree = match reader.measure(
+            &initial.snapshot,
+            expected_pool_guid,
+            initial.materialized_state_digest,
+            random_challenge()?,
+        ) {
+            Ok(measured) => measured,
+            Err(ZfsWorkerError::Quiescence(_)) => {
+                self.readiness = StorageRuntimeReadiness::ReopenRequired;
+                return Err(StorageRuntimeError::ReopenRequired);
+            }
+            Err(_) => return Err(StorageRuntimeError::Recovery),
+        };
+        let post_binding = HeldSnapshotWorkerBindingV1 {
+            nonce: random_challenge()?,
+            ..binding
+        };
+        let (post_pool_guid, post_measurement_observation_digest) =
+            classify_held_snapshot_worker_result(
+                &mut self.readiness,
+                self.helper.observe_held_snapshot(
+                    &initial.snapshot,
+                    selector.hold_id,
+                    post_binding,
+                ),
+            )?;
+        if post_pool_guid != expected_pool_guid {
+            return Err(StorageRuntimeError::Recovery);
+        }
+
         let final_cut = self
             .coordinator
             .held_snapshot_catalog_cut(selector)
@@ -421,10 +479,18 @@ impl StorageBrokerRuntime {
         {
             return Err(StorageRuntimeError::Recovery);
         }
+        if !identity_observation_matches_snapshot_metadata(
+            measured_tree.identity,
+            final_cut.metadata,
+        ) {
+            return Err(StorageRuntimeError::Recovery);
+        }
         Ok(StorageHeldSnapshotReadbackV1 {
             cut: final_cut,
             pool_guid,
             physical_observation_digest: digest,
+            measured_tree,
+            post_measurement_observation_digest,
         })
     }
 
@@ -975,6 +1041,7 @@ impl StorageBrokerRuntime {
             workspaces: Some(workspaces),
             configuration_binding,
             broker_instance_id,
+            held_reader_state_directory: Some(state_directory.to_path_buf()),
             pin_contract: contract.clone(),
             pin_io: Box::new(pin_io),
             helper: StorageMutationHelper::new(
@@ -1029,6 +1096,7 @@ impl StorageBrokerRuntime {
             workspaces: Some(workspaces),
             configuration_binding,
             broker_instance_id: random_challenge()?,
+            held_reader_state_directory: None,
             pin_contract,
             pin_io: Box::new(pin_io),
             helper: helper.into_boxed(),
@@ -1073,6 +1141,7 @@ impl StorageBrokerRuntime {
             workspaces: Some(workspaces),
             configuration_binding,
             broker_instance_id: random_challenge()?,
+            held_reader_state_directory: None,
             pin_contract,
             pin_io,
             helper,
@@ -3272,6 +3341,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::held_snapshot_tree::HeldSnapshotIdentityObservationV1;
     use crate::resolver::protected_catalog::{
         ProtectedStorageResolverPolicyDirectoryV1, encode_catalog_for_test,
     };
@@ -3281,6 +3351,69 @@ mod tests {
         CatalogPlanV1, ManagedDatasetRoot, PlannedDataset, ProjectAncestorPolicyV1,
         ReservationPolicy, ResolvedDataset, StorageDomainsV1, WorkspaceSpacePolicyV1,
     };
+
+    #[test]
+    fn held_snapshot_identity_must_match_the_unchanged_protected_metadata() {
+        let root = PortableRootAttributesV1::new(0, 0, 0o755).unwrap();
+        let observed = HeldSnapshotIdentityObservationV1 {
+            root_attributes: root,
+            maximum_portable_uid: 17,
+            maximum_portable_gid: 23,
+            distinct_inode_count: 3,
+            directory_entry_count: 2,
+            identity_tree_digest: ObjectDigest::from_bytes([11; 32]),
+        };
+        let metadata = |maximum_uid, digest| {
+            CheckedSnapshotMetadataRecordV1::new_for_test(
+                [1; 16],
+                ObjectDigest::from_bytes([2; 32]),
+                ObjectDigest::from_bytes([3; 32]),
+                aos_sandbox_protocol::semantics::CatalogBindingV1::from_publisher(
+                    1,
+                    ObjectDigest::from_bytes([4; 32]),
+                )
+                .unwrap(),
+                5,
+                6,
+                [7; 32],
+                ObjectDigest::from_bytes([8; 32]),
+                root,
+                maximum_uid,
+                23,
+                3,
+                2,
+                digest,
+            )
+            .unwrap()
+        };
+
+        assert!(identity_observation_matches_snapshot_metadata(
+            observed,
+            metadata(17, ObjectDigest::from_bytes([11; 32])),
+        ));
+        assert!(!identity_observation_matches_snapshot_metadata(
+            observed,
+            metadata(18, ObjectDigest::from_bytes([11; 32])),
+        ));
+        assert!(!identity_observation_matches_snapshot_metadata(
+            observed,
+            metadata(17, ObjectDigest::from_bytes([12; 32])),
+        ));
+        assert!(!identity_observation_matches_snapshot_metadata(
+            HeldSnapshotIdentityObservationV1 {
+                directory_entry_count: 1,
+                ..observed
+            },
+            metadata(17, ObjectDigest::from_bytes([11; 32])),
+        ));
+        assert!(!identity_observation_matches_snapshot_metadata(
+            HeldSnapshotIdentityObservationV1 {
+                root_attributes: PortableRootAttributesV1::new(1, 0, 0o755).unwrap(),
+                ..observed
+            },
+            metadata(17, ObjectDigest::from_bytes([11; 32])),
+        ));
+    }
 
     fn catalog(generation: u64) -> ResolvedCatalogCommitmentV1 {
         let domains = StorageDomainsV1::new(

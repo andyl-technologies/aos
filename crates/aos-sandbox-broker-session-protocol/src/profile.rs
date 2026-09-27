@@ -81,7 +81,7 @@ const HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDis
 ///
 /// Registration is not production advertisement. Closed provisional carriers
 /// remain excluded until their protected issuers and Host owners are joined.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 39] = [
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 46] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -121,6 +121,13 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 39] = [
     BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY,
     BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY,
     BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE,
+    BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2,
+    BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2,
+    BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1,
+    BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1,
+    BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT,
+    BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT,
+    BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
@@ -151,6 +158,11 @@ pub fn authenticated_broker_methods_for_role_v1(
                     | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
                     | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
                     | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
+                    | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
+                    | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
+                    | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+                    | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
+                    | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
             )
         })
         .filter(|method| {
@@ -404,6 +416,7 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
         | BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG
         | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
@@ -413,11 +426,16 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
         | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
-        | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT => BrokerSessionProtocolV1::Host,
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT => BrokerSessionProtocolV1::Host,
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
         | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
-        | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY => BrokerSessionProtocolV1::Host,
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
+        | BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 => {
+            BrokerSessionProtocolV1::Host
+        }
         BrokerMethod::BROKER_METHOD_STORAGE_APPLY
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
@@ -440,24 +458,39 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => {
             BrokerSessionProtocolV1::Mount
         }
+        BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1 => {
+            BrokerSessionProtocolV1::MountFuse
+        }
         BrokerMethod::BROKER_METHOD_NETWORK_APPLY
         | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY
         | BrokerMethod::BROKER_METHOD_NETWORK_INVENTORY_RESOURCES => {
             BrokerSessionProtocolV1::Network
         }
-        BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
+        // The Storage method remains unnegotiable until its same-session Host
+        // proof and protected writer admission are implemented.
+        BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
     };
     let (major, minor) = supported_broker_session_version_v1(protocol);
-    let audience = if matches!(method, BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE) {
+    let audience = if matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
+    ) {
         Audience::AUDIENCE_ROOT_MOUNT
     } else if matches!(
         method,
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
     ) {
         Audience::AUDIENCE_STORAGE_BROKER
     } else {
         Audience::AUDIENCE_NODE_CONTROLLER
     };
+    // V2 stages carry no effect authority. The pinned signed Controller
+    // session authenticates the coordinate; no caller-selected plan/lease
+    // artifact can promote it into a Host or Controller effect grant.
     let authorization = if matches!(
         method,
         BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
@@ -469,6 +502,7 @@ pub const fn authenticated_broker_method_profile_v1(
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
             | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
             | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
@@ -476,6 +510,7 @@ pub const fn authenticated_broker_method_profile_v1(
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
             | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
             | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
             | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
@@ -486,6 +521,7 @@ pub const fn authenticated_broker_method_profile_v1(
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
             | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
             | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
+            | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
             | BrokerMethod::BROKER_METHOD_NETWORK_APPLY
     ) {
         BrokerSessionAuthorizationPresenceV1::Required
@@ -541,7 +577,8 @@ pub const fn authenticated_broker_method_profile_v1(
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE => {
             &HOST_PAYLOAD_SCOPE_RESPONSE_DESCRIPTOR_ROLES
         }
-        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE => {
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
             &HOST_MOUNT_SCOPE_RESPONSE_DESCRIPTOR_ROLES
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP => {
@@ -634,6 +671,7 @@ pub const fn supported_broker_session_version_v1(protocol: BrokerSessionProtocol
         | BrokerSessionProtocolV1::Storage
         | BrokerSessionProtocolV1::Network => (1, 0),
         BrokerSessionProtocolV1::Mount => (2, 0),
+        BrokerSessionProtocolV1::MountFuse => (3, 0),
     }
 }
 
@@ -643,6 +681,7 @@ pub const fn maximum_broker_session_request_bytes_v1(protocol: BrokerSessionProt
     match protocol {
         BrokerSessionProtocolV1::Host => AUTHENTICATED_HOST_QUERY_MAXIMUM_BYTES,
         BrokerSessionProtocolV1::Mount => AUTHENTICATED_MOUNT_PREPARE_CATALOG_MAXIMUM_BYTES,
+        BrokerSessionProtocolV1::MountFuse => AUTHENTICATED_ORDINARY_REQUEST_MAXIMUM_BYTES,
         BrokerSessionProtocolV1::Storage | BrokerSessionProtocolV1::Network => {
             AUTHENTICATED_ORDINARY_REQUEST_MAXIMUM_BYTES
         }
@@ -960,6 +999,7 @@ pub(crate) const fn method_matches_protocol(
             (BrokerSessionProtocolV1::Host, BrokerSessionProtocolV1::Host)
             | (BrokerSessionProtocolV1::Storage, BrokerSessionProtocolV1::Storage)
             | (BrokerSessionProtocolV1::Mount, BrokerSessionProtocolV1::Mount)
+            | (BrokerSessionProtocolV1::MountFuse, BrokerSessionProtocolV1::MountFuse)
             | (BrokerSessionProtocolV1::Network, BrokerSessionProtocolV1::Network) => true,
             _ => false,
         },
@@ -1027,12 +1067,192 @@ mod tests {
     const RESPONSE_MAXIMUM: u32 = 65_536;
 
     #[test]
+    fn storage_output_reserve_remains_unnegotiable() {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT;
+        let query = BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT;
+        let audience = Audience::AUDIENCE_NODE_CONTROLLER;
+        let protocol = BrokerSessionProtocolV1::Storage;
+
+        assert!(authenticated_broker_method_profile_v1(method).is_none());
+        assert!(authenticated_broker_method_profile_v1(query).is_none());
+        assert!(!authenticated_broker_methods_for_role_v1(protocol, audience).contains(&method));
+        assert!(!authenticated_broker_methods_for_role_v1(protocol, audience).contains(&query));
+
+        let client = production_broker_client_hello_v1(protocol, audience, RESPONSE_MAXIMUM)
+            .expect("existing Storage hello remains available");
+        assert!(!client.required_methods.contains(&method.into()));
+        assert!(!client.required_methods.contains(&query.into()));
+    }
+
+    #[test]
+    fn mount_fuse_three_has_no_advertisable_methods_or_legacy_downgrade() {
+        let fuse = BrokerSessionProtocolV1::MountFuse;
+        let controller = Audience::AUDIENCE_NODE_CONTROLLER;
+        assert_eq!(supported_broker_session_version_v1(fuse), (3, 0));
+        assert!(authenticated_broker_methods_for_role_v1(fuse, controller).is_empty());
+        assert!(production_broker_client_hello_v1(fuse, controller, RESPONSE_MAXIMUM).is_err());
+        assert!(production_broker_server_hello_v1(fuse, controller, RESPONSE_MAXIMUM).is_err());
+
+        let method = BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1;
+        for registered in AUTHENTICATED_BROKER_METHODS_V1 {
+            assert_eq!(
+                method_matches_protocol(registered, fuse),
+                registered == method
+            );
+        }
+        assert!(method_matches_protocol(
+            BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+            BrokerSessionProtocolV1::Mount
+        ));
+        assert!(!method_matches_protocol(
+            method,
+            BrokerSessionProtocolV1::Mount
+        ));
+
+        let legacy_client = production_broker_client_hello_v1(
+            BrokerSessionProtocolV1::Mount,
+            controller,
+            RESPONSE_MAXIMUM,
+        )
+        .unwrap();
+        let legacy_server = production_broker_server_hello_v1(
+            BrokerSessionProtocolV1::Mount,
+            controller,
+            RESPONSE_MAXIMUM,
+        )
+        .unwrap();
+        assert!(
+            validate_authenticated_negotiation_v1(
+                &legacy_client,
+                &legacy_server,
+                fuse,
+                3,
+                0,
+                controller,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn dormant_fuse_reserve_profile_requires_exact_authenticated_controller_session() {
+        let method = BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1;
+        let protocol = BrokerSessionProtocolV1::MountFuse;
+        let audience = Audience::AUDIENCE_NODE_CONTROLLER;
+        let profile = authenticated_broker_method_profile_v1(method).unwrap();
+
+        assert_eq!(profile.protocol(), protocol);
+        assert_eq!(profile.version(), (3, 0));
+        assert_eq!(profile.audience(), audience);
+        assert_eq!(
+            profile.authorization(),
+            BrokerSessionAuthorizationPresenceV1::Required
+        );
+        assert_eq!(profile.required_features(), &SIGNED_PLAN_LEASE_FEATURES);
+        assert!(profile.request_descriptor_roles().is_empty());
+        assert!(profile.success_response_descriptor_roles().is_empty());
+        assert!(profile.error_response_descriptor_roles().is_empty());
+
+        let features = production_features_for_methods(&[method]);
+        let client = BrokerClientHello {
+            protocol_major: 3,
+            protocol_minor: 0,
+            audience: audience.into(),
+            required_features: features.clone(),
+            maximum_response_bytes: RESPONSE_MAXIMUM,
+            required_methods: vec![method.into()],
+            ..Default::default()
+        };
+        let broker = BrokerServerHello {
+            protocol_major: 3,
+            protocol_minor: 0,
+            features,
+            maximum_request_bytes: AUTHENTICATED_ORDINARY_REQUEST_MAXIMUM_BYTES as u32,
+            maximum_response_bytes: RESPONSE_MAXIMUM,
+            methods: vec![method.into()],
+            ..Default::default()
+        };
+
+        validate_authenticated_negotiation_v1(&client, &broker, protocol, 3, 0, audience).unwrap();
+        assert!(
+            validate_authenticated_negotiation_v1(&client, &broker, protocol, 2, 0, audience)
+                .is_err()
+        );
+
+        let mut downgraded = client.clone();
+        downgraded.protocol_major = 2;
+        assert!(
+            validate_authenticated_negotiation_v1(&downgraded, &broker, protocol, 3, 0, audience)
+                .is_err()
+        );
+
+        let mut legacy_method = client.clone();
+        legacy_method.required_methods = vec![BrokerMethod::BROKER_METHOD_MOUNT_APPLY.into()];
+        assert!(
+            validate_authenticated_negotiation_v1(
+                &legacy_method,
+                &broker,
+                protocol,
+                3,
+                0,
+                audience
+            )
+            .is_err()
+        );
+
+        let mut wrong_audience = client;
+        wrong_audience.audience = Audience::AUDIENCE_ROOT_MOUNT.into();
+        assert!(
+            validate_authenticated_negotiation_v1(
+                &wrong_audience,
+                &broker,
+                protocol,
+                3,
+                0,
+                Audience::AUDIENCE_ROOT_MOUNT,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn host_namespace_identity_readback_is_root_mount_only_and_not_advertised() {
+        let method = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1;
+        let profile = authenticated_broker_method_profile_v1(method).unwrap();
+        let root_mount = authenticated_broker_methods_for_role_v1(
+            BrokerSessionProtocolV1::Host,
+            Audience::AUDIENCE_ROOT_MOUNT,
+        );
+
+        assert_eq!(profile.protocol(), BrokerSessionProtocolV1::Host);
+        assert_eq!(profile.version(), (1, 0));
+        assert_eq!(profile.audience(), Audience::AUDIENCE_ROOT_MOUNT);
+        assert_eq!(
+            profile.authorization(),
+            BrokerSessionAuthorizationPresenceV1::Required
+        );
+        assert!(profile.request_descriptor_roles().is_empty());
+        assert_eq!(
+            profile.success_response_descriptor_roles(),
+            &HOST_MOUNT_SCOPE_RESPONSE_DESCRIPTOR_ROLES
+        );
+        assert!(!root_mount.contains(&method));
+        assert!(
+            !authenticated_broker_methods_for_role_v1(
+                BrokerSessionProtocolV1::Host,
+                Audience::AUDIENCE_NODE_CONTROLLER,
+            )
+            .contains(&method)
+        );
+    }
+
+    #[test]
     fn production_hello_profiles_cover_every_registered_endpoint_role() {
         let profiles = [
             (
                 BrokerSessionProtocolV1::Host,
                 Audience::AUDIENCE_NODE_CONTROLLER,
-                11,
+                13,
                 3,
             ),
             (
@@ -1106,9 +1326,11 @@ mod tests {
                 HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE,
             ]
         );
-        assert!(features
-            .iter()
-            .all(|feature| feature.major == 1 && feature.minor == 0));
+        assert!(
+            features
+                .iter()
+                .all(|feature| feature.major == 1 && feature.minor == 0)
+        );
     }
 
     #[test]
@@ -1293,6 +1515,46 @@ mod tests {
     }
 
     #[test]
+    fn no_apply_settlement_methods_require_a_signed_controller_session_without_lease_artifacts() {
+        let methods = [
+            BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2,
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2,
+        ];
+        let production = authenticated_broker_methods_for_role_v1(
+            BrokerSessionProtocolV1::Host,
+            Audience::AUDIENCE_NODE_CONTROLLER,
+        );
+        let hello = production_broker_client_hello_v1(
+            BrokerSessionProtocolV1::Host,
+            Audience::AUDIENCE_NODE_CONTROLLER,
+            RESPONSE_MAXIMUM,
+        )
+        .unwrap();
+
+        for method in methods {
+            let profile = authenticated_broker_method_profile_v1(method).unwrap();
+            assert_eq!(profile.protocol(), BrokerSessionProtocolV1::Host);
+            assert_eq!(profile.audience(), Audience::AUDIENCE_NODE_CONTROLLER);
+            assert_eq!(
+                profile.authorization(),
+                BrokerSessionAuthorizationPresenceV1::Forbidden
+            );
+            assert!(profile.request_descriptor_roles().is_empty());
+            assert!(profile.success_response_descriptor_roles().is_empty());
+            assert!(production.contains(&method));
+            assert!(
+                hello
+                    .required_methods
+                    .iter()
+                    .any(|value| value.as_known() == Some(method))
+            );
+        }
+        assert!(hello.required_features.iter().any(|feature| {
+            feature.namespace == BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE
+        }));
+    }
+
+    #[test]
     fn storage_capture_candidate_is_signed_read_only_and_not_advertised() {
         let method = BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE;
         let profile = authenticated_broker_method_profile_v1(method).unwrap();
@@ -1378,6 +1640,36 @@ mod tests {
                 &[method],
             ),
             Err(BrokerSessionNegotiationError::FeatureCondition)
+        );
+    }
+
+    #[test]
+    fn storage_output_host_readback_has_its_own_closed_signed_role() {
+        let method = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT;
+        let profile = authenticated_broker_method_profile_v1(method).unwrap();
+        assert_eq!(profile.protocol(), BrokerSessionProtocolV1::Host);
+        assert_eq!(profile.audience(), Audience::AUDIENCE_STORAGE_BROKER);
+        assert_eq!(
+            profile.authorization(),
+            BrokerSessionAuthorizationPresenceV1::Required
+        );
+        assert_eq!(profile.required_features(), &SIGNED_PLAN_LEASE_FEATURES);
+        assert!(profile.request_descriptor_roles().is_empty());
+        assert!(profile.success_response_descriptor_roles().is_empty());
+        assert!(
+            authenticated_broker_methods_for_role_v1(
+                BrokerSessionProtocolV1::Host,
+                Audience::AUDIENCE_STORAGE_BROKER,
+            )
+            .is_empty()
+        );
+        assert!(
+            production_broker_client_hello_v1(
+                BrokerSessionProtocolV1::Host,
+                Audience::AUDIENCE_STORAGE_BROKER,
+                RESPONSE_MAXIMUM,
+            )
+            .is_err()
         );
     }
 }

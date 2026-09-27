@@ -18,10 +18,13 @@ use aos_sandbox::lifecycle::{
     LifecycleBootInventoryBootstrapChallengeV1, LifecycleEffectObservationV1,
     LifecyclePhase6ErrorV1, LiveRuntimeFenceV1,
 };
+use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
 use aos_sandbox::{
     AuthorityEffectObservationV1, EffectFailure, PreparedAuthorityEffectV1,
     ValidatedAuthorityEffectReceiptV1,
 };
+use aos_sandbox_core::RawPairedClockSample;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 use aos_sandbox_protocol::host_catalog::HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES;
 use buffa::Message as _;
@@ -31,6 +34,9 @@ use crate::controller_argument_exchange::{
 };
 use crate::controller_attach_exchange::ControllerHostAttachGateExchangeV1;
 use crate::controller_authority_effect::ControllerAuthorityEffectExchangeV1;
+use crate::controller_no_apply_exchange::{
+    ControllerHostNoApplyExchangeV2, ControllerHostNoApplyObservationV2,
+};
 use crate::controller_output_exchange::{
     ControllerHostOutputExchangeV1, ControllerHostOutputObservationV1,
 };
@@ -62,6 +68,7 @@ pub(crate) struct ControllerHostPublication {
     execution_effects: ControllerExecutionExchangeV1,
     output_reserve: ControllerHostOutputExchangeV1,
     argument_observe: ControllerHostArgumentExchangeV1,
+    no_apply_settlement: ControllerHostNoApplyExchangeV2,
     attach_gate: ControllerHostAttachGateExchangeV1,
     poisoned: bool,
 }
@@ -102,6 +109,7 @@ impl ControllerHostPublication {
             execution_effects: ControllerExecutionExchangeV1::default(),
             output_reserve: ControllerHostOutputExchangeV1::default(),
             argument_observe: ControllerHostArgumentExchangeV1::default(),
+            no_apply_settlement: ControllerHostNoApplyExchangeV2::default(),
             attach_gate: ControllerHostAttachGateExchangeV1::default(),
             poisoned: false,
         }
@@ -168,6 +176,7 @@ impl ControllerHostPublication {
             || self.execution_effects.has_pending()
             || self.output_reserve.has_pending()
             || self.argument_observe.has_pending()
+            || self.no_apply_settlement.has_pending()
             || self.poisoned
         {
             return Err(EffectFailure::Retryable(
@@ -189,6 +198,7 @@ impl ControllerHostPublication {
             || self.execution_effects.has_pending()
             || self.output_reserve.has_pending()
             || self.argument_observe.has_pending()
+            || self.no_apply_settlement.has_pending()
             || self.attach_gate.has_pending()
             || self.poisoned
         {
@@ -210,6 +220,7 @@ impl ControllerHostPublication {
         if self.execution_effects.has_pending()
             || self.output_reserve.has_pending()
             || self.argument_observe.has_pending()
+            || self.no_apply_settlement.has_pending()
             || self.attach_gate.has_pending()
         {
             return Some(Err(EffectFailure::Retryable(
@@ -230,6 +241,7 @@ impl ControllerHostPublication {
             || self.execution_effects.has_pending()
             || self.output_reserve.has_pending()
             || self.argument_observe.has_pending()
+            || self.no_apply_settlement.has_pending()
             || self.attach_gate.has_pending()
             || self.poisoned
         {
@@ -254,6 +266,7 @@ impl ControllerHostPublication {
             || self.execution_effects.has_pending()
             || self.output_reserve.has_pending()
             || self.argument_observe.has_pending()
+            || self.no_apply_settlement.has_pending()
             || self.attach_gate.has_pending()
             || self.poisoned
         {
@@ -345,6 +358,77 @@ impl ControllerHostPublication {
         exchange.drain(session)
     }
 
+    /// Issues only a signed, nonauthorizing preliminary Host settlement.
+    pub(crate) fn preliminary_no_apply<T>(
+        &mut self,
+        controller: &mut Journal,
+        assignment: &CurrentAssignmentTarget,
+        source: &ControllerExecutionArgumentAttemptV1,
+        clock: &mut T,
+    ) -> Result<ControllerHostNoApplyObservationV2, EffectFailure>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        let (exchange, session) = self.no_apply_exchange()?;
+        exchange.preliminary(session, controller, assignment, source, clock)
+    }
+
+    /// Queries exact Host settlement history after reauthenticating H/T custody.
+    pub(crate) fn query_no_apply_settlement<T>(
+        &mut self,
+        controller: &mut Journal,
+        assignment: &CurrentAssignmentTarget,
+        source: &ControllerExecutionArgumentAttemptV1,
+        clock: &mut T,
+    ) -> Result<ControllerHostNoApplyObservationV2, EffectFailure>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        let (exchange, session) = self.no_apply_exchange()?;
+        exchange.query(session, controller, assignment, source, clock)
+    }
+
+    /// Drains the exact in-process method-42 or method-43 request.
+    pub(crate) fn drain_no_apply_settlement<T>(
+        &mut self,
+        controller: &mut Journal,
+        assignment: &CurrentAssignmentTarget,
+        clock: &mut T,
+    ) -> Result<Option<ControllerHostNoApplyObservationV2>, EffectFailure>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        let (exchange, session) = self.no_apply_exchange()?;
+        exchange.drain(session, controller, assignment, clock)
+    }
+
+    fn no_apply_exchange(
+        &mut self,
+    ) -> Result<
+        (
+            &mut ControllerHostNoApplyExchangeV2,
+            &mut DormantAuthenticatedBrokerSessionV1,
+        ),
+        EffectFailure,
+    > {
+        if self.pending.is_some()
+            || self.authority_effects.has_pending()
+            || self.execution_effects.has_pending()
+            || self.output_reserve.has_pending()
+            || self.argument_observe.has_pending()
+            || self.attach_gate.has_pending()
+            || self.poisoned
+        {
+            return Err(EffectFailure::Retryable(
+                "Host session has retained non-settlement work".to_owned(),
+            ));
+        }
+        let session = self.session.as_mut().ok_or_else(|| {
+            EffectFailure::Retryable("Host session is temporarily unavailable".to_owned())
+        })?;
+        Ok((&mut self.no_apply_settlement, session))
+    }
+
     fn argument_exchange(
         &mut self,
     ) -> Result<
@@ -358,6 +442,7 @@ impl ControllerHostPublication {
             || self.authority_effects.has_pending()
             || self.execution_effects.has_pending()
             || self.output_reserve.has_pending()
+            || self.no_apply_settlement.has_pending()
             || self.attach_gate.has_pending()
             || self.poisoned
         {
@@ -384,6 +469,7 @@ impl ControllerHostPublication {
             || self.authority_effects.has_pending()
             || self.execution_effects.has_pending()
             || self.argument_observe.has_pending()
+            || self.no_apply_settlement.has_pending()
             || self.attach_gate.has_pending()
             || self.poisoned
         {
@@ -421,6 +507,7 @@ impl ControllerHostPublication {
             || self.attach_gate.has_pending()
             || self.output_reserve.has_pending()
             || self.argument_observe.has_pending()
+            || self.no_apply_settlement.has_pending()
             || self.poisoned
         {
             return Err(EffectFailure::Retryable(
@@ -447,6 +534,7 @@ impl ControllerHostPublication {
             || self.execution_effects.has_pending()
             || self.output_reserve.has_pending()
             || self.argument_observe.has_pending()
+            || self.no_apply_settlement.has_pending()
             || self.attach_gate.has_pending()
             || self.poisoned
             || self.session.is_none()
@@ -478,6 +566,7 @@ impl ControllerHostPublication {
             && !self.execution_effects.has_pending()
             && !self.output_reserve.has_pending()
             && !self.argument_observe.has_pending()
+            && !self.no_apply_settlement.has_pending()
             && !self.attach_gate.has_pending()
             && !self.poisoned
             && self.session.is_some()
@@ -511,6 +600,7 @@ impl ControllerHostPublication {
             || self.execution_effects.requires_reconnect()
             || self.output_reserve.requires_reconnect()
             || self.argument_observe.requires_reconnect()
+            || self.no_apply_settlement.requires_reconnect()
             || self.attach_gate.requires_reconnect()
     }
 
@@ -523,6 +613,7 @@ impl ControllerHostPublication {
             || self.execution_effects.has_pending()
             || self.output_reserve.has_pending()
             || self.argument_observe.has_pending()
+            || self.no_apply_settlement.has_pending()
             || self.attach_gate.has_pending()
             || self.poisoned
             || self

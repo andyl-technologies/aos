@@ -17,12 +17,14 @@
 
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
-use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use crate::hierarchy::protected_journal::HierarchyProtectedJournalOwnerV1;
-use crate::journal::SourceDomainPolicyHoldV1;
+use crate::journal::{
+    SourceDomainChallengeV1, SourceDomainPolicyHoldV1, replay_source_domain_challenge_v1,
+};
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
+use crate::role_credential::{decode_role_credential, encode_role_credential};
 
 const MAGIC: &[u8; 8] = b"AOSSRB01";
 const KEY_MAGIC: &[u8; 8] = b"AOSSPK01";
@@ -96,22 +98,8 @@ impl PinnedSourceHoldReadbackSignerV1 {
     ///
     /// Rejects a foreign role, altered checksum, zero generation, or bad key.
     pub fn decode(bytes: &[u8]) -> Result<Self, SourceHoldReadbackErrorV1> {
-        if bytes.len() != KEY_BYTES || bytes.get(..8) != Some(KEY_MAGIC) {
-            return Err(SourceHoldReadbackErrorV1::NonCanonical);
-        }
-        let checksum = Sha256::new()
-            .chain_update(KEY_DOMAIN)
-            .chain_update(&bytes[..48])
-            .finalize();
-        if bytes[48..] != checksum[..] {
-            return Err(SourceHoldReadbackErrorV1::NonCanonical);
-        }
-        let generation = u64::from_be_bytes(take::<8>(bytes, 8)?);
-        let key = VerifyingKey::from_bytes(&take::<32>(bytes, 16)?)
-            .map_err(|_| SourceHoldReadbackErrorV1::NonCanonical)?;
-        if generation == 0 {
-            return Err(SourceHoldReadbackErrorV1::NonCanonical);
-        }
+        let (generation, key) = decode_role_credential(bytes, KEY_MAGIC, KEY_DOMAIN)
+            .ok_or(SourceHoldReadbackErrorV1::NonCanonical)?;
         Ok(Self { generation, key })
     }
 
@@ -139,19 +127,8 @@ pub fn encode_source_hold_readback_signer_credential_v1(
     generation: u64,
     key: &VerifyingKey,
 ) -> Result<[u8; KEY_BYTES], SourceHoldReadbackErrorV1> {
-    if generation == 0 {
-        return Err(SourceHoldReadbackErrorV1::NonCanonical);
-    }
-    let mut bytes = [0; KEY_BYTES];
-    bytes[..8].copy_from_slice(KEY_MAGIC);
-    bytes[8..16].copy_from_slice(&generation.to_be_bytes());
-    bytes[16..48].copy_from_slice(key.as_bytes());
-    let checksum = Sha256::new()
-        .chain_update(KEY_DOMAIN)
-        .chain_update(&bytes[..48])
-        .finalize();
-    bytes[48..].copy_from_slice(&checksum);
-    Ok(bytes)
+    encode_role_credential(generation, key, KEY_MAGIC, KEY_DOMAIN)
+        .ok_or(SourceHoldReadbackErrorV1::NonCanonical)
 }
 
 /// Signs the exact held Source record after checking its current hierarchy head.
@@ -189,6 +166,73 @@ pub fn sign_current_source_hold_readback_v1(
         return Err(SourceHoldReadbackErrorV1::Stale);
     }
     Ok(packet)
+}
+
+/// Commits a Root challenge under the held Source writer and current ancestry.
+///
+/// Controller must retain this same writer until Root compares the separate
+/// Source-only signature and finishes its CAS. This row and its return value
+/// confer no publication, Create, or effect authority.
+///
+/// # Errors
+///
+/// Rejects stale or replaced Source names, absent or released hold, changed
+/// ancestry, malformed challenge, or failed durable append/readback.
+pub fn record_current_source_signer_challenge_v1(
+    owner: &mut ProtectedSourceDomainJournalOwnerV1,
+    project: ProjectId,
+    challenge: SourceHoldReadbackChallengeV1,
+) -> Result<SourceDomainChallengeV1, SourceHoldReadbackErrorV1> {
+    if project.as_bytes() == &[0; 16] {
+        return Err(SourceHoldReadbackErrorV1::NonCanonical);
+    }
+    let names = owner
+        .fixed_physical_names_v1()
+        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?;
+    let hold = require_current_hold_and_head(owner, project)?;
+    let row = owner
+        .journal()
+        .record_source_domain_challenge_v1(hold, project, challenge.nonce(), challenge.cut(), names)
+        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?;
+    if owner
+        .fixed_physical_names_v1()
+        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?
+        != names
+        || require_current_hold_and_head(owner, project)? != hold
+        || replay_source_domain_challenge_v1(owner.journal())
+            .map_err(|_| SourceHoldReadbackErrorV1::Stale)?
+            != Some(row)
+    {
+        return Err(SourceHoldReadbackErrorV1::Stale);
+    }
+    Ok(row)
+}
+
+/// Rechecks the exact committed challenge and Source names under its writer.
+///
+/// # Errors
+///
+/// Rejects a superseded challenge, changed ancestry or hold, or substituted
+/// fixed journal or lock name.
+pub fn require_current_source_signer_challenge_v1(
+    owner: &mut ProtectedSourceDomainJournalOwnerV1,
+    project: ProjectId,
+    expected: SourceDomainChallengeV1,
+) -> Result<(), SourceHoldReadbackErrorV1> {
+    let names = owner
+        .fixed_physical_names_v1()
+        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?;
+    let hold = require_current_hold_and_head(owner, project)?;
+    if !expected
+        .matches_current(expected.nonce(), expected.cut(), project, hold, names)
+        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?
+        || replay_source_domain_challenge_v1(owner.journal())
+            .map_err(|_| SourceHoldReadbackErrorV1::Stale)?
+            != Some(expected)
+    {
+        return Err(SourceHoldReadbackErrorV1::Stale);
+    }
+    Ok(())
 }
 
 fn require_current_hold_and_head(
@@ -257,7 +301,7 @@ pub fn verify_current_source_hold_readback_v1(
         .map_err(|_| SourceHoldReadbackErrorV1::Signature)
 }
 
-fn sign_fields(
+pub(super) fn sign_fields(
     challenge: SourceHoldReadbackChallengeV1,
     project: ProjectId,
     hold: SourceDomainPolicyHoldV1,
@@ -265,6 +309,20 @@ fn sign_fields(
     signing_key: &SigningKey,
 ) -> [u8; SOURCE_HOLD_READBACK_BYTES_V1] {
     let mut packet = [0; SOURCE_HOLD_READBACK_BYTES_V1];
+    packet[..BODY_BYTES]
+        .copy_from_slice(&source_hold_body_v1(challenge, project, hold, generation));
+    let signature = signing_key.sign(&signature_preimage(&packet[..BODY_BYTES]));
+    packet[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
+    packet
+}
+
+pub(super) fn source_hold_body_v1(
+    challenge: SourceHoldReadbackChallengeV1,
+    project: ProjectId,
+    hold: SourceDomainPolicyHoldV1,
+    generation: u64,
+) -> [u8; BODY_BYTES] {
+    let mut packet = [0; BODY_BYTES];
     packet[..8].copy_from_slice(MAGIC);
     packet[8..10].copy_from_slice(&1_u16.to_be_bytes());
     packet[16..24].copy_from_slice(&generation.to_be_bytes());
@@ -277,8 +335,6 @@ fn sign_fields(
     packet[152..184].copy_from_slice(hold.ancestry().as_bytes());
     packet[184..216].copy_from_slice(hold.binding().as_bytes());
     packet[216..224].copy_from_slice(&hold.epoch().to_be_bytes());
-    let signature = signing_key.sign(&signature_preimage(&packet[..BODY_BYTES]));
-    packet[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
     packet
 }
 
@@ -473,6 +529,14 @@ mod tests {
                 challenge,
                 1,
                 &SigningKey::from_bytes(&[10; 32]),
+            )
+            .is_err()
+        );
+        assert!(
+            record_current_source_signer_challenge_v1(
+                &mut owner,
+                ProjectId::from_bytes([9; 16]),
+                challenge,
             )
             .is_err()
         );

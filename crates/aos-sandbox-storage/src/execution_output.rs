@@ -59,7 +59,9 @@ mod physical_observation;
 )]
 mod reserve_source;
 
-pub use held_readback::HeldExecutionOutputReadbackV1;
+pub use held_readback::{
+    HeldExecutionOutputReadbackV1, StorageHeldOutputRequestV1, StorageHeldOutputResponseV1,
+};
 
 type HmacSha256 = Hmac<Sha256>;
 

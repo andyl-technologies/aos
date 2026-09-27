@@ -10,6 +10,7 @@
   views = config.aos.sandbox.cacheSignerView;
   policy = config.aos.sandbox.policyAuthority;
   controllerService = config.aos.sandbox.controllerService;
+  signerServiceHardening = import ./_signer-service-hardening.nix;
 in {
   options.aos.sandbox.cacheSignerService = {
     enable = lib.mkEnableOption "the separate, nonauthorizing Cache-only readback signer";
@@ -97,7 +98,7 @@ in {
       requires = ["aos-sandbox-cache-signer-views.service" "aos-sandbox-cache-signerd.socket"];
       after = ["aos-sandbox-cache-signer-views.service" "aos-sandbox-cache-signerd.socket"];
       unitConfig.BindsTo = ["aos-sandbox-cache-signer-views.service"];
-      serviceConfig = {
+      serviceConfig = signerServiceHardening // {
         Type = "simple";
         Sockets = ["aos-sandbox-cache-signerd.socket"];
         StandardInput = "socket";
@@ -110,27 +111,6 @@ in {
         Group = "aos-cache-signer";
         UMask = "0077";
 
-        CapabilityBoundingSet = "";
-        NoNewPrivileges = true;
-        PrivateDevices = true;
-        PrivateNetwork = true;
-        PrivateTmp = true;
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        ProtectProc = "invisible";
-        ProcSubset = "pid";
-        ProtectClock = true;
-        ProtectControlGroups = true;
-        ProtectKernelLogs = true;
-        ProtectKernelModules = true;
-        ProtectKernelTunables = true;
-        RestrictNamespaces = true;
-        RestrictRealtime = true;
-        RestrictSUIDSGID = true;
-        RestrictAddressFamilies = ["AF_UNIX"];
-        DevicePolicy = "closed";
-        LockPersonality = true;
-        MemoryDenyWriteExecute = true;
         # Exact-name and legacy checks stat the original Cache root names.
         # Their 0700 contents remain inaccessible outside the idmapped views.
         InaccessiblePaths = [

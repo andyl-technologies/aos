@@ -8,6 +8,12 @@
 //! SHA256(domain || preceding):32
 //! ```
 //!
+//! ```text
+//! AOSCFA01 | version:u16be | reserved:2 | Create-operation:16 |
+//! Host-preliminary-head:32 | Controller-floor:32 | Controller-CAS:32 |
+//! SHA256(domain || preceding):32
+//! ```
+//!
 //! The receipt is a local transaction witness, not Host authorization. There
 //! is deliberately no production constructor for its proof input until a
 //! current signed 39/40 readback and anti-rollback cut can be supplied.
@@ -18,6 +24,7 @@ use aos_proto::aos::sandbox::v1::{ExecutionPhase, Timestamp};
 use aos_sandbox_core::{ObjectDigest, OperationId, ResourceKind};
 use aos_sandbox_protocol::host_execution_no_apply::{
     HOST_EXECUTION_NO_APPLY_RECORD_BYTES_V1, HostExecutionNoApplyRecordV1,
+    validate_controller_create_failure_ack_envelope_v1,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -27,6 +34,7 @@ use crate::controller_service::public_projection::{
     PublicProjectionStoreV1,
 };
 use crate::journal::{Journal, JournalRecord, RecordNamespace};
+use crate::runtime_execution::no_apply_settlement::HostSettlementRecordV1;
 
 use prepare::{CreateFailurePrepareV1, load_floor, record_digest};
 
@@ -42,6 +50,10 @@ const VERSION: u16 = 1;
 const RECEIPT_BYTES: usize =
     8 + 2 + 2 + 32 * 3 + HOST_EXECUTION_NO_APPLY_RECORD_BYTES_V1 + 32 * 3 + 8 + 4 + 8 + 32;
 const RESOURCE_VERSION_DOMAIN: &[u8] = b"aos.sandbox.failed-create-resource-version.v1\0";
+const ACK_MAGIC: &[u8; 8] = b"AOSCFA01";
+const ACK_DOMAIN: &[u8] = b"aos.sandbox.create-failure-settlement-ack.v1\0";
+const ACK_VERSION: u16 = 1;
+const ACK_BYTES: usize = 8 + 2 + 2 + 16 + 32 * 3 + 32;
 
 /// Carries a joined H archive, signed Host outcome, and current Host cut.
 ///
@@ -107,6 +119,12 @@ impl CreateFailureSettlementProofV1 {
         self.host_lease_head = head;
         self
     }
+
+    #[cfg(test)]
+    pub(super) fn with_test_lease_epoch(mut self, epoch: u64) -> Self {
+        self.host_lease_epoch = epoch;
+        self
+    }
 }
 
 /// Retains a fresh held-Host proof only across one Controller prepare-to-CAS.
@@ -119,6 +137,102 @@ pub(crate) struct PreparedCreateFailureSettlementV1 {
     proof: CreateFailureSettlementProofV1,
     floor: CreateFailurePrepareV1,
     wall_seconds: i64,
+}
+
+/// Names the exact durable Controller settlement for a later signed Host ACK.
+///
+/// This is a local CAS witness, not an authenticated Host message or permission
+/// to retire H custody. It is minted only after the protected successor bytes
+/// have been read back against the prepare floor.
+#[allow(dead_code, reason = "signed cross-owner ACK transport remains closed")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ControllerCreateFailureSettlementAckV1 {
+    pub(crate) operation_id: OperationId,
+    pub(crate) host_lease_head: ObjectDigest,
+    pub(crate) controller_floor: ObjectDigest,
+    pub(crate) controller_cas: ObjectDigest,
+}
+
+impl ControllerCreateFailureSettlementAckV1 {
+    fn from_floor(floor: CreateFailurePrepareV1) -> Self {
+        Self {
+            operation_id: floor.operation_id,
+            host_lease_head: floor.host_lease_head,
+            controller_floor: floor.digest(),
+            controller_cas: floor.settled_cas_digest(),
+        }
+    }
+
+    /// Encodes the exact Controller settlement for authenticated transport.
+    ///
+    /// The checksum detects noncanonical bytes; it is not a signature. Only
+    /// the broker session's signed outcome can carry this across owners.
+    pub(crate) fn encode_canonical(self) -> [u8; ACK_BYTES] {
+        let mut bytes = [0; ACK_BYTES];
+        bytes[..8].copy_from_slice(ACK_MAGIC);
+        bytes[8..10].copy_from_slice(&ACK_VERSION.to_be_bytes());
+        bytes[12..28].copy_from_slice(self.operation_id.as_bytes());
+        bytes[28..60].copy_from_slice(self.host_lease_head.as_bytes());
+        bytes[60..92].copy_from_slice(self.controller_floor.as_bytes());
+        bytes[92..124].copy_from_slice(self.controller_cas.as_bytes());
+        let checksum = Sha256::new()
+            .chain_update(ACK_DOMAIN)
+            .chain_update(&bytes[..ACK_BYTES - 32])
+            .finalize();
+        bytes[ACK_BYTES - 32..].copy_from_slice(&checksum);
+        bytes
+    }
+
+    /// Decodes an exact ACK without claiming its signer or currentness.
+    pub(crate) fn decode_canonical(bytes: &[u8]) -> Result<Self, ReconcilerError> {
+        validate_controller_create_failure_ack_envelope_v1(bytes)
+            .map_err(|_| invalid_settlement())?;
+        let operation_id =
+            OperationId::from_bytes(bytes[12..28].try_into().map_err(|_| invalid_settlement())?);
+        let digest = |start: usize| -> Result<ObjectDigest, ReconcilerError> {
+            let value: [u8; 32] = bytes[start..start + 32]
+                .try_into()
+                .map_err(|_| invalid_settlement())?;
+            if value == [0; 32] {
+                return Err(invalid_settlement());
+            }
+            Ok(ObjectDigest::from_bytes(value))
+        };
+        Ok(Self {
+            operation_id,
+            host_lease_head: digest(28)?,
+            controller_floor: digest(60)?,
+            controller_cas: digest(92)?,
+        })
+    }
+
+    /// Checks a retained Host ACK against the Controller's durable CAS.
+    ///
+    /// The caller must supply a protected Host journal observation. This
+    /// structural join does not turn that observation into a live lease.
+    #[allow(dead_code, reason = "signed cross-owner ACK transport remains closed")]
+    pub(crate) fn validate_host_retention(
+        self,
+        journal: &Journal,
+        preliminary: HostSettlementRecordV1,
+        sealed: HostSettlementRecordV1,
+        retained: HostSettlementRecordV1,
+        protected_host_sequence: u64,
+    ) -> Result<(), ReconcilerError> {
+        let floor = load_floor(journal, self.operation_id)?.ok_or_else(invalid_settlement)?;
+        prepare::validate_settled_host_floor_join(
+            journal,
+            floor,
+            preliminary,
+            sealed,
+            retained,
+            protected_host_sequence,
+        )?;
+        if self != Self::from_floor(floor) {
+            return Err(invalid_settlement());
+        }
+        Ok(())
+    }
 }
 
 struct PlannedCreateFailureV1 {
@@ -484,7 +598,7 @@ impl<E: SingleNodeEffectExecutor> Reconciler<E> {
     pub(crate) fn settle_create_failed_before_commit(
         &mut self,
         prepared: PreparedCreateFailureSettlementV1,
-    ) -> Result<(), ReconcilerError> {
+    ) -> Result<ControllerCreateFailureSettlementAckV1, ReconcilerError> {
         let plan = self.plan_create_failure(
             prepared.operation_id,
             &prepared.proof,
@@ -503,7 +617,50 @@ impl<E: SingleNodeEffectExecutor> Reconciler<E> {
             return Err(invalid_settlement());
         }
         self.commit_records(plan.records.into())?;
-        validate_failed_create_operation(&self.journal, prepared.operation_id, plan.operation)
+        validate_failed_create_operation(&self.journal, prepared.operation_id, plan.operation)?;
+        prepare::validate_all_floors(&self.journal)?;
+
+        Ok(ControllerCreateFailureSettlementAckV1::from_floor(
+            prepared.floor,
+        ))
+    }
+
+    /// Recovers an exact local settlement coordinate after an ambiguous reply.
+    ///
+    /// A prepared but uncommitted floor returns `None`: recovery cannot infer
+    /// a fresh Host lease from Controller history. A completed floor must join
+    /// the exact three-record successor before this local ACK is reconstructed.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing protected authority, malformed floors, or any changed
+    /// Effect, Operation, or projection bytes.
+    #[allow(dead_code, reason = "signed cross-owner ACK transport remains closed")]
+    pub(crate) fn recover_create_failure_settlement_ack_v1(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<Option<ControllerCreateFailureSettlementAckV1>, ReconcilerError> {
+        self.journal.ensure_protected_authority()?;
+        let Some(floor) = load_floor(&self.journal, operation_id)? else {
+            return if self.load_operation(operation_id)?.state == OperationState::FailedBeforeCommit
+            {
+                Err(invalid_settlement())
+            } else {
+                Ok(None)
+            };
+        };
+        prepare::validate_all_floors(&self.journal)?;
+        let operation = self.load_operation(operation_id)?;
+        match operation.state {
+            OperationState::Applying => Ok(None),
+            OperationState::FailedBeforeCommit => {
+                validate_failed_create_operation(&self.journal, operation_id, operation)?;
+                Ok(Some(ControllerCreateFailureSettlementAckV1::from_floor(
+                    floor,
+                )))
+            }
+            _ => Err(invalid_settlement()),
+        }
     }
 
     fn plan_create_failure(

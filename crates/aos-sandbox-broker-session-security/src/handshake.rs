@@ -9,6 +9,7 @@
 
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
+use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
 use aos_sandbox_broker_session_protocol::{
     BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES, BrokerSessionProtocolV1, CLIENT_HELLO_MAXIMUM_BYTES,
     SERVER_HELLO_MAXIMUM_BYTES, UntrustedBrokerSessionEndpointPublicationV1,
@@ -26,9 +27,10 @@ use aos_sandbox_linux::seqpacket::{
 use aos_sandbox_protocol::PeerCredentials;
 
 use crate::recovery::{
-    ArchivedStorageInventoryHeadV1, FixedEndpointCustodyV1, HistoricalSessionCheckpointV1,
-    ProtectedBrokerSessionOwnerV1, ProtectedPriorAtomicStorageHistoryV1,
-    ProtectedPriorTerminalExchangeV1, ProtectedVerifiedAtomicStorageHistoryV1,
+    ArchivedStorageInventoryHeadV1, AuthenticatedOriginalHostNoApplyJoinV1, FixedEndpointCustodyV1,
+    HistoricalSessionCheckpointV1, ProtectedBrokerSessionOwnerV1,
+    ProtectedPriorAtomicStorageHistoryV1, ProtectedPriorTerminalExchangeV1,
+    ProtectedVerifiedAtomicStorageHistoryV1,
 };
 use crate::{
     BrokerSessionSecurityError, ProtectedBrokerSessionBrokerV1, ProtectedBrokerSessionClientV1,
@@ -1209,6 +1211,21 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    /// Reauthenticates the original signed H/T pair under live Host-session custody.
+    pub(super) fn historical_host_terminal_no_apply_archive(
+        &mut self,
+        source: &ControllerExecutionArgumentAttemptV1,
+    ) -> Result<AuthenticatedOriginalHostNoApplyJoinV1, BrokerSessionSecurityError> {
+        self.owner
+            .revalidate_transport(&self.transcript, self.socket.peer())?;
+        let joined = self
+            .owner
+            .historical_host_terminal_no_apply_archive(source)?;
+        self.owner
+            .revalidate_transport(&self.transcript, self.socket.peer())?;
+        Ok(joined)
+    }
+
     pub(super) fn current_storage_session_binding(
         &mut self,
     ) -> Result<[u8; 32], BrokerSessionSecurityError> {

@@ -11,9 +11,6 @@
 //! openssh-attach-trust.json = canonical AOSHAT01 deployment trust JSON
 //! ```
 
-use std::fs::File;
-use std::io::Read as _;
-use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
 use aos_sandbox::attach_route_issuer::OpenSshAttachRouteIssuerV1;
@@ -21,11 +18,14 @@ use aos_sandbox::public_attach_pending::PublicAttachPendingV1;
 use aos_sandbox_agent::openssh_gate::OpenSshGateBindingV1;
 use aos_sandbox_agent::openssh_gate_linux::expected_openssh_gate_config_v1;
 use ed25519_dalek::SigningKey;
-use rustix::fs::{CWD, Mode, OFlags, openat};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use ssh_key::{Algorithm, PublicKey};
 use zeroize::Zeroizing;
+
+use crate::fixed_role_credential::{
+    CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
+};
 
 const GRANT_SIGNING_KEY: &str = "openssh-attach-grant-signing-key";
 const GRANT_PUBLIC_KEY: &str = "openssh-attach-grant-public-key";
@@ -246,37 +246,15 @@ fn read_credential(
     name: &str,
     maximum: usize,
 ) -> Result<Option<Vec<u8>>, ControllerAttachCredentialErrorV1> {
-    let path = directory.join(name);
-    let descriptor = match openat(
-        CWD,
-        &path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-        Mode::empty(),
-    ) {
-        Ok(descriptor) => descriptor,
-        Err(rustix::io::Errno::NOENT) => return Ok(None),
-        Err(_) => return Err(ControllerAttachCredentialErrorV1::Invalid),
-    };
-    let mut file = File::from(descriptor);
-    let metadata = file
-        .metadata()
-        .map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?;
-    if !metadata.is_file()
-        || metadata.len() == 0
-        || metadata.len() > maximum as u64
-        || metadata.nlink() != 1
-        || metadata.mode() & 0o077 != 0
-    {
-        return Err(ControllerAttachCredentialErrorV1::Invalid);
-    }
-    let mut bytes = Vec::with_capacity(maximum.min(metadata.len() as usize));
-    file.take((maximum + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| ControllerAttachCredentialErrorV1::Invalid)?;
-    if bytes.len() != metadata.len() as usize {
-        return Err(ControllerAttachCredentialErrorV1::Invalid);
-    }
-    Ok(Some(bytes))
+    read_optional_bounded_role_credential_v1(
+        directory,
+        name,
+        1,
+        maximum,
+        true,
+        CredentialOwnerPolicyV1::Any,
+    )
+    .map_err(|_| ControllerAttachCredentialErrorV1::Invalid)
 }
 
 #[cfg(test)]

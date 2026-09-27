@@ -84,6 +84,12 @@ pub struct ProtectedControllerOutputSettlementV1 {
 }
 
 impl ProtectedControllerOutputSettlementV1 {
+    /// Borrows the original protected Host attempt frozen before its first send.
+    #[must_use]
+    pub const fn original_attempt(&self) -> &ControllerExecutionOutputAttemptV1 {
+        &self.attempt
+    }
+
     /// Returns the execution bound to the original accepted Create.
     #[must_use]
     pub fn execution(&self) -> ExecutionId {

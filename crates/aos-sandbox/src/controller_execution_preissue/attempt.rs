@@ -97,6 +97,13 @@ impl ControllerExecutionOutputAttemptV1 {
         self.record_digest
     }
 
+    /// Returns the immutable original Controller attempt for a later signed
+    /// Storage source. These bytes alone are not cross-process authority.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        self.encode().to_vec()
+    }
+
     /// Returns the exact execution keyed by this one-shot attempt.
     #[must_use]
     pub const fn execution(&self) -> ExecutionId {

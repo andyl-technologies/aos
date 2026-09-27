@@ -397,7 +397,7 @@ fn installed_transport_rejects_non_fuse_fd_without_consuming_it() {
     with_connection(|worker, scratch, connected, cancellation| {
         assert!(matches!(
             run_metadata(worker, scratch, connected, cancellation, limits(), budget()),
-            Err(RunError::Transport(_))
+            Err(RunError::Transport(error)) if error.raw_os_error() == Some(libc::ENODEV)
         ));
         // SAFETY: The transport only borrows this live descriptor, even on error.
         assert!(unsafe { libc::fcntl(connected.as_raw_fd(), libc::F_GETFD) } >= 0);
@@ -625,6 +625,79 @@ unsafe extern "C" fn admission_only_run(
         ((*operations).destroy)(context);
     }
     0
+}
+
+unsafe extern "C" fn terminal_transport_run(
+    _: c_int,
+    _: c_int,
+    operations: *const abi::Operations,
+    context: *mut c_void,
+    _: *const abi::Limits,
+) -> c_int {
+    // SAFETY: The scoped runner supplies this live operation table and context.
+    unsafe {
+        ((*operations).destroy)(context);
+    }
+    libc::EIO
+}
+
+#[test]
+fn owned_connection_descriptor_closes_on_admission_and_transport_failure() {
+    with_connection(|worker, scratch, connected, cancellation| {
+        let owned = connected.try_clone_to_owned().unwrap();
+        let raw = owned.as_raw_fd();
+        let invalid = TransportLimits {
+            maximum_name_bytes: 1,
+            ..limits()
+        };
+
+        assert!(matches!(
+            run_owned_with(
+                worker,
+                scratch,
+                owned,
+                cancellation,
+                invalid,
+                budget(),
+                admission_only_run,
+            ),
+            Err(RunError::InvalidLimits)
+        ));
+        // SAFETY: F_GETFD only inspects the raw descriptor number.
+        assert_eq!(unsafe { libc::fcntl(raw, libc::F_GETFD) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EBADF)
+        );
+        // SAFETY: The original descriptor remains borrowed and live.
+        assert!(unsafe { libc::fcntl(connected.as_raw_fd(), libc::F_GETFD) } >= 0);
+    });
+
+    with_connection(|worker, scratch, connected, cancellation| {
+        let owned = connected.try_clone_to_owned().unwrap();
+        let raw = owned.as_raw_fd();
+
+        assert!(matches!(
+            run_owned_with(
+                worker,
+                scratch,
+                owned,
+                cancellation,
+                limits(),
+                budget(),
+                terminal_transport_run,
+            ),
+            Err(RunError::Transport(error)) if error.raw_os_error() == Some(libc::EIO)
+        ));
+        // SAFETY: F_GETFD only inspects the raw descriptor number.
+        assert_eq!(unsafe { libc::fcntl(raw, libc::F_GETFD) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EBADF)
+        );
+        // SAFETY: The original descriptor remains borrowed and live.
+        assert!(unsafe { libc::fcntl(connected.as_raw_fd(), libc::F_GETFD) } >= 0);
+    });
 }
 
 #[test]

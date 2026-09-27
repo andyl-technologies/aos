@@ -18,6 +18,7 @@ use super::host::HostSemanticError;
 use crate::mount_scope::ValidatedMountScopeRequest;
 
 const DOMAIN: &[u8] = b"aos.sandbox.host.mount-scope.v1\0";
+const IDENTITY_DOMAIN: &[u8] = b"aos.sandbox.host.mount-scope-identity.v1\0";
 
 /// Binds exact retained scope acquisition to a distinct signed HostObserve grant.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,13 +55,35 @@ impl CanonicalMountScopeSemanticsV1 {
 pub fn canonical_mount_scope_semantics_v1(
     request: &ValidatedMountScopeRequest,
 ) -> Result<CanonicalMountScopeSemanticsV1, HostSemanticError> {
+    canonical_semantics(request, DOMAIN, 13)
+}
+
+/// Commits the separate Host namespace-identity readback and its five FDs.
+///
+/// This method-45 purpose cannot consume a method-13 RootMount grant, even
+/// when both queries name the same retained scope and descriptor roles.
+///
+/// # Errors
+///
+/// Rejects a runtime handle that cannot form a resource grant target.
+pub fn canonical_mount_scope_identity_semantics_v1(
+    request: &ValidatedMountScopeRequest,
+) -> Result<CanonicalMountScopeSemanticsV1, HostSemanticError> {
+    canonical_semantics(request, IDENTITY_DOMAIN, 45)
+}
+
+fn canonical_semantics(
+    request: &ValidatedMountScopeRequest,
+    domain: &[u8],
+    method: u16,
+) -> Result<CanonicalMountScopeSemanticsV1, HostSemanticError> {
     let target = BrokerResourceHandle::from_bytes(*request.runtime_handle())
         .map_err(|_| HostSemanticError::InvalidTarget)?;
 
     let fence = request.fence();
-    let mut bytes = Vec::with_capacity(DOMAIN.len() + 160);
-    bytes.extend_from_slice(DOMAIN);
-    bytes.extend_from_slice(&13_u16.to_be_bytes());
+    let mut bytes = Vec::with_capacity(domain.len() + 160);
+    bytes.extend_from_slice(domain);
+    bytes.extend_from_slice(&method.to_be_bytes());
 
     bytes.extend_from_slice(fence.sandbox_id());
     bytes.extend_from_slice(fence.incarnation_id());

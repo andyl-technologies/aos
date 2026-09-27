@@ -1013,19 +1013,16 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use aos_sandbox_broker_session_protocol::{
-        BrokerSessionKeyUsageV1, BrokerSessionProtocolV1, BrokerSessionSignerReferenceV1,
-    };
-    use ed25519_dalek::SigningKey;
+    use aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1;
     use rustix::io::Errno;
     use tempfile::TempDir;
 
     use super::*;
-    use crate::manifest::{
-        BrokerSessionSecurityAudienceV1, BrokerSessionSecurityKeyPinV1,
-        BrokerSessionSecurityManifestV1,
-    };
+    use crate::manifest::BrokerSessionSecurityManifestV1;
     use crate::protected_files::MANIFEST_NAME;
+    use crate::test_signed_endpoint::{
+        TestEndpointRole, install_endpoint, manifest_and_secrets, write_protected,
+    };
 
     const CLIENT_KEY_NAMES: [&str; 2] = ["client-hello-signing-key", "client-record-signing-key"];
     const BROKER_KEY_NAMES: [&str; 2] = ["broker-hello-signing-key", "broker-outcome-signing-key"];
@@ -1044,17 +1041,12 @@ mod tests {
             let endpoint = temporary.path().join("endpoint");
             fs::create_dir(&endpoint)
                 .unwrap_or_else(|error| panic!("endpoint directory failed: {error}"));
-            let (manifest, secrets) = test_manifest();
-            write_protected(&endpoint.join(MANIFEST_NAME), &manifest.encode());
-            let (names, indices) = match role {
-                EndpointRole::Client => (CLIENT_KEY_NAMES, [0, 2]),
-                EndpointRole::Broker => (BROKER_KEY_NAMES, [1, 3]),
+            let (manifest, secrets) = manifest_and_secrets(BrokerSessionProtocolV1::Network);
+            let test_role = match role {
+                EndpointRole::Client => TestEndpointRole::Client,
+                EndpointRole::Broker => TestEndpointRole::Broker,
             };
-            for (name, index) in names.into_iter().zip(indices) {
-                write_protected(&endpoint.join(name), &secrets[index]);
-            }
-            fs::set_permissions(&endpoint, fs::Permissions::from_mode(0o500))
-                .unwrap_or_else(|error| panic!("endpoint permissions failed: {error}"));
+            install_endpoint(&endpoint, &manifest, &secrets, test_role);
             Self {
                 _temporary: temporary,
                 endpoint,
@@ -1141,66 +1133,6 @@ mod tests {
         fn fill_once(&mut self, _output: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::IO)
         }
-    }
-
-    fn test_manifest() -> (BrokerSessionSecurityManifestV1, [[u8; 48]; 4]) {
-        let usages = [
-            BrokerSessionKeyUsageV1::ClientHello,
-            BrokerSessionKeyUsageV1::BrokerHello,
-            BrokerSessionKeyUsageV1::ClientRecord,
-            BrokerSessionKeyUsageV1::BrokerOutcome,
-        ];
-        let mut secrets = [[0_u8; 48]; 4];
-        let pins = core::array::from_fn(|index| {
-            let seed = [u8::try_from(index + 1).unwrap_or(1); 32];
-            let key_id = [0x50 + u8::try_from(index).unwrap_or(0); 16];
-            secrets[index][..16].copy_from_slice(&key_id);
-            secrets[index][16..].copy_from_slice(&seed);
-            let signing_key = SigningKey::from_bytes(&seed);
-            let signer = BrokerSessionSignerReferenceV1::for_signing_key(
-                [0x30 + u8::try_from(index).unwrap_or(0); 16],
-                10 + u64::try_from(index).unwrap_or(0),
-                [0x40 + u8::try_from(index).unwrap_or(0); 32],
-                key_id,
-                20 + u64::try_from(index).unwrap_or(0),
-                usages[index],
-                &signing_key,
-            )
-            .unwrap_or_else(|error| panic!("signer failed: {error}"));
-            BrokerSessionSecurityKeyPinV1::new(
-                signer,
-                signing_key.verifying_key().to_bytes(),
-                1,
-                1,
-                false,
-                None,
-            )
-            .unwrap_or_else(|error| panic!("pin failed: {error}"))
-        });
-        let manifest = BrokerSessionSecurityManifestV1::new(
-            BrokerSessionProtocolV1::Network,
-            BrokerSessionSecurityAudienceV1::NodeController,
-            1,
-            0,
-            [1; 16],
-            [2; 16],
-            1,
-            [3; 32],
-            1,
-            [4; 32],
-            1,
-            [5; 32],
-            [6; 16],
-            pins,
-        )
-        .unwrap_or_else(|error| panic!("manifest failed: {error}"));
-        (manifest, secrets)
-    }
-
-    fn write_protected(path: &Path, bytes: &[u8]) {
-        fs::write(path, bytes).unwrap_or_else(|error| panic!("protected write failed: {error}"));
-        fs::set_permissions(path, fs::Permissions::from_mode(0o400))
-            .unwrap_or_else(|error| panic!("protected permissions failed: {error}"));
     }
 
     fn rewrite_protected(path: &Path, bytes: &[u8]) {

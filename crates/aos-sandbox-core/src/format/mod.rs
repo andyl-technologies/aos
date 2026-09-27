@@ -26,7 +26,10 @@ use sha2::{Digest, Sha256};
 use crate::{MediaType, ObjectDescriptor, ObjectDigest};
 
 pub use assignment::{decode_assignment_manifest_v1, encode_assignment_manifest_v1};
-pub use attachment::{decode_attachment_intent_v1, encode_attachment_intent_v1};
+pub use attachment::{
+    decode_attachment_intent_v1, decode_attachment_intent_v2, encode_attachment_intent_v1,
+    encode_attachment_intent_v2,
+};
 pub use broker_authorization::{
     decode_broker_authorization_plan, encode_broker_authorization_plan,
 };

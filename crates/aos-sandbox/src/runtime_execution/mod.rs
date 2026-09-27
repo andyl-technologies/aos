@@ -21,6 +21,7 @@ mod recovery;
 mod route_record;
 mod spec_producer;
 mod store;
+pub(crate) use store::HostSettlementAdmissionWitnessV1;
 
 #[cfg(unix)]
 pub use agent_execution_adapter::DormantGuestProvisioningOwnerV1;
@@ -61,11 +62,17 @@ pub use host_output_source::{
     HostOutputReserveSourceErrorV1, VerifiedHostOutputReserveSourceV1,
     verify_host_output_reserve_source_v1,
 };
+pub use owner::bootstrap_proof::{
+    RuntimeBootstrapExpectationV1, RuntimeBootstrapProofErrorV1, RuntimeBootstrapProofV1,
+    RuntimeBootstrapSignerPinV1,
+};
 pub use owner::{
     AuthenticatedRecoveredHostAgentOutcomeV1, AuthenticatedRuntimeArgumentReadbackV1,
     CommittedHostAgentOutcomeV1, DormantRuntimeExecutionClaimV1,
     DormantRuntimeExecutionOwnerErrorV1, DormantRuntimeExecutionOwnerV1,
-    ProtectedAcceptedExecutionOutputV2, ProtectedLifecycleIssueV1, ProtectedRuntimeAgentPeerV1,
+    HostEffectFenceRecoveryClaimV1, PreparedHostSettlementPreliminaryV1,
+    ProtectedAcceptedExecutionOutputV2, ProtectedHostNoApplySettlementHistoryV1,
+    ProtectedHostSettlementCutV1, ProtectedLifecycleIssueV1, ProtectedRuntimeAgentPeerV1,
     ProtectedRuntimeArgumentChallengeV1, ProtectedRuntimeHostVerifierV1, RecoveredHostAgentRouteV1,
     RecoveredRuntimeArgumentChallengeV1,
 };
@@ -77,5 +84,5 @@ pub use spec_producer::{
 };
 pub use store::{
     AuthenticatedJournalExecutionRecoveryV1, ExecutionJournalRecoveryTokenV1,
-    JournalRuntimeExecutionError, ProtectedHostOutputReservationV1,
+    JournalRuntimeExecutionError, ProtectedHostOutputReadbackV1, ProtectedHostOutputReservationV1,
 };

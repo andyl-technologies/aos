@@ -65,12 +65,6 @@ in
           cp \
             ${../../pkgs/system/aos-systemd-rpath-sanitize_test.py} \
             source-tests/aos-systemd-rpath-sanitize_test.py
-          cp \
-            ${../../pkgs/filesystem/aos-device-mapper-rpath-sanitize.py} \
-            source-tests/aos-device-mapper-rpath-sanitize.py
-          cp \
-            ${../../pkgs/filesystem/aos-device-mapper-rpath-sanitize_test.py} \
-            source-tests/aos-device-mapper-rpath-sanitize_test.py
 
           PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 \
             source-tests/aos-selinux-runtime-manifest_test.py
@@ -78,8 +72,6 @@ in
             source-tests/aos-selinux-runtime-roots_source_test.py
           PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 \
             source-tests/aos-systemd-rpath-sanitize_test.py
-          PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 \
-            source-tests/aos-device-mapper-rpath-sanitize_test.py
 
           if ${pkgs.binutils}/bin/readelf -l \
             ${stage0}/bin/aos-selinux-stage0 | grep -q INTERP; then

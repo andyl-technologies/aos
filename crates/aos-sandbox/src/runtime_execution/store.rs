@@ -31,6 +31,7 @@ use aos_sandbox_core::{ExecutionId, ObjectDigest, ObservationSequence, Operation
 use aos_sandbox_protocol::host_execution_no_apply::{
     HostExecutionNoApplyRecordFieldsV1, HostExecutionNoApplyRecordV1,
 };
+use aos_sandbox_protocol::host_storage_output_readback::ValidatedHostStorageOutputReadbackRequestV1;
 use sha2::{Digest as _, Sha256};
 
 use crate::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
@@ -43,8 +44,8 @@ use crate::execution_output_reservation::{
 use crate::execution_parent_resource::ExecutionParentResourceSourceV1;
 use crate::journal::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1,
-    GlobalCapacityReservationV1, Journal, JournalError, JournalRecord, JournalTransaction,
-    ProtectedJournalAuthority, ProtectedJournalSnapshot, RecordNamespace,
+    GlobalCapacityReservationV1, HostExecutionFenceV1, Journal, JournalError, JournalRecord,
+    JournalTransaction, ProtectedJournalAuthority, ProtectedJournalSnapshot, RecordNamespace,
 };
 
 use super::argument_observation::{ArgumentObservationRecordV1, KEY_PREFIX as ARGUMENT_KEY_PREFIX};
@@ -63,11 +64,17 @@ use super::route_record::{
 
 mod output_budget;
 mod output_correlation;
+mod settlement_admission;
+mod settlement_store;
 
+use crate::journal::host_execution_fence::KEY as HOST_FENCE_KEY;
 use output_budget::{OutputBudget, decode_output_claim, reserve_output_bytes};
 use output_correlation::{
     HostOutputCorrelationV1, KEY_PREFIX as HOST_OUTPUT_KEY_PREFIX, host_output_key,
 };
+pub(crate) use settlement_admission::HostSettlementAdmissionWitnessV1;
+use settlement_admission::KEY_PREFIX as SETTLEMENT_ADMISSION_KEY_PREFIX;
+use settlement_store::host_settlement_cut_from_authority_v1;
 
 const ADMISSION_KEY_PREFIX: u8 = b'a';
 const ADMISSION_IDEMPOTENCY_KEY_PREFIX: u8 = b'i';
@@ -77,7 +84,7 @@ const NO_APPLY_KEY_PREFIX: u8 = b'n';
 const SEQUENCE_KEY_PREFIX: u8 = b's';
 const TERMINAL_KEY_PREFIX: u8 = b't';
 const AGENT_OUTCOME_KEY_PREFIX: u8 = b'u';
-const STORE_MARKER_KEY: &[u8] = b"runtime-execution-owner-v1";
+const STORE_MARKER_KEY: &[u8] = crate::journal::host_execution_fence::RUNTIME_OWNER_MARKER_KEY;
 const ADMISSION_AUTHORITY_KEY: &[u8] = b"runtime-execution-admission-authority-v1";
 const ADMISSION_AUTHORITY_MAGIC: &[u8; 8] = b"AOSRAA01";
 const OUTPUT_FORMAT_KEY: &[u8] = b"runtime-execution-output-v2";
@@ -115,6 +122,41 @@ pub struct ProtectedHostOutputReservationV1 {
     semantic_request_digest: ObjectDigest,
     correlation_digest: ObjectDigest,
     original_journal_sequence: u64,
+}
+
+/// Retains the exact protected Host reservation and its readback journal head.
+///
+/// The scalars are nonauthorizing outside a separately verified signed Host
+/// response and current Storage session. No Storage or execution effect can
+/// be obtained from this read-only observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProtectedHostOutputReadbackV1 {
+    reservation: ProtectedHostOutputReservationV1,
+    journal_head_sequence: u64,
+    journal_head_digest: ObjectDigest,
+}
+
+impl ProtectedHostOutputReadbackV1 {
+    /// Returns the exact AOSEOR02/AOSHOP01 receipt read under Host custody.
+    #[must_use]
+    pub const fn reservation(self) -> ProtectedHostOutputReservationV1 {
+        self.reservation
+    }
+
+    /// Returns the protected Host journal sequence at readback.
+    #[must_use]
+    pub const fn journal_head_sequence(self) -> u64 {
+        self.journal_head_sequence
+    }
+
+    /// Returns the store-binding and sequence commitment at readback.
+    ///
+    /// This token identifies a protected journal position, not its contents or
+    /// stand-alone anti-rollback evidence.
+    #[must_use]
+    pub const fn journal_head_digest(self) -> ObjectDigest {
+        self.journal_head_digest
+    }
 }
 
 impl ProtectedHostOutputReservationV1 {
@@ -846,7 +888,9 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             .snapshot()
             .map_err(|_| JournalRuntimeExecutionError::ObservationOutcomeUnknown)?
             .sequence();
-        if committed_sequence != next_sequence {
+        // The journal snapshot names the next frame, one past this transaction's
+        // Commit frame retained in the correlation receipt.
+        if next_sequence.checked_add(1) != Some(committed_sequence) {
             return Err(JournalRuntimeExecutionError::ObservationOutcomeUnknown);
         }
         host_output_receipt(correlation)
@@ -900,6 +944,52 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             return Err(JournalRuntimeExecutionError::RecordConflict);
         }
         host_output_receipt(correlation).map(Some)
+    }
+
+    /// Reads the exact original Host pair named by one structural AOSCST01.
+    ///
+    /// This checks the original AOSCIA01 plan and semantic digests and the
+    /// AOSCIS01 Host correlation/sequence against protected Host bytes. It
+    /// cannot authenticate Controller custody or sign a response by itself.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absence, foreign original identity, changed Host records, or
+    /// an unstable protected journal snapshot.
+    pub(crate) fn read_host_output_for_storage_v1(
+        &self,
+        request: &ValidatedHostStorageOutputReadbackRequestV1,
+    ) -> Result<ProtectedHostOutputReadbackV1, JournalRuntimeExecutionError> {
+        let snapshot = self.authority.snapshot()?;
+        let locator = request.records().host_locator();
+        let reservation = self
+            .query_host_output_v1(
+                locator.execution(),
+                locator.create_operation(),
+                locator.preissue_digest(),
+                locator.claim_digest(),
+                locator.carrier_digest(),
+                locator.original_request_id(),
+                locator.assignment_digest(),
+                locator.host_boot_id(),
+            )?
+            .ok_or(JournalRuntimeExecutionError::MissingRecord)?;
+        let attempt = request.records().attempt();
+        let settlement = request.records().settlement();
+        if reservation.plan_digest().as_bytes() != &attempt[712..744]
+            || reservation.semantic_request_digest().as_bytes() != &attempt[744..776]
+            || reservation.correlation_digest().as_bytes() != &settlement[72..104]
+            || reservation.original_journal_sequence().to_be_bytes() != settlement[104..112]
+            || snapshot.sequence() < reservation.original_journal_sequence()
+        {
+            return Err(JournalRuntimeExecutionError::RecordConflict);
+        }
+        self.authority.validate_snapshot_for_effect(&snapshot)?;
+        Ok(ProtectedHostOutputReadbackV1 {
+            reservation,
+            journal_head_sequence: snapshot.sequence(),
+            journal_head_digest: snapshot_commitment(self.store_binding, snapshot.sequence()),
+        })
     }
 
     /// Joins a Controller argument attempt to the exact protected Host output record.
@@ -2121,6 +2211,7 @@ fn agent_outcome_key(operation: &[u8; 16]) -> Vec<u8> {
 
 fn owned_key(key: &[u8]) -> bool {
     key == STORE_MARKER_KEY
+        || key == HOST_FENCE_KEY
         || key == ADMISSION_AUTHORITY_KEY
         || key == OUTPUT_FORMAT_KEY
         || output_record_key(key)
@@ -2134,6 +2225,7 @@ fn owned_key(key: &[u8]) -> bool {
         || matches!(key, [AGENT_OUTCOME_KEY_PREFIX, ..] if key.len() == 17)
         || matches!(key, [ARGUMENT_KEY_PREFIX, ..] if key.len() == 17)
         || matches!(key, [HOST_OUTPUT_KEY_PREFIX, ..] if key.len() == 17)
+        || matches!(key, [SETTLEMENT_ADMISSION_KEY_PREFIX, ..] if key.len() == 17)
         || matches!(key, [LEASE_KEY_PREFIX, ..] if key.len() == 18 && (1..=3).contains(&key[17]))
 }
 
@@ -2190,6 +2282,8 @@ fn validate_runtime_execution_replay(
     let mut effects = BTreeMap::new();
     let mut no_apply = BTreeMap::new();
     let mut no_apply_settlement = BTreeMap::<[u8; 16], [Option<HostSettlementRecordV1>; 3]>::new();
+    let mut settlement_admission = BTreeMap::<[u8; 16], HostSettlementAdmissionWitnessV1>::new();
+    let mut host_fence = None;
     let mut routes = BTreeMap::new();
     let mut agent_outcomes = BTreeMap::new();
     let mut sequence_heads = BTreeMap::new();
@@ -2208,6 +2302,15 @@ fn validate_runtime_execution_replay(
                 return Err(JournalRuntimeExecutionError::ForeignStore);
             }
             marker_seen = true;
+            continue;
+        }
+        if key == HOST_FENCE_KEY {
+            if host_fence
+                .replace(HostExecutionFenceV1::decode(value)?)
+                .is_some()
+            {
+                return Err(JournalRuntimeExecutionError::CorruptRecord);
+            }
             continue;
         }
         if key == ADMISSION_AUTHORITY_KEY {
@@ -2352,6 +2455,17 @@ fn validate_runtime_execution_replay(
                     return Err(JournalRuntimeExecutionError::CorruptRecord);
                 }
             }
+            Some(SETTLEMENT_ADMISSION_KEY_PREFIX) if key.len() == 17 => {
+                let witness = HostSettlementAdmissionWitnessV1::decode(value)?;
+                if witness.key() != key
+                    || witness.commit_sequence >= protected_sequence
+                    || settlement_admission
+                        .insert(*witness.execution.as_bytes(), witness)
+                        .is_some()
+                {
+                    return Err(JournalRuntimeExecutionError::CorruptRecord);
+                }
+            }
             Some(ROUTE_KEY_PREFIX) if key.len() == 17 => {
                 let route = ProtectedAgentRouteRecordV1::decode(value)?;
                 let operation = *route.request().operation_id().as_bytes();
@@ -2460,7 +2574,7 @@ fn validate_runtime_execution_replay(
             return Err(JournalRuntimeExecutionError::CorruptRecord);
         }
     }
-    for (execution, stages) in no_apply_settlement {
+    for (&execution, stages) in &no_apply_settlement {
         let marker = no_apply
             .get(&execution)
             .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
@@ -2472,6 +2586,40 @@ fn validate_runtime_execution_replay(
             protected_sequence,
         )
         .map_err(|_| JournalRuntimeExecutionError::CorruptRecord)?;
+    }
+    for (&execution, witness) in &settlement_admission {
+        let marker = no_apply
+            .get(&execution)
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        let preliminary = no_apply_settlement
+            .get(&execution)
+            .and_then(|stages| stages[0])
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        if !witness.matches_stage(*marker, preliminary, store_binding) {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
+    }
+    if let Some(fence) = host_fence {
+        let stages = no_apply_settlement
+            .get(fence.execution.as_bytes())
+            .ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        let preliminary = stages[0].ok_or(JournalRuntimeExecutionError::CorruptRecord)?;
+        if fence.store_binding != store_binding
+            || stages[1].is_some()
+            || stages[2].is_some()
+            || preliminary.digest() != fence.preliminary_digest
+            || preliminary.commit_sequence > fence.pre_fence_epoch
+            || fence.commit_sequence.checked_add(1) != Some(protected_sequence)
+            || predicted_commit_sequence(fence.pre_fence_epoch, 1)? != fence.commit_sequence
+            || host_settlement_cut_from_authority_v1(
+                authority,
+                store_binding,
+                fence.pre_fence_epoch,
+                true,
+            )? != fence.pre_fence_cut
+        {
+            return Err(JournalRuntimeExecutionError::CorruptRecord);
+        }
     }
     if admissions.len() != idempotency.len() || admissions.len() != resources.len() {
         return Err(JournalRuntimeExecutionError::CorruptRecord);
@@ -3098,6 +3246,9 @@ pub enum JournalRuntimeExecutionError {
     /// A Host no-Apply append may have committed; cold Query40 is required.
     #[error("Host no-Apply outcome is unknown; reopen protected custody")]
     NoApplyOutcomeUnknown,
+    /// A Host failed-Create lease append may have committed; reopen custody.
+    #[error("Host failed-Create settlement outcome is unknown; reopen protected custody")]
+    SettlementOutcomeUnknown,
     /// An argument-observation append may have committed; cold reopen is required.
     #[error("runtime argument observation outcome is unknown; reopen protected custody")]
     ObservationOutcomeUnknown,
@@ -3164,6 +3315,7 @@ pub enum JournalRuntimeExecutionError {
 mod output_v2_tests {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
+    use aos_proto::aos::sandbox::local::v1::ReserveStorageExecutionOutputRequestV1;
     use aos_sandbox_agent::{
         AgentFeatureSetV1, AgentFeatureV1, AgentHandshakeRequestV1, AgentHandshakeResponseV1,
         AgentNonceV1, AgentRuntimeBindingV1, AgentSessionBindingV1, AgentSessionIdV1,
@@ -3173,10 +3325,15 @@ mod output_v2_tests {
         AssignmentEpoch, DesiredGeneration, FeatureRef, IncarnationId, NamespaceGeneration,
         SandboxId,
     };
+    use buffa::Message as _;
     use ed25519_dalek::SigningKey;
     use tempfile::TempDir;
 
     use super::*;
+    use crate::controller_storage_output_reserve_attempt::tests::{
+        original_body, original_body_with_host_plan, original_body_with_host_receipt,
+        readback_request,
+    };
     use crate::journal::JournalLimits;
     use crate::runtime_execution::no_apply_settlement::{
         ControllerAssertedSettlementArchivesV1, HostObservedSettlementIdentityV1,
@@ -3476,6 +3633,146 @@ mod output_v2_tests {
         Ok(())
     }
 
+    #[test]
+    fn protected_storage_readback_binds_original_attempt_to_host_pair() {
+        let directory = TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = directory.path().metadata().unwrap().uid();
+        let binding = ObjectDigest::from_bytes([4; 32]);
+        let admission_state = ProtectedExecutionAdmissionStateV1 {
+            authority_binding: ObjectDigest::from_bytes([6; 32]),
+            resource_ledger: ObjectDigest::from_bytes([7; 32]),
+        };
+        let original =
+            ReserveStorageExecutionOutputRequestV1::decode_from_slice(&original_body()).unwrap();
+        let records = aos_sandbox_protocol::storage_output_reserve::StorageOutputReserveRecordsV1::from_canonical_records(
+            &original.canonical_controller_attempt,
+            &original.canonical_controller_settlement,
+        )
+        .unwrap();
+        let locator = records.host_locator();
+        let source = &records.attempt()[8..696];
+        let claim_bytes = source[192..520].to_vec();
+        let parent_output_bytes = u64::from_be_bytes(source[432..440].try_into().unwrap());
+
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
+        let mut store = JournalRuntimeExecutionStoreV1::initialize(
+            &mut journal,
+            binding,
+            admission_state,
+            peer(),
+        )
+        .unwrap();
+        let original_sequence =
+            predicted_commit_sequence(store.authority.snapshot().unwrap().sequence(), 4).unwrap();
+        let correlation = HostOutputCorrelationV1 {
+            execution: locator.execution(),
+            create_operation: locator.create_operation(),
+            preissue_digest: locator.preissue_digest(),
+            claim_digest: locator.claim_digest(),
+            carrier_digest: locator.carrier_digest(),
+            original_request_id: locator.original_request_id(),
+            assignment_digest: locator.assignment_digest(),
+            host_boot_id: locator.host_boot_id(),
+            plan_digest: ObjectDigest::from_bytes(records.attempt()[712..744].try_into().unwrap()),
+            semantic_request_digest: ObjectDigest::from_bytes(
+                records.attempt()[744..776].try_into().unwrap(),
+            ),
+            deadline_boottime_nanoseconds: 900,
+            original_journal_sequence: original_sequence,
+        };
+        let correlation_bytes = correlation.encode().unwrap();
+        let correlation_digest: [u8; 32] = Sha256::digest(correlation_bytes).into();
+        let matched_body = original_body_with_host_receipt(correlation_digest, original_sequence);
+        let request = readback_request(&matched_body);
+        assert!(matches!(
+            store.read_host_output_for_storage_v1(&request),
+            Err(JournalRuntimeExecutionError::MissingRecord),
+        ));
+
+        let transaction = JournalTransaction::new(
+            [2; 16],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    OUTPUT_FORMAT_KEY.to_vec(),
+                    output_format_bytes(binding).to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    OUTPUT_MARKER_KEY.to_vec(),
+                    marker_bytes(locator.assignment_digest(), parent_output_bytes).to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    claim_key(locator.execution()),
+                    claim_bytes,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    host_output_key(locator.execution()),
+                    correlation_bytes.to_vec(),
+                ),
+            ],
+        )
+        .unwrap();
+        store.authority.commit(&transaction).unwrap();
+        drop(store);
+        drop(journal);
+
+        let (mut reopened, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
+        let store = JournalRuntimeExecutionStoreV1::claim(&mut reopened, binding, peer()).unwrap();
+        let observed = store.read_host_output_for_storage_v1(&request).unwrap();
+        assert_eq!(
+            observed.reservation().correlation_digest().as_bytes(),
+            &correlation_digest
+        );
+        assert!(observed.journal_head_sequence() >= original_sequence);
+        assert_ne!(observed.journal_head_digest().as_bytes(), &[0; 32]);
+        assert_eq!(
+            store.read_host_output_for_storage_v1(&request).unwrap(),
+            observed
+        );
+
+        let foreign_sequence = readback_request(&original_body_with_host_receipt(
+            correlation_digest,
+            original_sequence + 1,
+        ));
+        assert!(matches!(
+            store.read_host_output_for_storage_v1(&foreign_sequence),
+            Err(JournalRuntimeExecutionError::RecordConflict),
+        ));
+        let foreign_correlation = readback_request(&original_body_with_host_receipt(
+            [99; 32],
+            original_sequence,
+        ));
+        assert!(matches!(
+            store.read_host_output_for_storage_v1(&foreign_correlation),
+            Err(JournalRuntimeExecutionError::RecordConflict),
+        ));
+        let foreign_plan = readback_request(&original_body_with_host_plan(
+            correlation_digest,
+            original_sequence,
+            [98; 32],
+        ));
+        assert!(matches!(
+            store.read_host_output_for_storage_v1(&foreign_plan),
+            Err(JournalRuntimeExecutionError::RecordConflict),
+        ));
+    }
+
     fn argument_source(
         correlation: HostOutputCorrelationV1,
     ) -> ControllerExecutionArgumentAttemptV1 {
@@ -3578,6 +3875,9 @@ mod output_v2_tests {
             .authority
             .commit(&reservation)
             .expect("output custody");
+        let (before_marker_epoch, before_marker_cut) = store
+            .protected_host_settlement_cut_v1()
+            .expect("protected pre-marker cut");
 
         let identity = HostNoApplyIdentityV1 {
             source: argument_source(correlation),
@@ -3588,9 +3888,65 @@ mod output_v2_tests {
             terminal_signed_request_digest: [25; 32],
         };
         let runtime_handle = ObjectDigest::from_bytes([26; 32]);
+        assert_eq!(
+            store
+                .with_held_host_settlement_cut_v1(|_, cut| {
+                    assert!(matches!(
+                        Journal::open_protected_at_uid(
+                            directory.path(),
+                            "execution.journal",
+                            JournalLimits::default(),
+                            uid,
+                        ),
+                        Err(JournalError::AlreadyLocked)
+                    ));
+                    Ok(cut)
+                })
+                .expect("unchanged held cut"),
+            (before_marker_epoch, before_marker_cut)
+        );
+        assert!(matches!(
+            store.with_held_host_settlement_cut_v1::<()>(|_, _| {
+                Err(JournalRuntimeExecutionError::RecordConflict)
+            }),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        assert!(matches!(
+            store.with_held_host_settlement_cut_v1(|store, cut| {
+                assert_eq!(cut, (before_marker_epoch, before_marker_cut));
+                store.commit_host_no_apply_v1(&identity, runtime_handle)
+            }),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
         let committed = store
-            .commit_host_no_apply_v1(&identity, runtime_handle)
-            .expect("terminal marker");
+            .load_host_no_apply_v1(identity.source.execution())
+            .expect("protected marker readback")
+            .expect("durable terminal marker");
+        let (marker_epoch, marker_cut) = store
+            .protected_host_settlement_cut_v1()
+            .expect("protected marker cut");
+        assert!(marker_epoch > before_marker_epoch);
+        assert_ne!(marker_cut, before_marker_cut);
+        let same_bytes = JournalTransaction::new(
+            [34; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                no_apply_key(identity.source.execution()),
+                committed.encode_canonical().to_vec(),
+            )],
+        )
+        .expect("same-byte write");
+        assert!(matches!(
+            store.with_held_host_settlement_cut_v1(|store, cut| {
+                assert_eq!(cut, (marker_epoch, marker_cut));
+                store.authority.commit(&same_bytes)?;
+                Ok(())
+            }),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        let (marker_epoch, marker_cut) = store
+            .protected_host_settlement_cut_v1()
+            .expect("same-byte replacement advanced the epoch");
         assert_eq!(
             store
                 .commit_host_no_apply_v1(&identity, runtime_handle)
@@ -3607,36 +3963,137 @@ mod output_v2_tests {
             ObjectDigest::from_bytes([29; 32]),
         )
         .expect("Controller archive coordinate");
-        let preliminary_sequence =
-            predicted_commit_sequence(store.authority.snapshot().expect("snapshot").sequence(), 1)
-                .expect("next commit sequence");
+        let preliminary_sequence = store
+            .next_host_settlement_sequence_v1(marker_epoch)
+            .expect("next commit sequence from held cut");
         let preliminary = HostSettlementRecordV1::preliminary(
             observed,
             archives,
-            1,
-            ObjectDigest::from_bytes([30; 32]),
+            marker_epoch,
+            marker_cut,
             [31; 32],
             [32; 16],
             preliminary_sequence,
         )
         .expect("preliminary coordinate");
-        store
-            .authority
-            .commit(
-                &JournalTransaction::new(
-                    [33; 16],
-                    vec![JournalRecord::put(
-                        RecordNamespace::Effect,
-                        lease_key(
-                            identity.source.execution(),
-                            HostSettlementStageV1::Preliminary,
-                        ),
-                        preliminary.encode_canonical().to_vec(),
-                    )],
-                )
-                .expect("one Host phase"),
+        assert!(matches!(
+            store.commit_host_settlement_preliminary_v1(
+                preliminary,
+                marker_epoch,
+                before_marker_cut,
+            ),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        assert!(matches!(
+            store.commit_host_settlement_preliminary_v1(
+                preliminary.with_test_marker_digest(ObjectDigest::from_bytes([99; 32])),
+                marker_epoch,
+                marker_cut,
+            ),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        assert_eq!(
+            store
+                .commit_host_settlement_preliminary_v1(preliminary, marker_epoch, marker_cut)
+                .expect("durable preliminary coordinate"),
+            preliminary
+        );
+        assert_eq!(
+            store
+                .load_host_settlement_admission_witness_v1(identity.source.execution())
+                .expect("stage-only readback"),
+            None
+        );
+        std::fs::copy(
+            directory.path().join("execution.journal"),
+            directory.path().join("stage-only.journal"),
+        )
+        .expect("copy stage-only crash window");
+        std::fs::set_permissions(
+            directory.path().join("stage-only.journal"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .expect("private stage-only journal");
+        let witness = HostSettlementAdmissionWitnessV1 {
+            execution: identity.source.execution(),
+            store_binding: binding,
+            preliminary_digest: preliminary.digest(),
+            signed_request_digest: ObjectDigest::from_bytes([34; 32]),
+            settlement_session_binding: [31; 32],
+            source_digest: identity.source.record_digest(),
+            handoff_digest: ObjectDigest::from_bytes([27; 32]),
+            host_boot_id: identity.source.host_boot_id(),
+            admitted_boottime_nanoseconds: 50,
+            original_deadline_boottime_nanoseconds: 100,
+            commit_sequence: predicted_commit_sequence(
+                store
+                    .authority
+                    .snapshot()
+                    .expect("pre-witness snapshot")
+                    .sequence(),
+                1,
             )
-            .expect("durable preliminary coordinate");
+            .expect("witness commit sequence"),
+            hoststate_cut: ObjectDigest::from_bytes([35; 32]),
+        };
+        let raw_witness = JournalTransaction::new(
+            [101; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                witness.key(),
+                witness.encode().expect("canonical witness").to_vec(),
+            )],
+        )
+        .expect("raw witness transaction");
+        assert!(matches!(
+            store
+                .authority
+                .preflight_transactions(std::slice::from_ref(&raw_witness)),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        assert!(matches!(
+            store.authority.commit(&raw_witness),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        store
+            .append_host_settlement_admission_witness_v1(witness)
+            .expect("protected admission witness");
+        assert_eq!(
+            store
+                .load_host_settlement_admission_witness_v1(identity.source.execution())
+                .expect("witness readback"),
+            Some(witness)
+        );
+        assert!(matches!(
+            store.append_host_settlement_admission_witness_v1(witness),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        for (index, record) in [
+            JournalRecord::put(
+                RecordNamespace::Effect,
+                witness.key(),
+                witness.encode().expect("canonical witness").to_vec(),
+            ),
+            JournalRecord::delete(RecordNamespace::Effect, witness.key()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mutation = JournalTransaction::new([102 + index as u8; 16], vec![record])
+                .expect("witness mutation");
+            assert!(matches!(
+                store.authority.commit(&mutation),
+                Err(JournalError::ProtectedBoundary)
+            ));
+        }
+        let preliminary_cut = store
+            .protected_host_settlement_cut_v1()
+            .expect("protected preliminary cut");
+        assert_ne!(preliminary_cut.1, marker_cut);
+        assert!(matches!(
+            store.next_host_settlement_sequence_v1(marker_epoch),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
         assert!(matches!(
             Journal::open_protected_at_uid(
                 directory.path(),
@@ -3647,7 +4104,445 @@ mod output_v2_tests {
             Err(JournalError::AlreadyLocked)
         ));
         drop(store);
+        assert!(matches!(
+            journal.compact(),
+            Err(JournalError::ProtectedBoundary)
+        ));
         drop(journal);
+
+        let (mut stage_only_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "stage-only.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("cold stage-only journal");
+        let stage_only =
+            JournalRuntimeExecutionStoreV1::claim(&mut stage_only_journal, binding, peer())
+                .expect("cold stage-only replay");
+        assert_eq!(
+            stage_only
+                .load_host_settlement_admission_witness_v1(identity.source.execution())
+                .expect("cold stage-only witness absence"),
+            None
+        );
+        drop(stage_only);
+        drop(stage_only_journal);
+
+        std::fs::copy(
+            directory.path().join("stage-only.journal"),
+            directory.path().join("delayed-witness.journal"),
+        )
+        .expect("copy delayed witness history");
+        std::fs::set_permissions(
+            directory.path().join("delayed-witness.journal"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .expect("private delayed witness journal");
+        let (mut delayed_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "delayed-witness.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("delayed witness journal");
+        let mut delayed =
+            JournalRuntimeExecutionStoreV1::claim(&mut delayed_journal, binding, peer())
+                .expect("preliminary-only delayed replay");
+        delayed
+            .authority
+            .commit(
+                &JournalTransaction::new(
+                    [104; 16],
+                    vec![JournalRecord::put(
+                        RecordNamespace::Effect,
+                        no_apply_key(identity.source.execution()),
+                        committed.encode_canonical().to_vec(),
+                    )],
+                )
+                .expect("intervening same-byte transaction"),
+            )
+            .expect("intervening durable transaction");
+        let late_witness = HostSettlementAdmissionWitnessV1 {
+            commit_sequence: predicted_commit_sequence(
+                delayed
+                    .authority
+                    .snapshot()
+                    .expect("delayed snapshot")
+                    .sequence(),
+                1,
+            )
+            .expect("late commit sequence"),
+            ..witness
+        };
+        assert!(matches!(
+            delayed.append_host_settlement_admission_witness_v1(late_witness),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        drop(delayed);
+        drop(delayed_journal);
+        let (mut delayed_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "delayed-witness.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("cold delayed journal");
+        let delayed = JournalRuntimeExecutionStoreV1::claim(&mut delayed_journal, binding, peer())
+            .expect("cold delayed history");
+        assert_eq!(
+            delayed
+                .load_host_settlement_admission_witness_v1(identity.source.execution())
+                .expect("delayed history lacks witness"),
+            None
+        );
+        drop(delayed);
+        drop(delayed_journal);
+
+        std::fs::copy(
+            directory.path().join("stage-only.journal"),
+            directory.path().join("forged-witness.journal"),
+        )
+        .expect("copy stage-only history for forged witness");
+        std::fs::set_permissions(
+            directory.path().join("forged-witness.journal"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .expect("private forged witness journal");
+
+        // Clone the witnessed preliminary history so the fence tests remain
+        // independent of one another.
+        for name in [
+            "fenced.journal",
+            "forged-fence.journal",
+            "orphan-fence.journal",
+        ] {
+            std::fs::copy(
+                directory.path().join("execution.journal"),
+                directory.path().join(name),
+            )
+            .expect("copy preliminary history");
+            std::fs::set_permissions(
+                directory.path().join(name),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .expect("private copied journal");
+        }
+
+        let (mut fenced_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "fenced.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("protected fence journal");
+        let mut fenced =
+            JournalRuntimeExecutionStoreV1::claim(&mut fenced_journal, binding, peer())
+                .expect("preliminary replay");
+        assert_eq!(
+            fenced
+                .load_host_settlement_admission_witness_v1(identity.source.execution())
+                .expect("cold witness replay"),
+            Some(witness)
+        );
+        assert!(matches!(
+            fenced.acquire_host_execution_fence_v1(preliminary, marker_epoch, marker_cut),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        assert!(matches!(
+            fenced.acquire_host_execution_fence_v1(
+                preliminary.with_test_marker_digest(ObjectDigest::from_bytes([99; 32])),
+                preliminary_cut.0,
+                preliminary_cut.1,
+            ),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        let held = fenced
+            .acquire_host_execution_fence_v1(preliminary, preliminary_cut.0, preliminary_cut.1)
+            .expect("acquire Host fence");
+        let competing = JournalTransaction::new(
+            [91; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                b"competing-effect".to_vec(),
+                vec![1],
+            )],
+        )
+        .expect("competing mutation");
+        assert!(matches!(
+            fenced
+                .authority
+                .preflight_transactions(std::slice::from_ref(&competing)),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        assert!(matches!(
+            fenced.authority.commit(&competing),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        for (index, record) in [
+            JournalRecord::delete(RecordNamespace::Effect, HOST_FENCE_KEY.to_vec()),
+            JournalRecord::put(
+                RecordNamespace::Effect,
+                HOST_FENCE_KEY.to_vec(),
+                held.encode().expect("canonical fence").to_vec(),
+            ),
+            JournalRecord::delete(
+                RecordNamespace::Effect,
+                lease_key(preliminary.execution, HostSettlementStageV1::Preliminary),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let transaction = JournalTransaction::new([93 + index as u8; 16], vec![record])
+                .expect("competing replacement or deletion");
+            assert!(matches!(
+                fenced.authority.commit(&transaction),
+                Err(JournalError::ProtectedBoundary)
+            ));
+        }
+        drop(fenced);
+        assert!(matches!(
+            fenced_journal.compact(),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        assert!(matches!(
+            fenced_journal.commit(&competing),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        drop(fenced_journal);
+
+        let (mut cold_fence, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "fenced.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("cold fenced journal");
+        let mut recovered_fence =
+            JournalRuntimeExecutionStoreV1::claim(&mut cold_fence, binding, peer())
+                .expect("cold fenced owner replay");
+        assert_eq!(
+            recovered_fence
+                .load_host_execution_fence_v1()
+                .expect("fence readback"),
+            Some(held)
+        );
+        // A valid cold Effect fence cannot be treated as a complete Host
+        // continuation when the separate HostState journal lacks its hold.
+        assert!(
+            super::super::owner::host_currentness_fence::validate_host_currentness_pair_v1(
+                None,
+                recovered_fence
+                    .load_host_execution_fence_v1()
+                    .expect("cold Effect fence"),
+                binding,
+            )
+            .is_err()
+        );
+        assert!(matches!(
+            recovered_fence.authority.commit(&competing),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        drop(recovered_fence);
+        drop(cold_fence);
+
+        let (mut forged_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "forged-fence.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("forged journal");
+        let mut forged =
+            JournalRuntimeExecutionStoreV1::claim(&mut forged_journal, binding, peer())
+                .expect("unfenced replay");
+        for (index, invalid) in [
+            HostExecutionFenceV1 {
+                preliminary_digest: ObjectDigest::from_bytes([87; 32]),
+                ..held
+            },
+            HostExecutionFenceV1 {
+                store_binding: ObjectDigest::from_bytes([86; 32]),
+                ..held
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let bytes = invalid.encode().expect("canonical invalid fence");
+            let transaction = JournalTransaction::new(
+                [98 + index as u8; 16],
+                vec![JournalRecord::put(
+                    RecordNamespace::Effect,
+                    HOST_FENCE_KEY.to_vec(),
+                    bytes.to_vec(),
+                )],
+            )
+            .expect("invalid fence transaction");
+            assert!(matches!(
+                forged
+                    .authority
+                    .acquire_host_execution_fence_v1(invalid, &transaction),
+                Err(JournalError::ProtectedBoundary)
+            ));
+        }
+        let false_fence = HostExecutionFenceV1 {
+            pre_fence_cut: ObjectDigest::from_bytes([88; 32]),
+            ..held
+        };
+        let false_bytes = false_fence.encode().expect("false fence bytes");
+        let false_transaction = JournalTransaction::new(
+            [92; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                HOST_FENCE_KEY.to_vec(),
+                false_bytes.to_vec(),
+            )],
+        )
+        .expect("false fence transaction");
+        assert!(matches!(
+            forged.authority.commit(&false_transaction),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        assert!(matches!(
+            forged
+                .authority
+                .acquire_host_execution_fence_v1(false_fence, &false_transaction),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        forged
+            .authority
+            .inject_host_execution_fence_for_test(&false_transaction)
+            .expect("inject false cut for cold replay");
+        drop(forged);
+        drop(forged_journal);
+        let (mut forged_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "forged-fence.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("cold false fence journal");
+        assert!(matches!(
+            JournalRuntimeExecutionStoreV1::claim(&mut forged_journal, binding, peer()),
+            Err(JournalRuntimeExecutionError::CorruptRecord)
+        ));
+
+        let (mut orphan_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "orphan-fence.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("orphan journal");
+        let mut orphan =
+            JournalRuntimeExecutionStoreV1::claim(&mut orphan_journal, binding, peer())
+                .expect("preliminary still present");
+        let remove_stage = JournalTransaction::new(
+            [96; 16],
+            vec![JournalRecord::delete(
+                RecordNamespace::Effect,
+                lease_key(preliminary.execution, HostSettlementStageV1::Preliminary),
+            )],
+        )
+        .expect("stage removal");
+        orphan
+            .authority
+            .commit(&remove_stage)
+            .expect("raw stage removal before fence");
+        let (orphan_epoch, orphan_cut) = orphan
+            .protected_host_settlement_cut_v1()
+            .expect("orphan cut");
+        let orphan_fence = HostExecutionFenceV1 {
+            pre_fence_epoch: orphan_epoch,
+            pre_fence_cut: orphan_cut,
+            commit_sequence: predicted_commit_sequence(orphan_epoch, 1).expect("fence sequence"),
+            ..held
+        };
+        let orphan_bytes = orphan_fence.encode().expect("canonical orphan fence");
+        let orphan_transaction = JournalTransaction::new(
+            [97; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                HOST_FENCE_KEY.to_vec(),
+                orphan_bytes.to_vec(),
+            )],
+        )
+        .expect("orphan fence transaction");
+        assert!(matches!(
+            orphan
+                .authority
+                .acquire_host_execution_fence_v1(orphan_fence, &orphan_transaction),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        orphan
+            .authority
+            .inject_host_execution_fence_for_test(&orphan_transaction)
+            .expect("inject orphan stage for cold replay");
+        drop(orphan);
+        drop(orphan_journal);
+        let (mut orphan_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "orphan-fence.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("cold orphan fence journal");
+        assert!(matches!(
+            JournalRuntimeExecutionStoreV1::claim(&mut orphan_journal, binding, peer()),
+            Err(JournalRuntimeExecutionError::CorruptRecord)
+        ));
+
+        let (mut forged_witness_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "forged-witness.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("forged witness journal");
+        let mut forged_witness =
+            JournalRuntimeExecutionStoreV1::claim(&mut forged_witness_journal, binding, peer())
+                .expect("original preliminary stage");
+        let substituted = HostSettlementAdmissionWitnessV1 {
+            preliminary_digest: ObjectDigest::from_bytes([90; 32]),
+            ..witness
+        };
+        let forged_transaction = JournalTransaction::new(
+            [100; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                witness.key(),
+                substituted
+                    .encode()
+                    .expect("canonical substitution")
+                    .to_vec(),
+            )],
+        )
+        .expect("forged witness transaction");
+        assert!(matches!(
+            forged_witness
+                .authority
+                .append_host_settlement_admission_witness_v1(substituted, &forged_transaction),
+            Err(JournalError::ProtectedBoundary)
+        ));
+        forged_witness
+            .authority
+            .inject_host_settlement_admission_witness_for_test(&forged_transaction)
+            .expect("inject forged witness for cold replay");
+        drop(forged_witness);
+        drop(forged_witness_journal);
+        let (mut forged_witness_journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "forged-witness.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("cold forged witness journal");
+        assert!(matches!(
+            JournalRuntimeExecutionStoreV1::claim(&mut forged_witness_journal, binding, peer()),
+            Err(JournalRuntimeExecutionError::CorruptRecord)
+        ));
 
         let (mut reopened, _) = Journal::open_protected_at_uid(
             directory.path(),
@@ -3658,6 +4553,12 @@ mod output_v2_tests {
         .expect("cold reopened journal");
         let mut recovered = JournalRuntimeExecutionStoreV1::claim(&mut reopened, binding, peer())
             .expect("validated cold replay");
+        assert_eq!(
+            recovered
+                .protected_host_settlement_cut_v1()
+                .expect("cold protected cut"),
+            preliminary_cut
+        );
         assert_eq!(
             recovered
                 .load_host_no_apply_v1(identity.source.execution())
@@ -3677,6 +4578,81 @@ mod output_v2_tests {
             )
             .expect("canonical coordinate"),
             preliminary
+        );
+        assert_eq!(
+            recovered
+                .load_host_settlement_history_v1(identity.source.execution())
+                .expect("cold Host stage replay"),
+            [Some(preliminary), None, None]
+        );
+        assert!(matches!(
+            recovered.commit_host_settlement_preliminary_v1(preliminary, marker_epoch, marker_cut),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        assert_eq!(
+            recovered
+                .append_host_settlement_stage_v1(preliminary)
+                .expect("exact stage replay"),
+            preliminary
+        );
+        assert!(matches!(
+            recovered.append_host_settlement_stage_v1(
+                preliminary.with_test_marker_digest(ObjectDigest::from_bytes([99; 32]))
+            ),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        let floor_sequence = predicted_commit_sequence(
+            recovered.authority.snapshot().expect("snapshot").sequence(),
+            1,
+        )
+        .expect("floor sequence");
+        let floor = preliminary
+            .seal_floor(ObjectDigest::from_bytes([33; 32]), floor_sequence)
+            .expect("floor coordinate");
+        let premature_ack = floor
+            .retain_ack(ObjectDigest::from_bytes([34; 32]), floor_sequence + 1)
+            .expect("premature ack coordinate");
+        assert!(matches!(
+            recovered.append_host_settlement_stage_v1(premature_ack),
+            Err(JournalRuntimeExecutionError::RecordConflict)
+        ));
+        recovered
+            .append_host_settlement_stage_v1(floor)
+            .expect("durable floor coordinate");
+        let ack_sequence = predicted_commit_sequence(
+            recovered.authority.snapshot().expect("snapshot").sequence(),
+            1,
+        )
+        .expect("ack sequence");
+        let ack = floor
+            .retain_ack(ObjectDigest::from_bytes([34; 32]), ack_sequence)
+            .expect("ack coordinate");
+        recovered
+            .append_host_settlement_stage_v1(ack)
+            .expect("durable ack coordinate");
+        assert_eq!(
+            recovered
+                .load_host_settlement_history_v1(identity.source.execution())
+                .expect("complete Host stage replay"),
+            [Some(preliminary), Some(floor), Some(ack)]
+        );
+        drop(recovered);
+        drop(reopened);
+
+        let (mut reopened, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("reopen completed Host stages");
+        let mut recovered = JournalRuntimeExecutionStoreV1::claim(&mut reopened, binding, peer())
+            .expect("cold completed-stage replay");
+        assert_eq!(
+            recovered
+                .load_host_settlement_history_v1(identity.source.execution())
+                .expect("cold completed-stage history"),
+            [Some(preliminary), Some(floor), Some(ack)]
         );
         assert_eq!(
             recovered
@@ -3726,6 +4702,147 @@ mod output_v2_tests {
         .expect("tampered journal reopen");
         assert!(matches!(
             JournalRuntimeExecutionStoreV1::claim(&mut missing_correlation, binding, peer()),
+            Err(JournalRuntimeExecutionError::CorruptRecord)
+        ));
+
+        let mislabeled_preliminary = HostSettlementRecordV1 {
+            epoch: committed.fields().commit_sequence,
+            commit_sequence: committed.fields().commit_sequence + 2,
+            ..preliminary
+        };
+        let mislabeled_lease = JournalTransaction::new(
+            [45; 16],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    host_output_key(identity.source.execution()),
+                    correlation.encode().expect("original correlation").to_vec(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    lease_key(
+                        identity.source.execution(),
+                        HostSettlementStageV1::Preliminary,
+                    ),
+                    mislabeled_preliminary.encode_canonical().to_vec(),
+                ),
+            ],
+        )
+        .expect("adversarial lease replacement");
+        missing_correlation
+            .commit(&mislabeled_lease)
+            .expect("raw protected lease replacement");
+        drop(missing_correlation);
+
+        let (mut mislabeled_lease, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("mislabeled lease reopen");
+        assert!(matches!(
+            JournalRuntimeExecutionStoreV1::claim(&mut mislabeled_lease, binding, peer()),
+            Err(JournalRuntimeExecutionError::CorruptRecord)
+        ));
+    }
+
+    #[test]
+    fn orphan_host_settlement_stage_fails_closed_on_cold_replay() {
+        let directory = TempDir::new_in(std::env::current_dir().expect("current directory"))
+            .expect("test directory");
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let uid = directory.path().metadata().expect("metadata").uid();
+        let binding = ObjectDigest::from_bytes([4; 32]);
+        let admission_state = ProtectedExecutionAdmissionStateV1 {
+            authority_binding: ObjectDigest::from_bytes([6; 32]),
+            resource_ledger: ObjectDigest::from_bytes([7; 32]),
+        };
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("protected journal");
+        let mut store = JournalRuntimeExecutionStoreV1::initialize(
+            &mut journal,
+            binding,
+            admission_state,
+            peer(),
+        )
+        .expect("initialized store");
+        let marker = HostExecutionNoApplyRecordV1::new(HostExecutionNoApplyRecordFieldsV1 {
+            execution_id: [1; 16],
+            create_operation_id: [2; 16],
+            original_request_id: [3; 16],
+            terminal_request_id: [4; 16],
+            host_boot_id: [5; 16],
+            assignment_digest: [6; 32],
+            source_record_digest: [7; 32],
+            original_session_binding: [8; 32],
+            original_signed_request_digest: [9; 32],
+            terminal_session_binding: [10; 32],
+            terminal_signed_request_digest: [11; 32],
+            runtime_handle: [12; 32],
+            execution_store_binding: *binding.as_bytes(),
+            commit_sequence: 1,
+        })
+        .expect("synthetic absent marker");
+        let observed = HostObservedSettlementIdentityV1::from_marker_and_handoff(
+            marker,
+            ObjectDigest::from_bytes([13; 32]),
+        )
+        .expect("Host identity");
+        let archives = ControllerAssertedSettlementArchivesV1::new(
+            ObjectDigest::from_bytes([14; 32]),
+            ObjectDigest::from_bytes([15; 32]),
+        )
+        .expect("Controller assertions");
+        let (epoch, cut) = store
+            .protected_host_settlement_cut_v1()
+            .expect("protected cut");
+        let sequence =
+            predicted_commit_sequence(store.authority.snapshot().expect("snapshot").sequence(), 1)
+                .expect("next sequence");
+        let stage = HostSettlementRecordV1::preliminary(
+            observed, archives, epoch, cut, [16; 32], [17; 16], sequence,
+        )
+        .expect("canonical orphan stage");
+        let transaction = JournalTransaction::new(
+            [40; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                lease_key(
+                    ExecutionId::from_bytes([1; 16]),
+                    HostSettlementStageV1::Preliminary,
+                ),
+                stage.encode_canonical().to_vec(),
+            )],
+        )
+        .expect("raw orphan append");
+        store
+            .authority
+            .commit(&transaction)
+            .expect("adversarial append");
+        assert!(
+            store
+                .has_host_settlement_stages_v1(ExecutionId::from_bytes([1; 16]))
+                .expect("orphan key readback")
+        );
+        drop(store);
+        drop(journal);
+
+        let (mut reopened, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "execution.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("cold reopen");
+        assert!(matches!(
+            JournalRuntimeExecutionStoreV1::claim(&mut reopened, binding, peer()),
             Err(JournalRuntimeExecutionError::CorruptRecord)
         ));
     }

@@ -311,6 +311,18 @@ cross-owner anti-rollback barrier, and no authenticated acknowledgment permits
 H archive retirement.
 Public Create and production methods 39/40 therefore remain closed.
 
+The protected `AOSCSC01` cursor retains the exact signed method-42 request and
+a signed method-42/43 preliminary observation, but only as historical custody.
+A Host owner-local scope can keep its exclusive writer claim while a bounded
+callback runs and reject a changed protected Effect sequence or digest before
+returning success. This scope has no Controller writer and is not the missing
+two-owner cut. A production continuation must either keep the Host claim held
+through an authenticated, versioned Controller floor exchange and its durable
+compare-and-swap, or install a durable Host fence that excludes competing
+writes and can be recovered after transport loss. The floor must bind both
+exact protected heads and reject rollback or uncertain release on cold replay
+before FloorSeal, failed-Create CAS, or ACK can be enabled.
+
 - `crates/aos-sandbox-broker-session-security/src/controller_service.rs` now
   constructs `NodeController<ProductionOperationCompilerV1,
   ProductionEffectExecutor>` with one protected journal writer. Public admission
@@ -367,10 +379,11 @@ Public Create and production methods 39/40 therefore remain closed.
   No production CreateExecution effect establishes the required Host admission
   or RUNNING public projection. The packaged `aos-sandbox-guest-agent` already
   claims a fixed inherited protected channel and runs concrete guest-local
-  process effects with a durable ledger. Host has a retained authenticated
-  agent-session type, but production activation does not install one or connect
-  it to a launch, so this does not complete the execution path. Attach requires
-  its separately authorized OpenSSH data route; it is not an agent control effect.
+  process effects with a durable ledger. Host production activation can launch
+  and retain an authenticated agent session through Guardian, but the deployed
+  CreateExecution effect does not yet use it to establish Host admission or a
+  RUNNING public projection. Attach requires its separately authorized OpenSSH
+  data route; it is not an agent control effect.
   `ExecutionControlRequest` now carries attach-only holder key and possession
   proof fields under a required semantic feature, and `ExecutionControlResult`
   can carry a checked holder-bound endpoint. The public Controller service
@@ -380,8 +393,8 @@ Public Create and production methods 39/40 therefore remain closed.
   gate readback match the current execution and assignment. Accepted replay
   requires a fresh Host route query. This route is fail-closed without the
   separately provisioned attach credentials, a retained authenticated guest
-  agent session, and a RUNNING execution projection; production activation
-  currently supplies neither the guest session nor that projection.
+  agent session, and a RUNNING execution projection; the launch-session wiring
+  exists, but no qualified CreateExecution path supplies that projection.
 - Grouped Storage snapshots now have authenticated Method 25 in the broker
   profile and production Storage dispatch. The controller advances Snapshot
   and Hibernate Storage effects from a signed predecessor inventory, reserves
@@ -8647,8 +8660,40 @@ key still exposes no receipt issuance. Storage now derives the expected pool
 GUID from an exact root-owned `AOSSRPC2` managed-root assignment rather than
 the caller, compares it with the physical worker readback, and rechecks the
 protected policy head after worker quiescence. Hold generation, active-hold
-digest, and root policy come from the protected Storage journal, but the
-read-only content digest still lacks an independent protected measurement. No
+digest, and root policy come from the protected Storage journal. A dedicated
+Storage-only `aos-sandbox-held-snapshot-reader@` service now measures the
+bounded portable tree beneath a detached ZFS snapshot mount. The one-shot
+service has a fixed root-only socket, verifies the live `aos-storaged` peer and
+request-record subject, and refuses to run outside a private mount namespace.
+It applies read-only, nodev, nosuid, and noexec attributes before reading, and
+returns only a request-bound digest and mount identity. Storage's dormant held
+readback keeps its sole journal cut while it observes the GUID and hold and
+measures the bytes. A successful path observes the GUID and hold again after
+reader quiescence and rechecks the protected catalog and policy heads.
+
+Storage writes and fsyncs a single exclusive launch marker in its root-owned,
+mode-0700 StateDirectory before connecting to the reader socket. A restart
+that finds the marker refuses another reader launch even if systemd has not
+yet created the first reader's cgroup. Storage removes and fsyncs the marker
+only after an authenticated reader and its whole unit are proved quiescent.
+An ambiguous connect, crash, or failed durability operation leaves reader
+admission closed; offline recovery needs independent proof that no accepted
+activation can still run. This trades availability after an uncertain launch
+for the absence of overlapping reader attempts.
+
+The reader has no receipt key or descriptor-transfer path. A scoped OpenZFS 2.4.4
+patch for the pinned Linux 7.2 kernel now binds the mounted superblock's UUID
+to the immutable pool and snapshot GUIDs. The reader checks `FS_IOC_GETFSUUID` on a
+readable descriptor of the detached root before and after the complete byte
+walk, rejects an absent or mismatched UUID, and only then asserts the
+request-bound mounted GUID. This closes the name-replacement ABA gap that
+pre/post `zfs list` checks alone could not close. The older `statfs` FSID is
+not treated as a GUID. The backport and protected-cut exchange still require
+ZFS/KVM qualification before any production authority is enabled. No
+`/dev/zfs` node is exposed to the one-shot reader; its private `/dev` and
+mount namespace do not change the fact that CAP_SYS_ADMIN remains an
+initial-user-namespace capability. The syscall and descriptor boundary still
+requires a confinement review before activation of any authority. No
 authenticated broker carrier yet conveys the owner-minted Provider challenge,
 attempt, holder session, and trusted Storage current head. The signed receipt,
 read-only SourceRoot descriptor custody, and Provider replay/MAC gates do not
@@ -9001,8 +9046,17 @@ the complete all-owner held cut and release/recovery barrier are proved.
 Root can optionally admit an exact public-only AOSSPK01 Source hold signer
 credential at policy-authority startup. Its protected pin rejects removal,
 rotation, malformed framing, and reuse of deployment, project, Controller, or
-Cache signer keys. No Source private issuer key or new Source/Controller mount
-is provisioned. Root's library-only all-owner readback spends a monotonic
+Cache signer keys. A separate Source-only service now receives its own private
+seed and matching public pin through systemd credentials. Privileged exact-name
+setup creates one signer-private, read-only idmapped view of the Controller-owned
+Source journal directory; the Controller retains the writer. The signer checks
+the original root and mounted inode, replays the active typed hold and complete
+hierarchy projection without a writer lock, compares the project ancestry,
+signs the AOSSRB01 challenge, and rechecks the journal, lock, and mount names.
+Its root-only socket returns no packet for malformed requests or failed replay.
+The view grants no Source journal write or other domain access.
+
+Root's library-only all-owner readback spends a monotonic
 AOSCTH01 epoch and fresh nonce durably before calling any receipt transport.
 The same nonce and root cut bind the root-pinned AOSCTW01 Controller,
 AOSSRB01 Source, and AOSCRB01 Cache-purpose signatures. The cut commits to
@@ -9018,10 +9072,12 @@ altered or wrong-generation Source receipt, bad Cache signature, and changed
 Cache hold: two all-owner tests, two Source-pin tests, and two existing
 Controller-session tests. The Cache physical signer statement and read-only
 journal replay are still separate observations, not one simultaneous owner
-writer cut. There is no production Source signer transport or private-key
-custody, all-owner CAS, crash-safe release/recovery composition, or Q04
-request admission. The daemon's early Q04 gate remains closed; these bytes
-cannot authorize public Create, publication, or effects.
+writer cut. The Source service is available for a root-requested diagnostic,
+but the all-owner session does not yet invoke it or retain an ordered
+Controller/Source/Cache/Root cut. There is no all-owner CAS, crash-safe
+release/recovery composition, or Q04 request admission. The daemon's early
+Q04 gate remains closed; these bytes cannot authorize public Create,
+publication, or effects.
 
 The exact v1 fields cannot close the Cache physical/journal join. `AOSCRB01`
 signs the physical `owner-state` generation and SHA-256 digest plus a digest
@@ -9129,6 +9185,79 @@ replaced original physical root. These gates do not exercise the complete
 Root/Controller socket flight or a cross-owner CAS. Q04/Root authority and
 public Create remain closed.
 
+The inert Q04 recovery slice now exposes an authenticated exact-decision
+readback on the Root socket. The protected AOSPCB02 binding, head pointer, and
+held decision were already one durable transaction before any reply; the new
+replay checks complete Root history and distinguishes a strictly absent
+current epoch from the exact held or released commit. It returns the canonical
+stored proposal with a committed decision so a Controller caller can compare
+it under retained Controller, Source, all four Cache writers, and the physical
+flock. Foreign binding, epoch, nonce, proposal, or overtaken history fails
+closed. Replay bypasses only the unresolved-hold admission guard; first Q04
+SUBMIT still emits no receipt and does not open Root custody.
+
+This is not a public Create grant. A production first-submit path still needs
+a staged Root CAS base and challenge before owner lock acquisition, Controller
+signer seed retention and independent Source/Cache signer flights under the
+same held cut, and an effect-handoff decision that survives restart. The
+current bridge learns the Root base before freezing local holds, so the early
+Q04 and public Create gates remain closed pending those qualifications.
+
+The next inert prerequisite stages an authenticated Root base and fresh Q04
+challenge before the Controller takes other owner writers. Root durably writes
+the issuance epoch, nonce, and a cut over its current CAS predecessor, pinned
+signer generations, and exact signed deployment/project identity before
+returning a nonce-bound receipt over the Controller-authenticated socket.
+Restaging supersedes the prior nonce; Root-last validation checks the exact
+protected stage and current signed-source identity, and rejects a changed
+predecessor or unresolved Root hold. A lost stage reply can be restaged only
+before owner holds are acquired. This stage is proposal input, not a grant:
+the held first-SUBMIT RPC does not yet consume it, Controller signer seed and
+same-cut independent Source/Cache signer proofs remain unconnected, and no
+recoverable effect handoff exists. The early Q04 and public Create gates stay
+closed.
+
+An inert Root-last `AOSPHQ4V` preview now carries the exact staged token and
+canonical proposal over the Controller-authenticated Root socket. A Controller
+caller keeps its Controller, Source, four protected Cache writers, and physical
+Cache flock through the request and postflight checks. Root revalidates the
+durable stage, pinned signed-source identity, proposed CAS base, and its fixed
+read-only protected Cache hold while retaining its own writer; the returned
+binding, epoch, project, partition, and Cache head must match the local held
+claims. No AOSPCB02 transaction is written or hold released. The separate
+Source signer readback does not yet attest an adopted held Source writer, and
+the Cache signer exchange is not joined to this same Q04 challenge/cut. A
+Controller-purpose signer seed is also not retained across the held flight.
+Those independent proofs, the first-SUBMIT durable CAS/recovery handshake,
+and effect handoff remain prerequisites; `AOSPHQ04` and public Create stay
+closed.
+
+The next inert Q04 signer precursor derives one domain-separated challenge
+from the durable staged Root token and canonical AOSPCB02 proposal. Under the
+Root-last writer it requires independently protected Source and Cache public
+pins, verifies both signatures on the identical nonce/cut, compares the
+signed Source hold with the proposal, and joins the signed Cache hold and
+complete quota digest to Root's fixed read-only Cache replay. This is a typed
+verification primitive, not a live exchange or authority token. The Source
+signer currently accepts only a Root peer, while the Cache V2 transport uses
+its separate AOSCRH02 challenge and releases Root before Controller takes its
+held writers; neither transport supplies this staged Q04 cut. A coordinated
+same-cut transport with retained Controller, Source, Cache, and physical Cache
+custody, Controller-purpose signer proof, durable first-SUBMIT recovery, and
+effect handoff are still required. First AOSPHQ04 SUBMIT and public Create
+remain closed.
+
+The Source-only root-peer request can now take the typed staged Q04 challenge
+without changing its read-only view or signing key. A distinct Cache signer
+`AOSCSR03`/`AOSCSC03`/`AOSCSS03` diagnostic flight carries the same Q04 stage
+epoch, nonce, and cut on the existing root-first and Controller-matched socket.
+The V2 Cache diagnostic flight keeps its separate magic and replay epoch;
+cross-version frames and replies are rejected. The signer still reads only its
+private Cache views and issues no authority. No policy-authority RPC yet
+coordinates these two signer flights with the held Root-last preview, and no
+Controller-purpose signer proof or durable first-SUBMIT handoff exists. The
+first AOSPHQ04 CAS and public Create gates remain closed.
+
 ### Execution Observe child and Storage writer readback
 
 The Controller's existing AOSCOB01 reservation now recovers a deterministic,
@@ -9146,6 +9275,28 @@ The query remains a Storage-local observation; it does not join Controller,
 environment, Host, physical ZFS, or an effect handoff. Create and Observe stay
 closed pending the ordered all-owner barrier, versioned large-spec handoff,
 and durable reconciler child Operation/Effect adoption protocol.
+
+A closed Storage-only callback can now challenge the exact accepted-output
+AOSEOR03 row digest and journal head with a nonzero nonce while retaining the
+protected output writer through the callback and its final revalidation. Its
+typed response binds the nonce and complete accepted-output fields to the
+MAC-verified row, including zero-byte Stream/PTY rows; it does not reserve a
+row, inspect a capture dataset, or survive as a lease after the callback.
+No production original-reserve verifier can yet mint AOSEOR03, and no
+coordinated Controller→environment→Host→Storage cut invokes this callback.
+
+An opt-in zero-byte AOSEOR03 held readback flight for future Stream/PTY use now
+shares the authenticated Host/Storage existing-output socket under a distinct
+fixed-size protocol. Storage retains its exclusive writer from exact row/head
+proof through a same-peer, nonce- and proof-bound Settle or Abort terminal and
+read-only acknowledgement;
+timeout or disconnect releases the hold without an acknowledgement. The
+dormant Host client authenticates both proof and acknowledgement against the
+same live Storage service. Settle carries only an opaque caller digest: it
+does not verify earlier owner writers, mint an AOSEOR03 row, authorize a Host
+effect, or persist a cross-owner decision. No production caller invokes the
+flight under an ordered Controller→environment→Host cut. Public Create,
+Observe, and Host Apply remain closed.
 
 Host can now query this exact row after a completed, current ReserveOutput and
 an explicitly supplied v2 claim expectation, then authenticate and retain the
@@ -9352,3 +9503,61 @@ With the provider option disabled and no namespace-40 records, the packaged
 Mount service skips source-owner recovery and does not require an undeployed
 startup policy. Either an enabled provider or retained namespace-40 state
 requires full policy replay before broker recovery can alter durable state.
+
+### Mount source negative manager readback (in progress)
+
+The Mount keeper now uses the same bounded read-only systemd FD-store inspector
+as Network. On removal of a present source name, it reads the complete manager
+store before `FDSTOREREMOVE`, sends the notification and waits for its barrier,
+then reads the complete store again. Exact capacity and count, the complete
+retained mount/source name set, disappearance of the target, and unchanged
+metadata for every unrelated row are required before it reports manager-
+confirmed absence. An unchanged dump remains unconfirmed. A failed or divergent
+post-mutation readback poisons the keeper until restart. Startup orphan cleanup
+and live `Reaping` retirement consume this negative evidence through their
+existing calls. A missing bus fails before mutation and does not turn a
+barrier into proof.
+
+An absent or previously removed name also requires a fresh complete manager
+snapshot before `ManagerConfirmed`: capacity, count, canonical unique rows,
+and the exact locked mount/source inventory must agree, with the target absent.
+No notification is sent on this path. A missing bus or malformed transport
+reply leaves absence unconfirmed for retry; a decoded but malformed or
+contradictory manager snapshot poisons the keeper rather than treating startup
+adoption or a prior removal as continuing PID 1 proof.
+
+The dump reports device and inode but not a kernel-unique mount ID. Fresh
+`FDSTORE` therefore remains unconfirmed, and no positive SourceRoot custody,
+source acquisition, or public Create method is enabled. Mount's exact SELinux
+service `status` permission and real-systemd enforcing VM readback still need
+qualification; this increment changes neither the production unit nor its
+SELinux policy or any readiness checkbox.
+
+### Durable execution Observe child adoption (source qualified, inert)
+
+The Controller now adopts an exact `AOSCOB01` reservation into one private
+Operation, version-4 inert Effect, and idempotency decision in one journal
+transaction. The effect retains the reservation bytes and has no broker or
+public mutation method. Cold replay requires the three records to agree with
+the retained reservation; a missing, changed, or foreign claim fails closed.
+An ambiguous append requires cold reopen, where exact replay makes no second
+transaction. A partial crash tail cannot turn the child into dispatchable work.
+
+The reconciler reports an adopted child as pending without invoking its
+executor or advertising it as a public operation. The original Authorize
+classification and protected Create-spec check still precede reservation.
+This private ledger step does not complete the ordered cross-owner Create
+handoff, Storage physical output backing, Host launch, or an Observe grant.
+Public Create and Observe dispatch remain closed.
+
+### Host execution Query semantic specification binding (source qualified)
+
+Existing method-27 Query now requires binding version 2 and the domain-separated
+digest of the exact admitted execution specification. The Controller binds that
+digest to its signed Query grant and request attempt; Host compares it with its
+protected admission before returning an existing effect or admission readback.
+Legacy Query binding versions and substituted digests fail closed. This does
+not authorize Host Apply, public Create, Observe dispatch, or `RUNNING`.
+
+The original one-shot argument handoff, physical Storage backing, ordered
+cross-owner barrier, and installed Host/guest qualification remain open.

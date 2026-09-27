@@ -44,6 +44,25 @@
     "~fchmodat"
     "~fchmodat2"
   ];
+
+  mkStorageWorkerSocket = {description, path}: {
+    inherit description;
+    wantedBy = ["sockets.target"];
+    requires = ["aos-sandbox-zfs-ready.service"];
+    after = ["aos-sandbox-zfs-ready.service"];
+    socketConfig = {
+      ListenSequentialPacket = path;
+      Accept = true;
+      PassCredentials = true;
+      PassPIDFD = true;
+      SocketUser = "root";
+      SocketGroup = "root";
+      SocketMode = "0600";
+      DirectoryMode = "0700";
+      RemoveOnStop = true;
+      MaxConnections = 1;
+    };
+  };
 in {
   options.aos.sandbox.storageWorker = {
     enable = lib.mkEnableOption "the fixed one-transaction OpenZFS worker";
@@ -138,80 +157,29 @@ in {
     aos.kernel.modulePackages = [cfg.zfsModulePackage];
     aos.kernel.modules = ["zfs"];
 
-    systemd.sockets.aos-sandbox-zfs-worker = {
+    systemd.sockets.aos-sandbox-zfs-worker = mkStorageWorkerSocket {
       description = "AOS one-transaction OpenZFS worker socket";
-      wantedBy = ["sockets.target"];
-      requires = ["aos-sandbox-zfs-ready.service"];
-      after = ["aos-sandbox-zfs-ready.service"];
-      socketConfig = {
-        ListenSequentialPacket = "/run/aos/sandbox-zfs-worker/control.sock";
-        Accept = true;
-        PassCredentials = true;
-        PassPIDFD = true;
-        SocketUser = "root";
-        SocketGroup = "root";
-        SocketMode = "0600";
-        DirectoryMode = "0700";
-        RemoveOnStop = true;
-        MaxConnections = 1;
-      };
+      path = "/run/aos/sandbox-zfs-worker/control.sock";
     };
 
-    systemd.sockets.aos-sandbox-workspace-pin-worker = {
+    systemd.sockets.aos-sandbox-held-snapshot-reader = mkStorageWorkerSocket {
+      description = "AOS Storage-only held snapshot reader socket";
+      path = "/run/aos/sandbox-held-snapshot-reader/control.sock";
+    };
+
+    systemd.sockets.aos-sandbox-workspace-pin-worker = mkStorageWorkerSocket {
       description = "AOS authenticated workspace root-pin worker socket";
-      wantedBy = ["sockets.target"];
-      requires = ["aos-sandbox-zfs-ready.service"];
-      after = ["aos-sandbox-zfs-ready.service"];
-      socketConfig = {
-        ListenSequentialPacket = "/run/aos/sandbox-workspace-pin-worker/control.sock";
-        Accept = true;
-        PassCredentials = true;
-        PassPIDFD = true;
-        SocketUser = "root";
-        SocketGroup = "root";
-        SocketMode = "0600";
-        DirectoryMode = "0700";
-        RemoveOnStop = true;
-        MaxConnections = 1;
-      };
+      path = "/run/aos/sandbox-workspace-pin-worker/control.sock";
     };
 
-    systemd.sockets.aos-sandbox-workspace-pin-observer = {
+    systemd.sockets.aos-sandbox-workspace-pin-observer = mkStorageWorkerSocket {
       description = "AOS authenticated workspace root-pin observer socket";
-      wantedBy = ["sockets.target"];
-      requires = ["aos-sandbox-zfs-ready.service"];
-      after = ["aos-sandbox-zfs-ready.service"];
-      socketConfig = {
-        ListenSequentialPacket = "/run/aos/sandbox-workspace-pin-observer/control.sock";
-        Accept = true;
-        PassCredentials = true;
-        PassPIDFD = true;
-        SocketUser = "root";
-        SocketGroup = "root";
-        SocketMode = "0600";
-        DirectoryMode = "0700";
-        RemoveOnStop = true;
-        MaxConnections = 1;
-      };
+      path = "/run/aos/sandbox-workspace-pin-observer/control.sock";
     };
 
-    systemd.sockets.aos-sandbox-workspace-root-initializer = {
+    systemd.sockets.aos-sandbox-workspace-root-initializer = mkStorageWorkerSocket {
       description = "AOS authenticated workspace root initializer socket";
-      wantedBy = ["sockets.target"];
-      requires = ["aos-sandbox-zfs-ready.service"];
-      after = ["aos-sandbox-zfs-ready.service"];
-      socketConfig = {
-        ListenSequentialPacket = "/run/aos/sandbox-workspace-root-initializer/control.sock";
-        Accept = true;
-        PassCredentials = true;
-        PassPIDFD = true;
-        SocketUser = "root";
-        SocketGroup = "root";
-        SocketMode = "0600";
-        DirectoryMode = "0700";
-        RemoveOnStop = true;
-        MaxConnections = 1;
-      };
+      path = "/run/aos/sandbox-workspace-root-initializer/control.sock";
     };
 
     systemd.services.aos-sandbox-zfs-ready = {
@@ -357,6 +325,89 @@ in {
         ] ++ ioUringDeny;
         SystemCallErrorNumber = "EPERM";
         TasksMax = 16;
+      };
+    };
+
+    # CAP_SYS_ADMIN remains in the initial user namespace, but the service has
+    # a private mount table, no /dev/zfs, and no syscall route for attaching a
+    # detached snapshot mount to a consumer namespace. This is not a userns
+    # capability boundary; production SourceRoot issuance remains disabled.
+    systemd.services."aos-sandbox-held-snapshot-reader@" = {
+      description = "AOS confined held snapshot byte reader";
+      requires = ["aos-sandbox-zfs-ready.service"];
+      after = ["aos-sandbox-zfs-ready.service"];
+      unitConfig.RequiresMountsFor = ["/sys/fs/cgroup"];
+      serviceConfig = {
+        Type = "exec";
+        ExecStart = "${cfg.package}/bin/aos-sandbox-held-snapshot-reader";
+        StandardInput = "socket";
+        StandardOutput = "socket";
+        StandardError = "journal";
+        RuntimeMaxSec = "45s";
+        TimeoutStopSec = "1s";
+        KillMode = "control-group";
+        KillSignal = "SIGKILL";
+        FinalKillSignal = "SIGKILL";
+        SendSIGKILL = true;
+        Restart = "no";
+        UMask = "0077";
+        User = "root";
+        Group = "root";
+        CapabilityBoundingSet = ["CAP_SYS_ADMIN"];
+        AmbientCapabilities = ["CAP_SYS_ADMIN"];
+        DevicePolicy = "closed";
+        LimitNOFILE = 128;
+        LimitCORE = 0;
+        LockPersonality = true;
+        MemoryMax = "256M";
+        MemoryDenyWriteExecute = true;
+        NoNewPrivileges = true;
+        PrivateDevices = true;
+        PrivateMounts = true;
+        PrivateNetwork = true;
+        PrivateTmp = true;
+        TemporaryFileSystem = ["/run/aos-held-reader-namespace:ro,nosuid,nodev,noexec"];
+        ProcSubset = "pid";
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectHome = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectProc = "invisible";
+        ProtectSystem = "strict";
+        RestrictAddressFamilies = ["AF_UNIX"];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        Slice = "aos-control.slice";
+        SystemCallArchitectures = ["native"];
+        SystemCallFilter = [
+          "@system-service"
+          "fsopen"
+          "fsconfig"
+          "fsmount"
+          "mount_setattr"
+          "openat2"
+          "statx"
+          "~mount"
+          "~umount2"
+          "~move_mount"
+          "~open_tree"
+          "~pivot_root"
+          "~chroot"
+          "~setns"
+          "~unshare"
+          "~@reboot"
+          "~@swap"
+          "~@module"
+          "~@raw-io"
+          "~socket"
+          "~socketpair"
+          "~connect"
+        ] ++ ioUringDeny;
+        SystemCallErrorNumber = "EPERM";
+        TasksMax = 4;
       };
     };
 

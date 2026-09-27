@@ -13,8 +13,8 @@ use aos_sandbox_broker::{
     VerifiedBrokerAdmission,
 };
 use aos_sandbox_core::{
-    BrokerAssignment, BrokerAudience, BrokerPlanTrustAnchor, NodeId, OwnershipLeaseTrustAnchor,
-    ProtocolId, ProtocolVersion, RawPairedClockSample,
+    BrokerAssignment, BrokerAudience, BrokerGrant, BrokerPlanTrustAnchor, NodeId,
+    OwnershipLeaseTrustAnchor, ProtocolId, ProtocolVersion, RawPairedClockSample,
 };
 use aos_sandbox_protocol::ValidatedRuntimeRequest;
 use aos_sandbox_protocol::semantics::CanonicalHostAttachGateSemanticsV1;
@@ -391,6 +391,44 @@ impl HostAuthorityV1 {
         )
     }
 
+    /// Verifies the exact read-only Host output readback grant and current lease.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed Controller plan, assignment, request, lease, or
+    /// protected Host base fence.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_storage_output_readback(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        assignment: BrokerAssignment,
+        request_id: [u8; 16],
+        request_body: &[u8],
+        grant: &BrokerGrant,
+        deadline_boottime_nanoseconds: u64,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
+        self.authority.admit_host_storage_output_readback(
+            artifacts,
+            AdmissionRequest {
+                audience: BrokerAudience::Host,
+                protocol: ProtocolId::HostBroker,
+                protocol_version: ProtocolVersion::new(1, 0),
+                assignment,
+                request_id,
+                request_body,
+                descriptor_count: 0,
+                verb: grant.verb(),
+                target: grant.target(),
+                argument_commitment: grant.argument_commitment(),
+                request_deadline_boottime_nanoseconds: deadline_boottime_nanoseconds,
+            },
+            current_clock,
+            prior_fence,
+        )
+    }
+
     /// Advances the stable Host base-plan fence with a verified exact grant's lease.
     pub(crate) fn advance_base_execution_fence(
         &self,
@@ -498,7 +536,47 @@ impl HostAuthorityV1 {
                 request,
             )
             .map_err(|_| HostAdmissionError::RequestMismatch)?;
+        self.admit_exact_mount_scope(
+            artifacts,
+            request,
+            request_body,
+            current_clock,
+            prior_fence,
+            semantics,
+        )
+    }
 
+    /// Admits only the separate method-45 Host namespace-identity purpose.
+    pub(crate) fn admit_mount_scope_identity(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: &aos_sandbox_protocol::mount_scope::ValidatedMountScopeRequest,
+        request_body: &[u8],
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
+        let semantics = aos_sandbox_protocol::semantics::mount_scope::
+            canonical_mount_scope_identity_semantics_v1(request)
+            .map_err(|_| HostAdmissionError::RequestMismatch)?;
+        self.admit_exact_mount_scope(
+            artifacts,
+            request,
+            request_body,
+            current_clock,
+            prior_fence,
+            semantics,
+        )
+    }
+
+    fn admit_exact_mount_scope(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: &aos_sandbox_protocol::mount_scope::ValidatedMountScopeRequest,
+        request_body: &[u8],
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+        semantics: aos_sandbox_protocol::semantics::mount_scope::CanonicalMountScopeSemanticsV1,
+    ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
         let fence = request.fence();
         let assignment = fence
             .broker_assignment()

@@ -4,8 +4,9 @@
 //! inventory path. This module supplies the dormant uniform path for every
 //! method in the same closed authenticated profile. It composes canonical signed
 //! packet verification with the existing method decoders and retains exact
-//! body bytes plus a method-separated semantic commitment. It does not invoke
-//! a service, consume descriptors, authorize an effect, or write durable state.
+//! body bytes plus a method-separated semantic commitment. It does not itself
+//! invoke a service, consume descriptors, authorize an effect, or write durable
+//! state.
 
 use aos_proto::aos::sandbox::local::v1::{
     BrokerMethod, BrokerRequestEnvelope, InventoryNetworksRequest,
@@ -26,9 +27,12 @@ use crate::mount_catalog::{
     decode_mount_catalog_preparation, decode_mount_catalog_preparation_response,
 };
 use crate::mount_scope::{decode_mount_scope_request, decode_mount_scope_response};
+use crate::mount_scope_identity::decode_mount_scope_identity_response_v1;
 use crate::mount_source_acquisition::decode_mount_source_acquisition_inventory_response_with_maximum;
 use crate::payload_scope::{decode_payload_scope_request, decode_payload_scope_response};
-use crate::semantics::mount_scope::canonical_mount_scope_semantics_v1;
+use crate::semantics::mount_scope::{
+    canonical_mount_scope_identity_semantics_v1, canonical_mount_scope_semantics_v1,
+};
 use crate::semantics::payload_scope::canonical_payload_scope_semantics_v1;
 use crate::semantics::{
     CanonicalNetworkSemanticsV1, CanonicalStorageGuestRootSemanticsV1,
@@ -235,6 +239,8 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     HostObservePayloadScope,
     /// Host mount-scope acquisition.
     HostObserveMountScope,
+    /// Host namespace-identity readback with its own signed purpose.
+    HostObserveMountScopeIdentity,
     /// Storage-only Host physical consumer-cgroup readback.
     HostObserveConsumerCgroup,
     /// Mount catalog preparation.
@@ -255,6 +261,8 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     HostReserveExecutionOutput,
     /// Read-only exact original Host output reservation query.
     HostQueryExecutionOutput,
+    /// Storage-audience Host output readback of one protected Controller attempt.
+    HostObserveStorageOutput,
     /// Signed, one-shot Controller attempt for a fresh Host-owned Guest readback.
     HostObserveExecutionArgument,
     /// Read-only historical query of the original Host argument attempt.
@@ -263,6 +271,10 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     HostTerminalNoApply,
     /// Read-only historical Host no-Apply marker query.
     HostQueryNoApply,
+    /// Signed preliminary Host settlement coordinate; no Controller CAS authority.
+    HostSettleNoApplyPreliminary,
+    /// Read-only signed Host settlement history query.
+    HostQueryNoApplySettlement,
     /// Read-only Storage capture candidate; issuer and signed outcome are closed.
     StorageCaptureCandidateReadback,
     /// Host OpenSSH forced-command installation and signed readback.
@@ -373,6 +385,9 @@ pub const fn authenticated_broker_method_adapter_v1(
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE => {
             AuthenticatedBrokerMethodSemanticsV1::HostObserveMountScope
         }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
+            AuthenticatedBrokerMethodSemanticsV1::HostObserveMountScopeIdentity
+        }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP => {
             AuthenticatedBrokerMethodSemanticsV1::HostObserveConsumerCgroup
         }
@@ -402,6 +417,9 @@ pub const fn authenticated_broker_method_adapter_v1(
         }
         BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT => {
             AuthenticatedBrokerMethodSemanticsV1::HostQueryExecutionOutput
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT => {
+            AuthenticatedBrokerMethodSemanticsV1::HostObserveStorageOutput
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
             AuthenticatedBrokerMethodSemanticsV1::HostObserveExecutionArgument
@@ -457,6 +475,17 @@ pub const fn authenticated_broker_method_adapter_v1(
         BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT => {
             AuthenticatedBrokerMethodSemanticsV1::StoragePopulateGuestRoot
         }
+        BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 => {
+            AuthenticatedBrokerMethodSemanticsV1::HostSettleNoApplyPreliminary
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 => {
+            AuthenticatedBrokerMethodSemanticsV1::HostQueryNoApplySettlement
+        }
+        // These provisional carriers remain closed until their independent
+        // issuers and cross-owner currentness joins exist.
+        BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT => return None,
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
     };
     Some(AuthenticatedBrokerMethodAdapterV1 { profile, semantics })
@@ -754,6 +783,53 @@ impl AuthenticatedBrokerMethodOutcomeV1 {
             outcome: self,
             record,
         }))
+    }
+
+    /// Reads exact Host settlement history from a signed method-43 outcome.
+    ///
+    /// A matching history is protected Host custody, not a live lease or
+    /// Controller settlement authority. An error outcome returns `None`.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed signed direction, method, semantic commitment, source,
+    /// status, or any stage in the protected predecessor chain.
+    pub fn recorded_host_no_apply_settlement_history(
+        &self,
+    ) -> Result<
+        Option<crate::host_execution_no_apply::HostNoApplySettlementHistoryV2>,
+        AuthenticatedBrokerMethodErrorV1,
+    > {
+        if self.method != BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 {
+            return Ok(None);
+        }
+        if self.direction != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+            || self.request.direction != AuthenticatedBrokerRequestDirectionV1::ClientSend
+            || self.method != self.request.method
+        {
+            return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+        }
+        let AuthenticatedBrokerMethodResultV1::Success {
+            exact_body,
+            semantic_commitment,
+            ..
+        } = &self.result
+        else {
+            return Ok(None);
+        };
+        if *semantic_commitment != method_digest(OUTCOME_SEMANTIC_DOMAIN, self.method, exact_body) {
+            return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+        }
+        let RequestOutcomeContextV1::HostNoApplySettlementQuery(original) =
+            &self.request.outcome_context
+        else {
+            return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+        };
+        crate::host_execution_no_apply::decode_host_no_apply_settlement_query_response_v2(
+            exact_body, original,
+        )
+        .map(Some)
+        .map_err(Into::into)
     }
 }
 
@@ -1179,6 +1255,7 @@ enum RequestOutcomeContextV1 {
     HostQuery(crate::ValidatedQueryRuntimeEffectRequestV1),
     PayloadScope(crate::payload_scope::ValidatedPayloadScopeRequest),
     MountScope(crate::mount_scope::ValidatedMountScopeRequest),
+    MountScopeIdentity(crate::mount_scope::ValidatedMountScopeRequest),
     HostConsumerCgroup(crate::host_consumer_cgroup::ValidatedConsumerCgroupRequestV1),
     MountAcquireSource(crate::ValidatedAcquireMountSourceRequest),
     MountReleaseSource(crate::ValidatedReleaseMountSourceAcquisitionRequest),
@@ -1192,10 +1269,17 @@ enum RequestOutcomeContextV1 {
     HostExecutionQuery(crate::ValidatedHostExecutionQueryV1),
     HostOutputReserve(crate::host_output::ValidatedHostOutputReserveRequestV1),
     HostOutputQuery(crate::host_output::ValidatedHostOutputQueryRequestV1),
+    HostStorageOutput(
+        crate::host_storage_output_readback::ValidatedHostStorageOutputReadbackRequestV1,
+    ),
     HostArgumentObserve(crate::host_execution_argument::ValidatedHostExecutionArgumentRequestV1),
     HostArgumentQuery(crate::host_execution_argument::ValidatedHostExecutionArgumentRequestV1),
     HostNoApply(crate::host_execution_no_apply::ValidatedHostExecutionNoApplyRequestV1),
     HostNoApplyQuery(crate::host_execution_no_apply::ValidatedHostExecutionNoApplyRequestV1),
+    HostNoApplySettlement(crate::host_execution_no_apply::ValidatedHostNoApplySettlementRequestV2),
+    HostNoApplySettlementQuery(
+        crate::host_execution_no_apply::ValidatedHostNoApplySettlementQueryV2,
+    ),
     HostAttachGate(crate::ValidatedHostAttachGateRequestV1),
     HostAttachReadiness,
     HostAttachRoute(crate::ValidatedHostAttachRouteQueryV1),
@@ -1305,6 +1389,16 @@ fn validate_request_semantics(
                 Some(*semantics.commitment().digest().as_bytes()),
             )
         }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
+            let request = decode_mount_scope_request(body, peer, policy, now)?;
+            let semantics = canonical_mount_scope_identity_semantics_v1(&request)
+                .map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostObserveMountScopeIdentity,
+                *request.header(),
+                Some(*semantics.commitment().digest().as_bytes()),
+            )
+        }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP => {
             let request = crate::host_consumer_cgroup::decode_consumer_cgroup_request_v1(
                 body, peer, policy, now,
@@ -1390,6 +1484,19 @@ fn validate_request_semantics(
                 None,
             )
         }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT => {
+            let request = crate::host_storage_output_readback::decode_host_storage_output_readback_request_v1(body, peer, policy, now)?;
+            let grant = crate::host_storage_output_readback::host_storage_output_readback_grant_v1(
+                request.records().assignment(),
+                *request.header().request_id(),
+                body,
+            )?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostObserveStorageOutput,
+                *request.header(),
+                Some(*grant.argument_commitment().digest().as_bytes()),
+            )
+        }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
             let request =
                 crate::host_execution_argument::decode_host_execution_argument_observe_request_v1(
@@ -1430,6 +1537,33 @@ fn validate_request_semantics(
                 )?;
             (
                 AuthenticatedBrokerMethodSemanticsV1::HostQueryNoApply,
+                *request.header(),
+                None,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 => {
+            let request =
+                crate::host_execution_no_apply::decode_host_no_apply_settlement_request_v2(
+                    body, peer, policy, now,
+                )?;
+            if request.phase()
+                != crate::host_execution_no_apply::HostNoApplySettlementPhaseV2::Preliminary
+            {
+                return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
+            }
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostSettleNoApplyPreliminary,
+                *request.header(),
+                None,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 => {
+            let request =
+                crate::host_execution_no_apply::decode_host_no_apply_settlement_query_request_v2(
+                    body, peer, policy, now,
+                )?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostQueryNoApplySettlement,
                 *request.header(),
                 None,
             )
@@ -1563,7 +1697,10 @@ fn validate_request_semantics(
                 Some(*commitment.digest().as_bytes()),
             )
         }
-        BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
+        BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }
     };
@@ -1599,6 +1736,11 @@ fn validate_request_semantics(
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE => {
             RequestOutcomeContextV1::MountScope(decode_mount_scope_request(
+                body, peer, policy, now,
+            )?)
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
+            RequestOutcomeContextV1::MountScopeIdentity(decode_mount_scope_request(
                 body, peer, policy, now,
             )?)
         }
@@ -1675,6 +1817,11 @@ fn validate_request_semantics(
                 crate::host_output::decode_host_output_query_request_v1(body, peer, policy, now)?,
             )
         }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT => {
+            RequestOutcomeContextV1::HostStorageOutput(
+                crate::host_storage_output_readback::decode_host_storage_output_readback_request_v1(body, peer, policy, now)?,
+            )
+        }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT => {
             RequestOutcomeContextV1::HostArgumentObserve(
                 crate::host_execution_argument::decode_host_execution_argument_observe_request_v1(
@@ -1702,6 +1849,20 @@ fn validate_request_semantics(
                     decode_host_execution_argument_query_no_apply_request_v1(
                         body, peer, policy, now,
                     )?,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 => {
+            RequestOutcomeContextV1::HostNoApplySettlement(
+                crate::host_execution_no_apply::decode_host_no_apply_settlement_request_v2(
+                    body, peer, policy, now,
+                )?,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 => {
+            RequestOutcomeContextV1::HostNoApplySettlementQuery(
+                crate::host_execution_no_apply::decode_host_no_apply_settlement_query_request_v2(
+                    body, peer, policy, now,
+                )?,
             )
         }
         BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
@@ -1861,6 +2022,13 @@ fn validate_success_semantics(
             };
             decode_mount_scope_response(body, original)?;
         }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
+            let RequestOutcomeContextV1::MountScopeIdentity(original) = &request.outcome_context
+            else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            decode_mount_scope_identity_response_v1(body, original)?;
+        }
         BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG => {
             let RequestOutcomeContextV1::MountPrepareCatalog(original) = &request.outcome_context
             else {
@@ -1942,6 +2110,15 @@ fn validate_success_semantics(
                 body,
                 original.locator(),
                 true,
+            )?;
+        }
+        BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT => {
+            let RequestOutcomeContextV1::HostStorageOutput(original) = &request.outcome_context
+            else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::host_storage_output_readback::decode_host_storage_output_readback_response_v1(
+                body, original,
             )?;
         }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP => {
@@ -2060,10 +2237,34 @@ fn validate_success_semantics(
                 request.signed_request_digest(),
             )?;
         }
+        BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 => {
+            let RequestOutcomeContextV1::HostNoApplySettlement(original) = &request.outcome_context
+            else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::host_execution_no_apply::decode_host_no_apply_settlement_response_v2(
+                body,
+                original,
+                request.session_binding(),
+            )?;
+        }
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 => {
+            let RequestOutcomeContextV1::HostNoApplySettlementQuery(original) =
+                &request.outcome_context
+            else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::host_execution_no_apply::decode_host_no_apply_settlement_query_response_v2(
+                body, original,
+            )?;
+        }
         BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }
-        BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
+        BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);
         }
     }

@@ -614,6 +614,15 @@ pub fn decode_request_envelope(
     }
     reject_legacy_authentication_field(&envelope.signed_session_request)?;
     let method = validate_method(envelope.method.as_known(), protocol)?;
+    if matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
+            | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
+    ) {
+        return Err(ProtocolValidationError::MethodMismatch);
+    }
     let maximum = request_packet_maximum(method);
     if bytes.len() > maximum {
         return Err(ProtocolValidationError::RequestTooLarge);
@@ -640,6 +649,7 @@ pub(crate) fn validate_decoded_request_envelope(
         method,
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
     ) && !descriptors.is_empty())
         || descriptors
             .iter()
@@ -1229,6 +1239,7 @@ const fn method_requires_authorization(method: BrokerMethod) -> bool {
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
             | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
@@ -1271,15 +1282,24 @@ fn validate_role_methods(
                 !matches!(
                     method,
                     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+                        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
                         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
                 )
             }),
-            Audience::AUDIENCE_ROOT_MOUNT => methods
-                .iter()
-                .all(|method| *method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE),
-            Audience::AUDIENCE_STORAGE_BROKER => methods
-                .iter()
-                .all(|method| *method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP),
+            Audience::AUDIENCE_ROOT_MOUNT => methods.iter().all(|method| {
+                matches!(
+                    method,
+                    BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+                        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
+                )
+            }),
+            Audience::AUDIENCE_STORAGE_BROKER => methods.iter().all(|method| {
+                matches!(
+                    method,
+                    BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
+                        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
+                )
+            }),
             _ => false,
         };
     if valid {
@@ -1313,16 +1333,20 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
         | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
         | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
+        | BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+        | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
         | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
         | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME
         | BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME
@@ -1333,6 +1357,7 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
         | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS
+        | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
         | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
         | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
         | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
@@ -1347,7 +1372,9 @@ fn validate_outbound_carriers(
         BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => {
             roles == crate::host_catalog::HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES
         }
-        BrokerMethod::BROKER_METHOD_UNSPECIFIED => false,
+        BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_UNSPECIFIED => false,
     };
     if valid {
         Ok(())
@@ -1594,21 +1621,36 @@ fn encode_response_envelope(
     };
     let bytes = envelope.encode_to_vec();
     let authenticated_cleared_budget = minimum_bytes < MINIMUM_RESPONSE_BYTES;
+    if request.method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
+        && !authenticated_cleared_budget
+    {
+        return Err(ProtocolValidationError::MethodMismatch);
+    }
     if authenticated_cleared_budget
         && bytes.len() > usize::try_from(maximum_bytes).unwrap_or(usize::MAX)
     {
         return Err(ProtocolValidationError::ResponseTooLarge);
     }
     let semantic_response_bound = maximum_bytes.max(MINIMUM_RESPONSE_BYTES);
-    decode_response_envelope(
-        &bytes,
-        request_id,
-        request.method,
-        &request.descriptors,
-        response_descriptor_roles.len(),
-        semantic_response_bound,
-        semantic_response_bound,
-    )?;
+    if request.method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 {
+        validate_decoded_response_envelope(
+            envelope,
+            request_id,
+            request.method,
+            &request.descriptors,
+            response_descriptor_roles.len(),
+        )?;
+    } else {
+        decode_response_envelope(
+            &bytes,
+            request_id,
+            request.method,
+            &request.descriptors,
+            response_descriptor_roles.len(),
+            semantic_response_bound,
+            semantic_response_bound,
+        )?;
+    }
     if bytes.len() > usize::try_from(maximum_bytes).unwrap_or(usize::MAX) {
         return Err(ProtocolValidationError::ResponseTooLarge);
     }
@@ -1666,6 +1708,9 @@ pub fn decode_response_envelope(
         return Err(ProtocolValidationError::UnknownFields);
     }
     reject_legacy_authentication_field(&envelope.signed_session_outcome)?;
+    if expected_method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 {
+        return Err(ProtocolValidationError::MethodMismatch);
+    }
     validate_decoded_response_envelope(
         envelope,
         expected_request_id,
@@ -1708,11 +1753,16 @@ pub(crate) fn validate_decoded_response_envelope(
         expected_method,
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
     ) {
         let expected_roles: &[BrokerDescriptorRole] = if error.is_some() {
             &[]
-        } else if expected_method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE {
+        } else if matches!(
+            expected_method,
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
+        ) {
             &crate::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES
         } else if expected_method == BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP {
             &crate::host_consumer_cgroup::CONSUMER_CGROUP_DESCRIPTOR_ROLES_V1
@@ -1833,6 +1883,7 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_CONSUMER_CGROUP
                 | BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG
                 | BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
@@ -1840,6 +1891,7 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT
                 | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
                 | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
@@ -1847,6 +1899,8 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
                 | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY
+                | BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
         ) | (
             ProtocolId::MountBroker,
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY
@@ -1857,6 +1911,9 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
                 | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
                 | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS
+        ) | (
+            ProtocolId::MountFuseBroker,
+            BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
         ) | (
             ProtocolId::StorageBroker,
             BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
@@ -1924,6 +1981,15 @@ fn validate_canonical_methods(
     }
     for method in methods {
         validate_method(Some(*method), protocol)?;
+        if matches!(
+            method,
+            BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
+                | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
+                | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
+        ) {
+            return Err(ProtocolValidationError::MethodMismatch);
+        }
     }
     if methods
         .windows(2)
@@ -2133,6 +2199,19 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn storage_output_attempt_and_query_remain_closed_to_sessions() {
+        for method in [
+            BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT,
+            BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT,
+        ] {
+            assert!(matches!(
+                validate_method(Some(method), ProtocolId::StorageBroker),
+                Err(ProtocolValidationError::MethodMismatch)
+            ));
+        }
+    }
+
     fn feature(namespace: &str) -> FeatureRef {
         FeatureRef::new(namespace, 1, 0)
             .unwrap_or_else(|error| panic!("test feature is invalid: {error}"))
@@ -2161,6 +2240,159 @@ mod tests {
         ];
         features.sort();
         features
+    }
+
+    #[test]
+    fn mount_fuse_three_rejects_legacy_methods_even_at_its_exact_version() {
+        let method = BrokerMethod::BROKER_METHOD_MOUNT_APPLY;
+        let fuse_method = BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1;
+        assert_eq!(
+            validate_method(Some(method), ProtocolId::MountFuseBroker),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+        assert_eq!(
+            validate_method(Some(fuse_method), ProtocolId::MountBroker),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+        assert!(validate_method(Some(fuse_method), ProtocolId::MountFuseBroker).is_ok());
+        assert_eq!(
+            validate_canonical_methods(&[fuse_method], ProtocolId::MountFuseBroker, "FUSE methods"),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+        assert!(validate_outbound_carriers(fuse_method, &[]).is_ok());
+        assert!(
+            validate_outbound_carriers(
+                fuse_method,
+                &[BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_MOUNT_SOURCE]
+            )
+            .is_err()
+        );
+        assert!(
+            crate::authenticated_session::all_methods::authenticated_broker_method_adapter_v1(
+                fuse_method
+            )
+            .is_none()
+        );
+        let legacy_request = BrokerRequestEnvelope {
+            method: fuse_method.into(),
+            body: vec![1],
+            ..Default::default()
+        };
+        assert_eq!(
+            decode_request_envelope(
+                &legacy_request.encode_to_vec(),
+                ProtocolId::MountFuseBroker,
+                0,
+            ),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+        assert!(
+            validate_canonical_methods(&[], ProtocolId::MountFuseBroker, "FUSE methods").is_err()
+        );
+
+        let mut hello = client_hello();
+        hello.protocol_major = 3;
+        hello.protocol_minor = 0;
+        assert!(
+            negotiate_client_hello(
+                &hello.encode_to_vec(),
+                peer(),
+                policy(),
+                ProtocolId::MountFuseBroker,
+                &client_features(),
+                &[method],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn host_identity_readback_cannot_enter_legacy_or_controller_profiles() {
+        let method = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1;
+
+        assert!(validate_method(Some(method), ProtocolId::HostBroker).is_ok());
+        assert_eq!(
+            validate_method(Some(method), ProtocolId::MountBroker),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+        assert_eq!(
+            validate_canonical_methods(&[method], ProtocolId::HostBroker, "Host methods"),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+        assert!(validate_outbound_carriers(method, &[]).is_ok());
+        assert!(
+            validate_outbound_carriers(
+                method,
+                &[BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_MOUNT_NAMESPACE]
+            )
+            .is_err()
+        );
+        assert!(
+            crate::authenticated_session::all_methods::authenticated_broker_method_adapter_v1(
+                method
+            )
+            .is_some()
+        );
+
+        let envelope = BrokerRequestEnvelope {
+            method: method.into(),
+            body: vec![1],
+            ..Default::default()
+        };
+        assert_eq!(
+            decode_request_envelope(&envelope.encode_to_vec(), ProtocolId::HostBroker, 0),
+            Err(ProtocolValidationError::MethodMismatch)
+        );
+    }
+
+    #[test]
+    fn authenticated_identity_response_has_exact_five_roles_but_no_legacy_decoder() {
+        let method = BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1;
+        let roles = crate::mount_scope::MOUNT_SCOPE_DESCRIPTOR_ROLES;
+        let request = ValidatedBrokerRequestEnvelope {
+            method,
+            body: vec![1],
+            descriptors: vec![],
+            authorization: None,
+        };
+        let packet = encode_authenticated_success_response_envelope(
+            &[1; 16],
+            &request,
+            vec![1],
+            &roles,
+            &[],
+            0,
+            8192,
+        )
+        .unwrap();
+        assert!(decode_response_envelope(&packet, &[1; 16], method, &[], 5, 8192, 8192).is_err());
+
+        let response = BrokerResponseEnvelope::decode_from_slice(&packet).unwrap();
+        assert!(
+            validate_decoded_response_envelope(response.clone(), &[1; 16], method, &[], 5).is_ok()
+        );
+        for wrong_roles in [
+            Vec::new(),
+            roles[..4].to_vec(),
+            vec![roles[1], roles[0], roles[2], roles[3], roles[4]],
+        ] {
+            let mut changed = response.clone();
+            changed.descriptors = descriptor_entries(&wrong_roles).unwrap();
+            assert!(
+                validate_decoded_response_envelope(
+                    changed,
+                    &[1; 16],
+                    method,
+                    &[],
+                    wrong_roles.len(),
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            encode_success_response_envelope(&[1; 16], &request, vec![1], &roles, &[], 8192)
+                .is_err()
+        );
     }
 
     #[test]
@@ -2571,6 +2803,74 @@ mod tests {
             ownership_lease,
             ownership_lease_signature,
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn authenticated_no_apply_v2_methods_reject_even_well_formed_lease_artifacts() {
+        for method in [
+            BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2,
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2,
+        ] {
+            let envelope = BrokerRequestEnvelope {
+                method: method.into(),
+                body: vec![1],
+                authorization: Some(authorization_artifacts()).into(),
+                ..Default::default()
+            };
+            let validated =
+                validate_decoded_request_envelope(envelope, ProtocolId::HostBroker, 0).unwrap();
+            let profile =
+                aos_sandbox_broker_session_protocol::authenticated_broker_method_profile_v1(method)
+                    .unwrap();
+
+            assert_eq!(
+                crate::authenticated_session::validate_request_against_profile(
+                    &validated, &profile,
+                ),
+                Err(ProtocolValidationError::MethodMismatch),
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_negotiation_cannot_offer_no_apply_v2_methods() {
+        for method in [
+            BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2,
+            BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2,
+        ] {
+            let hello = BrokerClientHello {
+                protocol_major: 1,
+                protocol_minor: 0,
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                maximum_response_bytes: 8_192,
+                required_methods: vec![method.into()],
+                ..Default::default()
+            };
+            assert_eq!(
+                negotiate_client_hello(
+                    &hello.encode_to_vec(),
+                    peer(),
+                    policy(),
+                    ProtocolId::HostBroker,
+                    &[],
+                    &[method],
+                ),
+                Err(ProtocolValidationError::MethodMismatch),
+            );
+            let unsigned_request = BrokerRequestEnvelope {
+                method: method.into(),
+                body: vec![1],
+                ..Default::default()
+            };
+            assert_eq!(
+                decode_request_envelope(
+                    &unsigned_request.encode_to_vec(),
+                    ProtocolId::HostBroker,
+                    0,
+                ),
+                Err(ProtocolValidationError::MethodMismatch),
+            );
         }
     }
 

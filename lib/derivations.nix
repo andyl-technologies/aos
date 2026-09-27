@@ -37,6 +37,7 @@
     else "/bin/sh";
 
   inherit (import ./trivial.nix) throwIfNot isDerivation;
+  inherit (import ./strings.nix) escapeShellArg;
   inherit
     (import ./platform.nix)
     satisfies
@@ -183,13 +184,19 @@
 
       if [ -z "''${dontStrip:-}" ]; then
         echo "stripping..."
+        archive_strip_flags=-S
+        case "$(${stripCommand} --help 2>&1 || true)" in
+          *--enable-deterministic-archives*) archive_strip_flags='-D -S' ;;
+        esac
         for o in ''${AOS_OUTPUT_NAMES:-out}; do
           eval "p=\"\''${$o:-}\""
           [ -d "$p" ] || continue
           find "$p" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) \
             -exec chmod u+w {} \; -exec ${stripCommand} --strip-unneeded {} \; 2>/dev/null || true
+          # Use deterministic headers where strip supports them; older bootstrap
+          # tools still need their original archive-strip operation.
           find "$p" -type f -name '*.a' \
-            -exec chmod u+w {} \; -exec ${stripCommand} -S {} \; 2>/dev/null || true
+            -exec chmod u+w {} \; -exec ${stripCommand} $archive_strip_flags {} \; 2>/dev/null || true
           for d in bin sbin libexec; do
             if [ -d "$p/$d" ]; then
               find "$p/$d" -type f \
@@ -665,6 +672,7 @@
     dependencySearchDeps ? null,
     buildDependencySearchDeps ? null,
     phases ? defaultPhases,
+    passBuildScriptAsFile ? false,
     meta ? {},
     storeDir ? "/nix/store",
     system ? defaultSystem,
@@ -876,6 +884,10 @@
 
     builder = phasesToScript allPhases shell useStructuredAttrs;
 
+    # Linux limits each exec argument to 128 KiB. Keep the choice explicit:
+    # measuring every script here can force target dependencies too early.
+    largeBuilder = passBuildScriptAsFile;
+
     # Extra args to pass through to builtins.derivation
     extraArgs = builtins.removeAttrs args [
       "name"
@@ -888,6 +900,7 @@
       "dependencySearchDeps"
       "buildDependencySearchDeps"
       "phases"
+      "passBuildScriptAsFile"
       "meta"
       "storeDir"
       "system"
@@ -1033,10 +1046,10 @@
           {
             inherit name system;
             builder = shell;
-            args = [
-              "-c"
-              builder
-            ];
+            args =
+              if largeBuilder
+              then ["-c" ''exec "${shell}" "$__aosBuildScriptPath"'']
+              else ["-c" builder];
             inherit outputs;
 
             # Source
@@ -1139,6 +1152,14 @@
             else {}
           )
           // extraArgs
+          // (
+            if largeBuilder
+            then {
+              __aosBuildScript = builder;
+              passAsFile = (args.passAsFile or []) ++ ["__aosBuildScript"];
+            }
+            else {}
+          )
         )
       )
     );
@@ -1335,9 +1356,10 @@
   # ---------------------------------------------------------------------------
   # fetchgit
   # ---------------------------------------------------------------------------
-  # fetchgit { url; rev; hash; }
+  # fetchgit { url; rev; hash; ref?; fetchCommit?; sparsePaths?; sparsePatterns?; git?; caCertificates?; coreutils?; }
   #
   # Fixed-output derivation that clones a Git repository at a specific revision.
+  # Sparse checkout avoids downloading excluded blobs, such as bundled JARs.
   fetchgit = {
     url,
     rev,
@@ -1348,8 +1370,30 @@
     system ? defaultSystem,
     storeDir ? "/nix/store",
     deepClone ? false,
+    fetchCommit ? false,
     leaveDotGit ? false,
+    ref ? null,
+    sparsePaths ? [],
+    sparsePatterns ? [],
+    git ? null,
+    caCertificates ? null,
+    coreutils ? null,
   }: let
+    gitPath =
+      if git == null
+      then "${storeDir}/git-minimal"
+      else builtins.toString git;
+    coreutilsPath =
+      if coreutils == null
+      then "${storeDir}/coreutils"
+      else builtins.toString coreutils;
+    caCertificatesPath =
+      if caCertificates == null
+      then "${storeDir}/cacert"
+      else builtins.toString caCertificates;
+    sparseArguments = builtins.concatStringsSep " " (builtins.map escapeShellArg sparsePaths);
+    sparsePatternArguments = builtins.concatStringsSep " " (builtins.map escapeShellArg sparsePatterns);
+
     drv = builtins.derivation {
       inherit name system;
       builder = builderPath;
@@ -1357,23 +1401,59 @@
         "-c"
         ''
           set -euo pipefail
-          export PATH="${storeDir}/git-minimal/bin:$PATH"
-          export GIT_SSL_CAINFO="${storeDir}/cacert/etc/ssl/certs/ca-bundle.crt"
+          export PATH="${gitPath}/bin:${coreutilsPath}/bin:$PATH"
+          export GIT_SSL_CAINFO="${caCertificatesPath}/etc/ssl/certs/ca-bundle.crt"
 
-          git clone ${
-            if deepClone
-            then ""
-            else "--depth 1"
-          } \
-            ${
-            if fetchSubmodules
-            then "--recurse-submodules"
-            else ""
-          } \
-            "${url}" "$out"
+          ${
+            if fetchCommit
+            then ''
+              git init "$out"
+              git -C "$out" remote add origin "${url}"
+              git -C "$out" fetch --depth 1 ${
+                if sparsePaths == [] && sparsePatterns == []
+                then ""
+                else "--filter=blob:none"
+              } origin "${rev}"
+            ''
+            else ''
+              git clone ${
+                if deepClone
+                then ""
+                else "--depth 1"
+              } \
+                ${
+                if sparsePaths == [] && sparsePatterns == []
+                then ""
+                else "--filter=blob:none --sparse --no-checkout"
+              } \
+                ${
+                if ref == null
+                then ""
+                else "--branch ${escapeShellArg ref}"
+              } \
+                ${
+                if fetchSubmodules
+                then "--recurse-submodules"
+                else ""
+              } \
+                "${url}" "$out"
+            ''
+          }
 
           cd "$out"
-          git checkout "${rev}"
+          ${
+            if sparsePatterns != []
+            then ''printf '%s\n' ${sparsePatternArguments} | git sparse-checkout set --no-cone --stdin''
+            else if sparsePaths != []
+            then ''git sparse-checkout set -- ${sparseArguments}''
+            else ""
+          }
+          git checkout "${
+            if fetchCommit
+            then "FETCH_HEAD"
+            else rev
+          }"
+          test "$(git rev-parse HEAD)" = "${rev}"
           ${
             if fetchSubmodules
             then "git submodule update --init --recursive"
@@ -1396,14 +1476,22 @@
       inherit url rev;
     };
   in
-    annotateFixedOutput drv {
-      kind = "git";
-      hashMode = "recursive";
-      sourceInputs = [url];
-      builderParameters = {
-        inherit rev fetchSubmodules deepClone leaveDotGit system;
+    assert sparsePaths == [] || sparsePatterns == [];
+    assert !fetchCommit || (ref == null && !deepClone);
+      annotateFixedOutput drv {
+        kind = "git";
+        hashMode = "recursive";
+        sourceInputs = [url];
+        builderParameters =
+          {
+            inherit rev fetchSubmodules deepClone leaveDotGit ref sparsePaths system;
+          }
+          // (
+            if sparsePatterns == []
+            then {}
+            else {inherit sparsePatterns;}
+          );
       };
-    };
 
   # ---------------------------------------------------------------------------
   # fakeHash — placeholder hash for iterating on fixed-output derivations
@@ -1792,14 +1880,15 @@
   # fetchNpmDeps
   # ---------------------------------------------------------------------------
   # fetchNpmDeps { nodejs; python3; caCertificates; bootstrapTools;
-  #                src; hash; sourceRoot?; ... }
+  #                src; hash; sourceRoot?; omitOptional?; requiresGit?;
+  #                localTarballs?; ... }
   #
   # Fixed-output derivation that materializes a complete `node_modules` tree
   # from a committed `package.json` + `package-lock.json` (the npm analogue of
   # `fetchCargoDeps`). It runs `npm ci --ignore-scripts`, which installs
   # *exactly* the lockfile — no version resolution — so the result is
-  # deterministic given the lockfile, and a pure JS tree free of store-path
-  # references (which a fixed-output derivation must not contain). Native
+  # deterministic given the lockfile and free of store-path references (which
+  # a fixed-output derivation must not contain). Native
   # (node-gyp) addons are left uncompiled and are built by the *consuming*
   # derivation, which is permitted to reference the toolchain.
   #
@@ -1833,6 +1922,9 @@
     src,
     hash,
     sourceRoot ? null,
+    omitOptional ? false,
+    requiresGit ? true,
+    localTarballs ? [],
     extraPaths ? [],
     extraLibPaths ? [],
     name ? "npm-deps",
@@ -1841,6 +1933,15 @@
     ldLibPath = builtins.concatStringsSep ":" (
       builtins.map (d: "${builtins.toString d}/lib") extraLibPaths
     );
+    stageLocalTarballs = builtins.concatStringsSep "\n" (builtins.map (
+        tarball: let
+          name = tarball.name;
+        in
+          if builtins.match "[A-Za-z0-9][A-Za-z0-9._-]*([.]tgz|[.]tar[.]gz)" name == null
+          then throw "fetchNpmDeps: local tarball name must be a .tgz or .tar.gz basename"
+          else ''cp "${tarball.path}" "${name}"''
+      )
+      localTarballs);
   in
     annotateFixedOutput (builtins.derivation {
       inherit name system;
@@ -1868,6 +1969,7 @@
           }"
           cp "$srcdir/package.json" package.json
           cp "$srcdir/package-lock.json" package-lock.json
+          ${stageLocalTarballs}
 
           # Build-local, hermetic npm/node-gyp configuration.
           export HOME="$TMPDIR/home"
@@ -1894,10 +1996,14 @@
           # avoids the addons' `prebuild-install || node-gyp rebuild` install
           # hooks, whose host-style shebangs cannot run in the sandbox.
           node "$npmCli" \
-            ci --no-audit --no-fund --ignore-scripts
+            ci --no-audit --no-fund --ignore-scripts ${
+            if omitOptional
+            then "--omit=optional"
+            else ""
+          }
 
-          # Emit the populated node_modules tree (pure JS, no store references)
-          # as the FOD output.
+          # Emit the populated node_modules tree without store references as
+          # the FOD output.
           cp -a node_modules "$out"
 
           # Normalize timestamps/permissions for reproducibility.
@@ -1913,7 +2019,9 @@
     }) {
       kind = "npm-deps";
       hashMode = "recursive";
-      sourceInputs = [builtins.toString src];
+      sourceInputs =
+        [builtins.toString src]
+        ++ builtins.map (tarball: builtins.toString tarball.path) localTarballs;
       builderParameters = {
         sourceRoot =
           if sourceRoot == null
@@ -1922,6 +2030,8 @@
         manifest = "package.json";
         lockfile = "package-lock.json";
         lifecycleScripts = false;
+        inherit omitOptional requiresGit;
+        localTarballs = builtins.map (tarball: tarball.name) localTarballs;
         nodejs = builtins.toString nodejs;
         inherit system;
       };

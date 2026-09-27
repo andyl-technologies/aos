@@ -415,6 +415,8 @@ pub enum ProtocolId {
     StorageBroker,
     /// Node-local root descriptor mount broker.
     MountBroker,
+    /// Separate, closed root Mount FUSE-reservation protocol.
+    MountFuseBroker,
     /// Node-local root network broker.
     NetworkBroker,
     /// Transport-neutral exclusive ownership authority.
@@ -458,10 +460,10 @@ impl ProtocolVersion {
 
 /// Negotiates one protocol independently from every other compatibility domain.
 ///
-/// Host, Mount, Storage, Network, Ownership, and SourceProvider have single
-/// exact baselines. SourceProvider's baseline is 1.0; Mount's is 2.0. Other
-/// domains retain their existing same-major compatibility policy until their
-/// independent cutovers.
+/// Host, Mount, Mount FUSE, Storage, Network, Ownership, and SourceProvider have
+/// single exact baselines. SourceProvider's baseline is 1.0, Mount's is 2.0,
+/// and the distinct Mount FUSE domain is 3.0. Other domains retain their
+/// existing same-major compatibility policy until their independent cutovers.
 ///
 /// # Errors
 ///
@@ -476,6 +478,7 @@ pub fn negotiate_protocol(
         protocol,
         ProtocolId::HostBroker
             | ProtocolId::MountBroker
+            | ProtocolId::MountFuseBroker
             | ProtocolId::StorageBroker
             | ProtocolId::NetworkBroker
             | ProtocolId::OwnershipAuthority
@@ -504,6 +507,7 @@ pub const fn supported_protocol_version(protocol: ProtocolId) -> ProtocolVersion
     match protocol {
         ProtocolId::HostBroker => ProtocolVersion::new(1, 0),
         ProtocolId::MountBroker => ProtocolVersion::new(2, 0),
+        ProtocolId::MountFuseBroker => ProtocolVersion::new(3, 0),
         ProtocolId::StorageBroker => ProtocolVersion::new(1, 0),
         ProtocolId::NetworkBroker => ProtocolVersion::new(1, 0),
         ProtocolId::OwnershipAuthority => ProtocolVersion::new(1, 0),
@@ -695,6 +699,24 @@ mod tests {
                 Err(RegistryError::IncompatibleProtocol { .. })
             ));
         }
+        assert_eq!(
+            negotiate_protocol(ProtocolId::MountFuseBroker, ProtocolVersion::new(3, 0)),
+            Ok(ProtocolVersion::new(3, 0))
+        );
+        for version in [
+            ProtocolVersion::new(2, 0),
+            ProtocolVersion::new(3, 1),
+            ProtocolVersion::new(4, 0),
+        ] {
+            assert!(matches!(
+                negotiate_protocol(ProtocolId::MountFuseBroker, version),
+                Err(RegistryError::IncompatibleProtocol { .. })
+            ));
+        }
+        assert!(matches!(
+            negotiate_protocol(ProtocolId::MountBroker, ProtocolVersion::new(3, 0)),
+            Err(RegistryError::IncompatibleProtocol { .. })
+        ));
         assert_eq!(
             negotiate_protocol(ProtocolId::HostBroker, ProtocolVersion::new(1, 0)),
             Ok(ProtocolVersion::new(1, 0))

@@ -112,13 +112,14 @@ fn advance(
         return Ok(());
     }
 
-    if let Some(attempt) = attempt {
+    let (observation, preissue, mismatched_reply) = if let Some(attempt) = attempt {
+        let preissue = attempt.source().preissue().clone();
         revalidate_historical_execution_preissue_source_v1(
             controller,
             &assignment,
             &mut environment,
             &parent,
-            attempt.source().preissue(),
+            &preissue,
             &mut clock,
         )
         .map_err(|error| retryable(error.to_string()))?;
@@ -139,27 +140,12 @@ fn advance(
             None => host.query_execution_output(controller, &attempt, signer)?,
         };
         drop(sessions);
-        if !observation.matches(execution, operation) {
-            return Err(retryable(
-                "another execution owns the retained Host output reply",
-            ));
-        }
-        revalidate_historical_execution_preissue_source_v1(
-            controller,
-            &assignment,
-            &mut environment,
-            &parent,
-            attempt.source().preissue(),
-            &mut clock,
+
+        (
+            observation,
+            preissue,
+            retryable("another execution owns the retained Host output reply"),
         )
-        .map_err(|error| retryable(error.to_string()))?;
-        let settlement = observation
-            .settle(controller, &assignment, &mut clock)
-            .map_err(|error| retryable(error.to_string()))?;
-        if settlement.is_none() {
-            return Err(retryable("original Host output attempt is not committed"));
-        }
-        Ok(())
     } else {
         let preissue = preissue_accepted_execution_source_v1(
             controller,
@@ -196,28 +182,35 @@ fn advance(
             )
         })?;
         drop(sessions);
-        if !observation.matches(execution, operation) {
-            return Err(EffectFailure::Permanent(
+
+        (
+            observation,
+            preissue,
+            EffectFailure::Permanent(
                 "Host output reply differs from the accepted Create".to_owned(),
-            ));
-        }
-        revalidate_historical_execution_preissue_source_v1(
-            controller,
-            &assignment,
-            &mut environment,
-            &parent,
-            &preissue,
-            &mut clock,
+            ),
         )
-        .map_err(|error| retryable(error.to_string()))?;
-        let settlement = observation
-            .settle(controller, &assignment, &mut clock)
-            .map_err(|error| retryable(error.to_string()))?;
-        if settlement.is_none() {
-            return Err(retryable("original Host output attempt is not committed"));
-        }
-        Ok(())
+    };
+
+    if !observation.matches(execution, operation) {
+        return Err(mismatched_reply);
     }
+    revalidate_historical_execution_preissue_source_v1(
+        controller,
+        &assignment,
+        &mut environment,
+        &parent,
+        &preissue,
+        &mut clock,
+    )
+    .map_err(|error| retryable(error.to_string()))?;
+    let settlement = observation
+        .settle(controller, &assignment, &mut clock)
+        .map_err(|error| retryable(error.to_string()))?;
+    if settlement.is_none() {
+        return Err(retryable("original Host output attempt is not committed"));
+    }
+    Ok(())
 }
 
 fn accepted_target(

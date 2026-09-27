@@ -228,6 +228,7 @@ fn protocol_code(protocol: ProtocolId) -> u64 {
         | ProtocolId::CoordinatorNode
         | ProtocolId::OwnershipAuthority
         | ProtocolId::SourceProvider
+        | ProtocolId::MountFuseBroker
         | ProtocolId::GuestAgent => unreachable!("broker plans use only broker protocols"),
     }
 }
@@ -463,6 +464,9 @@ mod tests {
             BrokerVerb::StoragePrepareCatalog,
             BrokerVerb::StorageRepairWorkspacePin,
             BrokerVerb::StorageReserveExecutionCapture,
+            BrokerVerb::StorageReserveExecutionOutput,
+            BrokerVerb::StorageQueryExecutionOutput,
+            BrokerVerb::HostObserveStorageOutput,
             BrokerVerb::StorageQueryExecutionCapture,
             BrokerVerb::StorageCaptureCandidateReadback,
             BrokerVerb::NetworkPrepare,
@@ -504,6 +508,9 @@ mod tests {
                 | BrokerVerb::StorageInventory
                 | BrokerVerb::StoragePrepareCatalog
                 | BrokerVerb::StorageReserveExecutionCapture
+                | BrokerVerb::StorageReserveExecutionOutput
+                | BrokerVerb::StorageQueryExecutionOutput
+                | BrokerVerb::HostObserveStorageOutput
                 | BrokerVerb::StorageQueryExecutionCapture
                 | BrokerVerb::StorageCaptureCandidateReadback
                 | BrokerVerb::NetworkPrepare

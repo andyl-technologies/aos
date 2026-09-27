@@ -2,6 +2,13 @@
 
 use std::collections::BTreeMap;
 
+use super::project_authorization_store_v2::{
+    HEAD_PREFIX as PROJECT_AUTH_HEAD_PREFIX, ROW_PREFIX as PROJECT_AUTH_ROW_PREFIX,
+    RetainedProjectAuthorizationHeadV2, decode_head as decode_project_auth_head,
+    decode_row as decode_project_auth_row, head_key as project_auth_head_key,
+    project_auth_row_digest, row_key as project_auth_row_key, validate_historical_row,
+    validate_rows_and_heads,
+};
 use super::*;
 
 pub(super) fn validate_policy_resources(
@@ -63,6 +70,10 @@ pub(super) fn validate_namespace(
     let mut revocations: BTreeMap<RevocationScopeId, Chain> = BTreeMap::new();
     let mut revocation_heads: BTreeMap<RevocationScopeId, u64> = BTreeMap::new();
     let mut project_revocations: BTreeMap<ProjectId, RevocationScopeId> = BTreeMap::new();
+    let mut project_auth_rows: BTreeMap<ProjectId, BTreeMap<u64, ([u8; 16], ObjectDigest)>> =
+        BTreeMap::new();
+    let mut project_auth_heads: BTreeMap<ProjectId, RetainedProjectAuthorizationHeadV2> =
+        BTreeMap::new();
     for (key, value) in journal.records(RecordNamespace::PublisherPolicy) {
         records = records
             .checked_add(1)
@@ -150,6 +161,31 @@ pub(super) fn validate_namespace(
             {
                 return Err(PublisherPolicyError::CorruptState);
             }
+        } else if key.starts_with(PROJECT_AUTH_ROW_PREFIX)
+            && key.len() == PROJECT_AUTH_ROW_PREFIX.len() + 32
+        {
+            let row = decode_project_auth_row(value)?;
+            if key != project_auth_row_key(row.project, row.request_id) {
+                return Err(PublisherPolicyError::CorruptState);
+            }
+            validate_historical_row(journal, &row)?;
+            if project_auth_rows
+                .entry(row.project)
+                .or_default()
+                .insert(row.epoch, (row.request_id, project_auth_row_digest(value)))
+                .is_some()
+            {
+                return Err(PublisherPolicyError::CorruptState);
+            }
+        } else if key.starts_with(PROJECT_AUTH_HEAD_PREFIX)
+            && key.len() == PROJECT_AUTH_HEAD_PREFIX.len() + 16
+        {
+            let head = decode_project_auth_head(value)?;
+            if key != project_auth_head_key(head.project)
+                || project_auth_heads.insert(head.project, head).is_some()
+            {
+                return Err(PublisherPolicyError::CorruptState);
+            }
         } else {
             return Err(PublisherPolicyError::CorruptState);
         }
@@ -195,5 +231,6 @@ pub(super) fn validate_namespace(
     }) {
         return Err(PublisherPolicyError::CorruptState);
     }
+    validate_rows_and_heads(&project_auth_rows, &project_auth_heads)?;
     Ok((records, total))
 }

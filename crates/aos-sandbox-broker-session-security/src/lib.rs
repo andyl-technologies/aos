@@ -20,6 +20,8 @@
 //! executable, service identity, protected state, and systemd confinement.
 //! [`cache_signer_exchange`] owns a separate Cache-only, nonauthorizing signer
 //! transport whose seed never enters the Controller or root process.
+//! [`source_signer_exchange`] owns the corresponding Source-only readback
+//! transport over the signer's private read-only journal view.
 //!
 //! Broker-side execution reserves the authenticated request durably before
 //! issuing a move-only domain handoff. Concrete Host, Storage, Mount, and
@@ -53,14 +55,15 @@ mod cache_public_pin;
 mod cache_signer_credential;
 pub mod cache_signer_exchange;
 mod cache_source_membership;
-mod controller_authority_effect;
-mod controller_attach_credentials;
-mod controller_cache_readback_credential;
-mod controller_guest_root_credentials;
-mod controller_attach_exchange;
 mod controller_argument_exchange;
+mod controller_attach_credentials;
+mod controller_attach_exchange;
+mod controller_authority_effect;
+mod controller_cache_readback_credential;
 mod controller_capture_candidate_exchange;
+mod controller_guest_root_credentials;
 mod controller_hold_credential;
+mod controller_no_apply_exchange;
 mod controller_output_exchange;
 mod controller_ownership;
 mod controller_plan_signer;
@@ -76,15 +79,18 @@ mod handoff;
 mod handshake;
 mod host_consumer_cgroup_transfer;
 mod host_execution_handoff;
+mod host_mount_scope_identity_transfer;
 mod lifecycle_domain_effect;
 mod lifecycle_host_inventory;
-pub mod policy_authority_client;
-pub mod policy_cache_readback_client;
-pub mod policy_binding_barrier;
 pub mod manifest;
 pub mod ownership_authority_client;
 pub mod ownership_authority_runtime;
 pub mod ownership_authority_server;
+pub mod policy_authority_client;
+pub mod policy_binding_barrier;
+pub mod policy_cache_readback_client;
+pub mod policy_root_ack_client;
+pub mod policy_root_ack_v8_client;
 pub mod policy_signer_credential;
 mod production_activation;
 mod production_dispatch;
@@ -92,8 +98,8 @@ mod production_receive;
 mod production_response;
 mod production_root_mount_source_provider;
 mod production_service;
-mod production_source_provider_catalog;
 mod production_source_provider;
+mod production_source_provider_catalog;
 mod production_source_provider_storage;
 #[allow(
     dead_code,
@@ -106,8 +112,14 @@ mod recovery;
     reason = "sealed handshake boot access stays unreachable until P0-10"
 )]
 mod self_execution;
+mod source_signer_credential;
+pub mod source_signer_exchange;
 mod storage_create_preparation;
 mod storage_host_consumer_client;
+mod storage_host_output_readback;
+
+#[cfg(test)]
+mod test_signed_endpoint;
 
 pub use cache_directory_source::{
     DirectoryPortableObjectSource, PortableObjectReader, ProjectSealedViewObjectSourceV1,
@@ -151,13 +163,13 @@ pub use dormant_handshake::{
     DormantCommittedBrokerDescriptorResponseV1, DormantControllerClientHandshakeProgressV1,
     DormantControllerClientHandshakeV1, DormantHostCatalogPublicationRecoveryProgressV1,
     DormantHostCatalogPublicationRetryV1, DormantHostCatalogPublicationUnknownV1,
-    DormantHostConsumerCgroupResponseProgressV1, DormantHostScopeTerminalFinalizationV1,
-    DormantMountSourceBrokerRecoveryProgressV1, DormantMountSourceBrokerRecoveryV1,
-    DormantOutstandingBrokerRequestV1, DormantPreparedBrokerDescriptorRequestV1,
-    DormantPreparedBrokerRequestV1, DormantReadyBrokerDescriptorTerminalReplayV1,
-    DormantReceivedBrokerDescriptorRequestV1, DormantReceivedBrokerRequestV1,
-    DormantUnconfirmedBrokerDescriptorRequestV1, DormantUnconfirmedBrokerRequestV1,
-    DormantUnconfirmedReceivedBrokerRequestV1,
+    DormantHostConsumerCgroupResponseProgressV1, DormantHostMountScopeIdentityResponseProgressV1,
+    DormantHostScopeTerminalFinalizationV1, DormantMountSourceBrokerRecoveryProgressV1,
+    DormantMountSourceBrokerRecoveryV1, DormantOutstandingBrokerRequestV1,
+    DormantPreparedBrokerDescriptorRequestV1, DormantPreparedBrokerRequestV1,
+    DormantReadyBrokerDescriptorTerminalReplayV1, DormantReceivedBrokerDescriptorRequestV1,
+    DormantReceivedBrokerRequestV1, DormantUnconfirmedBrokerDescriptorRequestV1,
+    DormantUnconfirmedBrokerRequestV1, DormantUnconfirmedReceivedBrokerRequestV1,
 };
 pub use endpoint::{
     BrokerSessionProcessExecutionIdV1, FreshBrokerHelloNonceV1, FreshClientHelloNonceV1,
@@ -180,6 +192,10 @@ pub use host_consumer_cgroup_transfer::{
     ProtectedHostStorageConsumerJoinErrorV1, ProtectedHostStorageConsumerJoinV1,
 };
 pub use host_execution_handoff::HostExecutionHandoffErrorV1;
+pub use host_mount_scope_identity_transfer::{
+    ProtectedHostMountScopeCurrentV1, ProtectedHostMountScopeIdentityTransferV1,
+    ProtectedHostMountScopeIdentityV1,
+};
 pub use lifecycle_domain_effect::{
     DormantLifecycleDomainEffectOwnerV1, DormantLifecycleDomainEffectProgressV1,
     DormantLifecycleDomainEffectRecoveryV1,
@@ -244,4 +260,7 @@ pub use recovery::{
 pub use storage_create_preparation::AuthenticatedStorageCreatePreparationV1;
 pub use storage_host_consumer_client::{
     StorageHostConsumerClientErrorV1, StorageHostConsumerClientV1,
+};
+pub use storage_host_output_readback::{
+    ProtectedHostStorageOutputCurrentV1, ProtectedHostStorageOutputReadbackV1,
 };

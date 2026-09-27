@@ -93,10 +93,16 @@ let
       # gcc-stage2 into its runtime closure via Nix's reference scanner.
       if [ -z "''${dontStrip:-}" ]; then
         echo "stripping..."
+        archive_strip_flags=-S
+        case "$(${stripCommand} --help 2>&1 || true)" in
+          *--enable-deterministic-archives*) archive_strip_flags='-D -S' ;;
+        esac
         find "$out" -type f \( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \) \
           -exec chmod u+w {} \; -exec ${stripCommand} --strip-unneeded {} \; 2>/dev/null || true
+        # Use deterministic headers where strip supports them; older bootstrap
+        # tools still need their original archive-strip operation.
         find "$out" -type f -name '*.a' \
-          -exec chmod u+w {} \; -exec ${stripCommand} -S {} \; 2>/dev/null || true
+          -exec chmod u+w {} \; -exec ${stripCommand} $archive_strip_flags {} \; 2>/dev/null || true
         if [ -d "$out/bin" ]; then
           find "$out/bin" -type f \
             -exec chmod u+w {} \; -exec ${stripCommand} -s {} \; 2>/dev/null || true
@@ -428,7 +434,9 @@ in rec {
         script =
           ''
             export GOPATH="$TMPDIR/go"
-            export GOCACHE="$TMPDIR/go-cache"
+            # mkDerivation supplies the shared path in development builds;
+            # ordinary builds keep their private temporary compilation cache.
+            export GOCACHE="''${GOCACHE:-$TMPDIR/go-cache}"
             export GOFLAGS="-trimpath"
             export CGO_ENABLED=${
               if cgoEnabled
@@ -514,6 +522,8 @@ in rec {
   cargoPhases = {
     cargoDeps,
     cargoArtifacts ? null,
+    cargoSourceId ? null,
+    cargoCacheLock ? null,
     cargoRoot ? ".",
     cargoEnv ? {},
     cargoBuildCommands ? [],
@@ -597,7 +607,41 @@ in rec {
         name = "configure";
         script = ''
           export CARGO_HOME="$TMPDIR/cargo"
-          export CARGO_INCREMENTAL=0
+          if [ -n "''${CARGO_TARGET_DIR:-}" ]; then
+            ${
+            if cargoSourceId == null
+            then ''
+              mkdir -p "$CARGO_TARGET_DIR"
+            ''
+            else ''
+              # Coordinate target creation with aos-dev pruning. The parent
+              # lock is held only while acquiring this tree's source lock;
+              # unrelated packages can compile concurrently.
+              while :; do
+                exec 8>"$(dirname "$CARGO_TARGET_DIR")/.aos-cache.lock"
+                ${cargoCacheLock}/bin/flock 8
+                mkdir -p "$CARGO_TARGET_DIR"
+                exec 9>"$CARGO_TARGET_DIR/.aos-source.lock"
+                if ${cargoCacheLock}/bin/flock -n 9; then
+                  ${cargoCacheLock}/bin/flock -u 8
+                  exec 8>&-
+                  break
+                fi
+                exec 9>&-
+                ${cargoCacheLock}/bin/flock -u 8
+                exec 8>&-
+                sleep 1
+              done
+            ''
+          }
+            # The top-level mtime is the target tree's last-use marker for
+            # aos-dev cache pruning. It does not enter package outputs.
+            touch "$CARGO_TARGET_DIR"
+          fi
+          # Release and qualification builds retain the ordinary disabled
+          # setting; aos-dev can enable incremental units independently of
+          # the persistent target directory.
+          export CARGO_INCREMENTAL="''${CARGO_INCREMENTAL:-0}"
           if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
             export CARGO_BUILD_TARGET="$AOS_RUST_TARGET"
           fi
@@ -617,6 +661,20 @@ in rec {
           if [ "${cargoRoot}" != "." ]; then
             cd "${cargoRoot}"
           fi
+          ${
+            if cargoSourceId == null
+            then ""
+            else ''
+              # Nix normalizes copied source mtimes. A changed source can
+              # otherwise look older than Cargo's previous fingerprint and
+              # be incorrectly reported Fresh. The configure phase holds the
+              # source lock through all following build phases.
+              if [ ! -f "$CARGO_TARGET_DIR/.aos-source-id" ] || \
+                  [ "$(cat "$CARGO_TARGET_DIR/.aos-source-id")" != "${cargoSourceId}" ]; then
+                find . -path ./target -prune -o -type f -exec touch {} +
+              fi
+            ''
+          }
           if [ -n "${
             if cargoArtifacts == null
             then ""
@@ -644,6 +702,15 @@ in rec {
           cargoBuildLogPart="$cargoBuildLog.part"
           : > "$cargoBuildLog"
           ${loggedBuildCommands}
+          ${
+            if cargoSourceId == null
+            then ""
+            else ''
+              # A failed or interrupted build must not claim that the new
+              # source was compiled. The next attempt will touch it again.
+              printf '%s\n' '${cargoSourceId}' > "$CARGO_TARGET_DIR/.aos-source-id"
+            ''
+          }
         '';
       }
     ]
@@ -1044,6 +1111,11 @@ in rec {
         }
                   export PATH="${toolsPath}:${jdk}/bin:${bazel}/bin:$PATH"
                   export CMAKE_POLICY_VERSION_MINIMUM=3.5
+                  if [ -n "''${AOS_BAZEL_DISK_CACHE:-}" ]; then
+                    echo "build --disk_cache=$AOS_BAZEL_DISK_CACHE" >> .bazelrc
+                    echo "build --experimental_disk_cache_gc_max_size=50G" >> .bazelrc
+                    echo "build --experimental_disk_cache_gc_max_age=14d" >> .bazelrc
+                  fi
 
                   # Unset C_INCLUDE_PATH to prevent #include_next breakage
                   unset C_INCLUDE_PATH CPATH CPLUS_INCLUDE_PATH

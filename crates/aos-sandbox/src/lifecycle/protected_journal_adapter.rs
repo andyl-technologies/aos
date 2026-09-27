@@ -23,6 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::path::Path;
 use std::sync::Arc;
 
 use aos_sandbox_core::ObjectDigest;
@@ -31,7 +32,7 @@ use sha2::{Digest as _, Sha256};
 use crate::journal::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
     GlobalCapacityReservationRequestV1, GlobalCapacityReservationV1, Journal, JournalError,
-    JournalRecord, JournalTransaction, PreparedGlobalCapacityReservationV1,
+    JournalLimits, JournalRecord, JournalTransaction, PreparedGlobalCapacityReservationV1,
     ProtectedJournalPreflight, RecordNamespace, capacity_reservation_identity_is_exact_v1,
 };
 
@@ -1885,10 +1886,43 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         &mut self,
         prepared: PreparedDomainTransactionV1<S>,
     ) -> Result<DomainCommitOutcomeV1<S>, ProtectedDomainJournalErrorV1> {
+        self.commit_with_check(prepared, |_| Ok(()))
+    }
+
+    /// Commits with an independently configured protected-name check at both
+    /// sides of the durability boundary. Post-commit name loss is ambiguous.
+    pub(crate) fn commit_at_named_location(
+        &mut self,
+        prepared: PreparedDomainTransactionV1<S>,
+        directory: &Path,
+        name: &str,
+        expected_uid: u32,
+        limits: JournalLimits,
+    ) -> Result<DomainCommitOutcomeV1<S>, ProtectedDomainJournalErrorV1> {
+        self.commit_with_check(prepared, |journal| {
+            journal.require_protected_named_location(directory, name, expected_uid, limits)
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn commit_with_test_check(
+        &mut self,
+        prepared: PreparedDomainTransactionV1<S>,
+        check: impl FnMut(&Journal) -> Result<(), JournalError>,
+    ) -> Result<DomainCommitOutcomeV1<S>, ProtectedDomainJournalErrorV1> {
+        self.commit_with_check(prepared, check)
+    }
+
+    fn commit_with_check(
+        &mut self,
+        prepared: PreparedDomainTransactionV1<S>,
+        mut check: impl FnMut(&Journal) -> Result<(), JournalError>,
+    ) -> Result<DomainCommitOutcomeV1<S>, ProtectedDomainJournalErrorV1> {
         self.validate_snapshot(&prepared.snapshot)?;
         validate_expected_values(self.journal, &prepared, false)?;
         self.journal
             .preflight_transactions(std::slice::from_ref(&prepared.transaction))?;
+        check(self.journal)?;
         if let Err(cause) = self.journal.commit(&prepared.transaction) {
             return Ok(DomainCommitOutcomeV1::OutcomeUnknown {
                 pending: DomainOutcomeUnknownV1 { prepared },
@@ -1899,6 +1933,12 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
             return Ok(DomainCommitOutcomeV1::OutcomeUnknown {
                 pending: DomainOutcomeUnknownV1 { prepared },
                 cause: JournalError::AuthorityPreflightMismatch,
+            });
+        }
+        if let Err(cause) = check(self.journal) {
+            return Ok(DomainCommitOutcomeV1::OutcomeUnknown {
+                pending: DomainOutcomeUnknownV1 { prepared },
+                cause,
             });
         }
         self.applied(prepared).map(DomainCommitOutcomeV1::Applied)

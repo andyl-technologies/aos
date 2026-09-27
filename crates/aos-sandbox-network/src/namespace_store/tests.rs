@@ -1,15 +1,10 @@
 #![allow(clippy::unwrap_used)]
 
 use std::collections::VecDeque;
-use std::io::Read as _;
-use std::os::unix::net::UnixListener;
-use std::sync::{Mutex, mpsc};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::Mutex;
 
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 
-use super::systemd::SystemdStoreInspector;
 use super::*;
 
 #[derive(Default)]
@@ -88,66 +83,6 @@ fn current_network_namespace() -> NamespaceFd {
     )
     .unwrap();
     NamespaceFd::from_owned(descriptor, NamespaceKind::Network).unwrap()
-}
-
-#[test]
-fn inspector_startup_fails_cleanly_outside_a_tokio_runtime() {
-    let directory = tempfile::tempdir().unwrap();
-    let address = format!(
-        "unix:path={}",
-        directory.path().join("missing-system-bus.sock").display()
-    );
-
-    match SystemdStoreInspector::connect_to_address(&address, Duration::from_secs(1)) {
-        Err(NetworkNamespaceStoreError::Systemd(message)) => {
-            assert!(message.contains("system bus connection failed"));
-        }
-        Err(error) => panic!("unexpected inspector error: {error}"),
-        Ok(_) => panic!("missing system bus unexpectedly accepted"),
-    }
-}
-
-#[test]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "This deadline regression observes duration but never persists it."
-)]
-fn inspector_cancels_a_stalled_handshake_and_joins_its_worker() {
-    let directory = tempfile::tempdir().unwrap();
-    let socket_path = directory.path().join("stalled-system-bus.sock");
-    let listener = UnixListener::bind(&socket_path).unwrap();
-    let (eof_sender, eof_receiver) = mpsc::sync_channel(1);
-    let peer = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-
-        let mut buffer = [0_u8; 256];
-        loop {
-            match stream.read(&mut buffer) {
-                Ok(0) => {
-                    eof_sender.send(()).unwrap();
-                    break;
-                }
-                Ok(_) => {}
-                Err(error) => panic!("stalled peer did not observe EOF: {error}"),
-            }
-        }
-    });
-    let address = format!("unix:path={}", socket_path.display());
-    let started = Instant::now();
-
-    match SystemdStoreInspector::connect_to_address(&address, Duration::from_millis(100)) {
-        Err(NetworkNamespaceStoreError::Systemd(message)) => {
-            assert!(message.contains("connection exceeded its deadline"));
-        }
-        Err(error) => panic!("unexpected inspector error: {error}"),
-        Ok(_) => panic!("stalled system bus handshake unexpectedly completed"),
-    }
-    assert!(started.elapsed() < Duration::from_secs(2));
-    eof_receiver.recv_timeout(Duration::from_secs(2)).unwrap();
-    peer.join().unwrap();
 }
 
 fn configured_listener() -> (tempfile::TempDir, RecordSubjectListener) {

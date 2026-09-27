@@ -1,9 +1,11 @@
 //! Scoped Linux FUSE transport for immutable filesystem metadata.
 //!
 //! [`run_metadata`] consumes one prepared connection while borrowing its index,
-//! presentation, scratch, and descriptors. The synchronous AOS C transport owns
-//! kernel parsing and reply publication; Rust owns metadata decisions and handle
-//! state. File data and extended attributes remain disabled in the installed profile.
+//! presentation, scratch, and descriptors. [`run_protected_metadata_candidate`] connects
+//! protected Mount qualification to that runner and owns the connected descriptor
+//! through terminal return. The synchronous AOS C transport owns kernel parsing
+//! and reply publication; Rust owns metadata decisions and handle state. File
+//! data and extended attributes remain disabled in the installed profile.
 //! The private ABI and callback modules contain the audited pointer boundary.
 //! Internal callback reducers define the dormant typed OPEN/READ/RELEASE
 //! sequencing contract for a later ABI revision; they are not installed in the
@@ -22,11 +24,12 @@
 #![cfg(target_os = "linux")]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use std::os::fd::{AsRawFd, BorrowedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 
 use aos_filesystem_view::{
-    InitRequest, MetadataConnection, MetadataTransportError, MetadataTransportLimits, ReplyScratch,
-    RequestBudget, TeardownSummary, WorkerError,
+    DirectoryHandleLimits, DormantFilesystemWorkerPreparation, InitRequest, InodeTableLimits,
+    MetadataConnection, MetadataTransportError, MetadataTransportLimits, ReplyScratch,
+    RequestBudget, TeardownSummary, WorkerError, WorkerLimits,
 };
 
 mod abi;
@@ -143,6 +146,87 @@ pub enum RunError {
     /// The C transport returned a terminal operating-system error.
     #[error("FUSE transport failed: {0}")]
     Transport(#[source] std::io::Error),
+}
+
+/// Reports protected worker construction or terminal kernel-session failure.
+#[derive(Debug, thiserror::Error)]
+pub enum ProtectedCandidateRunError {
+    /// Bounded worker or reply storage could not be constructed.
+    #[error("qualified FUSE worker admission failed: {0}")]
+    Worker(#[from] WorkerError),
+    /// The bounded metadata transport rejected or lost the connection.
+    #[error("qualified FUSE metadata transport failed: {0}")]
+    Run(#[from] RunError),
+}
+
+/// Runs one protected metadata worker candidate on an owned FUSE descriptor.
+///
+/// The preparation can only be obtained after exact protected Mount outcome
+/// admission and currentness readback. The current Mount protocol does not bind
+/// the supplied descriptor to that outcome. This candidate is therefore not
+/// production mount authority and cannot publish `ViewsReady`. A future broker
+/// handoff must transfer the sole connected `/dev/fuse` descriptor for the same
+/// attachment and retain mount teardown custody.
+///
+/// The C transport verifies the device identity and descriptor flags, installs
+/// only the bounded metadata callbacks, and qualifies kernel INIT before
+/// dispatch. This function closes its owned descriptor on every return path,
+/// including failures before transport entry. Closing the descriptor is not
+/// a substitute for broker-owned mount detach and inventory reconciliation.
+///
+/// `cancellation` must be a distinct, nonblocking readable descriptor. The
+/// broker must ensure that no other reader or independently retained duplicate
+/// dispatches requests from this connection.
+///
+/// # Errors
+///
+/// Returns [`ProtectedCandidateRunError::Worker`] if bounded worker construction
+/// fails, or [`ProtectedCandidateRunError::Run`] for transport admission or
+/// session failure.
+#[allow(clippy::too_many_arguments)]
+pub fn run_protected_metadata_candidate(
+    preparation: &DormantFilesystemWorkerPreparation<'_, '_, '_, '_, '_, '_, '_>,
+    connected: OwnedFd,
+    cancellation: BorrowedFd<'_>,
+    inode_limits: InodeTableLimits,
+    directory_limits: DirectoryHandleLimits,
+    worker_limits: WorkerLimits,
+    transport_limits: TransportLimits,
+    budget: RequestBudget,
+) -> Result<TeardownSummary, ProtectedCandidateRunError> {
+    let connection =
+        preparation.metadata_connection(inode_limits, directory_limits, worker_limits)?;
+    let mut scratch = ReplyScratch::new(worker_limits)?;
+    run_owned_with(
+        connection,
+        &mut scratch,
+        connected,
+        cancellation,
+        transport_limits,
+        budget,
+        abi::aos_fuse_transport_run,
+    )
+    .map_err(Into::into)
+}
+
+fn run_owned_with(
+    connection: MetadataConnection<'_, '_, '_, '_>,
+    scratch: &mut ReplyScratch,
+    connected: OwnedFd,
+    cancellation: BorrowedFd<'_>,
+    limits: TransportLimits,
+    budget: RequestBudget,
+    run: abi::Run,
+) -> Result<TeardownSummary, RunError> {
+    run_with(
+        connection,
+        scratch,
+        connected.as_fd(),
+        cancellation,
+        limits,
+        budget,
+        run,
+    )
 }
 
 /// Runs and discards one immutable metadata connection synchronously.

@@ -37,7 +37,6 @@
 //! ```
 //!
 //! ```text
-//! AOSRBV01 || manifest_fsverity_sha256[32]
 //! AOSRBM01 || peer[296] || currentness[176] || capabilities[52]
 //! || host_evidence[152] || plan_catalog[216] || manifest_digest[32]
 //! ```
@@ -66,22 +65,21 @@ use aos_sandbox_core::runtime_backend::{
     backend_evidence_authority_binding_v1, backend_execution_inspection_binding_v1,
 };
 use aos_sandbox_core::{
-    AssignmentEpoch, DecodeLimits, DesiredGeneration, ExecutionId, ExecutionRuntimeArgumentLimitV1,
-    IncarnationId, NamespaceGeneration, NodeId, ObjectDigest, ObservationSequence, OperationId,
-    PayloadBootId, Revision, SandboxId, decode_execution_spec_v1, execution_spec_digest_v1,
+    AssignmentEpoch, BrokerAssignment, DecodeLimits, DesiredGeneration, ExecutionId,
+    ExecutionRuntimeArgumentLimitV1, IncarnationId, NamespaceGeneration, NodeId, ObjectDigest,
+    ObservationSequence, OperationId, PayloadBootId, Revision, SandboxId, decode_execution_spec_v1,
+    execution_spec_digest_v1,
 };
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodRequestV1, AuthenticatedBrokerRequestDirectionV1,
 };
-use aos_sandbox_protocol::host_execution_no_apply::HostExecutionNoApplyRecordV1;
+use aos_sandbox_protocol::host_execution_no_apply::{
+    HostExecutionNoApplyRecordV1, HostNoApplySettlementPhaseV2,
+};
+use aos_sandbox_protocol::host_storage_output_readback::ValidatedHostStorageOutputReadbackRequestV1;
 use ed25519_dalek::{Signature, VerifyingKey};
 use rand::{TryRngCore as _, rngs::OsRng};
 use sha2::{Digest as _, Sha256};
-
-#[cfg(target_os = "linux")]
-use aos_sandbox_linux::immutable_file::{FsVerityDigest, FsVerityMapping, FsVerityPublicationRoot};
-#[cfg(target_os = "linux")]
-use aos_sandbox_linux::path::BeneathRoot;
 
 use super::agent_checkpoint::{AgentCheckpointCandidateV1, AgentCheckpointError};
 use super::agent_reducer::{
@@ -101,8 +99,9 @@ use crate::execution_output_reservation::{
 };
 use crate::execution_parent_resource::ExecutionParentResourceSourceV1;
 use crate::journal::{
-    GlobalCapacityReservationPurposeV1, Journal, JournalError, JournalLimits, JournalRecord,
-    JournalTransaction, ProtectedJournalAuthority, RecordNamespace,
+    GlobalCapacityReservationPurposeV1, HostCurrentnessFenceV1, HostExecutionFenceV1, Journal,
+    JournalError, JournalLimits, JournalRecord, JournalTransaction, ProtectedJournalAuthority,
+    RecordNamespace,
 };
 use crate::sandbox_spec_state;
 
@@ -112,6 +111,10 @@ use super::agent_store::{
 use super::argument_observation::ArgumentObservationRecordV1;
 use super::evidence::JournalExecutionCompletionV1;
 use super::host_output_source::VerifiedHostOutputReserveSourceV1;
+use super::no_apply_settlement::{
+    ControllerAssertedSettlementArchivesV1, HostObservedSettlementIdentityV1,
+    HostSettlementRecordV1, RECORD_BYTES as HOST_SETTLEMENT_RECORD_BYTES,
+};
 use super::recovery::{AppliedExecutionRecoveryV1, apply_execution_recovery_v1};
 use super::route_record::{
     ProtectedAgentRoutePeerV1, ProtectedAgentRouteRecordV1,
@@ -120,29 +123,36 @@ use super::route_record::{
 use super::store::{
     AuthenticatedJournalExecutionRecoveryV1 as JournalRecoveryV1, ExecutionJournalRecoveryTokenV1,
     HostNoApplyIdentityV1, JournalRuntimeExecutionError, JournalRuntimeExecutionStoreV1,
-    ProtectedExecutionAdmissionStateV1, ProtectedHostOutputReservationV1,
+    ProtectedExecutionAdmissionStateV1, ProtectedHostOutputReadbackV1,
+    ProtectedHostOutputReservationV1,
 };
 
+#[cfg(all(test, target_os = "linux"))]
+mod bootstrap_closed_tests;
+pub mod bootstrap_proof;
+pub(crate) mod host_currentness_fence;
+mod settlement_admission;
+#[cfg(all(
+    target_os = "linux",
+    any(test, all(feature = "test-fixtures", debug_assertions))
+))]
+mod test_fixture;
+
+pub use host_currentness_fence::HostEffectFenceRecoveryClaimV1;
+use host_currentness_fence::{load_host_currentness_fence_v1, validate_host_currentness_pair_v1};
+
 const HOST_STATE_ROOT: &str = "/var/lib/aos/sandbox-host";
-#[cfg(target_os = "linux")]
-const BOOTSTRAP_ROOT: &str = "/var/lib/aos/sandbox-host/bootstrap";
-#[cfg(target_os = "linux")]
-const BOOTSTRAP_MANIFEST_NAME: &str = "runtime-owner.records";
-#[cfg(target_os = "linux")]
-const BOOTSTRAP_VERITY_NAME: &str = "runtime-owner.records.verity";
-#[cfg(target_os = "linux")]
 const BOOTSTRAP_MANIFEST_MAGIC: &[u8; 8] = b"AOSRBM01";
-#[cfg(target_os = "linux")]
-const BOOTSTRAP_VERITY_MAGIC: &[u8; 8] = b"AOSRBV01";
 const PEER_JOURNAL_NAME: &str = "runtime-agent-peer.journal";
 const EXECUTION_JOURNAL_NAME: &str = "runtime-execution.journal";
 const AGENT_JOURNAL_NAME: &str = "runtime-agent-state.journal";
 const LIFECYCLE_JOURNAL_NAME: &str = "runtime-lifecycle.journal";
-const PEER_CURRENT_KEY: &[u8] = b"dormant-agent-peer-current-v1";
-const CURRENTNESS_KEY: &[u8] = b"runtime-execution-currentness-v1";
-const CAPABILITIES_KEY: &[u8] = b"runtime-backend-capabilities-v1";
-const HOST_EVIDENCE_KEY: &[u8] = b"runtime-host-evidence-v1";
-const PLAN_CATALOG_KEY: &[u8] = b"runtime-plan-catalog-v1";
+const PEER_CURRENT_KEY: &[u8] = crate::journal::host_currentness_fence::PEER_CURRENT_KEY;
+const CURRENTNESS_KEY: &[u8] = crate::journal::host_currentness_fence::CURRENTNESS_KEY;
+const CAPABILITIES_KEY: &[u8] = crate::journal::host_currentness_fence::CAPABILITIES_KEY;
+const HOST_EVIDENCE_KEY: &[u8] = crate::journal::host_currentness_fence::HOST_EVIDENCE_KEY;
+const PLAN_CATALOG_KEY: &[u8] = crate::journal::host_currentness_fence::PLAN_CATALOG_KEY;
+const HOST_CURRENTNESS_FENCE_KEY: &[u8] = crate::journal::host_currentness_fence::KEY;
 const PEER_MAGIC: &[u8; 8] = b"AOSHPE01";
 const CURRENTNESS_MAGIC: &[u8; 8] = b"AOSREC01";
 const PEER_BYTES: usize = 296;
@@ -153,10 +163,8 @@ const HOST_EVIDENCE_MAGIC: &[u8; 8] = b"AOSRHE01";
 const HOST_EVIDENCE_BYTES: usize = 152;
 const PLAN_CATALOG_MAGIC: &[u8; 8] = b"AOSRPL01";
 const PLAN_CATALOG_BYTES: usize = 216;
-#[cfg(target_os = "linux")]
 const BOOTSTRAP_RECORD_BYTES: usize =
     PEER_BYTES + CURRENTNESS_BYTES + CAPABILITIES_BYTES + HOST_EVIDENCE_BYTES + PLAN_CATALOG_BYTES;
-#[cfg(target_os = "linux")]
 const BOOTSTRAP_MANIFEST_BYTES: usize = 8 + BOOTSTRAP_RECORD_BYTES + 32;
 // Begin, five records, and Commit advance the protected snapshot by seven.
 const PEER_PROVISION_TRANSACTION_FRAME_COUNT: u64 = 7;
@@ -326,12 +334,6 @@ struct RuntimeOwnerPeerRecordsV1 {
     capabilities: Vec<u8>,
     host_evidence: Vec<u8>,
     plan_catalog: Vec<u8>,
-}
-
-/// Private one-shot authority issued only by the fixed authenticated manifest.
-#[cfg(target_os = "linux")]
-struct FixedRuntimeBootstrapAuthorityV1 {
-    records: RuntimeOwnerPeerRecordsV1,
 }
 
 #[derive(Clone, Copy)]
@@ -504,25 +506,21 @@ pub struct DormantRuntimeExecutionOwnerV1 {
 }
 
 impl DormantRuntimeExecutionOwnerV1 {
-    /// Bootstraps the empty fixed owner from its immutable authenticated manifest.
+    /// Rejects legacy fixed bootstrap until independent currentness is available.
     ///
-    /// This source-only entry point accepts no key, path, capability, plan, or
-    /// currentness scalar. The private one-shot authority is minted only after
-    /// protected-root and fs-verity validation of the fixed manifest, and it is
-    /// consumed by exactly one initial journal transaction.
+    /// The old manifest-sidecar path could not authenticate a Controller cut or
+    /// an externally monotonic deployment floor. The signed proof codec is
+    /// dormant; no production caller may write initial peer records from it
+    /// until a protected Controller currentness owner and journal replay join
+    /// are implemented.
     ///
     /// # Errors
     ///
-    /// Returns [`DormantRuntimeExecutionOwnerErrorV1`] when the manifest/root
-    /// is unavailable or unauthenticated, bootstrap was already consumed, or
-    /// exact atomic append recovery cannot classify the initial transaction.
+    /// Always returns
+    /// [`DormantRuntimeExecutionOwnerErrorV1::BootstrapProofRequired`].
     #[cfg(target_os = "linux")]
     pub fn bootstrap_fixed() -> Result<Self, DormantRuntimeExecutionOwnerErrorV1> {
-        let authority = open_fixed_runtime_bootstrap_authority()?;
-        let provisioner = DormantRuntimeExecutionProvisionerV1::open()?;
-        let transition = provisioner.provision_records(authority.records, false)?;
-        resolve_fixed_bootstrap_transition(transition)?;
-        Self::open()
+        Err(DormantRuntimeExecutionOwnerErrorV1::BootstrapProofRequired)
     }
 
     /// Opens the fixed root-owned journals without activating runtime dispatch.
@@ -541,6 +539,50 @@ impl DormantRuntimeExecutionOwnerV1 {
             Journal::open_protected_at(HOST_STATE_ROOT, AGENT_JOURNAL_NAME, limits)?;
         let (lifecycle_journal, _) =
             Journal::open_protected_at(HOST_STATE_ROOT, LIFECYCLE_JOURNAL_NAME, limits)?;
+
+        Ok(Self {
+            peer_journal,
+            execution_journal,
+            agent_journal,
+            lifecycle_journal,
+        })
+    }
+
+    /// Opens all four protected owner journals in a private test directory.
+    ///
+    /// This opener retains final-directory, file-owner, and journal replay
+    /// checks, but omits production root-ancestry validation. It is unavailable
+    /// in production builds and never provisions authority or creates a claim.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unsafe directory or journal, a held lock, or corrupt replay.
+    #[cfg(all(
+        target_os = "linux",
+        any(test, all(feature = "test-fixtures", debug_assertions))
+    ))]
+    #[doc(hidden)]
+    pub fn open_protected_at_uid_for_test(
+        directory: &Path,
+        expected_uid: u32,
+    ) -> Result<Self, DormantRuntimeExecutionOwnerErrorV1> {
+        let limits = JournalLimits::default();
+        let (peer_journal, _) =
+            Journal::open_protected_at_uid(directory, PEER_JOURNAL_NAME, limits, expected_uid)?;
+        let (execution_journal, _) = Journal::open_protected_at_uid(
+            directory,
+            EXECUTION_JOURNAL_NAME,
+            limits,
+            expected_uid,
+        )?;
+        let (agent_journal, _) =
+            Journal::open_protected_at_uid(directory, AGENT_JOURNAL_NAME, limits, expected_uid)?;
+        let (lifecycle_journal, _) = Journal::open_protected_at_uid(
+            directory,
+            LIFECYCLE_JOURNAL_NAME,
+            limits,
+            expected_uid,
+        )?;
 
         Ok(Self {
             peer_journal,
@@ -573,6 +615,7 @@ impl DormantRuntimeExecutionOwnerV1 {
         let peer_authority =
             peer_journal.claim_protected_authority(RecordNamespace::HostExecution)?;
         let protected_sequence = peer_authority.snapshot()?.sequence();
+        let peer_fence = load_host_currentness_fence_v1(&peer_authority, protected_sequence)?;
         let peer_record = peer_authority
             .get(PEER_CURRENT_KEY)?
             .ok_or(DormantRuntimeExecutionOwnerErrorV1::MissingCurrentness)?
@@ -599,18 +642,22 @@ impl DormantRuntimeExecutionOwnerV1 {
                 && key != CAPABILITIES_KEY
                 && key != HOST_EVIDENCE_KEY
                 && key != PLAN_CATALOG_KEY
+                && key != HOST_CURRENTNESS_FENCE_KEY
         }) {
             return Err(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness);
         }
 
         let resolved = resolve_currentness(
-            protected_sequence,
+            peer_fence.map_or(protected_sequence, |fence| fence.pre_hold_epoch),
             peer_record.as_slice(),
             currentness_record.as_slice(),
             capability_record.as_slice(),
             host_evidence_record.as_slice(),
             plan_record.as_slice(),
         )?;
+        if peer_fence.is_some_and(|fence| fence.store_binding != resolved.execution_store_binding) {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness);
+        }
         let admission_state = ProtectedExecutionAdmissionStateV1::new(&resolved.currentness);
         let execution = open_execution_store(
             execution_journal,
@@ -621,6 +668,12 @@ impl DormantRuntimeExecutionOwnerV1 {
                 resolved.agent_peer.channel_binding,
                 resolved.agent_peer.authority_binding,
             )?,
+            peer_fence.is_some(),
+        )?;
+        validate_host_currentness_pair_v1(
+            peer_fence,
+            execution.load_host_execution_fence_v1()?,
+            resolved.execution_store_binding,
         )?;
         let agent = open_agent_store(
             agent_journal,
@@ -641,6 +694,8 @@ impl DormantRuntimeExecutionOwnerV1 {
         Ok(DormantRuntimeExecutionClaimV1 {
             peer_authority,
             protected_sequence,
+            peer_fence,
+            execution_store_binding: resolved.execution_store_binding,
             peer_record,
             currentness_record,
             capability_record,
@@ -665,6 +720,8 @@ impl DormantRuntimeExecutionOwnerV1 {
 pub struct DormantRuntimeExecutionClaimV1<'owner> {
     peer_authority: ProtectedJournalAuthority<'owner>,
     protected_sequence: u64,
+    peer_fence: Option<HostCurrentnessFenceV1>,
+    execution_store_binding: ObjectDigest,
     peer_record: Vec<u8>,
     currentness_record: Vec<u8>,
     capability_record: Vec<u8>,
@@ -681,6 +738,84 @@ pub struct DormantRuntimeExecutionClaimV1<'owner> {
     lifecycle_head: LifecycleHeadV1,
     lifecycle_issue: Option<Vec<u8>>,
     lifecycle_terminals: BTreeMap<[u8; 16], Vec<u8>>,
+}
+
+/// Retains a protected historical Host settlement readback without a live lease.
+///
+/// The marker and ordered stage bytes were joined under one protected Host
+/// claim. They can support a signed read-only query, but do not attest that a
+/// Controller floor or CAS is current and do not permit another Host effect.
+pub struct ProtectedHostNoApplySettlementHistoryV1 {
+    marker: HostExecutionNoApplyRecordV1,
+    stages: [Option<[u8; HOST_SETTLEMENT_RECORD_BYTES]>; 3],
+}
+
+/// Names one digest-bearing protected Host cut while the writer claim is held.
+///
+/// The sequence and digest are replay coordinates, not a transferable lease.
+/// A caller must retain and revalidate the Host owner claim at the effect
+/// boundary, and a second owner must compare the signed exact coordinate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProtectedHostSettlementCutV1 {
+    epoch: u64,
+    digest: ObjectDigest,
+}
+
+/// Retains an exact preliminary Host record prepared under a held protected cut.
+///
+/// The H/T fields are Controller assertions. This value is not an append token,
+/// a transferable lease, or evidence that the Controller archive is current.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PreparedHostSettlementPreliminaryV1 {
+    canonical_record: [u8; HOST_SETTLEMENT_RECORD_BYTES],
+    cut: ProtectedHostSettlementCutV1,
+}
+
+impl PreparedHostSettlementPreliminaryV1 {
+    /// Returns the canonical, uncommitted AOSCHL01 preliminary record.
+    #[must_use]
+    pub const fn canonical_record(&self) -> &[u8; HOST_SETTLEMENT_RECORD_BYTES] {
+        &self.canonical_record
+    }
+
+    /// Returns the exact protected cut used to prepare the record.
+    #[must_use]
+    pub const fn cut(&self) -> ProtectedHostSettlementCutV1 {
+        self.cut
+    }
+}
+
+impl ProtectedHostSettlementCutV1 {
+    /// Returns the protected journal sequence at which the cut was measured.
+    #[must_use]
+    pub const fn epoch(self) -> u64 {
+        self.epoch
+    }
+
+    /// Returns the domain-separated digest of the exact protected Effect replay.
+    #[must_use]
+    pub const fn digest(self) -> ObjectDigest {
+        self.digest
+    }
+}
+
+impl ProtectedHostNoApplySettlementHistoryV1 {
+    /// Returns the exact protected method-39 no-Apply marker.
+    #[must_use]
+    pub const fn marker(&self) -> HostExecutionNoApplyRecordV1 {
+        self.marker
+    }
+
+    /// Borrows the canonical bytes of a retained Host settlement stage, if any.
+    #[must_use]
+    pub fn stage_bytes(&self, phase: HostNoApplySettlementPhaseV2) -> Option<&[u8]> {
+        let index = match phase {
+            HostNoApplySettlementPhaseV2::Preliminary => 0,
+            HostNoApplySettlementPhaseV2::FloorSealed => 1,
+            HostNoApplySettlementPhaseV2::AckRetained => 2,
+        };
+        self.stages[index].as_ref().map(|bytes| bytes.as_slice())
+    }
 }
 
 /// Holds a v2-only output claim read back under the protected execution owner.
@@ -1576,6 +1711,40 @@ impl DormantRuntimeExecutionClaimV1<'_> {
                 host_boot_id,
             )
             .map_err(Into::into)
+    }
+
+    /// Reads the exact protected Host output pair for a Storage-audience query.
+    ///
+    /// The parsed Controller records are structural, not an issuance proof.
+    /// A future Host responder must separately verify its Controller Host plan
+    /// and sign this observation in the Storage-owned authenticated session.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale Host owner, assignment or boot, absent original pair, or
+    /// any difference from AOSCIA01/AOSCIS01 plan and correlation fields.
+    pub fn read_host_output_for_storage_v1(
+        &self,
+        request: &ValidatedHostStorageOutputReadbackRequestV1,
+    ) -> Result<ProtectedHostOutputReadbackV1, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        let current = self.currentness().runtime().currentness();
+        let assignment = BrokerAssignment::new(
+            current.sandbox(),
+            current.incarnation(),
+            current.assignment_epoch(),
+            current.desired_generation(),
+            current.assignment_digest(),
+        )
+        .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+        if assignment != request.records().assignment()
+            || self.host_verifier().boot_id() != request.records().host_locator().host_boot_id()
+        {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::AcceptedOutputClaimMismatch);
+        }
+        let readback = self.execution.read_host_output_for_storage_v1(request)?;
+        self.validate_current()?;
+        Ok(readback)
     }
 
     /// Resolves the exact Host-held AOSEOR02/AOSHOP01 pair for one argument attempt.
@@ -2490,6 +2659,298 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         Ok(Some(record))
     }
 
+    /// Reads the complete protected Host settlement chain for one original attempt.
+    ///
+    /// This is historical readback only. The caller must separately verify the
+    /// signed method-39 custody, Controller floor/CAS, and current held Host
+    /// lease before using any stage as cross-owner settlement evidence.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale Host currentness, a foreign original attempt, or any
+    /// malformed, orphaned, or nonconsecutive protected settlement stage.
+    pub fn query_host_settlement_history_v1(
+        &self,
+        source: &ControllerExecutionArgumentAttemptV1,
+        original_session_binding: [u8; 32],
+        original_signed_request_digest: [u8; 32],
+    ) -> Result<Option<ProtectedHostNoApplySettlementHistoryV1>, DormantRuntimeExecutionOwnerErrorV1>
+    {
+        let Some(marker) = self.query_host_no_apply_v1(
+            source,
+            original_session_binding,
+            original_signed_request_digest,
+        )?
+        else {
+            if self
+                .execution
+                .has_host_settlement_stages_v1(source.execution())?
+            {
+                return Err(JournalRuntimeExecutionError::CorruptRecord.into());
+            }
+            self.validate_current()?;
+            return Ok(None);
+        };
+
+        let stages = self
+            .execution
+            .load_host_settlement_history_v1(source.execution())?;
+        self.validate_current()?;
+
+        Ok(Some(ProtectedHostNoApplySettlementHistoryV1 {
+            marker,
+            stages: stages.map(|record| record.map(HostSettlementRecordV1::encode_canonical)),
+        }))
+    }
+
+    /// Measures the exact protected Host Effect cut under the current claim.
+    ///
+    /// This readback can label a future no-Apply lease, but it does not itself
+    /// retain a lock or authorize a Controller CAS after the claim is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale protected currentness, malformed replay, or an unavailable
+    /// fixed Host journal.
+    pub fn protected_host_settlement_cut_v1(
+        &self,
+    ) -> Result<ProtectedHostSettlementCutV1, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        let (epoch, digest) = self.execution.protected_host_settlement_cut_v1()?;
+        self.validate_current()?;
+        Ok(ProtectedHostSettlementCutV1 { epoch, digest })
+    }
+
+    /// Runs a bounded action without releasing the protected Host writer claim.
+    ///
+    /// The action receives only an Effect-cut coordinate. Both the protected
+    /// Host currentness and exact Effect cut are checked again before any
+    /// successful result is returned. The action must itself bound any socket
+    /// wait; a copied coordinate or completed callback is not a transferable
+    /// Host lease, Controller floor, or two-owner barrier. If the postcheck
+    /// fails, a sent request or durable write remains outcome-unknown and
+    /// requires cold exact-request recovery, never a new challenge.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale owner currentness, an Effect-cut change during the
+    /// action, an unavailable protected journal, or the action's own error.
+    pub fn with_held_host_settlement_cut_v1<T, E>(
+        &mut self,
+        action: impl FnOnce(ProtectedHostSettlementCutV1) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<DormantRuntimeExecutionOwnerErrorV1>,
+    {
+        self.validate_current().map_err(E::from)?;
+        let result = self
+            .execution
+            .with_held_host_settlement_cut_v1(|_, (epoch, digest)| {
+                Ok(action(ProtectedHostSettlementCutV1 { epoch, digest }))
+            })
+            .map_err(DormantRuntimeExecutionOwnerErrorV1::from)
+            .map_err(E::from)?;
+        self.validate_current().map_err(E::from)?;
+        result
+    }
+
+    /// Prepares, without appending, one preliminary Host no-Apply settlement stage.
+    ///
+    /// The protected marker and absent stage history are re-read under this
+    /// claim. The H/T digests remain Controller assertions until its separate
+    /// protected archive owner reauthenticates them and the cross-owner lease
+    /// is qualified. The returned bytes cannot be committed by this method.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale custody, a foreign marker, a conflicting prior stage,
+    /// malformed asserted coordinates, or a cut that changed during preparation.
+    #[allow(
+        dead_code,
+        reason = "signed cross-owner stage admission remains closed"
+    )]
+    pub fn prepare_host_settlement_preliminary_v1(
+        &self,
+        marker: HostExecutionNoApplyRecordV1,
+        handoff_digest: ObjectDigest,
+        original_h_head: ObjectDigest,
+        signed_terminal_outcome: ObjectDigest,
+        session_binding: [u8; 32],
+        challenge: [u8; 16],
+    ) -> Result<PreparedHostSettlementPreliminaryV1, DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        let execution = ExecutionId::from_bytes(marker.fields().execution_id);
+        if self.execution.load_host_no_apply_v1(execution)? != Some(marker)
+            || self
+                .execution
+                .load_host_settlement_history_v1(execution)?
+                .iter()
+                .any(Option::is_some)
+        {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness);
+        }
+
+        let cut = self.protected_host_settlement_cut_v1()?;
+        let sequence = self.execution.next_host_settlement_sequence_v1(cut.epoch)?;
+        let observed =
+            HostObservedSettlementIdentityV1::from_marker_and_handoff(marker, handoff_digest)
+                .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+        let archives =
+            ControllerAssertedSettlementArchivesV1::new(original_h_head, signed_terminal_outcome)
+                .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+        let record = HostSettlementRecordV1::preliminary(
+            observed,
+            archives,
+            cut.epoch,
+            cut.digest,
+            session_binding,
+            challenge,
+            sequence,
+        )
+        .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+        if self.protected_host_settlement_cut_v1()? != cut {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness);
+        }
+        Ok(PreparedHostSettlementPreliminaryV1 {
+            canonical_record: record.encode_canonical(),
+            cut,
+        })
+    }
+
+    /// Commits a prepared preliminary coordinate while its Host writer claim is held.
+    ///
+    /// This commits no Controller disposition and grants no Host Apply. The
+    /// caller must have authenticated the Controller's request and must retain
+    /// this claim from preparation through the append. A failed append has an
+    /// unknown outcome and requires a cold protected readback of the original
+    /// request; the prepared value cannot be retried under a new claim.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed Host cut, marker, or stage history, a forged prepared
+    /// record, stale Host currentness, or uncertain journal durability.
+    pub fn commit_host_settlement_preliminary_v1(
+        &mut self,
+        prepared: PreparedHostSettlementPreliminaryV1,
+    ) -> Result<[u8; HOST_SETTLEMENT_RECORD_BYTES], DormantRuntimeExecutionOwnerErrorV1> {
+        self.validate_current()?;
+        let record = HostSettlementRecordV1::decode_canonical(&prepared.canonical_record)
+            .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+        self.execution.commit_host_settlement_preliminary_v1(
+            record,
+            prepared.cut.epoch,
+            prepared.cut.digest,
+        )?;
+        self.validate_current()
+            .map_err(|_| JournalRuntimeExecutionError::SettlementOutcomeUnknown)?;
+        if self
+            .execution
+            .load_host_settlement_history_v1(record.execution)
+            .map_err(|_| JournalRuntimeExecutionError::SettlementOutcomeUnknown)?
+            != [Some(record), None, None]
+        {
+            return Err(JournalRuntimeExecutionError::SettlementOutcomeUnknown.into());
+        }
+        Ok(record.encode_canonical())
+    }
+
+    /// Rejoins a cold-recovered preliminary stage to one exact original request.
+    ///
+    /// A matching return value is historical custody only. It does not revive
+    /// the writer cut that preceded the append or authorize Controller's CAS.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed marker, handoff, Controller assertion, session, or
+    /// challenge, as well as malformed or orphaned protected Host history.
+    pub fn match_host_settlement_preliminary_v1(
+        &self,
+        source: &ControllerExecutionArgumentAttemptV1,
+        original_session_binding: [u8; 32],
+        original_signed_request_digest: [u8; 32],
+        handoff_digest: ObjectDigest,
+        original_h_head: ObjectDigest,
+        signed_terminal_outcome: ObjectDigest,
+        settlement_session_binding: [u8; 32],
+        challenge: [u8; 16],
+    ) -> Result<Option<[u8; HOST_SETTLEMENT_RECORD_BYTES]>, DormantRuntimeExecutionOwnerErrorV1>
+    {
+        let Some(history) = self.query_host_settlement_history_v1(
+            source,
+            original_session_binding,
+            original_signed_request_digest,
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(bytes) = history.stage_bytes(HostNoApplySettlementPhaseV2::Preliminary) else {
+            return Ok(None);
+        };
+        let preliminary = HostSettlementRecordV1::decode_canonical(bytes)
+            .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+
+        if !preliminary.matches_preliminary_source(
+            history.marker(),
+            handoff_digest,
+            original_h_head,
+            signed_terminal_outcome,
+            settlement_session_binding,
+            challenge,
+        ) {
+            return Err(DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness);
+        }
+        self.validate_current()?;
+        Ok(Some(preliminary.encode_canonical()))
+    }
+
+    /// Quarantines Host Effect after rejoining one exact preliminary request.
+    ///
+    /// This retains the HostState and Effect writer claims through the append.
+    /// H/T remain Controller assertions until an independently authenticated
+    /// two-owner continuation proves their current archive custody. The paired
+    /// Effect and HostState holds are permanent in this version and grant no
+    /// Floor seal or Apply.
+    ///
+    /// # Errors
+    ///
+    /// Rejects foreign original-request or handoff identities, stale Host
+    /// currentness or Effect cut, a non-preliminary history, or uncertain
+    /// durability. An outcome-unknown append requires cold exact readback.
+    #[allow(dead_code, reason = "two-owner continuation remains closed")]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn acquire_host_execution_fence_v1(
+        &mut self,
+        source: &ControllerExecutionArgumentAttemptV1,
+        original_session_binding: [u8; 32],
+        original_signed_request_digest: [u8; 32],
+        handoff_digest: ObjectDigest,
+        original_h_head: ObjectDigest,
+        signed_terminal_outcome: ObjectDigest,
+        settlement_session_binding: [u8; 32],
+        challenge: [u8; 16],
+    ) -> Result<HostExecutionFenceV1, DormantRuntimeExecutionOwnerErrorV1> {
+        let bytes = self
+            .match_host_settlement_preliminary_v1(
+                source,
+                original_session_binding,
+                original_signed_request_digest,
+                handoff_digest,
+                original_h_head,
+                signed_terminal_outcome,
+                settlement_session_binding,
+                challenge,
+            )?
+            .ok_or(DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness)?;
+        let preliminary = HostSettlementRecordV1::decode_canonical(&bytes)
+            .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::MalformedCurrentness)?;
+        let cut = self.protected_host_settlement_cut_v1()?;
+        let fence =
+            self.execution
+                .acquire_host_execution_fence_v1(preliminary, cut.epoch, cut.digest)?;
+        self.commit_host_currentness_fence_after_effect_v1(fence)?;
+        Ok(fence)
+    }
+
     /// Rejects an argument execution with a protected terminal no-Apply marker.
     ///
     /// Absence is not a send grant. Callers must separately validate the exact
@@ -3020,6 +3481,10 @@ impl DormantRuntimeExecutionClaimV1<'_> {
     }
 
     fn validate_current(&self) -> Result<(), DormantRuntimeExecutionOwnerErrorV1> {
+        let peer_fence_bytes = self
+            .peer_fence
+            .map(HostCurrentnessFenceV1::encode)
+            .transpose()?;
         if self.peer_authority.snapshot()?.sequence() != self.protected_sequence
             || self.peer_authority.get(PEER_CURRENT_KEY)? != Some(self.peer_record.as_slice())
             || self.peer_authority.get(CURRENTNESS_KEY)? != Some(self.currentness_record.as_slice())
@@ -3027,6 +3492,8 @@ impl DormantRuntimeExecutionClaimV1<'_> {
             || self.peer_authority.get(HOST_EVIDENCE_KEY)?
                 != Some(self.host_evidence_record.as_slice())
             || self.peer_authority.get(PLAN_CATALOG_KEY)? != Some(self.plan_record.as_slice())
+            || self.peer_authority.get(HOST_CURRENTNESS_FENCE_KEY)?
+                != peer_fence_bytes.as_ref().map(|bytes| bytes.as_slice())
             || self.lifecycle_authority.get(LIFECYCLE_HEAD_KEY)?
                 != Some(encode_lifecycle_head(self.lifecycle_head).as_slice())
             || self.lifecycle_authority.get(LIFECYCLE_ISSUE_KEY)? != self.lifecycle_issue.as_deref()
@@ -3034,6 +3501,11 @@ impl DormantRuntimeExecutionClaimV1<'_> {
         {
             return Err(DormantRuntimeExecutionOwnerErrorV1::StaleCurrentness);
         }
+        validate_host_currentness_pair_v1(
+            self.peer_fence,
+            self.execution.load_host_execution_fence_v1()?,
+            self.execution_store_binding,
+        )?;
         Ok(())
     }
 
@@ -3734,6 +4206,7 @@ fn open_execution_store<'journal>(
     store_binding: ObjectDigest,
     admission_state: ProtectedExecutionAdmissionStateV1,
     agent_peer: ProtectedAgentRoutePeerV1,
+    require_existing: bool,
 ) -> Result<JournalRuntimeExecutionStoreV1<'journal>, JournalRuntimeExecutionError> {
     let empty = {
         let authority = journal.claim_global_capacity_reservation_authority(
@@ -3742,6 +4215,10 @@ fn open_execution_store<'journal>(
         authority.is_materialized_empty()?
     };
     if empty {
+        // A retained HostState hold must not initialize a rolled-back Effect store.
+        if require_existing {
+            return Err(JournalRuntimeExecutionError::UninitializedStore);
+        }
         JournalRuntimeExecutionStoreV1::initialize(
             journal,
             store_binding,
@@ -4369,118 +4846,6 @@ fn hash_parts(domain: &[u8], parts: &[&[u8]]) -> ObjectDigest {
     ObjectDigest::from_bytes(digest.finalize().into())
 }
 
-#[cfg(target_os = "linux")]
-fn open_fixed_runtime_bootstrap_authority()
--> Result<FixedRuntimeBootstrapAuthorityV1, DormantRuntimeExecutionOwnerErrorV1> {
-    let protected_root =
-        FsVerityPublicationRoot::from_protected_absolute_path(Path::new(BOOTSTRAP_ROOT))?;
-    let root = rustix::fs::open(
-        BOOTSTRAP_ROOT,
-        rustix::fs::OFlags::RDONLY
-            | rustix::fs::OFlags::DIRECTORY
-            | rustix::fs::OFlags::NOFOLLOW
-            | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    )?;
-    let root_stat = rustix::fs::fstat(&root)?;
-    if root_stat.st_dev != protected_root.device() || root_stat.st_ino != protected_root.inode() {
-        return Err(DormantRuntimeExecutionOwnerErrorV1::BootstrapManifest);
-    }
-    let root = BeneathRoot::from_owned(rustix::io::dup(&root)?)?;
-    let expected_verity = read_fixed_runtime_bootstrap_verity(&root)?;
-    let records = FsVerityMapping::run_beneath(
-        &root,
-        Path::new(BOOTSTRAP_MANIFEST_NAME),
-        FsVerityDigest::Sha256(expected_verity),
-        BOOTSTRAP_MANIFEST_BYTES as u64,
-        BOOTSTRAP_MANIFEST_BYTES as u64,
-        decode_fixed_runtime_bootstrap_manifest,
-    )??;
-    if read_fixed_runtime_bootstrap_verity(&root)? != expected_verity {
-        return Err(DormantRuntimeExecutionOwnerErrorV1::BootstrapManifest);
-    }
-    protected_root.recheck_protected_path()?;
-    Ok(FixedRuntimeBootstrapAuthorityV1 { records })
-}
-
-#[cfg(target_os = "linux")]
-fn read_fixed_runtime_bootstrap_verity(
-    root: &BeneathRoot,
-) -> Result<[u8; 32], DormantRuntimeExecutionOwnerErrorV1> {
-    let verity = root
-        .open_regular(Path::new(BOOTSTRAP_VERITY_NAME))?
-        .read_bounded(40)?;
-    if verity.len() != 40 || &verity[..8] != BOOTSTRAP_VERITY_MAGIC {
-        return Err(DormantRuntimeExecutionOwnerErrorV1::BootstrapManifest);
-    }
-    verity[8..]
-        .try_into()
-        .map_err(|_| DormantRuntimeExecutionOwnerErrorV1::BootstrapManifest)
-}
-
-#[cfg(target_os = "linux")]
-fn decode_fixed_runtime_bootstrap_manifest(
-    bytes: &[u8],
-    _identity: aos_sandbox_linux::immutable_file::ImmutableFileIdentity<'_>,
-) -> Result<RuntimeOwnerPeerRecordsV1, DormantRuntimeExecutionOwnerErrorV1> {
-    if bytes.len() != BOOTSTRAP_MANIFEST_BYTES || &bytes[..8] != BOOTSTRAP_MANIFEST_MAGIC {
-        return Err(DormantRuntimeExecutionOwnerErrorV1::BootstrapManifest);
-    }
-    let checksum_offset = BOOTSTRAP_MANIFEST_BYTES - 32;
-    if digest(&bytes[..checksum_offset]).as_bytes() != &bytes[checksum_offset..] {
-        return Err(DormantRuntimeExecutionOwnerErrorV1::BootstrapManifest);
-    }
-
-    let mut cursor = 8;
-    let peer = bytes[cursor..cursor + PEER_BYTES].to_vec();
-    cursor += PEER_BYTES;
-    let currentness = bytes[cursor..cursor + CURRENTNESS_BYTES].to_vec();
-    cursor += CURRENTNESS_BYTES;
-    let capabilities = bytes[cursor..cursor + CAPABILITIES_BYTES].to_vec();
-    cursor += CAPABILITIES_BYTES;
-    let host_evidence = bytes[cursor..cursor + HOST_EVIDENCE_BYTES].to_vec();
-    cursor += HOST_EVIDENCE_BYTES;
-    let plan_catalog = bytes[cursor..cursor + PLAN_CATALOG_BYTES].to_vec();
-    cursor += PLAN_CATALOG_BYTES;
-    if cursor != checksum_offset {
-        return Err(DormantRuntimeExecutionOwnerErrorV1::BootstrapManifest);
-    }
-
-    Ok(RuntimeOwnerPeerRecordsV1 {
-        peer,
-        currentness,
-        capabilities,
-        host_evidence,
-        plan_catalog,
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn resolve_fixed_bootstrap_transition(
-    transition: DormantRuntimeExecutionProvisioningTransitionV1,
-) -> Result<(), DormantRuntimeExecutionOwnerErrorV1> {
-    let recovery = match transition {
-        DormantRuntimeExecutionProvisioningTransitionV1::Committed(_) => return Ok(()),
-        DormantRuntimeExecutionProvisioningTransitionV1::RecoveryRequired(recovery) => recovery,
-    };
-    let retry = match recovery.recover()? {
-        DormantRuntimeExecutionProvisioningRecoveryOutcomeV1::Committed(_) => return Ok(()),
-        DormantRuntimeExecutionProvisioningRecoveryOutcomeV1::Absent(retry) => retry,
-    };
-    let provisioner = DormantRuntimeExecutionProvisionerV1::open()?;
-    let retried = provisioner.provision_records(retry.records, false)?;
-    let recovery = match retried {
-        DormantRuntimeExecutionProvisioningTransitionV1::Committed(_) => return Ok(()),
-        DormantRuntimeExecutionProvisioningTransitionV1::RecoveryRequired(recovery) => recovery,
-    };
-    match recovery.recover()? {
-        DormantRuntimeExecutionProvisioningRecoveryOutcomeV1::Committed(_) => Ok(()),
-        DormantRuntimeExecutionProvisioningRecoveryOutcomeV1::Absent(_) => {
-            Err(DormantRuntimeExecutionOwnerErrorV1::BootstrapOutcomeUnknown)
-        }
-    }
-}
-
 fn digest(bytes: &[u8]) -> ObjectDigest {
     ObjectDigest::from_bytes(Sha256::digest(bytes).into())
 }
@@ -4526,6 +4891,9 @@ fn same_owner_and_accepted_output_v2(
 /// Reports fixed-root runtime execution ownership and replay failure.
 #[derive(Debug, thiserror::Error)]
 pub enum DormantRuntimeExecutionOwnerErrorV1 {
+    /// Independent signed proof and Controller currentness are not joined.
+    #[error("runtime execution bootstrap requires independent signed proof and currentness")]
+    BootstrapProofRequired,
     /// The fixed immutable bootstrap manifest/root is absent or unauthenticated.
     #[cfg(target_os = "linux")]
     #[error("runtime execution bootstrap manifest is invalid")]
@@ -4597,6 +4965,10 @@ pub enum DormantRuntimeExecutionOwnerErrorV1 {
 #[cfg(test)]
 mod accepted_output_currentness_tests {
     use super::*;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use ed25519_dalek::SigningKey;
+    use tempfile::TempDir;
 
     fn fixed_currentness(resource_ledger: u8, authority_context: u8) -> AdmissionCurrentnessV1 {
         let runtime = RuntimeCurrentnessV1::new(
@@ -4645,6 +5017,46 @@ mod accepted_output_currentness_tests {
             stream_limits: Some((0, 0)),
             record_digest: ObjectDigest::from_bytes([19; 32]),
         }
+    }
+
+    #[test]
+    fn retained_hoststate_hold_never_initializes_empty_effect_store() {
+        let directory = TempDir::new_in(std::env::current_dir().expect("current directory"))
+            .expect("test directory");
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let uid = directory.path().metadata().expect("metadata").uid();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "empty-effect.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("empty Effect journal");
+        let peer = ProtectedAgentRoutePeerV1::new(
+            SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes(),
+            ObjectDigest::from_bytes([8; 32]),
+            ObjectDigest::from_bytes([9; 32]),
+        )
+        .expect("fixed peer");
+
+        assert!(matches!(
+            open_execution_store(
+                &mut journal,
+                ObjectDigest::from_bytes([1; 32]),
+                ProtectedExecutionAdmissionStateV1::new(&fixed_currentness(20, 21)),
+                peer,
+                true,
+            ),
+            Err(JournalRuntimeExecutionError::UninitializedStore)
+        ));
+        assert!(
+            journal
+                .claim_protected_authority(RecordNamespace::Effect)
+                .expect("Effect authority")
+                .is_materialized_empty()
+                .expect("still empty")
+        );
     }
 
     #[test]
@@ -4725,5 +5137,56 @@ mod accepted_output_currentness_tests {
                 Err(DormantRuntimeExecutionOwnerErrorV1::AcceptedOutputClaimMismatch)
             ));
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod protected_owner_test_opener_tests {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn private_owner_opener_replays_four_journals_without_minting_a_claim() {
+        let directory = TempDir::new_in(std::env::current_dir().expect("current directory"))
+            .expect("test directory");
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let uid = directory.path().metadata().expect("metadata").uid();
+
+        let mut owner =
+            DormantRuntimeExecutionOwnerV1::open_protected_at_uid_for_test(directory.path(), uid)
+                .expect("four protected journals");
+        assert!(matches!(
+            owner.claim(),
+            Err(DormantRuntimeExecutionOwnerErrorV1::MissingCurrentness)
+        ));
+        drop(owner);
+
+        let mut cold =
+            DormantRuntimeExecutionOwnerV1::open_protected_at_uid_for_test(directory.path(), uid)
+                .expect("cold replay of four protected journals");
+        assert!(matches!(
+            cold.claim(),
+            Err(DormantRuntimeExecutionOwnerErrorV1::MissingCurrentness)
+        ));
+        drop(cold);
+
+        assert!(
+            DormantRuntimeExecutionOwnerV1::open_protected_at_uid_for_test(
+                directory.path(),
+                uid.wrapping_add(1),
+            )
+            .is_err()
+        );
+
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("make directory unsafe");
+        assert!(
+            DormantRuntimeExecutionOwnerV1::open_protected_at_uid_for_test(directory.path(), uid)
+                .is_err()
+        );
     }
 }

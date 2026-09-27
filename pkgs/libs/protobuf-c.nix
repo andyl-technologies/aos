@@ -5,6 +5,7 @@
   gnumake,
   pkg-config,
   protobuf,
+  buildPackages,
   abseil-cpp,
   zlib,
 }: let
@@ -21,7 +22,8 @@ in
       hash = "sha256-4shicYc6eckrWP736/jeGqDfRzg0eovV1OZagKFtDSQ=";
     };
 
-    buildDeps = [gnumake pkg-config protobuf];
+    # protoc generates target sources on the build machine during cross builds.
+    buildDeps = [gnumake pkg-config protobuf buildPackages.protobuf];
     # protoc-gen-c links Abseil directly through libprotoc. Keep the dependency
     # explicit so reference scrubbing preserves its runtime search path.
     runtimeDeps = [protobuf abseil-cpp zlib];
@@ -49,7 +51,7 @@ in
             --prefix="$out" \
             --enable-shared \
             --enable-static \
-            PROTOC="${protobuf}/bin/protoc"
+            PROTOC="${buildPackages.protobuf}/bin/protoc"
         '';
       }
       {

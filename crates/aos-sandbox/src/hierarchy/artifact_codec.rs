@@ -910,7 +910,10 @@ fn decode_publication(
     let intent =
         aos_sandbox_core::decode_attachment_intent_v1(intent_bytes, DecodeLimits::default())
             .map_err(|_| HierarchyArtifactCodecError::NonCanonical)?;
-    if aos_sandbox_core::encode_attachment_intent_v1(&intent) != intent_bytes {
+    if aos_sandbox_core::encode_attachment_intent_v1(&intent)
+        .map_err(|_| HierarchyArtifactCodecError::NonCanonical)?
+        != intent_bytes
+    {
         return Err(HierarchyArtifactCodecError::NonCanonical);
     }
     let consumer_node = NodeId::from_bytes(cursor.take::<16>()?);
@@ -1058,7 +1061,8 @@ fn encode_publication(
     writer: &mut ArtifactWriter,
     publication: &AttachmentRealizationV1,
 ) -> Result<(), HierarchyArtifactCodecError> {
-    let intent = aos_sandbox_core::encode_attachment_intent_v1(publication.intent());
+    let intent = aos_sandbox_core::encode_attachment_intent_v1(publication.intent())
+        .map_err(|_| HierarchyArtifactCodecError::NonCanonical)?;
     writer.length_prefixed(&intent)?;
     writer.bytes(publication.consumer_node().as_bytes())?;
     writer.u64(publication.assignment_epoch().get())?;

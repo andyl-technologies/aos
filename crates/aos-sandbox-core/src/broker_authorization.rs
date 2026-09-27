@@ -181,6 +181,12 @@ pub enum BrokerVerb {
     StoragePopulateGuestRoot,
     /// Reserves one exact accepted execution-output capture attempt.
     StorageReserveExecutionCapture,
+    /// Reserves the original accepted logical execution-output row.
+    StorageReserveExecutionOutput,
+    /// Queries the exact original logical execution-output reserve attempt.
+    StorageQueryExecutionOutput,
+    /// Reads the original Host output claim for Storage under a fresh session.
+    HostObserveStorageOutput,
     /// Reads one exact prior execution-output capture attempt without reissuing it.
     StorageQueryExecutionCapture,
     /// Reads a current Storage-owned capture candidate without reserving an effect.
@@ -262,6 +268,9 @@ impl BrokerVerb {
             50 => Ok(Self::StorageCaptureCandidateReadback),
             51 => Ok(Self::HostTerminalNoApply),
             52 => Ok(Self::HostQueryNoApply),
+            53 => Ok(Self::StorageReserveExecutionOutput),
+            54 => Ok(Self::StorageQueryExecutionOutput),
+            55 => Ok(Self::HostObserveStorageOutput),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -322,6 +331,9 @@ impl BrokerVerb {
             Self::StorageCaptureCandidateReadback => 50,
             Self::HostTerminalNoApply => 51,
             Self::HostQueryNoApply => 52,
+            Self::StorageReserveExecutionOutput => 53,
+            Self::StorageQueryExecutionOutput => 54,
+            Self::HostObserveStorageOutput => 55,
         }
     }
 
@@ -347,6 +359,7 @@ impl BrokerVerb {
             | Self::HostInstallAttachGate
             | Self::HostQueryAttachGateReadiness
             | Self::HostQueryAttachGateRoute => BrokerAudience::Host,
+            Self::HostObserveStorageOutput => BrokerAudience::Host,
             Self::MountCreate
             | Self::MountInstall
             | Self::MountReplace
@@ -372,6 +385,8 @@ impl BrokerVerb {
             | Self::StorageAtomicSnapshot
             | Self::StoragePopulateGuestRoot
             | Self::StorageReserveExecutionCapture
+            | Self::StorageReserveExecutionOutput
+            | Self::StorageQueryExecutionOutput
             | Self::StorageQueryExecutionCapture
             | Self::StorageCaptureCandidateReadback => BrokerAudience::Storage,
             Self::NetworkPrepare
@@ -396,6 +411,7 @@ impl BrokerVerb {
             | Self::HostQueryExecutionArgument
             | Self::HostTerminalNoApply
             | Self::HostQueryNoApply
+            | Self::HostObserveStorageOutput
             | Self::HostInstallAttachGate
             | Self::HostQueryAttachGateReadiness
             | Self::HostQueryAttachGateRoute
@@ -410,6 +426,8 @@ impl BrokerVerb {
             | Self::StorageAtomicSnapshot
             | Self::StoragePopulateGuestRoot
             | Self::StorageReserveExecutionCapture
+            | Self::StorageReserveExecutionOutput
+            | Self::StorageQueryExecutionOutput
             | Self::StorageQueryExecutionCapture
             | Self::StorageCaptureCandidateReadback
             | Self::NetworkPrepare
@@ -1403,6 +1421,41 @@ mod tests {
     }
 
     #[test]
+    fn legacy_mount_plan_cannot_be_rebound_to_fuse_protocol() {
+        let fixture = fixture();
+        let mut expectation = context(&fixture);
+        expectation.protocol = ProtocolId::MountFuseBroker;
+        expectation.protocol_version = ProtocolVersion::new(3, 0);
+        assert!(verify(&fixture, expectation).is_err());
+
+        let legacy_grant = BrokerGrant::new(
+            BrokerVerb::MountCreate,
+            BrokerGrantTarget::Assignment,
+            BrokerArgumentCommitment::from_digest(ObjectDigest::from_bytes([13; 32])).unwrap(),
+            4_096,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            BrokerAuthorizationPlan::new(
+                BrokerAudience::Mount,
+                ProtocolId::MountFuseBroker,
+                ProtocolVersion::new(3, 0),
+                fixture.context_assignment,
+                fixture.node,
+                fixture.ownership_authority,
+                vec![legacy_grant],
+                ObjectDigest::from_bytes([7; 32]),
+                RevocationScopeId::from_bytes([8; 16]),
+                100,
+                200,
+                Vec::new(),
+            ),
+            Err(InvalidBrokerAuthorizationPlan::ProtocolAudienceMismatch)
+        );
+    }
+
+    #[test]
     fn one_plan_can_commit_distinct_semantics_for_the_same_verb_and_target() {
         let fixture = fixture();
         let grant = |byte| {
@@ -1580,6 +1633,9 @@ mod tests {
             (50, BrokerVerb::StorageCaptureCandidateReadback),
             (51, BrokerVerb::HostTerminalNoApply),
             (52, BrokerVerb::HostQueryNoApply),
+            (53, BrokerVerb::StorageReserveExecutionOutput),
+            (54, BrokerVerb::StorageQueryExecutionOutput),
+            (55, BrokerVerb::HostObserveStorageOutput),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)
@@ -1588,7 +1644,7 @@ mod tests {
             assert_eq!(verb.get(), code);
         }
         assert_eq!(
-            BrokerVerb::from_code(53),
+            BrokerVerb::from_code(56),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
         );
         assert_eq!(
@@ -1713,6 +1769,9 @@ mod tests {
             BrokerVerb::StorageInventory,
             BrokerVerb::StoragePrepareCatalog,
             BrokerVerb::StorageReserveExecutionCapture,
+            BrokerVerb::StorageReserveExecutionOutput,
+            BrokerVerb::StorageQueryExecutionOutput,
+            BrokerVerb::HostObserveStorageOutput,
             BrokerVerb::StorageQueryExecutionCapture,
             BrokerVerb::StorageCaptureCandidateReadback,
             BrokerVerb::NetworkPrepare,

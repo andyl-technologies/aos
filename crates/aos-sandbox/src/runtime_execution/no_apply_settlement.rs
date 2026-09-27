@@ -19,14 +19,16 @@
 //! structural cold replay never revives a held lock, signer, or CAS permit.
 
 use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId};
-use aos_sandbox_protocol::host_execution_no_apply::HostExecutionNoApplyRecordV1;
+use aos_sandbox_protocol::host_execution_no_apply::{
+    HostExecutionNoApplyRecordV1, validate_host_no_apply_settlement_record_envelope_v1,
+};
 use sha2::{Digest as _, Sha256};
 
 const MAGIC: &[u8; 8] = b"AOSCHL01";
 const VERSION: u16 = 1;
 const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.host-create-failure-lease.v1\0";
 const HEAD_DOMAIN: &[u8] = b"aos.sandbox.host-create-failure-lease-head.v1\0";
-const RECORD_BYTES: usize = 396;
+pub(crate) const RECORD_BYTES: usize = 396;
 pub(crate) const KEY_PREFIX: u8 = b'l';
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -149,10 +151,48 @@ impl HostSettlementRecordV1 {
             controller_floor: None,
             controller_cas: None,
         };
-        if commit_sequence <= observed.marker_sequence || !record.valid() {
+        if epoch <= observed.marker_sequence
+            || !preliminary_sequence_matches_epoch(epoch, commit_sequence)
+            || !record.valid()
+        {
             return Err(HostSettlementRecordErrorV1);
         }
         Ok(record)
+    }
+
+    /// Matches a recovered stage to every input of its original signed request.
+    ///
+    /// This is an exact historical comparison, not a renewal of the pre-append
+    /// Host cut or a validation of Controller's protected archive.
+    pub(crate) fn matches_preliminary_source(
+        self,
+        marker: HostExecutionNoApplyRecordV1,
+        handoff_digest: ObjectDigest,
+        original_h_head: ObjectDigest,
+        signed_terminal_outcome: ObjectDigest,
+        session_binding: [u8; 32],
+        challenge: [u8; 16],
+    ) -> bool {
+        let Ok(observed) =
+            HostObservedSettlementIdentityV1::from_marker_and_handoff(marker, handoff_digest)
+        else {
+            return false;
+        };
+        let Ok(archives) =
+            ControllerAssertedSettlementArchivesV1::new(original_h_head, signed_terminal_outcome)
+        else {
+            return false;
+        };
+        Self::preliminary(
+            observed,
+            archives,
+            self.epoch,
+            self.pre_lease_cut,
+            session_binding,
+            challenge,
+            self.commit_sequence,
+        )
+        .is_ok_and(|expected| expected == self)
     }
 
     pub(crate) fn seal_floor(
@@ -198,6 +238,12 @@ impl HostSettlementRecordV1 {
     #[cfg(test)]
     pub(crate) fn with_test_controller_floor(mut self, floor: ObjectDigest) -> Self {
         self.controller_floor = Some(floor);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_controller_cas(mut self, cas: ObjectDigest) -> Self {
+        self.controller_cas = Some(cas);
         self
     }
 
@@ -261,20 +307,9 @@ impl HostSettlementRecordV1 {
     }
 
     pub(crate) fn decode_canonical(bytes: &[u8]) -> Result<Self, HostSettlementRecordErrorV1> {
-        if bytes.len() != RECORD_BYTES
-            || bytes.get(..8) != Some(MAGIC.as_slice())
-            || bytes[8..10] != VERSION.to_be_bytes()
-            || bytes[11] != 0
-            || Sha256::new()
-                .chain_update(CHECKSUM_DOMAIN)
-                .chain_update(&bytes[..RECORD_BYTES - 32])
-                .finalize()
-                .as_slice()
-                != &bytes[RECORD_BYTES - 32..]
-        {
-            return Err(HostSettlementRecordErrorV1);
-        }
-        let stage = HostSettlementStageV1::from_byte(bytes[10])?;
+        let stage = validate_host_no_apply_settlement_record_envelope_v1(bytes)
+            .map_err(|_| HostSettlementRecordErrorV1)
+            .and_then(HostSettlementStageV1::from_byte)?;
         let mut reader = Reader { bytes, offset: 12 };
         let execution = ExecutionId::from_bytes(reader.take::<16>()?);
         let operation = OperationId::from_bytes(reader.take::<16>()?);
@@ -366,6 +401,12 @@ fn marker_digest(marker: HostExecutionNoApplyRecordV1) -> ObjectDigest {
     ObjectDigest::from_bytes(Sha256::digest(marker.encode_canonical()).into())
 }
 
+fn preliminary_sequence_matches_epoch(epoch: u64, commit_sequence: u64) -> bool {
+    // A one-record Journal transaction has a begin, record, and commit frame.
+    // The snapshot epoch is the sequence of its next begin frame.
+    epoch.checked_add(2) == Some(commit_sequence)
+}
+
 struct Reader<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -428,7 +469,8 @@ pub(crate) fn validate_history(
         || preliminary.execution.as_bytes() != &marker.fields().execution_id
         || preliminary.operation.as_bytes() != &marker.fields().create_operation_id
         || preliminary.marker_digest != marker_digest(marker)
-        || preliminary.commit_sequence <= marker.fields().commit_sequence
+        || preliminary.epoch <= marker.fields().commit_sequence
+        || !preliminary_sequence_matches_epoch(preliminary.epoch, preliminary.commit_sequence)
         || preliminary.commit_sequence > protected_sequence
     {
         return Err(HostSettlementRecordErrorV1);
@@ -530,6 +572,31 @@ mod tests {
         assert!(
             validate_history(
                 marker,
+                Some(HostSettlementRecordV1 {
+                    epoch: preliminary.epoch + 1,
+                    ..preliminary
+                }),
+                None,
+                None,
+                19,
+            )
+            .is_err()
+        );
+        assert!(
+            HostSettlementRecordV1::preliminary(
+                observed,
+                archives,
+                marker.fields().commit_sequence,
+                ObjectDigest::from_bytes([17; 32]),
+                [18; 32],
+                [19; 16],
+                marker.fields().commit_sequence + 2,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_history(
+                marker,
                 Some(preliminary),
                 Some(floor.with_test_marker_digest(ObjectDigest::from_bytes([22; 32]))),
                 None,
@@ -556,5 +623,86 @@ mod tests {
             .finalize();
         corrupt[RECORD_BYTES - 32..].copy_from_slice(&checksum);
         assert!(HostSettlementRecordV1::decode_canonical(&corrupt).is_err());
+    }
+
+    #[test]
+    fn cold_preliminary_replay_requires_exact_signed_source_and_host_handoff() {
+        let marker = marker();
+        let handoff = ObjectDigest::from_bytes([14; 32]);
+        let h_head = ObjectDigest::from_bytes([15; 32]);
+        let terminal = ObjectDigest::from_bytes([16; 32]);
+        let session = [18; 32];
+        let challenge = [19; 16];
+        let observed = HostObservedSettlementIdentityV1::from_marker_and_handoff(marker, handoff)
+            .expect("Host marker and handoff");
+        let archives = ControllerAssertedSettlementArchivesV1::new(h_head, terminal)
+            .expect("Controller assertions");
+        let preliminary = HostSettlementRecordV1::preliminary(
+            observed,
+            archives,
+            11,
+            ObjectDigest::from_bytes([17; 32]),
+            session,
+            challenge,
+            13,
+        )
+        .expect("preliminary stage");
+
+        assert!(
+            preliminary
+                .matches_preliminary_source(marker, handoff, h_head, terminal, session, challenge,)
+        );
+        let mut foreign_fields = marker.fields();
+        foreign_fields.original_request_id = [22; 16];
+        let foreign_marker =
+            HostExecutionNoApplyRecordV1::new(foreign_fields).expect("foreign marker");
+        assert!(!preliminary.matches_preliminary_source(
+            foreign_marker,
+            handoff,
+            h_head,
+            terminal,
+            session,
+            challenge,
+        ));
+        for (marker, handoff, h_head, terminal, session, challenge) in [
+            (
+                marker,
+                ObjectDigest::from_bytes([22; 32]),
+                h_head,
+                terminal,
+                session,
+                challenge,
+            ),
+            (
+                marker,
+                handoff,
+                ObjectDigest::from_bytes([22; 32]),
+                terminal,
+                session,
+                challenge,
+            ),
+            (
+                marker,
+                handoff,
+                h_head,
+                ObjectDigest::from_bytes([22; 32]),
+                session,
+                challenge,
+            ),
+            (marker, handoff, h_head, terminal, [22; 32], challenge),
+            (marker, handoff, h_head, terminal, session, [22; 16]),
+        ] {
+            assert!(
+                !preliminary.matches_preliminary_source(
+                    marker, handoff, h_head, terminal, session, challenge,
+                )
+            );
+        }
+        assert!(
+            !preliminary
+                .seal_floor(ObjectDigest::from_bytes([20; 32]), 16)
+                .expect("sealed stage")
+                .matches_preliminary_source(marker, handoff, h_head, terminal, session, challenge)
+        );
     }
 }

@@ -542,11 +542,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
             BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION
             | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
             | BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS
-            | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE => self
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
+            | BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 => self
                 .execute_host_execution_and_commit(
                     request,
                     None,
@@ -588,7 +591,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 .map_err(ProductionHostBrokerDispatchFailureV1::Ordinary)
             }
             BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
-            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE => {
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+            | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1 => {
                 let Some(artifacts) = request.authorization_artifacts().cloned() else {
                     return Err(ProductionHostBrokerDispatchFailureV1::Ordinary(
                         before_effect_currentness(request),
@@ -1072,13 +1076,21 @@ mod execution_spec_content_tests {
         );
 
         let query_fields = HostExecutionSpecContentFieldsV1::for_grant(content)
-            .bind_query_attempt([5; 16], [2; 16], execution, source);
+            .bind_query_attempt_v2(
+                [5; 16],
+                [2; 16],
+                execution,
+                source,
+                ObjectDigest::from_bytes([6; 32]),
+            );
         let query = QueryHostExecutionRequestV1 {
             header: Some(header([5; 16])).into(),
             operation_id: vec![2; 16],
             execution_id: vec![3; 16],
             source_operation_commitment: vec![4; 32],
             spec_transfer_version: 1,
+            query_binding_version: 2,
+            execution_spec_digest: vec![6; 32],
             spec_content_bytes: query_fields.bytes(),
             spec_content_digest: query_fields.digest().to_vec(),
             spec_attempt_commitment: query_fields.attempt_commitment().to_vec(),

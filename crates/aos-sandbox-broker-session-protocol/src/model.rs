@@ -69,7 +69,7 @@ pub enum BrokerSessionValidationError {
     InvalidEncoding,
 }
 
-/// Identifies one broker protocol without extending the repository ProtocolId registry.
+/// Identifies one broker protocol with a distinct signed one-byte code.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum BrokerSessionProtocolV1 {
     /// Host broker protocol.
@@ -80,6 +80,8 @@ pub enum BrokerSessionProtocolV1 {
     Mount = 3,
     /// Network broker protocol.
     Network = 4,
+    /// Closed, separately versioned Mount FUSE protocol.
+    MountFuse = 5,
 }
 
 impl BrokerSessionProtocolV1 {
@@ -89,6 +91,7 @@ impl BrokerSessionProtocolV1 {
             Self::Storage => 2,
             Self::Mount => 3,
             Self::Network => 4,
+            Self::MountFuse => 5,
         }
     }
 
@@ -102,6 +105,7 @@ impl BrokerSessionProtocolV1 {
             ProtocolId::HostBroker => Ok(Self::Host),
             ProtocolId::StorageBroker => Ok(Self::Storage),
             ProtocolId::MountBroker => Ok(Self::Mount),
+            ProtocolId::MountFuseBroker => Ok(Self::MountFuse),
             ProtocolId::NetworkBroker => Ok(Self::Network),
             _ => Err(BrokerSessionValidationError::InvalidClosedValue("protocol")),
         }
@@ -113,6 +117,7 @@ impl BrokerSessionProtocolV1 {
             2 => Ok(Self::Storage),
             3 => Ok(Self::Mount),
             4 => Ok(Self::Network),
+            5 => Ok(Self::MountFuse),
             _ => Err(BrokerSessionValidationError::InvalidClosedValue("protocol")),
         }
     }
@@ -702,4 +707,21 @@ pub(crate) fn take_array<const N: usize>(
         .ok_or(BrokerSessionValidationError::InvalidEncoding)?
         .try_into()
         .map_err(|_| BrokerSessionValidationError::InvalidEncoding)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mount_fuse_has_a_distinct_signed_protocol_code() {
+        let legacy = BrokerSessionProtocolV1::from_protocol_id(ProtocolId::MountBroker).unwrap();
+        let fuse = BrokerSessionProtocolV1::from_protocol_id(ProtocolId::MountFuseBroker).unwrap();
+
+        assert_eq!(legacy, BrokerSessionProtocolV1::Mount);
+        assert_eq!(fuse, BrokerSessionProtocolV1::MountFuse);
+        assert_ne!(legacy.code(), fuse.code());
+        assert_eq!(BrokerSessionProtocolV1::from_code(fuse.code()), Ok(fuse));
+        assert!(BrokerSessionProtocolV1::from_code(6).is_err());
+    }
 }

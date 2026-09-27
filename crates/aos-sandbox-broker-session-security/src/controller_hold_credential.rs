@@ -2,8 +2,10 @@
 //!
 //! The seed and AOSCTK01 pin are fixed systemd credentials. Startup checks
 //! exact framing, file metadata, key correspondence, and role separation,
-//! then forgets the seed. Q04 does not consume this signer yet.
+//! then forgets the seed. The held Q04 ACK exchange reloads this one role
+//! only while Controller retains its protected writer.
 
+use std::io;
 use std::path::Path;
 
 use aos_sandbox::cache_residency::PinnedCacheOwnerReadbackSignerV1;
@@ -72,6 +74,47 @@ fn validate_controller_hold_credentials_at(
     Ok(())
 }
 
+/// Borrows the Controller-only signer for one held Root challenge response.
+///
+/// The caller must retain its protected Controller writer while invoking the
+/// callback. The key is loaded from the same checked systemd pair used at
+/// process startup and is not retained after the callback returns.
+pub(crate) fn with_process_controller_hold_signer_v1<R>(
+    action: impl FnOnce(u64, &SigningKey) -> io::Result<R>,
+) -> io::Result<R> {
+    let directory = std::env::var_os("CREDENTIALS_DIRECTORY")
+        .ok_or_else(|| io::Error::other("Controller hold signer unavailable"))?;
+    if !Path::new(&directory).is_absolute() {
+        return Err(io::Error::other(
+            "unsafe Controller hold credential directory",
+        ));
+    }
+    with_controller_hold_signer_at(Path::new(&directory), action)
+}
+
+fn with_controller_hold_signer_at<R>(
+    directory: &Path,
+    action: impl FnOnce(u64, &SigningKey) -> io::Result<R>,
+) -> io::Result<R> {
+    let seed = read_optional_fixed_role_credential_v1(directory, SEED_NAME, 32, true)
+        .map_err(io::Error::other)?
+        .ok_or_else(|| io::Error::other("Controller hold signer seed unavailable"))?;
+    let pin = read_optional_fixed_role_credential_v1(directory, PIN_NAME, 80, false)
+        .map_err(io::Error::other)?
+        .ok_or_else(|| io::Error::other("Controller hold signer pin unavailable"))?;
+    let seed: Zeroizing<[u8; 32]> = Zeroizing::new(
+        seed.as_slice()
+            .try_into()
+            .map_err(|_| io::Error::other("invalid Controller hold signer seed"))?,
+    );
+    let signing_key = SigningKey::from_bytes(&seed);
+    let pinned = PinnedControllerHoldSignerV1::decode(&pin).map_err(io::Error::other)?;
+    if pinned.verifying_key() != &signing_key.verifying_key() {
+        return Err(io::Error::other("Controller hold signer pin mismatch"));
+    }
+    action(pinned.generation(), &signing_key)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -97,6 +140,14 @@ mod tests {
         assert!(validate_controller_hold_credentials_at(directory.path(), None).is_err());
         fs::write(&pin_path, pin).unwrap();
         assert!(validate_controller_hold_credentials_at(directory.path(), None).is_ok());
+        assert_eq!(
+            with_controller_hold_signer_at(directory.path(), |generation, signer| {
+                assert_eq!(signer.verifying_key(), key);
+                Ok(generation)
+            })
+            .unwrap(),
+            3
+        );
         assert!(
             validate_controller_hold_credentials_at(directory.path(), Some(key.to_bytes()))
                 .is_err()

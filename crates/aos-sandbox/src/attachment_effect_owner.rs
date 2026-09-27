@@ -103,6 +103,43 @@ pub enum ProtectedAttachmentLeaseErrorV1 {
     Model(#[from] InvalidDomainModel),
 }
 
+/// Reports why protected FUSE intent cannot be prepared for a future broker profile.
+#[derive(Debug, thiserror::Error)]
+pub enum ProtectedFuseReserveIntentErrorV1 {
+    /// The desired generation, source View, slot, or lease is not current.
+    #[error(transparent)]
+    Desired(#[from] AttachmentDesiredStateError),
+    /// The live namespace target is no longer current.
+    #[error(transparent)]
+    Target(#[from] NamespaceTargetError),
+    /// The signed assignment or ownership lease is no longer current.
+    #[error(transparent)]
+    Runtime(#[from] CurrentRuntimeScopeError),
+}
+
+/// Retains exact protected FUSE intent beside its live Controller target.
+///
+/// This is not signed broker authority. In particular it cannot establish a
+/// Mount-owned slot, independently verify a Host namespace, or start a worker.
+pub struct PreparedCurrentFuseReserveIntentV1 {
+    target: CurrentNamespaceTarget,
+    desired: DurableAttachmentDesiredStateV1,
+}
+
+impl PreparedCurrentFuseReserveIntentV1 {
+    /// Borrows the exact v2 desired generation selected by protected custody.
+    #[must_use]
+    pub const fn desired(&self) -> &DurableAttachmentDesiredStateV1 {
+        &self.desired
+    }
+
+    /// Borrows the retained live Controller namespace target.
+    #[must_use]
+    pub const fn target(&self) -> &CurrentNamespaceTarget {
+        &self.target
+    }
+}
+
 /// Borrows protected controller custody for one attachment effect step.
 pub struct ProtectedAttachmentEffectOwnerV1<'journal> {
     journal: &'journal mut Journal,
@@ -223,6 +260,50 @@ impl<'journal> ProtectedAttachmentEffectOwnerV1<'journal> {
     ) -> Result<Option<DurableAttachmentDesiredStateV1>, AttachmentDesiredStateError> {
         self.journal.ensure_protected_authority()?;
         attachment_state::get(self.journal, attachment_id)
+    }
+
+    /// Prepares current v2 FUSE intent without issuing a Mount request.
+    ///
+    /// The protected journal, retained live target, signed ownership lease,
+    /// exact View and slot, and attachment lease are checked on both sides of
+    /// preparation. A future distinct signed method and independent Mount-side
+    /// Host proof are still required before the private reservation writer runs.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale or released desired state, non-v2 or native presentation,
+    /// expired lease, changed View or slot, and stale target authority.
+    pub fn prepare_current_fuse_reserve_intent<T>(
+        &mut self,
+        target: CurrentNamespaceTarget,
+        desired: DurableAttachmentDesiredStateV1,
+        clock: &mut T,
+    ) -> Result<PreparedCurrentFuseReserveIntentV1, ProtectedFuseReserveIntentErrorV1>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.journal
+            .ensure_protected_authority()
+            .map_err(AttachmentDesiredStateError::from)?;
+        target.recheck(self.journal, clock)?;
+        attachment_state::validate_target(&target, desired.intent())?;
+
+        let scope = target.runtime_generation().scope();
+        let (now, lease_limit) = scope.attachment_lease_bounds(self.journal, clock)?;
+        if desired.intent().lease().expires_seconds() > lease_limit {
+            return Err(AttachmentDesiredStateError::Conflict.into());
+        }
+        attachment_state::validate_current_fuse_reserve_source(self.journal, &desired, now)?;
+
+        target.recheck(self.journal, clock)?;
+        attachment_state::validate_target(&target, desired.intent())?;
+        let (now, lease_limit) = scope.attachment_lease_bounds(self.journal, clock)?;
+        if desired.intent().lease().expires_seconds() > lease_limit {
+            return Err(AttachmentDesiredStateError::Conflict.into());
+        }
+        attachment_state::validate_current_fuse_reserve_source(self.journal, &desired, now)?;
+
+        Ok(PreparedCurrentFuseReserveIntentV1 { target, desired })
     }
 
     /// Loads the exact current destination-slot binding, including a tombstone.

@@ -29,6 +29,10 @@ name = "aos-sandbox-held-tree-fixture"
 path = "src/bin/aos-sandbox-held-tree-fixture.rs"
 required-features = ["held-tree-fixture"]
 
+[[bin]]
+name = "aos-sandbox-held-snapshot-reader"
+path = "src/bin/aos-sandbox-held-snapshot-reader.rs"
+
 [features]
 default = []
 kernel-tests = ["aos-sandbox-linux/kernel-tests"]

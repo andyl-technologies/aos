@@ -17,19 +17,19 @@ use aos_sandbox::mount_manager_startup::{
     MountManagerStartupProtectedOwnerV1,
 };
 use aos_sandbox_broker_session_security::{
-    connect_authenticated_fixed_source_provider, observe_original_pending_acquires,
-    production_deadline_after, recover_reserved_remote_inventories,
     ProductionBrokerDeadlineErrorV1, ProductionBrokerServiceErrorV1,
     ProductionBrokerSessionActivationErrorV1, ProductionBrokerSessionActivationV1,
     ProductionMountBrokerOwnersV1, ProductionRootMountSourceProviderErrorV1,
+    connect_authenticated_fixed_source_provider, observe_original_pending_acquires,
+    production_deadline_after, recover_reserved_remote_inventories,
 };
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::protected_file::{open_nofollow_child, read_exact_positioned};
 use aos_sandbox_linux::startup_fd_table::{
-    observe_provisioned_startup_executable, StartupExecutableObservationV1,
+    StartupExecutableObservationV1, observe_provisioned_startup_executable,
 };
 use aos_sandbox_mount::authorization::MountAuthorityV1;
-use aos_sandbox_mount::broker::{preflight_recovery_state, MountBroker};
+use aos_sandbox_mount::broker::{MountBroker, preflight_recovery_state};
 use aos_sandbox_mount::catalog::{FileMountCatalog, PreparedMountCatalog};
 use aos_sandbox_mount::helper::PosixSpawnNamespaceHelper;
 use aos_sandbox_mount::keeper::SystemdFdStore;
@@ -37,12 +37,12 @@ use aos_sandbox_mount::source_pin::recover_source_custody;
 use aos_sandbox_mount::worker::{DescriptorMountWorker, RetainedMountObservation};
 use aos_sandbox_mount::{DormantMountBrokerCompositionV1, MountError};
 use aos_sandbox_protocol::mount_manager_startup::{
-    decode_mount_manager_startup_policy_v1, MountManagerStartupPolicyV1,
-    StartupExecutableIdentityV1, MAXIMUM_STARTUP_POLICY_BYTES_V1,
+    MAXIMUM_STARTUP_POLICY_BYTES_V1, MountManagerStartupPolicyV1, StartupExecutableIdentityV1,
+    decode_mount_manager_startup_policy_v1,
 };
 use aos_sandbox_source_provider_security::{
-    validate_fixed_root_mount_authority_v1, RootMountSourceProviderOwnerV1,
-    SourceProviderSecurityError,
+    RootMountSourceProviderOwnerV1, SourceProviderSecurityError,
+    validate_fixed_root_mount_authority_v1,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -409,7 +409,7 @@ fn parse_arguments(
 mod tests {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::{symlink, PermissionsExt as _};
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
 
     use aos_sandbox::journal::{JournalRecord, JournalTransaction};
 

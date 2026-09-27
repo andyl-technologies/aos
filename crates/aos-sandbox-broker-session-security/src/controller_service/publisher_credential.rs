@@ -1,11 +1,10 @@
 //! Bounded systemd credential reads for the publisher service and policy source.
 
-use std::fs::File;
-use std::io::Read as _;
-use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
-use rustix::fs::{Mode, OFlags, open};
+use crate::fixed_role_credential::{
+    CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
+};
 
 /// Reports an absent or unsafe required publisher credential.
 pub(super) struct PublisherCredentialErrorV1;
@@ -21,33 +20,14 @@ pub(super) fn read_required_credential(
     if !directory.is_absolute() {
         return Err(PublisherCredentialErrorV1);
     }
-    let descriptor = open(
-        &directory.join(name),
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-        Mode::empty(),
+    read_optional_bounded_role_credential_v1(
+        directory,
+        name,
+        minimum,
+        maximum,
+        true,
+        CredentialOwnerPolicyV1::RootOrCurrent,
     )
-    .map_err(|_| PublisherCredentialErrorV1)?;
-    let mut file = File::from(descriptor);
-    let metadata = file.metadata().map_err(|_| PublisherCredentialErrorV1)?;
-    let process_uid = rustix::process::geteuid().as_raw();
-    let length = usize::try_from(metadata.len()).map_err(|_| PublisherCredentialErrorV1)?;
-    if !metadata.is_file()
-        || !(minimum..=maximum).contains(&length)
-        || metadata.nlink() != 1
-        || (metadata.uid() != 0 && metadata.uid() != process_uid)
-        || metadata.mode() & 0o077 != 0
-    {
-        return Err(PublisherCredentialErrorV1);
-    }
-    let mut bytes = vec![0; length];
-    file.read_exact(&mut bytes)
-        .map_err(|_| PublisherCredentialErrorV1)?;
-    if file
-        .read(&mut [0_u8; 1])
-        .map_err(|_| PublisherCredentialErrorV1)?
-        != 0
-    {
-        return Err(PublisherCredentialErrorV1);
-    }
-    Ok(bytes)
+    .map_err(|_| PublisherCredentialErrorV1)?
+    .ok_or(PublisherCredentialErrorV1)
 }

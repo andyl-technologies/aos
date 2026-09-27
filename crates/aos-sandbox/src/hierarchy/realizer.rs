@@ -224,7 +224,7 @@ impl AttachmentRealizationV1 {
             || stored_lease_commitment.as_bytes() == &[0; 32]
             || inventory_commitment.as_bytes() == &[0; 32]
             || recipe_commitment.as_bytes() == &[0; 32]
-            || request_commitment != intent_commitment(&intent)
+            || request_commitment != intent_commitment(&intent)?
             || stored_lease_commitment != lease_commitment(&intent)
             || source_node.is_some_and(|value| value.as_bytes() == &[0; 16])
             || source_namespace_generation.is_some_and(|value| value.get() == 0)
@@ -921,7 +921,7 @@ fn validate_intent_evidence(
 ) -> Result<(), RealizationPlanError> {
     let (consumer, consumer_incarnation) = intent.consumer();
     let (view, view_revision) = intent.source_view();
-    if intent_commitment(intent) != authority.request_commitment()
+    if intent_commitment(intent)? != authority.request_commitment()
         || lease_commitment(intent) != authority.lease_commitment()
         || tree.project() != assignment.project()
         || assignment.project() != source.project()
@@ -996,13 +996,14 @@ fn validate_intent_evidence(
     Ok(())
 }
 
-fn intent_commitment(intent: &AttachmentIntent) -> ObjectDigest {
-    let encoded = aos_sandbox_core::encode_attachment_intent_v1(intent);
+fn intent_commitment(intent: &AttachmentIntent) -> Result<ObjectDigest, RealizationPlanError> {
+    let encoded = aos_sandbox_core::encode_attachment_intent_v1(intent)
+        .map_err(|_| RealizationPlanError::UnspecifiedIdentity)?;
     let mut hasher = Sha256::new();
     hasher.update(b"aos.sandbox.attachment-intent.v1\0");
     hasher.update((encoded.len() as u64).to_be_bytes());
     hasher.update(encoded);
-    ObjectDigest::from_bytes(hasher.finalize().into())
+    Ok(ObjectDigest::from_bytes(hasher.finalize().into()))
 }
 
 fn lease_commitment(intent: &AttachmentIntent) -> ObjectDigest {

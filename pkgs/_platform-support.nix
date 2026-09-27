@@ -44,6 +44,7 @@ let
 
   targetWave1 = [
     "abseil-cpp"
+    "apr"
     "autoconf"
     "autoconf-archive"
     "automake"
@@ -162,7 +163,6 @@ let
     "python3-jinja2"
     "python3-smartypants"
     "python3-typogrify"
-    "xmlto"
     "xxhash"
     "acpica"
     "aos-fuse3"
@@ -184,7 +184,6 @@ let
     "fontconfig"
     "freetype"
     "fstrm"
-    "fuse3"
     "gnupg"
     "gnutls"
     "gptfdisk"
@@ -295,6 +294,7 @@ let
   # Wave 3: compilers, interpreters and build systems.  These require a native
   # Linux compiler/interpreter package set distinct from Darwin target outputs.
   targetWave3 = [
+    "accache"
     "cargo-c"
     "mdbook"
     "alejandra"
@@ -344,6 +344,7 @@ let
     "ninja"
     "nix"
     "nodejs"
+    "esbuild"
     "packaging"
     "pip"
     "python3"
@@ -414,7 +415,6 @@ let
     "pnpm"
     "postgresql"
     "pyrefly"
-    "sccache"
     "test-http-server"
     "test-static-cache-server"
     "uv"
@@ -430,6 +430,7 @@ let
     "bazel-8"
     "bazel-9"
     "envoy"
+    "icu4j"
     "openjdk"
     "openjdk-10"
     "openjdk-11"
@@ -473,9 +474,9 @@ let
     "nuke-references"
   ];
 
-  # These Linux packages remain complete, but their GUI, VM, fixture, and
-  # downloader closures are outside the first Darwin release. The Darwin AOS
-  # clients retain their non-VM commands without pulling in target GLib.
+  # These Linux packages remain complete, but their GUI, VM, documentation,
+  # fixture, and downloader closures are outside the first Darwin release.
+  # The Darwin AOS clients retain their non-VM commands without target GLib.
   linuxScoped = [
     "aos-hub-cloudflare"
     "aos-vm"
@@ -503,6 +504,7 @@ let
     "swtpm"
     "vala"
     "wget"
+    "xmlto"
   ];
 
   # These outputs implement Linux kernel, userspace, guest or service
@@ -583,6 +585,7 @@ let
     "erofs-utils"
     "ethtool"
     "firecracker"
+    "fuse3"
     "fuse-overlayfs"
     "getent"
     "glibc"
@@ -817,6 +820,7 @@ let
     "libs/_sharp-vips.nix" = "cross-build-helper";
     "tools/_cargo-c-sources.nix" = "target-independent-source";
     "tools/_device-test-coreutils.nix" = "linux-only-build-helper";
+    "tools/miniflare/_blake3-wasm.nix" = "native-build-helper";
     "tools/miniflare/_sharp-addon.nix" = "cross-build-helper";
     "tools/workerd/_binaryen.nix" = "native-build-helper";
     "tools/workerd/_cargo-bazel.nix" = "native-build-helper";
@@ -838,6 +842,7 @@ let
     "tools/workerd/_rust-repository.nix" = "native-build-helper";
     "_platform-support.nix" = "platform-policy";
     "build-support/_cargo-artifacts.nix" = "native-build-helper";
+    "build-support/_cargo-source-vendor.nix" = "native-build-helper";
     "build-support/_config-module-renderer.nix" = "native-build-helper";
     "build-support/_expose-module.nix" = "target-independent-source";
     "build-support/_expose-renderer.nix" = "native-build-helper";
@@ -871,6 +876,7 @@ let
     "kubernetes/_k3s-traefik.nix" = "linux-only-build-helper";
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
+    "security/_aos-mount-executable-carrier.nix" = "linux-only-build-helper";
     "storage/_postgresql-cross.nix" = "cross-build-helper";
     "toolchain/_bazel.nix" = "native-build-helper";
     "toolchain/_linux-hosted-binutils.nix" = "cross-build-helper";
@@ -930,6 +936,7 @@ let
     "networking/_envoy-config/types.nix" = "linux-only-config-source";
     "networking/_nginx-config/module.nix" = "linux-only-config-source";
     "networking/_openldap-config/module.nix" = "linux-only-config-source";
+    "security/_aos-namespace-inspector-manager-query/broker-query.c" = "linux-only-build-source";
     "security/_aos-namespace-inspector-manager-query/fd-table.c" = "linux-only-build-source";
     "security/_aos-namespace-inspector-manager-query/helper.h" = "linux-only-build-source";
     "security/_aos-namespace-inspector-manager-query/main.c" = "linux-only-build-source";

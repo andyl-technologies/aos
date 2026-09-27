@@ -100,6 +100,35 @@ impl CacheResidencyProtectedOwnerV1 {
             &CacheResidencyWriterReadbackV2,
         ) -> Result<R, CacheResidencyProtectedJournalErrorV1>,
     ) -> Result<R, CacheResidencyProtectedJournalErrorV1> {
+        self.with_held_cache_owner_readback_after_postflight_v3(physical, |readback| {
+            action(readback).map(|value| (value, |value| Ok(value)))
+        })
+    }
+
+    /// Runs a terminal observation after Cache postflight but before any writer drops.
+    ///
+    /// The first callback may open a Root-last observational flight and return
+    /// a continuation. Cache then validates its clock, all named journals,
+    /// hold, physical flock, and complete typed replay before calling that
+    /// continuation under the same clock and hold writer guards. A caller
+    /// must separately revalidate Controller and Source before sending a
+    /// terminal ACK. Neither phase may dispatch effects or release owners.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale Cache custody, an incomplete first callback, or a failed
+    /// terminal continuation. No continuation runs after Cache postflight fails.
+    pub fn with_held_cache_owner_readback_after_postflight_v3<Prepared, Output, Finish>(
+        &mut self,
+        physical: &DormantCacheOwnerV1,
+        inspect: impl FnOnce(
+            &CacheResidencyWriterReadbackV2,
+        )
+            -> Result<(Prepared, Finish), CacheResidencyProtectedJournalErrorV1>,
+    ) -> Result<Output, CacheResidencyProtectedJournalErrorV1>
+    where
+        Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
+    {
         reject_legacy_cache_journals()?;
         let clock = Arc::clone(
             self.clock
@@ -163,7 +192,7 @@ impl CacheResidencyProtectedOwnerV1 {
             physical_snapshot
                 .revalidate()
                 .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-            action(&readback)
+            inspect(&readback)
         });
 
         clock_guard.revalidate()?;
@@ -182,7 +211,26 @@ impl CacheResidencyProtectedOwnerV1 {
             .revalidate()
             .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
         reject_legacy_cache_journals()?;
-        result
+        let (prepared, finish) = result?;
+        let outcome = finish(prepared);
+
+        clock_guard.revalidate()?;
+        self.check_held_writer_names(&state_witness, &authority_witness)?;
+        hold_journal.require_protected_named_location(
+            root,
+            CACHE_POLICY_HOLD_JOURNAL,
+            self.owner_uid,
+            Journal::cache_policy_hold_limits(),
+        )?;
+        hold_journal.validate_protected_writer_name_witness(&hold_witness)?;
+        if hold_journal.held_cache_policy_hold_for_writer()? != hold {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        physical_snapshot
+            .revalidate()
+            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        reject_legacy_cache_journals()?;
+        outcome
     }
 
     fn check_held_writer_names(
@@ -225,6 +273,24 @@ fn with_cache_writer_readback_at<R>(
         CacheResidencyWriterReadbackV2,
     ) -> Result<R, CacheResidencyProtectedJournalErrorV1>,
 ) -> Result<R, CacheResidencyProtectedJournalErrorV1> {
+    with_cache_writer_readback_after_postflight_at(root, owner_uid, open, check, |readback| {
+        action(readback).map(|value| (value, |value| Ok(value)))
+    })
+}
+
+#[cfg(test)]
+fn with_cache_writer_readback_after_postflight_at<Prepared, Output, Finish>(
+    root: &Path,
+    owner_uid: u32,
+    open: impl Fn(&Path, &str, JournalLimits) -> Result<(Journal, RecoveryReport), JournalError>,
+    check: impl Fn(&Journal, &Path, &str, JournalLimits) -> Result<(), JournalError>,
+    action: impl FnOnce(
+        CacheResidencyWriterReadbackV2,
+    ) -> Result<(Prepared, Finish), CacheResidencyProtectedJournalErrorV1>,
+) -> Result<Output, CacheResidencyProtectedJournalErrorV1>
+where
+    Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
+{
     let (mut clock, _) = open(root, CACHE_CLOCK_JOURNAL, cache_clock_journal_limits())?;
     let floor = {
         let authority = clock.claim_protected_authority(RecordNamespace::DesiredState)?;
@@ -331,11 +397,15 @@ fn with_cache_writer_readback_at<R>(
         node_quotas,
     });
     check_all()?;
-    result
+    let (prepared, finish) = result?;
+    let outcome = finish(prepared);
+    check_all()?;
+    outcome
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::fs::{self, OpenOptions};
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt as _;
@@ -350,6 +420,28 @@ mod tests {
         ) -> Result<R, CacheResidencyProtectedJournalErrorV1>,
     ) -> Result<R, CacheResidencyProtectedJournalErrorV1> {
         with_cache_writer_readback_at(
+            root,
+            uid,
+            |root, name, limits| Journal::open_protected_at_uid(root, name, limits, uid),
+            |journal, root, name, limits| {
+                journal.require_protected_named_location_at_uid_for_test(root, name, uid, limits)
+            },
+            action,
+        )
+    }
+
+    fn with_fixture_after_postflight<Prepared, Output, Finish>(
+        root: &Path,
+        uid: u32,
+        action: impl FnOnce(
+            CacheResidencyWriterReadbackV2,
+        )
+            -> Result<(Prepared, Finish), CacheResidencyProtectedJournalErrorV1>,
+    ) -> Result<Output, CacheResidencyProtectedJournalErrorV1>
+    where
+        Finish: FnOnce(Prepared) -> Result<Output, CacheResidencyProtectedJournalErrorV1>,
+    {
+        with_cache_writer_readback_after_postflight_at(
             root,
             uid,
             |root, name, limits| Journal::open_protected_at_uid(root, name, limits, uid),
@@ -420,6 +512,87 @@ mod tests {
             Ok(())
         })
         .expect("Root-last nested callback");
+    }
+
+    #[test]
+    fn terminal_continuation_keeps_all_cache_writers_after_postflight() {
+        let (cache_root, uid, expected) = super::super::tests::live_cache_hold_fixture();
+        let root = tempfile::tempdir().expect("Root journal fixture");
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700))
+            .expect("private Root directory");
+
+        let observed = with_fixture_after_postflight(cache_root.path(), uid, |readback| {
+            Ok((readback, |readback: CacheResidencyWriterReadbackV2| {
+                for (name, limits) in [
+                    (CACHE_CLOCK_JOURNAL, cache_clock_journal_limits()),
+                    (CACHE_AUTHORITY_JOURNAL, cache_authority_journal_limits()),
+                    (CACHE_STATE_JOURNAL, cache_state_journal_limits()),
+                    (
+                        CACHE_POLICY_HOLD_JOURNAL,
+                        Journal::cache_policy_hold_limits(),
+                    ),
+                ] {
+                    assert!(matches!(
+                        Journal::open_protected_at_uid(cache_root.path(), name, limits, uid),
+                        Err(JournalError::AlreadyLocked)
+                    ));
+                }
+                let (_root_writer, _) = Journal::open_protected_at_uid(
+                    root.path(),
+                    "root.journal",
+                    JournalLimits::default(),
+                    uid,
+                )
+                .expect("Root acquired last under Cache postflight guards");
+                Ok(readback)
+            }))
+        })
+        .expect("terminal Cache continuation");
+        assert_eq!(observed.hold(), expected);
+    }
+
+    #[test]
+    fn changed_cache_writer_name_suppresses_terminal_continuation() {
+        let (directory, uid, _) = super::super::tests::live_cache_hold_fixture();
+        let named = directory
+            .path()
+            .join(format!("{CACHE_POLICY_HOLD_JOURNAL}.lock"));
+        let retained = directory
+            .path()
+            .join(format!("{CACHE_POLICY_HOLD_JOURNAL}.lock.retained"));
+        let invoked = Cell::new(false);
+
+        let outcome = with_fixture_after_postflight(directory.path(), uid, |_| {
+            fs::rename(&named, &retained).expect("retain locked inode");
+            fs::copy(&retained, &named).expect("replace with identical lock bytes");
+            Ok(((), |_| {
+                invoked.set(true);
+                Ok(())
+            }))
+        });
+        assert!(outcome.is_err());
+        assert!(!invoked.get());
+    }
+
+    #[test]
+    fn terminal_error_still_checks_all_cache_writer_names() {
+        let (directory, uid, _) = super::super::tests::live_cache_hold_fixture();
+        let named = directory.path().join(format!("{CACHE_CLOCK_JOURNAL}.lock"));
+        let retained = directory
+            .path()
+            .join(format!("{CACHE_CLOCK_JOURNAL}.lock.retained"));
+
+        let outcome = with_fixture_after_postflight(directory.path(), uid, |_| {
+            Ok(((), |_| -> Result<(), _> {
+                fs::rename(&named, &retained).expect("retain locked inode");
+                fs::copy(&retained, &named).expect("replace with identical lock bytes");
+                Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)
+            }))
+        });
+        assert!(matches!(
+            outcome,
+            Err(CacheResidencyProtectedJournalErrorV1::Journal(_))
+        ));
     }
 
     #[test]

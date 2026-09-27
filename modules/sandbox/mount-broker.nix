@@ -8,6 +8,12 @@
   cfg = config.aos.sandbox.mountBroker;
   hostBroker = config.aos.sandbox.hostBroker;
   sourceProvider = config.aos.sandbox.sourceProvider;
+  signedCarrier = config.boot.initrd.systemd.mountExecutableCarrier;
+  selectedStage0 = config.aos.boot.initrd.stage0;
+  daemonPath =
+    if cfg.useExecutableCarrier
+    then "/run/aos/mount-executable-carrier/daemon"
+    else "${cfg.package}/bin/aos-sandbox-mountd";
   brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
   brokerSessionEndpoints = [
     {
@@ -64,6 +70,12 @@ in {
       description = "Connect to the separate SourceProvider service after installing a protected AOSMMSTA1 Mount startup policy and externally provisioning RootMount's authority at /var/lib/aos/sandbox-mount/source-provider-authority and Provider's authority at /var/lib/aos/source-provider/authority. This enables authenticated session, pending Acquire observation, and Reserved Inventory readback; source effects and SourceRoot handoff remain unavailable.";
     };
 
+    useExecutableCarrier = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Run Mount's daemon from the signed, verified first-launcher carrier mounted by SELinux stage0. Requires the selected initrd and stage0 to name the same carrier, with a daemon built from this module's package.";
+    };
+
     package = lib.mkOption {
       type = lib.types.package;
       default = pkgs.aos-sandbox-mountd;
@@ -99,6 +111,20 @@ in {
         {
           assertion = !cfg.sourceProviderSession.enable || sourceProvider.enable;
           message = "aos.sandbox.mountBroker.sourceProviderSession.enable requires aos.sandbox.sourceProvider.enable";
+        }
+        {
+          assertion =
+            !cfg.useExecutableCarrier
+            || (signedCarrier
+              != null
+              && selectedStage0 != null
+              && (selectedStage0.passthru.mountCarrierFirstLauncher or false)
+              && selectedStage0.passthru ? mountExecutableCarrier
+              && selectedStage0.passthru.mountExecutableCarrier != null
+              && toString selectedStage0.passthru.mountExecutableCarrier == toString signedCarrier
+              && signedCarrier.passthru ? daemon
+              && toString signedCarrier.passthru.daemon == toString cfg.package);
+          message = "aos.sandbox.mountBroker.useExecutableCarrier requires a matching signed first-launcher stage0 carrier whose daemon is mountBroker.package";
         }
         {
           assertion =
@@ -142,11 +168,11 @@ in {
         ExecStartPre =
           brokerSessionConfiguration.installCommands
           ++ lib.optionals cfg.sourceProviderSession.enable [
-            "${cfg.package}/bin/aos-sandbox-mountd --check-source-provider-authority"
+            "${daemonPath} --check-source-provider-authority"
           ];
         # The service does not provision RootMount custody; the daemon checks
         # its fixed files, peer and signed hello before retaining the session.
-        ExecStart = "${cfg.package}/bin/aos-sandbox-mountd ${cfg.package}/bin/aos-sandbox-mount-helper${lib.optionalString cfg.sourceProviderSession.enable " --source-provider"}";
+        ExecStart = "${daemonPath} ${cfg.package}/bin/aos-sandbox-mount-helper${lib.optionalString cfg.sourceProviderSession.enable " --source-provider"}";
         LoadCredential = loadCredentials ++ brokerSessionConfiguration.loadCredentials;
         Restart = "on-failure";
         RestartSec = "2s";

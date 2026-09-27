@@ -46,6 +46,9 @@ use crate::source_pin::{
     SourcePinRowV1, SourcePinRowV1Ext, SourcePinTableV1, SourceRealizationEvidenceV1,
 };
 use crate::state::authorization_v1::{MountEffectIntentV1, MountEffectStatusV1};
+use crate::state::fuse_worker_reservation_v1::{
+    FuseWorkerReservationTableV1, FuseWorkerReservationV1,
+};
 use crate::state::mount_resource_v1::{
     AssignmentBindingV1, DetachedMountIdentityV1, InstalledMountObservationV1, MountFaultPhaseV1,
     MountHandleV1, MountPolicyV1, MountRecipeV1, MountResourceLimitsV1, MountResourceStateV1,
@@ -66,6 +69,7 @@ pub struct MountBroker<W> {
     worker: W,
     resources: MountResourceTableV1,
     source_pins: SourcePinTableV1,
+    fuse_reservations: FuseWorkerReservationTableV1,
     kernel_boot_id: [u8; 16],
     broker_instance_id: [u8; 16],
     authority: MountAuthorityV1,
@@ -134,6 +138,8 @@ impl<W: MountWorker> MountBroker<W> {
             kernel_boot_id,
         )?;
         let source_pins = SourcePinTableV1::recover(&journal, kernel_boot_id)?;
+        let fuse_reservations = FuseWorkerReservationTableV1::recover(&journal, kernel_boot_id)?;
+        ensure_fuse_slots_exclude_native(&resources, &fuse_reservations)?;
         let custody = worker.custody_inventory()?;
         validate_pre_repair_state(&resources, &source_pins, kernel_boot_id, &custody)?;
 
@@ -154,6 +160,7 @@ impl<W: MountWorker> MountBroker<W> {
             worker,
             resources,
             source_pins,
+            fuse_reservations,
             kernel_boot_id,
             broker_instance_id,
             authority,
@@ -161,6 +168,45 @@ impl<W: MountWorker> MountBroker<W> {
             source_runtime: None,
             source_runtime_failed: false,
         })
+    }
+
+    /// Commits a first-generation FUSE reservation under Mount's journal owner.
+    ///
+    /// This private writer has no production caller until a separate signed
+    /// Controller intent and authenticated Mount method can supply every row
+    /// field. A row is neither worker-launch nor descriptor authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unhealthy or contradictory journal state, any native/FUSE slot
+    /// alias, an unsupported successor or replay, or failed durability.
+    pub(crate) fn reserve_fuse_worker_gen1(
+        &mut self,
+        reservation: &FuseWorkerReservationV1,
+    ) -> Result<()> {
+        self.journal.ensure_healthy()?;
+        let resources = MountResourceTableV1::recover(
+            &self.journal,
+            MountResourceLimitsV1::default(),
+            self.kernel_boot_id,
+        )?;
+        let reservations =
+            FuseWorkerReservationTableV1::recover(&self.journal, self.kernel_boot_id)?;
+        ensure_fuse_slots_exclude_native(&resources, &reservations)?;
+        if !native_slot_is_unused_for_fuse(&resources, reservation) {
+            return Err(MountError::Fence(
+                "FUSE destination slot is claimed by native Mount state",
+            ));
+        }
+
+        let record = reservations.prepare_reservation(reservation)?;
+        let transaction_id = fuse_reservation_transaction_id(reservation);
+        self.journal
+            .commit(&JournalTransaction::new(transaction_id, vec![record])?)?;
+        self.resources = resources;
+        self.fuse_reservations =
+            FuseWorkerReservationTableV1::recover(&self.journal, self.kernel_boot_id)?;
+        Ok(())
     }
 
     /// Encodes one complete authoritative durable resource-table snapshot.
@@ -794,6 +840,16 @@ impl<W: MountWorker> MountBroker<W> {
         let mut fresh_source_activation = false;
         let mut resource_records = match request.action() {
             MountAction::MOUNT_ACTION_CREATE_DETACHED => {
+                if self.fuse_reservations.rows().any(|reservation| {
+                    reservation.assignment.sandbox_id == *request.fence().sandbox_id()
+                        && reservation.assignment.incarnation_id
+                            == *request.fence().incarnation_id()
+                        && reservation.destination_slot_id == *request.destination_slot_id()
+                }) {
+                    return Err(MountError::Fence(
+                        "native Mount destination slot is reserved for FUSE",
+                    ));
+                }
                 let source_realization = catalog_authorization
                     .as_ref()
                     .ok_or(MountError::Fence("CREATE lost its source realization"))?
@@ -2165,6 +2221,56 @@ fn destination_slot_is_unused(
     )
 }
 
+fn ensure_fuse_slots_exclude_native(
+    resources: &MountResourceTableV1,
+    reservations: &FuseWorkerReservationTableV1,
+) -> Result<()> {
+    for reservation in reservations.rows() {
+        if !native_slot_is_unused_for_fuse(resources, reservation) {
+            return Err(MountError::State(
+                "FUSE reservation aliases a native Mount resource".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn native_slot_is_unused_for_fuse(
+    resources: &MountResourceTableV1,
+    reservation: &FuseWorkerReservationV1,
+) -> bool {
+    resources
+        .resources()
+        .filter(|resource| {
+            resource.binding.sandbox_id == reservation.assignment.sandbox_id
+                && resource.binding.incarnation_id == reservation.assignment.incarnation_id
+                && resource.recipe.destination_slot_id == reservation.destination_slot_id
+        })
+        .all(|resource| {
+            // Prepared detached resources can still be installed later even
+            // though the physical slot is not occupied yet.
+            matches!(resource.state, MountResourceStateV1::Released { .. })
+                && resources.destination_slot_is_unused(
+                    &reservation.assignment.sandbox_id,
+                    &reservation.assignment.incarnation_id,
+                    resource.binding.namespace_generation,
+                    &reservation.destination_slot_id,
+                )
+        })
+}
+
+fn fuse_reservation_transaction_id(reservation: &FuseWorkerReservationV1) -> [u8; 16] {
+    let digest = Sha256::new()
+        .chain_update(b"aos.mount.fuse.reservation.transaction.v1\0")
+        .chain_update(reservation.attachment_id)
+        .chain_update(reservation.connection_generation.to_be_bytes())
+        .chain_update(reservation.worker_instance_id)
+        .finalize();
+    let mut transaction_id = [0; 16];
+    transaction_id.copy_from_slice(&digest[..16]);
+    transaction_id
+}
+
 fn destination_slot_record(resource: DestinationSlotResourceV1) -> DestinationSlotInventoryRecord {
     let binding = resource.binding();
     let descriptor = binding.sandbox_spec();
@@ -3337,6 +3443,99 @@ mod tests {
         )
         .unwrap();
         (broker, fixture)
+    }
+
+    fn fuse_reservation(attachment: u8) -> FuseWorkerReservationV1 {
+        FuseWorkerReservationV1 {
+            attachment_id: [attachment; 16],
+            connection_generation: 1,
+            kernel_boot_id: KernelBootId::current().unwrap().into_bytes(),
+            worker_instance_id: [attachment.wrapping_add(1); 16],
+            assignment: AssignmentBindingV1 {
+                sandbox_id: [1; 16],
+                incarnation_id: [2; 16],
+                assignment_epoch: 1,
+                desired_generation: 1,
+                assignment_digest: [6; 32],
+                namespace_generation: 1,
+            },
+            attachment_generation: 1,
+            destination_slot_id: [4; 16],
+            source_view_id: [7; 16],
+            source_view_revision: 1,
+            view_revision: ObjectDescriptorV1 {
+                media_type: PortableMediaType::View.as_str().to_owned(),
+                sha256_digest: [8; 32],
+                encoded_size: 1,
+            },
+            user_namespace_device: 9,
+            user_namespace_inode: 10,
+            user_namespace_generation: 1,
+            presentation_plan_digest: [11; 32],
+            policy_digest: [12; 32],
+            lease_identity: [13; 16],
+            lease_expires_boottime_ns: 1_000,
+            state: crate::state::fuse_worker_reservation_v1::FuseWorkerReservationStateV1::Reserved,
+        }
+    }
+
+    #[test]
+    fn fuse_reservation_writer_is_gen1_only_and_blocks_native_slot_reuse() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let reservation = fuse_reservation(20);
+
+        broker.reserve_fuse_worker_gen1(&reservation).unwrap();
+        assert!(broker.reserve_fuse_worker_gen1(&reservation).is_err());
+        let mut successor = reservation.clone();
+        successor.connection_generation = 2;
+        successor.worker_instance_id = [22; 16];
+        assert!(broker.reserve_fuse_worker_gen1(&successor).is_err());
+        assert!(apply(&mut broker, &fixture, &request(30)).is_err());
+        assert_eq!(broker.worker.calls, 0);
+
+        drop(broker);
+        let (mut recovered, recovered_fixture) =
+            test_broker(open(&path), ScriptedWorker::default());
+        assert_eq!(recovered.fuse_reservations.rows().count(), 1);
+        assert!(apply(&mut recovered, &recovered_fixture, &request(31)).is_err());
+        assert_eq!(recovered.worker.calls, 0);
+    }
+
+    #[test]
+    fn native_resource_blocks_fuse_reservation_and_forged_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        apply(&mut broker, &fixture, &request(32)).unwrap();
+        let reservation = fuse_reservation(20);
+
+        assert!(broker.reserve_fuse_worker_gen1(&reservation).is_err());
+        assert_eq!(broker.fuse_reservations.rows().count(), 0);
+
+        let forged = broker
+            .fuse_reservations
+            .prepare_reservation(&reservation)
+            .unwrap();
+        broker
+            .journal
+            .commit(&JournalTransaction::new([79; 16], vec![forged]).unwrap())
+            .unwrap();
+        let custody = broker.worker.custody.clone();
+        drop(broker);
+
+        assert!(
+            MountBroker::new(
+                open(&path),
+                ScriptedWorker {
+                    custody,
+                    ..Default::default()
+                },
+                fixture.authority(),
+            )
+            .is_err()
+        );
     }
 
     struct ScriptedWorker {

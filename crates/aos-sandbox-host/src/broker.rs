@@ -19,8 +19,9 @@ use aos_proto::aos::sandbox::local::v1::{
 use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
 use aos_sandbox::controller_execution_preissue::ControllerExecutionReserveSourceV1;
 use aos_sandbox::runtime_execution::{
-    DormantRuntimeExecutionClaimV1, VerifiedHostOutputReserveSourceV1,
-    verify_host_output_reserve_source_v1,
+    DormantRuntimeExecutionClaimV1, HostEffectFenceRecoveryClaimV1,
+    PreparedHostSettlementPreliminaryV1, ProtectedHostNoApplySettlementHistoryV1,
+    VerifiedHostOutputReserveSourceV1, verify_host_output_reserve_source_v1,
 };
 use aos_sandbox_broker::{
     BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1,
@@ -45,13 +46,19 @@ use aos_sandbox_protocol::host_execution_argument::{
     decode_host_execution_argument_query_request_v1,
 };
 use aos_sandbox_protocol::host_execution_no_apply::{
-    HOST_EXECUTION_NO_APPLY_RECORD_BYTES_V1, ValidatedHostExecutionNoApplyRequestV1,
+    HOST_EXECUTION_NO_APPLY_RECORD_BYTES_V1, HostExecutionNoApplyRecordV1,
+    HostNoApplyControllerCoordinateV2, HostNoApplySettlementPhaseV2,
+    ValidatedHostExecutionNoApplyRequestV1, ValidatedHostNoApplySettlementRequestV2,
     decode_host_execution_argument_no_apply_request_v1,
     decode_host_execution_argument_query_no_apply_request_v1,
+    decode_host_no_apply_settlement_query_request_v2, decode_host_no_apply_settlement_request_v2,
 };
 use aos_sandbox_protocol::host_output::{
     ValidatedHostOutputQueryRequestV1, ValidatedHostOutputReserveRequestV1,
     decode_host_output_query_request_v1, decode_host_output_reserve_request_v1,
+};
+use aos_sandbox_protocol::host_storage_output_readback::{
+    decode_host_storage_output_readback_request_v1, host_storage_output_readback_grant_v1,
 };
 use aos_sandbox_protocol::semantics::{
     CanonicalHostAttachGateSemanticsV1, CanonicalHostExecutionArgumentSemanticsV1,
@@ -100,12 +107,13 @@ use crate::state::transition::{
 };
 use crate::state::{
     Admission, CompletedGuardianLineage, GuardianLineage, HostAction, HostState, HostStateStore,
-    RuntimeEffectQuery,
+    RuntimeEffectQuery, host_execution_receipt_digest,
 };
+use crate::storage_output_readback::protected_storage_output_readback_body_v1;
 use crate::worker::{
     CompletedRuntimeProof, GuardianObservation, GuardianObservedState, HostRuntimeIdentity,
     HostWorker, ObservedRuntimeState, PinnedLeader, PinnedPayloadLeader, WorkerObservation,
-    WorkerOperation,
+    WorkerOperation, runtime_proof_snapshot_with_workspace_mount_id,
 };
 use crate::{HostError, Result};
 
@@ -155,6 +163,30 @@ pub struct HostExecutionGrantReservationV1 {
     verified_lease: VerifiedOwnershipLease,
     intersection: BrokerAdmissionIntersection,
     verified_output_source: Option<VerifiedHostOutputReserveSourceV1>,
+}
+
+/// Joins one protected method-39 marker to its completed authenticated HostState handoff.
+///
+/// This is Host custody only. It does not authenticate Controller H/T archives,
+/// the archived signed method-39 outcome, or a live Host cut, and cannot
+/// permit a Controller failed-Create CAS.
+pub struct VerifiedHostNoApplyHandoffV1 {
+    marker: HostExecutionNoApplyRecordV1,
+    handoff_digest: ObjectDigest,
+}
+
+impl VerifiedHostNoApplyHandoffV1 {
+    /// Returns the exact protected Host terminal marker.
+    #[must_use]
+    pub const fn marker(&self) -> HostExecutionNoApplyRecordV1 {
+        self.marker
+    }
+
+    /// Returns the authenticated completed HostState handoff digest.
+    #[must_use]
+    pub const fn handoff_digest(&self) -> ObjectDigest {
+        self.handoff_digest
+    }
 }
 
 /// Retains only authenticated read-only ATTACH query authority and selectors.
@@ -628,6 +660,101 @@ where
         })
     }
 
+    /// Observes the original Host output pair under one signed Storage session.
+    ///
+    /// The request's Controller records remain structural until this Host plan
+    /// and current lease pass admission. The returned body is signed only by
+    /// the caller's protected broker-session outcome commit.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign authenticated method, stale Host boot/assignment,
+    /// invalid Host grant or lease, absent original pair, or changed readback.
+    pub fn observe_storage_output<F>(
+        &mut self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        authenticated: &AuthenticatedBrokerMethodRequestV1,
+        protected_boot_id: [u8; 16],
+        mut trusted_clock: F,
+    ) -> Result<Vec<u8>>
+    where
+        F: FnMut() -> Result<RawPairedClockSample>,
+    {
+        if authenticated.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            || authenticated.method() != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
+        {
+            return Err(HostError::Fence(
+                "Host Storage output readback method is invalid",
+            ));
+        }
+        let artifacts = authenticated.authorization().ok_or(HostError::Fence(
+            "Host Storage output readback plan is absent",
+        ))?;
+        self.ensure_healthy()?;
+        claim
+            .revalidate()
+            .map_err(|_| HostError::Fence("protected Host output claim is stale"))?;
+        let admission_clock = trusted_clock()?;
+        if admission_clock.host_boot_id() != protected_boot_id
+            || claim.host_verifier().boot_id() != protected_boot_id
+        {
+            return Err(HostError::Fence(
+                "Host Storage output readback boot changed",
+            ));
+        }
+
+        let request = decode_host_storage_output_readback_request_v1(
+            authenticated.exact_body(),
+            authenticated.peer(),
+            authenticated.peer_policy(),
+            admission_clock.boottime_nanoseconds(),
+        )?;
+        let request_id = authenticated.request_id();
+        if request.header().request_id() != &request_id
+            || request.header().deadline_boottime_nanoseconds()
+                != authenticated.deadline_boottime_nanoseconds()
+        {
+            return Err(HostError::Fence(
+                "Host Storage output readback header changed",
+            ));
+        }
+        let assignment = execution_assignment(claim)?;
+        let grant = host_storage_output_readback_grant_v1(
+            assignment,
+            request_id,
+            authenticated.exact_body(),
+        )?;
+        let prior_fence = self
+            .state
+            .prior_authorization(assignment.sandbox().as_bytes())
+            .ok_or(HostError::Fence(
+                "Host Storage output readback base fence is absent",
+            ))?;
+        let admitted = self.authority.admit_storage_output_readback(
+            artifacts,
+            assignment,
+            request_id,
+            authenticated.exact_body(),
+            &grant,
+            request.header().deadline_boottime_nanoseconds(),
+            &admission_clock,
+            prior_fence,
+        )?;
+        self.authority
+            .check_before_effect(&admitted.effect, &mut || {
+                trusted_clock().map_err(|_| aos_sandbox_broker::BrokerAdmissionError::FenceRejected)
+            })?;
+        let body = protected_storage_output_readback_body_v1(claim, &request, protected_boot_id)?;
+        self.authority
+            .check_before_effect(&admitted.effect, &mut || {
+                trusted_clock().map_err(|_| aos_sandbox_broker::BrokerAdmissionError::FenceRejected)
+            })?;
+        claim
+            .revalidate()
+            .map_err(|_| HostError::Fence("protected Host output changed after readback"))?;
+        Ok(body)
+    }
+
     /// Reserves one signed Host execution grant in the shared Host lease fence.
     ///
     /// # Errors
@@ -1000,6 +1127,18 @@ where
         if header.request_id() != &request_id {
             return Err(HostError::Fence("Host execution request identity differs"));
         }
+        if let HostExecutionGrantRequestV1::Query(query) = &request {
+            if let Some(admission) = claim
+                .load_admission(query.execution_id())
+                .map_err(|_| HostError::Fence("Host execution admission is unavailable"))?
+            {
+                if query.specification_digest() != admission.specification_digest() {
+                    return Err(HostError::Fence(
+                        "Host execution Query specification differs from admission",
+                    ));
+                }
+            }
+        }
         let runtime_witness_request_id = self
             .state
             .runtime_witness_request_id(assignment.sandbox().as_bytes())
@@ -1208,6 +1347,437 @@ where
         reservation.query_argument_historical(claim, &original_intent)
     }
 
+    /// Verifies the completed authenticated HostState handoff for one protected no-Apply marker.
+    ///
+    /// The method reloads and authenticates HostState, checks the original
+    /// method-37 source, then binds the method-39 grant and exact response
+    /// receipt to the runtime-journal marker. A later stage writer must still
+    /// hold and compare a fresh digest-bearing Host cut.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale Host state or runtime custody, an incomplete terminal
+    /// request, or any foreign original source, signed identity, or response.
+    pub fn verified_completed_no_apply_handoff_v1(
+        &self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        source: &ControllerExecutionArgumentAttemptV1,
+        original_session_binding: [u8; 32],
+        original_signed_request_digest: [u8; 32],
+    ) -> Result<Option<VerifiedHostNoApplyHandoffV1>> {
+        self.ensure_healthy()?;
+        let durable = self.store.load()?;
+        durable.validate_authenticated(&self.authority)?;
+        if durable != self.state {
+            return Err(HostError::Fence("HostState changed during no-Apply join"));
+        }
+        let assignment = execution_assignment(claim)?;
+        let runtime_handle = claim.currentness().runtime().handle();
+        if source.host_boot_id() != claim.host_verifier().boot_id() {
+            return Err(HostError::Fence("Host no-Apply boot identity changed"));
+        }
+        let original = self
+            .original_argument_intent_from_state(&durable, source, assignment, runtime_handle)
+            .map_err(|_| HostError::Fence("original Host argument handoff changed"))?;
+        if !original
+            .matches_original_session(original_session_binding, original_signed_request_digest)
+        {
+            return Err(HostError::Fence("original Host argument session changed"));
+        }
+
+        let Some(marker) = claim
+            .query_host_no_apply_v1(
+                source,
+                original_session_binding,
+                original_signed_request_digest,
+            )
+            .map_err(|_| HostError::Fence("protected no-Apply marker is stale"))?
+        else {
+            if durable.has_terminal_no_apply_handoff_for_create(
+                *source.create_operation().as_bytes(),
+                *source.execution().as_bytes(),
+            ) {
+                return Err(HostError::Fence("Host terminal no-Apply marker is missing"));
+            }
+            claim
+                .revalidate()
+                .map_err(|_| HostError::Fence("protected no-Apply claim changed"))?;
+            return Ok(None);
+        };
+
+        let handoff_digest = durable.completed_no_apply_handoff_digest(
+            &self.authority,
+            source,
+            marker,
+            assignment,
+            runtime_handle,
+        )?;
+        claim
+            .revalidate()
+            .map_err(|_| HostError::Fence("protected no-Apply claim changed"))?;
+        Ok(Some(VerifiedHostNoApplyHandoffV1 {
+            marker,
+            handoff_digest,
+        }))
+    }
+
+    /// Prepares a V2 preliminary record from current Host marker and handoff custody.
+    ///
+    /// This read-only path records the Controller-supplied H/T digests as
+    /// assertions. It neither verifies the Controller archive nor appends a
+    /// Host stage. The caller's signed session is checked by the dispatch path;
+    /// this preparer alone does not authenticate Controller archive custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-preliminary request, foreign original attempt, stale
+    /// HostState handoff, or changed protected cut.
+    pub fn prepare_no_apply_preliminary_v2(
+        &self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        request: &ValidatedHostNoApplySettlementRequestV2,
+        request_session_binding: [u8; 32],
+    ) -> Result<Option<PreparedHostSettlementPreliminaryV1>> {
+        if request.phase() != HostNoApplySettlementPhaseV2::Preliminary
+            || request.coordinate() != HostNoApplyControllerCoordinateV2::Preliminary
+        {
+            return Err(HostError::Fence("Host preliminary stage is invalid"));
+        }
+        let original = request.original();
+        let source =
+            ControllerExecutionArgumentAttemptV1::decode_canonical(original.canonical_attempt())
+                .map_err(|_| HostError::Fence("original Host settlement source is invalid"))?;
+        let Some(handoff) = self.verified_completed_no_apply_handoff_v1(
+            claim,
+            &source,
+            original.original_session_binding(),
+            original.original_signed_request_digest(),
+        )?
+        else {
+            return Ok(None);
+        };
+        claim
+            .prepare_host_settlement_preliminary_v1(
+                handoff.marker(),
+                handoff.handoff_digest(),
+                request.archive_head(),
+                request.signed_terminal_outcome(),
+                request_session_binding,
+                request.challenge(),
+            )
+            .map(Some)
+            .map_err(|_| HostError::Fence("Host preliminary cut changed"))
+    }
+
+    /// Retains the first Host settlement stage and its admission witness.
+    ///
+    /// The signed request authenticates the Controller's H/T assertions; Host
+    /// independently rejoins its current marker and completed handoff before
+    /// appending. This stage is nonauthorizing and cannot release Apply or
+    /// settle Controller Create. Later Controller floor and ACK phases remain
+    /// closed until their full cross-owner authority exchange is qualified.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign signed method, stale Host custody, changed protected
+    /// cut, conflicting stage, or an append with unknown durability.
+    pub fn commit_no_apply_preliminary_v2(
+        &self,
+        claim: &mut DormantRuntimeExecutionClaimV1<'_>,
+        authenticated: &AuthenticatedBrokerMethodRequestV1,
+        now_boottime_nanoseconds: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        if authenticated.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            || authenticated.method() != BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+            || authenticated.authorization().is_some()
+        {
+            return Err(HostError::Fence(
+                "Host settlement request is not authenticated",
+            ));
+        }
+        if now_boottime_nanoseconds == 0
+            || now_boottime_nanoseconds >= authenticated.deadline_boottime_nanoseconds()
+        {
+            return Err(HostError::Fence(
+                "Host preliminary admission clock is stale",
+            ));
+        }
+        let request = decode_host_no_apply_settlement_request_v2(
+            authenticated.exact_body(),
+            authenticated.peer(),
+            authenticated.peer_policy(),
+            now_boottime_nanoseconds,
+        )?;
+        if request.header().request_id() != &authenticated.request_id()
+            || request.header().deadline_boottime_nanoseconds()
+                != authenticated.deadline_boottime_nanoseconds()
+            || request.challenge() != authenticated.request_id()
+        {
+            return Err(HostError::Fence("Host preliminary signed header changed"));
+        }
+        if let Some(replayed) =
+            self.match_no_apply_preliminary_v2(claim, &request, authenticated.session_binding())?
+        {
+            claim
+                .ensure_host_settlement_admission_witness_v1(authenticated, &replayed)
+                .map_err(|_| {
+                    HostError::Fence("Host preliminary witness needs protected recovery")
+                })?;
+            return Ok(Some(replayed));
+        }
+        let Some(prepared) =
+            self.prepare_no_apply_preliminary_v2(claim, &request, authenticated.session_binding())?
+        else {
+            return Ok(None);
+        };
+        let committed = claim
+            .commit_host_settlement_preliminary_v1(prepared)
+            .map_err(|_| HostError::Fence("Host preliminary append needs protected recovery"))?;
+        let readback = self
+            .match_no_apply_preliminary_v2(claim, &request, authenticated.session_binding())?
+            .ok_or(HostError::Fence("Host preliminary readback is absent"))?;
+        if readback.as_slice() != committed.as_slice() {
+            return Err(HostError::Fence("Host preliminary readback changed"));
+        }
+        claim
+            .ensure_host_settlement_admission_witness_v1(authenticated, &readback)
+            .map_err(|_| HostError::Fence("Host preliminary witness needs protected recovery"))?;
+        Ok(Some(readback))
+    }
+
+    /// Completes an Effect-first HostState hold from the original signed request.
+    ///
+    /// This recovery-only path is deliberately absent from public dispatch.
+    /// It proves the original method-37 source and completed method-39 HostState
+    /// handoff again before appending the nonauthorizing HostState half. It
+    /// requires the original live signed session, Host boot, and deadline;
+    /// a lost or expired session stays quarantined. It does not verify
+    /// Controller archive currentness or release either fence.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign or expired signed method-42 request, changed Host
+    /// custody, a different preliminary stage, or an outcome-unknown append.
+    pub fn recover_effect_first_hoststate_hold_v1(
+        &self,
+        claim: &mut HostEffectFenceRecoveryClaimV1<'_>,
+        authenticated: &AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<()> {
+        if authenticated.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            || authenticated.method() != BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+            || authenticated.authorization().is_some()
+        {
+            return Err(HostError::Fence("Host fence recovery is not authenticated"));
+        }
+        let sample = crate::service::trusted_paired_clock_sample()?;
+        if sample.host_boot_id() != claim.host_verifier().boot_id() {
+            return Err(HostError::Fence("Host fence recovery boot is stale"));
+        }
+        let request = decode_host_no_apply_settlement_request_v2(
+            authenticated.exact_body(),
+            authenticated.peer(),
+            authenticated.peer_policy(),
+            sample.boottime_nanoseconds(),
+        )?;
+        if request.phase() != HostNoApplySettlementPhaseV2::Preliminary
+            || request.coordinate() != HostNoApplyControllerCoordinateV2::Preliminary
+        {
+            return Err(HostError::Fence("Host fence recovery is not preliminary"));
+        }
+        let original = request.original();
+        let source =
+            ControllerExecutionArgumentAttemptV1::decode_canonical(original.canonical_attempt())
+                .map_err(|_| HostError::Fence("original Host settlement source is invalid"))?;
+        let handoff = self.verified_completed_no_apply_handoff_for_recovery_v1(
+            claim,
+            &source,
+            original.original_session_binding(),
+            original.original_signed_request_digest(),
+        )?;
+        claim
+            .complete_hoststate_hold_v1(
+                &source,
+                original.original_session_binding(),
+                original.original_signed_request_digest(),
+                handoff.handoff_digest(),
+                request.archive_head(),
+                request.signed_terminal_outcome(),
+                authenticated.session_binding(),
+                request.challenge(),
+            )
+            .map_err(|_| HostError::Fence("Host fence recovery append needs cold readback"))?;
+        let durable = self.store.load()?;
+        durable.validate_authenticated(&self.authority)?;
+        if durable != self.state {
+            return Err(HostError::Fence("HostState changed during fence recovery"));
+        }
+        Ok(())
+    }
+
+    fn verified_completed_no_apply_handoff_for_recovery_v1(
+        &self,
+        claim: &HostEffectFenceRecoveryClaimV1<'_>,
+        source: &ControllerExecutionArgumentAttemptV1,
+        original_session_binding: [u8; 32],
+        original_signed_request_digest: [u8; 32],
+    ) -> Result<VerifiedHostNoApplyHandoffV1> {
+        self.ensure_healthy()?;
+        let durable = self.store.load()?;
+        durable.validate_authenticated(&self.authority)?;
+        if durable != self.state {
+            return Err(HostError::Fence(
+                "HostState changed during no-Apply recovery",
+            ));
+        }
+        let current = claim.currentness().runtime().currentness();
+        let assignment = BrokerAssignment::new(
+            current.sandbox(),
+            current.incarnation(),
+            current.assignment_epoch(),
+            current.desired_generation(),
+            current.assignment_digest(),
+        )
+        .map_err(|_| HostError::Fence("protected runtime assignment is invalid"))?;
+        let runtime_handle = claim.currentness().runtime().handle();
+        if source.host_boot_id() != claim.host_verifier().boot_id() {
+            return Err(HostError::Fence("Host no-Apply boot identity changed"));
+        }
+        let original = self
+            .original_argument_intent_from_state(&durable, source, assignment, runtime_handle)
+            .map_err(|_| HostError::Fence("original Host argument handoff changed"))?;
+        if !original
+            .matches_original_session(original_session_binding, original_signed_request_digest)
+        {
+            return Err(HostError::Fence("original Host argument session changed"));
+        }
+        let marker = claim
+            .query_host_no_apply_v1(
+                source,
+                original_session_binding,
+                original_signed_request_digest,
+            )
+            .map_err(|_| HostError::Fence("protected no-Apply marker is stale"))?
+            .ok_or(HostError::Fence("Host no-Apply marker is missing"))?;
+        let handoff_digest = durable.completed_no_apply_handoff_digest(
+            &self.authority,
+            source,
+            marker,
+            assignment,
+            runtime_handle,
+        )?;
+        claim
+            .revalidate()
+            .map_err(|_| HostError::Fence("protected no-Apply recovery claim changed"))?;
+        Ok(VerifiedHostNoApplyHandoffV1 {
+            marker,
+            handoff_digest,
+        })
+    }
+
+    /// Rejoins one historical stage to current Host marker and handoff custody.
+    ///
+    /// The caller must reauthenticate the original signed stage request before
+    /// supplying it here. This readback cannot renew the Host pre-append cut.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign original source, changed HostState handoff, or any
+    /// conflicting protected stage field.
+    pub fn match_no_apply_preliminary_v2(
+        &self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        request: &ValidatedHostNoApplySettlementRequestV2,
+        settlement_session_binding: [u8; 32],
+    ) -> Result<Option<Vec<u8>>> {
+        if request.phase() != HostNoApplySettlementPhaseV2::Preliminary
+            || request.coordinate() != HostNoApplyControllerCoordinateV2::Preliminary
+        {
+            return Err(HostError::Fence("Host preliminary request is invalid"));
+        }
+        let original = request.original();
+        let source =
+            ControllerExecutionArgumentAttemptV1::decode_canonical(original.canonical_attempt())
+                .map_err(|_| HostError::Fence("original Host settlement source is invalid"))?;
+        let Some(handoff) = self.verified_completed_no_apply_handoff_v1(
+            claim,
+            &source,
+            original.original_session_binding(),
+            original.original_signed_request_digest(),
+        )?
+        else {
+            return Ok(None);
+        };
+        let record = claim
+            .match_host_settlement_preliminary_v1(
+                &source,
+                original.original_session_binding(),
+                original.original_signed_request_digest(),
+                handoff.handoff_digest(),
+                request.archive_head(),
+                request.signed_terminal_outcome(),
+                settlement_session_binding,
+                request.challenge(),
+            )
+            .map_err(|_| HostError::Fence("Host preliminary replay is not exact"))?;
+        Ok(record.map(|bytes| bytes.to_vec()))
+    }
+
+    /// Reads protected settlement history for the exact original signed attempt.
+    ///
+    /// The HostState handoff and method-39 marker are rejoined before a stage
+    /// is returned. The history remains nonauthorizing after this query.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign signed query, stale original attempt, changed
+    /// HostState handoff, or malformed protected stage history.
+    pub fn query_no_apply_settlement_v2(
+        &self,
+        claim: &DormantRuntimeExecutionClaimV1<'_>,
+        authenticated: &AuthenticatedBrokerMethodRequestV1,
+        now_boottime_nanoseconds: u64,
+    ) -> Result<Option<ProtectedHostNoApplySettlementHistoryV1>> {
+        if authenticated.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            || authenticated.method()
+                != BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
+            || authenticated.authorization().is_some()
+        {
+            return Err(HostError::Fence(
+                "Host settlement query is not authenticated",
+            ));
+        }
+        let request = decode_host_no_apply_settlement_query_request_v2(
+            authenticated.exact_body(),
+            authenticated.peer(),
+            authenticated.peer_policy(),
+            now_boottime_nanoseconds,
+        )?;
+        let original = request.original();
+        let source =
+            ControllerExecutionArgumentAttemptV1::decode_canonical(original.canonical_attempt())
+                .map_err(|_| HostError::Fence("original Host settlement source is invalid"))?;
+        let handoff = self.verified_completed_no_apply_handoff_v1(
+            claim,
+            &source,
+            original.original_session_binding(),
+            original.original_signed_request_digest(),
+        )?;
+        let history = claim
+            .query_host_settlement_history_v1(
+                &source,
+                original.original_session_binding(),
+                original.original_signed_request_digest(),
+            )
+            .map_err(|_| HostError::Fence("Host settlement history is not exact"))?;
+        match (handoff, history) {
+            (None, None) => Ok(None),
+            (Some(handoff), Some(history)) if handoff.marker() == history.marker() => {
+                Ok(Some(history))
+            }
+            _ => Err(HostError::Fence("Host settlement handoff changed")),
+        }
+    }
+
     fn original_argument_intent(
         &self,
         source: &ControllerExecutionArgumentAttemptV1,
@@ -1227,6 +1797,16 @@ where
             return Err(HostArgumentAttemptErrorV1::OutcomeUnknown);
         }
 
+        self.original_argument_intent_from_state(&durable, source, assignment, runtime_handle)
+    }
+
+    fn original_argument_intent_from_state(
+        &self,
+        durable: &HostState,
+        source: &ControllerExecutionArgumentAttemptV1,
+        assignment: BrokerAssignment,
+        runtime_handle: ObjectDigest,
+    ) -> std::result::Result<OriginalHostArgumentIntentV1, HostArgumentAttemptErrorV1> {
         let original = durable
             .effect(&source.request_id())
             .ok_or(HostArgumentAttemptErrorV1::OutcomeUnknown)?;
@@ -1288,12 +1868,7 @@ where
         {
             return Err(HostError::Fence("Host execution reservation changed"));
         }
-        let mut digest = Sha256::new();
-        digest.update(b"aos.sandbox.host.execution-reservation-receipt.v1\0");
-        digest.update(reservation.request_id);
-        digest.update((outcome.len() as u64).to_be_bytes());
-        digest.update(outcome);
-        let receipt = digest.finalize().to_vec();
+        let receipt = host_execution_receipt_digest(reservation.request_id, outcome).to_vec();
         let completed = match existing.status() {
             BrokerEffectStatusV1::Pending => existing
                 .complete(receipt.clone())
@@ -2320,6 +2895,10 @@ where
             || supervisor.handle() != retained.supervisor.handle()
             || !payload.has_same_cgroup(&retained.payload)
             || payload.relative_cgroup_hint() != retained.payload.relative_cgroup_hint()
+            || payload.mount().identity() != retained.payload.mount().identity()
+            || payload.user().identity() != retained.payload.user().identity()
+            || payload.network().identity() != retained.payload.network().identity()
+            || payload.pid().identity() != retained.payload.pid().identity()
             || payload
                 .pidfd()
                 .info()
@@ -2346,6 +2925,46 @@ where
         Ok(())
     }
 
+    /// Commits a Host-authenticated scope name before any response exposes it.
+    ///
+    /// The caller must hold a current completed Guardian scope; no historical
+    /// request or non-Guardian observation may persist a recoverable handle.
+    pub(crate) fn retain_durable_scope_handle(
+        &mut self,
+        identity: HostRuntimeIdentity,
+    ) -> Result<()> {
+        let lineage = match self.state.completed_guardian_lineage(
+            identity.sandbox_id(),
+            identity.incarnation_id(),
+            &self.authority,
+        )? {
+            GuardianLineage::Absent | GuardianLineage::Shadowed => {
+                return Err(HostError::UnknownHandle);
+            }
+            GuardianLineage::Complete(lineage) => lineage,
+        };
+        let pins = self
+            .payload_pin(&identity)
+            .ok_or(HostError::UnknownHandle)?;
+        pins.recheck_kernel()?;
+        let observed = runtime_proof_snapshot_with_workspace_mount_id(
+            lineage.worker_proof.workspace_mount_id,
+            &pins.supervisor,
+            &pins.payload,
+        )?;
+        if observed != lineage.worker_proof || pins.invocation_id != lineage.payload_invocation {
+            return Err(HostError::Worker(
+                "payload scope differs from its completed launch proof".to_owned(),
+            ));
+        }
+        let handle = pins.scope_handle;
+        let mut proposed = self.state.clone();
+        if proposed.retain_scope_handle(&identity, &lineage, handle, &self.authority)? {
+            self.commit_state(&proposed)?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn recover_completed_runtime_scope(
         &mut self,
         identity: HostRuntimeIdentity,
@@ -2368,7 +2987,29 @@ where
         // Authenticate lineage before the fast path so a scope query cannot
         // race a newly admitted lifecycle transition.
         if retained_pins_are_current {
+            if let Some(saved) = self.state.current_scope_handle(&identity, &lineage)?
+                && self
+                    .runtime_pins
+                    .get(&identity)
+                    .is_none_or(|pins| pins.scope_handle != saved)
+            {
+                return Err(HostError::State(
+                    "volatile and durable payload scope handles disagree".to_owned(),
+                ));
+            }
             return Ok(());
+        }
+        let saved_handle = self.state.current_scope_handle(&identity, &lineage)?;
+        if let Some(saved) = saved_handle
+            && self.runtime_pins.iter().any(|(prior, pins)| {
+                prior.sandbox_id() == identity.sandbox_id()
+                    && prior.incarnation_id() == identity.incarnation_id()
+                    && pins.scope_handle != saved
+            })
+        {
+            return Err(HostError::State(
+                "volatile and durable payload scope handles disagree".to_owned(),
+            ));
         }
         let recovered = self
             .worker
@@ -2388,17 +3029,16 @@ where
                 "completed runtime recovery contradicted durable exact evidence".to_owned(),
             ));
         }
-        self.retain_runtime_observation(identity, recovered.verification.observation)
-            .and_then(|()| {
-                self.runtime_pins
-                    .contains_key(&identity)
-                    .then_some(())
-                    .ok_or_else(|| {
-                        HostError::Worker(
-                            "completed runtime recovery omitted retained payload pins".to_owned(),
-                        )
-                    })
-            })
+        self.retain_runtime_observation(identity, recovered.verification.observation)?;
+        let pins = self.runtime_pins.get_mut(&identity).ok_or_else(|| {
+            HostError::Worker("completed runtime recovery omitted retained payload pins".to_owned())
+        })?;
+        if let Some(handle) = saved_handle {
+            // The worker has compared its fresh complete proof with the
+            // authenticated launch snapshot before this name is restored.
+            pins.scope_handle = handle;
+        }
+        Ok(())
     }
 
     pub(crate) fn payload_pin(
@@ -5354,6 +5994,119 @@ mod tests {
                 .is_err()
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn storage_output_readback_requires_exact_signed_plan_and_current_base_fence() {
+        let fixture = AuthorityFixture::new();
+        let authority = fixture.authority();
+        let base_body = request(1, 1, 4);
+        let base_request =
+            decode_runtime_request(&base_body, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)
+                .unwrap();
+        let assignment = base_request.fence().broker_assignment().unwrap();
+        let base_artifacts = fixture.artifacts(&base_body, 1);
+        let base = authority
+            .admit(
+                &base_artifacts,
+                &base_request,
+                &base_body,
+                ProtocolVersion::new(1, 0),
+                &clock(),
+                None,
+            )
+            .unwrap();
+        let base_fence = authority
+            .seal_fence(assignment.sandbox().as_bytes(), &base.fence)
+            .unwrap();
+
+        let body = b"canonical method-48 request";
+        let grant = BrokerGrant::new(
+            BrokerVerb::HostObserveStorageOutput,
+            BrokerGrantTarget::Assignment,
+            aos_sandbox_core::BrokerArgumentCommitment::for_canonical_bytes(body),
+            4 * 1_024,
+            0,
+        )
+        .unwrap();
+        let plan = BrokerAuthorizationPlan::new(
+            BrokerAudience::Host,
+            ProtocolId::HostBroker,
+            ProtocolVersion::new(1, 0),
+            assignment,
+            TEST_NODE,
+            fixture.lease_signer.clone(),
+            vec![grant.clone()],
+            ObjectDigest::from_bytes([48; 32]),
+            fixture.revocation_scope,
+            100,
+            300,
+            Vec::new(),
+        )
+        .unwrap();
+        let plan_bytes = encode_broker_authorization_plan(&plan);
+        let plan_signature = signed_object(
+            &plan_bytes,
+            PortableMediaType::BrokerAuthorizationPlan,
+            fixture.plan_scope,
+            fixture.plan_signer.clone(),
+            SignaturePurpose::BrokerAuthorization,
+            &fixture.plan_policy_descriptor,
+            &fixture.plan_key,
+        );
+        let artifacts = validated_artifacts(BrokerAuthorizationArtifactsV1 {
+            broker_plan: plan_bytes,
+            broker_plan_signature: plan_signature,
+            ownership_lease: base_artifacts.ownership_lease().to_vec(),
+            ownership_lease_signature: base_artifacts.ownership_lease_signature().to_vec(),
+            ..Default::default()
+        });
+        let admit = |request_body: &[u8], semantic: &BrokerGrant, prior: &[u8], deadline| {
+            authority.admit_storage_output_readback(
+                &artifacts,
+                assignment,
+                [72; 16],
+                request_body,
+                semantic,
+                deadline,
+                &clock(),
+                prior,
+            )
+        };
+
+        let accepted = admit(body, &grant, &base_fence, 200).unwrap();
+        assert!(
+            authority
+                .check_before_effect(&accepted.effect, &mut || Ok(clock()))
+                .is_ok()
+        );
+        let foreign_body = b"canonical method-48 requesu";
+        let foreign_grant = BrokerGrant::new(
+            BrokerVerb::HostObserveStorageOutput,
+            BrokerGrantTarget::Assignment,
+            aos_sandbox_core::BrokerArgumentCommitment::for_canonical_bytes(foreign_body),
+            4 * 1_024,
+            0,
+        )
+        .unwrap();
+        assert!(admit(foreign_body, &foreign_grant, &base_fence, 200).is_err());
+        assert!(admit(body, &grant, &base_fence, TEST_BOOTTIME_NANOSECONDS).is_err());
+        assert!(admit(body, &grant, b"foreign base fence", 200).is_err());
+
+        let wrong_verb = BrokerGrant::new(
+            BrokerVerb::HostQueryExecutionOutput,
+            BrokerGrantTarget::Assignment,
+            grant.argument_commitment(),
+            4 * 1_024,
+            0,
+        )
+        .unwrap();
+        assert!(admit(body, &wrong_verb, &base_fence, 200).is_err());
+        assert!(
+            authority
+                .check_before_effect(&accepted.effect, &mut || Ok(clock_at(300, 200)))
+                .is_err()
+        );
     }
 
     #[tokio::test]

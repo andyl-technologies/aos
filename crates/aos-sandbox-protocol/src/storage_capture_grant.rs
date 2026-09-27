@@ -876,10 +876,12 @@ mod tests {
             *SETTLEMENT_MAGIC
         );
 
-        // Only a read-only candidate wire exists. Reserve/query have no method
-        // or production handler; a caller's well-formed source is not an effect
-        // permit or a production candidate issuer.
+        // Candidate readback and the separate output-reserve and query
+        // carriers remain closed to production. A caller's well-formed source
+        // grants neither capture authority nor an output-reserve effect.
         let candidate = BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE;
+        let output_reserve = BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT;
+        let output_query = BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT;
         for method_number in 0..=u16::MAX {
             let Some(method) = BrokerMethod::from_i32(i32::from(method_number)) else {
                 continue;
@@ -888,19 +890,19 @@ mod tests {
             if name.starts_with("BROKER_METHOD_STORAGE_")
                 && (name.contains("CAPTURE") || name.contains("EXECUTION_OUTPUT"))
             {
-                assert_eq!(
-                    method, candidate,
+                assert!(
+                    method == candidate || method == output_reserve || method == output_query,
                     "unexpected Storage capture method: {name}"
                 );
             }
         }
-        assert!(
-            !authenticated_broker_methods_for_role_v1(
-                BrokerSessionProtocolV1::Storage,
-                Audience::AUDIENCE_NODE_CONTROLLER,
-            )
-            .contains(&candidate)
+        let advertised = authenticated_broker_methods_for_role_v1(
+            BrokerSessionProtocolV1::Storage,
+            Audience::AUDIENCE_NODE_CONTROLLER,
         );
+        assert!(!advertised.contains(&candidate));
+        assert!(!advertised.contains(&output_reserve));
+        assert!(!advertised.contains(&output_query));
     }
 
     #[test]

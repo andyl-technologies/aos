@@ -135,7 +135,7 @@ pub fn decode_host_execution_argument_query_no_apply_request_v1(
     )
 }
 
-fn validate_request(
+pub(super) fn validate_request(
     header: Option<&aos_proto::aos::sandbox::local::v1::RequestHeader>,
     source: &[u8],
     original_session: &[u8],
@@ -248,7 +248,7 @@ pub fn decode_host_execution_argument_query_no_apply_response_v1(
     }
 }
 
-fn decode_record(
+pub(super) fn decode_record(
     bytes: &[u8],
     request: &ValidatedHostExecutionNoApplyRequestV1,
 ) -> Result<HostExecutionNoApplyRecordV1, ProtocolValidationError> {

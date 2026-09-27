@@ -66,6 +66,9 @@ pub use effect::{
 use effect::{
     EffectLedgerRecord, EffectState, MAXIMUM_DIAGNOSTIC_BYTES, decode_effect, encode_effect,
 };
+pub use observe_reservation::{
+    adopt_execution_observe_child_v1, observe_child_adoption_state_v1, observe_child_identity_v1,
+};
 use public_operation::{DurablePublicOperationV1, PUBLIC_OPERATION_RECORD_BYTES};
 pub use public_operation::{PublicOperationAdmissionV1, PublicOperationAuthorizationV1};
 
@@ -847,6 +850,8 @@ pub trait SingleNodeEffectExecutor {
 pub enum ReconcileOutcome {
     /// Ownership is pending and no effect was made eligible or invoked.
     OwnershipPending,
+    /// An adopted Observe child remains inert until a separate handoff protocol exists.
+    ObserveChildPending,
     /// Durable state advanced without invoking an external effect.
     Progressed,
     /// An effect was applied or recovered and its receipt became durable.
@@ -1279,6 +1284,9 @@ where
             .check_idempotency(&plan.idempotency_key, plan.request_digest)
         {
             IdempotencyOutcome::Replay(operation_id) => {
+                if observe_reservation::is_adopted_child(&self.journal, operation_id)? {
+                    return Err(ReconcilerError::OperationAlreadyExists);
+                }
                 self.validate_operation_gate_relation(operation_id)?;
                 let recorded = self.load_operation(operation_id)?;
                 let recorded_authorization = self
@@ -1473,8 +1481,12 @@ where
 
     fn pending_operation_count(&self) -> Result<usize, ReconcilerError> {
         let mut pending = 0_usize;
+        let adopted_children = observe_reservation::adopted_operations(&self.journal)?;
         for (key, value) in self.journal.records(RecordNamespace::Operation) {
-            let _operation_id = decode_operation_key(key)?;
+            let operation_id = decode_operation_key(key)?;
+            if adopted_children.contains(&operation_id) {
+                continue;
+            }
             let operation = decode_operation(value)?;
             if !matches!(
                 operation.state,
@@ -1509,8 +1521,12 @@ where
         self.ensure_ledger_validated_read_only()?;
 
         let mut first = None;
+        let adopted_children = observe_reservation::adopted_operations(&self.journal)?;
         for (key, value) in self.journal.records(RecordNamespace::Operation) {
             let operation_id = decode_operation_key(key)?;
+            if adopted_children.contains(&operation_id) {
+                continue;
+            }
             let operation = decode_operation(value)?;
             let state = match operation.state {
                 OperationState::Accepted => UnfinishedOperationStateV1::Accepted,
@@ -1611,6 +1627,9 @@ where
     ) -> Result<ReconcileOutcome, ReconcilerError> {
         self.ensure_ledger_validated()?;
         let operation = self.load_operation(operation_id)?;
+        if observe_reservation::is_adopted_child(&self.journal, operation_id)? {
+            return Ok(ReconcileOutcome::ObserveChildPending);
+        }
         let gate = self.load_and_validate_ownership_gate(operation_id, operation)?;
         match operation.state {
             OperationState::OwnershipPending => return Ok(ReconcileOutcome::OwnershipPending),
@@ -1912,10 +1931,15 @@ where
             validate_publication_namespace(&self.journal).map_err(|_| {
                 ReconcilerError::CorruptLedger("authority publication namespace is corrupt")
             })?;
+            observe_reservation::validate_all(&self.journal)?;
             self.validate_all_ownership_gates(validate_current_boot)?;
             self.validate_public_operation_authorizations()?;
             validate_runtime_authority_operations(&self.journal)?;
             create_failure::validate_all_prepare_floors(&self.journal)?;
+            crate::controller_no_apply_settlement_cursor::validate_all_controller_no_apply_cursors_v1(
+                &self.journal,
+            )
+            .map_err(|_| ReconcilerError::CorruptLedger("Controller no-Apply settlement cursor is corrupt"))?;
             if self
                 .journal
                 .records(RecordNamespace::SandboxSpec)
@@ -6732,6 +6756,11 @@ mod tests {
                 encode_effect(&changed_effect).unwrap(),
             )])
             .unwrap();
+        assert!(
+            reconciler
+                .recover_create_failure_settlement_ack_v1(operation_id)
+                .is_err()
+        );
         drop(reconciler);
         let mut reconciler =
             Reconciler::new(protected_runtime_journal(&directory), Executor::default());
@@ -6751,9 +6780,27 @@ mod tests {
                 102,
             )
             .unwrap();
-        reconciler
+        assert!(
+            reconciler
+                .recover_create_failure_settlement_ack_v1(operation_id)
+                .unwrap()
+                .is_none()
+        );
+        let acknowledgment = reconciler
             .settle_create_failed_before_commit(prepared)
             .unwrap();
+        assert_eq!(acknowledgment.operation_id, operation_id);
+        assert_eq!(
+            acknowledgment.controller_floor,
+            create_failure::test_prepare_floor_digest(&reconciler.journal, operation_id)
+        );
+        assert_ne!(acknowledgment.controller_cas.as_bytes(), &[0; 32]);
+        assert_eq!(
+            reconciler
+                .recover_create_failure_settlement_ack_v1(operation_id)
+                .unwrap(),
+            Some(acknowledgment)
+        );
         assert!(
             reconciler
                 .prepare_create_failed_before_commit(
@@ -6780,6 +6827,12 @@ mod tests {
         drop(reconciler);
         let mut recovered =
             Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        assert_eq!(
+            recovered
+                .recover_create_failure_settlement_ack_v1(operation_id)
+                .unwrap(),
+            Some(acknowledgment)
+        );
         let resource = recovered.public_operation(operation_id).unwrap().unwrap();
         assert_eq!(
             resource.phase.as_known(),
@@ -6993,7 +7046,7 @@ mod tests {
         let preliminary = HostSettlementRecordV1::preliminary(
             observed,
             archives,
-            1,
+            marker_sequence + 1,
             ObjectDigest::from_bytes([0xa3; 32]),
             [0xe3; 32],
             [0xe4; 16],
@@ -7022,7 +7075,8 @@ mod tests {
         );
 
         let proof = create_failure::CreateFailureSettlementProofV1::test_only(marker)
-            .with_test_lease(preliminary.digest());
+            .with_test_lease(preliminary.digest())
+            .with_test_lease_epoch(preliminary.epoch);
         let _lost_prepared = controller
             .prepare_create_failed_before_commit(operation_id, proof, 102)
             .unwrap();
@@ -7119,6 +7173,90 @@ mod tests {
                 foreign_preliminary,
                 foreign_sealed,
                 sealed_sequence,
+            )
+            .is_err()
+        );
+
+        let prepared = controller
+            .prepare_create_failed_before_commit(operation_id, proof, 102)
+            .unwrap();
+        let ack = controller
+            .settle_create_failed_before_commit(prepared)
+            .unwrap();
+        let canonical_ack = ack.encode_canonical();
+        assert_eq!(
+            create_failure::ControllerCreateFailureSettlementAckV1::decode_canonical(
+                &canonical_ack
+            )
+            .unwrap(),
+            ack,
+        );
+        let mut altered_ack = canonical_ack;
+        altered_ack[92] ^= 1;
+        assert!(
+            create_failure::ControllerCreateFailureSettlementAckV1::decode_canonical(&altered_ack)
+                .is_err()
+        );
+        let retained = sealed
+            .retain_ack(ack.controller_cas, sealed_sequence + 3)
+            .unwrap();
+        let retained_sequence = commit_protected_effect_record(
+            &mut host,
+            0xe9,
+            lease_key(execution, HostSettlementStageV1::AckRetained),
+            retained.encode_canonical().to_vec(),
+        );
+        assert_eq!(retained_sequence, retained.commit_sequence);
+        drop(host);
+        drop(controller);
+
+        let controller = Reconciler::new(
+            protected_runtime_journal(&controller_directory),
+            Executor::default(),
+        );
+        let mut host = protected_runtime_journal(&host_directory);
+        assert_eq!(
+            HostSettlementRecordV1::decode_canonical(
+                host.get(
+                    RecordNamespace::Effect,
+                    &lease_key(execution, HostSettlementStageV1::AckRetained),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            retained,
+        );
+        let ack = controller
+            .recover_create_failure_settlement_ack_v1(operation_id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            ack.validate_host_retention(
+                &controller.journal,
+                preliminary,
+                sealed,
+                retained,
+                retained_sequence,
+            )
+            .is_ok()
+        );
+        assert!(
+            ack.validate_host_retention(
+                &controller.journal,
+                preliminary,
+                sealed,
+                retained.with_test_controller_cas(ObjectDigest::from_bytes([0xfe; 32])),
+                retained_sequence,
+            )
+            .is_err()
+        );
+        assert!(
+            ack.validate_host_retention(
+                &controller.journal,
+                preliminary,
+                sealed,
+                retained,
+                retained_sequence - 1,
             )
             .is_err()
         );

@@ -371,9 +371,32 @@ in {
       assert measured["nodes"] == 2 and measured["file_bytes"] == 22, measured
       assert measured["root_device"] > 0 and measured["root_inode"] > 0, measured
       assert measured["mount_id"] > 0 and measured["tree_size"] > 0, measured
+      assert measured["distinct_inode_count"] == 2, measured
+      assert measured["directory_entry_count"] == 1, measured
+      assert measured["root_uid"] <= measured["maximum_portable_uid"], measured
+      assert measured["root_gid"] <= measured["maximum_portable_gid"], measured
+      assert measured["identity_tree_digest"].startswith("sha256:"), measured
       assert vm.succeed(
           f"{HELD_TREE_PROBE} aosproof/fsopen@held {measured['content_digest']}"
       )
+      pool_guid = int(vm.succeed(
+          f"{ZPOOL} get -Hp -o value guid aosproof"
+      ).strip())
+      bound = json.loads(vm.succeed(
+          f"{HELD_TREE_PROBE} aosproof/fsopen@held "
+          f"{measured['content_digest']} {pool_guid} {held_guid}"
+      ))
+      assert bound["content_digest"] == measured["content_digest"], bound
+      assert bound["identity_tree_digest"] == measured["identity_tree_digest"], bound
+      for wrong_pool, wrong_snapshot in [
+          (pool_guid - 1 if pool_guid > 1 else 2, held_guid),
+          (pool_guid, held_guid - 1 if held_guid > 1 else 2),
+      ]:
+          status, _, error = vm.execute(
+              f"{HELD_TREE_PROBE} aosproof/fsopen@held "
+              f"{measured['content_digest']} {wrong_pool} {wrong_snapshot}"
+          )
+          assert status != 0 and b"mount GUID differs" in error, error
       wrong_digest_status, _, wrong_digest_error = vm.execute(
           f"{HELD_TREE_PROBE} aosproof/fsopen@held sha256:{'00' * 32}"
       )

@@ -12,7 +12,9 @@ use aos_sandbox_protocol::semantics::payload_scope::canonical_payload_scope_sema
 fn mount_scope_requires_distinct_signed_authority_for_the_exact_retained_scope() {
     use aos_proto::aos::sandbox::local::v1::ObserveMountScopeRequest;
     use aos_sandbox_protocol::mount_scope::decode_mount_scope_request;
-    use aos_sandbox_protocol::semantics::mount_scope::canonical_mount_scope_semantics_v1;
+    use aos_sandbox_protocol::semantics::mount_scope::{
+        canonical_mount_scope_identity_semantics_v1, canonical_mount_scope_semantics_v1,
+    };
 
     let fixture = AuthorityFixture::new();
     let authority = fixture.authority();
@@ -59,6 +61,47 @@ fn mount_scope_requires_distinct_signed_authority_for_the_exact_retained_scope()
         .unwrap();
     assert_eq!(admitted.fence, current);
 
+    let identity_commitment = canonical_mount_scope_identity_semantics_v1(&query)
+        .unwrap()
+        .commitment();
+    assert_ne!(identity_commitment, commitment);
+    let identity_artifacts =
+        scope_artifacts(&fixture, &launch, &payload_query, identity_commitment, 1);
+    let (identity_fence, identity_current) =
+        install_fence(&authority, &launch, &identity_artifacts);
+    let identity_admitted = authority
+        .admit_mount_scope_identity(
+            &identity_artifacts,
+            &query,
+            &raw.encode_to_vec(),
+            &clock(),
+            &identity_fence,
+        )
+        .unwrap();
+    assert_eq!(identity_admitted.fence, identity_current);
+    assert!(
+        authority
+            .admit_mount_scope_identity(
+                &artifacts,
+                &query,
+                &raw.encode_to_vec(),
+                &clock(),
+                &sealed,
+            )
+            .is_err()
+    );
+    assert!(
+        authority
+            .admit_mount_scope(
+                &identity_artifacts,
+                &query,
+                &raw.encode_to_vec(),
+                &clock(),
+                &identity_fence,
+            )
+            .is_err()
+    );
+
     let payload_commitment = canonical_payload_scope_semantics_v1(&payload_query)
         .unwrap()
         .commitment();
@@ -100,6 +143,17 @@ fn mount_scope_requires_distinct_signed_authority_for_the_exact_retained_scope()
                 &raw.encode_to_vec(),
                 &clock(),
                 &sealed,
+            )
+            .is_err()
+    );
+    assert!(
+        authority
+            .admit_mount_scope_identity(
+                &identity_artifacts,
+                &replacement,
+                &raw.encode_to_vec(),
+                &clock(),
+                &identity_fence,
             )
             .is_err()
     );

@@ -377,21 +377,18 @@ impl GuardianConfig {
 
     #[cfg(test)]
     pub(crate) fn for_tests() -> Result<Self> {
-        let path =
-            std::env::current_exe().map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        let descriptor = rustix::fs::open(
-            &path,
-            rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        let executable = GuardianExecutableDescriptor::from_descriptor(descriptor.as_fd())
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory =
+            tempfile::tempdir().map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        let path = directory.path().join("guardian");
+        std::fs::write(&path, b"guardian-test")
             .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        Ok(Self {
-            executable,
-            executable_path: path.to_string_lossy().into_owned(),
-            timeout_start: Duration::from_secs(30),
-        })
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o500))
+            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        let descriptor = std::fs::File::open(&path)
+            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        Self::for_test_descriptor(descriptor.as_fd())
     }
 
     #[cfg(test)]

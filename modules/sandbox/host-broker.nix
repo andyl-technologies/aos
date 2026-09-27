@@ -60,6 +60,7 @@
       opensshAttachTrust = "openssh-attach-trust.json";
       opensshAttachGrantPublicKey = "openssh-attach-grant-public-key";
       guestAgentSigningSeed = "guest-agent-signing-seed-v1";
+      runtimeBootstrapTrustPin = "runtime-bootstrap-trust-pin-v1";
       opensshAttachHostPrivateKey = "openssh-attach-host-private-key-v1";
       phase0ProbeSigningSeed = "phase0-probe-signing-seed-v1";
       phase0ProbePublicKey = "phase0-probe-public-key-v1";
@@ -128,6 +129,8 @@ in {
             then "Optional dedicated controller OpenSSH attach-grant verifier key loaded as ${credentialFile}; broker-plan verification keys cannot authorize attach grants."
             else if name == "guestAgentSigningSeed"
             then "Optional externally provisioned AOSGSK01 guest-agent signing seed loaded as ${credentialFile}; its derived public key must match the protected runtime peer before launch."
+            else if name == "runtimeBootstrapTrustPin"
+            then "Optional externally provisioned AOSRBT01 signer pin and monotonic deployment-epoch floor loaded as ${credentialFile}; the dormant proof decoder alone grants no Host bootstrap authority."
             else if name == "opensshAttachHostPrivateKey"
             then "Optional externally provisioned unencrypted Ed25519 OpenSSH server private key loaded as ${credentialFile}; its public key must match independent protected attach trust pins before launch."
             else if name == "phase0ProbeSigningSeed"

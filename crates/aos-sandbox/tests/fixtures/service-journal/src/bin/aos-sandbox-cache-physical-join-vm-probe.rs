@@ -110,6 +110,10 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let mut physical = DormantCacheOwnerV1::open_fixed(limits)?;
     physical.initialize_empty_manifest_for_vm_fixture()?;
+    if std::env::args().nth(1).as_deref() == Some("bootstrap-only") {
+        println!("cache-protected-physical-bootstrap:PASS");
+        return Ok(());
+    }
     let ticket = physical
         .release_for_ordered_reopen()
         .map_err(|failure| failure.into_parts().1)?;
