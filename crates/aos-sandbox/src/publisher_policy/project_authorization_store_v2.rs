@@ -34,7 +34,8 @@ use crate::hierarchy::source_seed::verify_controller_source_tree_seed_from_fixed
 #[cfg(any(target_os = "linux", test))]
 use crate::hierarchy::source_seed::{
     ControllerSourceTreeSeedErrorV1, ControllerSourceTreeSeedExpectedV1,
-    VerifiedControllerSourceTreeSeedV1,
+    PinnedControllerSourceTreeSeedIssuerV1, VerifiedControllerSourceTreeSeedV1,
+    verify_controller_source_tree_seed_v1,
 };
 use crate::journal::{CommitResult, Journal, JournalRecord, RecordNamespace};
 
@@ -96,8 +97,8 @@ pub(super) enum ProjectAuthorizationRetentionV2 {
 
 /// Reports why a Controller-held initial-tree seed preflight is unavailable.
 ///
-/// Passing this preflight does not spend the seed epoch or authorize Source
-/// journal mutation.
+/// Passing this preflight, including its current-pair DATA read, does not spend
+/// the seed epoch or authorize Source journal mutation.
 #[cfg(any(target_os = "linux", test))]
 #[derive(Debug, Error)]
 pub(crate) enum CurrentSourceTreeSeedPreflightErrorV1 {
@@ -110,6 +111,9 @@ pub(crate) enum CurrentSourceTreeSeedPreflightErrorV1 {
     /// The seed or its distinct fixed issuer is unavailable or stale.
     #[error(transparent)]
     Seed(#[from] ControllerSourceTreeSeedErrorV1),
+    /// The current pair cannot form the existing nonauthorizing acceptance data.
+    #[error(transparent)]
+    Acceptance(#[from] crate::hierarchy::genesis_profile::SourceGenesisErrorV1),
 }
 
 pub(super) fn row_key(project: ProjectId, request_id: [u8; 16]) -> Vec<u8> {
@@ -342,10 +346,8 @@ impl PublisherPolicyStore<'_> {
         let authorization_issuer =
             ProtectedProjectAuthorizationIssuerV2::from_systemd_credentials()?;
         authorization_issuer.recheck()?;
-        let authorization = self
-            .current_authenticated_project_authorization_v2(project, authorization_issuer.pin())?
-            .ok_or(CurrentSourceTreeSeedPreflightErrorV1::MissingAuthorization)?;
-        let head_digest = self.current_project_authorization_head_digest_v2(project)?;
+        let (authorization, head_digest) =
+            self.current_source_genesis_authorization_v1(project, authorization_issuer.pin())?;
         let verified = verify_seed_for_current_authorization_v1(
             packet,
             authorization,
@@ -355,6 +357,22 @@ impl PublisherPolicyStore<'_> {
         authorization_issuer.recheck()?;
         self.require_fixed_controller_writer_v2()?;
         Ok(verified)
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    fn current_source_genesis_authorization_v1(
+        &self,
+        project: ProjectId,
+        issuer: &PinnedPublisherProjectAuthorizationIssuerV2,
+    ) -> Result<
+        (VerifiedPublisherProjectAuthorizationSourceV2, ObjectDigest),
+        CurrentSourceTreeSeedPreflightErrorV1,
+    > {
+        let authorization = self
+            .current_authenticated_project_authorization_v2(project, issuer)?
+            .ok_or(CurrentSourceTreeSeedPreflightErrorV1::MissingAuthorization)?;
+        let head_digest = self.current_project_authorization_head_digest_v2(project)?;
+        Ok((authorization, head_digest))
     }
 
     #[cfg(any(target_os = "linux", test))]
@@ -501,53 +519,75 @@ impl PublisherPolicyStore<'_> {
         crate::hierarchy::genesis_profile::ControllerSourceGenesisAcceptanceRecordV1,
         crate::hierarchy::genesis_profile::SourceGenesisErrorV1,
     > {
-        use crate::hierarchy::genesis_profile::{
-            ControllerSourceGenesisAcceptanceRecordV1, SourceGenesisErrorV1,
-        };
+        use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
+
+        self.inspect_current_source_genesis_pair_from_fixed_issuers_v1(project, seed, authorization)
+            .map_err(|error| match error {
+                CurrentSourceTreeSeedPreflightErrorV1::Acceptance(error) => error,
+                _ => SourceGenesisErrorV1::Stale,
+            })
+    }
+
+    /// Reads the exact current pair once under this store's Controller writer.
+    ///
+    /// Both fixed issuer files remain retained until the joined read is checked
+    /// again. The result is the existing acceptance DATA, not admission or a
+    /// cacheable currentness proof. Later phases must perform their own read.
+    ///
+    /// # Errors
+    ///
+    /// Distinguishes absent current authorization from invalid signatures,
+    /// changed publisher or authorization heads, replaced issuer custody,
+    /// differing packets and shared administrative role keys.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn inspect_current_source_genesis_pair_from_fixed_issuers_v1(
+        &self,
+        project: ProjectId,
+        seed: [u8; 224],
+        authorization: [u8; 224],
+    ) -> Result<
+        crate::hierarchy::genesis_profile::ControllerSourceGenesisAcceptanceRecordV1,
+        CurrentSourceTreeSeedPreflightErrorV1,
+    > {
         use crate::public_api_session::PinnedSystemdCredential;
 
-        self.preflight_current_source_tree_seed_from_fixed_issuers_v1(project, &seed)
-            .map_err(|_| SourceGenesisErrorV1::Stale)?;
-        let current = self
-            .current_authenticated_project_authorization_from_fixed_issuer_v2(project)?
-            .ok_or(SourceGenesisErrorV1::Stale)?;
-        if current.packet_digest() != commitment(PACKET_DOMAIN, &authorization) {
-            return Err(SourceGenesisErrorV1::Stale);
-        }
-        let authorization_head = self.current_project_authorization_head_digest_v2(project)?;
-        let seed_pin = PinnedSystemdCredential::load_controller_source_tree_seed_issuer_v1()
-            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        self.require_fixed_controller_writer_v2()?;
         let authorization_pin = PinnedSystemdCredential::load_project_authorization_issuer_v2()
-            .map_err(|_| SourceGenesisErrorV1::Stale)?;
-        let seed_issuer =
-            crate::hierarchy::source_seed::PinnedControllerSourceTreeSeedIssuerV1::decode(
-                seed_pin.bytes(),
-            )?;
+            .map_err(|_| ProjectAuthorizationSourceErrorV2::Credential)?;
         let authorization_issuer =
             PinnedPublisherProjectAuthorizationIssuerV2::decode(authorization_pin.bytes())?;
-        if seed_issuer.verifying_key() == authorization_issuer.verifying_key() {
-            return Err(SourceGenesisErrorV1::Stale);
-        }
-        let roles = Sha256::new()
-            .chain_update(b"aos.sandbox.source-genesis.administrative-roles.v1\0")
-            .chain_update(seed_pin.bytes())
-            .chain_update(authorization_pin.bytes())
-            .finalize();
-        seed_pin
-            .recheck()
-            .map_err(|_| SourceGenesisErrorV1::Stale)?;
         authorization_pin
             .recheck()
-            .map_err(|_| SourceGenesisErrorV1::Stale)?;
-        self.require_fixed_controller_writer_v2()?;
-        ControllerSourceGenesisAcceptanceRecordV1::new(
+            .map_err(|_| ProjectAuthorizationSourceErrorV2::Credential)?;
+        let (current, authorization_head) =
+            self.current_source_genesis_authorization_v1(project, &authorization_issuer)?;
+
+        // Preserve the missing-authorization result before attempting seed
+        // validation. Both roles then use these same retained credential bytes.
+        let seed_pin = PinnedSystemdCredential::load_controller_source_tree_seed_issuer_v1()
+            .map_err(|_| ControllerSourceTreeSeedErrorV1::Credential)?;
+        let seed_issuer = PinnedControllerSourceTreeSeedIssuerV1::decode(seed_pin.bytes())?;
+        seed_pin
+            .recheck()
+            .map_err(|_| ControllerSourceTreeSeedErrorV1::Credential)?;
+        let pair = assemble_current_source_genesis_pair_v1(
             seed,
             authorization,
-            current.publisher_head_digest(),
-            current.publisher_revision_digest(),
+            current,
             authorization_head,
-            ObjectDigest::from_bytes(roles.into()),
-        )
+            &seed_issuer,
+            &authorization_issuer,
+            administrative_roles_digest_v1(seed_pin.bytes(), authorization_pin.bytes()),
+        )?;
+
+        seed_pin
+            .recheck()
+            .map_err(|_| ControllerSourceTreeSeedErrorV1::Credential)?;
+        authorization_pin
+            .recheck()
+            .map_err(|_| ProjectAuthorizationSourceErrorV2::Credential)?;
+        self.require_fixed_controller_writer_v2()?;
+        Ok(pair)
     }
 
     /// Rejoins completed genesis provenance without claiming old heads are current.
@@ -775,6 +815,62 @@ impl PublisherPolicyStore<'_> {
 }
 
 #[cfg(any(target_os = "linux", test))]
+fn administrative_roles_digest_v1(
+    seed_credential: &[u8],
+    authorization_credential: &[u8],
+) -> ObjectDigest {
+    ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(b"aos.sandbox.source-genesis.administrative-roles.v1\0")
+            .chain_update(seed_credential)
+            .chain_update(authorization_credential)
+            .finalize()
+            .into(),
+    )
+}
+
+// These arguments are DATA derived in one current read, not an authority
+// constructor. The production caller retains both fixed credentials and the
+// Controller writer; no joined result survives to replace a later recheck.
+#[cfg(any(target_os = "linux", test))]
+fn assemble_current_source_genesis_pair_v1(
+    seed: [u8; 224],
+    authorization: [u8; 224],
+    current: VerifiedPublisherProjectAuthorizationSourceV2,
+    authorization_head: ObjectDigest,
+    seed_issuer: &PinnedControllerSourceTreeSeedIssuerV1,
+    authorization_issuer: &PinnedPublisherProjectAuthorizationIssuerV2,
+    administrative_roles: ObjectDigest,
+) -> Result<
+    crate::hierarchy::genesis_profile::ControllerSourceGenesisAcceptanceRecordV1,
+    CurrentSourceTreeSeedPreflightErrorV1,
+> {
+    use crate::hierarchy::genesis_profile::{
+        ControllerSourceGenesisAcceptanceRecordV1, SourceGenesisErrorV1,
+    };
+
+    verify_seed_for_current_authorization_v1(
+        &seed,
+        current,
+        authorization_head,
+        |packet, expected| verify_controller_source_tree_seed_v1(packet, seed_issuer, expected),
+    )?;
+    if current.packet_digest() != commitment(PACKET_DOMAIN, &authorization)
+        || seed_issuer.verifying_key() == authorization_issuer.verifying_key()
+    {
+        return Err(SourceGenesisErrorV1::Stale.into());
+    }
+    Ok(ControllerSourceGenesisAcceptanceRecordV1::new(
+        seed,
+        authorization,
+        current.publisher_head_digest(),
+        current.publisher_revision_digest(),
+        authorization_head,
+        administrative_roles,
+    )?)
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn verify_seed_for_current_authorization_v1(
     packet: &[u8],
     authorization: VerifiedPublisherProjectAuthorizationSourceV2,
@@ -813,6 +909,9 @@ mod tests {
     use ed25519_dalek::SigningKey;
 
     use crate::JournalTransaction;
+    use crate::hierarchy::genesis_profile::{
+        ControllerSourceGenesisAcceptanceRecordV1, SourceGenesisErrorV1, hash,
+    };
     use crate::hierarchy::source_seed::{
         ControllerSourceTreeSeedV1, PinnedControllerSourceTreeSeedIssuerV1,
         encode_controller_source_tree_seed_credential_v1, sign_controller_source_tree_seed_v1,
@@ -820,6 +919,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::publisher_policy::project_authorization_source_v2::encode_project_authorization_issuer_credential_v2;
     use crate::publisher_policy::project_authorization_test_fixture::{
         TestDirectory, packet as signed_packet, pin as issuer_pin, policy as policy_at,
     };
@@ -874,13 +974,16 @@ mod tests {
                 &pin(&authorization_signer),
             )
             .unwrap();
-        let authorization = store
-            .current_authenticated_project_authorization_v2(project, &pin(&authorization_signer))
-            .unwrap()
+        let authorization_issuer = pin(&authorization_signer);
+        let (authorization, head_digest) = store
+            .current_source_genesis_authorization_v1(project, &authorization_issuer)
             .unwrap();
-        let head_digest = store
-            .current_project_authorization_head_digest_v2(project)
-            .unwrap();
+        assert_eq!(
+            Some(authorization),
+            store
+                .current_authenticated_project_authorization_v2(project, &authorization_issuer)
+                .unwrap()
+        );
         let seed = ControllerSourceTreeSeedV1::new(
             project,
             authorization.limits(),
@@ -908,19 +1011,51 @@ mod tests {
             .seed(),
             seed
         );
+        let authorization_credential = encode_project_authorization_issuer_credential_v2(
+            7,
+            &authorization_signer.verifying_key(),
+        )
+        .unwrap();
+        let roles = administrative_roles_digest_v1(&seed_credential, &authorization_credential);
+        assert_eq!(
+            roles,
+            hash(
+                b"aos.sandbox.source-genesis.administrative-roles.v1\0",
+                &[
+                    seed_credential.as_slice(),
+                    authorization_credential.as_slice()
+                ]
+                .concat(),
+            )
+        );
+        let assemble = |seed_packet, authorization_packet| {
+            assemble_current_source_genesis_pair_v1(
+                seed_packet,
+                authorization_packet,
+                authorization,
+                head_digest,
+                &seed_issuer,
+                &authorization_issuer,
+                roles,
+            )
+        };
+        let pair = assemble(seed_packet, authorization_packet).unwrap();
+        let expected = ControllerSourceGenesisAcceptanceRecordV1::new(
+            seed_packet,
+            authorization_packet,
+            authorization.publisher_head_digest(),
+            authorization.publisher_revision_digest(),
+            head_digest,
+            roles,
+        )
+        .unwrap();
+        assert_eq!(pair, expected);
 
         let mismatch = |seed: ControllerSourceTreeSeedV1| {
             let packet =
                 sign_controller_source_tree_seed_v1(seed, seed_issuer.generation(), &seed_signer)
                     .unwrap();
-            verify_seed_for_current_authorization_v1(
-                &packet,
-                authorization,
-                head_digest,
-                |packet, expected| {
-                    verify_controller_source_tree_seed_v1(packet, &seed_issuer, expected)
-                },
-            )
+            assemble(packet, authorization_packet)
         };
         let changed =
             |limits, publisher_generation, publisher_head, authorization_head, request, epoch| {
@@ -993,6 +1128,37 @@ mod tests {
             ));
         }
 
+        let mut altered_seed = seed_packet;
+        altered_seed[223] ^= 1;
+        assert!(matches!(
+            assemble(altered_seed, authorization_packet),
+            Err(CurrentSourceTreeSeedPreflightErrorV1::Seed(
+                ControllerSourceTreeSeedErrorV1::Signature
+            ))
+        ));
+        let other_authorization = packet(&store, project, [8; 16], 9, &authorization_signer);
+        assert!(matches!(
+            assemble(seed_packet, other_authorization),
+            Err(CurrentSourceTreeSeedPreflightErrorV1::Acceptance(
+                SourceGenesisErrorV1::Stale
+            ))
+        ));
+        let shared_key_issuer = pin(&seed_signer);
+        assert!(matches!(
+            assemble_current_source_genesis_pair_v1(
+                seed_packet,
+                authorization_packet,
+                authorization,
+                head_digest,
+                &seed_issuer,
+                &shared_key_issuer,
+                roles,
+            ),
+            Err(CurrentSourceTreeSeedPreflightErrorV1::Acceptance(
+                SourceGenesisErrorV1::Stale
+            ))
+        ));
+
         let rotated_key = SigningKey::from_bytes(&[43; 32]);
         let rotated_credential =
             encode_controller_source_tree_seed_credential_v1(11, &rotated_key.verifying_key())
@@ -1017,12 +1183,44 @@ mod tests {
             .publish_policy_from_trusted_controller([6; 16], Some(1), &policy(project, 2))
             .unwrap();
         assert!(matches!(
-            store.current_authenticated_project_authorization_v2(
-                project,
-                &pin(&authorization_signer)
-            ),
+            store.current_authenticated_project_authorization_v2(project, &authorization_issuer),
             Err(ProjectAuthorizationSourceErrorV2::Stale)
         ));
+        assert!(matches!(
+            store.current_source_genesis_authorization_v1(project, &authorization_issuer),
+            Err(CurrentSourceTreeSeedPreflightErrorV1::Authorization(
+                ProjectAuthorizationSourceErrorV2::Stale
+            ))
+        ));
+    }
+
+    #[test]
+    fn current_pair_read_preserves_missing_authorization() {
+        let directory = TestDirectory::new();
+        let project = ProjectId::from_bytes([1; 16]);
+        let authorization_signer = SigningKey::from_bytes(&[2; 32]);
+        let mut journal = directory.open();
+        let store = initial_store(&mut journal, project);
+
+        assert!(matches!(
+            store.current_source_genesis_authorization_v1(project, &pin(&authorization_signer)),
+            Err(CurrentSourceTreeSeedPreflightErrorV1::MissingAuthorization)
+        ));
+        assert!(
+            store
+                .current_authenticated_project_authorization_v2(
+                    project,
+                    &pin(&authorization_signer)
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .current_retained_project_authorization_v2(project)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1088,6 +1286,16 @@ mod tests {
         ));
         assert!(matches!(
             copy.preflight_current_source_tree_seed_from_fixed_issuers_v1(project, &seed_packet),
+            Err(CurrentSourceTreeSeedPreflightErrorV1::Authorization(
+                ProjectAuthorizationSourceErrorV2::Publisher(PublisherPolicyError::Journal(_))
+            ))
+        ));
+        assert!(matches!(
+            copy.inspect_current_source_genesis_pair_from_fixed_issuers_v1(
+                project,
+                seed_packet,
+                authorization_packet,
+            ),
             Err(CurrentSourceTreeSeedPreflightErrorV1::Authorization(
                 ProjectAuthorizationSourceErrorV2::Publisher(PublisherPolicyError::Journal(_))
             ))
@@ -1398,10 +1606,32 @@ mod tests {
         let mut reopened = directory.open();
         let store =
             PublisherPolicyStore::load(&mut reopened, PublisherPolicyLimits::default()).unwrap();
+        let (current, head_digest) = store
+            .current_source_genesis_authorization_v1(project, &pin(&signer))
+            .unwrap();
+        assert_eq!(
+            Some(current),
+            store
+                .current_authenticated_project_authorization_v2(project, &pin(&signer))
+                .unwrap()
+        );
+        assert_eq!(current.packet_digest(), commitment(PACKET_DOMAIN, &signed));
+        assert_eq!(
+            head_digest,
+            store
+                .current_project_authorization_head_digest_v2(project)
+                .unwrap()
+        );
         let rotated = SigningKey::from_bytes(&[3; 32]);
         assert!(matches!(
             store.current_authenticated_project_authorization_v2(project, &pin(&rotated)),
             Err(ProjectAuthorizationSourceErrorV2::Signature)
+        ));
+        assert!(matches!(
+            store.current_source_genesis_authorization_v1(project, &pin(&rotated)),
+            Err(CurrentSourceTreeSeedPreflightErrorV1::Authorization(
+                ProjectAuthorizationSourceErrorV2::Signature
+            ))
         ));
         drop(store);
         drop(reopened);
@@ -1443,6 +1673,12 @@ mod tests {
         assert!(matches!(
             store.current_authenticated_project_authorization_v2(project, &pin(&signer)),
             Err(ProjectAuthorizationSourceErrorV2::Signature)
+        ));
+        assert!(matches!(
+            store.current_source_genesis_authorization_v1(project, &pin(&signer)),
+            Err(CurrentSourceTreeSeedPreflightErrorV1::Authorization(
+                ProjectAuthorizationSourceErrorV2::Signature
+            ))
         ));
     }
 }
