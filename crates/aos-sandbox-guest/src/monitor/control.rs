@@ -55,7 +55,7 @@ impl MonitorRegistry {
     /// # Errors
     /// Rejects missing/currently foreign custody, expired authority, substitution,
     /// unsupported original topology, reused sequence or ambiguous effect/ACK.
-    pub(super) fn original_control_v5(
+    pub(crate) fn original_control_v5(
         &self,
         action: OriginalControlActionV5,
         expected_binding: [u8; 32],
@@ -81,7 +81,7 @@ impl MonitorRegistry {
                 super::terminal::refresh_original_terminal(installed, session, ledger)?;
                 apply_or_observe(
                     installed,
-                    &session.connection,
+                    &mut session.connection,
                     &session.subject,
                     &session.child,
                     &session.original_witness,
@@ -100,7 +100,7 @@ impl MonitorRegistry {
                 super::refresh_relay(installed, custody, ledger)?;
                 apply_or_observe(
                     installed,
-                    &custody.connection,
+                    &mut custody.connection,
                     &custody.subject,
                     &custody.child,
                     &custody.original_witness,
@@ -139,7 +139,7 @@ impl MonitorRegistry {
 
 fn apply_or_observe(
     installed: &InstalledScope,
-    connection: &SeqpacketSocket,
+    connection: &mut SeqpacketSocket,
     subject: &KernelAuthorizedRecordSubject,
     child: &PidFd,
     witness: &[u8],
@@ -154,7 +154,7 @@ fn apply_or_observe(
     authority_expires_at: i64,
     effect_deadline_boottime_nanoseconds: u64,
 ) -> Result<OriginalControlObservationV5, Error> {
-    let recheck_root = || {
+    let recheck_root = |connection: &SeqpacketSocket| {
         require_control_custody(
             installed,
             connection,
@@ -165,7 +165,7 @@ fn apply_or_observe(
             ledger,
         )
     };
-    recheck_root()?;
+    recheck_root(connection)?;
     let process = ledger.read_process_bytes(installed.runtime.claim().binding.execution_id)?;
     ledger.require_active_original_tree_v5(&process)?;
     let binding = control_binding(installed, connection, subject, child, witness)?;
@@ -227,11 +227,11 @@ fn apply_or_observe(
             crate::process::check_deadline(deadline)?;
             // This deliberately does not reacquire ledger.live: the actual
             // tree/PTY owner holds that lock through every kernel effect.
-            recheck_root()
+            recheck_root(connection)
         },
     )?;
     current_deadline().map_err(|_| Error::AmbiguousEffect)?;
-    recheck_root().map_err(|_| Error::AmbiguousEffect)?;
+    recheck_root(connection).map_err(|_| Error::AmbiguousEffect)?;
     if matches!(request.action, OpenSshControlActionV5::Pty { .. }) {
         controls.pty_configured = true;
     }
@@ -240,7 +240,7 @@ fn apply_or_observe(
     ack[8..16].copy_from_slice(&request.sequence.to_be_bytes());
     connection.send(&ack).map_err(|_| Error::AmbiguousEffect)?;
     current_deadline().map_err(|_| Error::AmbiguousEffect)?;
-    recheck_root().map_err(|_| Error::AmbiguousEffect)?;
+    recheck_root(connection).map_err(|_| Error::AmbiguousEffect)?;
     Ok(OriginalControlObservationV5 {
         binding,
         phase: OriginalControlPhaseV5::Applied,
