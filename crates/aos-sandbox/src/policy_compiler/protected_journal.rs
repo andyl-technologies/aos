@@ -37,6 +37,8 @@ use super::{
     CandidateAuthorityV1, CompiledPolicyCandidateV1, PolicyCompilerInputV1, PolicyModelError,
 };
 
+mod canonical_output;
+
 const CURRENT_MAGIC: &[u8; 8] = b"AOSPCU01";
 const CANDIDATE_MAGIC: &[u8; 8] = b"AOSPCC01";
 const CANDIDATE_V2_FIXED_BYTES: usize = 478;
@@ -2018,7 +2020,7 @@ fn decode_diagnostics_payload(bytes: &[u8]) -> Result<&[u8], PolicyCompilerJourn
 }
 
 fn validate_canonical_diagnostics(bytes: &[u8]) -> Result<(), PolicyCompilerJournalErrorV1> {
-    validate_canonical_json_domain(bytes, DIAGNOSTICS_DOMAIN)
+    canonical_output::validate_diagnostics(bytes)
 }
 
 fn encode_effect_payload(
@@ -2344,13 +2346,8 @@ pub(super) fn validated_candidate_body(
                     return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
                 }
             }
-            2 => {
-                validate_canonical_json_domain(payload, b"aos.sandbox.portable-namespace-graph.v1")?
-            }
-            3 => validate_canonical_json_domain(
-                payload,
-                b"aos.sandbox.portable-advisory-program.v1",
-            )?,
+            2 => canonical_output::validate_namespace(payload)?,
+            3 => canonical_output::validate_advisory(payload)?,
             _ => return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication),
         }
         outputs[index] = payload;
@@ -2393,49 +2390,6 @@ pub(super) fn validated_candidate_body(
     }
 
     Ok((header, outputs))
-}
-
-fn validate_canonical_json_domain(
-    bytes: &[u8],
-    expected_domain: &[u8],
-) -> Result<(), PolicyCompilerJournalErrorV1> {
-    if bytes.len() < 16 {
-        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
-    }
-    let domain_length = usize::try_from(u64::from_be_bytes(
-        bytes[..8]
-            .try_into()
-            .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?,
-    ))
-    .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    let domain_end = 8_usize
-        .checked_add(domain_length)
-        .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    let length_end = domain_end
-        .checked_add(8)
-        .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    if bytes.get(8..domain_end) != Some(expected_domain) || length_end > bytes.len() {
-        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
-    }
-    let length = usize::try_from(u64::from_be_bytes(
-        bytes[domain_end..length_end]
-            .try_into()
-            .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?,
-    ))
-    .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    if length == 0 || length_end.checked_add(length) != Some(bytes.len()) {
-        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
-    }
-    let payload = &bytes[length_end..];
-    let value: serde_json::Value = serde_json::from_slice(payload)
-        .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    if serde_json::to_vec(&value)
-        .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?
-        != payload
-    {
-        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
-    }
-    Ok(())
 }
 
 fn policy_effect_observation_request(
@@ -2652,7 +2606,7 @@ mod canonical_diagnostics_tests {
 
     #[test]
     fn diagnostics_require_the_exact_domain_and_canonical_json() {
-        let valid = frame(DIAGNOSTICS_DOMAIN, b"{}");
+        let valid = super::candidate_tests::fixture(4096).diagnostics;
         assert!(validate_canonical_diagnostics(&valid).is_ok());
 
         for invalid in [
