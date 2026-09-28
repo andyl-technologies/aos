@@ -26,6 +26,7 @@ pub mod host_consumer_cgroup;
 pub mod host_execution;
 pub mod host_execution_argument;
 pub mod host_execution_no_apply;
+pub mod host_fuse_worker_session;
 pub mod host_observation;
 pub mod host_output;
 pub mod host_storage_output_readback;

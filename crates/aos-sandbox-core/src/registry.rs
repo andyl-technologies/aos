@@ -372,7 +372,10 @@ pub const BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE: &str =
 pub const HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE: &str =
     "aos.sandbox.host.execution-spec-descriptor";
 
-const BASE_FEATURES: [FeatureDefinition; 19] = [
+/// Exact feature name for original Host/Mount worker preparation transport 1.0.
+pub const HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE: &str = "aos.sandbox.host.fuse-worker-session";
+
+const BASE_FEATURES: [FeatureDefinition; 20] = [
     feature("aos.sandbox.runtime.linux-systemd"),
     feature("aos.sandbox.identity.posix32"),
     feature("aos.sandbox.metadata.posix-acl"),
@@ -383,6 +386,7 @@ const BASE_FEATURES: [FeatureDefinition; 19] = [
     feature("aos.sandbox.authorization.signed-plan-lease"),
     feature(BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE),
     feature(HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE),
+    feature(HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE),
     feature("aos.sandbox.host.consumer-cgroup-readback"),
     feature("aos.sandbox.mount.source-acquisition"),
     feature("aos.sandbox.enforcement.zfs-quota"),

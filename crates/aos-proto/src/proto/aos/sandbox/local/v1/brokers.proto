@@ -117,6 +117,35 @@ enum BrokerMethod {
   BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT = 47;
   // Closed Storage-audience Host readback of the original output claim.
   BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT = 48;
+  // Closed original Mount-owned worker preparation; never public readiness.
+  BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 = 49;
+}
+
+// Carries comparison coordinates from the genuine held Mount preparation.
+// The four exact descriptor roles are plan, original FUSE OFD duplicate,
+// original worker record endpoint and cancellation reader. Host independently
+// pins its image-owned executable; no executable/argv/environment is received.
+// Decoding these fields cannot mint current reservation, lease or read authority.
+message PrepareHostFuseWorkerSessionRequestV1 {
+  RequestHeader header = 1;
+  bytes worker_instance_id = 2; // Exactly 16 nonzero bytes.
+  bytes preparation_plan_digest = 3; // Exact sealed original plan commitment.
+  bytes mount_reservation_commitment = 4; // Exact held original reservation.
+  AssignmentFence fence = 5; // Original accepted assignment, not currentness proof.
+}
+
+// Compares Host's actual retained launch, never reconstructs it from scalars.
+// The response carries exactly the original worker pidfd and cgroup anchor.
+// Fresh original-channel challenge and live held-owner joins remain required.
+message PrepareHostFuseWorkerSessionResponseV1 {
+  bytes kernel_boot_id = 1; // Exactly 16 nonzero bytes.
+  bytes worker_instance_id = 2; // Original requested instance, not a successor.
+  bytes host_invocation_id = 3; // Actual fixed unit invocation.
+  uint32 worker_pid = 4; // Compared with the actual retained pidfd.
+  string worker_cgroup = 5; // Exact instance-derived independent cgroup.
+  bytes preparation_plan_digest = 6;
+  bytes mount_reservation_commitment = 7;
+  bytes launch_request_commitment = 8; // Original authenticated request.
 }
 
 // FUSE 3.0 Controller intent candidate. These fields become authority only
@@ -528,6 +557,12 @@ enum BrokerDescriptorRole {
   BROKER_DESCRIPTOR_ROLE_HOST_CATALOG = 10;
   BROKER_DESCRIPTOR_ROLE_HOST_EXECUTION_SPEC = 11;
   BROKER_DESCRIPTOR_ROLE_HOST_ARGUMENT_SOURCE = 12;
+  BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_PLAN_V1 = 13;
+  BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CONNECTION_V1 = 14;
+  BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_RECORDS_V1 = 15;
+  BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CANCELLATION_V1 = 16;
+  BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_PIDFD_V1 = 17;
+  BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CGROUP_V1 = 18;
 }
 
 // Declares response-side ownership of a descriptor received with the request.

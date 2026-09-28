@@ -68,7 +68,9 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     // This covers the complete comment-free V1 schema rather than a sample of
     // declarations: every method tag, enum value, message field/type/
     // cardinality/oneof, reserved tag, and RPC signature are compatibility-owned.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x8d64_64b8_d1ff_dfba;
+    // Additive fixed worker preparation: method 49, roles 13..18, and the two
+    // V1 comparison messages. Existing declarations remain compatibility-pinned.
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x83a2_1b8c_5cf4_f378;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(
@@ -165,6 +167,44 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
             "BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE = 41;",
             "BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 = 42;",
             "BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 = 43;",
+            "BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 = 49;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "enum BrokerDescriptorRole {",
+        &[
+            "BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_PLAN_V1 = 13;",
+            "BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CONNECTION_V1 = 14;",
+            "BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_RECORDS_V1 = 15;",
+            "BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CANCELLATION_V1 = 16;",
+            "BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_PIDFD_V1 = 17;",
+            "BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CGROUP_V1 = 18;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message PrepareHostFuseWorkerSessionRequestV1 {",
+        &[
+            "RequestHeader header = 1;",
+            "bytes worker_instance_id = 2;",
+            "bytes preparation_plan_digest = 3;",
+            "bytes mount_reservation_commitment = 4;",
+            "AssignmentFence fence = 5;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message PrepareHostFuseWorkerSessionResponseV1 {",
+        &[
+            "bytes kernel_boot_id = 1;",
+            "bytes worker_instance_id = 2;",
+            "bytes host_invocation_id = 3;",
+            "uint32 worker_pid = 4;",
+            "string worker_cgroup = 5;",
+            "bytes preparation_plan_digest = 6;",
+            "bytes mount_reservation_commitment = 7;",
+            "bytes launch_request_commitment = 8;",
         ],
     )?;
     verify_scoped_declarations(

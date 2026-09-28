@@ -1150,3 +1150,50 @@ fn profile_binding(method: BrokerMethod) -> Result<[u8; 32], BrokerSessionDurabl
     }
     Ok(digest.finalize().into())
 }
+
+#[cfg(test)]
+mod profile_binding_tests {
+    use super::*;
+
+    #[test]
+    fn existing_root_mount_profile_fingerprint_is_unchanged() {
+        // Independent encoding of the pre-existing method-45 profile. Adding
+        // worker roles must not reinterpret its retained recovery records.
+        let expected = [
+            0x17, 0xd7, 0x40, 0x0b, 0x79, 0x4e, 0x31, 0x75, 0xfa, 0xce, 0xf8, 0xd0, 0x0d, 0x87,
+            0xd7, 0x47, 0x3f, 0x3c, 0xa9, 0x4e, 0xd7, 0xbf, 0x7f, 0x67, 0xad, 0x6f, 0x23, 0x45,
+            0x84, 0xc8, 0xc1, 0x9f,
+        ];
+
+        assert_eq!(
+            profile_binding(BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1,)
+                .unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn worker_preparation_has_a_distinct_complete_durable_profile() {
+        let worker =
+            profile_binding(BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1)
+                .unwrap();
+
+        for method in crate::AUTHENTICATED_BROKER_METHODS_V1 {
+            if matches!(
+                method,
+                BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+                    | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
+            ) {
+                // These registry IDs intentionally have no executable profile.
+                // Do not silently skip any newly missing profile here.
+                assert!(authenticated_broker_method_profile_v1(method).is_none());
+                assert!(matches!(
+                    profile_binding(method),
+                    Err(BrokerSessionDurableError::InvalidClosedValue)
+                ));
+            } else if method != BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 {
+                assert_ne!(worker, profile_binding(method).unwrap());
+            }
+        }
+    }
+}

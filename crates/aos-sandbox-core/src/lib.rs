@@ -114,9 +114,10 @@ pub use publisher::{
 };
 pub use registry::{
     BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE, DescriptorRole,
-    HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE, PortableMediaType, ProtocolId,
-    ProtocolVersion, RegistryError, negotiate_protocol, supported_protocol_version,
-    validate_descriptor_role, validate_required_features, validate_signature_subject,
+    HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE, HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE,
+    PortableMediaType, ProtocolId, ProtocolVersion, RegistryError, negotiate_protocol,
+    supported_protocol_version, validate_descriptor_role, validate_required_features,
+    validate_signature_subject,
 };
 pub use resources::{
     AccountingError, AncestryAdmissionError, ReservationClass, ResourceAccount, ResourceBudget,

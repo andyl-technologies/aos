@@ -1374,6 +1374,7 @@ fn validate_outbound_carriers(
         }
         BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
+        | BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
         | BrokerMethod::BROKER_METHOD_UNSPECIFIED => false,
     };
     if valid {
