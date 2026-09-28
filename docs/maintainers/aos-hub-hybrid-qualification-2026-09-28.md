@@ -60,6 +60,24 @@ the signed package tree. Read-only SQL from an isolated copy of the retained
 Native disk confirmed this exact rejection. The fixture is being corrected;
 nonempty container parity remains unqualified.
 
+The corrected package-tree run passed all 3,983 shared tests, with six skipped,
+and successfully indexed the signed container in Hybrid. Standalone operator
+indexing reported two packages, two releases and one stable channel at
+`386d6f732d5b9588f2a6191b80688e801590d08e09c8f38e1249da92fa85f959`.
+Local authenticated-page p95 was 23.222 ms before parallel uploads and 12.181 ms
+during them; direct Native p95 was 9.734 ms during uploads. This capture predates
+console reference normalization and its additional startup readiness fence.
+
+That run stopped at the fixture's assertion that the entire inventory used at
+most sixteen checkpoints. Sixteen is the collector's per-dispatch budget; it
+checkpoints one canonical OCI object per page and resumes across dispatches.
+Read-only SQL from an isolated copy of the retained Native disk confirmed a
+complete inventory with 26 checkpoints, 26 distinct objects, 26 observed hashes
+and zero digest mismatches. The fixture now checks those cardinality and hash
+invariants and requires continuation beyond one dispatch. Controller budgets
+are unchanged. Full nonempty comparison with Native-only and Workers-only
+remains pending in the rerun that also includes the corrected console bundle.
+
 A separate four-VM browser attempt passed the captured transport setup, then
 timed out on Chrome's first navigation through a disposable SOCKS bridge. It
 completed zero browser assertions and does not qualify the Hybrid UI. The
