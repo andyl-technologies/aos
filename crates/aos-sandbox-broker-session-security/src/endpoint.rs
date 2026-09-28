@@ -220,6 +220,21 @@ impl ProtectedEndpointV1 {
         Ok(output)
     }
 
+    fn require_fuse_context(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        self.revalidate_before()?;
+        let manifest = self.files.manifest();
+        let matches = manifest.protocol()
+            == aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::MountFuse
+            && manifest.protocol_version() == (3, 0)
+            && manifest.audience()
+                == crate::manifest::BrokerSessionSecurityAudienceV1::NodeController;
+        self.revalidate_after()?;
+        if !matches {
+            return Err(BrokerSessionSecurityError::manifest("fixed FUSE-3 context"));
+        }
+        Ok(())
+    }
+
     fn process_execution_id(
         &mut self,
     ) -> Result<BrokerSessionProcessExecutionIdV1, BrokerSessionSecurityError> {
@@ -343,6 +358,10 @@ impl ProtectedBrokerSessionClientV1 {
             self.inner.files.manifest().protocol(),
             self.inner.files.manifest().node_id(),
         )
+    }
+
+    pub(crate) fn require_fuse_context(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        self.inner.require_fuse_context()
     }
 
     pub(crate) fn sign_lifecycle_bootstrap_attestation(
@@ -642,6 +661,10 @@ impl ProtectedBrokerSessionBrokerV1 {
             self.inner.files.manifest().protocol(),
             self.inner.files.manifest().node_id(),
         )
+    }
+
+    pub(crate) fn require_fuse_context(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        self.inner.require_fuse_context()
     }
 
     pub(crate) fn broker_outcome_verifier(
@@ -1222,6 +1245,39 @@ mod tests {
             AlwaysCurrentExecution,
         )
         .unwrap_or_else(|error| panic!("deterministic load failed: {error}"))
+    }
+
+    #[test]
+    fn fixed_fuse_context_refuses_a_native_manifest_with_the_same_keys() {
+        for role in [EndpointRole::Client, EndpointRole::Broker] {
+            for (protocol, version, accepts) in [
+                (BrokerSessionProtocolV1::Mount, (2, 0), false),
+                (BrokerSessionProtocolV1::MountFuse, (3, 0), true),
+            ] {
+                let mut fixture = Fixture::new(role);
+                fixture.manifest = BrokerSessionSecurityManifestV1::new(
+                    protocol,
+                    crate::manifest::BrokerSessionSecurityAudienceV1::NodeController,
+                    version.0,
+                    version.1,
+                    [1; 16],
+                    [2; 16],
+                    1,
+                    [3; 32],
+                    1,
+                    [4; 32],
+                    1,
+                    [5; 32],
+                    [6; 16],
+                    (*fixture.manifest.key_pins()).clone(),
+                )
+                .unwrap();
+                fixture.rewrite_manifest(&fixture.manifest);
+                let mut endpoint = load_deterministic(&fixture, role);
+
+                assert_eq!(endpoint.require_fuse_context().is_ok(), accepts);
+            }
+        }
     }
 
     #[test]

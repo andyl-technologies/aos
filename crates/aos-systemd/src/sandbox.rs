@@ -25,6 +25,8 @@ mod discovery;
 mod exact_unit;
 #[cfg(target_os = "linux")]
 mod fuse_worker;
+#[cfg(target_os = "linux")]
+mod fuse_worker_private;
 mod guardian;
 mod payload_root_continuity;
 pub use discovery::{
@@ -41,6 +43,8 @@ pub use fuse_worker::{
     FuseWorkerDescriptorRoleV1, FuseWorkerUnitNameV1, FuseWorkerUnitObservationV1,
     FuseWorkerUnitSpecV1,
 };
+#[cfg(target_os = "linux")]
+pub use fuse_worker_private::FixedFuseWorkerPid1ClientV1;
 pub use guardian::{
     GuardianCredentialDescriptors, GuardianCredentialRole, GuardianExecutableDescriptor,
     GuardianExecutableSnapshot, GuardianStartError, GuardianUnitObservation, GuardianUnitSpec,

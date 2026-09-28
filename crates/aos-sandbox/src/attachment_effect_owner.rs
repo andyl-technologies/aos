@@ -72,6 +72,12 @@ use crate::runtime_scope::{
 use crate::{Journal, JournalError, SignedBrokerPlan};
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 
+mod fuse_reserve;
+
+pub use fuse_reserve::{
+    ControllerFuseIntentDispatchErrorV1, CurrentControllerFuseIntentDispatchV1,
+};
+
 /// Reports failure to bind a fresh Host observation to protected namespace authority.
 #[derive(Debug, thiserror::Error)]
 pub enum ProtectedAttachmentTargetErrorV1 {
@@ -137,6 +143,20 @@ impl PreparedCurrentFuseReserveIntentV1 {
     #[must_use]
     pub const fn target(&self) -> &CurrentNamespaceTarget {
         &self.target
+    }
+
+    /// Borrows the Policy descriptor from the actual retained runtime assignment.
+    ///
+    /// This accepted lineage is comparison data, never current read authority.
+    #[must_use]
+    pub fn accepted_policy(&self) -> &aos_sandbox_core::ObjectDescriptor {
+        self.target
+            .runtime_generation()
+            .scope()
+            .binding()
+            .manifest()
+            .manifest()
+            .policy()
     }
 }
 

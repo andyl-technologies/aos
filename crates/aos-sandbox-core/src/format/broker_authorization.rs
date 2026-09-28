@@ -55,7 +55,9 @@ pub fn decode_broker_authorization_plan(
         .map_err(|_| semantics("broker protocol", "major exceeds its schema width"))?;
     let protocol_minor = u16::try_from(decoder.unsigned()?)
         .map_err(|_| semantics("broker protocol", "minor exceeds its schema width"))?;
-    if protocol != audience.protocol() {
+    // The complete constructor below independently requires the sole purpose
+    // 57 grant and exact feature/version for the additive protocol code 5.
+    if protocol != audience.protocol() && protocol != ProtocolId::MountFuseBroker {
         return Err(CanonicalCborError::InvalidSemantics {
             object: "broker protocol",
             message: "protocol does not match audience".to_owned(),
@@ -223,23 +225,24 @@ fn protocol_code(protocol: ProtocolId) -> u64 {
         ProtocolId::StorageBroker => 2,
         ProtocolId::NetworkBroker => 3,
         ProtocolId::Guardian => 4,
+        ProtocolId::MountFuseBroker => 5,
         ProtocolId::PublicApi
         | ProtocolId::PublisherAuthority
         | ProtocolId::CoordinatorNode
         | ProtocolId::OwnershipAuthority
         | ProtocolId::SourceProvider
-        | ProtocolId::MountFuseBroker
         | ProtocolId::GuestAgent => unreachable!("broker plans use only broker protocols"),
     }
 }
 
 fn decode_protocol(decoder: &mut Decoder<'_>) -> Result<ProtocolId, CanonicalCborError> {
-    match decoder.closed("broker protocol", 4)? {
+    match decoder.closed("broker protocol", 5)? {
         0 => Ok(ProtocolId::HostBroker),
         1 => Ok(ProtocolId::MountBroker),
         2 => Ok(ProtocolId::StorageBroker),
         3 => Ok(ProtocolId::NetworkBroker),
         4 => Ok(ProtocolId::Guardian),
+        5 => Ok(ProtocolId::MountFuseBroker),
         value => Err(CanonicalCborError::UnknownRegistryValue {
             registry: "broker protocol",
             value,
@@ -277,7 +280,7 @@ mod tests {
 
     #[test]
     fn publisher_registration_does_not_expand_broker_protocol_wire_codes() {
-        let mut decoder = Decoder::new(&[5], DecodeLimits::default())
+        let mut decoder = Decoder::new(&[6], DecodeLimits::default())
             .unwrap_or_else(|error| panic!("test broker protocol decoder failed: {error}"));
         assert!(matches!(
             decode_protocol(&mut decoder),
@@ -380,6 +383,54 @@ mod tests {
         assert_eq!(
             decode_broker_authorization_plan(&bytes, DecodeLimits::default()),
             Ok(plan)
+        );
+    }
+
+    #[test]
+    fn fuse_intent_plan_uses_only_additive_protocol_five_and_purpose_fifty_seven() {
+        let original = plan();
+        let candidate = BrokerAuthorizationPlan::new(
+            BrokerAudience::Mount,
+            ProtocolId::MountFuseBroker,
+            ProtocolVersion::new(3, 0),
+            original.assignment(),
+            original.node(),
+            original.ownership_authority().clone(),
+            vec![
+                BrokerGrant::new(
+                    BrokerVerb::MountReserveFuseWorkerIntent,
+                    BrokerGrantTarget::Resource(
+                        BrokerResourceHandle::from_bytes([12; 32]).unwrap(),
+                    ),
+                    crate::BrokerArgumentCommitment::for_canonical_bytes(
+                        b"exact original FUSE intent",
+                    ),
+                    1024 * 1024,
+                    0,
+                )
+                .unwrap(),
+            ],
+            original.policy_commitment(),
+            original.revocation_scope(),
+            10,
+            20,
+            vec![FeatureRef::new(crate::MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE, 1, 0).unwrap()],
+        )
+        .unwrap();
+        let bytes = encode_broker_authorization_plan(&candidate);
+
+        assert_eq!(&bytes[..6], &[0x8e, 1, 1, 5, 3, 0]);
+        assert!(bytes.windows(2).any(|part| part == [0x18, 57]));
+        assert_eq!(
+            decode_broker_authorization_plan(&bytes, DecodeLimits::default()),
+            Ok(candidate)
+        );
+        let mut downgraded = bytes;
+        downgraded[3] = 1;
+        assert!(decode_broker_authorization_plan(&downgraded, DecodeLimits::default()).is_err());
+        assert_eq!(
+            hex::encode(encode_broker_authorization_plan(&original)),
+            PLAN_HEX
         );
     }
 

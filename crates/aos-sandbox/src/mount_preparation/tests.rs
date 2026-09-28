@@ -71,6 +71,57 @@ fn catalog_client_hello_offers_the_exact_mount_baseline() {
 }
 
 #[test]
+fn shared_host_query_keeps_original_native_framing() {
+    // These coordinates exercise framing only, not current runtime authority.
+    let fence = AssignmentFence {
+        sandbox_id: vec![1; 16],
+        incarnation_id: vec![2; 16],
+        assignment_epoch: 3,
+        desired_generation: 4,
+        assignment_digest: vec![5; 32],
+        ..Default::default()
+    };
+    let runtime = [6; 32];
+    let payload = [7; 32];
+
+    for (request_id, deadline) in [([8; 16], 9), ([10; 16], u64::MAX)] {
+        let original = ObserveMountScopeRequest {
+            header: Some(RequestHeader {
+                protocol_major: 1,
+                protocol_minor: 0,
+                request_id: request_id.to_vec(),
+                audience: Audience::AUDIENCE_ROOT_MOUNT.into(),
+                deadline_boottime_nanoseconds: deadline,
+                maximum_response_bytes: 16 * 1024,
+                ..Default::default()
+            })
+            .into(),
+            fence: Some(fence.clone()).into(),
+            runtime_handle: runtime.to_vec(),
+            payload_scope_handle: payload.to_vec(),
+            ..Default::default()
+        };
+
+        let body = host_scope_query_body(request_id, deadline, fence.clone(), &runtime, &payload);
+
+        assert_eq!(body, original.encode_to_vec());
+        let decoded = ObserveMountScopeRequest::decode_from_slice(&body).unwrap();
+        assert_eq!(decoded.header.as_option().unwrap().request_id, request_id);
+        assert_eq!(
+            decoded
+                .header
+                .as_option()
+                .unwrap()
+                .deadline_boottime_nanoseconds,
+            deadline
+        );
+        assert_eq!(decoded.fence.as_option().unwrap(), &fence);
+        assert_eq!(decoded.runtime_handle, runtime);
+        assert_eq!(decoded.payload_scope_handle, payload);
+    }
+}
+
+#[test]
 fn intent_accepts_only_action_fields_and_keeps_context_unset() {
     let intent = MountCatalogIntentV1::new(create_intent()).unwrap();
     assert!(intent.request.header.as_option().is_none());

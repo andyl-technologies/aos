@@ -68,7 +68,11 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     // This covers the complete comment-free V1 schema rather than a sample of
     // declarations: every method tag, enum value, message field/type/
     // cardinality/oneof, reserved tag, and RPC signature are compatibility-owned.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0xf6b8_728a_8d97_9fd3;
+    // Additive fixed worker preparation: method 49, roles 13..18, and the two
+    // V1 comparison messages, plus explicit purpose-57 binding version 2 and
+    // its accepted Policy descriptor. Original SSH V3/V5 declarations and all
+    // earlier fields remain pinned in the combined compatibility baseline.
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x8519_0037_f1a9_172e;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(
@@ -101,6 +105,22 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
         &source_declarations,
         "message BrokerClientHello {",
         &["bytes signed_session_hello = 7;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message ReserveFuseWorkerIntentRequestV1 {",
+        &[
+            "RequestHeader header = 1;",
+            "AssignmentFence fence = 2;",
+            "bytes attachment_intent_v2 = 3;",
+            "bytes desired_record_digest = 4;",
+            "uint64 namespace_target_generation = 5;",
+            "bytes namespace_allocation_digest = 6;",
+            "bytes runtime_handle = 7;",
+            "bytes payload_scope_handle = 8;",
+            "uint32 intent_binding_version = 9;",
+            "Descriptor accepted_policy = 10;",
+        ],
     )?;
     verify_scoped_declarations(
         &source_declarations,
@@ -165,6 +185,44 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
             "BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE = 41;",
             "BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 = 42;",
             "BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 = 43;",
+            "BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 = 49;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "enum BrokerDescriptorRole {",
+        &[
+            "BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_PLAN_V1 = 13;",
+            "BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CONNECTION_V1 = 14;",
+            "BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_RECORDS_V1 = 15;",
+            "BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CANCELLATION_V1 = 16;",
+            "BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_PIDFD_V1 = 17;",
+            "BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CGROUP_V1 = 18;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message PrepareHostFuseWorkerSessionRequestV1 {",
+        &[
+            "RequestHeader header = 1;",
+            "bytes worker_instance_id = 2;",
+            "bytes preparation_plan_digest = 3;",
+            "bytes mount_reservation_commitment = 4;",
+            "AssignmentFence fence = 5;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message PrepareHostFuseWorkerSessionResponseV1 {",
+        &[
+            "bytes kernel_boot_id = 1;",
+            "bytes worker_instance_id = 2;",
+            "bytes host_invocation_id = 3;",
+            "uint32 worker_pid = 4;",
+            "string worker_cgroup = 5;",
+            "bytes preparation_plan_digest = 6;",
+            "bytes mount_reservation_commitment = 7;",
+            "bytes launch_request_commitment = 8;",
         ],
     )?;
     verify_scoped_declarations(

@@ -7,15 +7,17 @@
 
 use std::fs::File;
 use std::io::Read as _;
-use std::os::fd::BorrowedFd;
+use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
+use aos_sandbox_linux::fuse_worker_image::FixedFuseWorkerImageV1;
 use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
+use aos_systemd::FixedFuseWorkerPid1ClientV1;
 use aos_systemd::{
     ExactStartError, FuseWorkerUnitNameV1, FuseWorkerUnitObservationV1, FuseWorkerUnitSpecV1,
-    JobResult, SystemdClient,
+    JobResult,
 };
 
 use crate::{HostError, Result};
@@ -31,6 +33,7 @@ const MAXIMUM_CONTEXT_BYTES: usize = 256;
 /// from a journal row; lost custody requires explicit drain and reconciliation.
 pub struct RetainedFuseWorkerHostLaunchV1 {
     name: FuseWorkerUnitNameV1,
+    image: FixedFuseWorkerImageV1,
     boot: KernelBootId,
     invocation: [u8; 16],
     process: PidFd,
@@ -39,10 +42,15 @@ pub struct RetainedFuseWorkerHostLaunchV1 {
 }
 
 impl RetainedFuseWorkerHostLaunchV1 {
-    /// Launches one fixed worker under the protected caller's final effect guard.
+    /// Consumes four original roles and launches the independently pinned image.
     ///
+    /// Roles are the original sealed plan, fresh FUSE connection, private record
+    /// endpoint, and cancellation reader, in that exact order. Host opens its
+    /// own fixed executable; no received executable descriptor is accepted.
     /// The guard must retain the original authenticated Host/Mount submission
-    /// and image/environment seal through actual activation and this readback.
+    /// through actual activation and this readback; PID 1 retains its image and
+    /// environment seal. These kernel observations do not certify fresh FUSE
+    /// provenance or confer Mount/Controller/read authority.
     /// This transport composition registers no broker method or worker listener.
     /// It consumes and closes its role table before worker readback. The
     /// enclosing fixed dispatch must also finish and drop its original receive
@@ -51,7 +59,8 @@ impl RetainedFuseWorkerHostLaunchV1 {
     /// # Errors
     ///
     /// Returns an error for a pre-existing locator, denied final guard, failed
-    /// launch, unavailable kernel inspection, foreign cgroup, changed invocation,
+    /// image admission, launch, unavailable kernel inspection, foreign cgroup,
+    /// changed invocation,
     /// or exited/replaced worker. A failure after submission is ambiguous and
     /// must keep the caller's reservation and descriptor/pin escrow intact.
     ///
@@ -59,13 +68,13 @@ impl RetainedFuseWorkerHostLaunchV1 {
     ///
     /// Propagates a panic from `before_effect` before manager submission.
     pub async fn launch_guarded(
-        systemd: &SystemdClient,
+        systemd: &FixedFuseWorkerPid1ClientV1,
         cgroup_root: &CgroupV2Root,
-        spec: FuseWorkerUnitSpecV1,
+        name: FuseWorkerUnitNameV1,
+        original_roles: [OwnedFd; 4],
         before_effect: &mut (dyn FnMut() -> Result<()> + Send),
     ) -> Result<Self> {
         let boot = KernelBootId::current().map_err(kernel_error)?;
-        let name = spec.name().clone();
         if systemd
             .observe_fuse_worker_unit_v1(&name)
             .await
@@ -75,13 +84,36 @@ impl RetainedFuseWorkerHostLaunchV1 {
             return Err(HostError::Fence("FUSE worker locator already exists"));
         }
 
-        let job = systemd
-            .start_fuse_worker_unit_guarded_v1(&spec, before_effect)
-            .await
-            .map_err(|error| match error {
-                ExactStartError::Guard(error) => error,
-                ExactStartError::Systemd(error) => manager_error(error),
-            })?;
+        let image = FixedFuseWorkerImageV1::open_fixed().map_err(kernel_error)?;
+        let spec = FuseWorkerUnitSpecV1::new(
+            name.clone(),
+            [
+                image.executable(),
+                original_roles[0].as_fd(),
+                original_roles[1].as_fd(),
+                original_roles[2].as_fd(),
+                original_roles[3].as_fd(),
+            ],
+        )
+        .map_err(manager_error)?;
+
+        // Close this function's received-role owners. The enclosing dispatcher
+        // must separately complete its packet/message copy-close barrier.
+        drop(original_roles);
+
+        let job = {
+            let mut final_guard = || {
+                image.recheck().map_err(kernel_error)?;
+                before_effect()
+            };
+            systemd
+                .start_fuse_worker_unit_guarded_v1(&spec, &mut final_guard)
+                .await
+                .map_err(|error| match error {
+                    ExactStartError::Guard(error) => error,
+                    ExactStartError::Systemd(error) => manager_error(error),
+                })?
+        };
 
         // The executor inherited the role table. Close these local copies
         // before readback; the enclosing dispatch owns its receive-packet barrier.
@@ -116,6 +148,7 @@ impl RetainedFuseWorkerHostLaunchV1 {
 
         let retained = Self {
             name,
+            image,
             boot,
             invocation,
             process,
@@ -133,7 +166,8 @@ impl RetainedFuseWorkerHostLaunchV1 {
     /// Returns an error when any retained kernel object or manager identity
     /// changes. This cannot establish Mount/Controller currentness or authorize
     /// a new backing grant without their independently retained held cut.
-    pub async fn recheck(&self, systemd: &SystemdClient) -> Result<()> {
+    pub async fn recheck(&self, systemd: &FixedFuseWorkerPid1ClientV1) -> Result<()> {
+        self.image.recheck().map_err(kernel_error)?;
         if KernelBootId::current().map_err(kernel_error)? != self.boot {
             return Err(HostError::Fence("FUSE worker kernel boot changed"));
         }
@@ -226,7 +260,7 @@ fn is_worker_context(context: &[u8]) -> bool {
 }
 
 async fn observe_running(
-    systemd: &SystemdClient,
+    systemd: &FixedFuseWorkerPid1ClientV1,
     name: &FuseWorkerUnitNameV1,
 ) -> Result<FuseWorkerUnitObservationV1> {
     let observed = systemd

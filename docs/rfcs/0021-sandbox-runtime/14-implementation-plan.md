@@ -192,12 +192,14 @@ Reusable Linux syscall mechanics and vendored UAPI belong in
 `unsafe` ownership table. The Host, Network, and Mount service-entry rows are
 existing activated transitional boundaries used by `run()` and the existing
 Nix services; this source tranche adds no new activation and does not constitute
-production qualification:
+production qualification. The fixed FUSE worker-entry row is a separate,
+disabled source-only ownership boundary, not an installed worker qualification:
 
 | Owner | Permitted boundary | Status |
 | --- | --- | --- |
 | `aos-sandbox-linux` | Reusable direct syscalls, vendored UAPI, inherited-FD claiming, fixed spawning, pidfds, namespaces, and descriptor validation | Canonical reusable Linux boundary |
 | `aos-filesystem-fuse` | `abi.rs`, `callbacks.rs`, `control.rs`, and the scoped call in `lib.rs` needed for the libfuse C ABI and synchronous callback trampolines | Narrow FUSE-specific exception; not a general syscall home |
+| `aos-filesystem-fuse` | The single `FixedFuseWorkerStartupV1::capture()` call in `bin/aos-filesystem-fuse-worker.rs`, before signal handlers, threads, or existing owners of the exact inherited FDs 3..7 | Transitional fixed-entry ownership claim only; table capture, syscall mechanics and descriptor validation remain Linux-owned; activation and connected-worker qualification remain closed |
 | `aos-sandbox-host` | `activation.rs` and `main.rs` initial ownership claim for the inherited systemd listener | Existing activated transitional boundary; target migration is a safe Linux-owned startup wrapper |
 | `aos-sandbox-network` | `activation.rs` and `main.rs` initial ownership claim for the inherited systemd listener | Existing activated transitional boundary; target migration is a safe Linux-owned startup wrapper |
 | `aos-sandbox-mount` | `helper.rs`, `keeper.rs`, and the mount helper/daemon entrypoints that claim fixed inherited descriptor tables | Existing activated transitional boundaries; target migration is safe Linux-owned startup wrappers |
@@ -208,6 +210,13 @@ must document descriptor type, lifetime, namespace, single-threading, and
 generation invariants in an adjacent `SAFETY` argument. After initial process
 ownership is established, crates pass owned descriptor types rather than
 integer FDs.
+
+The fixed worker entry forwards the Linux API's exclusive, single-threaded
+original-table contract; it may not adopt caller-selected integers or wrap the
+ownership claim in an unsound safe factory. The Linux boundary rejects extra
+or missing descriptors, owns the original five-role transfer, and returns
+owned types. This row authorizes no general syscall helper or additional
+unsafe boundary in the FUSE crate.
 
 ## Nix packages and modules
 

@@ -30,6 +30,7 @@ POSITIVE_GROUPS = (
     (WORKER_DOMAIN, "lib_t", "file", ("execute", "getattr", "map", "open", "read")),
     (WORKER_DOMAIN, "ld_so_t", "file", ("execute", "getattr", "map", "open", "read")),
     (WORKER_DOMAIN, "usr_t", "lnk_file", ("getattr", "read")),
+    ("aos_sandbox_host_t", WORKER_EXECUTABLE, "file", ("getattr", "open", "read")),
     ("aos_sandbox_host_t", WORKER_DOMAIN, "process", ("getattr",)),
     ("aos_sandbox_host_t", WORKER_DOMAIN, "dir", ("getattr", "search")),
     ("aos_sandbox_host_t", WORKER_DOMAIN, "file", ("getattr", "open", "read")),
@@ -47,6 +48,7 @@ def negative_groups(runtime_domains: tuple[str, ...]) -> tuple[tuple, ...]:
 
     groups = [
         ("init_t", WORKER_EXECUTABLE, "file", ("execute_no_trans",)),
+        ("aos_sandbox_host_t", WORKER_EXECUTABLE, "file", ("append", "create", "execute", "execute_no_trans", "execmod", "ioctl", "link", "map", "relabelfrom", "relabelto", "rename", "setattr", "unlink", "write")),
         (WORKER_DOMAIN, "*", "file", ("execute_no_trans", "execmod")),
         (WORKER_DOMAIN, "*", "process", ("execmem", "execstack", "setexec", "setfscreate", "setsockcreate")),
         (WORKER_DOMAIN, "*", "unix_stream_socket", ("create", "connect", "connectto", "bind", "listen", "accept")),

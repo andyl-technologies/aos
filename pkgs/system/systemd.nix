@@ -153,6 +153,7 @@ in
       ./patches/0017-pin-network-unit-fragments-before-spawn.patch
       ./patches/0018-launch-image-fuse-worker-role.patch
       ./patches/0017-nspawn-guest-cgroup-custody.patch
+      ./patches/0019-fixed-fuse-worker-private-transport.patch
     ];
 
     buildDeps = [

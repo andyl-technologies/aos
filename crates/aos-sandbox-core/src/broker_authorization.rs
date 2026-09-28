@@ -79,7 +79,10 @@ pub enum BrokerAudience {
 }
 
 impl BrokerAudience {
-    /// Returns the only protocol domain valid for this audience.
+    /// Returns the audience's default native protocol domain.
+    ///
+    /// Purpose 57 uses a separately checked Mount FUSE 3.0 plan; it does not
+    /// change this default or permit native Mount grants in that protocol.
     #[must_use]
     pub const fn protocol(self) -> ProtocolId {
         match self {
@@ -187,6 +190,16 @@ pub enum BrokerVerb {
     StorageQueryExecutionOutput,
     /// Reads the original Host output claim for Storage under a fresh session.
     HostObserveStorageOutput,
+    /// Prepares one fixed worker for an already-held original Mount reservation.
+    ///
+    /// This distinct purpose permits neither metadata nor backing disclosure.
+    /// A wire grant alone cannot replace the real held Mount/Host owners.
+    HostPrepareFuseWorkerSession,
+    /// Reserves the exact current FUSE attachment intent under retained owners.
+    ///
+    /// This distinct purpose carries no descriptors and grants neither native
+    /// mount effects nor metadata, backing, attachment or worker readiness.
+    MountReserveFuseWorkerIntent,
     /// Reads one exact prior execution-output capture attempt without reissuing it.
     StorageQueryExecutionCapture,
     /// Reads a current Storage-owned capture candidate without reserving an effect.
@@ -271,6 +284,8 @@ impl BrokerVerb {
             53 => Ok(Self::StorageReserveExecutionOutput),
             54 => Ok(Self::StorageQueryExecutionOutput),
             55 => Ok(Self::HostObserveStorageOutput),
+            56 => Ok(Self::HostPrepareFuseWorkerSession),
+            57 => Ok(Self::MountReserveFuseWorkerIntent),
             _ => Err(InvalidBrokerAuthorizationPlan::UnknownVerb),
         }
     }
@@ -334,6 +349,8 @@ impl BrokerVerb {
             Self::StorageReserveExecutionOutput => 53,
             Self::StorageQueryExecutionOutput => 54,
             Self::HostObserveStorageOutput => 55,
+            Self::HostPrepareFuseWorkerSession => 56,
+            Self::MountReserveFuseWorkerIntent => 57,
         }
     }
 
@@ -359,8 +376,11 @@ impl BrokerVerb {
             | Self::HostInstallAttachGate
             | Self::HostQueryAttachGateReadiness
             | Self::HostQueryAttachGateRoute => BrokerAudience::Host,
-            Self::HostObserveStorageOutput => BrokerAudience::Host,
+            Self::HostObserveStorageOutput | Self::HostPrepareFuseWorkerSession => {
+                BrokerAudience::Host
+            }
             Self::MountCreate
+            | Self::MountReserveFuseWorkerIntent
             | Self::MountInstall
             | Self::MountReplace
             | Self::MountDetach
@@ -438,6 +458,8 @@ impl BrokerVerb {
             | Self::HostThaw
             | Self::HostKill
             | Self::HostObserve
+            | Self::HostPrepareFuseWorkerSession
+            | Self::MountReserveFuseWorkerIntent
             | Self::MountInstall
             | Self::MountDetach
             | Self::MountRelease
@@ -538,8 +560,9 @@ impl BrokerGrant {
     ///
     /// # Errors
     ///
-    /// Returns [`InvalidBrokerAuthorizationPlan`] for a zero body ceiling or
-    /// an invalid target or zero request-body ceiling.
+    /// Returns [`InvalidBrokerAuthorizationPlan`] for an invalid target or
+    /// allocation ceiling. Fixed worker preparation requires a body ceiling
+    /// of at most 4096 bytes and exactly four descriptors.
     pub fn new(
         verb: BrokerVerb,
         target: BrokerGrantTarget,
@@ -550,6 +573,13 @@ impl BrokerGrant {
         if maximum_request_bytes == 0
             || maximum_request_bytes > 16 * 1024 * 1024
             || maximum_descriptors > 16
+            // The separate fixed-worker generation has one bounded body and
+            // four original roles, not an extensible descriptor table.
+            || (verb == BrokerVerb::HostPrepareFuseWorkerSession
+                && (maximum_request_bytes > 4096 || maximum_descriptors != 4))
+            || (verb == BrokerVerb::MountReserveFuseWorkerIntent
+                && (maximum_request_bytes > crate::MOUNT_FUSE_RESERVE_INTENT_MAXIMUM_REQUEST_BYTES_V1
+                    || maximum_descriptors != 0))
         {
             return Err(InvalidBrokerAuthorizationPlan::InvalidRequestBound);
         }
@@ -699,8 +729,8 @@ pub enum InvalidBrokerAuthorizationPlan {
     /// An assignment field uses a reserved zero sentinel.
     #[error("broker assignment identities, generations, and digest must not be zero")]
     UnspecifiedAssignmentDigest,
-    /// A request byte ceiling must permit at least one byte.
-    #[error("broker maximum request bytes must be nonzero")]
+    /// Request allocation ceilings violate the selected purpose's bounds.
+    #[error("broker request allocation ceilings are invalid")]
     InvalidRequestBound,
     /// Verb and target have incompatible semantic shapes.
     #[error("broker verb has an incompatible target shape")]
@@ -726,6 +756,12 @@ pub enum InvalidBrokerAuthorizationPlan {
     /// Protocol is not the fixed local protocol for the selected audience.
     #[error("broker protocol does not match its audience")]
     ProtocolAudienceMismatch,
+    /// Fixed worker preparation lacks its exact versioned feature contract.
+    #[error("fixed worker preparation requires Host 1.0 and its exact feature 1.0")]
+    FixedWorkerProfileMismatch,
+    /// FUSE reservation is not the sole grant in its exact versioned profile.
+    #[error("FUSE intent reservation requires Mount FUSE 3.0 and presentation 1.0")]
+    FuseIntentProfileMismatch,
 }
 
 impl BrokerAuthorizationPlan {
@@ -733,8 +769,9 @@ impl BrokerAuthorizationPlan {
     ///
     /// # Errors
     ///
-    /// Returns [`InvalidBrokerAuthorizationPlan`] for invalid time bounds or
-    /// unordered, duplicate, empty, or oversized authority sets.
+    /// Returns [`InvalidBrokerAuthorizationPlan`] for invalid time bounds,
+    /// unordered, duplicate, empty, or oversized authority sets, or a fixed
+    /// worker grant without its exact Host 1.0 feature contract.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         audience: BrokerAudience,
@@ -769,10 +806,43 @@ impl BrokerAuthorizationPlan {
         {
             return Err(InvalidBrokerAuthorizationPlan::FeaturesNotCanonical);
         }
+        if grants
+            .iter()
+            .any(|grant| grant.verb() == BrokerVerb::HostPrepareFuseWorkerSession)
+            && (protocol_version != ProtocolVersion::new(1, 0)
+                || !required_features.iter().any(|feature| {
+                    feature.namespace() == crate::HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE
+                        && feature.major() == 1
+                        && feature.minor() == 0
+                }))
+        {
+            return Err(InvalidBrokerAuthorizationPlan::FixedWorkerProfileMismatch);
+        }
         if expires_seconds <= issued_seconds {
             return Err(InvalidBrokerAuthorizationPlan::InvalidValidityInterval);
         }
-        if protocol != audience.protocol() {
+        let fuse_protocol = protocol == ProtocolId::MountFuseBroker;
+        let fuse_purpose = grants
+            .iter()
+            .any(|grant| grant.verb() == BrokerVerb::MountReserveFuseWorkerIntent);
+        if fuse_protocol && !fuse_purpose {
+            return Err(InvalidBrokerAuthorizationPlan::ProtocolAudienceMismatch);
+        }
+        if (fuse_protocol || fuse_purpose)
+            && (!fuse_protocol
+                || audience != BrokerAudience::Mount
+                || protocol_version != ProtocolVersion::new(3, 0)
+                || grants.len() != 1
+                || !fuse_purpose
+                || !required_features.iter().any(|feature| {
+                    feature.namespace() == crate::MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE
+                        && feature.major() == 1
+                        && feature.minor() == 0
+                }))
+        {
+            return Err(InvalidBrokerAuthorizationPlan::FuseIntentProfileMismatch);
+        }
+        if !fuse_protocol && protocol != audience.protocol() {
             return Err(InvalidBrokerAuthorizationPlan::ProtocolAudienceMismatch);
         }
         if crate::negotiate_protocol(protocol, protocol_version).is_err() {
@@ -1076,7 +1146,8 @@ impl VerifiedBrokerPlan {
     ///
     /// Returns [`BrokerPlanVerificationError`] unless verb, target, canonical
     /// argument commitment, body size, and descriptor count are covered by one
-    /// exact signed grant.
+    /// exact signed grant. Fixed worker preparation matches exactly four
+    /// descriptors rather than a smaller count beneath the grant ceiling.
     pub fn match_request(
         &self,
         request: BrokerPlanRequest,
@@ -1092,6 +1163,10 @@ impl VerifiedBrokerPlan {
         let grant = &self.plan.grants()[index];
         if request.request_bytes > grant.maximum_request_bytes()
             || request.descriptor_count > grant.maximum_descriptors()
+            || (request.verb == BrokerVerb::HostPrepareFuseWorkerSession
+                && request.descriptor_count != 4)
+            || (request.verb == BrokerVerb::MountReserveFuseWorkerIntent
+                && request.descriptor_count != 0)
         {
             return Err(BrokerPlanVerificationError::RequestBoundsExceeded);
         }
@@ -1456,6 +1531,137 @@ mod tests {
     }
 
     #[test]
+    fn fuse_intent_grant_has_only_its_exact_resource_and_zero_fd_shape() {
+        let commitment = BrokerArgumentCommitment::for_canonical_bytes(b"FUSE intent");
+        let target =
+            BrokerGrantTarget::Resource(BrokerResourceHandle::from_bytes([9; 32]).unwrap());
+        let purpose = BrokerVerb::MountReserveFuseWorkerIntent;
+
+        assert_eq!(purpose.get(), 57);
+        assert_eq!(purpose.audience(), BrokerAudience::Mount);
+        assert!(BrokerGrant::new(purpose, target, commitment, 1024 * 1024, 0).is_ok());
+        for (target, bytes, descriptors) in [
+            (BrokerGrantTarget::Assignment, 4096, 0),
+            (target, 0, 0),
+            (target, 1024 * 1024 + 1, 0),
+            (target, 4096, 1),
+            (target, 4096, 4),
+        ] {
+            assert!(BrokerGrant::new(purpose, target, commitment, bytes, descriptors).is_err());
+        }
+    }
+
+    #[test]
+    fn fuse_intent_plan_cannot_downgrade_mix_native_grants_or_skip_feature() {
+        let fixture = fixture();
+        let target =
+            BrokerGrantTarget::Resource(BrokerResourceHandle::from_bytes([9; 32]).unwrap());
+        let commitment = BrokerArgumentCommitment::for_canonical_bytes(b"FUSE intent");
+        let grant = BrokerGrant::new(
+            BrokerVerb::MountReserveFuseWorkerIntent,
+            target,
+            commitment,
+            4096,
+            0,
+        )
+        .unwrap();
+        let feature =
+            || FeatureRef::new(crate::MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE, 1, 0).unwrap();
+        let make = |protocol, version, grants, features| {
+            BrokerAuthorizationPlan::new(
+                BrokerAudience::Mount,
+                protocol,
+                version,
+                fixture.context_assignment,
+                fixture.node,
+                fixture.ownership_authority.clone(),
+                grants,
+                ObjectDigest::from_bytes([7; 32]),
+                RevocationScopeId::from_bytes([8; 16]),
+                100,
+                200,
+                features,
+            )
+        };
+
+        let exact = make(
+            ProtocolId::MountFuseBroker,
+            ProtocolVersion::new(3, 0),
+            vec![grant.clone()],
+            vec![feature()],
+        )
+        .unwrap();
+        let verified = VerifiedBrokerPlan::from_test_plan(exact);
+        for descriptors in [0, 1, 4] {
+            assert_eq!(
+                verified
+                    .match_request(BrokerPlanRequest {
+                        verb: BrokerVerb::MountReserveFuseWorkerIntent,
+                        target,
+                        argument_commitment: commitment,
+                        request_bytes: 4096,
+                        descriptor_count: descriptors,
+                    })
+                    .is_ok(),
+                descriptors == 0
+            );
+        }
+        assert!(
+            make(
+                ProtocolId::MountBroker,
+                ProtocolVersion::new(2, 0),
+                vec![grant.clone()],
+                vec![feature()]
+            )
+            .is_err()
+        );
+        assert!(
+            make(
+                ProtocolId::MountFuseBroker,
+                ProtocolVersion::new(3, 1),
+                vec![grant.clone()],
+                vec![feature()]
+            )
+            .is_err()
+        );
+        assert!(
+            make(
+                ProtocolId::MountFuseBroker,
+                ProtocolVersion::new(3, 0),
+                vec![grant.clone()],
+                vec![]
+            )
+            .is_err()
+        );
+        assert!(
+            make(
+                ProtocolId::MountFuseBroker,
+                ProtocolVersion::new(3, 0),
+                vec![grant.clone()],
+                vec![
+                    FeatureRef::new(crate::MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE, 1, 1)
+                        .unwrap()
+                ]
+            )
+            .is_err()
+        );
+        let mut mixed = vec![
+            grant,
+            BrokerGrant::new(BrokerVerb::MountRelease, target, commitment, 4096, 0).unwrap(),
+        ];
+        mixed.sort_by_key(grant_key);
+        assert!(
+            make(
+                ProtocolId::MountFuseBroker,
+                ProtocolVersion::new(3, 0),
+                mixed,
+                vec![feature()]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn one_plan_can_commit_distinct_semantics_for_the_same_verb_and_target() {
         let fixture = fixture();
         let grant = |byte| {
@@ -1636,6 +1842,8 @@ mod tests {
             (53, BrokerVerb::StorageReserveExecutionOutput),
             (54, BrokerVerb::StorageQueryExecutionOutput),
             (55, BrokerVerb::HostObserveStorageOutput),
+            (56, BrokerVerb::HostPrepareFuseWorkerSession),
+            (57, BrokerVerb::MountReserveFuseWorkerIntent),
         ];
         for (code, expected) in stable_codes {
             let verb = BrokerVerb::from_code(code)
@@ -1644,7 +1852,7 @@ mod tests {
             assert_eq!(verb.get(), code);
         }
         assert_eq!(
-            BrokerVerb::from_code(56),
+            BrokerVerb::from_code(58),
             Err(InvalidBrokerAuthorizationPlan::UnknownVerb)
         );
         assert_eq!(
@@ -1779,6 +1987,7 @@ mod tests {
             BrokerVerb::GuardianArm,
         ];
         let resource_verbs = [
+            BrokerVerb::HostPrepareFuseWorkerSession,
             BrokerVerb::HostStop,
             BrokerVerb::HostFreeze,
             BrokerVerb::HostThaw,
@@ -1852,6 +2061,156 @@ mod tests {
             BrokerAudience::Guardian,
         ] {
             assert_ne!(audience.protocol(), ProtocolId::SourceProvider);
+        }
+    }
+
+    #[test]
+    fn fixed_worker_purpose_requires_exact_bounded_four_role_resource_grant() {
+        let target =
+            BrokerGrantTarget::Resource(BrokerResourceHandle::from_bytes([7; 32]).unwrap());
+        let commitment = BrokerArgumentCommitment::for_canonical_bytes(b"fixed worker preparation");
+        let exact = BrokerGrant::new(
+            BrokerVerb::HostPrepareFuseWorkerSession,
+            target,
+            commitment,
+            4096,
+            4,
+        )
+        .unwrap();
+
+        assert_eq!(exact.verb().get(), 56);
+        assert_eq!(exact.verb().audience(), BrokerAudience::Host);
+        assert_ne!(exact.verb(), BrokerVerb::HostObserve);
+        assert_ne!(exact.verb(), BrokerVerb::HostLaunch);
+        for descriptors in [0, 1, 3, 5, 16] {
+            assert!(
+                BrokerGrant::new(
+                    BrokerVerb::HostPrepareFuseWorkerSession,
+                    target,
+                    commitment,
+                    4096,
+                    descriptors
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            BrokerGrant::new(
+                BrokerVerb::HostPrepareFuseWorkerSession,
+                target,
+                commitment,
+                4097,
+                4
+            )
+            .is_err()
+        );
+        assert!(
+            BrokerGrant::new(
+                BrokerVerb::HostPrepareFuseWorkerSession,
+                BrokerGrantTarget::Assignment,
+                commitment,
+                4096,
+                4
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn fixed_worker_plan_requires_feature_and_matches_only_exact_purpose_and_roles() {
+        let fixture = fixture();
+        let target =
+            BrokerGrantTarget::Resource(BrokerResourceHandle::from_bytes([7; 32]).unwrap());
+        let commitment = BrokerArgumentCommitment::for_canonical_bytes(b"fixed worker preparation");
+        let construct = |verb, target, required_features| {
+            BrokerAuthorizationPlan::new(
+                BrokerAudience::Host,
+                ProtocolId::HostBroker,
+                ProtocolVersion::new(1, 0),
+                fixture.context_assignment,
+                fixture.node,
+                fixture.ownership_authority.clone(),
+                vec![BrokerGrant::new(verb, target, commitment, 4096, 4).unwrap()],
+                ObjectDigest::from_bytes([7; 32]),
+                RevocationScopeId::from_bytes([8; 16]),
+                100,
+                200,
+                required_features,
+            )
+        };
+        let feature =
+            || FeatureRef::new(crate::HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE, 1, 0).unwrap();
+
+        assert_eq!(
+            construct(BrokerVerb::HostPrepareFuseWorkerSession, target, Vec::new()),
+            Err(InvalidBrokerAuthorizationPlan::FixedWorkerProfileMismatch)
+        );
+        for (major, minor) in [(0, 0), (1, 1), (2, 0)] {
+            let changed = FeatureRef::new(
+                crate::HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE,
+                major,
+                minor,
+            )
+            .unwrap();
+            assert_eq!(
+                construct(
+                    BrokerVerb::HostPrepareFuseWorkerSession,
+                    target,
+                    vec![changed]
+                ),
+                Err(InvalidBrokerAuthorizationPlan::FixedWorkerProfileMismatch)
+            );
+        }
+
+        let plan = construct(
+            BrokerVerb::HostPrepareFuseWorkerSession,
+            target,
+            vec![feature()],
+        )
+        .unwrap();
+        let encoded = encode_broker_authorization_plan(&plan);
+        assert_eq!(
+            decode_broker_authorization_plan(&encoded, DecodeLimits::default()).unwrap(),
+            plan
+        );
+        let verified = VerifiedBrokerPlan::from_test_plan(plan);
+        let request = BrokerPlanRequest {
+            verb: BrokerVerb::HostPrepareFuseWorkerSession,
+            target,
+            argument_commitment: commitment,
+            request_bytes: 4096,
+            descriptor_count: 4,
+        };
+
+        assert!(verified.match_request(request).is_ok());
+        for descriptor_count in [0, 1, 3, 5] {
+            assert!(matches!(
+                verified.match_request(BrokerPlanRequest {
+                    descriptor_count,
+                    ..request
+                }),
+                Err(BrokerPlanVerificationError::RequestBoundsExceeded)
+            ));
+        }
+        for verb in [BrokerVerb::HostObserve, BrokerVerb::HostLaunch] {
+            assert!(matches!(
+                verified.match_request(BrokerPlanRequest { verb, ..request }),
+                Err(BrokerPlanVerificationError::RequestNotCommitted)
+            ));
+        }
+
+        // An existing resource Observe grant never becomes purpose 56 merely
+        // because its target, argument digest, and ceilings happen to match.
+        for (verb, old_target) in [
+            (BrokerVerb::HostObserve, target),
+            (BrokerVerb::HostLaunch, BrokerGrantTarget::Assignment),
+        ] {
+            let old_plan = construct(verb, old_target, Vec::new()).unwrap();
+            let old_verified = VerifiedBrokerPlan::from_test_plan(old_plan);
+            assert!(matches!(
+                old_verified.match_request(request),
+                Err(BrokerPlanVerificationError::RequestNotCommitted)
+            ));
         }
     }
 

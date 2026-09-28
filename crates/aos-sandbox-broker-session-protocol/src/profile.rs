@@ -11,8 +11,11 @@ use aos_proto::aos::sandbox::local::v1::{
 };
 use aos_sandbox_core::{
     BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE, FeatureRef,
-    HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE, validate_required_features,
+    HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE, HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE,
+    MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE, validate_required_features,
 };
+
+mod fuse_worker;
 
 use crate::model::BrokerSessionProtocolV1;
 use crate::projection::{
@@ -37,6 +40,10 @@ const MOUNT_SOURCE_EFFECT_FEATURES: [BrokerSessionMethodFeatureV1; 2] = [
 ];
 const MOUNT_SOURCE_INVENTORY_FEATURES: [BrokerSessionMethodFeatureV1; 1] =
     [BrokerSessionMethodFeatureV1::MountSourceAcquisition];
+const MOUNT_FUSE_INTENT_FEATURES: [BrokerSessionMethodFeatureV1; 2] = [
+    BrokerSessionMethodFeatureV1::SignedPlanLease,
+    BrokerSessionMethodFeatureV1::MountFusePresentation,
+];
 const HOST_EXECUTION_SPEC_FEATURES: [BrokerSessionMethodFeatureV1; 2] = [
     BrokerSessionMethodFeatureV1::SignedPlanLease,
     BrokerSessionMethodFeatureV1::HostExecutionSpecDescriptor,
@@ -81,7 +88,7 @@ const HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDis
 ///
 /// Registration is not production advertisement. Closed provisional carriers
 /// remain excluded until their protected issuers and Host owners are joined.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 46] = [
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 47] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -128,6 +135,7 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 46] = [
     BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT,
     BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT,
+    BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
@@ -160,6 +168,7 @@ pub fn authenticated_broker_methods_for_role_v1(
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
                     | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
                     | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
+                    | BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
             )
         })
         .filter(|method| {
@@ -275,6 +284,10 @@ pub enum BrokerSessionMethodFeatureV1 {
     HostArgumentSourceDescriptor,
     /// Requires exact Storage-audience Host cgroup readback 1.0.
     HostConsumerCgroupReadback,
+    /// Requires exact Root/Mount-only fixed FUSE worker session transport 1.0.
+    HostFuseWorkerSession,
+    /// Requires exact FUSE presentation intent negotiation, separate from native Mount.
+    MountFusePresentation,
 }
 
 impl BrokerSessionMethodFeatureV1 {
@@ -287,6 +300,8 @@ impl BrokerSessionMethodFeatureV1 {
             Self::HostExecutionSpecDescriptor => HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE,
             Self::HostArgumentSourceDescriptor => HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE,
             Self::HostConsumerCgroupReadback => HOST_CONSUMER_CGROUP_READBACK_FEATURE_NAMESPACE,
+            Self::HostFuseWorkerSession => HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE,
+            Self::MountFusePresentation => MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE,
         }
     }
 
@@ -424,7 +439,10 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE
         | BrokerMethod::BROKER_METHOD_HOST_RESERVE_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT
-        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT => BrokerSessionProtocolV1::Host,
+        | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
+        | BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 => {
+            BrokerSessionProtocolV1::Host
+        }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_EXECUTION_ARGUMENT
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_ARGUMENT
         | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
@@ -474,6 +492,7 @@ pub const fn authenticated_broker_method_profile_v1(
         method,
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
+            | BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
     ) {
         Audience::AUDIENCE_ROOT_MOUNT
     } else if matches!(
@@ -508,6 +527,7 @@ pub const fn authenticated_broker_method_profile_v1(
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
+            | BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
             | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
             | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
             | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
@@ -526,6 +546,8 @@ pub const fn authenticated_broker_method_profile_v1(
         BrokerSessionAuthorizationPresenceV1::Forbidden
     };
     let required_features: &'static [BrokerSessionMethodFeatureV1] = match method {
+        BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1 => &MOUNT_FUSE_INTENT_FEATURES,
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 => &fuse_worker::FEATURES,
         BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION
         | BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION => &HOST_EXECUTION_SPEC_FEATURES,
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME_ARGUMENT => &HOST_ARGUMENT_SOURCE_FEATURES,
@@ -561,6 +583,9 @@ pub const fn authenticated_broker_method_profile_v1(
         ),
     };
     let request_descriptor_roles: &'static [BrokerDescriptorRole] = match method {
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 => {
+            &fuse_worker::REQUEST_ROLES
+        }
         BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => &HOST_CATALOG_REQUEST_DESCRIPTOR_ROLES,
         BrokerMethod::BROKER_METHOD_HOST_APPLY_EXECUTION => {
             &HOST_EXECUTION_SPEC_REQUEST_DESCRIPTOR_ROLES
@@ -571,6 +596,9 @@ pub const fn authenticated_broker_method_profile_v1(
         _ => &NO_DESCRIPTOR_ROLES,
     };
     let success_response_descriptor_roles: &'static [BrokerDescriptorRole] = match method {
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 => {
+            &fuse_worker::RESPONSE_ROLES
+        }
         BrokerMethod::BROKER_METHOD_HOST_OBSERVE_PAYLOAD_SCOPE => {
             &HOST_PAYLOAD_SCOPE_RESPONSE_DESCRIPTOR_ROLES
         }
@@ -584,6 +612,9 @@ pub const fn authenticated_broker_method_profile_v1(
         _ => &NO_DESCRIPTOR_ROLES,
     };
     let request_descriptor_dispositions: &'static [BrokerDescriptorDisposition] = match method {
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 => {
+            &fuse_worker::DISPOSITIONS
+        }
         BrokerMethod::BROKER_METHOD_HOST_PUBLISH_CATALOG => {
             &HOST_CATALOG_REQUEST_DESCRIPTOR_DISPOSITIONS
         }
@@ -888,6 +919,13 @@ fn validate_feature_conditions(
     required_methods: &[BrokerMethod],
     advertised_methods: &[BrokerMethod],
 ) -> Result<(), BrokerSessionNegotiationError> {
+    fuse_worker::validate_feature_condition(
+        protocol,
+        required_features,
+        advertised_features,
+        required_methods,
+        advertised_methods,
+    )?;
     if required_methods
         .iter()
         .copied()
@@ -1035,6 +1073,13 @@ pub(crate) fn method_has_required_traffic_features(
                 required_features,
                 HOST_ARGUMENT_SOURCE_DESCRIPTOR_FEATURE_NAMESPACE,
             ))
+        && (method != BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
+            || has_feature(
+                required_features,
+                HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE,
+            ))
+        && (method != BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
+            || has_feature(required_features, MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE))
 }
 
 const fn is_mount_source_acquisition_method(method: BrokerMethod) -> bool {
@@ -1145,7 +1190,7 @@ mod tests {
             profile.authorization(),
             BrokerSessionAuthorizationPresenceV1::Required
         );
-        assert_eq!(profile.required_features(), &SIGNED_PLAN_LEASE_FEATURES);
+        assert_eq!(profile.required_features(), &MOUNT_FUSE_INTENT_FEATURES);
         assert!(profile.request_descriptor_roles().is_empty());
         assert!(profile.success_response_descriptor_roles().is_empty());
         assert!(profile.error_response_descriptor_roles().is_empty());
@@ -1171,6 +1216,25 @@ mod tests {
         };
 
         validate_authenticated_negotiation_v1(&client, &broker, protocol, 3, 0, audience).unwrap();
+        for feature in [
+            SIGNED_PLAN_LEASE_FEATURE,
+            MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE,
+        ] {
+            let mut missing = client.clone();
+            missing
+                .required_features
+                .retain(|value| value.namespace != feature);
+            assert!(
+                validate_authenticated_negotiation_v1(&missing, &broker, protocol, 3, 0, audience)
+                    .is_err()
+            );
+            let mut missing = broker.clone();
+            missing.features.retain(|value| value.namespace != feature);
+            assert!(
+                validate_authenticated_negotiation_v1(&client, &missing, protocol, 3, 0, audience)
+                    .is_err()
+            );
+        }
         assert!(
             validate_authenticated_negotiation_v1(&client, &broker, protocol, 2, 0, audience)
                 .is_err()

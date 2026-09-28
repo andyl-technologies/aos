@@ -38,6 +38,18 @@
         record = "brokerSessionHostRecordKey";
       };
     }
+    {
+      name = "mount-fuse-broker";
+      description = "Dormant FUSE-3 Mount broker context";
+      role = "broker";
+      optionalManifest = true;
+      journalRoot = "/var/lib/aos/sandbox-mount/broker-session/fuse";
+      options = {
+        manifest = "brokerSessionFuseManifest";
+        hello = "brokerSessionHelloKey";
+        record = "brokerSessionOutcomeKey";
+      };
+    }
   ];
   brokerSessionConfiguration = brokerSession.configure cfg.credentials brokerSessionEndpoints;
   credentialFields = {

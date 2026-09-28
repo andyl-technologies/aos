@@ -45,7 +45,12 @@
   endpointState = credentials: endpoint: let
     files = endpointFiles endpoint;
     selected = map (file: credentials.${file.option}) files;
-    anyConfigured = lib.any (value: value != null) selected;
+    # A dormant protocol context may reuse an existing role's signing keys.
+    # Its separate manifest opts in; shared keys alone do not enable it.
+    anyConfigured =
+      if endpoint.optionalManifest or false
+      then credentials.${endpoint.options.manifest} != null
+      else lib.any (value: value != null) selected;
     completelyConfigured = lib.all (value: value != null) selected;
     custody = "${endpoint.journalRoot}/custody";
   in {

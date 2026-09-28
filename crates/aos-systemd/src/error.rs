@@ -8,6 +8,11 @@
 /// Errors surfaced by [`crate::SystemdClient`].
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// A retained kernel pin for the fixed worker private transport failed.
+    #[cfg(target_os = "linux")]
+    #[error("worker private transport kernel pin failed: {0}")]
+    WorkerPrivateKernel(#[source] aos_sandbox_linux::Error),
+
     /// A caller attempted to construct an invalid typed sandbox unit, or
     /// systemd returned an observation that violates the typed contract.
     #[error("invalid sandbox unit contract: {0}")]
@@ -47,6 +52,8 @@ impl Error {
     /// units as idempotent without swallowing unrelated D-Bus failures.
     pub fn is_no_such_unit(&self) -> bool {
         match self {
+            #[cfg(target_os = "linux")]
+            Self::WorkerPrivateKernel(_) => false,
             Self::Zbus(err) => is_no_such_unit(err),
             Self::SystemdUnavailable(_)
             | Self::Fdo(_)

@@ -63,6 +63,10 @@ use crate::worker::{
 };
 use crate::{MountError, Result};
 
+mod fuse_intent;
+
+pub use fuse_intent::HeldMountFuseIntentPreparationV1;
+
 /// Applies validated mount requests through durable, idempotent effects.
 pub struct MountBroker<W> {
     journal: Journal,
@@ -451,7 +455,13 @@ impl<W: MountWorker> MountBroker<W> {
                     .is_none_or(|resource| {
                         resource.phase() == DestinationSlotResourcePhaseV1::Materializing
                     });
-                if must_be_unused && !destination_slot_is_unused(&self.resources, &binding) {
+                if must_be_unused
+                    && !destination_slot_is_unused(
+                        &self.resources,
+                        &self.fuse_reservations,
+                        &binding,
+                    )
+                {
                     return Err(MountError::Fence(
                         "destination slot is already claimed by Mount state",
                     ));
@@ -489,6 +499,7 @@ impl<W: MountWorker> MountBroker<W> {
                 )?;
                 let authority = &self.authority;
                 let resources = &self.resources;
+                let fuse_reservations = &self.fuse_reservations;
                 let slots = self.destination_slots.as_mut().ok_or_else(|| {
                     MountError::State("destination-slot ownership disappeared".to_owned())
                 })?;
@@ -505,7 +516,11 @@ impl<W: MountWorker> MountBroker<W> {
                                     "destination-slot authority expired before reaping",
                                 )
                             })?;
-                        Ok(destination_slot_is_unused(resources, binding))
+                        Ok(destination_slot_is_unused(
+                            resources,
+                            fuse_reservations,
+                            binding,
+                        ))
                     })?
                     .0
             }
@@ -523,6 +538,7 @@ impl<W: MountWorker> MountBroker<W> {
                 )?;
                 let authority = &self.authority;
                 let resources = &self.resources;
+                let fuse_reservations = &self.fuse_reservations;
                 let slots = self.destination_slots.as_mut().ok_or_else(|| {
                     MountError::State("destination-slot ownership disappeared".to_owned())
                 })?;
@@ -530,7 +546,9 @@ impl<W: MountWorker> MountBroker<W> {
                     .rematerialize_guarded(
                         &mut self.journal,
                         &mutation,
-                        |binding| Ok(destination_slot_is_unused(resources, binding)),
+                        |binding| {
+                            Ok(destination_slot_is_unused(resources, fuse_reservations, binding))
+                        },
                         || {
                             authority
                                 .check_before_effect(&effect, &mut || {
@@ -2211,6 +2229,7 @@ fn destination_slot_binding(
 
 fn destination_slot_is_unused(
     resources: &MountResourceTableV1,
+    fuse_reservations: &FuseWorkerReservationTableV1,
     binding: &DestinationSlotBindingV1,
 ) -> bool {
     resources.destination_slot_is_unused(
@@ -2218,7 +2237,14 @@ fn destination_slot_is_unused(
         binding.incarnation_id(),
         binding.namespace_generation(),
         binding.slot_id().as_bytes(),
-    )
+    ) && !fuse_reservations.rows().any(|reservation| {
+        // Every retained generation fences the physical slot, including an
+        // expired preparation or an unverified terminal claim. Namespace/head
+        // changes cannot make its original connection obligations disappear.
+        reservation.assignment.sandbox_id == *binding.sandbox_id()
+            && reservation.assignment.incarnation_id == *binding.incarnation_id()
+            && reservation.destination_slot_id == *binding.slot_id().as_bytes()
+    })
 }
 
 fn ensure_fuse_slots_exclude_native(
@@ -2984,6 +3010,91 @@ mod tests {
             MountAuthorityV1::new(plan_anchor, lease_anchor, TEST_NODE, [46; 16], [47; 32]).unwrap()
         }
 
+        fn common_authority(&self) -> aos_sandbox_broker::BrokerAuthority {
+            let plan_anchor = aos_sandbox_core::BrokerPlanTrustAnchor::from_trusted_configuration(
+                self.plan_policy.clone(),
+                self.plan_policy_descriptor.clone(),
+                self.plan_scope,
+                self.plan_signer.clone(),
+                self.plan_key.verifying_key().to_bytes(),
+                self.revocation_scope,
+                DecodeLimits::default(),
+            )
+            .unwrap();
+            let lease_anchor = OwnershipLeaseTrustAnchor::from_trusted_configuration(
+                self.lease_policy.clone(),
+                self.lease_policy_descriptor.clone(),
+                self.lease_scope,
+                self.lease_signer.clone(),
+                self.lease_key.verifying_key().to_bytes(),
+                DecodeLimits::default(),
+            )
+            .unwrap();
+            aos_sandbox_broker::BrokerAuthority::new(
+                aos_sandbox_broker::BrokerDomain::Mount,
+                plan_anchor,
+                lease_anchor,
+                TEST_NODE,
+                [46; 16],
+                [47; 32],
+            )
+            .unwrap()
+        }
+
+        fn fuse_intent_artifacts(
+            &self,
+            request: aos_sandbox_broker::AdmissionRequest<'_>,
+            lease: &ValidatedUntrustedAuthorizationArtifacts,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let grant = BrokerGrant::new(
+                request.verb,
+                request.target,
+                request.argument_commitment,
+                u32::try_from(request.request_body.len()).unwrap(),
+                0,
+            )
+            .unwrap();
+            let plan = BrokerAuthorizationPlan::new(
+                BrokerAudience::Mount,
+                ProtocolId::MountFuseBroker,
+                ProtocolVersion::new(3, 0),
+                request.assignment,
+                TEST_NODE,
+                self.lease_signer.clone(),
+                vec![grant],
+                ObjectDigest::from_bytes([48; 32]),
+                self.revocation_scope,
+                100,
+                300,
+                vec![
+                    FeatureRef::new(
+                        aos_sandbox_core::MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE.to_owned(),
+                        1,
+                        0,
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap();
+            let broker_plan = encode_broker_authorization_plan(&plan);
+            let broker_plan_signature = signed_object(
+                &broker_plan,
+                PortableMediaType::BrokerAuthorizationPlan,
+                self.plan_scope,
+                self.plan_signer.clone(),
+                SignaturePurpose::BrokerAuthorization,
+                &self.plan_policy_descriptor,
+                &self.plan_key,
+            );
+            validated_artifacts(BrokerAuthorizationArtifactsV1 {
+                broker_plan,
+                broker_plan_signature,
+                ownership_lease: lease.ownership_lease().to_vec(),
+                ownership_lease_signature: lease.ownership_lease_signature().to_vec(),
+                ..Default::default()
+            })
+        }
+
         fn artifacts(
             &self,
             request_bytes: &[u8],
@@ -3352,6 +3463,294 @@ mod tests {
         clock_at(TEST_WALL_SECONDS)
     }
 
+    #[test]
+    fn fuse_policy_descriptor_joins_the_actual_signed_plan_not_its_digest() {
+        use aos_proto::aos::sandbox::local::v1::ReserveFuseWorkerIntentRequestV1;
+        use aos_sandbox_broker::AdmissionRequest;
+        use aos_sandbox_core::model::{
+            AttachmentConsistency, AttachmentIntent, AttachmentLease, AttachmentPresentation,
+            ViewMutation,
+        };
+        use aos_sandbox_core::{AttachmentId, LeaseId, NamespaceGeneration, Revision, ViewId};
+        use aos_sandbox_protocol::mount_fuse_reserve_intent::decode_fuse_reserve_intent_request_v1;
+        use aos_sandbox_protocol::semantics::mount_fuse_reserve_intent::canonical_mount_fuse_reserve_intent_semantics_v1;
+
+        let fixture = AuthorityFixture::new();
+        let authority = fixture.authority();
+        let native_body = request(1);
+        let native_request =
+            decode_mount_request(&native_body, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)
+                .unwrap();
+        let catalog =
+            MountCatalogCommitmentV1::from_verified_digest(ObjectDigest::from_bytes([77; 32]))
+                .unwrap();
+        let native_artifacts = fixture.artifacts(
+            &native_body,
+            Some(ObjectDigest::from_bytes([77; 32])),
+            1,
+            &[&native_body],
+        );
+        let native = authority
+            .admit(
+                &native_artifacts,
+                &native_request,
+                &native_body,
+                Some(catalog),
+                &[],
+                ProtocolVersion::new(2, 0),
+                &clock(),
+                None,
+            )
+            .unwrap();
+        let prior = authority.seal_fence(&[1; 16], &native.fence).unwrap();
+        let intent = AttachmentIntent::new_with_presentation(
+            AttachmentId::from_bytes([3; 16]),
+            DesiredGeneration::new(1),
+            SandboxId::from_bytes([1; 16]),
+            IncarnationId::from_bytes([2; 16]),
+            NamespaceGeneration::new(1),
+            ViewId::from_bytes([8; 16]),
+            Revision::new(1),
+            None,
+            ObjectDescriptor::new(
+                MediaType::new(PortableMediaType::View.as_str().to_owned()).unwrap(),
+                ObjectDigest::from_bytes([5; 32]),
+                64,
+            ),
+            AttachmentSlotId::from_bytes([4; 16]),
+            AttachmentConsistency::ImmutableRevision,
+            ViewMutation::ReadOnly,
+            aos_sandbox_core::model::MountAttributes::new(true, true, true, true, true, false),
+            AttachmentLease::new(LeaseId::from_bytes([9; 16]), 100, 250).unwrap(),
+            AttachmentPresentation::Fuse,
+        )
+        .unwrap();
+        let mut wire = ReserveFuseWorkerIntentRequestV1 {
+            header: Some(RequestHeader {
+                protocol_major: 3,
+                protocol_minor: 0,
+                request_id: vec![42; 16],
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds: 1000,
+                maximum_response_bytes: 4096,
+                ..Default::default()
+            })
+            .into(),
+            fence: Some(AssignmentFence {
+                sandbox_id: vec![1; 16],
+                incarnation_id: vec![2; 16],
+                assignment_epoch: 1,
+                desired_generation: 1,
+                assignment_digest: vec![6; 32],
+                ..Default::default()
+            })
+            .into(),
+            attachment_intent_v2: aos_sandbox_core::encode_attachment_intent_v2(&intent),
+            desired_record_digest: vec![80; 32],
+            namespace_target_generation: 1,
+            namespace_allocation_digest: vec![81; 32],
+            runtime_handle: runtime_handle_v1(&[2; 16], 1, &[6; 32]).to_vec(),
+            payload_scope_handle: vec![82; 32],
+            intent_binding_version: 2,
+            accepted_policy: Some(Descriptor {
+                media_type: PortableMediaType::Policy.as_str().to_owned(),
+                sha256: vec![48; 32],
+                encoded_size: 100,
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        };
+        let signed_for = |wire: &ReserveFuseWorkerIntentRequestV1| {
+            let body = wire.encode_to_vec();
+            let decoded = decode_fuse_reserve_intent_request_v1(
+                &body,
+                peer(),
+                policy(),
+                TEST_BOOTTIME_NANOSECONDS,
+            )
+            .unwrap();
+            let semantics = canonical_mount_fuse_reserve_intent_semantics_v1(&decoded).unwrap();
+            let artifacts = fixture.fuse_intent_artifacts(
+                AdmissionRequest {
+                    audience: BrokerAudience::Mount,
+                    protocol: ProtocolId::MountFuseBroker,
+                    protocol_version: ProtocolVersion::new(3, 0),
+                    assignment: native.fence.assignment(),
+                    request_id: *decoded.header().request_id(),
+                    request_body: &body,
+                    descriptor_count: 0,
+                    verb: semantics.verb(),
+                    target: semantics.target(),
+                    argument_commitment: semantics.commitment(),
+                    request_deadline_boottime_nanoseconds: decoded
+                        .header()
+                        .deadline_boottime_nanoseconds(),
+                },
+                &native_artifacts,
+            );
+            (body, decoded, artifacts)
+        };
+        let (body, decoded, artifacts) = signed_for(&wire);
+        let accepted = authority
+            .admit_fuse_reserve_intent(&artifacts, &decoded, &body, &clock(), Some(&prior))
+            .unwrap();
+        let plan_digest = *accepted.effect.plan_digest().as_bytes();
+        assert_ne!(plan_digest, *decoded.accepted_policy().digest().as_bytes());
+
+        // Re-sign the complete changed request, so these refusals exercise
+        // accepted Policy lineage after real signature/current-fence checks.
+        for substituted in [[47; 32], plan_digest] {
+            wire.accepted_policy.as_option_mut().unwrap().sha256 = substituted.to_vec();
+            let (body, decoded, artifacts) = signed_for(&wire);
+            assert!(matches!(
+                authority.admit_fuse_reserve_intent(
+                    &artifacts,
+                    &decoded,
+                    &body,
+                    &clock(),
+                    Some(&prior)
+                ),
+                Err(crate::authorization::MountAdmissionError::RequestMismatch)
+            ));
+        }
+    }
+
+    #[test]
+    fn fuse_intent_rotates_only_the_existing_exact_mount_assignment() {
+        use aos_sandbox_broker::{AdmissionRequest, BrokerAdmissionError};
+        use aos_sandbox_core::{
+            BrokerArgumentCommitment, BrokerGrantTarget, BrokerResourceHandle, BrokerVerb,
+        };
+
+        let fixture = AuthorityFixture::new();
+        let authority = fixture.common_authority();
+        let body = request(1);
+        let validated =
+            decode_mount_request(&body, peer(), policy(), TEST_BOOTTIME_NANOSECONDS).unwrap();
+        let catalog =
+            MountCatalogCommitmentV1::from_verified_digest(ObjectDigest::from_bytes([77; 32]))
+                .unwrap();
+        let semantics = crate::authorization::semantics_v1::canonical_mount_semantics_v1(
+            &validated,
+            Some(catalog),
+            &[],
+        )
+        .unwrap();
+        let assignment = BrokerAssignment::new(
+            SandboxId::from_bytes([1; 16]),
+            IncarnationId::from_bytes([2; 16]),
+            AssignmentEpoch::new(1),
+            DesiredGeneration::new(1),
+            ObjectDigest::from_bytes([6; 32]),
+        )
+        .unwrap();
+        let native = AdmissionRequest {
+            audience: BrokerAudience::Mount,
+            protocol: ProtocolId::MountBroker,
+            protocol_version: ProtocolVersion::new(2, 0),
+            assignment,
+            request_id: *validated.header().request_id(),
+            request_body: &body,
+            descriptor_count: 0,
+            verb: semantics.verb(),
+            target: semantics.target(),
+            argument_commitment: semantics.commitment(),
+            request_deadline_boottime_nanoseconds: validated
+                .header()
+                .deadline_boottime_nanoseconds(),
+        };
+        let native_artifacts =
+            fixture.artifacts(&body, Some(ObjectDigest::from_bytes([77; 32])), 1, &[&body]);
+        let prior = authority
+            .admit(&native_artifacts, native, &clock(), None)
+            .unwrap();
+        let sealed = authority
+            .seal_fence(assignment.sandbox().as_bytes(), &prior.fence)
+            .unwrap();
+        let fuse = AdmissionRequest {
+            protocol: ProtocolId::MountFuseBroker,
+            protocol_version: ProtocolVersion::new(3, 0),
+            request_id: [2; 16],
+            verb: BrokerVerb::MountReserveFuseWorkerIntent,
+            target: BrokerGrantTarget::Resource(
+                BrokerResourceHandle::from_bytes([80; 32]).unwrap(),
+            ),
+            argument_commitment: BrokerArgumentCommitment::for_canonical_bytes(
+                b"exact FUSE intent",
+            ),
+            ..native
+        };
+        let signed_fuse = fixture.fuse_intent_artifacts(fuse, &native_artifacts);
+
+        // The named phase accepts a distinct signed plan on the same genuine
+        // locally authenticated lease, but generic entry remains closed.
+        let accepted = authority
+            .admit_fuse_intent(&signed_fuse, fuse, &clock(), &sealed)
+            .unwrap();
+        assert_ne!(accepted.fence.plan_digest(), prior.fence.plan_digest());
+        assert_eq!(accepted.fence.assignment(), prior.fence.assignment());
+        assert_eq!(
+            accepted.fence.local_lease_record(),
+            prior.fence.local_lease_record()
+        );
+        let sealed_effect = authority
+            .seal_effect(&fuse.request_id, &accepted.effect)
+            .unwrap();
+        let renewed_native =
+            fixture.artifacts(&body, Some(ObjectDigest::from_bytes([77; 32])), 2, &[&body]);
+        let renewed_fuse = fixture.fuse_intent_artifacts(fuse, &renewed_native);
+        assert!(matches!(
+            authority.admit_fuse_intent(&renewed_fuse, fuse, &clock(), &sealed),
+            Err(BrokerAdmissionError::FenceRejected)
+        ));
+        assert_eq!(
+            authority
+                .open_effect(&fuse.request_id, &sealed_effect)
+                .unwrap(),
+            accepted.effect
+        );
+        for fence in [None, Some(sealed.as_slice())] {
+            assert!(matches!(
+                authority.admit(&signed_fuse, fuse, &clock(), fence),
+                Err(BrokerAdmissionError::RequestMismatch)
+            ));
+        }
+        assert!(matches!(
+            authority.admit_fuse_intent(&signed_fuse, fuse, &clock(), &[]),
+            Err(BrokerAdmissionError::FenceRejected)
+        ));
+
+        for case in 0..5 {
+            let changed = BrokerAssignment::new(
+                SandboxId::from_bytes(if case == 0 { [9; 16] } else { [1; 16] }),
+                IncarnationId::from_bytes(if case == 1 { [9; 16] } else { [2; 16] }),
+                AssignmentEpoch::new(if case == 2 { 2 } else { 1 }),
+                DesiredGeneration::new(if case == 3 { 2 } else { 1 }),
+                ObjectDigest::from_bytes(if case == 4 { [9; 32] } else { [6; 32] }),
+            )
+            .unwrap();
+            let changed_request = AdmissionRequest {
+                assignment: changed,
+                ..fuse
+            };
+            let changed_artifacts =
+                fixture.fuse_intent_artifacts(changed_request, &native_artifacts);
+            assert!(
+                matches!(
+                    authority.admit_fuse_intent(
+                        &changed_artifacts,
+                        changed_request,
+                        &clock(),
+                        &sealed
+                    ),
+                    Err(BrokerAdmissionError::FenceRejected)
+                ),
+                "changed assignment case {case}"
+            );
+        }
+    }
+
     fn clock_at(wall_seconds: i64) -> RawPairedClockSample {
         clock_sample(wall_seconds, TEST_BOOTTIME_NANOSECONDS)
     }
@@ -3501,6 +3900,118 @@ mod tests {
         assert_eq!(recovered.fuse_reservations.rows().count(), 1);
         assert!(apply(&mut recovered, &recovered_fixture, &request(31)).is_err());
         assert_eq!(recovered.worker.calls, 0);
+    }
+
+    #[test]
+    fn fuse_request_index_blocks_authorized_native_request_id_reuse_after_recovery() {
+        let directory = private_destination_slot_root();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, _) = test_broker_with_destination_slots(
+            open(&path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let native = request(33);
+        let reservation = fuse_reservation(20);
+        let mut other_slot = reservation.clone();
+        other_slot.destination_slot_id = [5; 16];
+        let reservation_record = broker
+            .fuse_reservations
+            .prepare_reservation(&other_slot)
+            .unwrap();
+
+        // This exercises the shared atomic index, not a live FUSE producer or
+        // connected-worker grant. Native admission below uses real signatures.
+        let fuse_body = b"distinct original FUSE request";
+        let index =
+            fuse_intent::fuse_intent_idempotency_record(&broker.journal, [33; 16], fuse_body)
+                .unwrap();
+        let effect = JournalRecord::put(RecordNamespace::Effect, vec![33; 16], vec![81; 32]);
+        let origin = JournalRecord::put(
+            RecordNamespace::AuthorityPublication,
+            b"test-original-fuse-origin".to_vec(),
+            vec![82; 32],
+        );
+        broker
+            .journal
+            .commit(
+                &JournalTransaction::new([83; 16], vec![index, reservation_record, effect, origin])
+                    .unwrap(),
+            )
+            .unwrap();
+        drop(broker);
+
+        let (mut recovered, recovered_fixture) = test_broker_with_destination_slots(
+            open(&path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let before = std::fs::read(&path).unwrap();
+        assert!(matches!(
+            apply(&mut recovered, &recovered_fixture, &native),
+            Err(MountError::Fence(
+                "request ID was reused with different bytes"
+            ))
+        ));
+        assert_eq!(recovered.worker.calls, 0);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(recovered.fuse_reservations.rows().count(), 1);
+
+        let native_slot = destination_slot_request(
+            33,
+            1,
+            6,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+            None,
+            None,
+        );
+        assert!(matches!(
+            apply_destination_slot(&mut recovered, &recovered_fixture, &native_slot, 1),
+            Err(MountError::Fence(
+                "request ID was reused with different bytes"
+            ))
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(recovered.fuse_reservations.rows().count(), 1);
+    }
+
+    #[test]
+    fn native_request_index_blocks_fuse_even_when_native_effect_is_absent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let native = request(34);
+        apply(&mut broker, &fixture, &native).unwrap();
+
+        for body in [native.as_slice(), b"distinct FUSE body".as_slice()] {
+            let sequence = broker.journal.snapshot_sequence();
+            assert!(
+                fuse_intent::fuse_intent_idempotency_record(&broker.journal, [34; 16], body,)
+                    .is_err()
+            );
+            assert_eq!(broker.journal.snapshot_sequence(), sequence);
+        }
+        broker
+            .journal
+            .commit(
+                &JournalTransaction::new(
+                    [84; 16],
+                    vec![JournalRecord::delete(RecordNamespace::Effect, vec![34; 16])],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(
+            fuse_intent::fuse_intent_idempotency_record(
+                &broker.journal,
+                [34; 16],
+                b"distinct FUSE body",
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(broker.fuse_reservations.rows().count(), 0);
     }
 
     #[test]
@@ -4292,6 +4803,170 @@ mod tests {
             apply_destination_slot(&mut recovered, &recovered_fixture, &request, 1).unwrap(),
             first
         );
+    }
+
+    #[test]
+    fn retained_fuse_reservation_fences_slot_materialization_after_recovery() {
+        let directory = private_destination_slot_root();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, _) = test_broker_with_destination_slots(
+            open(&path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let reservation = fuse_reservation(20);
+        broker.reserve_fuse_worker_gen1(&reservation).unwrap();
+        drop(broker);
+
+        let (mut recovered, fixture) = test_broker_with_destination_slots(
+            open(&path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let materialize = destination_slot_request(
+            92,
+            1,
+            6,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+            None,
+            None,
+        );
+        let decoded = decode_destination_slot_request(
+            &materialize,
+            peer(),
+            policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        let binding = destination_slot_binding(&decoded).unwrap();
+
+        assert!(matches!(
+            apply_destination_slot(&mut recovered, &fixture, &materialize, 1),
+            Err(MountError::Fence(
+                "destination slot is already claimed by Mount state"
+            ))
+        ));
+        assert!(
+            recovered
+                .destination_slots
+                .as_ref()
+                .unwrap()
+                .get(&binding)
+                .is_none()
+        );
+        assert_eq!(
+            recovered.fuse_reservations.rows().next().unwrap(),
+            &reservation
+        );
+        assert_eq!(recovered.worker.calls, 0);
+
+        let mut unrelated = materialize;
+        let mut wire = ApplyDestinationSlotRequest::decode_from_slice(&unrelated).unwrap();
+        wire.fence.get_or_insert_default().incarnation_id = vec![3; 16];
+        unrelated = wire.encode_to_vec();
+        let decoded = decode_destination_slot_request(
+            &unrelated,
+            peer(),
+            policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        let other = destination_slot_binding(&decoded).unwrap();
+        assert!(destination_slot_is_unused(
+            &recovered.resources,
+            &recovered.fuse_reservations,
+            &other,
+        ));
+    }
+
+    #[test]
+    fn retained_fuse_reservation_blocks_reap_and_stale_rematerialization() {
+        for action in [
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE,
+        ] {
+            let directory = private_destination_slot_root();
+            let path = directory.path().join("mount.journal");
+            let (mut broker, fixture) = test_broker_with_destination_slots(
+                open(&path),
+                ScriptedWorker::default(),
+                directory.path(),
+            );
+            let materialize = destination_slot_request(
+                93,
+                1,
+                6,
+                DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+                None,
+                None,
+            );
+            let ready = decode_destination_slot_response(
+                &apply_destination_slot(&mut broker, &fixture, &materialize, 1).unwrap(),
+                4096,
+            )
+            .unwrap();
+            let decoded = decode_destination_slot_request(
+                &materialize,
+                peer(),
+                policy(),
+                TEST_BOOTTIME_NANOSECONDS,
+            )
+            .unwrap();
+            let binding = destination_slot_binding(&decoded).unwrap();
+            let expected = if action == DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE
+            {
+                *broker
+                    .destination_slots
+                    .as_mut()
+                    .unwrap()
+                    .make_ready_record_stale_for_test(&mut broker.journal, &binding)
+                    .unwrap()
+                    .as_bytes()
+            } else {
+                *ready.resource_digest()
+            };
+            let reservation = fuse_reservation(20);
+            broker.reserve_fuse_worker_gen1(&reservation).unwrap();
+            drop(broker);
+
+            let (mut recovered, recovered_fixture) = test_broker_with_destination_slots(
+                open(&path),
+                ScriptedWorker::default(),
+                directory.path(),
+            );
+            let slot_before = recovered
+                .destination_slots
+                .as_ref()
+                .unwrap()
+                .get(&binding)
+                .unwrap();
+            let mutation = destination_slot_request(
+                94,
+                2,
+                7,
+                action,
+                Some(expected),
+                Some(destination_slot_fence(1, 6)),
+            );
+            assert!(
+                apply_destination_slot(&mut recovered, &recovered_fixture, &mutation, 1).is_err(),
+                "{action:?}"
+            );
+            assert_eq!(
+                recovered
+                    .destination_slots
+                    .as_ref()
+                    .unwrap()
+                    .get(&binding)
+                    .unwrap(),
+                slot_before
+            );
+            assert_eq!(
+                recovered.fuse_reservations.rows().next().unwrap(),
+                &reservation
+            );
+            assert_eq!(recovered.worker.calls, 0);
+        }
     }
 
     #[test]

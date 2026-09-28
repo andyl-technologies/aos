@@ -682,57 +682,8 @@ where
         .try_into()
         .map_err(|_| MountCatalogPreparationError::InvalidIntent)?;
     let deadline = header.deadline_boottime_nanoseconds;
-
-    let observed = target.runtime_generation().scope().observed();
-    let host_request = ObserveMountScopeRequest {
-        header: Some(request_header(
-            HOST_VERSION,
-            Audience::AUDIENCE_ROOT_MOUNT,
-            request_id,
-            deadline,
-        ))
-        .into(),
-        fence: mount_request.fence.clone(),
-        runtime_handle: observed.runtime_handle().to_vec(),
-        payload_scope_handle: observed.payload_scope_handle().to_vec(),
-        ..Default::default()
-    };
-    let host_body = host_request.encode_to_vec();
-    let now = transport::boottime()?;
-    let host_checked = decode_mount_scope_request(
-        &host_body,
-        PeerCredentials {
-            uid: 0,
-            gid: 0,
-            pid: Some(1),
-        },
-        PeerPolicy {
-            uid: 0,
-            gid: Some(0),
-            audience: Audience::AUDIENCE_ROOT_MOUNT,
-        },
-        now,
-    )?;
-    target.runtime_generation().scope().authorize_mount_scope(
-        journal,
-        &host_checked,
-        &host_body,
-        clock,
-    )?;
-
-    let authorization = observed.authorization();
-    let host_packet = encode_authorized_request_envelope(
-        ProtocolId::HostBroker,
-        HOST_METHOD,
-        &host_body,
-        &[],
-        AuthorizationArtifactBytes {
-            broker_plan: authorization.broker_plan(),
-            broker_plan_signature: authorization.broker_plan_signature(),
-            ownership_lease: authorization.ownership_lease(),
-            ownership_lease_signature: authorization.ownership_lease_signature(),
-        },
-    )?;
+    let host_packet =
+        prepare_current_host_scope_packet(journal, &target, request_id, deadline, clock)?;
     let preparation_body = PrepareMountCatalogRequest {
         header: mount_request.header.clone(),
         mount_request: Some(mount_request.clone()).into(),
@@ -762,6 +713,94 @@ where
         body: preparation_body,
         packet,
     })
+}
+
+/// Reuses exact existing Host-scope authority without reentering Controller.
+///
+/// The caller retains the actual Controller writer and namespace target. This
+/// constructs only the original query's signed artifact carrier: the returned
+/// bytes do not establish Host response subject, namespace custody, Mount
+/// reservation, connected worker liveness or any content permission.
+pub(crate) fn prepare_current_host_scope_packet<T>(
+    journal: &mut Journal,
+    target: &CurrentNamespaceTarget,
+    request_id: [u8; 16],
+    deadline: u64,
+    clock: &mut T,
+) -> Result<Vec<u8>, MountCatalogPreparationError>
+where
+    T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+{
+    target.recheck(journal, clock)?;
+    let scope = target.runtime_generation().scope();
+    if deadline > scope.deadline_boottime_nanoseconds() {
+        return Err(MountCatalogPreparationError::Deadline);
+    }
+    let observed = scope.observed();
+    let body = host_scope_query_body(
+        request_id,
+        deadline,
+        current_fence(target),
+        observed.runtime_handle(),
+        observed.payload_scope_handle(),
+    );
+
+    // These are the fixed RootMount decoder coordinates, not a fabricated
+    // sender identity. Host independently verifies the real record sender.
+    let checked = decode_mount_scope_request(
+        &body,
+        PeerCredentials {
+            uid: 0,
+            gid: 0,
+            pid: Some(1),
+        },
+        PeerPolicy {
+            uid: 0,
+            gid: Some(0),
+            audience: Audience::AUDIENCE_ROOT_MOUNT,
+        },
+        transport::boottime()?,
+    )?;
+    scope.authorize_mount_scope(journal, &checked, &body, clock)?;
+    let authorization = observed.authorization();
+    let packet = encode_authorized_request_envelope(
+        ProtocolId::HostBroker,
+        HOST_METHOD,
+        &body,
+        &[],
+        AuthorizationArtifactBytes {
+            broker_plan: authorization.broker_plan(),
+            broker_plan_signature: authorization.broker_plan_signature(),
+            ownership_lease: authorization.ownership_lease(),
+            ownership_lease_signature: authorization.ownership_lease_signature(),
+        },
+    )?;
+    target.recheck(journal, clock)?;
+    Ok(packet)
+}
+
+// Pure framing only: live authority stays with the held target and writer.
+fn host_scope_query_body(
+    request_id: [u8; 16],
+    deadline: u64,
+    fence: AssignmentFence,
+    runtime_handle: &[u8; 32],
+    payload_scope_handle: &[u8; 32],
+) -> Vec<u8> {
+    ObserveMountScopeRequest {
+        header: Some(request_header(
+            HOST_VERSION,
+            Audience::AUDIENCE_ROOT_MOUNT,
+            request_id,
+            deadline,
+        ))
+        .into(),
+        fence: Some(fence).into(),
+        runtime_handle: runtime_handle.to_vec(),
+        payload_scope_handle: payload_scope_handle.to_vec(),
+        ..Default::default()
+    }
+    .encode_to_vec()
 }
 
 fn complete_catalog_response<T>(
