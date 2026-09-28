@@ -16,7 +16,7 @@ in
     inherit version src;
     # The complete workspace has one vendor input contract. Reuse Mount's
     # source-only vendor derivation rather than adding another divergent pin.
-    cargoDeps = aos-sandbox-mountd.cargoDeps;
+    cargoDeps = aos-sandbox-mountd.passthru.cargoDeps;
     cargoRoot = "crates";
     cargoFlags = "-p aos-filesystem-fuse --bin aos-filesystem-fuse-worker";
     cargoTestFlags = "-p aos-filesystem-fuse";
