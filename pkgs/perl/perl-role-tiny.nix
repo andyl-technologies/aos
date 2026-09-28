@@ -1,12 +1,13 @@
 ##! perl-role-tiny — Minimal role composition for Perl
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
 }: let
   version = "2.002004";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-role-tiny";
     inherit version;
     src = fetchurl {

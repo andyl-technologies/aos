@@ -11,6 +11,7 @@
   perl-ipc-run,
   perl-timedate,
   perl-time-duration,
+  stdenv,
 }: let
   version = "0.70";
   modules = [perl-ipc-run perl-timedate perl-time-duration];
@@ -64,18 +65,29 @@ in
       }
       {
         name = "check";
-        script = ''make check'';
+        # The upstream check runs the target isutf8 executable.
+        script =
+          if stdenv.isCross
+          then ""
+          else ''make check'';
       }
       {
         name = "install";
-        script = ''
-          make install \
-            PREFIX="$out" \
-            INSTALL_BIN="install -m 0755"
-          printf 'input\n' | "$out/bin/sponge" /tmp/moreutils-sponge
-          grep -qx input /tmp/moreutils-sponge
-          printf 'test\n' | "$out/bin/ts" -s | grep -q test
-        '';
+        script =
+          ''
+            make install \
+              PREFIX="$out" \
+              INSTALL_BIN="install -m 0755"
+          ''
+          + (
+            if stdenv.isCross
+            then ""
+            else ''
+              printf 'input\n' | "$out/bin/sponge" /tmp/moreutils-sponge
+              grep -qx input /tmp/moreutils-sponge
+              printf 'test\n' | "$out/bin/ts" -s | grep -q test
+            ''
+          );
       }
     ];
     checks = {

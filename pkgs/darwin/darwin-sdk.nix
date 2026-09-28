@@ -1061,6 +1061,10 @@ in
 
           typedef uint64_t os_signpost_id_t;
 
+          // Instruments recognizes this public category when displaying
+          // signpost events in its Points of Interest track.
+          #define OS_LOG_CATEGORY_POINTS_OF_INTEREST "PointsOfInterest"
+
           #define OS_SIGNPOST_ID_NULL ((os_signpost_id_t)0)
           #define OS_SIGNPOST_ID_INVALID ((os_signpost_id_t)~0ull)
           #define OS_SIGNPOST_ID_EXCLUSIVE ((os_signpost_id_t)0xEEEEB0B5B2B2EEEEull)
@@ -1554,6 +1558,8 @@ in
           );
           bool SecTrustEvaluateWithError(SecTrustRef trust, CFErrorRef *error);
           SecCertificateRef SecTrustGetCertificateAtIndex(SecTrustRef trust, CFIndex index);
+          OSStatus SecTrustSetOCSPResponse(SecTrustRef trust, CFTypeRef responseData);
+          OSStatus SecTrustSetVerifyDate(SecTrustRef trust, CFDateRef verifyDate);
           __END_DECLS
           #endif
           EOF
@@ -1736,6 +1742,8 @@ in
                 - _CFDictionaryGetValueIfPresent
                 - _CFDictionarySetValue
                 - _CFEqual
+                - _CFErrorCopyDescription
+                - _CFErrorGetCode
                 - _CFGetTypeID
                 - _CFLocaleCreateCanonicalLanguageIdentifierFromString
                 - _CFLocaleCopyISOLanguageCodes
@@ -1810,6 +1818,7 @@ in
                 - _kCFAllocatorNull
                 - _kCFAllocatorMalloc
                 - _kCFAllocatorSystemDefault
+                - _kCFAbsoluteTimeIntervalSince1970
                 - _kCFBooleanTrue
                 - _kCFBooleanFalse
                 - _kCFBundleExecutableKey
