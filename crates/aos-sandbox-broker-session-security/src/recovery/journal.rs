@@ -13,6 +13,11 @@ mod host_terminal_archive;
 mod owner;
 mod storage_inventory_abandonment;
 mod storage_inventory_archive;
+#[allow(
+    dead_code,
+    reason = "TPM floor attachment and live transport remain unqualified"
+)]
+mod tpm_floor;
 pub(crate) use storage_inventory_archive::ArchivedStorageInventoryHeadV1;
 
 pub(crate) use historical_checkpoint::HistoricalSessionCheckpointV1;
