@@ -23,6 +23,7 @@ use aos_sandbox_protocol::fuse_worker_preparation::{
 };
 
 use super::*;
+use crate::dormant_handshake::DormantBrokerSessionHandshakeErrorV1 as RendezvousError;
 use aos_sandbox_host::OriginalHostFuseWorkerTransportProgressV1 as Progress;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,7 +58,7 @@ fn frame(
     control: Control,
     challenge: &WorkerRendezvousChallengeV2,
     maximum: u32,
-) -> Result<Vec<u8>, TransportError> {
+) -> Result<Vec<u8>, RendezvousError> {
     let (magic, version) = match control {
         Control::Ready | Control::Joined | Control::Confirmed => (b"AOSFWX02", 2),
         Control::StartInit | Control::IdmapApplied | Control::PreparationConfirmed => {
@@ -73,17 +74,17 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
     fn check_fresh(
         &mut self,
         challenge: &WorkerRendezvousChallengeV2,
-    ) -> Result<(), TransportError> {
+    ) -> Result<(), RendezvousError> {
         self.recheck()?;
         if self.stage != ReplyStage::Compared {
-            return Err(TransportError::RemoteInvalid);
+            return Err(RendezvousError::RemoteInvalid);
         }
         challenge
             .check_deadline(super::super::protected_boottime_nanoseconds()?)
-            .map_err(|_| TransportError::RemoteInvalid)?;
+            .map_err(|_| RendezvousError::RemoteInvalid)?;
         if let Some(original) = &self.fresh_challenge {
             if original != challenge {
-                return Err(TransportError::RemoteInvalid);
+                return Err(RendezvousError::RemoteInvalid);
             }
         } else {
             self.fresh_challenge = Some(challenge.clone());
@@ -95,7 +96,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         &mut self,
         control: Control,
         challenge: &WorkerRendezvousChallengeV2,
-    ) -> Result<Progress, TransportError> {
+    ) -> Result<Progress, RendezvousError> {
         self.check_fresh(challenge)?;
         let frame = frame(
             self.binding,
@@ -114,7 +115,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
             }
             Err(error) => {
                 self.stage = ReplyStage::ReconciliationRequired;
-                Err(error)
+                Err(error.into())
             }
         }
     }
@@ -123,7 +124,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         &mut self,
         control: Control,
         challenge: &WorkerRendezvousChallengeV2,
-    ) -> Result<ControlReceive, TransportError> {
+    ) -> Result<ControlReceive, RendezvousError> {
         self.check_fresh(challenge)?;
         let expected = frame(
             self.binding,
@@ -139,7 +140,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
             Ok(received) if received == expected => Ok(ControlReceive::Received),
             Ok(_) => {
                 self.stage = ReplyStage::ReconciliationRequired;
-                Err(TransportError::RemoteInvalid)
+                Err(RendezvousError::RemoteInvalid)
             }
             Err(TransportError::Transport) => {
                 self.wait(false)?;
@@ -148,7 +149,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
             }
             Err(error) => {
                 self.stage = ReplyStage::ReconciliationRequired;
-                Err(error)
+                Err(error.into())
             }
         }
     }
@@ -156,42 +157,42 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
     pub(crate) fn send_rendezvous_ready(
         &mut self,
         challenge: &WorkerRendezvousChallengeV2,
-    ) -> Result<Progress, TransportError> {
+    ) -> Result<Progress, RendezvousError> {
         self.host_control(Control::Ready, challenge)
     }
 
     pub(crate) fn receive_rendezvous_joined(
         &mut self,
         challenge: &WorkerRendezvousChallengeV2,
-    ) -> Result<Progress, TransportError> {
+    ) -> Result<Progress, RendezvousError> {
         self.host_control(Control::Joined, challenge)
     }
 
     pub(crate) fn send_rendezvous_confirmed(
         &mut self,
         challenge: &WorkerRendezvousChallengeV2,
-    ) -> Result<Progress, TransportError> {
+    ) -> Result<Progress, RendezvousError> {
         self.host_control(Control::Confirmed, challenge)
     }
 
     pub(crate) fn send_kernel_init_start(
         &mut self,
         challenge: &WorkerRendezvousChallengeV2,
-    ) -> Result<Progress, TransportError> {
+    ) -> Result<Progress, RendezvousError> {
         self.host_control(Control::StartInit, challenge)
     }
 
     pub(crate) fn receive_kernel_idmap_applied(
         &mut self,
         challenge: &WorkerRendezvousChallengeV2,
-    ) -> Result<Progress, TransportError> {
+    ) -> Result<Progress, RendezvousError> {
         self.host_control(Control::IdmapApplied, challenge)
     }
 
     pub(crate) fn send_kernel_preparation_confirmed(
         &mut self,
         challenge: &WorkerRendezvousChallengeV2,
-    ) -> Result<Progress, TransportError> {
+    ) -> Result<Progress, RendezvousError> {
         self.host_control(Control::PreparationConfirmed, challenge)
     }
 
@@ -199,7 +200,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         &mut self,
         control: Control,
         challenge: &WorkerRendezvousChallengeV2,
-    ) -> Result<Progress, TransportError> {
+    ) -> Result<Progress, RendezvousError> {
         let (before, after) = match control {
             Control::Ready => (RendezvousStage::Pending, RendezvousStage::Ready),
             Control::Joined => (RendezvousStage::Ready, RendezvousStage::Joined),
@@ -218,7 +219,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
             if self.request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
                 || self.rendezvous_stage != before
             {
-                return Err(TransportError::RemoteInvalid);
+                return Err(RendezvousError::RemoteInvalid);
             }
             let progress = if matches!(control, Control::Joined | Control::IdmapApplied) {
                 match self.receive_control(control, challenge)? {
@@ -248,7 +249,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         handoff: &mut PreparedMountFuseWorkerHandoffV1<'_, '_, W>,
         original: &mut super::super::fuse_intent_continuation::HeldFuseIntentTransportV1<'_>,
         comparison: &OriginalHostWorkerComparisonV1,
-    ) -> Result<(), TransportError> {
+    ) -> Result<(), RendezvousError> {
         let result = self.mount_rendezvous(handoff, original, comparison);
         if result.is_err() {
             // The actual durable owners remain occupied; even an error before
@@ -263,12 +264,12 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         handoff: &mut PreparedMountFuseWorkerHandoffV1<'_, '_, W>,
         original: &mut super::super::fuse_intent_continuation::HeldFuseIntentTransportV1<'_>,
         comparison: &OriginalHostWorkerComparisonV1,
-    ) -> Result<(), TransportError> {
+    ) -> Result<(), RendezvousError> {
         if self.request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend
             || self.rendezvous_stage != RendezvousStage::Pending
             || self.stage != ReplyStage::Compared
         {
-            return Err(TransportError::RemoteInvalid);
+            return Err(RendezvousError::RemoteInvalid);
         }
         let ready = self.receive_ready(handoff, original)?;
         let subject = self.exchange_original_worker(handoff, original, comparison, &ready)?;
@@ -280,7 +281,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         &mut self,
         handoff: &mut PreparedMountFuseWorkerHandoffV1<'_, '_, W>,
         original: &mut super::super::fuse_intent_continuation::HeldFuseIntentTransportV1<'_>,
-    ) -> Result<WorkerRendezvousChallengeV2, TransportError> {
+    ) -> Result<WorkerRendezvousChallengeV2, RendezvousError> {
         loop {
             self.check_mount(handoff, original)?;
             let received = self
@@ -291,13 +292,13 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
                 Ok(received) => {
                     let body = received
                         .get(HEADER_BYTES..)
-                        .ok_or(TransportError::RemoteInvalid)?;
+                        .ok_or(RendezvousError::RemoteInvalid)?;
                     let challenge = WorkerRendezvousChallengeV2::decode(
                         body,
                         handoff.plan(),
                         super::super::protected_boottime_nanoseconds()?,
                     )
-                    .map_err(|_| TransportError::RemoteInvalid)?;
+                    .map_err(|_| RendezvousError::RemoteInvalid)?;
                     if received
                         != frame(
                             self.binding,
@@ -306,14 +307,14 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
                             self.request.maximum_response_bytes(),
                         )?
                     {
-                        return Err(TransportError::RemoteInvalid);
+                        return Err(RendezvousError::RemoteInvalid);
                     }
                     self.check_fresh(&challenge)?;
                     self.rendezvous_stage = RendezvousStage::Ready;
                     return Ok(challenge);
                 }
                 Err(TransportError::Transport) => self.wait(false)?,
-                Err(error) => return Err(error),
+                Err(error) => return Err(error.into()),
             }
         }
     }
@@ -324,7 +325,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         original: &mut super::super::fuse_intent_continuation::HeldFuseIntentTransportV1<'_>,
         comparison: &OriginalHostWorkerComparisonV1,
         ready: &WorkerRendezvousChallengeV2,
-    ) -> Result<KernelAuthorizedRecordSubject, TransportError> {
+    ) -> Result<KernelAuthorizedRecordSubject, RendezvousError> {
         // The called sender moved and dropped its outgoing table; the Host
         // received/consumed that packet and emitted READY only after its actual
         // local/PID1 cleanup and uncached observations. This method neither
@@ -334,7 +335,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
             self.check_fresh(ready)?;
             let sent = handoff
                 .original_worker_channel()
-                .map_err(|_| TransportError::RemoteInvalid)?
+                .map_err(|_| RendezvousError::RemoteInvalid)?
                 .send(&ready.encode());
             self.check_mount(handoff, original)?;
             match sent {
@@ -342,7 +343,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
                 Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
                     self.wait_worker(handoff, original, true)?;
                 }
-                Err(_) => return Err(TransportError::RemoteInvalid),
+                Err(_) => return Err(RendezvousError::RemoteInvalid),
             }
         }
 
@@ -351,7 +352,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
             self.check_fresh(ready)?;
             let channel = handoff
                 .original_worker_channel()
-                .map_err(|_| TransportError::RemoteInvalid)?;
+                .map_err(|_| RendezvousError::RemoteInvalid)?;
             let record = channel.receive(WORKER_RENDEZVOUS_BYTES_V2);
             match record {
                 Ok(record) => {
@@ -359,13 +360,13 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
                     // actual receiving socket, then use this record's subject.
                     let bound = channel
                         .bind_received(record)
-                        .map_err(|_| TransportError::KernelEvidence)?;
+                        .map_err(|_| RendezvousError::KernelEvidence)?;
                     ready
                         .compare_reply(
                             bound.payload(),
                             super::super::protected_boottime_nanoseconds()?,
                         )
-                        .map_err(|_| TransportError::RemoteInvalid)?;
+                        .map_err(|_| RendezvousError::RemoteInvalid)?;
                     let (_, subject, _) = bound.into_parts();
                     comparison.recheck_record_subject(&subject)?;
                     self.check_mount(handoff, original)?;
@@ -374,7 +375,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
                 Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
                     self.wait_worker(handoff, original, false)?;
                 }
-                Err(_) => return Err(TransportError::RemoteInvalid),
+                Err(_) => return Err(RendezvousError::RemoteInvalid),
             }
         }
     }
@@ -386,7 +387,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         comparison: &OriginalHostWorkerComparisonV1,
         ready: &WorkerRendezvousChallengeV2,
         subject: &KernelAuthorizedRecordSubject,
-    ) -> Result<(), TransportError> {
+    ) -> Result<(), RendezvousError> {
         loop {
             self.check_mount(handoff, original)?;
             comparison.recheck_record_subject(subject)?;
@@ -422,7 +423,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         comparison: &OriginalHostWorkerComparisonV1,
         challenge: &WorkerRendezvousChallengeV2,
         subject: &KernelAuthorizedRecordSubject,
-    ) -> Result<(), TransportError> {
+    ) -> Result<(), RendezvousError> {
         loop {
             self.check_kernel_preparation(handoff, original, comparison, challenge, subject)?;
             let received = self.receive_control(Control::StartInit, challenge)?;
@@ -455,7 +456,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         self.check_kernel_preparation(handoff, original, comparison, challenge, subject)?;
         handoff
             .apply_original_prepared_idmap()
-            .map_err(|_| TransportError::RemoteInvalid)?;
+            .map_err(|_| RendezvousError::RemoteInvalid)?;
         self.rendezvous_stage = RendezvousStage::IdmapApplied;
         self.check_kernel_preparation(handoff, original, comparison, challenge, subject)?;
         self.send_worker_kernel_phase(
@@ -504,7 +505,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         comparison: &OriginalHostWorkerComparisonV1,
         challenge: &WorkerRendezvousChallengeV2,
         subject: &KernelAuthorizedRecordSubject,
-    ) -> Result<(), TransportError> {
+    ) -> Result<(), RendezvousError> {
         self.check_mount(handoff, original)?;
         self.check_fresh(challenge)?;
         comparison.recheck_record_subject(subject)?;
@@ -514,7 +515,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         ) {
             handoff
                 .recheck_original_prepared_idmap()
-                .map_err(|_| TransportError::RemoteInvalid)?;
+                .map_err(|_| RendezvousError::RemoteInvalid)?;
         }
         self.check_mount(handoff, original)
     }
@@ -527,12 +528,12 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         challenge: &WorkerRendezvousChallengeV2,
         subject: &KernelAuthorizedRecordSubject,
         phase: KernelPhase,
-    ) -> Result<(), TransportError> {
+    ) -> Result<(), RendezvousError> {
         loop {
             self.check_kernel_preparation(handoff, original, comparison, challenge, subject)?;
             let sent = handoff
                 .original_worker_channel()
-                .map_err(|_| TransportError::RemoteInvalid)?
+                .map_err(|_| RendezvousError::RemoteInvalid)?
                 .send(&phase.encode(challenge));
             self.check_kernel_preparation(handoff, original, comparison, challenge, subject)?;
             match sent {
@@ -543,7 +544,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
                         handoff, original, comparison, challenge, subject,
                     )?;
                 }
-                Err(_) => return Err(TransportError::RemoteInvalid),
+                Err(_) => return Err(RendezvousError::RemoteInvalid),
             }
         }
     }
@@ -556,25 +557,25 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         challenge: &WorkerRendezvousChallengeV2,
         subject: &KernelAuthorizedRecordSubject,
         phase: KernelPhase,
-    ) -> Result<(), TransportError> {
+    ) -> Result<(), RendezvousError> {
         loop {
             self.check_kernel_preparation(handoff, original, comparison, challenge, subject)?;
             let channel = handoff
                 .original_worker_channel()
-                .map_err(|_| TransportError::RemoteInvalid)?;
+                .map_err(|_| RendezvousError::RemoteInvalid)?;
             let received = channel.receive(WORKER_KERNEL_PREPARATION_BYTES_V3);
             match received {
                 Ok(record) => {
                     let bound = channel
                         .bind_received(record)
-                        .map_err(|_| TransportError::KernelEvidence)?;
+                        .map_err(|_| RendezvousError::KernelEvidence)?;
                     phase
                         .compare(
                             bound.payload(),
                             challenge,
                             super::super::protected_boottime_nanoseconds()?,
                         )
-                        .map_err(|_| TransportError::RemoteInvalid)?;
+                        .map_err(|_| RendezvousError::RemoteInvalid)?;
                     comparison.recheck_record_subject(bound.subject())?;
                     drop(bound);
                     return self.check_kernel_preparation(
@@ -587,7 +588,7 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
                         handoff, original, comparison, challenge, subject,
                     )?;
                 }
-                Err(_) => return Err(TransportError::RemoteInvalid),
+                Err(_) => return Err(RendezvousError::RemoteInvalid),
             }
         }
     }
@@ -596,11 +597,11 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         &mut self,
         handoff: &mut PreparedMountFuseWorkerHandoffV1<'_, '_, W>,
         original: &mut super::super::fuse_intent_continuation::HeldFuseIntentTransportV1<'_>,
-    ) -> Result<(), TransportError> {
+    ) -> Result<(), RendezvousError> {
         original.recheck()?;
         handoff
             .recheck()
-            .map_err(|_| TransportError::RemoteInvalid)?;
+            .map_err(|_| RendezvousError::RemoteInvalid)?;
         self.recheck()?;
         Ok(())
     }
@@ -610,13 +611,13 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         handoff: &mut PreparedMountFuseWorkerHandoffV1<'_, '_, W>,
         original: &mut super::super::fuse_intent_continuation::HeldFuseIntentTransportV1<'_>,
         write: bool,
-    ) -> Result<(), TransportError> {
+    ) -> Result<(), RendezvousError> {
         self.check_mount(handoff, original)?;
         let fd = handoff
             .original_worker_channel()
-            .map_err(|_| TransportError::RemoteInvalid)?
+            .map_err(|_| RendezvousError::RemoteInvalid)?
             .as_fd()
-            .map_err(|_| TransportError::KernelEvidence)?;
+            .map_err(|_| RendezvousError::KernelEvidence)?;
         let waited = crate::dormant_handshake::wait_for_handshake_readiness(
             fd,
             write,
@@ -631,18 +632,18 @@ impl OriginalHostWorkerComparisonV1 {
     fn recheck_record_subject(
         &self,
         subject: &KernelAuthorizedRecordSubject,
-    ) -> Result<(), TransportError> {
+    ) -> Result<(), RendezvousError> {
         let expected = self
             .process
             .info()
-            .map_err(|_| TransportError::KernelEvidence)?;
+            .map_err(|_| RendezvousError::KernelEvidence)?;
         let observed = subject
             .pidfd()
             .info()
-            .map_err(|_| TransportError::KernelEvidence)?;
+            .map_err(|_| RendezvousError::KernelEvidence)?;
         let credentials = expected
             .credentials()
-            .ok_or(TransportError::KernelEvidence)?;
+            .ok_or(RendezvousError::KernelEvidence)?;
         let nominated = subject.credentials();
         if expected != observed
             || observed != subject.initial_info()
@@ -655,48 +656,48 @@ impl OriginalHostWorkerComparisonV1 {
             || !self
                 .process
                 .is_alive()
-                .map_err(|_| TransportError::KernelEvidence)?
+                .map_err(|_| RendezvousError::KernelEvidence)?
             || !subject
                 .is_alive()
-                .map_err(|_| TransportError::KernelEvidence)?
+                .map_err(|_| RendezvousError::KernelEvidence)?
             || self
                 .process
                 .info()
-                .map_err(|_| TransportError::KernelEvidence)?
+                .map_err(|_| RendezvousError::KernelEvidence)?
                 != expected
             || subject
                 .pidfd()
                 .info()
-                .map_err(|_| TransportError::KernelEvidence)?
+                .map_err(|_| RendezvousError::KernelEvidence)?
                 != expected
         {
-            return Err(TransportError::KernelEvidence);
+            return Err(RendezvousError::KernelEvidence);
         }
         let anchor = self
             .cgroup
             .resolve(Path::new("."))
-            .map_err(|_| TransportError::KernelEvidence)?;
+            .map_err(|_| RendezvousError::KernelEvidence)?;
         anchor
             .verify_exact_membership(&self.process)
-            .map_err(|_| TransportError::KernelEvidence)?;
+            .map_err(|_| RendezvousError::KernelEvidence)?;
         anchor
             .verify_exact_membership(subject.pidfd())
-            .map_err(|_| TransportError::KernelEvidence)?;
+            .map_err(|_| RendezvousError::KernelEvidence)?;
         if self
             .process
             .info()
-            .map_err(|_| TransportError::KernelEvidence)?
+            .map_err(|_| RendezvousError::KernelEvidence)?
             != expected
             || subject
                 .pidfd()
                 .info()
-                .map_err(|_| TransportError::KernelEvidence)?
+                .map_err(|_| RendezvousError::KernelEvidence)?
                 != expected
             || !subject
                 .is_alive()
-                .map_err(|_| TransportError::KernelEvidence)?
+                .map_err(|_| RendezvousError::KernelEvidence)?
         {
-            return Err(TransportError::KernelEvidence);
+            return Err(RendezvousError::KernelEvidence);
         }
         Ok(())
     }
