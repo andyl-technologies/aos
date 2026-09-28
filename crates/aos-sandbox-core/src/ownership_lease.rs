@@ -111,6 +111,20 @@ impl RawPairedClockSample {
     pub const fn boottime_nanoseconds(self) -> u64 {
         self.boottime_nanoseconds
     }
+
+    /// Checks that a later sample preserves the existing paired-clock policy.
+    ///
+    /// This comparison does not authenticate caller-supplied clock claims or
+    /// grant lease, currentness, or authorization authority. An owner must
+    /// independently obtain both samples through its trusted clock boundary.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed provenance or boot, rollback of either clock, overflow,
+    /// or elapsed wall/BOOTTIME divergence beyond the existing v1 tolerance.
+    pub fn validate_later_sample(self, later: Self) -> Result<(), OwnershipLeaseVerificationError> {
+        validate_later_clock(self, later)
+    }
 }
 
 /// Identifies assignment semantics retained across lease renewal.
@@ -1448,6 +1462,41 @@ mod tests {
             boottime,
         )
         .unwrap_or_else(|error| panic!("test clock failed: {error}"))
+    }
+
+    #[test]
+    fn raw_paired_clock_validation_preserves_existing_owner_policy() {
+        let initial = clock(100, 10_000_000_000, 8, 9);
+        let cases = [
+            (clock(101, 11_000_000_000, 8, 9), Ok(())),
+            (
+                clock(101, 11_000_000_000, 8, 10),
+                Err(OwnershipLeaseVerificationError::ClockProvenanceMismatch),
+            ),
+            (
+                clock(101, 11_000_000_000, 10, 9),
+                Err(OwnershipLeaseVerificationError::BootMismatch),
+            ),
+            (
+                clock(99, 11_000_000_000, 8, 9),
+                Err(OwnershipLeaseVerificationError::ClockRollback),
+            ),
+            (
+                clock(101, 9_000_000_000, 8, 9),
+                Err(OwnershipLeaseVerificationError::ClockRollback),
+            ),
+            (
+                clock(101, 16_000_000_000, 8, 9),
+                Err(OwnershipLeaseVerificationError::ClockDivergence),
+            ),
+        ];
+        for (later, expected) in cases {
+            assert_eq!(initial.validate_later_sample(later), expected);
+            assert_eq!(
+                initial.validate_later_sample(later),
+                validate_later_clock(initial, later)
+            );
+        }
     }
 
     fn historical_expectation(
