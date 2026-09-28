@@ -12,6 +12,7 @@ use aos_sandbox_agent::openssh_control_channel::{
 };
 use aos_sandbox_agent::openssh_ticket::{ticket_digest_v2, verify_ticket_gate_readback_v2};
 use aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2;
+use ed25519_dalek::VerifyingKey;
 
 use super::{
     AgentFrameV1, DormantRuntimeExecutionClaimV1, GRANT_RESERVATION_PREFIX,
@@ -166,8 +167,10 @@ impl HostOpenSshAttachRouteOwnerV1 {
         let AgentFrameV1::OriginalControlResponseV5(packet) = decode_frame_v1(&response)? else {
             return Err(Error::GateMismatch);
         };
+        let agent_verifier = VerifyingKey::from_bytes(&current.agent_peer().public_key())
+            .map_err(|_| Error::TrustUnavailable)?;
         let (observation, physical) =
-            verify_original_control_response_v5(&packet, &current.agent_peer().public_key())?;
+            verify_original_control_response_v5(&packet, &agent_verifier)?;
         if action == OriginalControlActionV5::Apply
             && (observation.phase != OriginalControlPhaseV5::Applied
                 || observation.binding != binding
