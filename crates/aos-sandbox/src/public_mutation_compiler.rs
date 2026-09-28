@@ -160,6 +160,22 @@ impl AuthorizedPublicMutationRequestV1 {
         self.authorization.accepted_wall_seconds()
     }
 
+    /// Returns the immutable capability and policy limit accepted for attachment.
+    ///
+    /// The checked capability registry already requires every child expiry to
+    /// remain within all retained ancestors. This projection does not reissue
+    /// authority or replace the current authorization checks.
+    #[must_use]
+    pub(crate) fn original_attach_authority_expires_at(&self) -> Option<i64> {
+        self.authorization
+            .original_coordinates()
+            .map(|coordinates| {
+                coordinates
+                    .capability_expires_at
+                    .min(coordinates.policy_expires_at)
+            })
+    }
+
     /// Encodes historical custody from this already checked attach decision.
     ///
     /// # Errors
@@ -670,6 +686,68 @@ mod handle_decode_tests {
     use buffa::Message as _;
 
     use super::*;
+
+    #[test]
+    fn accepted_attach_lifetime_projects_original_capability_and_policy_minimum() {
+        use crate::cli_model::provenance::OriginalPublicMutationCoordinatesV2;
+
+        let request = aos_proto::aos::sandbox::v1::DeleteSandboxRequest {
+            sandbox_id: vec![1; 16],
+            mutation: Some(aos_proto::aos::sandbox::v1::MutationContext {
+                idempotency_key: vec![2; 16],
+                expected_resource_version: vec![3; 32],
+                operation_timeout: Some(aos_proto::aos::sandbox::v1::Duration {
+                    nanoseconds: 1,
+                    ..Default::default()
+                })
+                .into(),
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        };
+        let encoded = PublicMutationRequestV1::new(
+            PublicApiAuditMethodV1::DeleteSandbox,
+            &request.encode_to_vec(),
+        )
+        .unwrap()
+        .encode();
+        let mut accepted = AuthorizedPublicMutationRequestV1::test_authorized_delete(&encoded);
+        assert_eq!(accepted.original_attach_authority_expires_at(), None);
+
+        for (capability_expires_at, policy_expires_at, expected) in
+            [(40, 70, 40), (70, 40, 40), (40, 40, 40)]
+        {
+            let coordinates = OriginalPublicMutationCoordinatesV2 {
+                capability: [4; 16],
+                revocation_scope: [5; 16],
+                revocation_generation: 1,
+                policy_digest: [6; 32],
+                policy_generation: 1,
+                controller: [7; 16],
+                controller_generation: 1,
+                capability_not_before: 1,
+                capability_expires_at,
+                policy_not_before: 1,
+                policy_expires_at,
+                channel_binding: [8; 32],
+                session_commitment: [9; 32],
+                authorization_revision: [10; 32],
+            };
+            accepted.authorization = accepted
+                .authorization
+                .with_original_coordinates(coordinates);
+
+            assert_eq!(
+                accepted.original_attach_authority_expires_at(),
+                Some(expected)
+            );
+            assert_eq!(
+                accepted.authorization.original_coordinates(),
+                Some(coordinates)
+            );
+        }
+    }
 
     #[test]
     fn structural_replay_decode_defers_capability_selector_until_protected_lookup() {

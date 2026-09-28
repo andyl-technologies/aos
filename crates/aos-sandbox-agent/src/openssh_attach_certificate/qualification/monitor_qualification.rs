@@ -1,12 +1,17 @@
-//! Real pinned sshd monitor/authentication fixture, never an I/O authority.
+//! Real pinned sshd monitor and confined relay transport qualification.
 //!
 //! The fixture uses the existing fixed Guest pathname only to inspect real
-//! monitor records and pidfds. Production registry/Controller currentness and
-//! continuously confined relay/held consume still require separate qualification.
+//! monitor records, pidfds and native pipe transport. The fixed fixture pipes
+//! are not production execution authority; actual Guest/Controller/Host held
+//! consume and installed continuous confinement require separate qualification.
 
 use aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2;
 use aos_sandbox_linux::pidfd::PidFd;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
+use nix::libc;
+use std::io::Write as _;
+use std::os::fd::AsFd as _;
+use std::os::unix::process::CommandExt as _;
 
 use super::*;
 use crate::openssh_monitor::{
@@ -17,6 +22,29 @@ use crate::openssh_monitor::{
 const SOCKET: &str = "/run/aos-sandbox-agent/exec-gate.sock";
 
 pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1, original: &str) {
+    let passwd = fs::read_to_string("/etc/passwd").unwrap();
+    let shell = format!("{FIXTURE_DIRECTORY}/hostile-shell");
+    let marker = "/home/aos_exec/shell-executed";
+    protected_file(marker, b"", 0o666);
+    let bash = std::env::var("AOS_ATTACH_PROFILE_BASH").unwrap();
+    protected_file(
+        &shell,
+        format!("#!{bash}\nprintf shell-invoked > {marker}\nexit 99\n").as_bytes(),
+        0o755,
+    );
+    let changed = passwd
+        .lines()
+        .map(|line| {
+            if line.starts_with("aos_exec:") {
+                format!("{}:{shell}", line.rsplit_once(':').unwrap().0)
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    protected_file("/etc/passwd", changed.as_bytes(), 0o644);
     let session_package = std::env::var("AOS_ATTACH_PROFILE_SSHD_SESSION").unwrap();
     if let Ok(existing) = fs::symlink_metadata("/usr/libexec/sshd-session") {
         assert!(existing.file_type().is_symlink());
@@ -47,6 +75,7 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
 
     let mut daemon = RunningOpenSshGateV1::start_with_monitor_v2(base.binding.clone()).unwrap();
     let mut claim = base.clone();
+    claim.pty = false;
     (claim.sshd_pid, claim.sshd_start_ticks) = daemon.daemon_identity().unwrap();
     write_claim(&claim);
     wait_listener();
@@ -61,9 +90,16 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
     assert!(PidFd::from_owned(fs::File::open("/dev/null").unwrap().into()).is_err());
 
     let mut client = ssh_command(ssh, original)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
+        .unwrap();
+    client
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"original-input\n")
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut connection = loop {
@@ -90,7 +126,9 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
     let (payload, subject, child) = {
         let bound = connection.bind_received_descriptors(record).unwrap();
         let (payload, subject, mut descriptors, peer) = bound.into_parts();
-        assert_eq!(subject.credentials(), peer.credentials());
+        assert_eq!(subject.credentials().pid(), peer.credentials().pid());
+        assert_eq!(subject.credentials().uid(), peer.credentials().uid());
+        assert_eq!(subject.credentials().gid(), peer.credentials().gid());
         assert_eq!(peer.credentials().uid(), 0);
         let child = PidFd::from_owned(descriptors.pop().unwrap()).unwrap();
         assert!(descriptors.is_empty());
@@ -108,12 +146,12 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
     assert!(runtime.require_monitor(subject.pidfd()).is_err());
     fs::rename(accepted_session, session_path).unwrap();
     runtime.require_monitor(subject.pidfd()).unwrap();
-    let witness = OpenSshMonitorWitnessV2::decode(&payload).unwrap();
+    let witness = OpenSshMonitorWitnessV2::decode_confined_v3(&payload).unwrap();
     witness
         .validate_original_holder(&claim, &ticket, now())
         .unwrap();
     runtime
-        .require_child(
+        .require_confined_child_v3(
             &child,
             connection.peer().credentials().pid().get(),
             witness.uid,
@@ -123,12 +161,12 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
     assert_eq!((witness.uid, witness.gid), (1001, 1001));
     assert!(
         runtime
-            .require_child(&child, claim.sshd_pid, witness.uid, witness.gid)
+            .require_confined_child_v3(&child, claim.sshd_pid, witness.uid, witness.gid)
             .is_err()
     );
     assert!(
         runtime
-            .require_child(
+            .require_confined_child_v3(
                 &child,
                 connection.peer().credentials().pid().get(),
                 1002,
@@ -138,30 +176,126 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
     );
     connection.send(OPENSSH_MONITOR_BINDING_ACK_V2).unwrap();
 
-    // Refuse the later unprivileged forced command without sending any FD.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let record = loop {
+        match connection.receive_with_descriptors(8, 1) {
+            Ok(record) => break record,
+            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
+                assert!(Instant::now() < deadline, "confined relay did not register");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(error) => panic!("relay receive: {error}"),
+        }
+    };
+    let bound = connection.bind_received_descriptors(record).unwrap();
+    let (payload, relay_sender, mut descriptors, peer) = bound.into_parts();
+    assert_eq!(payload, b"AOSRLY03");
+    assert_eq!(relay_sender.credentials().pid(), peer.credentials().pid());
+    assert_eq!(relay_sender.credentials().uid(), peer.credentials().uid());
+    assert_eq!(relay_sender.credentials().gid(), peer.credentials().gid());
+    runtime.require_monitor(relay_sender.pidfd()).unwrap();
+    let relay = PidFd::from_owned(descriptors.pop().unwrap()).unwrap();
+    assert!(descriptors.is_empty());
+    let child_pid = child.process_identity().unwrap().pid();
+    runtime
+        .require_confined_child_v3(&relay, child_pid, witness.uid, witness.gid)
+        .unwrap();
+    let relay_pid = relay.process_identity().unwrap().pid();
+    qualify_same_uid_denials(child_pid, relay_pid, witness.uid, witness.gid);
+    assert!(child.is_alive().unwrap() && relay.is_alive().unwrap());
+    connection.send(b"AOSRAK03").unwrap();
+
+    // These real fixed-process pipes exercise only the native relay transport.
+    // They do not replace the production Guest barrier or owner authorization.
+    let mut fixture = OwnedProcess(
+        Command::new(&bash)
+            .args(["-c", "IFS= read -r line; printf 'stdout:%s\\n' \"$line\"; printf 'stderr:%s\\n' \"$line\" >&2"])
+            .uid(1001).gid(1001)
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .spawn().unwrap(),
+    );
+    let mut pipe_ends = Some((
+        fixture.0.stdin.take().unwrap(),
+        fixture.0.stdout.take().unwrap(),
+        fixture.0.stderr.take().unwrap(),
+    ));
     let deadline = Instant::now() + Duration::from_secs(6);
     loop {
         if client.try_wait().unwrap().is_some() {
             break;
         }
-        if let Ok(gate) = listener.accept() {
+        if let Ok(mut gate) = listener.accept() {
             assert_eq!(gate.peer().credentials().uid(), 1001);
+            assert_eq!(gate.peer().credentials().pid().get(), relay_pid);
+            let record = loop {
+                match gate.receive(8) {
+                    Ok(record) => break record,
+                    Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
+                        assert!(Instant::now() < deadline);
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("relay request: {error}"),
+                }
+            };
+            let bound = gate.bind_received(record).unwrap();
+            assert_eq!(bound.payload(), b"AOSRIO03");
+            assert_eq!(
+                bound.subject().credentials().pid(),
+                bound.peer().credentials().pid()
+            );
+            assert_eq!(
+                bound.subject().credentials().uid(),
+                bound.peer().credentials().uid()
+            );
+            assert_eq!(
+                bound.subject().credentials().gid(),
+                bound.peer().credentials().gid()
+            );
+            assert_eq!(bound.subject().credentials().pid().get(), relay_pid);
+            drop(bound);
+            let (input, output, error) = pipe_ends.take().expect("one native transport handoff");
+            gate.send_with_descriptors(
+                b"AOSGOS03",
+                &[input.as_fd(), output.as_fd(), error.as_fd()],
+            )
+            .unwrap();
+            drop((input, output, error));
+            let receipt = loop {
+                match gate.receive(8) {
+                    Ok(record) => break record,
+                    Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
+                        assert!(Instant::now() < deadline);
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("native relay receipt: {error}"),
+                }
+            };
+            let receipt = gate.bind_received(receipt).unwrap();
+            assert_eq!(receipt.payload(), b"AOSRID03");
+            assert_eq!(receipt.subject().credentials().pid().get(), relay_pid);
+            assert_eq!(receipt.subject().credentials().uid(), 1001);
+            assert_eq!(receipt.subject().credentials().gid(), 1001);
+            drop(receipt);
             drop(gate);
         }
         assert!(
             Instant::now() < deadline,
-            "authentication-only client did not close"
+            "native relay client did not close"
         );
         std::thread::sleep(Duration::from_millis(2));
     }
     let output = client.wait_with_output().unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Authenticated to 127.0.0.1"));
+    assert!(stderr.contains("stderr:original-input\n"));
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"stdout:original-input\n");
+    assert!(pipe_ends.is_none());
+    assert!(fixture.0.wait().unwrap().success());
     assert!(
-        String::from_utf8(output.stderr)
-            .unwrap()
-            .contains("Authenticated to 127.0.0.1")
+        fs::read(marker).unwrap().is_empty(),
+        "passwd shell was invoked"
     );
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
     // A retained pidfd never adopts a later numeric PID: the exited original
     // child is closed even if a future process eventually obtains that number.
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -171,15 +305,88 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
     }
     assert!(
         runtime
-            .require_child(&child, subject.credentials().pid().get(), 1001, 1001)
+            .require_confined_child_v3(&child, subject.credentials().pid().get(), 1001, 1001)
             .is_err()
     );
     drop(connection);
     drop(daemon);
 
     qualify_incomplete_authentication(&mut listener, base, original, ssh);
+    protected_file("/etc/passwd", passwd.as_bytes(), 0o644);
     drop(listener);
     fs::remove_file(SOCKET).unwrap();
+}
+
+fn qualify_same_uid_denials(child: u32, relay: u32, uid: u32, gid: u32) {
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--ignored", "--exact", "openssh_attach_certificate::qualification::monitor_qualification::same_uid_actor_cannot_inject_or_steal_confined_producer", "--test-threads=1"])
+        .env("AOS_ATTACH_ATTACK_TARGETS", format!("{child},{relay}"))
+        .uid(uid).gid(gid).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+}
+
+#[test]
+#[ignore = "invoked only as an unprivileged actor by the pinned monitor VM fixture"]
+fn same_uid_actor_cannot_inject_or_steal_confined_producer() {
+    assert_eq!(rustix::process::getuid().as_raw(), 1001);
+    for pid in std::env::var("AOS_ATTACH_ATTACK_TARGETS")
+        .unwrap()
+        .split(',')
+        .map(|pid| pid.parse::<libc::pid_t>().unwrap())
+    {
+        assert!(pid > 1 && pid != std::process::id() as libc::pid_t);
+        let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+        assert!(status.lines().any(|line| line == "NoNewPrivs:\t1"));
+        assert!(status.lines().any(|line| line == "Seccomp:\t2"));
+        assert_eq!(
+            fs::read_link(format!("/proc/{pid}/exe"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        for path in [format!("/proc/{pid}/mem"), format!("/proc/{pid}/fd/0")] {
+            assert_eq!(
+                fs::File::open(path).unwrap_err().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+        }
+        // SAFETY: These qualification syscalls target a different live task;
+        // no pointer is dereferenced by Rust and every operation must be denied.
+        unsafe {
+            assert_eq!(
+                libc::syscall(libc::SYS_ptrace, libc::PTRACE_ATTACH, pid, 0usize, 0usize),
+                -1
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EPERM)
+            );
+            let mut byte = 0u8;
+            let local = libc::iovec {
+                iov_base: std::ptr::addr_of_mut!(byte).cast(),
+                iov_len: 1,
+            };
+            let remote = libc::iovec {
+                iov_base: std::ptr::null_mut(),
+                iov_len: 1,
+            };
+            assert_eq!(libc::process_vm_readv(pid, &local, 1, &remote, 1, 0), -1);
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EPERM)
+            );
+            assert_eq!(libc::process_vm_writev(pid, &local, 1, &remote, 1, 0), -1);
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EPERM)
+            );
+        }
+    }
 }
 
 fn fixture_ticket(claim: &OpenSshGateClaimV1, original: &str) -> PublicAttachTicketBindingV2 {
@@ -235,6 +442,7 @@ fn qualify_incomplete_authentication(
         );
     }
     let cases = [
+        ("nologin", Vec::new()),
         (
             "mfa",
             vec![
@@ -265,6 +473,10 @@ fn qualify_incomplete_authentication(
         ),
     ];
     for (case, overrides) in cases {
+        if case == "nologin" {
+            assert!(!Path::new("/etc/nologin").exists());
+            protected_file("/etc/nologin", b"closed\n", 0o644);
+        }
         let log_path = format!("{FIXTURE_DIRECTORY}/monitor-{case}.stderr");
         protected_file(&log_path, b"", 0o600);
         let log = fs::OpenOptions::new().write(true).open(&log_path).unwrap();
@@ -295,6 +507,9 @@ fn qualify_incomplete_authentication(
         assert!(matches!(listener.accept(), Err(SeqpacketError::WouldBlock)));
         drop(daemon);
         let log = fs::read_to_string(&log_path).unwrap();
+        if case == "nologin" {
+            fs::remove_file("/etc/nologin").unwrap();
+        }
         // Denial must follow actual privileged certificate verification, not
         // an absent PAM file, invalid configuration or failed signature.
         assert!(
@@ -303,6 +518,7 @@ fn qualify_incomplete_authentication(
                     && line.contains(" verified"))
         );
         match case {
+            "nologin" => assert!(log.contains("not allowed because") && log.contains("nologin")),
             "mfa" => assert!(log.contains("method publickey: partial")),
             "account" => assert!(log.contains("pam_acct_mgmt =")),
             "credentials" | "session" => {

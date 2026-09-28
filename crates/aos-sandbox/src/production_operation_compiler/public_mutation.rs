@@ -204,6 +204,14 @@ pub(super) fn reserve_authorized_attach(
     {
         return Err(OperationCompilationError::Rejected);
     }
+    // A lease cannot extend the original authenticated capability or policy.
+    // The pending route and subsequently issued certificate inherit this
+    // immutable limit; exact accepted replay keeps the retained original bytes.
+    let authority_expires_at = authorized
+        .original_attach_authority_expires_at()
+        .ok_or(OperationCompilationError::Rejected)?
+        .min(publication.lease().lease().authority_expires_seconds());
+
     reserve_public_attach_pending_v1(
         journal,
         authorized.request().idempotency_key(),
@@ -214,7 +222,7 @@ pub(super) fn reserve_authorized_attach(
         *authorized.caller().as_bytes(),
         exact_id(&execution.audit_id)?,
         authorized.accepted_wall_seconds(),
-        publication.lease().lease().authority_expires_seconds(),
+        authority_expires_at,
     )
     .map_err(|_| OperationCompilationError::Rejected)
 }

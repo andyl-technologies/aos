@@ -880,3 +880,43 @@ pub(crate) fn reserve_public_attach_pending_v1(
         .map_err(|_| PublicAttachPendingErrorV1::Unavailable)?;
     Ok(pending)
 }
+
+#[cfg(test)]
+mod expiry_tests {
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use super::*;
+    use crate::JournalLimits;
+
+    #[test]
+    fn pending_expiry_inherits_original_authority_and_exact_replay_never_extends_it() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let owner = fs::metadata(directory.path()).unwrap().uid();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "original-attach-expiry.journal",
+            JournalLimits::default(),
+            owner,
+        )
+        .unwrap();
+        let key = IdempotencyKey::new(vec![1; 16]).unwrap();
+        let reserve = |journal: &mut Journal, expiry| {
+            reserve_public_attach_pending_v1(
+                journal, &key, [2; 32], [3; 16], [4; 16], 1, [5; 16], [6; 16], 10, expiry,
+            )
+        };
+
+        let original = reserve(&mut journal, 40).unwrap();
+        let original_bytes = original.encode();
+        let sequence = journal.snapshot_sequence();
+        let replay = reserve(&mut journal, 1_000).unwrap();
+
+        assert_eq!(original.expires_at(), 40);
+        assert_eq!(replay.encode(), original_bytes);
+        assert_eq!(journal.snapshot_sequence(), sequence);
+        assert!(reserve(&mut journal, 10).is_err());
+        assert_eq!(journal.snapshot_sequence(), sequence);
+    }
+}

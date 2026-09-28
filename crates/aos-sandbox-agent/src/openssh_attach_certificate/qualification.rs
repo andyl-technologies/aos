@@ -2,8 +2,9 @@
 //!
 //! This ignored fixture runs only in the dedicated minimal VM. It installs
 //! public claims and the real gate binary. A final bounded monitor fixture
-//! inspects actual authentication custody on the existing Guest socket path;
-//! no fixture provides execution descriptors or production I/O authority.
+//! inspects actual authentication custody and confined native pipe transport
+//! on the existing Guest socket path. Fixture descriptors are not production
+//! I/O authority or qualification of the Controller/Host/Guest held consume.
 
 use std::fs;
 use std::net::TcpStream;
@@ -179,7 +180,7 @@ fn ssh_authentication(ssh: &str, certificate: &str, expected: bool) {
 
 #[test]
 #[ignore = "requires the dedicated root-owned minimal VM and packaged OpenSSH"]
-fn packaged_sshd_enforces_actual_certificate_profile_without_bridge_io() {
+fn packaged_sshd_enforces_profile_and_confined_original_ticket_relay() {
     assert_eq!(
         std::env::var("AOS_ATTACH_PROFILE_QUALIFICATION").unwrap(),
         "1"

@@ -2,9 +2,11 @@
 //!
 //! ```text
 //! request = InstallHostAttachGateRequestV1 { header, pending_grant: AOSAPG01[416],
-//!                                          original_ticket_binding_v2?: AOSTKB02 }
+//!                                          original_ticket_binding_v2?: AOSTKB02,
+//!                                          original_ticket_consume_v3?: custody[32] + challenge[32] }
 //! response = HostAttachGateEvidenceV1 { exact route, signed_gate_readback,
-//!                                      original_ticket_digest_v2?, signed_ticket_readback_v2? }
+//!                                      original_ticket_digest_v2?, signed_ticket_readback_v2?,
+//!                                      original_attach_observation_v3?: AOSACR03 }
 //! ```
 //!
 //! This layer validates wire shape and the request/response cross-link. The
@@ -12,6 +14,8 @@
 //! deployment trust, admitted execution, and guest physical measurement.
 //! V2 only installs immutable custody data through the existing ATTACH plan.
 //! It does not attest SSH authentication, authorize consumption, or renew a grant.
+//! V3 commits an exact consume under already-held owner authority; its correlation
+//! and observed custody bytes never create authority or substitute for currentness.
 
 use aos_proto::aos::sandbox::local::v1::{
     HostAttachGateEvidenceV1, HostAttachGateReadinessV1, InstallHostAttachGateRequestV1,
@@ -29,7 +33,7 @@ use crate::{
 
 /// Bounds the complete encoded Host attach-gate request body.
 pub const HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES: usize = 16 * 1024;
-const MAXIMUM_RESPONSE_BODY_BYTES: usize = 16 * 1024;
+const MAXIMUM_RESPONSE_BODY_BYTES: usize = 64 * 1024;
 
 /// Carries an exact pending-grant packet from an authenticated controller peer.
 #[derive(Clone, Eq, PartialEq)]
@@ -39,6 +43,7 @@ pub struct ValidatedHostAttachGateRequestV1 {
     operation_id: [u8; 16],
     execution_id: [u8; 16],
     original_ticket_binding_v2: Vec<u8>,
+    original_ticket_consume_v3: Option<([u8; 32], [u8; 32])>,
 }
 
 impl std::fmt::Debug for ValidatedHostAttachGateRequestV1 {
@@ -187,6 +192,12 @@ pub fn decode_host_attach_readiness_v1(
 }
 
 impl ValidatedHostAttachGateRequestV1 {
+    /// Returns exact consume correlation, never an authorizing constructor.
+    #[must_use]
+    pub const fn original_ticket_consume_v3(&self) -> Option<([u8; 32], [u8; 32])> {
+        self.original_ticket_consume_v3
+    }
+
     /// Returns the exact non-authorizing v2 data, or absence for v1 install.
     #[must_use]
     pub fn original_ticket_binding_v2(&self) -> Option<&[u8]> {
@@ -205,6 +216,17 @@ impl ValidatedHostAttachGateRequestV1 {
         crate::semantics::host_attach_gate::CanonicalHostAttachGateSemanticsV1,
         crate::semantics::host_attach_gate::HostAttachGateSemanticErrorV1,
     > {
+        if let Some((binding, challenge)) = self.original_ticket_consume_v3() {
+            return crate::semantics::host_attach_gate::canonical_host_attach_consume_semantics_v3(
+                assignment,
+                self.pending_grant(),
+                self.original_ticket_binding_v2().ok_or(
+                    crate::semantics::host_attach_gate::HostAttachGateSemanticErrorV1::InvalidGrant,
+                )?,
+                aos_sandbox_core::ObjectDigest::from_bytes(binding),
+                challenge,
+            );
+        }
         match self.original_ticket_binding_v2() {
             Some(ticket) => {
                 crate::semantics::host_attach_gate::canonical_host_attach_ticket_semantics_v2(
@@ -295,12 +317,31 @@ pub fn decode_host_attach_gate_request_v1(
             ));
         }
     }
+    let original_ticket_consume_v3 = if request.original_ticket_consume_v3.is_empty() {
+        None
+    } else {
+        if request.original_ticket_binding_v2.is_empty()
+            || request.original_ticket_consume_v3.len() != 64
+        {
+            return Err(ProtocolValidationError::InvalidField(
+                "original_ticket_consume_v3",
+            ));
+        }
+        Some((
+            exact_nonzero::<32>(&request.original_ticket_consume_v3[..32], "monitor_binding")?,
+            exact_nonzero::<32>(
+                &request.original_ticket_consume_v3[32..],
+                "observation_challenge",
+            )?,
+        ))
+    };
     Ok(ValidatedHostAttachGateRequestV1 {
         header,
         pending_grant,
         operation_id,
         execution_id,
         original_ticket_binding_v2: request.original_ticket_binding_v2,
+        original_ticket_consume_v3,
     })
 }
 
@@ -318,6 +359,50 @@ pub fn decode_host_attach_gate_evidence_v1(
     request: &ValidatedHostAttachGateRequestV1,
 ) -> Result<HostAttachGateEvidenceV1, ProtocolValidationError> {
     let evidence = decode_host_attach_gate_evidence_shape_v1(bytes)?;
+    if request.original_ticket_consume_v3().is_none()
+        && !evidence.original_attach_observation_v3.is_empty()
+    {
+        return Err(ProtocolValidationError::InvalidField(
+            "original_attach_observation_v3",
+        ));
+    }
+    if let Some((binding, challenge)) = request.original_ticket_consume_v3() {
+        let (observation, physical) =
+            aos_sandbox_agent::openssh_consume::decode_original_attach_response_v3(
+                &evidence.original_attach_observation_v3,
+            )
+            .map_err(|_| ProtocolValidationError::InvalidField("original_attach_observation_v3"))?;
+        if observation.binding != binding
+            || observation.phase
+                != aos_sandbox_agent::openssh_consume::OriginalAttachPhaseV3::Transferred
+            || physical != evidence.signed_ticket_readback_v2
+        {
+            return Err(ProtocolValidationError::InvalidField(
+                "original_attach_observation_v3",
+            ));
+        }
+        // Fresh physical readback contains this exact correlation challenge;
+        // signatures are independently checked by the authenticated owners.
+        let packet = &evidence.signed_gate_readback;
+        let length = u32::from_be_bytes(packet.get(8..12).and_then(|b| b.try_into().ok()).ok_or(
+            ProtocolValidationError::InvalidField("signed_gate_readback"),
+        )?) as usize;
+        if length > 8192 {
+            return Err(ProtocolValidationError::InvalidField(
+                "signed_gate_readback",
+            ));
+        }
+        let readback: aos_sandbox_agent::openssh_gate::OpenSshGateReadbackV1 =
+            serde_json::from_slice(packet.get(12..12 + length).ok_or(
+                ProtocolValidationError::InvalidField("signed_gate_readback"),
+            )?)
+            .map_err(|_| ProtocolValidationError::InvalidField("signed_gate_readback"))?;
+        if readback.challenge != challenge {
+            return Err(ProtocolValidationError::InvalidField(
+                "observation_challenge",
+            ));
+        }
+    }
     match request.original_ticket_binding_v2() {
         Some(ticket)
             if evidence.original_ticket_digest_v2.as_slice()
@@ -371,6 +456,20 @@ pub fn decode_host_attach_route_evidence_v1(
     request: &ValidatedHostAttachRouteQueryV1,
 ) -> Result<HostAttachGateEvidenceV1, ProtocolValidationError> {
     let evidence = decode_host_attach_gate_evidence_shape_v1(bytes)?;
+    if !evidence.original_attach_observation_v3.is_empty() {
+        let (observation, _) =
+            aos_sandbox_agent::openssh_consume::decode_original_attach_response_v3(
+                &evidence.original_attach_observation_v3,
+            )
+            .map_err(|_| ProtocolValidationError::InvalidField("original_attach_observation_v3"))?;
+        if observation.phase
+            == aos_sandbox_agent::openssh_consume::OriginalAttachPhaseV3::Transferred
+        {
+            return Err(ProtocolValidationError::InvalidField(
+                "original_attach_observation_v3",
+            ));
+        }
+    }
     if exact_nonzero::<16>(&evidence.operation_id, "operation_id")? != request.operation_id()
         || exact_nonzero::<16>(&evidence.execution_id, "execution_id")? != request.execution_id()
     {
@@ -389,6 +488,17 @@ fn decode_host_attach_gate_evidence_shape_v1(
     }
     let evidence = HostAttachGateEvidenceV1::decode_from_slice(bytes)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    if !evidence.original_attach_observation_v3.is_empty() {
+        let (_, physical) = aos_sandbox_agent::openssh_consume::decode_original_attach_response_v3(
+            &evidence.original_attach_observation_v3,
+        )
+        .map_err(|_| ProtocolValidationError::InvalidField("original_attach_observation_v3"))?;
+        if physical != evidence.signed_ticket_readback_v2 {
+            return Err(ProtocolValidationError::InvalidField(
+                "original_attach_observation_v3",
+            ));
+        }
+    }
     if !evidence.original_ticket_digest_v2.is_empty()
         || !evidence.signed_ticket_readback_v2.is_empty()
     {
@@ -545,6 +655,83 @@ mod tests {
         }
     }
 
+    fn original_ticket(pending_grant: [u8; 416]) -> Vec<u8> {
+        aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2 {
+            operation_id: [1; 16],
+            execution_id: [2; 16],
+            incarnation_id: [3; 16],
+            principal_id: [5; 16],
+            audit_id: [6; 16],
+            assignment_epoch: 4,
+            valid_after: 1,
+            expires_at: 7,
+            holder_public_key: [18; 32],
+            request_digest: [14; 32],
+            decision_digest: [19; 32],
+            pending_grant,
+            base_route_digest: [8; 32],
+            certificate: b"original-certificate".to_vec(),
+        }
+        .encode()
+        .unwrap()
+    }
+
+    #[test]
+    fn consume_requires_exact_original_ticket_and_canonical_nonzero_correlation() {
+        let decode = |request: &InstallHostAttachGateRequestV1| {
+            decode_host_attach_gate_request_v1(
+                &request.encode_to_vec(),
+                PeerCredentials {
+                    uid: 100,
+                    gid: 101,
+                    pid: Some(102),
+                },
+                PeerPolicy {
+                    uid: 100,
+                    gid: Some(101),
+                    audience: Audience::AUDIENCE_NODE_CONTROLLER,
+                },
+                10,
+            )
+        };
+        let mut request = request();
+        request.original_ticket_binding_v2 =
+            original_ticket(request.pending_grant.as_slice().try_into().unwrap());
+        request.original_ticket_consume_v3 = [vec![20; 32], vec![21; 32]].concat();
+
+        let decoded = decode(&request).unwrap();
+        assert_eq!(
+            decoded.original_ticket_consume_v3(),
+            Some(([20; 32], [21; 32]))
+        );
+        assert_eq!(
+            decoded.original_ticket_binding_v2(),
+            Some(request.original_ticket_binding_v2.as_slice())
+        );
+
+        let mut absent_ticket = request.clone();
+        absent_ticket.original_ticket_binding_v2.clear();
+        assert!(decode(&absent_ticket).is_err());
+
+        for correlation in [
+            vec![1; 63],
+            vec![1; 65],
+            vec![0; 64],
+            [vec![0; 32], vec![1; 32]].concat(),
+            [vec![1; 32], vec![0; 32]].concat(),
+        ] {
+            let mut invalid = request.clone();
+            invalid.original_ticket_consume_v3 = correlation;
+            assert!(decode(&invalid).is_err());
+        }
+
+        let mut foreign = request;
+        let mut foreign_grant: [u8; 416] = foreign.pending_grant.as_slice().try_into().unwrap();
+        foreign_grant[415] ^= 1;
+        foreign.original_ticket_binding_v2 = original_ticket(foreign_grant);
+        assert!(decode(&foreign).is_err());
+    }
+
     #[test]
     fn response_crosslinks_pending_grant_and_exact_readback_packet() {
         let request = decode_host_attach_gate_request_v1(
@@ -604,24 +791,7 @@ mod tests {
                 .is_err()
         );
 
-        let ticket = aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2 {
-            operation_id: [1; 16],
-            execution_id: [2; 16],
-            incarnation_id: [3; 16],
-            principal_id: [5; 16],
-            audit_id: [6; 16],
-            assignment_epoch: 4,
-            valid_after: 1,
-            expires_at: 7,
-            holder_public_key: [18; 32],
-            request_digest: [14; 32],
-            decision_digest: [19; 32],
-            pending_grant: *request.pending_grant(),
-            base_route_digest: [8; 32],
-            certificate: b"original-certificate".to_vec(),
-        }
-        .encode()
-        .unwrap();
+        let ticket = original_ticket(*request.pending_grant());
         let mut bound_request = request.clone();
         bound_request.original_ticket_binding_v2 = ticket.clone();
         assert!(

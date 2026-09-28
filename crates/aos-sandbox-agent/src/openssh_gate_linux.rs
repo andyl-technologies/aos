@@ -197,6 +197,32 @@ impl OpenSshMonitorRuntimeV2 {
         uid: u32,
         gid: u32,
     ) -> Result<(), OpenSshGatePhysicalErrorV1> {
+        self.require_confined_child_v3(child, monitor_pid, uid, gid)?;
+        let identity = child
+            .process_identity()
+            .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
+        self.installation
+            .session_executable
+            .require_file(&fs::canonicalize(format!("/proc/{}/exe", identity.pid()))?)?;
+        Ok(())
+    }
+
+    /// Checks kernel identity for a measured monitor's no-exec confined fork.
+    ///
+    /// This does not open a nondumpable child's procfs image: that would require
+    /// expanding the Guest's ptrace capability ceiling. Only the separately
+    /// retained v3 measured producer can establish image inheritance and
+    /// irreversible confinement before this check is useful.
+    ///
+    /// # Errors
+    /// Rejects wrong/dead/reused children, ancestry or login credentials.
+    pub fn require_confined_child_v3(
+        &self,
+        child: &aos_sandbox_linux::pidfd::PidFd,
+        parent_pid: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), OpenSshGatePhysicalErrorV1> {
         let identity = child
             .process_identity()
             .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
@@ -206,7 +232,7 @@ impl OpenSshMonitorRuntimeV2 {
             .credentials()
             .ok_or(OpenSshGatePhysicalErrorV1::InvalidInstallation)?;
         if uid == 0
-            || identity.parent_pid() != monitor_pid
+            || identity.parent_pid() != parent_pid
             || credentials.real_user_id() != uid
             || credentials.effective_user_id() != uid
             || credentials.saved_user_id() != uid
@@ -218,9 +244,6 @@ impl OpenSshMonitorRuntimeV2 {
         {
             return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
         }
-        self.installation
-            .session_executable
-            .require_file(&fs::canonicalize(format!("/proc/{}/exe", identity.pid()))?)?;
         if !child
             .is_alive()
             .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?

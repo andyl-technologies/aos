@@ -43,6 +43,7 @@ pub mod guest_root_publication;
 pub mod guest_root_tree;
 pub mod model;
 pub mod openssh_attach_certificate;
+pub mod openssh_consume;
 pub mod openssh_gate;
 #[cfg(target_os = "linux")]
 pub mod openssh_gate_linux;

@@ -8,6 +8,8 @@
 //! ```text
 //! AOSAMR02 | uid:u32 | gid:u32 | session:string | certificate:string
 //!          | original_userauth_message:string | holder_signature:string
+//! AOSAMR03 uses the same bounded fields, but its measured producer waits for
+//! irreversible post-auth confinement before publishing the record.
 //! ```
 //!
 //! Strings have a big-endian u32 length. One separately transferred descriptor
@@ -47,8 +49,26 @@ impl<'a> OpenSshMonitorWitnessV2<'a> {
     /// # Errors
     /// Rejects another version, partial/trailing bytes, or oversized sections.
     pub fn decode(bytes: &'a [u8]) -> Result<Self, OpenSshMonitorWitnessErrorV2> {
+        Self::decode_profile(bytes, b"AOSAMR02")
+    }
+
+    /// Decodes the fixed confined producer's v3 envelope without trusting it.
+    ///
+    /// This shape check does not attest confinement. The Guest must retain the
+    /// measured root producer and exact private post-auth child independently.
+    ///
+    /// # Errors
+    /// Rejects legacy records, another version, partial/trailing data or bounds.
+    pub fn decode_confined_v3(bytes: &'a [u8]) -> Result<Self, OpenSshMonitorWitnessErrorV2> {
+        Self::decode_profile(bytes, b"AOSAMR03")
+    }
+
+    fn decode_profile(
+        bytes: &'a [u8],
+        magic: &[u8; 8],
+    ) -> Result<Self, OpenSshMonitorWitnessErrorV2> {
         if bytes.len() > OPENSSH_MONITOR_MAXIMUM_RECORD_BYTES_V2
-            || bytes.get(..8) != Some(b"AOSAMR02".as_slice())
+            || bytes.get(..8) != Some(magic.as_slice())
         {
             return Err(OpenSshMonitorWitnessErrorV2);
         }

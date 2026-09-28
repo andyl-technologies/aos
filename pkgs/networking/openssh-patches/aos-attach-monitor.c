@@ -35,7 +35,9 @@
 #include "log.h"
 #include "servconf.h"
 #include "monitor.h"
+#include "monitor_fdpass.h"
 #include "aos-attach-monitor.h"
+#include "aos-attach-confinement.h"
 
 extern ServerOptions options;
 
@@ -102,7 +104,7 @@ aos_attach_monitor_capture(const u_char *certificate, size_t certificate_len,
 		fatal("AOS attach authentication profile rejected");
 	if ((candidate = sshbuf_new()) == NULL)
 		fatal("AOS attach allocation failed");
-	if ((r = sshbuf_put(candidate, "AOSAMR02", 8)) != 0 ||
+	if ((r = sshbuf_put(candidate, "AOSAMR03", 8)) != 0 ||
 	    (r = sshbuf_put_u32(candidate, uid)) != 0 ||
 	    (r = sshbuf_put_u32(candidate, gid)) != 0 ||
 	    (r = sshbuf_put_string(candidate, session, session_len)) != 0 ||
@@ -155,8 +157,8 @@ receive_child_ready(int fd, int64_t deadline)
 		fatal("AOS attach unexpected private monitor message");
 }
 
-static int
-connect_guest(void)
+int
+aos_attach_monitor_connect_guest(void)
 {
 	struct sockaddr_un address = { .sun_family = AF_UNIX };
 	struct stat metadata;
@@ -206,7 +208,7 @@ aos_attach_monitor_parent(pid_t child, int private_monitor)
 		fatal("AOS attach child custody unavailable");
 	deadline = deadline_milliseconds() + AOS_ATTACH_TIMEOUT_MS;
 	receive_child_ready(private_monitor, deadline);
-	held_guest_connection = connect_guest();
+	held_guest_connection = aos_attach_monitor_connect_guest();
 	if (fcntl(held_guest_connection, F_SETFL, O_NONBLOCK) == -1)
 		fatal("AOS attach Guest connection unavailable");
 
@@ -250,6 +252,59 @@ aos_attach_monitor_parent(pid_t child, int private_monitor)
 	sshbuf_free(empty);
 }
 
+/* Only the continuously confined post-auth image owns this private channel.
+ * The descriptor names its still-unreaped fork. Guest's existing typed owner
+ * independently joins that kernel child to the retained original witness;
+ * neither this message nor its acknowledgement is an I/O grant.
+ */
+int
+aos_attach_monitor_relay(struct ssh *ssh, int private_monitor, struct sshbuf *empty)
+{
+	union { struct cmsghdr alignment; u_char bytes[CMSG_SPACE(sizeof(int))]; } control;
+	struct cmsghdr *header;
+	struct iovec iov;
+	struct msghdr message = {0};
+	u_char response[9], ancillary[1];
+	int relay;
+	int64_t deadline;
+
+	(void)ssh;
+	if (!options.aos_attach_monitor_v2 || !fully_authenticated ||
+	    held_child_pidfd == -1 || held_guest_connection == -1 ||
+	    getuid() != 0 || geteuid() != 0 || sshbuf_len(empty) != 0 ||
+	    (relay = mm_receive_fd(private_monitor)) == -1)
+		fatal("AOS attach relay monitor rejected");
+	deadline = deadline_milliseconds() + AOS_ATTACH_TIMEOUT_MS;
+	memset(&control, 0, sizeof(control));
+	iov = (struct iovec){ "AOSRLY03", 8 };
+	message.msg_iov = &iov;
+	message.msg_iovlen = 1;
+	message.msg_control = control.bytes;
+	message.msg_controllen = sizeof(control.bytes);
+	header = CMSG_FIRSTHDR(&message);
+	header->cmsg_level = SOL_SOCKET;
+	header->cmsg_type = SCM_RIGHTS;
+	header->cmsg_len = CMSG_LEN(sizeof(int));
+	memcpy(CMSG_DATA(header), &relay, sizeof(int));
+	wait_ready(held_guest_connection, POLLOUT, deadline);
+	if (sendmsg(held_guest_connection, &message, MSG_NOSIGNAL) != 8)
+		fatal("AOS attach relay registration unavailable");
+	close(relay);
+	memset(&message, 0, sizeof(message));
+	iov = (struct iovec){ response, sizeof(response) };
+	message.msg_iov = &iov;
+	message.msg_iovlen = 1;
+	message.msg_control = ancillary;
+	message.msg_controllen = sizeof(ancillary);
+	wait_ready(held_guest_connection, POLLIN, deadline);
+	if (recvmsg(held_guest_connection, &message, 0) != 8 ||
+	    message.msg_flags != 0 || message.msg_controllen != 0 ||
+	    memcmp(response, "AOSRAK03", 8) != 0)
+		fatal("AOS attach relay registration rejected");
+	mm_request_send(private_monitor, AOS_ATTACH_RELAY_ANSWER, empty);
+	return 0;
+}
+
 void
 aos_attach_monitor_child(int private_monitor)
 {
@@ -263,6 +318,7 @@ aos_attach_monitor_child(int private_monitor)
 	fully_authenticated = 0;
 	if (getuid() == 0 || geteuid() == 0 || private_monitor < 0)
 		fatal("AOS attach child privilege drop rejected");
+	aos_attach_confinement_after_drop();
 	if ((empty = sshbuf_new()) == NULL)
 		fatal("AOS attach allocation failed");
 	mm_request_send(private_monitor, AOS_ATTACH_READY_REQUEST, empty);
