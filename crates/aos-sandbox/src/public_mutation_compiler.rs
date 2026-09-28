@@ -83,13 +83,14 @@ impl AuthorizedPublicMutationRequestV1 {
                 return Err(PublicMutationAuthorizationErrorV1::Rejected);
             }
         }
-        let authorization = crate::controller::authorize_resolved_public_mutation_v1(
-            journal,
-            peer,
-            capability_id,
-            &request,
-        )
-        .map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?;
+        let (authorization, checked_admission) =
+            crate::controller::authorize_resolved_public_mutation_v1(
+                journal,
+                peer,
+                capability_id,
+                &request,
+            )
+            .map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?;
 
         let fuse_authority = if matches!(
             request.request(),
@@ -100,7 +101,7 @@ impl AuthorizedPublicMutationRequestV1 {
                 crate::controller_fuse_admission::AdmissionAuthorityV1::capture(
                     journal,
                     peer,
-                    capability_id,
+                    &checked_admission,
                     authorization,
                 )?,
             )

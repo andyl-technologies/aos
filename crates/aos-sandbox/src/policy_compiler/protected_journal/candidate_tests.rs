@@ -90,7 +90,7 @@ fn resources(amount: Option<u64>) -> HardResourceProfileV1 {
     .expect("complete fixture resource profile")
 }
 
-fn fixture(amount: u64) -> VerifiedPolicyPublicationV1 {
+pub(super) fn fixture(amount: u64) -> VerifiedPolicyPublicationV1 {
     let project = ProjectId::from_bytes([1; 16]);
     let sandbox = SandboxId::from_bytes([2; 16]);
     let verifier = SyntheticInputVerifier;

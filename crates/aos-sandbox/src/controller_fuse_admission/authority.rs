@@ -1,17 +1,16 @@
 //! Retains actual authenticated admission inputs under the Controller writer.
 
 use aos_sandbox_core::{
-    CapabilityId, CapabilityRecord, ChannelBinding, ObjectDescriptor, ObjectDigest,
-    PortableMediaType, PrincipalId, ProjectId,
+    CapabilityRecord, ChannelBinding, ObjectDescriptor, ObjectDigest, PortableMediaType,
+    PrincipalId, ProjectId,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::Journal;
 use crate::cli_model::PublicMutationAuthorizationV1;
+use crate::cli_model::authorization_adapter::CurrentCapabilityDecisionV1;
 use crate::public_api_session::PublicApiPeer;
 use crate::public_mutation_compiler::PublicMutationAuthorizationErrorV1;
-use crate::publisher_authority::{PublisherAuthorityLimits, PublisherCapabilityRegistry};
-use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};
 
 /// Historical provenance, never independently usable as current read authority.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -34,12 +33,12 @@ impl AdmissionAuthorityV1 {
     ///
     /// # Errors
     ///
-    /// Rejects lost peer/journal custody or changed registry, policy,
-    /// revocation, holder/key, project or accepted authorization coordinates.
+    /// Rejects lost peer/journal custody or a checked decision that does not
+    /// exactly match the accepted authorization and live authenticated peer.
     pub(crate) fn capture(
         journal: &mut Journal,
         peer: &PublicApiPeer,
-        capability_id: CapabilityId,
+        decision: &CurrentCapabilityDecisionV1,
         authorization: PublicMutationAuthorizationV1,
     ) -> Result<Self, PublicMutationAuthorizationErrorV1> {
         let rejected = || PublicMutationAuthorizationErrorV1::Rejected;
@@ -48,37 +47,21 @@ impl AdmissionAuthorityV1 {
             .validate_held_protected_names()
             .map_err(|_| rejected())?;
 
-        // Authorization and this capture retain the same exclusive journal.
-        // Immutable registry lookup preserves the actual selected record; it
-        // never guesses a capability from the target Attachment or holder ID.
-        let capability =
-            PublisherCapabilityRegistry::load(journal, PublisherAuthorityLimits::default())
-                .and_then(|registry| registry.resolve_current(capability_id))
-                .map_err(|_| rejected())?;
+        // This is the actual decision retained through authenticated request
+        // binding, not a second grant evaluation or a later registry lookup.
+        let coordinates = authorization.original_coordinates().ok_or_else(rejected)?;
+        if decision.original_coordinates(coordinates.session_commitment) != coordinates
+            || decision.authorized_wall_seconds() != authorization.accepted_wall_seconds()
+            || decision.policy().generation() != authorization.policy_generation()
+        {
+            return Err(rejected());
+        }
+        let capability = decision.capability().clone();
         let claims = capability.claims();
-        let store = PublisherPolicyStore::load(journal, PublisherPolicyLimits::default())
-            .map_err(|_| rejected())?;
-        let controller = store
-            .controller_head()
-            .map_err(|_| rejected())?
-            .ok_or_else(rejected)?;
-        let policy = store
-            .current_policy(peer.project())
-            .map_err(|_| rejected())?
-            .ok_or_else(rejected)?;
-        let revocation = store
-            .revocation_head(claims.revocation_scope)
-            .map_err(|_| rejected())?
-            .ok_or_else(rejected)?;
+        let policy = decision.policy();
         if claims.holder != peer.principal()
             || claims.channel_binding != peer.key_binding()
             || claims.project != peer.project()
-            || claims.audience != controller.principal
-            || claims.policy_digest != policy.descriptor().digest()
-            || policy.generation() != authorization.policy_generation()
-            || revocation.generation != claims.revocation_generation.get()
-            || authorization.accepted_wall_seconds() < policy.not_before()
-            || authorization.accepted_wall_seconds() >= policy.expires_at()
         {
             return Err(rejected());
         }
@@ -92,7 +75,7 @@ impl AdmissionAuthorityV1 {
             accepted_wall_seconds: authorization.accepted_wall_seconds(),
             policy_generation: policy.generation(),
             policy_descriptor: policy.descriptor().clone(),
-            controller_generation: controller.generation,
+            controller_generation: coordinates.controller_generation,
             authorization_revision: revision.digest(),
             authenticated_request: request.digest(),
         };

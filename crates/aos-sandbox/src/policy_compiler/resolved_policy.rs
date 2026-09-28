@@ -19,8 +19,8 @@ use aos_sandbox_core::{
 };
 
 use super::protected_journal::{
-    decode_current_payload, policy_current_key, policy_key, validate_candidate_payload,
-    validate_state_candidate_body,
+    candidate_output_bytes, decode_current_payload, policy_current_key, policy_key,
+    validate_candidate_payload, validate_state_candidate_body,
 };
 use super::protected_owner::{
     POLICY_STATE_JOURNAL, PROTECTED_POLICY_ROOT, policy_state_journal_limits,
@@ -147,10 +147,12 @@ pub struct HeldResolvedRuntimePolicyV1<'policy> {
     sandbox: SandboxId,
     generation: u64,
     candidate: ObjectDigest,
+    complete_preimage: bool,
     normalized_input: ObjectDigest,
     diagnostics: ObjectDigest,
     current_envelope: ObjectDigest,
     candidate_envelope: ObjectDigest,
+    candidate_bytes: &'policy [u8],
     policy: Policy,
     policy_bytes: &'policy [u8],
     outputs: [ObjectDescriptor; 4],
@@ -183,7 +185,11 @@ impl<'policy> HeldResolvedRuntimePolicyV1<'policy> {
             .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
         let body = candidate.body();
         let header = validate_candidate_payload(body)?;
-        if header.generation != current_header.generation
+        if header.project != project
+            || header.sandbox != sandbox
+            || current_header.project != project
+            || current_header.sandbox != sandbox
+            || header.generation != current_header.generation
             || header.candidate != current_header.candidate
             || header.normalized_input != current_header.normalized_input
             || header.diagnostics != current_header.diagnostics
@@ -193,19 +199,9 @@ impl<'policy> HeldResolvedRuntimePolicyV1<'policy> {
             return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
         }
 
-        // Reuses the unchanged Candidate format: its first output is Policy.
-        // Canonical Policy/hash validation does not authenticate candidate ID.
-        let length = u32::from_be_bytes(
-            body[478..482]
-                .try_into()
-                .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?,
-        ) as usize;
-        let end = 482_usize
-            .checked_add(length)
-            .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-        let bytes = body
-            .get(482..end)
-            .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
+        // The shared codec owns V2/V3 offsets, canonical output checks and the
+        // V3 preimage join. Neither version independently authenticates Root.
+        let [bytes, _, _, _] = candidate_output_bytes(body)?;
         let policy = decode_policy(bytes, DecodeLimits::default())
             .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
         let descriptor = |index: usize, media: PortableMediaType| {
@@ -230,10 +226,12 @@ impl<'policy> HeldResolvedRuntimePolicyV1<'policy> {
             sandbox,
             generation: header.generation,
             candidate: header.candidate,
+            complete_preimage: header.has_complete_preimage(),
             normalized_input: header.normalized_input,
             diagnostics: header.diagnostics,
             current_envelope: current.envelope_digest(),
             candidate_envelope: candidate.envelope_digest(),
+            candidate_bytes: body,
             policy,
             policy_bytes: bytes,
             outputs,
@@ -251,6 +249,15 @@ impl<'policy> HeldResolvedRuntimePolicyV1<'policy> {
     #[must_use]
     pub const fn policy_bytes(&self) -> &[u8] {
         self.policy_bytes
+    }
+
+    /// Borrows exact canonical Candidate evidence for independent verification.
+    ///
+    /// V3 includes complete preimage consistency; neither these bytes nor a
+    /// V2 structural observation authenticate current Policy/Root authority.
+    #[must_use]
+    pub const fn candidate_bytes(&self) -> &[u8] {
+        self.candidate_bytes
     }
 
     /// Returns exact output descriptor claims for independent Root verification.
@@ -281,6 +288,15 @@ impl<'policy> HeldResolvedRuntimePolicyV1<'policy> {
     #[must_use]
     pub const fn candidate(&self) -> (ObjectDigest, u64) {
         (self.candidate, self.generation)
+    }
+
+    /// Reports complete candidate-preimage consistency, not Root authority.
+    ///
+    /// Legacy V2 claims remain observable but cannot supply complete worker
+    /// policy evidence. V3 still requires independent current Root verification.
+    #[must_use]
+    pub const fn has_complete_preimage(&self) -> bool {
+        self.complete_preimage
     }
 
     /// Returns exact Current and Candidate envelope commitments for comparison.

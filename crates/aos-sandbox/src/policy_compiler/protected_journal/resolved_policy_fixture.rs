@@ -100,6 +100,24 @@ pub(in crate::policy_compiler) fn publication(domain: CacheDomainKind) -> Fixtur
     }
 }
 
+/// Reuses the real pure compiler fixture, not an installed input authority.
+pub(in crate::policy_compiler) fn compiled_publication() -> FixturePublicationV1 {
+    let verified = super::candidate_tests::fixture(4096);
+    let diagnostics = digest_bytes(DIAGNOSTICS_DOMAIN, &verified.diagnostics);
+    let body = encode_candidate_payload(1, &verified, diagnostics).unwrap();
+    let policy = verified.candidate.portable().policy_bytes().to_vec();
+    FixturePublicationV1 {
+        project: verified.project,
+        sandbox: verified.sandbox,
+        candidate: verified.candidate.commitment().digest(),
+        input: verified.normalized_input,
+        diagnostics,
+        prerequisites: verified.prerequisites,
+        body,
+        policy,
+    }
+}
+
 pub(in crate::policy_compiler) fn commit(journal: &mut Journal, fixture: &FixturePublicationV1) {
     let validator = PolicyCompilerReplayValidatorV1 {
         authenticated_prerequisites: BTreeMap::from([(

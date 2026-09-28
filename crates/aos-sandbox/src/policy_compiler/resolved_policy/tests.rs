@@ -56,6 +56,7 @@ fn held_policy_claim_all_four_domains_retain_exact_outputs_and_writer() {
                 assert_eq!(claim.diagnostics(), publication.diagnostics);
                 assert_eq!(claim.prerequisites(), &publication.prerequisites);
                 assert_eq!(claim.outputs().len(), 4);
+                assert!(!claim.has_complete_preimage());
                 assert!(
                     Journal::open_protected_at_uid(
                         root.path(),
@@ -76,6 +77,60 @@ fn held_policy_claim_all_four_domains_retain_exact_outputs_and_writer() {
             })
             .unwrap();
     }
+}
+
+#[test]
+fn held_policy_claim_v3_reuses_exact_compiler_outputs_and_cold_evidence() {
+    let root = tempfile::tempdir().unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let mut owner = open(root.path());
+    let publication = fixture::compiled_publication();
+    fixture::commit(&mut owner.journal, &publication);
+    let sequence = owner.journal.snapshot_sequence();
+
+    for cold in [false, true] {
+        if cold {
+            drop(owner);
+            owner = open(root.path());
+        }
+        owner
+            .with_current_policy_claim(publication.project, publication.sandbox, |claim| {
+                assert!(claim.has_complete_preimage());
+                assert_eq!(claim.candidate_bytes(), publication.body);
+                assert_eq!(claim.policy_bytes(), publication.policy);
+                let fields = candidate_output_bytes(claim.candidate_bytes()).unwrap();
+                for (descriptor, bytes) in claim.outputs().iter().zip(fields) {
+                    assert_eq!(descriptor.encoded_size(), bytes.len() as u64);
+                    assert_eq!(descriptor.digest().as_bytes(), &Sha256::digest(bytes)[..]);
+                }
+            })
+            .unwrap();
+        assert_eq!(owner.journal.snapshot_sequence(), sequence);
+    }
+}
+
+#[test]
+fn shared_v3_checks_refuse_substitution_without_mutating_held_claims() {
+    let root = tempfile::tempdir().unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let mut owner = open(root.path());
+    let publication = fixture::compiled_publication();
+    fixture::commit(&mut owner.journal, &publication);
+    let sequence = owner.journal.snapshot_sequence();
+    // Descriptor table and preimage substitutions preserve canonical framing
+    // but cannot survive the shared V3 whole-candidate consistency check.
+    for offset in [315, 356, 397, 438, 478, 510, 542, 574, 606] {
+        let mut changed = publication.body.clone();
+        changed[offset] ^= 1;
+        assert!(candidate_output_bytes(&changed).is_err());
+        assert!(validate_candidate_payload(&changed).is_err());
+    }
+    assert_eq!(owner.journal.snapshot_sequence(), sequence);
+    owner
+        .with_current_policy_claim(publication.project, publication.sandbox, |claim| {
+            assert_eq!(claim.candidate_bytes(), publication.body);
+        })
+        .unwrap();
 }
 
 #[test]

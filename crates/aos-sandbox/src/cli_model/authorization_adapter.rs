@@ -42,6 +42,10 @@ const TIME_FLOOR_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.cli.authorization-time-flo
 const TIME_FLOOR_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.cli.authorization-time-floor-transaction.v1\0";
 
+#[cfg(test)]
+#[path = "authorization_adapter/decision_tests.rs"]
+mod decision_tests;
+
 /// Selects the single authority surface admitted by protected authorization.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CliAuthorizedSurfaceV1 {
@@ -664,6 +668,39 @@ impl CurrentProtectedCliAuthorizationV1 {
         identity: &AuthenticatedCliIdentityEvidenceV1,
         channel: &AuthenticatedCliChannelEvidenceV1,
     ) -> Result<Self, CliAuthorizationAdapterError> {
+        Self::from_current_protected_capability_with_decision(
+            journal,
+            capability_limits,
+            policy_limits,
+            capability_id,
+            authenticated_project,
+            protected_clock,
+            decoded,
+            identity,
+            channel,
+        )
+        .map(|(authorization, _)| authorization)
+    }
+
+    /// Retains the same checked inputs beside the exact authorization evidence.
+    ///
+    /// The evaluator and protected time-floor advancement run exactly once.
+    /// The projection is historical provenance, not a transferable live grant.
+    ///
+    /// # Errors
+    /// Rejects the same protected authorization or authenticated-evidence
+    /// failures as `from_current_protected_capability`.
+    pub(crate) fn from_current_protected_capability_with_decision(
+        journal: &mut Journal,
+        capability_limits: PublisherAuthorityLimits,
+        policy_limits: PublisherPolicyLimits,
+        capability_id: CapabilityId,
+        authenticated_project: ProjectId,
+        protected_clock: &mut crate::controller::ControllerProtectedClockV1,
+        decoded: &DecodedAuthenticatedCliRequestV1,
+        identity: &AuthenticatedCliIdentityEvidenceV1,
+        channel: &AuthenticatedCliChannelEvidenceV1,
+    ) -> Result<(Self, CurrentCapabilityDecisionV1), CliAuthorizationAdapterError> {
         let decision = evaluate_current_protected_capability(
             journal,
             capability_limits,
@@ -678,7 +715,7 @@ impl CurrentProtectedCliAuthorizationV1 {
             &decoded.selector,
         )?;
         let revision = decision.revision();
-        Ok(Self {
+        let authorization = Self {
             identity: authenticated_identity_commitment(identity.principal)?,
             session: channel.session,
             channel: authenticated_channel_commitment(channel.channel_binding)?,
@@ -689,7 +726,8 @@ impl CurrentProtectedCliAuthorizationV1 {
             authorized_wall_seconds: decision.authorized_wall_seconds(),
             policy_generation: decision.policy().generation(),
             original_coordinates: decision.original_coordinates(*channel.session.0.as_bytes()),
-        })
+        };
+        Ok((authorization, decision))
     }
 }
 
