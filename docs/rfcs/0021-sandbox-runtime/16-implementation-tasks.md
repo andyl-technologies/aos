@@ -9705,3 +9705,25 @@ two share only build mechanics. Fifty checker unit tests pass. Both pinned
 base patches apply and reverse with zero fuzz, restoring the original source.
 The compiled retry, actual raw-label worker startup, and all installed runtime
 qualification remain outstanding; no public operation is enabled.
+
+### Guest concrete file-type coverage (source repair, unqualified)
+
+The indirect SETools `file_type` query matches every rule whose expanded target
+intersects the attribute, including legitimate concrete kernel/control reads.
+The Guest gate retains those indirect queries and all existing access tuples,
+then rejects each returned rule's concrete `file_type` members outside a fixed,
+permission-specific cohort. Owner reads admit only `cgroup_t`, `init_runtime_t`,
+`proc_t`, `security_t`, `sysfs_t`, `tmpfs_t`, and `cpu_online_t`; Tenant reads and
+opens admit only `cpu_online_t`. All other checked Guest `file_type` permissions
+have an empty cohort. These are existing grants, not policy additions. The
+exception names must be canonical members of the actual attribute; they are
+never inferred from the candidate policy's allow rules.
+
+Disabled conditionals and mixed source/target attributes remain checked.
+Typed Guest store/private permissions and every concrete protected-object
+denial remain unchanged. A separate never-installed module combines allowed
+CPU-online and forbidden `var_t` targets under an indirect Guest source and a
+default-false Boolean. It must link and expand with normal neverallows before
+the same effective checker rejects its exact out-of-cohort target. Fifty-six
+checker unit tests pass; standalone mutant syntax compilation passes. Neither
+proves final compiled policy, installed startup, or public-operation readiness.

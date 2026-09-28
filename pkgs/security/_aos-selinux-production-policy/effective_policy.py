@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 import fuse_worker_policy
+import guest_file_policy
 
 
 DOMAINS = (
@@ -29,6 +30,7 @@ HANDOFF_DOMAIN = "aos_sandbox_runtime_roots_handoff_t"
 HANDOFF_EXECUTABLE = "aos_sandbox_runtime_roots_handoff_exec_t"
 GUEST_OWNER = "aos_sandbox_guest_owner_t"
 GUEST_TENANT = "aos_sandbox_payload_t"
+GUEST_FILE_TYPE_COHORTS = guest_file_policy.cohorts(GUEST_OWNER, GUEST_TENANT)
 EXPLICIT_LOADER_ATTRIBUTE = "aos_explicit_loader_domain"
 EXPLICIT_LOADER_DOMAINS = (fuse_worker_policy.WORKER_DOMAIN, GUEST_OWNER, GUEST_TENANT)
 NO_CONTEXT_TRANSLATION_ATTRIBUTE = "aos_no_context_translation_domain"
@@ -1161,6 +1163,7 @@ def check_policy(setools: Any, policy: Any) -> list[str]:
             evidence.append(f"member-attribute\t{domain}\tdomain")
 
     file_types = attribute_members(setools, policy, "file_type")
+    guest_file_policy.validate_names(policy, file_types)
     for object_type in GUARDED_OBJECT_TYPES:
         if object_type in file_types:
             raise ValueError(f"protected object inherited broad file_type: {object_type}")
@@ -1177,6 +1180,25 @@ def check_policy(setools: Any, policy: Any) -> list[str]:
 
     for access in NEGATIVE_ACCESS:
         rules = allow_rules(setools, policy, access)
+        cohort = GUEST_FILE_TYPE_COHORTS.get((access.source, access.permission))
+        if (
+            access.target == "file_type"
+            and access.object_class == "file"
+            and cohort is not None
+        ):
+            violations = guest_file_policy.violations(rules, file_types, cohort)
+            if violations:
+                rendered = " | ".join(violations)
+                raise ValueError(
+                    "forbidden allow exists outside Guest file_type cohort: "
+                    f"{access}: {rendered}"
+                )
+            evidence.append(
+                f"deny-file-type-cohort\t{access.source}\tfile\t{access.permission}\t"
+                f"allowed={','.join(sorted(cohort))}"
+            )
+            continue
+
         if rules:
             # Reject disabled conditional grants too: a Boolean change must not
             # be able to widen any protected negative asserted by this gate.

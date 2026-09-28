@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 
 import effective_policy
@@ -16,6 +16,8 @@ class FakeRule:
     text: str
     active: bool = True
     default: str | None = None
+    target: FakeTypeAttribute | None = None
+    source: FakeTypeAttribute | None = None
 
     def enabled(self) -> bool:
         return self.active
@@ -29,7 +31,9 @@ class FakePolicy:
 
     def __init__(self) -> None:
         self.permissive: set[str] = set()
-        self.file_types: set[str] = set()
+        self.file_types = (
+            set(effective_policy.guest_file_policy.OWNER_CONTROL_READ_TYPES) | {"var_t"}
+        )
         self.attributes = {
             "domain": set(effective_policy.ENFORCING_DOMAINS),
             effective_policy.EXPLICIT_LOADER_ATTRIBUTE: set(effective_policy.EXPLICIT_LOADER_DOMAINS),
@@ -52,8 +56,8 @@ class FakePolicy:
             for transition in effective_policy.TRANSITIONS
         }
 
-    def lookup_type(self, domain: str) -> SimpleNamespace:
-        return SimpleNamespace(ispermissive=domain in self.permissive)
+    def lookup_type(self, domain: str) -> FakeType:
+        return FakeType(domain, domain in self.permissive)
 
 
 class FakeQuery:
@@ -71,15 +75,32 @@ class FakeQuery:
             object_class = str(self.criteria["tclass"][0])
             permission = str(self.criteria["perms"][0])
 
-            return [
-                rule
-                for access, rules in self.policy.allows.items()
-                if access.source == source
-                and (target is None or access.target == str(target))
-                and access.object_class == object_class
-                and access.permission == permission
-                for rule in rules
-            ]
+            target_members = (
+                self.policy.file_types if target == "file_type" else {str(target)}
+            )
+            matches = []
+            for access, rules in self.policy.allows.items():
+                if (
+                    access.object_class != object_class
+                    or access.permission != permission
+                ):
+                    continue
+                for rule in rules:
+                    sources = rule.source.expand() if rule.source else {access.source}
+                    concrete_target = rule.target or FakeTypeAttribute(
+                        self.policy.file_types
+                        if access.target == "file_type"
+                        else {access.target}
+                    )
+                    if source not in sources:
+                        continue
+                    if target is not None and not target_members.intersection(
+                        concrete_target.expand()
+                    ):
+                        continue
+                    matches.append(replace(rule, target=concrete_target))
+
+            return matches
 
         if "default" in self.criteria:
             transition = effective_policy.Transition(
@@ -108,6 +129,17 @@ class FakeTypeAttribute:
 
     def expand(self) -> set[str]:
         return self.members
+
+
+@dataclass(frozen=True)
+class FakeType:
+    """Exposes a canonical fixture type and its enforcing state."""
+
+    name: str
+    ispermissive: bool = False
+
+    def __str__(self) -> str:
+        return self.name
 
 
 class FakeTypeAttributeQuery:
@@ -614,6 +646,92 @@ class EffectivePolicyTest(unittest.TestCase):
 
                 with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
                     effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_guest_file_type_cohorts_admit_only_fixed_kernel_reads(self) -> None:
+        cohorts = effective_policy.GUEST_FILE_TYPE_COHORTS
+        for (source, permission), allowed in cohorts.items():
+            for target in allowed:
+                with self.subTest(source=source, permission=permission, target=target):
+                    policy = FakePolicy()
+                    access = effective_policy.Access(source, target, "file", permission)
+                    policy.allows[access] = [
+                        FakeRule("existing kernel/control read")
+                    ]
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_guest_file_type_cohorts_reject_other_direct_file_types(self) -> None:
+        for source, permission in effective_policy.GUEST_FILE_TYPE_COHORTS:
+            with self.subTest(source=source, permission=permission):
+                policy = FakePolicy()
+                access = effective_policy.Access(source, "var_t", "file", permission)
+                policy.allows[access] = [
+                    FakeRule("unrelated host data")
+                ]
+                with self.assertRaisesRegex(
+                    ValueError, "outside Guest file_type cohort.*var_t"
+                ):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_guest_file_type_cohorts_reject_mixed_inherited_conditional_targets(self) -> None:
+        for active in (True, False):
+            with self.subTest(active=active):
+                policy = FakePolicy()
+                access = effective_policy.Access("domain", "mixed_files", "file", "read")
+                policy.allows[access] = [
+                    FakeRule(
+                        "conditional inherited mixed target",
+                        active=active,
+                        source=FakeTypeAttribute({
+                            effective_policy.GUEST_OWNER,
+                            effective_policy.GUEST_TENANT,
+                        }),
+                        target=FakeTypeAttribute({"cpu_online_t", "var_t"}),
+                    )
+                ]
+                with self.assertRaisesRegex(
+                    ValueError, "outside Guest file_type cohort.*var_t"
+                ):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_guest_kernel_read_exception_cannot_authorize_mapping_or_execution(self) -> None:
+        for source in (effective_policy.GUEST_OWNER, effective_policy.GUEST_TENANT):
+            for permission in ("map", "execute_no_trans"):
+                with self.subTest(source=source, permission=permission):
+                    policy = FakePolicy()
+                    access = effective_policy.Access(source, "cpu_online_t", "file", permission)
+                    policy.allows[access] = [
+                        FakeRule("kernel read exception widened")
+                    ]
+                    with self.assertRaisesRegex(
+                        ValueError, "outside Guest file_type cohort.*cpu_online_t"
+                    ):
+                        effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_tenant_cannot_inherit_owner_control_file_reads(self) -> None:
+        policy = FakePolicy()
+        access = effective_policy.Access(
+            effective_policy.GUEST_TENANT, "cgroup_t", "file", "read"
+        )
+        policy.allows[access] = [
+            FakeRule("Owner control read exposed to Tenant")
+        ]
+        with self.assertRaisesRegex(ValueError, "outside Guest file_type cohort.*cgroup_t"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_guest_file_type_cohort_names_must_remain_canonical_members(self) -> None:
+        policy = FakePolicy()
+        policy.file_types.remove("cpu_online_t")
+        with self.assertRaisesRegex(ValueError, "not a canonical member: cpu_online_t"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+        class AliasedPolicy(FakePolicy):
+            def lookup_type(self, name: str) -> FakeType:
+                if name == "cpu_online_t":
+                    return FakeType("substituted_cpu_type")
+                return super().lookup_type(name)
+
+        with self.assertRaisesRegex(ValueError, "not a canonical member: cpu_online_t"):
+            effective_policy.check_policy(FAKE_SETOOLS, AliasedPolicy())
 
     def test_missing_tenant_data_execution_permission_fails(self) -> None:
         for target in ("aos_sandbox_guest_tenant_data_t", "aos_sandbox_guest_store_t"):

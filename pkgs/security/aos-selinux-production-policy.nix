@@ -115,7 +115,7 @@ in
             -o "$attribute_negative_module.pp" \
             -m "$attribute_negative_module.mod"
           test -s "$attribute_negative_module.pp"
-          for narrow_negative_module in aos_sandbox_loader_negative aos_sandbox_context_negative; do
+          for narrow_negative_module in aos_sandbox_loader_negative aos_sandbox_context_negative aos_sandbox_guest_file_negative; do
             ${checkpolicy}/bin/checkmodule -m \
               -o "$narrow_negative_module.mod" \
               ${policySupport}/"$narrow_negative_module.te"
@@ -149,10 +149,10 @@ in
             final-policy.${policyVersion} > effective-policy.tsv
           test -s effective-policy.tsv
 
-          # Separate mutants restore textrel or translation socket access
-          # through an attribute. Both must pass normal base assertions, then
+          # Separate mutants restore textrel, translation or Guest host-file
+          # access through attributes. Each passes normal base assertions, then
           # fail the same effective checker as the production binary above.
-          for narrow_negative_module in aos_sandbox_loader_negative aos_sandbox_context_negative; do
+          for narrow_negative_module in aos_sandbox_loader_negative aos_sandbox_context_negative aos_sandbox_guest_file_negative; do
             ${semodule-utils}/bin/semodule_link \
               -o "$narrow_negative_module-linked.mod" \
               "$@" "$narrow_negative_module.pp"
@@ -169,12 +169,20 @@ in
               exit 1
             fi
             grep -F "forbidden allow exists" "$narrow_negative_module-diagnostic"
-            grep -F "aos_filesystem_fuse_worker_t" "$narrow_negative_module-diagnostic"
             case "$narrow_negative_module" in
-              aos_sandbox_loader_negative) grep -F "execmod" "$narrow_negative_module-diagnostic" ;;
+              aos_sandbox_loader_negative)
+                grep -F "aos_filesystem_fuse_worker_t" "$narrow_negative_module-diagnostic"
+                grep -F "execmod" "$narrow_negative_module-diagnostic"
+                ;;
               aos_sandbox_context_negative)
+                grep -F "aos_filesystem_fuse_worker_t" "$narrow_negative_module-diagnostic"
                 grep -F "sock_file" "$narrow_negative_module-diagnostic"
                 grep -F "permission='open'" "$narrow_negative_module-diagnostic"
+                ;;
+              aos_sandbox_guest_file_negative)
+                grep -F "outside Guest file_type cohort" "$narrow_negative_module-diagnostic"
+                grep -F "aos_sandbox_guest_owner_t" "$narrow_negative_module-diagnostic"
+                grep -F "var_t" "$narrow_negative_module-diagnostic"
                 ;;
               *)
                 echo "unknown negative module: $narrow_negative_module" >&2
