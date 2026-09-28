@@ -22,6 +22,9 @@
 //! {"magic":"AOSHAT01","host":"guest.example","port":2222,"user":"aos_exec","host_public_key":"ssh-ed25519 ...","trusted_user_ca_public_key":"ssh-ed25519 ..."}
 //! ```
 
+#[cfg(test)]
+mod named_storage_tests;
+
 use std::fs::OpenOptions;
 use std::io::Read as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
@@ -101,6 +104,8 @@ impl HostOpenSshAttachRouteOwnerV1 {
         &mut self,
         execution: [u8; 16],
     ) -> Result<bool, HostOpenSshAttachRouteErrorV1> {
+        self.journal
+            .validate_held_root_owned_at(HOST_STATE_ROOT, ROUTE_JOURNAL_NAME)?;
         let authority = self
             .journal
             .claim_protected_authority(RecordNamespace::HostExecution)?;
@@ -249,7 +254,11 @@ impl HostOpenSshAttachRouteOwnerV1 {
                 &ticket_bytes,
             )?,
         ));
+        // Keep the exact route writer borrowed while checking the effect's
+        // named storage boundary after its durable consume reservation.
+        validate_held_route_names_v3(&authority)?;
         let response = exchange.exchange(&frame)?;
+        validate_held_route_names_v3(&authority)?;
         let AgentFrameV1::OriginalAttachResponseV3(packet) = decode_frame_v1(&response)? else {
             return Err(HostOpenSshAttachRouteErrorV1::GateMismatch);
         };
@@ -1246,6 +1255,7 @@ fn read_protected_with_current_v3(
     incarnation_id: [u8; 16],
     assignment_epoch: u64,
 ) -> Result<ProtectedRouteV1, HostOpenSshAttachRouteErrorV1> {
+    validate_held_route_names_v3(authority)?;
     current.revalidate()?;
     let mut key = ROUTE_KEY_PREFIX.to_vec();
     key.extend_from_slice(&execution_id);
@@ -1283,6 +1293,13 @@ fn read_protected_with_current_v3(
         record: route,
         route_digest: digest.finalize().into(),
     })
+}
+
+fn validate_held_route_names_v3(
+    authority: &aos_sandbox::ProtectedJournalAuthority<'_>,
+) -> Result<(), HostOpenSshAttachRouteErrorV1> {
+    authority.validate_held_root_owned_at(HOST_STATE_ROOT, ROUTE_JOURNAL_NAME)?;
+    Ok(())
 }
 
 fn validate_deployment_trust(route: &RouteRecordV1) -> Result<(), HostOpenSshAttachRouteErrorV1> {
