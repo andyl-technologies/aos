@@ -12,41 +12,7 @@
   stage0Fixture = import ./_selinux-stage0-fixture.nix {inherit lib pkgs;};
   carrierRoot = "/run/aos/mount-executable-carrier";
   qualificationCredentials = "/run/aos/mount-carrier-qualification";
-  credentialFixture = pkgs.mkCargoPackage {
-    pname = "aos-mount-carrier-credential-fixture";
-    version = "0.1.0";
-    src = import ../../pkgs/tools/aos/_workspace-source.nix {inherit lib;};
-    cargoDeps = pkgs.aos-sandbox-mountd.passthru.cargoDeps;
-    cargoRoot = "crates";
-    buildType = "debug";
-    cargoBuildCommands = [
-      "test --no-run --lib --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --features aos-sandbox-broker-session-security/kernel-tests"
-    ];
-    doCheck = false;
-    installBins = false;
-    buildDeps = [pkgs.protobuf];
-    runtimeDeps = [];
-    cargoEnv.PROTOC = "${pkgs.protobuf}/bin/protoc";
-    postBuild = ''
-      mkdir -p credential-fixture
-      count=0
-      artifact_dir="''${CARGO_TARGET_DIR:-target}/debug/deps"
-      for candidate in "$artifact_dir"/aos_sandbox_broker_session_security-*; do
-        if [ -f "$candidate" ] && [ -x "$candidate" ]; then
-          install -m 0755 "$candidate" credential-fixture/mount-carrier-credential-fixture
-          count=$((count + 1))
-        fi
-      done
-      if [ "$count" -ne 1 ]; then
-        echo "expected exactly one Mount credential fixture, found $count" >&2
-        exit 1
-      fi
-    '';
-    postInstall = ''
-      mkdir -p "$out/bin"
-      install -m 0755 credential-fixture/mount-carrier-credential-fixture "$out/bin/"
-    '';
-  };
+  credentialFixture = import ./_broker-session-credential-fixture.nix {inherit lib pkgs;};
   qualificationStage0 = pkgs.aosSelinuxStage0With {
     admissionUnit = "";
     mountExecutableCarrier = carrier;
@@ -145,7 +111,7 @@ in {
 
     def install_mount_credentials():
         selected = retained.succeed(
-            "${credentialFixture}/bin/mount-carrier-credential-fixture "
+            "${credentialFixture}/bin/broker-session-credential-fixture "
             "--ignored --list "
             "handshake::qualification_credentials::"
             "provision_controller_broker_credentials_after_boot"
@@ -157,7 +123,7 @@ in {
 
         output = retained.succeed(
             f"AOS_BSA_QUALIFICATION_ROOT={credential_root} "
-            "${credentialFixture}/bin/mount-carrier-credential-fixture "
+            "${credentialFixture}/bin/broker-session-credential-fixture "
             "--ignored --exact "
             "handshake::qualification_credentials::"
             "provision_controller_broker_credentials_after_boot "
