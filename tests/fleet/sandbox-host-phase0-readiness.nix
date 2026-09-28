@@ -78,6 +78,9 @@
         '';
         environment.systemPackages = [credentialFixture pkgs.coreutils pkgs.openssl pkgs.systemd];
         aos.image.erofsCompressionLevel = 1;
+        # The nested Guest template copies fixed store bytes under independent
+        # names and inodes. Reuse only their compressed data, never their labels.
+        aos.image.erofsDeduplication = true;
         aos.image.budgets = {
           # This fixture carries a test-only credential harness alongside the
           # full sandbox closure; production runtime limits are unchanged.
@@ -217,6 +220,19 @@ in {
       vm.wait_for_unit("multi-user.target", timeout=180)
       vm.succeed("test -f /sys/fs/selinux/enforce")
       assert vm.succeed("cat /sys/fs/selinux/enforce").strip() == "1"
+
+      # Data deduplication must not turn the nested Guest copy into a Host
+      # inode alias, change immutable ownership/modes, or replace its label.
+      outer_library = "${pkgs.openssl}/lib/libcrypto.so.4"
+      guest_library = "${pkgs.aos-sandbox-guest-root-template}/root${pkgs.openssl}/lib/libcrypto.so.4"
+      vm.succeed(f"cmp {outer_library} {guest_library}")
+      identities = vm.succeed(f"stat -c '%d:%i' {outer_library} {guest_library}").splitlines()
+      assert len(identities) == 2 and identities[0] != identities[1], identities
+      metadata = vm.succeed(f"stat -c '%a %u %g' {outer_library} {guest_library}").splitlines()
+      assert metadata == ["555 0 0", "555 0 0"], metadata
+      contexts = vm.succeed(f"stat -c '%C' {outer_library} {guest_library}").splitlines()
+      assert contexts == ["system_u:object_r:lib_t", "system_u:object_r:lib_t"], contexts
+
       vm.succeed("test -s /run/credentials/@system/phase0-test-seed")
       vm.succeed("test -s /run/credentials/@system/phase0-test-public")
       vm.fail("systemctl is-active --quiet aos-sandbox-hostd.service")
