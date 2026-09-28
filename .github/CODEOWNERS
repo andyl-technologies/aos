@@ -1,0 +1,5 @@
+# Signed delivery source and authority-sensitive workflow changes need review.
+/.github/workflows/delivery-hub-staging.yml @dylanplecki
+/.github/CODEOWNERS @dylanplecki
+/deployment/application-project.nix @dylanplecki
+/pkgs/tools/aos-delivery/ @dylanplecki

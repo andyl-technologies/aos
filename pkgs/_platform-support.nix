@@ -388,6 +388,7 @@ let
   targetWave4 = [
     "aos"
     "aos-agent-rpc"
+    "aos-delivery"
     "aos-hub"
     "aos-release-signer"
     "aos-test-driver"
@@ -400,6 +401,7 @@ let
     "garage"
     "git-lfs"
     "gopls"
+    "grype"
     "hubble"
     "kubectl"
     "mariadb"
@@ -408,6 +410,7 @@ let
     "pnpm"
     "postgresql"
     "pyrefly"
+    "syft"
     "test-http-server"
     "test-static-cache-server"
     "uv"
@@ -801,6 +804,8 @@ let
     "libs/_sharp-ultrahdr.nix" = "cross-build-helper";
     "libs/_sharp-vips.nix" = "cross-build-helper";
     "tools/_cargo-c-sources.nix" = "target-independent-source";
+    "security/_grype-database.nix" = "target-independent-source";
+    "security/_grype-scan-check.nix" = "native-build-helper";
     "tools/_device-test-coreutils.nix" = "linux-only-build-helper";
     "tools/miniflare/_blake3-wasm.nix" = "native-build-helper";
     "tools/miniflare/_sharp-addon.nix" = "cross-build-helper";
@@ -1006,6 +1011,14 @@ let
   # Source fragments kept below underscore-prefixed directories are also
   # excluded from discovery, but are consumed by package factories.
   resourceInventory = {
+    "tools/aos-delivery/_src/artifact.py" = "target-independent-source";
+    "tools/aos-delivery/_src/cargo_inventory.py" = "target-independent-source";
+    "tools/aos-delivery/_src/cargo_inventory_test.py" = "target-independent-source";
+    "tools/aos-delivery/_src/delivery.py" = "target-independent-source";
+    "tools/aos-delivery/_src/delivery_test.py" = "target-independent-source";
+    "tools/aos-delivery/_src/transport.py" = "target-independent-source";
+    "tools/_uv-darwin/security.tbd" = "target-independent-source";
+    "tools/_uv-darwin/systemconfiguration.tbd" = "target-independent-source";
     "editors/_vim-darwin/api.h" = "target-independent-source";
     "editors/_vim-darwin/appkit.tbd" = "target-independent-source";
     "editors/_vim-darwin/text.h" = "target-independent-source";
