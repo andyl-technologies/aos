@@ -18,7 +18,7 @@ fn value(value: impl Into<Value<'static>>) -> OwnedValue {
 }
 
 fn inert_profile() -> serde_json::Value {
-    let pin = |path: String| json!({"path": path, "sha256": [1_u8; 32].as_slice()});
+    let pin = |path: String| json!({"path": path, "sha256": ([1_u8; 32].as_slice())});
     let executable = pin(format!("{ROOT}/bin/aos-sandbox-policy-authorityd"));
     let loader = pin(format!("{ROOT}/lib/ld.so"));
     json!({
@@ -29,7 +29,7 @@ fn inert_profile() -> serde_json::Value {
         "canonical_policy": pin("/nix/store/22222222222222222222222222222222-aos-selinux-kernel-policy-readback-1/policy.33".into()),
         "source_policy": pin(PROFILE.replace("profile.json", "source-policy.33")),
         "effective_matrix": pin(PROFILE.replace("profile.json", "effective-policy.tsv")),
-        "unit_sha256": [2_u8; 32].as_slice(),
+        "unit_sha256": ([2_u8; 32].as_slice()),
     })
 }
 
