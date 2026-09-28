@@ -720,6 +720,7 @@ mod handle_decode_tests {
 
         let request = aos_proto::aos::sandbox::v1::DeleteSandboxRequest {
             sandbox_id: vec![1; 16],
+            expected_plan_digest: vec![11; 32],
             mutation: Some(aos_proto::aos::sandbox::v1::MutationContext {
                 idempotency_key: vec![2; 16],
                 expected_resource_version: vec![3; 32],
