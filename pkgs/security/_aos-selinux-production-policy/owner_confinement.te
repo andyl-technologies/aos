@@ -144,6 +144,7 @@ type aos_sandbox_policy_authority_exec_t;
 type aos_sandbox_policy_authority_state_t;
 type aos_sandbox_policy_authority_credential_t;
 type aos_sandbox_policy_authority_runtime_t;
+type aos_sandbox_policy_authority_profile_t;
 
 # Explicit normal-unit context only: no ELF-based init_t default transition.
 # PID 1 may still run the legacy/recovery invocation without that context.
@@ -161,6 +162,12 @@ allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_exec_t:file { 
 allow aos_sandbox_policy_authority_t self:process { fork getattr getsched setrlimit sigchld signal };
 allow aos_sandbox_policy_authority_t self:unix_stream_socket { accept bind connect create getattr getopt listen read setopt shutdown write };
 allow aos_sandbox_policy_authority_t init_t:fd use;
+# Original PID1 OpenFile is an already-owned executable FD, not permission to
+# execute PID1 or inspect its procfs task. Only Root's own exe symlink is read.
+allow aos_sandbox_policy_authority_t init_exec_t:file { getattr read };
+allow aos_sandbox_policy_authority_t self:lnk_file { getattr read };
+allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_profile_t:file { getattr open read };
+allow init_t aos_sandbox_policy_authority_profile_t:file { getattr open read };
 allow aos_sandbox_policy_authority_t null_device_t:chr_file { getattr open read write };
 allow aos_sandbox_policy_authority_t { root_t var_t var_lib_t var_run_t usr_t etc_t }:dir { getattr open search };
 allow aos_sandbox_policy_authority_t device_t:dir { getattr open search };

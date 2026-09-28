@@ -140,7 +140,7 @@ impl RetainedFloorServicePolicyV1 {
             .verify_exact_membership(&self.parent)
             .map_err(|_| FloorErrorV1::Unavailable)?;
         self.fragment.revalidate()?;
-        self.manager.revalidate()
+        self.manager.revalidate().map_err(Into::into)
     }
 
     pub(super) fn require_child(&self, child: &PidFd) -> Result<(), FloorErrorV1> {
