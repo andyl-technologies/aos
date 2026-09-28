@@ -17,6 +17,25 @@ fn d(byte: u8) -> ObjectDigest {
     ObjectDigest::from_bytes([byte; 32])
 }
 
+fn assert_same_acquisition_state(
+    actual: MountSourceAcquisitionStateV2,
+    expected: MountSourceAcquisitionStateV2,
+) {
+    let MountSourceAcquisitionStateV2 {
+        acquisitions,
+        holder_sequences,
+        provider_heads,
+        provider_sessions,
+        provider_attempts,
+    } = actual;
+
+    assert_eq!(acquisitions, expected.acquisitions);
+    assert_eq!(holder_sequences, expected.holder_sequences);
+    assert_eq!(provider_heads, expected.provider_heads);
+    assert_eq!(provider_sessions, expected.provider_sessions);
+    assert_eq!(provider_attempts, expected.provider_attempts);
+}
+
 fn reference(attempt: &SourceProviderQueryAttemptV2) -> RecordRefV2 {
     RecordRefV2 {
         id: attempt.attempt_id,
@@ -958,9 +977,9 @@ fn disposition_later_acquire_and_release_advance_only_exact_tail_then_cold_repla
             uid,
         )
         .unwrap();
-        assert_eq!(
+        assert_same_acquisition_state(
             SourceAcquisitionTableV2::recover(&journal).unwrap().state(),
-            tentative.state()
+            tentative.state(),
         );
     }
 }

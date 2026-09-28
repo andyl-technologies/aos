@@ -325,7 +325,7 @@ fn native_export_fence_root_consumes_exact_pending_result_and_cold_replays_witho
     )
     .unwrap();
     let replayed = SourceAcquisitionTableV2::recover(&journal).unwrap();
-    assert_eq!(replayed.state(), consumed.state());
+    assert_same_acquisition_state(replayed.state(), consumed.state());
     let row = replayed.acquisitions.values().next().unwrap();
     let retained = aos_sandbox_protocol::mount_source_acquisition_state::native_export_fence::validate_native_export_fence_v1(
         row, &replayed.provider_attempts[&expected.id], &replayed.state()).unwrap().unwrap();
@@ -423,8 +423,8 @@ fn native_export_fence_root_rejects_resigned_changed_original_and_release_joins(
             "mutation {mutation}"
         );
     }
-    assert_eq!(
+    assert_same_acquisition_state(
         SourceAcquisitionTableV2::recover(&journal).unwrap().state(),
-        reserved.state()
+        reserved.state(),
     );
 }
