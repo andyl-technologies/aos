@@ -943,7 +943,9 @@ async fn cancel_upload(
             Ok(response) => response?,
             Err(_) => {
                 retry_delay =
-                    wait_for_upload_cancellation_retry(deadline, retry_delay, cancellation).await?;
+                    wait_for_upload_cancellation_retry(deadline, retry_delay, cancellation)
+                        .await
+                        .context("last upload cancellation attempt timed out")?;
                 continue;
             }
         };
@@ -963,8 +965,9 @@ async fn cancel_upload(
         // flight. DELETE is idempotent, so retry the resulting 503 within one
         // explicit window without discarding the checkpoint that makes later
         // cleanup safe.
-        retry_delay =
-            wait_for_upload_cancellation_retry(deadline, retry_delay, cancellation).await?;
+        retry_delay = wait_for_upload_cancellation_retry(deadline, retry_delay, cancellation)
+            .await
+            .context("last upload cancellation attempt returned HTTP 503 Service Unavailable")?;
     }
 }
 
@@ -983,6 +986,11 @@ async fn wait_for_upload_cancellation_retry(
         () = cancellation.cancelled() => bail!("OCI transfer cancelled"),
         () = tokio::time::sleep(delay) => {}
     }
+    // Preserve the last failed attempt instead of issuing a zero-budget request.
+    ensure!(
+        tokio::time::Instant::now() < deadline,
+        "upload cancellation retry window elapsed"
+    );
     Ok(retry_delay
         .saturating_mul(2)
         .min(UPLOAD_CANCELLATION_MAX_RETRY_DELAY))
