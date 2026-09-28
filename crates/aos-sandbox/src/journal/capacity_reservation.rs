@@ -23,7 +23,9 @@ pub enum GlobalCapacityReservationPurposeV1 {
     /// Runtime execution admission and terminal effect settlement.
     RuntimeExecution = 2,
     /// Root project intent and its exact terminal or cancellation decision.
-    RootProjectAdmission = 3,
+    ///
+    /// Value 3 is reserved for the Source Provider's separate terminal owner.
+    RootProjectAdmission = 4,
 }
 
 impl GlobalCapacityReservationPurposeV1 {
@@ -59,7 +61,7 @@ impl GlobalCapacityReservationPurposeV1 {
         match value {
             1 => Ok(Self::PublisherCompletion),
             2 => Ok(Self::RuntimeExecution),
-            3 => Ok(Self::RootProjectAdmission),
+            4 => Ok(Self::RootProjectAdmission),
             _ => Err(JournalError::MalformedRecord(
                 "unknown global capacity reservation purpose",
             )),
@@ -672,4 +674,98 @@ fn take<const N: usize>(value: &[u8], offset: &mut usize) -> [u8; N] {
 
 fn digest_bytes(value: &[u8]) -> [u8; 32] {
     Sha256::digest(value).into()
+}
+
+#[cfg(test)]
+mod purpose_tests {
+    use super::*;
+
+    fn root_request() -> GlobalCapacityReservationRequestV1 {
+        GlobalCapacityReservationRequestV1 {
+            purpose: GlobalCapacityReservationPurposeV1::RootProjectAdmission,
+            owner_namespace: RecordNamespace::DesiredState,
+            owner_id: [1; 32],
+            owner_digest: [2; 32],
+            operation_id: [3; 16],
+            artifact_digest: [4; 32],
+            checkpoint_digest: [5; 32],
+            chain_head_digest: [6; 32],
+            terminal_records: 2,
+            terminal_bytes: 1024,
+            poison_records: 2,
+            poison_bytes: 1024,
+        }
+    }
+
+    #[test]
+    fn root_project_capacity_uses_exact_purpose_four() {
+        let request = root_request();
+        let admission = [7; 16];
+        let id = reservation_id(&request, admission);
+        let value = encode_reservation(&request, admission, id);
+
+        assert_eq!(value[11], 4);
+        assert_eq!(
+            decode_reservation(&value).unwrap(),
+            (request, admission, id)
+        );
+        assert!(decode_capacity_record(&reservation_key(id), &value).is_ok());
+        assert!(request.purpose.permits(RecordNamespace::DesiredState));
+        assert!(
+            !request
+                .purpose
+                .permits(RecordNamespace::SourceProviderAuthority)
+        );
+    }
+
+    #[test]
+    fn historical_root_purpose_three_cannot_become_provider_capacity() {
+        let request = root_request();
+        let admission = [7; 16];
+        let mut value = encode_reservation(&request, admission, [0; 32]);
+        value[11] = 3;
+
+        // Recompute the complete old record identity, rather than relying on
+        // a stale checksum to reject it. Even a reader that recognizes the
+        // independent Provider purpose must reject this DesiredState owner.
+        let mut digest = Sha256::new();
+        digest.update(RECORD_DOMAIN);
+        digest.update([value[11], value[10]]);
+        digest.update(&value[14..VALUE_BYTES - 32]);
+        let id: [u8; 32] = digest.finalize().into();
+        value[VALUE_BYTES - 32..].copy_from_slice(&id);
+
+        assert!(decode_capacity_record(&reservation_key(id), &value).is_err());
+    }
+
+    #[test]
+    fn root_project_recovery_rejects_well_formed_foreign_purpose() {
+        let request = root_request();
+        let binding = GlobalCapacityReservationRecoveryBindingV1 {
+            purpose: request.purpose,
+            operation_id: request.operation_id,
+            artifact_digest: request.artifact_digest,
+            checkpoint_digest: request.checkpoint_digest,
+            chain_head_digest: request.chain_head_digest,
+            terminal_records: request.terminal_records,
+            terminal_bytes: request.terminal_bytes,
+            poison_records: request.poison_records,
+            poison_bytes: request.poison_bytes,
+        };
+        let mut foreign = request;
+        foreign.purpose = GlobalCapacityReservationPurposeV1::RuntimeExecution;
+        foreign.owner_namespace = RecordNamespace::Effect;
+        let admission = [7; 16];
+        let id = reservation_id(&foreign, admission);
+        let value = encode_reservation(&foreign, admission, id);
+        let reservation = GlobalCapacityReservationV1 {
+            request: foreign,
+            admission_transaction_id: admission,
+            reservation_id: id,
+            record_digest: digest_bytes(&value),
+        };
+
+        assert!(decode_capacity_record(&reservation_key(id), &value).is_ok());
+        assert!(!reservation.matches_recovery_binding(&binding));
+    }
 }
