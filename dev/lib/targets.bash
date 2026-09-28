@@ -89,7 +89,13 @@ aos_dev_validate_target() {
     return
   fi
   local entries
-  entries=$(aos_dev_list "$category" "" "$cross_system")
+  # Scoped check lookup avoids forcing unrelated check groups just to validate
+  # one leaf. Exact matching still rejects a completion prefix as a target.
+  if [[ $category == checks && $name == *.* ]]; then
+    entries=$(aos_dev_list "$category" "$name" "$cross_system")
+  else
+    entries=$(aos_dev_list "$category" "" "$cross_system")
+  fi
   if ! printf '%s\n' "$entries" | grep -Fxq -- "$name"; then
     printf 'aos-dev: unknown %s target: %s\n' "$category" "$name" >&2
     printf '%s\n' "$entries" | grep -iF -- "${name%%:*}" | head -8 >&2 || true

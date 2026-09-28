@@ -6,6 +6,9 @@ mkdir -p "$scratch/bin"
 
 cat > "$scratch/bin/nix-instantiate" <<'MOCK'
 #!@BASH@
+if [[ -n ${AOS_DEV_TEST_EVAL_LOG:-} ]]; then
+  printf '%s\n' "$*" >> "$AOS_DEV_TEST_EVAL_LOG"
+fi
 case " $* " in
   *' category packages '*' crossSystem x86_64-darwin '*) printf 'alpha\nbeta\ndarwin-runtimes' ;;
   *' category packages '*) printf 'alpha\nbeta' ;;
@@ -86,6 +89,19 @@ bash "$root/aos-dev" completion bash | grep -Fq '_aos_dev_complete()'
 test "$(bash "$root/aos-dev" list packages)" = $'alpha\nbeta'
 test "$(bash "$root/aos-dev" list check build.aos-dev)" = $'build.aos-dev-cli\nbuild.aos-dev-cache-identity'
 test "$(bash "$root/aos-dev" list check build.aos-dev-cli)" = 'build.aos-dev-cli'
+
+test "$(AOS_DEV_TEST_EVAL_LOG="$scratch/scoped-eval.log" \
+  bash "$root/aos-dev" --release build check build.aos-dev-cli --no-out-link)" = /tmp/aos-dev-test-output
+grep -Fq -- 'scope build.aos-dev-cli' "$scratch/scoped-eval.log"
+if grep -F -- 'category checks' "$scratch/scoped-eval.log" | grep -Fv -- 'scope build.aos-dev-cli'; then
+  echo 'nested check validation evaluated unrelated check groups' >&2
+  exit 1
+fi
+if bash "$root/aos-dev" --release build check build.aos-dev --no-out-link >/dev/null 2>&1; then
+  echo 'check completion prefix was accepted as an exact target' >&2
+  exit 1
+fi
+
 test "$(bash "$root/aos-dev" --release build package alpha --no-out-link)" = /tmp/aos-dev-test-output
 grep -Fq -- '-A pkgs.alpha --no-out-link' "$AOS_DEV_TEST_LOG"
 if bash "$root/aos-dev" --release build package darwin-runtimes --no-out-link >/dev/null 2>&1; then
