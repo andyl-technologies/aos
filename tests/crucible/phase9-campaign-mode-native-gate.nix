@@ -6,6 +6,7 @@
   system,
   gate,
   authoritativeAttr,
+  authoritativeResultIdentity ? "gate=${gate}",
   authority,
   name,
   cargoBuildCommands,
@@ -199,8 +200,8 @@ in
           script = ''
             set -eu
             mkdir -p "$out"
-            grep -Fxq PASS ${authority}/result
-            grep -Fxq ${lib.escapeShellArg "gate=${gate}"} ${authority}/result
+            test "$(grep -Fxc PASS ${authority}/result)" -eq 1
+            test "$(grep -Fxc ${lib.escapeShellArg authoritativeResultIdentity} ${authority}/result)" -eq 1
             serial=$(find ${fleet} -name '*-serial.log' -type f -print -quit)
             test -n "$serial"
             normalized_serial="$TMPDIR/campaign-mode-serial"
