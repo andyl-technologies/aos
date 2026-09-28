@@ -23,12 +23,20 @@ use crate::{IdempotencyKey, Journal, JournalError};
 ///
 /// The authorization proof remains private so downstream planning can consume
 /// this value but cannot construct one from request bytes alone.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct AuthorizedPublicMutationRequestV1 {
     request: ResolvedPublicMutationRequestV1,
     authorization: crate::cli_model::PublicMutationAuthorizationV1,
     caller: PrincipalId,
     project: ProjectId,
+    original_request: Vec<u8>,
+    original_trust: [[u8; 32]; 4],
+}
+
+impl std::fmt::Debug for AuthorizedPublicMutationRequestV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AuthorizedPublicMutationRequestV1(<redacted>)")
+    }
 }
 
 impl AuthorizedPublicMutationRequestV1 {
@@ -82,11 +90,23 @@ impl AuthorizedPublicMutationRequestV1 {
         )
         .map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?;
 
+        let attach = matches!(request.request(), DormantSandboxRequestKindV1::ExecutionControl(control)
+            if control.action.as_known() == Some(aos_proto::aos::sandbox::v1::ExecutionControlAction::EXECUTION_CONTROL_ACTION_ATTACH));
+        let original_request = if attach { encoded.to_vec() } else { Vec::new() };
+        let original_trust = if attach {
+            peer.original_trust_coordinates()
+                .map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?
+        } else {
+            [[0; 32]; 4]
+        };
+
         Ok(Self {
             request,
             authorization,
             caller: peer.principal(),
             project: peer.project(),
+            original_request,
+            original_trust,
         })
     }
 
@@ -123,6 +143,8 @@ impl AuthorizedPublicMutationRequestV1 {
             ),
             caller: PrincipalId::from_bytes([1; 16]),
             project: ProjectId::from_bytes([2; 16]),
+            original_request: Vec::new(),
+            original_trust: [[0; 32]; 4],
         }
     }
 
@@ -136,6 +158,25 @@ impl AuthorizedPublicMutationRequestV1 {
     #[must_use]
     pub(crate) const fn accepted_wall_seconds(&self) -> i64 {
         self.authorization.accepted_wall_seconds()
+    }
+
+    /// Encodes historical custody from this already checked attach decision.
+    ///
+    /// # Errors
+    /// Rejects absent attach-only original request/trust or protected coordinates.
+    pub(crate) fn original_attach_decision(
+        &self,
+    ) -> Result<Vec<u8>, crate::attach_route_issuer::AttachRouteIssuanceErrorV1> {
+        crate::attach_decision::encode_original_decision(
+            &self.original_request,
+            self.authorization
+                .original_coordinates()
+                .ok_or(crate::attach_route_issuer::AttachRouteIssuanceErrorV1::DurableRecord)?,
+            self.original_trust,
+            self.caller,
+            self.project,
+            self.accepted_wall_seconds(),
+        )
     }
 
     /// Returns the exact protected policy generation used by authorization.

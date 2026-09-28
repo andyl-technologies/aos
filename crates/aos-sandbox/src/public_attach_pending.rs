@@ -286,6 +286,67 @@ impl PublicAttachHostQueryDraftV1 {
     }
 }
 
+/// Prepares binding-only installation from accepted, retained original custody.
+///
+/// # Errors
+/// Rejects stale accepted execution/publication or exact ticket substitution.
+/// The returned plan uses the existing Host ATTACH purpose, never AOSAPG01
+/// re-signing, ticket renewal, or descriptor-transfer authorization.
+pub(crate) fn prepare_original_ticket_binding_v2(
+    journal: &mut Journal,
+    pending: &PublicAttachPendingV1,
+    project: ProjectId,
+    node: NodeId,
+    ticket: &[u8],
+    now_seconds: i64,
+) -> Result<PublicAttachHostInstallDraftV1, PublicAttachPendingErrorV1> {
+    let original = crate::attach_decision::original_grant(journal, pending.record_digest())
+        .map_err(|_| PublicAttachPendingErrorV1::Unavailable)?;
+    let query = prepare_public_attach_host_query_v1(
+        journal,
+        project,
+        node,
+        pending.execution,
+        Some(pending),
+        now_seconds,
+    )?;
+    let (parent, ownership_lease, ownership_lease_signature) = query.into_parts();
+    let semantics = aos_sandbox_protocol::semantics::host_attach_gate::canonical_host_attach_ticket_semantics_v2(
+        parent.assignment(), &original, ticket).map_err(|_| PublicAttachPendingErrorV1::Conflict)?;
+    let grant = BrokerGrant::new(
+        semantics.verb(),
+        semantics.target(),
+        semantics.commitment(),
+        u32::try_from(HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES)
+            .map_err(|_| PublicAttachPendingErrorV1::Conflict)?,
+        0,
+    )
+    .map_err(|_| PublicAttachPendingErrorV1::Conflict)?;
+    let plan = BrokerAuthorizationPlan::new(
+        BrokerAudience::Host,
+        ProtocolId::HostBroker,
+        ProtocolVersion::new(1, 0),
+        parent.assignment(),
+        node,
+        parent.ownership_authority().clone(),
+        vec![grant],
+        parent.policy_commitment(),
+        parent.revocation_scope(),
+        parent.issued_seconds(),
+        parent.expires_seconds(),
+        Vec::new(),
+    )
+    .map_err(|_| PublicAttachPendingErrorV1::Conflict)?;
+    crate::attach_decision::retain_original_ticket(journal, pending.operation, ticket)
+        .map_err(|_| PublicAttachPendingErrorV1::Unavailable)?;
+    Ok(PublicAttachHostInstallDraftV1 {
+        grant: original,
+        plan,
+        ownership_lease,
+        ownership_lease_signature,
+    })
+}
+
 /// Derives one exact Host-install plan from the protected current publication.
 ///
 /// The caller must first produce `grant` using the same protected pending
@@ -428,6 +489,8 @@ pub(crate) fn prepare_public_attach_host_install_v1(
     )
     .map_err(|_| PublicAttachPendingErrorV1::Conflict)?;
 
+    crate::attach_decision::retain_original_grant(journal, pending.record_digest(), &grant)
+        .map_err(|_| PublicAttachPendingErrorV1::Unavailable)?;
     Ok(PublicAttachHostInstallDraftV1 {
         grant,
         plan,

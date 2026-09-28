@@ -147,6 +147,12 @@ pub(super) struct Credentials {
 }
 
 impl Credentials {
+    // Only public trust material is retained; the server private key digest is
+    // deliberately excluded from the original decision's historical binding.
+    pub(super) fn public_trust_digests(&self) -> [[u8; 32]; 3] {
+        [self.digests[0], self.digests[2], self.digests[3]]
+    }
+
     pub(super) fn load() -> Result<(Self, [Zeroizing<Vec<u8>>; 4]), PublicApiSessionError> {
         let path = std::env::var_os("CREDENTIALS_DIRECTORY")
             .map(PathBuf::from)

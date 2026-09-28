@@ -48,6 +48,14 @@ pub(super) trait AuthenticatedHostAttachRouteExchangeV1 {
         authorization: &BrokerAuthorizationArtifactsV1,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, ControllerCommandFailure>;
 
+    /// Installs original custody data and returns fresh physical evidence only.
+    fn bind_original_ticket_v2(
+        &mut self,
+        grant: &[u8],
+        ticket: &[u8],
+        authorization: &BrokerAuthorizationArtifactsV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, ControllerCommandFailure>;
+
     /// Reads an accepted route with fresh signed physical gate evidence.
     fn query_route(
         &mut self,
@@ -58,6 +66,16 @@ pub(super) trait AuthenticatedHostAttachRouteExchangeV1 {
 }
 
 impl AuthenticatedHostAttachRouteExchangeV1 for ControllerHostPublication {
+    fn bind_original_ticket_v2(
+        &mut self,
+        grant: &[u8],
+        ticket: &[u8],
+        authorization: &BrokerAuthorizationArtifactsV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, ControllerCommandFailure> {
+        self.bind_original_attach_ticket_v2(grant, ticket, authorization)
+            .map_err(|_| ControllerCommandFailure::ControllerUnavailable)
+    }
+
     fn drain_pending(&mut self) -> Result<(), ControllerCommandFailure> {
         self.drain_attach_gate()
             .map(|_| ())
@@ -386,6 +404,9 @@ pub(super) fn admit_public_attach(
     finalize_attach(
         controller,
         credentials,
+        plan_signer,
+        node,
+        host,
         peer,
         capability_id,
         canonical_request,
@@ -405,8 +426,10 @@ fn replay_attach(
     canonical_request: &[u8],
     pending: &PublicAttachPendingV1,
 ) -> Result<AdmittedPublicAttachV1, ControllerCommandFailure> {
-    // Accepted replay cannot invoke the Vacant-only grant signer or mutate
-    // Host route state. It needs a fresh read-only physical readback.
+    // Finish any historical exact request, but never treat its cached reply
+    // as current physical evidence. The query below starts a new observation.
+    // Accepted replay cannot invoke the Vacant-only pending-grant signer.
+    host.drain_pending()?;
     let now_seconds = sample_ownership_clock()
         .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?
         .wall_seconds();
@@ -430,6 +453,9 @@ fn replay_attach(
     finalize_attach(
         controller,
         credentials,
+        plan_signer,
+        node,
+        host,
         peer,
         capability_id,
         canonical_request,
@@ -441,6 +467,9 @@ fn replay_attach(
 fn finalize_attach(
     controller: &mut ProductionController,
     credentials: &ControllerAttachCredentialsV1,
+    plan_signer: &ControllerBrokerPlanSignerV1,
+    node: NodeId,
+    host: &mut impl AuthenticatedHostAttachRouteExchangeV1,
     peer: &PublicApiPeer,
     capability_id: CapabilityId,
     canonical_request: &[u8],
@@ -460,6 +489,53 @@ fn finalize_attach(
     let operation_id = match outcome {
         AcceptOutcome::Accepted(operation) | AcceptOutcome::Replay(operation) => operation,
     };
+    // Durable issuance can precede sidecar installation. Recovery uses the
+    // SAME endpoint/receipt/decision, never another certificate or pending
+    // nonce. Drain a cached exchange before requiring new physical readback.
+    host.drain_pending()?;
+    let now = sample_ownership_clock()
+        .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?
+        .wall_seconds();
+    let (ticket, draft) = controller
+        .prepare_public_attach_ticket_binding_v2(
+            peer,
+            capability_id,
+            canonical_request,
+            pending,
+            route,
+            node,
+            now,
+        )
+        .map_err(classify_controller_error)?;
+    let (grant, plan, ownership_lease, ownership_lease_signature) = draft.into_parts();
+    let signed = plan_signer
+        .sign_plan(plan, now)
+        .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
+    let authorization = BrokerAuthorizationArtifactsV1 {
+        broker_plan: signed.canonical_plan().to_vec(),
+        broker_plan_signature: signed.canonical_signature().to_vec(),
+        ownership_lease,
+        ownership_lease_signature,
+        ..Default::default()
+    };
+    let binding = host.bind_original_ticket_v2(&grant, &ticket, &authorization)?;
+    let fresh_route = route_from_authenticated_outcome(&binding, &grant, pending, credentials)?;
+    let request = decode_host_attach_gate_request_v1(
+        binding.request().exact_body(),
+        binding.request().peer(),
+        binding.request().peer_policy(),
+        sample_ownership_clock()
+            .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?
+            .boottime_nanoseconds(),
+    )
+    .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?;
+    if request.original_ticket_binding_v2() != Some(ticket.as_slice())
+        || fresh_route.route_digest != route.route_digest
+    {
+        return Err(ControllerCommandFailure::ControllerUnavailable);
+    }
+    // Data binding does not qualify monitor custody, relay confinement, or a
+    // continuously held Controller/Host/Guest consume cut. Activation stays closed.
     let operation = controller
         .public_operation(operation_id)
         .map_err(|_| ControllerCommandFailure::ControllerUnavailable)?

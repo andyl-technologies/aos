@@ -90,7 +90,7 @@ pub struct OpenSshGatePhysicalStateV1 {
     pub sshd_start_ticks: u64,
     /// Digest of the root-owned sshd executable observed through procfs.
     pub sshd_executable_digest: [u8; 32],
-    /// Digest of the root-owned forced-command executable.
+    /// Digest of the root-owned certificate callback and forced-command executable.
     pub gate_executable_digest: [u8; 32],
     /// Digest of the exact root-owned private host key file.
     pub host_private_key_digest: [u8; 32],

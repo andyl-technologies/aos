@@ -168,6 +168,24 @@ struct PeerState {
 }
 
 impl PublicApiPeer {
+    /// Samples the rechecked public TLS trust bundle and exact registered leaf.
+    ///
+    /// # Errors
+    /// Rejects a retired or changed authenticated transport. These historical
+    /// coordinates cannot reconstruct a peer or authorize a resumed attach.
+    pub(crate) fn original_trust_coordinates(
+        &self,
+    ) -> Result<[[u8; 32]; 4], PublicApiSessionError> {
+        self.recheck()?;
+        let trust = self.0.credentials.public_trust_digests();
+        Ok([
+            trust[0],
+            trust[1],
+            trust[2],
+            self.0.registration.certificate_sha256,
+        ])
+    }
+
     /// Returns the principal from the protected registration, never a request field.
     #[must_use]
     pub fn principal(&self) -> PrincipalId {

@@ -13,6 +13,38 @@ use aos_sandbox_core::{BrokerArgumentCommitment, BrokerAssignment, BrokerGrantTa
 const DOMAIN: &[u8] = b"aos.sandbox.host.attach-gate-grant.v1\0";
 const READINESS_DOMAIN: &[u8] = b"aos.sandbox.host.attach-gate-readiness.v1\0";
 const ROUTE_QUERY_DOMAIN: &[u8] = b"aos.sandbox.host.attach-gate-route-query.v1\0";
+const TICKET_DOMAIN_V2: &[u8] = b"aos.sandbox.host.attach-original-ticket-binding.v2\0";
+
+/// Compiles binding-only ATTACH semantics over the original receipt and ticket.
+///
+/// # Errors
+/// Rejects malformed data or receipt substitution. The existing plan signer
+/// authorizes installation, not new ticket issuance or I/O transfer.
+pub fn canonical_host_attach_ticket_semantics_v2(
+    assignment: BrokerAssignment,
+    packet: &[u8],
+    ticket: &[u8],
+) -> Result<CanonicalHostAttachGateSemanticsV1, HostAttachGateSemanticErrorV1> {
+    let decoded =
+        aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2::decode(ticket)
+            .map_err(|_| HostAttachGateSemanticErrorV1::InvalidGrant)?;
+    if decoded.pending_grant.as_slice() != packet {
+        return Err(HostAttachGateSemanticErrorV1::InvalidGrant);
+    }
+    let mut bytes = assignment_bytes(TICKET_DOMAIN_V2, assignment);
+    bytes.extend_from_slice(packet);
+    bytes.extend_from_slice(
+        &u32::try_from(ticket.len())
+            .map_err(|_| HostAttachGateSemanticErrorV1::InvalidGrant)?
+            .to_be_bytes(),
+    );
+    bytes.extend_from_slice(ticket);
+    Ok(CanonicalHostAttachGateSemanticsV1 {
+        verb: BrokerVerb::HostInstallAttachGate,
+        target: BrokerGrantTarget::Assignment,
+        commitment: BrokerArgumentCommitment::for_canonical_bytes(&bytes),
+    })
+}
 
 /// Carries the distinct Host ATTACH verb, assignment target, and exact intent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

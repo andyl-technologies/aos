@@ -1,13 +1,17 @@
 //! Canonical Host broker request and physical OpenSSH gate evidence bodies.
 //!
 //! ```text
-//! request = InstallHostAttachGateRequestV1 { header, pending_grant: AOSAPG01[416] }
-//! response = HostAttachGateEvidenceV1 { exact route, signed_gate_readback }
+//! request = InstallHostAttachGateRequestV1 { header, pending_grant: AOSAPG01[416],
+//!                                          original_ticket_binding_v2?: AOSTKB02 }
+//! response = HostAttachGateEvidenceV1 { exact route, signed_gate_readback,
+//!                                      original_ticket_digest_v2?, signed_ticket_readback_v2? }
 //! ```
 //!
 //! This layer validates wire shape and the request/response cross-link. The
 //! Host independently verifies the dedicated grant signature, protected lease,
 //! deployment trust, admitted execution, and guest physical measurement.
+//! V2 only installs immutable custody data through the existing ATTACH plan.
+//! It does not attest SSH authentication, authorize consumption, or renew a grant.
 
 use aos_proto::aos::sandbox::local::v1::{
     HostAttachGateEvidenceV1, HostAttachGateReadinessV1, InstallHostAttachGateRequestV1,
@@ -24,16 +28,23 @@ use crate::{
 };
 
 /// Bounds the complete encoded Host attach-gate request body.
-pub const HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES: usize = 1024;
-const MAXIMUM_RESPONSE_BODY_BYTES: usize = 8192;
+pub const HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES: usize = 16 * 1024;
+const MAXIMUM_RESPONSE_BODY_BYTES: usize = 16 * 1024;
 
 /// Carries an exact pending-grant packet from an authenticated controller peer.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct ValidatedHostAttachGateRequestV1 {
     header: ValidatedHeader,
     pending_grant: [u8; PUBLIC_ATTACH_GRANT_BYTES],
     operation_id: [u8; 16],
     execution_id: [u8; 16],
+    original_ticket_binding_v2: Vec<u8>,
+}
+
+impl std::fmt::Debug for ValidatedHostAttachGateRequestV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ValidatedHostAttachGateRequestV1(<redacted>)")
+    }
 }
 
 /// Carries a read-only advisory readiness query from the authenticated peer.
@@ -176,6 +187,38 @@ pub fn decode_host_attach_readiness_v1(
 }
 
 impl ValidatedHostAttachGateRequestV1 {
+    /// Returns the exact non-authorizing v2 data, or absence for v1 install.
+    #[must_use]
+    pub fn original_ticket_binding_v2(&self) -> Option<&[u8]> {
+        (!self.original_ticket_binding_v2.is_empty())
+            .then_some(self.original_ticket_binding_v2.as_slice())
+    }
+
+    /// Compiles the exact install or binding-only argument commitment.
+    ///
+    /// # Errors
+    /// Rejects malformed receipt or ticket data without authenticating it.
+    pub fn semantics(
+        &self,
+        assignment: aos_sandbox_core::BrokerAssignment,
+    ) -> Result<
+        crate::semantics::host_attach_gate::CanonicalHostAttachGateSemanticsV1,
+        crate::semantics::host_attach_gate::HostAttachGateSemanticErrorV1,
+    > {
+        match self.original_ticket_binding_v2() {
+            Some(ticket) => {
+                crate::semantics::host_attach_gate::canonical_host_attach_ticket_semantics_v2(
+                    assignment,
+                    self.pending_grant(),
+                    ticket,
+                )
+            }
+            None => crate::semantics::host_attach_gate::canonical_host_attach_gate_semantics_v1(
+                assignment,
+                self.pending_grant(),
+            ),
+        }
+    }
     /// Returns the session-bound broker request header.
     #[must_use]
     pub const fn header(&self) -> &ValidatedHeader {
@@ -241,11 +284,23 @@ pub fn decode_host_attach_gate_request_v1(
     }
     let operation_id = exact_nonzero::<16>(&pending_grant[8..24], "operation_id")?;
     let execution_id = exact_nonzero::<16>(&pending_grant[24..40], "execution_id")?;
+    if !request.original_ticket_binding_v2.is_empty() {
+        let ticket = aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2::decode(
+            &request.original_ticket_binding_v2,
+        )
+        .map_err(|_| ProtocolValidationError::InvalidField("original_ticket_binding_v2"))?;
+        if ticket.pending_grant != pending_grant {
+            return Err(ProtocolValidationError::InvalidField(
+                "original_ticket_binding_v2",
+            ));
+        }
+    }
     Ok(ValidatedHostAttachGateRequestV1 {
         header,
         pending_grant,
         operation_id,
         execution_id,
+        original_ticket_binding_v2: request.original_ticket_binding_v2,
     })
 }
 
@@ -263,6 +318,19 @@ pub fn decode_host_attach_gate_evidence_v1(
     request: &ValidatedHostAttachGateRequestV1,
 ) -> Result<HostAttachGateEvidenceV1, ProtocolValidationError> {
     let evidence = decode_host_attach_gate_evidence_shape_v1(bytes)?;
+    match request.original_ticket_binding_v2() {
+        Some(ticket)
+            if evidence.original_ticket_digest_v2.as_slice()
+                == Sha256::digest(ticket).as_slice()
+                && !evidence.signed_ticket_readback_v2.is_empty() => {}
+        None if evidence.original_ticket_digest_v2.is_empty()
+            && evidence.signed_ticket_readback_v2.is_empty() => {}
+        _ => {
+            return Err(ProtocolValidationError::InvalidField(
+                "original_ticket_digest_v2",
+            ));
+        }
+    }
     if exact_nonzero::<16>(&evidence.operation_id, "operation_id")? != request.operation_id()
         || exact_nonzero::<16>(&evidence.execution_id, "execution_id")? != request.execution_id()
         || exact_nonzero::<16>(&evidence.incarnation_id, "incarnation_id")?
@@ -321,6 +389,41 @@ fn decode_host_attach_gate_evidence_shape_v1(
     }
     let evidence = HostAttachGateEvidenceV1::decode_from_slice(bytes)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    if !evidence.original_ticket_digest_v2.is_empty()
+        || !evidence.signed_ticket_readback_v2.is_empty()
+    {
+        exact_nonzero::<32>(
+            &evidence.original_ticket_digest_v2,
+            "original_ticket_digest_v2",
+        )?;
+        let packet = &evidence.signed_ticket_readback_v2;
+        if packet.len() < 108
+            || packet.len() > 8192
+            || packet.get(..8) != Some(b"AOSTGR02".as_slice())
+            || packet.get(8..40) != Some(evidence.original_ticket_digest_v2.as_slice())
+        {
+            return Err(ProtocolValidationError::InvalidField(
+                "signed_ticket_readback_v2",
+            ));
+        }
+        let length = u32::from_be_bytes(
+            packet[40..44]
+                .try_into()
+                .map_err(|_| ProtocolValidationError::InvalidField("signed_ticket_readback_v2"))?,
+        ) as usize;
+        if length > 8192 {
+            return Err(ProtocolValidationError::InvalidField(
+                "signed_ticket_readback_v2",
+            ));
+        }
+        if packet.len() != 44 + length + 64
+            || packet.get(44..44 + length) != Some(evidence.signed_gate_readback.as_slice())
+        {
+            return Err(ProtocolValidationError::InvalidField(
+                "signed_ticket_readback_v2",
+            ));
+        }
+    }
     if !evidence.__buffa_unknown_fields.is_empty() || evidence.encode_to_vec() != bytes {
         return Err(ProtocolValidationError::UnknownFields);
     }
@@ -494,10 +597,58 @@ mod tests {
                 .is_err()
         );
 
-        let mut changed_readback = evidence;
+        let mut changed_readback = evidence.clone();
         changed_readback.signed_gate_readback[12] ^= 1;
         assert!(
             decode_host_attach_gate_evidence_v1(&changed_readback.encode_to_vec(), &request)
+                .is_err()
+        );
+
+        let ticket = aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2 {
+            operation_id: [1; 16],
+            execution_id: [2; 16],
+            incarnation_id: [3; 16],
+            principal_id: [5; 16],
+            audit_id: [6; 16],
+            assignment_epoch: 4,
+            valid_after: 1,
+            expires_at: 7,
+            holder_public_key: [18; 32],
+            request_digest: [14; 32],
+            decision_digest: [19; 32],
+            pending_grant: *request.pending_grant(),
+            base_route_digest: [8; 32],
+            certificate: b"original-certificate".to_vec(),
+        }
+        .encode()
+        .unwrap();
+        let mut bound_request = request.clone();
+        bound_request.original_ticket_binding_v2 = ticket.clone();
+        assert!(
+            decode_host_attach_gate_evidence_v1(&evidence.encode_to_vec(), &bound_request).is_err()
+        );
+        let mut bound = evidence.clone();
+        bound.original_ticket_digest_v2 = Sha256::digest(&ticket).to_vec();
+        let mut packet = b"AOSTGR02".to_vec();
+        packet.extend_from_slice(&bound.original_ticket_digest_v2);
+        packet.extend_from_slice(&(bound.signed_gate_readback.len() as u32).to_be_bytes());
+        packet.extend_from_slice(&bound.signed_gate_readback);
+        packet.extend_from_slice(&[0; 64]);
+        bound.signed_ticket_readback_v2 = packet;
+        assert!(
+            decode_host_attach_gate_evidence_v1(&bound.encode_to_vec(), &bound_request).is_ok()
+        );
+        assert!(decode_host_attach_gate_evidence_v1(&bound.encode_to_vec(), &request).is_err());
+        let mut substitution = bound.clone();
+        substitution.original_ticket_digest_v2[0] ^= 1;
+        assert!(
+            decode_host_attach_gate_evidence_v1(&substitution.encode_to_vec(), &bound_request)
+                .is_err()
+        );
+        substitution = bound;
+        substitution.signed_ticket_readback_v2[40..44].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(
+            decode_host_attach_gate_evidence_v1(&substitution.encode_to_vec(), &bound_request)
                 .is_err()
         );
     }
