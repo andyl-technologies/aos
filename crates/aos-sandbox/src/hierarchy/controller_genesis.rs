@@ -110,7 +110,7 @@ pub fn hold_controller_source_genesis_v1(
         }
         acceptance
     };
-    let names = journal.protected_physical_names_v1()?;
+    let names = journal.protected_writer_physical_names_v1()?;
     let held = HeldControllerSourceGenesisV1 {
         journal: RefCell::new(journal),
         acceptance,
@@ -146,7 +146,7 @@ impl HeldControllerSourceGenesisV1<'_> {
             .try_borrow_mut()
             .map_err(|_| SourceGenesisErrorV1::Stale)?;
         require_controller(&journal, self.uid)?;
-        if journal.protected_physical_names_v1()? != self.names {
+        if journal.protected_writer_physical_names_v1()? != self.names {
             return Err(SourceGenesisErrorV1::Stale);
         }
         let retained = records::rows(&journal, self.acceptance.project())?

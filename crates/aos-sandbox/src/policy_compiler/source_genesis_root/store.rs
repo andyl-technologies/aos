@@ -76,7 +76,7 @@ impl RootSourceGenesisAuthorityV1 {
         capacity::require_owner(&journal)?;
         let pins = RootGenesisRolePinsV1::load(&journal)?;
         validate_history(&journal, &pins)?;
-        let names = journal.protected_physical_names_v1()?;
+        let names = journal.protected_writer_physical_names_v1()?;
         let owner = Self {
             journal,
             pins,
@@ -152,7 +152,7 @@ impl RootSourceGenesisAuthorityV1 {
     pub fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
         capacity::require_owner(&self.journal)?;
         self.pins.recheck(&self.journal)?;
-        if self.journal.protected_physical_names_v1()? != self.names {
+        if self.journal.protected_writer_physical_names_v1()? != self.names {
             return Err(SourceGenesisErrorV1::Stale);
         }
         validate_history(&self.journal, &self.pins)
@@ -474,8 +474,13 @@ impl RootSourceGenesisAuthorityV1 {
             ],
         )?;
         self.recheck()?;
-        self.journal
-            .settle_global_capacity_reservation_v1(reservation, &transaction)?;
+        {
+            let mut authority = self
+                .journal
+                .claim_global_capacity_reservation_authority(request.purpose)?;
+            let preflight = authority.preflight_reserved_terminal_v1(&reservation, &transaction)?;
+            authority.commit_reserved_terminal_v1(&preflight, reservation, &transaction)?;
+        }
         if self.floor(project)? != Some(floor.clone()) || self.intent(project)?.is_some() {
             return Err(SourceGenesisErrorV1::Stale);
         }
