@@ -121,6 +121,7 @@ pub(super) fn exact_reservation(
         terminal_bytes: NATIVE_RELEASE_STATUS_TERMINAL_BYTES_V1,
         poison_records: NATIVE_RELEASE_STATUS_TERMINAL_RECORDS_V1,
         poison_bytes: NATIVE_RELEASE_STATUS_TERMINAL_BYTES_V1,
+        future_transactions: 1,
     };
     let retained = journal
         .recover_unique_global_capacity_reservation_v1(
@@ -134,6 +135,7 @@ pub(super) fn exact_reservation(
                 terminal_bytes: expected.terminal_bytes,
                 poison_records: expected.poison_records,
                 poison_bytes: expected.poison_bytes,
+                future_transactions: expected.future_transactions,
             },
         )
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
