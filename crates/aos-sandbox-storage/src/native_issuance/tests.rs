@@ -188,11 +188,12 @@ pub(super) fn fixture(sequence: u8, challenge: u8) -> PreparedStorageNativeIssua
         &provider_key,
     )
     .unwrap();
-    let acceptance = StorageNativeAcceptanceV2::new(
+    let acceptance = StorageNativeAcceptanceV3::new(
         [sequence; 16],
         request.digest(),
         digest(35),
         SourceRootObservationV1::new([36; 16], 37, 38, 39, true, true, true).unwrap(),
+        RecursiveTopologyProofV1::new([45; 16], 1, digest(46), 1, 0, 1, 0).unwrap(),
     )
     .unwrap();
 
@@ -234,6 +235,63 @@ fn live_lookup_retains_exact_acceptance_and_rejects_fresh_attempt() {
             hold_id: original.cut.hold_id,
         }),
         Err(StorageNativeIssuanceErrorV1::HoldInUse),
+    ));
+}
+
+#[test]
+fn native_v3_journal_capacity_includes_topology_before_admission() {
+    let directory = tempfile::tempdir().unwrap();
+    let prepared = fixture(1, 42);
+    let value = prepared.row.encode().unwrap();
+    assert_eq!(
+        prepared.row.acceptance.to_canonical_bytes().len(),
+        STORAGE_NATIVE_ACCEPTANCE_BYTES_V3
+    );
+    assert_eq!(
+        value.len(),
+        HEADER_BYTES
+            + prepared.row.request.to_canonical_bytes().len()
+            + STORAGE_NATIVE_ACCEPTANCE_BYTES_V3,
+    );
+    assert!(NativeIssuanceRowV1::decode(&value).is_ok());
+
+    let mut too_short = journal_limits();
+    too_short.maximum_record_bytes = 7 + prepared.row.key().len() + value.len() - 1;
+    let mut owner = open(directory.path(), too_short).unwrap();
+    assert!(matches!(
+        owner.accept(&prepared, &prepared.cut),
+        Err(StorageNativeIssuanceErrorV1::Journal(_))
+    ));
+    assert!(owner.rows().unwrap().is_empty());
+    drop(owner);
+
+    let mut reopened = open(directory.path(), journal_limits()).unwrap();
+    assert_eq!(
+        reopened.accept(&prepared, &prepared.cut).unwrap(),
+        IssuanceCommitOutcomeV1::Recorded
+    );
+    assert_eq!(
+        reopened.retained_acceptance(&prepared.row.request).unwrap(),
+        Some(prepared.row.acceptance)
+    );
+}
+
+#[test]
+fn native_v3_journal_refuses_unreleased_legacy_acceptance_without_reinterpretation() {
+    let prepared = fixture(1, 42);
+    let mut legacy = prepared.row.encode().unwrap();
+    let acceptance_start = HEADER_BYTES + prepared.row.request.to_canonical_bytes().len();
+    // The old positive acceptance had the same prefix fields but no appended
+    // eighty-byte topology. Preserve its old magic/version/width deliberately.
+    let legacy_acceptance_bytes = 136_u32;
+    legacy[84..88].copy_from_slice(&legacy_acceptance_bytes.to_be_bytes());
+    legacy[acceptance_start..acceptance_start + 8].copy_from_slice(b"AOSZNA02");
+    legacy[acceptance_start + 8..acceptance_start + 10].copy_from_slice(&2_u16.to_be_bytes());
+    legacy.truncate(acceptance_start + legacy_acceptance_bytes as usize);
+
+    assert!(matches!(
+        NativeIssuanceRowV1::decode(&legacy),
+        Err(StorageNativeIssuanceErrorV1::Noncanonical)
     ));
 }
 
@@ -342,11 +400,12 @@ fn one_acquisition_cannot_equivocate_request_receipt_or_original_descriptor() {
             SourceRootObservationV1::new([36; 16], 37, 38, 49, true, true, true).unwrap(),
         ),
     ] {
-        let acceptance = StorageNativeAcceptanceV2::new(
+        let acceptance = StorageNativeAcceptanceV3::new(
             [1; 16],
             prepared.row.request.digest(),
             receipt,
             descriptor,
+            prepared.row.acceptance.topology().clone(),
         )
         .unwrap();
         let changed = PreparedStorageNativeIssuanceV1 {
@@ -389,11 +448,12 @@ fn challenge_attempt_and_issuance_id_are_not_recycled_between_acquisitions() {
         Err(StorageNativeIssuanceErrorV1::Conflict)
     ));
     let mut reused_issuance = fixture(2, 43);
-    reused_issuance.row.acceptance = StorageNativeAcceptanceV2::new(
+    reused_issuance.row.acceptance = StorageNativeAcceptanceV3::new(
         [1; 16],
         reused_issuance.row.request.digest(),
         digest(35),
         first.row.acceptance.descriptor().clone(),
+        first.row.acceptance.topology().clone(),
     )
     .unwrap();
     assert!(matches!(
@@ -587,11 +647,12 @@ fn conflicting_or_sentinel_cleanup_cannot_retire_original_interest() {
     let mut owner = open(directory.path(), journal_limits()).unwrap();
     owner.accept(&prepared, &prepared.cut).unwrap();
     let mut wrong = retirement(&prepared);
-    wrong.original.acceptance = StorageNativeAcceptanceV2::new(
+    wrong.original.acceptance = StorageNativeAcceptanceV3::new(
         [1; 16],
         prepared.row.request.digest(),
         digest(55),
         prepared.row.acceptance.descriptor().clone(),
+        prepared.row.acceptance.topology().clone(),
     )
     .unwrap();
     assert!(owner.retire(&wrong).is_err());

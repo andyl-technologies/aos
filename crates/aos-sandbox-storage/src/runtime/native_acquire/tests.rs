@@ -1,9 +1,9 @@
 //! Focused signed intent, cold-custody fencing, and stable original replay checks.
 
 use aos_sandbox_source_provider_protocol::{
-    SignedStorageNativeAcceptanceV2, SignedStorageZfsHoldReceiptV1, SourceProviderKeyUsageV1,
+    SignedStorageNativeAcceptanceV3, SignedStorageZfsHoldReceiptV1, SourceProviderKeyUsageV1,
     SourceProviderSigningKeyV1, SourceRootObservationV1, StorageZfsHoldHeadV1,
-    StorageZfsHoldReceiptV1, StorageZfsHoldSignerV1,
+    StorageZfsHoldReceiptV1, StorageZfsHoldSignerV1, storage_native_nonrecursive_topology_v1,
 };
 use ed25519_dalek::{Signer as _, SigningKey};
 
@@ -30,7 +30,7 @@ fn clock(wall: i64, boot: u8) -> RawPairedClockSample {
 fn reply(
     request: &SignedStorageNativeAcquireRequestV2,
     mount_id: u64,
-) -> StorageNativeAcquireReplyV2 {
+) -> StorageNativeAcquireReplyV3 {
     let claims = request.request().claims();
     let catalog = claims.catalog();
     let (resource, snapshot) = catalog
@@ -61,15 +61,20 @@ fn reply(
         signer,
         key.sign(&unsigned.signing_message()).to_bytes(),
     );
-    let acceptance = StorageNativeAcceptanceV2::new(
+    let descriptor =
+        SourceRootObservationV1::new([26; 16], 100, 101, mount_id, true, true, true).unwrap();
+    let topology =
+        storage_native_nonrecursive_topology_v1(request, &receipt, &descriptor, 1, 0).unwrap();
+    let acceptance = StorageNativeAcceptanceV3::new(
         [98; 16],
         request.digest(),
         receipt.digest(),
-        SourceRootObservationV1::new([26; 16], 100, 101, mount_id, true, true, true).unwrap(),
+        descriptor,
+        topology,
     )
     .unwrap();
-    StorageNativeAcquireReplyV2::new(
-        SignedStorageNativeAcceptanceV2::sign(acceptance, signer, &key),
+    StorageNativeAcquireReplyV3::new(
+        SignedStorageNativeAcceptanceV3::sign(acceptance, signer, &key),
         receipt,
     )
     .unwrap()
@@ -261,6 +266,7 @@ fn synthetic_runtime(
     runtime.readiness = StorageRuntimeReadiness::Ready;
     runtime.native_fixture = Some(SyntheticNativeRuntimeV2 {
         held: Some(held),
+        reply_override: None,
         cut,
         clock: clock(110, 26),
         measurements: 0,
@@ -290,7 +296,7 @@ fn real_owner_accepts_before_send_retains_ambiguous_original_and_retransfers_sam
     let mut first_identity = (0, 0, 0);
     let ambiguous = runtime
         .with_native_acquire_delivery_v2(&authenticated, &key, |packet, mount, _| {
-            let decoded = StorageNativeAcquireReplyV2::from_canonical_bytes(packet).unwrap();
+            let decoded = StorageNativeAcquireReplyV3::from_canonical_bytes(packet).unwrap();
             let accepted = decoded.acceptance().acceptance().to_canonical_bytes();
             let journal =
                 std::fs::read(issuance.path().join("storage-native-issuance.journal")).unwrap();
@@ -413,4 +419,111 @@ fn real_owner_accepts_before_send_retains_ambiguous_original_and_retransfers_sam
         ),
         Err(crate::native_issuance::StorageNativeIssuanceErrorV1::HoldInUse)
     ));
+}
+
+#[test]
+fn native_v3_replay_rejects_locally_signed_counts_not_from_original_readback() {
+    let primary = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let issuance = tempfile::tempdir().unwrap();
+    let physical = tempfile::tempdir().unwrap();
+    let trust_directory = tempfile::tempdir().unwrap();
+    let mut runtime = synthetic_runtime(&primary, &workspace, &issuance, &physical);
+    let held = runtime
+        .native_fixture
+        .as_ref()
+        .unwrap()
+        .held
+        .as_ref()
+        .unwrap();
+    let request = request();
+    let trust =
+        crate::live_export_request_trust::StorageLiveExportRequestTrustV1::native_fixture_for_test(
+            trust_directory.path(),
+        );
+    let authenticated = trust.verify_native(&request).unwrap();
+    let key = StorageZfsHoldKeyV1::synthetic_key_for_test();
+    let now = clock(110, 26);
+    let original = key
+        .sign_native_reply(&authenticated, held, [80; 16], now)
+        .unwrap();
+    key.verify_native_reply(&authenticated, held, &original, now)
+        .unwrap();
+    let accepted = original.acceptance().acceptance();
+    let topology = accepted.topology();
+    assert_eq!((topology.entry_count(), topology.byte_count()), (1, 0));
+    assert_eq!(
+        (topology.maximum_depth(), topology.observed_submounts()),
+        (1, 0)
+    );
+    assert_eq!(
+        topology.authority_id(),
+        original.receipt().signer().authority().0
+    );
+    assert_eq!(topology.generation(), held.readback.cut.authority_sequence);
+
+    // Both variants are valid, genuinely signed scalar profiles with the
+    // exact original receipt/FD. Protocol verification cannot recover the
+    // measured counts from the physical digest; the owner must rejoin them.
+    let mut substituted = None;
+    for (nodes, bytes) in [(2, 0), (2, 1)] {
+        let topology = storage_native_nonrecursive_topology_v1(
+            &request,
+            original.receipt(),
+            accepted.descriptor(),
+            nodes,
+            bytes,
+        )
+        .unwrap();
+        let forged = StorageNativeAcceptanceV3::new(
+            accepted.issuance_id(),
+            accepted.request_digest(),
+            accepted.receipt_digest(),
+            accepted.descriptor().clone(),
+            topology,
+        )
+        .unwrap();
+        let forged = StorageNativeAcquireReplyV3::new(
+            SignedStorageNativeAcceptanceV3::sign(
+                forged,
+                original.receipt().signer(),
+                &SigningKey::from_bytes(&[7; 32]),
+            ),
+            original.receipt().clone(),
+        )
+        .unwrap();
+        authenticated
+            .verify_reply(
+                &forged,
+                key.verifier(),
+                original.receipt().receipt(),
+                accepted.descriptor(),
+                now.wall_seconds(),
+            )
+            .unwrap();
+
+        assert!(
+            key.verify_native_reply(&authenticated, held, &forged, now)
+                .is_err()
+        );
+        substituted = Some(forged);
+    }
+    runtime.native_fixture.as_mut().unwrap().reply_override = substituted;
+    assert!(
+        runtime
+            .with_native_acquire_delivery_v2(&authenticated, &key, |_, _, _| {
+                panic!("substituted counts must fail before descriptor send")
+            })
+            .is_err()
+    );
+    assert!(
+        runtime
+            .native_issuance
+            .as_mut()
+            .unwrap()
+            .retained_acceptance(&request)
+            .unwrap()
+            .is_none()
+    );
+    assert!(runtime.native_escrow.originals.is_empty());
 }
