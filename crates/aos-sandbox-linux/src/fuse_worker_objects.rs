@@ -165,8 +165,8 @@ impl MountCreatedFuseWorkerObjectsV1 {
     /// The fixed profile is read-only, no-exec, no-suid and no-dev. This borrow
     /// supplies no permission to attach the mount, consume FUSE requests or
     /// send backing without the genuine held Controller/Root/Mount join.
-    /// No idmap is applied yet: successful guarded INIT and the exact retained
-    /// namespace idmap must both complete before publication.
+    /// Creation applies no idmap. Successful guarded INIT and applying the
+    /// exact retained namespace idmap must both complete before publication.
     pub fn fuse(&self) -> &FreshDetachedFuseMountV1 {
         &self.fuse
     }
