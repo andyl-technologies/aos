@@ -550,6 +550,40 @@ async fn spawn_registry_with_rollout(
     .await
 }
 
+// Observes bounded diagnostic bytes only as the original response is written.
+// Frames, trailers and body errors pass through unchanged; no eager body read
+// changes the cancelled writer's lifetime or the client's retry deadline.
+async fn observe_upload_cancellation_unavailability(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use http_body_util::BodyExt;
+
+    let cancellation = request.method() == axum::http::Method::DELETE
+        && request.uri().path().contains("/blobs/uploads/");
+    let response = next.run(request).await;
+    if !cancellation || response.status() != StatusCode::SERVICE_UNAVAILABLE {
+        return response;
+    }
+
+    let (parts, body) = response.into_parts();
+    let mut remaining = 16 * 1024;
+    let observed = body.map_frame(move |frame| {
+        if let Some(bytes) = frame.data_ref() {
+            let length = bytes.len().min(remaining);
+            if length > 0 {
+                eprintln!(
+                    "CANCEL_503_BODY {:?}",
+                    String::from_utf8_lossy(&bytes[..length]),
+                );
+                remaining -= length;
+            }
+        }
+        frame
+    });
+    axum::response::Response::from_parts(parts, axum::body::Body::new(observed))
+}
+
 async fn spawn_registry_with_delayed_cancellation(
     visibility: &str,
     auxiliary_repository: bool,
@@ -780,6 +814,9 @@ async fn spawn_registry_with_delayed_cancellation(
         release_evidence: None,
     });
     let mut app = router(state).await;
+    app = app.layer(axum::middleware::from_fn(
+        observe_upload_cancellation_unavailability,
+    ));
     if delay_first_cancel_response {
         let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let retry_arrived = Arc::new(tokio::sync::Notify::new());
