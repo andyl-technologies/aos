@@ -510,7 +510,7 @@ pub(super) fn validate_provider_request(
                 .ok_or_else(|| state_error("provider Acquire identity is missing"))?;
             let request = decode_acquire_request(signed.subject())
                 .map_err(|_| state_error("retained provider Acquire body is invalid"))?;
-            let normalized = NormalizedAcquisitionIntentV2::from_acquire_request(
+            let normalized = NormalizedAcquisitionIntentV2::from_original_acquire_request(
                 &request,
                 session_provider_authority(session)?,
                 session_holder_authority(session)?,

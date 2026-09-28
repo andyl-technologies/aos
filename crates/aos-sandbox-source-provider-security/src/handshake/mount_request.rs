@@ -864,6 +864,13 @@ impl CurrentRootMountSourceProviderSessionV1 {
         normalized_intent: NormalizedAcquisitionIntentV2,
         floor_authorization: AuthorizedMountAcquireVerificationFloorV2,
     ) -> Result<PreparedMountProviderRequestV2, SourceProviderSecurityError> {
+        // Native V3 requires the separate fresh remote-currentness/selection
+        // producer. A normalized DATA profile cannot substitute for that cut.
+        if request.acquisition_version()
+            == aos_sandbox_source_provider_protocol::ACQUIRE_SOURCE_REQUEST_VERSION_V3
+        {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
         let (session_projection, expected_request_sequence, expected_response_sequence) =
             self.consume_current_mount_plan(journal, plan)?;
         if journal

@@ -66,7 +66,7 @@ pub(super) fn validate_attempt_normalization(
                 .provider_acquisition
                 .ok_or_else(|| state_error("Acquire attempt lacks its provider identity"))?;
             let value = NormalizedAcquisitionIntentV2::from_canonical_bytes(&normalized.bytes)
-                .map_err(|_| state_error("attempt AOSNPI01 version-2 normalization is invalid"))?;
+                .map_err(|_| state_error("attempt AOSNPI01 profile normalization is invalid"))?;
             if normalized.bytes.is_empty()
                 || value.digest().as_bytes() != &normalized.digest
                 || value.acquisition_id().as_bytes() != &provider_acquisition.acquisition_id
@@ -82,6 +82,34 @@ pub(super) fn validate_attempt_normalization(
                 crate::mount_source_acquisition_state::protocol_acquire_verification_floor_v2(
                     verification_floor,
                 )?;
+            if attempt.previous_attempt_id.is_some() {
+                let root_normalization = table
+                    .provider_attempts
+                    .get(&attempt.lineage_root_attempt_id)
+                    .and_then(|root| root.normalized_acquire_intent.as_ref())
+                    .ok_or_else(|| state_error("Acquire retry root lacks normalization"))?;
+                let root =
+                    NormalizedAcquisitionIntentV2::from_canonical_bytes(&root_normalization.bytes)
+                        .map_err(|_| state_error("Acquire retry root normalization is invalid"))?;
+                if value.native_catalog() != root.native_catalog() {
+                    return Err(state_error(
+                        "Acquire retry changes its original native catalog profile",
+                    ));
+                }
+            }
+            if value.native_catalog().is_some_and(|native| {
+                native.floor()
+                    != (
+                        catalog.minimum_catalog_generation(),
+                        catalog.minimum_catalog_digest(),
+                    )
+                    || verification_floor.current_catalog_head_commitment
+                        != Some(*native.current_head_commitment().as_bytes())
+            }) {
+                return Err(state_error(
+                    "native normalization changes its pre-I/O catalog floor or head",
+                ));
+            }
             if catalog.provider_authority_id() != attempt.scope.provider_authority_id
                 || catalog.resource_namespace_digest().as_bytes()
                     != &attempt.scope.resource_namespace_digest

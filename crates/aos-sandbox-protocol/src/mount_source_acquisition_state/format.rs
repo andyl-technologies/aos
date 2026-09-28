@@ -46,7 +46,7 @@
 //!   actual Root writer/provider execution, and record digest.
 //! ProviderQueryAttempt (<=4 MiB): identity/scope/method/owner/intent/lineage,
 //!   immutable session/currentness snapshots, authority-scoped provider
-//!   acquisition identity, AOSNPI01 version-2 normalization, sequence/exact signed
+//!   acquisition identity, AOSNPI01 profile normalization, sequence/exact signed
 //!   request, compact pre-reservation owner-record witness, closed outcome/
 //!   recovery state, and digest. Only the initial Acquire omits that witness.
 //! ```

@@ -667,7 +667,7 @@ fn validate_legacy_body_shape(kind: LegacyKindV2, body: &[u8]) -> Result<(), Led
             let intent_len = bounded_u32_at(
                 body,
                 760,
-                crate::MAXIMUM_NORMALIZED_ACQUISITION_INTENT_BYTES,
+                aos_sandbox_source_provider_protocol::MAXIMUM_NORMALIZED_ACQUISITION_INTENT_V2_BYTES,
                 "legacy normalized intent",
             )?;
             let evidence_len = bounded_u32_at(body, 764, 65_656, "legacy backend evidence")?;
@@ -681,6 +681,15 @@ fn validate_legacy_body_shape(kind: LegacyKindV2, body: &[u8]) -> Result<(), Led
                     .ok_or(LedgerFormatErrorV1::LimitExceeded(
                         "legacy lease history bytes",
                     ))?;
+            // The old-family planner cannot reinterpret a new native profile
+            // as historical supplemental provenance. Its other legacy shape
+            // rules and exact byte ceiling remain unchanged.
+            let intent_offset = 784 + lease_history_bytes;
+            if body.get(intent_offset..intent_offset + 10) == Some(b"AOSNPI01\0\x03".as_slice()) {
+                return Err(LedgerFormatErrorV1::Corrupt(
+                    "native normalized intent in legacy migration",
+                ));
+            }
             784_usize
                 .checked_add(lease_history_bytes)
                 .and_then(|total| total.checked_add(intent_len))
@@ -1012,4 +1021,33 @@ fn array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], LedgerF
         .get(offset..offset + N)
         .and_then(|value| value.try_into().ok())
         .ok_or(LedgerFormatErrorV1::Corrupt("truncated legacy record"))
+}
+
+#[cfg(test)]
+mod native_profile_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_migration_keeps_its_old_ceiling_and_refuses_native_profile_bytes() {
+        // Shape-only old-family fixture: no current owner or provenance seal.
+        for history_count in [0_usize, 1] {
+            let intent_offset = 784 + history_count * 88;
+            let mut body = vec![0; intent_offset + 16];
+            body[760..764].copy_from_slice(&16_u32.to_be_bytes());
+            body[776..780].copy_from_slice(&(history_count as u32).to_be_bytes());
+            body[intent_offset..intent_offset + 10].copy_from_slice(b"AOSNPI01\0\x02");
+            assert!(validate_legacy_body_shape(LegacyKindV2::Acquisition, &body).is_ok());
+            body[intent_offset + 9] = 3;
+            assert_eq!(
+                validate_legacy_body_shape(LegacyKindV2::Acquisition, &body),
+                Err(LedgerFormatErrorV1::Corrupt(
+                    "native normalized intent in legacy migration"
+                ))
+            );
+        }
+
+        let mut oversized = vec![0; 784 + 67_997];
+        oversized[760..764].copy_from_slice(&67_997_u32.to_be_bytes());
+        assert!(validate_legacy_body_shape(LegacyKindV2::Acquisition, &oversized).is_err());
+    }
 }

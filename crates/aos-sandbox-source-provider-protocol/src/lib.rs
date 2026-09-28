@@ -117,8 +117,8 @@ pub use native_export_fence::{
     SourceProviderNativeExportFenceV1,
 };
 pub use normalized_intent::{
-    MAXIMUM_NORMALIZED_ACQUISITION_INTENT_BYTES, NormalizedAcquisitionIntentError,
-    NormalizedAcquisitionIntentV1, NormalizedAcquisitionIntentV2,
+    MAXIMUM_NORMALIZED_ACQUISITION_INTENT_BYTES, MAXIMUM_NORMALIZED_ACQUISITION_INTENT_V2_BYTES,
+    NormalizedAcquisitionIntentError, NormalizedAcquisitionIntentV1, NormalizedAcquisitionIntentV2,
 };
 pub use proof::{
     BestEffortReplicaProofV1, ImmutablePublisherTreeProofV1, LocalLiveExportProofV1,

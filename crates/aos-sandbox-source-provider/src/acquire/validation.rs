@@ -16,7 +16,7 @@ pub(super) fn normalized_intent(
 ) -> Result<NormalizedAcquisitionIntentV1, ProviderLedgerError> {
     let request = verified.request();
     let projection = verified.ingress_projection();
-    NormalizedAcquisitionIntentV1::from_acquire_request(
+    NormalizedAcquisitionIntentV1::from_original_acquire_request(
         request,
         projection.provider_authority().clone(),
         projection.root_mount_authority().clone(),
