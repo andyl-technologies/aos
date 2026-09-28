@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <fuse_lowlevel.h>
+#include <linux/fuse.h>
 #include <linux/major.h>
 #include <limits.h>
 #include <poll.h>
@@ -30,6 +31,14 @@
 #define MAX_FUSE_PAGES 256U
 #define MAX_TTL_NS UINT64_C(86400000000000)
 
+enum transport_phase {
+  TRANSPORT_METADATA,
+  TRANSPORT_PREPARING,
+  TRANSPORT_PREPARED,
+  TRANSPORT_CONTINUING,
+  TRANSPORT_FINISHED,
+};
+
 struct aos_fuse_transport {
   const struct aos_fuse_core_operations *operations;
   void *core_context;
@@ -44,6 +53,15 @@ struct aos_fuse_transport {
   struct aos_fuse_directory_entry *entries;
   bool initialized;
   bool destroyed;
+  enum transport_phase phase;
+  struct timespec preparation_deadline;
+  uint64_t init_unique;
+  uint64_t init_flags;
+  bool init_reply_complete;
+};
+
+struct aos_fuse_prepared_session_v1 {
+  struct aos_fuse_transport transport;
 };
 
 struct aos_fuse_open_responder {
@@ -92,19 +110,8 @@ static int power_of_ten(uint32_t value) {
   return value == 1;
 }
 
-static int validate_contract(const struct aos_fuse_core_operations *ops,
-                             const struct aos_fuse_limits *limits) {
-  if (ops == NULL || limits == NULL ||
-      ops->abi_major != AOS_FUSE_TRANSPORT_ABI_MAJOR ||
-      ops->abi_minor > AOS_FUSE_TRANSPORT_ABI_MINOR ||
-      ops->struct_size != sizeof(*ops) ||
-      ops->attributes_size != sizeof(struct aos_fuse_attributes) ||
-      ops->directory_entry_size != sizeof(struct aos_fuse_directory_entry) ||
-      ops->limits_size != sizeof(struct aos_fuse_limits) || ops->flags != 0 ||
-      ops->reserved != 0 || ops->lookup == NULL ||
-      ops->forget == NULL || ops->getattr == NULL || ops->readlink == NULL ||
-      ops->opendir == NULL || ops->readdir == NULL || ops->releasedir == NULL ||
-      ops->destroy == NULL)
+static int validate_limits(const struct aos_fuse_limits *limits) {
+  if (limits == NULL)
     return EINVAL;
   if (limits->struct_size != sizeof(*limits) ||
       limits->abi_major != AOS_FUSE_TRANSPORT_ABI_MAJOR ||
@@ -128,6 +135,23 @@ static int validate_contract(const struct aos_fuse_core_operations *ops,
       !power_of_ten(limits->time_granularity_ns))
     return EINVAL;
   return 0;
+}
+
+static int validate_contract(const struct aos_fuse_core_operations *ops,
+                             const struct aos_fuse_limits *limits) {
+  if (ops == NULL || limits == NULL ||
+      ops->abi_major != AOS_FUSE_TRANSPORT_ABI_MAJOR ||
+      ops->abi_minor > AOS_FUSE_TRANSPORT_ABI_MINOR ||
+      ops->struct_size != sizeof(*ops) ||
+      ops->attributes_size != sizeof(struct aos_fuse_attributes) ||
+      ops->directory_entry_size != sizeof(struct aos_fuse_directory_entry) ||
+      ops->limits_size != sizeof(struct aos_fuse_limits) || ops->flags != 0 ||
+      ops->reserved != 0 || ops->lookup == NULL ||
+      ops->forget == NULL || ops->getattr == NULL || ops->readlink == NULL ||
+      ops->opendir == NULL || ops->readdir == NULL || ops->releasedir == NULL ||
+      ops->destroy == NULL)
+    return EINVAL;
+  return validate_limits(limits);
 }
 
 static mode_t kind_mode(uint8_t kind) {
@@ -243,6 +267,12 @@ static void initialize(void *userdata, struct fuse_conn_info *connection) {
 
   connection->want = 0;
   connection->want_ext = 0;
+  if (transport->phase == TRANSPORT_PREPARING &&
+      (connection->proto_minor != 45 ||
+       !fuse_set_feature_flag(connection, FUSE_CAP_ALLOW_IDMAP))) {
+    poison(transport, EPROTO);
+    return;
+  }
   connection->max_write = transport->limits.maximum_write_bytes;
   connection->max_read = transport->limits.maximum_write_bytes;
   connection->max_readahead = 0;
@@ -257,7 +287,8 @@ static void initialize(void *userdata, struct fuse_conn_info *connection) {
 static void destroy(void *userdata) {
   struct aos_fuse_transport *transport = userdata;
   if (!transport->destroyed) {
-    transport->operations->destroy(transport->core_context);
+    if (transport->operations != NULL)
+      transport->operations->destroy(transport->core_context);
     transport->destroyed = true;
   }
 }
@@ -766,12 +797,26 @@ static ssize_t custom_read(int fd, void *buffer, size_t length, void *userdata) 
         {.fd = fd, .events = POLLIN},
         {.fd = transport->cancellation_fd, .events = POLLIN},
     };
-    int ready = poll(descriptors, 2, -1);
+    int timeout = -1;
+    if (transport->phase == TRANSPORT_PREPARING) {
+      timeout = remaining_milliseconds(transport,
+                                       &transport->preparation_deadline);
+      if (timeout < 0) {
+        errno = -timeout;
+        return -1;
+      }
+    }
+    int ready = poll(descriptors, 2, timeout);
     if (ready < 0 && errno == EINTR)
       continue;
     if (ready < 0) {
       int error = errno;
       poison(transport, error);
+      return -1;
+    }
+    if (ready == 0) {
+      poison(transport, ETIMEDOUT);
+      errno = ETIMEDOUT;
       return -1;
     }
     if ((descriptors[1].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) !=
@@ -797,6 +842,42 @@ static ssize_t custom_read(int fd, void *buffer, size_t length, void *userdata) 
   }
 }
 
+static int require_preparation_reply(struct aos_fuse_transport *transport,
+                                     const struct iovec *iov, int count) {
+  if (transport->terminal_error != 0 || transport->init_reply_complete ||
+      count != 2 || iov[0].iov_len != sizeof(struct fuse_out_header) ||
+      iov[1].iov_len != sizeof(struct fuse_init_out))
+    return EPROTO;
+  struct fuse_out_header header;
+  struct fuse_init_out body;
+  memcpy(&header, iov[0].iov_base, sizeof(header));
+  memcpy(&body, iov[1].iov_base, sizeof(body));
+  uint64_t flags = body.flags | ((uint64_t)body.flags2 << 32);
+  uint64_t expected_flags = FUSE_BIG_WRITES | FUSE_INIT_EXT | FUSE_ALLOW_IDMAP;
+  if (transport->init_flags & FUSE_MAX_PAGES)
+    expected_flags |= FUSE_MAX_PAGES;
+  if (transport->init_flags & FUSE_REQUEST_TIMEOUT)
+    expected_flags |= FUSE_REQUEST_TIMEOUT;
+  if (header.len != sizeof(header) + sizeof(body) || header.error != 0 ||
+      header.unique != transport->init_unique || body.major != 7 ||
+      body.minor != 45 || flags != expected_flags || body.max_readahead != 0 ||
+      body.max_write != transport->limits.maximum_write_bytes ||
+      body.time_gran != transport->limits.time_granularity_ns ||
+      body.max_background != 1 || body.congestion_threshold != 1 ||
+      body.map_alignment != 0 || body.max_stack_depth != 0 ||
+      body.max_pages != ((expected_flags & FUSE_MAX_PAGES)
+                             ? transport->limits.maximum_pages : 0U) ||
+      body.request_timeout != ((expected_flags & FUSE_REQUEST_TIMEOUT)
+                                   ? transport->limits.request_timeout_seconds
+                                   : 0U))
+    return EPROTO;
+  for (size_t index = 0; index < sizeof(body.unused) / sizeof(body.unused[0]);
+       index++)
+    if (body.unused[index] != 0)
+      return EPROTO;
+  return 0;
+}
+
 static ssize_t custom_writev(int fd, struct iovec *iov, int count,
                              void *userdata) {
   struct aos_fuse_transport *transport = userdata;
@@ -814,9 +895,20 @@ static ssize_t custom_writev(int fd, struct iovec *iov, int count,
     }
     total += iov[index].iov_len;
   }
+  if (transport->phase == TRANSPORT_PREPARING &&
+      require_preparation_reply(transport, iov, count) != 0) {
+    poison(transport, EPROTO);
+    errno = EPROTO;
+    return -1;
+  }
   struct timespec deadline;
   if (begin_deadline(transport, &deadline) != 0)
     return -1;
+  if (transport->phase == TRANSPORT_PREPARING &&
+      (transport->preparation_deadline.tv_sec < deadline.tv_sec ||
+       (transport->preparation_deadline.tv_sec == deadline.tv_sec &&
+        transport->preparation_deadline.tv_nsec < deadline.tv_nsec)))
+    deadline = transport->preparation_deadline;
 
   for (;;) {
     if (wait_for_io(transport, fd, POLLOUT, &deadline) != 0)
@@ -835,18 +927,17 @@ static ssize_t custom_writev(int fd, struct iovec *iov, int count,
       errno = error;
       return -1;
     }
+    if (transport->phase == TRANSPORT_PREPARING)
+      transport->init_reply_complete = true;
     return result;
   }
 }
 
-static int run_transport(int fd, int cancellation_fd,
-                         const struct aos_fuse_core_operations *operations,
-                         void *core_context,
-                         const struct aos_fuse_limits *limits,
-                         bool validate_device) {
-  int error = validate_contract(operations, limits);
-  if (error != 0 || fd < 0 || cancellation_fd < 0)
-    return error == 0 ? EBADF : error;
+static int validate_connection(int fd, int cancellation_fd,
+                                const struct aos_fuse_limits *limits,
+                                bool validate_device) {
+  if (fd < 0 || cancellation_fd < 0)
+    return EBADF;
   if (fd == cancellation_fd)
     return EINVAL;
   int fd_flags = fcntl(fd, F_GETFL);
@@ -878,25 +969,44 @@ static int run_transport(int fd, int cancellation_fd,
         minor(fd_status.st_rdev) != FUSE_DEVICE_MINOR)
       return ENODEV;
   }
+  return 0;
+}
+
+static void release_transport(struct aos_fuse_transport *transport) {
+  if (transport->session != NULL) {
+    fuse_session_destroy(transport->session);
+    transport->session = NULL;
+  }
+  free(transport->entries);
+  free(transport->directory_output);
+  free(transport->name);
+  free(transport->names);
+  free(transport->target);
+  transport->entries = NULL;
+  transport->directory_output = NULL;
+  transport->name = NULL;
+  transport->names = NULL;
+  transport->target = NULL;
+}
+
+// Both lifecycles construct the same fixed session/operations table. Only the
+// legacy runner attaches core callbacks before INIT; prepared sessions do not.
+static int create_transport_session(struct aos_fuse_transport *transport,
+                                     int fd) {
+  const struct aos_fuse_limits *limits = &transport->limits;
   int session_fd = fcntl(fd, F_DUPFD_CLOEXEC, 3);
   if (session_fd < 0)
     return errno;
-
-  struct aos_fuse_transport transport;
-  memset(&transport, 0, sizeof(transport));
-  transport.operations = operations;
-  transport.core_context = core_context;
-  transport.limits = *limits;
-  transport.cancellation_fd = cancellation_fd;
-  transport.target = calloc((size_t)limits->maximum_symlink_bytes + 1U, 1);
-  transport.names = calloc(limits->maximum_readdir_bytes, 1);
-  transport.name = calloc((size_t)limits->maximum_name_bytes + 1U, 1);
-  transport.directory_output = calloc(limits->maximum_readdir_bytes, 1);
-  transport.entries = calloc(limits->maximum_readdir_entries,
-                             sizeof(*transport.entries));
-  if (transport.target == NULL || transport.names == NULL ||
-      transport.name == NULL || transport.directory_output == NULL ||
-      transport.entries == NULL) {
+  int error;
+  transport->target = calloc((size_t)limits->maximum_symlink_bytes + 1U, 1);
+  transport->names = calloc(limits->maximum_readdir_bytes, 1);
+  transport->name = calloc((size_t)limits->maximum_name_bytes + 1U, 1);
+  transport->directory_output = calloc(limits->maximum_readdir_bytes, 1);
+  transport->entries = calloc(limits->maximum_readdir_entries,
+                              sizeof(*transport->entries));
+  if (transport->target == NULL || transport->names == NULL ||
+      transport->name == NULL || transport->directory_output == NULL ||
+      transport->entries == NULL) {
     error = ENOMEM;
     goto cleanup;
   }
@@ -950,39 +1060,57 @@ static int run_transport(int fd, int cancellation_fd,
   lowlevel.lseek = aos_lseek;
   lowlevel.tmpfile = aos_tmpfile;
 
-  transport.session =
-      fuse_session_new(&args, &lowlevel, sizeof(lowlevel), &transport);
+  transport->session =
+      fuse_session_new(&args, &lowlevel, sizeof(lowlevel), transport);
   fuse_opt_free_args(&args);
-  if (transport.session == NULL) {
+  if (transport->session == NULL) {
     error = EINVAL;
     goto cleanup;
   }
   struct fuse_custom_io io = {.writev = custom_writev, .read = custom_read};
   int attached =
-      fuse_session_custom_io(transport.session, &io, sizeof(io), session_fd);
+      fuse_session_custom_io(transport->session, &io, sizeof(io), session_fd);
   if (attached != 0) {
     error = -attached;
-    fuse_session_destroy(transport.session);
-    transport.session = NULL;
     goto cleanup;
   }
+  // Only successful custom_io transfers this duplicate to the same session.
   session_fd = -1;
-  error = fuse_session_loop(transport.session) == 0 ? 0 : EIO;
-  if (transport.terminal_error != 0)
-    error = transport.terminal_error;
-  fuse_session_destroy(transport.session);
-  transport.session = NULL;
-  if (!transport.initialized && error == 0)
-    error = EPROTO;
+  return 0;
 
 cleanup:
   if (session_fd >= 0)
     close(session_fd);
-  free(transport.entries);
-  free(transport.directory_output);
-  free(transport.name);
-  free(transport.names);
-  free(transport.target);
+  release_transport(transport);
+  return error;
+}
+
+static int run_transport(int fd, int cancellation_fd,
+                         const struct aos_fuse_core_operations *operations,
+                         void *core_context,
+                         const struct aos_fuse_limits *limits,
+                         bool validate_device) {
+  int error = validate_contract(operations, limits);
+  if (error != 0)
+    return error;
+  error = validate_connection(fd, cancellation_fd, limits, validate_device);
+  if (error != 0)
+    return error;
+  struct aos_fuse_transport transport;
+  memset(&transport, 0, sizeof(transport));
+  transport.operations = operations;
+  transport.core_context = core_context;
+  transport.limits = *limits;
+  transport.cancellation_fd = cancellation_fd;
+  error = create_transport_session(&transport, fd);
+  if (error != 0)
+    return error;
+  error = fuse_session_loop(transport.session) == 0 ? 0 : EIO;
+  if (transport.terminal_error != 0)
+    error = transport.terminal_error;
+  release_transport(&transport);
+  if (!transport.initialized && error == 0)
+    error = EPROTO;
   return error;
 }
 
@@ -994,7 +1122,178 @@ int aos_fuse_transport_run(int connected_fd, int cancellation_fd,
                        limits, true);
 }
 
+static int preparation_deadline(struct aos_fuse_transport *transport,
+                                 uint64_t deadline_ns) {
+  struct timespec now;
+  if (clock_gettime(CLOCK_BOOTTIME, &now) != 0)
+    return errno;
+  if (now.tv_sec < 0 || now.tv_nsec < 0 || now.tv_nsec >= 1000000000L)
+    return EOVERFLOW;
+  uint64_t seconds = deadline_ns / UINT64_C(1000000000);
+  time_t deadline_seconds = (time_t)seconds;
+  if (deadline_seconds < 0 || (uint64_t)deadline_seconds != seconds ||
+      (uint64_t)now.tv_sec > UINT64_MAX / UINT64_C(1000000000))
+    return EOVERFLOW;
+  uint64_t now_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000);
+  if (UINT64_MAX - now_ns < (uint64_t)now.tv_nsec)
+    return EOVERFLOW;
+  now_ns += (uint64_t)now.tv_nsec;
+  if (deadline_ns <= now_ns ||
+      deadline_ns - now_ns > UINT64_C(300000000000))
+    return ETIMEDOUT;
+  transport->preparation_deadline.tv_sec = deadline_seconds;
+  transport->preparation_deadline.tv_nsec =
+      (long)(deadline_ns % UINT64_C(1000000000));
+  return 0;
+}
+
+// This input comes only from the original kernel device receive, never from a
+// public process_buf entry or a replayed/synthetic buffer. Refuse negotiation
+// retries, extension payloads and every other opcode before libfuse dispatch.
+static int require_original_init(struct aos_fuse_transport *transport,
+                                  const struct fuse_buf *buffer) {
+  if (buffer->flags != 0 || buffer->mem == NULL ||
+      buffer->size != sizeof(struct fuse_in_header) + sizeof(struct fuse_init_in))
+    return EPROTO;
+  struct fuse_in_header header;
+  struct fuse_init_in body;
+  memcpy(&header, buffer->mem, sizeof(header));
+  memcpy(&body, (const uint8_t *)buffer->mem + sizeof(header), sizeof(body));
+  uint64_t flags = body.flags | ((uint64_t)body.flags2 << 32);
+  if (header.len != buffer->size || header.opcode != FUSE_INIT ||
+      header.unique == 0 || header.nodeid != 0 || header.total_extlen != 0 ||
+      header.padding != 0 || body.major != 7 || body.minor != 45 ||
+      !(flags & FUSE_INIT_EXT) || !(flags & FUSE_ALLOW_IDMAP) ||
+      (body.flags & (UINT32_C(1) << 31)))
+    return EPROTO;
+  for (size_t index = 0; index < sizeof(body.unused) / sizeof(body.unused[0]);
+       index++)
+    if (body.unused[index] != 0)
+      return EPROTO;
+  transport->init_unique = header.unique;
+  transport->init_flags = flags;
+  return 0;
+}
+
+static int prepare_transport(int fd, int cancellation_fd,
+                             const struct aos_fuse_preparation_v1 *preparation,
+                             struct aos_fuse_prepared_session_v1 **prepared,
+                             bool validate_device) {
+  if (prepared == NULL)
+    return EINVAL;
+  *prepared = NULL;
+  if (preparation == NULL || preparation->struct_size != sizeof(*preparation) ||
+      preparation->abi_major != AOS_FUSE_PREPARED_SESSION_ABI_MAJOR ||
+      preparation->abi_minor != AOS_FUSE_PREPARED_SESSION_ABI_MINOR ||
+      preparation->flags != 0 || preparation->reserved != 0)
+    return EINVAL;
+  int error = validate_limits(&preparation->limits);
+  if (error != 0)
+    return error;
+  error = validate_connection(fd, cancellation_fd, &preparation->limits,
+                              validate_device);
+  if (error != 0)
+    return error;
+  struct aos_fuse_prepared_session_v1 *owner = calloc(1, sizeof(*owner));
+  if (owner == NULL)
+    return ENOMEM;
+  struct aos_fuse_transport *transport = &owner->transport;
+  transport->limits = preparation->limits;
+  transport->cancellation_fd = cancellation_fd;
+  transport->phase = TRANSPORT_PREPARING;
+  error = preparation_deadline(transport, preparation->deadline_boottime_ns);
+  if (error != 0)
+    goto failed;
+  error = create_transport_session(transport, fd);
+  if (error != 0)
+    goto failed;
+
+  struct fuse_buf buffer = {0};
+  int received = fuse_session_receive_buf(transport->session, &buffer);
+  error = received > 0 ? require_original_init(transport, &buffer)
+                       : (received < 0 ? -received : EPROTO);
+  if (error == 0)
+    fuse_session_process_buf(transport->session, &buffer);
+  // The pinned public receive API uses malloc (internal=false), not libfuse's
+  // private aligned allocator. Splice is never enabled for this INIT phase.
+  free(buffer.mem);
+  if (transport->terminal_error != 0)
+    error = transport->terminal_error;
+  if (error == 0 && (!transport->initialized || !transport->init_reply_complete ||
+                    fuse_session_exited(transport->session)))
+    error = EPROTO;
+  if (error == 0 && remaining_milliseconds(
+                        transport, &transport->preparation_deadline) < 0)
+    error = transport->terminal_error;
+  if (error != 0)
+    goto failed;
+
+  // Do not exit/reset/destroy/recreate the libfuse session at this boundary.
+  // Mount may now apply its actual retained namespace idmap while the same
+  // session remains idle. No further kernel request is read before continue.
+  transport->phase = TRANSPORT_PREPARED;
+  *prepared = owner;
+  return 0;
+
+failed:
+  aos_fuse_transport_destroy_prepared_v1(owner);
+  return error;
+}
+
+int aos_fuse_transport_prepare_v1(
+    int connected_fd, int cancellation_fd,
+    const struct aos_fuse_preparation_v1 *preparation,
+    struct aos_fuse_prepared_session_v1 **prepared) {
+  return prepare_transport(connected_fd, cancellation_fd, preparation, prepared,
+                            true);
+}
+
+int aos_fuse_transport_continue_prepared_v1(
+    struct aos_fuse_prepared_session_v1 *prepared,
+    const struct aos_fuse_core_operations *operations, void *core_context) {
+  if (prepared == NULL)
+    return EINVAL;
+  struct aos_fuse_transport *transport = &prepared->transport;
+  if (transport->phase != TRANSPORT_PREPARED || transport->session == NULL ||
+      transport->terminal_error != 0 ||
+      fuse_session_exited(transport->session))
+    return EINVAL;
+  int error = validate_contract(operations, &transport->limits);
+  if (error != 0)
+    return error;
+  // Only trusted owner composition can attach its borrowed context here.
+  // This process-local ABI is not a current-policy or descriptor authority.
+  transport->operations = operations;
+  transport->core_context = core_context;
+  transport->phase = TRANSPORT_CONTINUING;
+  error = fuse_session_loop(transport->session) == 0 ? 0 : EIO;
+  if (transport->terminal_error != 0)
+    error = transport->terminal_error;
+  // End the callback borrow before returning, not at some later owner Drop.
+  release_transport(transport);
+  transport->operations = NULL;
+  transport->core_context = NULL;
+  transport->phase = TRANSPORT_FINISHED;
+  return error;
+}
+
+void aos_fuse_transport_destroy_prepared_v1(
+    struct aos_fuse_prepared_session_v1 *prepared) {
+  if (prepared == NULL)
+    return;
+  release_transport(&prepared->transport);
+  free(prepared);
+}
+
 #ifdef AOS_FUSE_TRANSPORT_TESTING
+int aos_fuse_transport_prepare_test_fd_v1(
+    int connected_fd, int cancellation_fd,
+    const struct aos_fuse_preparation_v1 *preparation,
+    struct aos_fuse_prepared_session_v1 **prepared) {
+  return prepare_transport(connected_fd, cancellation_fd, preparation, prepared,
+                            false);
+}
+
 int aos_fuse_transport_run_test_fd(
     int connected_fd, int cancellation_fd,
     const struct aos_fuse_core_operations *operations,

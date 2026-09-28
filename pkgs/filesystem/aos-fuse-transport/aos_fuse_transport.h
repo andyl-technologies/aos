@@ -135,12 +135,64 @@ int aos_fuse_transport_run(int connected_fd, int cancellation_fd,
                            void *core_context,
                            const struct aos_fuse_limits *limits);
 
+/* Additive private in-process lifecycle; no pointer crosses a process protocol.
+ * The old ABI and run entry remain unchanged. These objects prove transport
+ * preparation only, never Mount/Root authority, attachment or content access. */
+#define AOS_FUSE_PREPARED_SESSION_ABI_MAJOR 1U
+#define AOS_FUSE_PREPARED_SESSION_ABI_MINOR 0U
+
+struct aos_fuse_preparation_v1 {
+  uint32_t struct_size;
+  uint16_t abi_major;
+  uint16_t abi_minor;
+  uint32_t flags;
+  uint32_t reserved;
+  uint64_t deadline_boottime_ns;
+  struct aos_fuse_limits limits;
+};
+
+struct aos_fuse_prepared_session_v1;
+
+/* Borrows the original nonblocking /dev/fuse OFD and cancellation reader.
+ * Reads exactly one genuine kernel INIT, requires 7.45 and ALLOW_IDMAP, and
+ * retains the SAME libfuse session after its complete successful INIT reply.
+ * No metadata/core callback runs during preparation. The caller retains both
+ * originals until destroy, and Mount retains/applies its actual namespace
+ * idmap separately. Failure leaves *prepared NULL; it never adopts an already
+ * initialized connection or reconstructs a session from a receipt. */
+int aos_fuse_transport_prepare_v1(
+    int connected_fd, int cancellation_fd,
+    const struct aos_fuse_preparation_v1 *preparation,
+    struct aos_fuse_prepared_session_v1 **prepared);
+
+/* Continues the original session exactly once, without another INIT. This
+ * private unsafe ABI attaches only a synchronous borrowed callback context;
+ * the trusted caller MUST already retain genuine current Root+Mount authority
+ * and actual idmap/backing owner joins through dispatch. Neither the prepared
+ * pointer, callback table, plan nor a boolean supplies that authority. No safe
+ * public adapter is installed until those real producers are joined. The
+ * caller must destroy the session after terminal return, including failure. */
+int aos_fuse_transport_continue_prepared_v1(
+    struct aos_fuse_prepared_session_v1 *prepared,
+    const struct aos_fuse_core_operations *operations, void *core_context);
+
+/* Destroys exactly the same retained session and closes only its duplicate
+ * FUSE descriptor. NULL is accepted; every non-NULL pointer must be the sole
+ * live result of prepare_v1 and must be passed exactly once. */
+void aos_fuse_transport_destroy_prepared_v1(
+    struct aos_fuse_prepared_session_v1 *prepared);
+
 #ifdef AOS_FUSE_TRANSPORT_TESTING
 /* Test-only socket/pipe entry; never exported by the installed library. */
 int aos_fuse_transport_run_test_fd(
     int connected_fd, int cancellation_fd,
     const struct aos_fuse_core_operations *operations,
     void *core_context, const struct aos_fuse_limits *limits);
+/* Same lifecycle over trusted fake transport, never an installed FD adopter. */
+int aos_fuse_transport_prepare_test_fd_v1(
+    int connected_fd, int cancellation_fd,
+    const struct aos_fuse_preparation_v1 *preparation,
+    struct aos_fuse_prepared_session_v1 **prepared);
 /* Directly verifies record-write behavior; never exported by the library. */
 int aos_fuse_transport_test_writev(int connected_fd, int cancellation_fd,
                                    const uint8_t *first, uint64_t first_length,

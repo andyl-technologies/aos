@@ -392,9 +392,132 @@ static void wait_child(pid_t child) {
   fail("transport teardown deadline expired");
 }
 
+/* Fake transport exercises C lifetime/framing only, not genuine kernel INIT,
+ * namespace idmap, actual worker custody or a Root/Mount read grant. */
+static void prepared_session_case(unsigned scenario) {
+  int sockets[2];
+  int cancellation[2];
+  int prepared_notice[2];
+  int continuation[2];
+  if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0,
+                 sockets) != 0 ||
+      pipe2(cancellation, O_CLOEXEC | O_NONBLOCK) != 0 ||
+      pipe2(prepared_notice, O_CLOEXEC) != 0 ||
+      pipe2(continuation, O_CLOEXEC) != 0)
+    fail("prepared lifecycle fixture descriptors failed");
+  pid_t child = fork();
+  if (child < 0)
+    fail("prepared lifecycle fork failed");
+  if (child == 0) {
+    signal(SIGPIPE, SIG_IGN);
+    close(sockets[0]);
+    close(cancellation[1]);
+    close(prepared_notice[0]);
+    close(continuation[1]);
+    struct timespec now;
+    if (clock_gettime(CLOCK_BOOTTIME, &now) != 0)
+      _exit(2);
+    struct aos_fuse_preparation_v1 preparation = {
+        .struct_size = sizeof(preparation),
+        .abi_major = AOS_FUSE_PREPARED_SESSION_ABI_MAJOR,
+        .abi_minor = AOS_FUSE_PREPARED_SESSION_ABI_MINOR,
+        .deadline_boottime_ns = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+                               (uint64_t)now.tv_nsec +
+                               (scenario == 5 ? UINT64_C(50000000)
+                                              : UINT64_C(2000000000)),
+        .limits = limits,
+    };
+    struct aos_fuse_prepared_session_v1 *prepared = NULL;
+    int result = aos_fuse_transport_prepare_test_fd_v1(
+        sockets[1], cancellation[0], &preparation, &prepared);
+    if (scenario != 0) {
+      int expected = scenario == 5 ? ETIMEDOUT : EPROTO;
+      _exit(result == expected && prepared == NULL &&
+                    fcntl(sockets[1], F_GETFD) >= 0 &&
+                    fcntl(cancellation[0], F_GETFD) >= 0
+                ? 0
+                : 2);
+    }
+    if (result != 0 || prepared == NULL ||
+        write(prepared_notice[1], "p", 1) != 1)
+      _exit(2);
+    struct pollfd gate = {.fd = continuation[0], .events = POLLIN};
+    char signal_byte;
+    if (poll(&gate, 1, DEADLINE_MS) != 1 ||
+        read(continuation[0], &signal_byte, 1) != 1 || signal_byte != 'c')
+      _exit(2);
+    struct fake_core core = {0};
+    result = aos_fuse_transport_continue_prepared_v1(prepared, &operations,
+                                                     &core);
+    int valid = result == ECANCELED && core.getattr == 1 && core.destroy == 1 &&
+                aos_fuse_transport_continue_prepared_v1(
+                    prepared, &operations, &core) == EINVAL &&
+                fcntl(sockets[1], F_GETFD) >= 0 &&
+                fcntl(cancellation[0], F_GETFD) >= 0;
+    aos_fuse_transport_destroy_prepared_v1(prepared);
+    _exit(valid && core.destroy == 1 ? 0 : 2);
+  }
+  close(sockets[1]);
+  close(cancellation[0]);
+  close(prepared_notice[1]);
+  close(continuation[0]);
+
+  struct fuse_init_in init = {
+      .major = 7,
+      .minor = scenario == 3 ? 44U : 45U,
+      .flags = FUSE_INIT_EXT | FUSE_MAX_PAGES,
+      .flags2 = (uint32_t)((FUSE_ALLOW_IDMAP | FUSE_REQUEST_TIMEOUT) >> 32),
+  };
+  if (scenario == 1)
+    init.flags2 &= ~(uint32_t)(FUSE_ALLOW_IDMAP >> 32);
+  if (scenario == 4)
+    init.unused[0] = 1;
+  if (scenario != 5)
+    send_request(sockets[0], scenario == 2 ? FUSE_GETATTR : FUSE_INIT, 101,
+                 0, &init, sizeof(init), NULL, 0);
+  if (scenario == 0) {
+    union aligned_buffer reply;
+    size_t length = receive_reply(sockets[0], 101, reply.bytes,
+                                  sizeof(reply.bytes));
+    struct fuse_out_header *header = (struct fuse_out_header *)reply.bytes;
+    struct fuse_init_out *body = (struct fuse_init_out *)(header + 1);
+    if (length != sizeof(*header) + sizeof(*body) || header->error != 0 ||
+        body->major != 7 || body->minor != 45 ||
+        !(body->flags2 & (uint32_t)(FUSE_ALLOW_IDMAP >> 32)))
+      fail("prepared session did not select exact offered IDMAP");
+    struct pollfd notice = {.fd = prepared_notice[0], .events = POLLIN};
+    char byte;
+    if (poll(&notice, 1, DEADLINE_MS) != 1 ||
+        read(prepared_notice[0], &byte, 1) != 1 || byte != 'p')
+      fail("prepared session boundary was not reached");
+    struct fuse_getattr_in getattr = {0};
+    send_request(sockets[0], FUSE_GETATTR, 102, 1, &getattr, sizeof(getattr),
+                 NULL, 0);
+    struct pollfd idle = {.fd = sockets[0], .events = POLLIN};
+    if (poll(&idle, 1, 30) != 0)
+      fail("prepared session dispatched metadata before continuation");
+    if (write(continuation[1], "c", 1) != 1)
+      fail("prepared continuation fixture release failed");
+    length = receive_reply(sockets[0], 102, reply.bytes, sizeof(reply.bytes));
+    header = (struct fuse_out_header *)reply.bytes;
+    if (length != sizeof(*header) + sizeof(struct fuse_attr_out) ||
+        header->error != 0)
+      fail("same initialized session failed direct metadata continuation");
+    close(cancellation[1]);
+  }
+  wait_child(child);
+  if (scenario != 0)
+    close(cancellation[1]);
+  close(sockets[0]);
+  close(prepared_notice[0]);
+  close(continuation[1]);
+}
+
 int main(void) {
   if (fuse_version() != 318)
     fail("runtime libfuse version differs from the qualified 3.18.2 ABI");
+  for (unsigned scenario = 0; scenario <= 5; scenario++)
+    prepared_session_case(scenario);
 
   int short_sockets[2];
   int short_cancellation[2];
