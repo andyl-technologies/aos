@@ -19,6 +19,7 @@
 use aos_sandbox_core::encode_object_descriptor;
 use aos_sandbox_linux::fuse_worker_objects::MountCreatedFuseWorkerObjectsV1;
 use aos_sandbox_protocol::fuse_worker_preparation::WorkerPreparationPlanV1;
+use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 
 use super::*;
 
@@ -36,6 +37,19 @@ pub struct PreparedMountFuseWorkerObjectsV1<'cut, 'mount, W: MountWorker> {
     owner: &'cut mut HeldMountFuseIntentPreparationV1<'mount, W>,
     objects: MountCreatedFuseWorkerObjectsV1,
     plan: WorkerPreparationPlanV1,
+}
+
+/// Co-owns one original four-role launch table and the genuine pending Mount.
+///
+/// The table contains no executable or cancellation writer. Its creation does
+/// not establish Host acceptance, endpoint-copy absence, HELLO or INIT. The
+/// actual signed Host session must consume the table under these same retained
+/// owners. No row, decoded plan or received descriptor can construct this type.
+#[must_use = "retain original handoff and durable escrow through reconciliation"]
+pub struct PreparedMountFuseWorkerHandoffV1<'cut, 'mount, W: MountWorker> {
+    // Close local role owners before the objects/cancellation writer on Drop.
+    roles: [OwnedFd; 4],
+    preparation: PreparedMountFuseWorkerObjectsV1<'cut, 'mount, W>,
 }
 
 impl<'mount, W: MountWorker> HeldMountFuseIntentPreparationV1<'mount, W> {
@@ -267,6 +281,76 @@ impl<W: MountWorker> PreparedMountFuseWorkerObjectsV1<'_, '_, W> {
             return Err(MountError::Fence("original worker namespace changed"));
         }
         self.owner.recheck()
+    }
+}
+
+impl<'cut, 'mount, W: MountWorker> PreparedMountFuseWorkerObjectsV1<'cut, 'mount, W> {
+    /// Moves the sole original worker endpoint into a one-shot Host table.
+    ///
+    /// The plan/FUSE/cancellation-reader copies originate only from this
+    /// internally created bundle. Its original Mount writer, fresh FUSE OFD,
+    /// detached mount, namespace and cancellation writer remain co-owned.
+    /// Errors poison the held owner; the already durable start marker and all
+    /// reservation/effect rows remain occupied for explicit reconciliation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed held custody, a previously consumed endpoint, changed
+    /// labels or failed duplication. No failure permits a fresh connection or
+    /// role table to be minted from the historical marker.
+    pub fn into_original_host_handoff(
+        mut self,
+    ) -> Result<PreparedMountFuseWorkerHandoffV1<'cut, 'mount, W>> {
+        let result = (|| {
+            self.recheck()?;
+            let roles = self
+                .objects
+                .take_original_worker_launch_roles()
+                .map_err(|error| {
+                    MountError::Worker(format!("original worker handoff failed: {error}"))
+                })?;
+            self.recheck()?;
+            Ok(roles)
+        })();
+        match result {
+            Ok(roles) => Ok(PreparedMountFuseWorkerHandoffV1 {
+                roles,
+                preparation: self,
+            }),
+            Err(error) => {
+                self.owner.failed = true;
+                Err(error)
+            }
+        }
+    }
+}
+
+impl<W: MountWorker> PreparedMountFuseWorkerHandoffV1<'_, '_, W> {
+    /// Borrows exact plan coordinates for Host request comparison, not authority.
+    #[must_use]
+    pub fn plan(&self) -> &WorkerPreparationPlanV1 {
+        self.preparation.plan()
+    }
+
+    /// Borrows only the original ordered plan/FUSE/record/cancellation roles.
+    ///
+    /// This borrow deliberately does not acknowledge delivery or enable a
+    /// challenge. A sender can duplicate these descriptors, so the subsequent
+    /// actual session must account for packet/transport/PID1 copies rather
+    /// than derive their absence from this type or from a scalar response.
+    #[must_use]
+    pub fn launch_roles(&self) -> [BorrowedFd<'_>; 4] {
+        self.roles.each_ref().map(|role| role.as_fd())
+    }
+
+    /// Rechecks the original actual Mount owner throughout descriptor custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects substituted rows, assignment, scope, namespace or slot. Failure
+    /// leaves durable escrow occupied; this type cannot recreate a live worker.
+    pub fn recheck(&mut self) -> Result<()> {
+        self.preparation.recheck()
     }
 }
 

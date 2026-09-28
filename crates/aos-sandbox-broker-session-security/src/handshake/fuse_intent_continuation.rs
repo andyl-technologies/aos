@@ -188,6 +188,93 @@ impl<'session> HeldFuseIntentTransportV1<'session> {
         self.with_mount_preparation(mount, scope, action)
     }
 
+    /// Drives the actual original reservation ACK and one-shot object producer.
+    ///
+    /// Both the original authenticated session writer and the independently
+    /// authenticated physical Mount writer remain held through the callback.
+    /// The callback receives original descriptor custody, not a connected
+    /// worker/Root read grant. No challenge/INIT is enabled by this exchange.
+    pub(crate) fn with_original_worker_handoff<W, F, R>(
+        &mut self,
+        mount: &mut aos_sandbox_mount::broker::MountBroker<W>,
+        host_cgroup_root: &CgroupV2Root,
+        action: F,
+    ) -> Result<R, DormantBrokerSessionHandshakeErrorV1>
+    where
+        W: aos_sandbox_mount::worker::MountWorker,
+        F: FnOnce(
+            &mut aos_sandbox_mount::broker::PreparedMountFuseWorkerHandoffV1<'_, '_, W>,
+        ) -> Result<R, DormantBrokerSessionHandshakeErrorV1>,
+    {
+        let result = self.with_original_mount_preparation(
+            mount,
+            host_cgroup_root,
+            |transport, preparation| {
+                preparation
+                    .recheck()
+                    .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+                let coordinates = FuseIntentReservationCoordinatesV1 {
+                    worker_locator: preparation.worker_locator(),
+                    reservation_digest: preparation
+                        .reservation_digest()
+                        .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?,
+                    presentation_plan_digest: preparation.presentation_plan_digest(),
+                };
+
+                loop {
+                    preparation
+                        .recheck()
+                        .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+                    match transport.send_reservation_coordinates(coordinates) {
+                        Ok(()) => break,
+                        Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+                            transport.wait_original_socket(true)?;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                loop {
+                    preparation
+                        .recheck()
+                        .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+                    match transport.receive_preparation_control() {
+                        Ok(()) => break,
+                        Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+                            transport.wait_original_socket(false)?;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                if transport.prepared_coordinates()? != coordinates {
+                    return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
+                }
+
+                // This is the actual owner producer, after the original
+                // authenticated ACK, not reconstruction from its wire fields.
+                let objects = preparation
+                    .prepare_original_worker_objects()
+                    .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+                let mut handoff = objects
+                    .into_original_host_handoff()
+                    .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+                transport.recheck()?;
+                handoff
+                    .recheck()
+                    .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+                let result = action(&mut handoff);
+                handoff
+                    .recheck()
+                    .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+                transport.recheck()?;
+                result
+            },
+        );
+        // Neither return nor lost reply is a reusable preparation. Dropping
+        // the local objects closes cancellation; durable rows remain occupied.
+        self.stage = Stage::ReconciliationRequired;
+        result
+    }
+
     fn wait_original_socket(
         &mut self,
         write: bool,
@@ -582,20 +669,30 @@ impl<'session> HeldFuseIntentTransportV1<'session> {
         {
             return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
         }
-        self.stage = match (self.stage, control) {
-            (Stage::ClientChallenge, Control::Challenge) => Stage::ClientHeldAck,
-            (Stage::BrokerHeldAck, Control::HeldAcknowledgement) => Stage::BrokerHostQuery,
-            (Stage::ClientReservation, Control::Reservation(coordinates)) => {
-                Stage::ClientReservationAck(coordinates)
-            }
-            (
-                Stage::BrokerReservationAck(expected),
-                Control::ReservationAcknowledgement(observed),
-            ) if expected == observed => Stage::Prepared(expected),
-            _ => return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid),
-        };
+        self.stage = next_control_stage(self.stage, control)?;
         self.binding.challenge = binding.challenge;
         Ok(())
+    }
+}
+
+// Mechanical phase comparison only: callers still owe the original held
+// request, per-record subject admission and both genuine writer rechecks.
+fn next_control_stage(
+    stage: Stage,
+    control: Control,
+) -> Result<Stage, DormantBrokerSessionHandshakeErrorV1> {
+    match (stage, control) {
+        (Stage::ClientChallenge, Control::Challenge) => Ok(Stage::ClientHeldAck),
+        (Stage::BrokerHeldAck, Control::HeldAcknowledgement) => Ok(Stage::BrokerHostQuery),
+        (Stage::ClientReservation, Control::Reservation(coordinates)) => {
+            Ok(Stage::ClientReservationAck(coordinates))
+        }
+        (Stage::BrokerReservationAck(expected), Control::ReservationAcknowledgement(observed))
+            if expected == observed =>
+        {
+            Ok(Stage::Prepared(expected))
+        }
+        _ => Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid),
     }
 }
 
@@ -751,6 +848,59 @@ mod tests {
     use super::*;
     use crate::handshake::DormantBrokerSessionHandshakeErrorV1 as SessionError;
     use sha2::Digest as _;
+
+    #[test]
+    fn only_exact_original_reservation_ack_reaches_the_object_preparation_phase() {
+        let original = FuseIntentReservationCoordinatesV1 {
+            worker_locator: [1; 16],
+            reservation_digest: [2; 32],
+            presentation_plan_digest: [3; 32],
+        };
+
+        assert_eq!(
+            next_control_stage(
+                Stage::BrokerReservationAck(original),
+                Control::ReservationAcknowledgement(original),
+            )
+            .unwrap(),
+            Stage::Prepared(original),
+        );
+        for field in 0..3 {
+            let mut substituted = original;
+            match field {
+                0 => substituted.worker_locator[0] ^= 1,
+                1 => substituted.reservation_digest[0] ^= 1,
+                _ => substituted.presentation_plan_digest[0] ^= 1,
+            }
+            assert!(
+                next_control_stage(
+                    Stage::BrokerReservationAck(original),
+                    Control::ReservationAcknowledgement(substituted),
+                )
+                .is_err(),
+                "substituted coordinate {field}",
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_or_reconciliation_phase_cannot_reenter_original_preparation() {
+        let original = FuseIntentReservationCoordinatesV1 {
+            worker_locator: [1; 16],
+            reservation_digest: [2; 32],
+            presentation_plan_digest: [3; 32],
+        };
+        for stage in [Stage::Prepared(original), Stage::ReconciliationRequired] {
+            for control in [
+                Control::Challenge,
+                Control::HeldAcknowledgement,
+                Control::Reservation(original),
+                Control::ReservationAcknowledgement(original),
+            ] {
+                assert!(next_control_stage(stage, control).is_err());
+            }
+        }
+    }
 
     #[test]
     fn session_error_conversion_preserves_transport_and_fail_closed_classes() {
