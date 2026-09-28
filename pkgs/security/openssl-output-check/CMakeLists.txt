@@ -19,4 +19,4 @@ endforeach()
 
 add_executable(openssl-output-probe probe.c)
 target_compile_features(openssl-output-probe PRIVATE c_std_11)
-target_link_libraries(openssl-output-probe PRIVATE OpenSSL::SSL)
+target_link_libraries(openssl-output-probe PRIVATE OpenSSL::SSL OpenSSL::Crypto)
