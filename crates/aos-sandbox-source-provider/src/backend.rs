@@ -57,6 +57,25 @@ impl ProviderPhysicalSourceRootV1 {
         source_root_descriptor_commitment_v1(&self.observation)
     }
 
+    pub(crate) fn observation(&self) -> &SourceRootObservationV1 {
+        &self.observation
+    }
+
+    /// Duplicates custody of the same mount, never reopening an equivalent path.
+    pub(crate) fn retain_original(&self) -> Result<Self, crate::ProviderLedgerError> {
+        self.revalidate()?;
+        let descriptor = self
+            .descriptor
+            .try_clone()
+            .map_err(|_| crate::ProviderLedgerError::Unavailable)?;
+        let retained = observe_physical_source_root(descriptor, self.plan_binding)?;
+        if retained.observation != self.observation {
+            return Err(crate::ProviderLedgerError::BackendConflict);
+        }
+        self.revalidate()?;
+        Ok(retained)
+    }
+
     pub(crate) fn into_security_handoff(
         self,
     ) -> Result<
@@ -183,6 +202,7 @@ impl AcquirePlanV1 {
             source_root,
             backend_id,
             observed_seconds,
+            native: None,
         })
     }
 
@@ -676,11 +696,16 @@ pub struct ObservedBackendAcquisitionV1 {
     pub(crate) source_root: SourceRootIdentityV1,
     pub(crate) backend_id: [u8; 32],
     pub(crate) observed_seconds: i64,
+    pub(crate) native: Option<crate::native_completion::NativeAcquireLiveObservationV3>,
 }
 
 impl ObservedBackendAcquisitionV1 {
     pub(crate) fn revalidate_physical(&self) -> Result<(), crate::ProviderLedgerError> {
-        self.physical_root.revalidate()
+        self.physical_root.revalidate()?;
+        if let Some(native) = &self.native {
+            native.revalidate(self.physical_root.observation())?;
+        }
+        Ok(())
     }
 
     pub(crate) fn into_physical_root(self) -> ProviderPhysicalSourceRootV1 {
@@ -1039,6 +1064,21 @@ pub enum ReopenObservationV1 {
 /// sealed through [`DurableAcquireEffectPermitV1::seal_execution`] or
 /// [`DurableReleaseEffectPermitV1::seal_execution`].
 pub trait SourceProviderBackendV1: sealed::SealedBackendV1 {
+    /// Receives an exact native bundle under fixed Storage peer custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns unavailable for absent native transport or ambiguous exchange.
+    fn exchange_storage_native_acquire_v2(
+        &mut self,
+        _request: &aos_sandbox_source_provider_protocol::SignedStorageNativeAcquireRequestV2,
+    ) -> Result<
+        Option<aos_sandbox_source_provider_security::ReceivedStorageNativeAcquireV3>,
+        crate::ProviderLedgerError,
+    > {
+        Err(crate::ProviderLedgerError::Unavailable)
+    }
+
     /// Submits a signed LocalLive plan for nonauthorizing Storage inspection.
     ///
     /// The default is closed; no successful export or descriptor can flow

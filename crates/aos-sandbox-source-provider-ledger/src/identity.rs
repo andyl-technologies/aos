@@ -64,6 +64,26 @@ pub fn acquire_native_no_dispatch_id_v1(
     hasher.finalize().into()
 }
 
+/// Derives a native dispatch identity distinct from unavailable-only admission.
+///
+/// The original attempt is committed so an old no-dispatch reservation cannot
+/// be upgraded, rebound, or renewed into a descriptor-bearing operation.
+#[must_use]
+pub fn acquire_native_dispatch_id_v2(
+    intent_digest: ObjectDigest,
+    catalog_generation: u64,
+    catalog_digest: ObjectDigest,
+    attempt_digest: ObjectDigest,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"aos.sandbox.source-provider.native-dispatch.v2\0");
+    hasher.update(intent_digest.as_bytes());
+    hasher.update(catalog_generation.to_be_bytes());
+    hasher.update(catalog_digest.as_bytes());
+    hasher.update(attempt_digest.as_bytes());
+    hasher.finalize().into()
+}
+
 /// Derives one release backend-effect identity.
 #[must_use]
 pub fn release_effect_id_v1(

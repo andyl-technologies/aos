@@ -132,6 +132,14 @@ impl ProtectedStorageZfsHoldVerifierV1 {
         self.backend.revalidate()
     }
 
+    /// Borrows the independently pinned dedicated role after protected readback.
+    pub(crate) fn protocol_verifier(
+        &self,
+    ) -> Result<StorageZfsHoldVerifierV1, ProviderLedgerError> {
+        self.revalidate()?;
+        Ok(self.verifier)
+    }
+
     /// Checks the protocol signature, trusted time, and exact expected subject.
     ///
     /// This is a nonauthorizing prerequisite. The caller must separately prove

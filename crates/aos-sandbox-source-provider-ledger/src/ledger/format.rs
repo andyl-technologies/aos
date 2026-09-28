@@ -10,9 +10,10 @@
 //! upgraded in place: opening a namespace containing them fails before graph
 //! allocation with an explicit offline-migration error. This prevents an
 //! ambiguous dual interpretation of records without protected completion time.
-//! The native completion kind uses an explicitly separate version-5 envelope
-//! and version-2 body. Mixed graphs retain version-5 baseline records; older
-//! readers reject the native kind and cannot silently activate it.
+//! Digest-only native completion uses a version-5 envelope and version-2 body.
+//! Exact native request retention uses a version-6 envelope and version-3 body.
+//! Mixed graphs retain version-5 baseline records; older readers reject the
+//! new native body and cannot silently activate it.
 //!
 //! The seven baseline closed bodies use these exact semantic orders; `authority` is a
 //! 56-byte authority tuple, `signer` is the protocol's canonical 120-byte
@@ -89,7 +90,6 @@ const MAGIC: &[u8; 8] = b"AOSSPL01";
 // Version 5 also retains the original native no-dispatch reservation digest.
 // The earlier completion-time field still prevents historical time substitution.
 const VERSION: u16 = 5;
-const NATIVE_COMPLETION_VERSION: u16 = 5;
 const ENVELOPE_BYTES: usize = 64;
 const HEADER_BYTES: usize = 32;
 
@@ -135,6 +135,44 @@ const RELEASE_RECORD_MAXIMUM_BYTES: usize = ENVELOPE_BYTES
     + crate::limits::MAXIMUM_BACKEND_EVIDENCE_PAYLOAD_BYTES
     + 120
     + MAXIMUM_SIGNED_RELEASE_RECEIPT_BYTES;
+
+/// Bounds all six owner records in an atomic native Acquire completion.
+///
+/// This adds the format maxima for attempt, acquisition, current and historical
+/// session, authority, and native carrier, including their exact key widths and
+/// nine-byte mutation framing. It does not include the journal frame headers or
+/// a global capacity-reservation deletion; the owner accounts for those too.
+pub const MAXIMUM_NATIVE_ACQUIRE_COMPLETION_OWNER_BYTES_V2: usize =
+    NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2[0]
+        + NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2[1]
+        + NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2[2]
+        + NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2[3]
+        + NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2[4]
+        + NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2[5];
+
+/// Bounds the six atomic native owner mutations in semantic record order.
+///
+/// The order is attempt, acquisition, current session, historical session,
+/// authority, native carrier. Each bound includes its key and mutation framing.
+pub const NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2: [usize; 6] = [
+    ATTEMPT_RECORD_MAXIMUM_BYTES + 96 + 9,
+    ACQUISITION_RECORD_MAXIMUM_BYTES + 99 + 9,
+    SESSION_RECORD_MAXIMUM_BYTES + 63 + 9,
+    SESSION_RECORD_MAXIMUM_BYTES + 103 + 9,
+    ENVELOPE_BYTES + AUTHORITY_BODY_BYTES + 49 + 9,
+    ENVELOPE_BYTES + super::native_completion::MAXIMUM_BODY_BYTES + 40 + 9,
+];
+
+/// Bounds one exact native request or accepted-carrier mutation.
+///
+/// Includes its canonical envelope, fixed key and mutation framing, but not
+/// the journal frame headers.
+pub const MAXIMUM_NATIVE_ACQUIRE_CARRIER_MUTATION_BYTES_V2: usize =
+    ENVELOPE_BYTES + super::native_completion::MAXIMUM_BODY_BYTES + 40 + 9;
+
+const _: () = assert!(
+    MAXIMUM_NATIVE_ACQUIRE_COMPLETION_OWNER_BYTES_V2 < crate::limits::MAXIMUM_TRANSACTION_BYTES
+);
 
 const _: () = assert!(ENVELOPE_BYTES == 64);
 const _: () = assert!(AUTHORITY_BODY_BYTES + ENVELOPE_BYTES == 696);
@@ -582,7 +620,7 @@ fn encode_envelope(kind: RecordKind, state: u8, revision: u64, key: &[u8], body:
     let mut bytes = Vec::with_capacity(ENVELOPE_BYTES + body.len());
     bytes.extend_from_slice(MAGIC);
     let version = if kind == RecordKind::NativeCompletion {
-        NATIVE_COMPLETION_VERSION
+        super::native_completion::envelope_version(body)
     } else {
         VERSION
     };
@@ -615,7 +653,7 @@ fn decode_envelope<'a>(
     }
     let kind = RecordKind::decode(bytes[10])?;
     let expected_version = if kind == RecordKind::NativeCompletion {
-        NATIVE_COMPLETION_VERSION
+        super::native_completion::envelope_version(&bytes[ENVELOPE_BYTES..])
     } else {
         VERSION
     };

@@ -18,7 +18,7 @@
 //! state:u8 (1=issued, 2=spent) | reserved[7]=0 | receipt-digest[32]
 //! ```
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
@@ -40,6 +40,8 @@ const LIFETIME_SECONDS: i64 = 60;
 const ISSUED: u8 = 1;
 const SPENT: u8 = 2;
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.source-provider.native-hold-challenge.v1\0";
+
+type ChallengeAttemptIndexV1 = BTreeMap<([u8; 16], [u8; 16], ObjectDigest), ChallengeRecordV1>;
 
 /// Carries one durable Provider-issued challenge for an exact native attempt.
 ///
@@ -146,7 +148,7 @@ impl ProtectedZfsHoldChallengesV1 {
         if count >= MAXIMUM_CHALLENGES {
             return Err(ProviderLedgerError::LimitExceeded("native hold challenges"));
         }
-        if attempts.contains(&(
+        if attempts.contains_key(&(
             record.provider_id,
             record.holder_id,
             record.challenge.attempt_digest,
@@ -267,9 +269,29 @@ impl ProtectedZfsHoldChallengesV1 {
         ChallengeRecordV1::decode(&key, value)
     }
 
+    /// Finds the original one-shot record after a crash before request retention.
+    ///
+    /// Expired and spent records remain discoverable. The caller must validate
+    /// the full stored subject and original validity before using its nonce;
+    /// absence here is the only condition under which fresh issuance is safe.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed protected custody, corrupt records, duplicate attempts,
+    /// or a challenge set exceeding its closed lifetime bound.
+    pub(crate) fn retained_for_attempt(
+        &mut self,
+        provider_id: [u8; 16],
+        holder_id: [u8; 16],
+        attempt_digest: ObjectDigest,
+    ) -> Result<Option<ChallengeRecordV1>, ProviderLedgerError> {
+        let (_, mut attempts) = self.validate_records()?;
+        Ok(attempts.remove(&(provider_id, holder_id, attempt_digest)))
+    }
+
     fn validate_records(
         &mut self,
-    ) -> Result<(usize, BTreeSet<([u8; 16], [u8; 16], ObjectDigest)>), ProviderLedgerError> {
+    ) -> Result<(usize, ChallengeAttemptIndexV1), ProviderLedgerError> {
         let authority = self
             .journal
             .claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
@@ -280,8 +302,8 @@ impl ProtectedZfsHoldChallengesV1 {
 
 fn validate_record_set<'a>(
     records: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
-) -> Result<(usize, BTreeSet<([u8; 16], [u8; 16], ObjectDigest)>), ProviderLedgerError> {
-    let mut attempts = BTreeSet::new();
+) -> Result<(usize, ChallengeAttemptIndexV1), ProviderLedgerError> {
+    let mut attempts = BTreeMap::new();
     let mut count = 0;
     for (key, value) in records {
         count += 1;
@@ -289,11 +311,17 @@ fn validate_record_set<'a>(
             return Err(ProviderLedgerError::LimitExceeded("native hold challenges"));
         }
         let record = ChallengeRecordV1::decode(key, value)?;
-        if !attempts.insert((
-            record.provider_id,
-            record.holder_id,
-            record.challenge.attempt_digest,
-        )) {
+        if attempts
+            .insert(
+                (
+                    record.provider_id,
+                    record.holder_id,
+                    record.challenge.attempt_digest,
+                ),
+                record,
+            )
+            .is_some()
+        {
             return Err(ProviderLedgerError::Corrupt(
                 "duplicate native hold challenge attempt",
             ));
@@ -419,6 +447,71 @@ mod tests {
 
         let mut reopened = ProtectedZfsHoldChallengesV1::open_fixture(directory.path()).unwrap();
         assert_eq!(reopened.validate_records().unwrap().0, 0);
+    }
+
+    #[test]
+    fn retained_attempt_lookup_preserves_nonce_and_spend_across_reopen() {
+        let directory = fixture_directory();
+        let now = current_seconds().unwrap();
+        let proposed = ChallengeRecordV1::new(
+            [1; 16],
+            [2; 16],
+            digest(3),
+            digest(4),
+            digest(5),
+            digest(6),
+            digest(7),
+            now,
+            expiry(now).unwrap(),
+        );
+        let mut owner = ProtectedZfsHoldChallengesV1::open_fixture(directory.path()).unwrap();
+        assert!(
+            owner
+                .retained_for_attempt([1; 16], [2; 16], digest(4))
+                .unwrap()
+                .is_none()
+        );
+        let issued = owner.issue(proposed).unwrap();
+        drop(owner);
+
+        let mut owner = ProtectedZfsHoldChallengesV1::open_fixture(directory.path()).unwrap();
+        let retained = owner
+            .retained_for_attempt([1; 16], [2; 16], digest(4))
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.challenge, issued);
+        assert_eq!(retained.challenge.validity(), (now, expiry(now).unwrap()));
+        assert!(owner.issue(proposed).is_err());
+        assert!(
+            owner
+                .retained_for_attempt([9; 16], [2; 16], digest(4))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            owner
+                .retained_for_attempt([1; 16], [9; 16], digest(4))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            owner
+                .retained_for_attempt([1; 16], [2; 16], digest(9))
+                .unwrap()
+                .is_none()
+        );
+        owner.spend(retained, digest(8)).unwrap();
+        drop(owner);
+
+        let mut owner = ProtectedZfsHoldChallengesV1::open_fixture(directory.path()).unwrap();
+        let spent = owner
+            .retained_for_attempt([1; 16], [2; 16], digest(4))
+            .unwrap()
+            .unwrap();
+        assert_eq!(spent.challenge, issued);
+        assert_eq!(spent.spent_receipt(), Some(digest(8)));
+        assert!(owner.issue(proposed).is_err());
+        assert_eq!(owner.validate_records().unwrap().0, 1);
     }
 
     #[test]

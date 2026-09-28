@@ -205,8 +205,17 @@ pub(crate) fn reserve_acquire(
 
     let effect_id =
         derive_acquire_effect_id(request.acquisition_id(), attempt_evidence.attempt_digest())?;
-    let native_no_dispatch = selected_resource.is_some() && !normalized_intent.kernel_coupled();
-    let backend_id = if native_no_dispatch {
+    let selected_native = selected_resource.is_some() && !normalized_intent.kernel_coupled();
+    let native_dispatch = selected_native && ledger.qualified_native_bridge.is_some();
+    let native_no_dispatch = selected_native && !native_dispatch;
+    let backend_id = if native_dispatch {
+        aos_sandbox_source_provider_ledger::identity::acquire_native_dispatch_id_v2(
+            normalized_intent.digest(),
+            ledger.recovered.catalog.catalog_generation,
+            ledger.recovered.catalog.catalog_digest,
+            attempt_evidence.attempt_digest(),
+        )
+    } else if native_no_dispatch {
         derive_native_no_dispatch_id(
             normalized_intent.digest(),
             ledger.recovered.catalog.catalog_generation,
@@ -341,7 +350,7 @@ pub(crate) fn reserve_acquire(
         ),
         encode_session_history(&session),
     ));
-    let reservation_digest = if native_no_dispatch {
+    let reservation_digest = if selected_native {
         crate::native_no_dispatch_capacity::commit_reservation(
             ledger,
             ACQUIRE_RESERVE_PURPOSE,
@@ -398,7 +407,9 @@ pub(crate) fn reserve_acquire(
             return Err(error);
         }
     };
-    let completion_capacity = if native_no_dispatch {
+    let completion_capacity = if native_dispatch {
+        crate::transaction::CompletionCapacityV1::NativeDispatch
+    } else if native_no_dispatch {
         crate::transaction::CompletionCapacityV1::native_no_dispatch()
     } else {
         preflight_completion_capacity(

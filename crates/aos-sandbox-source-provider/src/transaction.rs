@@ -40,6 +40,9 @@ pub(crate) enum CompletionCapacityV1 {
         transaction: JournalTransaction,
     },
     NativeNoDispatch,
+    // The native owner separately preflights Requested/Prepared/Active while
+    // preserving durable cleanup headroom. Generic effects cannot consume it.
+    NativeDispatch,
 }
 
 pub(crate) struct PreparedLedgerMutationV1 {
@@ -118,7 +121,7 @@ impl CompletionCapacityV1 {
                     .validate_preflight_for_effect(preflight, std::slice::from_ref(transaction))?;
                 Ok(())
             }
-            Self::NativeNoDispatch => Err(ProviderLedgerError::Unavailable),
+            Self::NativeNoDispatch | Self::NativeDispatch => Err(ProviderLedgerError::Unavailable),
         }
     }
 }
@@ -217,6 +220,36 @@ pub(crate) fn authorize_current_reservation(
         response_sequence,
     )?;
     Ok(authorization)
+}
+
+/// Reauthenticates the unchanged original native request at the new journal cut.
+pub(crate) fn reauthorize_native_reservation(
+    ledger: &mut ProviderLedgerV1<'_>,
+    permit: crate::DurableAcquireEffectPermitV1,
+    original: &SignedSourceProviderRequestV1,
+    current_catalog: (&[u8], &[u8]),
+) -> Result<crate::DurableAcquireEffectPermitV1, ProviderLedgerError> {
+    let disposition =
+        ledger.verify_and_admit_request_with_catalog(original, &[], Some(current_catalog))?;
+    if !matches!(disposition, ProviderAdmissionDispositionV1::Recover(
+        ProviderRecoveryWorkV1::ObserveApplying { acquisition_id, effect_id }
+    ) if acquisition_id == permit.plan.acquisition_id() && effect_id == permit.plan.effect_id())
+    {
+        return Err(ProviderLedgerError::Equivocation);
+    }
+    let signing_authorization = ledger
+        .recovery_authorizations
+        .remove(&permit.completion_attempt_digest)
+        .ok_or(ProviderLedgerError::Unavailable)?;
+    Ok(crate::DurableAcquireEffectPermitV1 {
+        plan: permit.plan,
+        completion_session_binding: permit.completion_session_binding,
+        completion_attempt_digest: permit.completion_attempt_digest,
+        reservation_digest: permit.reservation_digest,
+        journal_snapshot: ledger.journal.snapshot()?,
+        completion_capacity: CompletionCapacityV1::NativeDispatch,
+        signing_authorization,
+    })
 }
 
 // A failed currentness check must keep custody installed so later recovery can

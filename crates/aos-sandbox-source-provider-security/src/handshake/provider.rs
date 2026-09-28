@@ -37,6 +37,8 @@ mod completion;
 mod session;
 #[path = "provider/storage_export.rs"]
 mod storage_export;
+#[path = "provider/storage_native.rs"]
+mod storage_native;
 
 pub(super) struct AwaitingRootMountHelloV1 {
     custody: ProtectedProviderCustodyV1,

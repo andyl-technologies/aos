@@ -28,6 +28,9 @@ use super::model::{
     ProviderAcquisitionStateV1, ProviderAttemptStateV1, ProviderReleaseStateV1, ReleaseKeyV1,
     ReleaseRecordV1, SourceRootIdentityV1,
 };
+use super::native_completion::{
+    NativeAcquireCompletionRecordV2, NativeAcquireCompletionStateV2, native_completion_key_v2,
+};
 use super::reopen::ReopenIdentityV1;
 
 /// Supplies durable acquisition facts whose signature-dependent fields are sealed.
@@ -136,6 +139,7 @@ struct CompletionMutationPlanV1 {
     class: CompletionPlanClassV1,
     attempt_key: Option<Vec<u8>>,
     acquire: Option<AcquireCompletionPatchV1>,
+    native: Option<NativeAcquireCompletionRecordV2>,
     release: Option<ReleaseCompletionPatchV1>,
     refresh_inventory_tombstones: Option<usize>,
 }
@@ -296,6 +300,7 @@ impl CompletionMutationPlanV1 {
             class: CompletionPlanClassV1::RecoveryArtifact,
             attempt_key: None,
             acquire: None,
+            native: None,
             release: Some(release),
             refresh_inventory_tombstones: Some(refresh_inventory_tombstones),
         };
@@ -318,6 +323,7 @@ impl CompletionMutationPlanV1 {
             class,
             attempt_key: Some(attempt_key),
             acquire,
+            native: None,
             release,
             refresh_inventory_tombstones,
         };
@@ -331,6 +337,7 @@ impl CompletionMutationPlanV1 {
             || usize::from(self.attempt_key.is_some())
                 + 2 * usize::from(self.attempt_key.is_some())
                 + usize::from(self.acquire.is_some())
+                + usize::from(self.native.is_some())
                 + usize::from(self.release.is_some())
                 > crate::limits::MAXIMUM_TRANSACTION_RECORDS
             || self
@@ -442,6 +449,40 @@ response_plan!(AcquireStatusCompletionPlanV1, false);
 pub struct AcquireCompletionPlanV1(CompletionMutationPlanV1);
 
 impl AcquireCompletionPlanV1 {
+    /// Adds the exact native Active marker to the same sealed completion cut.
+    ///
+    /// This is pure planning, not challenge-spend or descriptor authority. The
+    /// fixed owner supplies the protected original acceptance after spending
+    /// its exact receipt in the challenge journal.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a legacy row, wrong phase, substituted attempt/root, or rebind.
+    pub fn with_native_completion(
+        mut self,
+        native: NativeAcquireCompletionRecordV2,
+    ) -> Result<Self, LedgerFormatErrorV1> {
+        native.validate_canonical_artifacts()?;
+        let patch = self
+            .0
+            .acquire
+            .as_ref()
+            .ok_or(LedgerFormatErrorV1::Corrupt("native completion patch"))?;
+        if self.0.purpose != b"complete-acquire"
+            || native.state != NativeAcquireCompletionStateV2::Active
+            || native.canonical_request.is_none()
+            || native.accepted_reply.is_none()
+            || native.attempt_digest != patch.attempt_digest
+            || native.original_root != patch.source_root
+            || self.0.native.is_some()
+        {
+            return Err(LedgerFormatErrorV1::Corrupt("native completion plan scope"));
+        }
+        self.0.native = Some(native);
+        self.0.validate_shape()?;
+        Ok(self)
+    }
+
     /// Constructs the exact initial Acquire completion plan.
     ///
     /// # Errors
@@ -732,6 +773,19 @@ fn finalize_response_completion<'record>(
     }
     if let Some(maximum_tombstones) = plan.refresh_inventory_tombstones {
         refresh_authority_inventory(&mut prospective, maximum_tombstones)?;
+    }
+    if let Some(native) = plan.native.as_ref() {
+        let key = native_completion_key_v2(native.acquisition_id);
+        let current = prospective.get(&key).ok_or(LedgerFormatErrorV1::Corrupt(
+            "native completion intent missing",
+        ))?;
+        let DecodedRecordV1::NativeCompletion(current) = decode_record(&key, current)? else {
+            return Err(LedgerFormatErrorV1::Corrupt(
+                "native completion intent kind",
+            ));
+        };
+        current.validate_successor(native)?;
+        prospective.insert(key, super::format::encode_native_completion_v2(native));
     }
     validate_final_graph(&prospective)?;
     crate::validate_prospective_records(
@@ -1308,6 +1362,10 @@ fn collect_mutations(
     let mut keys = Vec::new();
     keys.extend(plan.attempt_key);
     keys.extend(plan.acquire.map(|value| value.acquisition_key));
+    keys.extend(
+        plan.native
+            .map(|value| native_completion_key_v2(value.acquisition_id)),
+    );
     keys.extend(plan.release.map(|value| value.release_key));
     if let Some(attempt_key) = completion_attempt_key.as_deref() {
         let attempt = decode_attempt_from(&graph, attempt_key)?;

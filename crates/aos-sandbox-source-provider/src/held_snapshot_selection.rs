@@ -28,10 +28,10 @@ use crate::{FixedProviderOwnerV1, ProviderLedgerError, ProviderLedgerV1};
 /// permit. Its currentness was checked when it was read, not after return.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ProviderHeldSnapshotCatalogClaimV1 {
-    provider: SourceProviderAuthorityV1,
-    holder_authority_id: [u8; 16],
-    session_binding: ObjectDigest,
-    binding_digest: ObjectDigest,
+    pub(crate) provider: SourceProviderAuthorityV1,
+    pub(crate) holder_authority_id: [u8; 16],
+    pub(crate) session_binding: ObjectDigest,
+    pub(crate) binding_digest: ObjectDigest,
     resource: SourceResourceV1,
     snapshot: ZfsHeldSnapshotProofV1,
     publication_head_commitment: ObjectDigest,
@@ -397,7 +397,7 @@ pub(crate) fn select_current_held_snapshot_claim(
     })
 }
 
-fn validate_current_native_attempt(
+pub(crate) fn validate_current_native_attempt(
     ledger: &ProviderLedgerV1<'_>,
     claim: &ProviderHeldSnapshotCatalogClaimV1,
     acquisition_id: ObjectDigest,
@@ -425,12 +425,7 @@ fn validate_current_native_attempt(
         || acquisition.catalog_digest != claim.resource.catalog_digest()
         || acquisition.selection_generation != claim.resource.selection_generation()
         || acquisition.selection_digest != claim.resource.selection_digest()
-        || acquisition.backend_id
-            == crate::acquire::derive_native_no_dispatch_id(
-                acquisition.normalized_intent.digest(),
-                acquisition.catalog_generation,
-                acquisition.catalog_digest,
-            )
+        || !crate::native_completion::is_native_dispatch_acquisition(acquisition)
         || acquisition.lease_id.is_some()
         || acquisition.backend_evidence.is_some()
         || acquisition.source_root.is_some()
@@ -492,7 +487,7 @@ fn validate_current_native_attempt(
     Ok(())
 }
 
-fn current_native_attempt_window(
+pub(crate) fn current_native_attempt_window(
     ledger: &ProviderLedgerV1<'_>,
     acquisition_id: ObjectDigest,
 ) -> Result<(ObjectDigest, i64), ProviderLedgerError> {

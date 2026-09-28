@@ -190,6 +190,24 @@ pub enum RawReopenObservationV1 {
 /// signatures independently, so implementing this trait never grants a way to
 /// declare evidence verified.
 pub trait SourceProviderBackendTransportV1 {
+    /// Exchanges exact native bytes with the fixed authenticated Storage owner.
+    ///
+    /// A positive result can be constructed only by the security client's
+    /// kernel peer/record checks. It is received custody, not completion proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns unavailable by default or for an ambiguous transport failure.
+    fn exchange_storage_native_acquire_v2(
+        &mut self,
+        _request: &aos_sandbox_source_provider_protocol::SignedStorageNativeAcquireRequestV2,
+    ) -> Result<
+        Option<aos_sandbox_source_provider_security::ReceivedStorageNativeAcquireV3>,
+        SourceProviderBackendTransportErrorV1,
+    > {
+        Err(SourceProviderBackendTransportErrorV1::Unavailable)
+    }
+
     /// Sends an already signed plan only to nonauthorizing Storage readback.
     ///
     /// # Errors
@@ -370,6 +388,22 @@ impl<'transport, Transport: SourceProviderBackendTransportV1 + ?Sized>
 impl<Transport: SourceProviderBackendTransportV1 + ?Sized> SourceProviderBackendV1
     for FixedSourceProviderBackendV1<'_, Transport>
 {
+    fn exchange_storage_native_acquire_v2(
+        &mut self,
+        request: &aos_sandbox_source_provider_protocol::SignedStorageNativeAcquireRequestV2,
+    ) -> Result<
+        Option<aos_sandbox_source_provider_security::ReceivedStorageNativeAcquireV3>,
+        ProviderLedgerError,
+    > {
+        self.verifier.revalidate()?;
+        let received = self
+            .transport
+            .exchange_storage_native_acquire_v2(request)
+            .map_err(map_transport_error)?;
+        self.verifier.revalidate()?;
+        Ok(received)
+    }
+
     fn inspect_storage_live_export_request(
         &mut self,
         signed_plan: &SignedStorageLiveExportRequestV1,
@@ -1138,22 +1172,27 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
         let verifier = self.owner.backend_verifier();
         let transport = &mut *self.transport;
         let current_catalog = self.current_catalog;
-        let prepared = self.owner.with_ledger(move |ledger| {
-            let mut backend = FixedSourceProviderBackendV1::new(transport, verifier);
-            let disposition = ledger.verify_and_admit_request_with_catalog(
-                signed_request,
-                descriptor_roles,
-                current_catalog,
-            )?;
-            execute_disposition(
-                ledger,
-                disposition,
-                &mut backend,
-                signed_request,
-                descriptor_roles,
-                current_catalog,
-            )
-        })?;
+        let prepared = self
+            .owner
+            .with_ledger_and_hold_challenges(move |ledger, challenges| {
+                let mut backend =
+                    FixedSourceProviderBackendV1::new(transport, Arc::clone(&verifier));
+                let disposition = ledger.verify_and_admit_request_with_catalog(
+                    signed_request,
+                    descriptor_roles,
+                    current_catalog,
+                )?;
+                execute_disposition(
+                    ledger,
+                    challenges,
+                    disposition,
+                    &mut backend,
+                    verifier,
+                    signed_request,
+                    descriptor_roles,
+                    current_catalog,
+                )
+            })?;
         match prepared {
             PreparedFixedProviderBackendOutcomeV1::Reply(reply) => {
                 Ok(FixedProviderBackendRequestOutcomeV1::Reply(reply))
@@ -1367,22 +1406,26 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
     ) -> Result<PreparedFixedProviderBackendOutcomeV1, ProviderLedgerError> {
         let verifier = self.owner.backend_verifier();
         let transport = &mut *self.transport;
-        self.owner.with_ledger(move |ledger| {
-            let mut backend = FixedSourceProviderBackendV1::new(transport, verifier);
-            let disposition = ledger.verify_and_admit_recovery_request(
-                continuation,
-                signed_request,
-                descriptor_roles,
-            )?;
-            execute_disposition(
-                ledger,
-                disposition,
-                &mut backend,
-                signed_request,
-                descriptor_roles,
-                None,
-            )
-        })
+        self.owner
+            .with_ledger_and_hold_challenges(move |ledger, challenges| {
+                let mut backend =
+                    FixedSourceProviderBackendV1::new(transport, Arc::clone(&verifier));
+                let disposition = ledger.verify_and_admit_recovery_request(
+                    continuation,
+                    signed_request,
+                    descriptor_roles,
+                )?;
+                execute_disposition(
+                    ledger,
+                    challenges,
+                    disposition,
+                    &mut backend,
+                    verifier,
+                    signed_request,
+                    descriptor_roles,
+                    None,
+                )
+            })
     }
 
     /// Reissues and completes one exact recovered Acquire after proven absence.
@@ -1527,8 +1570,10 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
 
 fn execute_disposition(
     ledger: &mut crate::ProviderLedgerV1<'_>,
+    challenges: &mut crate::zfs_hold_challenge::ProtectedZfsHoldChallengesV1,
     disposition: ProviderAdmissionDispositionV1,
     backend: &mut impl SourceProviderBackendV1,
+    backend_verifier: Arc<ProtectedBackendVerifierV1>,
     signed_request: &SignedSourceProviderRequestV1,
     descriptor_roles: &[SourceProviderDescriptorRole],
     current_catalog: Option<(&[u8], &[u8])>,
@@ -1558,6 +1603,30 @@ fn execute_disposition(
         ProviderAdmissionDispositionV1::AcquireRebind(permit) => ledger
             .execute_acquire_rebind(permit, backend)
             .map(PreparedFixedProviderBackendOutcomeV1::Reply),
+        ProviderAdmissionDispositionV1::Recover(ProviderRecoveryWorkV1::ObserveApplying {
+            acquisition_id,
+            effect_id,
+        }) if ledger.recovered.acquisitions.values().any(|acquisition| {
+            acquisition.acquisition_id == acquisition_id
+                && crate::native_completion::is_native_dispatch_acquisition(acquisition)
+        }) =>
+        {
+            let permit = ledger.resume_native_original_request_v3(
+                acquisition_id,
+                effect_id,
+                signed_request,
+            )?;
+            ledger
+                .execute_native_acquire_v3(
+                    challenges,
+                    permit,
+                    signed_request,
+                    current_catalog.ok_or(ProviderLedgerError::Unavailable)?,
+                    backend,
+                    backend_verifier,
+                )
+                .map(PreparedFixedProviderBackendOutcomeV1::Reply)
+        }
         ProviderAdmissionDispositionV1::Recover(work) => Ok(
             PreparedFixedProviderBackendOutcomeV1::Recovery(FixedProviderBackendRecoveryV1 {
                 work,
@@ -1581,6 +1650,23 @@ fn execute_disposition(
                 .complete_acquire_disposition(
                     permit,
                     aos_sandbox_source_provider_protocol::SourceProviderStatus::Unavailable,
+                )
+                .map(PreparedFixedProviderBackendOutcomeV1::Reply)
+        }
+        ProviderAdmissionDispositionV1::Acquire(permit)
+            if ledger.recovered.acquisitions.values().any(|acquisition| {
+                acquisition.acquisition_id == permit.plan().acquisition_id()
+                    && crate::native_completion::is_native_dispatch_acquisition(acquisition)
+            }) =>
+        {
+            ledger
+                .execute_native_acquire_v3(
+                    challenges,
+                    permit,
+                    signed_request,
+                    current_catalog.ok_or(ProviderLedgerError::Unavailable)?,
+                    backend,
+                    backend_verifier,
                 )
                 .map(PreparedFixedProviderBackendOutcomeV1::Reply)
         }

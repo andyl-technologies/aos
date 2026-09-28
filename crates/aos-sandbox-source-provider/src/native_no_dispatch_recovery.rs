@@ -68,6 +68,15 @@ impl FixedProviderOwnerV1 {
             }
             let acquisition = acquisition.clone();
             let acquisition_key_value = acquisition_key_value.clone();
+            // A native dispatch marker can never become proof of no dispatch,
+            // even before Storage acceptance or descriptor custody exists.
+            if ledger
+                .recovered
+                .native_completions
+                .contains_key(&acquisition_id)
+            {
+                return Err(ProviderLedgerError::Unavailable);
+            }
             let key = acquisition_key(&acquisition_key_value);
             let mut attempts = ledger.recovered.attempts.iter().filter(|(_, attempt)| {
                 attempt.attempt_digest == acquisition.current_attempt_digest

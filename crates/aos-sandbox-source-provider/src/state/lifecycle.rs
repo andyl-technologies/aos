@@ -165,6 +165,8 @@ impl<'a> ProviderLedgerV1<'a> {
             pending_releases: BTreeMap::new(),
             recovery_authorizations: BTreeMap::new(),
             pending_recovery_bridge: None,
+            qualified_native_bridge: None,
+            native_original_roots: BTreeMap::new(),
             poisoned: false,
         })
     }
@@ -207,6 +209,8 @@ impl<'a> ProviderLedgerV1<'a> {
             pending_releases: BTreeMap::new(),
             recovery_authorizations: BTreeMap::new(),
             pending_recovery_bridge: None,
+            qualified_native_bridge: None,
+            native_original_roots: BTreeMap::new(),
             poisoned: false,
         }
     }

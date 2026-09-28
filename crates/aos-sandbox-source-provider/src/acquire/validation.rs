@@ -57,6 +57,8 @@ pub(crate) fn validate_backend_selection(
     );
     if !proof_class_matches
         || is_native_no_dispatch_acquisition(acquisition)
+        || (crate::native_completion::is_native_dispatch_acquisition(acquisition)
+            != observed.native.is_some())
         || resource.resource_namespace_digest()
             != acquisition.normalized_intent.resource_namespace_digest()
         || resource.catalog_generation() != ledger.recovered.catalog.catalog_generation
