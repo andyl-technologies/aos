@@ -1,9 +1,10 @@
 # 05 — Implementation plan
 
 This is the plan AOS works through, top to bottom, to adopt Terrane. It is
-the ordering authority: it arranges tasks into phases, names the gate that
-must be green to leave each phase, and records which specification files'
-`MUST` requirements each phase covers. The specification itself carries no
+the ordering authority: it arranges tasks into three phases and their
+sub-stages, names the gate that must be green to leave each sub-stage, and
+records which specification files' `MUST` requirements each sub-stage
+covers. The specification itself carries no
 checklists (spec `00-conventions.md` §Task plans); this file is where tasks
 live.
 
@@ -18,17 +19,34 @@ live.
   `checks.terrane.*` ([`03-packaging.md`](03-packaging.md) PKG-7).
 - No task depends on a later-phase task. Formats, golden vectors, and the
   store come before anything built on them.
-- A phase is done when all its tasks are checked and its exit gate is green.
-  Do not start a phase before the prior phase's exit gate is green.
-- **[PLAN-1]** Every `MUST` in every specification file named by a phase
-  MUST be satisfied by at least one task before this RFC's status moves to
-  Implemented. The coverage section at the end lists the mapping and MUST
-  show no uncovered file.
+- The plan has three phases. Phase 1 is the sandbox path: everything needed
+  for RFC-0021's view service to run on Terrane against a `file://` and an
+  S3 bucket. Phase 2 adds the protocol surfaces, AOS Hub on R2, and
+  `terrane-edge`. Phase 3 adds storage breadth (EROFS, VM, block,
+  redundancy, block device) and operations (jobs, migrations, imports).
+- Phase 1 ships no protocol surface other than the Terrane wire protocol
+  itself. `terrane-edge` and every protocol surface (`nix-cache`, `reapi`,
+  `gha-cache`, `browse`, `api`, `git`, `oci`) are deferred to Phase 2.
+- Each phase is divided into ordered sub-stages (1a, 1b, ...). A sub-stage
+  is done when all its tasks are checked and its exit gate is green. Do not
+  start a sub-stage before the prior sub-stage's exit gate is green. A phase
+  is done when its last sub-stage is done.
+- **[PLAN-1]** Every `MUST` in every specification file named by a
+  sub-stage MUST be satisfied by at least one task before this RFC's status
+  moves to Implemented. The coverage section at the end lists the mapping
+  and MUST show no uncovered file.
 
-## Phase 0 — Spikes
+## Phase 1 — Sandbox path
+
+Phase 1 ends when RFC-0021's view service runs on Terrane against a
+`file://` root and one S3-compatible bucket, with no protocol surface other
+than the Terrane wire protocol.
+
+### 1a — Spikes
 
 Exit gate: every spike has a recorded result in
-[`06-decision-register.md`](06-decision-register.md) or spec `40`.
+[`06-decision-register.md`](06-decision-register.md) or spec `40`. Spikes
+may run alongside 1b; nothing in 1c starts before they are recorded.
 
 - [ ] **T-RISK-1** Conditional-write probe against R2, S3, GCS, a local
   `file://` root, and the S3-compatible stores AOS operates. Records which
@@ -49,7 +67,7 @@ Exit gate: every spike has a recorded result in
   satisfies RISK-10, RISK-11, FUSE-13, FUSE-39;
   `checks.terrane.gates.exec-through-overlay`.
 
-## Phase 1 — Core formats and algorithms (`terrane-core`)
+### 1b — Core formats and algorithms (`terrane-core`)
 
 Exit gate: `checks.terrane.gates.golden-vectors`,
 `checks.terrane.gates.core-no-std`, `checks.terrane.gates.core-fuzz`.
@@ -59,7 +77,8 @@ Exit gate: `checks.terrane.gates.golden-vectors`,
   PKG-1, PKG-2, CRATE-1, CRATE-30, CRATE-34 to CRATE-36;
   `checks.terrane.gates.crate-graph`.
 - [ ] **T-OBJ-1** Identity domains, descriptors, and the `terrane-v1`
-  profile; second-identity-profile registration hook. — satisfies OBJ-1 to OBJ-10;
+  profile; second-identity-profile registration hook. — satisfies OBJ-1 to
+  OBJ-10;
   `checks.terrane.gates.identity-idempotence`,
   `checks.terrane.gates.descriptor-strict`.
 - [ ] **T-CDC-1** FastCDC chunker with the seeded gear table, codec bytes,
@@ -109,7 +128,7 @@ Exit gate: `checks.terrane.gates.golden-vectors`,
   tests for every format. — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 
-## Phase 2 — Store, packs, bucket, refs, GC (`terrane`)
+### 1c — Store, packs, bucket, refs, GC (`terrane`)
 
 Exit gate: `checks.terrane.gates.bucket-ref-cas`,
 `checks.terrane.gates.gc-grace-window`, store conformance on `file://` and
@@ -167,7 +186,7 @@ one S3-compatible bucket.
   nextest in the `aos` package check phase, `aos-dev` targets. — satisfies
   PKG-3 to PKG-5, PKG-11; `checks.terrane.package`.
 
-## Phase 3 — Host tier and FUSE surface into the sandbox runtime
+### 1d — Host tier and FUSE surface into the sandbox runtime
 
 Exit gate: `checks.terrane.gates.fuse-passthrough`,
 `checks.terrane.gates.host-crash-recovery`,
@@ -240,7 +259,7 @@ conformance tests passing over Terrane.
   evaluation check. — satisfies PKG-8, PKG-10;
   `checks.terrane.module-eval`.
 
-## Phase 4 — Protocol, routing, guard, tokens
+### 1e — Protocol, routing, guard, tokens
 
 Exit gate: `checks.terrane.gates.proto-conformance`,
 `checks.terrane.gates.tier-chaos`,
@@ -279,7 +298,14 @@ Exit gate: `checks.terrane.gates.proto-conformance`,
   the measurement methodology. — satisfies PERF-1 to PERF-13, TEST-15;
   `checks.terrane.gates.perf-methodology` and each `checks.terrane.gates.perf-*`.
 
-## Phase 5 — Protocol surfaces
+## Phase 2 — Protocol surfaces, Hub, and edge
+
+Everything in this phase is deferred from Phase 1 by decision: `terrane-edge`
+and every protocol surface land here, after the sandbox path is green.
+Phase 2 ends when stock clients use Terrane through its protocol surfaces
+and AOS Hub serves from a Terrane bucket natively and at the edge.
+
+### 2a — Protocol surfaces
 
 Exit gate: `checks.terrane.gates.nix-frame-concat`,
 `checks.terrane.gates.reapi-completeness`, and stock clients (`nix`,
@@ -301,7 +327,7 @@ Exit gate: `checks.terrane.gates.nix-frame-concat`,
 - [ ] **T-OCI-1** `oci` surface. — satisfies OCI-1 to OCI-7;
   `checks.terrane.gates.surface-schema`.
 
-## Phase 6 — Hub on R2 and the edge
+### 2b — Hub on R2 and the edge
 
 Exit gate: `checks.terrane.gates.edge-native-interop`,
 `checks.terrane.integration.hub-import` against a staging Hub.
@@ -327,7 +353,12 @@ Exit gate: `checks.terrane.gates.edge-native-interop`,
   `checks.terrane.integration.hub-gc`,
   `checks.terrane.integration.hub-client-compat`.
 
-## Phase 7 — EROFS, VM, block, redundancy, block device
+## Phase 3 — Storage breadth and operations
+
+Phase 3 ends when every conformance level and every surface in the
+specification has a published claim.
+
+### 3a — EROFS, VM, block, redundancy, block device
 
 Exit gate: `checks.terrane.gates.erofs-image-determinism`,
 `checks.terrane.gates.block-layout-determinism`,
@@ -361,7 +392,7 @@ Exit gate: `checks.terrane.gates.erofs-image-determinism`,
   `checks.terrane.gates.blockdev-ref-cas`,
   `checks.terrane.gates.blockdev-crash-recovery`.
 
-## Phase 8 — Jobs, migrations, imports
+### 3b — Jobs, migrations, imports
 
 Exit gate: `checks.terrane.gates.job-resume`,
 `checks.terrane.gates.mig-store-move`.
@@ -384,49 +415,49 @@ Exit gate: `checks.terrane.gates.job-resume`,
 
 ## Coverage
 
-| Specification file | Phase | Tasks |
+| Specification file | Sub-stage | Tasks |
 | --- | --- | --- |
-| 01 goals and invariants | 1–4 | every task; invariants are cross-cutting gates |
-| 03 architecture | 3, 4 | T-SBX-1, T-FUSE-2, T-HOST-2, T-PROTO-1 |
-| 04 content model | 1 | T-OBJ-1 |
-| 05 chunking | 1 | T-CDC-1 |
-| 06 tree format | 1 | T-TREE-1, T-TREE-2 |
-| 07 tree algebra | 1 | T-ALG-1, T-ALG-2 |
-| 08 properties | 1 | T-PROP-1 |
-| 09 refs and commits | 1, 2 | T-REF-1, T-REF-2 |
-| 10 derived data | 1, 8 | T-DRV-1, T-JOB-1 |
-| 11 store trait | 2, 3 | T-STORE-1, T-STORE-2, T-STORE-3 |
-| 12 pack format | 2 | T-PACK-1, T-PACK-2 |
-| 13 bucket layout | 2, 3 | T-BKT-1, T-HOST-1 |
-| 14 host tier | 3, 7 | T-HOST-1, T-HOST-2, T-BLK-1 |
-| 15 redundancy | 7 | T-RED-1 |
-| 16 block-device backend | 7 | T-BLK-1 |
-| 17 garbage collection | 2, 4 | T-GC-1, T-TOPO-1 |
-| 18 protocol | 4 | T-PROTO-1 |
-| 19 tiering and topology | 4 | T-TOPO-1 |
-| 20 consistency | 3 | T-FUSE-3, T-CONS-1 |
-| 21 bandwidth | 4 | T-BW-1 |
-| 22 authentication | 1, 4 | T-AUTH-1, T-AUTH-2 |
-| 23 provenance | 2 | T-PROV-1 |
-| 24 disclosure domains | 2, 3 | T-DOM-1, T-STORE-3 |
-| 25 threat model | 4 | T-TEST-2 (mapping only; no `MUST`s of its own beyond residual-risk statements) |
-| 26 surfaces | 3 | T-SURF-1 |
-| 27 FUSE | 3 | T-FUSE-1, T-FUSE-2, T-FUSE-3 |
-| 28 EROFS and block | 7 | T-EROFS-1, T-VBLK-1 |
-| 29 VM | 7 | T-VM-1 |
-| 30 protocol surfaces | 5 | T-NIX-1, T-REAPI-1, T-GHA-1, T-WEB-1, T-GIT-1, T-OCI-1 |
-| 31 rulesets | 1 | T-RULE-1 |
-| 32 tree jobs | 8 | T-JOB-1 |
-| 33 migrations | 6, 8 | T-HUB-2, T-MIG-1 |
-| 34 observability | 4 | T-OBS-1 |
-| 35 performance | 4 | T-PERF-1 |
-| 36 testing | 1, 4, 8 | T-TEST-1, T-TEST-2, T-TEST-3 |
-| 37 crates | 1, 2 | T-PKG-1, T-CRATE-1 |
-| 38 edge | 6 | T-EDGE-1 |
-| integration 01 | 3 | T-SBX-1 to T-SBX-5 |
-| integration 02 | 6 | T-HUB-1 to T-HUB-3 |
-| integration 03 | 1–3 | T-PKG-1 to T-PKG-3 |
-| integration 04 | 7 | T-CRU-1 |
+| 01 goals and invariants | 1b–1e | every task; invariants are cross-cutting gates |
+| 03 architecture | 1d, 1e | T-SBX-1, T-FUSE-2, T-HOST-2, T-PROTO-1 |
+| 04 content model | 1b | T-OBJ-1 |
+| 05 chunking | 1b | T-CDC-1 |
+| 06 tree format | 1b | T-TREE-1, T-TREE-2 |
+| 07 tree algebra | 1b | T-ALG-1, T-ALG-2 |
+| 08 properties | 1b | T-PROP-1 |
+| 09 refs and commits | 1b, 1c | T-REF-1, T-REF-2 |
+| 10 derived data | 1b, 3b | T-DRV-1, T-JOB-1 |
+| 11 store trait | 1c, 1d | T-STORE-1, T-STORE-2, T-STORE-3 |
+| 12 pack format | 1c | T-PACK-1, T-PACK-2 |
+| 13 bucket layout | 1c, 1d | T-BKT-1, T-HOST-1 |
+| 14 host tier | 1d, 3a | T-HOST-1, T-HOST-2, T-BLK-1 |
+| 15 redundancy | 3a | T-RED-1 |
+| 16 block-device backend | 3a | T-BLK-1 |
+| 17 garbage collection | 1c, 1e | T-GC-1, T-TOPO-1 |
+| 18 protocol | 1e | T-PROTO-1 |
+| 19 tiering and topology | 1e | T-TOPO-1 |
+| 20 consistency | 1d | T-FUSE-3, T-CONS-1 |
+| 21 bandwidth | 1e | T-BW-1 |
+| 22 authentication | 1b, 1e | T-AUTH-1, T-AUTH-2 |
+| 23 provenance | 1c | T-PROV-1 |
+| 24 disclosure domains | 1c, 1d | T-DOM-1, T-STORE-3 |
+| 25 threat model | 1e | T-TEST-2 (mapping only; no `MUST`s of its own beyond residual-risk statements) |
+| 26 surfaces | 1d | T-SURF-1 |
+| 27 FUSE | 1d | T-FUSE-1, T-FUSE-2, T-FUSE-3 |
+| 28 EROFS and block | 3a | T-EROFS-1, T-VBLK-1 |
+| 29 VM | 3a | T-VM-1 |
+| 30 protocol surfaces | 2a | T-NIX-1, T-REAPI-1, T-GHA-1, T-WEB-1, T-GIT-1, T-OCI-1 |
+| 31 rulesets | 1b | T-RULE-1 |
+| 32 tree jobs | 3b | T-JOB-1 |
+| 33 migrations | 2b, 3b | T-HUB-2, T-MIG-1 |
+| 34 observability | 1e | T-OBS-1 |
+| 35 performance | 1e | T-PERF-1 |
+| 36 testing | 1b, 1e, 3b | T-TEST-1, T-TEST-2, T-TEST-3 |
+| 37 crates | 1b, 1c | T-PKG-1, T-CRATE-1 |
+| 38 edge | 2b | T-EDGE-1 |
+| integration 01 | 1d | T-SBX-1 to T-SBX-5 |
+| integration 02 | 2b | T-HUB-1 to T-HUB-3 |
+| integration 03 | 1b–1d | T-PKG-1 to T-PKG-3 |
+| integration 04 | 3a | T-CRU-1 |
 
 - **[PLAN-2]** A doc lint MUST verify that every requirement ID cited by a
   task exists in the specification or in this directory, and that every

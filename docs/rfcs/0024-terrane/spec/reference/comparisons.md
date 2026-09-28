@@ -1,10 +1,9 @@
 # Reference — Comparisons (informative)
 
-This document places Terrane beside three systems a reader is likely to
-know: ZFS, as the storage system whose feature set Terrane most resembles;
-git, as the version-control model Terrane adopts in part; and Span, the
-predecessor build-cache system whose node-local cache and archive service
-Terrane re-designs. It is informative. Where a row says "yes", the
+This document places Terrane beside two systems a reader is likely to
+know: ZFS, as the storage system whose feature set Terrane most resembles,
+and git, as the version-control model Terrane adopts in part. It is
+informative. Where a row says "yes", the
 requirement that makes it so is in the file named.
 
 ## Terrane and ZFS
@@ -85,104 +84,3 @@ over one directory of the prolly tree, memoized by the subtree it derives
 from, and per-entry git blob digests are an optional derived attribute
 computed once at commit. See
 [`../30-surface-protocols.md`](../30-surface-protocols.md).
-
-## Terrane and Span
-
-Span is the predecessor build-cache and remote-execution system whose
-archive service and node-local cache driver Terrane re-designs. The
-comparison below is an inventory of what carried over, what changed, what
-was dropped, and which of its known gaps Terrane closes by construction. It
-is written from a survey of Span's design documents and code at the time of
-writing.
-
-### Dependencies
-
-Span's archive service relied on a regional transactional key-value store
-for object records, chunk locations, reference counts, aliases, pins, and
-collection cursors; on a cache service that also carried correctness state
-(replica liveness for a pending-pack reaper, several collection root sets);
-on an analytical store on the collection path for recency and some roots;
-and on a relational database, reached through a control-plane service, for
-configuration. Terrane's authority is a bucket ([D-1] in
-[`../39-decision-register.md`](../39-decision-register.md)). The open-pack
-machinery (pending rows, quorum mirroring, leases, a reaper) existed only
-because packs were shared across replicas; writer-owned packs remove it
-([D-2]).
-
-### Kept as-is
-
-These mechanisms of Span's node-local cache are ported with their
-parameters as starting points:
-
-- FUSE passthrough on kernel 6.9 and later, one refcounted backing
-  registration per inode, keep-cache fallback on older kernels.
-- Direct presigned ranged reads: a few-millisecond micro-batching window,
-  gap merging up to 256 KiB, spans up to 16 MiB, verified admission of
-  unrequested bystander chunks inside a merged range, hedging after 60 ms,
-  three priority lanes with singleflight.
-- Verify before commit: a decompression-bomb cap, hash check, temporary
-  file plus `fsync` plus rename, quarantine on mismatch, crash recovery of
-  temporary files.
-- Eviction: S3-FIFO with a probationary queue, pinned content never evicted,
-  a five-minute release grace, reserve-then-evict to 85 percent.
-- Reassembly modes `never`, `smart`, and `always` with the uniqueness
-  heuristic, and a per-file plaintext content hash.
-- A structural index with packed arenas and binary-search lookup, memory
-  mapped, content-addressed, size-capped on disk.
-- Inode policy: canonical attributes for archive-derived trees, stable
-  32-bit inode allocation, alias directories sharing descendant inodes.
-- A private overlay upper per lease with project quota, and copy-on-write
-  child overlays stacked on a parent's merged tree.
-- A prefetch scheduler with tiers and predictors (ELF `NEEDED`, shebang,
-  closure graph, learned profiles, sequential) under a byte-rate cap.
-- Wipe-on-unpin strategies (zero, trim, ramfs).
-- A circuit breaker, retry policy, an unhealthy signal, and quiesce plus
-  remount for upgrades.
-- A pack-residency filter published for locality-aware scheduling.
-
-### Kept, but changed by the design
-
-| Span | Terrane |
-| --- | --- |
-| manifests and indexes fetched per object with paging; server-side index builds | a view's tree bundle; the prolly tree is the index |
-| closure layout rules evaluated at mount (breadth-first over references, pin authority, exclusions, duplicate-path conflicts) | tree transforms and merge policy |
-| mount grants and pinned-object tokens; trust selectors on alias reads | view-scoped capability tokens over refs; trust selectors on entry provenance |
-| eager assembly by materializing files | the EROFS surface for resident trees |
-| evaluation views with append-only generations | a view whose ref advances by fast-forward commits |
-| sandbox pins in an embedded key-value store | a small embedded store for host-local pins and reservations only; nothing global |
-| the routing ruleset engine evaluated at byte arrival | the same closed vocabulary; substitution and binding become tree transforms at checkout, guards become filters, classification is an attribute computed once per object |
-| object identity as the plaintext hash, re-read at every commit | identity as the manifest hash; plaintext hashes as attributes ([D-3]) |
-
-### Dropped
-
-- The container-orchestrator volume driver surface, registrar, resource
-  advertiser, and quota sizing from pod specifications: adopting systems
-  supply their own glue.
-- The legacy path that extracted archives and hard-linked them per sandbox.
-- Isolation modes as Span defined them; disclosure domains replace them.
-- All dependence on the key-value, cache, analytical, and relational
-  stores.
-
-### Gaps closed by design
-
-| Span gap | How Terrane closes it |
-| --- | --- |
-| no collection of per-file backing files | the sealed object directory is a `disk` tier under the same eviction as chunks |
-| tree leases held only in memory, lost on restart | leases are host-local durable records |
-| executing through overlay-over-FUSE returned I/O errors on some paths | the EROFS surface for resident trees; passthrough on the lazy path; tracked as `RISK-11` |
-| a single embedded-store writer lock stalled a fleet-wide rollout | the embedded store is off every read path |
-| chunks uploaded but never committed could live in packs forever | mark-and-sweep from refs finds them; no reference-count row is needed for an object to be collectable |
-| a cache outage made every replica look dead to the pending-pack reaper | there is no pending-pack reaper |
-| collection roots that lived only in a cache service | roots are refs in the bucket |
-| the whole object re-read at commit even when every chunk was a dedup hit | manifest-hash identity |
-| an in-memory visited set proportional to the cluster during orphan marking | marking skips already-marked subtrees by hash and is sharded by key range |
-| no virtual-machine story | virtiofs with DAX and the block surface |
-
-### New in Terrane
-
-Views as branches with merge, fold, set operations, and snapshots as tags;
-routed stores with `shared-dir`, nested hosts, and virtual-machine surfaces;
-bucket-native metadata with mark-and-sweep collection; cost-routed topology;
-capability tokens and one enforcement point; surfaces as the single
-exposure abstraction; tree jobs for backfill and maintenance; a `no_std`
-identity core that runs at the edge.

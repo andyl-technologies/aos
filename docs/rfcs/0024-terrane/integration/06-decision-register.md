@@ -52,8 +52,9 @@ the requirement IDs each decision affects.
 
 - **[AD-3] Sandbox runtime first, Hub second**
   - **Status:** Decided
-  - **Decision:** Phase 3 of the plan integrates Terrane into the RFC-0021
-    sandbox runtime before Phase 6 integrates AOS Hub.
+  - **Decision:** Phase 1 of the plan (sub-stage 1d) integrates Terrane
+    into the RFC-0021 sandbox runtime before Phase 2 (sub-stage 2b)
+    integrates AOS Hub.
   - **Rationale:** RFC-0021 has the seam ready: `aos-viewd`,
     `aos-view-publisher`, and per-view FUSE workers are specified but
     unwritten, and `ObjectSource` and `ImmutableFetchTransport` are dormant
@@ -64,7 +65,7 @@ the requirement IDs each decision affects.
   - **Alternatives considered:** Hub first because it is the larger byte
     volume (rejected: highest migration risk with the least-proven code);
     both in parallel (rejected: the same people, and the Hub migration
-    depends on the `nix-cache` and `oci` surfaces from Phase 5).
+    depends on the `nix-cache` and `oci` surfaces from sub-stage 2a).
   - **Affects:** [`05-implementation-plan.md`](05-implementation-plan.md)
     phase order, SBX-1 to SBX-21, HUB-1 to HUB-14.
 
@@ -135,7 +136,7 @@ the requirement IDs each decision affects.
 
 - **[AD-8] Erasure coding, the block backend, and block writes wait**
   - **Status:** Decided
-  - **Decision:** AOS ships Phases 0 through 6 before any of `striped`,
+  - **Decision:** AOS ships Phases 1 and 2 before any of `striped`,
     `blockdev`, or a writable block surface. AOS's first redundancy is the
     bucket's own durability plus `replicated` across regions for the Hub.
   - **Rationale:** Spec D-18 and NG-8. No AOS workload needs raw-device
@@ -144,13 +145,13 @@ the requirement IDs each decision affects.
   - **Alternatives considered:** Blockdev-first for on-prem warehouses
     (rejected: no on-prem deployment is planned before the Hub migration).
   - **Affects:** [`05-implementation-plan.md`](05-implementation-plan.md)
-    Phase 7, spec D-18.
+    sub-stage 3a, spec D-18.
 
 ## Open
 
 - **[AD-9] Whether `aos-cache` gains a `terrane://` backend or is replaced**
   - **Status:** Open
-  - **Decision:** Pending Phase 5 results. HUB-13 keeps `aos-cache`'s
+  - **Decision:** Pending sub-stage 2a results. HUB-13 keeps `aos-cache`'s
     existing backends working either way.
   - **Rationale:** The SDK already gives every AOS crate chunk-level
     negotiation; whether a Nix-compatible transfer client still needs a

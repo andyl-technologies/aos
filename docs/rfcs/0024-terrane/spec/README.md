@@ -151,7 +151,7 @@ for the gates it names.
 | [`reference/bucket-key-registry.md`](reference/bucket-key-registry.md) | Registered bucket key prefixes |
 | [`reference/errno-mapping.md`](reference/errno-mapping.md) | How outcomes reach POSIX callers |
 | [`reference/prior-art.md`](reference/prior-art.md) | Informative survey of prior systems and theory |
-| [`reference/comparisons.md`](reference/comparisons.md) | Informative comparisons with ZFS, git, and a predecessor system |
+| [`reference/comparisons.md`](reference/comparisons.md) | Informative comparisons with ZFS and git |
 
 ## Versioning
 

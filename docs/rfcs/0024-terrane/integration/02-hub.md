@@ -148,5 +148,5 @@ from refs with a grace window (GC-10).
 
 - Spec files `13`, `18`, `30`, `32`, `33`, `38`.
 - [`03-packaging.md`](03-packaging.md) for the Worker build.
-- [`05-implementation-plan.md`](05-implementation-plan.md) Phase 6.
+- [`05-implementation-plan.md`](05-implementation-plan.md) sub-stage 2b.
 - [`06-decision-register.md`](06-decision-register.md) AD-3 (adoption order).

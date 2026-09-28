@@ -128,7 +128,7 @@ requirement IDs. This keeps the specification stable while adoption moves.
   does not name a host operating system, product, or prior internal system in
   files `01` through `38` or in the normative reference documents. Public
   protocols, public projects, and published research MAY be cited by name.
-  Informative reference documents MAY compare against named systems.
+  Informative reference documents MAY compare against named public systems.
 - **[CONV-3]** Every identity domain, media type, property name, surface
   name, bucket key prefix, and gate name is registered in a reference
   document before it is used. Unregistered names are conformance errors.

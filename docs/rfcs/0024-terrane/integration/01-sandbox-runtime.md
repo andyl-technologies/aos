@@ -238,5 +238,5 @@ profiles.
 
 - Spec files `03`, `14`, `24`, `26`, `27`, `28`, `20`.
 - [`03-packaging.md`](03-packaging.md) for units and slices.
-- [`05-implementation-plan.md`](05-implementation-plan.md) Phase 3.
+- [`05-implementation-plan.md`](05-implementation-plan.md) sub-stage 1d.
 - [`06-decision-register.md`](06-decision-register.md) AD-3, AD-4, AD-5.
