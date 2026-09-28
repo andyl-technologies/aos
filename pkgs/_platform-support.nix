@@ -467,6 +467,14 @@ let
     "nuke-references"
   ];
 
+  # Patched QEMU and its plugin are built as dependencies of the Crucible
+  # suite. Only that aggregate retains the exact corresponding-source pair
+  # required by the closure publication policy.
+  internalComponents = [
+    "crucible-qemu-plugin"
+    "qemu-crucible"
+  ];
+
   # These Linux packages remain complete, but their GUI, VM, documentation,
   # fixture, and downloader closures are outside the first Darwin release.
   # The Darwin AOS clients retain their non-VM commands without target GLib.
@@ -539,7 +547,6 @@ let
     "containerd"
     "crucible"
     "crucible-guest"
-    "crucible-qemu-plugin"
     "crucible-qemu-trace-plugin"
     "cryptsetup"
     "darling"
@@ -629,7 +636,6 @@ let
     "polkit"
     "policycoreutils"
     "procps-ng"
-    "qemu-crucible"
     "qemu-crucible-reference"
     "qemu-crucible-source"
     "refpolicy"
@@ -663,6 +669,7 @@ let
     targetWave4
     targetWave5
     buildOnly
+    internalComponents
     linuxScoped
     linuxOnly
   ];
@@ -701,6 +708,7 @@ let
     // mkEntries "target" 4 ["language-cross-build" "target-runtime-tests"] targetWave4
     // mkEntries "target" 5 ["canadian-cross" "target-runtime-tests"] targetWave5
     // mkEntries "build-only" null ["linux-native-build-input"] buildOnly
+    // mkEntries "internal-component" null ["aggregate-release-required"] internalComponents
     // mkEntries "linux-scoped" null ["darwin-release-scope"] linuxScoped
     // mkEntries "linux-only" null ["linux-interface"] linuxOnly;
 
@@ -1066,6 +1074,8 @@ let
     "tests/_config-module-smoke/private.nix" = "linux-only-test-source";
     "tools/_conntrackd-config/module.nix" = "linux-only-config-source";
     "tools/_rsyncd-config/module.nix" = "linux-only-config-source";
+    "tools/_uv-darwin/security.tbd" = "target-independent-source";
+    "tools/_uv-darwin/systemconfiguration.tbd" = "target-independent-source";
   };
 
   isLinux = system: builtins.match "[a-zA-Z0-9_]+-linux" system != null;
@@ -1108,7 +1118,9 @@ in rec {
       then builtins.elem entry.disposition ["target" "independent" "darwin-only"] && architectureSupported
       else throw "package platform support: unsupported publication system '${system}'";
     rule =
-      if entry.disposition == "build-only"
+      if entry.disposition == "internal-component"
+      then "package-aggregate-component/v1"
+      else if entry.disposition == "build-only"
       then "package-build-input-only/v1"
       else if entry.disposition == "linux-scoped" && isDarwin system
       then "package-darwin-release-scope/v1"
@@ -1118,7 +1130,9 @@ in rec {
       then "package-darwin-runtime/v1"
       else "package-architecture-support/v1";
     reason =
-      if entry.disposition == "build-only"
+      if entry.disposition == "internal-component"
+      then "Publish this component through the Crucible suite with its matching corresponding source."
+      else if entry.disposition == "build-only"
       then "This derivation is a build or test input, not a public package root."
       else if entry.disposition == "linux-scoped" && isDarwin system
       then "This package is outside the first Darwin release scope."
@@ -1391,6 +1405,7 @@ in rec {
       "independent"
       "darwin-only"
       "build-only"
+      "internal-component"
       "linux-scoped"
       "linux-only"
     ];
