@@ -194,8 +194,11 @@ method-46 data is upgraded or reinterpreted by this unreleased correction.
 
 ## Existing-role confinement source contract
 
-The normal Controller and Storage units enter their distinct domains only
-when their image-pinned TPM mode is required. The normal policy-authority unit
+The normal Controller enters its distinct domain whenever the immutable
+enforcing profile is selected, independently of TPM mode. This keeps the
+purpose-specific Source/Cache journal writer out of `init_t`; legacy-closed
+TPM mode still closes methods 46–48. Storage's current domain selection remains
+required-mode-only pending its separate startup closure. The normal policy-authority unit
 has a distinct Root domain in the immutable SELinux image; its same-ELF Cache
 recovery invocation does not. These are explicit fixed-unit contexts, not a
 default executable transition from `init_t`. The one private helper ELF has
@@ -223,6 +226,70 @@ enforcing flag at runtime is not itself proof of this exact loaded matrix.
 An unconfined same-SID PID1 worker cannot be distinguished from PID1 by a MAC
 type; residual `init_t` actors therefore remain a preparation/installed-profile
 audit requirement, not a blanket trusted-worker exception.
+
+### Existing Source/Cache view producers (source-only)
+
+The immutable configuration reuses the three existing checked idmapped-view
+scripts, their actual Controller/signer UID/GID assignments and their existing
+five-capability preparation boundary. It does not add a mount service or a
+native duplicate of the mount implementation. Each exact script output is
+labelled separately. A source-built private tool package copies only the AOS
+Bash, stat, mkdir, chown, findmnt, mount and umount images into distinct immutable
+inodes; only the two existing preparation roles may execute those private tools
+without a domain transition. Shared `bin_t` interpreters are not an alias.
+The scripts clear interpreter/loader injection variables and prevent mount
+helper dispatch and writable mount-table updates. Mutable legacy scripts and
+their existing tool paths remain unchanged.
+
+The existing static fresh-only root provider runs as a fixed `ExecStartPre`
+of the existing Cache-journal-view unit. This keeps each labelled script
+package independent of the selected policy that labels it. Source and Cache
+signer-view units depend on that first preparation; they do not rerun root
+creation after a target has already been mounted. The provider preflights all
+enabled original roots and `/run` targets before creating any missing peer,
+rejects existing wrong type/mode/owner/label or a racing creation, and never
+repairs or relabels existing state. Only freshly created held directories may
+receive the image-compiled Controller UID/GID before durable admission.
+The provider's metadata-directory reopens use the existing preparer capability
+bound's DAC search permission. Its MAC profile explicitly denies protected
+journal, key, floor and lock file open/read; this is not a data-reader grant
+and adds no unit capability.
+
+The ext4 path retains the original fixed `/var` block-device, root-inode,
+mount-ID and attribute checks. A ZFS system-state image instead verifies the
+separately declared `${pool}/var/lib` dataset using actual bounded `statmount`
+filesystem type/magic, device, unique mount ID, source, mount root, mountpoint
+and writable/nosuid/nodev attributes. A subtree bind, ID map, read-only mount,
+foreign pool or undeclared mountpoint is refused. Its mounted `/var` and
+`/var/lib` root contexts are explicit image configuration, not relabelling
+stored children. The existing Network/ext4 provisioner behavior is unchanged;
+this view extension does not qualify a separate Network-on-ZFS producer.
+
+Normal Source and Cache signers have distinct cap-empty read-only domains,
+purpose-specific credential and socket types, and explicit fixed-unit contexts.
+Pinned systemd 261.2 uses that service context to select the activated listener's
+creation SID. The listener's `SO_PEERCRED` still names PID1, not the signer;
+this source change does not reinterpret it as actual signer-process evidence.
+Original and idmapped views share inode labels, while original-root DAC stays
+Controller-only. Root reads Cache through its existing checked view, never
+through a new capability or direct Controller-owned 0700-root grant.
+
+Protected types deliberately remain outside `file_type`. Explicit
+`filesystem:associate` grants follow the pinned refpolicy's actual `fs_t`
+ext4/ZFS xattr superblocks, `tmpfs_t` runtime/credential mounts and `device_t`
+devtmpfs. These source rules are not proof of actual mounted labels or delivery.
+
+The pure C reducer cases and shared effective-checker regressions are authored
+but unrun in this leaf. Module evaluation, compiled expanded policy, actual
+idmapped mount/association and signer/Controller startup all remain unqualified.
+In particular, `.fc` patterns do not prove that PID1's raw credential-file
+creation receives the intended type: the actual unit credential-root label,
+creation transition, input custody and delivered readback need a separate
+measured closure. Normal Controller/Root private-state preparation, the Storage
+prestart install/chmod contradiction, Cache-recovery's distinct state access,
+and deployment-provisioned broker peer SIDs are still explicit prerequisites.
+No signed manifest is rewritten, and neither selected policy paths nor a
+point-in-time policy-byte comparison mint a normal-Root matrix proof.
 
 The helper never receives a journal-data or credential FD. `SCM_RIGHTS`
 receive checks the descriptor's RDWR access mode, so its own lock type permits

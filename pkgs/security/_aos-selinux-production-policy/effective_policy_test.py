@@ -139,6 +139,69 @@ class EffectivePolicyTest(unittest.TestCase):
             + len(effective_policy.NEGATIVE_ACCESS),
         )
 
+    def test_view_preparer_cannot_modify_generic_ancestry_or_foreign_target(self) -> None:
+        for target, object_class, permission in (
+            ("var_lib_t", "dir", "add_name"),
+            ("aos_sandbox_view_parent_t", "dir", "write"),
+            ("aos_sandbox_cache_view_mount_t", "dir", "mounton"),
+            ("bin_t", "file", "execute_no_trans"),
+            ("aos_sandbox_source_journal_t", "file", "open"),
+        ):
+            with self.subTest(target=target, permission=permission):
+                policy = FakePolicy()
+                access = effective_policy.Access(
+                    "aos_sandbox_source_view_preparer_t", target, object_class, permission,
+                )
+                policy.allows[access] = [FakeRule("foreign preparation permission", active=False)]
+                with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_static_view_provider_dac_search_never_opens_protected_data(self) -> None:
+        for target in (
+            "aos_sandbox_source_journal_t",
+            "aos_sandbox_cache_journal_t",
+            "aos_sandbox_cache_object_t",
+            "aos_sandbox_source_signer_credential_t",
+            "aos_sandbox_controller_credential_t",
+            "aos_method46_storage_floor_t",
+            "aos_method46_controller_lock_t",
+        ):
+            with self.subTest(target=target):
+                policy = FakePolicy()
+                access = effective_policy.Access(
+                    "aos_sandbox_runtime_roots_t", target, "file", "open",
+                )
+                policy.allows[access] = [FakeRule("foreign protected data access", active=False)]
+                with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_signer_has_no_write_capability_or_foreign_seed_fallback(self) -> None:
+        for domain, target, object_class, permission in (
+            ("aos_sandbox_source_signer_t", "aos_sandbox_source_journal_t", "file", "write"),
+            ("aos_sandbox_cache_signer_t", "aos_sandbox_cache_signer_t", "capability", "dac_read_search"),
+            ("init_t", "aos_sandbox_source_signer_credential_t", "file", "read"),
+            ("aos_sandbox_controller_t", "aos_sandbox_cache_signer_credential_t", "file", "read"),
+        ):
+            with self.subTest(domain=domain, permission=permission):
+                policy = FakePolicy()
+                access = effective_policy.Access(domain, target, object_class, permission)
+                policy.allows[access] = [FakeRule("signer authority widening")]
+                with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_protected_association_is_a_required_object_to_superblock_grant(self) -> None:
+        for object_type, filesystem in (
+            ("aos_sandbox_source_journal_t", "fs_t"),
+            ("aos_sandbox_cache_view_mount_t", "tmpfs_t"),
+            ("aos_method46_tpm_device_t", "device_t"),
+        ):
+            with self.subTest(object_type=object_type):
+                policy = FakePolicy()
+                access = effective_policy.Access(object_type, filesystem, "filesystem", "associate")
+                policy.allows[access] = []
+                with self.assertRaisesRegex(ValueError, "missing effective allow"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def test_missing_transition_fails(self) -> None:
         policy = FakePolicy()
         transition = effective_policy.TRANSITIONS[0]

@@ -5,6 +5,9 @@ installed-policy/currentness producer. Missing preparation and credential
 label delivery are deliberately not papered over with init-domain grants.
 """
 
+import view_policy
+
+
 OWNERS = ("controller", "storage", "policy_authority")
 HELPERS = ("controller", "storage")
 OWNER_DOMAINS = tuple(f"aos_sandbox_{role}_t" for role in OWNERS)
@@ -13,8 +16,8 @@ PREPARER_DOMAINS = (
     "aos_sandbox_cache_view_preparer_t",
     "aos_sandbox_source_view_preparer_t",
 )
-ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS)
-NO_DEFAULT_ENTRY = OWNER_DOMAINS
+ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS)
+NO_DEFAULT_ENTRY = (*OWNER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS)
 ROOT_CUSTODY_CUTS = (
     ("fd", "use"),
     ("unix_stream_socket", "read"),
@@ -217,4 +220,8 @@ def matrix(Access, Transition, accesses, ordinary_domains):
             negative.append(Access(domain, "*", "capability", "sys_admin"))
             negative.append(Access(domain, "*", "cap_userns", "sys_admin"))
 
+    view_positive, view_negative, view_transitions = view_policy.matrix(Access, Transition, accesses, all_roles)
+    positive.extend(view_positive)
+    negative.extend(view_negative)
+    transitions.extend(view_transitions)
     return tuple(sorted(set(positive))), tuple(sorted(set(negative))), tuple(transitions)

@@ -1156,14 +1156,25 @@ out:
         return result;
 }
 
+#include "view-roots.h"
+
 int main(int argc, char **argv) {
         bool prepare_network_roots;
         bool prepare_owners = false;
 
+        if (argc == 4 && strcmp(argv[1], "--root") == 0 && strcmp(argv[2], "/") == 0 &&
+            strcmp(argv[3], "--prepare-sandbox-view-roots") == 0) {
+                if ((!AOS_SOURCE_VIEW_REQUIRED && !AOS_CACHE_VIEW_REQUIRED) ||
+                    verify_selinux_authority() < 0)
+                        return 1;
+                return provision_view_roots() < 0 ? 1 : 0;
+        }
+
         if (argc != 4 || strcmp(argv[1], "--root") != 0 ||
             (strcmp(argv[2], "/sysroot") != 0 && strcmp(argv[2], "/") != 0)) {
                 errorf("usage: aos-selinux-runtime-roots --root /sysroot|/ "
-                       "--prepare-var-base|--prepare-sandbox-network-roots|--prepare-sandbox-owner-roots");
+                       "--prepare-var-base|--prepare-sandbox-network-roots|"
+                       "--prepare-sandbox-owner-roots|--prepare-sandbox-view-roots");
                 return 2;
         }
         if (strcmp(argv[3], "--prepare-var-base") == 0)

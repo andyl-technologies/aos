@@ -14,6 +14,8 @@
   aos-sandboxd,
   aos-storaged,
   aos-method46-tpm-helper,
+  aos-sandbox-view-preparer-tools,
+  viewPreparers ? [],
 }: let
   policyVersion = "33";
   policySupport = ./_aos-selinux-production-policy;
@@ -33,7 +35,21 @@
     builtins.readFile (policySupport + "/aos_sandbox.te")
     + "\n"
     + builtins.readFile (policySupport + "/owner_confinement.te")
+    + "\n"
+    + builtins.readFile (policySupport + "/view_confinement.te")
   );
+  viewEntrypointContext = entry: let
+    basename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString entry.package));
+    allowedPrograms =
+      if entry.role == "source"
+      then ["aos-sandbox-source-signer-view"]
+      else if entry.role == "cache"
+      then ["aos-sandbox-cache-journal-view" "aos-sandbox-cache-signer-views" "aos-sandbox-cache-signer-views-stop"]
+      else [];
+  in
+    if builtins.elem entry.program allowedPrograms && builtins.match "[a-z0-9]{32}-${entry.program}" basename != null
+    then "/(nix|nix\\.lower)/store/${basename}/bin/${entry.program} -- system_u:object_r:aos_sandbox_${entry.role}_view_preparer_exec_t\n"
+    else throw "view preparation requires an exact evaluated fixed Source/Cache script entrypoint";
   inspectorPathRegex = "/(nix|nix\\.lower)/store/${netdBasenameRegex}/bin/aos-sandbox-network-namespace-inspector";
   inspectorPath = basename: "/nix/store/${basename}/bin/aos-sandbox-network-namespace-inspector";
   siblingBasename =
@@ -62,9 +78,10 @@
     then
       builtins.toFile "aos_sandbox.fc" (
         builtins.replaceStrings
-        ["@AOS_NETD_BASENAME_REGEX@" "@AOS_ZFS_WORKER_BASENAME_REGEX@" "@AOS_CONTROLLER_BASENAME_REGEX@" "@AOS_STORAGE_BASENAME_REGEX@" "@AOS_TPM_HELPER_BASENAME_REGEX@"]
-        [netdBasenameRegex workerBasenameRegex (exactPackageBasename "aos-sandboxd" aos-sandboxd) (exactPackageBasename "aos-storaged" aos-storaged) (exactPackageBasename "aos-method46-tpm-helper" aos-method46-tpm-helper)]
+        ["@AOS_NETD_BASENAME_REGEX@" "@AOS_ZFS_WORKER_BASENAME_REGEX@" "@AOS_CONTROLLER_BASENAME_REGEX@" "@AOS_STORAGE_BASENAME_REGEX@" "@AOS_TPM_HELPER_BASENAME_REGEX@" "@AOS_VIEW_TOOLS_BASENAME_REGEX@"]
+        [netdBasenameRegex workerBasenameRegex (exactPackageBasename "aos-sandboxd" aos-sandboxd) (exactPackageBasename "aos-storaged" aos-storaged) (exactPackageBasename "aos-method46-tpm-helper" aos-method46-tpm-helper) (exactPackageBasename "aos-sandbox-view-preparer-tools" aos-sandbox-view-preparer-tools)]
         (builtins.readFile (policySupport + "/aos_sandbox.fc"))
+        + builtins.concatStringsSep "" (map viewEntrypointContext viewPreparers)
       )
     else throw "aos-netd SELinux label must match only the evaluated package root";
 in
@@ -258,6 +275,8 @@ in
             "$aos_module.pp" \
             ${policySupport}/aos_sandbox.te \
             ${policySupport}/aos_sandbox_attribute_negative.te \
+            ${policySupport}/view_confinement.te \
+            ${policySupport}/view_policy.py \
             attribute-negative-diagnostic \
             deficient-source-diagnostic \
             deficient-binary-diagnostic \

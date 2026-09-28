@@ -7,6 +7,7 @@
 }: let
   cfg = config.aos.sandbox.policyAuthority;
   controller = config.aos.sandbox.controller;
+  preparer = import ./_view-preparer.nix {inherit config pkgs;};
   cacheRecovery = config.systemd.services.aos-sandbox-policy-cache-recovery;
   cacheRecoveryConfig = cacheRecovery.serviceConfig;
   cacheSignerView = config.aos.sandbox.cacheSignerView or {enable = false;};
@@ -48,7 +49,7 @@
   credentialFiles = requiredCredentials // projectCredentials // cacheCredentials // controllerCredentials // sourceCredentials;
   cacheJournalSource = "/var/lib/aos/sandbox/cache-residency-journals";
   cacheJournalView = "/run/aos/sandbox-policy-cache-journals";
-  prepareCacheJournalView = pkgs.writeShellScriptBin "aos-sandbox-cache-journal-view" ''
+  prepareCacheJournalView = preparer.writeScript "aos-sandbox-cache-journal-view" ''
     set -eu
 
     source=${cacheJournalSource}
@@ -57,14 +58,14 @@
     controller_gid=${toString controller.gid}
 
     require_root_directory() {
-      test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g' "$1")" = directory:0:0
-      mode="$(${pkgs.coreutils}/bin/stat --format='%a' "$1")"
+      test "$(${preparer.coreutils}/stat --format='%F:%u:%g' "$1")" = directory:0:0
+      mode="$(${preparer.coreutils}/stat --format='%a' "$1")"
       test $((8#$mode & 022)) -eq 0
     }
 
     for directory in /var /var/lib /var/lib/aos /var/lib/aos/sandbox; do
       if ! test -e "$directory"; then
-        ${pkgs.coreutils}/bin/mkdir --mode=0755 "$directory"
+        ${preparer.coreutils}/mkdir --mode=0755 "$directory"
       fi
       require_root_directory "$directory"
     done
@@ -77,7 +78,7 @@
       exit 1
     fi
     if test -e "$legacy"; then
-      test "$(${pkgs.coreutils}/bin/stat --format='%F' "$legacy")" = directory
+      test "$(${preparer.coreutils}/stat --format='%F' "$legacy")" = directory
     fi
     for name in state.journal authority.journal clock.journal policy-hold.journal; do
       for suffix in "" .lock .compact.tmp; do
@@ -88,10 +89,10 @@
     done
 
     if ! test -e "$source"; then
-      ${pkgs.coreutils}/bin/mkdir --mode=0700 "$source"
-      ${pkgs.coreutils}/bin/chown "$controller_uid:$controller_gid" "$source"
+      ${preparer.coreutils}/mkdir --mode=0700 "$source"
+      ${preparer.coreutils}/chown "$controller_uid:$controller_gid" "$source"
     fi
-    test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g:%a' "$source")" = "directory:$controller_uid:$controller_gid:700"
+    test "$(${preparer.coreutils}/stat --format='%F:%u:%g:%a' "$source")" = "directory:$controller_uid:$controller_gid:700"
 
     # Reject unexpected initial contents. This is not a live filename filter;
     # a future reader must still open only fixed names and verify currentness.
@@ -106,33 +107,33 @@
         "$source"/policy-hold.journal|"$source"/policy-hold.journal.lock|"$source"/policy-hold.journal.compact.tmp) ;;
         *) exit 1 ;;
       esac
-      test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g:%a' "$entry")" = "regular file:$controller_uid:$controller_gid:600"
+      test "$(${preparer.coreutils}/stat --format='%F:%u:%g:%a' "$entry")" = "regular file:$controller_uid:$controller_gid:600"
     done
 
     if ! test -e /run/aos; then
-      ${pkgs.coreutils}/bin/mkdir --mode=0755 /run/aos
+      ${preparer.coreutils}/mkdir --mode=0755 /run/aos
     fi
     require_root_directory /run
     require_root_directory /run/aos
     if ! test -e "$view"; then
-      ${pkgs.coreutils}/bin/mkdir --mode=0700 "$view"
+      ${preparer.coreutils}/mkdir --mode=0700 "$view"
     fi
-    test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g:%a' "$view")" = directory:0:0:700
-    if ${pkgs.util-linux}/bin/findmnt --mountpoint "$view" --noheadings >/dev/null; then
+    test "$(${preparer.coreutils}/stat --format='%F:%u:%g:%a' "$view")" = directory:0:0:700
+    if ${preparer.utilLinux}/findmnt --mountpoint "$view" --noheadings >/dev/null; then
       exit 1
     fi
 
-    ${pkgs.util-linux}/bin/mount --bind \
+    ${preparer.utilLinux}/mount --internal-only --no-mtab --bind \
       --map-users "$controller_uid:0:1" \
       --map-groups "$controller_gid:0:1" \
       --options ro,nosuid,nodev,noexec,nosymfollow \
       "$source" "$view"
-    trap '${pkgs.util-linux}/bin/umount --no-canonicalize ${cacheJournalView}' EXIT
+    trap '${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize ${cacheJournalView}' EXIT
 
-    test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g:%a' "$view")" = directory:0:0:700
-    test "$(${pkgs.coreutils}/bin/stat --format='%d:%i' "$source")" = \
-      "$(${pkgs.coreutils}/bin/stat --format='%d:%i' "$view")"
-    mount_options="$(${pkgs.util-linux}/bin/findmnt --noheadings --mountpoint "$view" --output VFS-OPTIONS)"
+    test "$(${preparer.coreutils}/stat --format='%F:%u:%g:%a' "$view")" = directory:0:0:700
+    test "$(${preparer.coreutils}/stat --format='%d:%i' "$source")" = \
+      "$(${preparer.coreutils}/stat --format='%d:%i' "$view")"
+    mount_options="$(${preparer.utilLinux}/findmnt --noheadings --mountpoint "$view" --output VFS-OPTIONS)"
     for option in ro nosuid nodev noexec nosymfollow; do
       case ",$mount_options," in
         *,$option,*) ;;
@@ -143,6 +144,13 @@
   '';
 in {
   options.aos.sandbox.policyAuthority = {
+    _preparerPackage = lib.mkOption {
+      type = lib.types.package;
+      internal = true;
+      readOnly = true;
+      default = prepareCacheJournalView;
+      description = "Exact immutable checked cache view entrypoint selected by the production policy.";
+    };
     enable = lib.mkEnableOption "the root-owned signed deployment policy input authority";
 
     package = lib.mkOption {
@@ -243,23 +251,30 @@ in {
       before = ["aos-sandboxd.service" "aos-sandbox-policy-authorityd.service"];
       after = ["local-fs.target"];
       unitConfig.RequiresMountsFor = ["/var/lib/aos/sandbox"];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = "${prepareCacheJournalView}/bin/aos-sandbox-cache-journal-view";
-        ExecStop = "${pkgs.util-linux}/bin/umount --no-canonicalize ${cacheJournalView}";
-        User = "root";
-        Group = "root";
-        UMask = "0077";
-        CapabilityBoundingSet = [
-          "CAP_CHOWN"
-          "CAP_DAC_READ_SEARCH"
-          "CAP_SETGID"
-          "CAP_SETUID"
-          "CAP_SYS_ADMIN"
-        ];
-        RestrictAddressFamilies = ["AF_UNIX"];
-      };
+      serviceConfig =
+        preparer.serviceConfig
+        // {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          SELinuxContext = lib.mkIf preparer.confined "system_u:system_r:aos_sandbox_cache_view_preparer_t";
+          # Keep the script's exact labelled package independent of the policy
+          # and provisioner that label it. Both fixed commands use this unit's
+          # reviewed preparation role; neither accepts a caller-selected path.
+          ExecStartPre = lib.mkIf preparer.confined "${config.aos.security.selinux._runtimeRootsProvisioner}/bin/aos-selinux-runtime-roots --root / --prepare-sandbox-view-roots";
+          ExecStart = "${prepareCacheJournalView}/bin/aos-sandbox-cache-journal-view";
+          ExecStop = "${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize ${cacheJournalView}";
+          User = "root";
+          Group = "root";
+          UMask = "0077";
+          CapabilityBoundingSet = [
+            "CAP_CHOWN"
+            "CAP_DAC_READ_SEARCH"
+            "CAP_SETGID"
+            "CAP_SETUID"
+            "CAP_SYS_ADMIN"
+          ];
+          RestrictAddressFamilies = ["AF_UNIX"];
+        };
     };
 
     systemd.services.aos-sandbox-policy-authorityd = {

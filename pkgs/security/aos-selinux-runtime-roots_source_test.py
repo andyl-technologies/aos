@@ -35,8 +35,8 @@ class ExistingObjectAdmissionTests(unittest.TestCase):
         inspect = function("inspect_directory")
 
         for predicate in (
-            "st.st_uid != 0",
-            "st.st_gid != 0",
+            "st.st_uid != spec->owner",
+            "st.st_gid != spec->group",
             "(st.st_mode & 07777) != spec->mode",
             "st.st_dev != expected_device",
             "mount_id != expected_mount_id",
@@ -89,7 +89,7 @@ class PartialTopologyTests(unittest.TestCase):
             r"\bchmod(at)?\s*\(",
             r"\bfchmod(at)?\s*\(",
             r"\bchown(at)?\s*\(",
-            r"\bfchown(at)?\s*\(",
+            r"\bfchownat\s*\(",
             r"\bsetxattr\s*\(",
             r"\bfsetxattr\s*\(",
             r"\bunlink(at)?\s*\(",
@@ -100,6 +100,15 @@ class PartialTopologyTests(unittest.TestCase):
         for pattern in forbidden:
             with self.subTest(pattern=pattern):
                 self.assertIsNone(re.search(pattern, SOURCE))
+
+        # The existing configurable-owner extension may chown only its held,
+        # just-created directory. Existing-object admission never repairs it.
+        self.assertNotIn("fchown(", function("inspect_directory"))
+        create = function("open_or_create_directory")
+        self.assertEqual(SOURCE.count("fchown("), 1)
+        self.assertIn("if (created && (spec->owner != 0 || spec->group != 0))", create)
+        self.assertLess(create.index("create_directory("), create.index("fchown("))
+        self.assertLess(create.index("fchown("), create.index("sync_directory("))
 
     def test_racing_eexist_is_failure_not_adoption(self) -> None:
         create = function("create_directory")

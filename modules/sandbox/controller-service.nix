@@ -511,7 +511,7 @@ in {
       };
       serviceConfig = {
         Type = "notify";
-        SELinuxContext = lib.mkIf cfg.method46TpmFloor.required "system_u:system_r:aos_sandbox_controller_t";
+        SELinuxContext = lib.mkIf (config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") "system_u:system_r:aos_sandbox_controller_t";
         NotifyAccess = "main";
         ExecStart =
           "${cfg.package}/bin/aos-sandboxd ${toString controller.uid} ${toString controller.gid}"
