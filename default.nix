@@ -1522,6 +1522,10 @@ in {
       native-sandbox-boundary = import ./tests/build/native-sandbox-boundary.nix {
         pkgs = buildPackages;
       };
+      native-acquire-v3-protocol = import ./tests/build/native-acquire-v3-protocol.nix {
+        pkgs = buildPackages;
+        inherit lib;
+      };
       aos-dev-cli = import ./tests/build/aos-dev-cli.nix {inherit pkgs;};
       accache = import ./tests/build/accache.nix {
         inherit lib;
@@ -1644,7 +1648,7 @@ in {
       ) (builtins.attrNames discoverSystems));
     in
       {
-        inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-dev-cache-identity accache erofs-deduplication;
+        inherit toolchain-boundaries native-sandbox-boundary native-acquire-v3-protocol aos-dev-cli aos-dev-cache-identity accache erofs-deduplication;
         inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-llvm linux-cross-runtime linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-support package-root-image runtime-python-outputs sandbox-controller-service sandbox-policy-cache-recovery-service sandbox-cache-signer-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-export structured-attrs-scrub systemd-verity vm-rootfs-adapter golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
@@ -1657,7 +1661,7 @@ in {
               then [bootstrap-seed]
               else []
             )
-            ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-dev-cache-identity accache critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config linux-hosted-toolchain linux-workerd package-platform-support package-root-image runtime-python-outputs sandbox-controller-service sandbox-policy-cache-recovery-service sandbox-cache-signer-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-export structured-attrs-scrub systemd-verity vm-rootfs-adapter]
+            ++ [toolchain-boundaries.all native-sandbox-boundary native-acquire-v3-protocol aos-dev-cli aos-dev-cache-identity accache critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config linux-hosted-toolchain linux-workerd package-platform-support package-root-image runtime-python-outputs sandbox-controller-service sandbox-policy-cache-recovery-service sandbox-cache-signer-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-export structured-attrs-scrub systemd-verity vm-rootfs-adapter]
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm
             ++ builtins.attrValues linux-hosted-rust
