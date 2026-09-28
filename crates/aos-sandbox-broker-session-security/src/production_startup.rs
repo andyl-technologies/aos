@@ -10,14 +10,11 @@ use std::fs::File;
 use std::os::fd::OwnedFd;
 use std::sync::Arc;
 
-use aos_sandbox_linux::inherited_fd::duplicate_initial_activation_table;
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
-use aos_sandbox_storage::activation::{PID1_LAUNCH_IMAGE_FD_NAME, take_systemd_startup};
+use aos_sandbox_storage::activation::take_systemd_startup;
 use aos_sandbox_storage::service::StorageServiceError;
 
 use crate::{ProductionBrokerSessionActivationV1, ProtectedBrokerSessionFixedEndpointV1};
-
-pub(crate) const CONTROLLER_PUBLISHER_FD_NAME: &str = "aos-sandboxd-publisher";
 
 /// Retains an original launch observation, not a currentness or TPM proof.
 #[derive(Clone)]
@@ -108,51 +105,22 @@ impl ProductionStorageStartupV1 {
 
 pub(crate) fn capture_controller(
     publisher: bool,
-) -> Result<(Option<OwnedFd>, Option<Pid1LaunchImageV1>), crate::BrokerSessionSecurityError> {
-    let count = match std::env::var("LISTEN_FDS") {
-        Ok(value) => value
-            .parse::<usize>()
-            .map_err(|_| crate::BrokerSessionSecurityError::Currentness)?,
-        Err(std::env::VarError::NotPresent) => 0,
-        Err(_) => return Err(crate::BrokerSessionSecurityError::Currentness),
-    };
-    if count > 2 {
-        return Err(crate::BrokerSessionSecurityError::Currentness);
-    }
-    let names = if count == 0 {
-        if ["LISTEN_PID", "LISTEN_FDNAMES"]
-            .iter()
-            .any(|name| std::env::var_os(name).is_some())
-        {
-            return Err(crate::BrokerSessionSecurityError::Currentness);
-        }
-        Vec::new()
-    } else {
-        crate::production_activation::validate_activation_process(count)
+) -> Result<
+    (
+        Option<OwnedFd>,
+        Option<Pid1LaunchImageV1>,
+        aos_sandbox::normal_root::ProductionControllerNormalRootCaptureV1,
+    ),
+    crate::BrokerSessionSecurityError,
+> {
+    let (profile, publisher_fd, image) =
+        aos_sandbox::normal_root::ProductionControllerNormalRootCaptureV1::capture(publisher)
             .map_err(|_| crate::BrokerSessionSecurityError::Currentness)?;
-        crate::production_activation::activation_names(count)
-            .map_err(|_| crate::BrokerSessionSecurityError::Currentness)?
-    };
-    if !valid_controller_names(&names, publisher) {
-        return Err(crate::BrokerSessionSecurityError::Currentness);
-    }
-
-    let descriptors = duplicate_initial_activation_table(count)
-        .map_err(|_| crate::BrokerSessionSecurityError::Currentness)?;
-    let mut publisher_fd = None;
-    let mut image = None;
-    for (name, descriptor) in names.iter().zip(descriptors) {
-        match name.as_str() {
-            CONTROLLER_PUBLISHER_FD_NAME => publisher_fd = Some(descriptor),
-            PID1_LAUNCH_IMAGE_FD_NAME => image = Some(descriptor),
-            _ => return Err(crate::BrokerSessionSecurityError::Currentness),
-        }
-    }
     let image = admit_launch_observation(
         ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
         image,
     )?;
-    Ok((publisher_fd, image))
+    Ok((publisher_fd, image, profile))
 }
 
 fn admit_launch_observation(
@@ -167,65 +135,6 @@ fn admit_launch_observation(
     }))
 }
 
-fn valid_controller_names(names: &[String], publisher: bool) -> bool {
-    names.len() <= 2
-        && names
-            .iter()
-            .filter(|name| name.as_str() == CONTROLLER_PUBLISHER_FD_NAME)
-            .count()
-            == usize::from(publisher)
-        && names
-            .iter()
-            .filter(|name| name.as_str() == PID1_LAUNCH_IMAGE_FD_NAME)
-            .count()
-            <= 1
-        && names.iter().all(|name| {
-            matches!(
-                name.as_str(),
-                CONTROLLER_PUBLISHER_FD_NAME | PID1_LAUNCH_IMAGE_FD_NAME
-            )
-        })
-}
-
 fn startup_error(message: impl Into<String>) -> StorageServiceError {
     StorageServiceError::Activation(message.into())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tpm_floor_controller_launch_table_keeps_publisher_and_image_roles_distinct() {
-        let names = |entries: &[&str]| {
-            entries
-                .iter()
-                .map(|entry| (*entry).to_owned())
-                .collect::<Vec<_>>()
-        };
-        assert!(valid_controller_names(&[], false));
-        assert!(valid_controller_names(
-            &names(&[PID1_LAUNCH_IMAGE_FD_NAME]),
-            false
-        ));
-        assert!(valid_controller_names(
-            &names(&[CONTROLLER_PUBLISHER_FD_NAME]),
-            true
-        ));
-        assert!(valid_controller_names(
-            &names(&[CONTROLLER_PUBLISHER_FD_NAME, PID1_LAUNCH_IMAGE_FD_NAME]),
-            true
-        ));
-        for entries in [
-            vec![PID1_LAUNCH_IMAGE_FD_NAME],
-            vec![CONTROLLER_PUBLISHER_FD_NAME, CONTROLLER_PUBLISHER_FD_NAME],
-            vec![CONTROLLER_PUBLISHER_FD_NAME, "unknown"],
-        ] {
-            assert!(!valid_controller_names(&names(&entries), true));
-        }
-        assert!(!valid_controller_names(
-            &names(&[CONTROLLER_PUBLISHER_FD_NAME]),
-            false
-        ));
-    }
 }

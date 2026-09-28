@@ -100,7 +100,13 @@ in
       symbols = testing.mkSymbolCheck {
         pkg = self;
         libName = "libaos-fuse-transport.so";
-        symbols = ["aos_fuse_transport_run" "aos_fuse_transport_run_fallback_v2"];
+        symbols = [
+          "aos_fuse_transport_run"
+          "aos_fuse_transport_run_fallback_v2"
+          "aos_fuse_transport_prepare_v1"
+          "aos_fuse_transport_continue_prepared_v1"
+          "aos_fuse_transport_destroy_prepared_v1"
+        ];
       };
 
       link = testing.mkLinkCheck {
@@ -134,13 +140,30 @@ in
                          "fallback operation-table embedding changed");
           _Static_assert(sizeof(struct aos_fuse_fallback_limits_v2) == 80,
                          "fallback limit-table ABI changed");
+          _Static_assert(sizeof(struct aos_fuse_preparation_v1) == 88,
+                         "prepared-session v1 ABI changed");
+          _Static_assert(offsetof(struct aos_fuse_preparation_v1, limits) == 24,
+                         "prepared-session limit offset changed");
 
           int main(void) {
             int (*volatile run)(
               int, int, const struct aos_fuse_core_operations *, void *,
               const struct aos_fuse_limits *) = aos_fuse_transport_run;
+            int (*volatile prepare)(
+              int, int, const struct aos_fuse_preparation_v1 *,
+              struct aos_fuse_prepared_session_v1 **) =
+                aos_fuse_transport_prepare_v1;
+            int (*volatile resume)(
+              struct aos_fuse_prepared_session_v1 *,
+              const struct aos_fuse_core_operations *, void *) =
+                aos_fuse_transport_continue_prepared_v1;
+            void (*volatile destroy)(struct aos_fuse_prepared_session_v1 *) =
+              aos_fuse_transport_destroy_prepared_v1;
             return AOS_FUSE_TRANSPORT_ABI_MAJOR == 1U &&
-                           AOS_FUSE_TRANSPORT_ABI_MINOR == 0U && run != 0
+                           AOS_FUSE_TRANSPORT_ABI_MINOR == 0U && run != 0 &&
+                           AOS_FUSE_PREPARED_SESSION_ABI_MAJOR == 1U &&
+                           AOS_FUSE_PREPARED_SESSION_ABI_MINOR == 0U &&
+                           prepare != 0 && resume != 0 && destroy != 0
                        ? 0
                        : 1;
           }

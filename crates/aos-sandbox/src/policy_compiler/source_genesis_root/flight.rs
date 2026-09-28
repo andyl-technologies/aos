@@ -13,33 +13,23 @@ use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::io::Write as _;
 use std::os::fd::{AsFd as _, BorrowedFd};
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use aos_sandbox_core::{RawClockProvenance, RawPairedClockSample};
 use aos_sandbox_linux::boot::KernelBootId;
-use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
-use aos_sandbox_linux::selinux_policy::VerifiedLiveSelinuxPolicy;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
 use aos_sandbox_linux::unix_stream::{RetainedUnixStream, UnixStreamSubjectChunk};
 
 use crate::hierarchy::genesis_profile::{SourceGenesisErrorV1, take};
 
-use super::super::controller_readback_session::fresh_root_nonce;
-use super::super::root_v8_released_proof::POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2;
 use super::records::{RootSourceGenesisIntentRecordV1, SourceHierarchyFloorRecordV1};
 
-use super::wire::{
-    ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1 as HELLO_MAGIC,
-    ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1 as START_MAGIC,
-};
-const ROOT_CONTEXT: &[u8] = b"system_u:system_r:aos_sandbox_policy_authority_t:s0";
-const ROOT_CGROUP: &str = "system.slice/aos-sandbox-policy-authorityd.service";
+use crate::normal_root::OriginalNormalRootPeerV1;
 const MAXIMUM_FLIGHT: Duration = Duration::from_secs(60);
 
 /// Borrows one actual Root prepare flight; decoding an intent cannot create it.
 pub struct HeldRootSourceGenesisIntentV1<'flight> {
-    origin: &'flight OriginalRootGenesisFlightV1,
+    origin: &'flight OriginalRootGenesisFlightV1<'flight>,
     record: RootSourceGenesisIntentRecordV1,
     deadline: u64,
     expires: i64,
@@ -86,7 +76,7 @@ impl HeldRootSourceGenesisIntentV1<'_> {
 
 /// Borrows the actual original Root flight through Controller and Source ACK.
 pub struct RootSourceGenesisFloorProofV1<'flight> {
-    origin: &'flight OriginalRootGenesisFlightV1,
+    origin: &'flight OriginalRootGenesisFlightV1<'flight>,
     floor: SourceHierarchyFloorRecordV1,
 }
 
@@ -118,11 +108,9 @@ impl RootSourceGenesisFloorProofV1<'_> {
 
 // Private to the same-flight coordinator. There is no adoption constructor
 // accepting caller-supplied peers, subjects, floor bytes, or ready flags.
-pub(super) struct OriginalRootGenesisFlightV1 {
+pub(super) struct OriginalRootGenesisFlightV1<'profile> {
     stream: RefCell<RetainedUnixStream>,
-    cgroup: RetainedCgroupAnchor,
-    policy: VerifiedLiveSelinuxPolicy,
-    policy_path: String,
+    peer: OriginalNormalRootPeerV1<'profile>,
     clock: RawPairedClockSample,
     started: Instant,
     poisoned: Cell<bool>,
@@ -130,68 +118,25 @@ pub(super) struct OriginalRootGenesisFlightV1 {
     source_uid: u32,
 }
 
-impl OriginalRootGenesisFlightV1 {
-    pub(super) fn connect_configured(policy_path: &str) -> Result<Self, SourceGenesisErrorV1> {
-        let policy = VerifiedLiveSelinuxPolicy::verify(policy_path)
-            .map_err(|_| SourceGenesisErrorV1::Stale)?;
-        let clock = kernel_pair()?;
-        let started = Instant::now();
-        let mut stream =
-            RetainedUnixStream::connect(Path::new(POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2))?;
-        stream.enable_subject_reporting()?;
-        let cgroups = CgroupV2Root::from_owned(File::open("/sys/fs/cgroup")?.into())?;
-        let cgroup = cgroups.resolve(Path::new(ROOT_CGROUP))?;
-        let client_nonce = fresh_root_nonce()?;
-        let mut request = [0; 32];
-        request[..8].copy_from_slice(START_MAGIC);
-        request[8..24].copy_from_slice(&client_nonce);
-        let origin = Self {
-            stream: RefCell::new(stream),
-            cgroup,
-            policy,
-            policy_path: policy_path.to_owned(),
-            clock,
-            started,
-            poisoned: Cell::new(false),
-            nonce: [0; 16],
-            source_uid: 0,
-        };
-        origin.recheck()?;
-        origin.write(&request)?;
-        let hello = origin.receive_exact(56)?;
-        if hello.get(..8) != Some(HELLO_MAGIC.as_slice())
-            || hello[8..16] != [0, 1, 0, 0, 0, 0, 0, 0]
-            || take::<16>(&hello, 16)? != client_nonce
-            || take::<16>(&hello, 32)? == [0; 16]
-            || u32::from_be_bytes(take(&hello, 48)?) == 0
-            || u32::from_be_bytes(take(&hello, 52)?) != rustix::process::getuid().as_raw()
-        {
-            return Err(SourceGenesisErrorV1::NonCanonical);
-        }
-        Ok(Self {
-            nonce: take(&hello, 32)?,
-            source_uid: u32::from_be_bytes(take(&hello, 48)?),
-            ..origin
-        })
-    }
+impl OriginalRootGenesisFlightV1<'_> {
+    // No constructor exists until the real packet-pair coordinator retains
+    // Controller, Source, this selected-profile borrow and one bounded stream.
+    // In particular, a supplied canonical-policy path cannot open this flight.
 
     fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
         if self.poisoned.get() || self.started.elapsed() >= MAXIMUM_FLIGHT {
             return Err(SourceGenesisErrorV1::Stale);
         }
-        self.policy
-            .revalidate(&self.policy_path)
-            .map_err(|_| SourceGenesisErrorV1::Stale)?;
         let stream = self
             .stream
             .try_borrow()
             .map_err(|_| SourceGenesisErrorV1::Stale)?;
         stream.revalidate_original()?;
         require_open_receive_queue(stream.as_fd())?;
-        let peer = stream.peer();
-        let credentials = peer.credentials();
-        let info = self.cgroup.verify_exact_membership(peer.pidfd())?;
-        if credentials.uid() != 0 || info.thread_group_id() != credentials.pid().get() {
+        self.peer
+            .recheck_stream(&stream)
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        if self.source_uid != self.peer.source_uid() {
             return Err(SourceGenesisErrorV1::Stale);
         }
         Ok(())
@@ -271,20 +216,9 @@ impl OriginalRootGenesisFlightV1 {
             .stream
             .try_borrow()
             .map_err(|_| SourceGenesisErrorV1::Stale)?;
-        let expected = stream.peer().credentials();
-        let subject = chunk.subject();
-        let actual = subject.credentials();
-        let info = self.cgroup.verify_exact_membership(subject.pidfd())?;
-        if chunk.socket_context() != ROOT_CONTEXT
-            || actual.pid() != expected.pid()
-            || actual.uid() != expected.uid()
-            || actual.gid() != expected.gid()
-            || info.thread_group_id() != expected.pid().get()
-            || !subject.is_alive()?
-        {
-            return Err(SourceGenesisErrorV1::Stale);
-        }
-        Ok(())
+        self.peer
+            .require_chunk(&stream, chunk)
+            .map_err(|_| SourceGenesisErrorV1::Stale)
     }
 }
 

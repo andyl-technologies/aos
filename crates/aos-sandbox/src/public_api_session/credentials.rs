@@ -29,6 +29,10 @@ const OPERATOR_RECOVERY_KEY_NAME: &str = "operator-recovery-controller-key-v1";
 const OPERATOR_STORAGE_OWNER_KEY_NAME: &str = "operator-recovery-storage-owner-key-v1";
 const PROJECT_AUTHORIZATION_ISSUER_NAME: &str = "project-authorization-issuer-v2";
 const CONTROLLER_SOURCE_TREE_SEED_ISSUER_NAME: &str = "controller-source-tree-seed-issuer-v1";
+const SOURCE_GENESIS_PACKET_NAMES: [&str; 2] = [
+    "controller-source-tree-seed-v1",
+    "project-authorization-source-v2",
+];
 
 /// Retains one fixed protected credential and rejects replacement before use.
 pub(crate) struct PinnedSystemdCredential {
@@ -38,6 +42,7 @@ pub(crate) struct PinnedSystemdCredential {
     directory_identity: (u64, u64),
     file_identity: CredentialIdentity,
     bytes: Zeroizing<Vec<u8>>,
+    exact_bytes: Option<u64>,
 }
 
 /// Existing operator recovery callers share the same protected file custody.
@@ -81,6 +86,41 @@ impl PinnedSystemdCredential {
         Self::load_named(CONTROLLER_SOURCE_TREE_SEED_ISSUER_NAME)
     }
 
+    /// Retains both exact administrative packets, or no optional startup pair.
+    ///
+    /// # Errors
+    ///
+    /// Rejects partial, unsafe, nonexact or changing protected file custody.
+    pub(crate) fn load_source_genesis_packets_optional()
+    -> Result<Option<[Self; 2]>, PublicApiSessionError> {
+        let path = std::env::var_os("CREDENTIALS_DIRECTORY")
+            .map(PathBuf::from)
+            .ok_or(PublicApiSessionError::Configuration)?;
+        Self::source_genesis_packets_at(path)
+    }
+
+    fn source_genesis_packets_at(
+        path: PathBuf,
+    ) -> Result<Option<[Self; 2]>, PublicApiSessionError> {
+        let lengths = [
+            crate::hierarchy::source_seed::CONTROLLER_SOURCE_TREE_SEED_BYTES_V1 as u64,
+            crate::publisher_policy::PROJECT_AUTHORIZATION_SOURCE_BYTES_V2 as u64,
+        ];
+        let seed =
+            Self::open_optional_exact(path.clone(), SOURCE_GENESIS_PACKET_NAMES[0], lengths[0])?;
+        let authorization =
+            Self::open_optional_exact(path, SOURCE_GENESIS_PACKET_NAMES[1], lengths[1])?;
+        match (seed, authorization) {
+            (None, None) => Ok(None),
+            (Some(seed), Some(authorization)) => {
+                seed.recheck()?;
+                authorization.recheck()?;
+                Ok(Some([seed, authorization]))
+            }
+            _ => Err(PublicApiSessionError::Configuration),
+        }
+    }
+
     fn load_named(name: &'static str) -> Result<Self, PublicApiSessionError> {
         let path = std::env::var_os("CREDENTIALS_DIRECTORY")
             .map(PathBuf::from)
@@ -105,9 +145,37 @@ impl PinnedSystemdCredential {
             directory_identity: (stat.st_dev, stat.st_ino),
             file_identity,
             bytes,
+            exact_bytes: None,
         };
         retained.recheck()?;
         Ok(retained)
+    }
+
+    fn open_optional_exact(
+        path: PathBuf,
+        name: &'static str,
+        exact_bytes: u64,
+    ) -> Result<Option<Self>, PublicApiSessionError> {
+        let uid = rustix::process::geteuid().as_raw();
+        let directory = open_directory(&path, uid)?;
+        let stat =
+            rustix::fs::fstat(&directory).map_err(|_| PublicApiSessionError::Configuration)?;
+        let Some((bytes, file_identity)) =
+            read_optional_exact_one_with_identity(&directory, name, uid, exact_bytes)?
+        else {
+            return Ok(None);
+        };
+        let retained = Self {
+            name,
+            path,
+            uid,
+            directory_identity: (stat.st_dev, stat.st_ino),
+            file_identity,
+            bytes,
+            exact_bytes: Some(exact_bytes),
+        };
+        retained.recheck()?;
+        Ok(Some(retained))
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {
@@ -124,7 +192,13 @@ impl PinnedSystemdCredential {
         if (stat.st_dev, stat.st_ino) != self.directory_identity {
             return Err(PublicApiSessionError::Stale);
         }
-        let (bytes, identity) = read_one_with_identity(&directory, self.name, self.uid)?;
+        let (bytes, identity) = match self.exact_bytes {
+            Some(length) => {
+                read_optional_exact_one_with_identity(&directory, self.name, self.uid, length)?
+                    .ok_or(PublicApiSessionError::Stale)?
+            }
+            None => read_one_with_identity(&directory, self.name, self.uid)?,
+        };
         if identity != self.file_identity || bytes != self.bytes {
             return Err(PublicApiSessionError::Stale);
         }
@@ -270,13 +344,29 @@ fn read_one_with_identity(
     name: &str,
     uid: u32,
 ) -> Result<(Zeroizing<Vec<u8>>, CredentialIdentity), PublicApiSessionError> {
-    let descriptor = openat(
+    read_optional_one_with_identity(directory, name, uid, MAXIMUM_CREDENTIAL_BYTES)?
+        .ok_or(PublicApiSessionError::Configuration)
+}
+
+fn read_optional_one_with_identity(
+    directory: &OwnedFd,
+    name: &str,
+    uid: u32,
+    maximum_bytes: u64,
+) -> Result<Option<(Zeroizing<Vec<u8>>, CredentialIdentity)>, PublicApiSessionError> {
+    if maximum_bytes == 0 || maximum_bytes > MAXIMUM_CREDENTIAL_BYTES {
+        return Err(PublicApiSessionError::Configuration);
+    }
+    let descriptor = match openat(
         directory,
         name,
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
         Mode::empty(),
-    )
-    .map_err(|_| PublicApiSessionError::Configuration)?;
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(_) => return Err(PublicApiSessionError::Configuration),
+    };
     let mut file = File::from(descriptor);
     let before = file
         .metadata()
@@ -286,13 +376,13 @@ fn read_one_with_identity(
         || before.mode() & 0o077 != 0
         || before.nlink() != 1
         || before.len() == 0
-        || before.len() > MAXIMUM_CREDENTIAL_BYTES
+        || before.len() > maximum_bytes
     {
         return Err(PublicApiSessionError::Configuration);
     }
     let mut bytes = Zeroizing::new(Vec::new());
     (&mut file)
-        .take(MAXIMUM_CREDENTIAL_BYTES + 1)
+        .take(maximum_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| PublicApiSessionError::Configuration)?;
     let after = file
@@ -301,7 +391,23 @@ fn read_one_with_identity(
     if before.len() != bytes.len() as u64 || identity(&before) != identity(&after) {
         return Err(PublicApiSessionError::Stale);
     }
-    Ok((bytes, identity(&after)))
+    Ok(Some((bytes, identity(&after))))
+}
+
+fn read_optional_exact_one_with_identity(
+    directory: &OwnedFd,
+    name: &str,
+    uid: u32,
+    exact_bytes: u64,
+) -> Result<Option<(Zeroizing<Vec<u8>>, CredentialIdentity)>, PublicApiSessionError> {
+    let observed = read_optional_one_with_identity(directory, name, uid, exact_bytes)?;
+    if observed
+        .as_ref()
+        .is_some_and(|(bytes, _)| bytes.len() as u64 != exact_bytes)
+    {
+        return Err(PublicApiSessionError::Configuration);
+    }
+    Ok(observed)
 }
 
 fn identity(metadata: &std::fs::Metadata) -> CredentialIdentity {
@@ -461,5 +567,86 @@ mod tests {
 
         assert_eq!(bytes, new_bytes);
         assert_ne!(identity, new_identity);
+    }
+
+    #[test]
+    fn source_genesis_fixed_file_reads_require_exact_private_packet_bounds() {
+        let directory = tempfile::tempdir().unwrap();
+        let descriptor = open(
+            directory.path(),
+            OFlags::RDONLY | OFlags::DIRECTORY,
+            Mode::empty(),
+        )
+        .unwrap();
+        let uid = rustix::process::geteuid().as_raw();
+        let read = |name| read_optional_exact_one_with_identity(&descriptor, name, uid, 224);
+        for name in SOURCE_GENESIS_PACKET_NAMES {
+            assert!(read(name).unwrap().is_none());
+        }
+        let seed = directory.path().join(SOURCE_GENESIS_PACKET_NAMES[0]);
+        let authorization = directory.path().join(SOURCE_GENESIS_PACKET_NAMES[1]);
+        std::fs::write(&seed, [1; 224]).unwrap();
+        std::fs::set_permissions(&seed, std::fs::Permissions::from_mode(0o400)).unwrap();
+        assert!(read(SOURCE_GENESIS_PACKET_NAMES[0]).unwrap().is_some());
+        assert!(read(SOURCE_GENESIS_PACKET_NAMES[1]).unwrap().is_none());
+
+        for width in [223, 225, 272] {
+            std::fs::write(&authorization, vec![2; width]).unwrap();
+            std::fs::set_permissions(&authorization, std::fs::Permissions::from_mode(0o400))
+                .unwrap();
+            assert!(read(SOURCE_GENESIS_PACKET_NAMES[1]).is_err());
+        }
+        std::fs::write(&authorization, [2; 224]).unwrap();
+        std::fs::set_permissions(&authorization, std::fs::Permissions::from_mode(0o400)).unwrap();
+        assert_eq!(
+            &**read(SOURCE_GENESIS_PACKET_NAMES[0]).unwrap().unwrap().0,
+            &[1; 224]
+        );
+        assert_eq!(
+            &**read(SOURCE_GENESIS_PACKET_NAMES[1]).unwrap().unwrap().0,
+            &[2; 224]
+        );
+        std::fs::set_permissions(&authorization, std::fs::Permissions::from_mode(0o444)).unwrap();
+        assert!(read(SOURCE_GENESIS_PACKET_NAMES[1]).is_err());
+    }
+
+    #[test]
+    fn source_genesis_fixed_file_reads_detect_same_bytes_inode_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let descriptor = open(
+            directory.path(),
+            OFlags::RDONLY | OFlags::DIRECTORY,
+            Mode::empty(),
+        )
+        .unwrap();
+        let uid = rustix::process::geteuid().as_raw();
+        let read = || {
+            read_optional_exact_one_with_identity(
+                &descriptor,
+                SOURCE_GENESIS_PACKET_NAMES[0],
+                uid,
+                224,
+            )
+            .unwrap()
+            .unwrap()
+        };
+        for name in SOURCE_GENESIS_PACKET_NAMES {
+            let path = directory.path().join(name);
+            std::fs::write(&path, [3; 224]).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        }
+        let original = read();
+        let replacement = directory.path().join("replacement");
+        std::fs::write(&replacement, [3; 224]).unwrap();
+        std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o400)).unwrap();
+        std::fs::rename(
+            &replacement,
+            directory.path().join(SOURCE_GENESIS_PACKET_NAMES[0]),
+        )
+        .unwrap();
+
+        let replaced = read();
+        assert_eq!(original.0, replaced.0);
+        assert_ne!(original.1, replaced.1);
     }
 }

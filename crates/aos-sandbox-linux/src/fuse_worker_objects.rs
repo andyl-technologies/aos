@@ -14,7 +14,9 @@ use rustix::fs::{FileType, Mode, OFlags};
 
 use crate::fuse_mount::FreshDetachedFuseMountV1;
 use crate::immutable_file::{ImmutableFileError, SealedReadOnlyCredential};
-use crate::pidfd::{NamespaceFd, NamespaceKind};
+use crate::inventory::MountId;
+use crate::mount::MountAttributes;
+use crate::pidfd::{NamespaceFd, NamespaceIdentity, NamespaceKind};
 use crate::seqpacket::{SeqpacketError, SeqpacketSocket};
 use crate::uapi::{self, OpenHow, RESOLVE_BENEATH, RESOLVE_NO_MAGICLINKS, RESOLVE_NO_SYMLINKS};
 use crate::{Error, Result};
@@ -70,6 +72,31 @@ pub struct MountCreatedFuseWorkerObjectsV1 {
     worker_channel: Option<OwnedFd>,
     cancellation_reader: OwnedFd,
     cancellation_writer: OwnedFd,
+    idmap: OriginalWorkerIdmap,
+}
+
+// A local record of the real kernel effect, never a decoded/read authority.
+// Only a successful operation on this owner's original objects sets Applied.
+enum OriginalWorkerIdmap {
+    Pending,
+    Ambiguous,
+    Applied {
+        mount: MountId,
+        namespace: NamespaceIdentity,
+    },
+}
+
+impl OriginalWorkerIdmap {
+    fn begin(&mut self) -> Result<()> {
+        if !matches!(self, Self::Pending) {
+            return Err(Error::invalid(
+                "worker idmap",
+                "original attempt is not reusable",
+            ));
+        }
+        *self = Self::Ambiguous;
+        Ok(())
+    }
 }
 
 impl MountCreatedFuseWorkerObjectsV1 {
@@ -129,6 +156,7 @@ impl MountCreatedFuseWorkerObjectsV1 {
             worker_channel: Some(worker_channel),
             cancellation_reader,
             cancellation_writer,
+            idmap: OriginalWorkerIdmap::Pending,
         })
     }
 
@@ -137,8 +165,8 @@ impl MountCreatedFuseWorkerObjectsV1 {
     /// The fixed profile is read-only, no-exec, no-suid and no-dev. This borrow
     /// supplies no permission to attach the mount, consume FUSE requests or
     /// send backing without the genuine held Controller/Root/Mount join.
-    /// No idmap is applied yet: successful guarded INIT and the exact retained
-    /// namespace idmap must both complete before publication.
+    /// Creation applies no idmap. Successful guarded INIT and applying the
+    /// exact retained namespace idmap must both complete before publication.
     pub fn fuse(&self) -> &FreshDetachedFuseMountV1 {
         &self.fuse
     }
@@ -149,6 +177,108 @@ impl MountCreatedFuseWorkerObjectsV1 {
     /// INIT, idmap completion, or the genuine held owners before publication.
     pub fn user_namespace(&self) -> &NamespaceFd {
         &self.user_namespace
+    }
+
+    /// Applies the required idmap to the same original detached FUSE mount.
+    ///
+    /// The kernel refuses this operation until genuine INIT selects ALLOW_IDMAP
+    /// with default permissions. It consumes only the internally retained
+    /// original user namespace, never a received initialized FUSE connection
+    /// or a caller's namespace/INIT assertion. Success records the real kernel
+    /// effect while both original objects remain held; it is not a detached
+    /// statmount readback, Host/worker proof, readiness, or a Root read grant.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another producer, a repeated/ambiguous attempt, changed original
+    /// object/namespace, absent INIT support, or a kernel/access failure. Failed
+    /// attempts remain fenced; the genuine Mount owner must retain its durable
+    /// reservation and reconciliation obligation rather than reissue objects.
+    pub fn apply_original_user_namespace_idmap(&mut self) -> Result<()> {
+        self.idmap.begin()?;
+        require_fixed_mount_process()?;
+        self.require_original_user_namespace()?;
+        require_object_context(self.fuse.device(), FUSE_WORKER_DEVICE_CONTEXT_V1)?;
+        let original_mount = self.fuse.mount_id();
+        if MountId::from_fd(self.fuse.mount().as_fd())? != original_mount {
+            return Err(Error::invalid("worker idmap", "original mount changed"));
+        }
+
+        self.fuse.mount().set_attributes(
+            false,
+            fixed_worker_mount_attributes(),
+            Some(&self.user_namespace),
+        )?;
+        if MountId::from_fd(self.fuse.mount().as_fd())? != original_mount {
+            return Err(Error::invalid("worker idmap", "original mount changed"));
+        }
+        self.require_original_user_namespace()?;
+        require_object_context(self.fuse.device(), FUSE_WORKER_DEVICE_CONTEXT_V1)?;
+        require_fixed_mount_process()?;
+        self.idmap = OriginalWorkerIdmap::Applied {
+            mount: original_mount,
+            namespace: self.user_namespace.identity(),
+        };
+        Ok(())
+    }
+
+    /// Rechecks original idmap-effect custody and reapplies secure mount flags.
+    ///
+    /// The same mount cannot have its idmap replaced by mount_setattr; pinned
+    /// Linux permits replacement only on an OPEN_TREE_CLONE copy, which has a
+    /// different mount ID. This checks retained effect custody, not statmount
+    /// readback or remote authority. Metadata/backing still requires genuine
+    /// current Host/worker and held Root/Mount owner joins.
+    ///
+    /// # Errors
+    ///
+    /// Rejects incomplete/ambiguous effect custody, changed original mount or
+    /// namespace, another producer, or failed fixed secure attributes.
+    pub fn recheck_original_user_namespace_idmap_custody(&self) -> Result<()> {
+        let OriginalWorkerIdmap::Applied { mount, namespace } = &self.idmap else {
+            return Err(Error::invalid(
+                "worker idmap",
+                "original effect is incomplete",
+            ));
+        };
+        require_fixed_mount_process()?;
+        self.require_original_user_namespace()?;
+        if self.user_namespace.identity() != *namespace
+            || self.fuse.mount_id() != *mount
+            || MountId::from_fd(self.fuse.mount().as_fd())? != *mount
+        {
+            return Err(Error::invalid(
+                "worker idmap",
+                "original effect custody changed",
+            ));
+        }
+        // Do not apply IDMAP a second time. The actual kernel reconfiguration
+        // restores only fixed secure flags on the same retained original mount.
+        self.fuse
+            .mount()
+            .set_attributes(false, fixed_worker_mount_attributes(), None)?;
+        if MountId::from_fd(self.fuse.mount().as_fd())? != *mount {
+            return Err(Error::invalid("worker idmap", "original mount changed"));
+        }
+        self.require_original_user_namespace()?;
+        require_object_context(self.fuse.device(), FUSE_WORKER_DEVICE_CONTEXT_V1)?;
+        require_fixed_mount_process()
+    }
+
+    fn require_original_user_namespace(&self) -> Result<()> {
+        let duplicate = self
+            .user_namespace
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|source| Error::Syscall {
+                operation: "recheck original worker user namespace",
+                source,
+            })?;
+        let observed = NamespaceFd::from_owned(duplicate, NamespaceKind::User)?;
+        if observed.identity() != self.user_namespace.identity() {
+            return Err(Error::invalid("worker idmap", "original namespace changed"));
+        }
+        Ok(())
     }
 
     /// Borrows the exact sealed original launch plan.
@@ -199,6 +329,12 @@ impl MountCreatedFuseWorkerObjectsV1 {
         }
         Ok(())
     }
+}
+
+fn fixed_worker_mount_attributes() -> MountAttributes {
+    MountAttributes::secure_read_only()
+        .with_no_exec(true)
+        .with_no_atime(true)
 }
 
 pub(crate) fn require_object_context(fd: BorrowedFd<'_>, expected: &str) -> Result<()> {
@@ -458,7 +594,27 @@ fn kernel_error(operation: &'static str, source: rustix::io::Errno) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{FUSE_WORKER_CONTEXT_V1, context_matches};
+    use super::*;
+
+    #[test]
+    fn original_idmap_attempt_never_restarts_after_ambiguity_or_success() {
+        let mut pending = OriginalWorkerIdmap::Pending;
+        assert!(pending.begin().is_ok());
+        assert!(matches!(pending, OriginalWorkerIdmap::Ambiguous));
+        assert!(pending.begin().is_err());
+
+        // State-machine regression only: this test does not mint kernel
+        // effect custody, exercise INIT/idmapping, or construct a live guard.
+        let mut completed = OriginalWorkerIdmap::Applied {
+            mount: MountId::new(7).unwrap(),
+            namespace: NamespaceIdentity {
+                device: 1,
+                inode: 2,
+            },
+        };
+        assert!(completed.begin().is_err());
+        assert!(matches!(completed, OriginalWorkerIdmap::Applied { .. }));
+    }
 
     #[test]
     fn accepts_only_exact_non_mls_context_with_optional_kernel_nul() {

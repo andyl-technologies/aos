@@ -2562,6 +2562,17 @@ are independently retained; the Controller/Source readback keys are distinct.
 The accepted `AOSSGC01[608]` record binds both packets, project, original publisher
 pointer/revision, authorization head and exact administrative role tuple.
 
+The normal Controller may receive the exact pair through the existing
+protected PID1 credential delivery as `controller-source-tree-seed-v1` and
+`project-authorization-source-v2`. Both are fixed 224-byte optional inputs;
+partial delivery, shared issuer keys and legacy `AOSPSC01` publisher-policy
+packets are rejected. Delivery validates signatures and matching signed
+claims only. Currentness requires the actual protected publisher and
+`AOSPAUH2` authorization head, never a manufactured expected epoch. Startup
+retains/rechecks the pair but does not admit and abandon a pending genesis.
+Durable Controller admission waits for the genuine original-Root coordinator
+to consume the actual held pair and owners through the complete ordered flight.
+
 Root creates `AOSSDI01[80]` deployment-instance identity only once from kernel
 entropy under its actual protected writer. Missing identity may be initialized
 only after the real held Source writer's **global** Empty cut and independently

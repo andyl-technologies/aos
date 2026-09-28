@@ -89,6 +89,9 @@ use aos_sandbox::controller_service::public_projection::{
     AuthorizedPublicProjectionReadV1, PublicProjectionKindV1, PublicProjectionQueryV1,
     PublicProjectionRecordV1,
 };
+use aos_sandbox::hierarchy::controller_genesis_input::{
+    ControllerSourceGenesisInputErrorV1, ProvisionedControllerSourceGenesisInputV1,
+};
 use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
 };
@@ -341,14 +344,22 @@ where
 pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     let configuration = RuntimeConfiguration::from_process()?;
     configuration.validate_process_identity()?;
-    let (publisher_descriptor, launch_image) =
+    let (publisher_descriptor, launch_image, normal_root_capture) =
         crate::production_startup::capture_controller(configuration.publisher_ingress)
             .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
+    // This independently selected profile is retained before opening any
+    // journal. Root's concurrent startup is joined only on the original flight.
+    let normal_root_profile = normal_root_capture
+        .admit_selected(configuration.uid, configuration.gid)
+        .map_err(ControllerRuntimeError::NormalRootProfile)?
+        .map(Arc::new);
     let publisher_listener = publisher_descriptor
         .map(publisher_ingress::adopt_observed_listener)
         .transpose()
         .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
     let node_id = read_node_id()?;
+    let source_genesis_input =
+        ProvisionedControllerSourceGenesisInputV1::from_systemd_credentials_optional()?;
     let publisher_registration = if let Some(listener) = publisher_listener {
         let scope = publisher_ingress::PublisherServiceScopeV1::from_process_credential(
             NodeId::from_bytes(node_id),
@@ -416,6 +427,38 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
         publisher_policy_source::install_from_process_credentials(&mut controller, scope)
             .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
     }
+    if let Some(input) = &source_genesis_input {
+        match controller.inspect_provisioned_source_genesis_v1(input) {
+            Ok(()) => {}
+            Err(ControllerSourceGenesisInputErrorV1::MissingCurrentAuthorization) => {
+                // Delivery is not admission: do not invent an authorization
+                // head, spend the epoch, or strand a pending Controller row.
+                eprintln!(
+                    "aos-sandboxd: Source genesis input awaits retained current authorization; coordinator remains closed"
+                );
+            }
+            Err(error)
+                if matches!(
+                    &error,
+                    ControllerSourceGenesisInputErrorV1::Seed(
+                        aos_sandbox::hierarchy::source_seed::ControllerSourceTreeSeedErrorV1::Stale
+                    ) | ControllerSourceGenesisInputErrorV1::Authorization(
+                        aos_sandbox::publisher_policy::ProjectAuthorizationSourceErrorV2::Stale
+                    ) | ControllerSourceGenesisInputErrorV1::Owner(
+                        aos_sandbox::hierarchy::genesis_profile::SourceGenesisErrorV1::Stale
+                    )
+                ) =>
+            {
+                // A valid old pair can still select exact historical recovery;
+                // an old current head is never promoted to fresh admission.
+                input.recheck()?;
+                eprintln!(
+                    "aos-sandboxd: Source genesis current cut unavailable; coordinator remains closed: {error}"
+                );
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
     let listener = runtime.block_on(into_async_diagnostic_listener(listener))?;
     let public_listener = if configuration.public_api {
         Some(runtime.block_on(public_api::bind(configuration.uid))?)
@@ -426,17 +469,20 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     let (events_tx, events_rx) = mpsc::channel();
     let (commands_tx, commands_rx) = mpsc::sync_channel(CONTROLLER_COMMAND_CAPACITY);
     let worker_capabilities = Arc::clone(&capabilities);
+    let worker_normal_root_profile = normal_root_profile.clone();
 
     std::thread::Builder::new()
         .name("aos-sandboxd-reconciler".to_owned())
         .spawn(move || {
             controller_worker(
                 controller,
+                worker_normal_root_profile,
                 node_id,
                 ownership,
                 attach_credentials,
                 attach_plan_signer,
                 guest_root_pins,
+                source_genesis_input,
                 publisher_registration,
                 worker_capabilities,
                 sessions,
@@ -447,6 +493,11 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
         .map_err(ControllerRuntimeError::WorkerSpawn)?;
 
     wait_for_initial_readiness(&events_rx)?;
+    if let Some(profile) = &normal_root_profile {
+        profile
+            .recheck()
+            .map_err(ControllerRuntimeError::NormalRootProfile)?;
+    }
     SystemdReadyNotifier::from_environment()?.notify_ready()?;
 
     let public_service = Arc::new(CapabilityService {
@@ -582,11 +633,15 @@ impl axum::serve::Listener for AuthenticatedDiagnosticListener {
 
 fn controller_worker(
     mut controller: ProductionController,
+    normal_root_profile: Option<
+        Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>,
+    >,
     node_id: [u8; 16],
     ownership: Option<ControllerOwnershipConfigurationV1>,
     attach_credentials: Option<ControllerAttachCredentialsV1>,
     attach_plan_signer: Option<ControllerBrokerPlanSignerV1>,
     guest_root_pins: Option<aos_sandbox::guest_root_publication::GuestRootTemplatePinsV1>,
+    source_genesis_input: Option<ProvisionedControllerSourceGenesisInputV1>,
     mut publisher_registration: Option<publisher_ingress::PublisherRegistrationOwnerV1>,
     capabilities: Arc<Mutex<CapabilityState>>,
     sessions: SharedControllerBrokerSessions,
@@ -599,6 +654,21 @@ fn controller_worker(
     let mut attach_poll_cursor = 0;
     loop {
         if Instant::now() >= next_cycle {
+            if let Some(input) = &source_genesis_input {
+                if let Err(error) = input.recheck() {
+                    let _ = events.send(WorkerEvent::Fatal(error.to_string()));
+                    return;
+                }
+            }
+
+            // Retain this same original profile in the actual worker lifecycle;
+            // no Root readiness or genesis authority follows from this check.
+            if let Some(profile) = &normal_root_profile {
+                if let Err(error) = profile.recheck() {
+                    let _ = events.send(WorkerEvent::Fatal(error.to_string()));
+                    return;
+                }
+            }
             match run_controller_cycle(
                 &mut controller,
                 node_id,
@@ -5718,6 +5788,12 @@ pub enum ControllerRuntimeError {
     /// The optional Controller hold seed and role pin are unsafe or inconsistent.
     #[error("protected Controller hold readback credentials are invalid")]
     InvalidControllerHoldCredential,
+    /// Protected Source genesis delivery or read-only current-cut validation failed.
+    #[error(transparent)]
+    SourceGenesisInput(#[from] ControllerSourceGenesisInputErrorV1),
+    /// The original image-selected normal-Root comparison inputs differ.
+    #[error("normal Root selected-profile custody failed: {0}")]
+    NormalRootProfile(#[source] aos_sandbox::normal_root::NormalRootStartupErrorV1),
     /// Protected cache Replay source import failed.
     #[error("protected controller cache Replay source failed: {0}")]
     CacheReplaySource(aos_sandbox::cache_residency::CacheReplayControllerBootstrapErrorV1),

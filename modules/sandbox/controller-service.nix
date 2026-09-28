@@ -14,6 +14,10 @@
       credentials.sessionKey = null;
     };
   policyAuthority = brokers.policyAuthority or {enable = false;};
+  normalRootProfile =
+    if policyAuthority.enable
+    then policyAuthority._normalStartupProfile
+    else null;
   cacheSignerView = brokers.cacheSignerView or {enable = false;};
   sourceSignerView = brokers.sourceSignerView or {enable = false;};
   brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
@@ -146,6 +150,10 @@
   controllerSourceTreeSeedIssuerCredential =
     lib.optional (cfg.credentials.controllerSourceTreeSeedIssuer != null)
     "controller-source-tree-seed-issuer-v1:/run/credentials/@system/${cfg.credentials.controllerSourceTreeSeedIssuer}";
+  sourceGenesisPacketCredentials = lib.optionals (cfg.credentials.controllerSourceTreeSeed != null && cfg.credentials.projectAuthorizationSource != null) [
+    "controller-source-tree-seed-v1:/run/credentials/@system/${cfg.credentials.controllerSourceTreeSeed}"
+    "project-authorization-source-v2:/run/credentials/@system/${cfg.credentials.projectAuthorizationSource}"
+  ];
 in {
   options.aos.sandbox.controllerService = {
     enable = lib.mkEnableOption "the production unprivileged sandbox node controller";
@@ -252,6 +260,16 @@ in {
           default = null;
           description = "Optional separately provisioned 80-byte AOSCSK01 Controller Source-tree seed public verifier; absence keeps fixed-issuer seed verification closed.";
         };
+        controllerSourceTreeSeed = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Optional externally signed 224-byte AOSCSE01 startup input; delivery does not admit Source genesis or open Create.";
+        };
+        projectAuthorizationSource = lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Optional independently signed 224-byte AOSPSC02 paired with the Source seed; legacy AOSPSC01 publisher policy is not accepted.";
+        };
         publicApiEntitlements = lib.mkOption {
           type = lib.types.nullOr lib.serviceTypes.credentialName;
           default = null;
@@ -325,6 +343,14 @@ in {
         {
           assertion = (cfg.credentials.operatorRecoveryControllerKey == null) == (cfg.credentials.operatorRecoveryStorageOwnerPublicKey == null);
           message = "controller operator Recovery signing and Storage owner trust credentials must be provisioned together";
+        }
+        {
+          assertion = (cfg.credentials.controllerSourceTreeSeed == null) == (cfg.credentials.projectAuthorizationSource == null);
+          message = "Source genesis startup seed and independent project authorization packets must be provisioned together";
+        }
+        {
+          assertion = cfg.credentials.controllerSourceTreeSeed == null || (cfg.credentials.controllerSourceTreeSeedIssuer != null && cfg.credentials.projectAuthorizationIssuer != null);
+          message = "Source genesis packet delivery requires both existing independently provisioned issuer pins";
         }
         {
           assertion = !cfg.publisherIngress.enable || cfg.credentials.publisherServiceScope != null;
@@ -525,8 +551,12 @@ in {
           + lib.optionalString cfg.publicApi.enable " --public-api"
           + lib.optionalString cfg.publisherIngress.enable " --publisher-ingress";
         Sockets = lib.optional cfg.publisherIngress.enable "aos-sandboxd-publisher.socket";
-        OpenFile = lib.mkIf cfg.method46TpmFloor.required ["/proc/1/exe:aos-method46-pid1-image:read-only"];
-        FileDescriptorStoreMax = lib.mkIf cfg.method46TpmFloor.required 0;
+        # Deliver the same configuration-selected inputs independently. Root's
+        # original PID1 image never travels to Controller.
+        OpenFile =
+          lib.optional cfg.method46TpmFloor.required "/proc/1/exe:aos-method46-pid1-image:read-only"
+          ++ lib.optional (normalRootProfile != null) "${normalRootProfile}/profile.json:aos-normal-root-client-profile:read-only";
+        FileDescriptorStoreMax = lib.mkIf (cfg.method46TpmFloor.required || normalRootProfile != null) 0;
         ExecStartPre = brokerSessionConfiguration.installCommands;
         LoadCredential =
           nodeCredentials
@@ -546,7 +576,8 @@ in {
           ++ publisherScopeCredential
           ++ publisherPolicySourceCredentials
           ++ projectAuthorizationIssuerCredential
-          ++ controllerSourceTreeSeedIssuerCredential;
+          ++ controllerSourceTreeSeedIssuerCredential
+          ++ sourceGenesisPacketCredentials;
         Restart = "on-failure";
         RestartSec = "2s";
         # Population, not cgroup.procs, retains exiting TPM helper tasks until

@@ -898,6 +898,7 @@ pub(crate) const MOUNT_ATTR_NOSUID: u64 = 0x0000_0002;
 pub(crate) const MOUNT_ATTR_NODEV: u64 = 0x0000_0004;
 pub(crate) const MOUNT_ATTR_NOEXEC: u64 = 0x0000_0008;
 pub(crate) const MOUNT_ATTR_NOATIME: u64 = 0x0000_0010;
+pub(crate) const MOUNT_ATTR_ATIME_MASK: u64 = 0x0000_0070;
 pub(crate) const MOUNT_ATTR_IDMAP: u64 = 0x0010_0000;
 
 pub(crate) const STATMOUNT_SB_BASIC: u64 = 0x0000_0001;

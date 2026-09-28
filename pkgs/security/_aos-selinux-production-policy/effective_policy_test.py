@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import re
 import unittest
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -847,6 +849,39 @@ class EffectivePolicyTest(unittest.TestCase):
                         effective_policy.Access("init_t", root, object_class, permission)
                     )
 
+    def test_controller_selected_images_are_read_only_not_root_task_custody(self) -> None:
+        controller = "aos_sandbox_controller_t"
+        source = Path(__file__).with_name("owner_confinement.te").read_text()
+        for object_type in (
+            "aos_sandbox_policy_authority_profile_t",
+            "aos_sandbox_policy_authority_exec_t",
+            "init_exec_t",
+        ):
+            self.assertIn(
+                f"allow {controller} {object_type}:file {{ getattr open read }};",
+                source,
+            )
+            for permission in ("getattr", "open", "read"):
+                self.assert_missing_allow_rejected(effective_policy.Access(
+                    controller, object_type, "file", permission,
+                ))
+
+        root_image = "aos_sandbox_policy_authority_exec_t"
+        for permission in ("execute", "execute_no_trans", "entrypoint", "map", "write"):
+            policy = FakePolicy()
+            access = effective_policy.Access(controller, root_image, "file", permission)
+            policy.allows[access] = [FakeRule("selected image became executable or mutable")]
+            with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+        root = "aos_sandbox_policy_authority_t"
+        for object_class, permission in effective_policy.owner_policy.ROOT_CUSTODY_CUTS:
+            policy = FakePolicy()
+            access = effective_policy.Access(controller, root, object_class, permission)
+            policy.allows[access] = [FakeRule("selected input became Root process custody")]
+            with self.assertRaisesRegex(ValueError, "foreign normal Root custody"):
+                effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def test_controller_connect_does_not_grant_root_endpoint_ownership(self) -> None:
         for object_class, permission in (
             ("fd", "use"), ("unix_stream_socket", "read"),
@@ -1097,6 +1132,41 @@ class EffectivePolicyTest(unittest.TestCase):
                         ValueError, f"forbidden allow exists.*{source}.*relabelfrom"
                     ):
                         effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_guest_ancestor_mutant_evidence_accepts_either_expanded_target(self) -> None:
+        support = Path(__file__).parent
+        recipe_path = Path(
+            os.environ.get(
+                "AOS_SELINUX_PRODUCTION_RECIPE",
+                str(support.parent / "aos-selinux-production-policy.nix"),
+            )
+        )
+        recipe = recipe_path.read_text()
+        case = recipe.split("              aos_sandbox_guest_ancestor_negative)\n", 1)[1]
+        case = case.split("                ;;", 1)[0]
+        target_check = re.search(r'grep -E "([^"]+)"', case)
+        self.assertIsNotNone(target_check)
+        assert target_check is not None
+        target_pattern = target_check.group(1)
+
+        for target in ("var_t", "var_lib_t"):
+            self.assertRegex(f"Access(target='{target}')", target_pattern)
+        for target in ("root_t", "var_t_other", "var_lib_t_other"):
+            self.assertNotRegex(f"Access(target='{target}')", target_pattern)
+
+        for guard in (
+            'grep -F "aos_sandbox_guest_owner_t"',
+            'grep -F "object_class=\'dir\'"',
+            'grep -F "permission=\'relabelfrom\'"',
+        ):
+            self.assertIn(guard, case)
+
+        mutant = (support / "aos_sandbox_guest_ancestor_negative.te").read_text()
+        for target in ("var_t", "var_lib_t"):
+            self.assertIn(
+                f"typeattribute {target} aos_sandbox_negative_guest_ancestors;", mutant
+            )
+        self.assertIn("bool aos_sandbox_negative_guest_ancestors_enabled false;", mutant)
 
     def test_missing_original_guest_host_channel_permission_fails(self) -> None:
         policy = FakePolicy()

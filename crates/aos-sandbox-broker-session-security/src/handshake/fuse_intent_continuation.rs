@@ -511,7 +511,11 @@ impl<'session> HeldFuseIntentTransportV1<'session> {
         self.recheck()?;
         // The reused receive path binds every record's SCM credentials/pidfd
         // to the retained original peer, then rechecks live endpoint custody.
-        let packet = match self.session.receive_response_packet(MAXIMUM_BYTES) {
+        let packet = match self
+            .session
+            .receive_response_packet(MAXIMUM_BYTES)
+            .map_err(DormantBrokerSessionHandshakeErrorV1::from)
+        {
             Ok(packet) => packet,
             Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
                 return Err(DormantBrokerSessionHandshakeErrorV1::Transport);
@@ -548,7 +552,11 @@ impl<'session> HeldFuseIntentTransportV1<'session> {
     ) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
         self.recheck()?;
         let packet = encode(self.binding, control);
-        match self.session.send_request_packet(&packet) {
+        match self
+            .session
+            .send_request_packet(&packet)
+            .map_err(DormantBrokerSessionHandshakeErrorV1::from)
+        {
             Ok(()) => self.stage = next,
             Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
                 return Err(DormantBrokerSessionHandshakeErrorV1::Transport);
@@ -741,7 +749,48 @@ fn decode_host_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::handshake::DormantBrokerSessionHandshakeErrorV1 as SessionError;
     use sha2::Digest as _;
+
+    #[test]
+    fn session_error_conversion_preserves_transport_and_fail_closed_classes() {
+        // Conversion must happen before the retry branch, not collapse every
+        // session error into Transport or an unclassified diagnostic string.
+        for (session_error, expected) in [
+            (
+                SessionError::Transport,
+                DormantBrokerSessionHandshakeErrorV1::Transport,
+            ),
+            (
+                SessionError::EndpointRole,
+                DormantBrokerSessionHandshakeErrorV1::EndpointRole,
+            ),
+            (
+                SessionError::RemoteInvalid,
+                DormantBrokerSessionHandshakeErrorV1::RemoteInvalid,
+            ),
+            (
+                SessionError::KernelEvidence,
+                DormantBrokerSessionHandshakeErrorV1::KernelEvidence,
+            ),
+        ] {
+            let actual = DormantBrokerSessionHandshakeErrorV1::from(session_error);
+
+            assert_eq!(
+                std::mem::discriminant(&actual),
+                std::mem::discriminant(&expected)
+            );
+        }
+
+        let actual = DormantBrokerSessionHandshakeErrorV1::from(SessionError::Protected(
+            BrokerSessionSecurityError::Poisoned,
+        ));
+
+        assert!(matches!(
+            actual,
+            DormantBrokerSessionHandshakeErrorV1::Protected(BrokerSessionSecurityError::Poisoned)
+        ));
+    }
 
     #[test]
     fn original_host_query_has_a_distinct_bounded_frame() {

@@ -90,6 +90,8 @@ pub mod hierarchy;
 pub mod host_catalog_publication;
 #[cfg(target_os = "linux")]
 pub mod host_catalog_reconciliation;
+#[cfg(target_os = "linux")]
+pub mod immutable_image;
 pub mod journal;
 pub mod lifecycle;
 mod lifecycle_authority;
@@ -114,6 +116,8 @@ pub mod mount_preparation;
 #[cfg(target_os = "linux")]
 pub mod mount_source_acquisition_inventory;
 pub mod multi_node;
+#[cfg(target_os = "linux")]
+pub mod normal_root;
 mod operator_abandon_ack;
 pub mod ownership_authority;
 pub mod ownership_resume;
