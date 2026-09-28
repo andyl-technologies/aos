@@ -3322,47 +3322,50 @@ async fn resolve_channels(
         let buckets = (0u16..=255).collect::<Vec<_>>();
         let mut resolved = Vec::with_capacity(buckets.len());
         for batch in buckets.chunks(CHANNEL_FETCH_CONCURRENCY) {
-            let channel_name = channel_name.as_str();
-            let channel_trusted = channel_trusted.as_slice();
-            let image_channel_trusted = image_channel_trusted.as_slice();
-            resolved.extend(
-                try_join_all(batch.iter().copied().map(|bucket| async move {
-                    let path = format!("channels/{channel_name}/{bucket:02x}");
-                    let Some(payload) = fetch.fetch(&path).await? else {
-                        return Ok::<_, anyhow::Error>((bucket, None));
-                    };
-                    let lenient = lenient_tag(&payload, channel_name)?;
-                    let signed = if registry.require_signatures
-                        || require_publication_signatures
-                        || channel_usage
-                        || image_release_tag_oids.contains(&lenient.tag.object)
-                    {
-                        let trusted =
-                            if registry.require_signatures || require_publication_signatures {
-                                channel_trusted
-                            } else {
-                                // Image-bearing channels remain rooted in the configured
-                                // catalog anchors plus their exact typed channel usage.
-                                image_channel_trusted
-                            };
-                        verify_signed_tag(&payload, channel_name, trusted)
-                            .with_context(|| format!("signed image channel partition {path}"))?
-                    } else {
-                        lenient
-                    };
-                    if signed.tag.target_type != TagTarget::Tag {
-                        bail!("partition {path} does not target a tag object");
-                    }
-                    let semver_str = tag_to_semver.get(&signed.tag.object).with_context(|| {
-                        format!(
-                            "partition {path} targets unknown tag object {}",
-                            signed.tag.object
-                        )
-                    })?;
-                    Ok((bucket, Some(semver_str.clone())))
-                }))
-                .await?,
+            let paths = batch
+                .iter()
+                .map(|bucket| format!("channels/{channel_name}/{bucket:02x}"))
+                .collect::<Vec<_>>();
+            let payloads = fetch.fetch_metadata_batch(&paths).await?;
+            anyhow::ensure!(
+                payloads.len() == batch.len(),
+                "channel metadata batch returned an incomplete observation set"
             );
+
+            for ((bucket, path), payload) in batch.iter().copied().zip(paths).zip(payloads) {
+                let Some(payload) = payload else {
+                    resolved.push((bucket, None));
+                    continue;
+                };
+                let lenient = lenient_tag(&payload, channel_name)?;
+                let signed = if registry.require_signatures
+                    || require_publication_signatures
+                    || channel_usage
+                    || image_release_tag_oids.contains(&lenient.tag.object)
+                {
+                    let trusted = if registry.require_signatures || require_publication_signatures {
+                        channel_trusted.as_slice()
+                    } else {
+                        // Image-bearing channels remain rooted in the configured
+                        // catalog anchors plus their exact typed channel usage.
+                        image_channel_trusted.as_slice()
+                    };
+                    verify_signed_tag(&payload, channel_name, trusted)
+                        .with_context(|| format!("signed image channel partition {path}"))?
+                } else {
+                    lenient
+                };
+                if signed.tag.target_type != TagTarget::Tag {
+                    bail!("partition {path} does not target a tag object");
+                }
+                let semver_str = tag_to_semver.get(&signed.tag.object).with_context(|| {
+                    format!(
+                        "partition {path} targets unknown tag object {}",
+                        signed.tag.object
+                    )
+                })?;
+                resolved.push((bucket, Some(semver_str.clone())));
+            }
         }
 
         let mut partitions: Vec<Option<String>> = vec![None; 256];
@@ -3882,6 +3885,49 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
     }
 
     struct MissingFetch;
+
+    struct IncompleteMetadataBatch;
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for IncompleteMetadataBatch {
+        async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("channel reads must use the metadata batch port");
+        }
+
+        async fn fetch_metadata_batch(&self, _paths: &[String]) -> Result<Vec<Option<Vec<u8>>>> {
+            Ok(Vec::new())
+        }
+
+        fn describe(&self) -> String {
+            "incomplete-metadata-batch".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn channel_refresh_rejects_an_incomplete_metadata_batch() {
+        let db = Database::open_in_memory().await.unwrap();
+        let id = db
+            .register_registry("metadata-batch", &[], false)
+            .await
+            .unwrap();
+        let registry = db.registry_by_id(id).await.unwrap().unwrap();
+
+        let error = resolve_channels(
+            &db,
+            &IncompleteMetadataBatch,
+            &registry,
+            &["stable".into()],
+            &[],
+            false,
+            &BTreeMap::new(),
+            &std::collections::BTreeSet::new(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("incomplete observation set"));
+        assert!(db.channel_floor(id, "stable").await.unwrap().is_none());
+    }
 
     #[async_trait::async_trait]
     impl SurfaceFetch for MissingFetch {

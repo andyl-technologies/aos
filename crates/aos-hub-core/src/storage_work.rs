@@ -31,6 +31,8 @@ pub const MAX_GIT_INSPECTION_CONTENT_BYTES: usize = 128 * 1024;
 pub const MAX_GIT_INSPECTION_BATCH: usize = 8;
 /// Maximum signed registry metadata returned across the cloud boundary.
 pub const MAX_METADATA_BYTES: usize = 128 * 1024;
+/// Maximum metadata paths admitted in one storage-local inspection batch.
+pub const MAX_METADATA_INSPECTION_BATCH: usize = 32;
 /// Maximum OCI blob range returned for legacy layer metadata inspection.
 pub const MAX_OCI_RANGE_BYTES: usize = 128 * 1024;
 /// Maximum OCI bytes hashed beside storage in one resumable inventory step.
@@ -63,6 +65,11 @@ pub struct StorageCapabilities {
 }
 
 mod binding_snapshot;
+mod metadata_batch;
+
+pub use metadata_batch::{
+    paged_metadata_result, StorageMetadataDocument, StorageMetadataObject, StorageMetadataPage,
+};
 
 pub use binding_snapshot::{
     StorageBindingAcknowledgement, StorageBindingControl, StorageBindingPublication,
@@ -127,6 +134,13 @@ pub enum StorageWorkOperation {
     InspectMetadata {
         /// Surface-relative metadata path from the closed admitted set.
         path: String,
+    },
+    /// Reads a bounded page from an ordered batch of signed metadata paths.
+    InspectMetadataObjects {
+        /// Strictly increasing surface-relative paths from the admitted set.
+        paths: Vec<String>,
+        /// Zero-based first path requested in this response page.
+        cursor: usize,
     },
     /// Verifies a signed documentation NAR and returns only index fields.
     InspectDocumentation {
@@ -265,6 +279,7 @@ impl StorageWorkOperation {
             | Self::InspectGitObject { .. }
             | Self::InspectGitObjects { .. }
             | Self::InspectMetadata { .. }
+            | Self::InspectMetadataObjects { .. }
             | Self::InspectDocumentation { .. }
             | Self::InspectOciRange { .. }
             | Self::HashOciRange { .. } => &["read"],
@@ -291,6 +306,7 @@ impl StorageWorkOperation {
             Self::InspectGitObject { .. } => "inspect_git_object",
             Self::InspectGitObjects { .. } => "inspect_git_objects",
             Self::InspectMetadata { .. } => "inspect_metadata",
+            Self::InspectMetadataObjects { .. } => "inspect_metadata_objects",
             Self::InspectDocumentation { .. } => "inspect_documentation",
             Self::InspectOciRange { .. } => "inspect_oci_range",
             Self::HashOciRange { .. } => "hash_oci_range",
@@ -492,6 +508,11 @@ pub enum StorageWorkOutcome {
         source: StorageObjectIdentity,
         /// Standard-base64 exact document bytes.
         content_base64: String,
+    },
+    /// Ordered metadata observations for one bounded response page.
+    MetadataObjects {
+        /// One observation per requested path in the returned prefix.
+        page: StorageMetadataPage,
     },
     /// Verified documentation identity and bounded index fields.
     Documentation {
@@ -798,6 +819,18 @@ impl StorageWorkPlan {
             }
             StorageWorkOperation::InspectMetadata { path } => {
                 if !valid_relative_path(path, false) || !admitted_metadata_path(path) {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
+            StorageWorkOperation::InspectMetadataObjects { paths, cursor } => {
+                if paths.is_empty()
+                    || paths.len() > MAX_METADATA_INSPECTION_BATCH
+                    || *cursor >= paths.len()
+                    || paths.iter().any(|path| {
+                        !valid_relative_path(path, false) || !admitted_metadata_path(path)
+                    })
+                    || paths.windows(2).any(|pair| pair[0] >= pair[1])
+                {
                     return Err(StorageWorkError::InvalidPlan);
                 }
             }

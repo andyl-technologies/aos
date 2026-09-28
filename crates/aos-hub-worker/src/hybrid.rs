@@ -834,6 +834,7 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
             "inspect_git_object".into(),
             "inspect_git_objects".into(),
             "inspect_metadata".into(),
+            "inspect_metadata_objects".into(),
             "inspect_documentation".into(),
             "inspect_oci_range".into(),
             "hash_oci_range".into(),

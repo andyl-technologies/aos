@@ -119,6 +119,7 @@ idempotency rule.
 | --- | --- | --- |
 | `head` and `list_page` | Inspect provider metadata or enumerate a placement prefix in bounded pages | Exact object version, size, presence, and ordered keys |
 | `inspect_registry` | Fetch and verify selected Git loose objects, bundle entries, channel partitions, or signed semantic files | Typed fields needed by the shared indexer, with source digest and parser evidence |
+| `inspect_metadata_objects` | Read up to 32 ordered, unique admitted metadata paths beside storage | An ordered page of exact bounded documents and provider identities, with explicit absent entries |
 | `inspect_oci` and `inspect_cache` | Parse admitted OCI descriptors, manifests, closure metadata, narinfo, or other versioned small semantic formats | Typed, bounded catalog or index projections |
 | `filter_object` | Apply an admitted schema-specific predicate and field projection to one verified object | Matching records or an ordered page, not source bytes |
 | `verify_object` | Stream source bytes locally while hashing and checking expected identity | Digest, size, version, and placement evidence |
@@ -174,6 +175,32 @@ Results preserve deterministic order so retries produce the same logical
 snapshot. Existing index caps, including branch, release, package, listing,
 and semantic-object limits, remain upper bounds rather than being replaced by
 larger remote limits.
+
+Channel refresh uses `SurfaceFetch::fetch_metadata_batch`. Local adapters read
+the batch concurrently; the hybrid adapter issues `inspect_metadata_objects`
+plans instead of one cross-cloud call per partition. Each plan names a sorted,
+unique set of at most 32 admitted metadata paths and a cursor into that set.
+The Worker returns a nonempty contiguous prefix of the remaining observations,
+including explicit absence, and the exact first unreturned position. Native
+rejects omitted or reordered positions, nonadvancing cursors, another source
+key, malformed bodies, and inconsistent byte counts before retaining a page.
+It restores the caller's input order after assembling all pages.
+
+Individual documents and the aggregate decoded bodies in one page are bounded
+at 128 KiB; the serialized result, including provider identities and base64
+encoding, is bounded at 256 KiB. Pagination preserves the existing maximum
+document size. The Worker may read the remaining batch concurrently before
+packing a page, so source-byte accounting includes documents deferred to the
+next page; a later page may reread those documents. Fanout and retries remain
+bounded, and this work does not return bulk storage objects to Native. Mutable
+channel documents retain their existing per-object observation semantics;
+batching does not claim an atomic snapshot across partitions. Native verifies
+each channel signature, name binding, tag target, and anti-rollback floor
+before committing the complete refresh.
+
+The executor advertises this operation in its authenticated capability reply.
+A hybrid Native Hub requiring metadata batching remains unready when the
+paired Worker lacks that capability.
 
 ## Idempotency, failures, and compatibility
 

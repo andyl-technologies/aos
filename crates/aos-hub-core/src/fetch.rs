@@ -348,6 +348,19 @@ pub trait SurfaceFetch: BackendBounds {
     /// Returns an error for IO/transport failures other than absence.
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>>;
 
+    /// Fetches metadata paths in input order, including explicit absent entries.
+    ///
+    /// Local adapters retain concurrent reads. Remote adapters may combine and
+    /// paginate storage work while returning exactly one observation per path.
+    /// Callers bound the number of paths to limit local concurrency and memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any metadata read fails for a reason other than absence.
+    async fn fetch_metadata_batch(&self, paths: &[String]) -> Result<Vec<Option<Vec<u8>>>> {
+        futures_util::future::try_join_all(paths.iter().map(|path| self.fetch(path))).await
+    }
+
     /// Observes one exact object version for a hybrid delivery grant.
     ///
     /// The provider must obtain size and strong ETag from the same HEAD. Only

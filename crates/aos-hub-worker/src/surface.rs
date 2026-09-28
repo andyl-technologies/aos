@@ -53,6 +53,8 @@ use crate::frozen_surface_access::{
 use crate::keymap;
 use crate::r2_adapter::{R2BucketAdapter, R2Contract, R2HeadObject, R2ListObject, R2ListPage};
 
+mod metadata_batch;
+
 #[derive(Clone)]
 struct WorkerR2BucketAdapter {
     /// Raw JavaScript R2 binding. Keeping reflection behind this exact value
@@ -82,6 +84,7 @@ pub(crate) async fn execute_external_storage_work(
         StorageWorkOperation::Head { .. }
         | StorageWorkOperation::InspectSha256 { .. }
         | StorageWorkOperation::InspectMetadata { .. }
+        | StorageWorkOperation::InspectMetadataObjects { .. }
         | StorageWorkOperation::InspectGitObject { .. }
         | StorageWorkOperation::InspectGitObjects { .. }
         | StorageWorkOperation::InspectDocumentation { .. }
@@ -343,6 +346,11 @@ pub(crate) async fn execute_external_storage_work(
                 source_bytes,
             )
         }
+        StorageWorkOperation::InspectMetadataObjects { paths, cursor } => {
+            return Ok(Some(
+                metadata_batch::inspect(&fetcher, plan, paths, *cursor).await?,
+            ));
+        }
         StorageWorkOperation::InspectGitObject { oid } => {
             let (projection, source_bytes) = inspect_git_object(&fetcher, plan, oid).await?;
             let Some(projection) = projection else {
@@ -550,6 +558,9 @@ pub(crate) async fn execute_r2_storage_work(
                 },
                 source_bytes,
             )
+        }
+        StorageWorkOperation::InspectMetadataObjects { paths, cursor } => {
+            return metadata_batch::inspect(&fetcher, plan, paths, *cursor).await;
         }
         StorageWorkOperation::InspectDocumentation {
             package_name,

@@ -26,10 +26,11 @@ use aos_hub_core::storage_work::{
     StorageOciChunkSource, StorageWorkKey, StorageWorkOperation, StorageWorkOutcome,
     StorageWorkPlan, StorageWorkResult, MAX_BINDING_CONTROL_BYTES, MAX_CREDENTIAL_PROBE_BYTES,
     MAX_DOCUMENTATION_ROWS, MAX_GIT_INSPECTION_BATCH, MAX_GIT_INSPECTION_CONTENT_BYTES,
-    MAX_METADATA_BYTES, MAX_OCI_HASH_RANGE_BYTES, MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES,
-    MAX_VERIFY_SOURCE_BYTES, STORAGE_BINDING_CONTROL_PATH, STORAGE_CAPABILITIES_CHALLENGE,
-    STORAGE_CAPABILITIES_PATH, STORAGE_CREDENTIAL_PROBE_FAILURE_STAGES,
-    STORAGE_CREDENTIAL_PROBE_PATH, STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
+    MAX_METADATA_BYTES, MAX_METADATA_INSPECTION_BATCH, MAX_OCI_HASH_RANGE_BYTES,
+    MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES, STORAGE_BINDING_CONTROL_PATH,
+    STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
+    STORAGE_CREDENTIAL_PROBE_FAILURE_STAGES, STORAGE_CREDENTIAL_PROBE_PATH, STORAGE_WORK_PATH,
+    STORAGE_WORK_SIGNATURE_HEADER,
 };
 use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceDeleteOutcome,
@@ -63,6 +64,7 @@ fn retryable_read_operation(operation: &StorageWorkOperation) -> bool {
             | StorageWorkOperation::InspectGitObject { .. }
             | StorageWorkOperation::InspectGitObjects { .. }
             | StorageWorkOperation::InspectMetadata { .. }
+            | StorageWorkOperation::InspectMetadataObjects { .. }
             | StorageWorkOperation::InspectDocumentation { .. }
             | StorageWorkOperation::InspectOciRange { .. }
             | StorageWorkOperation::HashOciRange { .. }
@@ -781,6 +783,7 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
                 "inspect_git_object",
                 "inspect_git_objects",
                 "inspect_metadata",
+                "inspect_metadata_objects",
                 "inspect_documentation",
                 "inspect_oci_range",
                 "hash_oci_range",
@@ -1030,6 +1033,10 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
                 "storage Worker Git batch understated its source reads"
             );
         }
+        (
+            StorageWorkOperation::InspectMetadataObjects { .. },
+            StorageWorkOutcome::MetadataObjects { page },
+        ) => page.validate(plan, result.source_bytes)?,
         (
             StorageWorkOperation::InspectMetadata { path },
             StorageWorkOutcome::Metadata {
@@ -1395,6 +1402,55 @@ impl SurfaceFetch for HybridSurfaceFetch {
             )),
             _ => bail!("storage Worker returned an unexpected metadata result"),
         }
+    }
+
+    async fn fetch_metadata_batch(&self, paths: &[String]) -> Result<Vec<Option<Vec<u8>>>> {
+        let mut requested = paths.to_vec();
+        requested.sort();
+        requested.dedup();
+        let mut observations = BTreeMap::new();
+        for batch in requested.chunks(MAX_METADATA_INSPECTION_BATCH) {
+            let mut cursor = 0;
+            loop {
+                let plan = self.work.plan_for_placement(
+                    &self.placement,
+                    &self.binding,
+                    StorageWorkOperation::InspectMetadataObjects {
+                        paths: batch.to_vec(),
+                        cursor,
+                    },
+                    aos_hub_core::clock::now_unix_secs(),
+                )?;
+                let result = self.execute(&plan).await?;
+                let StorageWorkOutcome::MetadataObjects { page } = result.outcome else {
+                    bail!("storage Worker returned an unexpected metadata batch result");
+                };
+                for object in page.objects {
+                    let bytes = object
+                        .document
+                        .map(|document| {
+                            base64::engine::general_purpose::STANDARD
+                                .decode(document.content_base64)
+                                .context("decoding batched metadata from storage Worker")
+                        })
+                        .transpose()?;
+                    observations.insert(object.path, bytes);
+                }
+                let Some(next) = page.next_cursor else {
+                    break;
+                };
+                cursor = next;
+            }
+        }
+        paths
+            .iter()
+            .map(|path| {
+                observations
+                    .get(path)
+                    .cloned()
+                    .with_context(|| format!("storage Worker omitted metadata path '{path}'"))
+            })
+            .collect()
     }
 
     async fn fetch_bounded(&self, path: &str, max_bytes: usize) -> Result<Option<Vec<u8>>> {
@@ -2694,6 +2750,7 @@ mod tests {
                 "inspect_git_object".into(),
                 "inspect_git_objects".into(),
                 "inspect_metadata".into(),
+                "inspect_metadata_objects".into(),
                 "inspect_documentation".into(),
                 "inspect_oci_range".into(),
                 "hash_oci_range".into(),
@@ -2714,6 +2771,11 @@ mod tests {
         };
         assert!(validate_capabilities("deployment-1", &capabilities).is_ok());
         assert!(validate_capabilities("deployment-2", &capabilities).is_err());
+        let mut older = capabilities.clone();
+        older
+            .operations
+            .retain(|operation| operation != "inspect_metadata_objects");
+        assert!(validate_capabilities("deployment-1", &older).is_err());
         capabilities.operations.pop();
         assert!(validate_capabilities("deployment-1", &capabilities).is_err());
     }

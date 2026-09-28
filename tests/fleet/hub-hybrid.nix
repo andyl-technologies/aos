@@ -740,6 +740,63 @@ in {
           "size": len(s3_object),
           "etag": metadata_result["outcome"]["source"]["etag"],
       }], list_result
+
+      large_metadata_size = 128 * 1024
+      client.succeed(
+          f"${pkgs.coreutils}/bin/head -c {large_metadata_size} /dev/zero "
+          "> /tmp/hybrid-large-metadata"
+      )
+      large_metadata_paths = ["releases/fleet-large-a", "releases/fleet-large-b"]
+      for path in large_metadata_paths:
+          client.succeed(
+              f"{CURL} -fsS --aws-sigv4 'aws:amz:garage:s3' "
+              f"-u {shlex.quote(access_key.group(1) + ':' + secret_key.group(1))} "
+              "-X PUT -H 'content-type: application/octet-stream' "
+              "--data-binary @/tmp/hybrid-large-metadata "
+              f"https://s3.fleet.test/fleet-s3/tenant/registry/{path}",
+              timeout=60,
+          )
+      metadata_batch_paths = [
+          "releases/aaa-absent", *large_metadata_paths, metadata_path,
+          "releases/zzz-absent",
+      ]
+      assert metadata_batch_paths == sorted(metadata_batch_paths)
+      metadata_cursor = 0
+      metadata_observations = []
+      metadata_pages = 0
+      while True:
+          metadata_pages += 1
+          batch_status, batch_response = external_binding_plan(
+              published_revision,
+              {"kind": "inspect_metadata_objects", "paths": metadata_batch_paths, "cursor": metadata_cursor},
+              f"{9000 + metadata_pages:032x}",
+          )
+          assert batch_status == "200", (batch_status, batch_response)
+          assert len(batch_response.encode()) <= 256 * 1024, len(batch_response)
+          batch_result = json.loads(batch_response)
+          assert batch_result["outcome"]["kind"] == "metadata_objects", batch_result
+          page = batch_result["outcome"]["page"]
+          assert page["objects"], page
+          next_position = metadata_cursor + len(page["objects"])
+          assert [obj["path"] for obj in page["objects"]] == metadata_batch_paths[metadata_cursor:next_position]
+          metadata_observations.extend(page["objects"])
+          if page["next_cursor"] is None:
+              assert next_position == len(metadata_batch_paths), page
+              break
+          assert page["next_cursor"] == next_position > metadata_cursor, page
+          metadata_cursor = next_position
+      assert metadata_pages > 1, metadata_pages
+      assert len(metadata_observations) == len(metadata_batch_paths), metadata_observations
+      for obj in metadata_observations:
+          if obj["path"].endswith("-absent"):
+              assert obj["document"] is None, obj
+              continue
+          document = obj["document"]
+          expected = bytes(large_metadata_size) if obj["path"] in large_metadata_paths else s3_object
+          assert base64.b64decode(document["content_base64"]) == expected, obj["path"]
+          assert document["source"]["key"] == "registry/" + obj["path"], obj["path"]
+      print("hybrid external S3 metadata batches preserve maximum documents and absence:", metadata_pages, "pages")
+
       narinfo_path = "0" * 32 + ".narinfo"
       narinfo_bytes = b"fleet narinfo written beside external S3"
       narinfo_status, narinfo_response = external_binding_plan(
@@ -1622,6 +1679,7 @@ in {
             --store-path ${fixture.helperV2} --name hub-helper --previous 1.0.0 \\
             --description 'Hybrid release indexing fixture' --license MIT \\
             --maintainer fleet-publisher@example.test --key-id initial \\
+            --channel stable --init-channel \\
             --cache-url https://aos.andyl.org/fleet/containers \\
             --upload-url file:///tmp/hybrid-publication-surface
           {APR} verify --registry containers
@@ -1688,6 +1746,16 @@ in {
           "registry package show fleet/containers hub-helper"
       )))["data"]
       assert all(version in json.dumps(indexed_package) for version in ("1.0.0", "2.0.0")), indexed_package
+      channel_query = (
+          "SELECT floor.floor FROM channel_floors floor "
+          "JOIN registries registry ON registry.id = floor.registry_id "
+          "WHERE registry.slug = 'fleet/containers' AND floor.channel = 'stable'"
+      )
+      channel_floor = native.succeed(
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          f"-c {shlex.quote(channel_query)}"
+      ).strip()
+      assert channel_floor == "2.0.0", channel_floor
 
       parallel_size = 4 * 1024 * 1024
       client.succeed(
@@ -2211,6 +2279,18 @@ in {
       print("hybrid indexing work by run and release:", json.dumps(
           list(index_runs.values()), sort_keys=True
       ))
+      warm_refreshes = [
+          run["shared"] for run in index_runs.values()
+          if run.get("success", False) and not run["releases"]
+          and run["shared"]["object_bytes_processed_at_worker"] > 0
+      ]
+      assert warm_refreshes, index_runs
+      # Two branches require eight batches each, plus HEAD and info/refs.
+      assert all(refresh["completed_calls"] <= 18 for refresh in warm_refreshes), warm_refreshes
+      assert all(
+          refresh["offered_plan_bytes_including_retries"] < 32 * 1024
+          for refresh in warm_refreshes
+      ), warm_refreshes
       compact_verifications = [
           response for response, source in transferred
           if source == cache_size and response < 2048

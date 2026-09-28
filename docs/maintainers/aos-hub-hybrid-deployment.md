@@ -141,8 +141,9 @@ public hostname. An unauthenticated direct request to Native must return 401.
 An unsigned storage capability request must return 401. A signed capability
 probe from Native must report the exact deployment identity and supported
 protocol. A mismatch keeps Native unready; it must not silently use local
-storage. Verify the Worker can reach the Native TLS hostname and return a
-healthy response through the probe hostname.
+storage. The supported operations must include `inspect_metadata_objects` for
+batched channel refresh. Verify the Worker can reach the Native TLS hostname
+and return a healthy response through the probe hostname.
 
 Run `nix-build -A checks.fleet.hub-hybrid` for the four-VM contract test. The
 client, PostgreSQL Native Hub, Wrangler/R2-emulation Worker, and Garage S3
@@ -171,6 +172,15 @@ result, and TLS/HTTP framing is excluded. `response_bytes` counts only validated
 terminal results; rejected and retry response bodies are excluded. The fleet
 report retains these distinctions and verifies exact signed release tags in
 PostgreSQL, alongside the object-body exclusion checks.
+
+Channel refresh batches up to 32 partitions per storage-work call. A warm
+registry with two branches needs sixteen channel batches plus its HEAD and
+refs checks when documents fit in one page per batch. Larger metadata pages
+require additional calls. The fleet fixture verifies a signed populated
+channel, bounded warm-refresh call and plan-byte totals, and pagination of
+maximum-sized documents through the external S3 adapter. Worker source-byte
+counts include documents read concurrently but deferred to the next page;
+those documents may be read again on continuation.
 
 Only after those probes and recovery checks pass, render the same profile with
 both `--domain "$probe_hostname"` and `--domain "$public_hostname"`, then
