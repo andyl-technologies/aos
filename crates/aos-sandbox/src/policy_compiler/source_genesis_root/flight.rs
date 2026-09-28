@@ -188,10 +188,7 @@ impl OriginalRootGenesisFlightV1 {
         let peer = stream.peer();
         let credentials = peer.credentials();
         let info = self.cgroup.verify_exact_membership(peer.pidfd())?;
-        if credentials.uid() != 0
-            || credentials.gid() != 0
-            || info.thread_group_id() != credentials.pid().get()
-        {
+        if credentials.uid() != 0 || info.thread_group_id() != credentials.pid().get() {
             return Err(SourceGenesisErrorV1::Stale);
         }
         Ok(())

@@ -365,6 +365,7 @@ impl Journal {
             super::SourceProjectAdmissionTransition::None,
             super::controller_source_genesis::ControllerSourceGenesisTransition::None,
             transition,
+            super::RootSourceGenesisTransitionV1::None,
         )?;
         Ok(())
     }

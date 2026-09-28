@@ -2305,6 +2305,7 @@ impl Journal {
             project_admission_transition,
             controller_genesis_transition,
             source_tree_genesis::SourceGenesisTransitionV1::None,
+            root_genesis_transition,
         )
     }
 
@@ -2321,6 +2322,7 @@ impl Journal {
         project_admission_transition: SourceProjectAdmissionTransition,
         controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
         source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
+        root_genesis_transition: RootSourceGenesisTransitionV1,
     ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
         #[cfg(target_os = "linux")]
