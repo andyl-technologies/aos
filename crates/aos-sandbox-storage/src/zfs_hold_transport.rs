@@ -1,17 +1,21 @@
 //! Authenticated native Provider-to-Storage inspection and original-root delivery.
 //!
-//! The live Provider process submits one AOSZHQ01 or signed AOSZNQ02 per connection.
+//! The live Provider process submits one native request per connection.
 //! V1 drops its measured mount before descriptor-free AOSZHU01. Signed V2
 //! independently pins Provider/RootMount authority, durably retains consumer
 //! interest, and transfers exactly one original SourceRoot from live escrow.
 //! Neither branch spends a Provider challenge or opens public Acquire.
+//! AOSZNR01 instead reads historical unsigned acceptance metadata and always
+//! replies without descriptors. Its sequence/nonce correlate the outstanding
+//! query; no readback grants latest-state, custody, or retirement authority.
 
 use std::path::Path;
 
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
 use aos_sandbox_source_provider_protocol::{
-    MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2, SignedStorageNativeAcquireRequestV2,
+    MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2,
+    SignedStorageNativeAcceptanceReadbackQueryV1, SignedStorageNativeAcquireRequestV2,
     StorageZfsHoldTransportRequestV1, StorageZfsHoldUnavailableV1,
 };
 
@@ -35,11 +39,13 @@ pub enum StorageZfsHoldTransportOutcomeV1 {
     Exported,
     /// The accepted interest and original root remain retained after uncertain send.
     SendAmbiguous,
+    /// Storage returned historical unsigned acceptance metadata with zero FDs.
+    MetadataReadback,
     /// The connection, packet, protected cut, or physical mount failed closed.
     Rejected,
 }
 
-/// Inspects V1 or durably accepts one signed V2 original-root delivery.
+/// Inspects native claims, delivers an original root, or reads historical metadata.
 ///
 /// # Errors
 ///
@@ -99,6 +105,37 @@ pub fn serve_zfs_hold_request_once(
     let readback_deadline = boottime()?
         .checked_add(READBACK_NANOSECONDS)
         .ok_or(StorageServiceError::Clock)?;
+
+    if let NativeRequestPacket::Readback(query) = &request {
+        let trust = match StorageLiveExportRequestTrustV1::open_root_owned(authority_directory) {
+            Ok(trust) => trust,
+            Err(_) => return Ok(StorageZfsHoldTransportOutcomeV1::Rejected),
+        };
+        let authenticated = match trust.verify_native_readback(query) {
+            Ok(authenticated) => authenticated,
+            Err(_) => return Ok(StorageZfsHoldTransportOutcomeV1::Rejected),
+        };
+        let Some(key) = key else {
+            return Ok(StorageZfsHoldTransportOutcomeV1::Rejected);
+        };
+        let outcome = runtime.with_native_acceptance_readback_v1(&authenticated, key, |bytes| {
+            if verifier.verify_connection(connection.peer()) != Ok(execution)
+                || boottime().map_err(|_| ())? >= readback_deadline
+            {
+                return Err(());
+            }
+            // `.send` emits a descriptor-free subject record; the descriptor
+            // API must never be used to manufacture an empty SCM_RIGHTS list.
+            connection.send(bytes).map_err(|_| ())
+        });
+        return match outcome {
+            Ok(()) => Ok(StorageZfsHoldTransportOutcomeV1::MetadataReadback),
+            Err(StorageRuntimeError::ReopenRequired) => {
+                Err(StorageRuntimeError::ReopenRequired.into())
+            }
+            Err(_) => Ok(StorageZfsHoldTransportOutcomeV1::Rejected),
+        };
+    }
 
     if let NativeRequestPacket::Signed(request) = &request {
         let trust = match StorageLiveExportRequestTrustV1::open_root_owned(authority_directory) {
@@ -195,6 +232,7 @@ pub fn serve_zfs_hold_request_once(
 enum NativeRequestPacket {
     Legacy(StorageZfsHoldTransportRequestV1),
     Signed(SignedStorageNativeAcquireRequestV2),
+    Readback(SignedStorageNativeAcceptanceReadbackQueryV1),
 }
 
 impl NativeRequestPacket {
@@ -208,6 +246,11 @@ impl NativeRequestPacket {
             Some(b"AOSZNQ02") => SignedStorageNativeAcquireRequestV2::from_canonical_bytes(bytes)
                 .map(Self::Signed)
                 .map_err(|_| ()),
+            Some(b"AOSZNR01") => {
+                SignedStorageNativeAcceptanceReadbackQueryV1::from_canonical_bytes(bytes)
+                    .map(Self::Readback)
+                    .map_err(|_| ())
+            }
             _ => Err(()),
         }
     }
@@ -215,7 +258,114 @@ impl NativeRequestPacket {
 
 #[cfg(test)]
 mod tests {
+    use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
+    use aos_sandbox_source_provider_protocol::{
+        SourceProviderKeyUsageV1, SourceProviderSigningKeyV1,
+        StorageNativeAcceptanceReadbackQueryV1,
+    };
+    use ed25519_dalek::SigningKey;
+
     use super::*;
+
+    fn metadata_query() -> SignedStorageNativeAcceptanceReadbackQueryV1 {
+        let request = crate::native_issuance::native_metadata_request_fixture_for_test();
+        let key = SigningKey::from_bytes(&[32; 32]);
+        let signer = SourceProviderSigningKeyV1::for_signing_key(
+            [30; 16],
+            1,
+            aos_sandbox_core::ObjectDigest::from_bytes([33; 32]),
+            [34; 16],
+            1,
+            SourceProviderKeyUsageV1::ProviderOutcome,
+            &key,
+        )
+        .unwrap();
+        let query = StorageNativeAcceptanceReadbackQueryV1::new(
+            30,
+            aos_sandbox_core::ObjectDigest::from_bytes([90; 32]),
+            [91; 32],
+            &request,
+        )
+        .unwrap();
+        SignedStorageNativeAcceptanceReadbackQueryV1::sign(query, signer, &key).unwrap()
+    }
+
+    fn subject_pair() -> (DescriptorSubjectSocket, DescriptorSubjectSocket) {
+        let (left, right) = rustix::net::socketpair(
+            rustix::net::AddressFamily::UNIX,
+            rustix::net::SocketType::SEQPACKET,
+            rustix::net::SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        (
+            DescriptorSubjectSocket::from_owned(left).unwrap(),
+            DescriptorSubjectSocket::from_owned(right).unwrap(),
+        )
+    }
+
+    #[test]
+    fn native_metadata_transport_keeps_exact_canonical_dispatch_separate_from_acquire() {
+        let bytes = metadata_query().to_canonical_bytes();
+        assert!(matches!(
+            NativeRequestPacket::decode(&bytes),
+            Ok(NativeRequestPacket::Readback(_))
+        ));
+        assert!(NativeRequestPacket::decode(&bytes[..bytes.len() - 1]).is_err());
+        let mut extra = bytes.to_vec();
+        extra.push(0);
+        assert!(NativeRequestPacket::decode(&extra).is_err());
+        for offset in [8, 10] {
+            let mut malformed = bytes.clone();
+            malformed[offset] ^= 1;
+            assert!(NativeRequestPacket::decode(&malformed).is_err());
+        }
+    }
+
+    #[test]
+    fn native_metadata_transport_receives_a_real_zero_fd_subject_record() {
+        let query = metadata_query().to_canonical_bytes();
+        let (mut sender, mut receiver) = subject_pair();
+        sender.send(&query).unwrap();
+        let record = receive_request(
+            &mut receiver,
+            boottime().unwrap() + REQUEST_RECEIVE_NANOSECONDS,
+            MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2,
+        )
+        .unwrap();
+        let record = receiver.bind_received(record).unwrap();
+        assert_eq!(record.payload(), query);
+        assert!(record.descriptors().is_empty());
+        assert!(matches!(
+            NativeRequestPacket::decode(record.payload()),
+            Ok(NativeRequestPacket::Readback(_))
+        ));
+    }
+
+    #[test]
+    fn native_metadata_transport_rejects_one_or_extra_inbound_scm_rights() {
+        use std::os::fd::AsFd as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        let first = std::fs::File::create(directory.path().join("first")).unwrap();
+        let second = std::fs::File::create(directory.path().join("second")).unwrap();
+        let query = metadata_query().to_canonical_bytes();
+        let descriptors = [first.as_fd(), second.as_fd()];
+        for count in [1, 2] {
+            let (mut sender, mut receiver) = subject_pair();
+            sender
+                .send_with_descriptors(&query, &descriptors[..count])
+                .unwrap();
+            assert!(
+                receive_request(
+                    &mut receiver,
+                    boottime().unwrap() + REQUEST_RECEIVE_NANOSECONDS,
+                    MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2,
+                )
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn native_v2_and_legacy_packets_keep_distinct_canonical_dispatch() {
@@ -257,7 +407,6 @@ mod tests {
 
     #[test]
     fn legacy_and_cold_unavailable_are_real_zero_fd_subject_records() {
-        use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
         let (left, right) = rustix::net::socketpair(
             rustix::net::AddressFamily::UNIX,
             rustix::net::SocketType::SEQPACKET,

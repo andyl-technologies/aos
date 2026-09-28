@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    SignedStorageLiveExportRequestV1, SignedStorageNativeAcquireRequestV2,
-    SourceProviderKeyUsageV1, SourceProviderSigningKeyV1,
+    SignedStorageLiveExportRequestV1, SignedStorageNativeAcceptanceReadbackQueryV1,
+    SignedStorageNativeAcquireRequestV2, SourceProviderKeyUsageV1, SourceProviderSigningKeyV1,
 };
 use ed25519_dalek::VerifyingKey;
 use rustix::fs::{FileType, Mode, OFlags};
@@ -91,6 +91,31 @@ pub(crate) struct AuthenticatedStorageNativeRequestV2<'a> {
     trust: &'a StorageLiveExportRequestTrustV1,
 }
 
+/// Authenticates historical metadata intent under the current Provider pin only.
+///
+/// This does not reauthorize the original Acquire, establish its currentness,
+/// or authenticate the live transport peer. The fixed carrier must do that.
+pub(crate) struct AuthenticatedStorageNativeAcceptanceReadbackQueryV1<'a> {
+    query: &'a SignedStorageNativeAcceptanceReadbackQueryV1,
+    trust: &'a StorageLiveExportRequestTrustV1,
+}
+
+impl AuthenticatedStorageNativeAcceptanceReadbackQueryV1<'_> {
+    /// Returns exact signed metadata intent, not renewed Acquire intent.
+    pub(crate) fn query(&self) -> &SignedStorageNativeAcceptanceReadbackQueryV1 {
+        self.query
+    }
+
+    /// Rechecks the current Provider pin and its protected physical names.
+    ///
+    /// # Errors
+    ///
+    /// Rejects replaced trust custody or a different Provider signer/signature.
+    pub(crate) fn recheck(&self) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+        self.trust.verify_native_readback_signature(self.query)
+    }
+}
+
 impl AuthenticatedStorageNativeRequestV2<'_> {
     pub(crate) fn request(&self) -> &SignedStorageNativeAcquireRequestV2 {
         self.request
@@ -136,6 +161,39 @@ impl AuthenticatedStorageNativeRequestV2<'_> {
 }
 
 impl StorageLiveExportRequestTrustV1 {
+    /// Authenticates a metadata query without validating historical Acquire.
+    ///
+    /// The independent query nonce and sequence correlate one current carrier;
+    /// they are not durable admission or latest-state freshness authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsafe or changed current pins and an unauthenticated Provider.
+    pub(crate) fn verify_native_readback<'a>(
+        &'a self,
+        query: &'a SignedStorageNativeAcceptanceReadbackQueryV1,
+    ) -> Result<
+        AuthenticatedStorageNativeAcceptanceReadbackQueryV1<'a>,
+        StorageLiveExportRequestTrustErrorV1,
+    > {
+        self.verify_native_readback_signature(query)?;
+        Ok(AuthenticatedStorageNativeAcceptanceReadbackQueryV1 { query, trust: self })
+    }
+
+    fn verify_native_readback_signature(
+        &self,
+        query: &SignedStorageNativeAcceptanceReadbackQueryV1,
+    ) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+        self.validate_current()?;
+        query
+            .verify(
+                &self.record.provider_signer,
+                &self.record.provider_public_key,
+            )
+            .map_err(|_| StorageLiveExportRequestTrustErrorV1::Signature)?;
+        self.validate_current()
+    }
+
     /// Opens current root-owned trust without accepting caller-supplied keys.
     ///
     /// # Errors
@@ -293,16 +351,27 @@ impl StorageLiveExportRequestTrustV1 {
 
     #[cfg(test)]
     pub(crate) fn native_fixture_for_test(directory: &Path) -> Self {
+        Self::native_provider_fixture_for_test(directory, [32; 32], 1)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn native_provider_fixture_for_test(
+        directory: &Path,
+        provider_seed: [u8; 32],
+        provider_key_generation: u64,
+    ) -> Self {
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
         std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut bytes = tests::fixture();
-        for (offset, authority, authority_digest, key_id, seed) in
-            [(24, 30, 33, 34, 32), (168, 22, 23, 29, 28)]
-        {
-            let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        for (offset, authority, authority_digest, key_id, seed, key_generation) in [
+            (24, 30, 33, 34, provider_seed, provider_key_generation),
+            (168, 22, 23, 29, [28; 32], 1),
+        ] {
+            let key = ed25519_dalek::SigningKey::from_bytes(&seed);
             bytes[offset..offset + 16].fill(authority);
             bytes[offset + 24..offset + 56].fill(authority_digest);
             bytes[offset + 56..offset + 72].fill(key_id);
+            bytes[offset + 72..offset + 80].copy_from_slice(&key_generation.to_be_bytes());
             bytes[offset + 80..offset + 112]
                 .copy_from_slice(&Sha256::digest(key.verifying_key().as_bytes()));
             bytes[offset + 112..offset + 144].copy_from_slice(key.verifying_key().as_bytes());

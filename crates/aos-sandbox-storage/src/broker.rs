@@ -482,6 +482,45 @@ impl FreshStorageEffectAuthority {
 }
 
 impl StorageAdmissionCoordinator {
+    /// Rejoins the fixed primary writer without asserting live snapshot custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unhealthy or physically replaced primary journal custody.
+    pub(crate) fn native_metadata_readback_cut(
+        &self,
+        state_directory: &std::path::Path,
+    ) -> Result<(u64, ObjectDigest), StorageBrokerError> {
+        self.transactions
+            .native_metadata_readback_cut(state_directory)
+            .map_err(Into::into)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn native_metadata_readback_cut_for_test(
+        &self,
+        state_directory: &std::path::Path,
+        uid: u32,
+    ) -> Result<(u64, ObjectDigest), StorageBrokerError> {
+        self.transactions
+            .native_metadata_readback_cut_for_test(state_directory, uid)
+            .map_err(Into::into)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_protected_metadata_fixture(
+        self,
+        state_directory: &std::path::Path,
+        uid: u32,
+    ) -> Result<Self, StorageBrokerError> {
+        Ok(Self {
+            transactions: self
+                .transactions
+                .into_protected_metadata_fixture(state_directory, uid)?,
+            authority: self.authority,
+        })
+    }
+
     /// Commits a fresh signed root-publication effect before the one-shot worker can run.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn begin_guest_root_publication(

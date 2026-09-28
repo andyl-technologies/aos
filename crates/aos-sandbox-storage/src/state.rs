@@ -2968,6 +2968,60 @@ impl StorageTransactionStore {
         Ok(self.journal.snapshot_sequence())
     }
 
+    /// Rejoins a historical metadata read to the fixed live primary writer.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unhealthy state or changed root-owned directory/journal/lock names.
+    pub(crate) fn native_metadata_readback_cut(
+        &self,
+        state_directory: &Path,
+    ) -> Result<(u64, ObjectDigest), StorageStateError> {
+        self.ensure_authority_readable()?;
+        self.journal
+            .validate_held_root_owned_at(state_directory, "storage-state.journal")?;
+        Ok((
+            self.authority_head_sequence()?,
+            self.held_snapshot_materialized_state_digest()?,
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn native_metadata_readback_cut_for_test(
+        &self,
+        state_directory: &Path,
+        uid: u32,
+    ) -> Result<(u64, ObjectDigest), StorageStateError> {
+        self.ensure_authority_readable()?;
+        self.journal.validate_held_protected_at_uid_for_test(
+            state_directory,
+            "storage-state.journal",
+            uid,
+        )?;
+        Ok((
+            self.authority_head_sequence()?,
+            self.held_snapshot_materialized_state_digest()?,
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_protected_metadata_fixture(
+        self,
+        state_directory: &Path,
+        uid: u32,
+    ) -> Result<Self, StorageStateError> {
+        let minimum_generation = self.catalog_head_binding()?.generation();
+        let Self { journal, key, .. } = self;
+        drop(journal);
+        let (journal, _) = Journal::open_protected_at_uid(
+            state_directory,
+            "storage-state.journal",
+            journal_limits(),
+            uid,
+        )?;
+        Self::from_journal(journal, key, minimum_generation)
+    }
+
     /// Commits the current protected materialized state for a held-snapshot cut.
     ///
     /// This covers the ordered namespace, key, and value of every retained
