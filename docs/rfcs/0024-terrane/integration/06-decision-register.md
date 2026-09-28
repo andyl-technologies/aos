@@ -50,24 +50,35 @@ the requirement IDs each decision affects.
     rewrite and would let AOS assumptions leak into formats).
   - **Affects:** spec CONV-2, spec README §Versioning, RFC-0024 README.
 
-- **[AD-3] Sandbox runtime first, Hub second**
+- **[AD-3] The MVP serves sandboxes, build caches, and CI caches together**
   - **Status:** Decided
-  - **Decision:** Phase 1 of the plan (sub-stage 1d) integrates Terrane
-    into the RFC-0021 sandbox runtime before Phase 2 (sub-stage 2b)
-    integrates AOS Hub.
-  - **Rationale:** RFC-0021 has the seam ready: `aos-viewd`,
-    `aos-view-publisher`, and per-view FUSE workers are specified but
-    unwritten, and `ObjectSource` and `ImmutableFetchTransport` are dormant
-    traits waiting for a client. The Hub has working storage today and
-    RFC-0023's hybrid topology is in progress; replacing its R2 layer is a
-    migration with a cutover, which is safer once the host tier, surfaces,
-    and GC have run in production under the sandbox workload.
-  - **Alternatives considered:** Hub first because it is the larger byte
-    volume (rejected: highest migration risk with the least-proven code);
-    both in parallel (rejected: the same people, and the Hub migration
-    depends on the `nix-cache` and `oci` surfaces from sub-stage 2a).
+  - **Decision:** The MVP is the trunk of
+    [`05-implementation-plan.md`](05-implementation-plan.md) through T6,
+    in the order T0 foundations, T1 local repository, T2 host tier, T3 wire
+    protocol and buckets, T4 CI caches (`nix-cache`, `reapi`, `gha-cache`
+    for Nix, Bazel, and GitHub Actions on GCP spot runners), T5 the
+    RFC-0021 sandbox view service, T6 hardening and the MVP conformance
+    claim. T4 and T5 share no dependency and may be worked concurrently.
+    AOS Hub, the edge, and every other consumer are branches.
+  - **Rationale:** The idea came from one need shared by three consumers:
+    an untrusted job reads a trusted baseline, writes results only it can
+    see, and has them folded in on merge without copying. Building for one
+    consumer would leave the fork-and-fold core untested until later; the
+    three together exercise it from T1 (merge) through T4 (surfaces) on the
+    same warehouse. CI caches merge before sandboxes because they need no
+    kernel work and validate the wire protocol and buckets end to end with
+    stock clients; the sandbox path then adds FUSE and the RFC-0021 slots
+    on a proven substrate. The Hub stays a branch because replacing its R2
+    layer is a migration with a cutover, which is safer once the trunk has
+    run under the CI and sandbox workloads.
+  - **Alternatives considered:** Sandbox-only MVP (rejected: it never
+    exercises merge, fold, or a protocol surface, and the CI need is
+    immediate); Hub first (rejected: highest migration risk with the
+    least-proven code); every consumer in parallel with no trunk (rejected:
+    formats and interfaces would fork before they froze).
   - **Affects:** [`05-implementation-plan.md`](05-implementation-plan.md)
-    phase order, SBX-1 to SBX-21, HUB-1 to HUB-14.
+    trunk order, [`07-ci-caches.md`](07-ci-caches.md) CI-1 to CI-17,
+    SBX-1 to SBX-21, HUB-1 to HUB-14.
 
 - **[AD-4] ZFS keeps live workspaces in 1.0**
   - **Status:** Decided
@@ -136,22 +147,48 @@ the requirement IDs each decision affects.
 
 - **[AD-8] Erasure coding, the block backend, and block writes wait**
   - **Status:** Decided
-  - **Decision:** AOS ships Phases 1 and 2 before any of `striped`,
-    `blockdev`, or a writable block surface. AOS's first redundancy is the
-    bucket's own durability plus `replicated` across regions for the Hub.
+  - **Decision:** AOS ships the MVP trunk (T0 through T6) before any of
+    `striped`, `blockdev`, or a writable block surface; those live on
+    B-redundancy and B-storage. AOS's first redundancy is the bucket's own
+    durability plus `replicated` across regions for the Hub.
   - **Rationale:** Spec D-18 and NG-8. No AOS workload needs raw-device
     pools in the first year, and the block surface's read-only mode already
     serves Crucible scenario disks.
   - **Alternatives considered:** Blockdev-first for on-prem warehouses
     (rejected: no on-prem deployment is planned before the Hub migration).
   - **Affects:** [`05-implementation-plan.md`](05-implementation-plan.md)
-    sub-stage 3a, spec D-18.
+    branches B-redundancy and B-storage, spec D-18.
+
+- **[AD-10] Trunk and branches, with freezes**
+  - **Status:** Decided
+  - **Decision:** The plan is a serial trunk of milestones, each leaving a
+    deployable and gate-green system, plus branch worklines that fork from
+    a named milestone and merge as one change. Identities, encodings,
+    bucket keys, and store traits freeze at T1; the surface interface and
+    exposure record at T2; the wire protocol and token format at T3.
+    Branches add registry entries only. Trunk gates are the floor for
+    every branch. Testing is local only: Nix checks, the AOS-built Garage
+    as the S3-compatible store, VM tests on the AOS kernel; cloud probes
+    are manual and recorded here.
+  - **Rationale:** A stable and deployable MVP needs a spine that never
+    waits on scale-out or multi-site work, and branches need frozen
+    formats so they never fork identity. Local-only testing keeps every
+    gate reproducible in a Nix check; the two things that cannot be
+    tested locally, real GCS and real S3 conditional writes, are exactly
+    the ones RISK-1 asks to probe by hand.
+  - **Alternatives considered:** Numbered phases with sub-stages (the
+    previous shape; rejected because it serialized branch work behind
+    unrelated milestones and hid which items were scale-out); gated cloud
+    integration tests (rejected: network-dependent gates are not
+    reproducible in the hermetic build).
+  - **Affects:** [`05-implementation-plan.md`](05-implementation-plan.md)
+    §How to use this plan, PLAN-3.
 
 ## Open
 
 - **[AD-9] Whether `aos-cache` gains a `terrane://` backend or is replaced**
   - **Status:** Open
-  - **Decision:** Pending sub-stage 2a results. HUB-13 keeps `aos-cache`'s
+  - **Decision:** Pending T4 results. HUB-13 keeps `aos-cache`'s
     existing backends working either way.
   - **Rationale:** The SDK already gives every AOS crate chunk-level
     negotiation; whether a Nix-compatible transfer client still needs a

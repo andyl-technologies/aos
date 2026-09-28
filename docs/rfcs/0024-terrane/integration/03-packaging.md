@@ -185,4 +185,5 @@ bash ./aos-dev all checks
 
 - Spec files `36`, `37`, `38`.
 - [`01-sandbox-runtime.md`](01-sandbox-runtime.md) for slices.
-- [`05-implementation-plan.md`](05-implementation-plan.md) sub-stages 1b through 1d.
+- [`05-implementation-plan.md`](05-implementation-plan.md) milestones T0, T2,
+  T5, and T6.

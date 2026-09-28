@@ -78,7 +78,11 @@ one wire protocol, and one way to expose a tree (a surface).
 5. [`spec/26-surfaces.md`](spec/26-surfaces.md) through
    [`spec/31-routing-rulesets.md`](spec/31-routing-rulesets.md) for how trees
    are exposed.
-6. [`integration/`](integration/) for what AOS builds first.
+6. [`integration/05-implementation-plan.md`](integration/05-implementation-plan.md)
+   for the trunk and branch worklines, then
+   [`integration/07-ci-caches.md`](integration/07-ci-caches.md) and
+   [`integration/01-sandbox-runtime.md`](integration/01-sandbox-runtime.md)
+   for the MVP's consumers.
 
 ## Index
 
@@ -95,8 +99,9 @@ The full index, conformance levels, and versioning policy are in
 | [`integration/02-hub.md`](integration/02-hub.md) | AOS Hub on Terrane: R2 as a bucket, registry and OCI surfaces, the console |
 | [`integration/03-packaging.md`](integration/03-packaging.md) | Nix packaging, systemd units and roles, `aos-dev` targets, workspace crates |
 | [`integration/04-crucible.md`](integration/04-crucible.md) | Crucible disks and campaign state on Terrane; the `crucible-cas` seam |
-| [`integration/05-implementation-plan.md`](integration/05-implementation-plan.md) | Phased task plan with requirement coverage |
+| [`integration/05-implementation-plan.md`](integration/05-implementation-plan.md) | Trunk milestones T0–T6 to the MVP, branch worklines, requirement coverage |
 | [`integration/06-decision-register.md`](integration/06-decision-register.md) | AOS-specific decisions (naming, ownership, sequencing) |
+| [`integration/07-ci-caches.md`](integration/07-ci-caches.md) | Nix, Bazel, and GitHub Actions caches on GCP spot runners: deployment shape, identity, fork and fold, client configuration |
 
 ## Status notes
 

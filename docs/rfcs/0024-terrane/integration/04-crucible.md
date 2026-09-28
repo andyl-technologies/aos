@@ -140,5 +140,5 @@ socket control protocol and the shared-memory data protocol.
 
 - Spec files `04`, `11`, `17`, `20`, `28`, `33`.
 - RFC-0010 files 13, 35, 37; RFC-0020 files 05, 06.
-- [`05-implementation-plan.md`](05-implementation-plan.md) sub-stage 3a.
+- [`05-implementation-plan.md`](05-implementation-plan.md) branch B-storage.
 - [`06-decision-register.md`](06-decision-register.md) AD-6.
