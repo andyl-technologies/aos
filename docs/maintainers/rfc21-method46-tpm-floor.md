@@ -97,6 +97,46 @@ Subsequent public and NV reads
 use the same authenticated HMAC session. AES-128-CFB parameter encryption
 protects extend input and NV read output; ESYS validates response HMACs.
 
+### Pinned initial-response cache regression (source-only)
+
+The helper package asserts the exact AOS `tpm2-tss` release `4.2.0` and compiles
+`pkgs/security/aos-method46-tpm-helper/readpublic-cache-test.c` against that
+package's public ESYS/SYS/MU interfaces and AOS OpenSSL. The test includes the
+actual private helper validator with only its process entry point renamed; it
+does not copy the validator or call the production entry point. Every TPM
+operation goes to a bounded in-memory TCTI that permits only the fixed salt
+handle's no-session ReadPublic. There is no device initialization, physical TPM,
+StartAuthSession, credential, provisioning or hierarchy command. The regression
+does not link Device-TCTI and provides a fatal test-only device-init guard; the
+production helper's device linkage and behavior are unchanged.
+
+Seven named regressions cover three rounds of repeated SAPI completion and the
+actual production check over the exact initial canonical public/Name/distinct
+qualifiedName with no new transmit or receive;
+distinct later responses in both directions (a later valid read cannot repair
+the initially cached RSA public); substituted initial RSA bytes with an asserted
+pinned Name; substituted Name; weak/signing key shapes; a short response header;
+and an oversized public declaration. Official MU codecs construct the response
+and compare public bytes. Public and qualified-Name fields are synthetic: these
+tests do not prove RSA salt encryption, a real hierarchy, response HMACs, device
+identity or installed custody.
+
+The sequence relies on the pinned
+[FromTPMPublic implementation](https://github.com/tpm2-software/tpm2-tss/blob/4.2.0/src/tss2-esys/esys_tr.c),
+[ESYS ReadPublic completion](https://github.com/tpm2-software/tpm2-tss/blob/4.2.0/src/tss2-esys/api/Esys_ReadPublic.c)
+and [SAPI CommonComplete](https://github.com/tpm2-software/tpm2-tss/blob/4.2.0/src/tss2-sys/sysapi_util.c):
+the initial all-NONE import has only one command, and CommonComplete resets the
+decoder cursor while retaining its receive-response stage and buffer. No private
+ESYS resource representation or TPM layout is parsed by the test.
+
+A native helper package build executes the regression and retains its report at
+`share/aos-method46-tpm-helper/readpublic-cache-regression.txt`. A cross build
+compiles it but records explicit `NOT RUN`, requiring execution on the target;
+it never labels a cross build as a passing test. Both source and check wiring
+remain uncompiled and unrun here. A future TSS upgrade requires review and actual
+regression execution before producer qualification; this source addition does
+not open method 46 or replace physical/installed qualification.
+
 Required mode loads these owner-specific systemd credentials under the existing
 `aos-sandboxd.service` or `aos-storaged.service` credential directory:
 
@@ -471,8 +511,9 @@ authentication, service confinement or effect boundaries.
 The new lock-loan, helper framing, startup-state and weakened-property tests
 are also unrun. Compiler/API qualification must cover the packaged TSS 4.2.0
 initial-response SAPI decode, not assume that a later public read refreshed
-the cached salt key. It must include an exact packaged-4.2.0 repeated-Complete
-regression before a future TSS upgrade or producer qualification. Required-mode
+the cached salt key. The new exact packaged-4.2.0 repeated-Complete regression
+and check wiring above remain uncompiled/unrun; they must pass before a future
+TSS upgrade or producer qualification. Required-mode
 effective unit policy and the exact old
 helper's TPM-close-before-next-owner ordering need genuine installed tests.
 
