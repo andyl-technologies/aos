@@ -146,8 +146,11 @@ batched channel refresh. Verify the Worker can reach the Native TLS hostname
 and return a healthy response through the probe hostname.
 
 Run `nix-build -A checks.fleet.hub-hybrid` for the four-VM contract test. The
-client, PostgreSQL Native Hub, Wrangler/R2-emulation Worker, and Garage S3
-service run on separate machines. The S3 fixture checks purpose-scoped
+client, PostgreSQL Native Hub, Miniflare/workerd Worker with R2 emulation, and
+Garage S3 service run on separate machines. Both hybrid and Worker-only comparison
+run through the pinned direct Worker runner with persistent real bindings; the
+Worker-only case includes HubDb SQLite, request shards, KV, queues and rate
+limits. The S3 fixture checks purpose-scoped
 credential validation, inventory admission, and full, ranged, and HEAD reads
 through Native authorization and Worker streaming. For the hosted environment,
 exercise the same browser, CLI, Nix cache, publication, OCI, parallel upload,

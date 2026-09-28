@@ -1,6 +1,6 @@
 // Serve the built Worker with real workerd and persistent Miniflare bindings.
-// Wrangler's development proxy exits on a single upstream connection failure;
-// the fleet must observe that failed request without losing its whole executor.
+// Persistent bindings and direct workerd dispatch keep the fleet independent
+// of Wrangler's live development proxy and external Request.cf discovery.
 const { readFileSync } = require('node:fs');
 const { createRequire } = require('node:module');
 const path = require('node:path');
@@ -42,7 +42,7 @@ async function main() {
   process.once('SIGTERM', stop);
 
   try {
-    console.info('Hybrid fleet Worker ready:', (await runtime.ready).href);
+    console.info('Fleet Worker ready:', (await runtime.ready).href);
   } catch (error) {
     await runtime.dispose();
     throw error;

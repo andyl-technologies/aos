@@ -2988,7 +2988,9 @@ in {
               "postgres": POSTGRES,
               "sqlite": "${pkgs.sqlite}/bin/sqlite3",
               "tar": "${pkgs.tar}/bin/tar",
-              "wrangler": "${pkgs.miniflare}/bin/wrangler",
+              "node": "${pkgs.nodejs}/bin/node",
+              "miniflare": "${pkgs.miniflare}",
+              "worker_runner": "${workerRunner}/value",
               "worker_main": "${pkgs.aos-hub-worker-dist}/shim.mjs",
           },
           fixture={

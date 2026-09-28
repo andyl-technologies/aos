@@ -67,7 +67,6 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
         echo $! > {native_root}/server.pid
     """), timeout=180)
 
-    worker_config = worker_only_configuration(tools["worker_main"], worker_origin)
     evidence = {
         "schema_version": "aos.hub.release-evidence-config/v1",
         "publication_key_id": "staging-publication-v1",
@@ -86,31 +85,25 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
         "HUB_ROUTE_RESERVATION_KEYRING": route_keys,
         "HUB_RELEASE_EVIDENCE_CONFIG": json.dumps(evidence, separators=(",", ":")),
     }
-    assert all("'" not in value and "\n" not in value for value in secrets.values())
-    dev_vars = "\n".join(f"{name}='{value}'" for name, value in secrets.items()) + "\n"
+    worker_config = worker_only_configuration(
+        tools["worker_main"], worker_origin, worker_root, fixture, secrets,
+    )
     worker.succeed(textwrap.dedent(f"""
         set -eu
         umask 077
-        mkdir -p {worker_root}/config {worker_root}/cache
-        printf '%s' {shlex.quote(worker_config)} > {worker_root}/wrangler.toml
-        printf '%s' {shlex.quote(dev_vars)} > {worker_root}/.dev.vars
-        cd {worker_root}
-        XDG_CONFIG_HOME={worker_root}/config XDG_CACHE_HOME={worker_root}/cache \\
-        WRANGLER_LOG_PATH={worker_root}/config/logs \\
-        WRANGLER_REGISTRY_PATH={worker_root}/config/registry \\
+        mkdir -p {worker_root}
+        printf '%s' {shlex.quote(json.dumps(worker_config))} > {worker_root}/runner.json
         SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \\
-        {tools['wrangler']} dev --local --config {worker_root}/wrangler.toml \\
-          --ip 0.0.0.0 --port 8443 --local-protocol https \\
-          --https-cert-path {fixture['certificate']} \\
-          --https-key-path {fixture['private_key']} \\
-          > {worker_root}/wrangler.log 2>&1 < /dev/null &
-        echo $! > {worker_root}/wrangler.pid
+        {tools['node']} {tools['worker_runner']} {tools['miniflare']} \\
+          {worker_root}/runner.json \\
+          > {worker_root}/worker.log 2>&1 < /dev/null &
+        echo $! > {worker_root}/worker.pid
     """), timeout=30)
     try:
         worker.wait_until_succeeds(f"{curl} -fsS {worker_origin}/healthz > /dev/null", timeout=180)
     except Exception:
         print("Worker-only parity startup log:", worker.succeed(
-            f"tail -n 100 {worker_root}/wrangler.log 2>/dev/null || true"
+            f"tail -n 100 {worker_root}/worker.log 2>/dev/null || true"
         ))
         raise
     worker.succeed(
@@ -169,7 +162,7 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
     }, "fleet/containers")
 
     for machine, root in ((native, native_root), (worker, worker_root)):
-        pid_file = "server.pid" if machine is native else "wrangler.pid"
+        pid_file = "server.pid" if machine is native else "worker.pid"
         machine.succeed(f"kill $(cat {root}/{pid_file})")
 
 
@@ -188,7 +181,7 @@ def browser_session_token(machine, origin, email, password, curl):
         body = machine.succeed(f"head -c 4096 {body_path}")
         print("Parity login failure body:", body)
         print("Worker-only parity runner diagnostics:", machine.succeed(
-            "tail -n 100 /var/lib/hub-parity-worker/wrangler.log 2>/dev/null || true"
+            "tail -n 100 /var/lib/hub-parity-worker/worker.log 2>/dev/null || true"
         ))
         raise AssertionError(f"parity password login returned HTTP {status}")
 
@@ -291,7 +284,7 @@ def setup_and_publish_same_registry(
         )
     except Exception:
         print("Worker-only parity publication diagnostics:", machine.succeed(
-            "tail -n 100 /var/lib/hub-parity-worker/wrangler.log 2>/dev/null || true"
+            "tail -n 100 /var/lib/hub-parity-worker/worker.log 2>/dev/null || true"
         ))
         raise
     assert publication["state"] == "ready", publication
@@ -301,43 +294,45 @@ def setup_and_publish_same_registry(
     )
 
 
-def worker_only_configuration(main, origin):
-    """Render isolated local bindings for the production Worker-only runtime."""
-    config = textwrap.dedent(f"""
-        name = "hub-runtime-parity-worker"
-        main = "{main}"
-        compatibility_date = "2024-09-23"
-        [vars]
-        HUB_TOPOLOGY = "worker_only"
-        HUB_REQUEST_SHARDING = "on"
-        HUB_EXTERNAL_URL = "{origin}"
-        HUB_DEPLOYMENT_ID = "fleet-worker-parity-v1"
-        HUB_DATABASE_INSTANCE = "runtime-parity"
-        HUB_DNS_JSON_ENDPOINT = "https://dns.google/resolve"
-        [[r2_buckets]]
-        binding = "REGISTRY_BUCKET"
-        bucket_name = "runtime-parity-r2"
-        [[kv_namespaces]]
-        binding = "SESSIONS"
-        id = "11111111111111111111111111111111"
-        [[queues.producers]]
-        binding = "JOBS"
-        queue = "runtime-parity-jobs"
-        [[queues.consumers]]
-        queue = "runtime-parity-jobs"
-        max_batch_size = 1
-        max_batch_timeout = 1
-    """)
+def worker_only_configuration(main, origin, root, fixture, secrets):
+    """Configure persistent production bindings for the direct Worker runner."""
     classes = {
         "COORDINATOR": "CoordinatorObject", "HUB_DB": "HubDb",
         "HUB_CONTROL_SHARDS": "HubControlShard", "HUB_TENANT_SHARDS": "HubTenantShard",
         "HUB_REGISTRY_SHARDS": "HubRegistryShard", "HUB_CACHE_SHARDS": "HubCacheShard",
     }
-    for binding, class_name in classes.items():
-        config += f'\n[[durable_objects.bindings]]\nname = "{binding}"\nclass_name = "{class_name}"\n'
-    legacy_classes = [name for name in classes.values() if name != "HubDb"]
-    config += '\n[[migrations]]\ntag = "runtime-parity-v1"\nnew_sqlite_classes = ["HubDb"]\n'
-    config += "new_classes = " + json.dumps(legacy_classes) + "\n"
-    for namespace, binding, limit in ((4101, "RL_BURST5", 5), (4102, "RL_BURST10", 10), (4103, "RL_BROWSE120", 120)):
-        config += f'\n[[ratelimits]]\nname = "{binding}"\nnamespace_id = "{namespace}"\n[ratelimits.simple]\nlimit = {limit}\nperiod = 60\n'
-    return config
+    return {
+        "name": "hub-runtime-parity-worker",
+        "scriptPath": main,
+        "compatibilityDate": "2024-09-23",
+        "host": "0.0.0.0",
+        "port": 8443,
+        "certificatePath": fixture["certificate"],
+        "privateKeyPath": fixture["private_key"],
+        "resourcePersistencePath": f"{root}/state",
+        "r2Buckets": {"REGISTRY_BUCKET": "runtime-parity-r2"},
+        "kvNamespaces": {"SESSIONS": "runtime-parity-sessions"},
+        "queueProducers": {"JOBS": "runtime-parity-jobs"},
+        "queueConsumers": {
+            "runtime-parity-jobs": {"maxBatchSize": 1, "maxBatchTimeout": 1},
+        },
+        "durableObjects": {
+            binding: {"className": name, "useSQLite": name == "HubDb"}
+            for binding, name in classes.items()
+        },
+        "ratelimits": {
+            binding: {"namespace_id": str(namespace), "simple": {"limit": limit, "period": 60}}
+            for namespace, binding, limit in (
+                (4101, "RL_BURST5", 5), (4102, "RL_BURST10", 10), (4103, "RL_BROWSE120", 120),
+            )
+        },
+        "bindings": {
+            **secrets,
+            "HUB_TOPOLOGY": "worker_only",
+            "HUB_REQUEST_SHARDING": "on",
+            "HUB_EXTERNAL_URL": origin,
+            "HUB_DEPLOYMENT_ID": "fleet-worker-parity-v1",
+            "HUB_DATABASE_INSTANCE": "runtime-parity",
+            "HUB_DNS_JSON_ENDPOINT": "https://dns.google/resolve",
+        },
+    }
