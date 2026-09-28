@@ -18,6 +18,13 @@ use super::*;
 use crate::handshake::root_mount::AuthenticatedRootMountCatalogCurrentnessV1;
 use crate::{RevalidatedProviderConfigurationV1, VerifiedCatalogPublicationV1};
 
+#[path = "native_catalog/outcome.rs"]
+mod outcome;
+
+pub(super) use outcome::NativeAcquireOutcomeCustodyV3;
+pub(super) use outcome::require_native_completion_barrier;
+pub(super) use outcome::retain_original_outcome_owner;
+
 /// Retains one original native query, protected plan, and absolute deadline.
 ///
 /// This move-only value has no public constructor or claim projection. Pending
@@ -40,7 +47,7 @@ struct NativeAcquirePreparationV3 {
     proof: Option<AuthenticatedRootMountCatalogCurrentnessV1>,
 }
 
-/// Retains genuine received-sender custody through reservation and send retry.
+/// Retains genuine received-sender custody through reservation, send, and outcome.
 pub(super) struct NativeAcquireCurrentnessGuardV3 {
     proof: AuthenticatedRootMountCatalogCurrentnessV1,
     publication: VerifiedCatalogPublicationV1,
@@ -899,7 +906,7 @@ mod tests {
         CatalogCurrentnessQueryV1::new(digest(1), [nonce; 32], sequence, 4, digest(4)).unwrap()
     }
 
-    fn clock(wall: i64, seconds: u64, boot: u8) -> RawPairedClockSample {
+    pub(super) fn clock(wall: i64, seconds: u64, boot: u8) -> RawPairedClockSample {
         RawPairedClockSample::new_untrusted(
             RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
             [boot; 16],
@@ -1262,7 +1269,7 @@ mod tests {
         }
     }
 
-    fn native_deadline_draft(expires_seconds: i64) -> AcquireSourceRequestV1 {
+    pub(super) fn native_deadline_draft(expires_seconds: i64) -> AcquireSourceRequestV1 {
         let mut template = Vec::new();
         for tag in 1_u8..=27 {
             let value = match tag {

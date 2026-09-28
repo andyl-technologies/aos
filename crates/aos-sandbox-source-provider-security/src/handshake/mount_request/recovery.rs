@@ -594,6 +594,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 });
         let authorization = AuthorizedMountProviderOutcomeV2 {
             signed_request,
+            native_outcome: None,
             method,
             provider,
             holder,

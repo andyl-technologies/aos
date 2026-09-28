@@ -734,7 +734,15 @@ impl CurrentRootMountSourceProviderSessionV1 {
         // A successful sequenced-packet send is atomic. Outcome receive checks
         // currentness again; bytes accepted by the kernel never recreate send
         // authority.
-        let ReservedMountProviderRequestV2 { prepared, .. } = reservation;
+        let ReservedMountProviderRequestV2 { mut prepared, .. } = reservation;
+        prepared.outcome.native_outcome = prepared.native_currentness.map(|guard| {
+            std::sync::Arc::new(
+                native_catalog::NativeAcquireOutcomeCustodyV3::retain_original(
+                    guard,
+                    prepared_signed_request,
+                ),
+            )
+        });
         Ok(SentMountProviderRequestV2 {
             projection: prepared.projection,
             outcome: prepared.outcome,
@@ -1031,6 +1039,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         };
         let outcome = AuthorizedMountProviderOutcomeV2 {
             signed_request: signed_request.clone(),
+            native_outcome: None,
             method: SourceProviderMethod::Acquire,
             provider,
             holder,
@@ -1460,6 +1469,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             },
             outcome: AuthorizedMountProviderOutcomeV2 {
                 signed_request: signed_request.clone(),
+                native_outcome: None,
                 method,
                 provider,
                 holder,

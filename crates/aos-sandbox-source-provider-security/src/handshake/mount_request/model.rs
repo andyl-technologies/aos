@@ -167,9 +167,14 @@ pub struct MountProviderSignerProjectionV2 {
     pub(super) superseded_by_key_generation: u64,
 }
 
-/// Verifies exactly one outcome for an authorized Mount Acquire-v2 attempt.
+/// Verifies exactly one outcome for an originally authorized Mount attempt.
+///
+/// Native requests retain their original bounded observation through live
+/// receive. Historical reconstruction cannot replace that original custody.
 pub struct AuthorizedMountProviderOutcomeV2 {
     pub(super) signed_request: SignedSourceProviderRequestV1,
+    pub(super) native_outcome:
+        Option<std::sync::Arc<super::native_catalog::NativeAcquireOutcomeCustodyV3>>,
     pub(super) method: SourceProviderMethod,
     pub(super) provider: SourceProviderAuthorityV1,
     pub(super) holder: SourceProviderAuthorityV1,
@@ -213,8 +218,13 @@ pub(super) enum OutcomeDeadlinePolicyV2 {
 }
 
 /// Carries one exact provider outcome verified against live Root Mount custody.
+///
+/// Original native custody stays with this outcome across disposition recovery;
+/// it does not supply the separate cross-owner positive completion barrier.
 pub struct VerifiedMountProviderOutcomeV2 {
     pub(super) canonical_response: Vec<u8>,
+    pub(super) native_outcome:
+        Option<std::sync::Arc<super::native_catalog::NativeAcquireOutcomeCustodyV3>>,
     pub(super) method: SourceProviderMethod,
     pub(super) status: SourceProviderStatus,
     pub(super) result_digest: ObjectDigest,
