@@ -6,6 +6,22 @@ mkdir -p "$scratch/bin"
 
 cat > "$scratch/bin/nix-instantiate" <<'MOCK'
 #!@BASH@
+if [[ " $* " == *' --raw '* ]]; then
+  echo "error: unrecognised flag '--raw'" >&2
+fi
+exit 1
+MOCK
+
+cat > "$scratch/bin/nix" <<'MOCK'
+#!@BASH@
+if [[ $1 == config && $2 == show ]]; then
+  printf 'trusted-users = root %s\n' "$(id -un)"
+  exit 0
+fi
+
+[[ $1 == --extra-experimental-features && $2 == nix-command && \
+    $3 == eval && $4 == --raw && $5 == --file && \
+    $6 == dev/targets.nix && ${!#} == entries ]] || exit 1
 if [[ -n ${AOS_DEV_TEST_EVAL_LOG:-} ]]; then
   printf '%s\n' "$*" >> "$AOS_DEV_TEST_EVAL_LOG"
 fi
@@ -50,12 +66,6 @@ case " $* " in
 esac
 MOCK
 
-cat > "$scratch/bin/nix" <<'MOCK'
-#!@BASH@
-[[ $1 == config && $2 == show ]] || exit 1
-printf 'trusted-users = root %s\n' "$(id -un)"
-MOCK
-
 cat > "$scratch/bin/setfacl" <<'MOCK'
 #!@BASH@
 exit 0
@@ -92,6 +102,13 @@ export AOS_DEV_TEST_LOG="$scratch/nix-build.log"
 export AOS_DEV_TEST_CLI="$scratch/cli"
 export AOS_DEV_TEST_RELEASE_LOG="$scratch/release.log"
 
+# The legacy evaluator must not mask the pinned Nix --raw incompatibility.
+if nix-instantiate --eval --raw --expr '"unused"' >"$scratch/legacy.out" 2>"$scratch/legacy.err"; then
+  echo 'legacy evaluator accepted unsupported --raw' >&2
+  exit 1
+fi
+grep -Fq -- "unrecognised flag '--raw'" "$scratch/legacy.err"
+
 bash -n "$root/aos-dev" "$root"/dev/lib/*.bash
 bash "$root/aos-dev" help | grep -Fq 'Usage: bash ./aos-dev'
 bash "$root/aos-dev" completion bash | grep -Fq '_aos_dev_complete()'
@@ -102,6 +119,7 @@ test "$(bash "$root/aos-dev" list check build.aos-dev-cli)" = 'build.aos-dev-cli
 test "$(AOS_DEV_TEST_EVAL_LOG="$scratch/scoped-eval.log" \
   bash "$root/aos-dev" --release build check build.aos-dev-cli --no-out-link)" = /tmp/aos-dev-test-output
 grep -Fq -- 'scope build.aos-dev-cli' "$scratch/scoped-eval.log"
+grep -Fq -- '--extra-experimental-features nix-command eval --raw --file dev/targets.nix' "$scratch/scoped-eval.log"
 if grep -F -- 'category checks' "$scratch/scoped-eval.log" | grep -Fv -- 'scope build.aos-dev-cli'; then
   echo 'nested check validation evaluated unrelated check groups' >&2
   exit 1

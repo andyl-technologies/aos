@@ -71,5 +71,7 @@
       "eval-standalone"
     ];
   };
-in
-  join values.${category}
+in {
+  # Selecting an attribute lets nix eval apply this function's --argstr inputs.
+  entries = join values.${category};
+}
