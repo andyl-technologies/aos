@@ -3,6 +3,8 @@
   mkCargoPackage,
   fetchCargoDeps,
   fetchurl,
+  lib,
+  stdenv,
 }: let
   # uv 0.12 requires the Rust 1.98 toolchain selected by this package set.
   version = "0.12.10";
@@ -20,6 +22,15 @@ in
     inherit version src cargoDeps;
 
     cargoFlags = "--package uv";
+    # These link declarations retain proxy discovery and default keychain access.
+    RUSTFLAGS =
+      lib.optionalString stdenv.hostPlatform.isDarwin
+      "-Lnative=. -C link-arg=-laos-uv-systemconfiguration -C link-arg=-laos-uv-security";
+    preBuild = lib.optionalString stdenv.hostPlatform.isDarwin ''
+      cp ${./_uv-darwin/systemconfiguration.tbd} libaos-uv-systemconfiguration.tbd
+      cp ${./_uv-darwin/security.tbd} libaos-uv-security.tbd
+    '';
+
     doCheck = false;
     runtimeDeps = [];
 
