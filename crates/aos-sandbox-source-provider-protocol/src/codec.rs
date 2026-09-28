@@ -50,6 +50,8 @@ pub const SOURCE_PROVIDER_HELLO_SUBJECT_BYTES: usize = 424;
 pub const SIGNED_SOURCE_PROVIDER_HELLO_BYTES: usize = 628;
 /// Exact outer SourceProvider 1.0 hello frame size.
 pub const SOURCE_PROVIDER_HELLO_FRAME_BYTES: usize = 652;
+/// Exact canonical width of the orthogonal recursive topology claim.
+pub const RECURSIVE_TOPOLOGY_PROOF_BYTES_V1: usize = 80;
 
 const _: () =
     assert!(SIGNED_SOURCE_PROVIDER_HELLO_BYTES == SOURCE_PROVIDER_HELLO_SUBJECT_BYTES + 204);
@@ -1250,13 +1252,43 @@ fn decode_resource(reader: &mut Reader<'_>) -> Result<SourceResourceV1, SourcePr
 }
 
 fn encode_topology(writer: &mut Writer, value: &RecursiveTopologyProofV1) {
-    writer.bytes(&value.authority_id);
-    writer.u64(value.generation);
-    writer.digest(value.topology_digest);
-    writer.u64(value.entry_count);
-    writer.u64(value.byte_count);
-    writer.u32(value.maximum_depth);
-    writer.u32(value.observed_submounts);
+    writer.bytes(&encode_recursive_topology_proof_v1(value));
+}
+
+/// Encodes the fixed-width topology claim without establishing backend truth.
+///
+/// The field order is authority ID, generation, digest, entry count, byte
+/// count, maximum depth, and observed submounts; all integers are big-endian.
+#[must_use]
+pub fn encode_recursive_topology_proof_v1(
+    value: &RecursiveTopologyProofV1,
+) -> [u8; RECURSIVE_TOPOLOGY_PROOF_BYTES_V1] {
+    let mut bytes = [0; RECURSIVE_TOPOLOGY_PROOF_BYTES_V1];
+    bytes[..16].copy_from_slice(&value.authority_id);
+    bytes[16..24].copy_from_slice(&value.generation.to_be_bytes());
+    bytes[24..56].copy_from_slice(value.topology_digest.as_bytes());
+    bytes[56..64].copy_from_slice(&value.entry_count.to_be_bytes());
+    bytes[64..72].copy_from_slice(&value.byte_count.to_be_bytes());
+    bytes[72..76].copy_from_slice(&value.maximum_depth.to_be_bytes());
+    bytes[76..80].copy_from_slice(&value.observed_submounts.to_be_bytes());
+    bytes
+}
+
+/// Decodes the exact fixed-width topology claim without authenticating it.
+///
+/// # Errors
+///
+/// Rejects truncation, trailing bytes, sentinel authority fields, or invalid counts.
+pub fn decode_recursive_topology_proof_v1(
+    bytes: &[u8],
+) -> Result<RecursiveTopologyProofV1, SourceProviderFrameError> {
+    if bytes.len() != RECURSIVE_TOPOLOGY_PROOF_BYTES_V1 {
+        return Err(SourceProviderFrameError::InvalidLength);
+    }
+    let mut reader = Reader::new(bytes);
+    let topology = decode_topology(&mut reader)?;
+    reader.finish()?;
+    Ok(topology)
 }
 
 fn decode_topology(

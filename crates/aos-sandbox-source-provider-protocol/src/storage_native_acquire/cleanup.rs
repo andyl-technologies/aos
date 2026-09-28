@@ -23,7 +23,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 
 use super::acceptance::{storage_signing_message, verify_storage_signature};
 use super::{
-    Reader, SignedStorageNativeAcquireRequestV2, StorageNativeAcceptanceV2,
+    Reader, SignedStorageNativeAcquireRequestV2, StorageNativeAcceptanceV3,
     StorageNativeAcquireErrorV2, digest, header, nonzero,
 };
 use crate::crypto::{decode_signer, encode_signer, sign_bytes, verify_bytes};
@@ -77,7 +77,7 @@ impl StorageNativeCleanupRequestV2 {
         nonce: [u8; 32],
         reason: StorageNativeCleanupReasonV2,
         request: &SignedStorageNativeAcquireRequestV2,
-        acceptance: &StorageNativeAcceptanceV2,
+        acceptance: &StorageNativeAcceptanceV3,
     ) -> Result<Self, StorageNativeAcquireErrorV2> {
         if sequence == 0
             || !nonzero(session_binding)

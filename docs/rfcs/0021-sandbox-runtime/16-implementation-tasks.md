@@ -8705,6 +8705,23 @@ request/descriptor bridge and exact Provider terminal/cleanup authority remain
 required. This journal neither signs a receipt nor delivers a SourceRoot, and
 positive Acquire remains closed.
 
+The shared native positive contract now reserves explicit acceptance/reply V3
+(`AOSZNA03`/`AOSZNP03`) with the existing 80-byte topology layout signed by the
+same dedicated Storage receipt role. Request and authenticated cleanup remain
+V2; old positive V2 framing has no compatibility path because this RFC slice is
+unreleased. The native nonrecursive profile binds the independently pinned
+receipt authority ID and primary journal cut to the exact signed request,
+signed receipt, original descriptor, measured portable content, root-inclusive
+node count, and logical file-byte count. Its bounds match the held reader:
+4,096 nodes and 64 MiB, with mount depth one and no submounts. A scalar helper
+encodes supplied claims only. A production builder must supply the actual
+complete held readback counts and prove zero submounts under the retained cut;
+neither the helper nor a valid signature alone establishes that fact. The
+canonical acceptance is 216 bytes, its signed form is 368 bytes, and the
+one-FD positive reply is exactly 1,192 bytes. Consumer migration, live authority
+ordering, custody recovery, and positive qualification remain separate gates;
+this format amendment enables no production Acquire or cleanup effect.
+
 Storage writes and fsyncs a single exclusive launch marker in its root-owned,
 mode-0700 StateDirectory before connecting to the reader socket. A restart
 that finds the marker refuses another reader launch even if systemd has not
