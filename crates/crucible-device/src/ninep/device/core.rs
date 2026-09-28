@@ -389,6 +389,25 @@ impl NinepDevice {
             .advance_to_shmem_with_commit_status(limit, outbox, outbox_entries, consumer_slot)
     }
 
+    /// Publishes one exact computed reply without waking the consumer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a truthful zero-publication failure for stale, reordered,
+    /// payload-mismatched selections or corrupt response rings. Ring-full
+    /// backpressure retains the exact response.
+    pub fn deliver_selected_to_shmem(
+        &mut self,
+        at: u64,
+        selected: crate::FrameDeliveryKey,
+        expected_payload: &[u8],
+        outbox: &RingHeader,
+        outbox_entries: &mut [FrameEntry],
+    ) -> Result<crate::SelectedDeliveryOutcome, crate::ShmemDeliveryFailure> {
+        self.core
+            .deliver_selected_to_shmem(at, selected, expected_payload, outbox, outbox_entries)
+    }
+
     /// Pops the next delivered response, returning its raw 9p reply frame.
     ///
     /// Returns `None` when no response has been made visible yet. The payload is

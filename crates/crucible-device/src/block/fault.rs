@@ -30,6 +30,7 @@ mod checkpoint_codec;
 #[macro_use]
 mod observation_effects;
 mod state_admission;
+pub use state_admission::BlockExecutionServiceSummary;
 mod observation_revision;
 mod state_execution;
 

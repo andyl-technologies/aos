@@ -232,6 +232,8 @@ mod core;
 mod external;
 #[path = "device/lifecycle.rs"]
 mod lifecycle;
+#[path = "device/selected_delivery.rs"]
+mod selected_delivery;
 #[path = "device/snapshot.rs"]
 mod snapshot;
 #[path = "device/snapshot_runtime.rs"]

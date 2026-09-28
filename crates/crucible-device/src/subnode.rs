@@ -53,8 +53,10 @@ use crate::request::{ComputedResponse, LatencyModel, Request, Response};
 mod frame;
 mod io_core_private;
 mod queue_revision;
+mod selected_delivery;
 mod snapshot;
 pub use queue_revision::IoRequestEnqueueFailure;
+pub use selected_delivery::SelectedDeliveryOutcome;
 
 use frame::{frame_from_pending_response, request_from_frame};
 pub use snapshot::{

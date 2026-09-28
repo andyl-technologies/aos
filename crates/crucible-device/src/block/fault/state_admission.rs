@@ -4,7 +4,12 @@
 //! directive, resource check, and persistence transition succeeds.
 
 use super::*;
+
+mod execution_services;
 mod resource_usage;
+
+pub use execution_services::BlockExecutionServiceSummary;
+
 impl BlockFaultState {
     /// Creates fault-free write-through state for a device.
     #[must_use]
