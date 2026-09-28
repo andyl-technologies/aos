@@ -38,8 +38,8 @@ pub use remote_source::{
 pub use source::{ExactObject, ObjectSource, SourceError, load_exact};
 pub use view_projection::{
     ProjectedNode, ProjectedNodeKind, ProjectionError, ProjectionLimits, ProjectionProfile,
-    SyntheticDirectoryMetadata, ValidatedViewProjection, ValidatedViewSourceObject,
-    compile_view_projection,
+    SyntheticDirectoryMetadata, ValidatedViewProjectedFileObject, ValidatedViewProjection,
+    ValidatedViewSourceObject, compile_view_projection,
 };
 
 #[cfg(feature = "test-fixtures")]
