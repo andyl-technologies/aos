@@ -999,7 +999,14 @@ fn admit(
     owner: &mut ProtectedJournalAuthority<'_>,
     graph: &Graph,
 ) -> aos_sandbox::GlobalCapacityReservationV1 {
-    let rows = graph.rows();
+    admit_rows(owner, graph, graph.rows())
+}
+
+fn admit_rows(
+    owner: &mut ProtectedJournalAuthority<'_>,
+    graph: &Graph,
+    rows: BTreeMap<Vec<u8>, Vec<u8>>,
+) -> aos_sandbox::GlobalCapacityReservationV1 {
     aos_sandbox_source_provider_ledger::validate_prospective_records(
         rows.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
     )
@@ -1048,6 +1055,99 @@ fn commit_graph(owner: &mut ProtectedJournalAuthority<'_>, id: u8, graph: &Graph
         .filter(|(key, value)| previous.get(key) != Some(value))
         .collect();
     owner.commit(&transaction(id, mutations)).unwrap();
+}
+
+#[test]
+fn native_graph_missing_marker_rejects_active_but_preserves_applying_reservation() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut graph = Graph::applying();
+    let key =
+        crate::ledger::native_completion::native_completion_key_v2(graph.native.acquisition_id);
+    let mut applying = graph.rows();
+    applying.remove(&key);
+    aos_sandbox_source_provider_ledger::validate_prospective_records(
+        applying.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
+    )
+    .unwrap();
+
+    // Protected admission reserves the distinct dispatch floor before the
+    // Requested row exists. Absence here is legitimate, not Active evidence.
+    let mut journal = open(directory.path());
+    let mut owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let reservation = admit_rows(&mut owner, &graph, applying);
+    let original = reservation.request();
+    assert_eq!(original.terminal_records, 7);
+    assert!(recover_graph(&owner).unwrap().native_completions.is_empty());
+    drop(owner);
+    drop(journal);
+
+    let mut journal = open(directory.path());
+    let mut owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let recovered = recover_graph(&owner).unwrap();
+    assert!(recovered.native_completions.is_empty());
+    assert_eq!(
+        recovered.acquisitions.values().next().unwrap().state,
+        ProviderAcquisitionStateV1::Applying
+    );
+    validate_set(&owner, &recovered).unwrap();
+    assert_eq!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&binding(original))
+            .unwrap()
+            .request(),
+        original
+    );
+
+    commit_graph(&mut owner, 120, &graph);
+    graph.native = fixture_prepared(&graph.native);
+    commit_graph(&mut owner, 121, &graph);
+    graph.active();
+    commit_graph(&mut owner, 122, &graph);
+    validate_set(&owner, &recover_graph(&owner).unwrap()).unwrap();
+    let mut missing = graph.rows();
+    missing.remove(&key);
+    assert!(
+        aos_sandbox_source_provider_ledger::validate_prospective_records(
+            missing.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
+        )
+        .is_err()
+    );
+
+    // A raw protected delete creates a hostile cut solely to exercise replay;
+    // the production prospective validator would reject this deletion.
+    owner
+        .commit(
+            &JournalTransaction::new(
+                [123; 16],
+                vec![JournalRecord::delete(
+                    RecordNamespace::SourceProviderAuthority,
+                    key,
+                )],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    drop(owner);
+    drop(journal);
+    let mut journal = open(directory.path());
+    let owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    assert!(recover_graph(&owner).is_err());
+    assert_eq!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&binding(original))
+            .unwrap()
+            .request(),
+        original
+    );
+    // This fixture validates the pure whole graph and actual protected floor,
+    // not recover_records with production protected trust/configuration.
 }
 
 #[test]
