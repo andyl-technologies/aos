@@ -27,7 +27,7 @@ pub enum MountSemanticError {
     /// The catalog commitment is missing, unexpected, or a reserved digest.
     #[error("mount catalog commitment does not match the action")]
     CatalogCommitmentMismatch,
-    /// The descriptor-role sequence is oversized or contains the sentinel role.
+    /// The descriptor-role sequence is oversized or contains a sentinel or worker role.
     #[error("mount descriptor-role semantics are invalid")]
     InvalidDescriptorRoles,
     /// A validated request unexpectedly contains an invalid action or target.
@@ -427,10 +427,14 @@ fn validate_roles(roles: &[BrokerDescriptorRole]) -> Result<(), MountSemanticErr
     if roles.len() > MAXIMUM_DESCRIPTOR_ROLES
         || roles.contains(&BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_UNSPECIFIED)
     {
-        Err(MountSemanticError::InvalidDescriptorRoles)
-    } else {
-        Ok(())
+        return Err(MountSemanticError::InvalidDescriptorRoles);
     }
+
+    for role in roles {
+        descriptor_role_code(*role)?;
+    }
+
+    Ok(())
 }
 
 struct Encoder {
@@ -526,7 +530,7 @@ impl Encoder {
                 .to_be_bytes(),
         );
         for role in roles {
-            value.extend_from_slice(&descriptor_role_code(*role).to_be_bytes());
+            value.extend_from_slice(&descriptor_role_code(*role)?.to_be_bytes());
         }
         self.field(tag, &value)
     }
@@ -546,8 +550,8 @@ const fn source_consistency_code(consistency: MountSourceConsistency) -> u8 {
     }
 }
 
-const fn descriptor_role_code(role: BrokerDescriptorRole) -> u16 {
-    match role {
+const fn descriptor_role_code(role: BrokerDescriptorRole) -> Result<u16, MountSemanticError> {
+    let code = match role {
         BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_UNSPECIFIED => 0,
         BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_MOUNT_NAMESPACE => 1,
         BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_ROOT => 2,
@@ -561,12 +565,94 @@ const fn descriptor_role_code(role: BrokerDescriptorRole) -> u16 {
         BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_CATALOG => 10,
         BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_EXECUTION_SPEC => 11,
         BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_ARGUMENT_SOURCE => 12,
-    }
+        // Worker roles have distinct method-49/purpose-56 semantics; extending
+        // the shared enum does not extend the legacy Mount authority preimage.
+        BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_PLAN_V1
+        | BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CONNECTION_V1
+        | BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_RECORDS_V1
+        | BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CANCELLATION_V1
+        | BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_PIDFD_V1
+        | BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CGROUP_V1 => {
+            return Err(MountSemanticError::InvalidDescriptorRoles);
+        }
+    };
+
+    Ok(code)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_descriptor_roles_keep_exact_canonical_bytes() {
+        let roles = [
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_MOUNT_NAMESPACE,
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_ROOT,
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_MOUNT_SOURCE,
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_DETACHED_MOUNT,
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_RUNTIME_LEADER,
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_USER_NAMESPACE,
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_SLOT,
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_LEADER_PIDFD,
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_PAYLOAD_CGROUP,
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_CATALOG,
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_EXECUTION_SPEC,
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_HOST_ARGUMENT_SOURCE,
+        ];
+        let mut encoder = Encoder::new();
+
+        validate_roles(&roles).unwrap();
+        encoder.roles(18, &roles).unwrap();
+
+        assert_eq!(
+            encoder.finish(),
+            [
+                0x12, 0, 0, 0, 0x1a, 0, 0x0c, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0, 7, 0, 8, 0, 9,
+                0, 10, 0, 11, 0, 12,
+            ]
+        );
+        assert_eq!(
+            validate_roles(&[BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_UNSPECIFIED]),
+            Err(MountSemanticError::InvalidDescriptorRoles)
+        );
+        assert_eq!(
+            validate_roles(&[roles[0]; MAXIMUM_DESCRIPTOR_ROLES + 1]),
+            Err(MountSemanticError::InvalidDescriptorRoles)
+        );
+    }
+
+    #[test]
+    fn worker_roles_are_rejected_by_legacy_mount_validation_and_encoding() {
+        let worker_roles = [
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_PLAN_V1,
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CONNECTION_V1,
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_RECORDS_V1,
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CANCELLATION_V1,
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_PIDFD_V1,
+            BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_FUSE_WORKER_CGROUP_V1,
+        ];
+
+        for role in worker_roles {
+            let roles = [
+                BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_MOUNT_SOURCE,
+                role,
+            ];
+            let mut encoder = Encoder::new();
+
+            assert_eq!(
+                validate_roles(&roles),
+                Err(MountSemanticError::InvalidDescriptorRoles),
+                "{role:?}"
+            );
+            assert_eq!(
+                encoder.roles(18, &roles),
+                Err(MountSemanticError::InvalidDescriptorRoles),
+                "{role:?}"
+            );
+            assert!(encoder.finish().is_empty());
+        }
+    }
 
     fn framed_semantics(version: u16, consistency: u8, assignment: Option<[u8; 32]>) -> Vec<u8> {
         let mut encoder = Encoder::new();
