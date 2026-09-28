@@ -1,6 +1,6 @@
 ##! Hybrid Hub transport qualification across separate Native, Worker, S3, and client VMs.
 ##!
-##! Wrangler runs the deployable Worker under local workerd with a persistent
+##! Miniflare runs the deployable Worker under local workerd with a persistent
 ##! emulated R2 binding. Native uses PostgreSQL on its own VM and has no R2
 ##! credentials. The suite exercises signed routing, browser and control APIs,
 ##! storage-local work, concurrent uploads, failure recovery, and byte budgets.
@@ -184,40 +184,35 @@
     }
   ];
 
-  wranglerConfig = writeFixture "hub-hybrid-fleet-wrangler.toml" ''
-    name = "hub-hybrid-fleet"
-    main = "${pkgs.aos-hub-worker-dist}/shim.mjs"
-    compatibility_date = "2024-09-23"
-
-    [vars]
-    HUB_TOPOLOGY = "hybrid"
-    HUB_DEPLOYMENT_ID = "fleet-hybrid-v1"
-    HUB_HYBRID_ORIGIN_URL = "https://aos.staging.andyl.org"
-
-    [[r2_buckets]]
-    binding = "REGISTRY_BUCKET"
-    bucket_name = "hybrid-fleet-r2"
-
-    [[durable_objects.bindings]]
-    name = "HYBRID_OBJECT_GUARD"
-    class_name = "HybridObjectGuard"
-
-    [[durable_objects.bindings]]
-    name = "HYBRID_BINDING_STATE"
-    class_name = "HybridBindingState"
-
-    [[migrations]]
-    tag = "hybrid-object-guard-v1"
-    new_sqlite_classes = ["HybridObjectGuard"]
-
-    [[migrations]]
-    tag = "hybrid-binding-state-v1"
-    new_sqlite_classes = ["HybridBindingState"]
-  '';
-  workerSecrets = writeFixture "hub-hybrid-fleet-dev-vars" ''
-    HUB_HYBRID_INGRESS_KEY=hybrid-fleet-ingress-key-with-at-least-thirty-two-bytes
-    HUB_STORAGE_WORK_KEY=hybrid-fleet-storage-key-with-at-least-thirty-two-bytes
-  '';
+  workerRunner = writeFixture "hub-hybrid-fleet-worker-runner" (builtins.readFile ./_hub-worker-runner.cjs);
+  workerOptions = writeFixture "hub-hybrid-fleet-worker-options" (builtins.toJSON {
+    name = "hub-hybrid-fleet";
+    scriptPath = "${pkgs.aos-hub-worker-dist}/shim.mjs";
+    compatibilityDate = "2024-09-23";
+    host = "0.0.0.0";
+    port = 443;
+    certificatePath = "${serverCertificate}/value";
+    privateKeyPath = "${serverPrivateKey}/value";
+    r2Buckets.REGISTRY_BUCKET = "hybrid-fleet-r2";
+    resourcePersistencePath = "/var/lib/hybrid-worker/state";
+    durableObjects = {
+      HYBRID_OBJECT_GUARD = {
+        className = "HybridObjectGuard";
+        useSQLite = true;
+      };
+      HYBRID_BINDING_STATE = {
+        className = "HybridBindingState";
+        useSQLite = true;
+      };
+    };
+    bindings = {
+      HUB_TOPOLOGY = "hybrid";
+      HUB_DEPLOYMENT_ID = "fleet-hybrid-v1";
+      HUB_HYBRID_ORIGIN_URL = "https://aos.staging.andyl.org";
+      HUB_HYBRID_INGRESS_KEY = "hybrid-fleet-ingress-key-with-at-least-thirty-two-bytes";
+      HUB_STORAGE_WORK_KEY = "hybrid-fleet-storage-key-with-at-least-thirty-two-bytes";
+    };
+  });
   parityRouteKeys = writeFixture "hub-runtime-parity-route-keys" (builtins.toJSON {
     activeVersion = 1;
     keys = [
@@ -241,6 +236,7 @@
       pkgs.grep
       pkgs.jq
       pkgs.miniflare
+      pkgs.nodejs
       pkgs.garage
       pkgs.nginx
       pkgs.nix
@@ -265,8 +261,8 @@
       s3PrivateKey
       garageConfig
       s3ProxyConfig
-      wranglerConfig
-      workerSecrets
+      workerRunner
+      workerOptions
       parityRouteKeys
     ];
   };
@@ -449,23 +445,13 @@ in {
       """), timeout=180)
 
       worker.succeed(textwrap.dedent("""
-          install -d -m 0700 /var/lib/hybrid-worker \\
-            /var/lib/hybrid-worker/config /var/lib/hybrid-worker/cache
-          cp ${wranglerConfig}/value /var/lib/hybrid-worker/wrangler.toml
-          cp ${workerSecrets}/value /var/lib/hybrid-worker/.dev.vars
+          install -d -m 0700 /var/lib/hybrid-worker
           cd /var/lib/hybrid-worker
-          XDG_CONFIG_HOME=/var/lib/hybrid-worker/config \\
-            XDG_CACHE_HOME=/var/lib/hybrid-worker/cache \\
-            WRANGLER_LOG_PATH=/var/lib/hybrid-worker/config/logs \\
-            WRANGLER_REGISTRY_PATH=/var/lib/hybrid-worker/config/registry \\
-            SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \\
-            ${pkgs.miniflare}/bin/wrangler dev --local \\
-            --config /var/lib/hybrid-worker/wrangler.toml \\
-            --ip 0.0.0.0 --port 443 --local-protocol https \\
-            --https-cert-path ${serverCertificate}/value \\
-            --https-key-path ${serverPrivateKey}/value \\
-            > /var/lib/hybrid-worker/wrangler.log 2>&1 < /dev/null &
-          echo $! > /var/lib/hybrid-worker/wrangler.pid
+          SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \\
+            ${pkgs.nodejs}/bin/node ${workerRunner}/value \\
+            ${pkgs.miniflare} ${workerOptions}/value \\
+            > /var/lib/hybrid-worker/worker.log 2>&1 < /dev/null &
+          echo $! > /var/lib/hybrid-worker/worker.pid
       """), timeout=30)
       worker.wait_until_succeeds(
           f"{CURL} -s -o /dev/null -w '%{{http_code}}' -X POST https://aos.andyl.org/_internal/storage/v1/capabilities | {GREP} -qx 401",
@@ -474,11 +460,11 @@ in {
 
       def worker_runtime_status():
           return worker.succeed(textwrap.dedent("""
-              pid=$(cat /var/lib/hybrid-worker/wrangler.pid)
+              pid=$(cat /var/lib/hybrid-worker/worker.pid)
               if kill -0 "$pid" 2>/dev/null; then
                 cat "/proc/$pid/status" | head -n 12
               else
-                echo "Wrangler process $pid exited"
+                echo "Worker runner process $pid exited"
               fi
           """))
 
@@ -701,7 +687,7 @@ in {
       )
       if head_status != "200":
           print("external S3 HEAD Worker diagnostics:", worker.succeed(
-              "${pkgs.coreutils}/bin/tail -n 80 /var/lib/hybrid-worker/wrangler.log"
+              "${pkgs.coreutils}/bin/tail -n 80 /var/lib/hybrid-worker/worker.log"
           ))
       assert head_status == "200", (head_status, head_response)
       head_result = json.loads(head_response)
@@ -1163,7 +1149,7 @@ in {
       # Client TTFB includes time queued before the Worker handler runs.
       def page_worker_timings():
           log = worker.succeed(
-              f"{GREP} 'route_class=instance_page' /var/lib/hybrid-worker/wrangler.log"
+              f"{GREP} 'route_class=instance_page' /var/lib/hybrid-worker/worker.log"
           )
           return [
               (int(origin), int(total), int(native))
@@ -1717,7 +1703,7 @@ in {
           )
       except Exception:
           print("hybrid Worker runtime log after publication upload failure:", worker.succeed(
-              "tail -n 100 /var/lib/hybrid-worker/wrangler.log"
+              "tail -n 100 /var/lib/hybrid-worker/worker.log"
           ))
           print("Native errors after publication upload failure:", native.succeed(
               "journalctl -u aos-hub.service -p warning --no-pager -n 60"
@@ -1737,12 +1723,23 @@ in {
           f"AND surface_object_id = {large_object['object_id']}\""
       ).strip()
       assert publication_multipart == "completed", publication_multipart
-      client.wait_until_succeeds(
-          hub_command("registry show fleet/containers")
-          + " | ${pkgs.jq}/bin/jq -e '.data.registry.index_state == \"fresh\"' "
-          "> /dev/null",
-          timeout=180,
-      )
+      session_token = refresh_session_token()
+      try:
+          client.wait_until_succeeds(
+              hub_command("registry show fleet/containers")
+              + " | ${pkgs.jq}/bin/jq -e '.data.registry.index_state == \"fresh\"' "
+              "> /dev/null",
+              timeout=180,
+          )
+      except Exception:
+          print("Worker runner status after index freshness failure:", worker_runtime_status())
+          print("Worker runtime log after index freshness failure:", worker.succeed(
+              "tail -n 100 /var/lib/hybrid-worker/worker.log"
+          ))
+          print("Native index errors after freshness failure:", native.succeed(
+              "journalctl -u aos-hub.service -p warning --no-pager -n 60"
+          ))
+          raise
 
       # The operator command must use the same Worker storage adapter as the
       # service. Copy fixtures into private files owned by the workload user,
@@ -1928,7 +1925,7 @@ in {
           print("hybrid Worker process after parallel upload failure:",
                 worker_runtime_status())
           print("hybrid Worker logs after parallel upload failure:", worker.succeed(
-              "tail -n 120 /var/lib/hybrid-worker/wrangler.log"
+              "tail -n 120 /var/lib/hybrid-worker/worker.log"
           ))
           print("hybrid Worker kernel logs after parallel upload failure:", worker.succeed(
               "journalctl -k --no-pager -n 60"
@@ -2154,7 +2151,7 @@ in {
           print("hybrid Worker process after large OCI part failure:",
                 worker_runtime_status())
           print("hybrid Worker logs after large OCI part failure:", worker.succeed(
-              "tail -n 120 /var/lib/hybrid-worker/wrangler.log"
+              "tail -n 120 /var/lib/hybrid-worker/worker.log"
           ))
           print("hybrid Native logs after large OCI part failure:", native.succeed(
               "journalctl -u aos-hub --no-pager -n 100"
@@ -2375,7 +2372,7 @@ in {
       assert sum(source for _, source in placement_copies) >= multipart_size, placement_copies
       assert all(response < 2048 for response, _ in placement_copies), placement_copies
       origin_log = worker.succeed(
-          f"{GREP} 'hybrid_origin_request' /var/lib/hybrid-worker/wrangler.log"
+          f"{GREP} 'hybrid_origin_request' /var/lib/hybrid-worker/worker.log"
       )
       origin_request_bytes = [
           int(size) for size in re.findall(r"request_bytes=(\d+)", origin_log)
@@ -2630,7 +2627,7 @@ in {
                   time.sleep(2)
                   continue
               print("hybrid Worker log after OCI GC:", worker.succeed(
-                  "tail -n 120 /var/lib/hybrid-worker/wrangler.log"
+                  "tail -n 120 /var/lib/hybrid-worker/worker.log"
               ))
               print("hybrid Worker kernel log after OCI GC:", worker.succeed(
                   "journalctl -k --no-pager -n 60"
@@ -2668,7 +2665,7 @@ in {
               "journalctl -u aos-hub.service -p err --no-pager -n 40"
           ))
           print("Worker log at cache GC admission:", worker.succeed(
-              "tail -n 100 /var/lib/hybrid-worker/wrangler.log"
+              "tail -n 100 /var/lib/hybrid-worker/worker.log"
           ))
       assert gc_upload_status == "200", gc_upload_status
       gc_upload = json.loads(client.succeed("cat /tmp/hybrid-gc-upload.response"))
@@ -2968,7 +2965,7 @@ in {
           f"{GREP} -q '<html'",
           timeout=180,
       )
-      # Local Wrangler runs R2 emulation and Worker execution in one process.
+      # Local Miniflare co-hosts R2 emulation and Worker execution on one VM.
       # The hosted staging gate applies the 25% target to real Worker and R2.
       print("hybrid local-emulator upload latency target:", {
           "met": loaded_page_gate,
