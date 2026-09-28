@@ -176,6 +176,13 @@ impl ProviderLedgerV1<'_> {
                 if request.request().signed_root_request() != original {
                     return Err(ProviderLedgerError::Equivocation);
                 }
+                // A cold row or challenge cannot acquire a replacement local
+                // anchor from historical wall bounds, even if Storage lives.
+                self.native_acquire_custody
+                    .get(&record.acquisition_id)
+                    .ok_or(ProviderLedgerError::Unavailable)?
+                    .clock
+                    .require_request(request)?;
                 record.clone()
             }
             None => {
@@ -249,11 +256,49 @@ impl ProviderLedgerV1<'_> {
         )?;
         let (attempt_digest, deadline) =
             current_native_attempt_window(self, plan.acquisition_id())?;
+        let attempt = self
+            .recovered
+            .attempts
+            .values()
+            .find(|row| row.attempt_digest == attempt_digest)
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let verified_at = attempt.verified_at_seconds;
+        let original = SignedSourceProviderRequestV1::from_canonical_bytes(&attempt.signed_request)
+            .map_err(|_| ProviderLedgerError::Corrupt("native retained Root request"))?;
         let retained = challenges.retained_for_attempt(
             plan.provider_id(),
             plan.holder_id(),
             attempt_digest,
         )?;
+        if !self
+            .native_acquire_custody
+            .contains_key(&plan.acquisition_id())
+        {
+            if retained.is_some() {
+                return Err(ProviderLedgerError::Unavailable);
+            }
+            let clock = std::sync::Arc::new(NativeAcquireClockGuardV1::before_challenge(
+                &original,
+                attempt_digest,
+                verified_at,
+                deadline,
+            )?);
+            self.native_acquire_custody.insert(
+                plan.acquisition_id(),
+                super::NativeAcquireHotCustodyV3 {
+                    clock,
+                    source_root: None,
+                },
+            );
+        }
+        let clock = std::sync::Arc::clone(
+            &self
+                .native_acquire_custody
+                .get(&plan.acquisition_id())
+                .ok_or(ProviderLedgerError::Unavailable)?
+                .clock,
+        );
+        clock.require_original(&original, attempt_digest)?;
         let challenge = match retained {
             Some(record) => record,
             None => {
@@ -293,14 +338,6 @@ impl ProviderLedgerV1<'_> {
         if challenge.spent_receipt().is_some() || current_seconds()? >= expires {
             return Err(ProviderLedgerError::Unavailable);
         }
-        let original = self
-            .recovered
-            .attempts
-            .values()
-            .find(|row| row.attempt_digest == attempt_digest)
-            .map(|row| SignedSourceProviderRequestV1::from_canonical_bytes(&row.signed_request))
-            .ok_or(ProviderLedgerError::Unavailable)?
-            .map_err(|_| ProviderLedgerError::Corrupt("native retained Root request"))?;
         let catalog = ProviderHeldSnapshotCatalogV1::from_canonical_bytes(current_catalog.1)
             .map_err(|_| ProviderLedgerError::Unavailable)?;
         // This is the first native carrier. Exact retry retains sequence one,
@@ -340,11 +377,13 @@ impl ProviderLedgerV1<'_> {
             )?;
         let selected =
             current.select_held_snapshot_row(&self.journal, current_catalog.1, binding)?;
-        session
+        let signed = session
             .session
             .provider_outcome_facade(&self.journal, &permit.signing_authorization)?
             .sign_current_storage_native_request_v2(&selected, request)
-            .map_err(Into::into)
+            .map_err(ProviderLedgerError::from)?;
+        clock.require_request(&signed)?;
+        Ok(signed)
     }
 }
 

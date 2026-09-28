@@ -22,6 +22,17 @@ mod live;
 
 pub(crate) use live::NativeAcquireLiveObservationV3;
 
+#[path = "native_completion/clock.rs"]
+mod clock;
+
+pub(crate) use clock::NativeAcquireClockGuardV1;
+
+/// Keeps the hot original anchor and optional same-mount custody together.
+pub(crate) struct NativeAcquireHotCustodyV3 {
+    pub(crate) clock: std::sync::Arc<NativeAcquireClockGuardV1>,
+    pub(crate) source_root: Option<crate::ProviderPhysicalSourceRootV1>,
+}
+
 /// Qualifies the private runtime seam without changing published capabilities.
 ///
 /// Production has no constructor. Installed bridge qualification and its

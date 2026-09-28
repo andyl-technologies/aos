@@ -33,6 +33,7 @@ pub(crate) struct NativeAcquireLiveObservationV3 {
     active: NativeAcquireCompletionRecordV2,
     origin: ReceivedStorageNativeAcquireV3,
     manifest: ProtectedStorageZfsHoldVerifierV1,
+    clock: Arc<NativeAcquireClockGuardV1>,
 }
 
 impl core::fmt::Debug for NativeAcquireLiveObservationV3 {
@@ -50,6 +51,8 @@ impl NativeAcquireLiveObservationV3 {
             .revalidate()
             .map_err(|_| ProviderLedgerError::Unavailable)?;
         self.manifest.revalidate()?;
+        self.clock
+            .revalidate(Some(self.origin.reply().receipt().receipt().validity().1))?;
         let now = current_seconds()?;
         let (issued, expires) = self.origin.reply().receipt().receipt().validity();
         if self.origin.reply().acceptance().acceptance().descriptor() != descriptor
@@ -110,8 +113,16 @@ impl ProviderLedgerV1<'_> {
             .canonical_request
             .as_ref()
             .ok_or(ProviderLedgerError::Unavailable)?;
+        let clock = Arc::clone(
+            &self
+                .native_acquire_custody
+                .get(&requested.acquisition_id)
+                .ok_or(ProviderLedgerError::Unavailable)?
+                .clock,
+        );
         let manifest = ProtectedStorageZfsHoldVerifierV1::load(backend_verifier)?;
         capacity.require_before_dispatch(self)?;
+        clock.require_request(signed)?;
 
         // An ambiguous send leaves Requested intact. It is not no-dispatch
         // absence and cannot use that identity's settlement or a new nonce.
@@ -126,6 +137,7 @@ impl ProviderLedgerV1<'_> {
             .map_err(|_| ProviderLedgerError::Unavailable)?;
         let physical = permit.plan().observe_source_root(descriptor)?;
         let reply = received.reply().clone();
+        clock.revalidate(Some(reply.receipt().receipt().validity().1))?;
         let catalog = signed.request().claims().catalog();
         let (resource, snapshot) = catalog
             .select_under_head(
@@ -187,8 +199,11 @@ impl ProviderLedgerV1<'_> {
         // failure leaves real original custody here even if Storage dies. This
         // first-positive slice still requires live Storage origin to complete;
         // unavailability is neither total FD loss nor cleanup authority.
-        self.native_original_roots
-            .insert(requested.acquisition_id, physical.retain_original()?);
+        self.native_acquire_custody
+            .get_mut(&requested.acquisition_id)
+            .ok_or(ProviderLedgerError::Unavailable)?
+            .source_root = Some(physical.retain_original()?);
+        clock.revalidate(Some(reply.receipt().receipt().validity().1))?;
 
         let prepared = match requested.state {
             NativeAcquireCompletionStateV2::Requested => requested
@@ -196,7 +211,7 @@ impl ProviderLedgerV1<'_> {
                 .map_err(crate::transaction::map_pure_ledger_error)?,
             NativeAcquireCompletionStateV2::Prepared => {
                 requested
-                    .validate_verified_acceptance(&verified)
+                    .validate_verified_acceptance(signed, &verified)
                     .map_err(crate::transaction::map_pure_ledger_error)?;
                 if requested.accepted_reply.as_ref() != Some(&reply) {
                     return Err(ProviderLedgerError::Equivocation);
@@ -229,6 +244,7 @@ impl ProviderLedgerV1<'_> {
             original,
             current_catalog,
         )?;
+        clock.revalidate(Some(reply.receipt().receipt().validity().1))?;
         let issued = challenges.retained_for(prepared.challenge)?;
         require_exact_challenge(&prepared, issued)?;
         challenges.spend(issued, prepared.receipt_digest)?;
@@ -281,6 +297,7 @@ impl ProviderLedgerV1<'_> {
             active,
             origin: received,
             manifest,
+            clock,
         });
         observed.revalidate_physical()?;
         self.with_current_completion_session(
