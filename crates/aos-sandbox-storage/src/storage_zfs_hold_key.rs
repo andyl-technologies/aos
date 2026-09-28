@@ -10,11 +10,11 @@
 //! This systemd credential is separate from the LocalLive lease key and
 //! operator Repair key. It is pinned at Storage startup and rechecked against
 //! the exact credential directory, file identity, and bytes. Signing remains
-//! unavailable until an authenticated broker carrier conveys the Provider's
-//! owner-minted challenge, exact attempt, and holder session. Storage also
+//! restricted to the authenticated native carrier's exact attempt and original
+//! measured SourceRoot under the held Storage cut. Storage also
 //! derives a nonauthorizing AOSZHR01 head from its protected journal cut and
-//! confined physical readback. The key exposes no signing method while
-//! authenticated attempt and SourceRoot descriptor custody are absent. A
+//! confined physical readback. The key exposes no raw key or general signing
+//! method. A
 //! retained readback does not prove that the hold or journal remains current.
 
 use std::path::PathBuf;
@@ -23,15 +23,21 @@ use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::storage_zfs_hold_receipt::{
     StorageZfsHoldHeadV1, StorageZfsHoldSignerV1, StorageZfsHoldVerifierV1,
 };
-use ed25519_dalek::SigningKey;
+use aos_sandbox_source_provider_protocol::{
+    SignedStorageNativeAcceptanceV2, SignedStorageZfsHoldReceiptV1, StorageNativeAcceptanceV2,
+    StorageNativeAcquireReplyV2, StorageZfsHoldReceiptV1,
+};
+use ed25519_dalek::{Signer as _, SigningKey};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
+use crate::live_export_request_trust::AuthenticatedStorageNativeRequestV2;
 use crate::operator_recovery_credentials::{
     FileIdentity, PinnedCredential, open_directory, read_credential,
 };
 use crate::process::HeldSnapshotReaderObservationV1;
 use crate::runtime::StorageHeldSnapshotReadbackV1;
+use crate::runtime::StorageHeldSnapshotReadbackWithMountV1;
 use crate::service::StorageServiceError;
 
 const CREDENTIAL_NAME: &str = "storage-zfs-hold-key-v1";
@@ -42,16 +48,24 @@ const RECEIPT_PHYSICAL_DOMAIN: &[u8] = b"aos.sandbox.storage.zfs-hold.receipt-ph
 
 /// Pins the separately provisioned Storage ZFS hold receipt role key.
 pub struct StorageZfsHoldKeyV1 {
-    directory: PathBuf,
-    directory_identity: FileIdentity,
-    key: PinnedCredential,
+    custody: StorageZfsHoldKeyCustodyV1,
     signer: StorageZfsHoldSignerV1,
     verifier: StorageZfsHoldVerifierV1,
     seed: Zeroizing<[u8; 32]>,
 }
 
+enum StorageZfsHoldKeyCustodyV1 {
+    Protected {
+        directory: PathBuf,
+        directory_identity: FileIdentity,
+        key: PinnedCredential,
+    },
+    #[cfg(test)]
+    SyntheticFixture,
+}
+
 impl StorageZfsHoldKeyV1 {
-    /// Loads the fixed systemd credential without creating signing authority.
+    /// Loads and pins the existing dedicated-role systemd credential.
     ///
     /// # Errors
     ///
@@ -64,9 +78,11 @@ impl StorageZfsHoldKeyV1 {
         let key = read_credential(&fd, CREDENTIAL_NAME, KEY_BYTES)?;
         let (signer, verifier, seed) = decode_key_record(&key.bytes)?;
         let retained = Self {
-            directory,
-            directory_identity,
-            key,
+            custody: StorageZfsHoldKeyCustodyV1::Protected {
+                directory,
+                directory_identity,
+                key,
+            },
             signer,
             verifier,
             seed,
@@ -81,12 +97,21 @@ impl StorageZfsHoldKeyV1 {
     ///
     /// Rejects any changed directory, file identity, metadata, or key bytes.
     pub fn recheck(&self) -> Result<(), StorageServiceError> {
-        let (fd, identity) = open_directory(&self.directory)?;
-        if identity != self.directory_identity {
+        let (directory, directory_identity, key) = match &self.custody {
+            StorageZfsHoldKeyCustodyV1::Protected {
+                directory,
+                directory_identity,
+                key,
+            } => (directory, directory_identity, key),
+            #[cfg(test)]
+            StorageZfsHoldKeyCustodyV1::SyntheticFixture => return Ok(()),
+        };
+        let (fd, identity) = open_directory(directory)?;
+        if identity != *directory_identity {
             return Err(invalid("Storage ZFS hold credential directory changed"));
         }
-        let current = read_credential(&fd, self.key.name, KEY_BYTES)?;
-        if current.identity != self.key.identity || current.bytes != self.key.bytes {
+        let current = read_credential(&fd, key.name, KEY_BYTES)?;
+        if current.identity != key.identity || current.bytes != key.bytes {
             return Err(invalid("Storage ZFS hold credential changed"));
         }
         let (signer, verifier, seed) = decode_key_record(&current.bytes)?;
@@ -134,6 +159,158 @@ impl StorageZfsHoldKeyV1 {
         .map_err(|_| invalid("Storage ZFS hold receipt head is invalid"))?;
         self.recheck()?;
         Ok(head)
+    }
+
+    /// Signs only a joined native request and its continuously retained original root.
+    ///
+    /// The caller retains all Storage writers and must durably accept the exact
+    /// reply before transfer. It must rejoin the protected final cut around this
+    /// call: this method checks retained evidence, not journal currentness itself.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed credentials/pins, scope, clock, hold claims, or original FD.
+    pub(crate) fn sign_native_reply(
+        &self,
+        authenticated: &AuthenticatedStorageNativeRequestV2<'_>,
+        held: &StorageHeldSnapshotReadbackWithMountV1,
+        issuance_id: [u8; 16],
+        clock: aos_sandbox_core::RawPairedClockSample,
+    ) -> Result<StorageNativeAcquireReplyV2, StorageServiceError> {
+        let request = authenticated.request();
+        let claims = request.request().claims();
+        let (issued, expires) = claims.validity();
+        let (receipt, descriptor) = self.native_receipt_basis(
+            authenticated,
+            held,
+            clock,
+            (clock.wall_seconds().max(issued), expires),
+        )?;
+        let unsigned = SignedStorageZfsHoldReceiptV1::new(receipt.clone(), self.signer, [0; 64]);
+        let key = SigningKey::from_bytes(&self.seed);
+        let receipt = SignedStorageZfsHoldReceiptV1::new(
+            receipt,
+            self.signer,
+            key.sign(&unsigned.signing_message()).to_bytes(),
+        );
+        let acceptance = StorageNativeAcceptanceV2::new(
+            issuance_id,
+            request.digest(),
+            receipt.digest(),
+            descriptor,
+        )
+        .map_err(|_| invalid("native acceptance is invalid"))?;
+        let signed_acceptance =
+            SignedStorageNativeAcceptanceV2::sign(acceptance, self.signer, &key);
+        let reply = StorageNativeAcquireReplyV2::new(signed_acceptance, receipt)
+            .map_err(|_| invalid("native signed reply is inconsistent"))?;
+        self.recheck()?;
+        authenticated
+            .recheck()
+            .map_err(|_| invalid("native request trust changed"))?;
+        Ok(reply)
+    }
+
+    /// Verifies saved signed bytes against freshly rejoined original custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed custody, signed bytes, claims, head, original FD, or time.
+    pub(crate) fn verify_native_reply(
+        &self,
+        authenticated: &AuthenticatedStorageNativeRequestV2<'_>,
+        held: &StorageHeldSnapshotReadbackWithMountV1,
+        reply: &StorageNativeAcquireReplyV2,
+        clock: aos_sandbox_core::RawPairedClockSample,
+    ) -> Result<(), StorageServiceError> {
+        let (issued, expires) = reply.receipt().receipt().validity();
+        let (expected, descriptor) =
+            self.native_receipt_basis(authenticated, held, clock, (issued, expires))?;
+        authenticated
+            .verify_reply(
+                reply,
+                self.verifier,
+                &expected,
+                &descriptor,
+                clock.wall_seconds(),
+            )
+            .map_err(|_| {
+                invalid("saved native reply differs from authenticated original evidence")
+            })?;
+        self.recheck()?;
+        Ok(())
+    }
+
+    fn native_receipt_basis(
+        &self,
+        authenticated: &AuthenticatedStorageNativeRequestV2<'_>,
+        held: &StorageHeldSnapshotReadbackWithMountV1,
+        clock: aos_sandbox_core::RawPairedClockSample,
+        validity: (i64, i64),
+    ) -> Result<
+        (
+            StorageZfsHoldReceiptV1,
+            aos_sandbox_source_provider_protocol::SourceRootObservationV1,
+        ),
+        StorageServiceError,
+    > {
+        authenticated
+            .recheck()
+            .map_err(|_| invalid("native request trust changed"))?;
+        let descriptor = held
+            .observe_root()
+            .map_err(|_| invalid("original root changed"))?;
+        let request = authenticated.request();
+        crate::runtime::validate_native_request_clock(request, clock)
+            .map_err(|_| invalid("native request is no longer current"))?;
+        let claims = request.request().claims();
+        let catalog = claims.catalog();
+        let (resource, snapshot) = catalog
+            .select_under_head(
+                catalog.generation(),
+                catalog.digest(),
+                catalog.namespace_digest(),
+                claims.selection().0,
+            )
+            .map_err(|_| invalid("native selection is invalid"))?;
+        if descriptor.kernel_boot_id() != clock.host_boot_id()
+            || validity.0 < claims.validity().0
+            || validity.1 != claims.validity().1
+            || !held.readback.cut.matches_native_claim(
+                &snapshot,
+                held.readback.pool_guid,
+                held.readback.measured_tree.content_digest,
+                held.readback.measured_tree.mounted_snapshot_guid,
+            )
+        {
+            return Err(invalid(
+                "native receipt basis differs from held original scope",
+            ));
+        }
+        let (challenge, attempt) = claims.attempt();
+        let receipt = StorageZfsHoldReceiptV1::new(
+            challenge,
+            attempt,
+            claims.selection().0,
+            resource,
+            snapshot,
+            self.receipt_head(&held.readback)?,
+            validity.0,
+            validity.1,
+        )
+        .map_err(|_| invalid("native hold receipt is invalid"))?;
+        Ok((receipt, descriptor))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn synthetic_key_for_test() -> Self {
+        let (signer, verifier, seed) = decode_key_record(&tests::record()).unwrap();
+        Self {
+            custody: StorageZfsHoldKeyCustodyV1::SyntheticFixture,
+            signer,
+            verifier,
+            seed,
+        }
     }
 }
 
@@ -233,7 +410,7 @@ mod tests {
     use crate::held_snapshot_tree::HeldSnapshotIdentityObservationV1;
     use crate::root_policy::PortableRootAttributesV1;
 
-    fn record() -> [u8; KEY_BYTES] {
+    pub(super) fn record() -> [u8; KEY_BYTES] {
         let mut bytes = [0; KEY_BYTES];
         let seed = [7; 32];
         bytes[..8].copy_from_slice(MAGIC);

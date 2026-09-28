@@ -301,7 +301,7 @@ impl DormantStorageApplyCompositionV1 {
         )
     }
 
-    /// Inspects one authenticated native hold without returning an FD or receipt.
+    /// Inspects V1 or delivers a durably accepted V2 original native root.
     ///
     /// # Errors
     ///
@@ -310,6 +310,8 @@ impl DormantStorageApplyCompositionV1 {
         &mut self,
         listener: &mut RecordSubjectListener,
         verifier: &crate::peer::ProviderLiveExportPeerVerifier,
+        authority_directory: &Path,
+        key: Option<&crate::storage_zfs_hold_key::StorageZfsHoldKeyV1>,
     ) -> Result<
         crate::zfs_hold_transport::StorageZfsHoldTransportOutcomeV1,
         crate::service::StorageServiceError,
@@ -318,6 +320,8 @@ impl DormantStorageApplyCompositionV1 {
             listener,
             &mut self.runtime,
             verifier,
+            authority_directory,
+            key,
         )
     }
 

@@ -117,7 +117,7 @@ mod live_export_three_fd;
 pub mod live_export_transport;
 #[allow(
     dead_code,
-    reason = "native issuance admission and retirement await the authenticated live carrier"
+    reason = "native retirement awaits authenticated Provider terminal and cleanup authority"
 )]
 mod native_issuance;
 mod observation;

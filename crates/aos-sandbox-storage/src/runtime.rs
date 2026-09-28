@@ -14,7 +14,9 @@
 //! Repair worker admission closes before the final pin/ZFS and guest-root
 //! cgroup scans; it does not itself authorize a Repair commit.
 
+mod native_acquire;
 mod repair_worker_drain;
+pub(crate) use native_acquire::{StorageNativeDeliveryOutcomeV2, validate_native_request_clock};
 
 use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
@@ -79,6 +81,7 @@ use crate::process::{
     HeldSnapshotPhysicalObservationV1, HeldSnapshotWorkerBindingV1, open_cgroup_root,
 };
 use crate::resolver::protected_catalog::ProtectedStorageResolverPolicyDirectoryV1;
+use crate::resolver::protected_catalog::StorageResolverPolicyCatalogBindingV1;
 use crate::root_policy::PortableRootAttributesV1;
 use crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1;
 use crate::workspace_catalog::{
@@ -265,6 +268,8 @@ pub(crate) struct StorageHeldSnapshotReadbackV1 {
     pub(crate) cut: StorageHeldSnapshotCatalogCutV1,
     /// The protected-policy-constrained pool GUID observed on both sides of the hold readback.
     pub(crate) pool_guid: u64,
+    /// The exact complete protected policy publication bracketing this sample.
+    pub(crate) policy_head: StorageResolverPolicyCatalogBindingV1,
     /// The digest of exact worker request, ZFS output, and both pool rows.
     pub(crate) physical_observation_digest: ObjectDigest,
     /// Exact physical portable bytes measured in the confined reader.
@@ -273,19 +278,70 @@ pub(crate) struct StorageHeldSnapshotReadbackV1 {
     pub(crate) post_measurement_observation_digest: ObjectDigest,
 }
 
-/// Pins a measured detached mount only for the current Storage readback call.
+/// Pins the original measured detached mount for readback and live Storage escrow.
 pub(crate) struct StorageHeldSnapshotReadbackWithMountV1 {
     pub(crate) readback: StorageHeldSnapshotReadbackV1,
     mount: OwnedFd,
+    #[cfg(test)]
+    synthetic_fixture: Option<[u8; 16]>,
 }
 
 impl StorageHeldSnapshotReadbackWithMountV1 {
     /// Rechecks that the retained mount is the exact read-only measured root.
     pub(crate) fn verify_mount(&self) -> Result<(), StorageRuntimeError> {
+        #[cfg(test)]
+        if self.synthetic_fixture.is_some() {
+            let observed = fstat(self.mount.as_fd()).map_err(|_| StorageRuntimeError::Recovery)?;
+            if observed.st_dev != self.readback.measured_tree.root_device
+                || observed.st_ino != self.readback.measured_tree.root_inode
+                || MountId::from_fd(self.mount.as_fd())
+                    .map_err(|_| StorageRuntimeError::Recovery)?
+                    .get()
+                    != self.readback.measured_tree.mount_id
+            {
+                return Err(StorageRuntimeError::Recovery);
+            }
+            return Ok(());
+        }
         crate::process::verify_received_mount_fd(
             self.mount.as_fd(),
             &self.readback.measured_tree,
             self.readback.pool_guid,
+        )
+        .map_err(|_| StorageRuntimeError::Recovery)
+    }
+
+    /// Observes this retained FD, rather than reopening or reconstructing its root.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed measured mount identity/flags, non-O_PATH semantics, or invalid boot.
+    pub(crate) fn observe_root(
+        &self,
+    ) -> Result<aos_sandbox_source_provider_protocol::SourceRootObservationV1, StorageRuntimeError>
+    {
+        self.verify_mount()?;
+        let flags = rustix::fs::fcntl_getfl(self.mount.as_fd())
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        if !flags.contains(OFlags::PATH) {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let stat = fstat(self.mount.as_fd()).map_err(|_| StorageRuntimeError::Recovery)?;
+        let mount_id =
+            MountId::from_fd(self.mount.as_fd()).map_err(|_| StorageRuntimeError::Recovery)?;
+        let boot_id = KernelBootId::current()
+            .map_err(|_| StorageRuntimeError::Recovery)?
+            .into_bytes();
+        #[cfg(test)]
+        let boot_id = self.synthetic_fixture.unwrap_or(boot_id);
+        aos_sandbox_source_provider_protocol::SourceRootObservationV1::new(
+            boot_id,
+            stat.st_dev,
+            stat.st_ino,
+            mount_id.get(),
+            true,
+            true,
+            true,
         )
         .map_err(|_| StorageRuntimeError::Recovery)
     }
@@ -375,6 +431,9 @@ pub struct StorageBrokerRuntime {
     broker_instance_id: [u8; 16],
     held_reader_state_directory: Option<PathBuf>,
     native_issuance: Option<StorageNativeIssuanceLedgerV1>,
+    native_escrow: native_acquire::StorageNativeEscrowV2,
+    #[cfg(test)]
+    native_fixture: Option<native_acquire::SyntheticNativeRuntimeV2>,
     pin_contract: ZfsHelperContract,
     pin_io: Box<dyn WorkspacePinRuntimeIo + Send>,
     helper: StorageMutationHelper<Box<dyn ZfsProcessBackend + Send>>,
@@ -545,6 +604,7 @@ impl StorageBrokerRuntime {
             StorageHeldSnapshotReadbackV1 {
                 cut: final_cut,
                 pool_guid,
+                policy_head,
                 physical_observation_digest: digest,
                 measured_tree,
                 post_measurement_observation_digest,
@@ -595,7 +655,12 @@ impl StorageBrokerRuntime {
             return Err(StorageRuntimeError::Admission(StorageBrokerError::Request));
         }
         let mount = mount.ok_or(StorageRuntimeError::Recovery)?;
-        let held = StorageHeldSnapshotReadbackWithMountV1 { readback, mount };
+        let held = StorageHeldSnapshotReadbackWithMountV1 {
+            readback,
+            mount,
+            #[cfg(test)]
+            synthetic_fixture: None,
+        };
         held.verify_mount()?;
         Ok(held)
     }
@@ -1157,6 +1222,9 @@ impl StorageBrokerRuntime {
             broker_instance_id,
             held_reader_state_directory: Some(state_directory.to_path_buf()),
             native_issuance: Some(native_issuance),
+            native_escrow: native_acquire::StorageNativeEscrowV2::default(),
+            #[cfg(test)]
+            native_fixture: None,
             pin_contract: contract.clone(),
             pin_io: Box::new(pin_io),
             helper: StorageMutationHelper::new(
@@ -1213,6 +1281,8 @@ impl StorageBrokerRuntime {
             broker_instance_id: random_challenge()?,
             held_reader_state_directory: None,
             native_issuance: None,
+            native_escrow: native_acquire::StorageNativeEscrowV2::default(),
+            native_fixture: None,
             pin_contract,
             pin_io: Box::new(pin_io),
             helper: helper.into_boxed(),
@@ -1259,6 +1329,8 @@ impl StorageBrokerRuntime {
             broker_instance_id: random_challenge()?,
             held_reader_state_directory: None,
             native_issuance: None,
+            native_escrow: native_acquire::StorageNativeEscrowV2::default(),
+            native_fixture: None,
             pin_contract,
             pin_io,
             helper,

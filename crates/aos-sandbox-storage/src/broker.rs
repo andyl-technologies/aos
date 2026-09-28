@@ -4000,6 +4000,17 @@ pub fn advertised_storage_methods(
 }
 
 #[cfg(test)]
+pub(crate) fn native_runtime_fixture_for_test(
+    transaction_directory: &tempfile::TempDir,
+    workspace_directory: &tempfile::TempDir,
+) -> crate::StorageBrokerRuntime {
+    tests::missing_initial_runtime_tests::native_runtime_fixture_for_test(
+        transaction_directory,
+        workspace_directory,
+    )
+}
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
 
@@ -12602,7 +12613,7 @@ mod tests {
         );
     }
 
-    mod missing_initial_runtime_tests;
+    pub(crate) mod missing_initial_runtime_tests;
     mod missing_initial_tests;
 
     #[test]

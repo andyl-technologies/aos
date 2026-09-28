@@ -302,7 +302,12 @@ fn run() -> Result<(), StorageServiceError> {
             let provider_cgroup = open_cgroup_root()?.resolve(Path::new(SOURCE_PROVIDER_CGROUP));
             if let Ok(provider_cgroup) = provider_cgroup {
                 let verifier = ProviderLiveExportPeerVerifier::new(provider_cgroup)?;
-                storage.serve_zfs_hold_request_once(listener, &verifier)?;
+                storage.serve_zfs_hold_request_once(
+                    listener,
+                    &verifier,
+                    &arguments.authority_directory,
+                    zfs_hold_key.as_ref(),
+                )?;
             } else {
                 listener.validate_current()?;
                 let _ = listener.accept();

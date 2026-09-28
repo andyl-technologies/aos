@@ -24,7 +24,7 @@ fn digest(byte: u8) -> ObjectDigest {
     ObjectDigest::from_bytes([byte; 32])
 }
 
-fn fixture(sequence: u8, challenge: u8) -> PreparedStorageNativeIssuanceV1 {
+pub(super) fn fixture(sequence: u8, challenge: u8) -> PreparedStorageNativeIssuanceV1 {
     let domains = StorageDomainsV1::new(digest(1), digest(2), digest(3), digest(4)).unwrap();
     let root = ManagedDatasetRoot::from_catalog("tank", "tank/aos", 11).unwrap();
     let source =
@@ -208,7 +208,61 @@ fn fixture(sequence: u8, challenge: u8) -> PreparedStorageNativeIssuanceV1 {
     }
 }
 
-fn open(
+#[test]
+fn live_lookup_retains_exact_acceptance_and_rejects_fresh_attempt() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut owner = open(directory.path(), journal_limits()).unwrap();
+    let original = fixture(1, 2);
+    assert_eq!(
+        owner.retained_acceptance(&original.row.request).unwrap(),
+        None
+    );
+    owner.accept(&original, &original.cut).unwrap();
+    assert_eq!(
+        owner.retained_acceptance(&original.row.request).unwrap(),
+        Some(original.row.acceptance.clone()),
+    );
+
+    let changed = fixture(1, 3);
+    assert!(matches!(
+        owner.retained_acceptance(&changed.row.request),
+        Err(StorageNativeIssuanceErrorV1::Conflict),
+    ));
+    assert!(matches!(
+        owner.check_release(&CatalogPlanV1::ReleaseHold {
+            snapshot: original.cut.snapshot.clone(),
+            hold_id: original.cut.hold_id,
+        }),
+        Err(StorageNativeIssuanceErrorV1::HoldInUse),
+    ));
+}
+
+#[test]
+fn cold_lookup_does_not_retire_interest_or_replace_original_acceptance() {
+    let directory = tempfile::tempdir().unwrap();
+    let original = fixture(1, 2);
+    {
+        let mut owner = open(directory.path(), journal_limits()).unwrap();
+        owner.accept(&original, &original.cut).unwrap();
+    }
+    let mut recovered = open(directory.path(), journal_limits()).unwrap();
+    assert_eq!(
+        recovered
+            .retained_acceptance(&original.row.request)
+            .unwrap(),
+        Some(original.row.acceptance.clone())
+    );
+    assert!(matches!(
+        recovered.check_release(&CatalogPlanV1::ReleaseHold {
+            snapshot: original.cut.snapshot.clone(),
+            hold_id: original.cut.hold_id,
+        }),
+        Err(StorageNativeIssuanceErrorV1::HoldInUse)
+    ));
+    assert!(recovered.rows().unwrap()[0].retirement.is_none());
+}
+
+pub(super) fn open(
     directory: &Path,
     limits: JournalLimits,
 ) -> Result<StorageNativeIssuanceLedgerV1, StorageNativeIssuanceErrorV1> {
