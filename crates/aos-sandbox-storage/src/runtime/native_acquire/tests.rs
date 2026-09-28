@@ -125,6 +125,30 @@ fn native_request_binds_independent_pinned_provider_and_root_signatures() {
 }
 
 #[test]
+fn native_entry_clock_sampling_stall_does_not_extend_original_deadline() {
+    let kernel_boottime = std::cell::Cell::new(1);
+    let sample = super::super::paired_clock_sample_from_kernel_readers(
+        || Ok([26; 16]),
+        || Ok(kernel_boottime.get()),
+        || {
+            // Model a stall after capturing the integer wall observation but
+            // before the reader returns. A later BOOTTIME anchor would extend
+            // expiry by this entire delay, beyond the one-second guard.
+            kernel_boottime.set(kernel_boottime.get() + 10_000_000_000);
+            100
+        },
+    )
+    .unwrap();
+
+    assert_eq!(sample.boottime_nanoseconds(), 1);
+    assert_eq!(kernel_boottime.get(), 10_000_000_001);
+    assert_eq!(
+        original_fail_stop_deadline(&request(), sample).unwrap(),
+        49_000_000_001
+    );
+}
+
+#[test]
 fn original_expiry_is_conservatively_bound_to_boot_time_and_never_renewed() {
     let request = request();
     let deadline = original_fail_stop_deadline(&request, clock(100, 26)).unwrap();
