@@ -156,7 +156,9 @@ impl MonitorRegistry {
             let (payload, subject, mut descriptors, peer) = bound.into_parts();
             let sender = subject.credentials();
             let connector = peer.credentials();
-            if sender != connector
+            if sender.pid() != connector.pid()
+                || sender.uid() != connector.uid()
+                || sender.gid() != connector.gid()
                 || sender.uid() != 0
                 || !subject.is_alive().map_err(|_| Error::InvalidRequest)?
             {
@@ -253,7 +255,10 @@ fn connected(connection: &SeqpacketSocket) -> bool {
         tv_sec: 0,
         tv_nsec: 0,
     };
-    let mut fds = [rustix::event::PollFd::new(fd, rustix::event::PollFlags::IN)];
+    let mut fds = [rustix::event::PollFd::new(
+        &fd,
+        rustix::event::PollFlags::IN,
+    )];
     // Unexpected extra root messages also close this binding-only profile.
     matches!(rustix::event::poll(&mut fds, Some(&timeout)), Ok(0))
 }
