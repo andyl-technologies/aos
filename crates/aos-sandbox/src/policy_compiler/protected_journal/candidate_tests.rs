@@ -4,23 +4,23 @@
 //! not establish installed owner custody, publication authority, or read grants.
 
 use aos_sandbox_core::{
-    CacheDomainId, ResourceDimension, ResourceId, Selector,
-    model::{
-        CacheDomain, CacheDomainKind, Optimization, OptimizationKind, OptimizationProfile,
-        RevocationMode, RevocationPolicy,
-    },
+    CacheDomainId, Grant, GrantId, Operation, OperationSet, RelativePath, ResourceDimension,
+    ResourceId, ResourceKind, Selector,
+    model::{CacheDomain, CacheDomainKind, RevocationMode, RevocationPolicy},
 };
 
 use super::*;
 use crate::policy_compiler::{
-    AuthenticatedCacheDomainV1, AuthenticatedEndpointCatalogV1, AuthenticatedNamespaceCatalogV1,
-    AuthenticatedSandboxProjectRelationV1, BackendCapabilitiesV1, BackendEnforcementSetV1,
-    CacheDomainBindingV1, CacheDomainInputV1, CacheDomainVerifierV1, EndpointCatalogVerifierV1,
-    HardEnforcementV1, HardLimitRequestV1, HardLimitValueV1, HardResourceKeyV1,
-    HardResourceProfileV1, NamespaceCatalogVerifierV1, NodePolicyInputV1,
-    PORTABLE_LIMIT_DIMENSIONS, PolicyCompilerLimitsV1, PolicyCompilerV1, PolicyLayerV1,
-    ProjectPolicyInputV1, RequestPolicyInputV1, RevocationInputV1,
-    SandboxProjectRelationVerifierV1, SitePolicyInputV1,
+    AdvisoryActionV1, AdvisoryDegradationV1, AdvisoryKindV1, AuthenticatedCacheDomainV1,
+    AuthenticatedEndpointCatalogV1, AuthenticatedExecutableSourceV1,
+    AuthenticatedNamespaceCatalogV1, AuthenticatedSandboxProjectRelationV1, BackendCapabilitiesV1,
+    BackendEnforcementSetV1, CacheDomainBindingV1, CacheDomainInputV1, CacheDomainVerifierV1,
+    EndpointCatalogVerifierV1, ExecutableSourceVerifierV1, HardEnforcementV1, HardLimitRequestV1,
+    HardLimitValueV1, HardResourceKeyV1, HardResourceProfileV1, LogicalSourceV1,
+    NamespaceBackendFeatureV1, NamespaceCatalogVerifierV1, NamespaceCompositionV1, NamespaceRuleV1,
+    NamespaceSourceClassV1, NodePolicyInputV1, PORTABLE_LIMIT_DIMENSIONS, PolicyCompilerLimitsV1,
+    PolicyCompilerV1, PolicyLayerV1, ProjectPolicyInputV1, RequestPolicyInputV1, RevocationInputV1,
+    SandboxProjectRelationVerifierV1, SitePolicyInputV1, ViewExecutionV1,
 };
 
 struct SyntheticInputVerifier;
@@ -45,6 +45,12 @@ impl EndpointCatalogVerifierV1 for SyntheticInputVerifier {
 
 impl NamespaceCatalogVerifierV1 for SyntheticInputVerifier {
     fn verify(&self, _: &ObjectDescriptor, _: &[u8]) -> bool {
+        true
+    }
+}
+
+impl ExecutableSourceVerifierV1 for SyntheticInputVerifier {
+    fn verify(&self, _: ResourceId, _: &Selector, _: &ObjectDescriptor, _: &[u8]) -> bool {
         true
     }
 }
@@ -91,6 +97,14 @@ fn resources(amount: Option<u64>) -> HardResourceProfileV1 {
 }
 
 pub(super) fn fixture(amount: u64) -> VerifiedPolicyPublicationV1 {
+    compile_fixture(amount, None, false)
+}
+
+pub(super) fn compile_fixture(
+    amount: u64,
+    namespace_seed: Option<u8>,
+    executable: bool,
+) -> VerifiedPolicyPublicationV1 {
     let project = ProjectId::from_bytes([1; 16]);
     let sandbox = SandboxId::from_bytes([2; 16]);
     let verifier = SyntheticInputVerifier;
@@ -100,20 +114,24 @@ pub(super) fn fixture(amount: u64) -> VerifiedPolicyPublicationV1 {
         &verifier,
     )
     .expect("synthetic project domain");
+    let (grants, namespace, advisory) = namespace_seed.map_or_else(
+        || (Vec::new(), Vec::new(), Vec::new()),
+        |seed| nonempty_rules(seed, executable),
+    );
     let ceiling = PolicyLayerV1::new(
-        Vec::new(),
+        grants.clone(),
         resources(Some(amount)),
-        Vec::new(),
-        Vec::new(),
+        namespace.clone(),
+        advisory.clone(),
         CacheDomainInputV1::Exact(domain),
         RevocationInputV1::Exact(RevocationPolicy::new(RevocationMode::DenyNew, 0)),
     )
     .expect("explicit synthetic ceiling");
     let inherited = PolicyLayerV1::new(
-        Vec::new(),
+        grants,
         resources(None),
-        Vec::new(),
-        Vec::new(),
+        namespace,
+        advisory,
         CacheDomainInputV1::Inherit,
         RevocationInputV1::Inherit,
     )
@@ -132,8 +150,19 @@ pub(super) fn fixture(amount: u64) -> VerifiedPolicyPublicationV1 {
             .expect("empty fixture namespace"),
         BackendCapabilitiesV1::new(
             BackendEnforcementSetV1::new(ENFORCEMENT.to_vec()).expect("ordered fixture mechanisms"),
-            Vec::new(),
-            Vec::new(),
+            if namespace_seed.is_some() {
+                vec![
+                    NamespaceBackendFeatureV1::Immutable,
+                    NamespaceBackendFeatureV1::NoExecute,
+                ]
+            } else {
+                Vec::new()
+            },
+            if namespace_seed.is_some() {
+                vec![AdvisoryKindV1::Readahead, AdvisoryKindV1::CacheWeight]
+            } else {
+                Vec::new()
+            },
         )
         .expect("fixture backend"),
         PolicyCompilerLimitsV1::DEFAULT,
@@ -163,6 +192,83 @@ pub(super) fn fixture(amount: u64) -> VerifiedPolicyPublicationV1 {
         diagnostics,
         prerequisites,
     }
+}
+
+fn nonempty_rules(
+    seed: u8,
+    executable: bool,
+) -> (Vec<Grant>, Vec<NamespaceRuleV1>, Vec<AdvisoryActionV1>) {
+    let handle = ResourceId::from_bytes([seed; 16]);
+    let second = ResourceId::from_bytes([seed + 3; 16]);
+    let output = ResourceId::from_bytes([seed + 2; 16]);
+    let selector = Selector::Tree {
+        tree: ObjectDescriptor::new(
+            MediaType::new(PortableMediaType::Tree.as_str()).unwrap(),
+            ObjectDigest::from_bytes([seed; 32]),
+            64,
+        ),
+    };
+    let grant = Grant::new(
+        GrantId::from_bytes([seed + 1; 16]),
+        ResourceKind::Tree,
+        OperationSet::one(Operation::Discover)
+            .union(OperationSet::one(Operation::MetadataRead))
+            .union(OperationSet::one(Operation::ContentRead)),
+        selector.clone(),
+        false,
+    )
+    .unwrap();
+    let source = |handle, evidence| {
+        NamespaceRuleV1::Source(
+            LogicalSourceV1::new(
+                handle,
+                ResourceKind::Tree,
+                selector.clone(),
+                NamespaceSourceClassV1::Immutable,
+                evidence,
+            )
+            .unwrap(),
+        )
+    };
+    let evidence = executable.then(|| {
+        AuthenticatedExecutableSourceV1::authenticate(
+            handle,
+            selector.clone(),
+            &SyntheticInputVerifier,
+        )
+        .unwrap()
+    });
+    let rules = vec![
+        source(handle, evidence),
+        source(second, None),
+        NamespaceRuleV1::Compose(
+            NamespaceCompositionV1::new(output, vec![handle, second]).unwrap(),
+        ),
+        NamespaceRuleV1::Include {
+            source: output,
+            prefix: RelativePath::root(),
+            execution: ViewExecutionV1::NoExecute,
+        },
+    ];
+    let action = |kind, source, value| {
+        AdvisoryActionV1::new(
+            kind,
+            source,
+            ResourceKind::Tree,
+            selector.clone(),
+            value,
+            1,
+            AdvisoryDegradationV1::Omit,
+        )
+    };
+    (
+        vec![grant],
+        rules,
+        vec![
+            action(AdvisoryKindV1::Readahead, handle, 8),
+            action(AdvisoryKindV1::CacheWeight, second, 2),
+        ],
+    )
 }
 
 fn encoded_fixture(verified: &VerifiedPolicyPublicationV1) -> (Vec<u8>, Vec<u8>) {
@@ -270,31 +376,13 @@ fn candidate_v2_is_observation_only_even_with_exact_current_claims() {
 fn candidate_v3_rejects_all_four_repaired_output_substitutions() {
     let (bytes, _) = encoded_fixture(&fixture(4096));
     let other = fixture(4097);
-    let optimization = encode_optimization(
-        &OptimizationProfile::new(vec![Optimization::new(
-            OptimizationKind::Readahead,
-            Selector::Resource {
-                resource: ResourceId::from_bytes([8; 16]),
-            },
-            1,
-        )])
-        .expect("canonical unrelated optimization"),
-    );
-    let namespace = super::super::model::canonical_bytes(
-        b"aos.sandbox.portable-namespace-graph.v1",
-        &serde_json::json!({"substituted": true}),
-    )
-    .unwrap();
-    let advisory = super::super::model::canonical_bytes(
-        b"aos.sandbox.portable-advisory-program.v1",
-        &serde_json::json!({"substituted": true}),
-    )
-    .unwrap();
+    let other_namespace = compile_fixture(4096, Some(32), false);
+    let portable = other_namespace.candidate.portable();
     let replacements = [
         other.candidate.portable().policy_bytes(),
-        optimization.as_slice(),
-        namespace.as_slice(),
-        advisory.as_slice(),
+        portable.optimization_bytes(),
+        portable.namespace_graph_bytes(),
+        portable.advisory_program_bytes(),
     ];
 
     for (index, replacement) in replacements.into_iter().enumerate() {

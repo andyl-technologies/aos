@@ -16,7 +16,7 @@ use aos_sandbox_core::{
     PortableMediaType, RelativePath, ResourceId, ResourceKind, Selector,
     validate_required_features,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::authority::AuthorityPlanV1;
 use super::model::{
@@ -26,7 +26,7 @@ use super::model::{
 };
 
 /// Identifies the closed semantics of a logical source.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum NamespaceSourceClassV1 {
     /// Immutable portable content.
     Immutable,
@@ -39,7 +39,7 @@ pub enum NamespaceSourceClassV1 {
 }
 
 /// Selects one closed registered metadata-presentation semantic.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum NamespacePresentationFeatureV1 {
     /// Preserves portable POSIX ACL metadata.
     PosixAcl,
@@ -50,7 +50,7 @@ pub enum NamespacePresentationFeatureV1 {
 }
 
 /// Selects explicit ordinary-view execution semantics.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum ViewExecutionV1 {
     /// Commits to denying execution through the included view.
     NoExecute,
@@ -64,7 +64,7 @@ impl Default for ViewExecutionV1 {
 }
 
 /// Classifies whether source verification permits executable presentation.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum NamespaceExecutionClassV1 {
     /// Treats all source content as non-executable data.
     DataOnly,
@@ -453,7 +453,7 @@ pub struct NamespacePlanV1 {
 }
 
 /// Names the exact portable namespace-graph schema.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum NamespaceGraphSchemaV1 {
     /// Canonical source, composition, and presentation graph version 1.
     V1,
@@ -938,6 +938,41 @@ fn canonical_dag(
         leaf_execution_classes,
     })
 }
+
+/// Checks portable definition ordering without authenticating source claims.
+///
+/// The maximum configured depth is not retained in this output. Reuse the
+/// checked DAG with the vocabulary's full u16 depth range; input admission
+/// separately enforces its stricter original compiler budget.
+///
+/// # Errors
+/// Rejects duplicate definitions/destinations, invalid references, cyclic or
+/// noncanonical definition ordering, and sentinel attachment destinations.
+pub(crate) fn validate_portable_namespace_rule_order(
+    rules: &[NamespaceRuleV1],
+) -> Result<(), PolicyModelError> {
+    validate_namespace_rule_sequence(rules.to_vec())?;
+    let analysis =
+        canonical_dag(rules, u16::MAX).map_err(|_| PolicyModelError::CanonicalEncoding)?;
+    if analysis.ordered != rules {
+        return Err(PolicyModelError::CanonicalEncoding);
+    }
+    for rule in rules {
+        match rule {
+            NamespaceRuleV1::Include { source, .. } | NamespaceRuleV1::Attach { source, .. }
+                if !analysis.dependencies.contains_key(source) =>
+            {
+                return Err(PolicyModelError::CanonicalEncoding);
+            }
+            NamespaceRuleV1::Attach { destination, .. } if destination.as_bytes() == &[0; 16] => {
+                return Err(PolicyModelError::CanonicalEncoding);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn derive_source_requirements(
     rules: &[NamespaceRuleV1],
 ) -> Result<BTreeMap<ResourceId, OperationSet>, NamespaceCompilationError> {

@@ -20,7 +20,7 @@ use aos_sandbox_core::model::{
 use aos_sandbox_core::{
     Grant, MediaType, ObjectDescriptor, ObjectDigest, PortableMediaType, ProjectId, SandboxId,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use super::advisory::{
@@ -945,7 +945,7 @@ pub enum CandidateAuthorityV1 {
 }
 
 /// Identifies one fixed compiler stage.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum ExplanationStageV1 {
     /// Freezes and validates all inputs.
     Normalize,
@@ -963,7 +963,7 @@ pub enum ExplanationStageV1 {
     Lowering,
 }
 /// Classifies a compiler decision.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ExplanationDecisionV1 {
     /// Accepts a request without narrowing.
     Admitted,
@@ -979,7 +979,7 @@ pub enum ExplanationDecisionV1 {
     Frozen,
 }
 /// Gives a stable machine-readable reason.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ExplanationReasonV1 {
     /// Records one canonical input object.
     InputFrozen,
@@ -1023,7 +1023,8 @@ pub enum ExplanationReasonV1 {
     PortableLowering,
 }
 /// Identifies a source without disclosing its contents.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub enum InputSourceV1 {
     /// Node safety policy.
     Node,

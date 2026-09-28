@@ -52,19 +52,22 @@ pub(in crate::policy_compiler) fn publication(domain: CacheDomainKind) -> Fixtur
         )
         .unwrap(),
     );
-    let frame_json = |domain: &[u8]| {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&(domain.len() as u64).to_be_bytes());
-        bytes.extend_from_slice(domain);
-        bytes.extend_from_slice(&2_u64.to_be_bytes());
-        bytes.extend_from_slice(b"{}");
-        bytes
-    };
     let outputs = [
         policy.clone(),
         encode_optimization(&OptimizationProfile::new(Vec::new()).unwrap()),
-        frame_json(b"aos.sandbox.portable-namespace-graph.v1"),
-        frame_json(b"aos.sandbox.portable-advisory-program.v1"),
+        super::super::model::canonical_bytes(
+            b"aos.sandbox.portable-namespace-graph.v1",
+            &(
+                super::super::namespace::NamespaceGraphSchemaV1::V1,
+                Vec::<super::super::namespace::NamespaceRuleV1>::new(),
+            ),
+        )
+        .unwrap(),
+        super::super::model::canonical_bytes(
+            b"aos.sandbox.portable-advisory-program.v1",
+            &Vec::<super::super::advisory::AdvisoryDecisionV1>::new(),
+        )
+        .unwrap(),
     ];
 
     let mut body = Vec::new();
