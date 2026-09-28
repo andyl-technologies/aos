@@ -114,6 +114,32 @@ impl NativeAcquireSuffixCapacityV2 {
 }
 
 impl ProviderLedgerV1<'_> {
+    /// Commits one typed native row and installs exact checked readback.
+    ///
+    /// Phase admission, nonce ordering and fresh original-request authorization
+    /// remain at the call sites; this helper grants no effect authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects the existing graph/CAS/capacity checks or mismatched readback.
+    pub(super) fn commit_retained_native_record(
+        &mut self,
+        purpose: &[u8],
+        record: &NativeAcquireCompletionRecordV2,
+    ) -> Result<(), ProviderLedgerError> {
+        let key = native_completion_key_v2(record.acquisition_id);
+        let encoded = crate::format::encode_native_completion_v2(record);
+        crate::transaction::commit_records(self, purpose, vec![(key.clone(), encoded.clone())])?;
+        if self.journal.get(&key)? != Some(encoded.as_slice()) {
+            self.poison_runtime();
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        self.recovered =
+            crate::recovery::recover_capacity_checked(&self.journal, &self.configuration)?;
+        self.refresh_recovery_work();
+        Ok(())
+    }
+
     /// Recovers only the still-current original attempt's fresh authorization.
     ///
     /// Admission must just have authenticated these exact Root bytes. This
@@ -315,19 +341,7 @@ impl ProviderLedgerV1<'_> {
                         .durable_anchor(&signed)?,
                 )
                 .map_err(crate::transaction::map_pure_ledger_error)?;
-                let key = native_completion_key_v2(record.acquisition_id);
-                let encoded = crate::format::encode_native_completion_v2(&record);
-                crate::transaction::commit_records(
-                    self,
-                    b"retain-native-request",
-                    vec![(key.clone(), encoded.clone())],
-                )?;
-                if self.journal.get(&key)? != Some(encoded.as_slice()) {
-                    self.poison_runtime();
-                    return Err(ProviderLedgerError::Equivocation);
-                }
-                self.recovered = crate::recovery::recover(&self.journal, &self.configuration)?;
-                self.refresh_recovery_work();
+                self.commit_retained_native_record(b"retain-native-request", &record)?;
                 record
             }
         };

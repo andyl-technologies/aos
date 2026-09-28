@@ -63,19 +63,14 @@ pub(crate) fn commit_sealed_completion(
             return Err(error.into());
         }
     };
-    let recovered = match crate::recovery::recover(&ledger.journal, &ledger.configuration) {
-        Ok(recovered) => recovered,
-        Err(error) => {
-            ledger.poison_runtime();
-            return Err(error);
-        }
-    };
-    if let Err(error) =
-        crate::native_no_dispatch_capacity::validate_set(&ledger.journal, &recovered)
-    {
-        ledger.poison_runtime();
-        return Err(error);
-    }
+    let recovered =
+        match crate::recovery::recover_capacity_checked(&ledger.journal, &ledger.configuration) {
+            Ok(recovered) => recovered,
+            Err(error) => {
+                ledger.poison_runtime();
+                return Err(error);
+            }
+        };
     ledger.recovered = recovered;
     ledger.refresh_recovery_work();
     Ok(committed)
@@ -1167,14 +1162,9 @@ fn commit_mutations_validated(
         return Err(error.into());
     }
     let effective_configuration = validation_configuration.unwrap_or(&ledger.configuration);
-    let replay = match crate::recovery::recover(&ledger.journal, effective_configuration) {
-        Ok(replay) => replay,
-        Err(error) => {
-            ledger.poison_runtime();
-            return Err(error);
-        }
-    };
-    if let Err(error) = crate::native_no_dispatch_capacity::validate_set(&ledger.journal, &replay) {
+    if let Err(error) =
+        crate::recovery::recover_capacity_checked(&ledger.journal, effective_configuration)
+    {
         ledger.poison_runtime();
         return Err(error);
     }

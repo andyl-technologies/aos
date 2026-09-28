@@ -148,8 +148,7 @@ fn exact_reservation(
 }
 
 fn validate_committed_graph(ledger: &mut ProviderLedgerV1<'_>) -> Result<(), ProviderLedgerError> {
-    let result = crate::recovery::recover(&ledger.journal, &ledger.configuration)
-        .and_then(|replay| validate_set(&ledger.journal, &replay));
+    let result = crate::recovery::recover_capacity_checked(&ledger.journal, &ledger.configuration);
     if let Err(error) = result {
         ledger.poison_runtime();
         return Err(error);
