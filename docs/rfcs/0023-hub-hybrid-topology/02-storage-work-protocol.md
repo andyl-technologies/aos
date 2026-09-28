@@ -109,6 +109,32 @@ requires the reviewed inventory identity, strong provider condition, and
 durable claim ID. The executor never turns a conditional mismatch into an
 unconditional retry.
 
+### Retained external cleanup grants
+
+Applying OCI GC claims use a separate signed cleanup envelope when their
+original delete credential is no longer the current binding generation.
+Native validates the SQL claim, credential hold, frozen placement and binding
+revision, and observed provider capability before issuing it. This does not
+republish the retained credential or restore ordinary read/write authority.
+
+The version 1 envelope admits only HEAD or conditional DELETE for one canonical
+OCI blob key. It carries the stable action identity, current claim token and
+lease, frozen access fence, reviewed digest, size and strong ETag, and exactly
+one retained delete credential through private transport. The envelope is
+limited to 16 KiB and 30 seconds, cannot outlive the claim lease, and uses a
+separate HMAC domain from ordinary storage work. Workers must not cache its
+secret material or pass it to binding publication. No list, body download,
+alternate key, write or multipart operation is admitted.
+
+The stable receipt fingerprint excludes request IDs, claim tokens, validity
+times and secret bytes, so renewing a lease cannot repeat a settled physical
+deletion. It retains the frozen address, reviewed object identity and credential
+reference. Reusing an action identity with a changed fingerprint fails closed.
+Wire validation proves request scope and integrity; it does not replace Native
+claim checks or positive observation of provider deletion semantics. Persistent
+pending mutations and terminal receipts still coordinate every visible writer
+for the same physical key.
+
 ## Closed operation set
 
 The first protocol version has explicit operation families. Each has a schema,

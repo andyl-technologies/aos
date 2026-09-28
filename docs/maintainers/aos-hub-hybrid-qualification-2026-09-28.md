@@ -25,6 +25,13 @@ and the Worker `wasm32-unknown-unknown` check passed. These are state-contract
 and compilation checks, not an injected provider failure or hosted R2 test.
 Automatic provider settlement and safe receipt retirement remain incomplete.
 
+The separate external cleanup wire contract now admits an exact OCI-key HEAD
+or conditional DELETE with one retained delete credential. Seven core tests
+passed for scope, credential fingerprint, lifetime/lease, replay identity,
+signature domain separation, unknown operations and bounded envelopes. Native
+claim issuance and Worker execution are still unwired; this does not qualify
+external physical GC or allow it to bypass current binding revocation.
+
 The expanded container corpus uses the real signed AOS base image and its
 complete source evidence. Its latest completed fleet attempt failed with HTTP
 503 during manifest admission; it does not qualify nonempty container parity.
