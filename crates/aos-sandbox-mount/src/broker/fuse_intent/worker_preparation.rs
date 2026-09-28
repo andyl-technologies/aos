@@ -400,6 +400,60 @@ impl<W: MountWorker> PreparedMountFuseWorkerHandoffV1<'_, '_, W> {
     pub fn recheck(&mut self) -> Result<()> {
         self.preparation.recheck()
     }
+
+    /// Applies the exact retained namespace's idmap under this original writer.
+    ///
+    /// The actual kernel refuses the original FUSE mount until INIT negotiates
+    /// ALLOW_IDMAP with default permissions. A worker record only sequences
+    /// this operation; it neither certifies INIT nor grants read authority.
+    /// The one-shot durable start marker remains occupied on every failure.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unmoved roles, changed owner/objects, absent kernel negotiation,
+    /// repeated/ambiguous effect, or a failed post-effect custody readback.
+    #[doc(hidden)]
+    pub fn apply_original_prepared_idmap(&mut self) -> Result<()> {
+        let result = (|| {
+            if self.roles.is_some() {
+                return Err(MountError::Fence("original worker table has not moved"));
+            }
+            self.recheck()?;
+            self.preparation
+                .objects
+                .apply_original_user_namespace_idmap()
+                .map_err(|error| {
+                    MountError::Worker(format!("original worker idmap failed: {error}"))
+                })?;
+            self.recheck_original_prepared_idmap()
+        })();
+        if result.is_err() {
+            self.preparation.owner.failed = true;
+        }
+        result
+    }
+
+    /// Rechecks actual original idmap-effect custody without repeating IDMAP.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed owner/objects, incomplete effect, or secure-flag failure.
+    #[doc(hidden)]
+    pub fn recheck_original_prepared_idmap(&mut self) -> Result<()> {
+        self.recheck()?;
+        let result = self
+            .preparation
+            .objects
+            .recheck_original_user_namespace_idmap_custody()
+            .map_err(|error| {
+                MountError::Worker(format!("original worker idmap custody failed: {error}"))
+            });
+        if result.is_err() {
+            self.preparation.owner.failed = true;
+        }
+        result?;
+        self.recheck()
+    }
 }
 
 #[cfg(test)]

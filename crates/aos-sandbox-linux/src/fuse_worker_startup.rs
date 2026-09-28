@@ -215,6 +215,23 @@ impl FixedFuseWorkerSessionV1 {
         Ok(())
     }
 
+    /// Rechecks a retained actual record subject against this original peer.
+    ///
+    /// This comparison confers no read permission or remote owner authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed startup, peer identity, credentials or process liveness.
+    #[doc(hidden)]
+    pub fn recheck_preparation_subject(
+        &self,
+        subject: &KernelAuthorizedRecordSubject,
+    ) -> Result<()> {
+        self.recheck()?;
+        Self::recheck_original_subject(self.records.peer(), subject)?;
+        self.recheck()
+    }
+
     /// Waits on the original record and cancellation endpoints until a deadline.
     ///
     /// # Errors
@@ -282,6 +299,9 @@ impl FixedFuseWorkerSessionV1 {
 
     /// Retains the prepared connection until actual owner cancellation or loss.
     ///
+    /// The borrow keeps a containing C-session owner alive until this wait
+    /// returns, so its Drop can destroy C before the original roles close.
+    ///
     /// No FUSE or content record is consumed while the genuine Root/Mount
     /// grant dispatcher is absent. Expiry is not a teardown proof and does
     /// not erase Mount's uncertain reservation or backing obligations.
@@ -289,7 +309,7 @@ impl FixedFuseWorkerSessionV1 {
     /// # Errors
     ///
     /// Returns an error for changed execution or failed bounded polling/read.
-    pub fn wait_for_owner_cancellation(self) -> Result<()> {
+    pub fn wait_for_owner_cancellation(&self) -> Result<()> {
         use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
         loop {
