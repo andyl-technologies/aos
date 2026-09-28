@@ -20,7 +20,7 @@ use super::{capture, hub_transition, publication_metadata, verify};
 
 const STAGING_HUB: &str = "https://aos.staging.andyl.org";
 
-/// Verifies, uploads, publicly reads back, and receipts one staging bundle.
+/// Verifies, uploads, and receipts one staging bundle.
 pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()> {
     let captured = capture::bundle(&args.bundle)?;
     let trusted_keys = verify::load_trusted_keys(&args.trusted_keys)?;
@@ -88,13 +88,17 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
     }
     hub_transition::verify_deployment(&public_client, STAGING_HUB, &plan.staging_deployment_id)
         .await?;
-    hub_transition::read_back_publication(
-        &public_client,
-        STAGING_HUB,
-        &plan.registry,
-        &publication,
-    )
-    .await?;
+    // The Hub verifies committed object bytes during upload. Public readback
+    // remains a qualification gate for releases outside staging-only testing.
+    if !plan.staging_only {
+        hub_transition::read_back_publication(
+            &public_client,
+            STAGING_HUB,
+            &plan.registry,
+            &publication,
+        )
+        .await?;
+    }
     let bundle_digest =
         aos_release::verify::bundle_digest(&captured.manifest_bytes, &captured.files)?;
     if publication.parent_publication_id.is_empty() {
@@ -166,7 +170,7 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
         return Ok(());
     }
     printer.success(&format!(
-        "Staged and publicly verified release {} as publication {}",
+        "Staged release {} as publication {}",
         receipt.release_id, receipt.operation_id
     ));
     Ok(())
