@@ -3,6 +3,7 @@
 # is linked into the existing module; it creates no Linux principal or service.
 require {
     attribute aos_private_root_custody_domain;
+    attribute aos_no_context_translation_domain;
     type lib_t;
     type ld_so_t;
     type usr_t;
@@ -205,11 +206,14 @@ allow aos_sandbox_controller_t aos_sandbox_policy_authority_runtime_t:sock_file 
 allow aos_sandbox_controller_t aos_sandbox_policy_authority_t:unix_stream_socket connectto;
 
 # One exact helper image has source-specific transitions, never an init_t entry.
+# Its raw kernel role checks use no MLS/MCS translation RPC. The deny-only
+# marker removes that blanket socket grant, not either inherited owner channel.
 type aos_method46_helper_exec_t;
 type aos_method46_tpm_device_t;
 
 type aos_method46_controller_helper_t;
 typeattribute aos_method46_controller_helper_t domain;
+typeattribute aos_method46_controller_helper_t aos_no_context_translation_domain;
 role system_r types aos_method46_controller_helper_t;
 type aos_method46_controller_floor_t;
 type aos_method46_controller_lock_t;
@@ -249,6 +253,7 @@ type_transition aos_sandbox_controller_t aos_method46_controller_floor_t:file ao
 
 type aos_method46_storage_helper_t;
 typeattribute aos_method46_storage_helper_t domain;
+typeattribute aos_method46_storage_helper_t aos_no_context_translation_domain;
 role system_r types aos_method46_storage_helper_t;
 type aos_method46_storage_floor_t;
 type aos_method46_storage_lock_t;
