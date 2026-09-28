@@ -189,8 +189,17 @@ deliberate response-interruption test. It skipped saved delivery progress becaus
 the fixture had no persisted workflow, then failed to select a delivery endpoint.
 Endpoint, gateway and network-policy list requests returned HTTP 500 on Native
 PostgreSQL. Their shared SQL predicates treat a bound integer as a boolean;
-PostgreSQL rejects this form while SQLite permits it. The dialect correction
-and remaining browser checks are being qualified. This run is not a full pass.
+PostgreSQL rejects this form while SQLite permits it. All three predicates now
+compare the integer explicitly with `1`. The extended shared contract passed
+on SQLite, actual PostgreSQL 18.6 and actual MariaDB 12.3.3 in the hermetic
+Firecracker gate, including nonempty owned/granted selectors, grant opt-in,
+deduplication, cursor continuation and revoked grants. Its output is
+`/nix/store/hk80syc6fh6l5xpglq4zaavg15h42y1f-aos-vm-test-aos-hub-live-sql-dialects-0`.
+The first attempt failed because the new fixture created a second instance
+default binding; the corrected test reuses the existing binding. The production
+correction is unchanged. A rebuilt runtime pair passes independent console-byte
+checks, and the remaining browser checks are being rerun. Neither focused
+database execution nor the earlier 77-check attempt establishes a full UI pass.
 
 The next full nonempty fleet capture passed the 26-object inventory continuation
 check and again indexed two packages, two releases and one signed channel.

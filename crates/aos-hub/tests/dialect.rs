@@ -35,8 +35,9 @@ use aos_hub::db::Database;
 use aos_hub::domain::{Permission, Principal};
 use aos_hub_core::db::{
     BeginCacheGcGeneration, CacheGcCoverageError, CacheInventoryNarinfoCandidate,
-    CacheObjectPresenceObservation, IndexOciRepositoryCatalog, NewBindingWriteRevision,
-    OciCatalogObject, OciCatalogProjection, SurfacePlacementRecord, SurfaceTarget,
+    CacheObjectPresenceObservation, EndpointHostInput, EndpointRevisionSpec, GatewayRevisionSpec,
+    GrantResource, IndexOciRepositoryCatalog, NewBindingWriteRevision, OciCatalogObject,
+    OciCatalogProjection, SurfacePlacementRecord, SurfaceTarget,
 };
 use aos_oci_types::{
     Annotations, Descriptor, ImageIndex, ImageManifest, ManifestReference, MediaType, Platform,
@@ -56,6 +57,219 @@ fn oci_descriptor(media_type: MediaType, bytes: &[u8]) -> Descriptor {
         artifact_type: None,
         platform: None,
     }
+}
+
+/// Checks scoped selectors, grant opt-in, and cursors on every live dialect.
+async fn exercise_scoped_topology_lists(db: &Database, binding_id: i64) {
+    let consumer_id = db
+        .create_org("topology-list-consumer", "Topology list consumer")
+        .await
+        .unwrap();
+    let consumer = db.org_by_id(consumer_id).await.unwrap().unwrap();
+    let boundary_resource = GrantResource::NetworkPolicy {
+        id: "instance:public",
+    };
+    let boundary_grant = db
+        .grant_consumer_scope(
+            boundary_resource,
+            &consumer.stable_id,
+            "explicit",
+            "test",
+            "request:topology-list-boundary",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        db.list_network_policies_page("instance", 1, None, false)
+            .await
+            .unwrap()
+            .records[0]
+            .id,
+        "instance:public"
+    );
+    assert!(db
+        .list_network_policies_page(&consumer.stable_id, 1, None, false)
+        .await
+        .unwrap()
+        .records
+        .is_empty());
+    let granted_boundaries = db
+        .list_network_policies_page(&consumer.stable_id, 1, None, true)
+        .await
+        .unwrap();
+    assert_eq!(granted_boundaries.records.len(), 1);
+    assert_eq!(granted_boundaries.records[0].id, "instance:public");
+    assert!(granted_boundaries.next_cursor.is_none());
+    assert!(db
+        .list_network_policies_page(&consumer.stable_id, 1, Some("instance:public"), true)
+        .await
+        .unwrap()
+        .records
+        .is_empty());
+
+    for (index, name) in ["a", "b"].into_iter().enumerate() {
+        let endpoint_id = format!("endpoint:topology-list-{name}");
+        db.create_endpoint(
+            &endpoint_id,
+            "instance",
+            None,
+            "http",
+            &EndpointHostInput::Ipv4([127, 0, 0, 1]),
+            8421 + index as u16,
+            "instance:public",
+            &EndpointRevisionSpec {
+                boundary_revision: 1,
+                ingress_kind: "layer7".to_string(),
+                listener_configuration: format!("listener:topology-list-{name}"),
+                tls_configuration: "{}".to_string(),
+                probe_configuration: "{\"provider\":\"native_file\",\"signerSecretRef\":\"test-probe-key\",\"publicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}".to_string(),
+            },
+            Some(1),
+            "test",
+            &format!("request:topology-list-endpoint-{name}"),
+        )
+        .await
+        .unwrap();
+        let endpoint_resource = GrantResource::Endpoint {
+            id: &endpoint_id,
+            generation: 1,
+        };
+        db.grant_consumer_scope(
+            endpoint_resource,
+            &consumer.stable_id,
+            "explicit",
+            "test",
+            &format!("request:topology-list-endpoint-grant-{name}"),
+        )
+        .await
+        .unwrap();
+
+        let gateway_id = format!("gateway:topology-list-{name}");
+        db.create_gateway(
+            &gateway_id,
+            "instance",
+            None,
+            &GatewayRevisionSpec {
+                binding_id,
+                endpoint_id,
+                endpoint_generation: 1,
+                client_base_path: format!("/topology-list-{name}"),
+                origin_prefix: "/objects".to_string(),
+                access_policy_kind: "public".to_string(),
+                access_boundary_id: None,
+                access_boundary_revision: None,
+                external_provider_kind: None,
+                external_provider_resource_id: None,
+                external_provider_revision: None,
+                access_policy_json: r#"{"public":true}"#.to_string(),
+            },
+            "test",
+        )
+        .await
+        .unwrap();
+        db.grant_consumer_scope(
+            GrantResource::Gateway {
+                id: &gateway_id,
+                generation: 1,
+            },
+            &consumer.stable_id,
+            "explicit",
+            "test",
+            &format!("request:topology-list-gateway-grant-{name}"),
+        )
+        .await
+        .unwrap();
+    }
+
+    for include_granted in [false, true] {
+        assert_eq!(
+            db.list_endpoints_page("instance", 10, None, include_granted)
+                .await
+                .unwrap()
+                .records
+                .len(),
+            2
+        );
+        assert_eq!(
+            db.list_gateways_page("instance", 10, None, include_granted)
+                .await
+                .unwrap()
+                .records
+                .len(),
+            2
+        );
+    }
+    assert!(db
+        .list_endpoints_page(&consumer.stable_id, 10, None, false)
+        .await
+        .unwrap()
+        .records
+        .is_empty());
+    assert!(db
+        .list_gateways_page(&consumer.stable_id, 10, None, false)
+        .await
+        .unwrap()
+        .records
+        .is_empty());
+
+    let first_endpoints = db
+        .list_endpoints_page(&consumer.stable_id, 1, None, true)
+        .await
+        .unwrap();
+    assert_eq!(first_endpoints.records[0].id, "endpoint:topology-list-a");
+    assert_eq!(
+        first_endpoints.next_cursor.as_deref(),
+        Some("endpoint:topology-list-a")
+    );
+    let next_endpoints = db
+        .list_endpoints_page(
+            &consumer.stable_id,
+            1,
+            first_endpoints.next_cursor.as_deref(),
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(next_endpoints.records[0].id, "endpoint:topology-list-b");
+    assert!(next_endpoints.next_cursor.is_none());
+
+    let first_gateways = db
+        .list_gateways_page(&consumer.stable_id, 1, None, true)
+        .await
+        .unwrap();
+    assert_eq!(first_gateways.records[0].id, "gateway:topology-list-a");
+    assert_eq!(
+        first_gateways.next_cursor.as_deref(),
+        Some("gateway:topology-list-a")
+    );
+    let next_gateways = db
+        .list_gateways_page(
+            &consumer.stable_id,
+            1,
+            first_gateways.next_cursor.as_deref(),
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(next_gateways.records[0].id, "gateway:topology-list-b");
+    assert!(next_gateways.next_cursor.is_none());
+
+    db.revoke_consumer_scope(
+        boundary_resource,
+        &consumer.stable_id,
+        boundary_grant.resource_version,
+        "test",
+        "request:topology-list-boundary-revoke",
+    )
+    .await
+    .unwrap();
+    assert!(db
+        .list_network_policies_page(&consumer.stable_id, 10, None, true)
+        .await
+        .unwrap()
+        .records
+        .is_empty());
 }
 
 /// Races exact catalog replays at a barrier and proves digest-scoped charging.
@@ -980,6 +1194,7 @@ async fn exercise(db: &Database) {
 
     // -- OCI digest ownership -------------------------------------------------
     exercise_oci_catalog_race(db, org, reg, &registry_placement).await;
+    exercise_scoped_topology_lists(db, binding).await;
 }
 
 #[tokio::test]

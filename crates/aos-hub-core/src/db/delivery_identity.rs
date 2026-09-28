@@ -2255,7 +2255,7 @@ impl Database {
                 &format!(
                     "SELECT {BOUNDARY_COLUMNS} FROM network_policies b
                      LEFT JOIN network_policy_defaults nd ON nd.boundary_id = b.id
-                     WHERE (b.owner_scope_key = ?1 OR (?4 AND EXISTS (
+                     WHERE (b.owner_scope_key = ?1 OR (?4 = 1 AND EXISTS (
                          SELECT 1 FROM network_policy_consumer_scopes grant_record
                          WHERE grant_record.boundary_id = b.id
                            AND grant_record.consumer_scope_key = ?1
@@ -4294,7 +4294,7 @@ impl Database {
                 &format!(
                     "SELECT {ENDPOINT_COLUMNS} FROM endpoints e
                      LEFT JOIN domains d ON d.id = e.domain_id
-                     WHERE (e.owner_scope_key = ?1 OR (?4 AND EXISTS (
+                     WHERE (e.owner_scope_key = ?1 OR (?4 = 1 AND EXISTS (
                          SELECT 1 FROM endpoint_route_scopes grant_record
                          WHERE grant_record.endpoint_id = e.id
                            AND grant_record.endpoint_generation = e.desired_generation

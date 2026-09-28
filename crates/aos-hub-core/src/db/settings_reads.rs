@@ -157,7 +157,7 @@ impl Database {
                         g.observed_generation, g.reconciliation_state, g.reconciliation_error,
                         g.resource_version, g.created_at, g.updated_at
                    FROM gateways g
-                  WHERE (g.owner_scope_key = ?1 OR (?4 AND EXISTS (
+                  WHERE (g.owner_scope_key = ?1 OR (?4 = 1 AND EXISTS (
                       SELECT 1 FROM gateway_revision_route_scopes grant_record
                        WHERE grant_record.gateway_id = g.id
                          AND grant_record.generation = g.desired_generation
