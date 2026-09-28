@@ -1,0 +1,27 @@
+--- a/curl/lib/vtls/openssl.c
++++ b/curl/lib/vtls/openssl.c
+@@ -430,10 +430,10 @@
+       break;
+ 
+     num = X509_get_serialNumber(x);
+-    if(num->type == V_ASN1_NEG_INTEGER)
++    if(ASN1_STRING_type(num) == V_ASN1_NEG_INTEGER)
+       BIO_puts(mem, "-");
+-    for(j = 0; j < num->length; j++)
+-      BIO_printf(mem, "%02x", num->data[j]);
++    for(j = 0; j < ASN1_STRING_length(num); j++)
++      BIO_printf(mem, "%02x", ASN1_STRING_get0_data(num)[j]);
+     result = push_certinfo(data, mem, "Serial Number", i);
+     if(result)
+       break;
+@@ -631,8 +631,8 @@
+     }
+ 
+     if(!result && psig) {
+-      for(j = 0; j < psig->length; j++)
+-        BIO_printf(mem, "%02x:", psig->data[j]);
++      for(j = 0; j < ASN1_STRING_length(psig); j++)
++        BIO_printf(mem, "%02x:", ASN1_STRING_get0_data(psig)[j]);
+       result = push_certinfo(data, mem, "Signature", i);
+     }
+ 

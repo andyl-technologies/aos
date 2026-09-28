@@ -56,6 +56,9 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     if crossSystem != null
     then lib.mkPlatform crossSystem
     else buildPlatform;
+  # An explicit target equal to the builder is still a native build. Release
+  # commands name every platform, including the one executing their tools.
+  isCrossBuild = hostPlatform.system != buildPlatform.system;
 
   # The native stdenv and package set provide tools that execute on the build
   # machine. A cross stdenv uses those tools while producing hostPlatform
@@ -74,13 +77,13 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     stdenv = buildStdenv;
   };
   buildPackages =
-    if crossSystem == null
+    if !isCrossBuild
     then pkgs
     else ordinaryBuildPackages;
   ordinaryToolchainPackages =
     if !anySharedCache
     then null
-    else if crossSystem == null
+    else if !isCrossBuild
     then ordinaryBuildPackages
     else
       (import ./. {
@@ -88,7 +91,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       }).pkgs;
 
   stdenv =
-    if crossSystem == null
+    if !isCrossBuild
     then buildStdenv
     else if hostPlatform.isDarwin
     then
