@@ -17,6 +17,7 @@ use crate::journal::{
     Journal, JournalRecord, JournalTransaction, ProtectedJournalNamesV1, RecordNamespace,
 };
 
+use super::super::PinnedSourceHoldReadbackSignerV1;
 use super::super::controller_readback_session::fresh_root_nonce;
 use super::super::deployment_head::{
     HEAD_KEY, SIGNER_PINS_KEY, decode_policy_signer_pins_v1, verify_historical_packet,
@@ -95,6 +96,54 @@ impl RootSourceGenesisAuthorityV1 {
         self.nonce
     }
 
+    /// Borrows the independently pinned Source role for the existing signer RPC.
+    ///
+    /// This public key does not grant mutation, ancestry or live Root custody.
+    #[must_use]
+    pub const fn source_readback_pin(&self) -> &PinnedSourceHoldReadbackSignerV1 {
+        &self.pins.source
+    }
+
+    /// Returns the currently held deployment expiry, or zero for exact history.
+    ///
+    /// # Errors
+    /// Rejects missing accepted input, unsafe Root custody, or unavailable
+    /// current deployment authority for a genuinely new Source append.
+    pub fn current_admission_expiry(&self) -> Result<i64, SourceGenesisErrorV1> {
+        self.recheck()?;
+        let accepted = self.accepted.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+        if accepted.historical {
+            return Ok(0);
+        }
+        require_current_deployment(&self.journal)
+    }
+
+    /// Rejoins an existing floor with the actual signed Source receipt, if present.
+    ///
+    /// The returned record is data only. This cannot turn a missing floor or
+    /// per-project lookup into an Empty observation or a prepare authority.
+    ///
+    /// # Errors
+    /// Rejects a missing/foreign accepted input or an existing floor without
+    /// its exact Source signer observation under this original flight nonce.
+    pub fn recover_floor(
+        &mut self,
+        source_packet: Option<&[u8]>,
+    ) -> Result<Option<SourceHierarchyFloorRecordV1>, SourceGenesisErrorV1> {
+        self.recheck()?;
+        let project = self
+            .accepted
+            .as_ref()
+            .ok_or(SourceGenesisErrorV1::Stale)?
+            .acceptance
+            .project();
+        if self.floor(project)?.is_none() {
+            return Ok(None);
+        }
+        self.anchor(source_packet.ok_or(SourceGenesisErrorV1::Conflict)?)
+            .map(Some)
+    }
+
     /// Rejoins exact fixed names, current independent pins, and semantic state.
     ///
     /// # Errors
@@ -121,6 +170,28 @@ impl RootSourceGenesisAuthorityV1 {
         packet: &[u8],
     ) -> Result<Option<(Option<ProjectId>, SourceTreeGenesisChallengeV1)>, SourceGenesisErrorV1>
     {
+        self.accept_controller_readback_for_scope(packet, true)
+    }
+
+    /// Selects only exact already materialized history for credential recovery.
+    ///
+    /// # Errors
+    /// Rejects all Empty/vacant current-admission packets, even if a retained
+    /// deployment HEAD has not expired, as well as foreign historical custody.
+    pub fn accept_historical_controller_readback(
+        &mut self,
+        packet: &[u8],
+    ) -> Result<Option<(Option<ProjectId>, SourceTreeGenesisChallengeV1)>, SourceGenesisErrorV1>
+    {
+        self.accept_controller_readback_for_scope(packet, false)
+    }
+
+    fn accept_controller_readback_for_scope(
+        &mut self,
+        packet: &[u8],
+        permit_current: bool,
+    ) -> Result<Option<(Option<ProjectId>, SourceTreeGenesisChallengeV1)>, SourceGenesisErrorV1>
+    {
         self.recheck()?;
         let accepted = controller_readback::verify(
             packet,
@@ -129,8 +200,22 @@ impl RootSourceGenesisAuthorityV1 {
             self.controller_uid,
             self.source_uid,
         )?;
+        if !permit_current && !accepted.historical {
+            return Err(SourceGenesisErrorV1::AdmissionClosed);
+        }
         self.pins
             .verify_administrative_input(&accepted.acceptance)?;
+        // Global Empty can recover an instance/intent created before the first
+        // Source append. It cannot reset custody after any project was anchored.
+        // Later projects require the distinct actual same-instance vacant cut.
+        if accepted.source_instance.is_none()
+            && self
+                .journal
+                .records(RecordNamespace::DesiredState)
+                .any(|(key, _)| key.starts_with(FLOOR_PREFIX))
+        {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
         if self.accepted.as_ref().is_some_and(|prior| {
             prior.acceptance != accepted.acceptance
                 || prior.source_names != accepted.source_names
@@ -397,6 +482,44 @@ impl RootSourceGenesisAuthorityV1 {
         Ok(floor)
     }
 
+    /// Rejoins the actual final Source ACK with the already durable exact floor.
+    ///
+    /// This is the Root server's final observation, not a factory for Source
+    /// or Controller proofs. The Controller must independently complete its
+    /// retained acceptance under its own writer before requesting this cut.
+    ///
+    /// # Errors
+    /// Rejects absent or changed floors, an unanchored Source observation,
+    /// mismatched original receipt/cuts, or a different durable Source ACK.
+    pub fn confirm_source_ack(
+        &self,
+        source_packet: &[u8],
+        floor: &SourceHierarchyFloorRecordV1,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        self.recheck()?;
+        let accepted = self.accepted.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+        if !accepted.historical
+            || self.floor(accepted.acceptance.project())?.as_ref() != Some(floor)
+        {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        let challenge =
+            SourceTreeGenesisChallengeV1::new(self.nonce, Some(floor.receipt().intent_digest()))
+                .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
+        let observed =
+            verify_source_tree_genesis_readback_v1(source_packet, &self.pins.source, challenge)
+                .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        require_same_source_cut(accepted, &observed)?;
+        if observed.state() != SourceTreeGenesisStateV1::Anchored
+            || observed.receipt() != Some(floor.receipt())
+            || observed.ack_floor_digest() != Some(floor.digest())
+            || observed.ack_record_digest().is_none()
+        {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        self.recheck()
+    }
+
     fn ensure_initial_instance(&mut self) -> Result<(), SourceGenesisErrorV1> {
         if self
             .journal
@@ -497,7 +620,7 @@ fn require_same_source_cut(
     Ok(())
 }
 
-fn require_current_deployment(journal: &Journal) -> Result<(), SourceGenesisErrorV1> {
+fn require_current_deployment(journal: &Journal) -> Result<i64, SourceGenesisErrorV1> {
     let namespace = RecordNamespace::DesiredState;
     let (generation, key, _, _) = decode_policy_signer_pins_v1(
         journal
@@ -517,13 +640,40 @@ fn require_current_deployment(journal: &Journal) -> Result<(), SourceGenesisErro
     )
     .map_err(|_| SourceGenesisErrorV1::AdmissionClosed)?;
     let read = |offset| crate::hierarchy::genesis_profile::take::<8>(packet, offset);
+    let expires = i64::from_be_bytes(read(24)?);
     if u64::from_be_bytes(read(8)?) != generation
         || i64::from_be_bytes(read(16)?) > now
-        || now >= i64::from_be_bytes(read(24)?)
+        || now >= expires
     {
         return Err(SourceGenesisErrorV1::AdmissionClosed);
     }
-    Ok(())
+    Ok(expires)
+}
+
+/// Reports genuine retained Root intent/floor history for the recovery listener.
+///
+/// Absence is only startup routing data. A retained instance alone cannot
+/// reconstruct Source custody or authorize a fresh expired administrative input.
+///
+/// # Errors
+/// Rejects unsafe fixed Root custody, malformed retained history or changed
+/// independently pinned roles. It grants no fresh deployment currentness.
+pub fn fixed_root_source_genesis_recovery_available_v1() -> Result<bool, SourceGenesisErrorV1> {
+    let (journal, _) = Journal::open_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    capacity::require_owner(&journal)?;
+    let retained = journal
+        .records(RecordNamespace::DesiredState)
+        .any(|(key, _)| key.starts_with(INTENT_PREFIX) || key.starts_with(FLOOR_PREFIX));
+    if !retained {
+        return Ok(false);
+    }
+    let pins = RootGenesisRolePinsV1::load(&journal)?;
+    validate_history(&journal, &pins)?;
+    Ok(true)
 }
 
 fn validate_history(

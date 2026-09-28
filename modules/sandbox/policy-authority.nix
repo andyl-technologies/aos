@@ -45,7 +45,11 @@
   sourceCredentials = {
     sourceHoldPublicKey = "source-hold-public-key";
   };
-  credentialFiles = requiredCredentials // projectCredentials // cacheCredentials // controllerCredentials // sourceCredentials;
+  genesisCredentials = {
+    sourceTreeSeedIssuer = "controller-source-tree-seed-issuer-v1";
+    projectAuthorizationIssuer = "project-authorization-issuer-v2";
+  };
+  credentialFiles = requiredCredentials // projectCredentials // cacheCredentials // controllerCredentials // sourceCredentials // genesisCredentials;
   cacheJournalSource = "/var/lib/aos/sandbox/cache-residency-journals";
   cacheJournalView = "/run/aos/sandbox-policy-cache-journals";
   prepareCacheJournalView = pkgs.writeShellScriptBin "aos-sandbox-cache-journal-view" ''
@@ -167,6 +171,10 @@ in {
           then "Optional 80-byte AOSCTK01 Controller-only hold signer pin. Root persists exact replay but Q04 does not consume receipts or publish Create."
           else if option == "sourceHoldPublicKey"
           then "Optional 80-byte AOSSPK01 Source-only hold signer pin for nonauthorizing Q04 held-flight readback; first CAS and Create remain closed."
+          else if option == "sourceTreeSeedIssuer"
+          then "Optional existing 80-byte AOSCSK01 administrative Source Tree seed issuer pin. Genesis requires this and the independent project authorization issuer together; this is not a readback key."
+          else if option == "projectAuthorizationIssuer"
+          then "Optional existing 80-byte AOSPAK02 administrative project authorization issuer pin for exact signed seven-limit genesis inputs; no readback role or inferred grant is added."
           else if option == "projectHeadPacketV2" || option == "projectLayerV2"
           then "Optional AOSPPH02/AOSPPL02 project source; both credentials are required for the closed AOSPHQ04 path."
           else "Externally provisioned signed deployment policy authority input.";
@@ -182,6 +190,12 @@ in {
       })
       requiredCredentials
       ++ [
+        {
+          assertion =
+            (cfg.credentials.sourceTreeSeedIssuer == null)
+            == (cfg.credentials.projectAuthorizationIssuer == null);
+          message = "Source genesis administrative seed and project authorization issuer pins must be provisioned together";
+        }
         {
           assertion =
             (cfg.credentials.projectHeadPacket == null)

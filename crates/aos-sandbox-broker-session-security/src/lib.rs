@@ -114,6 +114,7 @@ mod recovery;
     reason = "sealed handshake boot access stays unreachable until P0-10"
 )]
 mod self_execution;
+pub mod source_genesis_flight;
 mod source_signer_credential;
 pub mod source_signer_exchange;
 mod storage_create_preparation;

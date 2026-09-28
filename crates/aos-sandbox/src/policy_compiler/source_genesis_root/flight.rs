@@ -12,7 +12,7 @@
 use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::io::Write as _;
-use std::os::fd::AsFd as _;
+use std::os::fd::{AsFd as _, BorrowedFd};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -29,8 +29,10 @@ use super::super::controller_readback_session::fresh_root_nonce;
 use super::super::root_v8_released_proof::POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2;
 use super::records::{RootSourceGenesisIntentRecordV1, SourceHierarchyFloorRecordV1};
 
-pub(super) const START_MAGIC: &[u8; 8] = b"AOSSGQ01";
-pub(super) const HELLO_MAGIC: &[u8; 8] = b"AOSSGH01";
+use super::wire::{
+    ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1 as HELLO_MAGIC,
+    ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1 as START_MAGIC,
+};
 const ROOT_CONTEXT: &[u8] = b"system_u:system_r:aos_sandbox_policy_authority_t:s0";
 const ROOT_CGROUP: &str = "system.slice/aos-sandbox-policy-authorityd.service";
 const MAXIMUM_FLIGHT: Duration = Duration::from_secs(60);
@@ -185,6 +187,7 @@ impl OriginalRootGenesisFlightV1 {
             .try_borrow()
             .map_err(|_| SourceGenesisErrorV1::Stale)?;
         stream.revalidate_original()?;
+        require_open_receive_queue(stream.as_fd())?;
         let peer = stream.peer();
         let credentials = peer.credentials();
         let info = self.cgroup.verify_exact_membership(peer.pidfd())?;
@@ -285,6 +288,29 @@ impl OriginalRootGenesisFlightV1 {
     }
 }
 
+// Creator pidfd liveness does not imply the daemon still retains this writer:
+// the server shuts down its original endpoint before releasing the journal.
+fn require_open_receive_queue(descriptor: BorrowedFd<'_>) -> Result<(), SourceGenesisErrorV1> {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+
+    let mut descriptors = [PollFd::new(&descriptor, PollFlags::RDHUP)];
+    poll(
+        &mut descriptors,
+        Some(&Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        }),
+    )
+    .map_err(std::io::Error::from)?;
+    if descriptors[0]
+        .revents()
+        .intersects(PollFlags::RDHUP | PollFlags::HUP | PollFlags::ERR | PollFlags::NVAL)
+    {
+        return Err(SourceGenesisErrorV1::Stale);
+    }
+    Ok(())
+}
+
 fn kernel_pair() -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
     let before = KernelBootId::current()?.into_bytes();
     let boot = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
@@ -310,4 +336,25 @@ fn kernel_pair() -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
         boot,
     )
     .map_err(|_| SourceGenesisErrorV1::Stale)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Shutdown;
+    use std::os::unix::net::UnixStream;
+
+    use super::*;
+
+    #[test]
+    fn live_creator_does_not_hide_original_queue_shutdown() {
+        let (client, server) = UnixStream::pair().unwrap();
+        require_open_receive_queue(client.as_fd()).unwrap();
+
+        server.shutdown(Shutdown::Both).unwrap();
+
+        assert!(matches!(
+            require_open_receive_queue(client.as_fd()),
+            Err(SourceGenesisErrorV1::Stale)
+        ));
+    }
 }
