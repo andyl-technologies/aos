@@ -121,38 +121,37 @@ impl MeasuredHelperImageV1 {
     }
 }
 
-impl MeasuredFileV1 {
-    pub(super) fn open_pid1(
-        launch_image: &crate::production_startup::Pid1LaunchImageV1,
-    ) -> Result<Self, FloorErrorV1> {
-        let path =
-            PathBuf::from(option_env!("AOS_METHOD46_TPM_PID1").ok_or(FloorErrorV1::Unavailable)?);
-        let package = path
-            .parent()
-            .and_then(Path::parent)
-            .and_then(Path::parent)
-            .ok_or(FloorErrorV1::Provisioning)?;
-        let pin = read_pin(
-            &package.join("share/aos"),
-            "backend-policy-artifact-v2",
-            74,
-            4096,
-        )?;
-        if !pin.starts_with(b"AOSBPA02\n") {
-            return Err(FloorErrorV1::Provisioning);
-        }
-        let digest = decode_hash(pin.get(9..74).ok_or(FloorErrorV1::Provisioning)?)?;
-        // Retain the actual launch inode, not a reopened package image asserted
-        // to be executing. OpenFile runs before service UID/proc confinement.
-        let file = launch_image
-            .file()
-            .try_clone()
-            .map_err(|_| FloorErrorV1::Unavailable)?;
-        let flags = rustix::fs::fcntl_getfl(&file).map_err(|_| FloorErrorV1::Unavailable)?;
-        require_readonly_launch_flags(flags)?;
-        Self::retain_with_profile(path, file, Some(digest), MAXIMUM_IMAGE_BYTES, true)
-            .map_err(Into::into)
+/// Retains the original PID 1 launch file against the existing backend image pin.
+pub(super) fn open_original_pid1_image(
+    launch_image: &crate::production_startup::Pid1LaunchImageV1,
+) -> Result<MeasuredFileV1, FloorErrorV1> {
+    let path =
+        PathBuf::from(option_env!("AOS_METHOD46_TPM_PID1").ok_or(FloorErrorV1::Unavailable)?);
+    let package = path
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or(FloorErrorV1::Provisioning)?;
+    let pin = read_pin(
+        &package.join("share/aos"),
+        "backend-policy-artifact-v2",
+        74,
+        4096,
+    )?;
+    if !pin.starts_with(b"AOSBPA02\n") {
+        return Err(FloorErrorV1::Provisioning);
     }
+    let digest = decode_hash(pin.get(9..74).ok_or(FloorErrorV1::Provisioning)?)?;
+    // Retain the actual launch inode, not a reopened package image asserted
+    // to be executing. OpenFile runs before service UID/proc confinement.
+    let file = launch_image
+        .file()
+        .try_clone()
+        .map_err(|_| FloorErrorV1::Unavailable)?;
+    let flags = rustix::fs::fcntl_getfl(&file).map_err(|_| FloorErrorV1::Unavailable)?;
+    require_readonly_launch_flags(flags)?;
+    MeasuredFileV1::retain_with_profile(path, file, Some(digest), MAXIMUM_IMAGE_BYTES, true)
+        .map_err(Into::into)
 }
 
 impl From<crate::immutable_image::ImmutableImageErrorV1> for FloorErrorV1 {
