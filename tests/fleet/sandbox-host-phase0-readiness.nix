@@ -125,7 +125,7 @@ in {
       REPORT = "${report}"
       OVERRIDE = f"/run/systemd/system/{TARGET}.d/qualification.conf"
       HOST_OVERRIDE = f"/run/systemd/system/{HOST}.d/qualification.conf"
-      INSPECTOR_OVERRIDE = f"/run/systemd/system/{INSPECTOR}.d/qualification.conf"
+      STALE_REPORT = "/run/phase0-stale-report"
       EXPECTED_HOST_SYSCALLS = set(${builtins.toJSON hostSyscallProfile.syscallsX86_64})
 
       def install_host_credentials():
@@ -279,17 +279,19 @@ in {
       vm.succeed(f"printf '%b\\n' '[Service]\\nRestart=no' > {HOST_OVERRIDE}")
       vm.succeed("systemctl daemon-reload")
 
-      # A test-only dependency break leaves the old signed report in place,
-      # proving Host itself rejects a replacement rather than relying on the
-      # normal target -> inspector -> Host stop/renewal chain.
-      vm.succeed(f"mkdir -p /run/systemd/system/{INSPECTOR}.d")
-      vm.succeed(f"printf '%b\\n' '[Unit]\\nBindsTo=\\nRequires=' > {INSPECTOR_OVERRIDE}")
-      vm.succeed("systemctl daemon-reload")
-      vm.succeed(f"systemctl restart {TARGET}")
+      # Replay old, validly signed bytes after the normal dependency chain
+      # replaces the target. Host must reject that stale PID independently.
+      vm.succeed(f"install -m 0400 {REPORT} {STALE_REPORT}")
+      stale_report = vm.succeed(f"base64 -w0 {STALE_REPORT}").strip()
+      stale_pid = struct.unpack_from(">I", base64.b64decode(stale_report), 152)[0]
+      start_inspector(True)
+      current_pid = int(vm.succeed(f"systemctl show {TARGET} -p MainPID --value"))
+      assert current_pid != stale_pid
+      vm.succeed(f"install -m 0400 {STALE_REPORT} {REPORT}")
+      assert vm.succeed(f"base64 -w0 {REPORT}").strip() == stale_report
       vm.succeed(f"systemctl is-active --quiet {INSPECTOR}")
       start_host(False, "shifted target PID differs from the signed probe")
-      vm.succeed(f"rm {INSPECTOR_OVERRIDE}")
-      vm.succeed("systemctl daemon-reload")
+      vm.succeed(f"rm {STALE_REPORT}")
       start_inspector(True)
 
       # PID 1's current service policy is re-read by Host, not inferred from
