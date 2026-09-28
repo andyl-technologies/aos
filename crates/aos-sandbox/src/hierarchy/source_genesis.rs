@@ -6,6 +6,8 @@
 //! joins may anchor it; later Tree transitions need separate full authority.
 //! Neither cold receipt data nor this Source-only observation authenticates
 //! Root currentness, whole-host rollback resistance or unrelated Source facts.
+//! The live append/ACK entry points are Linux-only; receipt and readback data
+//! remain available independently of those owner interfaces.
 
 use std::path::Path;
 #[cfg(test)]
@@ -25,8 +27,10 @@ use crate::lifecycle::protected_journal_join::{
     PROTECTED_SOURCE_DOMAIN_JOURNAL, PROTECTED_SOURCE_DOMAIN_ROOT,
     ProtectedSourceDomainJournalOwnerV1, source_domain_journal_limits,
 };
+#[cfg(target_os = "linux")]
 use crate::policy_compiler::{HeldRootSourceGenesisIntentV1, RootSourceGenesisFloorProofV1};
 
+#[cfg(target_os = "linux")]
 use super::controller_genesis::HeldControllerSourceGenesisV1;
 use super::genesis_profile::SourceGenesisErrorV1;
 use super::tree_lineage::{
@@ -215,6 +219,7 @@ impl HeldSourceTreeGenesisObservationV1<'_> {
 /// Rejects missing or stale owner cuts, foreign instance/intent/acceptance,
 /// unsafe fixed Source names, an occupied project or another pending flight,
 /// malformed history, insufficient suffix capacity, and append/readback failure.
+#[cfg(target_os = "linux")]
 pub fn append_source_tree_genesis_v1<'source>(
     source: &'source mut ProtectedSourceDomainJournalOwnerV1,
     controller: &HeldControllerSourceGenesisV1<'_>,
@@ -341,6 +346,7 @@ pub fn append_source_tree_genesis_v1<'source>(
 /// Rejects stale/foreign live owner proofs, receipt/semantic-head substitution,
 /// changed Source names or pending nonce lineage, conflicting prior ACK,
 /// capacity failure, and ambiguous append/readback.
+#[cfg(target_os = "linux")]
 pub fn acknowledge_source_tree_genesis_v1<'source>(
     source: &'source mut ProtectedSourceDomainJournalOwnerV1,
     controller: &HeldControllerSourceGenesisV1<'_>,

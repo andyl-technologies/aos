@@ -27,9 +27,10 @@ pub(crate) mod source_genesis;
 pub mod source_seed;
 pub use source_genesis::{
     HeldSourceTreeGenesisObservationV1, SOURCE_TREE_GENESIS_RECEIPT_BYTES_V1,
-    SourceTreeGenesisReceiptV1, SourceTreeGenesisStateV1, acknowledge_source_tree_genesis_v1,
-    append_source_tree_genesis_v1, observe_source_tree_genesis_v1,
+    SourceTreeGenesisReceiptV1, SourceTreeGenesisStateV1, observe_source_tree_genesis_v1,
     observe_vacant_source_tree_genesis_project_v1,
 };
+#[cfg(target_os = "linux")]
+pub use source_genesis::{acknowledge_source_tree_genesis_v1, append_source_tree_genesis_v1};
 pub mod state;
 mod tree_lineage;
