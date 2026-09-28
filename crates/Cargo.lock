@@ -1191,6 +1191,7 @@ dependencies = [
  "aos-sandbox",
  "aos-sandbox-core",
  "aos-sandbox-source-provider-protocol",
+ "ed25519-dalek",
  "sha2 0.10.9",
  "tempfile",
 ]

@@ -385,9 +385,9 @@ fn require_native_suffix_progress(
             ));
         }
     }
-    if changed != expected {
+    if changed != expected || expected.iter().any(|key| !prospective.contains_key(key)) {
         return Err(LedgerFormatErrorV1::Corrupt(
-            "native dispatch suffix changed another owner",
+            "native dispatch suffix omitted or changed another owner",
         ));
     }
     Ok(())

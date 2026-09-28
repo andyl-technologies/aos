@@ -1,8 +1,8 @@
 //! Exercises native full-width capacity with the real protected journal owner.
 //!
 //! These records are capacity-only projections, not a fabricated complete
-//! Provider graph or an installed peer/session qualification. The runtime's
-//! separately tested closed graph validates real rows before every append.
+//! Provider graph or an installed peer/session qualification. The runtime
+//! separately requires strict graph validation of real rows before append.
 
 use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt as _;
@@ -68,7 +68,7 @@ fn native_capacity_preserves_full_width_cleanup_floor_after_active_and_reopen() 
     assert!(request.terminal_bytes > TERMINAL_BYTES);
     let mut journal = open(directory.path(), limits);
     let mut owner = journal
-        .claim_protected_authority(RecordNamespace::SourceProviderAuthority)
+        .claim_source_provider_native_terminal_authority_v1()
         .unwrap();
     let prepared = owner
         .prepare_global_capacity_reservation_v1(request, [7; 16])
@@ -112,13 +112,13 @@ fn native_capacity_preserves_full_width_cleanup_floor_after_active_and_reopen() 
     )
     .unwrap();
     assert!(owner.preflight_transactions(&[excessive]).is_err());
-    assert_eq!(owner.snapshot().unwrap(), before);
+    owner.validate_snapshot_for_effect(&before).unwrap();
     drop(owner);
     drop(journal);
 
     let mut journal = open(directory.path(), limits);
     let mut owner = journal
-        .claim_protected_authority(RecordNamespace::SourceProviderAuthority)
+        .claim_source_provider_native_terminal_authority_v1()
         .unwrap();
     let reservation = owner
         .recover_unique_global_capacity_reservation_v1(&binding(request))
@@ -152,7 +152,7 @@ fn native_capacity_refuses_ordered_suffix_before_dispatch_without_spending_floor
     let request = capacity_request();
     let mut journal = open(directory.path(), limits);
     let mut owner = journal
-        .claim_protected_authority(RecordNamespace::SourceProviderAuthority)
+        .claim_source_provider_native_terminal_authority_v1()
         .unwrap();
     let prepared = owner
         .prepare_global_capacity_reservation_v1(request, [11; 16])
@@ -185,7 +185,7 @@ fn native_capacity_refuses_ordered_suffix_before_dispatch_without_spending_floor
             .preflight_transactions(&[accepted, full_owner_cut(13)])
             .is_err()
     );
-    assert_eq!(owner.snapshot().unwrap(), before);
+    owner.validate_snapshot_for_effect(&before).unwrap();
     assert_eq!(
         owner
             .recover_global_capacity_reservation_v1(reservation.reservation_id())
