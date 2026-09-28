@@ -89,6 +89,22 @@ passed without resetting the database. Companion infra commit `63f1a360`
 records that evidence. Root administrator creation awaits explicit approval;
 this database migration does not qualify Cloud Run mounts or a hosted paired API.
 
+### Native settings browser qualification
+
+The Native build containing the empty-registry console correction passed all
+123 settings checks in real Chrome against the complete reviewed API fixture.
+The binary was
+`/nix/store/c2g0rsr1m61x526qcp5dviy2yb1wkaxv-aos-hub-0.1.0/bin/aos-hub`.
+The initial registry overview rendered the publication prerequisite without
+issuing `GetRegistryMetadata`; indexed registries retain their metadata editor
+and API error handling. Instance appearance, branding review, organization and
+registry configuration, and cache GC policy review also passed.
+
+This manual run used isolated Native SQLite, not the hosted Hybrid deployment.
+Its report and screenshots are retained at
+`/tmp/hub-native-empty-registry-browser-qualified`. Hybrid browser qualification
+remains pending.
+
 The dedicated GCP project, PostgreSQL and credential resources are provisioned,
 but no paired Native serving endpoint or public hybrid Worker route is deployed.
 Signed delivery setup, private credential mounts, root administrator initialization,

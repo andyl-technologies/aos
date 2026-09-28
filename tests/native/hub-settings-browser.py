@@ -1238,6 +1238,20 @@ class HubSettingsSmoke:
         self.assert_settings_page("registry overview")
         self.check(
             self.chrome.evaluate(
+                "document.body.textContent.includes("
+                "\"Publish and index the first release to edit the registry's committed metadata.\")"
+            ),
+            "empty registry explains its first-publication prerequisite",
+        )
+        self.check(
+            not any(
+                request.get("path") == "/aos.hub.v1.RegistryService/GetRegistryMetadata"
+                for request in self.chrome.request_timing_report()
+            ),
+            "empty registry avoids requesting unavailable committed metadata",
+        )
+        self.check(
+            self.chrome.evaluate(
                 "Array.from(document.querySelectorAll('.overview-actions a'))"
                 ".some(link => link.textContent.trim() === 'View containers')"
             ),
