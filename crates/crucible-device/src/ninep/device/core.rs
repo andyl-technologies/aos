@@ -246,9 +246,7 @@ impl NinepDevice {
         let uniform = Request::new(request_icount, tag, frame.to_vec());
         self.core
             .enqueue_request(uniform)
-            .map_err(|rejected| DeviceError::RingFull {
-                capacity: rejected.capacity,
-            })?;
+            .map_err(|rejected| rejected.source)?;
         // Borrow split: process_inbox needs `&mut self.core` and `&mut server`
         // simultaneously, so serve through a detached server view.
         Self::process_pending(
@@ -395,10 +393,14 @@ impl NinepDevice {
     ///
     /// Returns `None` when no response has been made visible yet. The payload is
     /// a complete, well-formed 9p reply frame ([IO-18]).
-    pub fn next_response(&mut self) -> Option<Vec<u8>> {
-        self.core
-            .pop_response()
-            .map(|pending| pending.response.payload)
+    /// # Errors
+    ///
+    /// Returns [`DeviceError::IoQueueRevisionExhausted`] before consuming a reply.
+    pub fn next_response(&mut self) -> Result<Option<Vec<u8>>, DeviceError> {
+        Ok(self
+            .core
+            .pop_response()?
+            .map(|pending| pending.response.payload))
     }
 
     /// COMPUTEs every pending inbox request through the 9p server view.

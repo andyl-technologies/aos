@@ -409,7 +409,7 @@ impl BlockDevice {
                 }
             }
         }
-        next_core.replace_inflight(inflight);
+        next_core.replace_inflight(inflight)?;
         for response in immediate {
             next_core.schedule_response_now(response)?;
         }

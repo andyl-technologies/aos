@@ -145,7 +145,7 @@ fn drive(requests: &[Request]) -> Vec<(u64, Response)> {
             delivered_count >= 1,
             "advancing to an event must deliver it"
         );
-        while let Some(pending) = core.pop_response() {
+        while let Some(pending) = ok(core.pop_response()) {
             delivered.push((pending.delivery_icount(), pending.response));
         }
     }
@@ -343,7 +343,7 @@ fn advance_to_drains_only_due_responses() {
     // Advance to exactly the head: only responses due at `head` come out.
     let delivered = ok(core.advance_to(head));
     assert!(delivered >= 1);
-    while let Some(p) = core.pop_response() {
+    while let Some(p) = ok(core.pop_response()) {
         assert!(p.delivery_icount() <= head);
     }
     // There is still future work pending.
@@ -386,7 +386,7 @@ fn host_compute_timing_does_not_change_outputs() {
     let mut skewed = Vec::new();
     while let Some(next) = core.next_exact_local_event() {
         ok(core.advance_to(next));
-        while let Some(p) = core.pop_response() {
+        while let Some(p) = ok(core.pop_response()) {
             skewed.push((p.delivery_icount(), p.response));
         }
     }
@@ -424,12 +424,12 @@ fn snapshot_restore_round_trips_mid_flight() {
     // Draining the original and the restored core must produce identical tails.
     fn drain(core: &mut IoCore) -> Vec<(u64, Response)> {
         let mut out = Vec::new();
-        while let Some(p) = core.pop_response() {
+        while let Some(p) = ok(core.pop_response()) {
             out.push((p.delivery_icount(), p.response));
         }
         while let Some(next) = core.next_exact_local_event() {
             ok(core.advance_to(next));
-            while let Some(p) = core.pop_response() {
+            while let Some(p) = ok(core.pop_response()) {
                 out.push((p.delivery_icount(), p.response));
             }
         }
@@ -450,7 +450,10 @@ fn full_inbox_blocks_producer_without_drop() {
         Err(error) => error,
         Ok(()) => panic!("a full inbox must reject the request"),
     };
-    assert_eq!(rejected.item, blocked, "the exact request is handed back");
+    assert_eq!(
+        rejected.request, blocked,
+        "the exact request is handed back"
+    );
 
     // Draining the inbox frees space; re-pushing the handed-back request lands
     // without cloning.
@@ -710,7 +713,7 @@ fn full_outbox_backpressures_delivery_without_reorder() {
         .ok_or("expected in-flight responses"));
     loop {
         ok(core.advance_to(last));
-        match core.pop_response() {
+        match ok(core.pop_response()) {
             Some(p) => order.push(p.delivery_icount()),
             None => break,
         }

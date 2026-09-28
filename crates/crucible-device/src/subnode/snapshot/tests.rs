@@ -11,8 +11,8 @@ fn io_core_snapshot_rejects_unsupported_version() {
         .canonical_bytes()
         .unwrap_or_else(|error| panic!("encode I/O-core fixture: {error}"));
     let version_index = b"crucible.io-core-snapshot.v".len();
-    assert_eq!(bytes[version_index], b'4');
-    bytes[version_index] = b'?';
+    assert_eq!(bytes[version_index], b'5');
+    bytes[version_index] = b'4';
     assert_eq!(
         IoCoreSnapshot::from_canonical_bytes(&bytes),
         Err(IoCoreSnapshotCodecError::Version)
