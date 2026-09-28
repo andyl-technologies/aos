@@ -2,7 +2,9 @@
 
 #![cfg(target_os = "linux")]
 
-use crucible::{AdvanceOutcome, Icount, NodeId, SimulationBackend, VirtualTime};
+use crucible::{
+    AdvanceOutcome, BackendPhysicalStop, Icount, NodeId, SimulationBackend, VirtualTime,
+};
 use crucible_protocol::selectable_catalog_plan::{
     SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
     SelectablePlanLimits, SelectablePlanPendingRequest, SelectablePlanPresence,
@@ -42,7 +44,8 @@ fn selectable_pause_returns_before_reissue_and_reply_reaches_the_next_choice() {
 
     let first = SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 5_000 })
         .expect("step to first selectable");
-    assert_eq!(first.reached, VirtualTime { ticks: 5_000 });
+    assert_eq!(first.reached, VirtualTime { ticks: 2_050 });
+    assert_eq!(first.physical_stop, BackendPhysicalStop::GuestSelectable);
     assert_eq!(
         first.outcome,
         AdvanceOutcome::Paused {
@@ -50,8 +53,9 @@ fn selectable_pause_returns_before_reissue_and_reply_reaches_the_next_choice() {
         }
     );
     let parked = SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 5_000 })
-        .expect("parked selectable can be projected without reissuing the guest quantum");
-    assert_eq!(parked.reached, VirtualTime { ticks: 5_000 });
+        .expect("parked selectable retains its physical stop without reissuing the guest quantum");
+    assert_eq!(parked.reached, VirtualTime { ticks: 2_050 });
+    assert_eq!(parked.physical_stop, BackendPhysicalStop::GuestSelectable);
     assert_eq!(
         parked.outcome,
         AdvanceOutcome::Paused {
@@ -77,7 +81,8 @@ fn selectable_pause_returns_before_reissue_and_reply_reaches_the_next_choice() {
 
     let second = SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 5_000 })
         .expect("step to second selectable");
-    assert_eq!(second.reached, VirtualTime { ticks: 5_000 });
+    assert_eq!(second.reached, VirtualTime { ticks: 3_050 });
+    assert_eq!(second.physical_stop, BackendPhysicalStop::GuestSelectable);
     assert_eq!(
         second.outcome,
         AdvanceOutcome::Paused {
@@ -201,8 +206,9 @@ fn selectable_at_the_exact_ceiling_is_retained_before_the_fast_path_returns() {
     );
 
     let parked = SimulationBackend::step_node_to(&mut nodes, &node, VirtualTime { ticks: 5_001 })
-        .expect("exact-ceiling selectable remains parked as the scheduler catches up");
-    assert_eq!(parked.reached, VirtualTime { ticks: 5_001 });
+        .expect("exact-ceiling selectable retains the original physical stop");
+    assert_eq!(parked.reached, VirtualTime { ticks: 5_000 });
+    assert_eq!(parked.physical_stop, BackendPhysicalStop::GuestSelectable);
     assert_eq!(
         parked.outcome,
         AdvanceOutcome::Paused {
@@ -261,7 +267,11 @@ fn one_nodes_choice_does_not_project_a_peer_step() {
     let first_observation =
         SimulationBackend::step_node_to(&mut nodes, &first, VirtualTime { ticks: 5_000 })
             .expect("step first node to choice");
-    assert_eq!(first_observation.reached, VirtualTime { ticks: 5_000 });
+    assert_eq!(first_observation.reached, VirtualTime { ticks: 2_050 });
+    assert_eq!(
+        first_observation.physical_stop,
+        BackendPhysicalStop::GuestSelectable
+    );
     assert_eq!(
         first_observation.outcome,
         AdvanceOutcome::Paused {

@@ -7,8 +7,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use crucible::{
-    BackendEffect, BackendError, ConcurrentBackendRun, ConcurrentBackendRunOutcome,
-    ConcurrentSimulationBackend, FingerprintSample, NodeId, SimulationBackend,
+    BackendError, BackendRunResult, ConcurrentBackendRun, ConcurrentBackendRunOutcome,
+    ConcurrentBackendRunResult, ConcurrentSimulationBackend, FingerprintSample, NodeId,
+    SimulationBackend,
 };
 
 use super::QemuNodeSet;
@@ -175,7 +176,7 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
         &mut self,
         runs: Vec<ConcurrentBackendRun>,
         max_host_workers: usize,
-    ) -> Result<Vec<ConcurrentBackendRunOutcome>, BackendError> {
+    ) -> Result<Vec<ConcurrentBackendRunResult>, BackendError> {
         if max_host_workers == 0 {
             return Err(BackendError::Rejected {
                 message: String::from("QEMU host worker count must be positive"),
@@ -184,24 +185,33 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
 
         let mut selected = BTreeSet::new();
         for run in &runs {
-            if !selected.insert(run.node.clone()) {
-                return Err(BackendError::Rejected {
-                    message: format!("QEMU host worker RUN set repeats node `{}`", run.node.name),
+            if !run.preemptions.is_empty() {
+                return Err(BackendError::Unsupported {
+                    capability: "authenticated concurrent QEMU preemptions",
                 });
             }
-            if self.pending_selectable_requests.contains_key(&run.node) {
+            if !selected.insert(run.node().clone()) {
                 return Err(BackendError::Rejected {
                     message: format!(
-                        "QEMU node `{}` cannot run with an unresolved selectable request",
-                        run.node.name
+                        "QEMU host worker RUN set repeats node `{}`",
+                        run.node().name
                     ),
                 });
             }
-            if !self.nodes.contains_key(&run.node) || self.permanently_closed.contains(&run.node) {
+            if self.pending_selectable_requests.contains_key(run.node()) {
+                return Err(BackendError::Rejected {
+                    message: format!(
+                        "QEMU node `{}` cannot run with an unresolved selectable request",
+                        run.node().name
+                    ),
+                });
+            }
+            if !self.nodes.contains_key(run.node()) || self.permanently_closed.contains(run.node())
+            {
                 return Err(BackendError::Rejected {
                     message: format!(
                         "QEMU host worker RUN selected absent node `{}`",
-                        run.node.name
+                        run.node().name
                     ),
                 });
             }
@@ -216,11 +226,11 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
             for run in batch {
                 let backend =
                     self.nodes
-                        .remove(&run.node)
+                        .remove(run.node())
                         .ok_or_else(|| BackendError::Rejected {
                             message: format!(
                                 "QEMU host worker lost node `{}` before dispatch",
-                                run.node.name
+                                run.node().name
                             ),
                         })?;
                 owned.push((run.clone(), backend));
@@ -236,35 +246,41 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
                         let peak = Arc::clone(&peak);
                         scope.spawn(move || {
                             let mut one = QemuNodeSet::new();
-                            one.nodes.insert(run.node.clone(), backend);
+                            one.nodes.insert(run.node().clone(), backend);
                             let operation = catch_unwind(AssertUnwindSafe(|| {
-                                for preemption in &run.preemptions {
-                                    let at = one.node_now(&run.node)?;
-                                    one.apply_to_node(
-                                        &run.node,
-                                        &BackendEffect::Preemption(preemption.clone()),
-                                        at,
-                                    )?;
-                                }
                                 let concurrent = active.fetch_add(1, Ordering::SeqCst) + 1;
                                 peak.fetch_max(concurrent, Ordering::SeqCst);
-                                let step = one.step_node_to(&run.node, run.ceiling);
+                                let result = one.step_node_with_admission(&run.admission);
                                 active.fetch_sub(1, Ordering::SeqCst);
-                                let step = step?;
-                                let rng_evidence = one.drain_rng_evidence()?;
-                                let network_outputs = one.drain_network_outputs()?;
-                                let observations = one.drain_observable_events()?;
-                                Ok(ConcurrentBackendRunOutcome {
-                                    node: run.node.clone(),
-                                    step,
-                                    rng_evidence,
-                                    network_outputs,
-                                    observations,
-                                })
+                                match result? {
+                                    BackendRunResult::Completed(step) => {
+                                        let rng_evidence = one.drain_rng_evidence()?;
+                                        let network_outputs = one.drain_network_outputs()?;
+                                        let observations = one.drain_observable_events()?;
+                                        Ok(ConcurrentBackendRunResult::Completed(
+                                            ConcurrentBackendRunOutcome {
+                                                node: run.node().clone(),
+                                                step,
+                                                rng_evidence,
+                                                network_outputs,
+                                                observations,
+                                            },
+                                        ))
+                                    }
+                                    BackendRunResult::InputBoundary(boundary) => {
+                                        Ok(ConcurrentBackendRunResult::InputBoundary(boundary))
+                                    }
+                                    BackendRunResult::CapBoundary(boundary) => {
+                                        Ok(ConcurrentBackendRunResult::CapBoundary(boundary))
+                                    }
+                                    BackendRunResult::DispatchBoundary(boundary) => {
+                                        Ok(ConcurrentBackendRunResult::DispatchBoundary(boundary))
+                                    }
+                                }
                             }));
-                            let backend = one.nodes.remove(&run.node);
-                            let pending = one.pending_selectable_requests.remove(&run.node);
-                            (run.node, backend, pending, operation)
+                            let backend = one.nodes.remove(run.node());
+                            let pending = one.pending_selectable_requests.remove(run.node());
+                            (run.node().clone(), backend, pending, operation)
                         })
                     })
                     .collect::<Vec<_>>()
@@ -322,7 +338,7 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
             requested_runs: outcomes.len(),
             maximum_workers: max_host_workers,
             realized_parallelism: peak.load(Ordering::SeqCst),
-            commit_order: runs.into_iter().map(|run| run.node).collect(),
+            commit_order: runs.into_iter().map(|run| run.node().clone()).collect(),
         });
         Ok(outcomes)
     }
@@ -465,8 +481,8 @@ mod tests {
     }
 
     #[test]
-    fn failed_fingerprint_capture_restores_nodes_for_next_sample(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn failed_fingerprint_capture_restores_nodes_for_next_sample()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut backends = BTreeMap::from([(node("alpha"), 11), (node("beta"), 13)]);
         let selected = BTreeSet::from([node("alpha"), node("beta")]);
         let first = fingerprint_selected_nodes(&mut backends, &selected, 2, |backend, node| {

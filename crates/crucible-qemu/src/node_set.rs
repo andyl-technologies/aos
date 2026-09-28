@@ -12,9 +12,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::thread;
 
 use crucible::{
-    BackendEffect, BackendError, BackendNetworkOutput, BackendRngEvidence, BackendSnapshot,
-    FingerprintSample, Icount, NodeId, ObservableEvent, ObservableEventPayload, SimulationBackend,
-    StepObservation, VirtualTime,
+    BackendEffect, BackendError, BackendNetworkOutput, BackendPhysicalStop, BackendRngEvidence,
+    BackendSnapshot, FingerprintSample, Icount, NodeId, ObservableEvent, ObservableEventPayload,
+    SimulationBackend, StepObservation, VirtualTime,
 };
 #[cfg(target_os = "linux")]
 use crucible::{ContentHash, EventLog};
@@ -2003,16 +2003,20 @@ fn parked_selectable_step(
             ),
         });
     }
-    // The guest remains physically stopped while peer nodes bring the
-    // conservative scheduler frontier up to this choice boundary.
+    // The retained selectable witness fixes the physical pause coordinate;
+    // a later scheduler ceiling does not manufacture guest progress.
     Ok(StepObservation {
         requested_ceiling: ceiling,
-        reached: ceiling,
+        reached: VirtualTime {
+            ticks: boundary_tick_ps,
+        },
         outcome: crucible::AdvanceOutcome::Paused {
             at: Icount {
                 retired: boundary_tick_ps,
             },
         },
+        physical_stop: BackendPhysicalStop::GuestSelectable,
+        applied_preemptions: Vec::new(),
     })
 }
 
@@ -2045,10 +2049,14 @@ impl SimulationBackend for QemuNodeSet {
         if let Some(parked) = self.parked_campaign_marker(node)? {
             return Ok(StepObservation {
                 requested_ceiling: ceiling,
-                reached: ceiling,
+                reached: VirtualTime {
+                    ticks: parked.physical_icount.retired,
+                },
                 outcome: crucible::AdvanceOutcome::Paused {
                     at: parked.physical_icount,
                 },
+                physical_stop: BackendPhysicalStop::CampaignMarker,
+                applied_preemptions: Vec::new(),
             });
         }
         if let Some(pending) = self.pending_selectable_requests.get(node) {
@@ -2076,7 +2084,8 @@ impl SimulationBackend for QemuNodeSet {
                         // The plugin retains the exact request while native
                         // VMStop prevents more guest execution. Return to the
                         // modeled driver so it can select and enqueue a reply.
-                        observation.reached = ceiling;
+                        observation.reached = VirtualTime { ticks: at.retired };
+                        observation.physical_stop = BackendPhysicalStop::GuestSelectable;
                         return Ok(observation);
                     }
                     PendingSelectableRetention::NewlyRetained { boundary_tick_ps } => {
@@ -2098,7 +2107,8 @@ impl SimulationBackend for QemuNodeSet {
                     PendingSelectableRetention::Absent => {}
                 }
                 if self.retain_campaign_marker_if_paused(node, at)? {
-                    observation.reached = ceiling;
+                    observation.reached = VirtualTime { ticks: at.retired };
+                    observation.physical_stop = BackendPhysicalStop::CampaignMarker;
                     return Ok(observation);
                 }
             }
@@ -2110,6 +2120,7 @@ impl SimulationBackend for QemuNodeSet {
                 && deadline.retired > ceiling.ticks
             {
                 observation.reached = ceiling;
+                observation.physical_stop = BackendPhysicalStop::Idle;
                 return Ok(observation);
             }
             if matches!(observation.outcome, crucible::AdvanceOutcome::Paused { .. }) {
@@ -2438,7 +2449,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_selectable_projects_a_quiescent_scheduler_catch_up_step() {
+    fn retained_selectable_preserves_physical_pause_before_later_scheduler_ceiling() {
         let node = NodeId {
             name: String::from("choice-node"),
         };
@@ -2457,7 +2468,9 @@ mod tests {
         let ceiling = VirtualTime { ticks: 2_250 };
         let stepped = parked_selectable_step(&node, retained, ceiling).expect("parked step");
         assert_eq!(stepped.requested_ceiling, ceiling);
-        assert_eq!(stepped.reached, ceiling);
+        assert_eq!(stepped.reached, VirtualTime { ticks: 2_100 });
+        assert_eq!(stepped.physical_stop, BackendPhysicalStop::GuestSelectable);
+        assert!(stepped.applied_preemptions.is_empty());
         assert_eq!(
             stepped.outcome,
             crucible::AdvanceOutcome::Paused {
