@@ -1765,7 +1765,13 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       darwinSdk = self.darwin-sdk;
       darwin-runtimes =
         if stdenv.hostPlatform.isDarwin
-        then withDefaultMaintainers stdenv.darwinRuntimes
+        then
+          withDistributionMeta {
+            description = "LLVM runtime libraries for Darwin";
+            homepage = "https://llvm.org/";
+            license = "Apache-2.0 WITH LLVM-exception";
+          }
+          stdenv.darwinRuntimes
         else null;
       darwinRuntimes = self.darwin-runtimes;
       java-native-foundation =
@@ -1832,6 +1838,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       cc =
         (withDistributionMeta {
             description = "AOS C and C++ compiler wrapper toolchain";
+            homepage = null;
             license = "GPL-3.0-or-later WITH GCC-exception-3.1";
           }
           (
@@ -1847,6 +1854,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       gccUnwrapped =
         (withDistributionMeta {
             description = "Unwrapped GNU Compiler Collection for the AOS target toolchain";
+            homepage = "https://gcc.gnu.org/";
             license = "GPL-3.0-or-later WITH GCC-exception-3.1";
           }
           (
@@ -1865,11 +1873,17 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
             else "16.2.0";
         };
       gcc-libs =
-        if stdenv.hostPlatform.isDarwin
-        then withDefaultMaintainers darwinGcc
-        else if stdenv.isCross && stdenv.hostPlatform.isLinux
-        then withDefaultMaintainers linuxTargetGccLibs
-        else discoveredPackages.gcc-libs;
+        withDistributionMeta {
+          description = "GCC runtime libraries";
+          homepage = "https://gcc.gnu.org/";
+          license = "GPL-3.0-or-later WITH GCC-exception-3.1";
+        } (
+          if stdenv.hostPlatform.isDarwin
+          then darwinGcc
+          else if stdenv.isCross && stdenv.hostPlatform.isLinux
+          then linuxTargetGccLibs
+          else discoveredPackages.gcc-libs
+        );
       getent =
         (withDistributionMeta {
             description = "Name service database lookup utility from GNU C Library";
