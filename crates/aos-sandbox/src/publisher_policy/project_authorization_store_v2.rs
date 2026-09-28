@@ -681,7 +681,7 @@ impl PublisherPolicyStore<'_> {
         acceptance: &crate::hierarchy::genesis_profile::ControllerSourceGenesisAcceptanceRecordV1,
     ) -> Result<(), crate::hierarchy::genesis_profile::SourceGenesisErrorV1> {
         use super::project_authorization_source_v2::verify_signed_project_authorization_claims_v2;
-        use crate::hierarchy::genesis_profile::{SourceGenesisErrorV1, hash};
+        use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
         use crate::hierarchy::source_seed::{
             ControllerSourceTreeSeedExpectedV1,
             verify_controller_source_tree_seed_from_fixed_issuer_v1,
@@ -718,11 +718,8 @@ impl PublisherPolicyStore<'_> {
             .map_err(|_| SourceGenesisErrorV1::Stale)?;
         let authorization_pin = PinnedSystemdCredential::load_project_authorization_issuer_v2()
             .map_err(|_| SourceGenesisErrorV1::Stale)?;
-        let roles = [seed_pin.bytes(), authorization_pin.bytes()].concat();
-        if hash(
-            b"aos.sandbox.source-genesis.administrative-roles.v1\0",
-            &roles,
-        ) != acceptance.administrative_roles()
+        if administrative_roles_digest_v1(seed_pin.bytes(), authorization_pin.bytes())
+            != acceptance.administrative_roles()
         {
             return Err(SourceGenesisErrorV1::Stale);
         }
@@ -920,7 +917,6 @@ fn head_for_row(row: &RetainedProjectAuthorizationRowV2) -> RetainedProjectAutho
     }
 }
 
-#[cfg(any(target_os = "linux", test))]
 fn administrative_roles_digest_v1(
     seed_credential: &[u8],
     authorization_credential: &[u8],
@@ -1030,6 +1026,35 @@ mod tests {
         TestDirectory, packet as signed_packet, pin as issuer_pin, policy as policy_at,
     };
     use crate::publisher_policy::{PreparedPublisherPolicyRevisionV1, PublisherPolicyLimits};
+
+    #[test]
+    fn administrative_roles_digest_preserves_old_preimage_and_role_order() {
+        let seed_signer = SigningKey::from_bytes(&[19; 32]);
+        let authorization_signer = SigningKey::from_bytes(&[20; 32]);
+        let seed =
+            encode_controller_source_tree_seed_credential_v1(11, &seed_signer.verifying_key())
+                .unwrap();
+        let authorization = encode_project_authorization_issuer_credential_v2(
+            7,
+            &authorization_signer.verifying_key(),
+        )
+        .unwrap();
+
+        let old_preimage = [seed.as_slice(), authorization.as_slice()].concat();
+        let digest = administrative_roles_digest_v1(&seed, &authorization);
+
+        assert_eq!(
+            digest,
+            hash(
+                b"aos.sandbox.source-genesis.administrative-roles.v1\0",
+                &old_preimage
+            ),
+        );
+        assert_ne!(
+            digest,
+            administrative_roles_digest_v1(&authorization, &seed)
+        );
+    }
 
     fn policy(project: ProjectId, generation: u64) -> PreparedPublisherPolicyRevisionV1 {
         policy_at(project, generation, 100)
