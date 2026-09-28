@@ -14,7 +14,6 @@
   cargoSourceNix = builtins.readFile ../../pkgs/tools/crucible/_cargo-source.nix;
   defaultChecks = builtins.readFile ./default.nix;
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
   doorbellAbi = builtins.readFile ../../crates/crucible-protocol/src/doorbell_abi.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -35,11 +34,7 @@
   crucibleVersion = sourceStringConst "Crucible package version" "  version = \"" cruciblePackageNix;
   pluginCargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
   shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
-  guestHostProtocolVersion =
-    sourceConst
-    "guest-host protocol version"
-    "pub const CONTROL_PROTOCOL_VERSION: u32 = "
-    protocolLib;
+  guestHostProtocolVersion = import ../../pkgs/tools/crucible/_control-protocol-version.nix {};
   doorbellInstructionAbiVersion =
     sourceConst
     "doorbell instruction ABI version"
@@ -349,7 +344,7 @@
       }
       {
         label = "manifest records guest-host ABI source";
-        needle = "pub const CONTROL_PROTOCOL_VERSION: u32 = ";
+        needle = "guestHostProtocolVersion = import ./_control-protocol-version.nix {};";
       }
       {
         label = "manifest records doorbell instruction ABI source";

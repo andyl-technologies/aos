@@ -100,7 +100,6 @@
     (package: builtins.unsafeDiscardStringContext (toString package))
     ([debugGateway] ++ forbiddenControllerRuntimePackages);
   shmemLib = builtins.readFile ../../../crates/crucible-shmem/src/lib.rs;
-  protocolLib = builtins.readFile ../../../crates/crucible-protocol/src/lib.rs;
   doorbellAbi = builtins.readFile ../../../crates/crucible-protocol/src/doorbell_abi.rs;
   apiRpcAbi = builtins.readFile ../../../crates/crucible-api/src/rpc_abi.rs;
   firstLineWith = label: prefix: content: let
@@ -116,7 +115,7 @@
     lib.removeSuffix "\";"
     (lib.removePrefix prefix (firstLineWith label prefix content));
   shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
-  guestHostProtocolVersion = sourceConst "guest-host protocol version" "pub const CONTROL_PROTOCOL_VERSION: u32 = " protocolLib;
+  guestHostProtocolVersion = import ./_control-protocol-version.nix {};
   doorbellInstructionAbiVersion = sourceConst "doorbell instruction ABI version" "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = " doorbellAbi;
   rpcProtocolMajor = sourceConst "RPC ABI major version" "pub const RPC_PROTOCOL_MAJOR: u16 = " apiRpcAbi;
   rpcProtocolMinor = sourceConst "RPC ABI minor version" "pub const RPC_PROTOCOL_MINOR: u16 = " apiRpcAbi;

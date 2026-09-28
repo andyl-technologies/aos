@@ -14,7 +14,6 @@
   packages = import ./_packages.nix;
   crateRoot = ../../../crates;
   shmemLib = builtins.readFile (crateRoot + "/crucible-shmem/src/lib.rs");
-  protocolLib = builtins.readFile (crateRoot + "/crucible-protocol/src/lib.rs");
   doorbellAbi = builtins.readFile (crateRoot + "/crucible-protocol/src/doorbell_abi.rs");
   apiRpcAbi = builtins.readFile (crateRoot + "/crucible-api/src/rpc_abi.rs");
   firstLineWith = label: prefix: content: let
@@ -54,11 +53,7 @@
     else toString package;
   atomicPatch = qemuPassthru.atomicPatch;
   shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
-  guestHostProtocolVersion =
-    sourceConst
-    "guest-host protocol version"
-    "pub const CONTROL_PROTOCOL_VERSION: u32 = "
-    protocolLib;
+  guestHostProtocolVersion = import ./_control-protocol-version.nix {};
   doorbellInstructionAbiVersion =
     sourceConst
     "doorbell instruction ABI version"
