@@ -29,6 +29,7 @@ pub(crate) struct AuthorizedPublicMutationRequestV1 {
     authorization: crate::cli_model::PublicMutationAuthorizationV1,
     caller: PrincipalId,
     project: ProjectId,
+    fuse_authority: Option<crate::controller_fuse_admission::AdmissionAuthorityV1>,
 }
 
 impl AuthorizedPublicMutationRequestV1 {
@@ -82,11 +83,29 @@ impl AuthorizedPublicMutationRequestV1 {
         )
         .map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?;
 
+        let fuse_authority = if matches!(
+            request.request(),
+            DormantSandboxRequestKindV1::ViewAttach(_)
+                | DormantSandboxRequestKindV1::ViewReplace(_)
+        ) {
+            Some(
+                crate::controller_fuse_admission::AdmissionAuthorityV1::capture(
+                    journal,
+                    peer,
+                    capability_id,
+                    authorization,
+                )?,
+            )
+        } else {
+            None
+        };
+
         Ok(Self {
             request,
             authorization,
             caller: peer.principal(),
             project: peer.project(),
+            fuse_authority,
         })
     }
 
@@ -123,6 +142,7 @@ impl AuthorizedPublicMutationRequestV1 {
             ),
             caller: PrincipalId::from_bytes([1; 16]),
             project: ProjectId::from_bytes([2; 16]),
+            fuse_authority: None,
         }
     }
 
@@ -154,6 +174,12 @@ impl AuthorizedPublicMutationRequestV1 {
     #[must_use]
     pub(crate) const fn project(&self) -> ProjectId {
         self.project
+    }
+
+    pub(crate) const fn fuse_authority(
+        &self,
+    ) -> Option<&crate::controller_fuse_admission::AdmissionAuthorityV1> {
+        self.fuse_authority.as_ref()
     }
 }
 

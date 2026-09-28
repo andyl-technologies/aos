@@ -56,6 +56,8 @@ pub struct PublicMutationEffectV1 {
     project: ProjectId,
     accepted_wall_seconds: i64,
     canonical_request: Vec<u8>,
+    #[cfg(target_os = "linux")]
+    fuse_admission: Option<crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1>,
 }
 
 impl PublicMutationEffectV1 {
@@ -90,6 +92,8 @@ impl PublicMutationEffectV1 {
             project,
             accepted_wall_seconds,
             canonical_request,
+            #[cfg(target_os = "linux")]
+            fuse_admission: None,
         })
     }
 
@@ -138,6 +142,14 @@ impl PublicMutationEffectV1 {
     }
 
     fn encode(&self) -> Result<Vec<u8>, ReconcilerError> {
+        #[cfg(target_os = "linux")]
+        if let Some(carrier) = &self.fuse_admission {
+            return Ok(carrier.canonical_bytes().to_vec());
+        }
+        self.encode_plain()
+    }
+
+    pub(crate) fn encode_plain(&self) -> Result<Vec<u8>, ReconcilerError> {
         let request_length = u32::try_from(self.canonical_request.len()).map_err(|_| {
             ReconcilerError::InvalidPlan("public mutation effect request exceeds its bound")
         })?;
@@ -166,6 +178,42 @@ impl PublicMutationEffectV1 {
     }
 
     fn decode(bytes: &[u8]) -> Result<Option<Self>, ReconcilerError> {
+        #[cfg(target_os = "linux")]
+        if let Some(carrier) =
+            crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1::decode(bytes)
+                .map_err(|_| ReconcilerError::InvalidPlan("invalid FUSE admission carrier"))?
+        {
+            let mut context = Self::decode_plain(carrier.ordinary_effect())?.ok_or(
+                ReconcilerError::InvalidPlan("missing FUSE admission context"),
+            )?;
+            context.fuse_admission = Some(carrier);
+            return Ok(Some(context));
+        }
+        Self::decode_plain(bytes)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_fuse_admission(
+        mut self,
+        carrier: crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1,
+    ) -> Result<Self, ReconcilerError> {
+        if self.encode_plain()? != carrier.ordinary_effect() {
+            return Err(ReconcilerError::InvalidPlan(
+                "FUSE admission context mismatch",
+            ));
+        }
+        self.fuse_admission = Some(carrier);
+        Ok(self)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn fuse_admission(
+        &self,
+    ) -> Option<&crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1> {
+        self.fuse_admission.as_ref()
+    }
+
+    pub(crate) fn decode_plain(bytes: &[u8]) -> Result<Option<Self>, ReconcilerError> {
         if !bytes.starts_with(PUBLIC_MUTATION_EFFECT_MAGIC) {
             return Ok(None);
         }
