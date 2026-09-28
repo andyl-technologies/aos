@@ -66,6 +66,7 @@
   };
   configuredDirectoryPaths = map (directory: directory.path) container.filesystem.directories;
   configuredFilePaths = map (file: file.path) container.filesystem.files;
+  needsStoreInit = container.packageManagement.enable || container.packageManagement.bakedGcRoots;
   standardDirectories =
     builtins.filter
     (directory: !builtins.elem directory.path configuredDirectoryPaths)
@@ -255,13 +256,15 @@
       expectedCollisions = container.filesystem.allowedFacadeCollisions;
       pname = "aos-container-${container.name}-golden-facade${suffixPart}";
     };
-    standardFiles = [
-      {
-        path = "/etc/group";
-        mode = "0644";
-        text = "root:x:0:\n";
-      }
-      {
+    standardFiles =
+      [
+        {
+          path = "/etc/group";
+          mode = "0644";
+          text = "root:x:0:\n";
+        }
+      ]
+      ++ lib.optional needsStoreInit {
         path = "/etc/nix/nix.conf";
         mode = "0644";
         text = ''
@@ -271,47 +274,52 @@
           substituters =
         '';
       }
-      {
-        path = "/etc/os-release";
-        mode = "0644";
-        text = osRelease;
-      }
-      {
-        path = "/etc/passwd";
-        mode = "0644";
-        text = "root:x:0:0:root:/root:/usr/bin/sh\n";
-      }
-      {
-        path = "/etc/shadow";
-        mode = "0600";
-        text = "root:!:1::::::\n";
-      }
-      {
-        path = "/aos-registration";
-        mode = "0444";
-        source = "${referenceGraph}/registration";
-      }
-      {
-        path = "/nix/var/nix/.aos-container-init.lock";
-        mode = "0600";
-        text = "";
-      }
-      {
-        path = "/usr/lib/aos-container/baked-roots";
-        mode = "0444";
-        source = "${bakedRootInventory}/baked-roots";
-      }
-      {
-        path = "/usr/lib/aos-container/store-paths";
-        mode = "0444";
-        source = "${referenceGraph}/store-paths";
-      }
-      {
-        path = "/usr/bin/aos-container-init";
-        mode = "0555";
-        source = "${initSource}/init";
-      }
-    ];
+      ++ [
+        {
+          path = "/etc/os-release";
+          mode = "0644";
+          text = osRelease;
+        }
+        {
+          path = "/etc/passwd";
+          mode = "0644";
+          text = "root:x:0:0:root:/root:/usr/bin/sh\n";
+        }
+        {
+          path = "/etc/shadow";
+          mode = "0600";
+          text = "root:!:1::::::\n";
+        }
+      ]
+      # Service images exec their workload directly and do not carry the Nix
+      # initialization script or references to its unrelated runtime tools.
+      ++ lib.optionals needsStoreInit [
+        {
+          path = "/aos-registration";
+          mode = "0444";
+          source = "${referenceGraph}/registration";
+        }
+        {
+          path = "/nix/var/nix/.aos-container-init.lock";
+          mode = "0600";
+          text = "";
+        }
+        {
+          path = "/usr/lib/aos-container/baked-roots";
+          mode = "0444";
+          source = "${bakedRootInventory}/baked-roots";
+        }
+        {
+          path = "/usr/lib/aos-container/store-paths";
+          mode = "0444";
+          source = "${referenceGraph}/store-paths";
+        }
+        {
+          path = "/usr/bin/aos-container-init";
+          mode = "0555";
+          source = "${initSource}/init";
+        }
+      ];
     reservedFilePaths = map (file: file.path) standardFiles;
     filePathCollisions = builtins.filter (path: builtins.elem path reservedFilePaths) configuredFilePaths;
     metadataFiles =

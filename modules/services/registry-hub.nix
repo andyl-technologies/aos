@@ -32,6 +32,10 @@
       handle = "jwt-secret";
       environment = "HUB_JWT_SECRET_FILE";
     };
+    instanceSecretKey = {
+      handle = "instance-secret-key";
+      environment = "AOS_HUB_SECRET_KEY_FILE";
+    };
     deliveryAttestationKey = {
       handle = "delivery-attestation-key";
       environment = "HUB_DELIVERY_ATTESTATION_KEY_FILE";
@@ -244,9 +248,11 @@ in {
             && cfg.credentials.databaseUrl != null
             && cfg.credentials.hybridIngressKey != null
             && cfg.credentials.storageWorkKey != null
+            && cfg.credentials.jwtSecret != null
+            && cfg.credentials.instanceSecretKey != null
             && cfg.externalUrl != null
             && lib.hasPrefix "https://" cfg.externalUrl);
-        message = "hybrid Hub requires deploymentId, HTTPS externalUrl, workerUrl and originUrl, plus databaseUrl, hybridIngressKey, and storageWorkKey credentials";
+        message = "hybrid Hub requires deploymentId, HTTPS externalUrl, workerUrl and originUrl, plus databaseUrl, hybridIngressKey, storageWorkKey, jwtSecret, and instanceSecretKey credentials";
       }
       {
         assertion = cfg.credentials.domainProbeSignerManifest != null;

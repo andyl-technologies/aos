@@ -28,6 +28,10 @@ for the routing and storage contracts.
    Native's `storageWorkKey` credential and the Worker's
    `HUB_STORAGE_WORK_KEY` secret. Keep these keys distinct from release,
    session, route-reservation, and database credentials.
+   Provision stable JWT and instance sealing keys through `jwtSecret` and
+   `instanceSecretKey`. Every Native replica must use the same versions.
+   Hybrid startup rejects an absent JWT or sealing-key file; it cannot generate
+   these keys in an ephemeral local root.
 5. Give the Native origin a private hostname and a certificate valid for that
    hostname. Configure the Worker to reach it over HTTPS. Restrict direct
    origin traffic at the network layer to Cloudflare and trusted probes;
@@ -50,6 +54,43 @@ Initialize the empty database with `aos-hub init` using the same
 once before opening traffic. The Native service retries startup while its
 paired Worker is unavailable; it must become healthy without a manual restart
 after the Worker starts. Keep public routing closed during this step.
+
+## Native container artifact
+
+The dedicated service image is exposed as `container-aos-hub-oci` and
+`container-aos-hub-docker` in the flake. `container-aos-hub-index` coordinates
+the amd64 and arm64 images; use the platform artifact supported by the selected
+GCP runtime. Build the image and Worker from the same reviewed source commit.
+The image execs `/usr/bin/aos-hub serve` directly and has no initialized database,
+credentials, or package-manager initialization step.
+
+The image defaults to `HUB_TOPOLOGY=hybrid`, `HUB_ROOT=/tmp/aos-hub`, and
+`HUB_LISTEN=0.0.0.0:8080`. Supply `HUB_EXTERNAL_URL`, the paired origins and
+deployment identity, PostgreSQL, release authority, and the credential-file
+variables documented by `aos-hub serve --help`. Configure the platform's
+listener port to match `HUB_LISTEN`. Platform TLS termination may front the
+HTTP listener; signed hybrid ingress still authenticates each request.
+
+Set `HUB_DNS_JSON_ENDPOINT` to an HTTPS DNS-over-JSON resolver (the systemd
+module defaults to `https://dns.google/resolve`). Route-reservation and
+domain-probe credential manifests are required before serving, even when the
+new instance has no custom domains.
+
+Mount credentials as read-only regular files with private permissions, owned
+by root or the workload user, beneath a directory that is not writable by
+other users. Set `HUB_JWT_SECRET_FILE` and `AOS_HUB_SECRET_KEY_FILE` to stable
+external keys, along with the two paired HMAC key-file variables. The temporary
+root is disposable in hybrid because PostgreSQL and the Worker own state; the
+sealing key must not live there. Run `init` as a separate operator operation
+against the same PostgreSQL URL before admitting requests. Native-only
+containers explicitly set `HUB_TOPOLOGY=native` and mount a persistent
+owner-private `HUB_ROOT` for SQLite and local object storage.
+
+The GCP application registration must bind the service artifact, listener,
+private credential files, and Cloud SQL connection. These platform resources
+are owned by the companion infrastructure configuration; the AOS image does
+not provision them. Run `nix-build -A checks.fleet.hub-native-container` to
+qualify the image in AOS-built containerd/runc before deploying it.
 
 ## Render and deploy the Worker
 

@@ -203,6 +203,12 @@ in {
 
   config = lib.mkIf cfg.enable {
     aos.containers.definitions.aos = defaultAosDefinition;
+    aos.containers.definitions.aos-hub =
+      (import ../../containers/aos-hub.nix {
+        inherit pkgs;
+        aosSystem = pkgs.stdenv.hostPlatform.system;
+      })
+      .config;
 
     assertions =
       [

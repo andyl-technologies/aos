@@ -77,6 +77,9 @@
   storageKey = writeFixture
     "hub-hybrid-fleet-storage-key"
     "hybrid-fleet-storage-key-with-at-least-thirty-two-bytes";
+  instanceSecretKey = writeFixture
+    "hub-hybrid-fleet-instance-secret-key"
+    "1111111111111111111111111111111111111111111111111111111111111111";
   releaseReceiptKey = writeFixture
     "hub-hybrid-fleet-release-receipt-key"
     "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
@@ -117,6 +120,7 @@
             databaseUrl = "hybrid-fleet-database-url";
             hybridIngressKey = "hybrid-fleet-ingress-key";
             storageWorkKey = "hybrid-fleet-storage-key";
+            instanceSecretKey = "hybrid-fleet-instance-secret-key";
             releaseReceiptKey = "hybrid-fleet-release-receipt-key";
             channelReceiptKey = "hybrid-fleet-channel-receipt-key";
             releasePublicationKeys = "hybrid-fleet-release-publication-keys";
@@ -140,6 +144,7 @@
           C /run/credentials/@system/hybrid-fleet-database-url 0600 root root - ${databaseUrl}/value
           C /run/credentials/@system/hybrid-fleet-ingress-key 0600 root root - ${ingressKey}/value
           C /run/credentials/@system/hybrid-fleet-storage-key 0600 root root - ${storageKey}/value
+          C /run/credentials/@system/hybrid-fleet-instance-secret-key 0600 root root - ${instanceSecretKey}/value
           C /run/credentials/@system/hybrid-fleet-release-receipt-key 0600 root root - ${releaseReceiptKey}/value
           C /run/credentials/@system/hybrid-fleet-channel-receipt-key 0600 root root - ${channelReceiptKey}/value
           C /run/credentials/@system/hybrid-fleet-release-publication-keys 0600 root root - ${releasePublicationKeys}/value
@@ -227,6 +232,7 @@
       databaseUrl
       ingressKey
       storageKey
+      instanceSecretKey
       releaseReceiptKey
       channelReceiptKey
       releasePublicationKeys

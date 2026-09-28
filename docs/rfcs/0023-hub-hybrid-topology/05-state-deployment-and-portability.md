@@ -19,6 +19,12 @@ Worker storage-work endpoint, database identity, object-store bindings, and
 protocol compatibility as one reviewed configuration. Worker-to-Native calls
 and Native-to-Worker storage work have separate credentials and audiences.
 
+The Native service artifact execs the Hub directly with deployment-supplied
+configuration and private credential files. JWT and instance sealing keys are
+stable external credentials shared by every Native replica. Hybrid startup
+must reject an absent key rather than generate one under an ephemeral root:
+sealed SQL secrets and authenticated sessions must survive a revision change.
+
 The existing [`Backend`](../../../crates/aos-hub-core/src/backend/mod.rs)
 and [`Database::connect`](../../../crates/aos-hub-core/src/db/mod.rs) already
 support PostgreSQL behind a feature. The Native `serve`, `index`, `init`, and

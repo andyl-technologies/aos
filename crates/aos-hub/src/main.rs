@@ -31,7 +31,7 @@ use aos_hub::server::{router, AppState};
 #[command(name = "aos-hub", version, about = "AOS registry hub server")]
 struct Cli {
     /// Hub state directory; holds hub.db when using local SQLite.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, env = "HUB_ROOT")]
     root: Option<PathBuf>,
 
     /// Native database URL; defaults to the SQLite file under --root.
@@ -55,7 +55,7 @@ enum Command {
     /// Run the hub server.
     Serve {
         /// Listen address.
-        #[arg(long, default_value = "127.0.0.1:8420")]
+        #[arg(long, env = "HUB_LISTEN", default_value = "127.0.0.1:8420")]
         listen: String,
         /// Zero-config development mode: defaults --root to ./.aos-hub.
         #[arg(long)]
@@ -64,7 +64,7 @@ enum Command {
         #[arg(long)]
         seed: bool,
         /// Externally reachable base URL for setup snippets.
-        #[arg(long)]
+        #[arg(long, env = "HUB_EXTERNAL_URL")]
         external_url: Option<String>,
         /// Serving topology: local Native or Worker-fronted hybrid.
         #[arg(long, env = "HUB_TOPOLOGY", default_value = "native", value_parser = ["native", "hybrid"])]
@@ -687,6 +687,15 @@ async fn main() -> Result<()> {
                 anyhow::ensure!(
                     !dev && !seed,
                     "hybrid serving does not use local demo state"
+                );
+                anyhow::ensure!(
+                    jwt_secret_file.is_some(),
+                    "hybrid serving requires a stable HUB_JWT_SECRET_FILE"
+                );
+                anyhow::ensure!(
+                    std::env::var_os("AOS_HUB_SECRET_KEY_FILE")
+                        .is_some_and(|path| !path.is_empty()),
+                    "hybrid serving requires a stable AOS_HUB_SECRET_KEY_FILE"
                 );
                 let deployment_id = deployment_id
                     .as_ref()
