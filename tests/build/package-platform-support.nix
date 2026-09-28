@@ -289,6 +289,7 @@ in
     nestedSourceRoot
   ];
   assert releaseSourcesComplete;
+  assert builtins.length (releasePackageByName "aos-sandbox-view-preparer-tools").source_store_paths == 4;
   assert configuredPackage.configuration.module_artifact
   == "package/k3s-worker/${pkgs.stdenv.hostPlatform.system}/config";
   assert configuredPackage.configuration.evaluation_base_artifact

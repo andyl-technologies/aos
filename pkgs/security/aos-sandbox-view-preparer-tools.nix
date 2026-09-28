@@ -36,6 +36,15 @@ mkDerivation {
   passthru = {
     interpreter = "libexec/bash";
     tools = ["stat" "mkdir" "chown" "findmnt" "mount" "umount"];
+    evidenceSources = [
+      (builtins.path {
+        path = ./aos-sandbox-view-preparer-tools.nix;
+        name = "aos-sandbox-view-preparer-tools.nix";
+      })
+      bash.src
+      coreutils.src
+      util-linux.src
+    ];
   };
 
   meta = {
