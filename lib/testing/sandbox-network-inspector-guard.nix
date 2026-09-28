@@ -24,6 +24,9 @@
   withoutRingFilter = inspectorSystem {
     systemd.services.${inspectorServiceName}.serviceConfig.SystemCallFilter = lib.mkForce [];
   };
+  withoutImmutableStoreView = inspectorSystem {
+    systemd.services.${inspectorServiceName}.serviceConfig.BindReadOnlyPaths = lib.mkForce [];
+  };
   withOtherBrokerPackage = inspectorSystem {
     aos.sandbox.networkBroker.package = pkgs.coreutils;
   };
@@ -141,6 +144,8 @@
     (name: holds withCredentials "credentials.${name} is required" true)
     (builtins.attrNames withCredentials.config.aos.sandbox.networkInspector.credentials)
     && holds source "inherited AOS no-set-ID guard" true
+    && holds source "must execute against the exact immutable lower-store view" true
+    && holds withoutImmutableStoreView "must execute against the exact immutable lower-store view" false
     && holds source "reject io_uring creation" true
     && holds withoutSetId "inherited AOS no-set-ID guard" false
     && holds withoutRingFilter "reject io_uring creation" false

@@ -49,6 +49,24 @@ impl SealedReadOnlyCredential {
         bytes: &[u8],
         maximum_bytes: usize,
     ) -> Result<Self, ImmutableFileError> {
+        Self::create_labelled(name, bytes, maximum_bytes, None)
+    }
+
+    pub(crate) fn create_fuse_worker_plan(bytes: &[u8]) -> Result<Self, ImmutableFileError> {
+        Self::create_labelled(
+            "aos-fuse-worker-plan-v1",
+            bytes,
+            4096,
+            Some("system_u:object_r:aos_filesystem_fuse_worker_plan_t"),
+        )
+    }
+
+    fn create_labelled(
+        name: &str,
+        bytes: &[u8],
+        maximum_bytes: usize,
+        context: Option<&str>,
+    ) -> Result<Self, ImmutableFileError> {
         if bytes.is_empty() || bytes.len() > maximum_bytes {
             return Err(ImmutableFileError::MappingLimitExceeded);
         }
@@ -59,6 +77,18 @@ impl SealedReadOnlyCredential {
         writer
             .write_all(bytes)
             .map_err(|error| std_io("write sealed credential", error))?;
+        if let Some(context) = context {
+            // Labels are installed before sealing, then verified on the exact
+            // object. Unsupported memfd labeling refuses the worker profile.
+            rustix::fs::fsetxattr(
+                &writer,
+                "security.selinux",
+                context.as_bytes(),
+                rustix::fs::XattrFlags::empty(),
+            )
+            .map_err(|error| linux("label fixed worker plan", error))?;
+            crate::fuse_worker_objects::require_object_context(writer.as_fd(), context)?;
+        }
         fcntl_add_seals(&writer, REQUIRED_SEALS)
             .map_err(|error| linux("fcntl(F_ADD_SEALS)", error))?;
 

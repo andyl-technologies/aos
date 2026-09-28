@@ -10,6 +10,7 @@
   setools,
   python3,
   aos-netd,
+  aos-filesystem-fuse-worker,
 }: let
   policyVersion = "33";
   policySupport = ./_aos-selinux-production-policy;
@@ -40,16 +41,33 @@
     && builtins.match inspectorPathRegex (inspectorPath siblingBasename) == null
     && siblingVersionBasename != netdBasename
     && builtins.match inspectorPathRegex (inspectorPath siblingVersionBasename) == null;
+  workerBasename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString aos-filesystem-fuse-worker));
+  workerBasenameRegex = builtins.replaceStrings ["."] ["\\."] workerBasename;
+  workerPathRegex = "/(nix|nix\\.lower)/store/${workerBasenameRegex}/bin/aos-filesystem-fuse-worker";
+  workerPath = basename: "/nix/store/${basename}/bin/aos-filesystem-fuse-worker";
+  workerSibling =
+    (
+      if builtins.substring 0 1 workerBasename == "0"
+      then "1"
+      else "0"
+    )
+    + builtins.substring 1 (builtins.stringLength workerBasename - 1) workerBasename;
+  exactWorkerLabel =
+    builtins.match "[a-z0-9]{32}-aos-filesystem-fuse-worker-[0-9]+\\.[0-9]+\\.[0-9]+" workerBasename
+    != null
+    && builtins.match workerPathRegex (workerPath workerBasename) != null
+    && builtins.match workerPathRegex (workerPath workerSibling) == null
+    && builtins.match workerPathRegex (workerPath (workerBasename + "-alias")) == null;
   fileContexts =
-    if exactNetdLabel
+    if exactNetdLabel && exactWorkerLabel
     then
       builtins.toFile "aos_sandbox.fc" (
         builtins.replaceStrings
-        ["@AOS_NETD_BASENAME_REGEX@"]
-        [netdBasenameRegex]
+        ["@AOS_NETD_BASENAME_REGEX@" "@AOS_FUSE_WORKER_BASENAME_REGEX@"]
+        [netdBasenameRegex workerBasenameRegex]
         (builtins.readFile (policySupport + "/aos_sandbox.fc"))
       )
-    else throw "aos-netd SELinux label must match only the evaluated package root";
+    else throw "fixed service SELinux labels must match only their evaluated package roots";
 in
   mkDerivation {
     pname = "aos-selinux-production-policy";

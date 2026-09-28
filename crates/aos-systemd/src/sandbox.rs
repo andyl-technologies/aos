@@ -23,6 +23,8 @@ use crate::manager_proxy::{AuxiliaryUnit, ServiceProxy, TransientProperty, UnitP
 
 mod discovery;
 mod exact_unit;
+#[cfg(target_os = "linux")]
+mod fuse_worker;
 mod guardian;
 mod payload_root_continuity;
 pub use discovery::{
@@ -33,6 +35,11 @@ pub use discovery::{
 pub use exact_unit::{
     ExactStartError, ExactStopError, ExactStopOutcome, ExactUnitClient, ExactUnitObservation,
     ExactUnitRole, ExactUnitState, ExactUnitTarget, PostUnrefUnitObservation,
+};
+#[cfg(target_os = "linux")]
+pub use fuse_worker::{
+    FuseWorkerDescriptorRoleV1, FuseWorkerUnitNameV1, FuseWorkerUnitObservationV1,
+    FuseWorkerUnitSpecV1,
 };
 pub use guardian::{
     GuardianCredentialDescriptors, GuardianCredentialRole, GuardianExecutableDescriptor,

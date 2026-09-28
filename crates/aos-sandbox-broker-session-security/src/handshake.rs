@@ -1211,6 +1211,18 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    /// Lends the actual writer and retained transport for one pending request.
+    pub(super) fn hold_pending_request<'session>(
+        &'session mut self,
+        request: &'session aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<
+        crate::recovery::ProtectedPendingBrokerRequestCutV1<'session>,
+        BrokerSessionSecurityError,
+    > {
+        self.owner
+            .hold_pending_request(request, &self.transcript, self.socket.peer())
+    }
+
     pub(super) fn require_negotiated_client_method(
         &mut self,
         method: aos_proto::aos::sandbox::local::v1::BrokerMethod,

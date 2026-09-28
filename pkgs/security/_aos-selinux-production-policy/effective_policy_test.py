@@ -29,6 +29,7 @@ class FakePolicy:
 
     def __init__(self) -> None:
         self.permissive: set[str] = set()
+        self.file_types: set[str] = set()
         self.queries: list[dict[str, object]] = []
         self.allows = {
             access: [FakeRule(f"allow {access}")]
@@ -92,14 +93,52 @@ class FakeQuery:
         ]
 
 
+class FakeTypeAttribute:
+    """Exposes fixture file_type members to the effective-policy checker."""
+
+    def __init__(self, policy: FakePolicy) -> None:
+        self.policy = policy
+
+    def expand(self) -> set[str]:
+        return self.policy.file_types
+
+
+class FakeTypeAttributeQuery:
+    """Returns the one required file_type attribute."""
+
+    def __init__(self, policy: FakePolicy, name: str) -> None:
+        self.policy = policy
+        self.name = name
+
+    def results(self) -> list[FakeTypeAttribute]:
+        return [FakeTypeAttribute(self.policy)] if self.name == "file_type" else []
+
+
 FAKE_SETOOLS = SimpleNamespace(
     TERuleQuery=FakeQuery,
     TERuletype=SimpleNamespace(allow="allow", type_transition="type_transition"),
+    TypeAttributeQuery=FakeTypeAttributeQuery,
 )
 
 
 class EffectivePolicyTest(unittest.TestCase):
     """Exercises positive, negative, conditional, and permissive gates."""
+
+    def assert_missing_allow_rejected(self, access: effective_policy.Access) -> None:
+        """Remove one required rule and require the linked-policy check to fail."""
+        policy = FakePolicy()
+        policy.allows[access] = []
+
+        with self.assertRaisesRegex(ValueError, "missing effective allow"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def assert_forbidden_allow_rejected(self, access: effective_policy.Access) -> None:
+        """Add one forbidden rule and require the linked-policy check to fail."""
+        policy = FakePolicy()
+        policy.allows[access] = [FakeRule("unexpected effective allow")]
+
+        with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
 
     def test_complete_matrix_passes(self) -> None:
         evidence = effective_policy.check_policy(FAKE_SETOOLS, FakePolicy())
@@ -110,9 +149,96 @@ class EffectivePolicyTest(unittest.TestCase):
             + len(effective_policy.TRANSITIONS)
             + 1
             + len(effective_policy.FORBIDDEN_PROVISIONER_TRANSITION_SOURCES)
+            + len(effective_policy.GUARDED_OBJECT_TYPES)
             + len(effective_policy.POSITIVE_ACCESS)
             + len(effective_policy.NEGATIVE_ACCESS),
         )
+
+    def test_protected_network_type_cannot_join_file_type(self) -> None:
+        policy = FakePolicy()
+        policy.file_types.add(effective_policy.PROTECTED_DIRECTORIES[0])
+
+        with self.assertRaisesRegex(ValueError, "inherited broad file_type"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_worker_objects_cannot_inherit_generic_file_grants(self) -> None:
+        for object_type in effective_policy.fuse_worker_policy.WORKER_OBJECT_TYPES:
+            with self.subTest(object_type=object_type):
+                policy = FakePolicy()
+                policy.file_types.add(object_type)
+                with self.assertRaisesRegex(ValueError, "inherited broad file_type"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_worker_requires_real_host_sid_read_and_original_object_labels(self) -> None:
+        worker = effective_policy.fuse_worker_policy.WORKER_DOMAIN
+        for access in (
+            effective_policy.Access("aos_sandbox_host_t", worker, "process", "getattr"),
+            effective_policy.Access(worker, "aos_filesystem_fuse_worker_plan_t", "file", "map"),
+            effective_policy.Access(worker, "aos_filesystem_fuse_worker_channel_t", "unix_stream_socket", "write"),
+            effective_policy.Access(worker, "aos_filesystem_fuse_worker_cancel_t", "fifo_file", "read"),
+        ):
+            with self.subTest(access=access):
+                self.assert_missing_allow_rejected(access)
+
+    def test_worker_requires_boot_id_read_without_sysctl_mutation(self) -> None:
+        worker = effective_policy.fuse_worker_policy.WORKER_DOMAIN
+        for access in (
+            effective_policy.Access(worker, "sysctl_t", "dir", "search"),
+            effective_policy.Access(worker, "sysctl_kernel_t", "dir", "search"),
+            effective_policy.Access(worker, "sysctl_kernel_t", "file", "open"),
+            effective_policy.Access(worker, "sysctl_kernel_t", "file", "read"),
+        ):
+            with self.subTest(access=access):
+                self.assert_missing_allow_rejected(access)
+
+        for access in (
+            effective_policy.Access(worker, "sysctl_t", "dir", "write"),
+            effective_policy.Access(worker, "sysctl_kernel_t", "dir", "add_name"),
+            effective_policy.Access(worker, "sysctl_kernel_t", "file", "write"),
+            effective_policy.Access(worker, "sysctl_kernel_t", "file", "setattr"),
+        ):
+            with self.subTest(access=access):
+                self.assert_forbidden_allow_rejected(access)
+
+    def test_worker_cannot_import_owner_authority_or_create_transport(self) -> None:
+        worker = effective_policy.fuse_worker_policy.WORKER_DOMAIN
+        for access in (
+            effective_policy.Access(worker, "init_t", "file", "read"),
+            effective_policy.Access(worker, "init_t", "unix_stream_socket", "read"),
+            effective_policy.Access(worker, "init_t", "unix_stream_socket", "connectto"),
+            effective_policy.Access(worker, worker, "unix_stream_socket", "create"),
+            effective_policy.Access(worker, "fuse_device_t", "chr_file", "open"),
+            effective_policy.Access(worker, "fuse_device_t", "chr_file", "ioctl"),
+            effective_policy.Access(worker, "bin_t", "file", "execute"),
+        ):
+            with self.subTest(access=access):
+                self.assert_forbidden_allow_rejected(access)
+
+    def test_protected_network_type_requires_exact_fs_association(self) -> None:
+        policy = FakePolicy()
+        access = effective_policy.Access(
+            effective_policy.PROTECTED_DIRECTORIES[0],
+            "fs_t",
+            "filesystem",
+            "associate",
+        )
+        policy.allows[access] = []
+
+        with self.assertRaisesRegex(ValueError, "missing effective allow"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_protected_network_type_cannot_associate_unrelated_filesystem(self) -> None:
+        policy = FakePolicy()
+        access = effective_policy.Access(
+            effective_policy.PROTECTED_DIRECTORIES[0],
+            "tmpfs_t",
+            "filesystem",
+            "associate",
+        )
+        policy.allows[access] = [FakeRule("unexpected tmpfs association")]
+
+        with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
 
     def test_missing_transition_fails(self) -> None:
         policy = FakePolicy()
@@ -121,6 +247,160 @@ class EffectivePolicyTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "missing effective transition"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_network_services_require_exact_nnp_guard(self) -> None:
+        for domain in effective_policy.NETWORK_SERVICE_DOMAINS:
+            with self.subTest(domain=domain):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access(
+                        "init_t", domain, "process2", "nnp_transition"
+                    )
+                )
+
+    def test_inspector_requires_pid1_opened_descriptor_use(self) -> None:
+        self.assert_missing_allow_rejected(
+            effective_policy.Access(
+                effective_policy.INSPECTOR_DOMAIN, "init_t", "fd", "use"
+            )
+        )
+
+    def test_inspector_requires_exact_enforcement_read(self) -> None:
+        for access in (
+            effective_policy.Access(
+                effective_policy.INSPECTOR_DOMAIN, "security_t", "dir", "search"
+            ),
+            *effective_policy.accesses(
+                effective_policy.INSPECTOR_DOMAIN,
+                "security_t",
+                "file",
+                ("getattr", "open", "read"),
+            ),
+        ):
+            with self.subTest(access=access):
+                self.assert_missing_allow_rejected(access)
+
+    def test_inspector_enforcement_read_cannot_become_administration(self) -> None:
+        for access in (
+            *effective_policy.accesses(
+                effective_policy.INSPECTOR_DOMAIN,
+                "security_t",
+                "file",
+                effective_policy.RECORD_MUTATIONS,
+            ),
+            *effective_policy.accesses(
+                effective_policy.INSPECTOR_DOMAIN,
+                "security_t",
+                "security",
+                ("load_policy", "read_policy", "setbool", "setenforce", "setsecparam"),
+            ),
+            effective_policy.Access(
+                effective_policy.INSPECTOR_DOMAIN, "security_t", "dir", "read"
+            ),
+        ):
+            with self.subTest(access=access):
+                self.assert_forbidden_allow_rejected(access)
+
+    def test_inspector_requires_inherited_journal_write(self) -> None:
+        self.assert_missing_allow_rejected(
+            effective_policy.Access(
+                effective_policy.INSPECTOR_DOMAIN, "init_t", "unix_stream_socket", "write"
+            )
+        )
+
+    def test_inspector_journal_exception_cannot_admit_connections_or_reads(self) -> None:
+        for access in (
+            *effective_policy.accesses(
+                effective_policy.INSPECTOR_DOMAIN,
+                "init_t",
+                "unix_stream_socket",
+                ("connect", "connectto"),
+            ),
+            effective_policy.Access(
+                effective_policy.INSPECTOR_DOMAIN, "init_t", "unix_stream_socket", "read"
+            ),
+            effective_policy.Access(
+                effective_policy.INSPECTOR_DOMAIN, "tmpfs_t", "sock_file", "write"
+            ),
+        ):
+            with self.subTest(access=access):
+                self.assert_forbidden_allow_rejected(access)
+
+    def test_only_pid1_can_enter_runtime_roots_handoff(self) -> None:
+        for access in (
+            effective_policy.Access(
+                "init_t", effective_policy.HANDOFF_EXECUTABLE, "file", "execute_no_trans"
+            ),
+            effective_policy.Access(
+                effective_policy.INSPECTOR_DOMAIN,
+                effective_policy.HANDOFF_EXECUTABLE,
+                "file",
+                "execute",
+            ),
+            effective_policy.Access(
+                effective_policy.INSPECTOR_DOMAIN,
+                effective_policy.HANDOFF_DOMAIN,
+                "process",
+                "transition",
+            ),
+        ):
+            with self.subTest(access=access):
+                self.assert_forbidden_allow_rejected(access)
+
+    def test_other_network_service_cannot_use_pid1_descriptors(self) -> None:
+        self.assert_forbidden_allow_rejected(
+            effective_policy.Access(
+                effective_policy.NETWORK_SERVICE_DOMAINS[0], "init_t", "fd", "use"
+            )
+        )
+
+    def test_network_service_cannot_gain_nosuid_transition(self) -> None:
+        self.assert_forbidden_allow_rejected(
+            effective_policy.Access(
+                "init_t",
+                effective_policy.NETWORK_SERVICE_DOMAINS[0],
+                "process2",
+                "nosuid_transition",
+            )
+        )
+
+    def test_inspector_requires_own_elf_mapping(self) -> None:
+        for permission in ("execute", "map", "read"):
+            with self.subTest(permission=permission):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access(
+                        effective_policy.INSPECTOR_DOMAIN,
+                        effective_policy.INSPECTOR_EXECUTABLE,
+                        "file",
+                        permission,
+                    )
+                )
+
+    def test_other_role_cannot_execute_inspector_elf(self) -> None:
+        self.assert_forbidden_allow_rejected(
+            effective_policy.Access(
+                effective_policy.HANDOFF_DOMAIN,
+                effective_policy.INSPECTOR_EXECUTABLE,
+                "file",
+                "execute",
+            )
+        )
+
+    def test_unrelated_nnp_transition_fails(self) -> None:
+        self.assert_forbidden_allow_rejected(
+            effective_policy.Access(
+                "init_t", "aos_sandbox_host_t", "process2", "nnp_transition"
+            )
+        )
+
+    def test_non_init_nosuid_transition_to_network_service_fails(self) -> None:
+        self.assert_forbidden_allow_rejected(
+            effective_policy.Access(
+                effective_policy.HANDOFF_DOMAIN,
+                effective_policy.NETWORK_SERVICE_DOMAINS[0],
+                "process2",
+                "nosuid_transition",
+            )
+        )
 
     def test_missing_nspawn_transition_fails(self) -> None:
         policy = FakePolicy()

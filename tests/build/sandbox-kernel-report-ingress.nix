@@ -4,6 +4,10 @@
   lib,
 }: let
   unitOptions = {lib, ...}: {
+    options.system.build.kernel = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.linux;
+    };
     options.assertions = lib.mkOption {
       type = lib.types.listOf lib.types.anything;
       default = [];
@@ -44,12 +48,14 @@
     ];
   };
   requested = base.extendModules {
-    modules = [{
-      aos.sandbox.kernelExportOwner.reportIngress = {
-        enable = true;
-        handoffCredential = "handoff-test";
-      };
-    }];
+    modules = [
+      {
+        aos.sandbox.kernelExportOwner.reportIngress = {
+          enable = true;
+          handoffCredential = "handoff-test";
+        };
+      }
+    ];
   };
   missingHandoff = base.extendModules {
     modules = [{aos.sandbox.kernelExportOwner.reportIngress.enable = true;}];
@@ -70,8 +76,9 @@ in
   assert reportSocket.socketConfig.PassCredentials && reportSocket.socketConfig.PassPIDFD;
   assert reportSocket.socketConfig.SocketMode == "0600";
   assert reportService.serviceConfig.CapabilityBoundingSet == "";
-  assert reportService.serviceConfig.ExecStart == "${pkgs.aos-sandbox-kernel-export-ownerd}/bin/aos-sandbox-kernel-export-owner-report-ingressd ${pkgs.aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
-  assert reportService.serviceConfig.LoadCredential == [
+  assert reportService.serviceConfig.ExecStart == "${pkgs.aos-sandbox-kernel-export-ownerd}/bin/aos-sandbox-kernel-export-owner-report-ingressd ${pkgs.aosSelinuxKernelPolicyReadbackForKernel requested.config.system.build.kernel}/policy.33";
+  assert reportService.serviceConfig.LoadCredential
+  == [
     "kernel-export-report-handoff-v1:/run/credentials/@system/handoff-test"
   ];
     pkgs.mkDerivation {

@@ -7,20 +7,88 @@ require {
     type init_t;
     type device_t;
     type fixed_disk_device_t;
+    type fuse_device_t;
+    type fs_t;
+    type lib_t;
+    type ld_so_t;
     type proc_t;
     type root_t;
     type security_t;
+    type sysctl_t;
+    type sysctl_kernel_t;
+    type tmpfs_t;
+    type usr_t;
     type var_lib_t;
     type var_t;
 
     class blk_file getattr;
     class capability { sys_admin sys_chroot sys_ptrace };
+    class chr_file { getattr read write };
     class dir { add_name create getattr open read relabelfrom relabelto remove_name rename rmdir search setattr write };
+    class fd use;
+    class fifo_file { create getattr open read relabelto unlink write };
     class file { append create entrypoint execute execute_no_trans getattr ioctl link lock map open read relabelfrom relabelto rename setattr unlink write };
-    class filesystem getattr;
+    class filesystem { associate getattr };
     class lnk_file { getattr read };
-    class process { ptrace setexec setfscreate transition };
+    class process { getattr noatsecure ptrace rlimitinh setexec setfscreate setsockcreate siginh transition };
+    class process2 nnp_transition;
+    class security read_policy;
+    class unix_stream_socket { create getattr getopt read setopt write };
 }
+
+# The fixed image worker has no pathname-opened FUSE, Cache, Root or channel
+# authority. Mount labels and retains its original preparation objects before
+# transfer; PID 1's sealed five-role launch narrows otherwise type-wide fd use.
+type aos_filesystem_fuse_worker_t;
+typeattribute aos_filesystem_fuse_worker_t domain;
+role system_r types aos_filesystem_fuse_worker_t;
+type aos_filesystem_fuse_worker_exec_t;
+type aos_filesystem_fuse_worker_plan_t;
+type aos_filesystem_fuse_worker_channel_t;
+type aos_filesystem_fuse_worker_cancel_t;
+
+allow init_t aos_filesystem_fuse_worker_exec_t:file { execute getattr map open read };
+allow init_t aos_filesystem_fuse_worker_t:process transition;
+allow init_t aos_filesystem_fuse_worker_t:process2 nnp_transition;
+allow aos_filesystem_fuse_worker_t aos_filesystem_fuse_worker_exec_t:file { entrypoint execute getattr map open read };
+type_transition init_t aos_filesystem_fuse_worker_exec_t:process aos_filesystem_fuse_worker_t;
+allow aos_filesystem_fuse_worker_t init_t:fd use;
+# Only writes to already inherited logging streams; no connect/read is added.
+allow aos_filesystem_fuse_worker_t init_t:unix_stream_socket write;
+
+# The socket-creation context is used only by Mount's synchronous fenced
+# producer. Object types deliberately do not join generic file_type grants.
+allow init_t self:process setsockcreate;
+allow init_t aos_filesystem_fuse_worker_channel_t:unix_stream_socket { create getattr getopt read setopt write };
+allow aos_filesystem_fuse_worker_t aos_filesystem_fuse_worker_channel_t:unix_stream_socket { getattr getopt read write };
+allow init_t aos_filesystem_fuse_worker_plan_t:file { getattr map open read relabelto setattr write };
+allow init_t aos_filesystem_fuse_worker_cancel_t:fifo_file { getattr open read relabelto unlink write };
+allow aos_filesystem_fuse_worker_plan_t tmpfs_t:filesystem associate;
+allow aos_filesystem_fuse_worker_cancel_t tmpfs_t:filesystem associate;
+allow aos_filesystem_fuse_worker_t aos_filesystem_fuse_worker_plan_t:file { getattr map read };
+allow aos_filesystem_fuse_worker_t aos_filesystem_fuse_worker_cancel_t:fifo_file { getattr read };
+allow aos_filesystem_fuse_worker_t fuse_device_t:chr_file { getattr read write };
+
+# The worker observes its own startup table/subject and immutable image.
+# Other tasks' proc files retain their subject types and are not readable.
+allow aos_filesystem_fuse_worker_t self:dir { getattr open read search };
+allow aos_filesystem_fuse_worker_t self:file { getattr open read };
+allow aos_filesystem_fuse_worker_t self:lnk_file { getattr read };
+allow aos_filesystem_fuse_worker_t proc_t:dir { getattr open read search };
+allow aos_filesystem_fuse_worker_t proc_t:file { getattr open read };
+# KernelBootId reads the fixed boot_id sysctl. These type-wide reads do not
+# permit writing kernel settings; the sealed worker selects the exact path.
+allow aos_filesystem_fuse_worker_t sysctl_t:dir search;
+allow aos_filesystem_fuse_worker_t sysctl_kernel_t:dir search;
+allow aos_filesystem_fuse_worker_t sysctl_kernel_t:file { getattr open read };
+allow aos_filesystem_fuse_worker_t root_t:dir { getattr search };
+allow aos_filesystem_fuse_worker_t usr_t:dir search;
+allow aos_filesystem_fuse_worker_t lib_t:dir search;
+allow aos_filesystem_fuse_worker_t lib_t:file { execute getattr map open read };
+allow aos_filesystem_fuse_worker_t ld_so_t:file { execute getattr map open read };
+allow aos_filesystem_fuse_worker_t fs_t:filesystem getattr;
+allow aos_filesystem_fuse_worker_t security_t:dir search;
+allow aos_filesystem_fuse_worker_t security_t:file { getattr open read };
 
 # AOS privileged processes use distinct domains. The Network publisher is the
 # long-lived aos-netd broker; the namespace inspector and lifecycle worker are
@@ -28,6 +96,13 @@ require {
 type aos_sandbox_host_t;
 typeattribute aos_sandbox_host_t domain;
 role system_r types aos_sandbox_host_t;
+
+# Host reads the retained worker's real post-exec attr/current, not the
+# channel's creation label or a SID string asserted in HELLO. Its pidfd,
+# invocation and exact cgroup sandwich separately binds this type-wide read.
+allow aos_sandbox_host_t aos_filesystem_fuse_worker_t:process getattr;
+allow aos_sandbox_host_t aos_filesystem_fuse_worker_t:dir { getattr search };
+allow aos_sandbox_host_t aos_filesystem_fuse_worker_t:file { getattr open read };
 
 type aos_sandbox_network_publisher_t;
 typeattribute aos_sandbox_network_publisher_t domain;
@@ -44,6 +119,10 @@ role system_r types aos_sandbox_network_lifecycle_worker_t;
 type aos_sandbox_runtime_roots_t;
 typeattribute aos_sandbox_runtime_roots_t domain;
 role system_r types aos_sandbox_runtime_roots_t;
+
+type aos_sandbox_runtime_roots_handoff_t;
+typeattribute aos_sandbox_runtime_roots_handoff_t domain;
+role system_r types aos_sandbox_runtime_roots_handoff_t;
 
 # The outer nspawn supervisor and shifted guest payload are separate enforcing
 # subjects. Only the supervisor is granted mount/chroot capability by this
@@ -66,6 +145,7 @@ type aos_sandbox_network_publisher_exec_t;
 type aos_sandbox_namespace_inspector_exec_t;
 type aos_sandbox_network_lifecycle_worker_exec_t;
 type aos_sandbox_runtime_roots_exec_t;
+type aos_sandbox_runtime_roots_handoff_exec_t;
 type aos_nspawn_exec_t;
 
 # PID 1 alone enters each fixed domain through its labeled executable.
@@ -74,28 +154,72 @@ allow init_t aos_sandbox_host_t:process transition;
 allow aos_sandbox_host_t aos_sandbox_host_exec_t:file entrypoint;
 type_transition init_t aos_sandbox_host_exec_t:process aos_sandbox_host_t;
 
+# These fixed services retain NoNewPrivileges; PID 1 may enter only their
+# dedicated domains when executing their labeled immutable-store binaries.
 allow init_t aos_sandbox_network_publisher_exec_t:file { execute getattr map open read };
 allow init_t aos_sandbox_network_publisher_t:process transition;
+allow init_t aos_sandbox_network_publisher_t:process2 nnp_transition;
 allow aos_sandbox_network_publisher_t aos_sandbox_network_publisher_exec_t:file entrypoint;
 type_transition init_t aos_sandbox_network_publisher_exec_t:process aos_sandbox_network_publisher_t;
 
 allow init_t aos_sandbox_namespace_inspector_exec_t:file { execute getattr map open read };
 allow init_t aos_sandbox_namespace_inspector_t:process transition;
-allow aos_sandbox_namespace_inspector_t aos_sandbox_namespace_inspector_exec_t:file entrypoint;
+allow init_t aos_sandbox_namespace_inspector_t:process2 nnp_transition;
+# ELF segments are mapped after the new inspector SID takes effect.
+allow aos_sandbox_namespace_inspector_t aos_sandbox_namespace_inspector_exec_t:file { entrypoint execute map read };
+# PID 1 opens both the executable and the accepted socket. fd:use cannot name
+# individual descriptors; startup admits only the exact socket/journal FDs,
+# while the inspector has no ptrace authority to fetch other PID 1 FDs.
+allow aos_sandbox_namespace_inspector_t init_t:fd use;
+# This type-wide grant permits writes to inherited init_t streams. The pinned
+# unit and startup FD contract narrow those streams to journal stderr; socket
+# pathname writes and new connections remain forbidden by the policy checks.
+allow aos_sandbox_namespace_inspector_t init_t:unix_stream_socket write;
 type_transition init_t aos_sandbox_namespace_inspector_exec_t:process aos_sandbox_namespace_inspector_t;
+
+# SELinux labels the enforcement file security_t. These type-wide reads support
+# its fixed-path query, not pathname-specific authority; directory enumeration,
+# mutations, SELinux control, and policy readback remain forbidden.
+allow aos_sandbox_namespace_inspector_t security_t:dir search;
+allow aos_sandbox_namespace_inspector_t security_t:file { getattr open read };
 
 allow init_t aos_sandbox_network_lifecycle_worker_exec_t:file { execute getattr map open read };
 allow init_t aos_sandbox_network_lifecycle_worker_t:process transition;
+allow init_t aos_sandbox_network_lifecycle_worker_t:process2 nnp_transition;
 allow aos_sandbox_network_lifecycle_worker_t aos_sandbox_network_lifecycle_worker_exec_t:file entrypoint;
 type_transition init_t aos_sandbox_network_lifecycle_worker_exec_t:process aos_sandbox_network_lifecycle_worker_t;
 
-# The fixed provisioner enters an enforcing domain before it receives any
-# topology or creation-label authority. init_t can select the transition but
-# cannot execute the entry point without it.
-allow init_t aos_sandbox_runtime_roots_exec_t:file { execute getattr map open read };
-allow init_t aos_sandbox_runtime_roots_t:process transition;
-allow aos_sandbox_runtime_roots_t aos_sandbox_runtime_roots_exec_t:file { entrypoint map };
-type_transition init_t aos_sandbox_runtime_roots_exec_t:process aos_sandbox_runtime_roots_t;
+# A distinct, immutable stage0 copy receives only executable custody. The
+# launcher closes its inherited descriptors before this transition; the FD
+# permission is needed for the kernel's post-transition ELF mapping.
+allow init_t aos_sandbox_runtime_roots_handoff_exec_t:file { execute getattr map open read };
+allow init_t aos_sandbox_runtime_roots_handoff_t:process transition;
+allow aos_sandbox_runtime_roots_handoff_t init_t:fd use;
+allow aos_sandbox_runtime_roots_handoff_t aos_sandbox_runtime_roots_handoff_exec_t:file { entrypoint execute map read };
+type_transition init_t aos_sandbox_runtime_roots_handoff_exec_t:process aos_sandbox_runtime_roots_handoff_t;
+
+# The handoff may read only the immutable root and kernel admission inputs,
+# then execute the physically verified provisioner. No mutable root authority
+# is present until the second transition succeeds.
+allow aos_sandbox_runtime_roots_handoff_t root_t:dir { getattr open read search };
+allow aos_sandbox_runtime_roots_handoff_t fs_t:filesystem getattr;
+allow aos_sandbox_runtime_roots_handoff_t proc_t:filesystem getattr;
+allow aos_sandbox_runtime_roots_handoff_t proc_t:dir { getattr open read search };
+allow aos_sandbox_runtime_roots_handoff_t proc_t:file { getattr open read };
+allow aos_sandbox_runtime_roots_handoff_t security_t:filesystem getattr;
+allow aos_sandbox_runtime_roots_handoff_t security_t:dir { getattr open read search };
+allow aos_sandbox_runtime_roots_handoff_t security_t:file { getattr open read };
+# Both sealed stage0 modes compare the selected kernel policy with the
+# embedded expected bytes before admitting any mutable runtime root.
+allow aos_sandbox_runtime_roots_handoff_t security_t:security read_policy;
+allow aos_sandbox_runtime_roots_handoff_t aos_sandbox_runtime_roots_exec_t:file { execute getattr map open read };
+allow aos_sandbox_runtime_roots_handoff_t aos_sandbox_runtime_roots_t:process { noatsecure rlimitinh siginh transition };
+
+# The provisioner uses only the handoff-opened executable FD. It never gains
+# use of arbitrary init_t descriptors or the handoff's immutable-root search.
+allow aos_sandbox_runtime_roots_t aos_sandbox_runtime_roots_handoff_t:fd use;
+allow aos_sandbox_runtime_roots_t aos_sandbox_runtime_roots_exec_t:file { entrypoint execute map read };
+type_transition aos_sandbox_runtime_roots_handoff_t aos_sandbox_runtime_roots_exec_t:process aos_sandbox_runtime_roots_t;
 allow aos_sandbox_runtime_roots_t self:process setfscreate;
 
 # PID 1 enters the supervisor domain through the fixed packaged nspawn.
@@ -129,14 +253,20 @@ allow aos_sandbox_host_t aos_sandbox_payload_t:file { ioctl read };
 # The static provisioner observes only its immutable execution substrate,
 # SELinux state, own proc attributes, and the two fixed /var device names.
 allow aos_sandbox_runtime_roots_t root_t:dir { getattr open read search };
+# fstatfs on the selected /var root checks its ext4 superblock SID.
+allow aos_sandbox_runtime_roots_t fs_t:filesystem getattr;
 allow aos_sandbox_runtime_roots_t security_t:filesystem getattr;
 allow aos_sandbox_runtime_roots_t security_t:dir { getattr open read search };
 allow aos_sandbox_runtime_roots_t security_t:file { getattr open read };
+allow aos_sandbox_runtime_roots_t security_t:security read_policy;
 allow aos_sandbox_runtime_roots_t proc_t:filesystem getattr;
 allow aos_sandbox_runtime_roots_t proc_t:dir { getattr open read search };
 allow aos_sandbox_runtime_roots_t proc_t:file { getattr open read write };
 allow aos_sandbox_runtime_roots_t device_t:dir { getattr open read search };
 allow aos_sandbox_runtime_roots_t device_t:lnk_file { getattr read };
+# The fixed /var symlink may resolve to a devtmpfs node still labeled device_t.
+# Only its metadata is needed to compare the mounted ext4 device identity.
+allow aos_sandbox_runtime_roots_t device_t:blk_file getattr;
 allow aos_sandbox_runtime_roots_t fixed_disk_device_t:blk_file getattr;
 
 type aos_sandbox_network_root_t;
@@ -158,9 +288,24 @@ type aos_sandbox_network_spent_record_t;
 
 type aos_sandbox_network_store_t;
 
+# These deliberately non-file_type objects still need to join the selected
+# ext4 superblock when a protected directory or record inode is created.
+# Enumerate only that association; file_type would inherit broad base grants.
+allow {
+    aos_sandbox_network_root_t
+    aos_sandbox_network_state_t
+    aos_sandbox_network_store_t
+    aos_sandbox_network_expected_staging_t
+    aos_sandbox_network_expected_final_t
+    aos_sandbox_network_expected_record_t
+    aos_sandbox_network_spent_staging_t
+    aos_sandbox_network_spent_final_t
+    aos_sandbox_network_spent_record_t
+} fs_t:filesystem associate;
+
 # Only the provisioner can create or validate the fixed descendant tree.
 # Parent name creation and child inode creation remain separate and auditable.
-allow aos_sandbox_runtime_roots_t var_t:dir { add_name getattr open search write };
+allow aos_sandbox_runtime_roots_t var_t:dir { add_name getattr open read search write };
 allow aos_sandbox_runtime_roots_t var_lib_t:dir { add_name create getattr open read search write };
 allow aos_sandbox_runtime_roots_t aos_sandbox_network_root_t:dir { add_name create getattr open read search write };
 allow aos_sandbox_runtime_roots_t aos_sandbox_network_state_t:dir { create getattr open read search };

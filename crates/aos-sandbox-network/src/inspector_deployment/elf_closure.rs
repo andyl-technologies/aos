@@ -61,23 +61,24 @@ struct ElfDependencies {
 /// Verifies one signed executable's complete statically declared load graph.
 pub(super) fn verify_service(
     members: &[RetainedMember],
-    inspector: bool,
+    root_role: MemberRole,
 ) -> Result<(), InspectorDeploymentErrorV2> {
-    verify_service_with_owner(members, inspector, (0, 0))
+    verify_service_with_owner(members, root_role, (0, 0))
 }
 
 // The owner parameter lets the nonroot Nix build fixture exercise the real
 // dependency walk; the production entrypoint above always requires root.
 fn verify_service_with_owner(
     members: &[RetainedMember],
-    inspector: bool,
+    root_role: MemberRole,
     directory_owner: (u32, u32),
 ) -> Result<(), InspectorDeploymentErrorV2> {
-    let root_role = if inspector {
-        MemberRole::Inspector
-    } else {
-        MemberRole::LifecycleWorker
-    };
+    if !matches!(
+        root_role,
+        MemberRole::Broker | MemberRole::Inspector | MemberRole::LifecycleWorker
+    ) {
+        return Err(InspectorDeploymentErrorV2::Invalid);
+    }
     let root = members
         .iter()
         .position(|member| member.expectation.role == root_role)
@@ -877,15 +878,19 @@ mod tests {
         ];
         let directory_metadata = std::fs::metadata(directory).unwrap();
         let owner = (directory_metadata.uid(), directory_metadata.gid());
-        assert!(verify_service_with_owner(&members, true, owner).is_ok());
+        assert!(verify_service_with_owner(&members, MemberRole::Inspector, owner).is_ok());
         if owner != (0, 0) {
-            assert!(verify_service(&members, true).is_err());
+            assert!(verify_service(&members, MemberRole::Inspector).is_err());
         }
 
+        members[0].expectation.role = MemberRole::Broker;
+        assert!(verify_service_with_owner(&members, MemberRole::Broker, owner).is_ok());
+        members[0].expectation.role = MemberRole::Inspector;
+
         members[2].inode ^= 1;
-        assert!(verify_service_with_owner(&members, true, owner).is_err());
+        assert!(verify_service_with_owner(&members, MemberRole::Inspector, owner).is_err());
         members[2].inode ^= 1;
         members.pop();
-        assert!(verify_service_with_owner(&members, true, owner).is_err());
+        assert!(verify_service_with_owner(&members, MemberRole::Inspector, owner).is_err());
     }
 }

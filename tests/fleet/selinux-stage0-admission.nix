@@ -175,7 +175,7 @@ in
   assert productionSystem.config.aos.boot.initrd.stage0.passthru.expectedPolicy == canonicalReadbackPath;
   assert productionSystem.config.aos.boot.initrd.stage0.passthru.expectedPolicyKernel == canonicalKernel;
   assert productionSystem.config.aos.boot.initrd.stage0.passthru.immutablePolicy == pkgs.aos-selinux-production-policy;
-  assert productionSystem.config.aos.boot.initrd.stage0.passthru.runtimeRootsProvisioner == pkgs.aos-selinux-runtime-roots;
+  assert productionSystem.config.aos.boot.initrd.stage0.passthru.runtimeRootsProvisioner == pkgs.aosSelinuxRuntimeRootsForKernel canonicalKernel;
   assert productionSystem.config.aos.boot.initrd.stage0.passthru.admissionUnit == "aos-selinux-stage0-hold.target";
   assert rejects "immutable SELinux stage 0 must load the canonical production policy." loadedOverrideSystem;
   assert rejects "immutable SELinux stage 0 must authenticate the selected kernel's canonical policy readback." expectedOverrideSystem;

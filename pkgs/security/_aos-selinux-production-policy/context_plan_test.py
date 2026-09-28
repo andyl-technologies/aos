@@ -16,19 +16,22 @@ def elf64(
     *,
     interpreter: bool = False,
     flags_1: int = 0,
+    soname: bool = False,
 ) -> bytes:
     """Builds the minimal ELF64 metadata consumed by ``inspect_elf``."""
 
     segments: list[tuple[int, bytes]] = []
     if interpreter:
         segments.append((context_plan.PT_INTERP, b"/lib/ld.so\x00"))
+    dynamic_entries: list[tuple[int, int]] = []
     if flags_1:
-        dynamic = struct.pack(
-            "<QQQQ",
-            context_plan.DT_FLAGS_1,
-            flags_1,
-            context_plan.DT_NULL,
-            0,
+        dynamic_entries.append((context_plan.DT_FLAGS_1, flags_1))
+    if soname:
+        dynamic_entries.append((context_plan.DT_SONAME, 0))
+    if dynamic_entries:
+        dynamic_entries.append((context_plan.DT_NULL, 0))
+        dynamic = b"".join(
+            struct.pack("<QQ", tag, value) for tag, value in dynamic_entries
         )
         segments.append((context_plan.PT_DYNAMIC, dynamic))
 
@@ -73,6 +76,20 @@ class ElfClassificationTest(unittest.TestCase):
             self.classify(elf64(context_plan.ET_DYN, interpreter=True), 0o755),
             "bin_t",
         )
+
+    def test_dual_use_libc_uses_authoritative_library_path(self) -> None:
+        image = elf64(context_plan.ET_DYN, interpreter=True, soname=True)
+        self.assertEqual(self.classify(image, 0o755, "lib/libc.so.6"), "lib_t")
+        self.assertEqual(self.classify(image, 0o755, "bin/libc.so.6"), "bin_t")
+
+    def test_soname_does_not_override_pie_flag_under_library_path(self) -> None:
+        image = elf64(
+            context_plan.ET_DYN,
+            interpreter=True,
+            flags_1=context_plan.DF_1_PIE,
+            soname=True,
+        )
+        self.assertEqual(self.classify(image, 0o755, "lib/program"), "bin_t")
 
     def test_static_pie_uses_df_1_pie_without_interpreter(self) -> None:
         self.assertEqual(
@@ -261,6 +278,35 @@ class PlanSemanticsTest(unittest.TestCase):
             self.assertEqual(
                 by_path["/nix.lower/store/hash-glibc/lib/ld-aarch64.so.1"],
                 "system_u:object_r:ld_so_t:s0",
+            )
+
+    def test_specific_alias_overrides_dual_use_libc_fallback(self) -> None:
+        class Resolver:
+            def lookup(
+                self, path: str, _kind: context_plan.InodeKind
+            ) -> str | None:
+                if path == "/usr/lib/libc.so.6":
+                    return "system_u:object_r:libc_alias_t:s0"
+                if path.startswith("/nix"):
+                    return "system_u:object_r:default_t:s0"
+                return "system_u:object_r:root_t:s0"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            libc = root / "nix/store/hash-glibc/lib/libc.so.6"
+            libc.parent.mkdir(parents=True)
+            libc.write_bytes(elf64(context_plan.ET_DYN, interpreter=True, soname=True))
+            libc.chmod(0o755)
+            (root / "usr").mkdir()
+            (root / "usr/lib").symlink_to("/nix/store/hash-glibc/lib")
+
+            labels = context_plan.plan_labels(
+                context_plan.inventory_tree(root), Resolver()
+            )
+            by_path = {label.path: label.context for label in labels}
+            self.assertEqual(
+                by_path["/nix/store/hash-glibc/lib/libc.so.6"],
+                "system_u:object_r:libc_alias_t:s0",
             )
 
     def test_dotdot_is_applied_after_intermediate_symlink_expansion(self) -> None:

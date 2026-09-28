@@ -6,6 +6,7 @@
   ...
 }: let
   cfg = config.aos.sandbox.kernelExportOwner;
+  canonicalReadback = pkgs.aosSelinuxKernelPolicyReadbackForKernel config.system.build.kernel;
   storageStageSigner = config.aos.sandbox.storageBroker.kernelExportStageSignerCredential;
   verifiersConfigured = cfg.leaseVerifierCredential != null && cfg.stageVerifierCredential != null;
 in {
@@ -143,7 +144,7 @@ in {
       serviceConfig = {
         Type = "exec";
         Sockets = ["aos-sandbox-kernel-export-owner-prepared-report.socket"];
-        ExecStart = "${cfg.package}/bin/aos-sandbox-kernel-export-owner-report-ingressd ${pkgs.aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
+        ExecStart = "${cfg.package}/bin/aos-sandbox-kernel-export-owner-report-ingressd ${canonicalReadback}/policy.33";
         LoadCredential = [
           "kernel-export-report-handoff-v1:/run/credentials/@system/${cfg.reportIngress.handoffCredential}"
         ];

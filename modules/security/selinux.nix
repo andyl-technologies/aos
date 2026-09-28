@@ -26,7 +26,7 @@
   canonicalReadbackPath = "${canonicalReadback}/policy.33";
   productionAdmissionUnit = "aos-selinux-stage0-hold.target";
   selectedStage0 = config.aos.boot.initrd.stage0;
-  runtimeRootsProvisioner = pkgs.aos-selinux-runtime-roots;
+  runtimeRootsProvisioner = pkgs.aosSelinuxRuntimeRootsForKernel config.system.build.kernel;
   strictKernelConfig = builtins.readFile ../../pkgs/kernel/config/selinux-immutable.config;
   semodule = "${pkgs.policycoreutils}/sbin/semodule";
   loadPolicy = "${pkgs.policycoreutils}/sbin/load_policy";
@@ -558,6 +558,10 @@ in {
           message = "immutable SELinux stage 0 must authenticate the canonical runtime-root provisioner.";
         }
         {
+          assertion = (runtimeRootsProvisioner.passthru.expectedPolicyReadback or null) == canonicalReadbackPath;
+          message = "immutable SELinux runtime-root provisioner must authenticate the selected kernel's policy readback.";
+        }
+        {
           assertion = selectedStage0 != null && (selectedStage0.passthru.qualificationPostPinGate or null) == "";
           message = "immutable SELinux stage 0 forbids the qualification post-pin gate in production composition.";
         }
@@ -579,6 +583,7 @@ in {
       aos.boot.initrd.stage0 = pkgs.aosSelinuxStage0With {
         expectedPolicy = canonicalReadbackPath;
         expectedPolicyKernel = config.system.build.kernel;
+        aos-selinux-runtime-roots = runtimeRootsProvisioner;
       };
       aos.kernel._extraConfigFragments = [strictKernelConfig];
 

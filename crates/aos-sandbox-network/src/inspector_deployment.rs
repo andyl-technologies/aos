@@ -233,8 +233,13 @@ impl ProtectedInspectorDeploymentV2 {
         };
         deployment.revalidate()?;
         if deployment.launch_policy.is_some() {
-            deployment.verify_service_elf_closure(true)?;
-            deployment.verify_service_elf_closure(false)?;
+            for role in [
+                MemberRole::Broker,
+                MemberRole::Inspector,
+                MemberRole::LifecycleWorker,
+            ] {
+                deployment.verify_service_elf_closure(role)?;
+            }
         }
         Ok(Some(deployment))
     }
@@ -314,7 +319,12 @@ impl ProtectedInspectorDeploymentV2 {
             .launch_policy
             .as_ref()
             .ok_or(InspectorDeploymentErrorV2::Invalid)?;
-        self.verify_service_elf_closure(inspector)?;
+        let role = if inspector {
+            MemberRole::Inspector
+        } else {
+            MemberRole::LifecycleWorker
+        };
+        self.verify_service_elf_closure(role)?;
         Ok(policy.service(inspector))
     }
 
@@ -337,10 +347,10 @@ impl ProtectedInspectorDeploymentV2 {
 
     fn verify_service_elf_closure(
         &self,
-        inspector: bool,
+        root_role: MemberRole,
     ) -> Result<(), InspectorDeploymentErrorV2> {
         self.revalidate()?;
-        elf_closure::verify_service(&self.members, inspector)?;
+        elf_closure::verify_service(&self.members, root_role)?;
         self.revalidate()
     }
 }
