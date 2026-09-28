@@ -101,7 +101,7 @@ impl RecursiveTopologyProofV1 {
         self.byte_count
     }
 
-    /// Returns the maximum represented directory depth.
+    /// Returns the maximum represented topology depth in the owning profile's units.
     #[must_use]
     pub const fn maximum_depth(&self) -> u32 {
         self.maximum_depth

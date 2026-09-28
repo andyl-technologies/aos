@@ -3013,24 +3013,45 @@ fn finish_live_transaction_mutation<T, E>(
 
 /// Samples the production kernel wall and boot clocks with the current boot identity.
 ///
+/// BOOTTIME precedes the integer wall observation so sampling delays cannot
+/// extend an expiry derived from the pair. Both reads share one boot identity.
+/// This adapter does not alter the paired-clock continuity policy.
+///
 /// # Errors
 ///
 /// Returns [`StorageRuntimeError::Recovery`] when the kernel boot identity or
-/// either clock cannot form a valid paired sample.
+/// either clock cannot form a valid paired sample, including a changed boot.
 pub(crate) fn trusted_paired_clock_sample() -> Result<RawPairedClockSample, StorageRuntimeError> {
-    let wall = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
+    paired_clock_sample_from_kernel_readers(
+        || {
+            KernelBootId::current()
+                .map(KernelBootId::into_bytes)
+                .map_err(|_| StorageRuntimeError::Recovery)
+        },
+        || boottime_now_nanoseconds().map_err(|_| StorageRuntimeError::Recovery),
+        || rustix::time::clock_gettime(rustix::time::ClockId::Realtime).tv_sec,
+    )
+}
+
+// Kept private so only the fixed kernel adapter can provide production samples;
+// injected readers exercise its exact ordering and failure paths in unit tests.
+fn paired_clock_sample_from_kernel_readers(
+    mut boot_identity: impl FnMut() -> Result<[u8; 16], StorageRuntimeError>,
+    boottime: impl FnOnce() -> Result<u64, StorageRuntimeError>,
+    wall_seconds: impl FnOnce() -> i64,
+) -> Result<RawPairedClockSample, StorageRuntimeError> {
+    let boot_before = boot_identity()?;
+    let boottime_nanoseconds = boottime()?;
+    let wall_seconds = wall_seconds();
+    let boot_after = boot_identity()?;
+    if boot_before != boot_after {
+        return Err(StorageRuntimeError::Recovery);
+    }
+
     let provenance = RawClockProvenance::new_untrusted(KERNEL_CLOCK_PROVENANCE)
         .map_err(|_| StorageRuntimeError::Recovery)?;
-    let boot_id = KernelBootId::current()
-        .map_err(|_| StorageRuntimeError::Recovery)?
-        .into_bytes();
-    RawPairedClockSample::new_untrusted(
-        provenance,
-        boot_id,
-        wall.tv_sec,
-        boottime_now_nanoseconds().map_err(|_| StorageRuntimeError::Recovery)?,
-    )
-    .map_err(|_| StorageRuntimeError::Recovery)
+    RawPairedClockSample::new_untrusted(provenance, boot_before, wall_seconds, boottime_nanoseconds)
+        .map_err(|_| StorageRuntimeError::Recovery)
 }
 
 fn finish_reopen_required_reconciliation(
@@ -3576,6 +3597,62 @@ mod tests {
         CatalogPlanV1, ManagedDatasetRoot, PlannedDataset, ProjectAncestorPolicyV1,
         ReservationPolicy, ResolvedDataset, StorageDomainsV1, WorkspaceSpacePolicyV1,
     };
+
+    #[test]
+    fn kernel_paired_clock_sampling_brackets_boot_and_reads_boot_time_before_wall() {
+        let calls = RefCell::new(Vec::new());
+        let sample = paired_clock_sample_from_kernel_readers(
+            || {
+                calls.borrow_mut().push("boot identity");
+                Ok([1; 16])
+            },
+            || {
+                calls.borrow_mut().push("BOOTTIME");
+                Ok(123)
+            },
+            || {
+                calls.borrow_mut().push("REALTIME");
+                100
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            *calls.borrow(),
+            ["boot identity", "BOOTTIME", "REALTIME", "boot identity"]
+        );
+        assert_eq!(sample.host_boot_id(), [1; 16]);
+        assert_eq!(sample.boottime_nanoseconds(), 123);
+        assert_eq!(sample.wall_seconds(), 100);
+    }
+
+    #[test]
+    fn kernel_paired_clock_sampling_rejects_changed_boot_and_read_errors() {
+        let boot_reads = Cell::new(0);
+        let changed_boot = paired_clock_sample_from_kernel_readers(
+            || {
+                boot_reads.set(boot_reads.get() + 1);
+                Ok([boot_reads.get(); 16])
+            },
+            || Ok(123),
+            || 100,
+        );
+        assert!(matches!(changed_boot, Err(StorageRuntimeError::Recovery)));
+
+        let failed_boot = paired_clock_sample_from_kernel_readers(
+            || Err(StorageRuntimeError::Recovery),
+            || panic!("failed boot read must stop before either clock"),
+            || panic!("failed boot read must stop before either clock"),
+        );
+        assert!(matches!(failed_boot, Err(StorageRuntimeError::Recovery)));
+
+        let failed_clock = paired_clock_sample_from_kernel_readers(
+            || Ok([1; 16]),
+            || Err(StorageRuntimeError::Recovery),
+            || panic!("failed BOOTTIME read must stop before REALTIME"),
+        );
+        assert!(matches!(failed_clock, Err(StorageRuntimeError::Recovery)));
+    }
 
     #[test]
     fn held_snapshot_identity_must_match_the_unchanged_protected_metadata() {

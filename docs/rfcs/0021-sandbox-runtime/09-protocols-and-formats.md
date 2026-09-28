@@ -902,6 +902,67 @@ one, depth cannot exceed either entries or submounts plus one, and depth is
 nonzero. A local-live proof's consumer authority and generation must equal the
 signed request and lease holder.
 
+The unreleased native held-snapshot exchange uses signed `AOSZNQ02` request
+V2, positive `AOSZNA03` acceptance V3, and `AOSZNP03` reply V3. It replaces the
+unreleased positive V2 framing rather than preserving another positive path;
+old `AOSZNA02`/`AOSZNP02` records are rejected. Negative-only `AOSZHQ01` and
+authenticated cleanup `AOSZNC02`/`AOSZND02` retain their existing formats. ZFS
+requests are non-kernel-coupled; they do not acquire LocalLive grant semantics.
+The unsigned acceptance is 216 bytes: its existing 136-byte request, receipt,
+issuance, and original descriptor binding is followed by the existing 80-byte
+`RecursiveTopologyProofV1` layout. The same independently pinned dedicated
+`AOSZHSG1` Storage role signs both receipt and V3 acceptance; no new topology
+key or generic backend-attestation role is introduced. The signed acceptance
+is 368 bytes and the exact one-SourceRoot-FD reply is 1,192 payload bytes.
+Acceptance signature, unsigned-digest, and signed-digest domains use V3.
+
+The native **nonrecursive topology profile** defines root-inclusive measured
+node count in `1..=4096` and measured logical file bytes in `0..=64 MiB`.
+A root-only count of one requires zero file bytes; multiple nodes with zero
+bytes remain valid, including empty files and directories.
+Depth means mount depth exactly one, not portable directory depth; submount
+count is exactly zero. This is an explicit new profile, not a retroactive
+interpretation of other V1 topology claims. Its authority ID is the independently
+pinned dedicated receipt signer ID and its generation is the signed primary
+receipt's Storage journal/cut sequence, not the signing authority generation.
+The topology digest is SHA-256 over:
+
+```text
+ASCII "aos.sandbox.storage.native-nonrecursive-topology.v1\0"
+|| authority-id:16 || receipt-journal-cut-sequence:u64be
+|| exact-signed-native-request-digest:32 || exact-signed-AOSZHR01-digest:32
+|| original-Root-descriptor-commitment:32 || measured-read-only-content-digest:32
+|| actual-nodes:u64be || actual-logical-bytes:u64be
+|| mount-depth:u32be=1 || submounts:u32be=0
+```
+
+The fixed contract-test vector has authority ID 16 bytes of `0x2e`, cut 43,
+nodes 2, logical bytes 55, mount depth 1, and no submounts. Its four committed
+digests, in preimage order, are:
+
+```text
+request:    df7644deba326b0089a20c2b9bcfa910df1b09194b981154aaafcea86b9bc3bf
+receipt:    444ce4a96eb0716b16d879a5347991d0534ab40c3ad9417a688f84f281f676f1
+descriptor: f468c44bb447bdda2f569ea8b0e9ceec07a549fcc3ebff62280f0c2c0599d9e5
+content:    1616161616161616161616161616161616161616161616161616161616161616
+```
+
+With the NUL-terminated domain above, its independently computed SHA-256 is
+`d8b774995d867979eee96b9e746346c2c8abd6250343b26e710041f1c253ee38`.
+
+The canonical helper only encodes supplied claims. Storage's production builder
+must derive counts from the complete held-root readback, establish the one-mount
+zero-submount profile, and retain that original descriptor through the unchanged
+protected cut before signing. Recomputing the digest, decoding counts, or
+verifying self-supplied receipt claims proves no measurement or currentness.
+Provider verification first pins the dedicated receipt/acceptance signer and
+independently expected receipt, then recomputes every topology crosslink.
+Acceptance commits no issuance-journal head; its stable unsigned digest is
+journaled separately, avoiding a head/digest cycle. Exact positive retry retains
+the original boot/device/inode/mount ID under uninterrupted live FD custody;
+cold remount or total custody loss cannot become exact replay. This codec profile
+alone opens no positive Acquire, FD send, cleanup, or release authority.
+
 Composite Acquire verification requires the verified signed Stage 2A session and outer
 status before interpreting any disposition. It requires `issued <= now < expires`, expiry no
 later than the Acquire deadline or current ownership bound, and nonzero duration
