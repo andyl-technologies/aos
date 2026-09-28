@@ -349,6 +349,9 @@ in
   assert !(protectedConfig.systemd.services.systemd-journald.serviceConfig ? RestrictSUIDSGID);
   assert protectedConfig.systemd.services.aos-journald-runtime-prep.serviceConfig.ExecStart
   == ''${pkgs.systemd}/bin/systemd-tmpfiles --create --inline "d /run/log/journal 2755 root systemd-journal -" "d /run/log/journal/%%m 2750 root systemd-journal -"'';
+  assert protectedConfig.systemd.services."aos-sandbox-network-namespace-inspector@".serviceConfig.StandardInput == "socket";
+  assert protectedConfig.systemd.services."aos-sandbox-network-namespace-inspector@".serviceConfig.StandardOutput == "socket";
+  assert protectedConfig.systemd.services."aos-sandbox-network-namespace-inspector@".serviceConfig.StandardError == "kmsg+console";
   # `+` restores root credentials for this systemd-spawned preflight; the
   # labeled helper still performs the only SELinux domain transition.
   assert protectedConfig.systemd.services.aos-netd.serviceConfig.ExecStartPre
@@ -609,6 +612,32 @@ in
             assert expected.startswith("/nix/store/"), (image_unit, expected)
             assert actual == expected, (unit, actual, expected)
 
+            if image_unit == "aos-sandbox-network-namespace-inspector@.service":
+                # Inspect PID 1's loaded context after reexec, not merely the
+                # text of the pinned fragment. No inherited/default stderr
+                # setting may substitute for the image-pinned logging stream.
+                stdio_command = (
+                    "systemctl show -p StandardInput -p StandardOutput "
+                    f"-p StandardError '{unit}'"
+                )
+                expected_stdio = {
+                    "StandardInput=socket",
+                    "StandardOutput=socket",
+                    "StandardError=kmsg+console",
+                }
+                stdio = machine.succeed(stdio_command).splitlines()
+                assert set(stdio) == expected_stdio, (unit, stdio)
+
+                status, stdout, stderr = machine.execute(
+                    f"systemctl set-property --runtime '{unit}' StandardError=null"
+                )
+                assert status != 0 and (
+                    b"Protected Network units do not accept property overrides"
+                    in stdout + stderr
+                ), (unit, status, stdout, stderr)
+                stdio = machine.succeed(stdio_command).splitlines()
+                assert set(stdio) == expected_stdio, (unit, stdio)
+
         def assert_manager_environment_isolated(machine, value):
             assignment = f"AOS_NETWORK_MANAGER_SENTINEL={value}"
             assert assignment in machine.succeed(
@@ -687,7 +716,7 @@ in
                 )
                 status, stdout, stderr = machine.execute(command, timeout=30)
                 assert status != 0 and (
-                    "Protected Network units do not accept live mounts"
+                    b"Protected Network units do not accept live mounts"
                     in stdout + stderr
                 ), (method, status, stdout, stderr)
 

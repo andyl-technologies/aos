@@ -211,6 +211,67 @@ class EffectivePolicyTest(unittest.TestCase):
             )
         )
 
+    def test_inspector_requires_exact_enforcement_read(self) -> None:
+        for access in (
+            effective_policy.Access(
+                effective_policy.INSPECTOR_DOMAIN, "security_t", "dir", "search"
+            ),
+            *effective_policy.accesses(
+                effective_policy.INSPECTOR_DOMAIN,
+                "security_t",
+                "file",
+                ("getattr", "open", "read"),
+            ),
+        ):
+            with self.subTest(access=access):
+                self.assert_missing_allow_rejected(access)
+
+    def test_inspector_enforcement_read_cannot_become_administration(self) -> None:
+        for access in (
+            *effective_policy.accesses(
+                effective_policy.INSPECTOR_DOMAIN,
+                "security_t",
+                "file",
+                effective_policy.RECORD_MUTATIONS,
+            ),
+            *effective_policy.accesses(
+                effective_policy.INSPECTOR_DOMAIN,
+                "security_t",
+                "security",
+                ("load_policy", "read_policy", "setbool", "setenforce", "setsecparam"),
+            ),
+            effective_policy.Access(
+                effective_policy.INSPECTOR_DOMAIN, "security_t", "dir", "read"
+            ),
+        ):
+            with self.subTest(access=access):
+                self.assert_forbidden_allow_rejected(access)
+
+    def test_inspector_requires_inherited_journal_write(self) -> None:
+        self.assert_missing_allow_rejected(
+            effective_policy.Access(
+                effective_policy.INSPECTOR_DOMAIN, "init_t", "unix_stream_socket", "write"
+            )
+        )
+
+    def test_inspector_journal_exception_cannot_admit_connections_or_reads(self) -> None:
+        for access in (
+            *effective_policy.accesses(
+                effective_policy.INSPECTOR_DOMAIN,
+                "init_t",
+                "unix_stream_socket",
+                ("connect", "connectto"),
+            ),
+            effective_policy.Access(
+                effective_policy.INSPECTOR_DOMAIN, "init_t", "unix_stream_socket", "read"
+            ),
+            effective_policy.Access(
+                effective_policy.INSPECTOR_DOMAIN, "tmpfs_t", "sock_file", "write"
+            ),
+        ):
+            with self.subTest(access=access):
+                self.assert_forbidden_allow_rejected(access)
+
     def test_only_pid1_can_enter_runtime_roots_handoff(self) -> None:
         for access in (
             effective_policy.Access(

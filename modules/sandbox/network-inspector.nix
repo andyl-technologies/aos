@@ -95,6 +95,14 @@ in {
         }
         {
           assertion =
+            renderedDirectives "StandardInput" renderedInspectorUnit
+            == ["StandardInput=socket"]
+            && renderedDirectives "StandardOutput" renderedInspectorUnit == ["StandardOutput=socket"]
+            && renderedDirectives "StandardError" renderedInspectorUnit == ["StandardError=journal"];
+          message = "${inspectorUnitName} must retain the image-pinned accepted socket and inherited journal stderr";
+        }
+        {
+          assertion =
             config.aos.sandbox.networkBroker.enable
             && renderedDirectives "ExecStart" renderedBrokerUnit
             == ["ExecStart=${cfg.package}/bin/aos-netd ${toString config.aos.sandbox.networkBroker.maximumRetainedNamespaces}"];

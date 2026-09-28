@@ -24,6 +24,7 @@ require {
     class process { noatsecure ptrace rlimitinh setexec setfscreate siginh transition };
     class process2 nnp_transition;
     class security read_policy;
+    class unix_stream_socket write;
 }
 
 # AOS privileged processes use distinct domains. The Network publisher is the
@@ -100,7 +101,17 @@ allow aos_sandbox_namespace_inspector_t aos_sandbox_namespace_inspector_exec_t:f
 # individual descriptors; startup admits only the exact socket/journal FDs,
 # while the inspector has no ptrace authority to fetch other PID 1 FDs.
 allow aos_sandbox_namespace_inspector_t init_t:fd use;
+# This type-wide grant permits writes to inherited init_t streams. The pinned
+# unit and startup FD contract narrow those streams to journal stderr; socket
+# pathname writes and new connections remain forbidden by the policy checks.
+allow aos_sandbox_namespace_inspector_t init_t:unix_stream_socket write;
 type_transition init_t aos_sandbox_namespace_inspector_exec_t:process aos_sandbox_namespace_inspector_t;
+
+# SELinux labels the enforcement file security_t. These type-wide reads support
+# its fixed-path query, not pathname-specific authority; directory enumeration,
+# mutations, SELinux control, and policy readback remain forbidden.
+allow aos_sandbox_namespace_inspector_t security_t:dir search;
+allow aos_sandbox_namespace_inspector_t security_t:file { getattr open read };
 
 allow init_t aos_sandbox_network_lifecycle_worker_exec_t:file { execute getattr map open read };
 allow init_t aos_sandbox_network_lifecycle_worker_t:process transition;

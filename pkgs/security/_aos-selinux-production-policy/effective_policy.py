@@ -179,6 +179,16 @@ POSITIVE_ACCESS = (
     # PID 1 owns the accepted socket and executable FD; runtime admission
     # narrows inherited FDs, while protected-domain ptrace remains forbidden.
     Access(INSPECTOR_DOMAIN, "init_t", "fd", "use"),
+    # Type-wide inherited stream writes are narrowed by the image-pinned launch
+    # and FD contract; new init_t connections and stream reads remain forbidden.
+    Access(INSPECTOR_DOMAIN, "init_t", "unix_stream_socket", "write"),
+    Access(INSPECTOR_DOMAIN, "security_t", "dir", "search"),
+    *accesses(
+        INSPECTOR_DOMAIN,
+        "security_t",
+        "file",
+        ("getattr", "open", "read"),
+    ),
     *accesses(
         HANDOFF_DOMAIN,
         PROVISIONER_EXECUTABLE,
@@ -571,6 +581,45 @@ def negative_access() -> tuple[Access, ...]:
     for domain in (HANDOFF_DOMAIN, PROVISIONER_DOMAIN, *DOMAINS):
         if domain != INSPECTOR_DOMAIN:
             checks.append(Access(domain, INSPECTOR_EXECUTABLE, "file", "execute"))
+
+    # The fixed enforcement query needs selinuxfs reads. No directory listing,
+    # mutation, policy readback, or SELinux administration is delegated.
+    checks.extend(accesses(INSPECTOR_DOMAIN, "security_t", "file", RECORD_MUTATIONS))
+    checks.extend(
+        accesses(
+            INSPECTOR_DOMAIN,
+            "security_t",
+            "dir",
+            (
+                "add_name",
+                "create",
+                "open",
+                "read",
+                "remove_name",
+                "write",
+                *DIRECTORY_INODE_MUTATIONS,
+            ),
+        )
+    )
+    checks.extend(
+        accesses(
+            INSPECTOR_DOMAIN,
+            "security_t",
+            "security",
+            ("load_policy", "read_policy", "setbool", "setenforce", "setsecparam"),
+        )
+    )
+
+    # The stderr exception has no pathname-opening or new-connection authority.
+    # SELinux uses unix_stream_socket for AF_UNIX stream and seqpacket sockets;
+    # accepted request I/O is a separate contract, never a connect exception.
+    checks.extend(
+        accesses(
+            INSPECTOR_DOMAIN, "init_t", "unix_stream_socket", ("connect", "connectto")
+        )
+    )
+    checks.append(Access(INSPECTOR_DOMAIN, "init_t", "unix_stream_socket", "read"))
+    checks.append(Access(INSPECTOR_DOMAIN, "tmpfs_t", "sock_file", "write"))
 
     # The handoff has no mount, creation, mutable topology, or return-to-init
     # authority. SELinux's init_t:fd use permission is broad; stage0's
