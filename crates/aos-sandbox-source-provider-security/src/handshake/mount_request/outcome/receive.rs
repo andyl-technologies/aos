@@ -139,6 +139,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         authorization: &AuthorizedMountProviderOutcomeV2,
     ) -> Result<VerifiedReceivedMountProviderOutcomeV2, SourceProviderSecurityError> {
+        self.require_native_outcome_authorization_v3(authorization)?;
         let received = self
             .carrier
             .receive_optional_source_root()
@@ -149,6 +150,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 };
                 self.poison(error)
             })?;
+        self.require_native_outcome_authorization_v3(authorization)?;
         let crate::carrier::ReceivedSourceProviderRecordV1 {
             payload,
             mut descriptors,
@@ -258,6 +260,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         };
         let source_root = crate::ObservedSourceRootV1::observe(record, self)?;
         source_root.revalidate(self)?;
+        self.require_native_outcome_response_v3(authorization, &verified.canonical_response, true)?;
         if verified.descriptor_commitment
             != aos_sandbox_source_provider_protocol::source_root_descriptor_commitment_v1(
                 source_root.protocol_observation(),
@@ -273,6 +276,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             lease.subject().expires_seconds(),
         )
         .map_err(|error| self.poison(error))?;
+        self.require_native_outcome_response_v3(authorization, &verified.canonical_response, true)?;
         Ok(VerifiedReceivedMountProviderOutcomeV2 {
             verified,
             source_root: Some(source_root),

@@ -136,6 +136,11 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 )
             })
             .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+            let attempt = match decode_mount_source_state_record_v2(&attempt_key, &attempt_record) {
+                Ok(StoredRecordV2::ProviderQueryAttempt { value }) => value,
+                _ => return Err(self.poison(SourceProviderSecurityError::SessionContinuity)),
+            };
+            self.require_verified_native_outcome_v3(&outcome, &attempt.signed_request)?;
             let committed_snapshot =
                 if journal.get(&attempt_key).ok().flatten() == Some(attempt_record.as_slice()) {
                     validated_mount_state(journal).map_err(|error| self.poison(error))?;
@@ -147,10 +152,6 @@ impl CurrentRootMountSourceProviderSessionV1 {
                         .map_err(|error| self.poison(error))?
                 };
             let graph = validated_mount_state(journal).map_err(|error| self.poison(error))?;
-            let attempt = match decode_mount_source_state_record_v2(&attempt_key, &attempt_record) {
-                Ok(StoredRecordV2::ProviderQueryAttempt { value }) => value,
-                _ => return Err(self.poison(SourceProviderSecurityError::SessionContinuity)),
-            };
             let ProviderAttemptStateV2::DispositionConsumed {
                 response_sequence,
                 verification_anchor,
@@ -217,6 +218,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
             }
             source_root.revalidate(self)?;
+            self.require_verified_native_outcome_v3(&outcome, &attempt.signed_request)?;
             let receipt = crate::descriptor::SourceRootDispositionCommitReceiptV1::from_observed(
                 &source_root,
             );
@@ -1371,6 +1373,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         >,
     ) -> Result<VerifiedMountProviderOutcomeV2, SourceProviderSecurityError> {
         self.revalidate()?;
+        self.require_native_outcome_authorization_v3(authorization)?;
         let verification_started = super::current_unix_seconds()?;
         if verification_started < 0
             || (authorization.deadline_policy == OutcomeDeadlinePolicyV2::Fresh
@@ -1431,34 +1434,46 @@ impl CurrentRootMountSourceProviderSessionV1 {
             authorization.catalog_floor.as_ref(),
         ) {
             (SourceProviderMethod::Acquire, Some(expected), Some(catalog_floor)) => {
-                let catalog_journal = catalog_journal
-                    .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-                let configuration = crate::RevalidatedProviderConfigurationV1::capture_root_mount(
-                    &mut self.custody,
-                    verification_started,
-                )
-                .map_err(|error| self.poison(error))?;
-                let catalog_cleanup_only = match authorization.deadline_policy {
-                    OutcomeDeadlinePolicyV2::Fresh => crate::catalog::current_catalog_head_matches(
-                        &configuration,
-                        catalog_journal,
-                        expected,
-                    )
-                    .then_some(false),
-                    OutcomeDeadlinePolicyV2::RetainedReplay => {
-                        crate::catalog::retained_catalog_head_cleanup_status(
-                            &configuration,
-                            catalog_journal,
-                            expected,
-                            catalog_floor,
-                            historical_verification_time,
+                if authorization.native_outcome.is_some() {
+                    // This authenticates the same original bounded remote cut.
+                    // Provider must rejoin its own writer-held head/floor around
+                    // positive signing and completion; Mount cannot infer that
+                    // freshness from the earlier received response.
+                    self.require_native_outcome_authorization_v3(authorization)?;
+                } else {
+                    let catalog_journal = catalog_journal.ok_or_else(|| {
+                        self.poison(SourceProviderSecurityError::SessionContinuity)
+                    })?;
+                    let configuration =
+                        crate::RevalidatedProviderConfigurationV1::capture_root_mount(
+                            &mut self.custody,
+                            verification_started,
                         )
-                    }
-                };
-                let Some(catalog_cleanup_only) = catalog_cleanup_only else {
-                    return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-                };
-                cleanup_only_current_policy |= catalog_cleanup_only;
+                        .map_err(|error| self.poison(error))?;
+                    let catalog_cleanup_only = match authorization.deadline_policy {
+                        OutcomeDeadlinePolicyV2::Fresh => {
+                            crate::catalog::current_catalog_head_matches(
+                                &configuration,
+                                catalog_journal,
+                                expected,
+                            )
+                            .then_some(false)
+                        }
+                        OutcomeDeadlinePolicyV2::RetainedReplay => {
+                            crate::catalog::retained_catalog_head_cleanup_status(
+                                &configuration,
+                                catalog_journal,
+                                expected,
+                                catalog_floor,
+                                historical_verification_time,
+                            )
+                        }
+                    };
+                    let Some(catalog_cleanup_only) = catalog_cleanup_only else {
+                        return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+                    };
+                    cleanup_only_current_policy |= catalog_cleanup_only;
+                }
             }
             (SourceProviderMethod::Acquire, _, _) | (_, Some(_), _) => {
                 return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
@@ -1508,6 +1523,11 @@ impl CurrentRootMountSourceProviderSessionV1 {
             }
         };
         let status = signed_status.subject();
+        self.require_native_outcome_response_v3(
+            authorization,
+            &canonical_response,
+            status.status() == SourceProviderStatus::Complete,
+        )?;
         let expected_descriptor_commitment = source_root_observation
             .as_ref()
             .map(aos_sandbox_source_provider_protocol::source_root_descriptor_commitment_v1)
@@ -1922,6 +1942,11 @@ impl CurrentRootMountSourceProviderSessionV1 {
             return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
         self.revalidate()?;
+        self.require_native_outcome_response_v3(
+            authorization,
+            &canonical_response,
+            status.status() == SourceProviderStatus::Complete,
+        )?;
         let verification_completed = super::current_unix_seconds()?;
         if verification_completed < verification_started
             || (authorization.deadline_policy == OutcomeDeadlinePolicyV2::Fresh
@@ -1951,8 +1976,16 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 anchor
             }
         };
+        native_catalog::require_native_completion_barrier(
+            authorization.native_outcome.is_some()
+                && status.status() == SourceProviderStatus::Complete,
+        )
+        .map_err(|error| self.poison(error))?;
         Ok(VerifiedMountProviderOutcomeV2 {
             canonical_response,
+            native_outcome: native_catalog::retain_original_outcome_owner(
+                &authorization.native_outcome,
+            ),
             method: authorization.method,
             status: status.status(),
             result_digest: status.result_digest(),
