@@ -48,7 +48,7 @@
     then "-proc:none"
     else "-processor ${processorNames source} -processorpath \".\${classpath:+:$classpath}\"";
 
-  archives = [
+  baseArchives = [
     {
       target = "com/beust/jcommander/1.82/jcommander-1.82.jar";
       sourceUrl = "https://repo.maven.apache.org/maven2/com/beust/jcommander/1.82/jcommander-1.82-sources.jar";
@@ -171,6 +171,11 @@
       # The source classifier also carries the separately packaged processor.
       javaRoot = "com/google/auto/value";
       javaMaxDepth = 1;
+      extraJavaSources = [
+        "com/google/auto/value/extension/memoized/Memoized.java"
+        "com/google/auto/value/extension/serializable/SerializableAutoValue.java"
+        "com/google/auto/value/extension/toprettystring/ToPrettyString.java"
+      ];
       copyResources = false;
     }
     {
@@ -344,6 +349,9 @@
       target = "com/google/auto/value/auto-value/1.11.0/auto-value-1.11.0.jar";
       sourceUrl = "https://repo.maven.apache.org/maven2/com/google/auto/value/auto-value/1.11.0/auto-value-1.11.0-sources.jar";
       hash = "sha256-S/8G/gd9aPlkvV4F8CDteP14cHMEQeQDouswY2DEiQo=";
+      # Generate the processor service registrations from @AutoService so
+      # downstream javac bootstrap actions discover the complete processor.
+      autoServiceProcessor = true;
     }
     {
       target = "com/ryanharter/auto/value/auto-value-gson-runtime/1.3.1/auto-value-gson-runtime-1.3.1.jar";
@@ -457,6 +465,9 @@
       target = "it/unimi/dsi/fastutil/7.2.1/fastutil-7.2.1.jar";
       sourceUrl = "https://repo.maven.apache.org/maven2/it/unimi/dsi/fastutil/7.2.1/fastutil-7.2.1-sources.jar";
       hash = "sha256-TcWqnsalUZkOujYP3jRhmdHLcZ4Lwcy4GymJKoa0U4A=";
+      excludeTestSources = true;
+      # The source-built ProGuard 6 CLI reads Java 8 classfiles.
+      javaRelease = 8;
     }
     {
       target = "org/brotli/dec/0.1.2/dec-0.1.2.jar";
@@ -606,18 +617,26 @@
       sourceUrl = "https://repo.maven.apache.org/maven2/org/jctools/jctools-core/3.3.0/jctools-core-3.3.0-sources.jar";
       hash = "sha256-R51NwF2/ifRpE1S9aEuqJ+evbhn8YvMl/RHLxhCUAvw=";
     }
-  ] ++ (if includeModernLibraries then [
-    {
-      target = "com/google/code/gson/gson/2.11.0/gson-2.11.0.jar";
-      sourceUrl = "https://repo.maven.apache.org/maven2/com/google/code/gson/gson/2.11.0/gson-2.11.0-sources.jar";
-      hash = "sha256-SahT9xvIdO4YmKStUAm1fQxTblqZiziQJT/79LcnatM=";
-    }
-    {
-      target = "org/commonmark/commonmark/0.25.0/commonmark-0.25.0.jar";
-      sourceUrl = "https://repo.maven.apache.org/maven2/org/commonmark/commonmark/0.25.0/commonmark-0.25.0-sources.jar";
-      hash = "sha256-5naJrhUSG51OLWK+lFfR86YZH9SHxrnoKKQIgFnobQU=";
-    }
-  ] else []);
+  ];
+
+  archives =
+    baseArchives
+    ++ (
+      if includeModernLibraries
+      then [
+        {
+          target = "com/google/code/gson/gson/2.11.0/gson-2.11.0.jar";
+          sourceUrl = "https://repo.maven.apache.org/maven2/com/google/code/gson/gson/2.11.0/gson-2.11.0-sources.jar";
+          hash = "sha256-SahT9xvIdO4YmKStUAm1fQxTblqZiziQJT/79LcnatM=";
+        }
+        {
+          target = "org/commonmark/commonmark/0.25.0/commonmark-0.25.0.jar";
+          sourceUrl = "https://repo.maven.apache.org/maven2/org/commonmark/commonmark/0.25.0/commonmark-0.25.0-sources.jar";
+          hash = "sha256-5naJrhUSG51OLWK+lFfR86YZH9SHxrnoKKQIgFnobQU=";
+        }
+      ]
+      else []
+    );
 
   sources = builtins.genList (
     index: let
@@ -815,8 +834,15 @@
         if source ? javaMaxDepth
         then "-maxdepth ${toString source.javaMaxDepth}"
         else ""
-      } -type f -name '*.java' \
+      } -type f -name '*.java' ${
+        if source.excludeTestSources or false
+        then "! -name '*Test.java'"
+        else ""
+      } \
         ! -name module-info.java -print > sources-${toString source.index}.list
+      ${builtins.concatStringsSep "\n" (builtins.map (path: ''
+        printf '%s\n' 'source-${toString source.index}/${path}' >> sources-${toString source.index}.list
+      '') (source.extraJavaSources or []))}
       test -s sources-${toString source.index}.list
       javac ${
         if source.javacApiExport or false

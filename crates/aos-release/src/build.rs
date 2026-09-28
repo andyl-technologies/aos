@@ -1,7 +1,8 @@
 //! Exact Nix realization and repeat-build evidence.
 //!
 //! The build report binds every planned Nix output to the observed NAR
-//! identity, closure size, references, and a successful Nix check rebuild.
+//! identity, closure size, references, and an explicit repeat-build result.
+//! Staging-only publication records `not-checked` without claiming reproducibility.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -21,6 +22,8 @@ pub const BUILD_REPORT_V1: &str = "aos.release.build-report/v1";
 pub enum ReproducibilityResult {
     /// Nix proved the repeat output byte-identical.
     Reproduced,
+    /// Publication captured an existing realization without repeat qualification.
+    NotChecked,
 }
 
 /// Observed identity and closure facts for one planned output.
@@ -111,6 +114,9 @@ impl BuildReportV1 {
             bail!("build report outputs must exactly match and sort the plan");
         }
         for output in &self.outputs {
+            if output.reproducibility == ReproducibilityResult::NotChecked && !plan.staging_only {
+                bail!("qualified releases require repeat-build evidence");
+            }
             let Some(planned) = expected.get(output.id.as_str()) else {
                 bail!("build report contains unplanned output {}", output.id);
             };

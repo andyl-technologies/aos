@@ -8,8 +8,27 @@
   bazelErrorProneDataflow,
   bazelGoogleJavaFormat,
   bazelProtobufJava,
+  version ? "2.36.0",
 }: let
-  version = "2.36.0";
+  release =
+    {
+      "2.36.0" = {
+        hash = "sha256-KSLKrx0hNIi1g4Qk2B0kCgGZVeeFm9mYVJYGaKayNxc=";
+        sourceCount = 960;
+        revision = "ab522c7dcac5e83b84828d5670595e5582d71fb3";
+        apiSnapshots = ["7to11diff" "8to11diff" "android" "android_java8"];
+      };
+      "2.41.0" = {
+        hash = "sha256-AYlG4Q0Jz6RLwWrdcXn41s52chiuvvOHaKBm011cXOc=";
+        sourceCount = 948;
+        revision = "d6539d63084b7f366a58bdcafbb889cf897b5297";
+        apiSnapshots = ["8to11diff" "android_java8"];
+      };
+    }.${
+      version
+    }
+    or (throw "unsupported Error Prone Core source version: ${version}");
+  apiSnapshotLiterals = builtins.concatStringsSep ", " (builtins.map (name: "\"${name}\"") release.apiSnapshots);
   buildJdk = buildPackages.openjdk-21;
   checkApiJar = "${bazelErrorProneCheckApi}/maven/com/google/errorprone/error_prone_check_api/${version}/error_prone_check_api-${version}.jar";
   dataflowVersion = bazelErrorProneDataflow.version;
@@ -19,16 +38,17 @@
   protobufJar = "${bazelProtobufJava}/share/java/protobuf-java-${bazelProtobufJava.version}.jar";
 
   license = fetchurl {
-    urls = ["https://raw.githubusercontent.com/google/error-prone/ab522c7dcac5e83b84828d5670595e5582d71fb3/COPYING"];
+    urls = ["https://raw.githubusercontent.com/google/error-prone/${release.revision}/COPYING"];
     hash = "sha256-z8d0m5b2O9McPEK1xHG/dWgUBT6EfBDz6wA0F7xSPTA=";
   };
 in
   mkDerivation {
     pname = "bazel-error-prone-core";
     inherit version;
+    passthru.sourceTargets = ["com/google/errorprone/error_prone_core/${version}/error_prone_core-${version}.jar"];
     src = fetchurl {
       urls = ["https://repo.maven.apache.org/maven2/com/google/errorprone/error_prone_core/${version}/error_prone_core-${version}-sources.jar"];
-      hash = "sha256-KSLKrx0hNIi1g4Qk2B0kCgGZVeeFm9mYVJYGaKayNxc=";
+      inherit (release) hash;
     };
 
     buildDeps = [
@@ -83,8 +103,8 @@ in
                   destination.write_bytes(data)
 
           sources = sorted(Path("source").rglob("*.java"))
-          if len(sources) != 960:
-              raise SystemExit(f"Expected 960 Error Prone Core sources, found {len(sources)}")
+          if len(sources) != ${toString release.sourceCount}:
+              raise SystemExit(f"Expected ${toString release.sourceCount} Error Prone Core sources, found {len(sources)}")
           Path("java-sources").write_text("".join(f"{path}\n" for path in sources))
           PY
         '';
@@ -92,10 +112,10 @@ in
       {
         name = "build";
         script = ''
-          # The four API snapshots are schema-defined protobuf data. Decode
+          # The API snapshots are schema-defined protobuf data. Decode
           # and re-encode each one to reject unknown or opaque payloads.
           resources=source/com/google/errorprone/bugpatterns/apidiff
-          test "$(find "$resources" -name '*.binarypb' | wc -l)" -eq 4
+          test "$(find "$resources" -name '*.binarypb' | wc -l)" -eq ${toString (builtins.length release.apiSnapshots)}
           for resource in "$resources"/*.binarypb; do
             protoc -Isource \
               --decode=devtools.staticanalysis.errorprone.apidiff.Diff \
@@ -139,7 +159,7 @@ in
               public static void main(String[] args) throws Exception {
                   String base = "com/google/errorprone/bugpatterns/apidiff/";
                   for (String name : new String[] {
-                          "7to11diff", "8to11diff", "android", "android_java8"}) {
+                          ${apiSnapshotLiterals}}) {
                       try (InputStream resource = ErrorProneCoreSmoke.class.getClassLoader()
                               .getResourceAsStream(base + name + ".binarypb")) {
                           if (resource == null ||
