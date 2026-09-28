@@ -1220,24 +1220,51 @@ impl Journal {
                 SourceProjectAdmissionTransition::AcknowledgeRetirement,
             ]),
         )?;
+        self.preflight_source_project_negative_capacity_v1(client_nonce, project, names)
+    }
+
+    /// Measures only real reservation, cancellation and ACK transaction sizes.
+    ///
+    /// The placeholders describe capacity, never durable proofs or ancestry.
+    /// The same retained writer must rejoin the preview and append the actual
+    /// reservation only after Root's durable denial capacity is read back.
+    pub(crate) fn preflight_source_project_negative_capacity_v1(
+        &mut self,
+        client_nonce: [u8; 16],
+        project: ProjectId,
+        names: ProtectedJournalNamesV1,
+    ) -> Result<(), JournalError> {
+        let reservation =
+            self.preview_source_project_admission_reservation_v1(client_nonce, project, names)?;
+        let rows = current_rows(&self.state)?;
+        if rows.reservation.is_some() && rows.retirement_ack.is_none() {
+            return Err(JournalError::ProtectedBoundary);
+        }
         let cancellation = SourceProjectReservationCancellationV1 {
-            issue,
+            issue: reservation.issue,
             reservation: reservation.record_digest(),
             root_marker: ObjectDigest::from_bytes([15; 32]),
+        };
+        let terminal = SourceProjectAdmissionTerminalV1 {
+            reservation,
+            challenge: None,
+            terminal: SourceProjectTerminalRecordV1::Cancellation(cancellation),
+        };
+        let ack = SourceProjectTerminalRetirementAckV1 {
+            issue: reservation.issue,
+            reservation: reservation.record_digest(),
+            source_terminal: terminal.source_terminal_digest(),
+            root_floor: ObjectDigest::from_bytes([16; 32]),
         };
         self.preflight_transactions_with_capacity_scope_and_project_admission(
             &[
                 reservation_transaction(
                     reservation,
-                    prior.is_some() && settlement.is_some(),
-                    cancellation.is_some(),
+                    rows.settlement.is_some(),
+                    rows.cancellation.is_some(),
                 )?,
                 cancellation_transaction(cancellation)?,
-                retirement_ack(SourceProjectAdmissionTerminalV1 {
-                    reservation,
-                    challenge: None,
-                    terminal: SourceProjectTerminalRecordV1::Cancellation(cancellation),
-                })?,
+                single_record_transaction(RETIREMENT_ACK_KEY, &ack.encode())?,
             ],
             None,
             false,
@@ -2079,6 +2106,75 @@ mod tests {
             )
             .unwrap();
         assert_eq!(writer.snapshot_sequence(), before);
+    }
+
+    #[test]
+    fn negative_preflight_reserves_three_real_source_cuts_without_ancestry_or_append() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(directory.path()).unwrap().uid();
+        let mut limits = source_domain_journal_limits();
+        limits.maximum_transactions = 2;
+        let (mut writer, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "source-domains-v1.journal",
+            limits,
+            uid,
+        )
+        .unwrap();
+        let names = writer.protected_writer_physical_names_v1().unwrap();
+        let project = ProjectId::from_bytes([73; 16]);
+        let before = writer.snapshot_sequence();
+        assert!(
+            writer
+                .preflight_source_project_negative_capacity_v1([74; 16], project, names)
+                .is_err()
+        );
+        assert_eq!(writer.snapshot_sequence(), before);
+        assert!(
+            writer
+                .source_project_admission_reservation_v1()
+                .unwrap()
+                .is_none()
+        );
+        writer.limits.maximum_transactions = 3;
+        writer
+            .preflight_source_project_negative_capacity_v1([74; 16], project, names)
+            .unwrap();
+        assert_eq!(writer.snapshot_sequence(), before);
+        let reservation = writer
+            .record_source_project_admission_reservation_v1([74; 16], project, names)
+            .unwrap();
+        let marker = test_root_project_reservation_cancellation_v1(reservation);
+        writer
+            .settle_source_project_admission_reservation_v1(
+                reservation,
+                RootProjectReservationCancellationProofV1::from_test_marker(marker),
+            )
+            .unwrap();
+        assert!(
+            writer
+                .source_project_admission_status_v1()
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            writer
+                .preview_source_project_admission_reservation_v1([74; 16], project, names)
+                .is_err()
+        );
+        assert!(writer.compact().is_err());
+        append_retirement_ack_for_test(&mut writer);
+        assert_eq!(writer.committed_transactions, 3);
+        // This test-only exact ACK helper models the final authority join; it
+        // is not a production Root/Controller proof or an installed issuer.
+        assert_eq!(
+            writer
+                .preview_source_project_admission_reservation_v1([74; 16], project, names)
+                .unwrap()
+                .issue(),
+            reservation.issue() + 1
+        );
     }
 
     #[test]

@@ -409,6 +409,46 @@ pub fn reserve_source_project_admission_v1(
     Ok(row)
 }
 
+/// Rejoins a retained prospective Source row and cancellation-only capacity.
+///
+/// This reads actual fixed names and the current issue under the retained
+/// Source writer; it does not require or assert project ancestry. It neither
+/// appends a reservation nor permits positive admission. Controller retains
+/// its writer first, and Root must durably reserve denial capacity before the
+/// actual Source reservation is appended under this same writer.
+///
+/// # Errors
+///
+/// Rejects replaced names, changed preview/issue, pending prior flight, Q04
+/// hold, or insufficient reservation/cancellation/retirement-ACK capacity.
+pub fn preflight_source_project_negative_recovery_v1(
+    owner: &mut ProtectedSourceDomainJournalOwnerV1,
+    expected: SourceProjectAdmissionReservationV1,
+) -> Result<(), SourceProjectAdmissionChallengeErrorV1> {
+    owner.require_fixed_named_writer_v1()?;
+    let names = owner.fixed_physical_names_v1()?;
+    if names != expected.names()
+        || owner
+            .journal()
+            .preview_source_project_admission_reservation_v1(
+                expected.client_nonce(),
+                expected.project(),
+                names,
+            )?
+            != expected
+    {
+        return Err(SourceProjectAdmissionChallengeErrorV1::Stale);
+    }
+    owner
+        .journal()
+        .preflight_source_project_negative_capacity_v1(
+            expected.client_nonce(),
+            expected.project(),
+            names,
+        )?;
+    Ok(())
+}
+
 /// Reads a reservation and whether exact Root cancellation retired it.
 ///
 /// The boolean is not a general terminal flag; a normally settled challenge

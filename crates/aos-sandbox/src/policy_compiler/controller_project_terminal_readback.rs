@@ -210,7 +210,7 @@ fn preimage(body: &[u8]) -> Vec<u8> {
     bytes
 }
 
-fn take<const N: usize>(
+pub(super) fn take<const N: usize>(
     packet: &[u8],
     offset: usize,
 ) -> Result<[u8; N], ControllerProjectAdmissionReadbackErrorV1> {

@@ -30,13 +30,16 @@ pub use history::{
 };
 
 pub(crate) use intent::{
-    ROOT_PROJECT_ADMISSION_INTENT_BYTES_V2,
+    ROOT_PROJECT_ADMISSION_INTENT_BYTES_V2, ROOT_PROJECT_NEGATIVE_INTENT_BYTES_V1,
     validate_capacity_transfer as validate_root_project_capacity_transfer_v1,
 };
 #[cfg(test)]
 mod positive_commit_fixture;
 
-pub use intent::{RootProjectAdmissionIntentV1, prepare_fixed_root_project_admission_intent_v1};
+pub use intent::{
+    RootProjectAdmissionIntentV1, fixed_root_project_negative_recovery_available_v1,
+    prepare_fixed_root_project_admission_intent_v1, prepare_fixed_root_project_negative_intent_v1,
+};
 #[cfg(test)]
 pub(crate) use positive_commit_fixture::signed_heads_for_project as test_signed_project_heads_for_history_v1;
 

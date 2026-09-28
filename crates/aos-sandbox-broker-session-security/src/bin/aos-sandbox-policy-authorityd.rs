@@ -54,15 +54,16 @@ use aos_sandbox::journal::{
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     CLOSED_POLICY_BINDING_BYTES_V2, CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1,
-    CONTROLLER_PROJECT_TERMINAL_READBACK_BYTES_V1, CacheSignerRootChallengeStatusV2,
-    CacheSignerRootSettlementStateV2, ClosedCacheReadbackRootChallengeV1,
-    ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, ClosedSourceTerminalClaimV1,
-    ControllerEffectAckChallengeV1, PinnedSourceHoldReadbackSignerV1, PolicyDeploymentInputsV1,
-    ROOT_PROJECT_ADMISSION_ABORT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_COMMIT_QUERY_MAGIC,
-    ROOT_PROJECT_ADMISSION_CURRENT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_INTENT_QUERY_MAGIC,
-    ROOT_PROJECT_ADMISSION_INTENT_REPLAY_MAGIC, ROOT_PROJECT_ADMISSION_OUTCOME_QUERY_MAGIC,
-    ROOT_PROJECT_ADMISSION_STAGE_QUERY_MAGIC, ROOT_PROJECT_HISTORY_FLOOR_QUERY_MAGIC,
-    ROOT_PROJECT_HISTORY_RETIRE_MAGIC, ROOT_PROJECT_RESERVATION_CANCEL_MAGIC,
+    CONTROLLER_PROJECT_DISPATCH_READBACK_BYTES_V1, CONTROLLER_PROJECT_TERMINAL_READBACK_BYTES_V1,
+    CacheSignerRootChallengeStatusV2, CacheSignerRootSettlementStateV2,
+    ClosedCacheReadbackRootChallengeV1, ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2,
+    ClosedSourceTerminalClaimV1, ControllerEffectAckChallengeV1, PinnedSourceHoldReadbackSignerV1,
+    PolicyDeploymentInputsV1, ROOT_PROJECT_ADMISSION_ABORT_QUERY_MAGIC,
+    ROOT_PROJECT_ADMISSION_COMMIT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_CURRENT_QUERY_MAGIC,
+    ROOT_PROJECT_ADMISSION_INTENT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_INTENT_REPLAY_MAGIC,
+    ROOT_PROJECT_ADMISSION_OUTCOME_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_STAGE_QUERY_MAGIC,
+    ROOT_PROJECT_HISTORY_FLOOR_QUERY_MAGIC, ROOT_PROJECT_HISTORY_RETIRE_MAGIC,
+    ROOT_PROJECT_NEGATIVE_INTENT_QUERY_MAGIC, ROOT_PROJECT_RESERVATION_CANCEL_MAGIC,
     ROOT_PROJECT_RESERVATION_CANCEL_QUERY_MAGIC, ROOT_V8_SETTLED_QUERY_MAGIC,
     RootV8HeldTerminalStepV1, SourceHoldReadbackChallengeV1, StagedClosedPolicyRootBaseV2,
     abandon_fixed_cache_signer_challenge_v2, abort_fixed_root_project_admission_v1,
@@ -77,15 +78,16 @@ use aos_sandbox::policy_compiler::{
     encode_root_project_admission_outcome_reply_v1, encode_root_project_admission_stage_reply_v1,
     encode_root_project_admission_terminal_reply_v1, encode_root_project_history_floor_reply_v1,
     encode_root_project_intent_replay_reply_v1, encode_root_project_intent_reply_v1,
-    encode_root_project_reservation_cancel_reply_v1, encode_root_v8_settled_reply_v1,
-    fixed_root_project_admission_recovery_required_v1,
+    encode_root_project_negative_intent_reply_v1, encode_root_project_reservation_cancel_reply_v1,
+    encode_root_v8_settled_reply_v1, fixed_root_project_admission_recovery_required_v1,
     fixed_root_project_history_readback_available_v1,
-    prepare_fixed_root_project_admission_intent_v1, read_fixed_cache_signer_challenge_v2,
-    read_fixed_inert_closed_policy_binding_hold_v1, read_fixed_policy_cache_hold_v1,
-    record_fixed_cache_signer_root_settlement_v2, recover_fixed_cache_signer_abandonment_v2,
-    recover_fixed_cache_signer_root_history_v2, recover_fixed_cache_signer_root_settlement_v2,
-    recover_fixed_closed_policy_binding_decision_v2, recover_fixed_closed_root_effect_ack_v1,
-    recover_fixed_closed_root_v8_effect_ack_v1,
+    fixed_root_project_negative_recovery_available_v1,
+    prepare_fixed_root_project_admission_intent_v1, prepare_fixed_root_project_negative_intent_v1,
+    read_fixed_cache_signer_challenge_v2, read_fixed_inert_closed_policy_binding_hold_v1,
+    read_fixed_policy_cache_hold_v1, record_fixed_cache_signer_root_settlement_v2,
+    recover_fixed_cache_signer_abandonment_v2, recover_fixed_cache_signer_root_history_v2,
+    recover_fixed_cache_signer_root_settlement_v2, recover_fixed_closed_policy_binding_decision_v2,
+    recover_fixed_closed_root_effect_ack_v1, recover_fixed_closed_root_v8_effect_ack_v1,
     recover_fixed_closed_root_v8_predecessor_settlement_v1,
     recover_fixed_closed_root_v8_terminal_custody_v1,
     recover_fixed_closed_root_v8_verified_terminal_v1,
@@ -217,6 +219,7 @@ enum HeadRequestMode {
     RootV8SettledGrant,
     ProjectAdmissionOutcomeReplay,
     ProjectAdmissionIntent,
+    ProjectNegativeIntent,
     ProjectAdmissionIntentReplay,
     ProjectAdmissionStage,
     ProjectAdmissionCommit,
@@ -674,6 +677,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         Err(error) => {
             if fixed_root_project_admission_recovery_required_v1()?
                 || fixed_root_project_history_readback_available_v1()?
+                || fixed_root_project_negative_recovery_available_v1()?
             {
                 eprintln!(
                     "aos-sandbox-policy-authorityd: current credentials unavailable; serving only exact project recovery: {error}"
@@ -800,6 +804,9 @@ fn serve_project_admission_recovery_request(
     }
     require_no_fixed_closed_policy_binding_hold_v1()?;
     match mode {
+        HeadRequestMode::ProjectNegativeIntent => {
+            serve_project_negative_intent(stream, &request[8..24], controller_uid)
+        }
         HeadRequestMode::ProjectHistoryFloorReplay => {
             serve_project_history_floor_replay(stream, &request[8..24])
         }
@@ -847,7 +854,8 @@ fn serve_project_admission_recovery_request(
 fn project_recovery_mode_allowed(mode: HeadRequestMode) -> bool {
     matches!(
         mode,
-        HeadRequestMode::ProjectHistoryFloorReplay
+        HeadRequestMode::ProjectNegativeIntent
+            | HeadRequestMode::ProjectHistoryFloorReplay
             | HeadRequestMode::ProjectHistoryRetirement
             | HeadRequestMode::ProjectAdmissionOutcomeReplay
             | HeadRequestMode::ProjectAdmissionCurrentStage
@@ -1127,6 +1135,9 @@ fn read_head_request(
         Some(magic) if magic == ROOT_PROJECT_ADMISSION_INTENT_QUERY_MAGIC => {
             HeadRequestMode::ProjectAdmissionIntent
         }
+        Some(magic) if magic == ROOT_PROJECT_NEGATIVE_INTENT_QUERY_MAGIC => {
+            HeadRequestMode::ProjectNegativeIntent
+        }
         Some(magic) if magic == ROOT_PROJECT_ADMISSION_INTENT_REPLAY_MAGIC => {
             HeadRequestMode::ProjectAdmissionIntentReplay
         }
@@ -1229,6 +1240,7 @@ fn read_head_request(
             | HeadRequestMode::RootV8SettledGrant
             | HeadRequestMode::ProjectAdmissionOutcomeReplay
             | HeadRequestMode::ProjectAdmissionIntent
+            | HeadRequestMode::ProjectNegativeIntent
             | HeadRequestMode::ProjectAdmissionIntentReplay
             | HeadRequestMode::ProjectAdmissionStage
             | HeadRequestMode::ProjectAdmissionCommit
@@ -1362,6 +1374,9 @@ fn serve_current_head(
     if matches!(mode, HeadRequestMode::ProjectAdmissionIntentReplay) {
         serve_project_intent_replay(stream, &request[8..24])?;
         return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::ProjectNegativeIntent) {
+        return serve_project_negative_intent(stream, &request[8..24], controller_uid);
     }
     if matches!(mode, HeadRequestMode::ProjectHistoryFloorReplay) {
         return serve_project_history_floor_replay(stream, &request[8..24]);
@@ -2740,6 +2755,30 @@ fn read_project_reservation_request(
     Ok(reservation)
 }
 
+fn serve_project_negative_intent(
+    stream: &mut std::os::unix::net::UnixStream,
+    nonce: &[u8],
+    controller_uid: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut packet = [0; CONTROLLER_PROJECT_DISPATCH_READBACK_BYTES_V1];
+    stream.read_exact(&mut packet)?;
+    require_stream_eof(stream)?;
+    let reservation = SourceProjectAdmissionReservationV1::from_record_bytes(&packet[188..324])?;
+    let nonce: [u8; 16] = nonce.try_into()?;
+    if reservation.client_nonce() != nonce {
+        return Err(
+            io::Error::new(io::ErrorKind::InvalidData, "changed negative intent nonce").into(),
+        );
+    }
+    // Root obtains both historical role pins under its own protected writer.
+    // The request carries no key, credential, positive input or stage authority.
+    let intent = prepare_fixed_root_project_negative_intent_v1(&packet, controller_uid)?;
+    stream.write_all(&encode_root_project_negative_intent_reply_v1(
+        nonce, intent,
+    )?)?;
+    Ok(())
+}
+
 fn serve_project_intent_replay(
     stream: &mut std::os::unix::net::UnixStream,
     client_nonce: &[u8],
@@ -3761,6 +3800,7 @@ fn select_project_source<'a>(
         | HeadRequestMode::RootV8SettledGrant
         | HeadRequestMode::ProjectAdmissionOutcomeReplay
         | HeadRequestMode::ProjectAdmissionIntent
+        | HeadRequestMode::ProjectNegativeIntent
         | HeadRequestMode::ProjectAdmissionIntentReplay
         | HeadRequestMode::ProjectAdmissionStage
         | HeadRequestMode::ProjectAdmissionCommit
@@ -4581,6 +4621,11 @@ mod tests {
     fn project_history_headers_separate_readback_and_retirement_custody() {
         for (magic, expected, opens_root) in [
             (
+                ROOT_PROJECT_NEGATIVE_INTENT_QUERY_MAGIC,
+                HeadRequestMode::ProjectNegativeIntent,
+                true,
+            ),
+            (
                 ROOT_PROJECT_HISTORY_FLOOR_QUERY_MAGIC,
                 HeadRequestMode::ProjectHistoryFloorReplay,
                 false,
@@ -4615,6 +4660,20 @@ mod tests {
                 assert!(!opened);
             }
         }
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        let mut request = [0; REQUEST_BYTES];
+        request[..8].copy_from_slice(b"AOSPHIQ2");
+        request[8..24].fill(1);
+        client.write_all(&request).unwrap();
+        let opened = Cell::new(false);
+        assert!(
+            read_head_request(&mut server, || {
+                opened.set(true);
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(!opened.get());
     }
 
     #[test]
@@ -4638,6 +4697,7 @@ mod tests {
             assert!(error.to_string().contains("recovery-only Root"));
         }
         for mode in [
+            HeadRequestMode::ProjectNegativeIntent,
             HeadRequestMode::ProjectHistoryFloorReplay,
             HeadRequestMode::ProjectHistoryRetirement,
             HeadRequestMode::ProjectAdmissionOutcomeReplay,

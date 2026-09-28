@@ -180,6 +180,52 @@ pub(crate) struct AcceptedControllerProjectTerminalV1 {
     pub kind: RootProjectHistoryTerminalKindV1,
 }
 
+/// Retains an actual immutable flight, solely to obtain a durable Root denial.
+pub(crate) struct ControllerProjectDispatchReadbackV1 {
+    pub operation: aos_sandbox_core::OperationId,
+    pub sandbox: SandboxId,
+    pub project: ProjectId,
+    pub source_commitment: ObjectDigest,
+    pub admission_revision: ObjectDigest,
+    pub admission_generation: u64,
+    pub metadata: ObjectDigest,
+    pub reservation: SourceProjectAdmissionReservationV1,
+}
+
+pub(crate) fn controller_project_dispatch_readback_v1(
+    journal: &Journal,
+    operation: aos_sandbox_core::OperationId,
+) -> Result<ControllerProjectDispatchReadbackV1, ControllerProjectAdmissionJournalErrorV1> {
+    require_controller_writer(journal)?;
+    dispatch_readback_from_original_graph(journal, operation)
+}
+
+fn dispatch_readback_from_original_graph(
+    journal: &Journal,
+    operation: aos_sandbox_core::OperationId,
+) -> Result<ControllerProjectDispatchReadbackV1, ControllerProjectAdmissionJournalErrorV1> {
+    validate_all(journal)?;
+    let effect = decode_effect(
+        journal
+            .get(RecordNamespace::Effect, &effect_key(operation, 0))
+            .ok_or_else(invalid_metadata)?,
+    )?;
+    let metadata = effect.project_admission.ok_or_else(invalid_metadata)?;
+    if metadata.phase != ProjectAdmissionPhase::DispatchAuthorized {
+        return Err(invalid_metadata().into());
+    }
+    Ok(ControllerProjectDispatchReadbackV1 {
+        operation,
+        sandbox: metadata.sandbox,
+        project: metadata.project,
+        source_commitment: metadata.source_commitment,
+        admission_revision: metadata.admission_revision,
+        admission_generation: metadata.admission_generation,
+        metadata: ObjectDigest::from_bytes(Sha256::digest(metadata.encode()?).into()),
+        reservation: metadata.reservation,
+    })
+}
+
 /// Reads only actual accepted original-Effect metadata under Controller custody.
 pub(crate) fn accepted_controller_project_terminal_v1(
     journal: &Journal,
