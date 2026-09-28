@@ -45,11 +45,13 @@ use crate::worker::HostRuntimeIdentity;
 use crate::{HostError, Result};
 
 mod existing_output;
+mod fuse_worker_launch;
 mod no_apply_handoff;
 mod scope_handle;
 pub(crate) mod transition;
 
 use existing_output::DurableExistingOutputObservation;
+use fuse_worker_launch::DurableFuseWorkerLaunchV1;
 pub(crate) use no_apply_handoff::host_execution_receipt_digest;
 use scope_handle::DurableScopeHandle;
 pub(crate) use transition::HostAction;
@@ -127,6 +129,7 @@ pub struct HostState {
     scope_replays: BTreeMap<[u8; 32], DurableScopeReplay>,
     scope_handles: BTreeMap<[u8; 16], DurableScopeHandle>,
     existing_output_observations: BTreeMap<[u8; 16], DurableExistingOutputObservation>,
+    fuse_worker_launches: BTreeMap<[u8; 16], DurableFuseWorkerLaunchV1>,
 }
 
 /// Exact Host-authenticated identity of one descriptor-bearing scope replay.
@@ -224,6 +227,10 @@ struct StateWire {
     scope_handles: Vec<DurableScopeHandle>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     existing_output_observations: Vec<DurableExistingOutputObservation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // Empty tables preserve legacy snapshot bytes. Nonempty rows have their
+    // own closed version and location MAC; old readers reject the new field.
+    fuse_worker_launches: Vec<DurableFuseWorkerLaunchV1>,
 }
 
 #[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
@@ -348,6 +355,7 @@ impl HostState {
             }
         }
         self.validate_scope_handles(authority)?;
+        self.validate_fuse_worker_launches(authority)?;
         for (request_id, observation) in &self.existing_output_observations {
             if request_id != &observation.host_request_id {
                 return Err(HostError::State(
@@ -457,6 +465,7 @@ impl HostState {
         sealed_effect: Vec<u8>,
         authority: &HostAuthorityV1,
     ) -> Result<Admission> {
+        self.require_request_not_worker_escrow(&request_id)?;
         if sealed_fence.is_empty()
             || sealed_effect.is_empty()
             || sealed_fence.len() > MAXIMUM_STATE_BYTES
@@ -493,7 +502,7 @@ impl HostState {
         let execution = DurableExecution::direct_lifecycle(host_action).ok_or_else(|| {
             HostError::State("direct lifecycle execution has an invalid action".to_owned())
         })?;
-        if self.requests.len() >= MAXIMUM_REQUESTS {
+        if self.requests.len() + self.fuse_worker_launches.len() >= MAXIMUM_REQUESTS {
             return Err(HostError::State(
                 "durable host request table reached its fixed bound".to_owned(),
             ));
@@ -563,6 +572,7 @@ impl HostState {
         sealed_effect: Vec<u8>,
         authority: &HostAuthorityV1,
     ) -> Result<Admission> {
+        self.require_request_not_worker_escrow(&request_id)?;
         if !action.is_execution_handoff()
             || admitted.fence.assignment() != assignment
             || admitted.effect.request_id() != &request_id
@@ -637,7 +647,7 @@ impl HostState {
             return Ok(Admission::Pending);
         }
 
-        if self.requests.len() >= MAXIMUM_REQUESTS
+        if self.requests.len() + self.fuse_worker_launches.len() >= MAXIMUM_REQUESTS
             || self.requests.values().any(|request| {
                 request.receipt.is_none()
                     && request.fence.sandbox_id == *assignment.sandbox().as_bytes()
@@ -931,6 +941,7 @@ impl HostState {
         sealed_effect: Vec<u8>,
         authority: &HostAuthorityV1,
     ) -> Result<Admission> {
+        self.require_request_not_worker_escrow(&request_id)?;
         let kind = match action {
             HostAction::Launch => "Guardian",
             HostAction::Stop => "composite Stop",
@@ -962,7 +973,7 @@ impl HostState {
             ));
         }
         self.ensure_incarnation_available(fence.sandbox_id(), fence.incarnation_id())?;
-        if self.requests.len() >= MAXIMUM_REQUESTS {
+        if self.requests.len() + self.fuse_worker_launches.len() >= MAXIMUM_REQUESTS {
             return Err(HostError::State(
                 "durable host request table reached its fixed bound".to_owned(),
             ));
@@ -1319,6 +1330,7 @@ impl HostState {
         request_id: &[u8; 16],
         request_digest: [u8; 32],
     ) -> Result<RuntimeEffectQuery> {
+        self.require_request_not_worker_escrow(request_id)?;
         let Some(record) = self.requests.get(request_id) else {
             return Ok(RuntimeEffectQuery::Absent);
         };
@@ -1660,6 +1672,7 @@ impl HostState {
                 .values()
                 .cloned()
                 .collect(),
+            fuse_worker_launches: self.fuse_worker_launches.values().cloned().collect(),
         };
         serde_json::to_vec(&wire).map_err(|error| HostError::State(error.to_string()))
     }
@@ -1667,7 +1680,7 @@ impl HostState {
     fn decode(bytes: &[u8]) -> Result<Self> {
         let wire: StateWire =
             serde_json::from_slice(bytes).map_err(|error| HostError::State(error.to_string()))?;
-        if wire.requests.len() > MAXIMUM_REQUESTS {
+        if wire.requests.len() + wire.fuse_worker_launches.len() > MAXIMUM_REQUESTS {
             return Err(HostError::State(
                 "durable host request table exceeds its fixed bound".to_owned(),
             ));
@@ -1688,6 +1701,19 @@ impl HostState {
             ));
         }
         let mut state = Self::default();
+        if wire.fuse_worker_launches.len() > MAXIMUM_REQUESTS {
+            return Err(HostError::ResourceExhausted);
+        }
+        for launch in wire.fuse_worker_launches {
+            launch.validate_shape()?;
+            if state
+                .fuse_worker_launches
+                .insert(launch.request_id(), launch)
+                .is_some()
+            {
+                return Err(HostError::Fence("duplicate original worker launch escrow"));
+            }
+        }
         for fence in wire.fences {
             validate_fence(&fence)?;
             if state.fences.insert(fence.sandbox_id, fence).is_some() {
@@ -2885,6 +2911,18 @@ mod tests {
             lease_generation: u64,
             plan_expires_seconds: i64,
         ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let features = if grant.verb() == BrokerVerb::HostPrepareFuseWorkerSession {
+                vec![
+                    aos_sandbox_core::FeatureRef::new(
+                        aos_sandbox_core::HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE,
+                        1,
+                        0,
+                    )
+                    .unwrap(),
+                ]
+            } else {
+                Vec::new()
+            };
             let plan = BrokerAuthorizationPlan::new(
                 BrokerAudience::Host,
                 ProtocolId::HostBroker,
@@ -2897,7 +2935,7 @@ mod tests {
                 self.revocation_scope,
                 100,
                 plan_expires_seconds,
-                Vec::new(),
+                features,
             )
             .unwrap();
             let broker_plan = encode_broker_authorization_plan(&plan);
@@ -2951,6 +2989,117 @@ mod tests {
 
     const TEST_WALL_SECONDS: i64 = 150;
     const TEST_BOOTTIME_NANOSECONDS: u64 = 100;
+
+    #[test]
+    fn signed_worker_preparation_borrows_the_complete_installed_lease() {
+        use aos_proto::aos::sandbox::local::v1::PrepareHostFuseWorkerSessionRequestV1;
+        use aos_sandbox_protocol::host_fuse_worker_session::decode_host_fuse_worker_session_request_v1;
+        use aos_sandbox_protocol::semantics::host_fuse_worker_session::canonical_host_fuse_worker_session_semantics_v1;
+
+        let fixture = AdmissionFixture::new();
+        let authority = fixture.authority();
+        let native_body = runtime_request();
+        let native = admitted_records(&fixture, &authority, &native_body, 1, 300, None);
+        let runtime = ApplyRuntimeRequest::decode_from_slice(&native_body).unwrap();
+        let mut wire = PrepareHostFuseWorkerSessionRequestV1 {
+            fence: runtime.fence.clone(),
+            worker_instance_id: vec![111; 16],
+            preparation_plan_digest: vec![112; 32],
+            mount_reservation_commitment: vec![113; 32],
+            ..Default::default()
+        };
+        let header = wire.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.audience = Audience::AUDIENCE_ROOT_MOUNT.into();
+        header.request_id = vec![114; 16];
+        header.deadline_boottime_nanoseconds = 1_000;
+        header.maximum_response_bytes = 4_096;
+        let body = wire.encode_to_vec();
+        let peer = PeerCredentials {
+            uid: 0,
+            gid: 0,
+            pid: Some(1),
+        };
+        let policy = PeerPolicy {
+            uid: 0,
+            gid: Some(0),
+            audience: Audience::AUDIENCE_ROOT_MOUNT,
+        };
+        let request = decode_host_fuse_worker_session_request_v1(
+            &body,
+            peer,
+            policy,
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        let semantics = canonical_host_fuse_worker_session_semantics_v1(&request).unwrap();
+        let grant = BrokerGrant::new(
+            semantics.verb(),
+            semantics.target(),
+            semantics.commitment(),
+            body.len() as u32,
+            4,
+        )
+        .unwrap();
+        let artifacts =
+            fixture.artifacts_for_grant(native.fence.assignment(), grant.clone(), 1, 300);
+        let prior = authority
+            .seal_fence(request.fence().sandbox_id(), &native.fence)
+            .unwrap();
+
+        let prepared = authority
+            .admit_fuse_worker(&artifacts, &request, &body, &test_clock(), &prior)
+            .unwrap();
+        assert_eq!(prepared.fence.assignment(), native.fence.assignment());
+        assert_eq!(
+            prepared.fence.local_lease_record(),
+            native.fence.local_lease_record()
+        );
+        assert_ne!(prepared.fence.plan_digest(), native.fence.plan_digest());
+        assert!(
+            authority
+                .admit_fuse_worker(&artifacts, &request, &body, &test_clock(), &[])
+                .is_err()
+        );
+
+        let renewed = fixture.artifacts_for_grant(native.fence.assignment(), grant, 2, 300);
+        assert!(
+            authority
+                .admit_fuse_worker(&renewed, &request, &body, &test_clock(), &prior)
+                .is_err()
+        );
+        for case in 0..4 {
+            let mut changed = wire.clone();
+            let fence = changed.fence.get_or_insert_default();
+            match case {
+                0 => fence.assignment_epoch += 1,
+                1 => fence.desired_generation += 1,
+                2 => fence.incarnation_id[0] ^= 1,
+                3 => fence.assignment_digest[0] ^= 1,
+                _ => unreachable!(),
+            }
+            let changed_body = changed.encode_to_vec();
+            let changed_request = decode_host_fuse_worker_session_request_v1(
+                &changed_body,
+                peer,
+                policy,
+                TEST_BOOTTIME_NANOSECONDS,
+            )
+            .unwrap();
+            assert!(
+                authority
+                    .admit_fuse_worker(
+                        &artifacts,
+                        &changed_request,
+                        &changed_body,
+                        &test_clock(),
+                        &prior
+                    )
+                    .is_err(),
+                "assignment substitution {case}"
+            );
+        }
+    }
 
     fn test_peer() -> PeerCredentials {
         PeerCredentials {

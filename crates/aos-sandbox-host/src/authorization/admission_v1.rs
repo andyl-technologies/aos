@@ -604,6 +604,42 @@ impl HostAuthorityV1 {
         )
     }
 
+    pub(crate) fn admit_fuse_worker(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: &aos_sandbox_protocol::host_fuse_worker_session::ValidatedHostFuseWorkerSessionRequestV1,
+        request_body: &[u8],
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedHostAdmissionV1, HostAdmissionError> {
+        let semantics = aos_sandbox_protocol::semantics::host_fuse_worker_session::
+            canonical_host_fuse_worker_session_semantics_v1(request)
+            .map_err(|_| HostAdmissionError::RequestMismatch)?;
+        self.authority.admit_host_fuse_worker(
+            artifacts,
+            AdmissionRequest {
+                audience: BrokerAudience::Host,
+                protocol: ProtocolId::HostBroker,
+                protocol_version: ProtocolVersion::new(1, 0),
+                assignment: request
+                    .fence()
+                    .broker_assignment()
+                    .map_err(|_| HostAdmissionError::RequestMismatch)?,
+                request_id: *request.header().request_id(),
+                request_body,
+                descriptor_count: 4,
+                verb: semantics.verb(),
+                target: semantics.target(),
+                argument_commitment: semantics.commitment(),
+                request_deadline_boottime_nanoseconds: request
+                    .header()
+                    .deadline_boottime_nanoseconds(),
+            },
+            current_clock,
+            prior_fence,
+        )
+    }
+
     pub(crate) fn check_before_effect<F>(
         &self,
         effect: &BrokerEffectIntentV1,

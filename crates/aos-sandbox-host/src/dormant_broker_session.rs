@@ -6,7 +6,7 @@
 //! session's pinned kernel boot.
 
 use std::future::Future;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::pin::Pin;
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
@@ -36,6 +36,33 @@ use crate::worker::HostWorker;
 
 mod sealed {
     pub trait Sealed {}
+}
+
+/// Retains comparison-only reply copies from the actual original worker launch.
+///
+/// This is not a terminal outcome, live Mount lease or read grant. Security
+/// retains the original pending session writer while lending this reply; the
+/// owning Host broker separately retains the actual process and private PID1
+/// connection. Borrowed descriptors can be duplicated, so their presence
+/// does not establish completion of the outgoing copy-close barrier.
+#[doc(hidden)]
+pub struct DormantOriginalHostFuseWorkerPreparationV1 {
+    body: Vec<u8>,
+    descriptors: [OwnedFd; 2],
+}
+
+impl DormantOriginalHostFuseWorkerPreparationV1 {
+    /// Borrows the bounded original response solely for exact comparisons.
+    #[must_use]
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
+
+    /// Borrows Host's reply copies without converting them into worker authority.
+    #[must_use]
+    pub fn descriptors(&self) -> [BorrowedFd<'_>; 2] {
+        self.descriptors.each_ref().map(|fd| fd.as_fd())
+    }
 }
 
 /// Reports rejection at the dormant broker-session-to-Host boundary.
@@ -167,6 +194,35 @@ impl DormantHostBrokerObservationV1 {
 /// Defines the closed asynchronous Host call surface accepted by security.
 #[doc(hidden)]
 pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
+    /// Admits purpose 56 and retains permanent escrow before fixed PID1 launch.
+    ///
+    /// The caller must hold the actual original pending session cut, consume
+    /// its received packet and move the exact four role owners here. The
+    /// currentness callback supplements, never replaces, Host's independent
+    /// signed-plan, installed-assignment and complete local-lease admission.
+    /// No terminal outcome or backing permission is produced.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign request, role substitution, changed pending/current
+    /// custody, occupied escrow, stale image or failed launch/readback. Any
+    /// failure after escrow is durable requires reconciliation, not reissue.
+    fn prepare_original_fuse_worker<'call>(
+        &'call mut self,
+        request: &'call AuthenticatedBrokerMethodRequestV1,
+        roles: [OwnedFd; 4],
+        pending_guard: &'call mut (dyn FnMut() -> Result<(), HostError> + Send),
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        DormantOriginalHostFuseWorkerPreparationV1,
+                        DormantHostBrokerCallErrorV1,
+                    >,
+                > + 'call,
+        >,
+    >;
+
     /// Transfers an authenticated launch-owned guest channel after Host commit.
     ///
     /// A failed response transport does not erase this one-shot in-memory
@@ -493,6 +549,33 @@ where
     Store: HostStateStore,
     Worker: HostWorker + Sync,
 {
+    fn prepare_original_fuse_worker<'call>(
+        &'call mut self,
+        request: &'call AuthenticatedBrokerMethodRequestV1,
+        roles: [OwnedFd; 4],
+        pending_guard: &'call mut (dyn FnMut() -> Result<(), HostError> + Send),
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        DormantOriginalHostFuseWorkerPreparationV1,
+                        DormantHostBrokerCallErrorV1,
+                    >,
+                > + 'call,
+        >,
+    > {
+        Box::pin(async move {
+            let reply = self
+                .broker
+                .prepare_original_fuse_worker(request, roles, pending_guard)
+                .await?;
+            Ok(DormantOriginalHostFuseWorkerPreparationV1 {
+                body: reply.body,
+                descriptors: reply.descriptors,
+            })
+        })
+    }
+
     fn take_authenticated_agent_launch(&mut self) -> Option<HostAgentLiveSessionV1> {
         self.broker.take_authenticated_agent_launch()
     }
