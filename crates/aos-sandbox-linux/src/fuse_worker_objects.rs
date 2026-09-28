@@ -356,6 +356,16 @@ impl MountCreatedFuseWorkerObjectsV1 {
         &self.channel
     }
 
+    /// Mutably borrows only Mount's original preparation endpoint.
+    ///
+    /// This is not a copy-closure assertion or a consumer grant. Trusted
+    /// callers must retain the owning Mount writer, exclude competing I/O and
+    /// separately join the actual Host continuation and record subject.
+    #[doc(hidden)]
+    pub fn channel_mut(&mut self) -> &mut SeqpacketSocket {
+        &mut self.channel
+    }
+
     /// Borrows the cancellation reader; no writer travels in the launch table.
     pub fn cancellation_reader(&self) -> BorrowedFd<'_> {
         self.cancellation_reader.as_fd()
