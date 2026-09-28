@@ -11,6 +11,7 @@ import fuse_worker_policy
 import guest_file_policy
 import owner_policy
 import rule_query
+import view_policy
 
 
 DOMAINS = (
@@ -37,7 +38,9 @@ EXPLICIT_LOADER_ATTRIBUTE = "aos_explicit_loader_domain"
 EXPLICIT_LOADER_DOMAINS = (fuse_worker_policy.WORKER_DOMAIN, GUEST_OWNER, GUEST_TENANT)
 NO_CONTEXT_TRANSLATION_ATTRIBUTE = "aos_no_context_translation_domain"
 NO_CONTEXT_TRANSLATION_DOMAINS = (
-    fuse_worker_policy.WORKER_DOMAIN, *owner_policy.HELPER_DOMAINS,
+    fuse_worker_policy.WORKER_DOMAIN,
+    *owner_policy.HELPER_DOMAINS,
+    *view_policy.SIGNER_DOMAINS,
 )
 PRIVATE_ROOT_CUSTODY_ATTRIBUTE = "aos_private_root_custody_domain"
 EXPLICIT_DOMAIN_ATTRIBUTES = (
