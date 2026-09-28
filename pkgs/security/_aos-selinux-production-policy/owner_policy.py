@@ -85,7 +85,7 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         ))
         positive.extend((
             Access(domain, "init_t", "system", "status"),
-            Access(domain, "systemd_unit_file_t", "service", "status"),
+            Access(domain, "systemd_unit_t", "service", "status"),
         ))
         transitions.append(Transition(domain, state, "file", state))
         transitions.append(Transition(domain, runtime, "sock_file", runtime))

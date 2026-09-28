@@ -280,6 +280,38 @@ class PlanSemanticsTest(unittest.TestCase):
                 "system_u:object_r:ld_so_t:s0",
             )
 
+    def test_generic_unit_alias_labels_original_store_fragment(self) -> None:
+        class Resolver:
+            def lookup(
+                self, path: str, _kind: context_plan.InodeKind
+            ) -> str | None:
+                # Pinned init.fc plus file_contexts.subs_dist maps this alias
+                # to /usr/lib/systemd/system's canonical generic unit type.
+                if path.startswith("/etc/systemd/system"):
+                    return "system_u:object_r:systemd_unit_t"
+                if path.startswith("/nix"):
+                    return "system_u:object_r:default_t"
+                return "system_u:object_r:root_t"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fragment = root / "nix.lower/store/hash-systemd-units/aos-sandboxd.service"
+            fragment.parent.mkdir(parents=True)
+            fragment.write_text("[Service]\nExecStart=/fixed-owner\n", encoding="ascii")
+            fragment.chmod(0o444)
+            (root / "nix").mkdir()
+            (root / "etc/systemd").mkdir(parents=True)
+            (root / "etc/systemd/system").symlink_to("/nix/store/hash-systemd-units")
+
+            labels = context_plan.plan_labels(
+                context_plan.inventory_tree(root), Resolver()
+            )
+            by_path = {label.path: label.context for label in labels}
+            self.assertEqual(
+                by_path["/nix.lower/store/hash-systemd-units/aos-sandboxd.service"],
+                "system_u:object_r:systemd_unit_t",
+            )
+
     def test_specific_alias_overrides_dual_use_libc_fallback(self) -> None:
         class Resolver:
             def lookup(

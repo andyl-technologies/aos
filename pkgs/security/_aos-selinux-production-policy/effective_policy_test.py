@@ -714,13 +714,42 @@ class EffectivePolicyTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
                 effective_policy.check_policy(FAKE_SETOOLS, policy)
 
+    def test_owner_status_uses_pinned_generic_unit_type(self) -> None:
+        source = Path(__file__).with_name("owner_confinement.te").read_text()
+        self.assertIn("type systemd_unit_t;", source)
+        self.assertNotIn("systemd_unit_file_t", source)
+
+        for domain in effective_policy.owner_policy.OWNER_DOMAINS:
+            with self.subTest(domain=domain):
+                access = effective_policy.Access(
+                    domain, "systemd_unit_t", "service", "status"
+                )
+                self.assertIn(access, effective_policy.POSITIVE_ACCESS)
+                self.assertIn(
+                    f"allow {domain} systemd_unit_t:service status;", source
+                )
+                self.assert_missing_allow_rejected(access)
+
+    def test_owner_generic_unit_access_stays_status_only(self) -> None:
+        for domain in effective_policy.owner_policy.OWNER_DOMAINS:
+            for permission in ("start", "stop", "reload", "enable", "disable"):
+                with self.subTest(domain=domain, permission=permission):
+                    self.assertIn(
+                        effective_policy.Access(domain, "*", "service", permission),
+                        effective_policy.NEGATIVE_ACCESS,
+                    )
+                    access = effective_policy.Access(
+                        domain, "systemd_unit_t", "service", permission
+                    )
+                    self.assert_forbidden_allow_rejected(access)
+
     def test_owner_cannot_change_manager_or_policy_or_cgroup(self) -> None:
         for access in (
             effective_policy.Access(
                 "aos_sandbox_controller_t", "init_t", "system", "reload",
             ),
             effective_policy.Access(
-                "aos_sandbox_storage_t", "systemd_unit_file_t", "service", "start",
+                "aos_sandbox_storage_t", "systemd_unit_t", "service", "start",
             ),
             effective_policy.Access(
                 "aos_sandbox_policy_authority_t", "security_t", "security", "setenforce",

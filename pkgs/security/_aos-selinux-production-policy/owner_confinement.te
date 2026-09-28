@@ -11,7 +11,8 @@ require {
     type sysctl_kernel_t;
     type cgroup_t;
     type init_exec_t;
-    type systemd_unit_file_t;
+    # Matches pinned refpolicy's init_get_generic_units_status target.
+    type systemd_unit_t;
     type system_dbusd_t;
     type system_dbusd_var_run_t;
     type null_device_t;
@@ -76,7 +77,7 @@ allow aos_sandbox_controller_t system_dbusd_var_run_t:sock_file { getattr open r
 allow aos_sandbox_controller_t system_dbusd_t:unix_stream_socket connectto;
 allow aos_sandbox_controller_t { init_t system_dbusd_t }:dbus send_msg;
 allow { init_t system_dbusd_t } aos_sandbox_controller_t:dbus send_msg;
-allow aos_sandbox_controller_t systemd_unit_file_t:service status;
+allow aos_sandbox_controller_t systemd_unit_t:service status;
 allow aos_sandbox_controller_t init_t:system status;
 
 type aos_sandbox_storage_t;
@@ -130,7 +131,7 @@ allow aos_sandbox_storage_t system_dbusd_var_run_t:sock_file { getattr open read
 allow aos_sandbox_storage_t system_dbusd_t:unix_stream_socket connectto;
 allow aos_sandbox_storage_t { init_t system_dbusd_t }:dbus send_msg;
 allow { init_t system_dbusd_t } aos_sandbox_storage_t:dbus send_msg;
-allow aos_sandbox_storage_t systemd_unit_file_t:service status;
+allow aos_sandbox_storage_t systemd_unit_t:service status;
 allow aos_sandbox_storage_t init_t:system status;
 
 type aos_sandbox_policy_authority_t;
@@ -184,7 +185,7 @@ allow aos_sandbox_policy_authority_t system_dbusd_var_run_t:sock_file { getattr 
 allow aos_sandbox_policy_authority_t system_dbusd_t:unix_stream_socket connectto;
 allow aos_sandbox_policy_authority_t { init_t system_dbusd_t }:dbus send_msg;
 allow { init_t system_dbusd_t } aos_sandbox_policy_authority_t:dbus send_msg;
-allow aos_sandbox_policy_authority_t systemd_unit_file_t:service status;
+allow aos_sandbox_policy_authority_t systemd_unit_t:service status;
 allow aos_sandbox_policy_authority_t init_t:system status;
 
 # Root owns its accepted endpoint. A Controller client needs only pathname
