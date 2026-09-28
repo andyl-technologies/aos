@@ -84,7 +84,10 @@ fn views(bytes: &[Vec<u8>; 4]) -> PolicyDeploymentInputsV1<'_> {
     }
 }
 
-fn original_input(target: SandboxId, request: Option<PolicyLayerV1>) -> PolicyCompilerInputV1 {
+pub(in crate::policy_compiler) fn original_input(
+    target: SandboxId,
+    request: Option<PolicyLayerV1>,
+) -> PolicyCompilerInputV1 {
     let project = ProjectId::from_bytes([1; 16]);
     let key = SigningKey::from_bytes(&[21; 32]);
     let (packet, bytes) = signed_test_deployment_input_fixture_v1(&key);
@@ -93,7 +96,10 @@ fn original_input(target: SandboxId, request: Option<PolicyLayerV1>) -> PolicyCo
     let legacy =
         decode_policy_deployment_sources_v1(&views(&bytes), head).expect("typed limit fixture");
     let domain = AuthenticatedCacheDomainV1::authenticate(
-        CacheDomain::new(CacheDomainKind::Project, CacheDomainId::from_bytes([3; 16])),
+        CacheDomain::new(
+            CacheDomainKind::Project,
+            CacheDomainId::from_bytes(*project.as_bytes()),
+        ),
         CacheDomainBindingV1::Project(project),
         &SyntheticInputVerifier,
     )
@@ -808,7 +814,10 @@ fn project_v3_six_layer_fields_are_exact_not_recovered_from_equal_output() {
         AdvisoryDegradationV1::Omit,
     );
     let domain = AuthenticatedCacheDomainV1::authenticate(
-        CacheDomain::new(CacheDomainKind::Project, CacheDomainId::from_bytes([3; 16])),
+        CacheDomain::new(
+            CacheDomainKind::Project,
+            CacheDomainId::from_bytes(*input.project().project().as_bytes()),
+        ),
         CacheDomainBindingV1::Project(input.project().project()),
         &SyntheticInputVerifier,
     )

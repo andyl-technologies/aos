@@ -164,7 +164,7 @@ impl RetainedPublisherCompilerOriginV3 {
         {
             return Err(PublisherPolicyError::InvalidPolicyRevision);
         }
-        let candidate = PolicyCompilerV1::compile(expected.clone())
+        let candidate = PolicyCompilerV1::compile_retained(expected)
             .map_err(|_| PublisherPolicyError::InvalidPolicyRevision)?;
         self.compare_compiled_derivation(expected, &candidate)
     }
@@ -377,7 +377,7 @@ fn derive_origin(
     if !input.ancestors().is_empty() {
         return Err(PublisherPolicyError::InvalidPolicyRevision);
     }
-    let candidate = PolicyCompilerV1::compile(input.clone())
+    let candidate = PolicyCompilerV1::compile_retained(input)
         .map_err(|_| PublisherPolicyError::InvalidPolicyRevision)?;
     retain_derivation(input, &candidate)
 }

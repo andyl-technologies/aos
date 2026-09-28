@@ -230,7 +230,6 @@ pub use protected_owner::{
     PolicyCompilerProtectedObservationRecoveryV1, PolicyCompilerProtectedOpenReportV1,
     PolicyCompilerProtectedOwnerV1,
 };
-pub use resolved_policy::{HeldResolvedRuntimePolicyV1, PolicyCompilerStateReadbackOwnerV1};
 #[cfg(target_os = "linux")]
 pub use public_create_source::with_current_create_cache_signer_barrier_v5;
 #[cfg(target_os = "linux")]
@@ -254,6 +253,7 @@ pub use publisher_origin::{
     CompiledPublisherPolicyRevisionV2, RetainedPublisherCompilerOriginV3,
     compile_publisher_policy_revision_v2,
 };
+pub use resolved_policy::{HeldResolvedRuntimePolicyV1, PolicyCompilerStateReadbackOwnerV1};
 pub use resources::{
     BackendEnforcementSetV1, HardEnforcementV1, HardLimitProvenanceV1, HardLimitRequestV1,
     HardLimitValueV1, HardResourceKeyV1, HardResourceModelError, HardResourcePlanV1,

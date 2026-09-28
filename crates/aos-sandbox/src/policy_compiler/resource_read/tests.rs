@@ -151,6 +151,70 @@ fn resource_read_retained_compile_keeps_work_admission_first() {
 }
 
 #[test]
+fn resource_read_same_target_origin_reuses_exact_borrowed_derivation() {
+    let original_input = super::super::project_source_v3::tests::original_input;
+    let input = original_input(aos_sandbox_core::SandboxId::from_bytes([2; 16]), None);
+    let prepared = super::super::compile_publisher_policy_revision_v2(&input, 1, 1, 30)
+        .expect("actual original compiler producer");
+    let origin = prepared
+        .revision()
+        .compiler_origin()
+        .expect("retained original provenance");
+    let foreign_input = original_input(aos_sandbox_core::SandboxId::from_bytes([71; 16]), None);
+    let foreign = super::super::compile_publisher_policy_revision_v2(&foreign_input, 1, 1, 30)
+        .expect("explicit different original target");
+    let mut untrusted_bytes = origin.to_record_bytes().unwrap();
+    untrusted_bytes[268] ^= 1;
+    let untrusted = RetainedPublisherCompilerOriginV3::from_record_bytes(&untrusted_bytes)
+        .expect("cold input bytes remain data, not reconstructed authenticated input");
+    let publication = fixture::compiled_publication_from_input(input.clone());
+    let root = root();
+    let mut owner = open(root.path());
+    let sequence = commit_fixture(&mut owner, &publication);
+
+    for cold in [false, true] {
+        if cold {
+            drop(owner);
+            owner = open(root.path());
+        }
+        owner
+            .with_current_policy_claim(publication.project, publication.sandbox, |state| {
+                let assignment = assignment(&input, state.policy_descriptor().clone());
+                let compared = compare_held_resource_read_policy_v1(
+                    state,
+                    &input,
+                    &assignment,
+                    1,
+                    &publication.prerequisites,
+                )
+                .unwrap();
+                compared
+                    .compare_same_target_publisher_origin(origin)
+                    .unwrap();
+                assert!(matches!(
+                    compared.compare_same_target_publisher_origin(
+                        foreign.revision().compiler_origin().unwrap()
+                    ),
+                    Err(ResourceReadPolicyComparisonErrorV1::OriginalTargetMismatch)
+                ));
+                assert!(matches!(
+                    compared.compare_same_target_publisher_origin(&untrusted),
+                    Err(ResourceReadPolicyComparisonErrorV1::PublisherOrigin(_))
+                ));
+                // Origin data cannot replace the exact input retained by the
+                // comparison. The same fresh candidate and held cut remain intact.
+                assert_eq!(
+                    compared.candidate().commitment().digest(),
+                    origin.candidate()
+                );
+                compared.recheck().unwrap();
+            })
+            .unwrap();
+    }
+    assert_eq!(owner.journal.snapshot_sequence(), sequence);
+}
+
+#[test]
 fn resource_read_derivation_all_four_domains_retain_exact_cold_state() {
     for domain in [
         CacheDomainKind::Private,

@@ -2408,6 +2408,17 @@ Resource-read continuity after an initiating capability expires belongs to
 the separate durable resolved-policy/current-assignment/lease owner join,
 not a fresh public Create/Attach admission.
 
+The retained-input compiler entry runs the same complete algorithm without
+cloning the original owner model and keeps work admission first. A state
+derivation comparison retains a borrow of the exact expected typed input it
+freshly compiled. Its crate-private same-target publisher-origin hook reuses
+that candidate and the existing complete origin comparison while rechecking
+the held state writer before and after. It cannot substitute cold input data,
+remove any original input/output check, or treat a different original target
+as the current target; that case still requires independently reconstructed
+original typed input and its own compile. Both comparison results remain
+nonauthorizing and do not replace the real Root-last current owner join.
+
 ## Portable tree format
 
 The tree format is a Merkle graph of bounded directory and node objects. Each

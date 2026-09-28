@@ -482,4 +482,4 @@ fn take<const N: usize>(
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
