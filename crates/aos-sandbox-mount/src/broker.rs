@@ -455,7 +455,13 @@ impl<W: MountWorker> MountBroker<W> {
                     .is_none_or(|resource| {
                         resource.phase() == DestinationSlotResourcePhaseV1::Materializing
                     });
-                if must_be_unused && !destination_slot_is_unused(&self.resources, &binding) {
+                if must_be_unused
+                    && !destination_slot_is_unused(
+                        &self.resources,
+                        &self.fuse_reservations,
+                        &binding,
+                    )
+                {
                     return Err(MountError::Fence(
                         "destination slot is already claimed by Mount state",
                     ));
@@ -493,6 +499,7 @@ impl<W: MountWorker> MountBroker<W> {
                 )?;
                 let authority = &self.authority;
                 let resources = &self.resources;
+                let fuse_reservations = &self.fuse_reservations;
                 let slots = self.destination_slots.as_mut().ok_or_else(|| {
                     MountError::State("destination-slot ownership disappeared".to_owned())
                 })?;
@@ -509,7 +516,11 @@ impl<W: MountWorker> MountBroker<W> {
                                     "destination-slot authority expired before reaping",
                                 )
                             })?;
-                        Ok(destination_slot_is_unused(resources, binding))
+                        Ok(destination_slot_is_unused(
+                            resources,
+                            fuse_reservations,
+                            binding,
+                        ))
                     })?
                     .0
             }
@@ -527,6 +538,7 @@ impl<W: MountWorker> MountBroker<W> {
                 )?;
                 let authority = &self.authority;
                 let resources = &self.resources;
+                let fuse_reservations = &self.fuse_reservations;
                 let slots = self.destination_slots.as_mut().ok_or_else(|| {
                     MountError::State("destination-slot ownership disappeared".to_owned())
                 })?;
@@ -534,7 +546,9 @@ impl<W: MountWorker> MountBroker<W> {
                     .rematerialize_guarded(
                         &mut self.journal,
                         &mutation,
-                        |binding| Ok(destination_slot_is_unused(resources, binding)),
+                        |binding| {
+                            Ok(destination_slot_is_unused(resources, fuse_reservations, binding))
+                        },
                         || {
                             authority
                                 .check_before_effect(&effect, &mut || {
@@ -2215,6 +2229,7 @@ fn destination_slot_binding(
 
 fn destination_slot_is_unused(
     resources: &MountResourceTableV1,
+    fuse_reservations: &FuseWorkerReservationTableV1,
     binding: &DestinationSlotBindingV1,
 ) -> bool {
     resources.destination_slot_is_unused(
@@ -2222,7 +2237,14 @@ fn destination_slot_is_unused(
         binding.incarnation_id(),
         binding.namespace_generation(),
         binding.slot_id().as_bytes(),
-    )
+    ) && !fuse_reservations.rows().any(|reservation| {
+        // Every retained generation fences the physical slot, including an
+        // expired preparation or an unverified terminal claim. Namespace/head
+        // changes cannot make its original connection obligations disappear.
+        reservation.assignment.sandbox_id == *binding.sandbox_id()
+            && reservation.assignment.incarnation_id == *binding.incarnation_id()
+            && reservation.destination_slot_id == *binding.slot_id().as_bytes()
+    })
 }
 
 fn ensure_fuse_slots_exclude_native(
@@ -3881,6 +3903,118 @@ mod tests {
     }
 
     #[test]
+    fn fuse_request_index_blocks_authorized_native_request_id_reuse_after_recovery() {
+        let directory = private_destination_slot_root();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, _) = test_broker_with_destination_slots(
+            open(&path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let native = request(33);
+        let reservation = fuse_reservation(20);
+        let mut other_slot = reservation.clone();
+        other_slot.destination_slot_id = [5; 16];
+        let reservation_record = broker
+            .fuse_reservations
+            .prepare_reservation(&other_slot)
+            .unwrap();
+
+        // This exercises the shared atomic index, not a live FUSE producer or
+        // connected-worker grant. Native admission below uses real signatures.
+        let fuse_body = b"distinct original FUSE request";
+        let index =
+            fuse_intent::fuse_intent_idempotency_record(&broker.journal, [33; 16], fuse_body)
+                .unwrap();
+        let effect = JournalRecord::put(RecordNamespace::Effect, vec![33; 16], vec![81; 32]);
+        let origin = JournalRecord::put(
+            RecordNamespace::AuthorityPublication,
+            b"test-original-fuse-origin".to_vec(),
+            vec![82; 32],
+        );
+        broker
+            .journal
+            .commit(
+                &JournalTransaction::new([83; 16], vec![index, reservation_record, effect, origin])
+                    .unwrap(),
+            )
+            .unwrap();
+        drop(broker);
+
+        let (mut recovered, recovered_fixture) = test_broker_with_destination_slots(
+            open(&path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let before = std::fs::read(&path).unwrap();
+        assert!(matches!(
+            apply(&mut recovered, &recovered_fixture, &native),
+            Err(MountError::Fence(
+                "request ID was reused with different bytes"
+            ))
+        ));
+        assert_eq!(recovered.worker.calls, 0);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(recovered.fuse_reservations.rows().count(), 1);
+
+        let native_slot = destination_slot_request(
+            33,
+            1,
+            6,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+            None,
+            None,
+        );
+        assert!(matches!(
+            apply_destination_slot(&mut recovered, &recovered_fixture, &native_slot, 1),
+            Err(MountError::Fence(
+                "request ID was reused with different bytes"
+            ))
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(recovered.fuse_reservations.rows().count(), 1);
+    }
+
+    #[test]
+    fn native_request_index_blocks_fuse_even_when_native_effect_is_absent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let native = request(34);
+        apply(&mut broker, &fixture, &native).unwrap();
+
+        for body in [native.as_slice(), b"distinct FUSE body".as_slice()] {
+            let sequence = broker.journal.snapshot_sequence();
+            assert!(
+                fuse_intent::fuse_intent_idempotency_record(&broker.journal, [34; 16], body,)
+                    .is_err()
+            );
+            assert_eq!(broker.journal.snapshot_sequence(), sequence);
+        }
+        broker
+            .journal
+            .commit(
+                &JournalTransaction::new(
+                    [84; 16],
+                    vec![JournalRecord::delete(RecordNamespace::Effect, vec![34; 16])],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(
+            fuse_intent::fuse_intent_idempotency_record(
+                &broker.journal,
+                [34; 16],
+                b"distinct FUSE body",
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(broker.fuse_reservations.rows().count(), 0);
+    }
+
+    #[test]
     fn native_resource_blocks_fuse_reservation_and_forged_recovery() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("mount.journal");
@@ -4669,6 +4803,170 @@ mod tests {
             apply_destination_slot(&mut recovered, &recovered_fixture, &request, 1).unwrap(),
             first
         );
+    }
+
+    #[test]
+    fn retained_fuse_reservation_fences_slot_materialization_after_recovery() {
+        let directory = private_destination_slot_root();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, _) = test_broker_with_destination_slots(
+            open(&path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let reservation = fuse_reservation(20);
+        broker.reserve_fuse_worker_gen1(&reservation).unwrap();
+        drop(broker);
+
+        let (mut recovered, fixture) = test_broker_with_destination_slots(
+            open(&path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let materialize = destination_slot_request(
+            92,
+            1,
+            6,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+            None,
+            None,
+        );
+        let decoded = decode_destination_slot_request(
+            &materialize,
+            peer(),
+            policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        let binding = destination_slot_binding(&decoded).unwrap();
+
+        assert!(matches!(
+            apply_destination_slot(&mut recovered, &fixture, &materialize, 1),
+            Err(MountError::Fence(
+                "destination slot is already claimed by Mount state"
+            ))
+        ));
+        assert!(
+            recovered
+                .destination_slots
+                .as_ref()
+                .unwrap()
+                .get(&binding)
+                .is_none()
+        );
+        assert_eq!(
+            recovered.fuse_reservations.rows().next().unwrap(),
+            &reservation
+        );
+        assert_eq!(recovered.worker.calls, 0);
+
+        let mut unrelated = materialize;
+        let mut wire = ApplyDestinationSlotRequest::decode_from_slice(&unrelated).unwrap();
+        wire.fence.get_or_insert_default().incarnation_id = vec![3; 16];
+        unrelated = wire.encode_to_vec();
+        let decoded = decode_destination_slot_request(
+            &unrelated,
+            peer(),
+            policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        let other = destination_slot_binding(&decoded).unwrap();
+        assert!(destination_slot_is_unused(
+            &recovered.resources,
+            &recovered.fuse_reservations,
+            &other,
+        ));
+    }
+
+    #[test]
+    fn retained_fuse_reservation_blocks_reap_and_stale_rematerialization() {
+        for action in [
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE,
+        ] {
+            let directory = private_destination_slot_root();
+            let path = directory.path().join("mount.journal");
+            let (mut broker, fixture) = test_broker_with_destination_slots(
+                open(&path),
+                ScriptedWorker::default(),
+                directory.path(),
+            );
+            let materialize = destination_slot_request(
+                93,
+                1,
+                6,
+                DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+                None,
+                None,
+            );
+            let ready = decode_destination_slot_response(
+                &apply_destination_slot(&mut broker, &fixture, &materialize, 1).unwrap(),
+                4096,
+            )
+            .unwrap();
+            let decoded = decode_destination_slot_request(
+                &materialize,
+                peer(),
+                policy(),
+                TEST_BOOTTIME_NANOSECONDS,
+            )
+            .unwrap();
+            let binding = destination_slot_binding(&decoded).unwrap();
+            let expected = if action == DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE
+            {
+                *broker
+                    .destination_slots
+                    .as_mut()
+                    .unwrap()
+                    .make_ready_record_stale_for_test(&mut broker.journal, &binding)
+                    .unwrap()
+                    .as_bytes()
+            } else {
+                *ready.resource_digest()
+            };
+            let reservation = fuse_reservation(20);
+            broker.reserve_fuse_worker_gen1(&reservation).unwrap();
+            drop(broker);
+
+            let (mut recovered, recovered_fixture) = test_broker_with_destination_slots(
+                open(&path),
+                ScriptedWorker::default(),
+                directory.path(),
+            );
+            let slot_before = recovered
+                .destination_slots
+                .as_ref()
+                .unwrap()
+                .get(&binding)
+                .unwrap();
+            let mutation = destination_slot_request(
+                94,
+                2,
+                7,
+                action,
+                Some(expected),
+                Some(destination_slot_fence(1, 6)),
+            );
+            assert!(
+                apply_destination_slot(&mut recovered, &recovered_fixture, &mutation, 1).is_err(),
+                "{action:?}"
+            );
+            assert_eq!(
+                recovered
+                    .destination_slots
+                    .as_ref()
+                    .unwrap()
+                    .get(&binding)
+                    .unwrap(),
+                slot_before
+            );
+            assert_eq!(
+                recovered.fuse_reservations.rows().next().unwrap(),
+                &reservation
+            );
+            assert_eq!(recovered.worker.calls, 0);
+        }
     }
 
     #[test]

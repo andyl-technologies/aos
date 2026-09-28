@@ -131,6 +131,11 @@ impl<W: MountWorker> MountBroker<W> {
                 Some(&base),
             )
             .map_err(|_| MountError::Fence("FUSE signed current admission failed"))?;
+        let idempotency = fuse_intent_idempotency_record(
+            &self.journal,
+            original.request_id(),
+            original.exact_body(),
+        )?;
         scope.recheck()?;
         require_scope(&decoded, &scope)?;
 
@@ -245,6 +250,7 @@ impl<W: MountWorker> MountBroker<W> {
         let transaction = JournalTransaction::new(
             fuse_reservation_transaction_id(&origin.reservation),
             vec![
+                idempotency,
                 reservation_record,
                 JournalRecord::put(
                     RecordNamespace::AuthorityPublication,
@@ -339,6 +345,16 @@ impl<W: MountWorker> HeldMountFuseIntentPreparationV1<'_, W> {
         self.broker
             .journal
             .validate_held_root_owned_at(STATE_DIRECTORY, "mount.journal")?;
+        let request_id = self.request.request_id();
+        let idempotency = IdempotencyKey::new(request_id.to_vec())?;
+        if self
+            .broker
+            .journal
+            .check_idempotency(&idempotency, digest(self.request.exact_body()))
+            != IdempotencyOutcome::Replay(OperationId::from_bytes(request_id))
+        {
+            return Err(MountError::Fence("FUSE original request index changed"));
+        }
         self.scope.recheck()?;
         require_scope(&self.decoded, &self.scope)?;
         let value = self
@@ -354,7 +370,6 @@ impl<W: MountWorker> HeldMountFuseIntentPreparationV1<'_, W> {
         if decode_origin(payload)? != self.origin {
             return Err(MountError::Fence("FUSE origin changed"));
         }
-        let request_id = self.request.request_id();
         for (namespace, key, expected) in [
             (
                 RecordNamespace::DesiredState,
@@ -459,6 +474,28 @@ fn select_slot(
     }
     slots.resolve(slot.binding())?;
     Ok(slot.binding().clone())
+}
+
+// Native and FUSE effects share one request-ID namespace. A pending FUSE
+// flight cannot be replayed without its original live owners, and an existing
+// native index remains occupied even when its effect is absent or reconciled.
+pub(super) fn fuse_intent_idempotency_record(
+    journal: &Journal,
+    request_id: [u8; 16],
+    body: &[u8],
+) -> Result<JournalRecord> {
+    let key = IdempotencyKey::new(request_id.to_vec())?;
+    let request_digest = digest(body);
+    if journal.check_idempotency(&key, request_digest) != IdempotencyOutcome::Vacant {
+        return Err(MountError::Fence(
+            "FUSE request ID needs original-flight reconciliation",
+        ));
+    }
+    Ok(JournalRecord::idempotency(
+        &key,
+        request_digest,
+        OperationId::from_bytes(request_id),
+    ))
 }
 
 fn resource_expiry(
