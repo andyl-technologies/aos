@@ -92,6 +92,125 @@ pub trait OpenSshGateAgentExchangeV1 {
 }
 
 impl HostOpenSshAttachRouteOwnerV1 {
+    /// Binds original ticket data on an existing live route and measures Guest.
+    ///
+    /// # Errors
+    /// Rejects receipt/route/assignment substitution, immutable sidecar conflict,
+    /// expiry, or stale/invalid physical readback. No route is created or renewed
+    /// and neither this data nor its measurement permits I/O transfer.
+    pub fn bind_original_ticket_on_session_v2(
+        &mut self,
+        packet: &[u8],
+        ticket_bytes: &[u8],
+        lease: &VerifiedOwnershipLease,
+        session_binding: [u8; 32],
+        exchange: &mut impl OpenSshGateAgentExchangeV1,
+    ) -> Result<HostOpenSshAttachRouteEvidenceV1, HostOpenSshAttachRouteErrorV1> {
+        use aos_sandbox_agent::openssh_ticket::{
+            encode_ticket_gate_request_v2, ticket_digest_v2, verify_ticket_gate_readback_v2,
+        };
+        let ticket = aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2::decode(
+            ticket_bytes,
+        )
+        .map_err(|_| HostOpenSshAttachRouteErrorV1::Malformed)?;
+        let grant = Self::verify_pending_grant(packet)?;
+        validate_grant_currentness(&grant, lease)?;
+        let protected = self.read_protected(
+            grant.execution_id,
+            grant.incarnation_id,
+            grant.assignment_epoch,
+        )?;
+        let route = &protected.record;
+        let now = u64::try_from(current_unix_seconds()?)
+            .map_err(|_| HostOpenSshAttachRouteErrorV1::Stale)?;
+        if ticket.pending_grant.as_slice() != packet
+            || ticket.operation_id != route.attach_operation_id
+            || ticket.execution_id != route.execution_id
+            || ticket.incarnation_id != route.incarnation_id
+            || ticket.assignment_epoch != route.assignment_epoch
+            || ticket.principal_id != route.principal_id
+            || ticket.audit_id != route.audit_id
+            || ticket.request_digest != grant.request_digest
+            || ticket.base_route_digest != protected.route_digest
+            || ticket.valid_after > now
+            || ticket.expires_at <= now
+            || ticket.expires_at
+                > u64::try_from(route.expires_at)
+                    .map_err(|_| HostOpenSshAttachRouteErrorV1::Stale)?
+        {
+            return Err(HostOpenSshAttachRouteErrorV1::Stale);
+        }
+        let key = original_ticket_key_v2(grant.execution_id);
+        let mut reservation = GRANT_RESERVATION_PREFIX.to_vec();
+        reservation.extend_from_slice(&grant.operation_id);
+        let digest = ticket_digest_v2(ticket_bytes);
+        {
+            let mut authority = self
+                .journal
+                .claim_protected_authority(RecordNamespace::HostExecution)?;
+            if authority.get(&reservation)? != Some(Sha256::digest(packet).as_slice()) {
+                return Err(HostOpenSshAttachRouteErrorV1::GrantReused);
+            }
+            match authority.get(&key)? {
+                Some(previous) if previous != ticket_bytes => {
+                    return Err(HostOpenSshAttachRouteErrorV1::GrantReused);
+                }
+                Some(_) => {}
+                None => {
+                    let transaction = JournalTransaction::new(
+                        route_transaction_id_v1(grant.operation_id, &digest)?,
+                        vec![JournalRecord::put(
+                            RecordNamespace::HostExecution,
+                            key.clone(),
+                            ticket_bytes.to_vec(),
+                        )],
+                    )?;
+                    authority.commit(&transaction)?;
+                }
+            }
+            if authority.get(&key)? != Some(ticket_bytes) {
+                return Err(HostOpenSshAttachRouteErrorV1::Stale);
+            }
+        }
+        let pending = self.begin_observe_active(
+            grant.execution_id,
+            grant.incarnation_id,
+            grant.assignment_epoch,
+        )?;
+        let observe = OpenSshGateObserveRequestV1 {
+            session_binding,
+            challenge: pending.challenge,
+            route_digest: pending.protected.route_digest,
+            binding: pending.protected.gate_binding(),
+        };
+        let frame = encode_frame_v1(&AgentFrameV1::OpenSshTicketBindRequestV2(
+            encode_ticket_gate_request_v2(&observe, ticket_bytes)?,
+        ));
+        let response = exchange.exchange(&frame)?;
+        let AgentFrameV1::OpenSshTicketReadbackV2(signed) = decode_frame_v1(&response)? else {
+            return Err(HostOpenSshAttachRouteErrorV1::GateMismatch);
+        };
+        let mut runtime_owner = DormantRuntimeExecutionOwnerV1::open()?;
+        let current = runtime_owner.claim()?;
+        let (_, measured_digest, base) =
+            verify_ticket_gate_readback_v2(&signed, &current.agent_peer().public_key())?;
+        if measured_digest != digest {
+            return Err(HostOpenSshAttachRouteErrorV1::GateMismatch);
+        }
+        drop(current);
+        drop(runtime_owner);
+        let mut evidence = pending.complete(self, base)?;
+        let authority = self
+            .journal
+            .claim_protected_authority(RecordNamespace::HostExecution)?;
+        if authority.get(&key)? != Some(ticket_bytes) {
+            return Err(HostOpenSshAttachRouteErrorV1::Stale);
+        }
+        evidence.original_ticket_digest_v2 = Some(digest);
+        evidence.signed_ticket_readback_v2 = signed;
+        Ok(evidence)
+    }
+
     /// Verifies the exact pending receipt under the dedicated protected key.
     ///
     /// # Errors
@@ -165,6 +284,16 @@ impl HostOpenSshAttachRouteOwnerV1 {
             return Err(HostOpenSshAttachRouteErrorV1::Revoked);
         }
         let grant_digest = Sha256::digest(packet);
+        if let Some(ticket_bytes) = authority.get(&original_ticket_key_v2(grant.execution_id))? {
+            let ticket =
+                aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2::decode(
+                    ticket_bytes,
+                )
+                .map_err(|_| HostOpenSshAttachRouteErrorV1::Malformed)?;
+            if ticket.pending_grant.as_slice() != packet {
+                return Err(HostOpenSshAttachRouteErrorV1::GrantReused);
+            }
+        }
         if let Some(previous_digest) = authority.get(&reservation_key)? {
             let previous_route = authority
                 .get(&key)?
@@ -190,7 +319,10 @@ impl HostOpenSshAttachRouteOwnerV1 {
             }
             // An expired pending reservation can be renewed under the same
             // controller operation, but never while the old grant is live.
-            if previous_route.expires_at >= current_unix_seconds()?
+            if authority
+                .get(&original_ticket_key_v2(grant.execution_id))?
+                .is_some()
+                || previous_route.expires_at >= current_unix_seconds()?
                 || grant.expires_at <= previous_route.expires_at
             {
                 return Err(HostOpenSshAttachRouteErrorV1::GrantReused);
@@ -615,6 +747,8 @@ impl PendingOpenSshGateObservationV1 {
             gate_observation_commitment: commitment,
             signed_gate_readback: packet.to_vec(),
             forced_command_gate_active: true,
+            original_ticket_digest_v2: None,
+            signed_ticket_readback_v2: Vec::new(),
         })
     }
 }
@@ -638,6 +772,8 @@ fn verify_readback_binding(
 /// Authenticated Host route fields usable only after live gate readback agrees.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HostOpenSshAttachRouteEvidenceV1 {
+    pub(crate) original_ticket_digest_v2: Option<[u8; 32]>,
+    pub(crate) signed_ticket_readback_v2: Vec<u8>,
     /// Exact execution selected by the protected Host record.
     pub(crate) execution_id: [u8; 16],
     /// Exact durably admitted attach operation named by the forced command.
@@ -708,10 +844,21 @@ impl HostOpenSshAttachRouteEvidenceV1 {
             route_digest: self.route_digest.to_vec(),
             gate_observation_commitment: self.gate_observation_commitment.to_vec(),
             signed_gate_readback: self.signed_gate_readback.clone(),
+            original_ticket_digest_v2: self
+                .original_ticket_digest_v2
+                .map(|digest| digest.to_vec())
+                .unwrap_or_default(),
+            signed_ticket_readback_v2: self.signed_ticket_readback_v2.clone(),
             ..Default::default()
         }
         .encode_to_vec()
     }
+}
+
+fn original_ticket_key_v2(execution: [u8; 16]) -> Vec<u8> {
+    let mut key = b"openssh-attach-original-ticket-v2/".to_vec();
+    key.extend_from_slice(&execution);
+    key
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

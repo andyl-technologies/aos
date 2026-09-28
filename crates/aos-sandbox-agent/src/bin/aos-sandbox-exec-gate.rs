@@ -4,16 +4,22 @@
 //! identity arguments. The root-owned guest process bridge independently
 //! checks the same claim and its private process ledger before returning one
 //! PTY master; this binary never runs a caller-provided command or shell.
+//!
+//! The same installed executable handles sshd's unprivileged certificate
+//! profile callback. That mode never contacts the bridge or transfers I/O.
 
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::{Read as _, Write as _};
 use std::os::fd::OwnedFd;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use aos_sandbox_agent::openssh_attach_certificate::validate_openssh_attach_certificate_v1;
 use aos_sandbox_agent::openssh_gate::OpenSshGateClaimV1;
 #[cfg(target_os = "linux")]
 use aos_sandbox_agent::openssh_gate_linux::load_openssh_gate_claim_v1;
+use aos_sandbox_core::public_attach_route::public_attach_force_command_v1;
 #[cfg(target_os = "linux")]
 use aos_sandbox_linux::seqpacket::{SeqpacketError, SeqpacketSocket};
 
@@ -24,8 +30,17 @@ const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "--authorized-principals")
+    {
+        emit_authorized_principal(&arguments);
+        return Ok(());
+    }
+
     let claim = load_openssh_gate_claim_v1()?;
-    require_exact_arguments(&claim)?;
+    require_exact_arguments(&claim, &arguments)?;
     match request_io(&claim)? {
         BridgeIo::Pty(descriptor) => relay_pty(descriptor)?,
         BridgeIo::Stream(descriptors) => relay_stream(descriptors)?,
@@ -38,26 +53,76 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Err("OpenSSH execution gate requires Linux".into())
 }
 
-fn require_exact_arguments(claim: &OpenSshGateClaimV1) -> Result<(), Box<dyn std::error::Error>> {
-    let expected = [
-        "--operation-id".to_owned(),
-        hex_id(&claim.binding.attach_operation_id),
-        "--execution-id".to_owned(),
-        hex_id(&claim.binding.execution_id),
-        "--incarnation-id".to_owned(),
-        hex_id(&claim.binding.incarnation_id),
-        "--assignment-epoch".to_owned(),
-        claim.binding.assignment_epoch.to_string(),
-        "--principal-id".to_owned(),
-        hex_id(&claim.binding.principal_id),
-        "--audit-id".to_owned(),
-        hex_id(&claim.binding.audit_id),
-    ];
-    let arguments: Vec<String> = std::env::args().skip(1).collect();
+fn require_exact_arguments(
+    claim: &OpenSshGateClaimV1,
+    arguments: &[OsString],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let binding = &claim.binding;
+    let command = public_attach_force_command_v1(
+        &binding.attach_operation_id,
+        &binding.execution_id,
+        &binding.incarnation_id,
+        binding.assignment_epoch,
+        &binding.principal_id,
+        &binding.audit_id,
+    );
+    let expected: Vec<OsString> = command
+        .split_ascii_whitespace()
+        .skip(1)
+        .map(OsString::from)
+        .collect();
     if arguments != expected {
         return Err("OpenSSH execution gate identity does not match protected claim".into());
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn emit_authorized_principal(arguments: &[OsString]) {
+    // sshd logs the callback's entire argv on nonzero exit. Expected denials
+    // return success with no output, keeping the certificate out of that path.
+    let principal = (|| {
+        if rustix::process::getuid().as_raw() == 0 || rustix::process::geteuid().as_raw() == 0 {
+            return None;
+        }
+        let (certificate_type, certificate_base64) = certificate_arguments(arguments)?;
+        let claim = load_openssh_gate_claim_v1().ok()?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+        match std::fs::symlink_metadata(
+            aos_sandbox_agent::openssh_ticket::OPENSSH_TICKET_CLAIM_PATH_V2,
+        ) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                let ticket =
+                    aos_sandbox_agent::openssh_gate_linux::load_original_ticket_claim_v2().ok()?;
+                aos_sandbox_agent::openssh_ticket::validate_original_ticket_certificate_v2(
+                    &claim,
+                    &ticket,
+                    certificate_type,
+                    certificate_base64,
+                    now,
+                )
+                .ok()?;
+            }
+            Err(_) => return None,
+        }
+        validate_openssh_attach_certificate_v1(&claim, certificate_type, certificate_base64, now)
+            .ok()
+            .map(|principal| format!("{principal}\n"))
+    })();
+    if let Some(principal) = principal {
+        let _ = std::io::stdout().lock().write_all(principal.as_bytes());
+    }
+}
+
+fn certificate_arguments(arguments: &[OsString]) -> Option<(&str, &str)> {
+    let [mode, certificate_type, certificate_base64] = arguments else {
+        return None;
+    };
+    if mode != "--authorized-principals" {
+        return None;
+    }
+    Some((certificate_type.to_str()?, certificate_base64.to_str()?))
 }
 
 #[cfg(target_os = "linux")]
@@ -175,12 +240,39 @@ fn relay_pty(descriptor: OwnedFd) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn hex_id(bytes: &[u8; 16]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut result = String::with_capacity(32);
-    for byte in bytes {
-        result.push(char::from(HEX[usize::from(byte >> 4)]));
-        result.push(char::from(HEX[usize::from(byte & 15)]));
+#[cfg(test)]
+mod tests {
+    use super::certificate_arguments;
+    use std::ffi::OsString;
+
+    #[test]
+    fn callback_arguments_require_exact_mode_and_arity() {
+        let arguments = ["--authorized-principals", "kind", "certificate"].map(OsString::from);
+        assert_eq!(
+            certificate_arguments(&arguments),
+            Some(("kind", "certificate"))
+        );
+        assert!(certificate_arguments(&arguments[..2]).is_none());
+        assert!(
+            certificate_arguments(&[arguments.as_slice(), &[OsString::from("extra")]].concat())
+                .is_none()
+        );
+        assert!(
+            certificate_arguments(&["--operation-id", "kind", "certificate"].map(OsString::from))
+                .is_none()
+        );
     }
-    result
+
+    #[cfg(unix)]
+    #[test]
+    fn callback_arguments_reject_non_utf8_without_printing_input() {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let arguments = [
+            OsString::from("--authorized-principals"),
+            OsString::from("kind"),
+            OsString::from_vec(vec![255]),
+        ];
+        assert!(certificate_arguments(&arguments).is_none());
+    }
 }

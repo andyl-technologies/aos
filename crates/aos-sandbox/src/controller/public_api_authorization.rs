@@ -18,7 +18,8 @@ use super::{
 use crate::PublicOperationAuthorizationV1;
 use crate::cli_model::PublicMutationAuthorizationV1;
 use crate::cli_model::authorization_adapter::{
-    PublicApiAuditMethodV1, canonical_public_audit_request_v2, canonical_public_mutation_request_v2,
+    CurrentCapabilityDecisionV1, PublicApiAuditMethodV1, canonical_public_audit_request_v2,
+    canonical_public_mutation_request_v2,
 };
 use crate::public_api_session::PublicApiPeer;
 use crate::public_mutation_compiler::ResolvedPublicMutationRequestV1;
@@ -40,7 +41,10 @@ pub(crate) fn authorize_resolved_public_mutation_v1(
     peer: &PublicApiPeer,
     capability_id: CapabilityId,
     request: &ResolvedPublicMutationRequestV1,
-) -> Result<PublicMutationAuthorizationV1, CliAuthorizationAdapterError> {
+) -> Result<
+    (PublicMutationAuthorizationV1, CurrentCapabilityDecisionV1),
+    CliAuthorizationAdapterError,
+> {
     if request
         .target_project()
         .is_some_and(|project| project != peer.project())
@@ -54,7 +58,7 @@ pub(crate) fn authorize_resolved_public_mutation_v1(
         journal,
         protected_clock,
     };
-    owner.authorize_public_mutation(
+    owner.authorize_public_mutation_with_decision(
         peer,
         capability_id,
         request.method(),
@@ -200,6 +204,37 @@ impl DormantCliAuthorizationOwnerV1<'_> {
         selector: aos_sandbox_core::Selector,
         protobuf_body: &[u8],
     ) -> Result<PublicMutationAuthorizationV1, CliAuthorizationAdapterError> {
+        self.authorize_public_mutation_with_decision(
+            peer,
+            capability_id,
+            method,
+            resource_kind,
+            operation,
+            selector,
+            protobuf_body,
+        )
+        .map(|(authorization, _)| authorization)
+    }
+
+    /// Retains genuine admission inputs without re-evaluating the grant.
+    ///
+    /// # Errors
+    /// Rejects exactly the same request, peer or protected-state failures as
+    /// `authorize_public_mutation`.
+    #[allow(clippy::too_many_arguments)]
+    fn authorize_public_mutation_with_decision(
+        &mut self,
+        peer: &PublicApiPeer,
+        capability_id: CapabilityId,
+        method: PublicApiAuditMethodV1,
+        resource_kind: aos_sandbox_core::ResourceKind,
+        operation: aos_sandbox_core::Operation,
+        selector: aos_sandbox_core::Selector,
+        protobuf_body: &[u8],
+    ) -> Result<
+        (PublicMutationAuthorizationV1, CurrentCapabilityDecisionV1),
+        CliAuthorizationAdapterError,
+    > {
         let (authorization_request, mutation_fence) = canonical_public_mutation_request_v2(
             method,
             resource_kind,
@@ -207,8 +242,13 @@ impl DormantCliAuthorizationOwnerV1<'_> {
             selector,
             protobuf_body,
         )?;
-        self.authenticate_public_request(peer, capability_id, &authorization_request)?
-            .authorize_public_mutation(mutation_fence)
+        let (authenticated, decision) = self.authenticate_public_request_with_decision(
+            peer,
+            capability_id,
+            &authorization_request,
+        )?;
+        let authorization = authenticated.authorize_public_mutation(mutation_fence)?;
+        Ok((authorization, decision))
     }
 
     /// Authenticates one exact public request against current protected authority.
@@ -230,6 +270,24 @@ impl DormantCliAuthorizationOwnerV1<'_> {
         capability_id: CapabilityId,
         canonical_request: &[u8],
     ) -> Result<DormantAuthenticatedCliRequestV1, CliAuthorizationAdapterError> {
+        self.authenticate_public_request_with_decision(peer, capability_id, canonical_request)
+            .map(|(authenticated, _)| authenticated)
+    }
+
+    // Keeps the actual decision through binding rather than reconstructing its
+    // capability/policy inputs from a later lookup or authenticated scalars.
+    fn authenticate_public_request_with_decision(
+        &mut self,
+        peer: &PublicApiPeer,
+        capability_id: CapabilityId,
+        canonical_request: &[u8],
+    ) -> Result<
+        (
+            DormantAuthenticatedCliRequestV1,
+            CurrentCapabilityDecisionV1,
+        ),
+        CliAuthorizationAdapterError,
+    > {
         peer.recheck()
             .map_err(|_| CliAuthorizationAdapterError::InvalidAuthenticatedEvidence)?;
 
@@ -247,21 +305,29 @@ impl DormantCliAuthorizationOwnerV1<'_> {
             canonical_request,
             DORMANT_CLI_OBSERVATION_SCHEMA_V1,
         )?;
-        let authorization = CurrentProtectedCliAuthorizationV1::from_current_protected_capability(
-            self.journal,
-            PublisherAuthorityLimits::default(),
-            PublisherPolicyLimits::default(),
-            capability_id,
-            peer.project(),
-            &mut self.protected_clock,
-            &decoded,
-            &identity,
-            &channel,
-        )?;
+        let (authorization, decision) =
+            CurrentProtectedCliAuthorizationV1::from_current_protected_capability_with_decision(
+                self.journal,
+                PublisherAuthorityLimits::default(),
+                PublisherPolicyLimits::default(),
+                capability_id,
+                peer.project(),
+                &mut self.protected_clock,
+                &decoded,
+                &identity,
+                &channel,
+            )?;
 
         // Protected journal reads must not extend the lifetime of transport proof.
         peer.recheck()
             .map_err(|_| CliAuthorizationAdapterError::InvalidAuthenticatedEvidence)?;
-        DormantAuthenticatedCliRequestV1::bind(decoded, identity, session, channel, authorization)
+        let authenticated = DormantAuthenticatedCliRequestV1::bind(
+            decoded,
+            identity,
+            session,
+            channel,
+            authorization,
+        )?;
+        Ok((authenticated, decision))
     }
 }

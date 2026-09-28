@@ -46,6 +46,9 @@ const DIAGNOSTICS_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.diagnostics.v1";
 const INPUT_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.normalized-input.v1\0";
 const PREREQUISITE_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.prerequisites.v1\0";
 
+#[cfg(test)]
+pub(super) mod resolved_policy_fixture;
+
 /// Selects one closed policy-publication record family.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
@@ -1710,15 +1713,15 @@ fn validate_policy_key(
     Ok(())
 }
 
-struct DecodedCurrentPolicyHeadV1 {
-    project: ProjectId,
-    sandbox: SandboxId,
-    generation: u64,
-    candidate: ObjectDigest,
-    normalized_input: ObjectDigest,
-    diagnostics: ObjectDigest,
-    prerequisites: ObjectDigest,
-    prerequisite_tuple: PolicyPublicationPrerequisitesV1,
+pub(super) struct DecodedCurrentPolicyHeadV1 {
+    pub(super) project: ProjectId,
+    pub(super) sandbox: SandboxId,
+    pub(super) generation: u64,
+    pub(super) candidate: ObjectDigest,
+    pub(super) normalized_input: ObjectDigest,
+    pub(super) diagnostics: ObjectDigest,
+    pub(super) prerequisites: ObjectDigest,
+    pub(super) prerequisite_tuple: PolicyPublicationPrerequisitesV1,
 }
 
 pub(super) struct DecodedCandidateHeaderV1 {
@@ -1790,7 +1793,7 @@ fn current_policy_head(
         .transpose()
 }
 
-fn policy_key(
+pub(super) fn policy_key(
     kind: PolicyCompilerJournalRecordKindV1,
     project: ProjectId,
     sandbox: SandboxId,
@@ -1823,7 +1826,7 @@ fn policy_key_from_identity(
     Ok(PolicyCompilerJournalKeyV1::new(kind, identity)?)
 }
 
-fn policy_current_key(
+pub(super) fn policy_current_key(
     project: ProjectId,
     sandbox: SandboxId,
 ) -> Result<PolicyCompilerJournalKeyV1, PolicyCompilerJournalErrorV1> {
@@ -2102,7 +2105,7 @@ fn append_prerequisite_tuple(
     bytes.extend_from_slice(&prerequisites.generation().to_be_bytes());
 }
 
-fn decode_current_payload(
+pub(super) fn decode_current_payload(
     bytes: &[u8],
 ) -> Result<DecodedCurrentPolicyHeadV1, PolicyCompilerJournalErrorV1> {
     if bytes.len() != 314 || &bytes[..8] != CURRENT_MAGIC || bytes[8..10] != 1_u16.to_be_bytes() {
@@ -2234,7 +2237,43 @@ fn decode_candidate_header(
     })
 }
 
-fn validate_candidate_payload(
+/// Checks domain bodies for a nonauthorizing protected-state readback.
+pub(super) fn validate_state_candidate_body(
+    record: &crate::lifecycle::protected_journal_adapter::ProtectedCurrentRecordCandidateV1<
+        PolicyCompilerJournalSchemaV1,
+    >,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    validate_policy_key(record.key())?;
+    let identity = record.key().identity();
+    let body = record.body();
+    let matches_identity = match record.key().kind() {
+        PolicyCompilerJournalRecordKindV1::Candidate => {
+            let header = validate_candidate_payload(body)?;
+            body.get(10..42) == identity.get(..32)
+                && identity.get(32..) == Some(header.candidate.as_bytes().as_slice())
+        }
+        PolicyCompilerJournalRecordKindV1::Current => {
+            decode_current_payload(body)?;
+            body.get(10..42) == Some(identity)
+        }
+        PolicyCompilerJournalRecordKindV1::Diagnostics => {
+            decode_diagnostics_payload(body)?;
+            body.get(10..74) == Some(identity)
+        }
+        PolicyCompilerJournalRecordKindV1::Effect => {
+            decode_effect_header(body)?;
+            body.get(10..58) == Some(identity)
+        }
+        // The existing structural decoder already validated checkpoint bytes.
+        PolicyCompilerJournalRecordKindV1::Checkpoint => body.is_empty(),
+    };
+    if !matches_identity {
+        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+    }
+    Ok(())
+}
+
+pub(super) fn validate_candidate_payload(
     bytes: &[u8],
 ) -> Result<DecodedCandidateHeaderV1, PolicyCompilerJournalErrorV1> {
     validated_candidate_body(bytes).map(|(header, _)| header)
@@ -2255,7 +2294,12 @@ pub(super) fn candidate_output_bytes(
     validated_candidate_body(bytes).map(|(_, outputs)| outputs)
 }
 
-fn validated_candidate_body(
+/// Borrows structurally checked header/output claims without publication authority.
+///
+/// # Errors
+/// Rejects unsupported versions, malformed/noncanonical outputs, descriptor
+/// mismatches or incomplete/substituted V3 preimage consistency.
+pub(super) fn validated_candidate_body(
     bytes: &[u8],
 ) -> Result<(DecodedCandidateHeaderV1, [&[u8]; 4]), PolicyCompilerJournalErrorV1> {
     let header = decode_candidate_header(bytes)?;
@@ -2349,6 +2393,56 @@ fn validated_candidate_body(
     }
 
     Ok((header, outputs))
+}
+
+/// Compares retained V3 claims with one complete typed compiler derivation.
+///
+/// This is shared byte consistency, not publication or read authority. The
+/// eventual Root-last owner must independently authenticate input provenance,
+/// the complete prerequisite tuple and current owner cuts. In particular,
+/// neither a normalized-input digest nor these bytes reconstruct typed input.
+///
+/// # Errors
+///
+/// Rejects legacy evidence, changed target/generation/prerequisites, any
+/// substituted plan, diagnostic or portable output, or noncanonical framing.
+pub(super) fn compare_recompiled_candidate_derivation_v1(
+    bytes: &[u8],
+    input: &PolicyCompilerInputV1,
+    candidate: &CompiledPolicyCandidateV1,
+    generation: u64,
+    prerequisites: &PolicyPublicationPrerequisitesV1,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    let (header, outputs) = validated_candidate_body(bytes)?;
+    let diagnostics = super::model::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
+    if header.project != input.project().project()
+        || header.sandbox != input.sandbox()
+        || header.generation != generation
+        || header.prerequisite_tuple != *prerequisites
+        || header.prerequisites != prerequisites.digest()
+        || header.normalized_input != normalized_policy_input_digest_v1(input)?
+        || header.candidate != candidate.commitment().digest()
+        || header.preimage != Some(candidate.commitment_preimage())
+        || header.diagnostics != digest_bytes(DIAGNOSTICS_DOMAIN, &diagnostics)
+    {
+        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+    }
+
+    let portable = candidate.portable();
+    let expected_bytes = [
+        portable.policy_bytes(),
+        portable.optimization_bytes(),
+        portable.namespace_graph_bytes(),
+        portable.advisory_program_bytes(),
+    ];
+    for (index, (_, _, descriptor)) in output_descriptors(portable).into_iter().enumerate() {
+        if outputs[index] != expected_bytes[index]
+            || header.outputs[index] != (descriptor.digest(), descriptor.encoded_size())
+        {
+            return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+        }
+    }
+    Ok(())
 }
 
 fn validate_canonical_json_domain(

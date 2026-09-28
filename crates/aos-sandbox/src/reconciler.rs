@@ -44,6 +44,8 @@ use crate::publication::{
 
 mod create_failure;
 mod effect;
+#[cfg(target_os = "linux")]
+mod fuse_admission;
 mod observe_reservation;
 mod public_operation;
 mod runtime_authority;
@@ -58,6 +60,8 @@ pub(crate) use runtime_authority::{
 };
 
 use create_failure::CreateFailureReceiptV1;
+#[cfg(target_os = "linux")]
+pub(crate) use fuse_admission::accepted_fuse_admission_v1;
 pub use effect::{
     AuthorityBoundEffectPlanV1, AuthorityEffectAttemptTimingV1, AuthorityEffectObservationV1,
     EffectDomain, EffectPlan, PreparedAuthorityBrokerRequestV1, PreparedAuthorityEffectV1,
@@ -220,6 +224,7 @@ impl OperationPlan {
         desired_key: Vec<u8>,
         desired_value: Vec<u8>,
         route_record: JournalRecord,
+        decision_record: JournalRecord,
     ) -> Result<Self, ReconcilerError> {
         if operation_id.as_bytes() == &[0; 16]
             || desired_key.is_empty()
@@ -227,6 +232,9 @@ impl OperationPlan {
             || route_record.namespace() != RecordNamespace::PublicAttachRoute
             || route_record.key() != operation_id.as_bytes()
             || route_record.value().is_none()
+            || decision_record.namespace() != RecordNamespace::PublicAttachRoute
+            || decision_record.key() != crate::attach_decision::decision_key(operation_id)
+            || decision_record.value().is_none()
         {
             return Err(ReconcilerError::InvalidPlan(
                 "invalid completed public attach plan",
@@ -242,7 +250,7 @@ impl OperationPlan {
             ownership_gate: None,
             runtime_authority: None,
             public_operation: None,
-            local_records: vec![route_record],
+            local_records: vec![route_record, decision_record],
         })
     }
 

@@ -8,6 +8,7 @@
 //! This module grants no capabilities and registers no public RPC handlers.
 
 mod credentials;
+mod original_registration;
 mod registration;
 mod stream;
 
@@ -28,6 +29,7 @@ use tokio_rustls::TlsAcceptor;
 pub(crate) use credentials::{
     PinnedOperatorRecoveryKeyV1, PinnedSystemdCredential, load_entitlement_credentials,
 };
+pub(crate) use original_registration::CurrentOriginalPublicRegistrationV3;
 pub use stream::AuthenticatedPublicApiStream;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -168,6 +170,24 @@ struct PeerState {
 }
 
 impl PublicApiPeer {
+    /// Samples the rechecked public TLS trust bundle and exact registered leaf.
+    ///
+    /// # Errors
+    /// Rejects a retired or changed authenticated transport. These historical
+    /// coordinates cannot reconstruct a peer or authorize a resumed attach.
+    pub(crate) fn original_trust_coordinates(
+        &self,
+    ) -> Result<[[u8; 32]; 4], PublicApiSessionError> {
+        self.recheck()?;
+        let trust = self.0.credentials.public_trust_digests();
+        Ok([
+            trust[0],
+            trust[1],
+            trust[2],
+            self.0.registration.certificate_sha256,
+        ])
+    }
+
     /// Returns the principal from the protected registration, never a request field.
     #[must_use]
     pub fn principal(&self) -> PrincipalId {

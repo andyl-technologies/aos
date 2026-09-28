@@ -9,6 +9,7 @@
 mod bridge;
 mod gate;
 mod ledger;
+mod monitor;
 mod process;
 
 pub use process::{GuestProcessEffectErrorV1, GuestProcessEffectsV1};

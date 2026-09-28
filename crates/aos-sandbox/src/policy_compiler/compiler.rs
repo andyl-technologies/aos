@@ -36,14 +36,30 @@ impl PolicyCompilerV1 {
     pub fn compile(
         input: PolicyCompilerInputV1,
     ) -> Result<CompiledPolicyCandidateV1, PolicyCompilationError> {
-        enforce_work_cap(&input)?;
-        let normalize = normalization_explanation(&input)?;
+        Self::compile_retained(&input)
+    }
 
-        let (authority, authority_entries) = compile_authority(&input)?;
-        let (namespace, namespace_entries) = compile_namespace(&input, &authority)?;
+    /// Compiles retained complete typed input without cloning its owner model.
+    ///
+    /// The consuming API delegates the same algorithm. Work admission remains
+    /// first, before derived output allocation; successful output retains the
+    /// existing nonauthoritative ancestry status and conveys no owner custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged compilation errors for work, model, authority,
+    /// namespace, resource, backend, advisory or lowering failures.
+    pub(crate) fn compile_retained(
+        input: &PolicyCompilerInputV1,
+    ) -> Result<CompiledPolicyCandidateV1, PolicyCompilationError> {
+        enforce_work_cap(input)?;
+        let normalize = normalization_explanation(input)?;
+
+        let (authority, authority_entries) = compile_authority(input)?;
+        let (namespace, namespace_entries) = compile_namespace(input, &authority)?;
         let (hard, mut resource_entries, mut backend_entries) =
-            compile_resources(&input, &authority)?;
-        let (advisory, advisory_entries) = compile_advisory(&input, &authority, &namespace)?;
+            compile_resources(input, &authority)?;
+        let (advisory, advisory_entries) = compile_advisory(input, &authority, &namespace)?;
 
         let mut authority_stage = Vec::new();
         for entry in authority_entries {
@@ -54,7 +70,7 @@ impl PolicyCompilerV1 {
             }
         }
 
-        let cross_cutting = resolve_cross_cutting(&input)?;
+        let cross_cutting = resolve_cross_cutting(input)?;
         resource_entries.push(ExplanationEntryV1::new(
             ExplanationStageV1::HardResources,
             if cross_cutting.cache_narrowed {
