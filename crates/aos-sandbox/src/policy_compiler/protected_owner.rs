@@ -699,7 +699,7 @@ fn binding_digest(binding: &ProtectedPolicyBindingV1) -> ObjectDigest {
     )
 }
 
-fn policy_state_journal_limits() -> JournalLimits {
+pub(super) fn policy_state_journal_limits() -> JournalLimits {
     JournalLimits::default()
 }
 

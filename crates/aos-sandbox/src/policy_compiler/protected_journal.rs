@@ -38,6 +38,9 @@ const DIAGNOSTICS_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.diagnostics.v1";
 const INPUT_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.normalized-input.v1\0";
 const PREREQUISITE_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.prerequisites.v1\0";
 
+#[cfg(test)]
+pub(super) mod resolved_policy_fixture;
+
 /// Selects one closed policy-publication record family.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
@@ -1706,23 +1709,23 @@ fn validate_policy_key(
     Ok(())
 }
 
-struct DecodedCurrentPolicyHeadV1 {
-    generation: u64,
-    candidate: ObjectDigest,
-    normalized_input: ObjectDigest,
-    diagnostics: ObjectDigest,
-    prerequisites: ObjectDigest,
-    prerequisite_tuple: PolicyPublicationPrerequisitesV1,
+pub(super) struct DecodedCurrentPolicyHeadV1 {
+    pub(super) generation: u64,
+    pub(super) candidate: ObjectDigest,
+    pub(super) normalized_input: ObjectDigest,
+    pub(super) diagnostics: ObjectDigest,
+    pub(super) prerequisites: ObjectDigest,
+    pub(super) prerequisite_tuple: PolicyPublicationPrerequisitesV1,
 }
 
-struct DecodedCandidateHeaderV1 {
-    generation: u64,
-    candidate: ObjectDigest,
-    normalized_input: ObjectDigest,
-    diagnostics: ObjectDigest,
-    prerequisites: ObjectDigest,
-    prerequisite_tuple: PolicyPublicationPrerequisitesV1,
-    outputs: [(ObjectDigest, u64); 4],
+pub(super) struct DecodedCandidateHeaderV1 {
+    pub(super) generation: u64,
+    pub(super) candidate: ObjectDigest,
+    pub(super) normalized_input: ObjectDigest,
+    pub(super) diagnostics: ObjectDigest,
+    pub(super) prerequisites: ObjectDigest,
+    pub(super) prerequisite_tuple: PolicyPublicationPrerequisitesV1,
+    pub(super) outputs: [(ObjectDigest, u64); 4],
 }
 
 struct DecodedEffectHeaderV1 {
@@ -1762,7 +1765,7 @@ fn current_policy_head(
         .transpose()
 }
 
-fn policy_key(
+pub(super) fn policy_key(
     kind: PolicyCompilerJournalRecordKindV1,
     project: ProjectId,
     sandbox: SandboxId,
@@ -1795,7 +1798,7 @@ fn policy_key_from_identity(
     Ok(PolicyCompilerJournalKeyV1::new(kind, identity)?)
 }
 
-fn policy_current_key(
+pub(super) fn policy_current_key(
     project: ProjectId,
     sandbox: SandboxId,
 ) -> Result<PolicyCompilerJournalKeyV1, PolicyCompilerJournalErrorV1> {
@@ -2071,7 +2074,7 @@ fn append_prerequisite_tuple(
     bytes.extend_from_slice(&prerequisites.generation().to_be_bytes());
 }
 
-fn decode_current_payload(
+pub(super) fn decode_current_payload(
     bytes: &[u8],
 ) -> Result<DecodedCurrentPolicyHeadV1, PolicyCompilerJournalErrorV1> {
     if bytes.len() != 314 || &bytes[..8] != CURRENT_MAGIC || bytes[8..10] != 1_u16.to_be_bytes() {
@@ -2195,7 +2198,43 @@ fn decode_candidate_header(
     })
 }
 
-fn validate_candidate_payload(
+/// Checks domain bodies for a nonauthorizing protected-state readback.
+pub(super) fn validate_state_candidate_body(
+    record: &crate::lifecycle::protected_journal_adapter::ProtectedCurrentRecordCandidateV1<
+        PolicyCompilerJournalSchemaV1,
+    >,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    validate_policy_key(record.key())?;
+    let identity = record.key().identity();
+    let body = record.body();
+    let matches_identity = match record.key().kind() {
+        PolicyCompilerJournalRecordKindV1::Candidate => {
+            let header = validate_candidate_payload(body)?;
+            body.get(10..42) == identity.get(..32)
+                && identity.get(32..) == Some(header.candidate.as_bytes().as_slice())
+        }
+        PolicyCompilerJournalRecordKindV1::Current => {
+            decode_current_payload(body)?;
+            body.get(10..42) == Some(identity)
+        }
+        PolicyCompilerJournalRecordKindV1::Diagnostics => {
+            decode_diagnostics_payload(body)?;
+            body.get(10..74) == Some(identity)
+        }
+        PolicyCompilerJournalRecordKindV1::Effect => {
+            decode_effect_header(body)?;
+            body.get(10..58) == Some(identity)
+        }
+        // The existing structural decoder already validated checkpoint bytes.
+        PolicyCompilerJournalRecordKindV1::Checkpoint => body.is_empty(),
+    };
+    if !matches_identity {
+        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+    }
+    Ok(())
+}
+
+pub(super) fn validate_candidate_payload(
     bytes: &[u8],
 ) -> Result<DecodedCandidateHeaderV1, PolicyCompilerJournalErrorV1> {
     let header = decode_candidate_header(bytes)?;
