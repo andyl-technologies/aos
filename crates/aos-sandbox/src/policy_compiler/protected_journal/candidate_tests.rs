@@ -246,7 +246,7 @@ fn nonempty_rules(
         ),
         NamespaceRuleV1::Include {
             source: output,
-            prefix: RelativePath::root(),
+            prefix: RelativePath::default(),
             execution: ViewExecutionV1::NoExecute,
         },
     ];
