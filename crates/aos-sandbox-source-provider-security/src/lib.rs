@@ -89,8 +89,9 @@ pub use handshake::{
     ProviderSourceProviderOwnerV1, ReceivedMountProviderOutcomePartsV2,
     RecoveredMountProviderOutcomePartsV2, RecoveredMountProviderOutcomeV2,
     ReopenedMountSourceRootV2, ReservedMountProviderRequestV2, RetainedRootRecoveryAuthorizationV2,
-    RevalidatedProviderReplayV1, RootMountSourceProviderHandshakeStatusV1,
-    RootMountSourceProviderOwnerV1, SentMountProviderRequestV2, VerifiedMountProviderOutcomeV2,
+    RevalidatedProviderReplayV1, RootAcceptedNativeExportFenceV1,
+    RootMountSourceProviderHandshakeStatusV1, RootMountSourceProviderOwnerV1,
+    SentMountProviderRequestV2, VerifiedMountProviderOutcomeV2,
     VerifiedReceivedMountProviderOutcomeV2,
 };
 pub use migration::{

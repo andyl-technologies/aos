@@ -11,19 +11,18 @@ use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
     AcquireSourceRequestV1, AcquireSourceResponseV1, InventorySourceRequestV1,
     InventorySourceResponseV1, NormalizedAcquisitionIntentV2, ProviderCatalogFloorV1,
-    ReleaseSourceRequestV1, ReleaseSourceResponseV1, SignedSourceExportLeaseV1,
-    SignedSourceProviderInventoryV1, SignedSourceProviderReceiptV1, SignedSourceProviderRequestV1,
-    SignedSourceProviderStatusV1, SignedSourceReleaseReceiptV1,
-    SourceProviderAuthorityTrustStateV1, SourceProviderAuthorityV1, SourceProviderDescriptorRole,
-    SourceProviderKeyTrustStateV1, SourceProviderKeyUsageV1, SourceProviderMethod,
-    SourceProviderSigningKeyV1, SourceProviderStatus, SourceProviderVerificationContextV1,
-    SourceSelectionFloorV1, decode_acquire_request, decode_acquire_response,
-    decode_inventory_response, decode_release_response, digest_acquire_request,
+    ReleaseSourceRequestV1, SignedSourceExportLeaseV1, SignedSourceProviderInventoryV1,
+    SignedSourceProviderReceiptV1, SignedSourceProviderRequestV1, SignedSourceProviderStatusV1,
+    SignedSourceReleaseReceiptV1, SourceProviderAuthorityTrustStateV1, SourceProviderAuthorityV1,
+    SourceProviderDescriptorRole, SourceProviderKeyTrustStateV1, SourceProviderKeyUsageV1,
+    SourceProviderMethod, SourceProviderSigningKeyV1, SourceProviderStatus,
+    SourceProviderVerificationContextV1, SourceSelectionFloorV1, decode_acquire_request,
+    decode_acquire_response, decode_inventory_response, digest_acquire_request,
     digest_inventory_request, digest_provider_proof, digest_release_request,
     digest_signed_export_lease, digest_signed_request, encode_acquire_request,
     encode_acquire_response, encode_inventory_request, encode_inventory_response,
-    encode_release_request, encode_release_response, provider_resource_commitment_v1,
-    response_result_digest_v1, sign_request, verify_acquire, verify_hello, verify_inventory,
+    encode_release_request, provider_resource_commitment_v1, response_result_digest_v1,
+    sign_request, verify_acquire, verify_hello, verify_inventory,
     verify_provider_receipt_and_lease, verify_release_receipt, verify_request,
     verify_response_status,
 };
@@ -43,6 +42,9 @@ mod outcome;
 mod projection;
 #[path = "mount_request/recovery.rs"]
 mod recovery;
+
+#[path = "mount_request/native_export_fence.rs"]
+mod native_export_fence;
 
 pub use model::*;
 use model::{HistoricalMountAcquisitionLineageV2, historical_acquisition_commitment};

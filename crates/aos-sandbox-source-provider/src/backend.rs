@@ -1004,13 +1004,13 @@ impl DurableProviderReplyV1 {
 
     pub(crate) fn session_binding(&self) -> Result<ObjectDigest, crate::ProviderLedgerError> {
         use aos_sandbox_source_provider_protocol::{
-            decode_acquire_response, decode_inventory_response, decode_release_response,
+            ReleaseSourceResponseProfileV2, decode_acquire_response, decode_inventory_response,
         };
 
         if let Ok(response) = decode_acquire_response(&self.response) {
             return Ok(response.signed_status().subject().session_binding());
         }
-        if let Ok(response) = decode_release_response(&self.response) {
+        if let Ok(response) = ReleaseSourceResponseProfileV2::from_canonical_bytes(&self.response) {
             return Ok(response.signed_status().subject().session_binding());
         }
         if let Ok(response) = decode_inventory_response(&self.response) {

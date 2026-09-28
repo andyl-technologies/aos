@@ -222,6 +222,7 @@ fn catalog(native: &NativeAcquireCompletionRecordV2) -> CatalogHeadRecordV1 {
     }
 }
 
+#[derive(Clone)]
 struct Graph {
     authority: AuthorityHeadRecordV1,
     catalog: CatalogHeadRecordV1,
@@ -774,19 +775,23 @@ impl Graph {
             &SigningKey::from_bytes(&[54; 32]),
         )
         .unwrap();
-        complete_attempt(
-            attempt,
-            SourceProviderStatus::Complete,
-            Some(receipt.to_canonical_bytes()),
-            session.signers[3].clone(),
-            session.next_response_sequence,
-            503,
-            empty_descriptor_set_commitment_v1(),
-        );
-        session.revision += 1;
-        session.pending_attempt_digest = None;
-        session.last_completed_attempt_digest = Some(attempt.attempt_digest);
-        session.next_response_sequence += 1;
+        // Structural tombstone fixtures also cover an already immutable
+        // Pending/Unavailable response; later effect progression cannot rewrite it.
+        if attempt.state == ProviderAttemptStateV1::Reserved {
+            complete_attempt(
+                attempt,
+                SourceProviderStatus::Complete,
+                Some(receipt.to_canonical_bytes()),
+                session.signers[3].clone(),
+                session.next_response_sequence,
+                503,
+                empty_descriptor_set_commitment_v1(),
+            );
+            session.revision += 1;
+            session.pending_attempt_digest = None;
+            session.last_completed_attempt_digest = Some(attempt.attempt_digest);
+            session.next_response_sequence += 1;
+        }
         let acquired = self.acquisition.backend_evidence.as_ref().unwrap();
         let evidence = BackendEvidenceV1::new_released(
             acquired.class(),
@@ -863,9 +868,9 @@ fn complete_attempt(
         SourceProviderMethod::Acquire => {
             encode_acquire_response(&AcquireSourceResponseV1::new(signed, result).unwrap())
         }
-        SourceProviderMethod::Release => {
-            encode_release_response(&ReleaseSourceResponseV1::new(signed, result).unwrap())
-        }
+        SourceProviderMethod::Release => ReleaseSourceResponseProfileV2::from_parts(signed, result)
+            .unwrap()
+            .to_canonical_bytes(),
         _ => panic!("unexpected fixture method"),
     };
     attempt.revision += 1;
@@ -897,6 +902,12 @@ fn recover_graph(
         .records()?
         .map(|(k, v)| (k.to_vec(), v.to_vec()))
         .collect();
+    recover_rows(rows)
+}
+
+fn recover_rows(
+    rows: Vec<(Vec<u8>, Vec<u8>)>,
+) -> Result<RecoveredProviderLedgerV1, ProviderLedgerError> {
     aos_sandbox_source_provider_ledger::validate_prospective_records(
         rows.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
     )
@@ -1055,6 +1066,175 @@ fn commit_graph(owner: &mut ProtectedJournalAuthority<'_>, id: u8, graph: &Graph
         .filter(|(key, value)| previous.get(key) != Some(value))
         .collect();
     owner.commit(&transaction(id, mutations)).unwrap();
+}
+
+fn admit_release_suffix(
+    owner: &mut ProtectedJournalAuthority<'_>,
+    id: u8,
+    graph: &Graph,
+    require_active_cas: bool,
+) -> aos_sandbox::GlobalCapacityReservationV1 {
+    let current: BTreeMap<_, _> = owner
+        .records()
+        .unwrap()
+        .map(|(key, value)| (key.to_vec(), value.to_vec()))
+        .collect();
+    let next = graph.rows();
+    if require_active_cas {
+        crate::ledger::native_completion::release_fence::validate_native_release_admission_v1(
+            &current, &next,
+        )
+        .unwrap();
+    } else {
+        aos_sandbox_source_provider_ledger::validate_prospective_transition(
+            current
+                .iter()
+                .map(|(key, value)| (key.as_slice(), value.as_slice())),
+            next.iter()
+                .map(|(key, value)| (key.as_slice(), value.as_slice())),
+        )
+        .unwrap();
+    }
+    let mutations = next
+        .into_iter()
+        .filter(|(key, value)| current.get(key) != Some(value))
+        .collect::<BTreeMap<_, _>>();
+    let mut rows = transaction(id, mutations).records().to_vec();
+    // Decode the canonical prospective graph through the same helper before
+    // binding the capacity request; no projected dummy acquisition is used.
+    let decoded = graph_recovered(graph);
+    let request =
+        crate::native_release_capacity::fixture_request(&decoded, graph.acquisition.acquisition_id)
+            .unwrap();
+    let capacity = owner
+        .prepare_global_capacity_reservation_v1(request, [id; 16])
+        .unwrap();
+    rows.push(capacity.record().clone());
+    if require_active_cas {
+        assert_eq!(rows.len(), 8);
+    }
+    let admission = JournalTransaction::new([id; 16], rows).unwrap();
+    let preflight = owner
+        .preflight_global_capacity_reservation_v1(&capacity, &admission)
+        .unwrap();
+    let (_, retained) = owner
+        .commit_global_capacity_reservation_v1(&preflight, capacity, &admission)
+        .unwrap();
+    validate_set(owner, &recover_graph(owner).unwrap()).unwrap();
+    retained
+}
+
+// Reuse the hostile decoder rather than hand-assembling a model projection.
+// An isolated protected journal authenticates storage/readback, not signatures
+// or installed runtime configuration; those qualifications remain separate.
+fn graph_recovered(graph: &Graph) -> RecoveredProviderLedgerV1 {
+    recover_rows(graph.rows().into_iter().collect()).unwrap()
+}
+
+fn complete_release_status_suffix(
+    owner: &mut ProtectedJournalAuthority<'_>,
+    id: u8,
+    graph: &mut Graph,
+    status: SourceProviderStatus,
+) {
+    complete_release_result_suffix(owner, id, graph, status, None);
+}
+
+fn complete_release_result_suffix(
+    owner: &mut ProtectedJournalAuthority<'_>,
+    id: u8,
+    graph: &mut Graph,
+    status: SourceProviderStatus,
+    result: Option<Vec<u8>>,
+) {
+    let before = recover_graph(owner).unwrap();
+    let capacity = crate::native_release_capacity::exact_reservation(
+        owner,
+        &before,
+        graph.acquisition.acquisition_id,
+    )
+    .unwrap();
+    let mut completed = graph.attempts.last().unwrap().clone();
+    let session = graph.sessions.last().unwrap();
+    complete_attempt(
+        &mut completed,
+        status,
+        result,
+        session.signers[3].clone(),
+        session.next_response_sequence,
+        503,
+        empty_descriptor_set_commitment_v1(),
+    );
+    let plan = aos_sandbox_source_provider_ledger::ReleaseStatusCompletionPlanV1::new(attempt_key(
+        &AttemptKeyV1 {
+            provider_id: completed.provider.authority_id(),
+            holder_id: completed.holder.authority_id(),
+            root_record_key_id: completed.root_record_signer.key_id(),
+            method: SourceProviderMethod::Release as u8,
+            request_id: completed.request_id,
+        },
+    ))
+    .unwrap();
+    let current = graph.rows();
+    let finalized = plan
+        .finalize(
+            current
+                .iter()
+                .map(|(key, value)| (key.as_slice(), value.as_slice())),
+            completed.completed_response.clone(),
+            None,
+            503,
+        )
+        .unwrap();
+    let (mutations, _) = finalized.into_parts();
+    assert_eq!(mutations.len(), 3);
+    let mut rows = Vec::new();
+    let mut next = current;
+    for (key, value) in mutations {
+        let value = value.unwrap();
+        next.insert(key.clone(), value.clone());
+        rows.push(JournalRecord::put(
+            RecordNamespace::SourceProviderAuthority,
+            key,
+            value,
+        ));
+    }
+    rows.push(capacity.settlement_record());
+    let terminal = JournalTransaction::new([id; 16], rows).unwrap();
+    assert_eq!(terminal.records().len(), 4);
+    let preflight = owner
+        .preflight_reserved_terminal_v1(&capacity, &terminal)
+        .unwrap();
+    owner
+        .commit_reserved_terminal_v1(&preflight, capacity, &terminal)
+        .unwrap();
+    let recovered = recover_graph(owner).unwrap();
+    validate_set(owner, &recovered).unwrap();
+    graph.attempts = graph
+        .attempts
+        .iter()
+        .map(|old| {
+            recovered
+                .attempts
+                .values()
+                .find(|row| row.attempt_digest == old.attempt_digest)
+                .unwrap()
+                .clone()
+        })
+        .collect();
+    graph.sessions = graph
+        .sessions
+        .iter()
+        .map(|old| {
+            recovered.session_history[&(
+                old.provider.authority_id(),
+                old.holder.authority_id(),
+                old.session_binding,
+            )]
+                .clone()
+        })
+        .collect();
+    assert_eq!(graph.rows(), next);
 }
 
 #[test]
@@ -1257,7 +1437,7 @@ fn native_graph_rejects_wrong_backend_attempt_session_and_early_floor_deletion()
         let mut owner = journal
             .claim_source_provider_native_terminal_authority_v1()
             .unwrap();
-        admit(&mut owner, &graph);
+        let _retained_floor = admit(&mut owner, &graph);
         // Raw protected append deliberately creates a hostile graph, without
         // pretending the production prospective validator would authorize it.
         owner.commit(&transaction(106 + wrong, rows)).unwrap();
@@ -1369,7 +1549,7 @@ fn native_graph_release_retains_original_acquire_session_until_exact_tombstone()
     graph.supersede_session();
     commit_graph(&mut owner, 116, &graph);
     graph.releasing();
-    commit_graph(&mut owner, 117, &graph);
+    admit_release_suffix(&mut owner, 117, &graph, false);
     let recovered = recover_graph(&owner).unwrap();
     validate_set(&owner, &recovered).unwrap();
     assert_ne!(
@@ -1430,6 +1610,12 @@ fn native_graph_release_retains_original_acquire_session_until_exact_tombstone()
         .claim_source_provider_native_terminal_authority_v1()
         .unwrap();
     validate_set(&owner, &recover_graph(&owner).unwrap()).unwrap();
+    complete_release_status_suffix(
+        &mut owner,
+        124,
+        &mut graph,
+        SourceProviderStatus::Unavailable,
+    );
     graph.released();
     // This is a signed canonical structural terminal fixture, NOT a new live
     // native terminal producer or proof that Root/Storage custody is absent.
@@ -1498,4 +1684,784 @@ fn native_graph_release_retains_original_acquire_session_until_exact_tombstone()
         .claim_source_provider_native_terminal_authority_v1()
         .unwrap();
     validate_set(&owner, &recover_graph(&owner).unwrap()).unwrap();
+}
+
+#[test]
+fn native_release_fence_atomic_admission_preserves_history_and_closes_old_reply_export() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut graph = Graph::applying();
+    let mut journal = open(directory.path());
+    let mut owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let original_floor = admit(&mut owner, &graph).request();
+    graph.native = fixture_prepared(&graph.native);
+    commit_graph(&mut owner, 130, &graph);
+    graph.active();
+    commit_graph(&mut owner, 131, &graph);
+    let original_native = graph.native.clone();
+    let original_acquisition = graph.acquisition.clone();
+    let old_prepared_reply = graph.attempts[0].completed_response.clone();
+    let original_request = graph.attempts[0].signed_request.clone();
+    crate::ledger::native_completion::validate_native_complete_export_v1(
+        &graph.acquisition,
+        Some(&graph.native),
+        &graph.attempts[0],
+    )
+    .unwrap();
+    let active = graph.rows();
+
+    // A crash before admission leaves the original Active graph and native7.
+    drop(owner);
+    drop(journal);
+    let mut journal = open(directory.path());
+    let mut owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    validate_set(&owner, &recover_graph(&owner).unwrap()).unwrap();
+    graph.releasing();
+    let release_floor = admit_release_suffix(&mut owner, 132, &graph, true);
+    let release_request = release_floor.request();
+    assert_eq!(release_request.terminal_records, 4);
+    assert_ne!(release_request.owner_id, original_floor.owner_id);
+    assert_ne!(release_request.operation_id, original_floor.operation_id);
+    assert_ne!(
+        release_request.artifact_digest,
+        original_floor.artifact_digest
+    );
+    assert_eq!(
+        release_request.chain_head_digest,
+        *graph.attempts.last().unwrap().session_binding.as_bytes()
+    );
+    assert_eq!(
+        graph.native,
+        original_native
+            .advance(NativeAcquireCompletionStateV2::CleanupRequired)
+            .unwrap()
+    );
+    assert_eq!(graph.acquisition.lease_id, original_acquisition.lease_id);
+    assert_eq!(
+        graph.acquisition.lease_digest,
+        original_acquisition.lease_digest
+    );
+    assert_eq!(
+        graph.acquisition.source_root,
+        original_acquisition.source_root
+    );
+    assert_eq!(
+        graph.acquisition.lease_history,
+        original_acquisition.lease_history
+    );
+    assert_eq!(graph.attempts[0].completed_response, old_prepared_reply);
+    assert_eq!(graph.attempts[0].signed_request, original_request);
+    assert!(
+        crate::ledger::native_completion::validate_native_complete_export_v1(
+            &graph.acquisition,
+            Some(&graph.native),
+            &graph.attempts[0],
+        )
+        .is_err()
+    );
+    assert!(
+        crate::ledger::native_completion::validate_native_export_open_v1(
+            &graph.acquisition,
+            Some(&graph.native)
+        )
+        .is_err()
+    );
+    // Undecodable history would also block authenticated Release recovery.
+    // The fence instead preserves the exact original Acquire and Release joins.
+    graph
+        .native
+        .validate_provider_graph(&graph.attempts[0], &graph.acquisition)
+        .unwrap();
+    crate::ledger::reducer::validate_release_join(
+        &graph.acquisition,
+        graph.release.as_ref().unwrap(),
+        graph.attempts.last().unwrap(),
+    )
+    .unwrap();
+    assert!(
+        crate::ledger::native_completion::release_fence::validate_native_release_admission_v1(
+            &active,
+            &graph.rows()
+        )
+        .is_ok()
+    );
+    drop(owner);
+    drop(journal);
+
+    // Crash after the atomic eight-record append retains BOTH exact floors.
+    let mut journal = open(directory.path());
+    let mut owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let recovered = recover_graph(&owner).unwrap();
+    validate_set(&owner, &recovered).unwrap();
+    assert_eq!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&binding(original_floor))
+            .unwrap()
+            .request(),
+        original_floor
+    );
+    assert_eq!(
+        crate::native_release_capacity::exact_reservation(
+            &owner,
+            &recovered,
+            graph.acquisition.acquisition_id
+        )
+        .unwrap()
+        .request(),
+        release_request
+    );
+    complete_release_status_suffix(
+        &mut owner,
+        133,
+        &mut graph,
+        SourceProviderStatus::Unavailable,
+    );
+    assert_eq!(
+        graph.acquisition.state,
+        ProviderAcquisitionStateV1::Releasing
+    );
+    assert_eq!(
+        graph.native.state,
+        NativeAcquireCompletionStateV2::CleanupRequired
+    );
+    assert_eq!(
+        graph.release.as_ref().unwrap().state,
+        ProviderReleaseStateV1::Intent
+    );
+    assert!(graph.release.as_ref().unwrap().backend_evidence.is_none());
+    assert!(
+        owner
+            .recover_global_capacity_reservation_v1(release_floor.reservation_id())
+            .is_err()
+    );
+    assert_eq!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&binding(original_floor))
+            .unwrap()
+            .request(),
+        original_floor
+    );
+    drop(owner);
+    drop(journal);
+
+    let mut journal = open(directory.path());
+    let owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let recovered = recover_graph(&owner).unwrap();
+    validate_set(&owner, &recovered).unwrap();
+    let original = recovered
+        .attempts
+        .values()
+        .find(|row| row.attempt_digest == graph.native.attempt_digest)
+        .unwrap();
+    assert_eq!(original.completed_response, old_prepared_reply);
+    assert!(
+        crate::ledger::native_completion::validate_native_complete_export_v1(
+            &graph.acquisition,
+            Some(&graph.native),
+            original,
+        )
+        .is_err()
+    );
+    // This tests the shared protected-graph eligibility used by the security
+    // send callers, not an installed socket/Root peer or SCM_RIGHTS handoff.
+}
+
+#[test]
+fn native_release_fence_rejects_incomplete_cas_and_changed_original_artifacts() {
+    let mut graph = Graph::applying();
+    graph.native = fixture_prepared(&graph.native);
+    graph.active();
+    let active = graph.rows();
+    let native = graph.native.clone();
+    graph.releasing();
+    let next = graph.rows();
+    crate::ledger::native_completion::release_fence::validate_native_release_admission_v1(
+        &active, &next,
+    )
+    .unwrap();
+    let changed: Vec<_> = next
+        .keys()
+        .filter(|key| active.get(*key) != next.get(*key))
+        .cloned()
+        .collect();
+    assert_eq!(changed.len(), 7);
+    for omitted in &changed {
+        let mut wrong = next.clone();
+        if let Some(old) = active.get(omitted) {
+            wrong.insert(omitted.clone(), old.clone());
+        } else {
+            wrong.remove(omitted);
+        }
+        assert!(
+            crate::ledger::native_completion::release_fence::validate_native_release_admission_v1(
+                &active, &wrong
+            )
+            .is_err()
+        );
+    }
+    for mutation in 0..5 {
+        let mut wrong = next.clone();
+        let mut marker = graph.native.clone();
+        match mutation {
+            0 => marker.challenge = [99; 32],
+            1 => marker.session_binding = digest(99),
+            2 => marker.attempt_digest = graph.attempts.last().unwrap().attempt_digest,
+            3 => marker.original_clock = None,
+            _ => marker.state = NativeAcquireCompletionStateV2::Active,
+        }
+        wrong.insert(
+            crate::ledger::native_completion::native_completion_key_v2(marker.acquisition_id),
+            encode_native_completion_v2(&marker),
+        );
+        assert!(
+            crate::ledger::native_completion::release_fence::validate_native_release_admission_v1(
+                &active, &wrong
+            )
+            .is_err()
+        );
+    }
+    let mut unbound = graph.clone();
+    unbound.acquisition.backend_id =
+        aos_sandbox_source_provider_ledger::identity::acquire_native_no_dispatch_id_v1(
+            unbound.acquisition.normalized_intent.digest(),
+            unbound.acquisition.catalog_generation,
+            unbound.acquisition.catalog_digest,
+        );
+    assert!(
+        crate::ledger::native_completion::release_fence::validate_native_release_admission_v1(
+            &active,
+            &unbound.rows()
+        )
+        .is_err()
+    );
+    let mut extra = next.clone();
+    extra.insert(b"foreign-extra".to_vec(), vec![1]);
+    assert!(
+        crate::ledger::native_completion::release_fence::validate_native_release_admission_v1(
+            &active, &extra
+        )
+        .is_err()
+    );
+    assert_eq!(native.state, NativeAcquireCompletionStateV2::Active);
+}
+
+#[test]
+fn native_release_fence_preserves_both_capacity_floors_under_pressure() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let limits = JournalLimits {
+        maximum_journal_bytes: DISPATCH_TERMINAL_BYTES
+            + crate::ledger::native_completion::release_fence::NATIVE_RELEASE_STATUS_TERMINAL_BYTES_V1 + 1024 * 1024,
+        ..JournalLimits::default()
+    };
+    let mut journal = Journal::open_protected_at_uid(
+        directory.path(),
+        "native-whole-graph.journal",
+        limits,
+        rustix::process::geteuid().as_raw(),
+    )
+    .unwrap()
+    .0;
+    let mut owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let mut graph = Graph::applying();
+    let original_floor = admit(&mut owner, &graph).request();
+    graph.native = fixture_prepared(&graph.native);
+    commit_graph(&mut owner, 140, &graph);
+    graph.active();
+    commit_graph(&mut owner, 141, &graph);
+    graph.releasing();
+    let status_floor = admit_release_suffix(&mut owner, 142, &graph, true);
+    assert_eq!(status_floor.request().terminal_records, 4);
+    // Repeated exact canonical puts create pressure without a malformed/dummy
+    // model. Every append must preserve both reserved terminal alternatives.
+    let mut refused = false;
+    for index in 1..1000_u16 {
+        let mut id = [143; 16];
+        id[..2].copy_from_slice(&index.to_be_bytes());
+        let rows = graph
+            .rows()
+            .into_iter()
+            .map(|(key, value)| {
+                JournalRecord::put(RecordNamespace::SourceProviderAuthority, key, value)
+            })
+            .collect();
+        let repeat = JournalTransaction::new(id, rows).unwrap();
+        if owner
+            .preflight_transactions(std::slice::from_ref(&repeat))
+            .is_err()
+        {
+            refused = true;
+            break;
+        }
+        owner.commit(&repeat).unwrap();
+    }
+    assert!(refused);
+    validate_set(&owner, &recover_graph(&owner).unwrap()).unwrap();
+    assert_eq!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&binding(original_floor))
+            .unwrap()
+            .request(),
+        original_floor
+    );
+    complete_release_status_suffix(&mut owner, 144, &mut graph, SourceProviderStatus::Pending);
+    validate_set(&owner, &recover_graph(&owner).unwrap()).unwrap();
+    assert_eq!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&binding(original_floor))
+            .unwrap()
+            .request(),
+        original_floor
+    );
+}
+
+#[test]
+fn native_release_fence_cold_replay_rejects_foreign_request_session_and_geometry() {
+    for changed in 0..6 {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut journal = open(directory.path());
+        let mut owner = journal
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+        let mut graph = Graph::applying();
+        let original = admit(&mut owner, &graph).request();
+        graph.native = fixture_prepared(&graph.native);
+        commit_graph(&mut owner, 145, &graph);
+        graph.active();
+        commit_graph(&mut owner, 146, &graph);
+        // The current Release may use a genuine different session while the
+        // native7 floor remains bound to immutable original Acquire history.
+        graph.supersede_session();
+        commit_graph(&mut owner, 147, &graph);
+        let before: BTreeMap<_, _> = owner
+            .records()
+            .unwrap()
+            .map(|(key, value)| (key.to_vec(), value.to_vec()))
+            .collect();
+        graph.releasing();
+        let next = graph.rows();
+        crate::ledger::native_completion::release_fence::validate_native_release_admission_v1(
+            &before, &next,
+        )
+        .unwrap();
+        let mut request = crate::native_release_capacity::fixture_request(
+            &graph_recovered(&graph),
+            graph.acquisition.acquisition_id,
+        )
+        .unwrap();
+        assert_ne!(request.chain_head_digest, original.chain_head_digest);
+        match changed {
+            0 => request.artifact_digest = original.artifact_digest,
+            1 => request.checkpoint_digest = original.checkpoint_digest,
+            2 => request.chain_head_digest = original.chain_head_digest,
+            3 => request.owner_id = original.owner_id,
+            4 => {
+                request.terminal_bytes -= 1;
+                request.poison_bytes -= 1;
+            }
+            _ => request.owner_digest = original.owner_digest,
+        }
+        // Raw protected admission deliberately creates a hostile capacity
+        // cut. Production derives the exact binding before this append.
+        let capacity = owner
+            .prepare_global_capacity_reservation_v1(request, [148; 16])
+            .unwrap();
+        let mut rows = transaction(
+            148,
+            next.into_iter()
+                .filter(|(key, value)| before.get(key) != Some(value))
+                .collect(),
+        )
+        .records()
+        .to_vec();
+        rows.push(capacity.record().clone());
+        let admission = JournalTransaction::new([148; 16], rows).unwrap();
+        let preflight = owner
+            .preflight_global_capacity_reservation_v1(&capacity, &admission)
+            .unwrap();
+        owner
+            .commit_global_capacity_reservation_v1(&preflight, capacity, &admission)
+            .unwrap();
+        assert!(validate_set(&owner, &recover_graph(&owner).unwrap()).is_err());
+        drop(owner);
+        drop(journal);
+        let mut journal = open(directory.path());
+        let owner = journal
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+        // The canonical owner graph is valid, but the foreign suffix cannot
+        // masquerade as current Release authority or the original native7.
+        assert!(validate_set(&owner, &recover_graph(&owner).unwrap()).is_err());
+        assert_eq!(
+            owner
+                .recover_unique_global_capacity_reservation_v1(&binding(original))
+                .unwrap()
+                .request(),
+            original
+        );
+    }
+}
+
+#[test]
+fn native_release_fence_faulted_observation_retains_exact_original_and_status_floors() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut journal = open(directory.path());
+    let mut owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let mut graph = Graph::applying();
+    let original = admit(&mut owner, &graph).request();
+    graph.native = fixture_prepared(&graph.native);
+    commit_graph(&mut owner, 150, &graph);
+    graph.active();
+    commit_graph(&mut owner, 151, &graph);
+    graph.releasing();
+    let release_status = admit_release_suffix(&mut owner, 152, &graph, true).request();
+    let native = graph.native.clone();
+
+    // Mirror record_backend_conflict's actual three-row canonical update.
+    // Neither a local contradiction nor AcquireClosed settles the Reserved
+    // Release request, proves absence, or consumes either capacity floor.
+    graph.acquisition.revision += 1;
+    graph.acquisition.state = ProviderAcquisitionStateV1::Faulted;
+    let release = graph.release.as_mut().unwrap();
+    release.revision += 1;
+    release.acquisition_record_digest =
+        record_digest(&encode_acquisition(&graph.acquisition)).unwrap();
+    graph.authority.revision += 1;
+    graph.authority.state = ProviderAuthorityStateV1::AcquireClosed;
+    graph.authority.inventory_generation += 1;
+    graph.refresh_inventory();
+    commit_graph(&mut owner, 153, &graph);
+    let recovered = recover_graph(&owner).unwrap();
+    validate_set(&owner, &recovered).unwrap();
+    assert_eq!(
+        crate::native_release_capacity::exact_reservation(
+            &owner,
+            &recovered,
+            graph.acquisition.acquisition_id
+        )
+        .unwrap()
+        .request(),
+        release_status
+    );
+    assert_eq!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&binding(original))
+            .unwrap()
+            .request(),
+        original
+    );
+    assert_eq!(graph.native, native);
+    assert!(
+        crate::ledger::native_completion::validate_native_export_open_v1(
+            &graph.acquisition,
+            Some(&graph.native)
+        )
+        .is_err()
+    );
+    // Capacity retention is deliberately broader than runtime completion:
+    // the native status facade and actual caller still require Releasing.
+    assert_ne!(
+        graph.acquisition.state,
+        ProviderAcquisitionStateV1::Releasing
+    );
+    for changed in 0..3 {
+        let mut foreign = graph.release.clone().unwrap();
+        match changed {
+            0 => foreign.lease_id = [99; 16],
+            1 => foreign.lease_digest = digest(99),
+            _ => foreign.backend_id = [99; 32],
+        }
+        assert!(crate::ledger::native_completion::release_fence::native_release_status_capacity_binding_v1(
+            &graph.acquisition, &graph.native, &graph.attempts[0], &foreign,
+            graph.attempts.last().unwrap(), graph.sessions.last().unwrap(),
+        ).is_err());
+    }
+    drop(owner);
+    drop(journal);
+
+    let mut journal = open(directory.path());
+    let mut owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let recovered = recover_graph(&owner).unwrap();
+    validate_set(&owner, &recovered).unwrap();
+    assert_eq!(
+        crate::native_release_capacity::exact_reservation(
+            &owner,
+            &recovered,
+            graph.acquisition.acquisition_id
+        )
+        .unwrap()
+        .request(),
+        release_status
+    );
+    assert_eq!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&binding(original))
+            .unwrap()
+            .request(),
+        original
+    );
+    let mut hostile = graph.release.clone().unwrap();
+    hostile.backend_id = [99; 32];
+    let key = release_key(&ReleaseKeyV1 {
+        provider_id: hostile.provider.authority_id(),
+        holder_id: hostile.holder.authority_id(),
+        acquisition_id: hostile.acquisition_id,
+    });
+    // A raw protected append exercises hostile replay, not production
+    // authorization. Immutable native capacity bytes still cannot bless it.
+    owner
+        .commit(&transaction(
+            154,
+            BTreeMap::from([(key, encode_release(&hostile))]),
+        ))
+        .unwrap();
+    drop(owner);
+    drop(journal);
+    let mut journal = open(directory.path());
+    let owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    assert!(
+        recover_graph(&owner)
+            .and_then(|recovered| validate_set(&owner, &recovered))
+            .is_err()
+    );
+}
+
+#[test]
+fn native_export_fence_result_crash_reopen_consumes_only_status4_and_never_terminalizes() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut graph = Graph::applying();
+    let mut journal = open(directory.path());
+    let mut owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let original_floor = admit(&mut owner, &graph).request();
+    graph.native = fixture_prepared(&graph.native);
+    commit_graph(&mut owner, 155, &graph);
+    graph.active();
+    commit_graph(&mut owner, 156, &graph);
+    graph.releasing();
+    let status_floor = admit_release_suffix(&mut owner, 157, &graph, true);
+    let exact_status_floor = status_floor.request();
+    let native_bytes = encode_native_completion_v2(&graph.native);
+
+    // Admission is already the export fence. Crash before result production
+    // leaves both protected floors and all original artifacts intact.
+    drop(owner);
+    drop(journal);
+    let mut journal = open(directory.path());
+    let mut owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let current = recover_graph(&owner).unwrap();
+    validate_set(&owner, &current).unwrap();
+    let status_floor = crate::native_release_capacity::exact_reservation(
+        &owner,
+        &current,
+        graph.acquisition.acquisition_id,
+    )
+    .unwrap();
+    assert_eq!(status_floor.request(), exact_status_floor);
+    let records = graph.rows().into_iter().collect::<Vec<_>>();
+    let subject = crate::ledger::native_completion::export_result::native_export_fence_subject_v1(
+        &records,
+        graph.attempts.last().unwrap().attempt_digest,
+        owner.snapshot().unwrap().sequence(),
+        status_floor.admission_transaction_id(),
+        status_floor.reservation_id(),
+    )
+    .unwrap();
+    let signed = SignedSourceProviderNativeExportFenceV1::sign(
+        subject,
+        graph.sessions.last().unwrap().signers[3].clone(),
+        &SigningKey::from_bytes(&[54; 32]),
+    )
+    .unwrap();
+    let result = signed.to_canonical_bytes();
+    complete_release_result_suffix(
+        &mut owner,
+        158,
+        &mut graph,
+        SourceProviderStatus::Pending,
+        Some(result.clone()),
+    );
+    let exact_response = graph.attempts.last().unwrap().completed_response.clone();
+    assert_eq!(
+        exact_response.len(),
+        MAXIMUM_NATIVE_RELEASE_RESPONSE_BYTES_V2
+    );
+    assert_eq!(encode_native_completion_v2(&graph.native), native_bytes);
+    assert_eq!(
+        graph.acquisition.state,
+        ProviderAcquisitionStateV1::Releasing
+    );
+    assert_eq!(
+        graph.release.as_ref().unwrap().state,
+        ProviderReleaseStateV1::Intent
+    );
+    assert!(graph.release.as_ref().unwrap().backend_evidence.is_none());
+    assert!(graph.release.as_ref().unwrap().signed_receipt.is_empty());
+    assert_eq!(
+        graph.native.state,
+        NativeAcquireCompletionStateV2::CleanupRequired
+    );
+    assert!(
+        crate::ledger::native_completion::validate_native_complete_export_v1(
+            &graph.acquisition,
+            Some(&graph.native),
+            &graph.attempts[0]
+        )
+        .is_err()
+    );
+    assert_eq!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&binding(original_floor))
+            .unwrap()
+            .request(),
+        original_floor
+    );
+    assert!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&binding(exact_status_floor))
+            .is_err()
+    );
+    drop(owner);
+    drop(journal);
+
+    // Lost send/readback cannot cause a new fence/request or free native7.
+    let mut journal = open(directory.path());
+    let owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let current = recover_graph(&owner).unwrap();
+    validate_set(&owner, &current).unwrap();
+    let attempt = current
+        .attempts
+        .values()
+        .find(|row| row.method == SourceProviderMethod::Release)
+        .unwrap();
+    assert_eq!(attempt.completed_response, exact_response);
+    let profile =
+        ReleaseSourceResponseProfileV2::from_canonical_bytes(&attempt.completed_response).unwrap();
+    assert_eq!(profile.status(), SourceProviderStatus::Pending);
+    assert_eq!(profile.signed_result(), Some(result.as_slice()));
+    assert_eq!(profile.native_fence(), Some(&signed));
+    // Exercise the actual durable-reply parser without granting a carrier,
+    // production ingress configuration or permission to send descriptors.
+    let reply = crate::backend::DurableProviderReplyV1 {
+        response: attempt.completed_response.clone(),
+        source_root: None,
+        durability: crate::backend::DurableReplyAuthorityV1::RevalidatedReplay {
+            snapshot: owner.snapshot().unwrap(),
+            attempt_key: Vec::new(),
+        },
+    };
+    assert_eq!(reply.session_binding().unwrap(), attempt.session_binding);
+    signed
+        .verify(SigningKey::from_bytes(&[54; 32]).verifying_key().as_bytes())
+        .unwrap();
+    assert_eq!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&binding(original_floor))
+            .unwrap()
+            .request(),
+        original_floor
+    );
+}
+
+#[test]
+fn native_export_fence_result_rejects_resigned_original_artifact_or_release_substitution() {
+    let mut graph = Graph::applying();
+    graph.native = fixture_prepared(&graph.native);
+    graph.active();
+    graph.releasing();
+    let records = graph.rows().into_iter().collect::<Vec<_>>();
+    let attempt = graph.attempts.last().unwrap();
+    let original = crate::ledger::native_completion::export_result::native_export_fence_subject_v1(
+        &records,
+        attempt.attempt_digest,
+        99,
+        [98; 16],
+        [97; 32],
+    )
+    .unwrap();
+    for mutation in 0..8 {
+        let mut release = original.release().clone();
+        let mut acquire = original.acquire().clone();
+        let mut signed_acceptance_digest = original.signed_acceptance_digest();
+        let mut cut = original.cut();
+        let mut acceptance = original.acceptance().clone();
+        match mutation {
+            0 => release.attempt_digest = digest(96),
+            1 => release.typed_request_digest = digest(96),
+            2 => acquire.attempt_digest = digest(96),
+            3 => acquire.session_binding = digest(96),
+            4 => signed_acceptance_digest = digest(96),
+            5 => cut.reservation_id = [96; 32],
+            6 => {
+                acceptance = StorageNativeAcceptanceV3::new(
+                    [96; 16],
+                    acceptance.request_digest(),
+                    acceptance.receipt_digest(),
+                    acceptance.descriptor().clone(),
+                    acceptance.topology().clone(),
+                )
+                .unwrap()
+            }
+            _ => {
+                acceptance = StorageNativeAcceptanceV3::new(
+                    acceptance.issuance_id(),
+                    acceptance.request_digest(),
+                    digest(96),
+                    acceptance.descriptor().clone(),
+                    acceptance.topology().clone(),
+                )
+                .unwrap()
+            }
+        }
+        let subject = SourceProviderNativeExportFenceV1::new(
+            release,
+            acquire,
+            original.native_request_digest(),
+            signed_acceptance_digest,
+            acceptance,
+            cut,
+        )
+        .unwrap();
+        let signed = SignedSourceProviderNativeExportFenceV1::sign(
+            subject,
+            graph.sessions.last().unwrap().signers[3].clone(),
+            &SigningKey::from_bytes(&[54; 32]),
+        )
+        .unwrap();
+        let mut completed = attempt.clone();
+        complete_attempt(
+            &mut completed,
+            SourceProviderStatus::Pending,
+            Some(signed.to_canonical_bytes()),
+            graph.sessions.last().unwrap().signers[3].clone(),
+            graph.sessions.last().unwrap().next_response_sequence,
+            503,
+            empty_descriptor_set_commitment_v1(),
+        );
+        assert!(crate::ledger::native_completion::export_result::validate_native_export_fence_result_v1(&records, attempt.attempt_digest, &completed.completed_response).is_err());
+    }
 }

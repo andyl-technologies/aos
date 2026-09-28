@@ -33,6 +33,8 @@ mod migration;
 mod native_completion;
 mod native_no_dispatch_capacity;
 mod native_no_dispatch_recovery;
+mod native_release_capacity;
+mod native_release_status;
 mod owner;
 mod pending;
 mod recovery;

@@ -6,6 +6,25 @@ pub(super) fn validate_consumed_result(
     attempt: &SourceProviderQueryAttemptV2,
     session: &SourceProviderSessionV2,
 ) -> Result<()> {
+    if let ProviderAttemptStateV2::DispositionConsumed {
+        status: ProviderStatusV2::Pending,
+        signed_result,
+        ..
+    } = &attempt.state
+        && attempt.method == ProviderMethodV2::Release
+        && !signed_result.is_empty()
+    {
+        let fence = aos_sandbox_source_provider_protocol::SignedSourceProviderNativeExportFenceV1::from_canonical_bytes(signed_result)
+            .map_err(|_| state_error("retained native export-fence result is invalid"))?;
+        if !signer_matches(&session.signers[3], fence.signer()) {
+            return Err(state_error(
+                "native export-fence signer differs from session",
+            ));
+        }
+        return fence
+            .verify(&session.signers[3].public_key)
+            .map_err(|_| state_error("native export-fence signature is invalid"));
+    }
     let ProviderAttemptStateV2::DispositionConsumed {
         status: ProviderStatusV2::Complete,
         signed_result,

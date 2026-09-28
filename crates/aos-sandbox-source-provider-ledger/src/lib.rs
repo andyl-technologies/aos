@@ -720,6 +720,17 @@ pub fn validate_prospective_records<'record>(
         native.validate_provider_graph(attempt, acquisition)?;
     }
     for attempt in &attempts {
+        if attempt.method == aos_sandbox_source_provider_protocol::SourceProviderMethod::Release
+            && attempt.state == ProviderAttemptStateV1::Completed
+        {
+            ledger::native_completion::export_result::validate_native_export_fence_result_decoded(
+                &decoded,
+                attempt.attempt_digest,
+                &attempt.completed_response,
+            )?;
+        }
+    }
+    for attempt in &attempts {
         let Some(predecessor_digest) = attempt.recovery_predecessor_attempt_digest else {
             continue;
         };

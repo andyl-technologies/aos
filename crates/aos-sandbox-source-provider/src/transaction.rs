@@ -21,6 +21,9 @@ use crate::format::{
     session_history_key,
 };
 use crate::ledger::model::DecodedRecordV1;
+use crate::ledger::native_completion::{
+    release_fence::validate_native_release_admission_v1, validate_native_complete_export_v1,
+};
 use crate::limits::{MAXIMUM_TRANSACTION_BYTES, MAXIMUM_TRANSACTION_RECORDS};
 use crate::model::{
     AttemptKeyV1, AttemptRecordV1, HolderSessionHeadRecordV1, ProviderAttemptStateV1,
@@ -34,6 +37,11 @@ use crate::{
 
 const TRANSACTION_ID_DOMAIN: &[u8] = b"aos.sandbox.source-provider.ledger.transaction-id.v1\0";
 
+enum MutationShapeV1 {
+    Ordinary,
+    NativeReleaseFence,
+}
+
 pub(crate) enum CompletionCapacityV1 {
     Preflight {
         preflight: ProtectedJournalPreflight,
@@ -43,6 +51,9 @@ pub(crate) enum CompletionCapacityV1 {
     // The native owner separately preflights Requested/Prepared/Active while
     // preserving durable cleanup headroom. Generic effects cannot consume it.
     NativeDispatch,
+    // This permits only the narrow descriptor-free Release status builder.
+    // Physical release/Complete paths still reject native custody.
+    NativeReleaseStatus,
 }
 
 pub(crate) struct PreparedLedgerMutationV1 {
@@ -116,7 +127,9 @@ impl CompletionCapacityV1 {
                     .validate_preflight_for_effect(preflight, std::slice::from_ref(transaction))?;
                 Ok(())
             }
-            Self::NativeNoDispatch | Self::NativeDispatch => Err(ProviderLedgerError::Unavailable),
+            Self::NativeNoDispatch | Self::NativeDispatch | Self::NativeReleaseStatus => {
+                Err(ProviderLedgerError::Unavailable)
+            }
         }
     }
 }
@@ -945,6 +958,11 @@ pub(crate) fn classify_attempt(
                     "Acquire replay source is not active",
                 ));
             }
+            let acquisition = ledger.recovered.acquisitions.values().find(|row| row.acquisition_id == acquisition_id)
+                .ok_or(ProviderLedgerError::Unavailable)?;
+            validate_native_complete_export_v1(
+                acquisition, ledger.recovered.native_completions.get(&acquisition_id), existing,
+            ).map_err(map_pure_ledger_error)?;
             Ok(Some(ProviderAdmissionDispositionV1::AcquireReplay(
                 DurableAcquireReplayV1 {
                     acquisition_id,
@@ -1174,8 +1192,40 @@ fn commit_mutations_validated(
 pub(crate) fn prepare_mutations_validated(
     ledger: &ProviderLedgerV1<'_>,
     purpose: &[u8],
+    records: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+    validation_configuration: Option<&crate::ProtectedProviderConfigurationV1>,
+) -> Result<PreparedLedgerMutationV1, ProviderLedgerError> {
+    prepare_mutations_with_shape(
+        ledger,
+        purpose,
+        records,
+        validation_configuration,
+        MutationShapeV1::Ordinary,
+    )
+}
+
+// The only seven-owner-row exception validates the exact native Release CAS.
+// The selector is private; no public count/capability or generic purpose alias
+// can widen ordinary transactions.
+pub(crate) fn prepare_native_release_admission(
+    ledger: &ProviderLedgerV1<'_>,
+    records: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+) -> Result<PreparedLedgerMutationV1, ProviderLedgerError> {
+    prepare_mutations_with_shape(
+        ledger,
+        b"reserve-native-release-fence-v1",
+        records,
+        None,
+        MutationShapeV1::NativeReleaseFence,
+    )
+}
+
+fn prepare_mutations_with_shape(
+    ledger: &ProviderLedgerV1<'_>,
+    purpose: &[u8],
     mut records: Vec<(Vec<u8>, Option<Vec<u8>>)>,
     validation_configuration: Option<&crate::ProtectedProviderConfigurationV1>,
+    shape: MutationShapeV1,
 ) -> Result<PreparedLedgerMutationV1, ProviderLedgerError> {
     if purpose.is_empty() || purpose.len() > 128 {
         return Err(ProviderLedgerError::LimitExceeded(
@@ -1183,7 +1233,13 @@ pub(crate) fn prepare_mutations_validated(
         ));
     }
     synchronize_session_history_mutations(&mut records)?;
-    if records.is_empty() || records.len() > MAXIMUM_TRANSACTION_RECORDS {
+    let native_release_fence = matches!(shape, MutationShapeV1::NativeReleaseFence);
+    let maximum_records = if native_release_fence {
+        7
+    } else {
+        MAXIMUM_TRANSACTION_RECORDS
+    };
+    if records.is_empty() || records.len() > maximum_records {
         return Err(ProviderLedgerError::LimitExceeded(
             "transaction record count",
         ));
@@ -1195,6 +1251,17 @@ pub(crate) fn prepare_mutations_validated(
     });
     if total_bytes.is_none_or(|bytes| bytes > MAXIMUM_TRANSACTION_BYTES) {
         return Err(ProviderLedgerError::LimitExceeded("transaction bytes"));
+    }
+    if native_release_fence
+        && total_bytes
+            .and_then(|bytes| bytes.checked_add(9 * records.len()))
+            .is_none_or(|bytes| {
+                bytes > crate::ledger::format::MAXIMUM_NATIVE_RELEASE_ADMISSION_OWNER_BYTES_V1
+            })
+    {
+        return Err(ProviderLedgerError::LimitExceeded(
+            "native Release admission bytes",
+        ));
     }
     for (key, value) in &records {
         if let Some(value) = value {
@@ -1220,6 +1287,10 @@ pub(crate) fn prepare_mutations_validated(
                 prospective.remove(key);
             }
         }
+    }
+    if native_release_fence {
+        validate_native_release_admission_v1(&current, &prospective)
+            .map_err(map_pure_ledger_error)?;
     }
     aos_sandbox_source_provider_ledger::validate_prospective_transition(
         current

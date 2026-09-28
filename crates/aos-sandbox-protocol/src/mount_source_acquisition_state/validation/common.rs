@@ -14,7 +14,7 @@ pub(super) fn reconciliation_commitment(value: &ReconciliationV2) -> [u8; 32] {
     digest.finalize().into()
 }
 
-pub(super) fn exact_session(
+pub(in crate::mount_source_acquisition_state) fn exact_session(
     table: &SourceAcquisitionTableV2,
     id: [u8; 32],
     digest: [u8; 32],
@@ -26,7 +26,7 @@ pub(super) fn exact_session(
         .ok_or_else(|| state_error("provider session reference is dangling or stale"))
 }
 
-pub(super) fn exact_attempt(
+pub(in crate::mount_source_acquisition_state) fn exact_attempt(
     table: &SourceAcquisitionTableV2,
     reference: RecordRefV2,
 ) -> Result<&SourceProviderQueryAttemptV2> {

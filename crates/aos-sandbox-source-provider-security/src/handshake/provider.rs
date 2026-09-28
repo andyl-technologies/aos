@@ -14,11 +14,11 @@ use aos_sandbox_source_provider_protocol::{
     SourceProviderMethod, SourceProviderPeerRole, SourceProviderReceiptV1,
     SourceProviderResponseStatusV1, SourceProviderStatus, SourceReleaseReceiptV1,
     StorageLiveExportRequestV1, decode_acquire_response, decode_inventory_response, decode_message,
-    decode_release_response, digest_signed_export_lease, digest_signed_hello,
-    empty_descriptor_set_commitment_v1, encode_acquire_response, encode_inventory_response,
-    encode_message, encode_release_response, response_result_digest_v1, sign_export_lease,
-    sign_hello, sign_inventory, sign_provider_receipt, sign_release_receipt, sign_response_status,
-    verify_hello, verify_provider_request,
+    digest_signed_export_lease, digest_signed_hello, empty_descriptor_set_commitment_v1,
+    encode_acquire_response, encode_inventory_response, encode_message, encode_release_response,
+    response_result_digest_v1, sign_export_lease, sign_hello, sign_inventory,
+    sign_provider_receipt, sign_release_receipt, sign_response_status, verify_hello,
+    verify_provider_request,
 };
 
 use super::{
@@ -33,6 +33,10 @@ use crate::execution::ProcessExecutionEvidenceV1;
 const MAXIMUM_CURRENT_REQUEST_LIFETIME_SECONDS: i64 = 300;
 #[path = "provider/completion.rs"]
 mod completion;
+#[path = "provider/native_export_fence.rs"]
+mod native_export_fence;
+#[path = "provider/native_release_status.rs"]
+mod native_release_status;
 #[path = "provider/session.rs"]
 mod session;
 #[path = "provider/storage_export.rs"]
@@ -175,6 +179,8 @@ pub struct ProviderCompletionBuilderV1 {
     method: SourceProviderMethod,
     session_binding: aos_sandbox_core::ObjectDigest,
     response: Option<Vec<u8>>,
+    // Constructed only by the exact native Pending/Unavailable status facade.
+    native_release_status_capacity: Option<aos_sandbox::GlobalCapacityReservationV1>,
 }
 
 /// Carries one exact recovered response authorized for a single carrier handoff.
@@ -187,9 +193,30 @@ pub struct RevalidatedProviderReplayV1 {
     has_source_root: bool,
 }
 
+#[derive(Clone, Copy)]
+enum RetainedArtifactUseV1 {
+    HistoricalLineage,
+    Export,
+}
+
 fn journal_retains_exact_artifact(
     journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
     response: &[u8],
+) -> Result<bool, SourceProviderSecurityError> {
+    journal_validates_retained_artifact(journal, response, RetainedArtifactUseV1::HistoricalLineage)
+}
+
+fn journal_retains_exportable_artifact(
+    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    response: &[u8],
+) -> Result<bool, SourceProviderSecurityError> {
+    journal_validates_retained_artifact(journal, response, RetainedArtifactUseV1::Export)
+}
+
+fn journal_validates_retained_artifact(
+    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    response: &[u8],
+    artifact_use: RetainedArtifactUseV1,
 ) -> Result<bool, SourceProviderSecurityError> {
     use aos_sandbox_source_provider_ledger::ledger::model::{
         DecodedRecordV1, ProviderAttemptStateV1,
@@ -210,13 +237,14 @@ fn journal_retains_exact_artifact(
     )
     .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
 
-    Ok(records.iter().any(|(key, value)| {
-        let Ok(DecodedRecordV1::Attempt(attempt)) =
+    for (key, value) in &records {
+        let DecodedRecordV1::Attempt(attempt) =
             aos_sandbox_source_provider_ledger::ledger::format::decode_record(key, value)
+                .map_err(|_| SourceProviderSecurityError::SessionContinuity)?
         else {
-            return false;
+            continue;
         };
-        attempt.state == ProviderAttemptStateV1::Completed
+        let retained = attempt.state == ProviderAttemptStateV1::Completed
             && attempt.completed_response == response
             && attempt.response_digest
                 == Some(
@@ -224,8 +252,66 @@ fn journal_retains_exact_artifact(
                         attempt.method,
                         response,
                     ),
+                );
+        if !retained {
+            continue;
+        }
+        if matches!(artifact_use, RetainedArtifactUseV1::Export)
+            && attempt.method == SourceProviderMethod::Acquire
+            && attempt.status == Some(SourceProviderStatus::Complete)
+        {
+            let response = decode_acquire_response(response)
+                .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+            let receipt = SignedSourceProviderReceiptV1::from_canonical_bytes(
+                response
+                    .signed_receipt()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?,
+            )
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+            let lease = SignedSourceExportLeaseV1::from_canonical_bytes(
+                receipt.subject().signed_export_lease(),
+            )
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+            let acquisition_key =
+                aos_sandbox_source_provider_ledger::ledger::format::acquisition_key(
+                    &aos_sandbox_source_provider_ledger::ledger::model::AcquisitionKeyV1 {
+                        provider_id: attempt.provider.authority_id(),
+                        holder_id: attempt.holder.authority_id(),
+                        acquisition_id: receipt.subject().acquisition_id(),
+                    },
+                );
+            let acquisition = match records.get(&acquisition_key).and_then(|bytes| {
+                aos_sandbox_source_provider_ledger::ledger::format::decode_record(
+                    &acquisition_key,
+                    bytes,
                 )
-    }))
+                .ok()
+            }) {
+                Some(DecodedRecordV1::Acquisition(acquisition)) => acquisition,
+                _ => return Err(SourceProviderSecurityError::SessionContinuity),
+            };
+            let native_key = aos_sandbox_source_provider_ledger::ledger::native_completion::native_completion_key_v2(acquisition.acquisition_id);
+            let native = match records.get(&native_key) {
+                Some(bytes) => {
+                    match aos_sandbox_source_provider_ledger::ledger::format::decode_record(
+                        &native_key,
+                        bytes,
+                    ) {
+                        Ok(DecodedRecordV1::NativeCompletion(native)) => Some(native),
+                        _ => return Err(SourceProviderSecurityError::SessionContinuity),
+                    }
+                }
+                None => None,
+            };
+            if receipt.subject().lease_digest() != digest_signed_export_lease(&lease)
+                || aos_sandbox_source_provider_ledger::ledger::native_completion::validate_native_complete_export_v1(&acquisition, native.as_ref(), &attempt).is_err()
+            {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 impl core::fmt::Debug for RevalidatedProviderReplayV1 {
@@ -1032,12 +1118,12 @@ fn validate_send_response(
             )
         }
         SourceProviderMethod::Release => {
-            let response = decode_release_response(bytes)
+            let response = aos_sandbox_source_provider_protocol::ReleaseSourceResponseProfileV2::from_canonical_bytes(bytes)
                 .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
             (
                 response.signed_status().clone(),
                 false,
-                encode_release_response(&response),
+                response.to_canonical_bytes(),
             )
         }
         SourceProviderMethod::Inventory => {
@@ -1108,9 +1194,9 @@ fn completion_response_matches(
             .ok()
             .filter(|value| encode_acquire_response(value) == bytes)
             .map(|value| value.signed_status().clone()),
-        SourceProviderMethod::Release => decode_release_response(bytes)
+        SourceProviderMethod::Release => aos_sandbox_source_provider_protocol::ReleaseSourceResponseProfileV2::from_canonical_bytes(bytes)
             .ok()
-            .filter(|value| encode_release_response(value) == bytes)
+            .filter(|value| value.to_canonical_bytes() == bytes)
             .map(|value| value.signed_status().clone()),
         SourceProviderMethod::Inventory => decode_inventory_response(bytes)
             .ok()

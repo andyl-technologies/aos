@@ -60,6 +60,8 @@ impl<'a> RetainedNativeChallengeRequestV1<'a> {
             .values()
             .find(|row| row.acquisition_id == record.acquisition_id)
             .ok_or(ProviderLedgerError::Unavailable)?;
+        crate::ledger::native_completion::validate_native_export_open_v1(acquisition, Some(record))
+            .map_err(crate::transaction::map_pure_ledger_error)?;
         let attempt = ledger
             .recovered
             .attempts

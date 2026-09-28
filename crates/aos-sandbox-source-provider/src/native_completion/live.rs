@@ -85,6 +85,17 @@ impl NativeAcquireLiveObservationV3 {
             .native_completions
             .get(&self.active.acquisition_id)
             .ok_or(ProviderLedgerError::Unavailable)?;
+        let acquisition = ledger
+            .recovered
+            .acquisitions
+            .values()
+            .find(|row| row.acquisition_id == current.acquisition_id)
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        crate::ledger::native_completion::validate_native_export_open_v1(
+            acquisition,
+            Some(current),
+        )
+        .map_err(crate::transaction::map_pure_ledger_error)?;
         if current.state != NativeAcquireCompletionStateV2::Prepared {
             return Err(ProviderLedgerError::Equivocation);
         }

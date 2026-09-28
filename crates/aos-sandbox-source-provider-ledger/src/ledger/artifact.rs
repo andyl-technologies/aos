@@ -6,10 +6,9 @@ use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
     SignedSourceProviderRequestV1, SourceProviderMethod, decode_acquire_request,
     decode_acquire_response, decode_inventory_request, decode_inventory_response,
-    decode_release_request, decode_release_response, digest_acquire_request,
-    digest_inventory_request, digest_release_request, encode_acquire_response,
-    encode_inventory_response, encode_release_response, source_provider_inventory_intent_digest_v1,
-    source_provider_release_intent_digest_v1,
+    decode_release_request, digest_acquire_request, digest_inventory_request,
+    digest_release_request, encode_acquire_response, encode_inventory_response,
+    source_provider_inventory_intent_digest_v1, source_provider_release_intent_digest_v1,
 };
 
 pub use aos_sandbox_source_provider_protocol::provider_response_artifact_digest_v1 as response_artifact_digest;
@@ -98,11 +97,11 @@ pub(super) fn validate_completed_response(
             )
         }
         SourceProviderMethod::Release => {
-            let response = decode_release_response(&value.completed_response)
+            let response = aos_sandbox_source_provider_protocol::ReleaseSourceResponseProfileV2::from_canonical_bytes(&value.completed_response)
                 .map_err(|_| LedgerFormatErrorV1::Corrupt("retained Release response"))?;
             (
                 response.signed_status().clone(),
-                encode_release_response(&response),
+                response.to_canonical_bytes(),
             )
         }
         SourceProviderMethod::Inventory => {
