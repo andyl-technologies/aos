@@ -1,4 +1,4 @@
-From 553445cb303b12e9228d1da70d9cdd8ccf6f3a55 Mon Sep 17 00:00:00 2001
+From 2185645d9792464aaf4755b4bff53b12989d615e Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -67,6 +67,11 @@ Preserve the exact virtual clock origin for VFIO INTx mmap timeout
 arming and pending rearming. Convert configured milliseconds with checked
 arithmetic and exercise the actual callbacks, notifier and timer dispatch
 with fractional clock samples and explicit IRQ/mmap hardware doubles.
+
+Retain fractional virtual origins in VGA text cursor and blink display
+cache deadlines. Preserve the existing periods, mode-change resets and
+non-TCG millisecond policy, and exercise actual glyph rendering at exact
+fractional boundaries without changing serialized device state.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -20379,7 +20384,7 @@ index d089847bdae123569879ab26948e3797c4019777..3f40c50670b430e626b7e46b007810f6
                                      unsigned size)
  {
 diff --git a/hw/display/vga.c b/hw/display/vga.c
-index da0c331486eb099617a6af8d567895d8163f8d72..8a15b1d0482a191a2a2f916c006d62ca9eefb327 100644
+index da0c331486eb099617a6af8d567895d8163f8d72..06c31580daaf90fee406d8a1546c74f04319565c 100644
 --- a/hw/display/vga.c
 +++ b/hw/display/vga.c
 @@ -191,6 +191,23 @@ static void vga_dumb_update_retrace_info(VGACommonState *s)
@@ -20469,6 +20474,88 @@ index da0c331486eb099617a6af8d567895d8163f8d72..8a15b1d0482a191a2a2f916c006d62ca
          cur_line = cur_char / r->htotal;
  
          if (cur_line >= r->vstart && cur_line <= r->vend) {
+@@ -1186,6 +1224,28 @@ static void vga_get_text_resolution(VGACommonState *s, int *pwidth, int *pheight
+     *pcheight = cheight;
+ }
+ 
++/* Display cache deadlines are local and are not part of migration state. */
++static __int128 vga_blink_now_ps(void)
++{
++    if (qemu_timer_tcg_ps_enabled()) {
++        return qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL);
++    }
++    return (__int128)qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) * SCALE_MS *
++           PICOSECONDS_PER_NANOSECOND;
++}
++
++static __int128 vga_blink_deadline_ps(__int128 now_ps, uint64_t period_ms)
++{
++    __int128 deadline_ps;
++    __int128 delay_ps = (__int128)period_ms * SCALE_MS *
++                        PICOSECONDS_PER_NANOSECOND;
++
++    if (__builtin_add_overflow(now_ps, delay_ps, &deadline_ps)) {
++        g_error("VGA blink deadline exceeds virtual clock range");
++    }
++    return deadline_ps;
++}
++
+ /*
+  * Text mode update
+  * Missing:
+@@ -1204,7 +1264,7 @@ static void vga_draw_text(VGACommonState *s, int full_update)
+     int dup9, line_offset;
+     uint32_t *palette;
+     uint32_t *ch_attr_ptr;
+-    int64_t now = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
++    __int128 now_ps = vga_blink_now_ps();
+ 
+     /* compute font data address (in plane 2) */
+     v = sr(s, VGA_SEQ_CHARACTER_MAP);
+@@ -1283,12 +1343,14 @@ static void vga_draw_text(VGACommonState *s, int full_update)
+         s->cursor_end = s->cr[VGA_CRTC_CURSOR_END];
+     }
+     cursor_ptr = s->vram_ptr + (s->params.start_addr + cursor_offset) * 4;
+-    if (now >= s->cursor_blink_time) {
+-        s->cursor_blink_time = now + VGA_TEXT_CURSOR_PERIOD_MS / 2;
++    if (now_ps >= s->cursor_blink_time_ps) {
++        s->cursor_blink_time_ps = vga_blink_deadline_ps(
++            now_ps, VGA_TEXT_CURSOR_PERIOD_MS / 2);
+         s->cursor_visible_phase = !s->cursor_visible_phase;
+     }
+-    if (now >= s->blink_time) {
+-        s->blink_time = now + VGA_TEXT_BLINK_PERIOD_MS / 2;
++    if (now_ps >= s->blink_time_ps) {
++        s->blink_time_ps = vga_blink_deadline_ps(
++            now_ps, VGA_TEXT_BLINK_PERIOD_MS / 2);
+         s->blink_visible_phase = !s->blink_visible_phase;
+         if (s->ar[VGA_ATC_MODE] & 0x08) {
+             full_update = 1;
+@@ -1818,7 +1880,7 @@ static bool vga_update_display(void *opaque)
+         }
+         if (graphic_mode != s->graphic_mode) {
+             s->graphic_mode = graphic_mode;
+-            s->cursor_blink_time = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
++            s->cursor_blink_time_ps = vga_blink_now_ps();
+             full_update = 1;
+         }
+         switch(graphic_mode) {
+diff --git a/hw/display/vga_int.h b/hw/display/vga_int.h
+index 5664317ecd6db3b74139386e56101de525489908..d4ef4e230ca9b06ea4d37c12246a88ddaa624301 100644
+--- a/hw/display/vga_int.h
++++ b/hw/display/vga_int.h
+@@ -129,9 +129,9 @@ typedef struct VGACommonState {
+     bool force_shadow;
+     uint8_t cursor_start, cursor_end;
+     bool cursor_visible_phase;
+-    int64_t cursor_blink_time;
++    __int128 cursor_blink_time_ps;
+     bool blink_visible_phase;
+-    int64_t blink_time;
++    __int128 blink_time_ps;
+     uint32_t cursor_offset;
+     const GraphicHwOps *hw_ops;
+     bool full_update_text;
 diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
 index 6e298f997d66bc9078a020f7436abc8108e6ef04..3ddb5f57ba11a9061567ddf05356361b46aa9a0e 100644
 --- a/hw/display/virtio-gpu-virgl.c
@@ -140807,7 +140894,7 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
      return g_test_run();
  }
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..c6764ddc985372d09297059fa6a79f0c823f4dd5 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..d92049314e3117cd6ad853f7493d8a645f1458a3 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -147,6 +147,37 @@ if have_system
@@ -140848,7 +140935,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..c6764ddc985372d09297059fa6a79f0c
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +238,72 @@ foreach test_name, extra: tests
+@@ -207,3 +238,93 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -140914,6 +141001,27 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..c6764ddc985372d09297059fa6a79f0c
 +  test(
 +    'test-crucible-vfio-timer',
 +    vfio_timer_test,
++    env: test_env,
++    args: ['--tap', '-k'],
++    protocol: 'tap',
++    timeout: 30,
++    suite: ['unit'],
++  )
++endif
++
++if have_system and config_all_devices.has_key('CONFIG_VGA')
++  vga_blink_test = executable(
++    'test-crucible-vga-blink',
++    'test-crucible-vga-blink.c',
++    '../../ui/qemu-pixman.c',
++    genh,
++    dependencies: [qemuutil, qom, pixman],
++    c_args: ['-ffunction-sections', '-fdata-sections'],
++    link_args: ['-Wl,--gc-sections'],
++  )
++  test(
++    'test-crucible-vga-blink',
++    vga_blink_test,
 +    env: test_env,
 +    args: ['--tap', '-k'],
 +    protocol: 'tap',
@@ -150757,6 +150865,270 @@ index 0000000000000000000000000000000000000000..5a7447bcaf67f68882479417aeeb384a
 +                         GUINT_TO_POINTER(UINT32_MAX), test_interrupt_origin);
 +    g_test_add_func("/vfio/timer/nanosecond-origin", test_nanosecond_origin);
 +    g_test_add_func("/vfio/timer/deadline-overflow", test_deadline_overflow);
++    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-vga-blink.c b/tests/unit/test-crucible-vga-blink.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..8b1d257a2d76721a3015fc66f09d4a051a2fb54e
+--- /dev/null
++++ b/tests/unit/test-crucible-vga-blink.c
+@@ -0,0 +1,258 @@
++/*
++ * Actual VGA text rendering interval tests.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/main-loop.h"
++#include "qemu/module.h"
++#include "system/cpu-timers.h"
++#include "../../hw/display/vga.c"
++
++static __int128 observed_ps;
++static DisplaySurface framebuffer;
++static char console_cookie;
++static unsigned int updates;
++
++int64_t cpu_get_clock(void)
++{
++    return observed_ps / PICOSECONDS_PER_NANOSECOND;
++}
++
++static __int128 observed_clock_ps(void)
++{
++    return observed_ps;
++}
++
++/* Framebuffer/backend doubles keep actual rendering and cache logic intact. */
++DisplaySurface *qemu_console_surface(QemuConsole *console)
++{
++    g_assert_true(console == (QemuConsole *)&console_cookie);
++    return &framebuffer;
++}
++
++void qemu_console_resize(QemuConsole *console, int width, int height)
++{
++    qemu_console_surface(console);
++    if (framebuffer.image) {
++        pixman_image_unref(framebuffer.image);
++    }
++    framebuffer.image = pixman_image_create_bits(PIXMAN_x8r8g8b8,
++                                                 width, height, NULL, 0);
++    g_assert_nonnull(framebuffer.image);
++}
++
++void qemu_console_text_resize(QemuConsole *console, int width, int height)
++{
++    qemu_console_surface(console);
++    g_assert_cmpint(width, ==, 2);
++    g_assert_cmpint(height, ==, 1);
++}
++
++void qemu_console_update(QemuConsole *console, int x, int y, int w, int h)
++{
++    qemu_console_surface(console);
++    g_assert_cmpint(x, >=, 0);
++    g_assert_cmpint(y, >=, 0);
++    g_assert_cmpint(x + w, <=, surface_width(&framebuffer));
++    g_assert_cmpint(y + h, <=, surface_height(&framebuffer));
++    updates++;
++}
++
++void qemu_flush_coalesced_mmio_buffer(void)
++{
++    /* No hardware coalesced writes exist in this framebuffer fixture. */
++}
++
++/* Graphics/blank-mode and RAM dirty tracking are outside this text fixture. */
++DisplaySurface *qemu_create_displaysurface(int width, int height)
++{
++    g_assert_not_reached();
++}
++
++DisplaySurface *qemu_create_displaysurface_from(int width, int height,
++                                                pixman_format_code_t format,
++                                                int linesize, uint8_t *data)
++{
++    g_assert_not_reached();
++}
++
++void qemu_console_set_surface(QemuConsole *console, DisplaySurface *surface)
++{
++    g_assert_not_reached();
++}
++
++void qemu_console_update_full(QemuConsole *console)
++{
++    g_assert_not_reached();
++}
++
++bool qemu_console_check_format(QemuConsole *console,
++                               pixman_format_code_t format)
++{
++    g_assert_not_reached();
++}
++
++DirtyBitmapSnapshot *memory_region_snapshot_and_clear_dirty(MemoryRegion *mr,
++                                                            hwaddr addr,
++                                                            hwaddr size,
++                                                            unsigned client)
++{
++    g_assert_not_reached();
++}
++
++bool memory_region_snapshot_get_dirty(MemoryRegion *mr,
++                                      DirtyBitmapSnapshot *snapshot,
++                                      hwaddr addr, hwaddr size)
++{
++    g_assert_not_reached();
++}
++
++static void initialize_vga(VGACommonState *state, bool tcg_ps)
++{
++    module_call_init(MODULE_INIT_QOM);
++    qemu_init_main_loop(&error_fatal);
++    if (tcg_ps) {
++        qemu_timer_enable_tcg_ps_clock(NULL, observed_clock_ps);
++    }
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++    memset(state, 0, sizeof(*state));
++    state->con = (QemuConsole *)&console_cookie;
++    state->vram_size = 128 * KiB;
++    state->vram_ptr = g_malloc0(state->vram_size);
++    state->cr[VGA_CRTC_H_DISP] = 1;
++    state->ar[VGA_ATC_MODE] = 8;
++    state->ar[1] = 1;
++    state->palette[3] = 63;
++    state->vram_ptr[1] = state->vram_ptr[5] = 0x81;
++    state->vram_ptr[2] = 0xff;
++    state->cr[VGA_CRTC_CURSOR_START] = 0x20;
++    state->ar_index = 0x20;
++    state->graphic_mode = -1;
++    state->get_params = vga_get_params;
++    state->get_resolution = vga_get_resolution;
++    qemu_console_resize(state->con, 16, 1);
++}
++
++static void destroy_vga(VGACommonState *state)
++{
++    g_free(state->vram_ptr);
++    pixman_image_unref(framebuffer.image);
++    framebuffer.image = NULL;
++}
++
++static void test_render_intervals(gconstpointer opaque)
++{
++    bool tcg_ps = GPOINTER_TO_INT(opaque);
++    VGACommonState state;
++    __int128 origin_ps;
++    __int128 cursor_deadline;
++    __int128 blink_deadline;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = 123456789;
++    initialize_vga(&state, tcg_ps);
++    origin_ps = tcg_ps ? observed_ps : 0;
++    cursor_deadline = origin_ps + (__int128)(VGA_TEXT_CURSOR_PERIOD_MS / 2) *
++                      SCALE_MS * PICOSECONDS_PER_NANOSECOND;
++    blink_deadline = origin_ps + (__int128)(VGA_TEXT_BLINK_PERIOD_MS / 2) *
++                     SCALE_MS * PICOSECONDS_PER_NANOSECOND;
++    g_assert_true(vga_update_display(&state));
++    g_assert_true(state.cursor_visible_phase);
++    g_assert_true(state.blink_visible_phase);
++    g_assert_true(state.cursor_blink_time_ps == cursor_deadline);
++    g_assert_true(state.blink_time_ps == blink_deadline);
++    g_assert_cmpuint(updates, >, 0);
++    g_assert_cmphex(pixman_image_get_data(framebuffer.image)[9], !=, 0);
++
++    observed_ps = cursor_deadline - 1;
++    g_assert_true(vga_update_display(&state));
++    g_assert_true(state.cursor_visible_phase);
++    observed_ps = cursor_deadline;
++    g_assert_true(vga_update_display(&state));
++    g_assert_false(state.cursor_visible_phase);
++    g_assert_true(state.blink_visible_phase);
++
++    observed_ps = blink_deadline - 1;
++    g_assert_true(vga_update_display(&state));
++    g_assert_true(state.blink_visible_phase);
++    observed_ps = blink_deadline;
++    g_assert_true(vga_update_display(&state));
++    g_assert_false(state.blink_visible_phase);
++    g_assert_cmphex(pixman_image_get_data(framebuffer.image)[9], ==, 0);
++    destroy_vga(&state);
++}
++
++static void test_mode_change_reset(void)
++{
++    VGACommonState state;
++    __int128 old_blink_deadline;
++    __int128 old_cursor_deadline;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = 123456789;
++    initialize_vga(&state, true);
++    g_assert_true(vga_update_display(&state));
++    old_blink_deadline = state.blink_time_ps;
++    old_cursor_deadline = state.cursor_blink_time_ps;
++
++    /* Mode transitions reset cursor timing and preserve blink timing. */
++    observed_ps += 17;
++    state.graphic_mode = GMODE_GRAPH;
++    g_assert_true(vga_update_display(&state));
++    g_assert_cmpint(state.graphic_mode, ==, GMODE_TEXT);
++    g_assert_false(state.cursor_visible_phase);
++    g_assert_true(state.cursor_blink_time_ps == old_cursor_deadline + 17);
++    g_assert_true(state.blink_time_ps == old_blink_deadline);
++    g_assert_true(state.blink_visible_phase);
++
++    observed_ps = state.cursor_blink_time_ps - 1;
++    g_assert_true(vga_update_display(&state));
++    g_assert_false(state.cursor_visible_phase);
++    observed_ps++;
++    g_assert_true(vga_update_display(&state));
++    g_assert_true(state.cursor_visible_phase);
++    destroy_vga(&state);
++}
++
++static void test_render_overflow(void)
++{
++    VGACommonState state;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_failed();
++        g_test_trap_assert_stderr(
++            "*VGA blink deadline exceeds virtual clock range*");
++        return;
++    }
++
++    observed_ps = 0;
++    initialize_vga(&state, true);
++    observed_ps = (((__int128)INT64_MAX << 64) | UINT64_MAX) - 500;
++    vga_update_display(&state);
++    g_assert_not_reached();
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_data_func("/vga/blink/fractional-render", GINT_TO_POINTER(true),
++                         test_render_intervals);
++    g_test_add_data_func("/vga/blink/non-tcg-render", GINT_TO_POINTER(false),
++                         test_render_intervals);
++    g_test_add_func("/vga/blink/mode-change-reset", test_mode_change_reset);
++    g_test_add_func("/vga/blink/render-overflow", test_render_overflow);
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-vga-fingerprint.c b/tests/unit/test-crucible-vga-fingerprint.c
