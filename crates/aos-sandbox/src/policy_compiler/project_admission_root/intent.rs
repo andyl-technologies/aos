@@ -13,8 +13,6 @@
 //! its reservation. The intent never asserts Source currentness or authorizes
 //! policy admission.
 
-use std::path::Path;
-
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
@@ -29,17 +27,14 @@ use super::super::deployment_head::{
     HEAD_KEY, PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, SIGNER_PINS_KEY, encode_policy_signer_pins_v1,
 };
 use super::super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
-use super::super::protected_owner::{
-    POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
-};
 use super::super::{
     PolicyDeploymentHeadErrorV1, PolicyDeploymentInputsV1, verify_policy_deployment_head_v1,
     verify_signed_project_policy_source_v2,
 };
 use super::{
     RESERVATION_CANCELLATION_DOMAIN, RootProjectAdmissionStageV1,
-    RootProjectReservationCancellationV1, STAGE_KEY, digest, outcome_key,
-    reservation_cancellation_key, zero_digest,
+    RootProjectReservationCancellationV1, STAGE_KEY, current_project_head_digests, digest,
+    open_fixed_root_project_journal, outcome_key, reservation_cancellation_key, zero_digest,
 };
 
 const KEY: &[u8] = b"\0aos-policy-project-admission-intent-v1\0";
@@ -258,11 +253,7 @@ pub(super) fn current_intent(
 pub(super) fn recover_current_intent_for_reservation_v1(
     source: SourceProjectAdmissionReservationV1,
 ) -> Result<Option<RootProjectAdmissionIntentV1>, PolicyDeploymentHeadErrorV1> {
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
+    let mut journal = open_fixed_root_project_journal()?;
     recover_current_intent_with_journal(&mut journal, source)
 }
 
@@ -364,17 +355,8 @@ pub(super) fn require_stage_intent(
     }
     require_intent_capacity(journal, intent)?;
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
-    if authority
-        .get(HEAD_KEY_V2)?
-        .map(digest)
-        .unwrap_or_else(zero_digest)
-        != intent.prior_packet
-        || authority
-            .get(INPUT_KEY_V2)?
-            .map(digest)
-            .unwrap_or_else(zero_digest)
-            != intent.prior_input
-    {
+    let (packet, input) = current_project_head_digests(&authority)?;
+    if packet != intent.prior_packet || input != intent.prior_input {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
     Ok(intent)
@@ -447,11 +429,7 @@ pub fn prepare_fixed_root_project_admission_intent_v1(
     {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
+    let mut journal = open_fixed_root_project_journal()?;
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     super::super::binding_v2::ensure_root_binding_unheld(&authority)
         .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
@@ -593,11 +571,7 @@ pub(super) fn cancel_reservation_with_journal(
 }
 
 pub(super) fn cancel_current_unstaged_intent_v1() -> Result<(), PolicyDeploymentHeadErrorV1> {
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
+    let mut journal = open_fixed_root_project_journal()?;
     cancel_current_unstaged_intent_with_journal(&mut journal)
 }
 
@@ -630,18 +604,8 @@ pub(super) fn cancel_current_unstaged_intent_with_journal(
         .map(super::RootProjectAdmissionOutcomeV1::from_record_bytes)
         .transpose()?;
     if let (Some(stage), Some(outcome)) = (stage, stage_outcome) {
-        super::require_exact_root_outcome_state(
-            stage,
-            outcome,
-            authority
-                .get(HEAD_KEY_V2)?
-                .map(digest)
-                .unwrap_or_else(zero_digest),
-            authority
-                .get(INPUT_KEY_V2)?
-                .map(digest)
-                .unwrap_or_else(zero_digest),
-        )?;
+        let (packet, input) = current_project_head_digests(&authority)?;
+        super::require_exact_root_outcome_state(stage, outcome, packet, input)?;
     }
     if stage.is_some_and(|stage| {
         stage_outcome.is_none() && stage.source_reservation_digest() != intent.source_reservation
@@ -707,18 +671,8 @@ fn cancel_intent_with_journal(
             .map(super::RootProjectAdmissionOutcomeV1::from_record_bytes)
             .transpose()?;
         let outcome = outcome.ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
-        super::require_exact_root_outcome_state(
-            stage,
-            outcome,
-            authority
-                .get(HEAD_KEY_V2)?
-                .map(digest)
-                .unwrap_or_else(zero_digest),
-            authority
-                .get(INPUT_KEY_V2)?
-                .map(digest)
-                .unwrap_or_else(zero_digest),
-        )?;
+        let (packet, input) = current_project_head_digests(&authority)?;
+        super::require_exact_root_outcome_state(stage, outcome, packet, input)?;
     }
     drop(authority);
     if let Some(prior) = prior {

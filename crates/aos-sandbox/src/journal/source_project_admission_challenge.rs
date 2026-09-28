@@ -686,7 +686,8 @@ impl Journal {
     ) -> Result<(), JournalError> {
         source_domain_policy_hold::ensure_source_domain(self)?;
         let marker = proof.marker();
-        if current_reservation(&self.state)? != Some(expected)
+        let rows = current_rows(&self.state)?;
+        if rows.reservation != Some(expected)
             || self.protected_writer_physical_names_v1()? != expected.names()
             || marker.reservation() != expected.record_digest()
             || marker.client_nonce() != expected.client_nonce()
@@ -699,7 +700,6 @@ impl Journal {
             reservation: expected.record_digest(),
             root_marker: marker.record_digest(),
         };
-        let rows = current_rows(&self.state)?;
         let prior = rows.cancellation;
         if let Some(prior) = prior {
             return if prior == cancellation {
@@ -979,10 +979,9 @@ impl Journal {
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        let reserved = current_reservation(&self.state)?.ok_or(JournalError::ProtectedBoundary)?;
-        let prior = replay_source_project_admission_challenge_v1(self)?;
-        let settlement = current_rows(&self.state)?.settlement;
-        if let Some(row) = prior {
+        let rows = current_rows(&self.state)?;
+        let reserved = rows.reservation.ok_or(JournalError::ProtectedBoundary)?;
+        if let Some(row) = rows.challenge {
             if row.kind == kind
                 && row.nonce == nonce
                 && row.cut == cut
@@ -995,7 +994,7 @@ impl Journal {
             }
             return Err(JournalError::ProtectedBoundary);
         }
-        if settlement.is_some() || reserved.project != project || reserved.names != names {
+        if rows.settlement.is_some() || reserved.project != project || reserved.names != names {
             return Err(JournalError::ProtectedBoundary);
         }
         let row = SourceProjectAdmissionChallengeV1 {
@@ -1038,7 +1037,8 @@ impl Journal {
     ) -> Result<(), JournalError> {
         source_domain_policy_hold::ensure_source_domain(self)?;
         let outcome = proof.outcome();
-        if replay_source_project_admission_challenge_v1(self)? != Some(expected)
+        let rows = current_rows(&self.state)?;
+        if rows.challenge != Some(expected)
             || self.protected_writer_physical_names_v1()? != expected.names()
             || outcome.project() != expected.project()
             || outcome.source_row() != expected.record_digest()
@@ -1052,7 +1052,7 @@ impl Journal {
             stage: outcome.stage(),
             outcome: outcome.record_digest(),
         };
-        let prior = current_rows(&self.state)?.settlement;
+        let prior = rows.settlement;
         if let Some(prior) = prior {
             return if prior == settlement {
                 Ok(())

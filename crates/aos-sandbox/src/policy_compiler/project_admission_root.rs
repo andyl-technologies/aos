@@ -82,6 +82,16 @@ const RESERVATION_CANCELLATION_DOMAIN: &[u8] =
     b"aos.sandbox.policy-project-reservation-cancellation.v1\0";
 const RESERVATION_CANCELLATION_BYTES: usize = 112;
 
+// This opener grants no caller-selected path or journal authority.
+fn open_fixed_root_project_journal() -> Result<Journal, PolicyDeploymentHeadErrorV1> {
+    let (journal, _) = Journal::open_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    Ok(journal)
+}
+
 /// Retains Root's irreversible refusal to stage one Source reservation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RootProjectReservationCancellationV1 {
@@ -578,14 +588,7 @@ fn admit_root_project_source_from_owner_proofs_with_journal(
     let mut fixed_journal = if journal_source.held.is_some() {
         None
     } else {
-        Some(
-            Journal::open_protected_at(
-                Path::new(PROTECTED_POLICY_ROOT),
-                POLICY_AUTHORITY_JOURNAL,
-                policy_authority_journal_limits(),
-            )?
-            .0,
-        )
+        Some(open_fixed_root_project_journal()?)
     };
     let journal = match journal_source.held {
         Some(held) => held,
@@ -778,11 +781,7 @@ pub fn abort_fixed_root_project_admission_v1(
     source_packet: &[u8],
     source_pin: &[u8],
 ) -> Result<RootProjectAdmissionOutcomeV1, PolicyDeploymentHeadErrorV1> {
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
+    let mut journal = open_fixed_root_project_journal()?;
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     super::binding_v2::ensure_root_binding_unheld(&authority)
         .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
@@ -831,14 +830,7 @@ pub fn abort_fixed_root_project_admission_v1(
             Err(PolicyDeploymentHeadErrorV1::StaleHead)
         };
     }
-    let current_packet = authority
-        .get(HEAD_KEY_V2)?
-        .map(digest)
-        .unwrap_or_else(zero_digest);
-    let current_input = authority
-        .get(INPUT_KEY_V2)?
-        .map(digest)
-        .unwrap_or_else(zero_digest);
+    let (current_packet, current_input) = current_project_head_digests(&authority)?;
     if current_packet != stage.prior_packet_digest || current_input != stage.prior_input_digest {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
@@ -867,11 +859,7 @@ pub fn recover_fixed_root_project_admission_outcome_v1(
     if stage_digest.as_bytes() == &[0; 32] {
         return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
     }
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
+    let mut journal = open_fixed_root_project_journal()?;
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     let outcome = authority
         .get(&outcome_key(stage_digest))?
@@ -1178,11 +1166,7 @@ pub fn stage_fixed_root_project_admission_v1(
     )
     .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
 
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
+    let mut journal = open_fixed_root_project_journal()?;
     intent::require_stage_intent(
         &mut journal,
         source_reservation,
@@ -1323,11 +1307,7 @@ fn stage_transaction(
 pub fn cancel_fixed_root_project_reservation_v1(
     reservation: SourceProjectAdmissionReservationV1,
 ) -> Result<RootProjectReservationCancellationV1, PolicyDeploymentHeadErrorV1> {
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
+    let mut journal = open_fixed_root_project_journal()?;
     cancel_root_project_reservation_with_journal_v1(reservation, &mut journal)
 }
 
@@ -1378,11 +1358,7 @@ pub fn recover_fixed_root_project_admission_intent_v1(
 /// Rejects malformed protected history or unsafe Root journal custody.
 pub fn fixed_root_project_admission_recovery_required_v1()
 -> Result<bool, PolicyDeploymentHeadErrorV1> {
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
+    let mut journal = open_fixed_root_project_journal()?;
     project_admission_recovery_required_with_journal(&mut journal)
 }
 
@@ -1425,11 +1401,7 @@ fn project_admission_recovery_required_with_journal(
 /// Rejects a malformed pin or unsafe Root journal custody.
 pub fn recover_fixed_root_project_source_pin_v1()
 -> Result<Option<Vec<u8>>, PolicyDeploymentHeadErrorV1> {
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
+    let mut journal = open_fixed_root_project_journal()?;
     recover_project_source_pin_with_journal(&mut journal)
 }
 
@@ -1456,11 +1428,7 @@ pub fn recover_fixed_root_project_reservation_cancellation_v1(
     if reservation.as_bytes() == &[0; 32] {
         return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
     }
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
+    let mut journal = open_fixed_root_project_journal()?;
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     let marker = authority
         .get(&reservation_cancellation_key(reservation))?
@@ -1480,11 +1448,7 @@ pub fn recover_fixed_root_project_reservation_cancellation_v1(
 pub fn recover_fixed_root_project_admission_stage_v1(
     stage_digest: ObjectDigest,
 ) -> Result<RootProjectAdmissionStageV1, PolicyDeploymentHeadErrorV1> {
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
+    let mut journal = open_fixed_root_project_journal()?;
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     let stage = authority
         .get(STAGE_KEY)?
@@ -1508,11 +1472,7 @@ pub fn recover_fixed_root_project_admission_stage_v1(
 /// Rejects malformed stage/outcome history or unsafe Root journal custody.
 pub fn recover_fixed_root_current_project_admission_stage_v1()
 -> Result<Option<RootProjectAdmissionStageV1>, PolicyDeploymentHeadErrorV1> {
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
+    let mut journal = open_fixed_root_project_journal()?;
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     let stage = authority
         .get(STAGE_KEY)?
@@ -1526,18 +1486,27 @@ pub fn recover_fixed_root_current_project_admission_stage_v1()
         .map(RootProjectAdmissionOutcomeV1::decode)
         .transpose()?;
     if let Some(outcome) = outcome {
-        let current_packet = authority
-            .get(HEAD_KEY_V2)?
-            .map(digest)
-            .unwrap_or_else(zero_digest);
-        let current_input = authority
-            .get(INPUT_KEY_V2)?
-            .map(digest)
-            .unwrap_or_else(zero_digest);
+        let (current_packet, current_input) = current_project_head_digests(&authority)?;
         require_exact_root_outcome_state(stage, outcome, current_packet, current_input)?;
         return Ok(None);
     }
     Ok(Some(stage))
+}
+
+// Reads packet before input from the same retained authority. Missing rows
+// preserve the zero predecessor representation used by exact recovery.
+fn current_project_head_digests(
+    authority: &ProtectedJournalAuthority<'_>,
+) -> Result<(ObjectDigest, ObjectDigest), PolicyDeploymentHeadErrorV1> {
+    let packet = authority
+        .get(HEAD_KEY_V2)?
+        .map(digest)
+        .unwrap_or_else(zero_digest);
+    let input = authority
+        .get(INPUT_KEY_V2)?
+        .map(digest)
+        .unwrap_or_else(zero_digest);
+    Ok((packet, input))
 }
 
 fn digest(bytes: &[u8]) -> ObjectDigest {
