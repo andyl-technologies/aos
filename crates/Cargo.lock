@@ -319,6 +319,7 @@ dependencies = [
  "aos-sandbox-broker-session-security",
  "aos-sandbox-core",
  "aos-sandbox-linux",
+ "aos-sandbox-protocol",
  "ed25519-dalek",
  "libc",
  "pkg-config",
