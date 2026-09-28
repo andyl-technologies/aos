@@ -7,9 +7,10 @@ through the floor; the helper and both journal writers stay retained together.
 Method 46 remains explicitly closed, including historical replay and effect
 handoff. No readiness or method advertisement is opened. Native helper
 compilation and the seven pinned-TSS cache regressions pass as described below.
-Combined Rust qualification, authenticated TPM execution, power-cut behavior,
-restart/rollover, and installed sender/recipient gates remain incomplete or
-unqualified. This is not completion of the rollback workstream.
+The selected native Rust library suite also passes as described below.
+Authenticated TPM execution, power-cut behavior, installed restart/rollover,
+and installed sender/recipient gates remain incomplete or unqualified. This
+is not completion of the rollback workstream.
 
 ## Exact scope
 
@@ -340,7 +341,9 @@ trusted-administrative manager reexec, and property readback still does not
 freeze policy. Genuine installed 261.2 launch delivery/property encoding,
 confinement, descriptor lifecycle, wrong/extra/missing slot failures and
 original-image identity must qualify; source inspection is not that evidence.
-The new shape/mode/flags/shared-offset/closed-set regressions are unrun.
+The native image-hash, read-only descriptor, shared-offset and Controller
+launch-table regressions pass in the selected library run below. They do not
+exercise installed PID 1 descriptor delivery or the full production process.
 
 The scope commits endpoint role, node identity, nonzero deployment epoch,
 stable endpoint manifest identity, and pinned salt-key Name digest. The fixed
@@ -514,12 +517,15 @@ guaranteed to yield only old/target; recovery treats that as unavailable.
 ## Remaining qualification
 
 The durable coordinator, sealed physical producer, image/credential wiring and
-actual owner hooks remain installed-unqualified. The production Rust security
-library and the selected combined test targets compile. The combined run on
-`ba13db30309c7c05933580a052f3ae435a14fd9c` passed 966 Sandbox tests but stopped
-on one fixture failure before the security-library tests ran. This is not
-passing combined Rust qualification. Existing native
-Journal commits are reused through one mutation funnel, including archive
+actual owner hooks remain installed-unqualified. The selected combined native
+library run on `0aba3a682b64f0c67dc495b4a02532b9cc8df398` exits successfully:
+17 libraries, 3,032 distinct tests passed, zero failed, and 15 ignored. The
+broker-session security library contributes 291 passing tests. The run uses
+the AOS development shell with frozen, offline Cargo dependencies, two jobs,
+and `--no-fail-fast`; ignored kernel/installed prerequisites remain unqualified.
+This is selected library qualification, not the full package, daemon or
+installed RFC qualification. Existing native Journal commits are reused
+through one mutation funnel, including archive
 retention/retirement and terminal process rollover. Schema-only validation is
 private to the opaque retained reconciliation borrow; ordinary reads cannot
 skip the floor. No traffic-journal compaction/reset is exposed. Fixed-name
@@ -527,8 +533,10 @@ open/reopen requires noncreating, nonrepairing replay before reconciliation.
 The test-local factory and fake NV do not qualify installed startup, physical
 authentication, service confinement or effect boundaries.
 
-The new lock-loan, helper framing, startup-state and weakened-property tests
-are also unrun. Compiler/API qualification must cover the packaged TSS 4.2.0
+The native lock-loan, helper framing, startup-state, image-hash,
+weakened-property, durable recovery and mocked physical-backend tests pass in
+that run. Their temporary journals and fake NV do not establish actual TPM or
+service custody. Compiler/API qualification must cover the packaged TSS 4.2.0
 initial-response SAPI decode, not assume that a later public read refreshed
 the cached salt key. The exact packaged-4.2.0 repeated-Complete regression and
 check wiring above passed natively; neither uses a physical TPM. They must pass
