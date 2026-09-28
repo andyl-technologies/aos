@@ -791,6 +791,8 @@ fn root_continuity_policy_v1_has_stable_independent_preimage() {
     preimage.extend_from_slice(&[1, 1]);
     preimage.push(4);
     append_string(&mut preimage, "--aos-guest-agent-fds=");
+    // Host supplies these three roles. nspawn separately creates the two
+    // cgroup-custody descriptors before delivering all five bootstrap FDs.
     for role in [
         "aos-sandbox-guest-agent-channel-v1",
         "aos-sandbox-guest-agent-provisioning-v1",
@@ -916,7 +918,7 @@ fn root_continuity_policy_v1_has_stable_independent_preimage() {
     let independently_assembled_digest: [u8; 32] = Sha256::digest(preimage).into();
     assert_eq!(
         encode_hex32(independently_assembled_digest),
-        "ea6e448b7a867444fb29116a6e56853330a082e26fde79d54c2cf432e5775aff"
+        "ee75b9369480946624259133474a135bd7e21565552698d79528f5f4bbd63e08"
     );
     assert_eq!(digest_v1(), independently_assembled_digest);
 }
