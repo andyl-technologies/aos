@@ -54,7 +54,7 @@ in
       nativeGo = buildPackages.go-1_4;
       nativeCc = buildPackages.cc;
       legacyCBootstrap = true;
-      description = "Go 1.4 bootstrap — Darwin-hosted toolchain built with native Go 1.4";
+      description = "Go 1.4 bootstrap toolchain built from source";
     }
   else
     mkDerivation {
@@ -129,7 +129,7 @@ in
       ];
 
       meta = {
-        description = "Go 1.4 bootstrap — compiled from C source";
+        description = "Go 1.4 bootstrap toolchain built from source";
         homepage = "https://go.dev";
         license = "BSD-3-Clause";
       };
