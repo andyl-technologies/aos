@@ -11,8 +11,10 @@
 //! The signer obtains all fields from its read-only fixed-name replay. Root
 //! checks this packet under its own pinned Source key and the Controller-held
 //! AOSQPA01 row; it does not transfer the Source writer or authorize Create.
+//! Completed terminals use distinct AOSQPR06 framing and signature domain:
+//! pending AOSQPR04 abort evidence cannot be relabeled as a settlement.
 
-use aos_sandbox_core::ProjectId;
+use aos_sandbox_core::{ObjectDigest, ProjectId};
 use ed25519_dalek::{Signature, Signer as _, SigningKey};
 
 use super::root_project_admission_proof::{
@@ -22,8 +24,9 @@ use crate::hierarchy::protected_journal::{
     HierarchyProtectedJournalErrorV1, HierarchyProtectedJournalOwnerV1,
 };
 use crate::journal::{
-    JournalError, SourceProjectAdmissionChallengeKindV1, SourceProjectAdmissionChallengeV1,
-    SourceProjectAdmissionReservationV1, replay_source_project_admission_challenge_v1,
+    JournalError, ProtectedJournalNamesV1, SourceProjectAdmissionChallengeKindV1,
+    SourceProjectAdmissionChallengeV1, SourceProjectAdmissionReservationV1,
+    SourceProjectAdmissionTerminalV1, replay_source_project_admission_challenge_v1,
 };
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 
@@ -41,6 +44,228 @@ const RETIREMENT_SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.source-project-retireme
 const RESERVATION_MAGIC: &[u8; 8] = b"AOSQPR05";
 const RESERVATION_SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.source-project-reservation.readback.v1\0";
 const RESERVATION_BODY_BYTES: usize = 136;
+const COMPLETED_TERMINAL_MAGIC: &[u8; 8] = b"AOSQPR06";
+const COMPLETED_TERMINAL_SIGNATURE_DOMAIN: &[u8] =
+    b"aos.sandbox.source-project-completed-terminal.readback.v1\0";
+const COMPLETED_TERMINAL_BODY_BYTES: usize = 552;
+
+/// Bounds the distinct signed actual-terminal packet.
+///
+/// ```text
+/// AOSQPR06 | version:u16=6 | reserved[6]=0 | generation:u64 |
+/// Source-sequence:u64 | actual-reservation:136 |
+/// actual-challenge-or-zero:232 | actual-Source-terminal:152 | signature:64
+/// ```
+///
+/// A cancellation occupies 120 terminal bytes followed by 32 zero bytes.
+pub const SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1: usize =
+    COMPLETED_TERMINAL_BODY_BYTES + 64;
+
+/// Authenticates actual completed Source rows under an independently pinned key.
+///
+/// It proves historical terminal identity, not a fresh clock, Root admission,
+/// retirement ACK, or transferable writer. Root must independently join its
+/// retained intent/terminal and reject issues below its durable history floor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifiedSourceProjectTerminalReadbackV1 {
+    terminal: SourceProjectAdmissionTerminalV1,
+    sequence: u64,
+}
+
+impl VerifiedSourceProjectTerminalReadbackV1 {
+    /// Returns the actual Source reservation authenticated by this packet.
+    pub const fn reservation(self) -> SourceProjectAdmissionReservationV1 {
+        self.terminal.reservation()
+    }
+
+    /// Returns the actual challenged row, absent for reservation cancellation.
+    pub const fn challenge(self) -> Option<SourceProjectAdmissionChallengeV1> {
+        self.terminal.challenge()
+    }
+
+    /// Returns the digest of the actual unpadded Source terminal.
+    pub fn source_terminal_digest(self) -> ObjectDigest {
+        self.terminal.source_terminal_digest()
+    }
+
+    /// Returns the exact Root terminal digest retained by Source.
+    pub const fn root_terminal_digest(self) -> ObjectDigest {
+        self.terminal.root_terminal_digest()
+    }
+
+    /// Returns the fixed names independently observed by the Source signer.
+    pub const fn names(self) -> ProtectedJournalNamesV1 {
+        self.terminal.reservation().names()
+    }
+
+    /// Returns the Source journal frame boundary at the completed observation.
+    pub const fn sequence(self) -> u64 {
+        self.sequence
+    }
+}
+
+/// Signs only actual completed rows from the existing fixed read-only view.
+///
+/// This domain cannot replace pending AOSQPR04 abort evidence. The derived
+/// challenge is the reservation client nonce and actual Root terminal digest;
+/// expiry recovery grants no new nonce, ancestry, or latest-state authority.
+///
+/// # Errors
+///
+/// Rejects pending or malformed rows, mismatched historical terminal challenge,
+/// unsafe fixed signer view, changed journal sequence/names, or invalid generation.
+#[cfg(target_os = "linux")]
+pub fn sign_fixed_source_project_completed_terminal_readback_v1(
+    expected_controller_uid: u32,
+    challenge: SourceHoldReadbackChallengeV1,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+) -> Result<
+    [u8; SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1],
+    super::source_signer_readback::SourceSignerReadbackErrorV1,
+> {
+    use super::source_signer_readback::{
+        SourceSignerReadbackErrorV1, with_source_signer_journal_view,
+    };
+    if expected_controller_uid == 0 || signer_generation == 0 {
+        return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
+    }
+    with_source_signer_journal_view(expected_controller_uid, |readback| {
+        let terminal = readback
+            .journal_mut()
+            .source_project_admission_terminal_v1()?
+            .ok_or(SourceSignerReadbackErrorV1::Stale)?;
+        let names = readback.physical_names_v1();
+        let sequence = readback.journal_mut().snapshot_sequence();
+        if terminal.reservation().names() != names
+            || terminal.reservation().client_nonce() != challenge.nonce()
+            || terminal.root_terminal_digest() != challenge.cut()
+        {
+            return Err(SourceSignerReadbackErrorV1::Stale);
+        }
+        let packet = sign_source_project_completed_terminal_fields_v1(
+            terminal,
+            sequence,
+            signer_generation,
+            signing_key,
+        )?;
+        if readback
+            .journal_mut()
+            .source_project_admission_terminal_v1()?
+            != Some(terminal)
+            || readback.journal_mut().snapshot_sequence() != sequence
+            || readback.physical_names_v1() != names
+        {
+            return Err(SourceSignerReadbackErrorV1::Stale);
+        }
+        Ok(packet)
+    })
+}
+
+fn sign_source_project_completed_terminal_fields_v1(
+    terminal: SourceProjectAdmissionTerminalV1,
+    sequence: u64,
+    generation: u64,
+    signing_key: &SigningKey,
+) -> Result<[u8; SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1], SourceHoldReadbackErrorV1> {
+    if sequence == 0 || generation == 0 {
+        return Err(SourceHoldReadbackErrorV1::NonCanonical);
+    }
+    let mut bytes = [0; SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1];
+    bytes[..8].copy_from_slice(COMPLETED_TERMINAL_MAGIC);
+    bytes[8..10].copy_from_slice(&6_u16.to_be_bytes());
+    bytes[16..24].copy_from_slice(&generation.to_be_bytes());
+    bytes[24..32].copy_from_slice(&sequence.to_be_bytes());
+    bytes[32..168].copy_from_slice(&terminal.reservation().record_bytes());
+    if let Some(challenge) = terminal.challenge() {
+        bytes[168..400].copy_from_slice(&challenge.record_bytes());
+    }
+    bytes[400..552].copy_from_slice(&terminal.record_bytes());
+    let signature = signing_key.sign(&signature_preimage(
+        COMPLETED_TERMINAL_SIGNATURE_DOMAIN,
+        &bytes[..COMPLETED_TERMINAL_BODY_BYTES],
+    ));
+    bytes[COMPLETED_TERMINAL_BODY_BYTES..].copy_from_slice(&signature.to_bytes());
+    Ok(bytes)
+}
+
+/// Verifies the separate Source completed-terminal domain and actual row join.
+///
+/// It cannot relabel a pending abort readback as completed, synthesize ancestry,
+/// or authorize Root retirement without Root's independently retained intent.
+///
+/// # Errors
+///
+/// Rejects noncanonical framing or row joins, wrong signer generation,
+/// mismatched historical terminal challenge, or an invalid signature.
+pub fn verify_source_project_completed_terminal_readback_v1(
+    bytes: &[u8],
+    signer: &PinnedSourceHoldReadbackSignerV1,
+    challenge: SourceHoldReadbackChallengeV1,
+) -> Result<VerifiedSourceProjectTerminalReadbackV1, SourceHoldReadbackErrorV1> {
+    if bytes.len() != SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1
+        || bytes.get(..8) != Some(COMPLETED_TERMINAL_MAGIC)
+        || take::<2>(bytes, 8)? != 6_u16.to_be_bytes()
+        || take::<6>(bytes, 10)? != [0; 6]
+        || take::<8>(bytes, 16)? != signer.generation().to_be_bytes()
+    {
+        return Err(SourceHoldReadbackErrorV1::NonCanonical);
+    }
+    let signature = Signature::from_bytes(&take::<64>(bytes, COMPLETED_TERMINAL_BODY_BYTES)?);
+    signer
+        .verifying_key()
+        .verify_strict(
+            &signature_preimage(
+                COMPLETED_TERMINAL_SIGNATURE_DOMAIN,
+                &bytes[..COMPLETED_TERMINAL_BODY_BYTES],
+            ),
+            &signature,
+        )
+        .map_err(|_| SourceHoldReadbackErrorV1::Signature)?;
+    let reservation = SourceProjectAdmissionReservationV1::from_record_bytes(&bytes[32..168])
+        .map_err(|_| SourceHoldReadbackErrorV1::NonCanonical)?;
+    let actual_challenge = if bytes[168..400] == [0; 232] {
+        None
+    } else {
+        Some(
+            SourceProjectAdmissionChallengeV1::from_record_bytes(&bytes[168..400])
+                .map_err(|_| SourceHoldReadbackErrorV1::NonCanonical)?,
+        )
+    };
+    let terminal = SourceProjectAdmissionTerminalV1::from_record_parts(
+        reservation,
+        actual_challenge,
+        &bytes[400..552],
+    )
+    .map_err(|_| SourceHoldReadbackErrorV1::NonCanonical)?;
+    let sequence = u64::from_be_bytes(take::<8>(bytes, 24)?);
+    if sequence == 0
+        || reservation.client_nonce() != challenge.nonce()
+        || terminal.root_terminal_digest() != challenge.cut()
+    {
+        return Err(SourceHoldReadbackErrorV1::Stale);
+    }
+    Ok(VerifiedSourceProjectTerminalReadbackV1 { terminal, sequence })
+}
+
+/// Acknowledges a completed Source terminal under retained Controller custody.
+///
+/// # Errors
+///
+/// Rejects unsafe fixed Source names, a foreign Root floor or Controller ACK,
+/// conflicting replay, or failed durable ACK commit/readback.
+pub fn acknowledge_source_project_terminal_retirement_v1(
+    owner: &mut ProtectedSourceDomainJournalOwnerV1,
+    proof: super::RootProjectHistoryFloorProofV1,
+    controller: &crate::reconciler::ControllerProjectHistoryAcceptanceV1<'_>,
+) -> Result<(), SourceProjectAdmissionChallengeErrorV1> {
+    owner.require_fixed_named_writer_v1()?;
+    owner
+        .journal()
+        .acknowledge_source_project_terminal_retirement_v1(proof, controller)?;
+    owner.require_fixed_named_writer_v1()?;
+    Ok(())
+}
 
 /// Bounds the exact Source-only project-admission readback packet.
 pub const SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1: usize = BODY_BYTES + 64;
@@ -268,10 +493,10 @@ pub fn record_source_project_abort_only_challenge_v1(
     Ok(row)
 }
 
-/// Preflights current project ancestry and three Source journal transactions.
+/// Preflights current project ancestry and four Source journal transactions.
 ///
 /// The caller must retain this owner through stage, challenge, Root decision,
-/// and exact settlement. This does not stage Root or grant any project policy.
+/// settlement, and exact retirement ACK. This does not stage Root or grant policy.
 ///
 /// # Errors
 ///
@@ -335,7 +560,7 @@ pub fn read_source_project_admission_status_v1(
     Ok(owner.journal().source_project_admission_status_v1()?)
 }
 
-/// Durably retires the current Source challenge with an opaque Root outcome.
+/// Records the current Source terminal without lifting the retirement-ACK fence.
 ///
 /// # Errors
 ///
@@ -698,5 +923,177 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn completed_terminal_domain_binds_actual_settlement_or_cancellation() {
+        use crate::policy_compiler::{
+            RootProjectReservationCancellationProofV1,
+            test_root_project_reservation_cancellation_v1,
+            test_source_project_admission_outcome_v1,
+        };
+
+        for canceled in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            let uid = fs::metadata(directory.path()).unwrap().uid();
+            let (mut writer, _) = Journal::open_protected_at_uid(
+                directory.path(),
+                "source-domains-v1.journal",
+                source_domain_journal_limits(),
+                uid,
+            )
+            .unwrap();
+            let names = writer.protected_writer_physical_names_v1().unwrap();
+            let reservation = writer
+                .record_source_project_admission_reservation_v1(
+                    [2; 16],
+                    ProjectId::from_bytes([1; 16]),
+                    names,
+                )
+                .unwrap();
+            assert!(
+                writer
+                    .source_project_admission_terminal_v1()
+                    .unwrap()
+                    .is_none()
+            );
+            if canceled {
+                writer
+                    .settle_source_project_admission_reservation_v1(
+                        reservation,
+                        RootProjectReservationCancellationProofV1::from_test_marker(
+                            test_root_project_reservation_cancellation_v1(reservation),
+                        ),
+                    )
+                    .unwrap();
+            } else {
+                let row = writer
+                    .record_source_project_admission_challenge_v1(
+                        reservation.project(),
+                        ObjectDigest::from_bytes([3; 32]),
+                        [4; 16],
+                        ObjectDigest::from_bytes([5; 32]),
+                        ObjectDigest::from_bytes([6; 32]),
+                        names,
+                    )
+                    .unwrap();
+                assert!(
+                    writer
+                        .source_project_admission_terminal_v1()
+                        .unwrap()
+                        .is_none()
+                );
+                writer
+                    .settle_source_project_admission_challenge_v1(
+                        row,
+                        RootProjectAdmissionOutcomeProofV1::from_test_outcome(
+                            test_source_project_admission_outcome_v1(row, row.stage()),
+                        ),
+                    )
+                    .unwrap();
+            }
+            let terminal = writer
+                .source_project_admission_terminal_v1()
+                .unwrap()
+                .unwrap();
+            let challenge = SourceHoldReadbackChallengeV1::new(
+                reservation.client_nonce(),
+                terminal.root_terminal_digest(),
+            )
+            .unwrap();
+            let key = SigningKey::from_bytes(&[7; 32]);
+            let pin = PinnedSourceHoldReadbackSignerV1::decode(
+                &encode_source_hold_readback_signer_credential_v1(8, &key.verifying_key()).unwrap(),
+            )
+            .unwrap();
+            let packet = sign_source_project_completed_terminal_fields_v1(
+                terminal,
+                writer.snapshot_sequence(),
+                8,
+                &key,
+            )
+            .unwrap();
+            assert_eq!(packet.len(), 616);
+            let verified =
+                verify_source_project_completed_terminal_readback_v1(&packet, &pin, challenge)
+                    .unwrap();
+            assert_eq!(verified.reservation(), reservation);
+            assert_eq!(verified.challenge(), terminal.challenge());
+            assert_eq!(
+                verified.source_terminal_digest(),
+                terminal.source_terminal_digest()
+            );
+            assert_eq!(
+                verified.root_terminal_digest(),
+                terminal.root_terminal_digest()
+            );
+            assert_eq!(verified.names(), names);
+            assert_eq!(verified.sequence(), writer.snapshot_sequence());
+
+            for offset in [16, 24, 32, 168, 400, 552] {
+                let mut changed = packet;
+                changed[offset] ^= 1;
+                assert!(
+                    verify_source_project_completed_terminal_readback_v1(&changed, &pin, challenge)
+                        .is_err()
+                );
+            }
+            let wrong = SourceHoldReadbackChallengeV1::new([9; 16], challenge.cut()).unwrap();
+            assert!(
+                verify_source_project_completed_terminal_readback_v1(&packet, &pin, wrong).is_err()
+            );
+            if canceled {
+                let mut padded = packet;
+                padded[520] = 1;
+                resign_completed_for_test(&mut padded, &key);
+                assert!(
+                    verify_source_project_completed_terminal_readback_v1(&padded, &pin, challenge)
+                        .is_err()
+                );
+            } else {
+                let row = terminal.challenge().unwrap();
+                let pending =
+                    sign_source_project_retirement_fields_v1(row, reservation, 8, &key).unwrap();
+                assert!(
+                    verify_source_project_completed_terminal_readback_v1(&pending, &pin, challenge)
+                        .is_err()
+                );
+                assert!(
+                    verify_source_project_retirement_readback_v1(
+                        &packet,
+                        &pin,
+                        SourceHoldReadbackChallengeV1::new(row.nonce(), row.cut()).unwrap(),
+                        row.project(),
+                        row,
+                        reservation.record_digest(),
+                    )
+                    .is_err()
+                );
+                // Even a validly signed relabeling cannot invent a Source terminal.
+                let mut fabricated = packet;
+                fabricated[400..552].fill(0);
+                resign_completed_for_test(&mut fabricated, &key);
+                assert!(
+                    verify_source_project_completed_terminal_readback_v1(
+                        &fabricated,
+                        &pin,
+                        challenge
+                    )
+                    .is_err()
+                );
+            }
+        }
+    }
+
+    fn resign_completed_for_test(
+        bytes: &mut [u8; SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1],
+        key: &SigningKey,
+    ) {
+        let signature = key.sign(&signature_preimage(
+            COMPLETED_TERMINAL_SIGNATURE_DOMAIN,
+            &bytes[..COMPLETED_TERMINAL_BODY_BYTES],
+        ));
+        bytes[COMPLETED_TERMINAL_BODY_BYTES..].copy_from_slice(&signature.to_bytes());
     }
 }

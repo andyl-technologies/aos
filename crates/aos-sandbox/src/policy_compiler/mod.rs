@@ -282,16 +282,22 @@ pub use source_hold_readback::{
 pub use source_hold_readback_v2::{
     SOURCE_HOLD_READBACK_BYTES_V2, verify_source_hold_readback_with_names_v2,
 };
+#[cfg(target_os = "linux")]
+pub use source_project_admission_readback::sign_fixed_source_project_completed_terminal_readback_v1;
 pub use source_project_admission_readback::{
-    SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1, SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1,
-    SourceProjectAdmissionChallengeErrorV1, preflight_source_project_admission_v1,
-    read_source_project_admission_status_v1, read_source_project_reservation_status_v1,
+    SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1,
+    SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1,
+    SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1, SourceProjectAdmissionChallengeErrorV1,
+    VerifiedSourceProjectTerminalReadbackV1, acknowledge_source_project_terminal_retirement_v1,
+    preflight_source_project_admission_v1, read_source_project_admission_status_v1,
+    read_source_project_reservation_status_v1,
     record_current_source_project_admission_challenge_v1,
     record_source_project_abort_only_challenge_v1,
     require_current_source_project_admission_challenge_v1, reserve_source_project_admission_v1,
     settle_current_source_project_admission_challenge_v1, settle_source_project_reservation_v1,
-    verify_source_project_admission_readback_v1, verify_source_project_reservation_readback_v1,
-    verify_source_project_retirement_readback_v1,
+    verify_source_project_admission_readback_v1,
+    verify_source_project_completed_terminal_readback_v1,
+    verify_source_project_reservation_readback_v1, verify_source_project_retirement_readback_v1,
 };
 #[cfg(target_os = "linux")]
 pub use source_signer_readback::{
