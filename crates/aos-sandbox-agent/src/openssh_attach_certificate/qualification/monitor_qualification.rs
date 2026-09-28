@@ -83,7 +83,21 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
     claim.pty = false;
     (claim.sshd_pid, claim.sshd_start_ticks) = daemon.daemon_identity().unwrap();
     write_claim(&claim);
-    let runtime = daemon.monitor_runtime_v2(&claim).unwrap();
+    let runtime = daemon.monitor_runtime_v2(&claim).unwrap_or_else(|error| {
+        let status = daemon.qualification_exit_status();
+        let diagnostic_path = Path::new(FIXTURE_DIRECTORY).join("monitor.stderr");
+        let failure = match &error {
+            crate::openssh_gate_linux::OpenSshGatePhysicalErrorV1::Io(io_error) => {
+                listener_failure(&status, io_error, &diagnostic_path)
+            }
+            _ => listener_failure(
+                &status,
+                &std::io::Error::other("monitor runtime readback denied"),
+                &diagnostic_path,
+            ),
+        };
+        panic!("original monitor runtime readback failed: {error:?}\n{failure}");
+    });
     assert!(
         runtime
             .require_monitor(
