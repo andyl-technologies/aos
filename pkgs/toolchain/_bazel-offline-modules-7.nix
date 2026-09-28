@@ -144,6 +144,9 @@ in
           name = "module_dot_bazel.patch";
           hash = "sha256-wH4mNS6ZYy+8uC0HoAft/c7SDsq2Kxf+J8dUakXhaB0=";
         })
+        # Avoid defining an anonymous type inside offsetof, which modern
+        # Clang diagnoses under this source release's C99 pedantic flags.
+        ./bazel-patches/upb-compiler-alignment.patch
       ];
     };
     rules_cc = moduleSource {
