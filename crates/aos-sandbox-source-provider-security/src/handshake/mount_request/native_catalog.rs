@@ -56,8 +56,11 @@ pub(super) struct NativeAcquireCurrentnessGuardV3 {
 }
 
 struct OriginalNativeDeadlineV3 {
+    // The original observation is never refreshed during pending progress.
     initial: RawPairedClockSample,
+    // This exact whole-second bound is written into the signed native request.
     expires_seconds: i64,
+    // The original wall ceiling and live Mount cutoff independently limit I/O.
     boottime_deadline: u64,
 }
 
@@ -74,7 +77,9 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// Canonical publication and catalog bytes are untrusted input until their
     /// independent signature, protected floors, and exact selection are joined.
     /// An empty Mount graph permits a publication-floor challenge, not fresh
-    /// authorization. This method performs at most one bounded progress step.
+    /// authorization. Both the signed expiry and local I/O fence intersect the
+    /// original live Mount cutoff using one paired sample. This method performs
+    /// at most one bounded progress step.
     ///
     /// # Errors
     ///
@@ -123,6 +128,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
             mount.header().deadline_boottime_nanoseconds(),
         )
         .map_err(|error| self.poison(error))?;
+        let request =
+            bound_native_draft_deadline(request, &deadline).map_err(|error| self.poison(error))?;
         let configuration = RevalidatedProviderConfigurationV1::capture_root_mount(
             &mut self.custody,
             deadline.initial.wall_seconds(),
@@ -664,6 +671,45 @@ fn joined_binding(
     .map_err(|_| SourceProviderSecurityError::SessionContinuity)
 }
 
+// Reconstructs only the native draft's deadline, preserving every original
+// identity and semantic field before normalization and signing. A local-only
+// BOOTTIME fence would not constrain a Provider effect after successful send.
+fn bound_native_draft_deadline(
+    request: AcquireSourceRequestV1,
+    deadline: &OriginalNativeDeadlineV3,
+) -> Result<AcquireSourceRequestV1, SourceProviderSecurityError> {
+    if request.acquisition_version() != ACQUIRE_SOURCE_REQUEST_VERSION_V2
+        || request.kernel_coupled()
+        || request.boot_id() != deadline.initial.host_boot_id()
+        || deadline.expires_seconds > request.deadline_seconds()
+    {
+        return Err(SourceProviderSecurityError::SessionContinuity);
+    }
+    AcquireSourceRequestV1::new_v2(
+        request.session_binding(),
+        request.sequence(),
+        request.request_id(),
+        request.acquisition_sequence(),
+        request.prospective_apply_template().to_vec(),
+        request.prospective_apply_template_digest(),
+        request.source_use(),
+        request.node_id(),
+        request.boot_id(),
+        request.holder_authority_id(),
+        request.holder_generation(),
+        request.holder_authority_digest(),
+        request.binding().to_vec(),
+        request.binding_digest(),
+        deadline.expires_seconds,
+        request.requested_lease_seconds(),
+        request.revocation_digest(),
+        request.recursive(),
+        request.requested_maximum_submounts(),
+        request.kernel_coupled(),
+    )
+    .map_err(|_| SourceProviderSecurityError::SessionContinuity)
+}
+
 impl OriginalNativeDeadlineV3 {
     fn capture(
         expires_seconds: i64,
@@ -674,15 +720,13 @@ impl OriginalNativeDeadlineV3 {
         if initial.host_boot_id() != boot {
             return Err(SourceProviderSecurityError::SessionContinuity);
         }
-        let mut deadline = Self::from_sample(initial, expires_seconds)?;
-        deadline.boottime_deadline = deadline.boottime_deadline.min(mount_deadline);
-        deadline.require_current(initial)?;
-        Ok(deadline)
+        Self::from_sample(initial, expires_seconds, mount_deadline)
     }
 
     fn from_sample(
         initial: RawPairedClockSample,
         expires_seconds: i64,
+        mount_deadline: u64,
     ) -> Result<Self, SourceProviderSecurityError> {
         // Wall time is observed in whole seconds. Subtract its maximum omitted
         // fraction rather than letting a BOOTTIME fence extend the expiry.
@@ -697,11 +741,26 @@ impl OriginalNativeDeadlineV3 {
             .boottime_nanoseconds()
             .checked_add(remaining)
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        Ok(Self {
+        // Round the Mount's remaining interval down and use the lower observed
+        // wall second. The signed remote expiry cannot outlive its original
+        // BOOTTIME cutoff; a subsecond-only interval is not representable.
+        let mount_remaining_seconds = mount_deadline
+            .checked_sub(initial.boottime_nanoseconds())
+            .map(|nanoseconds| nanoseconds / 1_000_000_000)
+            .filter(|seconds| *seconds > 0)
+            .and_then(|seconds| i64::try_from(seconds).ok())
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let mount_expires_seconds = initial
+            .wall_seconds()
+            .checked_add(mount_remaining_seconds)
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let deadline = Self {
             initial,
-            expires_seconds,
-            boottime_deadline,
-        })
+            expires_seconds: expires_seconds.min(mount_expires_seconds),
+            boottime_deadline: boottime_deadline.min(mount_deadline),
+        };
+        deadline.require_current(initial)?;
+        Ok(deadline)
     }
 
     fn require_current(
@@ -724,8 +783,10 @@ fn kernel_clock() -> Result<RawPairedClockSample, SourceProviderSecurityError> {
     let boot = aos_sandbox_linux::boot::KernelBootId::current()
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?
         .into_bytes();
-    let boottime = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    // Observe the lower wall second first so scheduling between reads cannot
+    // inflate a Mount BOOTTIME interval projected into signed wall expiry.
     let wall = rustix::time::clock_gettime(rustix::time::ClockId::Realtime).tv_sec;
+    let boottime = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
     let after = aos_sandbox_linux::boot::KernelBootId::current()
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?
         .into_bytes();
@@ -757,7 +818,10 @@ mod tests {
     // protected-plan, received-sender, signing, or reservation constructors.
     use super::*;
     use aos_sandbox_source_provider_protocol::{
-        ProviderHeldSnapshotRowV1, SourceProviderKeyUsageV1,
+        ProviderHeldSnapshotRowV1, SignedSourceProviderRequestV1, SourceProviderKeyUsageV1,
+        SourceUseV1, decode_acquire_request, digest_logical_binding_bytes,
+        prospective_mount_apply_template_digest_v1, source_provider_acquire_intent_digest_v1,
+        verify_request,
     };
     use ed25519_dalek::SigningKey;
 
@@ -1023,7 +1087,7 @@ mod tests {
     #[test]
     fn original_deadline_rejects_boot_rollback_drift_and_expiry_without_refresh() {
         let initial = clock(100, 200, 1);
-        let deadline = OriginalNativeDeadlineV3::from_sample(initial, 110).unwrap();
+        let deadline = OriginalNativeDeadlineV3::from_sample(initial, 110, u64::MAX).unwrap();
         assert_eq!(deadline.boottime_deadline, 209_000_000_000);
         assert!(deadline.require_current(clock(108, 208, 1)).is_ok());
         assert!(deadline.require_current(clock(109, 209, 1)).is_err());
@@ -1032,12 +1096,166 @@ mod tests {
         assert!(deadline.require_current(clock(99, 201, 1)).is_err());
         assert!(deadline.require_current(clock(101, 199, 1)).is_err());
         assert!(deadline.require_current(clock(104, 201, 1)).is_err());
-        assert!(OriginalNativeDeadlineV3::from_sample(initial, 101).is_err());
+        assert!(OriginalNativeDeadlineV3::from_sample(initial, 101, u64::MAX).is_err());
 
         // The original Mount BOOTTIME header can only shorten this fence.
-        let mut deadline = OriginalNativeDeadlineV3::from_sample(initial, 110).unwrap();
-        deadline.boottime_deadline = deadline.boottime_deadline.min(203_000_000_000);
+        let deadline =
+            OriginalNativeDeadlineV3::from_sample(initial, 110, 203_000_000_000).unwrap();
         assert!(deadline.require_current(clock(102, 202, 1)).is_ok());
         assert!(deadline.require_current(clock(103, 203, 1)).is_err());
+    }
+
+    #[test]
+    fn signed_wall_bound_intersects_original_mount_cutoff_without_rounding_up() {
+        let initial = clock(100, 200, 1);
+        for (request_expiry, mount_cutoff, signed_expiry, io_cutoff) in [
+            (700, 205_000_000_000, 105, 205_000_000_000),
+            (700, 205_999_999_999, 105, 205_999_999_999),
+            (104, 205_000_000_000, 104, 203_000_000_000),
+        ] {
+            let deadline =
+                OriginalNativeDeadlineV3::from_sample(initial, request_expiry, mount_cutoff)
+                    .unwrap();
+            assert_eq!(deadline.expires_seconds, signed_expiry);
+            assert_eq!(deadline.boottime_deadline, io_cutoff);
+            assert!(deadline.require_current(clock(101, 201, 1)).is_ok());
+            assert_eq!(deadline.expires_seconds, signed_expiry);
+        }
+        for mount_cutoff in [199_999_999_999, 200_000_000_000, 200_999_999_999] {
+            assert!(OriginalNativeDeadlineV3::from_sample(initial, 700, mount_cutoff).is_err());
+        }
+        let deadline =
+            OriginalNativeDeadlineV3::from_sample(initial, 700, 205_000_000_000).unwrap();
+        assert!(deadline.require_current(clock(105, 204, 1)).is_err());
+        assert!(deadline.require_current(clock(104, 205, 1)).is_err());
+    }
+
+    fn native_deadline_draft(expires_seconds: i64) -> AcquireSourceRequestV1 {
+        let mut template = Vec::new();
+        for tag in 1_u8..=27 {
+            let value = match tag {
+                1 => b"AOSMSEM1".to_vec(),
+                2 => 1_u16.to_be_bytes().to_vec(),
+                _ => vec![tag, tag + 1],
+            };
+            template.push(tag);
+            template.extend_from_slice(&(value.len() as u32).to_be_bytes());
+            template.extend_from_slice(&value);
+        }
+        let template_digest = prospective_mount_apply_template_digest_v1(&template).unwrap();
+        let binding = b"native-deadline-data".to_vec();
+        let binding_digest = digest_logical_binding_bytes(&binding);
+        AcquireSourceRequestV1::new_v2(
+            digest(1),
+            1,
+            [2; 16],
+            3,
+            template,
+            template_digest,
+            SourceUseV1::MountCreate,
+            [4; 16],
+            [5; 16],
+            [6; 16],
+            7,
+            digest(8),
+            binding,
+            binding_digest,
+            expires_seconds,
+            600,
+            digest(9),
+            false,
+            0,
+            false,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn native_signed_wire_carries_shorter_mount_expiry_and_preserves_original_intent() {
+        let initial = clock(100, 200, 5);
+        let deadline =
+            OriginalNativeDeadlineV3::from_sample(initial, 700, 205_000_000_000).unwrap();
+        let original = native_deadline_draft(700);
+        let bounded = bound_native_draft_deadline(original.clone(), &deadline).unwrap();
+
+        // The existing V2 layout ends in deadline[8], lease[8], revocation[32],
+        // and flags/reserved/submounts[8]. All other original bytes stay exact.
+        let mut expected = encode_acquire_request(&original);
+        let deadline_offset = expected.len() - 56;
+        expected[deadline_offset..deadline_offset + 8].copy_from_slice(&105_i64.to_be_bytes());
+        assert_eq!(encode_acquire_request(&bounded), expected);
+        assert_eq!(original.deadline_seconds(), 700);
+        assert_eq!(decode_acquire_request(&expected).unwrap(), bounded);
+        assert!(bound_native_draft_deadline(native_deadline_draft(104), &deadline).is_err());
+        let foreign_boot =
+            OriginalNativeDeadlineV3::from_sample(clock(100, 200, 1), 700, 205_000_000_000)
+                .unwrap();
+        assert!(bound_native_draft_deadline(original.clone(), &foreign_boot).is_err());
+
+        let catalog = NativeAcquireCatalogBindingV3::new(
+            digest(9),
+            5,
+            digest(5),
+            4,
+            digest(4),
+            digest(6),
+            digest(7),
+        )
+        .unwrap();
+        let original_native =
+            AcquireSourceRequestV1::new_native_v3(original, catalog.clone()).unwrap();
+        let bounded_native =
+            AcquireSourceRequestV1::new_native_v3(bounded, catalog.clone()).unwrap();
+        assert_eq!(bounded_native.native_catalog(), Some(&catalog));
+        assert!(bound_native_draft_deadline(bounded_native.clone(), &deadline).is_err());
+        assert_eq!(
+            source_provider_acquire_intent_digest_v1(&bounded_native),
+            source_provider_acquire_intent_digest_v1(&original_native)
+        );
+        let normalized = |request: &AcquireSourceRequestV1| {
+            NormalizedAcquisitionIntentV2::from_original_acquire_request(
+                request,
+                SourceProviderAuthorityV1::new([10; 16], 11, digest(12)).unwrap(),
+                SourceProviderAuthorityV1::new([6; 16], 7, digest(8)).unwrap(),
+                [4; 16],
+                [5; 16],
+                [13; 16],
+                14,
+                digest(15),
+                digest(9),
+                1,
+                digest(9),
+            )
+            .unwrap()
+        };
+        assert_eq!(normalized(&bounded_native), normalized(&original_native));
+
+        // Plain cryptographic DATA verification, not an installed Root signer
+        // or received-peer proof: the remote subject itself carries 105.
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let signer = SourceProviderSigningKeyV1::for_signing_key(
+            [6; 16],
+            7,
+            digest(8),
+            [16; 16],
+            1,
+            SourceProviderKeyUsageV1::RootMountRecord,
+            &key,
+        )
+        .unwrap();
+        let signed = sign_request(
+            SourceProviderMethod::Acquire,
+            encode_acquire_request(&bounded_native),
+            signer,
+            &key,
+        )
+        .unwrap();
+        let signed =
+            SignedSourceProviderRequestV1::from_canonical_bytes(&signed.to_canonical_bytes())
+                .unwrap();
+        verify_request(&signed, key.verifying_key().as_bytes()).unwrap();
+        let received = decode_acquire_request(signed.subject()).unwrap();
+        assert_eq!(received, bounded_native);
+        assert_eq!(received.deadline_seconds(), deadline.expires_seconds);
     }
 }
