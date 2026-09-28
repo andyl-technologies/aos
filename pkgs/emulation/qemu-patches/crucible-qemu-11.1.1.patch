@@ -1,4 +1,4 @@
-From 8efabcf41af3af03e38c27f9452955773417ee31 Mon Sep 17 00:00:00 2001
+From d9369ef170a1073e0058d5c93e57d9380c249613 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -57,6 +57,11 @@ checkpoints every 16 rows. Retain strict helper end boundaries and all
 target metadata words, reject malformed metadata without exposing partial
 outputs, and return the already authenticated TB from the private identity
 decoder without changing generic restoration or execution permissions.
+
+Preserve the fractional TCG virtual clock origin when arming relative
+coroutine sleeps. Keep nonpositive sleeps immediately eligible, diagnose
+unrepresentable deadlines before parking, and exercise actual coroutine
+wakeup and timer dispatch with coherent fractional clock samples.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -143038,6 +143043,211 @@ index b88b557133a721fc87bab91701271ef9f1888fc7..f850ad2c5fcc10989db7a0d032055e8a
  
      qemu_thread_join(&thread);
  
+diff --git a/tests/unit/test-coroutine.c b/tests/unit/test-coroutine.c
+index aa1f719b08169025f3d9f9f0fd82113d27325c78..cfa736135e6e2e50cd1bab20a17004d25e483330 100644
+--- a/tests/unit/test-coroutine.c
++++ b/tests/unit/test-coroutine.c
+@@ -13,6 +13,11 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/coroutine_int.h"
++#include "qapi/error.h"
++#include "qemu/aio.h"
++#include "qemu/main-loop.h"
++#include "qemu/timer.h"
++#include "system/cpu-timers.h"
+ 
+ /*
+  * Check that qemu_in_coroutine() works
+@@ -472,6 +477,170 @@ static void test_co_sleep_wake_before_sleep(void)
+     g_assert(d.completed);
+ }
+ 
++typedef struct {
++    QemuCoSleep wake;
++    QEMUClockType type;
++    int64_t duration_ns;
++    bool completed;
++} TimerSleepData;
++
++static __int128 sleep_virtual_ps;
++static bool sleep_virtual_clock_installed;
++
++/* Supply coherent ns/ps samples without requiring an executing vCPU. */
++int64_t cpu_get_clock(void)
++{
++    return sleep_virtual_clock_installed ? sleep_virtual_ps / 1000 :
++                                          get_clock_realtime();
++}
++
++static __int128 sleep_virtual_clock_ps(void)
++{
++    return sleep_virtual_ps;
++}
++
++static void coroutine_fn timer_sleep_entry(void *opaque)
++{
++    TimerSleepData *data = opaque;
++
++    qemu_co_sleep_ns_wakeable(&data->wake, data->type, data->duration_ns);
++    data->completed = true;
++}
++
++static void sleep_test_init(bool tcg_ps)
++{
++    sleep_virtual_clock_installed = tcg_ps;
++    qemu_init_main_loop(&error_fatal);
++    if (tcg_ps) {
++        qemu_timer_enable_tcg_ps_clock(NULL, sleep_virtual_clock_ps);
++    }
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++}
++
++static void test_co_sleep_fractional(gconstpointer opaque)
++{
++    int64_t duration_ns = GPOINTER_TO_INT(opaque);
++    TimerSleepData data = {
++        .type = QEMU_CLOCK_VIRTUAL,
++        .duration_ns = duration_ns,
++    };
++    AioContext *ctx;
++    Coroutine *coroutine;
++    __int128 deadline_ps;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    sleep_virtual_ps = 10501;
++    sleep_test_init(true);
++    ctx = qemu_get_aio_context();
++    deadline_ps = sleep_virtual_ps + (__int128)MAX(duration_ns, 0) * 1000;
++    coroutine = qemu_coroutine_create(timer_sleep_entry, &data);
++    qemu_coroutine_enter(coroutine);
++
++    g_assert_false(data.completed);
++    g_assert_true(timerlist_has_timers(ctx->tlg.tl[QEMU_CLOCK_VIRTUAL]));
++    g_assert_cmpint(qemu_clock_deadline_ps_all(QEMU_CLOCK_VIRTUAL,
++                                              QEMU_TIMER_ATTR_ALL), ==,
++                    MAX(duration_ns, 0) * 1000);
++
++    /* The real timer must neither publish a wake early nor lose the phase. */
++    if (duration_ns > 0) {
++        sleep_virtual_ps = deadline_ps - 1;
++        g_assert_false(timerlist_run_timers(ctx->tlg.tl[QEMU_CLOCK_VIRTUAL]));
++        aio_poll(ctx, false);
++        g_assert_false(data.completed);
++    }
++
++    sleep_virtual_ps = deadline_ps;
++    g_assert_true(timerlist_run_timers(ctx->tlg.tl[QEMU_CLOCK_VIRTUAL]));
++    aio_poll(ctx, false);
++    g_assert_true(data.completed);
++    g_assert_false(timerlist_has_timers(ctx->tlg.tl[QEMU_CLOCK_VIRTUAL]));
++}
++
++static void test_co_sleep_realtime(void)
++{
++    TimerSleepData data = {
++        .type = QEMU_CLOCK_REALTIME,
++        .duration_ns = NANOSECONDS_PER_SECOND,
++    };
++    AioContext *ctx;
++    Coroutine *coroutine;
++    int64_t remaining_ns;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    sleep_test_init(true);
++    ctx = qemu_get_aio_context();
++    coroutine = qemu_coroutine_create(timer_sleep_entry, &data);
++    qemu_coroutine_enter(coroutine);
++    remaining_ns = timerlist_deadline_ns(ctx->tlg.tl[QEMU_CLOCK_REALTIME]);
++
++    g_assert_false(data.completed);
++    g_assert_cmpint(remaining_ns, >, 0);
++    g_assert_cmpint(remaining_ns, <=, data.duration_ns);
++    qemu_co_sleep_wake(&data.wake);
++    aio_poll(ctx, false);
++    g_assert_true(data.completed);
++    g_assert_false(timerlist_has_timers(ctx->tlg.tl[QEMU_CLOCK_REALTIME]));
++}
++
++static void test_co_sleep_pending_timer_wake(void)
++{
++    TimerSleepData data = {
++        .type = QEMU_CLOCK_VIRTUAL,
++        .duration_ns = 1,
++    };
++    Coroutine *coroutine;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    sleep_virtual_ps = 10501;
++    sleep_test_init(true);
++    qemu_co_sleep_wake(&data.wake);
++    coroutine = qemu_coroutine_create(timer_sleep_entry, &data);
++    qemu_coroutine_enter(coroutine);
++
++    g_assert_true(data.completed);
++    g_assert_false(timerlist_has_timers(
++        qemu_get_aio_context()->tlg.tl[QEMU_CLOCK_VIRTUAL]));
++}
++
++static void test_co_sleep_deadline_overflow(void)
++{
++    TimerSleepData data = {
++        .type = QEMU_CLOCK_VIRTUAL,
++        .duration_ns = 1,
++    };
++    Coroutine *coroutine;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_failed();
++        g_test_trap_assert_stderr(
++            "*Coroutine sleep deadline exceeds clock range*");
++        return;
++    }
++
++    sleep_virtual_ps = (((__int128)INT64_MAX << 64) | UINT64_MAX) - 500;
++    sleep_test_init(true);
++    coroutine = qemu_coroutine_create(timer_sleep_entry, &data);
++    qemu_coroutine_enter(coroutine);
++    g_assert_not_reached();
++}
++
+ /*
+  * Check that creation, enter, and return work
+  */
+@@ -713,6 +882,17 @@ int main(int argc, char **argv)
+     g_test_add_func("/locking/co-rwlock/downgrade", test_co_rwlock_downgrade);
+     g_test_add_func("/locking/co-sleep/wake-before-sleep",
+                     test_co_sleep_wake_before_sleep);
++    g_test_add_data_func("/locking/co-sleep/fractional-positive",
++                         GINT_TO_POINTER(1), test_co_sleep_fractional);
++    g_test_add_data_func("/locking/co-sleep/fractional-zero",
++                         GINT_TO_POINTER(0), test_co_sleep_fractional);
++    g_test_add_data_func("/locking/co-sleep/fractional-negative",
++                         GINT_TO_POINTER(-1), test_co_sleep_fractional);
++    g_test_add_func("/locking/co-sleep/realtime", test_co_sleep_realtime);
++    g_test_add_func("/locking/co-sleep/pending-timer-wake",
++                    test_co_sleep_pending_timer_wake);
++    g_test_add_func("/locking/co-sleep/deadline-overflow",
++                    test_co_sleep_deadline_overflow);
+     if (g_test_perf()) {
+         g_test_add_func("/perf/lifecycle", perf_lifecycle);
+         g_test_add_func("/perf/nesting", perf_nesting);
 diff --git a/tests/unit/test-crucible-acpi-piix-fingerprint.c b/tests/unit/test-crucible-acpi-piix-fingerprint.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..4cfd97da94807463be4ce5d202b645672491972e
@@ -154665,10 +154875,22 @@ index fa174c07a57a422f19315e990147ea9364782ba7..5ee896ab013f8d99c3ce57bbfce329c6
    endif
  endif
 diff --git a/util/qemu-coroutine-sleep.c b/util/qemu-coroutine-sleep.c
-index 19ded0b6fd7d154f8e5baeb9da5cdcd11deb4b17..f5fda2bc16b4e7368c39c0cab396349d6f1100e6 100644
+index 19ded0b6fd7d154f8e5baeb9da5cdcd11deb4b17..160d2a2b656c8ebe266622beca7362a82bebfd25 100644
 --- a/util/qemu-coroutine-sleep.c
 +++ b/util/qemu-coroutine-sleep.c
-@@ -100,3 +100,16 @@ void coroutine_fn qemu_co_sleep_ns_wakeable(QemuCoSleep *w,
+@@ -89,7 +89,10 @@ void coroutine_fn qemu_co_sleep_ns_wakeable(QemuCoSleep *w,
+     QEMUTimer ts;
+ 
+     aio_timer_init(ctx, &ts, type, SCALE_NS, co_sleep_cb, w);
+-    timer_mod(&ts, qemu_clock_get_ns(type) + ns);
++    /* Nonpositive sleeps stay eligible immediately, retaining the TCG phase. */
++    if (!timer_mod_after_ns(&ts, MAX(ns, 0))) {
++        g_error("Coroutine sleep deadline exceeds clock range");
++    }
+ 
+     /*
+      * A wake racing with the arming of the sleep -- including the timer
+@@ -100,3 +103,16 @@ void coroutine_fn qemu_co_sleep_ns_wakeable(QemuCoSleep *w,
      qemu_co_sleep(w);
      timer_del(&ts);
  }
