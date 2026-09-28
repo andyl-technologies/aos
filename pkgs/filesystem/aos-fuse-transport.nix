@@ -166,8 +166,10 @@ in
           {
             name = "check";
             script = ''
+              # Inlining must not move packet-sized fixture scratch onto the stack.
               $CC -std=c17 -O2 \
                 -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
+                -Wframe-larger-than=65536 \
                 -DAOS_FUSE_TRANSPORT_TESTING \
                 -I. -I${pkgs.aos-fuse3}/include/fuse3 \
                 transport.c test.c -L${pkgs.aos-fuse3}/lib -lfuse3 \
