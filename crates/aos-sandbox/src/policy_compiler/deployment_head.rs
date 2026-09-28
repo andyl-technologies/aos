@@ -76,6 +76,37 @@ pub use profile_v2::{
     admit_fixed_policy_deployment_profile_v2, verify_current_policy_deployment_profile_v2,
 };
 
+#[cfg(test)]
+pub(super) fn verify_test_held_deployment_profile_v2(
+    journal: &mut Journal,
+    packet: &[u8],
+    inputs: &PolicyDeploymentInputsV1<'_>,
+    profile: &PolicyDeploymentInputProfileV2,
+    now: i64,
+) -> Result<PolicyDeploymentHeadV1, PolicyDeploymentHeadErrorV1> {
+    profile_v2::verify_current_profile(journal, packet, inputs, profile, now)
+}
+
+#[cfg(test)]
+pub(super) fn admit_test_held_deployment_profile_v2(
+    journal: &mut Journal,
+    packet: &[u8],
+    inputs: &PolicyDeploymentInputsV1<'_>,
+    profile: &PolicyDeploymentInputProfileV2,
+    key: &VerifyingKey,
+    now: i64,
+) -> Result<PolicyDeploymentHeadV1, PolicyDeploymentHeadErrorV1> {
+    let verified = profile_v2::verify_signed_profile(packet, inputs, profile, key, now)?;
+    admit_deployment_head_in_journal(journal, packet, verified, key)
+}
+
+#[cfg(test)]
+pub(super) fn signed_test_deployment_input_fixture_v1(
+    key: &ed25519_dalek::SigningKey,
+) -> (Vec<u8>, [Vec<u8>; 4]) {
+    tests::signed_deployment_fixture(key)
+}
+
 const MAGIC: &[u8; 8] = b"AOSPDH01";
 const SIGNING_DOMAIN: &[u8] = b"aos.sandbox.policy-deployment-head.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-deployment-head-transaction.v1\0";

@@ -3,8 +3,10 @@
 //! This store retains immutable canonical policy revisions, atomic current
 //! pointers, immutable logical cache-resource and project-revocation bindings,
 //! and independent controller-authority and revocation generation chains. It
-//! validates the complete namespace before allowing reads. It does not model publisher
-//! instances, publication roots, source evidence, reservations, or permits.
+//! validates the complete namespace before allowing reads. V2 policy revisions
+//! retain original compiler input/output provenance as data, not authenticated
+//! source-owner evidence. The store does not model publisher instances,
+//! publication roots, reservations, or permits.
 //!
 //! This is a trusted controller-administration facade: its caller authorizes
 //! every mutation and must be the sole writer of namespace 8. Replay validates
@@ -333,17 +335,15 @@ impl<'journal> PublisherPolicyStore<'journal> {
         {
             return Err(PublisherPolicyError::RevisionAlreadyExists);
         }
-        let revision_bytes = 84usize
-            .checked_add(prepared.canonical_policy.len())
-            .ok_or(PublisherPolicyError::LimitExceeded("policy revision bytes"))?;
-        if revision_bytes > self.limits.maximum_record_bytes {
+        let revision_bytes = encode_policy_revision(prepared)?;
+        if revision_bytes.len() > self.limits.maximum_record_bytes {
             return Err(PublisherPolicyError::LimitExceeded("policy revision bytes"));
         }
         let records = vec![
             JournalRecord::put(
                 RecordNamespace::PublisherPolicy,
                 revision_key,
-                encode_policy_revision(prepared)?,
+                revision_bytes,
             ),
             JournalRecord::put(
                 RecordNamespace::PublisherPolicy,

@@ -65,6 +65,7 @@ pub struct PreparedPublisherPolicyRevisionV1 {
     pub(super) policy: Policy,
     pub(super) descriptor: ObjectDescriptor,
     pub(super) canonical_policy: Vec<u8>,
+    pub(super) compiler_origin: Option<crate::policy_compiler::RetainedPublisherCompilerOriginV3>,
 }
 
 impl PreparedPublisherPolicyRevisionV1 {
@@ -116,6 +117,7 @@ impl PreparedPublisherPolicyRevisionV1 {
             policy,
             descriptor,
             canonical_policy,
+            compiler_origin: None,
         })
     }
 
@@ -159,6 +161,30 @@ impl PreparedPublisherPolicyRevisionV1 {
     #[must_use]
     pub fn canonical_policy(&self) -> &[u8] {
         &self.canonical_policy
+    }
+
+    /// Returns retained compiler provenance data, when the revision is V2.
+    ///
+    /// The decoded value is not authenticated input or live publication
+    /// authority. Legacy resolved-policy revisions intentionally return `None`.
+    #[must_use]
+    pub const fn compiler_origin(
+        &self,
+    ) -> Option<&crate::policy_compiler::RetainedPublisherCompilerOriginV3> {
+        self.compiler_origin.as_ref()
+    }
+
+    pub(crate) fn retain_compiler_origin(
+        &mut self,
+        origin: crate::policy_compiler::RetainedPublisherCompilerOriginV3,
+    ) -> Result<(), PublisherPolicyError> {
+        if origin.project() != self.project
+            || origin.output_bytes()[0] != self.canonical_policy.as_slice()
+        {
+            return Err(PublisherPolicyError::InvalidPolicyRevision);
+        }
+        self.compiler_origin = Some(origin);
+        Ok(())
     }
 }
 

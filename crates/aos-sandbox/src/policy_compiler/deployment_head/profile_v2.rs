@@ -279,7 +279,7 @@ pub fn verify_current_policy_deployment_profile_v2(
     Ok(verified)
 }
 
-fn verify_current_profile(
+pub(super) fn verify_current_profile(
     journal: &mut Journal,
     packet: &[u8],
     inputs: &PolicyDeploymentInputsV1<'_>,
@@ -308,7 +308,7 @@ fn read_deployment_role(
     Ok((deployment, deployment_generation))
 }
 
-fn verify_signed_profile(
+pub(super) fn verify_signed_profile(
     packet: &[u8],
     inputs: &PolicyDeploymentInputsV1<'_>,
     profile: &PolicyDeploymentInputProfileV2,
