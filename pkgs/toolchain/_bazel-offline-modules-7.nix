@@ -147,6 +147,7 @@ in
         # Avoid defining an anonymous type inside offsetof, which modern
         # Clang diagnoses under this source release's C99 pedantic flags.
         ./bazel-patches/upb-compiler-alignment.patch
+        ./bazel-patches/upb-explicit-lambda-captures.patch
       ];
     };
     rules_cc = moduleSource {
