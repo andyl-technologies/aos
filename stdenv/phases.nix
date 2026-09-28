@@ -754,7 +754,9 @@ in rec {
                     fi
                   ''
                 }
-                cargo nextest run \
+                # Nextest's interactive bar can hide all test diagnostics in
+                # Nix build logs. CLI options may still override this default.
+                NEXTEST_SHOW_PROGRESS=counter cargo nextest run \
                   ${
                   if checkType == "release"
                   then "--cargo-profile release"
