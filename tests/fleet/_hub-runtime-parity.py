@@ -106,7 +106,13 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
           > {worker_root}/wrangler.log 2>&1 < /dev/null &
         echo $! > {worker_root}/wrangler.pid
     """), timeout=30)
-    worker.wait_until_succeeds(f"{curl} -fsS {worker_origin}/healthz > /dev/null", timeout=180)
+    try:
+        worker.wait_until_succeeds(f"{curl} -fsS {worker_origin}/healthz > /dev/null", timeout=180)
+    except Exception:
+        print("Worker-only parity startup log:", worker.succeed(
+            f"tail -n 100 {worker_root}/wrangler.log 2>/dev/null || true"
+        ))
+        raise
     worker.succeed(
         f"{hub} worker bootstrap-root --url {worker_origin} --email {email} "
         f"--password {password} --seal-key {seal_key}",
@@ -302,5 +308,5 @@ def worker_only_configuration(main, origin):
     config += '\n[[migrations]]\ntag = "runtime-parity-v1"\nnew_sqlite_classes = ["HubDb"]\n'
     config += "new_classes = " + json.dumps(legacy_classes) + "\n"
     for namespace, binding, limit in ((4101, "RL_BURST5", 5), (4102, "RL_BURST10", 10), (4103, "RL_BROWSE120", 120)):
-        config += f'\n[[ratelimits]]\nname = "{binding}"\nnamespace_id = {namespace}\n[ratelimits.simple]\nlimit = {limit}\nperiod = 60\n'
+        config += f'\n[[ratelimits]]\nname = "{binding}"\nnamespace_id = "{namespace}"\n[ratelimits.simple]\nlimit = {limit}\nperiod = 60\n'
     return config
