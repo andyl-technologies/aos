@@ -5,6 +5,9 @@ use aos_sandbox_source_provider_protocol::*;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 
+#[path = "golden/native_acquire_v3.rs"]
+mod native_acquire_v3;
+
 const NOW: i64 = 1_800_000_100;
 const DEADLINE: i64 = 1_800_001_000;
 const LEASE_ISSUED: i64 = 1_800_000_000;

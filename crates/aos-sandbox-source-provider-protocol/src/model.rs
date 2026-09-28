@@ -15,6 +15,10 @@ use crate::crypto::{
 };
 use crate::proof::SourceProviderProofV1;
 
+mod native_acquire;
+
+pub use native_acquire::NativeAcquireCatalogBindingV3;
+
 const LOGICAL_BINDING_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.mount.source-realization-binding.v1\0";
 const PROSPECTIVE_MOUNT_TEMPLATE_DIGEST_DOMAIN: &[u8] =
     b"aos-source-provider-prospective-mount-template-v1\0";
@@ -29,8 +33,10 @@ pub const MAXIMUM_BINDING_BYTES: usize = 64 * 1024;
 pub const MAXIMUM_SOURCE_LEASE_SECONDS: u64 = 86_400;
 /// Canonical body version used by legacy opaque-ID Acquire requests.
 pub const ACQUIRE_SOURCE_REQUEST_VERSION_V1: u16 = 1;
-/// Canonical body version required for explicit-sequence Acquire requests.
+/// Canonical body version adding explicit-sequence Acquire requests.
 pub const ACQUIRE_SOURCE_REQUEST_VERSION_V2: u16 = 2;
+/// Canonical body version binding a native Acquire to one exact catalog.
+pub const ACQUIRE_SOURCE_REQUEST_VERSION_V3: u16 = 3;
 
 /// Derives the opaque acquisition ID for one holder-scoped monotone sequence.
 #[must_use]
@@ -493,6 +499,7 @@ impl SourceResourceV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AcquireSourceRequestV1 {
     pub(crate) acquisition_version: u16,
+    pub(crate) native_catalog: Option<NativeAcquireCatalogBindingV3>,
     pub(crate) session_binding: ObjectDigest,
     pub(crate) sequence: u64,
     pub(crate) request_id: [u8; 16],
@@ -716,6 +723,7 @@ impl AcquireSourceRequestV1 {
         }
         Ok(Self {
             acquisition_version,
+            native_catalog: None,
             session_binding,
             sequence,
             request_id,

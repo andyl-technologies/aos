@@ -10,6 +10,12 @@
 //! AOSSPV01 || major:u16be || minor:u16be || method:u8 || kind:u8 ||
 //! flags:u16be=0 || reserved:u32be=0 || body-length:u32be || typed-body
 //! ```
+//!
+//! Acquire V1 retains its untagged body. V2 prefixes the explicit-sequence
+//! body with `version:u16be=2 | reserved[6]=0`. Native V3 instead prefixes that
+//! same body with `version:u16be=3 | catalog-kind:u8=1 | reserved[5]=0` and the
+//! fixed exact-catalog block documented by [`NativeAcquireCatalogBindingV3`].
+//! Other catalog profiles, including LocalLive, are not part of V3.
 
 use aos_sandbox_core::ObjectDigest;
 
@@ -21,12 +27,12 @@ use crate::crypto::{
 use crate::model::{
     AcquireSourceRequestV1, AcquireSourceResponseV1, InventoryLeaseStateV1,
     InventorySourceRequestV1, InventorySourceResponseV1, MAXIMUM_BINDING_BYTES,
-    MAXIMUM_INVENTORY_ENTRIES, ReleaseSourceRequestV1, ReleaseSourceResponseV1,
-    SourceExportLeaseV1, SourceProviderAuthorityV1, SourceProviderDescriptorRole,
-    SourceProviderHelloV1, SourceProviderInventoryEntryV1, SourceProviderInventoryV1,
-    SourceProviderMethod, SourceProviderPeerRole, SourceProviderReceiptV1,
-    SourceProviderResponseStatusV1, SourceProviderStatus, SourceProviderValidationError,
-    SourceReleaseReceiptV1, SourceResourceV1, SourceUseV1,
+    MAXIMUM_INVENTORY_ENTRIES, NativeAcquireCatalogBindingV3, ReleaseSourceRequestV1,
+    ReleaseSourceResponseV1, SourceExportLeaseV1, SourceProviderAuthorityV1,
+    SourceProviderDescriptorRole, SourceProviderHelloV1, SourceProviderInventoryEntryV1,
+    SourceProviderInventoryV1, SourceProviderMethod, SourceProviderPeerRole,
+    SourceProviderReceiptV1, SourceProviderResponseStatusV1, SourceProviderStatus,
+    SourceProviderValidationError, SourceReleaseReceiptV1, SourceResourceV1, SourceUseV1,
 };
 use crate::proof::{
     BestEffortReplicaProofV1, ImmutablePublisherTreeProofV1, LocalLiveExportProofV1,
@@ -41,6 +47,7 @@ const HELLO_METHOD_MASK: u32 = 0b1111;
 const HELLO_FEATURE_MASK: u32 = 0b11;
 const HELLO_DESCRIPTOR_MASK: u32 = 0b1;
 const INVENTORY_ENTRY_BYTES: usize = 344;
+const NATIVE_ACQUIRE_CATALOG_KIND_V3: u8 = 1;
 
 /// Largest complete SourceProvider 1.0 record.
 pub const MAXIMUM_FRAME_BYTES: usize = 1024 * 1024;
@@ -519,15 +526,34 @@ pub fn decode_hello(bytes: &[u8]) -> Result<SourceProviderHelloV1, SourceProvide
 #[must_use]
 pub fn encode_acquire_request(value: &AcquireSourceRequestV1) -> Vec<u8> {
     let mut writer = Writer::new();
-    if value.acquisition_version == crate::ACQUIRE_SOURCE_REQUEST_VERSION_V2 {
-        writer.u16(crate::ACQUIRE_SOURCE_REQUEST_VERSION_V2);
-        writer.zeros(6);
+    if matches!(
+        value.acquisition_version,
+        crate::ACQUIRE_SOURCE_REQUEST_VERSION_V2 | crate::ACQUIRE_SOURCE_REQUEST_VERSION_V3
+    ) {
+        writer.u16(value.acquisition_version);
+        match value.native_catalog() {
+            Some(catalog) => {
+                writer.u8(NATIVE_ACQUIRE_CATALOG_KIND_V3);
+                writer.zeros(5);
+                writer.digest(catalog.resource_namespace_digest());
+                writer.u64(catalog.head().0);
+                writer.digest(catalog.head().1);
+                writer.u64(catalog.floor().0);
+                writer.digest(catalog.floor().1);
+                writer.digest(catalog.current_head_commitment());
+                writer.digest(catalog.canonical_publication_digest());
+            }
+            None => writer.zeros(6),
+        }
     }
     writer.digest(value.session_binding);
     writer.u64(value.sequence);
     writer.bytes(&value.request_id);
     writer.digest(value.acquisition_id);
-    if value.acquisition_version == crate::ACQUIRE_SOURCE_REQUEST_VERSION_V2 {
+    if matches!(
+        value.acquisition_version,
+        crate::ACQUIRE_SOURCE_REQUEST_VERSION_V2 | crate::ACQUIRE_SOURCE_REQUEST_VERSION_V3
+    ) {
         writer.u64(value.acquisition_sequence);
     }
     writer.sized_bytes(&value.prospective_apply_template);
@@ -560,8 +586,8 @@ pub fn decode_acquire_request(
     bytes: &[u8],
 ) -> Result<AcquireSourceRequestV1, SourceProviderFrameError> {
     let legacy = decode_acquire_request_v1(bytes).ok();
-    let version_2 = decode_acquire_request_v2(bytes).ok();
-    match (legacy, version_2) {
+    let tagged = decode_acquire_request_tagged(bytes).ok();
+    match (legacy, tagged) {
         (Some(value), None) | (None, Some(value)) => Ok(value),
         _ => Err(SourceProviderFrameError::InvalidFrame),
     }
@@ -582,17 +608,36 @@ fn decode_acquire_request_v1(
         request_id,
         acquisition_id,
         None,
+        None,
     )
 }
 
-fn decode_acquire_request_v2(
+fn decode_acquire_request_tagged(
     bytes: &[u8],
 ) -> Result<AcquireSourceRequestV1, SourceProviderFrameError> {
     let mut reader = Reader::new(bytes);
-    if reader.u16()? != crate::ACQUIRE_SOURCE_REQUEST_VERSION_V2 {
-        return Err(SourceProviderFrameError::InvalidFrame);
-    }
-    reader.require_zeros(6)?;
+    let native_catalog = match reader.u16()? {
+        crate::ACQUIRE_SOURCE_REQUEST_VERSION_V2 => {
+            reader.require_zeros(6)?;
+            None
+        }
+        crate::ACQUIRE_SOURCE_REQUEST_VERSION_V3 => {
+            if reader.u8()? != NATIVE_ACQUIRE_CATALOG_KIND_V3 {
+                return Err(SourceProviderFrameError::UnknownDiscriminant);
+            }
+            reader.require_zeros(5)?;
+            Some(NativeAcquireCatalogBindingV3::new(
+                reader.digest()?,
+                reader.u64()?,
+                reader.digest()?,
+                reader.u64()?,
+                reader.digest()?,
+                reader.digest()?,
+                reader.digest()?,
+            )?)
+        }
+        _ => return Err(SourceProviderFrameError::InvalidFrame),
+    };
     let session_binding = reader.digest()?;
     let sequence = reader.u64()?;
     let request_id = reader.array::<16>()?;
@@ -605,6 +650,7 @@ fn decode_acquire_request_v2(
         request_id,
         acquisition_id,
         Some(acquisition_sequence),
+        native_catalog,
     )
 }
 
@@ -615,6 +661,7 @@ fn decode_acquire_request_tail(
     request_id: [u8; 16],
     acquisition_id: ObjectDigest,
     acquisition_sequence: Option<u64>,
+    native_catalog: Option<NativeAcquireCatalogBindingV3>,
 ) -> Result<AcquireSourceRequestV1, SourceProviderFrameError> {
     let prospective_apply_template = reader.sized_bytes(2 * 1024)?.to_vec();
     let prospective_apply_template_digest = reader.digest()?;
@@ -687,7 +734,11 @@ fn decode_acquire_request_tail(
             source_flags & 2 != 0,
         ),
     };
-    value.map_err(Into::into)
+    let value = value?;
+    match native_catalog {
+        Some(catalog) => AcquireSourceRequestV1::new_native_v3(value, catalog).map_err(Into::into),
+        None => Ok(value),
+    }
 }
 
 /// Encodes one provider-signed response-status subject.
