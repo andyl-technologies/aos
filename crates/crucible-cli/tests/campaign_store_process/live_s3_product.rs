@@ -413,7 +413,7 @@ multipart_part_bytes = 5242880
     Ok(packed_cache)
 }
 
-fn write_credentials(
+pub(super) fn write_credentials(
     path: &Path,
     access_key: &str,
     secret_key: &str,
@@ -432,7 +432,7 @@ fn write_credentials(
     Ok(())
 }
 
-fn write_store(
+pub(super) fn write_store(
     fixture: &FlightFixture,
     endpoint: &str,
     bucket: &str,
@@ -485,14 +485,14 @@ policy = "crucible.campaign.object-profile.v1"
     Ok(())
 }
 
-struct GaragePauseGuard {
+pub(super) struct GaragePauseGuard {
     pid: String,
     kill: PathBuf,
     paused: bool,
 }
 
 impl GaragePauseGuard {
-    fn pause() -> Result<Self, Box<dyn Error>> {
+    pub(super) fn pause() -> Result<Self, Box<dyn Error>> {
         let mut guard = Self {
             pid: std::env::var("CRUCIBLE_S3_TEST_GARAGE_PID")?,
             kill: PathBuf::from(
@@ -505,7 +505,7 @@ impl GaragePauseGuard {
         Ok(guard)
     }
 
-    fn resume(&mut self) -> Result<(), Box<dyn Error>> {
+    pub(super) fn resume(&mut self) -> Result<(), Box<dyn Error>> {
         self.signal("CONT")?;
         self.paused = false;
         Ok(())

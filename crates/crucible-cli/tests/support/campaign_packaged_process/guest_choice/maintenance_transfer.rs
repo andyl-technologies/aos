@@ -214,7 +214,7 @@ fn public_active_pause_restart_and_executable_transfer_rejects_incompatible_prov
     Ok(())
 }
 
-fn assert_no_nested_qemu_processes(stage: &str) -> Result<(), Box<dyn Error>> {
+pub(super) fn assert_no_nested_qemu_processes(stage: &str) -> Result<(), Box<dyn Error>> {
     let mut observed = Vec::new();
     let exited = wait_for_process_observation(Instant::now() + Duration::from_secs(5), || {
         observed.clear();

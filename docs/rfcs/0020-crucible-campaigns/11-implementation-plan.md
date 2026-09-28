@@ -1668,6 +1668,15 @@ Primary crates: `crucible-cas` and `crucible-api` lifecycle/checkpoint code.
   transfer/import, incompatible restore, retention, and plan/apply GC coverage
   across multiple derived refs and active publication/transfer/write-back
   roots.
+  The combined packaged storage-recovery flight now captures an actual guest
+  checkpoint on the production S3 store, rejects replacement startup during
+  service outage and expired credentials before guest execution, and requires
+  the original exact origin, retained derived refs, scheduler-observed guest
+  progress, and a new authenticated checkpoint after recovery. Its raw VM and
+  Garage transcript is a mandatory operational-continuity input. This task
+  remains open until the flight passes on the coherent packaged native cohort;
+  offline campaign state and lifecycle status cannot substitute for guest
+  evidence.
 - [x] **T-CAM-5.9** Implement metadata/findings/debug/executable/mirror closure
   policies, durability receipts, pins, sensitive-export reporting, resumable
   missing-object transfer, and offline maintenance transfer. Do not implement

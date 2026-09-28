@@ -7,6 +7,7 @@
   campaignStoreComposition,
   campaignColdContinuity,
   campaignExactMaintenanceTransfer,
+  campaignStorageRecovery,
   campaignMidpointDebug,
   campaignServiceModuleContract,
   dependencies ? [],
@@ -32,6 +33,7 @@ in
         campaignStoreComposition
         campaignColdContinuity
         campaignExactMaintenanceTransfer
+        campaignStorageRecovery
         campaignMidpointDebug
         campaignServiceModuleContract
 
@@ -189,6 +191,25 @@ in
           test -f "$transfer_evidence"
           sha256sum -c ${campaignExactMaintenanceTransfer}/evidence.sha256
 
+          require_result_line ${campaignStorageRecovery}/result PASS
+          require_result_line ${campaignStorageRecovery}/result gate=gate:campaign-storage-recovery
+          require_result_line ${campaignStorageRecovery}/result tier=real-packaged-qemu-and-garage
+          for recovery_claim in \
+            storage_recovery_real_exact_pause=true \
+            storage_recovery_outage_refused_before_guest=true \
+            storage_recovery_expired_credentials_refused_before_guest=true \
+            storage_recovery_exact_origin_preserved=true \
+            storage_recovery_scheduler_observed_guest_progress=true \
+            storage_recovery_selected_outcome_preserved=true \
+            storage_recovery_derived_refs_preserved=2 \
+            storage_recovery_final_guest_cleanup=true
+          do
+            require_result_line ${campaignStorageRecovery}/result "$recovery_claim"
+          done
+          recovery_evidence=${campaignStorageRecovery}/evidence/storage-recovery-vm.output
+          test -f "$recovery_evidence"
+          sha256sum -c ${campaignStorageRecovery}/evidence.sha256
+
           require_result_line ${campaignMidpointDebug}/result PASS
           require_result_line \
             ${campaignMidpointDebug}/result \
@@ -309,6 +330,8 @@ in
             "$out/evidence/campaign-exact-maintenance-transfer.result"
           cp "$transfer_evidence" \
             "$out/evidence/exact-maintenance-transfer-vm.output"
+          cp ${campaignStorageRecovery}/result "$out/evidence/campaign-storage-recovery.result"
+          cp "$recovery_evidence" "$out/evidence/storage-recovery-vm.output"
           mkdir -p "$out/evidence/campaign-midpoint-debug"
           cp ${campaignMidpointDebug}/result \
             "$out/evidence/campaign-midpoint-debug/result"
@@ -323,7 +346,7 @@ in
               evidence_sha256=$(sha256sum "$evidence_file" | cut -d ' ' -f 1)
               printf '%s  %s\n' "$evidence_sha256" "$evidence_name"
             done > "$out/evidence.sha256"
-          test "$(wc -l < "$out/evidence.sha256" | tr -d ' ')" -eq 19
+          test "$(wc -l < "$out/evidence.sha256" | tr -d ' ')" -eq 21
           evidence_digest=$(sha256sum "$out/evidence.sha256" | cut -d ' ' -f 1)
 
           cat > "$out/result" <<RESULT
@@ -333,6 +356,8 @@ in
           tasks=${builtins.concatStringsSep "," taskIds}
           coordinator_executor_restart=true
           exact_pause=true
+          real_paused_qemu_s3_outage_credential_recovery=true
+          real_recovered_guest_progress_and_exact_origin=true
           public_checkpoint_pause_restart_resume=true
           backend_neutral_archival=true
           offline_maintenance_transfer=true
