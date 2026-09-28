@@ -517,6 +517,17 @@ impl BlockPersistenceGraph {
     /// Returns [`DeviceError`] when the node is absent or still has a live
     /// dependency. Callers perform the durable byte write before committing.
     pub fn commit_persisted(&mut self, sequence: u64) -> Result<(), DeviceError> {
+        self.validate_persisted_commit(sequence)?;
+        self.remove_resolved(sequence)
+    }
+
+    // Payload publication uses this read-only preflight before touching the
+    // durable overlay. The same graph remains owned until commit, so all
+    // recoverable readiness and edge-accounting errors precede the write.
+    pub(in crate::block) fn validate_persisted_commit(
+        &self,
+        sequence: u64,
+    ) -> Result<(), DeviceError> {
         if self
             .nodes
             .get(&sequence)
@@ -524,7 +535,15 @@ impl BlockPersistenceGraph {
         {
             return Err(invalid("persistence commit selected a non-ready fragment"));
         }
-        self.remove_resolved(sequence)
+        let removed_edges = self
+            .nodes
+            .values()
+            .filter(|node| node.dependencies.contains(&sequence))
+            .count();
+        if removed_edges > self.edge_count {
+            return Err(invalid("persistence edge accounting underflow"));
+        }
+        Ok(())
     }
 
     /// Resolves one lost fragment without marking it durable.

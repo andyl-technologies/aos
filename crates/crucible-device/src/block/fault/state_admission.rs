@@ -12,6 +12,8 @@ impl BlockFaultState {
         Self {
             observation_revision: std::num::NonZeroU64::MIN,
             observation_mutation_active: false,
+            observation_external_effect: false,
+            observation_changed: false,
             config: BlockDurabilityConfig::write_through(length_bytes),
             transport_epoch: None,
             retired_transport_epochs: BTreeMap::new(),
@@ -88,6 +90,8 @@ impl BlockFaultState {
         Ok(Self {
             observation_revision: std::num::NonZeroU64::MIN,
             observation_mutation_active: false,
+            observation_external_effect: false,
+            observation_changed: false,
             config,
             transport_epoch: None,
             retired_transport_epochs: BTreeMap::new(),
@@ -137,7 +141,7 @@ impl BlockFaultState {
 
     /// Enables or disables the fail-closed requirement for exact directives.
     pub(super) fn require_directives_untracked(&mut self, required: bool) {
-        self.execution_required = required;
+        observed_set!(self, execution_required, required);
     }
 
     /// Records one exact physical mutation absent from an array member.
@@ -164,16 +168,20 @@ impl BlockFaultState {
                 reason: "array dirty range is empty or overflows",
             })?;
         let generation = self.array_rebuild.next_sequence;
-        self.array_rebuild.next_sequence = self.array_rebuild.next_sequence.checked_add(1).ok_or(
-            DeviceError::InvalidBlockFaultDirective {
-                reason: "array dirty-range generation overflow",
-            },
-        )?;
+        observed_member_set!(
+            self,
+            self.array_rebuild.next_sequence,
+            self.array_rebuild.next_sequence.checked_add(1).ok_or(
+                DeviceError::InvalidBlockFaultDirective {
+                    reason: "array dirty-range generation overflow",
+                },
+            )?
+        );
         if self.array_rebuild.scheduled_member == Some(member) {
-            self.array_rebuild.next_ready_ticks = None;
-            self.array_rebuild.scheduled_member = None;
-            self.array_rebuild.scheduled_start_byte = None;
-            self.array_rebuild.scheduled_generation = None;
+            observed_member_set!(self, self.array_rebuild.next_ready_ticks, None);
+            observed_member_set!(self, self.array_rebuild.scheduled_member, None);
+            observed_member_set!(self, self.array_rebuild.scheduled_start_byte, None);
+            observed_member_set!(self, self.array_rebuild.scheduled_generation, None);
         }
         let overlapping = self
             .array_dirty_ranges
@@ -230,7 +238,7 @@ impl BlockFaultState {
         debug_assert!(retained_bytes >= u64::try_from(merged_len).unwrap_or(u64::MAX));
         let mut merged = vec![0; merged_len];
         for (key, range) in overlapping {
-            self.array_dirty_ranges.remove(&key);
+            observed_remove!(self, array_dirty_ranges, &key);
             let offset = usize::try_from(range.start_byte - merged_start).map_err(|_| {
                 DeviceError::InvalidBlockFaultDirective {
                     reason: "coalesced array dirty offset does not fit memory",
@@ -250,7 +258,9 @@ impl BlockFaultState {
                 hard: HARD_BLOCK_ARRAY_DIRTY_RANGES,
             });
         }
-        self.array_dirty_ranges.insert(
+        observed_insert!(
+            self,
+            array_dirty_ranges,
             (member, merged_start),
             BlockArrayDirtyRange {
                 member_ordinal: member,
@@ -299,11 +309,15 @@ impl BlockFaultState {
             });
         }
         let Some(range) = self.array_dirty_ranges.values().next() else {
-            self.array_rebuild = BlockArrayRebuildCursor {
-                next_sequence: self.array_rebuild.next_sequence,
-                available_ticks: self.array_rebuild.available_ticks,
-                ..BlockArrayRebuildCursor::default()
-            };
+            observed_set!(
+                self,
+                array_rebuild,
+                BlockArrayRebuildCursor {
+                    next_sequence: self.array_rebuild.next_sequence,
+                    available_ticks: self.array_rebuild.available_ticks,
+                    ..BlockArrayRebuildCursor::default()
+                }
+            );
             return Ok(None);
         };
         let count = usize::try_from(chunk_bytes)
@@ -347,10 +361,22 @@ impl BlockFaultState {
                         reason: "array rebuild deadline overflows",
                     },
                 )?;
-                self.array_rebuild.next_ready_ticks = Some(ready);
-                self.array_rebuild.scheduled_member = Some(range.member_ordinal);
-                self.array_rebuild.scheduled_start_byte = Some(range.start_byte);
-                self.array_rebuild.scheduled_generation = Some(range.generation);
+                observed_member_set!(self, self.array_rebuild.next_ready_ticks, Some(ready));
+                observed_member_set!(
+                    self,
+                    self.array_rebuild.scheduled_member,
+                    Some(range.member_ordinal)
+                );
+                observed_member_set!(
+                    self,
+                    self.array_rebuild.scheduled_start_byte,
+                    Some(range.start_byte)
+                );
+                observed_member_set!(
+                    self,
+                    self.array_rebuild.scheduled_generation,
+                    Some(range.generation)
+                );
                 ready
             }
         };
@@ -391,7 +417,7 @@ impl BlockFaultState {
             });
         }
         let mut remainder = range.clone();
-        self.array_dirty_ranges.remove(&key);
+        observed_remove!(self, array_dirty_ranges, &key);
         if opportunity.bytes.len() < remainder.bytes.len() {
             remainder.start_byte = remainder
                 .start_byte
@@ -400,19 +426,31 @@ impl BlockFaultState {
                     reason: "array rebuild cursor overflows",
                 })?;
             remainder.bytes.drain(..opportunity.bytes.len());
-            self.array_dirty_ranges
-                .insert((remainder.member_ordinal, remainder.start_byte), remainder);
+            observed_insert!(
+                self,
+                array_dirty_ranges,
+                (remainder.member_ordinal, remainder.start_byte),
+                remainder
+            );
         }
-        self.array_rebuild.next_sequence = self.array_rebuild.next_sequence.checked_add(1).ok_or(
-            DeviceError::InvalidBlockFaultDirective {
-                reason: "array rebuild sequence overflows",
-            },
-        )?;
-        self.array_rebuild.available_ticks = Some(opportunity.ready_ticks);
-        self.array_rebuild.next_ready_ticks = None;
-        self.array_rebuild.scheduled_member = None;
-        self.array_rebuild.scheduled_start_byte = None;
-        self.array_rebuild.scheduled_generation = None;
+        observed_member_set!(
+            self,
+            self.array_rebuild.next_sequence,
+            self.array_rebuild.next_sequence.checked_add(1).ok_or(
+                DeviceError::InvalidBlockFaultDirective {
+                    reason: "array rebuild sequence overflows",
+                },
+            )?
+        );
+        observed_member_set!(
+            self,
+            self.array_rebuild.available_ticks,
+            Some(opportunity.ready_ticks)
+        );
+        observed_member_set!(self, self.array_rebuild.next_ready_ticks, None);
+        observed_member_set!(self, self.array_rebuild.scheduled_member, None);
+        observed_member_set!(self, self.array_rebuild.scheduled_start_byte, None);
+        observed_member_set!(self, self.array_rebuild.scheduled_generation, None);
         Ok(())
     }
 
@@ -441,16 +479,24 @@ impl BlockFaultState {
                 reason: "failed array rebuild opportunity is stale or unauthenticated",
             });
         }
-        self.array_rebuild.next_sequence = self.array_rebuild.next_sequence.checked_add(1).ok_or(
-            DeviceError::InvalidBlockFaultDirective {
-                reason: "array rebuild sequence overflows",
-            },
-        )?;
-        self.array_rebuild.available_ticks = Some(opportunity.ready_ticks);
-        self.array_rebuild.next_ready_ticks = None;
-        self.array_rebuild.scheduled_member = None;
-        self.array_rebuild.scheduled_start_byte = None;
-        self.array_rebuild.scheduled_generation = None;
+        observed_member_set!(
+            self,
+            self.array_rebuild.next_sequence,
+            self.array_rebuild.next_sequence.checked_add(1).ok_or(
+                DeviceError::InvalidBlockFaultDirective {
+                    reason: "array rebuild sequence overflows",
+                },
+            )?
+        );
+        observed_member_set!(
+            self,
+            self.array_rebuild.available_ticks,
+            Some(opportunity.ready_ticks)
+        );
+        observed_member_set!(self, self.array_rebuild.next_ready_ticks, None);
+        observed_member_set!(self, self.array_rebuild.scheduled_member, None);
+        observed_member_set!(self, self.array_rebuild.scheduled_start_byte, None);
+        observed_member_set!(self, self.array_rebuild.scheduled_generation, None);
         Ok(())
     }
 
@@ -476,17 +522,17 @@ impl BlockFaultState {
                 reason: "paused array rebuild opportunity is stale or unauthenticated",
             });
         }
-        self.array_rebuild.available_ticks = None;
-        self.array_rebuild.next_ready_ticks = None;
-        self.array_rebuild.scheduled_member = None;
-        self.array_rebuild.scheduled_start_byte = None;
-        self.array_rebuild.scheduled_generation = None;
+        observed_member_set!(self, self.array_rebuild.available_ticks, None);
+        observed_member_set!(self, self.array_rebuild.next_ready_ticks, None);
+        observed_member_set!(self, self.array_rebuild.scheduled_member, None);
+        observed_member_set!(self, self.array_rebuild.scheduled_start_byte, None);
+        observed_member_set!(self, self.array_rebuild.scheduled_generation, None);
         Ok(())
     }
 
     /// Enables fail-closed resolve/persist opportunities after queue service.
     pub(super) fn require_execution_opportunities_untracked(&mut self, required: bool) {
-        self.execution_opportunities_required = required;
+        observed_set!(self, execution_opportunities_required, required);
     }
 
     /// Returns the first request ready for resolve/persist phase evaluation.
@@ -546,7 +592,7 @@ impl BlockFaultState {
                 reason: "execution opportunity disappeared",
             },
         )?;
-        next_pending.execution = Some(directive);
+        observed_member_set!(next, next_pending.execution, Some(directive));
         let bytes = next
             .execution_pending
             .values()
@@ -563,7 +609,7 @@ impl BlockFaultState {
                 hard: usize::try_from(HARD_PENDING_BLOCK_FAULT_BYTES).unwrap_or(usize::MAX),
             });
         }
-        next.execution_pending_bytes = bytes;
+        observed_set!(next, execution_pending_bytes, bytes);
         *self = next;
         Ok(())
     }
@@ -637,19 +683,23 @@ impl BlockFaultState {
                 reason: "request-persistence opportunity disappeared",
             },
         )?;
-        next_pending.persistence = Some(directive);
-        next.request_persistence_pending_bytes = next
-            .request_persistence_pending
-            .values()
-            .try_fold(0_u64, |total, pending| {
-                total
-                    .checked_add(request_persistence_pending_owned_bytes(pending)?)
-                    .filter(|bytes| *bytes <= HARD_PENDING_BLOCK_FAULT_BYTES)
-                    .ok_or(DeviceError::BlockFaultStateLimit {
-                        field: "block_request_persistence_pending_bytes",
-                        hard: usize::try_from(HARD_PENDING_BLOCK_FAULT_BYTES).unwrap_or(usize::MAX),
-                    })
-            })?;
+        observed_member_set!(next, next_pending.persistence, Some(directive));
+        observed_set!(
+            next,
+            request_persistence_pending_bytes,
+            next.request_persistence_pending
+                .values()
+                .try_fold(0_u64, |total, pending| {
+                    total
+                        .checked_add(request_persistence_pending_owned_bytes(pending)?)
+                        .filter(|bytes| *bytes <= HARD_PENDING_BLOCK_FAULT_BYTES)
+                        .ok_or(DeviceError::BlockFaultStateLimit {
+                            field: "block_request_persistence_pending_bytes",
+                            hard: usize::try_from(HARD_PENDING_BLOCK_FAULT_BYTES)
+                                .unwrap_or(usize::MAX),
+                        })
+                })?
+        );
         *self = next;
         Ok(())
     }
@@ -729,8 +779,10 @@ impl BlockFaultState {
                 reason: "delivery opportunity disappeared",
             },
         )?;
-        next_pending.delivery = Some(directive);
-        next.delivery_pending_bytes =
+        observed_member_set!(next, next_pending.delivery, Some(directive));
+        observed_set!(
+            next,
+            delivery_pending_bytes,
             next.delivery_pending
                 .values()
                 .try_fold(0_u64, |total, pending| {
@@ -742,7 +794,8 @@ impl BlockFaultState {
                             hard: usize::try_from(HARD_PENDING_BLOCK_FAULT_BYTES)
                                 .unwrap_or(usize::MAX),
                         })
-                })?;
+                })?
+        );
         *self = next;
         Ok(())
     }
@@ -1451,7 +1504,7 @@ impl BlockFaultState {
 
     /// Enables fail-closed resolution at each physical persistence opportunity.
     pub(super) fn require_persistence_media_directives_untracked(&mut self, required: bool) {
-        self.persistence_execution_required = required;
+        observed_set!(self, persistence_execution_required, required);
     }
 
     /// Returns the first ready physical persistence opportunity in canonical order.
@@ -1499,7 +1552,7 @@ impl BlockFaultState {
         let mut next = self.clone();
         next.flash
             .register_rules(self.config.length_bytes, &directive.flash_rules)?;
-        next.pending_persistence_media.insert(sequence, directive);
+        observed_insert!(next, pending_persistence_media, sequence, directive);
         *self = next;
         Ok(())
     }
@@ -1514,9 +1567,11 @@ impl BlockFaultState {
     pub(super) fn drain_persistence_media_outcomes_untracked(
         &mut self,
     ) -> Vec<BlockPersistenceMediaOutcome> {
-        self.storage_outcome_order
-            .retain(|outcome| matches!(outcome, BlockStorageOutcomeRef::Service(_)));
-        std::mem::take(&mut self.persistence_media_outcomes)
+        observed_retain!(self, storage_outcome_order, |outcome| matches!(
+            outcome,
+            BlockStorageOutcomeRef::Service(_)
+        ));
+        observed_take!(self, persistence_media_outcomes)
     }
 
     /// Borrows completed physical-media outcomes without acknowledging them.
@@ -1562,9 +1617,9 @@ impl BlockFaultState {
         &mut self,
     ) -> Result<Vec<BlockStorageOutcome>, DeviceError> {
         let outcomes = self.storage_outcomes()?;
-        self.storage_outcome_order.clear();
-        self.service_outcomes.clear();
-        self.persistence_media_outcomes.clear();
+        observed_clear!(self, storage_outcome_order);
+        observed_clear!(self, service_outcomes);
+        observed_clear!(self, persistence_media_outcomes);
         Ok(outcomes)
     }
 
@@ -1609,8 +1664,8 @@ impl BlockFaultState {
                 hard: usize::try_from(HARD_PENDING_BLOCK_FAULT_BYTES).unwrap_or(usize::MAX),
             });
         }
-        self.pending.insert(identity, directive);
-        self.pending_bytes = next_bytes;
+        observed_insert!(self, pending, identity, directive);
+        observed_set!(self, pending_bytes, next_bytes);
         Ok(())
     }
 
@@ -1689,7 +1744,7 @@ impl BlockFaultState {
     pub(super) fn drain_persistence_transformation_evidence_untracked(
         &mut self,
     ) -> Vec<crate::block::persistence::BlockPersistenceTransformationEvidence> {
-        self.persistence.drain_transformation_evidence()
+        observed_drain!(self, self.persistence.drain_transformation_evidence())
     }
 
     /// Returns retained versions in version sequence order.
@@ -1808,7 +1863,11 @@ impl BlockFaultState {
                     if wait != 0 {
                         return Ok(None);
                     }
-                    self.reported_durable_frontier = self.actual_durable_frontier;
+                    observed_set!(
+                        self,
+                        reported_durable_frontier,
+                        self.actual_durable_frontier
+                    );
                 }
                 completion.recovery_response
             }
@@ -1821,7 +1880,7 @@ impl BlockFaultState {
                 completion.timeout_response
             }
         };
-        self.retained_completions.remove(&identity);
+        observed_remove!(self, retained_completions, &identity);
         Ok(Some(response))
     }
 
@@ -1870,18 +1929,25 @@ impl BlockFaultState {
         }
         let mut next = self.clone();
         for sequence in selected {
-            if let Some(entry) = next.volatile.remove(&sequence) {
+            if let Some(entry) = observed_remove!(next, volatile, &sequence) {
                 next.persistence.commit_lost(sequence)?;
-                next.first_lost_sequence = Some(
-                    next.first_lost_sequence
-                        .map_or(sequence, |existing| existing.min(sequence)),
+                observed_set!(
+                    next,
+                    first_lost_sequence,
+                    Some(
+                        next.first_lost_sequence
+                            .map_or(sequence, |existing| existing.min(sequence)),
+                    )
                 );
-                next.volatile_bytes = next
-                    .volatile_bytes
-                    .checked_sub(u64::try_from(entry.bytes.len()).unwrap_or(u64::MAX))
-                    .ok_or(DeviceError::InvalidBlockFaultDirective {
-                        reason: "volatile byte accounting underflow",
-                    })?;
+                observed_set!(
+                    next,
+                    volatile_bytes,
+                    next.volatile_bytes
+                        .checked_sub(u64::try_from(entry.bytes.len()).unwrap_or(u64::MAX))
+                        .ok_or(DeviceError::InvalidBlockFaultDirective {
+                            reason: "volatile byte accounting underflow",
+                        })?
+                );
             }
         }
         next.recompute_actual_durable_frontier();
@@ -1911,18 +1977,25 @@ impl BlockFaultState {
         }
         let mut next = self.clone();
         for sequence in selected {
-            if let Some(entry) = next.controller.remove(&sequence) {
+            if let Some(entry) = observed_remove!(next, controller, &sequence) {
                 next.persistence.commit_lost(sequence)?;
-                next.first_lost_sequence = Some(
-                    next.first_lost_sequence
-                        .map_or(sequence, |existing| existing.min(sequence)),
+                observed_set!(
+                    next,
+                    first_lost_sequence,
+                    Some(
+                        next.first_lost_sequence
+                            .map_or(sequence, |existing| existing.min(sequence)),
+                    )
                 );
-                next.controller_bytes = next
-                    .controller_bytes
-                    .checked_sub(u64::try_from(entry.bytes.len()).unwrap_or(u64::MAX))
-                    .ok_or(DeviceError::InvalidBlockFaultDirective {
-                        reason: "controller byte accounting underflow",
-                    })?;
+                observed_set!(
+                    next,
+                    controller_bytes,
+                    next.controller_bytes
+                        .checked_sub(u64::try_from(entry.bytes.len()).unwrap_or(u64::MAX))
+                        .ok_or(DeviceError::InvalidBlockFaultDirective {
+                            reason: "controller byte accounting underflow",
+                        })?
+                );
             }
         }
         next.recompute_actual_durable_frontier();
@@ -1974,33 +2047,37 @@ impl BlockFaultState {
                     hard: HARD_BLOCK_RETIRED_TRANSPORT_EPOCHS,
                 });
             }
-            if next
-                .retired_transport_epochs
-                .insert(
-                    current_epoch,
-                    BlockRetiredTransportEpoch {
-                        queued: reset.queued,
-                        failure_result: reset.failure_result,
-                    },
-                )
-                .is_some()
+            if observed_insert!(
+                next,
+                retired_transport_epochs,
+                current_epoch,
+                BlockRetiredTransportEpoch {
+                    queued: reset.queued,
+                    failure_result: reset.failure_result,
+                },
+            )
+            .is_some()
             {
                 return Err(DeviceError::InvalidBlockFaultDirective {
                     reason: "block transport epoch was retired twice",
                 });
             }
         }
-        next.transport_epoch = Some(reset.next_epoch);
-        next.recovery_until_ticks = Some(
-            delivered_ticks
-                .checked_add(crate::ns_to_tick(reset.recovery_nanos)?)
-                .ok_or(DeviceError::InvalidBlockFaultDirective {
-                    reason: "block transport recovery deadline overflow",
-                })?,
+        observed_set!(next, transport_epoch, Some(reset.next_epoch));
+        observed_set!(
+            next,
+            recovery_until_ticks,
+            Some(
+                delivered_ticks
+                    .checked_add(crate::ns_to_tick(reset.recovery_nanos)?)
+                    .ok_or(DeviceError::InvalidBlockFaultDirective {
+                        reason: "block transport recovery deadline overflow",
+                    })?,
+            )
         );
 
-        let pending = std::mem::take(&mut next.pending);
-        next.pending_bytes = 0;
+        let pending = observed_take!(next, pending);
+        observed_set!(next, pending_bytes, 0);
         for (identity, _directive) in pending {
             responses.push(transport_pending_response(
                 identity,
@@ -2009,9 +2086,9 @@ impl BlockFaultState {
             )?);
         }
 
-        let queued = std::mem::take(&mut next.service_pending);
-        next.service_pending_bytes = 0;
-        next.service = BlockServiceState::default();
+        let queued = observed_take!(next, service_pending);
+        observed_set!(next, service_pending_bytes, 0);
+        observed_set!(next, service, BlockServiceState::default());
         for pending in queued.into_values() {
             responses.push(transport_pending_response(
                 pending.request.identity(),
@@ -2020,8 +2097,8 @@ impl BlockFaultState {
             )?);
         }
 
-        let executing = std::mem::take(&mut next.execution_pending);
-        next.execution_pending_bytes = 0;
+        let executing = observed_take!(next, execution_pending);
+        observed_set!(next, execution_pending_bytes, 0);
         for pending in executing.into_values() {
             responses.push(transport_pending_response(
                 pending.opportunity.request.identity(),
@@ -2031,8 +2108,8 @@ impl BlockFaultState {
         }
 
         if reset.resolved != BlockTransportResolved::Complete {
-            let persistence = std::mem::take(&mut next.request_persistence_pending);
-            next.request_persistence_pending_bytes = 0;
+            let persistence = observed_take!(next, request_persistence_pending);
+            observed_set!(next, request_persistence_pending_bytes, 0);
             for pending in persistence.into_values() {
                 responses.push(transport_resolved_response(
                     pending.opportunity.request.identity(),
@@ -2041,8 +2118,8 @@ impl BlockFaultState {
                 )?);
             }
 
-            let delivery = std::mem::take(&mut next.delivery_pending);
-            next.delivery_pending_bytes = 0;
+            let delivery = observed_take!(next, delivery_pending);
+            observed_set!(next, delivery_pending_bytes, 0);
             for pending in delivery.into_values() {
                 responses.push(transport_resolved_response(
                     pending.opportunity.request.identity(),
@@ -2052,12 +2129,12 @@ impl BlockFaultState {
             }
         } else {
             for pending in next.delivery_pending.values_mut() {
-                pending.opportunity.required_durable_frontier = None;
+                observed_member_set!(next, pending.opportunity.required_durable_frontier, None);
             }
         }
 
         if reset.completed_undelivered != BlockTransportUndelivered::Complete {
-            let retained = std::mem::take(&mut next.retained_completions);
+            let retained = observed_take!(next, retained_completions);
             for completion in retained.into_values() {
                 let original = BlockResponse::decode(&completion.recovery_response.payload)
                     .map_err(DeviceError::Codec)?;
@@ -2136,9 +2213,11 @@ impl BlockFaultState {
 
     /// Drains contributor-level service evidence in canonical completion order.
     pub(super) fn drain_service_outcomes_untracked(&mut self) -> Vec<BlockServiceCompletion> {
-        self.storage_outcome_order
-            .retain(|outcome| matches!(outcome, BlockStorageOutcomeRef::Persistence(_)));
-        std::mem::take(&mut self.service_outcomes)
+        observed_retain!(self, storage_outcome_order, |outcome| matches!(
+            outcome,
+            BlockStorageOutcomeRef::Persistence(_)
+        ));
+        observed_take!(self, service_outcomes)
     }
 
     /// Borrows integrated-service completion evidence without acknowledging it.
@@ -2168,13 +2247,16 @@ impl BlockFaultState {
                 hard: crate::block::service::HARD_BLOCK_SERVICE_JOBS,
             });
         }
-        if let Some(removed) = self.pending.remove(&request.identity()) {
-            self.pending_bytes = self
-                .pending_bytes
-                .checked_sub(directive_owned_bytes(&removed)?)
-                .ok_or(DeviceError::InvalidBlockFaultDirective {
-                    reason: "pending directive byte accounting underflow",
-                })?;
+        if let Some(removed) = observed_remove!(self, pending, &request.identity()) {
+            observed_set!(
+                self,
+                pending_bytes,
+                self.pending_bytes
+                    .checked_sub(directive_owned_bytes(&removed)?)
+                    .ok_or(DeviceError::InvalidBlockFaultDirective {
+                        reason: "pending directive byte accounting underflow",
+                    })?
+            );
         }
         admission.service_rules.clear();
         let sequence = admission.request_sequence;
@@ -2189,15 +2271,18 @@ impl BlockFaultState {
             },
             execution: None,
         };
-        self.execution_pending_bytes = self
-            .execution_pending_bytes
-            .checked_add(execution_pending_owned_bytes(&pending)?)
-            .filter(|bytes| *bytes <= HARD_PENDING_BLOCK_FAULT_BYTES)
-            .ok_or(DeviceError::BlockFaultStateLimit {
-                field: "block_execution_pending_bytes",
-                hard: usize::try_from(HARD_PENDING_BLOCK_FAULT_BYTES).unwrap_or(usize::MAX),
-            })?;
-        self.execution_pending.insert(sequence, pending);
+        observed_set!(
+            self,
+            execution_pending_bytes,
+            self.execution_pending_bytes
+                .checked_add(execution_pending_owned_bytes(&pending)?)
+                .filter(|bytes| *bytes <= HARD_PENDING_BLOCK_FAULT_BYTES)
+                .ok_or(DeviceError::BlockFaultStateLimit {
+                    field: "block_execution_pending_bytes",
+                    hard: usize::try_from(HARD_PENDING_BLOCK_FAULT_BYTES).unwrap_or(usize::MAX),
+                })?
+        );
+        observed_insert!(self, execution_pending, sequence, pending);
         Ok(())
     }
 
@@ -2224,17 +2309,20 @@ impl BlockFaultState {
             })
             .collect::<BTreeSet<_>>();
         for (ready_ticks, sequence) in ready {
-            let pending = next.execution_pending.remove(&sequence).ok_or(
+            let pending = observed_remove!(next, execution_pending, &sequence).ok_or(
                 DeviceError::InvalidBlockFaultDirective {
                     reason: "ready execution request disappeared",
                 },
             )?;
-            next.execution_pending_bytes = next
-                .execution_pending_bytes
-                .checked_sub(execution_pending_owned_bytes(&pending)?)
-                .ok_or(DeviceError::InvalidBlockFaultDirective {
-                    reason: "execution-pending byte accounting underflow",
-                })?;
+            observed_set!(
+                next,
+                execution_pending_bytes,
+                next.execution_pending_bytes
+                    .checked_sub(execution_pending_owned_bytes(&pending)?)
+                    .ok_or(DeviceError::InvalidBlockFaultDirective {
+                        reason: "execution-pending byte accounting underflow",
+                    })?
+            );
             let directive = pending
                 .execution
                 .ok_or(DeviceError::InvalidBlockFaultDirective {
@@ -2303,15 +2391,18 @@ impl BlockFaultState {
             },
             persistence: None,
         };
-        self.request_persistence_pending_bytes = self
-            .request_persistence_pending_bytes
-            .checked_add(request_persistence_pending_owned_bytes(&pending)?)
-            .filter(|bytes| *bytes <= HARD_PENDING_BLOCK_FAULT_BYTES)
-            .ok_or(DeviceError::BlockFaultStateLimit {
-                field: "block_request_persistence_pending_bytes",
-                hard: usize::try_from(HARD_PENDING_BLOCK_FAULT_BYTES).unwrap_or(usize::MAX),
-            })?;
-        self.request_persistence_pending.insert(sequence, pending);
+        observed_set!(
+            self,
+            request_persistence_pending_bytes,
+            self.request_persistence_pending_bytes
+                .checked_add(request_persistence_pending_owned_bytes(&pending)?)
+                .filter(|bytes| *bytes <= HARD_PENDING_BLOCK_FAULT_BYTES)
+                .ok_or(DeviceError::BlockFaultStateLimit {
+                    field: "block_request_persistence_pending_bytes",
+                    hard: usize::try_from(HARD_PENDING_BLOCK_FAULT_BYTES).unwrap_or(usize::MAX),
+                })?
+        );
+        observed_insert!(self, request_persistence_pending, sequence, pending);
         Ok(())
     }
 
@@ -2333,17 +2424,20 @@ impl BlockFaultState {
             })
             .collect::<BTreeSet<_>>();
         for (ready_ticks, sequence) in ready {
-            let pending = next.request_persistence_pending.remove(&sequence).ok_or(
+            let pending = observed_remove!(next, request_persistence_pending, &sequence).ok_or(
                 DeviceError::InvalidBlockFaultDirective {
                     reason: "ready request-persistence opportunity disappeared",
                 },
             )?;
-            next.request_persistence_pending_bytes = next
-                .request_persistence_pending_bytes
-                .checked_sub(request_persistence_pending_owned_bytes(&pending)?)
-                .ok_or(DeviceError::InvalidBlockFaultDirective {
-                    reason: "request-persistence byte accounting underflow",
-                })?;
+            observed_set!(
+                next,
+                request_persistence_pending_bytes,
+                next.request_persistence_pending_bytes
+                    .checked_sub(request_persistence_pending_owned_bytes(&pending)?)
+                    .ok_or(DeviceError::InvalidBlockFaultDirective {
+                        reason: "request-persistence byte accounting underflow",
+                    })?
+            );
             let directive = pending
                 .persistence
                 .ok_or(DeviceError::InvalidBlockFaultDirective {

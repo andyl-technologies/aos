@@ -27,6 +27,8 @@ use super::service::{
 };
 
 mod checkpoint_codec;
+#[macro_use]
+mod observation_effects;
 mod state_admission;
 mod observation_revision;
 mod state_execution;
@@ -1352,6 +1354,10 @@ pub struct BlockFaultState {
     // Runtime nesting is never persisted as an observation or Source proof.
     #[serde(skip)]
     observation_mutation_active: bool,
+    #[serde(skip)]
+    observation_external_effect: bool,
+    #[serde(skip)]
+    observation_changed: bool,
     config: BlockDurabilityConfig,
     transport_epoch: Option<u64>,
     retired_transport_epochs: BTreeMap<u64, BlockRetiredTransportEpoch>,
