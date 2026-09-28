@@ -149,6 +149,7 @@ in
       ./patches/0015-restrict-suid-sgid-kernel-guard.patch
       ./patches/0016-reject-truncated-bus-ancillary-data.patch
       ./patches/0017-pin-network-unit-fragments-before-spawn.patch
+      ./patches/0018-launch-image-fuse-worker-role.patch
     ];
 
     buildDeps = [

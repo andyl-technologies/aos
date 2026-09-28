@@ -8,24 +8,16 @@
 
 use std::num::NonZeroU32;
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
-use std::path::{Component, Path};
-use std::time::Duration;
 
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::Fd;
 
-use super::{
-    ExactStartError, SandboxCgroupPath, bool_property, complex_property, duration_micros,
-    exec_property, invalid, string_array_property, string_property, u32_property, u64_property,
-};
+use super::{ExactStartError, SandboxCgroupPath, invalid};
 use crate::client::{JobOutcome, SystemdClient};
 use crate::error::Result;
-use crate::manager_proxy::{AuxiliaryUnit, ServiceProxy, TransientProperty, UnitProxy};
+use crate::manager_proxy::{ServiceProxy, UnitProxy};
 
-const WORKER_EXECUTABLE: &str = "aos-filesystem-fuse-worker";
-const WORKER_SLICE: &str = "aos-view-workers.slice";
 const WORKER_SLICE_CGROUP: &str = "/aos.slice/aos-view.slice/aos-view-workers.slice";
-const LAUNCH_ARGUMENT: &str = "--mount-owned-session-v1";
 
 /// Enumerates the complete worker-session-v1 inherited descriptor table.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,7 +36,7 @@ pub enum FuseWorkerDescriptorRoleV1 {
 }
 
 impl FuseWorkerDescriptorRoleV1 {
-    /// Returns the exact order used in `ExtraFileDescriptors` and at startup.
+    /// Returns the exact inherited-role order admitted by PID 1 and at startup.
     pub const ALL: [Self; 5] = [
         Self::Executable,
         Self::Plan,
@@ -68,6 +60,7 @@ impl FuseWorkerDescriptorRoleV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FuseWorkerUnitNameV1 {
     service: String,
+    instance: [u8; 16],
 }
 
 impl FuseWorkerUnitNameV1 {
@@ -82,7 +75,8 @@ impl FuseWorkerUnitNameV1 {
         }
 
         Ok(Self {
-            service: format!("aos-view-worker-{}.service", super::encode_hex(instance)),
+            service: format!("aos-view-worker@{}.service", super::encode_hex(instance)),
+            instance,
         })
     }
 
@@ -108,7 +102,6 @@ impl FuseWorkerUnitNameV1 {
 /// property map, listener, capability, or automatic restart setting.
 pub struct FuseWorkerUnitSpecV1 {
     name: FuseWorkerUnitNameV1,
-    executable_path: String,
     descriptors: [OwnedFd; 5],
 }
 
@@ -128,23 +121,18 @@ pub struct FuseWorkerUnitObservationV1 {
 }
 
 impl FuseWorkerUnitSpecV1 {
-    /// Pins a role-exact descriptor table for the fixed image-owned worker.
+    /// Retains the role-exact descriptors for the sole image-owned template.
     ///
-    /// `executable_path` must come from Host's image-owned deployment policy,
-    /// not broker request bytes. Path shape and descriptor duplication here
-    /// are structural checks; Host must separately establish the image pin,
-    /// exact role types, original session binding, and final effect guard.
+    /// No executable path, argv, environment, or property map is accepted.
+    /// PID 1 admits the fixed measured-image template and exact descriptor role
+    /// shapes before arming its first command. Host/Mount still independently
+    /// admit original session provenance; this structural table is not authority.
     ///
     /// # Errors
     ///
-    /// Returns an error for a noncanonical fixed worker store path or failed
-    /// duplication of any descriptor. Partial copies are closed on failure.
-    pub fn new(
-        name: FuseWorkerUnitNameV1,
-        executable_path: String,
-        descriptors: [BorrowedFd<'_>; 5],
-    ) -> Result<Self> {
-        validate_executable_path(&executable_path)?;
+    /// Returns an error if any descriptor cannot be duplicated. Partial copies
+    /// are closed on failure.
+    pub fn new(name: FuseWorkerUnitNameV1, descriptors: [BorrowedFd<'_>; 5]) -> Result<Self> {
         let copies = descriptors
             .into_iter()
             .map(|descriptor| {
@@ -157,11 +145,7 @@ impl FuseWorkerUnitSpecV1 {
             .try_into()
             .map_err(|_| invalid("FUSE worker descriptor table length changed"))?;
 
-        Ok(Self {
-            name,
-            executable_path,
-            descriptors,
-        })
+        Ok(Self { name, descriptors })
     }
 
     /// Returns the original, single-use worker unit locator.
@@ -170,8 +154,8 @@ impl FuseWorkerUnitSpecV1 {
         &self.name
     }
 
-    fn properties(&self) -> Result<Vec<TransientProperty>> {
-        let descriptors = FuseWorkerDescriptorRoleV1::ALL
+    fn descriptor_table(&self) -> Result<Vec<(Fd<'static>, String)>> {
+        FuseWorkerDescriptorRoleV1::ALL
             .into_iter()
             .zip(&self.descriptors)
             .map(|(role, descriptor)| {
@@ -180,83 +164,7 @@ impl FuseWorkerUnitSpecV1 {
                 })?;
                 Ok((Fd::from(copy), role.name().to_owned()))
             })
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(vec![
-            string_property("Description", "AOS original Mount-owned FUSE worker"),
-            string_property("Type", "exec"),
-            string_property("Slice", WORKER_SLICE),
-            string_property("Restart", "no"),
-            u64_property("StartLimitIntervalUSec", u64::MAX),
-            u32_property("StartLimitBurst", 1),
-            string_property("CollectMode", "inactive-or-failed"),
-            string_property("KillMode", "control-group"),
-            bool_property("DynamicUser", true),
-            bool_property("SetLoginEnvironment", false),
-            u32_property("UMask", 0o077),
-            u64_property("CapabilityBoundingSet", 0),
-            u64_property("AmbientCapabilities", 0),
-            bool_property("NoNewPrivileges", true),
-            string_property("ProtectSystem", "strict"),
-            string_property("ProtectHome", "yes"),
-            bool_property("PrivateNetwork", true),
-            bool_property("PrivateIPC", true),
-            bool_property("PrivateTmp", true),
-            bool_property("PrivateDevices", true),
-            bool_property("ProtectKernelTunables", true),
-            bool_property("ProtectKernelModules", true),
-            bool_property("ProtectControlGroups", true),
-            bool_property("ProtectClock", true),
-            bool_property("RestrictSUIDSGID", true),
-            bool_property("RestrictRealtime", true),
-            bool_property("LockPersonality", true),
-            bool_property("MemoryDenyWriteExecute", true),
-            u64_property("RestrictNamespaces", 0),
-            u64_property("TasksMax", 8),
-            u64_property("MemoryHigh", 64 * 1024 * 1024),
-            u64_property("MemoryMax", 128 * 1024 * 1024),
-            u64_property("MemorySwapMax", 0),
-            u64_property("LimitNOFILE", 128),
-            u64_property("LimitNOFILESoft", 128),
-            complex_property(
-                "RestrictAddressFamilies",
-                (true, vec!["AF_UNIX".to_owned()]),
-            )?,
-            complex_property(
-                "SystemCallFilter",
-                (true, vec!["@system-service".to_owned()]),
-            )?,
-            complex_property(
-                "SystemCallFilter",
-                (
-                    false,
-                    vec![
-                        "accept".to_owned(),
-                        "accept4".to_owned(),
-                        "bind".to_owned(),
-                        "listen".to_owned(),
-                    ],
-                ),
-            )?,
-            string_array_property("SystemCallArchitectures", vec!["native".to_owned()])?,
-            complex_property("ExtraFileDescriptors", descriptors)?,
-            // Empty per-unit Environment does not itself remove PID 1's
-            // manager environment. The required pre-loader launch seal must
-            // exclude manager injection before this candidate can activate.
-            string_array_property("Environment", Vec::new())?,
-            u64_property(
-                "TimeoutStartUSec",
-                duration_micros(Duration::from_secs(5), "FUSE worker start timeout")?,
-            ),
-            u64_property(
-                "TimeoutStopUSec",
-                duration_micros(Duration::from_secs(5), "FUSE worker stop timeout")?,
-            ),
-            exec_property(
-                &self.executable_path,
-                vec![self.executable_path.clone(), LAUNCH_ARGUMENT.to_owned()],
-            )?,
-        ])
+            .collect()
     }
 }
 
@@ -329,7 +237,7 @@ impl SystemdClient {
     /// # Errors
     ///
     /// Returns [`ExactStartError::Guard`] if final admission fails, or a
-    /// systemd error for property preparation, submission, or job completion.
+    /// systemd error for descriptor preparation, submission, or job completion.
     ///
     /// # Panics
     ///
@@ -339,39 +247,17 @@ impl SystemdClient {
         spec: &FuseWorkerUnitSpecV1,
         before_submission: &mut (dyn FnMut() -> std::result::Result<(), E> + Send),
     ) -> std::result::Result<JobOutcome, ExactStartError<E>> {
-        let properties =
-            super::exact_unit::prepare_then_guard(|| spec.properties(), before_submission)?;
-        let auxiliary_units: Vec<AuxiliaryUnit> = Vec::new();
+        let descriptors =
+            super::exact_unit::prepare_then_guard(|| spec.descriptor_table(), before_submission)?;
+        let instance = super::encode_hex(spec.name.instance);
         let path = self
             .manager
-            .start_transient_unit(spec.name.as_str(), "fail", &properties, &auxiliary_units)
+            .launch_aos_fuse_worker_v1(&instance, &descriptors)
             .await
             .map_err(crate::Error::from)
             .map_err(ExactStartError::Systemd)?;
         self.await_job(path).await.map_err(ExactStartError::Systemd)
     }
-}
-
-fn validate_executable_path(value: &str) -> Result<()> {
-    let path = Path::new(value);
-    if value.len() > 4096
-        || value.as_bytes().contains(&0)
-        || !value.starts_with("/nix/store/")
-        || value
-            .split('/')
-            .skip(1)
-            .any(|component| component.is_empty() || component == "." || component == "..")
-        || path.file_name().and_then(|name| name.to_str()) != Some(WORKER_EXECUTABLE)
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
-    {
-        return Err(invalid(
-            "FUSE worker must name the fixed image store executable",
-        ));
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -384,81 +270,34 @@ mod tests {
 
         assert_eq!(
             name.as_str(),
-            "aos-view-worker-abababababababababababababababab.service"
+            "aos-view-worker@abababababababababababababababab.service"
         );
         assert_eq!(
             name.cgroup_path().as_str(),
-            "/aos.slice/aos-view.slice/aos-view-workers.slice/aos-view-worker-abababababababababababababababab.service"
+            "/aos.slice/aos-view.slice/aos-view-workers.slice/aos-view-worker@abababababababababababababababab.service"
         );
         assert!(FuseWorkerUnitNameV1::from_instance([0; 16]).is_err());
     }
 
     #[test]
-    fn worker_role_table_and_executable_are_closed() {
+    fn worker_role_table_is_fixed_and_contains_no_launch_properties() {
+        use std::fs::File;
+
         assert_eq!(
             FuseWorkerDescriptorRoleV1::ALL.map(|role| role as u8),
             [3, 4, 5, 6, 7]
         );
-        assert!(
-            validate_executable_path("/nix/store/image/bin/aos-filesystem-fuse-worker").is_ok()
-        );
 
-        for path in [
-            "/run/aos-filesystem-fuse-worker",
-            "/nix/store/image/bin/other-worker",
-            "/nix/store/image/../bin/aos-filesystem-fuse-worker",
-            "/nix/store/image/./bin/aos-filesystem-fuse-worker",
-            "/nix/store/image//bin/aos-filesystem-fuse-worker",
-            "/nix/store/image/bin/aos-filesystem-fuse-worker\0",
-        ] {
-            assert!(validate_executable_path(path).is_err(), "{path}");
-        }
-    }
-
-    #[test]
-    fn structural_launch_projection_keeps_caps_empty_and_never_restarts() {
-        use std::fs::File;
-        use zbus::zvariant::OwnedValue;
-
-        // This tests structural property compilation only. These descriptors
-        // deliberately carry no image, Mount, or worker admission authority.
+        // Only descriptor transport is tested here. PID 1 must reject these
+        // placeholder objects; they carry no image, Mount, or worker authority.
         let placeholder = File::open("/dev/null").unwrap();
         let spec = FuseWorkerUnitSpecV1::new(
             FuseWorkerUnitNameV1::from_instance([7; 16]).unwrap(),
-            "/nix/store/image/bin/aos-filesystem-fuse-worker".to_owned(),
             [placeholder.as_fd(); 5],
         )
         .unwrap();
+        let descriptors = spec.descriptor_table().unwrap();
 
-        let properties = spec.properties().unwrap();
-        let property = |name: &str| -> OwnedValue {
-            let matches = properties
-                .iter()
-                .filter(|(key, _)| key == name)
-                .collect::<Vec<_>>();
-            assert_eq!(matches.len(), 1, "{name}");
-            matches[0].1.try_clone().unwrap()
-        };
-
-        assert_eq!(u64::try_from(property("CapabilityBoundingSet")).unwrap(), 0);
-        assert_eq!(u64::try_from(property("AmbientCapabilities")).unwrap(), 0);
-        assert_eq!(u64::try_from(property("RestrictNamespaces")).unwrap(), 0);
-        assert!(bool::try_from(property("NoNewPrivileges")).unwrap());
-        assert_eq!(String::try_from(property("Restart")).unwrap(), "no");
-        assert_eq!(u32::try_from(property("StartLimitBurst")).unwrap(), 1);
-        assert!(
-            Vec::<String>::try_from(property("Environment"))
-                .unwrap()
-                .is_empty()
-        );
-        assert!(properties.iter().all(|(name, _)| {
-            !matches!(
-                name.as_str(),
-                "ExecStartPre" | "ExecStartPost" | "ExecStop" | "ExecStopPost"
-            )
-        }));
-        let descriptors =
-            Vec::<(Fd<'static>, String)>::try_from(property("ExtraFileDescriptors")).unwrap();
         assert_eq!(
             descriptors
                 .into_iter()
@@ -466,5 +305,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             FuseWorkerDescriptorRoleV1::ALL.map(|role| role.name().to_owned())
         );
+        assert_eq!(spec.name.instance, [7; 16]);
     }
 }

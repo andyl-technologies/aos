@@ -52,6 +52,21 @@ pub trait Manager {
         auxiliary_units: &[AuxiliaryUnit],
     ) -> zbus::Result<OwnedObjectPath>;
 
+    /// Starts one image-owned FUSE worker with the exact versioned role table.
+    ///
+    /// No executable, argv, environment, property map, or job mode is accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless PID 1 admits the fixed Host caller, measured
+    /// template, fresh instance, and exact five descriptor roles.
+    #[zbus(name = "LaunchAosFuseWorkerV1")]
+    fn launch_aos_fuse_worker_v1(
+        &self,
+        instance: &str,
+        descriptors: &[(zbus::zvariant::Fd<'_>, String)],
+    ) -> zbus::Result<OwnedObjectPath>;
+
     /// Retain a loaded unit object until the matching [`Self::unref_unit`].
     fn ref_unit(&self, name: &str) -> zbus::Result<()>;
     /// Release one reference previously acquired through [`Self::ref_unit`].
