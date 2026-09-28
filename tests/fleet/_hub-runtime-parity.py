@@ -175,12 +175,24 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
 
 def browser_session_token(machine, origin, email, password, curl):
     """Use the password login and console CSRF boundary to obtain an API token."""
-    headers = machine.succeed(
-        f"{curl} -fsS -D - -o /dev/null -X POST -H 'cf-connecting-ip: 192.0.2.10' "
+    headers_path = "/tmp/hub-parity-login.headers"
+    body_path = "/tmp/hub-parity-login.body"
+    status = machine.succeed(
+        f"{curl} -sS -D {headers_path} -o {body_path} -w '%{{http_code}}' "
+        "-X POST -H 'cf-connecting-ip: 192.0.2.10' "
         f"--data-urlencode {shlex.quote('email=' + email)} "
         f"--data-urlencode {shlex.quote('password=' + password)} {origin}/login/password",
         timeout=120,
-    )
+    ).strip()
+    if status != "303":
+        body = machine.succeed(f"head -c 4096 {body_path}")
+        print("Parity login failure body:", body)
+        print("Worker-only parity runner diagnostics:", machine.succeed(
+            "tail -n 100 /var/lib/hub-parity-worker/wrangler.log 2>/dev/null || true"
+        ))
+        raise AssertionError(f"parity password login returned HTTP {status}")
+
+    headers = machine.succeed(f"cat {headers_path}")
     cookie = re.search(r"(?im)^set-cookie:\s*([^;\r\n]+)", headers)
     assert cookie is not None, headers
     cookie_header = "Cookie: " + cookie.group(1)
