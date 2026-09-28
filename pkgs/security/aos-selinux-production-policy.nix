@@ -10,6 +10,7 @@
   setools,
   python3,
   aos-netd,
+  aos-sandbox-zfs-worker,
 }: let
   policyVersion = "33";
   policySupport = ./_aos-selinux-production-policy;
@@ -17,6 +18,8 @@
   # the executable it labels. The system module co-installs this exact output.
   netdBasename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString aos-netd));
   netdBasenameRegex = builtins.replaceStrings ["."] ["\\."] netdBasename;
+  workerBasename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString aos-sandbox-zfs-worker));
+  workerBasenameRegex = builtins.replaceStrings ["."] ["\\."] workerBasename;
   inspectorPathRegex = "/(nix|nix\\.lower)/store/${netdBasenameRegex}/bin/aos-sandbox-network-namespace-inspector";
   inspectorPath = basename: "/nix/store/${basename}/bin/aos-sandbox-network-namespace-inspector";
   siblingBasename =
@@ -41,12 +44,12 @@
     && siblingVersionBasename != netdBasename
     && builtins.match inspectorPathRegex (inspectorPath siblingVersionBasename) == null;
   fileContexts =
-    if exactNetdLabel
+    if exactNetdLabel && builtins.match "[a-z0-9]{32}-aos-sandbox-zfs-worker-[0-9]+\\.[0-9]+\\.[0-9]+" workerBasename != null
     then
       builtins.toFile "aos_sandbox.fc" (
         builtins.replaceStrings
-        ["@AOS_NETD_BASENAME_REGEX@"]
-        [netdBasenameRegex]
+        ["@AOS_NETD_BASENAME_REGEX@" "@AOS_ZFS_WORKER_BASENAME_REGEX@"]
+        [netdBasenameRegex workerBasenameRegex]
         (builtins.readFile (policySupport + "/aos_sandbox.fc"))
       )
     else throw "aos-netd SELinux label must match only the evaluated package root";

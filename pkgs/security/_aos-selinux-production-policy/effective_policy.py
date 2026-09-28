@@ -52,9 +52,10 @@ DOMAIN_EXECUTABLES = (
         "aos_sandbox_network_lifecycle_worker_exec_t",
     ),
     (PROVISIONER_DOMAIN, "aos_sandbox_runtime_roots_exec_t"),
+    ("aos_sandbox_guest_root_publisher_t", "aos_sandbox_guest_root_publisher_exec_t"),
 )
 PROVISIONER_EXECUTABLE = "aos_sandbox_runtime_roots_exec_t"
-FORBIDDEN_PROVISIONER_TRANSITION_SOURCES = DOMAINS
+FORBIDDEN_PROVISIONER_TRANSITION_SOURCES = (*DOMAINS, "aos_sandbox_guest_root_publisher_t")
 
 
 @dataclass(frozen=True, order=True)
@@ -107,6 +108,7 @@ TRANSITIONS = (
         "process",
         PROVISIONER_DOMAIN,
     ),
+    Transition("init_t", "aos_sandbox_guest_root_publisher_exec_t", "process", "aos_sandbox_guest_root_publisher_t"),
     Transition(
         "aos_sandbox_network_publisher_t",
         "aos_sandbox_network_expected_staging_t",
@@ -153,6 +155,7 @@ def execution_access() -> tuple[Access, ...]:
 
 
 POSITIVE_ACCESS = (
+    Access("init_t", "aos_sandbox_guest_root_publisher_t", "process2", "nnp_transition"),
     Access("kernel_t", "init_t", "process", "transition"),
     Access("kernel_t", "init_exec_t", "file", "execute"),
     Access("init_t", "init_exec_t", "file", "entrypoint"),
@@ -457,7 +460,7 @@ POSITIVE_ACCESS = (
         access
         for executable in PAYLOAD_EXECUTABLE_TYPES
         for access in accesses(
-            "init_t", executable, "file", ("getattr", "open", "read", "relabelto")
+            "aos_sandbox_guest_root_publisher_t", executable, "file", ("getattr", "open", "read", "relabelto")
         )
     ),
     *(
@@ -720,6 +723,8 @@ def negative_access() -> tuple[Access, ...]:
                     ("append", "create", "relabelto", "setattr", "unlink", "write"),
                 )
             )
+    for executable in PAYLOAD_EXECUTABLE_TYPES:
+        checks.append(Access("init_t", executable, "file", "relabelto"))
 
     # UID-zero tenant and same-UID SSH children are different subjects. A
     # domain-pair fd:use allow for stdio cannot grant these object permissions.

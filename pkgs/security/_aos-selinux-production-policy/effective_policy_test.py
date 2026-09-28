@@ -147,7 +147,7 @@ class EffectivePolicyTest(unittest.TestCase):
     def test_missing_publisher_label_authority_fails(self) -> None:
         policy = FakePolicy()
         access = effective_policy.Access(
-            "init_t", "aos_sandbox_payload_bootstrap_exec_t", "file", "relabelto"
+            "aos_sandbox_guest_root_publisher_t", "aos_sandbox_payload_bootstrap_exec_t", "file", "relabelto"
         )
         policy.allows[access] = []
 
