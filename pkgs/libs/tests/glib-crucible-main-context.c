@@ -447,6 +447,226 @@ static void test_after_fork_holder(void)
     release_registry(&registry);
 }
 
+/* Package-only cohort tests: role tags supply fixture classifications, not
+ * QEMU reader/Source authority. Native tests independently join actual owners.
+ */
+typedef struct ControlFixture {
+    GMainContext *context;
+    GCrucibleMainContextControlHold control;
+    GMutex mutex;
+    GCond cond;
+    gboolean run;
+    gboolean entered;
+    gboolean resume;
+    gboolean finished;
+    gboolean invoke_unknown;
+    guint controls;
+    guint parked_prepare;
+    guint parked_check;
+    guint parked_dispatch;
+    guint unknown_callbacks;
+} ControlFixture;
+
+typedef struct ParkedSource {
+    GSource source;
+    ControlFixture *fixture;
+} ParkedSource;
+
+static gboolean parked_prepare(GSource *source, gint *timeout)
+{
+    ((ParkedSource *)source)->fixture->parked_prepare++;
+    *timeout = 0;
+    return TRUE;
+}
+
+static gboolean parked_check(GSource *source)
+{
+    ((ParkedSource *)source)->fixture->parked_check++;
+    return TRUE;
+}
+
+static gboolean parked_dispatch(GSource *source, GSourceFunc callback,
+                                gpointer data)
+{
+    ((ParkedSource *)source)->fixture->parked_dispatch++;
+    return G_SOURCE_CONTINUE;
+}
+
+static GSourceFuncs parked_source_funcs = {
+    parked_prepare, parked_check, parked_dispatch, NULL, NULL, NULL,
+};
+
+static gboolean unknown_control_invoke(gpointer opaque)
+{
+    ((ControlFixture *)opaque)->unknown_callbacks++;
+    return G_SOURCE_REMOVE;
+}
+
+static void wait_control_fixture(ControlFixture *fixture, gboolean *condition)
+{
+    gint64 deadline = g_get_monotonic_time() + 5000000;
+
+    while (!*condition) {
+        g_assert_true(g_cond_wait_until(&fixture->cond, &fixture->mutex,
+                                        deadline));
+    }
+}
+
+static gboolean bounded_control_callback(gpointer opaque)
+{
+    ControlFixture *fixture = opaque;
+
+    g_assert_true(g_main_context_is_owner(fixture->context));
+    g_assert_true(g_main_context_get_thread_default() == fixture->context);
+    fixture->controls++;
+    if (fixture->invoke_unknown) {
+        fixture->invoke_unknown = FALSE;
+        g_main_context_invoke(fixture->context, unknown_control_invoke, fixture);
+        g_assert_cmpuint(fixture->unknown_callbacks, ==, 0);
+    }
+    g_mutex_lock(&fixture->mutex);
+    fixture->entered = TRUE;
+    g_cond_broadcast(&fixture->cond);
+    wait_control_fixture(fixture, &fixture->resume);
+    g_mutex_unlock(&fixture->mutex);
+    return G_SOURCE_CONTINUE;
+}
+
+static gpointer control_reader(gpointer opaque)
+{
+    ControlFixture *fixture = opaque;
+
+    g_mutex_lock(&fixture->mutex);
+    wait_control_fixture(fixture, &fixture->run);
+    g_mutex_unlock(&fixture->mutex);
+    g_crucible_main_context_control_iteration(&fixture->control);
+    g_mutex_lock(&fixture->mutex);
+    fixture->finished = TRUE;
+    g_cond_broadcast(&fixture->cond);
+    g_mutex_unlock(&fixture->mutex);
+    return NULL;
+}
+
+static void test_closed_control_cohort(gconstpointer opaque)
+{
+    gboolean invoke_unknown = GPOINTER_TO_INT(opaque);
+    ControlFixture fixture = { .invoke_unknown = invoke_unknown };
+    GCrucibleMainContextRegistryHold registry = { 0 };
+    GMainContext *contexts[64];
+    GCrucibleMainContextHold holds[64] = { 0 };
+    GCrucibleSourceObservation observations[8];
+    GCrucibleMainContextObservation observation;
+    GCrucibleMainContextControlHold copied;
+    GSource *control_source = g_idle_source_new();
+    GSource *parked_source = g_source_new(&parked_source_funcs,
+                                         sizeof(ParkedSource));
+    GSource *unknown = g_idle_source_new();
+    GThread *reader;
+    guint count = 0;
+    guint control_context = G_MAXUINT;
+
+    g_mutex_init(&fixture.mutex);
+    g_cond_init(&fixture.cond);
+    fixture.context = g_main_context_new();
+    ((ParkedSource *)parked_source)->fixture = &fixture;
+    g_crucible_source_set_role(control_source, G_CRUCIBLE_SOURCE_CONTROL,
+                               &fixture);
+    g_crucible_source_set_role(parked_source, G_CRUCIBLE_SOURCE_NATIVE_AIO,
+                               parked_source);
+    g_source_set_callback(control_source, bounded_control_callback, &fixture,
+                          NULL);
+    g_source_attach(control_source, fixture.context);
+    g_source_attach(parked_source, fixture.context);
+    g_source_attach(unknown, fixture.context);
+    reader = g_thread_new("closed-control-reader", control_reader, &fixture);
+
+    g_assert_true(g_crucible_main_contexts_try_hold(&registry, contexts, holds,
+                                                   64, &count));
+    for (guint index = 0; index < count; index++) {
+        if (contexts[index] == fixture.context) {
+            control_context = index;
+        }
+    }
+    g_assert_cmpuint(control_context, !=, G_MAXUINT);
+    g_assert_true(g_crucible_main_context_inventory(&holds[control_context],
+        observations, 8, &observation));
+    g_assert_false(g_crucible_main_context_control_try_arm(&registry,
+        &holds[control_context], observations, observation.sources, reader,
+        &fixture.control));
+    g_assert_null(fixture.control.context);
+
+    g_source_destroy(unknown);
+    g_source_unref(unknown);
+    unknown = NULL;
+    g_assert_true(g_crucible_main_context_registry_refresh(&registry, contexts,
+                                                          holds, count));
+    g_assert_true(g_crucible_main_context_inventory(&holds[control_context],
+        observations, 8, &observation));
+    g_assert_true(g_crucible_main_context_control_try_arm(&registry,
+        &holds[control_context], observations, observation.sources, reader,
+        &fixture.control));
+    g_assert_true(g_crucible_main_context_control_current(&fixture.control));
+    copied = fixture.control;
+    g_assert_false(g_crucible_main_context_control_current(&copied));
+    g_assert_false(g_crucible_main_context_control_iteration(&fixture.control));
+    g_assert_false(g_crucible_main_context_control_iteration(&copied));
+    g_assert_false(g_crucible_main_context_registry_release(&registry));
+    g_assert_false(g_crucible_main_context_release(&holds[control_context]));
+    g_assert_true(g_crucible_main_context_dispatch_fenced());
+
+    g_mutex_lock(&fixture.mutex);
+    fixture.run = TRUE;
+    g_cond_broadcast(&fixture.cond);
+    wait_control_fixture(&fixture, &fixture.entered);
+    g_mutex_unlock(&fixture.mutex);
+    g_assert_cmpuint(fixture.parked_prepare, ==, 0);
+    g_assert_cmpuint(fixture.parked_check, ==, 0);
+    g_assert_cmpuint(fixture.parked_dispatch, ==, 0);
+    g_assert_false(g_crucible_main_context_control_try_release(&fixture.control));
+    g_assert_nonnull(fixture.control.context);
+    g_assert_false(g_crucible_main_context_release(&holds[control_context]));
+    g_assert_false(g_crucible_main_context_registry_release(&registry));
+
+    g_mutex_lock(&fixture.mutex);
+    fixture.resume = TRUE;
+    g_cond_broadcast(&fixture.cond);
+    wait_control_fixture(&fixture, &fixture.finished);
+    g_mutex_unlock(&fixture.mutex);
+    g_thread_join(reader);
+    g_assert_cmpuint(fixture.controls, ==, 1);
+    g_assert_cmpuint(fixture.parked_prepare, ==, 0);
+    g_assert_cmpuint(fixture.parked_check, ==, 0);
+    g_assert_cmpuint(fixture.parked_dispatch, ==, 0);
+    g_assert_cmpuint(fixture.unknown_callbacks, ==, 0);
+    g_assert_false(g_crucible_main_context_control_current(&fixture.control));
+    g_assert_true(g_crucible_main_context_control_try_release(&fixture.control));
+    g_assert_null(fixture.control.context);
+    g_assert_true(g_crucible_main_context_dispatch_fenced());
+    for (guint index = 0; index < count; index++) {
+        release_context(&holds[index]);
+        g_main_context_unref(contexts[index]);
+    }
+    release_registry(&registry);
+    g_assert_false(g_crucible_main_context_dispatch_fenced());
+    g_assert_true(g_main_context_iteration(fixture.context, FALSE));
+    g_assert_cmpuint(fixture.parked_prepare, >, 0);
+    g_assert_cmpuint(fixture.parked_dispatch, >, 0);
+    if (invoke_unknown) {
+        g_assert_cmpuint(fixture.unknown_callbacks, ==, 1);
+    }
+
+    g_source_destroy(control_source);
+    g_source_destroy(parked_source);
+    g_source_unref(control_source);
+    g_source_unref(parked_source);
+    if (unknown) {
+        g_source_unref(unknown);
+    }
+    g_main_context_unref(fixture.context);
+    g_cond_clear(&fixture.cond);
+    g_mutex_clear(&fixture.mutex);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -460,5 +680,9 @@ int main(int argc, char **argv)
     g_test_add_func("/crucible/registry-capacity-bound", test_registry_capacity_bound);
     g_test_add_func("/crucible/holder-new-context-fence", test_holder_new_context_fence);
     g_test_add_func("/crucible/atomic-all-context-hold", test_atomic_all_context_hold);
+    g_test_add_data_func("/crucible/closed-control-cohort", GINT_TO_POINTER(0),
+                          test_closed_control_cohort);
+    g_test_add_data_func("/crucible/control-invoke-unknown-queued", GINT_TO_POINTER(1),
+                          test_closed_control_cohort);
     return g_test_run();
 }
