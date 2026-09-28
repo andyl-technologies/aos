@@ -21,7 +21,9 @@ PAYLOAD_EXECUTABLE_TYPES = (
     "aos_sandbox_payload_systemd_exec_t",
 )
 PROVISIONER_DOMAIN = "aos_sandbox_runtime_roots_t"
-ENFORCING_DOMAINS = ("kernel_t", "init_t", PROVISIONER_DOMAIN, *DOMAINS)
+HANDOFF_DOMAIN = "aos_sandbox_runtime_roots_handoff_t"
+HANDOFF_EXECUTABLE = "aos_sandbox_runtime_roots_handoff_exec_t"
+ENFORCING_DOMAINS = ("kernel_t", "init_t", HANDOFF_DOMAIN, PROVISIONER_DOMAIN, *DOMAINS)
 
 DOMAIN_EXECUTABLES = (
     ("aos_sandbox_host_t", "aos_sandbox_host_exec_t"),
@@ -32,10 +34,32 @@ DOMAIN_EXECUTABLES = (
         "aos_sandbox_network_lifecycle_worker_t",
         "aos_sandbox_network_lifecycle_worker_exec_t",
     ),
-    (PROVISIONER_DOMAIN, "aos_sandbox_runtime_roots_exec_t"),
+    (HANDOFF_DOMAIN, HANDOFF_EXECUTABLE),
 )
+NETWORK_SERVICE_DOMAINS = (
+    "aos_sandbox_network_publisher_t",
+    "aos_sandbox_namespace_inspector_t",
+    "aos_sandbox_network_lifecycle_worker_t",
+)
+INSPECTOR_DOMAIN = "aos_sandbox_namespace_inspector_t"
+INSPECTOR_EXECUTABLE = "aos_sandbox_namespace_inspector_exec_t"
 PROVISIONER_EXECUTABLE = "aos_sandbox_runtime_roots_exec_t"
-FORBIDDEN_PROVISIONER_TRANSITION_SOURCES = DOMAINS
+FORBIDDEN_PROVISIONER_TRANSITION_SOURCES = ("init_t", *DOMAINS)
+
+PROTECTED_RECORDS = (
+    "aos_sandbox_network_expected_record_t",
+    "aos_sandbox_network_spent_record_t",
+)
+PROTECTED_DIRECTORIES = (
+    "aos_sandbox_network_root_t",
+    "aos_sandbox_network_state_t",
+    "aos_sandbox_network_store_t",
+    "aos_sandbox_network_expected_staging_t",
+    "aos_sandbox_network_expected_final_t",
+    "aos_sandbox_network_spent_staging_t",
+    "aos_sandbox_network_spent_final_t",
+)
+PROTECTED_OBJECT_TYPES = (*PROTECTED_DIRECTORIES, *PROTECTED_RECORDS)
 
 
 @dataclass(frozen=True, order=True)
@@ -82,6 +106,12 @@ TRANSITIONS = (
     ),
     Transition(
         "init_t",
+        HANDOFF_EXECUTABLE,
+        "process",
+        HANDOFF_DOMAIN,
+    ),
+    Transition(
+        HANDOFF_DOMAIN,
         PROVISIONER_EXECUTABLE,
         "process",
         PROVISIONER_DOMAIN,
@@ -136,7 +166,51 @@ POSITIVE_ACCESS = (
     Access("kernel_t", "init_exec_t", "file", "execute"),
     Access("init_t", "init_exec_t", "file", "entrypoint"),
     *execution_access(),
+    *(
+        Access("init_t", domain, "process2", "nnp_transition")
+        for domain in NETWORK_SERVICE_DOMAINS
+    ),
+    *accesses(
+        INSPECTOR_DOMAIN,
+        INSPECTOR_EXECUTABLE,
+        "file",
+        ("execute", "map", "read"),
+    ),
+    # PID 1 owns the accepted socket and executable FD; runtime admission
+    # narrows inherited FDs, while protected-domain ptrace remains forbidden.
+    Access(INSPECTOR_DOMAIN, "init_t", "fd", "use"),
+    # Type-wide inherited stream writes are narrowed by the image-pinned launch
+    # and FD contract; new init_t connections and stream reads remain forbidden.
+    Access(INSPECTOR_DOMAIN, "init_t", "unix_stream_socket", "write"),
+    Access(INSPECTOR_DOMAIN, "security_t", "dir", "search"),
+    *accesses(
+        INSPECTOR_DOMAIN,
+        "security_t",
+        "file",
+        ("getattr", "open", "read"),
+    ),
+    *accesses(
+        HANDOFF_DOMAIN,
+        PROVISIONER_EXECUTABLE,
+        "file",
+        ("execute", "getattr", "map", "open", "read"),
+    ),
+    *accesses(
+        HANDOFF_DOMAIN,
+        PROVISIONER_DOMAIN,
+        "process",
+        ("noatsecure", "rlimitinh", "siginh", "transition"),
+    ),
+    Access(PROVISIONER_DOMAIN, PROVISIONER_EXECUTABLE, "file", "entrypoint"),
+    Access(PROVISIONER_DOMAIN, PROVISIONER_EXECUTABLE, "file", "execute"),
+    Access(HANDOFF_DOMAIN, "init_t", "fd", "use"),
+    Access(HANDOFF_DOMAIN, HANDOFF_EXECUTABLE, "file", "execute"),
+    Access(HANDOFF_DOMAIN, HANDOFF_EXECUTABLE, "file", "read"),
+    Access(HANDOFF_DOMAIN, "security_t", "security", "read_policy"),
+    Access(HANDOFF_DOMAIN, "fs_t", "filesystem", "getattr"),
+    Access(PROVISIONER_DOMAIN, HANDOFF_DOMAIN, "fd", "use"),
     Access(PROVISIONER_DOMAIN, PROVISIONER_EXECUTABLE, "file", "map"),
+    Access(PROVISIONER_DOMAIN, PROVISIONER_EXECUTABLE, "file", "read"),
     Access(PROVISIONER_DOMAIN, PROVISIONER_DOMAIN, "process", "setfscreate"),
     *accesses(
         PROVISIONER_DOMAIN,
@@ -145,6 +219,8 @@ POSITIVE_ACCESS = (
         ("getattr", "open", "read", "search"),
     ),
     Access(PROVISIONER_DOMAIN, "security_t", "filesystem", "getattr"),
+    Access(PROVISIONER_DOMAIN, "fs_t", "filesystem", "getattr"),
+    Access(PROVISIONER_DOMAIN, "security_t", "security", "read_policy"),
     *accesses(
         PROVISIONER_DOMAIN,
         "security_t",
@@ -182,12 +258,17 @@ POSITIVE_ACCESS = (
         "lnk_file",
         ("getattr", "read"),
     ),
+    Access(PROVISIONER_DOMAIN, "device_t", "blk_file", "getattr"),
     Access(PROVISIONER_DOMAIN, "fixed_disk_device_t", "blk_file", "getattr"),
+    *(
+        Access(object_type, "fs_t", "filesystem", "associate")
+        for object_type in PROTECTED_OBJECT_TYPES
+    ),
     *accesses(
         PROVISIONER_DOMAIN,
         "var_t",
         "dir",
-        ("add_name", "getattr", "open", "search", "write"),
+        ("add_name", "getattr", "open", "read", "search", "write"),
     ),
     *accesses(
         PROVISIONER_DOMAIN,
@@ -380,19 +461,6 @@ POSITIVE_ACCESS = (
 )
 
 
-PROTECTED_RECORDS = (
-    "aos_sandbox_network_expected_record_t",
-    "aos_sandbox_network_spent_record_t",
-)
-PROTECTED_DIRECTORIES = (
-    "aos_sandbox_network_root_t",
-    "aos_sandbox_network_state_t",
-    "aos_sandbox_network_store_t",
-    "aos_sandbox_network_expected_staging_t",
-    "aos_sandbox_network_expected_final_t",
-    "aos_sandbox_network_spent_staging_t",
-    "aos_sandbox_network_spent_final_t",
-)
 PROTECTED_ANCESTOR_DIRECTORIES = ("var_t", "var_lib_t")
 PUBLICATION_DIRECTORIES = {
     "aos_sandbox_network_expected_staging_t": "aos_sandbox_network_publisher_t",
@@ -480,7 +548,107 @@ def negative_access() -> tuple[Access, ...]:
             )
         )
 
-    # init_t selects the dedicated transition but owns none of the protected
+    # init_t selects the dedicated handoff but cannot enter the provisioner
+    # directly or retain that executable without its domain transition.
+    checks.append(Access("init_t", PROVISIONER_EXECUTABLE, "file", "execute"))
+    checks.append(Access("init_t", PROVISIONER_DOMAIN, "process", "transition"))
+    checks.append(Access(PROVISIONER_DOMAIN, HANDOFF_EXECUTABLE, "file", "entrypoint"))
+    checks.append(Access("init_t", HANDOFF_EXECUTABLE, "file", "execute_no_trans"))
+    for domain in (PROVISIONER_DOMAIN, *DOMAINS):
+        checks.append(Access(domain, HANDOFF_EXECUTABLE, "file", "execute"))
+        checks.append(Access(domain, HANDOFF_DOMAIN, "process", "transition"))
+
+    # The NNP exception names only PID 1 and the three fixed Network services.
+    # A nosuid exception remains forbidden until the logical overlay launch
+    # route is qualified separately from the physical EROFS diagnostic route.
+    for domain in (HANDOFF_DOMAIN, PROVISIONER_DOMAIN, *DOMAINS):
+        checks.append(Access("init_t", domain, "process2", "nosuid_transition"))
+        if domain not in NETWORK_SERVICE_DOMAINS:
+            checks.append(Access("init_t", domain, "process2", "nnp_transition"))
+        for network_domain in NETWORK_SERVICE_DOMAINS:
+            checks.extend(
+                accesses(
+                    domain,
+                    network_domain,
+                    "process2",
+                    ("nnp_transition", "nosuid_transition"),
+                )
+            )
+
+    # The inspector's post-transition ELF mapping stays exclusive to its own
+    # domain; init_t cannot bypass the transition with execute_no_trans.
+    checks.append(Access("init_t", INSPECTOR_EXECUTABLE, "file", "execute_no_trans"))
+    for domain in (HANDOFF_DOMAIN, PROVISIONER_DOMAIN, *DOMAINS):
+        if domain != INSPECTOR_DOMAIN:
+            checks.append(Access(domain, INSPECTOR_EXECUTABLE, "file", "execute"))
+
+    # The fixed enforcement query needs selinuxfs reads. No directory listing,
+    # mutation, policy readback, or SELinux administration is delegated.
+    checks.extend(accesses(INSPECTOR_DOMAIN, "security_t", "file", RECORD_MUTATIONS))
+    checks.extend(
+        accesses(
+            INSPECTOR_DOMAIN,
+            "security_t",
+            "dir",
+            (
+                "add_name",
+                "create",
+                "open",
+                "read",
+                "remove_name",
+                "write",
+                *DIRECTORY_INODE_MUTATIONS,
+            ),
+        )
+    )
+    checks.extend(
+        accesses(
+            INSPECTOR_DOMAIN,
+            "security_t",
+            "security",
+            ("load_policy", "read_policy", "setbool", "setenforce", "setsecparam"),
+        )
+    )
+
+    # The stderr exception has no pathname-opening or new-connection authority.
+    # SELinux uses unix_stream_socket for AF_UNIX stream and seqpacket sockets;
+    # accepted request I/O is a separate contract, never a connect exception.
+    checks.extend(
+        accesses(
+            INSPECTOR_DOMAIN, "init_t", "unix_stream_socket", ("connect", "connectto")
+        )
+    )
+    checks.append(Access(INSPECTOR_DOMAIN, "init_t", "unix_stream_socket", "read"))
+    checks.append(Access(INSPECTOR_DOMAIN, "tmpfs_t", "sock_file", "write"))
+
+    # The handoff has no mount, creation, mutable topology, or return-to-init
+    # authority. SELinux's init_t:fd use permission is broad; stage0's
+    # close_range is what excludes inherited descriptors before transition.
+    checks.extend(
+        (
+            Access(HANDOFF_DOMAIN, "*", "capability", "sys_admin"),
+            Access(HANDOFF_DOMAIN, "*", "capability", "sys_ptrace"),
+            Access(HANDOFF_DOMAIN, "init_t", "process", "transition"),
+            Access(HANDOFF_DOMAIN, HANDOFF_DOMAIN, "process", "setfscreate"),
+        )
+    )
+    for directory in (*PROTECTED_ANCESTOR_DIRECTORIES, *PROTECTED_DIRECTORIES):
+        checks.extend(
+            accesses(
+                HANDOFF_DOMAIN,
+                directory,
+                "dir",
+                ("add_name", "create", "remove_name", "rename", "rmdir", "setattr", "write"),
+            )
+        )
+    for record in PROTECTED_RECORDS:
+        checks.extend(accesses(HANDOFF_DOMAIN, record, "file", RECORD_MUTATIONS))
+    for domain in DOMAINS:
+        if domain != INSPECTOR_DOMAIN:
+            checks.append(Access(domain, "init_t", "fd", "use"))
+        checks.append(Access(domain, HANDOFF_DOMAIN, "fd", "use"))
+
+    # init_t owns none of the protected
     # object creation or topology authority. The upstream reference policy
     # gives its unconfined init domain self:setfscreate; that permission cannot
     # name or create these deliberately non-file_type objects without one of
@@ -519,6 +687,51 @@ def negative_access() -> tuple[Access, ...]:
             Access(PROVISIONER_DOMAIN, "*", "capability", "sys_ptrace"),
             Access(PROVISIONER_DOMAIN, "*", "cap_userns", "sys_ptrace"),
             Access(PROVISIONER_DOMAIN, "*", "process", "ptrace"),
+        )
+    )
+    checks.extend(
+        accesses(
+            PROVISIONER_DOMAIN,
+            "fs_t",
+            "filesystem",
+            (
+                "associate",
+                "mount",
+                "quotaget",
+                "quotamod",
+                "relabelfrom",
+                "relabelto",
+                "remount",
+                "unmount",
+                "watch",
+            ),
+        )
+    )
+    for object_type in PROTECTED_OBJECT_TYPES:
+        checks.extend(
+            accesses(
+                object_type,
+                "fs_t",
+                "filesystem",
+                (
+                    "mount",
+                    "quotaget",
+                    "quotamod",
+                    "relabelfrom",
+                    "relabelto",
+                    "remount",
+                    "unmount",
+                    "watch",
+                ),
+            )
+        )
+        checks.append(Access(object_type, "tmpfs_t", "filesystem", "associate"))
+    checks.extend(
+        accesses(
+            PROVISIONER_DOMAIN,
+            "device_t",
+            "blk_file",
+            ("ioctl", "open", "read", "write"),
         )
     )
     for record in PROTECTED_RECORDS:
@@ -716,7 +929,7 @@ def check_policy(setools: Any, policy: Any) -> list[str]:
     provisioner_candidates = transition_candidates(
         setools,
         policy,
-        "init_t",
+        HANDOFF_DOMAIN,
         PROVISIONER_EXECUTABLE,
         "process",
     )
@@ -729,7 +942,7 @@ def check_policy(setools: Any, policy: Any) -> list[str]:
         rendered = " | ".join(sorted(str(rule) for rule in unexpected))
         raise ValueError(f"alternate provisioner transition exists: {rendered}")
     evidence.append(
-        f"exclusive-transition\tinit_t\t{PROVISIONER_EXECUTABLE}\t"
+        f"exclusive-transition\t{HANDOFF_DOMAIN}\t{PROVISIONER_EXECUTABLE}\t"
         f"process\t{PROVISIONER_DOMAIN}"
     )
 
@@ -749,6 +962,15 @@ def check_policy(setools: Any, policy: Any) -> list[str]:
         evidence.append(
             f"deny-transition\t{source}\t{PROVISIONER_EXECUTABLE}\tprocess"
         )
+
+    file_type_attributes = list(setools.TypeAttributeQuery(policy, name="file_type").results())
+    if len(file_type_attributes) != 1:
+        raise ValueError("effective policy must contain exactly one file_type attribute")
+    file_types = {str(object_type) for object_type in file_type_attributes[0].expand()}
+    for object_type in PROTECTED_OBJECT_TYPES:
+        if object_type in file_types:
+            raise ValueError(f"protected object inherited broad file_type: {object_type}")
+        evidence.append(f"deny-attribute\t{object_type}\tfile_type")
 
     for access in POSITIVE_ACCESS:
         rules = [rule for rule in allow_rules(setools, policy, access) if rule.enabled()]
