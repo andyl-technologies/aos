@@ -918,6 +918,7 @@ let
     "toolchain/_bazel-google-http-1433.nix" = "native-build-helper";
     "toolchain/_bazel-google-http.nix" = "native-build-helper";
     "toolchain/_bazel-google-java-format.nix" = "native-build-helper";
+    "toolchain/_bazel-caffeine.nix" = "native-build-helper";
     "toolchain/_bazel-grpc-java-plugin.nix" = "native-build-helper";
     "toolchain/_bazel-grpc-netty.nix" = "native-build-helper";
     "toolchain/_bazel-grpc-xds-source.nix" = "target-independent-source";
