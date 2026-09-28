@@ -56,7 +56,12 @@ impl FuseWorkerDescriptorRoleV1 {
     }
 }
 
-/// Names a single-use unit solely by its broker-minted original worker instance.
+/// Projects an original worker-instance value into a structural unit locator.
+///
+/// A name does not prove protected reservation, global uniqueness, or confinement.
+/// PID 1's launch arm applies to the currently loaded unit; after unit collection,
+/// the same name can identify a fresh unit. The actual Host/Mount owner must
+/// durably reserve and consume the original worker instance before activation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FuseWorkerUnitNameV1 {
     service: String,
@@ -80,7 +85,7 @@ impl FuseWorkerUnitNameV1 {
         })
     }
 
-    /// Returns the exact independently confined service locator.
+    /// Returns the exact structural service locator without launch authority.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.service
@@ -148,7 +153,7 @@ impl FuseWorkerUnitSpecV1 {
         Ok(Self { name, descriptors })
     }
 
-    /// Returns the original, single-use worker unit locator.
+    /// Returns the original structural worker unit locator.
     #[must_use]
     pub const fn name(&self) -> &FuseWorkerUnitNameV1 {
         &self.name
