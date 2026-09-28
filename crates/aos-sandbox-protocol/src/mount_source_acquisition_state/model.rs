@@ -172,7 +172,7 @@ pub struct AcquireIntentV2 {
     pub kernel_coupled: bool,
 }
 
-/// Retains the exact session-specific AOSNPI01 version-2 normalization of an Acquire.
+/// Retains the exact AOSNPI01 legacy or native profile of an Acquire.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AttemptNormalizedAcquireV2 {

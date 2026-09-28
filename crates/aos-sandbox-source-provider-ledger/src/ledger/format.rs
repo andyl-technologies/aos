@@ -1321,6 +1321,10 @@ fn decode_acquisition_body(
         || intent.provider() != &provider
         || intent.holder() != &holder
         || intent.digest() != intent_digest
+        || intent.native_catalog().is_some_and(|catalog| {
+            catalog.resource_namespace_digest() != resource_namespace_digest
+                || catalog.head() != (catalog_generation, catalog_digest)
+        })
         || optional_bytes_digest(evidence_bytes) != evidence_digest
     {
         return Err(LedgerFormatErrorV1::Corrupt("acquisition cross-link"));
@@ -1706,6 +1710,72 @@ mod native_selected_reservation_tests {
             panic!("fixture decoded as another record kind");
         };
         assert_eq!(decoded, acquisition);
+
+        let native_request = AcquireSourceRequestV1::new_native_v3(
+            request.clone(),
+            aos_sandbox_source_provider_protocol::NativeAcquireCatalogBindingV3::new(
+                namespace,
+                resource.catalog_generation(),
+                resource.catalog_digest(),
+                resource.catalog_generation(),
+                resource.catalog_digest(),
+                digest(39),
+                digest(40),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut native_acquisition = acquisition.clone();
+        native_acquisition.normalized_intent =
+            NormalizedAcquisitionIntentV1::from_original_acquire_request(
+                &native_request,
+                provider.clone(),
+                holder.clone(),
+                [5; 16],
+                [6; 16],
+                [24; 16],
+                25,
+                digest(26),
+                namespace,
+                28,
+                digest(10),
+            )
+            .unwrap();
+        native_acquisition.backend_id = crate::identity::acquire_native_no_dispatch_id_v1(
+            native_acquisition.normalized_intent.digest(),
+            resource.catalog_generation(),
+            resource.catalog_digest(),
+        );
+        let native_bytes = encode_acquisition(&native_acquisition);
+        let DecodedRecordV1::Acquisition(decoded_native) =
+            decode_record(&key, &native_bytes).unwrap()
+        else {
+            panic!("native normalized fixture changed record kind");
+        };
+        assert_eq!(decoded_native, native_acquisition);
+        assert_eq!(
+            decoded_native.normalized_intent.native_catalog(),
+            native_request.native_catalog()
+        );
+        assert!(
+            decoded_native
+                .normalized_intent
+                .matches_original_acquire_request(&native_request)
+        );
+
+        let mut changed_head = native_acquisition.clone();
+        changed_head.catalog_digest = digest(99);
+        assert!(decode_record(&key, &encode_acquisition(&changed_head)).is_err());
+
+        let mut native_terminal = native_acquisition.clone();
+        native_terminal.revision = 2;
+        native_terminal.state = ProviderAcquisitionStateV1::Faulted;
+        native_terminal.native_no_dispatch_reservation_digest =
+            Some(record_digest(&native_bytes).unwrap());
+        let native_terminal_bytes = encode_acquisition(&native_terminal);
+        assert!(decode_record(&key, &native_terminal_bytes).is_ok());
+        #[cfg(target_os = "linux")]
+        protected_native_terminal_replay(&key, &native_bytes, &native_terminal_bytes);
 
         let mut terminal = acquisition.clone();
         terminal.revision = 2;

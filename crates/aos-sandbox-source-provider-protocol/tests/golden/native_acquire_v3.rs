@@ -333,3 +333,206 @@ fn legacy_normalized_intent_rejects_native_v3_without_discarding_catalog() {
         Err(NormalizedAcquisitionIntentError::Invalid)
     );
 }
+
+fn normalize_original(request: &AcquireSourceRequestV1) -> NormalizedAcquisitionIntentV2 {
+    normalize_original_in_namespace(request, digest(61))
+}
+
+fn normalize_original_in_namespace(
+    request: &AcquireSourceRequestV1,
+    namespace: ObjectDigest,
+) -> NormalizedAcquisitionIntentV2 {
+    let key = SigningKey::from_bytes(&[51; 32]);
+    NormalizedAcquisitionIntentV2::from_original_acquire_request(
+        request,
+        provider_authority(&key),
+        SourceProviderAuthorityV1::new([31; 16], 32, digest(33)).unwrap(),
+        [4; 16],
+        [5; 16],
+        [55; 16],
+        56,
+        digest(57),
+        namespace,
+        91,
+        digest(90),
+    )
+    .unwrap()
+}
+
+#[test]
+fn normalized_native_profile_preserves_the_exact_legacy_wire_and_digest() {
+    let request = request_v2(false);
+    let legacy = normalize_original(&request);
+    let provider = provider_authority(&SigningKey::from_bytes(&[51; 32]));
+
+    // Independent field-order reconstruction pins the complete old layout,
+    // not merely a round trip through the production encoder and decoder.
+    let mut expected = b"AOSNPI01".to_vec();
+    expected.extend_from_slice(&[0, 2, 1, 1, 0, 0, 0, 0]);
+    expected.extend_from_slice(request.acquisition_id().as_bytes());
+    expected.extend_from_slice(&17_u64.to_be_bytes());
+    expected.extend_from_slice(&provider.authority_id());
+    expected.extend_from_slice(&provider.authority_generation().to_be_bytes());
+    expected.extend_from_slice(provider.authority_digest().as_bytes());
+    expected.extend_from_slice(&[31; 16]);
+    expected.extend_from_slice(&32_u64.to_be_bytes());
+    expected.extend_from_slice(&[33; 32]);
+    expected.extend_from_slice(&[4; 16]);
+    expected.extend_from_slice(&[5; 16]);
+    expected.extend_from_slice(&[55; 16]);
+    expected.extend_from_slice(&56_u64.to_be_bytes());
+    expected.extend_from_slice(&[57; 32]);
+    expected.extend_from_slice(&[61; 32]);
+    expected.extend_from_slice(&91_u64.to_be_bytes());
+    expected.extend_from_slice(&[90; 32]);
+    expected.extend_from_slice(&600_u64.to_be_bytes());
+    expected.extend_from_slice(&4_u32.to_be_bytes());
+    expected.extend_from_slice(&(request.prospective_apply_template().len() as u32).to_be_bytes());
+    expected.extend_from_slice(request.prospective_apply_template_digest().as_bytes());
+    expected.extend_from_slice(&(request.binding().len() as u32).to_be_bytes());
+    expected.extend_from_slice(request.binding_digest().as_bytes());
+    assert_eq!(expected.len(), 412);
+    expected.extend_from_slice(request.prospective_apply_template());
+    expected.extend_from_slice(request.binding());
+    assert_eq!(legacy.to_canonical_bytes(), expected);
+    assert!(legacy.native_catalog().is_none());
+
+    let mut legacy_hash = Sha256::new();
+    legacy_hash.update(b"aos.sandbox.source-provider.normalized-acquisition-intent.v2\0");
+    legacy_hash.update((expected.len() as u32).to_be_bytes());
+    legacy_hash.update(&expected);
+    assert_eq!(
+        legacy.digest(),
+        ObjectDigest::from_bytes(legacy_hash.finalize().into())
+    );
+
+    let native = normalize_original(&request_v3());
+    let mut native_expected = expected[..412].to_vec();
+    native_expected[8..10].copy_from_slice(&3_u16.to_be_bytes());
+    native_expected[12] = 1;
+    native_expected.extend_from_slice(&[61; 32]);
+    native_expected.extend_from_slice(&9_u64.to_be_bytes());
+    native_expected.extend_from_slice(&[62; 32]);
+    native_expected.extend_from_slice(&7_u64.to_be_bytes());
+    native_expected.extend_from_slice(&[63; 32]);
+    native_expected.extend_from_slice(&[64; 32]);
+    native_expected.extend_from_slice(&[65; 32]);
+    assert_eq!(native_expected.len(), 588);
+    native_expected.extend_from_slice(&expected[412..]);
+    assert_eq!(native.to_canonical_bytes(), native_expected);
+    assert_eq!(native.native_catalog(), Some(&catalog()));
+    assert_eq!(
+        NormalizedAcquisitionIntentV2::from_canonical_bytes(&native_expected).unwrap(),
+        native
+    );
+    assert_ne!(native.digest(), legacy.digest());
+
+    let mut native_hash = Sha256::new();
+    native_hash.update(b"aos.sandbox.source-provider.normalized-acquisition-intent.v3\0");
+    native_hash.update((native_expected.len() as u32).to_be_bytes());
+    native_hash.update(&native_expected);
+    assert_eq!(
+        native.digest(),
+        ObjectDigest::from_bytes(native_hash.finalize().into())
+    );
+}
+
+#[test]
+fn normalized_native_profile_commits_every_catalog_claim_and_reconstructs_exactly() {
+    let request = request_v3();
+    let original = normalize_original(&request);
+    assert!(original.matches_original_acquire_request(&request));
+    assert!(!original.matches_original_acquire_request(&request_v2(false)));
+    assert!(!normalize_original(&request_v2(false)).matches_original_acquire_request(&request));
+
+    for offset in [47, 79, 87, 119, 151, 183] {
+        let mut changed = encode_acquire_request(&request);
+        changed[offset] ^= 1;
+        let changed = decode_acquire_request(&changed).unwrap();
+        let normalized = normalize_original(&changed);
+        assert_ne!(normalized, original, "catalog offset {offset}");
+        assert_ne!(
+            normalized.digest(),
+            original.digest(),
+            "catalog offset {offset}"
+        );
+        assert!(!original.matches_original_acquire_request(&changed));
+        assert!(normalized.matches_original_acquire_request(&changed));
+    }
+
+    // The seventh field is the namespace, which must also agree with the
+    // retained owner scope rather than normalize into an unrelated catalog.
+    let mut changed_namespace = encode_acquire_request(&request);
+    changed_namespace[39] ^= 1;
+    let changed_namespace = decode_acquire_request(&changed_namespace).unwrap();
+    assert!(!original.matches_original_acquire_request(&changed_namespace));
+    let changed = normalize_original_in_namespace(
+        &changed_namespace,
+        changed_namespace
+            .native_catalog()
+            .unwrap()
+            .resource_namespace_digest(),
+    );
+    assert_ne!(changed.digest(), original.digest());
+    assert!(changed.matches_original_acquire_request(&changed_namespace));
+}
+
+#[test]
+fn normalized_native_profile_omits_only_transport_attempt_and_deadline_fields() {
+    let original_request = request_v3();
+    let original = normalize_original(&original_request);
+    let mut changed = encode_acquire_request(&original_request);
+    changed[215] ^= 1; // Session binding.
+    changed[216..224].copy_from_slice(&73_u64.to_be_bytes());
+    changed[239] ^= 1; // Request identity.
+    let deadline_offset = changed.len() - 56;
+    changed[deadline_offset..deadline_offset + 8].copy_from_slice(&(DEADLINE + 10).to_be_bytes());
+    let changed = decode_acquire_request(&changed).unwrap();
+    assert_ne!(
+        digest_acquire_request(&changed),
+        digest_acquire_request(&original_request)
+    );
+    assert_eq!(normalize_original(&changed), original);
+    assert!(original.matches_original_acquire_request(&changed));
+}
+
+#[test]
+fn normalized_native_profile_rejects_closed_shapes_and_catalog_sentinels() {
+    let original = normalize_original(&request_v3()).to_canonical_bytes();
+    for (offset, value) in [(8, 1), (9, 4), (12, 0), (12, 2), (13, 1), (14, 1), (15, 1)] {
+        let mut changed = original.clone();
+        changed[offset] = value;
+        assert!(NormalizedAcquisitionIntentV2::from_canonical_bytes(&changed).is_err());
+    }
+    for field in [
+        412..444,
+        444..452,
+        452..484,
+        484..492,
+        492..524,
+        524..556,
+        556..588,
+    ] {
+        let mut changed = original.clone();
+        changed[field.clone()].fill(0);
+        assert!(
+            NormalizedAcquisitionIntentV2::from_canonical_bytes(&changed).is_err(),
+            "zero {field:?}"
+        );
+    }
+    for length in 0..original.len() {
+        assert!(
+            NormalizedAcquisitionIntentV2::from_canonical_bytes(&original[..length]).is_err(),
+            "truncated {length}"
+        );
+    }
+    let mut coupled = original.clone();
+    coupled[11] |= 2;
+    assert!(NormalizedAcquisitionIntentV2::from_canonical_bytes(&coupled).is_err());
+    let mut missing = original[..412].to_vec();
+    missing.extend_from_slice(&original[588..]);
+    assert!(NormalizedAcquisitionIntentV2::from_canonical_bytes(&missing).is_err());
+    let mut trailing = original;
+    trailing.push(0);
+    assert!(NormalizedAcquisitionIntentV2::from_canonical_bytes(&trailing).is_err());
+}
