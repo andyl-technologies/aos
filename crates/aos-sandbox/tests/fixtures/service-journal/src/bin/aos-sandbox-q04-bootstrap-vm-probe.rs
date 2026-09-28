@@ -1,8 +1,11 @@
 //! Bootstraps real protected Q04 owner journals and role-separated VM credentials.
 //!
-//! This fixture has no accepted Create, Source hold, or Root binding. Its pins
-//! and signed source claims are deterministic test material, never production
-//! credentials or proof that the claimed publisher and ancestry heads are current.
+//! The explicit debug fixture retains an exact accepted Create only for denial
+//! and history retirement. Its synthetic historical heads and deterministic
+//! pins never establish current publisher/ancestry authority or Root publication.
+
+#[path = "aos-sandbox-q04-bootstrap-vm-probe/negative_recovery.rs"]
+mod negative_recovery;
 
 #[path = "aos-sandbox-q04-bootstrap-vm-probe/project_recovery.rs"]
 mod project_recovery;
@@ -114,9 +117,57 @@ fn run() -> Result<(), Box<dyn Error>> {
             require_uid(0)?;
             project_recovery::expire_deployment_credential()?;
         }
+        "project-rotate-controller-credential" => {
+            require_uid(0)?;
+            rotate_controller_credential()?;
+        }
+        "project-rotate-root-source-credential" => {
+            require_uid(0)?;
+            let key = SigningKey::from_bytes(&[0x43; 32]);
+            let pin = encode_source_hold_readback_signer_credential_v1(18, &key.verifying_key())?;
+            fs::write(
+                credential_path(
+                    "aos-sandbox-policy-authorityd.service",
+                    "source-hold-public-key",
+                ),
+                pin,
+            )?;
+        }
+        "project-historical-source-pin" => {
+            require_uid(0)?;
+            let pin = aos_sandbox::policy_compiler::recover_fixed_root_project_source_pin_v1()?
+                .ok_or("protected historical Source pin absent")?;
+            let current = PinnedSourceHoldReadbackSignerV1::decode(&fs::read(credential_path(
+                "aos-sandbox-policy-authorityd.service",
+                "source-hold-public-key",
+            ))?)?;
+            if pin.generation() != 8
+                || pin.verifying_key() != &SigningKey::from_bytes(&[8; 32]).verifying_key()
+                || current.generation() != 18
+                || current.verifying_key() == pin.verifying_key()
+            {
+                return Err("historical Root trust followed a replacement credential".into());
+            }
+        }
+        negative if negative.starts_with("project-negative-") => {
+            require_uid(CONTROLLER_UID)?;
+            negative_recovery::run(negative)?;
+        }
         _ => return Err("unknown bootstrap mode".into()),
     }
     println!("q04-{mode}:PASS");
+    Ok(())
+}
+
+fn rotate_controller_credential() -> Result<(), Box<dyn Error>> {
+    let key = SigningKey::from_bytes(&[0x42; 32]);
+    let pin = encode_controller_hold_signer_credential_v1(10, &key.verifying_key())?;
+    let service = "aos-sandboxd.service";
+    fs::write(
+        credential_path(service, "controller-hold-signing-key"),
+        [0x42; 32],
+    )?;
+    fs::write(credential_path(service, "controller-hold-public-key"), pin)?;
     Ok(())
 }
 
