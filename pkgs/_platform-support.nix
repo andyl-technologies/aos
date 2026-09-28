@@ -900,6 +900,7 @@ let
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
     "security/_aos-mount-executable-carrier.nix" = "linux-only-build-helper";
+    "security/_aos-normal-root-profile.nix" = "linux-only-build-helper";
     "security/_openssl-output-check.nix" = "cross-build-helper";
     "storage/_postgresql-cross.nix" = "cross-build-helper";
     "toolchain/_bazel-asm.nix" = "native-build-helper";
@@ -1124,6 +1125,9 @@ let
     "security/_aos-selinux-production-policy/refpolicy-explicit-loaders.patch" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/refpolicy-private-root-custody.patch" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/refpolicy-linux-6.18.33.patch" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/rule_query.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/rule_query_fixture.conf" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/rule_query_test.py" = "linux-only-test-source";
     "security/_aos-selinux-production-policy/verify_context_dump.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/verify_context_dump_test.py" = "linux-only-test-source";
     "security/_aos-selinux-production-policy/verify_context_lookups.py" = "linux-only-build-source";

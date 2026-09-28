@@ -110,6 +110,13 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         negative.append(Access(domain, "aos_method46_tpm_device_t", "chr_file", "open"))
 
     root = "aos_sandbox_policy_authority_t"
+    positive.extend(accesses(root, "init_exec_t", "file", ("getattr", "read")))
+    positive.extend(accesses(root, root, "lnk_file", ("getattr", "read")))
+    profile = "aos_sandbox_policy_authority_profile_t"
+    for reader in (root, "init_t"):
+        positive.extend(accesses(reader, profile, "file", file_read))
+    for source in all_roles:
+        negative.extend(accesses(source, profile, "file", file_mutate + ("execute", "execute_no_trans", "map")))
     # Preserve precisely the trusted PID 1 inspection removed from the generic
     # interface. This is the pinned refpolicy permission expansion, not a new
     # privileged peer or an exception to the all-source custody cut.

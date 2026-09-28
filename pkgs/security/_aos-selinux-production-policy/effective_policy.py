@@ -10,6 +10,7 @@ from typing import Any, Iterable, Sequence
 import fuse_worker_policy
 import guest_file_policy
 import owner_policy
+import rule_query
 
 
 DOMAINS = (
@@ -1267,7 +1268,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     import setools
 
     policy = setools.SELinuxPolicy(str(args.policy))
-    for line in check_policy(setools, policy):
+    queries = rule_query.IndexedPolicyQueries(setools, policy)
+    for line in check_policy(queries, policy):
         print(line)
     return 0
 

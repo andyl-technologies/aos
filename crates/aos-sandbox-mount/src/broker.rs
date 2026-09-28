@@ -65,7 +65,7 @@ use crate::{MountError, Result};
 
 mod fuse_intent;
 
-pub use fuse_intent::HeldMountFuseIntentPreparationV1;
+pub use fuse_intent::{HeldMountFuseIntentPreparationV1, PreparedMountFuseWorkerObjectsV1};
 
 /// Applies validated mount requests through durable, idempotent effects.
 pub struct MountBroker<W> {

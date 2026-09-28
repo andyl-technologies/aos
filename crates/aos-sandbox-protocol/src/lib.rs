@@ -18,6 +18,7 @@
 
 pub mod authenticated_session;
 pub mod fencing;
+pub mod fuse_worker_preparation;
 pub mod host_argument_source;
 pub mod host_attach_gate;
 pub mod host_catalog;

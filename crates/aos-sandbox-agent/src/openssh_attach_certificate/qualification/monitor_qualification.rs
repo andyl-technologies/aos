@@ -78,12 +78,11 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
         0o444,
     );
 
-    let mut daemon = RunningOpenSshGateV1::start_with_monitor_v2(base.binding.clone()).unwrap();
+    let mut daemon = start_qualification_daemon(base.binding.clone(), true, "monitor.stderr");
     let mut claim = base.clone();
     claim.pty = false;
     (claim.sshd_pid, claim.sshd_start_ticks) = daemon.daemon_identity().unwrap();
     write_claim(&claim);
-    wait_listener();
     let runtime = daemon.monitor_runtime_v2(&claim).unwrap();
     assert!(
         runtime
@@ -556,12 +555,12 @@ fn qualify_incomplete_authentication(
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log);
-        let daemon = OwnedProcess(command.spawn().unwrap());
+        let mut daemon = OwnedProcess(command.spawn().unwrap());
+        wait_listener(|| daemon.0.try_wait(), Path::new(&log_path));
         let mut claim = base.clone();
         claim.sshd_pid = daemon.0.id();
         claim.sshd_start_ticks = process_start_ticks(daemon.0.id());
         write_claim(&claim);
-        wait_listener();
         let output = ssh_command(ssh, original).output().unwrap();
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());
@@ -595,12 +594,4 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs()
-}
-
-fn wait_listener() {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while TcpStream::connect(("127.0.0.1", 2222)).is_err() {
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(2));
-    }
 }

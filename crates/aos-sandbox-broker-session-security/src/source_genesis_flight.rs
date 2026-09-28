@@ -44,6 +44,7 @@ const ROOT_HOLD_LIMIT: Duration = Duration::from_secs(65);
 /// insufficient reserved suffixes, unanchored final ACKs or transport loss.
 pub fn serve_root_source_genesis_flight_v1(
     stream: &mut UnixStream,
+    startup: Option<&crate::production_normal_root::ProductionNormalRootStartupV1>,
     client_nonce: [u8; 16],
     controller_uid: u32,
     controller_gid: u32,
@@ -52,6 +53,7 @@ pub fn serve_root_source_genesis_flight_v1(
 ) -> Result<(), SourceGenesisErrorV1> {
     serve(
         stream,
+        startup,
         client_nonce,
         controller_uid,
         controller_gid,
@@ -69,6 +71,7 @@ pub fn serve_root_source_genesis_flight_v1(
 /// as the normal flight. This entry cannot admit a new expired genesis.
 pub fn serve_root_source_genesis_recovery_v1(
     stream: &mut UnixStream,
+    startup: Option<&crate::production_normal_root::ProductionNormalRootStartupV1>,
     client_nonce: [u8; 16],
     controller_uid: u32,
     controller_gid: u32,
@@ -77,6 +80,7 @@ pub fn serve_root_source_genesis_recovery_v1(
 ) -> Result<(), SourceGenesisErrorV1> {
     serve(
         stream,
+        startup,
         client_nonce,
         controller_uid,
         controller_gid,
@@ -93,6 +97,7 @@ enum AdmissionScope {
 
 fn serve(
     stream: &mut UnixStream,
+    startup: Option<&crate::production_normal_root::ProductionNormalRootStartupV1>,
     client_nonce: [u8; 16],
     controller_uid: u32,
     controller_gid: u32,
@@ -116,6 +121,7 @@ fn serve(
     let owner = RootSourceGenesisAuthorityV1::open_fixed(controller_uid, source_uid)?;
     let mut flight = RootHeldStreamFlight {
         stream,
+        startup,
         owner,
         deadline: Instant::now() + ROOT_HOLD_LIMIT,
         source_signer_uid,
@@ -176,8 +182,9 @@ fn serve(
 
 // Field drop order is deliberate: closing the original receive queue must
 // precede releasing Root's actual writer on every return/unwind path.
-struct RootHeldStreamFlight<'stream> {
+struct RootHeldStreamFlight<'stream, 'startup> {
     stream: ClosingOriginalStream<'stream>,
+    startup: Option<&'startup crate::production_normal_root::ProductionNormalRootStartupV1>,
     owner: RootSourceGenesisAuthorityV1,
     deadline: Instant,
     source_signer_uid: u32,
@@ -193,8 +200,10 @@ impl Drop for ClosingOriginalStream<'_> {
     }
 }
 
-impl RootHeldStreamFlight<'_> {
+impl RootHeldStreamFlight<'_, '_> {
     fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        crate::production_normal_root::recheck_optional(self.startup)
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
         if Instant::now() >= self.deadline {
             return Err(SourceGenesisErrorV1::Stale);
         }

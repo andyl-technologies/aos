@@ -1,18 +1,25 @@
 diff --git a/src/nspawn/nspawn-root-fd.c b/src/nspawn/nspawn-root-fd.c
 --- a/src/nspawn/nspawn-root-fd.c
 +++ b/src/nspawn/nspawn-root-fd.c
-@@ -5,2 +5,3 @@
+@@ -7,2 +7,3 @@
  #include <sys/stat.h>
 +#include <sys/statfs.h>
  #include <unistd.h>
-@@ -12,4 +13,6 @@
+@@ -12,11 +13,13 @@
+ #include "alloc-util.h"
  #include "fd-util.h"
 +#include "memfd-util.h"
+ #include "namespace-util.h"
  #include "nspawn-root-fd.h"
+ #include "pidref.h"
+ #include "process-util.h"
+ #include "socket-util.h"
  #include "string-util.h"
  #include "strv.h"
 +#include "unaligned.h"
-@@ -178,4 +181,48 @@
+ 
+ int aos_root_directory_from_fd(int fd, int *ret_root_fd, int *ret_lock_fd, char **ret_path) {
+@@ -178,6 +181,50 @@
          return 0;
  }
  
@@ -61,10 +68,12 @@ diff --git a/src/nspawn/nspawn-root-fd.c b/src/nspawn/nspawn-root-fd.c
 +}
 +
  static int aos_guest_agent_descriptor_validate(int fd, int role) {
+         struct stat st;
+ 
 diff --git a/src/nspawn/nspawn-root-fd.h b/src/nspawn/nspawn-root-fd.h
 --- a/src/nspawn/nspawn-root-fd.h
 +++ b/src/nspawn/nspawn-root-fd.h
-@@ -8,4 +8,7 @@
+@@ -9,4 +9,7 @@
  #define AOS_GUEST_ATTACH_TRUST_FD_NAME "aos-sandbox-guest-attach-trust-v1"
  #define AOS_GUEST_AGENT_FD_NAMES AOS_GUEST_AGENT_CHANNEL_FD_NAME ":" AOS_GUEST_AGENT_PROVISIONING_FD_NAME ":" AOS_GUEST_ATTACH_TRUST_FD_NAME
 +#define AOS_GUEST_CGROUP_CUSTODY_BYTES 48
@@ -75,11 +84,11 @@ diff --git a/src/nspawn/nspawn-root-fd.h b/src/nspawn/nspawn-root-fd.h
 diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
 --- a/src/nspawn/nspawn.c
 +++ b/src/nspawn/nspawn.c
-@@ -3347,2 +3347,3 @@ static int inner_child(
+@@ -3418,2 +3418,3 @@ static int inner_child(
          _cleanup_free_ char *home = NULL;
 +        int aos_cgroup_fds[2] = { -EBADF, -EBADF };
          size_t n_env = 1;
-@@ -3452,4 +3453,21 @@ static int inner_child(
+@@ -3523,6 +3524,23 @@ static int inner_child(
          if (r < 0)
                  return r;
  
@@ -101,7 +110,9 @@ diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
 +        }
 +
          r = setup_boot_id();
-@@ -3759,6 +3778,9 @@
+         if (r < 0)
+                 return r;
+@@ -3762,6 +3780,9 @@
          if (arg_aos_guest_agent_fds) {
 -                for (int i = 0; i < 3; i++)
 -                        if (!fdset_contains(fds, arg_aos_guest_fds[i]) ||
