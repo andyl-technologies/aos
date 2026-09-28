@@ -14,6 +14,124 @@ fn object_id(value: &str) -> FaultObjectId {
         .unwrap_or_else(|error| panic!("test object ID must be valid: {error}"))
 }
 
+#[test]
+fn atomic_selectors_export_actual_typed_payloads() -> Result<(), Box<dyn std::error::Error>> {
+    let mutations = [
+        (
+            "read-corrupt",
+            false,
+            true,
+            json!({"kind":"read_corrupt","parameters":{"mask":"01"}}),
+        ),
+        (
+            "read-corrupt-gva",
+            false,
+            true,
+            json!({"kind":"read_corrupt","parameters":{"mask":"01"}}),
+        ),
+        (
+            "stuck-read-write",
+            true,
+            true,
+            json!({"kind":"stuck","parameters":{"mask":"0f","value":"05"}}),
+        ),
+        (
+            "stuck-write",
+            true,
+            false,
+            json!({"kind":"stuck","parameters":{"mask":"0f","value":"05"}}),
+        ),
+        ("lost-write", true, false, json!({"kind":"lost_write"})),
+        (
+            "torn-write",
+            true,
+            false,
+            json!({"kind":"torn_write","parameters":{"selector":"0f"}}),
+        ),
+        (
+            "torn-write-atomic",
+            true,
+            false,
+            json!({"kind":"torn_write","parameters":{"selector":"0f"}}),
+        ),
+    ];
+    let output = std::env::var_os("AOS_ATOMIC_SELECTOR_OUTPUT").map(std::path::PathBuf::from);
+    if let Some(directory) = &output {
+        std::fs::create_dir_all(directory)?;
+        std::fs::write(
+            directory.join("node.hash"),
+            crate::qemu_fault_target_hash("node-a"),
+        )?;
+    }
+    for (name, write, read, mutation) in mutations {
+        let effect: NodeEffectSpecification = serde_json::from_value(json!({
+            "kind": "memory_access_transform",
+            "parameters": {
+                "range": {"start": 4096, "length": 16},
+                "accesses": {"fetch":false,"cpu_load":read,"cpu_store":write,
+                             "dma_read":false,"dma_write":false,"page_table_walk":false},
+                "violate_atomicity": name == "torn-write-atomic",
+                "mutation": mutation,
+                "occurrence": {"kind":"every"}
+            }
+        }))?;
+        effect.validate()?;
+        let specification = EffectSpecification::Node(effect);
+        let descriptor = specification.kind().descriptor();
+        let action = ResolvedBindingAction {
+            kind: BindingActionKind::UpsertPersistent,
+            binding: object_id(name),
+            target: ResolvedFaultTarget::MemoryRange {
+                node: object_id("node-a"),
+                address_space: object_id(if name.ends_with("-gva") { "gva" } else { "gpa" }),
+                guest_address: 4096,
+                vcpu: name.ends_with("-gva").then_some(0),
+                length_bytes: 16,
+            },
+            phase: descriptor.phases[0],
+            effect: Arc::new(EffectRequest::new(
+                descriptor.semantic_version,
+                EffectLifetime::Persistent,
+                specification,
+            )?),
+            mapping_output: Arc::new(ResolvedMappingOutput::Activation { active: true }),
+            mapped_digest: ContentHash { bytes: [1; 32] },
+            transition_sequence: 1,
+            opportunity: None,
+            coordinate: FaultCoordinate {
+                virtual_ticks: 1,
+                retired_instructions: Some(1),
+            },
+            cause: BindingActionCause::Signal,
+            expected_precondition: None,
+        };
+        let encoded = encode_node_action(&action, [3; 32])?;
+        let bytes = encoded.payload.encode()?;
+        assert_eq!(NodeFaultPayloadV1::decode(&bytes), Ok(encoded.payload));
+        if let Some(directory) = &output {
+            std::fs::write(directory.join(format!("{name}.bin")), bytes)?;
+            let binding = ContentHash::from_canonical_material(
+                "crucible.fault-binding.v1",
+                action.binding.as_str(),
+            );
+            std::fs::write(directory.join(format!("{name}.binding")), binding.bytes)?;
+        }
+    }
+
+    let invalid: NodeEffectSpecification = serde_json::from_value(json!({
+        "kind":"memory_access_transform", "parameters": {
+            "range":{"start":4096,"length":16},
+            "accesses":{"fetch":false,"cpu_load":false,"cpu_store":true,
+                        "dma_read":false,"dma_write":false,"page_table_walk":false},
+            "violate_atomicity":false,
+            "mutation":{"kind":"read_corrupt","parameters":{"mask":"01"}},
+            "occurrence":{"kind":"every"}
+        }
+    }))?;
+    assert!(invalid.validate().is_err());
+    Ok(())
+}
+
 fn lifecycle() -> EffectSpecification {
     EffectSpecification::Node(NodeEffectSpecification::Lifecycle {
         transition: NodeLifecycleTransition::Reset,
