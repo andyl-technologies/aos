@@ -680,25 +680,13 @@ async fn verify_absent_section(
 }
 
 async fn extract_section(
-    objcopy: &PinnedTool,
+    _objcopy: &PinnedTool,
     uki: &Path,
     section: &str,
     output: &Path,
 ) -> Result<()> {
-    let section = format!("--only-section=.{section}");
-    let _ = objcopy
-        .run(
-            [
-                OsString::from("-O"),
-                OsString::from("binary"),
-                OsString::from(section),
-                uki.as_os_str().to_owned(),
-                output.as_os_str().to_owned(),
-            ],
-            MAX_TOOL_STDOUT_BYTES,
-        )
-        .await?;
-    Ok(())
+    // Native binutils need not recognize the target architecture's PE format.
+    crate::pe_sections::extract_section(uki, section, output)
 }
 
 fn verify_pe_machine(path: &Path, expected: &str) -> Result<()> {
