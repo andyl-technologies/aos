@@ -64,6 +64,7 @@ mod public_create_source;
 pub(crate) use public_create_source::{
     HistoricalCreateProjectSourceHeadsV1, create_project_source_commitment_v1,
 };
+mod resolved_policy;
 mod resources;
 mod root_challenge_record;
 mod root_project_admission_proof;
@@ -251,6 +252,7 @@ pub use protected_owner::{
     PolicyCompilerProtectedObservationRecoveryV1, PolicyCompilerProtectedOpenReportV1,
     PolicyCompilerProtectedOwnerV1,
 };
+pub use resolved_policy::{HeldResolvedRuntimePolicyV1, PolicyCompilerStateReadbackOwnerV1};
 #[cfg(target_os = "linux")]
 pub use public_create_source::with_current_create_cache_signer_barrier_v5;
 #[cfg(target_os = "linux")]

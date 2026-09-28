@@ -366,6 +366,18 @@ impl PublicProjectionPlanV1 {
     }
 }
 
+/// Reuses canonical projection decoding without claiming owner currentness.
+///
+/// # Errors
+///
+/// Rejects malformed identities, framing, hashes or noncanonical public resources.
+pub(crate) fn decode_checked_public_projection_v1(
+    key: &[u8],
+    value: &[u8],
+) -> Result<PublicProjectionRecordV1, PublicProjectionError> {
+    decode_record(key, value)
+}
+
 /// Prepares removal of one superseded public projection in an atomic local mutation.
 ///
 /// # Errors

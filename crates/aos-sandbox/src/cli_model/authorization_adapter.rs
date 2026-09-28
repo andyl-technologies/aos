@@ -42,6 +42,10 @@ const TIME_FLOOR_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.cli.authorization-time-flo
 const TIME_FLOOR_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.cli.authorization-time-floor-transaction.v1\0";
 
+#[cfg(test)]
+#[path = "authorization_adapter/decision_tests.rs"]
+mod decision_tests;
+
 /// Selects the single authority surface admitted by protected authorization.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CliAuthorizedSurfaceV1 {
@@ -664,103 +668,221 @@ impl CurrentProtectedCliAuthorizationV1 {
         identity: &AuthenticatedCliIdentityEvidenceV1,
         channel: &AuthenticatedCliChannelEvidenceV1,
     ) -> Result<Self, CliAuthorizationAdapterError> {
-        let clock = protected_clock
-            .sample()
-            .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
-        let time_floor = advance_protected_time_floor(journal, clock)?;
-        let trusted_now = clock.wall_seconds();
-        let capability = {
-            let registry = PublisherCapabilityRegistry::load(journal, capability_limits)
-                .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
-            registry
-                .resolve_current(capability_id)
-                .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?
-        };
-        let claims = capability.claims();
-        require_authenticated_project(authenticated_project, claims.project)?;
-        let (controller, revocation, policy) = {
-            let store = PublisherPolicyStore::load(journal, policy_limits)
-                .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
-            let controller = store
-                .controller_head()
-                .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?
-                .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
-            let revocation = store
-                .revocation_head(claims.revocation_scope)
-                .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?
-                .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
-            let policy = store
-                .current_policy(claims.project)
-                .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?
-                .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
-            (controller, revocation, policy)
-        };
+        Self::from_current_protected_capability_with_decision(
+            journal,
+            capability_limits,
+            policy_limits,
+            capability_id,
+            authenticated_project,
+            protected_clock,
+            decoded,
+            identity,
+            channel,
+        )
+        .map(|(authorization, _)| authorization)
+    }
 
-        if controller.principal != claims.audience
-            || revocation.scope != claims.revocation_scope
-            || revocation.generation != claims.revocation_generation.get()
-            || policy.project() != claims.project
-            || policy.descriptor().digest() != claims.policy_digest
-            || trusted_now < policy.not_before()
-            || trusted_now >= policy.expires_at()
-        {
-            return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
-        }
-
-        let context = AuthorizationContext {
-            now: trusted_now,
-            audience: controller.principal,
-            holder: identity.principal,
-            channel_binding: channel.channel_binding,
-            project: claims.project,
-            sandbox: claims.sandbox,
-            incarnation: claims.incarnation,
-            assignment_epoch: claims.assignment_epoch,
-            revocation_generation: claims.revocation_generation,
-        };
-        capability
-            .authorize(
-                &context,
-                decoded.resource_kind,
-                decoded.operation,
-                &decoded.selector,
-            )
-            .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
-
-        let revision = protected_authorization_revision(
-            &capability,
-            controller.generation,
-            policy.generation(),
-            time_floor,
-        );
-        Ok(Self {
-            identity: authenticated_identity_commitment(context.holder)?,
+    /// Retains the same checked inputs beside the exact authorization evidence.
+    ///
+    /// The evaluator and protected time-floor advancement run exactly once.
+    /// The projection is historical provenance, not a transferable live grant.
+    ///
+    /// # Errors
+    /// Rejects the same protected authorization or authenticated-evidence
+    /// failures as `from_current_protected_capability`.
+    pub(crate) fn from_current_protected_capability_with_decision(
+        journal: &mut Journal,
+        capability_limits: PublisherAuthorityLimits,
+        policy_limits: PublisherPolicyLimits,
+        capability_id: CapabilityId,
+        authenticated_project: ProjectId,
+        protected_clock: &mut crate::controller::ControllerProtectedClockV1,
+        decoded: &DecodedAuthenticatedCliRequestV1,
+        identity: &AuthenticatedCliIdentityEvidenceV1,
+        channel: &AuthenticatedCliChannelEvidenceV1,
+    ) -> Result<(Self, CurrentCapabilityDecisionV1), CliAuthorizationAdapterError> {
+        let decision = evaluate_current_protected_capability(
+            journal,
+            capability_limits,
+            policy_limits,
+            capability_id,
+            authenticated_project,
+            identity.principal,
+            channel.channel_binding,
+            protected_clock,
+            decoded.resource_kind,
+            decoded.operation,
+            &decoded.selector,
+        )?;
+        let revision = decision.revision();
+        let authorization = Self {
+            identity: authenticated_identity_commitment(identity.principal)?,
             session: channel.session,
-            channel: authenticated_channel_commitment(context.channel_binding)?,
+            channel: authenticated_channel_commitment(channel.channel_binding)?,
             request: canonical_request_commitment(&decoded.canonical_request)?,
             revision,
             schema: channel.schema,
             surface: decoded.surface,
-            authorized_wall_seconds: trusted_now,
-            policy_generation: policy.generation(),
-            original_coordinates: super::provenance::OriginalPublicMutationCoordinatesV2 {
-                capability: *capability_id.as_bytes(),
-                revocation_scope: *claims.revocation_scope.as_bytes(),
-                revocation_generation: claims.revocation_generation.get(),
-                policy_digest: *claims.policy_digest.as_bytes(),
-                policy_generation: policy.generation(),
-                controller: *controller.principal.as_bytes(),
-                controller_generation: controller.generation,
-                capability_not_before: claims.not_before,
-                capability_expires_at: claims.expires_at,
-                policy_not_before: policy.not_before(),
-                policy_expires_at: policy.expires_at(),
-                channel_binding: *context.channel_binding.as_bytes(),
-                session_commitment: *channel.session.0.as_bytes(),
-                authorization_revision: *revision.digest().as_bytes(),
-            },
-        })
+            authorized_wall_seconds: decision.authorized_wall_seconds(),
+            policy_generation: decision.policy().generation(),
+            original_coordinates: decision.original_coordinates(*channel.session.0.as_bytes()),
+        };
+        Ok((authorization, decision))
     }
+}
+
+/// Retains the actual protected inputs after the common current grant checks.
+///
+/// There is no scalar constructor. Callers must still establish the identity
+/// and exact request semantics in their own owner boundary; this projection
+/// does not reconstruct a TLS peer or mint public mutation authorization.
+pub(crate) struct CurrentCapabilityDecisionV1 {
+    capability: aos_sandbox_core::CapabilityRecord,
+    policy: crate::publisher_policy::PreparedPublisherPolicyRevisionV1,
+    controller: crate::publisher_policy::PublisherControllerHeadV1,
+    time_floor: ProtectedTimeFloorRevisionV1,
+    authorized_wall_seconds: i64,
+}
+
+impl CurrentCapabilityDecisionV1 {
+    /// Borrows the actual immutable capability that passed current grant checks.
+    pub(crate) fn capability(&self) -> &aos_sandbox_core::CapabilityRecord {
+        &self.capability
+    }
+
+    /// Borrows the actual currently selected protected project policy.
+    pub(crate) fn policy(&self) -> &crate::publisher_policy::PreparedPublisherPolicyRevisionV1 {
+        &self.policy
+    }
+
+    /// Returns the protected wall time used for this decision.
+    pub(crate) const fn authorized_wall_seconds(&self) -> i64 {
+        self.authorized_wall_seconds
+    }
+
+    /// Returns the same paired sample committed into the protected time floor.
+    pub(crate) const fn clock(&self) -> RawPairedClockSample {
+        self.time_floor.clock
+    }
+
+    fn revision(&self) -> AuthorizationRevisionDigestV1 {
+        protected_authorization_revision(
+            &self.capability,
+            self.controller.generation,
+            self.policy.generation(),
+            self.time_floor,
+        )
+    }
+
+    /// Projects checked coordinates without reviving the historical TLS session.
+    pub(crate) fn original_coordinates(
+        &self,
+        historical_session: [u8; 32],
+    ) -> super::provenance::OriginalPublicMutationCoordinatesV2 {
+        let claims = self.capability.claims();
+        super::provenance::OriginalPublicMutationCoordinatesV2 {
+            capability: *claims.id.as_bytes(),
+            revocation_scope: *claims.revocation_scope.as_bytes(),
+            revocation_generation: claims.revocation_generation.get(),
+            policy_digest: *claims.policy_digest.as_bytes(),
+            policy_generation: self.policy.generation(),
+            controller: *self.controller.principal.as_bytes(),
+            controller_generation: self.controller.generation,
+            capability_not_before: claims.not_before,
+            capability_expires_at: claims.expires_at,
+            policy_not_before: self.policy.not_before(),
+            policy_expires_at: self.policy.expires_at(),
+            channel_binding: *claims.channel_binding.as_bytes(),
+            session_commitment: historical_session,
+            authorization_revision: *self.revision().digest().as_bytes(),
+        }
+    }
+}
+
+/// Evaluates the same protected capability policy for live and original custody.
+///
+/// # Errors
+/// Rejects unavailable protected time/state, changed controller or revocation
+/// heads, invalid policy lifetime, holder/key/project mismatch, or denied scope.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn evaluate_current_protected_capability(
+    journal: &mut Journal,
+    capability_limits: PublisherAuthorityLimits,
+    policy_limits: PublisherPolicyLimits,
+    capability_id: CapabilityId,
+    authenticated_project: ProjectId,
+    holder: PrincipalId,
+    channel_binding: ChannelBinding,
+    protected_clock: &mut crate::controller::ControllerProtectedClockV1,
+    resource_kind: ResourceKind,
+    operation: Operation,
+    selector: &Selector,
+) -> Result<CurrentCapabilityDecisionV1, CliAuthorizationAdapterError> {
+    let clock = protected_clock
+        .sample()
+        .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+    let time_floor = advance_protected_time_floor(journal, clock)?;
+    let trusted_now = clock.wall_seconds();
+    let capability = {
+        let registry = PublisherCapabilityRegistry::load(journal, capability_limits)
+            .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+        registry
+            .resolve_current(capability_id)
+            .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?
+    };
+    let claims = capability.claims();
+    require_authenticated_project(authenticated_project, claims.project)?;
+    let (controller, revocation, policy) = {
+        let store = PublisherPolicyStore::load(journal, policy_limits)
+            .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+        let controller = store
+            .controller_head()
+            .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?
+            .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+        let revocation = store
+            .revocation_head(claims.revocation_scope)
+            .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?
+            .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+        let policy = store
+            .current_policy(claims.project)
+            .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?
+            .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+        (controller, revocation, policy)
+    };
+
+    if controller.principal != claims.audience
+        || revocation.scope != claims.revocation_scope
+        || revocation.generation != claims.revocation_generation.get()
+        || policy.project() != claims.project
+        || policy.descriptor().digest() != claims.policy_digest
+        || trusted_now < policy.not_before()
+        || trusted_now >= policy.expires_at()
+    {
+        return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+    }
+
+    let context = AuthorizationContext {
+        now: trusted_now,
+        audience: controller.principal,
+        holder,
+        channel_binding,
+        project: claims.project,
+        sandbox: claims.sandbox,
+        incarnation: claims.incarnation,
+        assignment_epoch: claims.assignment_epoch,
+        revocation_generation: claims.revocation_generation,
+    };
+    capability
+        .authorize(&context, resource_kind, operation, selector)
+        .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+
+    Ok(CurrentCapabilityDecisionV1 {
+        capability,
+        policy,
+        controller,
+        time_floor,
+        authorized_wall_seconds: trusted_now,
+    })
 }
 
 fn require_authenticated_project(

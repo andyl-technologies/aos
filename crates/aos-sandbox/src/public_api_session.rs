@@ -8,6 +8,7 @@
 //! This module grants no capabilities and registers no public RPC handlers.
 
 mod credentials;
+mod original_registration;
 mod registration;
 mod stream;
 
@@ -28,6 +29,7 @@ use tokio_rustls::TlsAcceptor;
 pub(crate) use credentials::{
     PinnedOperatorRecoveryKeyV1, PinnedSystemdCredential, load_entitlement_credentials,
 };
+pub(crate) use original_registration::CurrentOriginalPublicRegistrationV3;
 pub use stream::AuthenticatedPublicApiStream;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);

@@ -2231,6 +2231,52 @@ enum values, and required features in authority-bearing policy fail closed.
 Canonical policy uses the deterministic CBOR profile and domain-separated
 object digest. Golden encoded-byte and semantic fixtures pin the result.
 
+### Protected compiler Candidate V3 (source-only)
+
+The local `AOSPCC01` Candidate body version 3 retains the pure compiler's
+complete existing candidate-commitment preimage. It is not a new portable
+Policy schema, a signature, or a runtime-read capability. The fixed prefix is:
+
+```text
+magic[8] || version:u16be(3) || project[16] || sandbox[16]
+|| candidate[32] || normalized-input[32] || diagnostics[32]
+|| prerequisite-digest[32] || prerequisite-tuple[136] || generation:u64be
+|| output-descriptor[41] * 4 || plan-commitment[32] * 5
+```
+
+Each output descriptor retains a closed one-byte role, SHA-256 digest, and
+eight-byte encoded size, in Policy, Optimization, namespace-graph, and
+advisory-program order. Their media types are respectively Policy,
+Optimization, raw Content, and raw Content. The five plan commitments are
+authority, namespace, hard resources, advisory, and explanation. The
+638-byte prefix is followed by four nonempty `u32be(length) || exact-bytes`
+fields in descriptor order, with no trailing bytes. Each output must match its
+descriptor and existing canonical codec or domain-framed JSON encoding.
+
+The candidate identity remains the existing
+`aos.sandbox.compiled-policy-candidate.v2` domain over canonical JSON of the
+ordered tuple `(authority, namespace, hard, advisory, Policy descriptor,
+Optimization descriptor, namespace descriptor, advisory-program descriptor,
+explanation)`, framed by the existing eight-byte domain and payload lengths.
+Version 3 changes retained evidence, not that hash or its serializer. New
+Candidate bodies are encoded from the actual `PolicyCompilerV1` result;
+decoding reconstructs the same tuple and rejects a different candidate digest.
+
+Version 2 remains structurally replayable with its 478-byte fixed prefix and
+the same four output fields. It supplies no retained plan preimage and is
+observation-only for any new worker-read authority join. Relabeling a V2 body
+as V3 does not upgrade it. The unchanged Current V1 record joins the exact
+project, sandbox, publication generation, candidate, normalized input,
+diagnostics, and complete prerequisite tuple; this local equality alone does
+not authenticate any of those claims.
+
+Neither version proves that plan semantics came from authentic current inputs,
+that Root's signed history and rollback floor accept the candidate, or that
+Controller, Policy state, Source, Cache, and Root/Mount retain the same cut.
+Worker-read admission therefore remains closed pending that genuine owner-held
+producer and final Root-last consumer. Existing bootstrap verification and
+the public Create gate are not widened by this record version.
+
 ## Portable tree format
 
 The tree format is a Merkle graph of bounded directory and node objects. Each

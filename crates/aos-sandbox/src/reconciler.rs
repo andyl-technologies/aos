@@ -44,6 +44,8 @@ use crate::publication::{
 
 mod create_failure;
 mod effect;
+#[cfg(target_os = "linux")]
+mod fuse_admission;
 mod observe_reservation;
 pub(crate) mod project_admission;
 mod public_operation;
@@ -59,6 +61,8 @@ pub(crate) use runtime_authority::{
 };
 
 use create_failure::CreateFailureReceiptV1;
+#[cfg(target_os = "linux")]
+pub(crate) use fuse_admission::accepted_fuse_admission_v1;
 pub use effect::{
     AuthorityBoundEffectPlanV1, AuthorityEffectAttemptTimingV1, AuthorityEffectObservationV1,
     EffectDomain, EffectPlan, PreparedAuthorityBrokerRequestV1, PreparedAuthorityEffectV1,

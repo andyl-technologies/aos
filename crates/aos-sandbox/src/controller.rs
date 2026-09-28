@@ -61,7 +61,13 @@ mod destination_slot;
 mod operator_recovery_issuance;
 
 #[cfg(target_os = "linux")]
+mod original_attach_grant;
+#[cfg(target_os = "linux")]
 mod public_api_authorization;
+#[cfg(target_os = "linux")]
+pub use original_attach_grant::{
+    CurrentOriginalAttachConsumeCutV3, CurrentOriginalAttachHostConsumeDraftV3,
+};
 #[cfg(target_os = "linux")]
 pub(crate) use public_api_authorization::{
     authorize_public_operator_recovery_v1, authorize_resolved_public_mutation_v1,

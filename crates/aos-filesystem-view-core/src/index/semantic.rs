@@ -161,7 +161,7 @@ impl<'a> IndexObjectDescriptorView<'a> {
         self.encoded_size
     }
 
-    fn matches(self, object: &ObjectDescriptor) -> bool {
+    pub(crate) fn matches(self, object: &ObjectDescriptor) -> bool {
         self.media_type == object.media_type().as_str()
             && self.digest == object.digest()
             && self.encoded_size == object.encoded_size()

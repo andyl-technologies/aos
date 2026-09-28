@@ -62,6 +62,8 @@ pub mod controller_execution_output_settlement;
 pub mod controller_execution_preissue;
 #[cfg(target_os = "linux")]
 pub mod controller_execution_spec_attempt;
+#[cfg(target_os = "linux")]
+pub mod controller_fuse_admission;
 pub mod controller_no_apply_settlement_cursor;
 pub mod controller_query;
 #[cfg(target_os = "linux")]
@@ -196,6 +198,8 @@ pub use controller::{
     ControllerRequestScopeV1, ControllerServiceError, NodeController, NodeControllerLimits,
     OperationCompilationError,
 };
+#[cfg(target_os = "linux")]
+pub use controller::{CurrentOriginalAttachConsumeCutV3, CurrentOriginalAttachHostConsumeDraftV3};
 #[cfg(target_os = "linux")]
 pub use destination_slot_effect::{
     CompletedCurrentDestinationSlotAttemptV1, DestinationSlotAttemptAdmissionOutcomeV1,

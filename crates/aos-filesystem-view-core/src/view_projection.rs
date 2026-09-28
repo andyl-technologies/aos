@@ -21,6 +21,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{IndexError, IndexNodeKind, IndexNodeView, ValidatedIndex};
 
+mod projected_content;
+
+pub use projected_content::ValidatedViewProjectedFileObject;
+
 /// Bounds projection decoding, namespace expansion, and retained memory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProjectionLimits {
