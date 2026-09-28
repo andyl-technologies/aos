@@ -10,17 +10,27 @@ aos_dev_category() {
   esac
 }
 
+_aos_dev_target_entries() {
+  local category=$1 scope=${2:-} cross_system=${3:-}
+  aos_dev_require_command nix-instantiate
+
+  local -a eval_args=(--argstr category "$category")
+  if [[ -n $scope ]]; then
+    eval_args+=(--argstr scope "$scope")
+  fi
+  if [[ -n $cross_system ]]; then
+    eval_args+=(--argstr crossSystem "$cross_system")
+  fi
+  (cd "$aos_dev_root" && nix-instantiate --eval --raw \
+    "${eval_args[@]}" dev/targets.nix)
+}
+
 aos_dev_list() {
   local category=${1:-packages}
   local filter=${2:-}
   local cross_system=${3:-}
   category=$(aos_dev_category "$category") || aos_dev_error "unknown target category '$1'"
 
-  aos_dev_require_command nix-instantiate
-  local -a eval_args=()
-  if [[ -n $cross_system ]]; then
-    eval_args=(--argstr crossSystem "$cross_system")
-  fi
   local entries
   # Descend through a check scope while it exists. A partial leaf such as
   # build.aos-dev falls back to the build scope, so completion and filtering
@@ -28,9 +38,7 @@ aos_dev_list() {
   if [[ $category == checks && $filter == *.* ]]; then
     local scope=$filter
     while :; do
-      entries=$(cd "$aos_dev_root" && nix-instantiate --eval --raw \
-        --argstr category "$category" --argstr scope "$scope" \
-        "${eval_args[@]}" dev/targets.nix)
+      entries=$(_aos_dev_target_entries "$category" "$scope" "$cross_system")
       if [[ -n $entries || $scope != *.* ]]; then
         printf '%s\n' "$entries" | grep -F -- "$filter" || true
         return
@@ -39,8 +47,7 @@ aos_dev_list() {
     done
   fi
 
-  entries=$(cd "$aos_dev_root" && nix-instantiate --eval --raw \
-    --argstr category "$category" "${eval_args[@]}" dev/targets.nix)
+  entries=$(_aos_dev_target_entries "$category" "" "$cross_system")
 
   if [[ -n $filter ]]; then
     printf '%s\n' "$entries" | grep -F -- "$filter" || true
@@ -91,8 +98,8 @@ aos_dev_validate_target() {
   local entries
   # Scoped check lookup avoids forcing unrelated check groups just to validate
   # one leaf. Exact matching still rejects a completion prefix as a target.
-  if [[ $category == checks && $name == *.* ]]; then
-    entries=$(aos_dev_list "$category" "$name" "$cross_system")
+  if [[ $category == checks ]]; then
+    entries=$(_aos_dev_target_entries "$category" "$name" "$cross_system")
   else
     entries=$(aos_dev_list "$category" "" "$cross_system")
   fi

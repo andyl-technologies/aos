@@ -9,12 +9,21 @@ cat > "$scratch/bin/nix-instantiate" <<'MOCK'
 if [[ -n ${AOS_DEV_TEST_EVAL_LOG:-} ]]; then
   printf '%s\n' "$*" >> "$AOS_DEV_TEST_EVAL_LOG"
 fi
+if [[ ${AOS_DEV_TEST_REQUIRE_CHECK_SCOPE:-0} == 1 && \
+    " $* " == *' category checks '* && " $* " != *' scope '* ]]; then
+  echo 'unrelated check tree forced by unscoped validation' >&2
+  exit 1
+fi
 case " $* " in
   *' category packages '*' crossSystem x86_64-darwin '*) printf 'alpha\nbeta\ndarwin-runtimes' ;;
   *' category packages '*) printf 'alpha\nbeta' ;;
   *' category checks '*' scope build.aos-dev-cli '*) printf 'build.aos-dev-cli' ;;
   *' category checks '*' scope build.aos-dev '*) : ;;
   *' category checks '*' scope build '*) printf 'build.aos-dev-cli\nbuild.aos-dev-cache-identity' ;;
+  *' category checks '*' scope eval '*' crossSystem x86_64-darwin '*) printf 'eval' ;;
+  *' category checks '*' scope eval '*) printf 'eval' ;;
+  *' category checks '*' scope group '*) printf 'group.child' ;;
+  *' category checks '*' scope '*) : ;;
   *' category checks '*) printf 'eval\nbuild.all' ;;
   *' category images '*) printf 'server:qcow2' ;;
   *' category containers '*) printf 'aos:oci' ;;
@@ -101,6 +110,38 @@ if bash "$root/aos-dev" --release build check build.aos-dev --no-out-link >/dev/
   echo 'check completion prefix was accepted as an exact target' >&2
   exit 1
 fi
+
+# A named leaf must not force the mock's unrelated check tree.
+export AOS_DEV_TEST_REQUIRE_CHECK_SCOPE=1
+test "$(AOS_DEV_TEST_EVAL_LOG="$scratch/leaf-eval.log" \
+  bash "$root/aos-dev" --release build check eval --dry-run)" = /tmp/aos-dev-test-output
+grep -Fq -- 'category checks --argstr scope eval' "$scratch/leaf-eval.log"
+test "$(wc -l < "$scratch/leaf-eval.log")" -eq 1
+if grep -Fq -- 'crossSystem' "$scratch/leaf-eval.log"; then
+  echo 'native check validation added a cross target' >&2
+  exit 1
+fi
+
+test "$(AOS_DEV_TEST_EVAL_LOG="$scratch/cross-leaf-eval.log" \
+  bash "$root/aos-dev" --release build check eval \
+    --argstr crossSystem x86_64-darwin --dry-run)" = /tmp/aos-dev-test-output
+grep -Fq -- 'scope eval --argstr crossSystem x86_64-darwin' "$scratch/cross-leaf-eval.log"
+grep -Fq -- '-A checks.eval --argstr crossSystem x86_64-darwin --dry-run' "$AOS_DEV_TEST_LOG"
+
+for invalid_check in eva group build.aos-dev; do
+  if bash "$root/aos-dev" --release build check "$invalid_check" --dry-run >/dev/null 2>&1; then
+    echo "nonexact check target was accepted: $invalid_check" >&2
+    exit 1
+  fi
+done
+# Deep direct attributes remain the requested Nix build's responsibility.
+test "$(AOS_DEV_TEST_EVAL_LOG="$scratch/deep-eval.log" \
+  bash "$root/aos-dev" --release build check group.child.deep --dry-run)" = /tmp/aos-dev-test-output
+test ! -e "$scratch/deep-eval.log"
+unset AOS_DEV_TEST_REQUIRE_CHECK_SCOPE
+
+test "$(bash "$root/aos-dev" list checks eva)" = eval
+test "$(bash "$root/aos-dev" list check build.aos-dev)" = $'build.aos-dev-cli\nbuild.aos-dev-cache-identity'
 
 test "$(bash "$root/aos-dev" --release build package alpha --no-out-link)" = /tmp/aos-dev-test-output
 grep -Fq -- '-A pkgs.alpha --no-out-link' "$AOS_DEV_TEST_LOG"
