@@ -22,6 +22,10 @@
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   isSupportedCross = isLinuxCross || isDarwinCross;
+  darwinArchitecture =
+    if stdenv.hostPlatform.isAarch64
+    then "arm64"
+    else "x86_64";
   rustForBuild =
     if isSupportedCross
     then rust.passthru.buildTool
@@ -43,7 +47,7 @@ in
     buildDeps =
       [gnumake pkg-config rustForBuild buildPackages.glibc-locales]
       ++ lib.optionals isSupportedCross [buildPackages.ruby]
-      ++ lib.optionals isDarwinCross [buildPackages.gawk];
+      ++ lib.optionals isDarwinCross [buildPackages.gawk buildPackages.darwinCctoolsLinker];
     runtimeDeps = [
       openssl
       zlib
@@ -81,6 +85,14 @@ in
             export RUSTC="$PWD/.aos-build-tools/rustc-for-target"
           ''
           + lib.optionalString isDarwinCross ''
+            # The archive filter executes on Linux. YJIT also needs Mach-O
+            # relocatable linking, which ld64.lld does not implement.
+            sed -i '1c\#!${buildPackages.bash}/bin/bash' tool/darwin-ar
+            grep -Fq '$(CC) -nodefaultlibs -r -o $@' defs/jit.mk
+            sed -i \
+              's|$(CC) -nodefaultlibs -r -o $@|${buildPackages.darwinCctoolsLinker}/bin/aarch64-apple-darwin-ld -arch ${darwinArchitecture} -r -o $@|' \
+              defs/jit.mk
+
             # Runtime and propagated dependencies share runpaths. Ruby's
             # configure treats linker diagnostics as a failed probe, so emit
             # each runpath once while retaining every distinct dependency.
