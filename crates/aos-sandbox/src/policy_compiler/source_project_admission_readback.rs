@@ -189,6 +189,39 @@ fn sign_source_project_completed_terminal_fields_v1(
     Ok(bytes)
 }
 
+/// Signs actual protected Source terminal rows for a cross-owner test fixture.
+///
+/// This test-only seam cannot fabricate a terminal or substitute scalar rows;
+/// it grants no production signer-view or cross-owner currentness authority.
+///
+/// # Errors
+///
+/// Rejects pending, malformed, or replaced protected rows and zero generation.
+#[cfg(test)]
+pub(crate) fn sign_test_source_project_completed_terminal_readback_v1(
+    journal: &crate::Journal,
+    generation: u64,
+    signing_key: &SigningKey,
+) -> Result<[u8; SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1], SourceHoldReadbackErrorV1> {
+    let terminal = journal
+        .source_project_admission_terminal_v1()
+        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?
+        .ok_or(SourceHoldReadbackErrorV1::Stale)?;
+    if journal
+        .protected_writer_physical_names_v1()
+        .map_err(|_| SourceHoldReadbackErrorV1::Stale)?
+        != terminal.reservation().names()
+    {
+        return Err(SourceHoldReadbackErrorV1::Stale);
+    }
+    sign_source_project_completed_terminal_fields_v1(
+        terminal,
+        journal.snapshot_sequence(),
+        generation,
+        signing_key,
+    )
+}
+
 /// Verifies the separate Source completed-terminal domain and actual row join.
 ///
 /// It cannot relabel a pending abort readback as completed, synthesize ancestry,
@@ -933,6 +966,7 @@ mod tests {
             test_source_project_admission_outcome_v1,
         };
 
+        let key = SigningKey::from_bytes(&[7; 32]);
         for canceled in [false, true] {
             let directory = tempfile::tempdir().unwrap();
             fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -957,6 +991,9 @@ mod tests {
                     .source_project_admission_terminal_v1()
                     .unwrap()
                     .is_none()
+            );
+            assert!(
+                sign_test_source_project_completed_terminal_readback_v1(&writer, 8, &key).is_err()
             );
             if canceled {
                 writer
@@ -984,6 +1021,10 @@ mod tests {
                         .unwrap()
                         .is_none()
                 );
+                assert!(
+                    sign_test_source_project_completed_terminal_readback_v1(&writer, 8, &key)
+                        .is_err()
+                );
                 writer
                     .settle_source_project_admission_challenge_v1(
                         row,
@@ -1002,18 +1043,12 @@ mod tests {
                 terminal.root_terminal_digest(),
             )
             .unwrap();
-            let key = SigningKey::from_bytes(&[7; 32]);
             let pin = PinnedSourceHoldReadbackSignerV1::decode(
                 &encode_source_hold_readback_signer_credential_v1(8, &key.verifying_key()).unwrap(),
             )
             .unwrap();
-            let packet = sign_source_project_completed_terminal_fields_v1(
-                terminal,
-                writer.snapshot_sequence(),
-                8,
-                &key,
-            )
-            .unwrap();
+            let packet =
+                sign_test_source_project_completed_terminal_readback_v1(&writer, 8, &key).unwrap();
             assert_eq!(packet.len(), 616);
             let verified =
                 verify_source_project_completed_terminal_readback_v1(&packet, &pin, challenge)

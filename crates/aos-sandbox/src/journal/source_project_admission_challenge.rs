@@ -1033,6 +1033,8 @@ impl Journal {
     /// Root may reserve its own cancellation headroom for this canonical row
     /// before Source appends it. This preview grants no Source authority and
     /// must be rechecked by the later commit under the same writer.
+    /// Identical pending replay retains the issue; an ACKed terminal instead
+    /// selects the successor even when the accepted Create keeps its nonce.
     pub(crate) fn preview_source_project_admission_reservation_v1(
         &self,
         client_nonce: [u8; 16],
@@ -1055,6 +1057,7 @@ impl Journal {
                 && prior.project == project
                 && prior.names == names
                 && rows.cancellation.is_none()
+                && rows.retirement_ack.is_none()
             {
                 return Ok(prior);
             }
@@ -2076,5 +2079,133 @@ mod tests {
             )
             .unwrap();
         assert_eq!(writer.snapshot_sequence(), before);
+    }
+
+    #[test]
+    fn same_nonce_abort_retry_advances_only_after_exact_ack_and_cold_replay() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(directory.path()).unwrap().uid();
+        let name = "source-domains-v1.journal";
+        let (mut writer, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            name,
+            source_domain_journal_limits(),
+            uid,
+        )
+        .unwrap();
+        let names = writer.protected_writer_physical_names_v1().unwrap();
+        let project = ProjectId::from_bytes([1; 16]);
+        let nonce = [2; 16];
+        let reservation = writer
+            .record_source_project_admission_reservation_v1(nonce, project, names)
+            .unwrap();
+        assert_eq!(
+            writer
+                .preview_source_project_admission_reservation_v1(nonce, project, names)
+                .unwrap(),
+            reservation
+        );
+        let challenge = writer
+            .record_source_project_admission_challenge_v1(
+                project,
+                ObjectDigest::from_bytes([3; 32]),
+                [4; 16],
+                ObjectDigest::from_bytes([5; 32]),
+                ObjectDigest::from_bytes([6; 32]),
+                names,
+            )
+            .unwrap();
+        let outcome = test_source_project_admission_outcome_v1(challenge, challenge.stage());
+        assert_eq!(
+            outcome.kind(),
+            crate::policy_compiler::RootProjectAdmissionOutcomeKindV1::Aborted
+        );
+        writer
+            .settle_source_project_admission_challenge_v1(
+                challenge,
+                RootProjectAdmissionOutcomeProofV1::from_test_outcome(outcome),
+            )
+            .unwrap();
+        assert_eq!(
+            writer
+                .preview_source_project_admission_reservation_v1(nonce, project, names)
+                .unwrap(),
+            reservation
+        );
+        drop(writer);
+
+        let (mut cold, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            name,
+            source_domain_journal_limits(),
+            uid,
+        )
+        .unwrap();
+        assert_eq!(
+            cold.preview_source_project_admission_reservation_v1(nonce, project, names)
+                .unwrap(),
+            reservation
+        );
+        let terminal = cold
+            .source_project_admission_terminal_v1()
+            .unwrap()
+            .unwrap();
+        let foreign = SourceProjectTerminalRetirementAckV1 {
+            issue: reservation.issue(),
+            reservation: reservation.record_digest(),
+            source_terminal: ObjectDigest::from_bytes([9; 32]),
+            root_floor: ObjectDigest::from_bytes([10; 32]),
+        };
+        let before = fs::read(directory.path().join(name)).unwrap();
+        assert!(
+            cold.commit_source_project_admission_transition(
+                &single_record_transaction(RETIREMENT_ACK_KEY, &foreign.encode()).unwrap(),
+                SourceProjectAdmissionTransition::AcknowledgeRetirement,
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(directory.path().join(name)).unwrap(), before);
+        assert_eq!(
+            cold.source_project_admission_terminal_v1().unwrap(),
+            Some(terminal)
+        );
+        assert_eq!(
+            cold.preview_source_project_admission_reservation_v1(nonce, project, names)
+                .unwrap(),
+            reservation
+        );
+        append_retirement_ack_for_test(&mut cold);
+        let next = cold
+            .preview_source_project_admission_reservation_v1(nonce, project, names)
+            .unwrap();
+        assert_eq!(next.issue(), reservation.issue() + 1);
+        assert_eq!(next.client_nonce(), nonce);
+        assert_ne!(next.record_digest(), reservation.record_digest());
+        drop(cold);
+
+        let (mut recovered, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            name,
+            source_domain_journal_limits(),
+            uid,
+        )
+        .unwrap();
+        assert_eq!(
+            recovered
+                .preview_source_project_admission_reservation_v1(nonce, project, names)
+                .unwrap(),
+            next
+        );
+        assert_eq!(
+            recovered
+                .record_source_project_admission_reservation_v1(nonce, project, names)
+                .unwrap(),
+            next
+        );
+        let rows = current_rows(&recovered.state).unwrap();
+        assert!(rows.retirement_ack.is_none());
+        assert!(rows.terminal().is_none());
+        assert_eq!(rows.reservation, Some(next));
     }
 }
