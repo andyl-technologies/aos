@@ -1,8 +1,9 @@
-//! Authentication-only qualification against the packaged OpenSSH daemon.
+//! Profile and root-monitor qualification against the packaged OpenSSH daemon.
 //!
 //! This ignored fixture runs only in the dedicated minimal VM. It installs
-//! public claims and the real gate binary, but deliberately creates no process
-//! bridge: successful SSH authentication must not transfer any descriptors.
+//! public claims and the real gate binary. A final bounded monitor fixture
+//! inspects actual authentication custody on the existing Guest socket path;
+//! no fixture provides execution descriptors or production I/O authority.
 
 use std::fs;
 use std::net::TcpStream;
@@ -129,10 +130,11 @@ fn assert_callback_denial(output: Output) {
     assert!(output.stderr.is_empty());
 }
 
-fn ssh_authentication(ssh: &str, certificate: &str, expected: bool) {
+fn ssh_command(ssh: &str, certificate: &str) -> Command {
     let certificate_path = PathBuf::from(format!("{FIXTURE_DIRECTORY}/holder-cert.pub"));
     protected_file(&certificate_path, certificate.as_bytes(), 0o644);
-    let output = Command::new(ssh)
+    let mut command = Command::new(ssh);
+    command
         .args([
             "-v",
             "-F",
@@ -152,9 +154,12 @@ fn ssh_authentication(ssh: &str, certificate: &str, expected: bool) {
             "aos_exec@127.0.0.1",
             "true",
         ])
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
+        .stdin(Stdio::null());
+    command
+}
+
+fn ssh_authentication(ssh: &str, certificate: &str, expected: bool) {
+    let output = ssh_command(ssh, certificate).output().unwrap();
     let diagnostic = String::from_utf8(output.stderr).unwrap();
     let authenticated = diagnostic.contains("Authenticated to 127.0.0.1")
         && diagnostic.contains("using \"publickey\"");
@@ -355,4 +360,12 @@ fn packaged_sshd_enforces_actual_certificate_profile_without_bridge_io() {
             .is_err()
     );
     assert_callback_denial(callback(&chroot, &accepted, 1001, None));
+
+    // Restore the exact original installation before the distinct monitor
+    // fixture. That fixture measures authentication custody only, never I/O.
+    protected_file(format!("{DIRECTORY}/sshd_config"), &config, 0o644);
+    drop(daemon);
+    monitor_qualification::qualify_root_monitor_binding(&ssh, &claim, &accepted);
 }
+
+mod monitor_qualification;

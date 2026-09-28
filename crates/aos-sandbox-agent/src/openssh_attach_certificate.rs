@@ -136,17 +136,17 @@ pub struct OpenSshAttachCertificateErrorV1;
 mod qualification;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use ssh_key::{PrivateKey, certificate::Builder, private::Ed25519Keypair};
 
     use super::*;
     use crate::openssh_gate::OpenSshGateBindingV1;
 
-    fn key(seed: u8) -> PrivateKey {
+    pub(crate) fn key(seed: u8) -> PrivateKey {
         PrivateKey::new(Ed25519Keypair::from_seed(&[seed; 32]).into(), "").unwrap()
     }
 
-    fn claim() -> OpenSshGateClaimV1 {
+    pub(crate) fn claim() -> OpenSshGateClaimV1 {
         OpenSshGateClaimV1 {
             binding: OpenSshGateBindingV1 {
                 attach_operation_id: [1; 16],
@@ -172,7 +172,7 @@ mod tests {
         }
     }
 
-    fn builder(claim: &OpenSshGateClaimV1, holder: u8) -> Builder {
+    pub(crate) fn builder(claim: &OpenSshGateClaimV1, holder: u8) -> Builder {
         let binding = &claim.binding;
         let mut builder = Builder::new(
             [16; 32],
@@ -194,7 +194,7 @@ mod tests {
         builder
     }
 
-    fn command(claim: &OpenSshGateClaimV1) -> String {
+    pub(crate) fn command(claim: &OpenSshGateClaimV1) -> String {
         let binding = &claim.binding;
         public_attach_force_command_v1(
             &binding.attach_operation_id,
@@ -206,7 +206,7 @@ mod tests {
         )
     }
 
-    fn certificate(builder: Builder, authority: u8) -> String {
+    pub(crate) fn certificate(builder: Builder, authority: u8) -> String {
         builder.sign(&key(authority)).unwrap().to_openssh().unwrap()
     }
 
