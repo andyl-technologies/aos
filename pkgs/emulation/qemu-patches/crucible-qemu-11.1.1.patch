@@ -1,4 +1,4 @@
-From d05a0ff204cc6e35f7bff08858f5456fbad95181 Mon Sep 17 00:00:00 2001
+From 55b61b7e82a57cede860739d1b1ccffd46b515e8 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -77,6 +77,12 @@ Preserve fractional CMOS RTC calendar origins and update/alarm deadlines.
 Keep guest nanosecond interfaces and non-TCG policy, reusing the existing
 optional exact-clock migration fields with legacy zero-phase defaults.
 Exercise actual RTC callbacks and serialized origin-phase round trips.
+
+Preserve fractional NVMe timestamp and power-on elapsed origins.
+Keep guest millisecond timestamp and whole-hour SMART units, retaining
+picosecond remainders until the final elapsed conversion. Add an optional
+phase migration subsection with legacy zero-phase defaults and exercise
+actual controller timestamp, SMART transfer and serialized phase checks.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -34366,6 +34372,204 @@ index 814b99a43d20408d5541aa7f19e1f9d2da3ad578..8eb3b4c4d82a40735060560d418ffa14
      .fields = (const VMStateField[]) {
          VMSTATE_VIRTIO_DEVICE,
          VMSTATE_END_OF_LIST()
+diff --git a/hw/nvme/ctrl.c b/hw/nvme/ctrl.c
+index 4893cf7e7418d3cf8a5a27d7e458d700c6fcc7b8..ce2e61351c3df1cc920ae521693284d6e4893d96 100644
+--- a/hw/nvme/ctrl.c
++++ b/hw/nvme/ctrl.c
+@@ -5062,6 +5062,53 @@ static uint16_t nvme_ocp_extended_smart_info(NvmeCtrl *n, uint8_t rae,
+     return nvme_c2h(n, (uint8_t *) &smart_l + off, trans_len, req);
+ }
+ 
++/* Keep elapsed origins exact; the NVMe registers expose whole milliseconds. */
++#define NVME_PICOSECONDS_PER_MILLISECOND 1000000000LL
++
++static bool nvme_capture_clock_origin(uint64_t *milliseconds,
++                                     uint32_t *phase_ps)
++{
++    if (!qemu_timer_tcg_ps_enabled()) {
++        *milliseconds = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
++        *phase_ps = 0;
++        return true;
++    }
++
++    __int128 now_ps = qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL);
++    __int128 now_ms = now_ps / NVME_PICOSECONDS_PER_MILLISECOND;
++
++    if (now_ps < 0 || now_ms > UINT64_MAX) {
++        return false;
++    }
++    *milliseconds = now_ms;
++    *phase_ps = now_ps % NVME_PICOSECONDS_PER_MILLISECOND;
++    return true;
++}
++
++static bool nvme_elapsed_clock_ms(uint64_t origin_ms, uint32_t phase_ps,
++                                 uint64_t *elapsed_ms)
++{
++    if (!qemu_timer_tcg_ps_enabled()) {
++        *elapsed_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) - origin_ms;
++        return true;
++    }
++
++    __int128 origin_ps = (__int128)origin_ms *
++                         NVME_PICOSECONDS_PER_MILLISECOND + phase_ps;
++    __int128 now_ps = qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL);
++    __int128 elapsed;
++
++    if (phase_ps >= NVME_PICOSECONDS_PER_MILLISECOND || now_ps < origin_ps) {
++        return false;
++    }
++    elapsed = (now_ps - origin_ps) / NVME_PICOSECONDS_PER_MILLISECOND;
++    if (elapsed > UINT64_MAX) {
++        return false;
++    }
++    *elapsed_ms = elapsed;
++    return true;
++}
++
+ static uint16_t nvme_smart_info(NvmeCtrl *n, uint8_t rae, uint32_t buf_len,
+                                 uint64_t off, NvmeRequest *req)
+ {
+@@ -5070,7 +5117,7 @@ static uint16_t nvme_smart_info(NvmeCtrl *n, uint8_t rae, uint32_t buf_len,
+     NvmeSmartLog smart = { 0 };
+     uint32_t trans_len;
+     NvmeNamespace *ns;
+-    time_t current_ms;
++    uint64_t elapsed_ms;
+     uint64_t u_read, u_written;
+ 
+     if (off >= sizeof(smart)) {
+@@ -5113,9 +5160,11 @@ static uint16_t nvme_smart_info(NvmeCtrl *n, uint8_t rae, uint32_t buf_len,
+         smart.critical_warning |= NVME_SMART_TEMPERATURE;
+     }
+ 
+-    current_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+-    smart.power_on_hours[0] =
+-        cpu_to_le64((((current_ms - n->starttime_ms) / 1000) / 60) / 60);
++    if (!nvme_elapsed_clock_ms(n->starttime_ms, n->starttime_phase_ps,
++                              &elapsed_ms)) {
++        g_error("NVMe power-on origin exceeds virtual clock");
++    }
++    smart.power_on_hours[0] = cpu_to_le64(elapsed_ms / 3600000);
+ 
+     if (!rae) {
+         nvme_clear_events(n, NVME_AER_TYPE_SMART);
+@@ -6271,13 +6320,20 @@ static inline void nvme_set_timestamp(NvmeCtrl *n, uint64_t ts)
+     trace_pci_nvme_setfeat_timestamp(ts);
+ 
+     n->host_timestamp = le64_to_cpu(ts);
+-    n->timestamp_set_qemu_clock_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
++    if (!nvme_capture_clock_origin(&n->timestamp_set_qemu_clock_ms,
++                                   &n->timestamp_set_phase_ps)) {
++        g_error("NVMe timestamp origin exceeds its millisecond range");
++    }
+ }
+ 
+ static inline uint64_t nvme_get_timestamp(const NvmeCtrl *n)
+ {
+-    uint64_t current_time = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+-    uint64_t elapsed_time = current_time - n->timestamp_set_qemu_clock_ms;
++    uint64_t elapsed_time;
++
++    if (!nvme_elapsed_clock_ms(n->timestamp_set_qemu_clock_ms,
++                              n->timestamp_set_phase_ps, &elapsed_time)) {
++        g_error("NVMe timestamp origin exceeds virtual clock");
++    }
+ 
+     union nvme_timestamp {
+         struct {
+@@ -8907,7 +8963,9 @@ static void nvme_init_state(NvmeCtrl *n)
+     n->cq = g_new0(NvmeCQueue *, n->num_queues);
+     n->temperature = NVME_TEMPERATURE;
+     n->features.temp_thresh_hi = NVME_TEMPERATURE_WARNING;
+-    n->starttime_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
++    if (!nvme_capture_clock_origin(&n->starttime_ms, &n->starttime_phase_ps)) {
++        g_error("NVMe power-on origin exceeds its millisecond range");
++    }
+     n->aer_reqs = g_new0(NvmeRequest *, n->params.aerl + 1);
+     QTAILQ_INIT(&n->aer_queue);
+ 
+@@ -10491,11 +10549,55 @@ static bool nvme_ctrl_post_load(void *opaque, int version_id, Error **errp)
+     return true;
+ }
+ 
++static bool nvme_clock_phase_needed(void *opaque)
++{
++    NvmeCtrl *n = opaque;
++
++    return n->timestamp_set_phase_ps || n->starttime_phase_ps;
++}
++
++static bool nvme_clock_phase_post_load(void *opaque, int version_id,
++                                      Error **errp)
++{
++    NvmeCtrl *n = opaque;
++
++    if (n->timestamp_set_phase_ps >= NVME_PICOSECONDS_PER_MILLISECOND ||
++        n->starttime_phase_ps >= NVME_PICOSECONDS_PER_MILLISECOND) {
++        error_setg(errp, "NVMe clock origin has an invalid millisecond phase");
++        return false;
++    }
++    return true;
++}
++
++static const VMStateDescription nvme_vmstate_clock_phase = {
++    .name = "nvme/clock-phase",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .needed = nvme_clock_phase_needed,
++    .post_load_errp = nvme_clock_phase_post_load,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT32(timestamp_set_phase_ps, NvmeCtrl),
++        VMSTATE_UINT32(starttime_phase_ps, NvmeCtrl),
++        VMSTATE_END_OF_LIST()
++    },
++};
++
++static bool nvme_ctrl_pre_load(void *opaque, Error **errp)
++{
++    NvmeCtrl *n = opaque;
++
++    /* Legacy streams carry millisecond origins without a fractional phase. */
++    n->timestamp_set_phase_ps = 0;
++    n->starttime_phase_ps = 0;
++    return true;
++}
++
+ static const VMStateDescription nvme_vmstate = {
+     .name = "nvme",
+     .minimum_version_id = 1,
+     .version_id = 1,
+     .pre_save_errp = nvme_ctrl_pre_save,
++    .pre_load_errp = nvme_ctrl_pre_load,
+     .post_load_errp = nvme_ctrl_post_load,
+     .fields = (const VMStateField[]) {
+         VMSTATE_PCI_DEVICE(parent_obj, NvmeCtrl),
+@@ -10549,6 +10651,10 @@ static const VMStateDescription nvme_vmstate = {
+ 
+         VMSTATE_END_OF_LIST()
+     },
++    .subsections = (const VMStateDescription * const[]) {
++        &nvme_vmstate_clock_phase,
++        NULL
++    },
+ };
+ 
+ static void nvme_class_init(ObjectClass *oc, const void *data)
+diff --git a/hw/nvme/nvme.h b/hw/nvme/nvme.h
+index 43e3c916f73fa3bda638e170895ec0421fedfeef..da2b831f4822ba0424d76606dc9617b9f7effe17 100644
+--- a/hw/nvme/nvme.h
++++ b/hw/nvme/nvme.h
+@@ -608,6 +608,9 @@ typedef struct NvmeCtrl {
+     uint64_t    host_timestamp;                 /* Timestamp sent by the host */
+     uint64_t    timestamp_set_qemu_clock_ms;    /* QEMU clock time */
+     uint64_t    starttime_ms;
++    /* Picosecond remainders within the retained millisecond origins. */
++    uint32_t    timestamp_set_phase_ps;
++    uint32_t    starttime_phase_ps;
+     uint16_t    temperature;
+     uint8_t     smart_critical_warning;
+     uint32_t    conf_msix_qsize;
 diff --git a/hw/nvram/fw_cfg.c b/hw/nvram/fw_cfg.c
 index b057d870c004110fdfbe4b34da55719acbf69c7a..5cd7745c4d5f3ff16f54cbe3ab1b7e2da6444b54 100644
 --- a/hw/nvram/fw_cfg.c
@@ -140978,7 +141182,7 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
      return g_test_run();
  }
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..d7256b5fb71ea0c4c5a14b61464bbdd78a44649a 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..e26b9c6c950cc372813f7739656ec0fd2ac93258 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -147,6 +147,37 @@ if have_system
@@ -141019,7 +141223,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..d7256b5fb71ea0c4c5a14b61464bbdd7
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +238,114 @@ foreach test_name, extra: tests
+@@ -207,3 +238,134 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -141127,6 +141331,26 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..d7256b5fb71ea0c4c5a14b61464bbdd7
 +  test(
 +    'test-crucible-rtc-phase',
 +    rtc_phase_test,
++    env: test_env,
++    args: ['--tap', '-k'],
++    protocol: 'tap',
++    timeout: 30,
++    suite: ['unit'],
++  )
++endif
++
++if have_system and config_all_devices.has_key('CONFIG_NVME_PCI')
++  nvme_phase_test = executable(
++    'test-crucible-nvme-phase',
++    'test-crucible-nvme-phase.c',
++    genh,
++    dependencies: [qemuutil, qom, migration, io],
++    c_args: ['-ffunction-sections', '-fdata-sections'],
++    link_args: ['-Wl,--gc-sections'],
++  )
++  test(
++    'test-crucible-nvme-phase',
++    nvme_phase_test,
 +    env: test_env,
 +    args: ['--tap', '-k'],
 +    protocol: 'tap',
@@ -150382,6 +150606,409 @@ index 0000000000000000000000000000000000000000..826f34e7c26bdac48f2dab1190635991
 +                    test_exact_timer_codec_negative_deadline);
 +    g_test_add_func("/crucible/timer-codec/ns-projection",
 +                    test_timer_ns_projection);
++    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-nvme-phase.c b/tests/unit/test-crucible-nvme-phase.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..bb46211d9641f0d43e0ff04304d92725417e8d35
+--- /dev/null
++++ b/tests/unit/test-crucible-nvme-phase.c
+@@ -0,0 +1,397 @@
++/*
++ * Actual NVMe timestamp and SMART elapsed-origin tests.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/main-loop.h"
++#include "qemu/module.h"
++#include "system/cpu-timers.h"
++#include "exec/icount.h"
++#include "io/channel-buffer.h"
++#include "../../migration/qemu-file.h"
++
++/* Keep literal controller bodies without constructing a PCI machine. */
++#undef type_init
++#define type_init(function) \
++    static void (*const nvme_fixture_registration)(void) \
++        G_GNUC_UNUSED = function;
++#include "../../hw/nvme/ctrl.c"
++
++static __int128 observed_ps;
++
++int64_t cpu_get_clock(void)
++{
++    return observed_ps / PICOSECONDS_PER_NANOSECOND;
++}
++
++bool icount_crucible_sim_mode(void)
++{
++    return false;
++}
++
++static __int128 observed_clock_ps(void)
++{
++    return observed_ps;
++}
++
++/* DMA, PMR and backend IO are outside the retained CMB-only SMART path. */
++MemTxResult dma_buf_read(void *ptr, dma_addr_t len, dma_addr_t *residual,
++                         QEMUSGList *sg, MemTxAttrs attrs)
++{
++    g_assert_not_reached();
++}
++
++MemTxResult dma_buf_write(void *ptr, dma_addr_t len, dma_addr_t *residual,
++                          QEMUSGList *sg, MemTxAttrs attrs)
++{
++    g_assert_not_reached();
++}
++
++void qemu_sglist_init(QEMUSGList *qsg, DeviceState *dev, int alloc_hint,
++                      AddressSpace *as)
++{
++    g_assert_not_reached();
++}
++
++void qemu_sglist_add(QEMUSGList *qsg, dma_addr_t base, dma_addr_t len)
++{
++    g_assert_not_reached();
++}
++
++void qemu_sglist_destroy(QEMUSGList *qsg)
++{
++    g_assert_not_reached();
++}
++
++void *memory_region_get_ram_ptr(const MemoryRegion *mr)
++{
++    g_assert_not_reached();
++}
++
++BlockAcctStats *blk_get_stats(BlockBackend *blk)
++{
++    g_assert_not_reached();
++}
++
++MemTxResult address_space_rw(const AddressSpace *as, hwaddr addr,
++                             MemTxAttrs attrs, void *buf, hwaddr len,
++                             bool is_write)
++{
++    g_assert_not_reached();
++}
++
++MemTxResult address_space_rw_crucible_dma_frozen(void *buf, hwaddr len,
++                                               bool is_write)
++{
++    g_assert_not_reached();
++}
++
++void qemu_crucible_fault_dma_enter(bool is_write, MemTxAttrs attrs,
++                                   const uint8_t device_identity[32])
++{
++    g_assert_not_reached();
++}
++
++void qemu_crucible_fault_dma_leave(void)
++{
++    g_assert_not_reached();
++}
++
++uint64_t qemu_crucible_fault_observed_icount(void)
++{
++    g_assert_not_reached();
++}
++
++void qemu_crucible_fault_memory_dma_transaction_begin(
++    enum QemuCrucibleMemoryAccessClass access_class, uint32_t actor,
++    const AddressSpace *as, uint64_t iova, size_t length, MemTxAttrs attrs,
++    uint64_t observed_icount)
++{
++    g_assert_not_reached();
++}
++
++void qemu_crucible_fault_memory_transaction_end(void)
++{
++    g_assert_not_reached();
++}
++
++bool qemu_crucible_fault_memory_transaction_failed(void)
++{
++    g_assert_not_reached();
++}
++
++bool qemu_crucible_fault_memory_transaction_active(
++    enum QemuCrucibleMemoryAccessClass access_class)
++{
++    g_assert_not_reached();
++}
++
++static void initialize_clock(bool exact)
++{
++    Error *error = NULL;
++
++    module_call_init(MODULE_INIT_QOM);
++    qemu_init_main_loop(&error);
++    g_assert_null(error);
++    if (exact) {
++        qemu_timer_enable_tcg_ps_clock(NULL, observed_clock_ps);
++    }
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++}
++
++static void test_timestamp_boundary(gconstpointer data)
++{
++    NvmeCtrl controller = { 0 };
++    bool exact = GPOINTER_TO_INT(data);
++    uint64_t timestamp;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = 10 * (__int128)NVME_PICOSECONDS_PER_MILLISECOND + 999999999;
++    initialize_clock(exact);
++    nvme_set_timestamp(&controller, cpu_to_le64(123));
++    g_assert_cmpuint(controller.timestamp_set_qemu_clock_ms, ==, 10);
++
++    observed_ps++;
++    timestamp = le64_to_cpu(nvme_get_timestamp(&controller));
++    g_assert_cmpuint(timestamp & 0xffffffffffffULL, ==, exact ? 123 : 124);
++    g_assert_cmpuint((timestamp >> 49) & 7, ==, 1);
++    g_assert_cmpuint(controller.timestamp_set_phase_ps, ==,
++                     exact ? 999999999 : 0);
++
++    observed_ps = 12 * (__int128)NVME_PICOSECONDS_PER_MILLISECOND - 2;
++    timestamp = le64_to_cpu(nvme_get_timestamp(&controller));
++    g_assert_cmpuint(timestamp & 0xffffffffffffULL, ==, exact ? 123 : 124);
++    observed_ps++;
++    timestamp = le64_to_cpu(nvme_get_timestamp(&controller));
++    g_assert_cmpuint(timestamp & 0xffffffffffffULL, ==, 124);
++}
++
++static void test_timestamp_rebase_and_wrap(void)
++{
++    NvmeCtrl controller = { 0 };
++    uint64_t timestamp;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = 10501;
++    initialize_clock(true);
++    nvme_set_timestamp(&controller, cpu_to_le64(0xffffffffffffULL));
++    observed_ps += NVME_PICOSECONDS_PER_MILLISECOND;
++    timestamp = le64_to_cpu(nvme_get_timestamp(&controller));
++    g_assert_cmpuint(timestamp & 0xffffffffffffULL, ==, 0);
++    g_assert_cmpuint((timestamp >> 49) & 7, ==, 1);
++
++    observed_ps += 123;
++    nvme_set_timestamp(&controller, 0);
++    observed_ps += NVME_PICOSECONDS_PER_MILLISECOND - 1;
++    g_assert_cmpuint(le64_to_cpu(nvme_get_timestamp(&controller)), ==, 0);
++    observed_ps++;
++    g_assert_cmpuint(le64_to_cpu(nvme_get_timestamp(&controller)), ==, 1);
++}
++
++static uint64_t read_smart_hours(NvmeCtrl *controller)
++{
++    NvmeSmartLog log = { 0 };
++    NvmeRequest request = { 0 };
++    uint16_t status;
++
++    /* Exercise real PRP/CMB mapping and IOV copy without backend or DMA IO. */
++    controller->page_size = 4096;
++    controller->cmb.cmse = true;
++    controller->cmb.cba = 0x10000;
++    controller->cmb.mem.size = int128_make64(sizeof(log));
++    controller->cmb.buf = (uint8_t *)&log;
++    request.cmd.dptr.prp1 = cpu_to_le64(controller->cmb.cba);
++    request.cmd.nsid = cpu_to_le32(0xffffffff);
++    status = nvme_smart_info(controller, true, sizeof(log), 0, &request);
++    g_assert_cmpuint(status, ==, NVME_SUCCESS);
++    nvme_sg_unmap(&request.sg);
++    controller->cmb.buf = NULL;
++    return le64_to_cpu(log.power_on_hours[0]);
++}
++
++static void test_smart_hours_boundary(void)
++{
++    NvmeCtrl controller = { 0 };
++    __int128 origin;
++    __int128 hour_ps = (__int128)3600 * PICOSECONDS_PER_SECOND;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = 10501;
++    initialize_clock(true);
++    origin = observed_ps;
++    g_assert_true(nvme_capture_clock_origin(&controller.starttime_ms,
++                                           &controller.starttime_phase_ps));
++    observed_ps = hour_ps;
++    g_assert_cmpuint(read_smart_hours(&controller), ==, 0);
++    observed_ps = origin + hour_ps - 1;
++    g_assert_cmpuint(read_smart_hours(&controller), ==, 0);
++    observed_ps++;
++    g_assert_cmpuint(read_smart_hours(&controller), ==, 1);
++}
++
++static void test_origin_range(void)
++{
++    uint64_t milliseconds = 17;
++    uint32_t phase = 19;
++    uint64_t elapsed = 23;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    observed_ps = -1;
++    g_assert_false(nvme_capture_clock_origin(&milliseconds, &phase));
++    g_assert_cmpuint(milliseconds, ==, 17);
++    g_assert_cmpuint(phase, ==, 19);
++    observed_ps = ((__int128)UINT64_MAX + 1) *
++                  NVME_PICOSECONDS_PER_MILLISECOND;
++    g_assert_false(nvme_capture_clock_origin(&milliseconds, &phase));
++    g_assert_cmpuint(milliseconds, ==, 17);
++    g_assert_cmpuint(phase, ==, 19);
++    g_assert_false(nvme_elapsed_clock_ms(0, 0, &elapsed));
++    g_assert_cmpuint(elapsed, ==, 23);
++    observed_ps = 0;
++    g_assert_false(nvme_elapsed_clock_ms(1, 0, &elapsed));
++    g_assert_false(nvme_elapsed_clock_ms(0, 1000000000, &elapsed));
++    g_assert_cmpuint(elapsed, ==, 23);
++}
++
++static void test_origin_migration(void)
++{
++    NvmeCtrl controller = { 0 };
++    QIOChannelBuffer *buffer;
++    QIOChannelBuffer *input;
++    QEMUFile *file;
++    Error *error = NULL;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = 10501;
++    initialize_clock(true);
++    nvme_set_timestamp(&controller, cpu_to_le64(123));
++    controller.starttime_phase_ps = 999999999;
++    g_assert_true(nvme_clock_phase_needed(&controller));
++
++    /* Serialize the actual optional subsection with QEMU's real VMState IO. */
++    buffer = qio_channel_buffer_new(64);
++    file = qemu_file_new_output(QIO_CHANNEL(buffer));
++    g_assert_cmpint(vmstate_save_state(file, &nvme_vmstate_clock_phase,
++                                      &controller, NULL, &error), ==, 0);
++    g_assert_null(error);
++    qemu_put_byte(file, 0);
++    qemu_fflush(file);
++    input = qio_channel_buffer_new(buffer->usage);
++    input->usage = buffer->usage;
++    g_assert_cmpuint(input->usage, ==, 9);
++    memcpy(input->data, buffer->data, buffer->usage);
++    g_assert_cmpint(qemu_fclose(file), ==, 0);
++    object_unref(OBJECT(buffer));
++
++    g_assert_true(nvme_ctrl_pre_load(&controller, &error));
++    g_assert_false(nvme_clock_phase_needed(&controller));
++    file = qemu_file_new_input(QIO_CHANNEL(input));
++    g_assert_cmpint(vmstate_load_state(file, &nvme_vmstate_clock_phase,
++                                      &controller, 1, &error), ==, 0);
++    g_assert_cmpint(qemu_fclose(file), ==, 0);
++    g_assert_null(error);
++    g_assert_cmpuint(controller.timestamp_set_phase_ps, ==, 10501);
++    g_assert_cmpuint(controller.starttime_phase_ps, ==, 999999999);
++    observed_ps += NVME_PICOSECONDS_PER_MILLISECOND - 1;
++    g_assert_cmpuint(le64_to_cpu(nvme_get_timestamp(&controller)) &
++                     0xffffffffffffULL, ==, 123);
++    observed_ps++;
++    g_assert_cmpuint(le64_to_cpu(nvme_get_timestamp(&controller)) &
++                     0xffffffffffffULL, ==, 124);
++    object_unref(OBJECT(input));
++}
++
++static void test_legacy_phase_default(void)
++{
++    NvmeCtrl controller = {
++        .timestamp_set_qemu_clock_ms = 10,
++        .starttime_ms = 7,
++        .timestamp_set_phase_ps = 501,
++        .starttime_phase_ps = 999999999,
++    };
++    Error *error = NULL;
++
++    g_assert_true(nvme_ctrl_pre_load(&controller, &error));
++    g_assert_null(error);
++    g_assert_cmpuint(controller.timestamp_set_qemu_clock_ms, ==, 10);
++    g_assert_cmpuint(controller.starttime_ms, ==, 7);
++    g_assert_false(nvme_clock_phase_needed(&controller));
++}
++
++static void test_invalid_migration_phase(void)
++{
++    NvmeCtrl controller = { 0 };
++    QIOChannelBuffer *input;
++    QEMUFile *file;
++    Error *error = NULL;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    for (unsigned field = 0; field < 2; field++) {
++        input = qio_channel_buffer_new(9);
++        input->usage = 9;
++        memset(input->data, 0, input->usage);
++        stl_be_p(input->data + field * sizeof(uint32_t), 1000000000);
++        g_assert_true(nvme_ctrl_pre_load(&controller, &error));
++        file = qemu_file_new_input(QIO_CHANNEL(input));
++        g_assert_cmpint(vmstate_load_state(file, &nvme_vmstate_clock_phase,
++                                          &controller, 1, &error), <, 0);
++        g_assert_nonnull(error);
++        error_free(error);
++        error = NULL;
++        qemu_fclose(file);
++        object_unref(OBJECT(input));
++    }
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_data_func("/nvme/timestamp/fractional-origin",
++                         GINT_TO_POINTER(true), test_timestamp_boundary);
++    g_test_add_data_func("/nvme/timestamp/non-tcg-origin",
++                         GINT_TO_POINTER(false), test_timestamp_boundary);
++    g_test_add_func("/nvme/timestamp/rebase-wrap",
++                    test_timestamp_rebase_and_wrap);
++    g_test_add_func("/nvme/smart/hour-boundary", test_smart_hours_boundary);
++    g_test_add_func("/nvme/clock/range-refusal", test_origin_range);
++    g_test_add_func("/nvme/migration/origin-roundtrip", test_origin_migration);
++    g_test_add_func("/nvme/migration/legacy-default",
++                    test_legacy_phase_default);
++    g_test_add_func("/nvme/migration/invalid-phase",
++                    test_invalid_migration_phase);
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-parallel-fingerprint.c b/tests/unit/test-crucible-parallel-fingerprint.c
