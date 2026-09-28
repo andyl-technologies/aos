@@ -6,7 +6,7 @@
 use super::*;
 
 impl BlockFaultState {
-    pub(in crate::block) fn execute_to_delivery(
+    pub(super) fn execute_to_delivery_untracked(
         &mut self,
         base: &BaseImage,
         durable: &mut CowOverlay,
@@ -97,7 +97,7 @@ impl BlockFaultState {
     }
 
     /// Releases every computed completion with an installed deliver decision.
-    pub(in crate::block) fn resume_delivery_to(
+    pub(super) fn resume_delivery_to_untracked(
         &mut self,
         now_ticks: u64,
     ) -> Result<Vec<BlockDeferredResponse>, DeviceError> {
@@ -157,7 +157,7 @@ impl BlockFaultState {
     ///
     /// Returns [`DeviceError`] when service state is malformed, persistence at
     /// an intervening boundary fails, or released device execution fails.
-    pub(in crate::block) fn advance_service_to(
+    pub(super) fn advance_service_to_untracked(
         &mut self,
         base: &BaseImage,
         durable: &mut CowOverlay,
@@ -258,7 +258,7 @@ impl BlockFaultState {
         Ok(released)
     }
 
-    pub(in crate::block) fn execute(
+    pub(super) fn execute_untracked(
         &mut self,
         base: &BaseImage,
         durable: &mut CowOverlay,
@@ -441,7 +441,7 @@ impl BlockFaultState {
         Ok(computed)
     }
 
-    pub(in crate::block) fn dispose_retired_transport_request_if_needed(
+    pub(super) fn dispose_retired_transport_request_if_needed_untracked(
         &mut self,
         identity: BlockRequestIdentity,
     ) -> Result<Option<Response>, DeviceError> {
@@ -634,7 +634,7 @@ impl BlockFaultState {
         clippy::too_many_arguments,
         reason = "the atomic cross-device write carries independent request identity, time, range, and bytes"
     )]
-    pub(in crate::block) fn apply_external_write(
+    pub(super) fn apply_external_write_untracked(
         &mut self,
         base: &BaseImage,
         durable: &mut CowOverlay,
@@ -673,7 +673,7 @@ impl BlockFaultState {
     }
 
     /// Applies one externally owned array mutation without a guest completion.
-    pub(in crate::block) fn apply_external_mutation(
+    pub(super) fn apply_external_mutation_untracked(
         &mut self,
         base: &BaseImage,
         durable: &mut CowOverlay,
@@ -871,7 +871,7 @@ impl BlockFaultState {
         }
     }
 
-    pub(in crate::block) fn read_visible(
+    pub(super) fn read_visible_untracked(
         &mut self,
         base: &BaseImage,
         durable: &CowOverlay,
@@ -1484,7 +1484,7 @@ impl BlockFaultState {
         Ok(())
     }
 
-    pub(in crate::block) fn persist_due(
+    pub(super) fn persist_due_untracked(
         &mut self,
         base: &BaseImage,
         durable: &mut CowOverlay,

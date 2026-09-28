@@ -74,8 +74,15 @@ impl BlockDevice {
     }
 
     /// Restores an exact trusted storage-fault state during host transaction rollback.
-    pub fn restore_storage_fault_state(&mut self, state: BlockFaultState) {
-        self.storage_faults = state;
+    ///
+    /// # Errors
+    ///
+    /// Refuses before replacement if the live observation revision is exhausted.
+    pub fn restore_storage_fault_state(
+        &mut self,
+        state: BlockFaultState,
+    ) -> Result<(), DeviceError> {
+        self.storage_faults.replace_retained_state(state)
     }
 
     /// Replaces durability configuration before request execution begins.
@@ -98,9 +105,8 @@ impl BlockDevice {
             });
         }
         let mut state = BlockFaultState::new(config)?;
-        state.require_directives(require_directives);
-        self.storage_faults = state;
-        Ok(())
+        state.require_directives(require_directives)?;
+        self.storage_faults.replace_retained_state(state)
     }
 
     /// Enables fail-closed staged resolve/persist opportunities.
@@ -117,7 +123,7 @@ impl BlockDevice {
                 reason: "staged storage execution must be configured before device mutation",
             });
         }
-        self.storage_faults.require_execution_opportunities(true);
+        self.storage_faults.require_execution_opportunities(true)?;
         Ok(())
     }
 
@@ -133,7 +139,7 @@ impl BlockDevice {
             });
         }
         self.storage_faults
-            .require_persistence_media_directives(true);
+            .require_persistence_media_directives(true)?;
         Ok(())
     }
 
@@ -243,9 +249,13 @@ impl BlockDevice {
     }
 
     /// Drains completed physical-media outcomes for event recording.
+    ///
+    /// # Errors
+    ///
+    /// Refuses before draining if the observation revision is exhausted.
     pub fn drain_storage_persistence_media_outcomes(
         &mut self,
-    ) -> Vec<BlockPersistenceMediaOutcome> {
+    ) -> Result<Vec<BlockPersistenceMediaOutcome>, DeviceError> {
         self.storage_faults.drain_persistence_media_outcomes()
     }
 
@@ -256,7 +266,13 @@ impl BlockDevice {
     }
 
     /// Drains integrated-service completion evidence in canonical order.
-    pub fn drain_storage_service_outcomes(&mut self) -> Vec<BlockServiceCompletion> {
+    ///
+    /// # Errors
+    ///
+    /// Refuses before draining if the observation revision is exhausted.
+    pub fn drain_storage_service_outcomes(
+        &mut self,
+    ) -> Result<Vec<BlockServiceCompletion>, DeviceError> {
         self.storage_faults.drain_service_outcomes()
     }
 

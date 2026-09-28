@@ -28,6 +28,7 @@ use super::service::{
 
 mod checkpoint_codec;
 mod state_admission;
+mod observation_revision;
 mod state_execution;
 
 pub use checkpoint_codec::{BlockFaultStateCodecError, MAX_BLOCK_FAULT_STATE_BYTES};
@@ -1347,6 +1348,10 @@ pub struct BlockRetainedCompletion {
 /// Checkpointed durability, cache, version, and directive state.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockFaultState {
+    observation_revision: std::num::NonZeroU64,
+    // Runtime nesting is never persisted as an observation or Source proof.
+    #[serde(skip)]
+    observation_mutation_active: bool,
     config: BlockDurabilityConfig,
     transport_epoch: Option<u64>,
     retired_transport_epochs: BTreeMap<u64, BlockRetiredTransportEpoch>,

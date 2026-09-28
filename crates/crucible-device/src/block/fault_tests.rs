@@ -741,7 +741,12 @@ fn cache_rejection_rolls_back_partially_schedulable_evictions() {
     );
 
     assert_eq!(rejected.error_code(), Ok(BlockFaultResult::Busy));
-    assert_eq!(state, before_state);
+    // Installing and consuming the rejected request are real phase changes,
+    // even though the payload/cache rollback returns to the prior state.
+    assert!(state.observation_revision > before_state.observation_revision);
+    let mut expected = before_state;
+    expected.observation_revision = state.observation_revision;
+    assert_eq!(state, expected);
     assert_eq!(durable, before_durable);
 }
 
@@ -1278,7 +1283,9 @@ fn persistence_opportunity_applies_checkpointed_partial_flash_program() {
     storage
         .schedule_volatile_persistence(0)
         .unwrap_or_else(|error| panic!("write should enter media queue: {error}"));
-    storage.require_persistence_media_directives(true);
+    storage
+        .require_persistence_media_directives(true)
+        .unwrap_or_else(|error| panic!("revision admission: {error}"));
     let opportunity = storage
         .next_persistence_opportunity(0)
         .unwrap_or_else(|| panic!("persistence opportunity should be ready"));
@@ -1320,7 +1327,9 @@ fn persistence_opportunity_applies_checkpointed_partial_flash_program() {
     storage
         .persist_due(&base, &mut durable, 0)
         .unwrap_or_else(|error| panic!("flash persistence should execute: {error}"));
-    let outcomes = storage.drain_persistence_media_outcomes();
+    let outcomes = storage
+        .drain_persistence_media_outcomes()
+        .unwrap_or_else(|error| panic!("revision admission: {error}"));
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].opportunity, opportunity);
     assert!(outcomes[0].media_failed);
@@ -1397,7 +1406,9 @@ fn flash_discard_applies_one_request_wide_partial_erase() {
         .persist_due(&base, &mut durable, 0)
         .unwrap_or_else(|error| panic!("flash erase should persist: {error}"));
 
-    let outcomes = storage.drain_persistence_media_outcomes();
+    let outcomes = storage
+        .drain_persistence_media_outcomes()
+        .unwrap_or_else(|error| panic!("revision admission: {error}"));
     assert_eq!(outcomes.len(), 2);
     assert!(outcomes.iter().all(|outcome| outcome.media_failed));
     assert!(
@@ -1502,7 +1513,9 @@ fn staged_execution_does_not_mutate_before_the_exact_decision() {
     let base = BaseImage::new(vec![0; 32]);
     let mut durable = CowOverlay::new();
     let mut storage = state(BlockCompletionDurability::Durable);
-    storage.require_execution_opportunities(true);
+    storage
+        .require_execution_opportunities(true)
+        .unwrap_or_else(|error| panic!("revision admission: {error}"));
     let request = BlockRequest::write(61, 4, b"stage".to_vec());
     let mut admission = ResolvedBlockFaultDirective::fault_free(&request, 32);
     admission.request_sequence = 900;
@@ -1597,8 +1610,12 @@ fn durable_delivery_waits_for_the_exact_physical_media_decision() {
     let base = BaseImage::new(vec![0; 32]);
     let mut durable = CowOverlay::new();
     let mut storage = state(BlockCompletionDurability::Durable);
-    storage.require_execution_opportunities(true);
-    storage.require_persistence_media_directives(true);
+    storage
+        .require_execution_opportunities(true)
+        .unwrap_or_else(|error| panic!("revision admission: {error}"));
+    storage
+        .require_persistence_media_directives(true)
+        .unwrap_or_else(|error| panic!("revision admission: {error}"));
     let request = BlockRequest::write(63, 0, b"sync".to_vec());
     let mut admission = ResolvedBlockFaultDirective::fault_free(&request, 32);
     admission.request_sequence = 902;
@@ -1695,7 +1712,9 @@ fn queue_service_release_creates_the_execution_opportunity() {
     let base = BaseImage::new(vec![0; 32]);
     let mut durable = CowOverlay::new();
     let mut storage = state(BlockCompletionDurability::Durable);
-    storage.require_execution_opportunities(true);
+    storage
+        .require_execution_opportunities(true)
+        .unwrap_or_else(|error| panic!("revision admission: {error}"));
     let request = BlockRequest::write(62, 0, b"work".to_vec());
     let mut admission = ResolvedBlockFaultDirective::fault_free(&request, 32);
     admission.request_sequence = 901;

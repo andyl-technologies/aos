@@ -1567,8 +1567,10 @@ impl QemuLiveBlockIoServicer {
         &mut self,
         state: BlockFaultState,
     ) -> Result<(), QemuLiveBlockIoServicerError> {
-        self.device.lock()?.restore_storage_fault_state(state);
-        Ok(())
+        self.device
+            .lock()?
+            .restore_storage_fault_state(state)
+            .map_err(|source| QemuLiveBlockIoServicerError::Device { source })
     }
 
     /// Returns the next physical persistence opportunity ready at `now_tick`.

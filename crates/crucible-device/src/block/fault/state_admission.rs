@@ -10,6 +10,8 @@ impl BlockFaultState {
     #[must_use]
     pub fn write_through(length_bytes: u64) -> Self {
         Self {
+            observation_revision: std::num::NonZeroU64::MIN,
+            observation_mutation_active: false,
             config: BlockDurabilityConfig::write_through(length_bytes),
             transport_epoch: None,
             retired_transport_epochs: BTreeMap::new(),
@@ -84,6 +86,8 @@ impl BlockFaultState {
             usize::try_from(config.persistence_dependencies).unwrap_or(usize::MAX),
         )?;
         Ok(Self {
+            observation_revision: std::num::NonZeroU64::MIN,
+            observation_mutation_active: false,
             config,
             transport_epoch: None,
             retired_transport_epochs: BTreeMap::new(),
@@ -132,7 +136,7 @@ impl BlockFaultState {
     }
 
     /// Enables or disables the fail-closed requirement for exact directives.
-    pub fn require_directives(&mut self, required: bool) {
+    pub(super) fn require_directives_untracked(&mut self, required: bool) {
         self.execution_required = required;
     }
 
@@ -145,7 +149,7 @@ impl BlockFaultState {
     ///
     /// Returns [`DeviceError`] for an empty/overflowing range or when the
     /// checkpointed dirty-range hard bound would be exceeded.
-    pub(in crate::block) fn record_array_dirty_range(
+    pub(super) fn record_array_dirty_range_untracked(
         &mut self,
         member: u16,
         start_byte: u64,
@@ -282,7 +286,7 @@ impl BlockFaultState {
     /// # Errors
     ///
     /// Returns [`DeviceError`] for zero policy values or arithmetic overflow.
-    pub(in crate::block) fn next_array_rebuild_opportunity(
+    pub(super) fn next_array_rebuild_opportunity_untracked(
         &mut self,
         now_ticks: u64,
         chunk_bytes: u64,
@@ -364,7 +368,7 @@ impl BlockFaultState {
     }
 
     /// Commits one exact previously offered rebuild chunk.
-    pub(in crate::block) fn complete_array_rebuild(
+    pub(super) fn complete_array_rebuild_untracked(
         &mut self,
         opportunity: &BlockArrayRebuildOpportunity,
     ) -> Result<(), DeviceError> {
@@ -416,7 +420,7 @@ impl BlockFaultState {
     ///
     /// The next scheduler call charges the complete chunk service duration
     /// again, preventing a persistent failure from spinning at one coordinate.
-    pub(in crate::block) fn defer_array_rebuild(
+    pub(super) fn defer_array_rebuild_untracked(
         &mut self,
         opportunity: &BlockArrayRebuildOpportunity,
     ) -> Result<(), DeviceError> {
@@ -451,7 +455,7 @@ impl BlockFaultState {
     }
 
     /// Pauses a scheduled rebuild while its destination is unavailable.
-    pub(in crate::block) fn pause_array_rebuild(
+    pub(super) fn pause_array_rebuild_untracked(
         &mut self,
         _now_ticks: u64,
         opportunity: &BlockArrayRebuildOpportunity,
@@ -481,7 +485,7 @@ impl BlockFaultState {
     }
 
     /// Enables fail-closed resolve/persist opportunities after queue service.
-    pub fn require_execution_opportunities(&mut self, required: bool) {
+    pub(super) fn require_execution_opportunities_untracked(&mut self, required: bool) {
         self.execution_opportunities_required = required;
     }
 
@@ -509,7 +513,7 @@ impl BlockFaultState {
     /// Returns [`DeviceError`] when the opportunity is stale, the directive
     /// aliases another request, queue service is repeated, or a decision was
     /// already installed.
-    pub fn install_execution_directive(
+    pub(super) fn install_execution_directive_untracked(
         &mut self,
         resolved: ResolvedBlockExecutionDirective,
     ) -> Result<(), DeviceError> {
@@ -590,7 +594,7 @@ impl BlockFaultState {
     ///
     /// Returns [`DeviceError`] when the opportunity is stale, repeated, or the
     /// directive alters fields already fixed by admit/queue/resolve.
-    pub fn install_request_persistence_directive(
+    pub(super) fn install_request_persistence_directive_untracked(
         &mut self,
         resolved: ResolvedBlockRequestPersistenceDirective,
     ) -> Result<(), DeviceError> {
@@ -678,7 +682,7 @@ impl BlockFaultState {
     ///
     /// Returns [`DeviceError`] when the opportunity is stale, repeated, or the
     /// directive changes fields fixed by an earlier request phase.
-    pub fn install_delivery_directive(
+    pub(super) fn install_delivery_directive_untracked(
         &mut self,
         resolved: ResolvedBlockDeliveryDirective,
     ) -> Result<(), DeviceError> {
@@ -1446,7 +1450,7 @@ impl BlockFaultState {
     }
 
     /// Enables fail-closed resolution at each physical persistence opportunity.
-    pub fn require_persistence_media_directives(&mut self, required: bool) {
+    pub(super) fn require_persistence_media_directives_untracked(&mut self, required: bool) {
         self.persistence_execution_required = required;
     }
 
@@ -1475,7 +1479,7 @@ impl BlockFaultState {
     ///
     /// Returns [`DeviceError`] for stale/mismatched opportunity identity,
     /// duplicate installation, invalid flash rules, or bounded-state exhaustion.
-    pub fn install_persistence_media_directive(
+    pub(super) fn install_persistence_media_directive_untracked(
         &mut self,
         directive: ResolvedBlockPersistenceMediaDirective,
     ) -> Result<(), DeviceError> {
@@ -1507,7 +1511,9 @@ impl BlockFaultState {
     }
 
     /// Drains completed persistence-media evidence after durable event recording.
-    pub fn drain_persistence_media_outcomes(&mut self) -> Vec<BlockPersistenceMediaOutcome> {
+    pub(super) fn drain_persistence_media_outcomes_untracked(
+        &mut self,
+    ) -> Vec<BlockPersistenceMediaOutcome> {
         self.storage_outcome_order
             .retain(|outcome| matches!(outcome, BlockStorageOutcomeRef::Service(_)));
         std::mem::take(&mut self.persistence_media_outcomes)
@@ -1552,7 +1558,9 @@ impl BlockFaultState {
     ///
     /// Returns [`DeviceError`] without mutation when checkpointed outcome-order
     /// state contains an invalid reference.
-    pub fn drain_storage_outcomes(&mut self) -> Result<Vec<BlockStorageOutcome>, DeviceError> {
+    pub(super) fn drain_storage_outcomes_untracked(
+        &mut self,
+    ) -> Result<Vec<BlockStorageOutcome>, DeviceError> {
         let outcomes = self.storage_outcomes()?;
         self.storage_outcome_order.clear();
         self.service_outcomes.clear();
@@ -1565,7 +1573,7 @@ impl BlockFaultState {
     /// # Errors
     ///
     /// Returns [`DeviceError`] for duplicate IDs or a hard pending-state limit.
-    pub fn install(
+    pub(super) fn install_untracked(
         &mut self,
         identity: BlockRequestIdentity,
         directive: ResolvedBlockFaultDirective,
@@ -1678,7 +1686,7 @@ impl BlockFaultState {
     }
 
     /// Drains persistence graph mutations after canonical event recording.
-    pub fn drain_persistence_transformation_evidence(
+    pub(super) fn drain_persistence_transformation_evidence_untracked(
         &mut self,
     ) -> Vec<crate::block::persistence::BlockPersistenceTransformationEvidence> {
         self.persistence.drain_transformation_evidence()
@@ -1763,7 +1771,7 @@ impl BlockFaultState {
     ///
     /// Returns [`DeviceError`] when the request is not retained or persistence
     /// of the captured flush frontier fails.
-    pub(in crate::block) fn resolve_retained_completion(
+    pub(super) fn resolve_retained_completion_untracked(
         &mut self,
         base: &BaseImage,
         durable: &mut CowOverlay,
@@ -1849,7 +1857,7 @@ impl BlockFaultState {
     /// # Errors
     ///
     /// Returns [`DeviceError`] if a selected sequence is not currently live.
-    pub fn lose_volatile(&mut self, sequences: &[u64]) -> Result<(), DeviceError> {
+    pub(super) fn lose_volatile_untracked(&mut self, sequences: &[u64]) -> Result<(), DeviceError> {
         let selected = sequences.iter().copied().collect::<BTreeSet<_>>();
         if selected.len() != sequences.len()
             || selected
@@ -1887,7 +1895,10 @@ impl BlockFaultState {
     ///
     /// Returns [`DeviceError`] if a selected sequence is not currently in the
     /// controller-accepted layer.
-    pub fn lose_controller(&mut self, sequences: &[u64]) -> Result<(), DeviceError> {
+    pub(super) fn lose_controller_untracked(
+        &mut self,
+        sequences: &[u64],
+    ) -> Result<(), DeviceError> {
         let selected = sequences.iter().copied().collect::<BTreeSet<_>>();
         if selected.len() != sequences.len()
             || selected
@@ -1932,7 +1943,7 @@ impl BlockFaultState {
     ///
     /// Returns [`DeviceError`] if a generated response cannot be encoded or if
     /// losing controller/cache state violates persistence accounting.
-    pub fn apply_transport_reset(
+    pub(super) fn apply_transport_reset_untracked(
         &mut self,
         reset: BlockTransportReset,
         delivered_ticks: u64,
@@ -2124,7 +2135,7 @@ impl BlockFaultState {
     }
 
     /// Drains contributor-level service evidence in canonical completion order.
-    pub fn drain_service_outcomes(&mut self) -> Vec<BlockServiceCompletion> {
+    pub(super) fn drain_service_outcomes_untracked(&mut self) -> Vec<BlockServiceCompletion> {
         self.storage_outcome_order
             .retain(|outcome| matches!(outcome, BlockStorageOutcomeRef::Persistence(_)));
         std::mem::take(&mut self.service_outcomes)
@@ -2136,7 +2147,7 @@ impl BlockFaultState {
         &self.service_outcomes
     }
 
-    pub(in crate::block) fn defer_execution(
+    pub(super) fn defer_execution_untracked(
         &mut self,
         request: &BlockRequest,
         request_icount: u64,
@@ -2196,7 +2207,7 @@ impl BlockFaultState {
     ///
     /// Returns [`DeviceError`] when a decision is malformed, execution fails,
     /// or the resulting completion cannot be represented exactly.
-    pub(in crate::block) fn resume_execution_to(
+    pub(super) fn resume_execution_to_untracked(
         &mut self,
         base: &BaseImage,
         durable: &mut CowOverlay,
@@ -2261,7 +2272,7 @@ impl BlockFaultState {
         Ok(Vec::new())
     }
 
-    pub(in crate::block) fn defer_request_persistence(
+    pub(super) fn defer_request_persistence_untracked(
         &mut self,
         request: BlockRequest,
         request_icount: u64,
@@ -2305,7 +2316,7 @@ impl BlockFaultState {
     }
 
     /// Executes every request whose exact persist decision is installed and ready.
-    pub(in crate::block) fn resume_request_persistence_to(
+    pub(super) fn resume_request_persistence_to_untracked(
         &mut self,
         base: &BaseImage,
         durable: &mut CowOverlay,
