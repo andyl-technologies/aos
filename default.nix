@@ -1905,6 +1905,9 @@ in {
         sandbox-source-provider-native-recovery = import ./tests/vm/sandbox-source-provider-native-recovery.nix {
           inherit testing pkgs lib;
         };
+        sandbox-source-provider-detached-root = import ./tests/vm/sandbox-source-provider-detached-root.nix {
+          inherit testing pkgs lib;
+        };
         sandbox-local-identity = import ./tests/vm/sandbox-local-identity.nix {
           inherit testing pkgs lib;
         };
