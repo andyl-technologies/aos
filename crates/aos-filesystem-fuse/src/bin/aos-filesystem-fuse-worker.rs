@@ -1,8 +1,8 @@
 //! Fixed image-owned worker entry for the Mount-owned session role.
 //!
 //! Startup owns exactly five inherited roles. It admits actual execution and
-//! labelled kernel objects before receiving a fresh preparation challenge. It
-//! reads FUSE requests, exposes metadata, accepts a backing FD or acknowledges
+//! labelled kernel objects before receiving a fresh preparation challenge.
+//! It never reads FUSE requests, exposes metadata, accepts a backing FD or acknowledges
 //! readiness before a separately genuine held Root/Mount read-grant dispatch.
 
 use std::process::ExitCode;

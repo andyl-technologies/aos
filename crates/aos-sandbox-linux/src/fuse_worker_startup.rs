@@ -17,7 +17,9 @@ use crate::fuse_worker_objects::{
     FUSE_WORKER_DEVICE_CONTEXT_V1, FUSE_WORKER_EXECUTABLE_CONTEXT_V1, FUSE_WORKER_PLAN_CONTEXT_V1,
     context_matches, require_object_context,
 };
-use crate::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketError, SeqpacketSocket};
+use crate::seqpacket::{
+    ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError, SeqpacketSocket,
+};
 use crate::{Error, Result, uapi};
 
 const EROFS_SUPER_MAGIC: i64 = 0xe0f5_e1e2;
@@ -146,7 +148,7 @@ impl FixedFuseWorkerSessionV1 {
         original_subject: &KernelAuthorizedRecordSubject,
     ) -> Result<()> {
         self.recheck()?;
-        self.recheck_original_subject(original_subject)?;
+        Self::recheck_original_subject(self.records.peer(), original_subject)?;
         if record.is_empty() || record.len() > 512 {
             return Err(Error::invalid(
                 "worker preparation record",
@@ -156,7 +158,7 @@ impl FixedFuseWorkerSessionV1 {
         self.records
             .send(record)
             .map_err(|_| Error::invalid("worker preparation send", "atomic send failed"))?;
-        self.recheck_original_subject(original_subject)?;
+        Self::recheck_original_subject(self.records.peer(), original_subject)?;
         self.recheck()
     }
 
@@ -185,17 +187,19 @@ impl FixedFuseWorkerSessionV1 {
         let bound = self.records.bind_received(record).map_err(|_| {
             SeqpacketError::Kernel(Error::invalid("worker record", "foreign channel"))
         })?;
-        self.recheck_original_subject(bound.subject())
+        Self::recheck_original_subject(bound.peer(), bound.subject())
             .map_err(SeqpacketError::Kernel)?;
         let (payload, subject, _) = bound.into_parts();
         self.recheck().map_err(SeqpacketError::Kernel)?;
-        self.recheck_original_subject(&subject)
+        Self::recheck_original_subject(self.records.peer(), &subject)
             .map_err(SeqpacketError::Kernel)?;
         Ok((payload, subject))
     }
 
-    fn recheck_original_subject(&self, subject: &KernelAuthorizedRecordSubject) -> Result<()> {
-        let peer = self.records.peer();
+    fn recheck_original_subject(
+        peer: &ConnectionPeerIdentity,
+        subject: &KernelAuthorizedRecordSubject,
+    ) -> Result<()> {
         let credentials = subject.credentials();
         if credentials.pid() != peer.credentials().pid()
             || credentials.uid() != peer.credentials().uid()
