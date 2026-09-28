@@ -1,21 +1,34 @@
-##! Google HTTP 1.43.3 Maven libraries compiled from audited Java sources.
+##! Pinned Google HTTP Maven libraries compiled from audited Java sources.
 {
   mkDerivation,
   fetchurl,
   buildPackages,
   bazelMavenBootstrap,
   bazelGoogleHttp,
+  version ? "1.43.3",
 }: let
-  version = "1.43.3";
+  sourceHashes =
+    {
+      "1.43.3" = {
+        google-http-client = "sha256-PTl9Bg6a4OinFyH/g27WKe5myBuTJuTypaqJKujDo/k=";
+        google-http-client-gson = "sha256-5vZdNFm1+JB/OinCmZFtse/VaIP4zkWvGw8ngDYYGvU=";
+      };
+      "1.44.2" = {
+        google-http-client = "sha256-lBlTeilzGVYZtD92vpI4ix43p4VQNxfXav/1dkiE68I=";
+        google-http-client-gson = "sha256-O6wGG9rFxcZ3E7jbaJodY0KvyweofC9yhd/8Fyn8SCU=";
+      };
+    }.${
+      version
+    } or (throw "Unsupported Google HTTP source version: ${version}");
   buildJdk = buildPackages.openjdk-17;
   archives = [
     {
       name = "google-http-client";
-      hash = "sha256-PTl9Bg6a4OinFyH/g27WKe5myBuTJuTypaqJKujDo/k=";
+      hash = sourceHashes.google-http-client;
     }
     {
       name = "google-http-client-gson";
-      hash = "sha256-5vZdNFm1+JB/OinCmZFtse/VaIP4zkWvGw8ngDYYGvU=";
+      hash = sourceHashes.google-http-client-gson;
     }
   ];
   sources =
