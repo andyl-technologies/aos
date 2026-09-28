@@ -47,6 +47,8 @@ use sha2::Digest as _;
 use tokio::sync::{Mutex, Semaphore};
 use zeroize::Zeroizing;
 
+mod control;
+mod frozen;
 mod telemetry;
 
 // Limit each index walk's simultaneous cross-cloud inspection requests.
@@ -1286,6 +1288,16 @@ impl SurfaceProvider for HybridSurfaceProvider {
             work: Arc::clone(&self.work),
         }))
     }
+
+    async fn frozen_placement_fetcher(
+        &self,
+        access: &FrozenSurfaceAccess,
+    ) -> Result<Box<dyn SurfaceFetch>> {
+        Ok(Box::new(
+            frozen::FrozenR2Surface::open(Arc::clone(&self.db), Arc::clone(&self.work), access)
+                .await?,
+        ))
+    }
 }
 
 struct HybridSurfaceFetch {
@@ -1480,16 +1492,7 @@ impl SurfaceFetch for HybridSurfaceFetch {
     }
 
     async fn fetch_bounded(&self, path: &str, max_bytes: usize) -> Result<Option<Vec<u8>>> {
-        // Metadata comes from the Worker's bounded inspection result. The
-        // default implementation streams the body, which hybrid forbids.
-        let Some(bytes) = self.fetch(path).await? else {
-            return Ok(None);
-        };
-        anyhow::ensure!(
-            bytes.len() <= max_bytes,
-            "hybrid metadata object '{path}' exceeds the {max_bytes} byte semantic limit"
-        );
-        Ok(Some(bytes))
+        control::fetch_bounded(self, path, max_bytes).await
     }
 
     fn storage_local_git_inspection(&self) -> bool {
@@ -2134,64 +2137,10 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
         &self,
         access: &FrozenSurfaceAccess,
     ) -> Result<Box<dyn SurfaceWrite>> {
-        access.validate()?;
-        anyhow::ensure!(
-            access.delete_credential_purpose.is_none()
-                && access.delete_credential_generation.is_none(),
-            "deployment R2 has no external delete credential"
-        );
-        let placement = self
-            .db
-            .surface_placement(access.placement_id)
-            .await?
-            .context("frozen hybrid deletion placement disappeared")?;
-        anyhow::ensure!(
-            placement.registry_id == Some(access.registry_id)
-                && placement.name == access.placement_name
-                && placement.prefix == access.placement_prefix
-                && placement.binding_id == access.binding_id
-                && placement.resource_version == access.placement_resource_version
-                && placement.write_spec_version == access.placement_write_spec_version
-                && placement.observation_version == Some(access.placement_observation_version),
-            "frozen hybrid deletion placement changed"
-        );
-        let binding = self
-            .db
-            .binding(access.binding_id)
-            .await?
-            .context("frozen hybrid deletion binding disappeared")?;
-        anyhow::ensure!(
-            binding.kind == "deployment_r2"
-                && binding.is_instance_default
-                && binding.resource_version == access.binding_resource_version,
-            "frozen hybrid deletion binding changed or is unsupported"
-        );
-        let revision = self
-            .db
-            .binding_write_revision(access.binding_id, access.binding_write_revision)
-            .await?
-            .context("frozen hybrid delete revision disappeared")?;
-        anyhow::ensure!(
-            revision.writes_supported,
-            "frozen hybrid binding revision cannot write"
-        );
-        let capability = self
-            .db
-            .oci_conditional_delete_capability(access.binding_id, access.binding_write_revision)
-            .await?
-            .context("frozen hybrid delete capability disappeared")?;
-        anyhow::ensure!(
-            capability.state == "valid"
-                && capability.binding_resource_version == access.binding_resource_version
-                && capability.capability_fingerprint == access.delete_capability_fingerprint
-                && capability.resource_version >= access.delete_capability_resource_version,
-            "frozen hybrid delete capability changed"
-        );
-        Ok(Box::new(HybridR2MultipartWriter {
-            placement,
-            binding,
-            work: Arc::clone(&self.work),
-        }))
+        Ok(Box::new(
+            frozen::FrozenR2Surface::open(Arc::clone(&self.db), Arc::clone(&self.work), access)
+                .await?,
+        ))
     }
 }
 

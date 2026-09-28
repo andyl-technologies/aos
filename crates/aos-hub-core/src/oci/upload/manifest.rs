@@ -827,7 +827,7 @@ impl RpcService {
             .await
             .map_err(|_| unavailable_response("registry reader is unavailable", false))?;
         let read = fetcher
-            .fetch_stream(&oci_blob_object_key(descriptor.digest), Some(range))
+            .inspect_oci_range(&oci_blob_object_key(descriptor.digest), range)
             .await
             .map_err(|_| unavailable_response("image layer could not be read", false))?
             .ok_or_else(manifest_blob_unknown)?;

@@ -12,6 +12,30 @@ The prerequisite shared application gate passed 3,966 tests, with six skipped.
 Client, PostgreSQL Native Hub, the pinned Worker runner with R2 emulation, and
 Garage S3 ran on separate VMs. All measurements below are from this local fleet.
 
+## Current OCI requalification
+
+The expanded container corpus uses the real signed AOS base image and its
+complete source evidence. Its latest completed fleet attempt failed with HTTP
+503 during manifest admission; it does not qualify nonempty container parity.
+Runnable manifest admission still requested an ordinary stream for layer
+metadata, and Hybrid's bounded reader did not admit OCI config blobs.
+
+Native now queries small OCI configs and manifests through Worker ranges,
+with a 4 MiB hard limit, the caller's semantic limit, and a fixed size and strong
+ETag across all ranges. Layer metadata uses the existing inspection port.
+Public object streams remain Worker-owned. All 21 Native storage client tests
+passed, including new range, size-limit, changed-version and frozen-address
+regressions. All 13 Native OCI Distribution integration tests also passed.
+
+Frozen R2 GC now retains the claim's original prefix and placement version,
+even after the current placement and capability observation advance. It
+reopens only the matching binding and immutable write revision. Frozen absence
+checks use Worker HEAD requests. External S3 cleanup remains unimplemented.
+
+The full four-VM rerun using these corrections is pending. It must compare
+nonempty container projections across Hybrid, Native-only and Workers-only;
+the earlier empty-container comparison below remains a narrower qualification.
+
 ## Qualified paths
 
 The run passed signed publication of two releases and a stable channel,
