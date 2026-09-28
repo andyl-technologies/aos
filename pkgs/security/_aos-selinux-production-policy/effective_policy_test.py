@@ -52,9 +52,9 @@ class FakePolicy:
         self.attributes = {
             "domain": set(effective_policy.ENFORCING_DOMAINS),
             effective_policy.EXPLICIT_LOADER_ATTRIBUTE: set(effective_policy.EXPLICIT_LOADER_DOMAINS),
-            effective_policy.NO_CONTEXT_TRANSLATION_ATTRIBUTE: {
-                effective_policy.fuse_worker_policy.WORKER_DOMAIN
-            },
+            effective_policy.NO_CONTEXT_TRANSLATION_ATTRIBUTE: set(
+                effective_policy.NO_CONTEXT_TRANSLATION_DOMAINS
+            ),
             effective_policy.PRIVATE_ROOT_CUSTODY_ATTRIBUTE: {
                 "aos_sandbox_policy_authority_t"
             },
@@ -256,17 +256,36 @@ class EffectivePolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, f"exactly one {marker} attribute"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
 
-    def test_raw_worker_exclusion_preserves_ordinary_context_translation(self) -> None:
+    def test_raw_clients_exclusion_preserves_ordinary_context_translation(self) -> None:
         marker = effective_policy.NO_CONTEXT_TRANSLATION_ATTRIBUTE
         worker = effective_policy.fuse_worker_policy.WORKER_DOMAIN
-        policy = FakePolicy()
-        policy.attributes[marker].clear()
-        with self.assertRaisesRegex(ValueError, f"unexpected {marker} membership"):
-            effective_policy.check_policy(FAKE_SETOOLS, policy)
+        self.assertEqual(
+            set(effective_policy.NO_CONTEXT_TRANSLATION_DOMAINS),
+            {worker, "aos_method46_controller_helper_t", "aos_method46_storage_helper_t"},
+        )
+
+        for domain in effective_policy.NO_CONTEXT_TRANSLATION_DOMAINS:
+            with self.subTest(domain=domain):
+                policy = FakePolicy()
+                policy.attributes[marker].remove(domain)
+                with self.assertRaisesRegex(ValueError, f"unexpected {marker} membership"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+                policy = FakePolicy()
+                policy.attributes["domain"].remove(domain)
+                with self.assertRaisesRegex(ValueError, "lost domain membership"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+        for ordinary in ("init_t", effective_policy.GUEST_OWNER, "aos_sandbox_controller_t"):
+            with self.subTest(ordinary=ordinary):
+                policy = FakePolicy()
+                policy.attributes[marker].add(ordinary)
+                with self.assertRaisesRegex(ValueError, f"unexpected {marker} membership"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
 
         policy = FakePolicy()
-        policy.attributes[marker].add(effective_policy.GUEST_OWNER)
-        with self.assertRaisesRegex(ValueError, f"unexpected {marker} membership"):
+        del policy.attributes[marker]
+        with self.assertRaisesRegex(ValueError, f"exactly one {marker} attribute"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
 
         self.assert_missing_allow_rejected(
@@ -279,6 +298,36 @@ class EffectivePolicyTest(unittest.TestCase):
         ):
             with self.subTest(access=access):
                 self.assert_forbidden_allow_rejected(access)
+
+    def test_helper_inherited_channels_remain_required(self) -> None:
+        for role, helper in zip(
+            effective_policy.owner_policy.HELPERS, effective_policy.owner_policy.HELPER_DOMAINS,
+        ):
+            owner = f"aos_sandbox_{role}_t"
+            for permission in ("getattr", "getopt", "read", "setopt", "write"):
+                with self.subTest(helper=helper, permission=permission):
+                    self.assert_missing_allow_rejected(
+                        effective_policy.Access(helper, owner, "unix_stream_socket", permission)
+                    )
+
+    def test_disabled_indirect_helper_socket_grant_is_forbidden(self) -> None:
+        members = (*effective_policy.owner_policy.HELPER_DOMAINS, "init_t")
+        for helper in effective_policy.owner_policy.HELPER_DOMAINS:
+            for permission in ("connect", "connectto", "create", "listen"):
+                with self.subTest(helper=helper, permission=permission):
+                    policy = FakePolicy()
+                    # Both axes retain an ordinary member. Default-off grants
+                    # remain forbidden even though no positive rule uses them.
+                    access = effective_policy.Access(
+                        "indirect_helpers", "indirect_channels", "unix_stream_socket", permission,
+                    )
+                    policy.allows[access] = [FakeRule(
+                        "disabled indirect helper socket grant", active=False,
+                        source=FakeAttribute("indirect_helpers", (helper, "init_t")),
+                        target=FakeTypeAttribute(set(members)),
+                    )]
+                    with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                        effective_policy.check_policy(FAKE_SETOOLS, policy)
 
     def test_loader_exclusion_preserves_ordinary_textrel_and_explicit_worker_loads(self) -> None:
         self.assert_missing_allow_rejected(
