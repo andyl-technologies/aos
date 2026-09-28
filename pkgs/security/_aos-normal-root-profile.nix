@@ -32,6 +32,14 @@ in
         script = ''
           set -eu
           export PYTHONPATH=${buildPackages.setools}/lib/python3/site-packages
+          # Run producer regressions in the same hermetic build that selects
+          # the profile. Keeping the helpers adjacent preserves their imports.
+          mkdir producer-tests
+          cp "$src" producer-tests/aos-normal-root-profile.py
+          cp ${./aos-normal-root-profile_test.py} producer-tests/aos-normal-root-profile_test.py
+          cp ${./aos-selinux-runtime-manifest.py} producer-tests/aos-selinux-runtime-manifest.py
+          ${buildPackages.python3}/bin/python3 -B producer-tests/aos-normal-root-profile_test.py
+
           # Rerun the same attribute-expanded checker on the selected final
           # binary. A marker or nonempty archived TSV alone is not success.
           ${buildPackages.python3}/bin/python3 -B ${support}/effective_policy.py \
