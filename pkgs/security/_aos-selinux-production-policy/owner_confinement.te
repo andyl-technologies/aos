@@ -2,6 +2,7 @@
 # Protected object types deliberately have no file_type membership. This file
 # is linked into the existing module; it creates no Linux principal or service.
 require {
+    attribute aos_private_root_custody_domain;
     type lib_t;
     type ld_so_t;
     type usr_t;
@@ -18,6 +19,7 @@ require {
     type null_device_t;
     class chr_file { getattr ioctl open read write };
     class fd use;
+    class dir { ioctl lock };
     class sock_file { create getattr open read setattr unlink write };
     class unix_stream_socket { accept bind connect connectto create getattr getopt listen read setopt shutdown write };
     class dbus send_msg;
@@ -136,6 +138,7 @@ allow aos_sandbox_storage_t init_t:system status;
 
 type aos_sandbox_policy_authority_t;
 typeattribute aos_sandbox_policy_authority_t domain;
+typeattribute aos_sandbox_policy_authority_t aos_private_root_custody_domain;
 role system_r types aos_sandbox_policy_authority_t;
 type aos_sandbox_policy_authority_exec_t;
 type aos_sandbox_policy_authority_state_t;
@@ -147,6 +150,13 @@ type aos_sandbox_policy_authority_runtime_t;
 allow init_t aos_sandbox_policy_authority_exec_t:file { execute execute_no_trans getattr map open read };
 allow init_t aos_sandbox_policy_authority_t:process transition;
 allow init_t aos_sandbox_policy_authority_t:process2 nnp_transition;
+
+# Restore only PID 1's exact pinned domain_read_all_domains_state profile.
+# Other interface callers must not inspect normal Root's task files or FDs.
+allow init_t aos_sandbox_policy_authority_t:dir { getattr search open read lock ioctl };
+allow init_t aos_sandbox_policy_authority_t:file { getattr open read lock ioctl };
+allow init_t aos_sandbox_policy_authority_t:lnk_file { getattr read };
+
 allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_exec_t:file { entrypoint getattr map open read };
 allow aos_sandbox_policy_authority_t self:process { fork getattr getsched setrlimit sigchld signal };
 allow aos_sandbox_policy_authority_t self:unix_stream_socket { accept bind connect create getattr getopt listen read setopt shutdown write };

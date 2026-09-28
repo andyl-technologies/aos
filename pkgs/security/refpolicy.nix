@@ -69,6 +69,8 @@ in
               patch --fuzz=0 -p1 < ${./_aos-selinux-production-policy/refpolicy-explicit-loaders.patch}
               # The worker reads raw kernel labels and has no translation RPC.
               patch --fuzz=0 -p1 < ${./_aos-selinux-production-policy/refpolicy-explicit-contexts.patch}
+              # Normal Root custody is excluded from blanket domain grants only.
+              patch --fuzz=0 -p1 < ${./_aos-selinux-production-policy/refpolicy-private-root-custody.patch}
               sed -i 's/^UNK_PERMS.*/UNK_PERMS = reject/' build.conf
               # Both fixed AOS transitions retain NNP/nosuid. They use explicit
               # process2 permissions rather than weakening the inherited guard.

@@ -55,6 +55,9 @@ class FakePolicy:
             effective_policy.NO_CONTEXT_TRANSLATION_ATTRIBUTE: {
                 effective_policy.fuse_worker_policy.WORKER_DOMAIN
             },
+            effective_policy.PRIVATE_ROOT_CUSTODY_ATTRIBUTE: {
+                "aos_sandbox_policy_authority_t"
+            },
         }
         self.queries: list[dict[str, object]] = []
         self.allows = {
@@ -668,6 +671,75 @@ class EffectivePolicyTest(unittest.TestCase):
                 )]
                 with self.assertRaisesRegex(ValueError, "foreign normal Root custody"):
                     effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_root_custody_marker_is_exact_and_preserves_domain_membership(self) -> None:
+        marker = effective_policy.PRIVATE_ROOT_CUSTODY_ATTRIBUTE
+        root = "aos_sandbox_policy_authority_t"
+        source = Path(__file__).with_name("owner_confinement.te").read_text()
+        memberships = [
+            line for line in source.splitlines()
+            if line.startswith("typeattribute ") and line.endswith(f" {marker};")
+        ]
+        self.assertEqual(memberships, [f"typeattribute {root} {marker};"])
+
+        policy = FakePolicy()
+        policy.attributes[marker].clear()
+        with self.assertRaisesRegex(ValueError, f"unexpected {marker} membership"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+        for other in ("init_t", "aos_sandbox_controller_t", "aos_method46_controller_helper_t"):
+            with self.subTest(other=other):
+                policy = FakePolicy()
+                policy.attributes[marker].add(other)
+                with self.assertRaisesRegex(ValueError, f"unexpected {marker} membership"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+        policy = FakePolicy()
+        policy.attributes["domain"].remove(root)
+        with self.assertRaisesRegex(ValueError, "lost domain membership"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+        policy = FakePolicy()
+        del policy.attributes[marker]
+        with self.assertRaisesRegex(ValueError, f"exactly one {marker} attribute"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_both_attribute_axes_cannot_hide_conditional_root_custody(self) -> None:
+        root = "aos_sandbox_policy_authority_t"
+        sources = FakeAttribute("mixed_root_sources", ("init_t", "unconfined_t"))
+        targets = FakeTypeAttribute({root, "init_t"})
+        for object_class, permission in effective_policy.owner_policy.ROOT_CUSTODY_CUTS:
+            for active in (False, True):
+                with self.subTest(object_class=object_class, permission=permission, active=active):
+                    policy = FakePolicy()
+                    access = effective_policy.Access(
+                        sources.name, "mixed_root_targets", object_class, permission,
+                    )
+                    policy.allows[access] = [FakeRule(
+                        "conditional both-axis Root custody", active=active,
+                        source=sources, target=targets,
+                    )]
+
+                    with self.assertRaisesRegex(ValueError, "foreign normal Root custody"):
+                        effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_root_exclusion_preserves_exact_pinned_pid1_inspection(self) -> None:
+        root = "aos_sandbox_policy_authority_t"
+        source = Path(__file__).with_name("owner_confinement.te").read_text()
+        for object_class, permissions in (
+            ("dir", ("getattr", "search", "open", "read", "lock", "ioctl")),
+            ("file", ("getattr", "open", "read", "lock", "ioctl")),
+            ("lnk_file", ("getattr", "read")),
+        ):
+            with self.subTest(object_class=object_class):
+                self.assertIn(
+                    f"allow init_t {root}:{object_class} {{ {' '.join(permissions)} }};",
+                    source,
+                )
+                for permission in permissions:
+                    self.assert_missing_allow_rejected(
+                        effective_policy.Access("init_t", root, object_class, permission)
+                    )
 
     def test_controller_connect_does_not_grant_root_endpoint_ownership(self) -> None:
         for object_class, permission in (
