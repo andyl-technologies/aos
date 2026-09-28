@@ -37,6 +37,7 @@ const SERVICE_PROPERTIES: &[&str] = &[
     "ExtraFileDescriptorNames",
     "FileDescriptorStoreMax",
     "NFileDescriptorStore",
+    "SELinuxContext",
 ];
 const UNIT_PROPERTIES: &[&str] = &["FragmentPath", "DropInPaths", "Transient", "InvocationID"];
 
@@ -221,6 +222,7 @@ fn decode_policy_claims(
         extra_fds,
         store_maximum,
         stored_fds,
+        selinux_context,
     ] = service
     else {
         return Err(FloorErrorV1::Provisioning);
@@ -256,6 +258,7 @@ fn decode_policy_claims(
         || !has_exact_launch_fd_properties(open_files, extra_fds)
         || u32::try_from(store_maximum).ok() != Some(0)
         || u32::try_from(stored_fds).ok() != Some(0)
+        || !has_exact_owner_context(selinux_context, endpoint)
     {
         return Err(FloorErrorV1::Provisioning);
     }
@@ -268,6 +271,17 @@ fn decode_policy_claims(
         control_group: cgroup.to_owned(),
         invocation,
     })
+}
+
+fn has_exact_owner_context(value: &OwnedValue, endpoint: FloorEndpointV1) -> bool {
+    let Value::Structure(value) = &**value else {
+        return false;
+    };
+    let [ignore_failure, context] = value.fields() else {
+        return false;
+    };
+    matches!(ignore_failure, Value::Bool(false))
+        && matches!(context, Value::Str(context) if context.as_str() == super::confinement::owner_context(endpoint))
 }
 
 /// Checks the single fixed launch entry without copying caller-sized arrays.
@@ -326,6 +340,7 @@ mod tests {
             value(Vec::<String>::new()),
             OwnedValue::from(0_u32),
             OwnedValue::from(0_u32),
+            value((false, "system_u:system_r:aos_sandbox_controller_t")),
         ];
         let unit = vec![
             // This test rejects policy claims before any filesystem lookup.
@@ -390,6 +405,13 @@ mod tests {
             (5, value(Vec::<u8>::new())),
             (6, OwnedValue::from(1_u32)),
             (7, OwnedValue::from(1_u32)),
+            (
+                8,
+                value((true, "system_u:system_r:aos_sandbox_controller_t")),
+            ),
+            (8, value((false, "system_u:system_r:init_t"))),
+            (8, value((false, "system_u:system_r:aos_sandbox_storage_t"))),
+            (8, value("system_u:system_r:aos_sandbox_controller_t")),
         ] {
             let (mut service, unit) = claims();
             service[position] = replacement;

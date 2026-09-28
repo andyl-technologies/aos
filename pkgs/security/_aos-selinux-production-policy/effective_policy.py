@@ -9,6 +9,7 @@ from typing import Any, Iterable, Sequence
 
 import fuse_worker_policy
 import guest_file_policy
+import owner_policy
 
 
 DOMAINS = (
@@ -55,6 +56,7 @@ ENFORCING_DOMAINS = (
     PROVISIONER_DOMAIN,
     GUEST_ROOT_PUBLISHER,
     *DOMAINS,
+    *owner_policy.ENFORCING,
 )
 
 DOMAIN_EXECUTABLES = (
@@ -1024,7 +1026,12 @@ def negative_access() -> tuple[Access, ...]:
     return tuple(sorted(set(checks)))
 
 
-NEGATIVE_ACCESS = negative_access()
+OWNER_POSITIVE, OWNER_NEGATIVE, OWNER_TRANSITIONS = owner_policy.matrix(
+    Access, Transition, accesses, DOMAINS,
+)
+POSITIVE_ACCESS = (*POSITIVE_ACCESS, *OWNER_POSITIVE)
+TRANSITIONS = (*TRANSITIONS, *OWNER_TRANSITIONS)
+NEGATIVE_ACCESS = (*negative_access(), *OWNER_NEGATIVE)
 
 
 def allow_rules(setools: Any, policy: Any, access: Access) -> list[Any]:
@@ -1032,11 +1039,12 @@ def allow_rules(setools: Any, policy: Any, access: Access) -> list[Any]:
 
     criteria = {
         "ruletype": [setools.TERuletype.allow],
-        "source": access.source,
         "source_indirect": True,
         "tclass": [access.object_class],
         "perms": [access.permission],
     }
+    if access.source != "*":
+        criteria["source"] = access.source
     if access.target != "*":
         criteria["target"] = access.target
         criteria["target_indirect"] = True
@@ -1113,6 +1121,36 @@ def check_policy(setools: Any, policy: Any) -> list[str]:
             f"{transition.source}\t{transition.target}\t"
             f"{transition.object_class}\t{transition.default}"
         )
+
+    # Explicit normal-unit contexts must not promote another shared-ELF mode.
+    for domain in owner_policy.NO_DEFAULT_ENTRY:
+        query = setools.TERuleQuery(
+            policy,
+            ruletype=[setools.TERuletype.type_transition],
+            source_indirect=True,
+            target_indirect=True,
+            tclass=["process"],
+            default=domain,
+        )
+        if list(query.results()):
+            raise ValueError(f"normal owner has automatic entry transition: {domain}")
+        evidence.append(f"deny-default-entry\t{domain}")
+
+    # Scan all sources, including attributes and domains not named by AOS.
+    # A finite AOS role list cannot establish the Root nondelegation boundary.
+    root = "aos_sandbox_policy_authority_t"
+    for object_class, permission in owner_policy.ROOT_CUSTODY_CUTS:
+        for rule in allow_rules(setools, policy, Access("*", root, object_class, permission)):
+            source = rule.source
+            expanded = source.expand() if hasattr(source, "expand") else (source,)
+            permitted_sources = (
+                {"init_t"}
+                if (object_class, permission) == ("process", "transition")
+                else {root, "init_t", "kernel_t"}
+            )
+            if {str(value) for value in expanded} - permitted_sources:
+                raise ValueError(f"foreign normal Root custody grant exists: {rule}")
+        evidence.append(f"deny-foreign-root\t{object_class}\t{permission}")
 
     provisioner_candidates = transition_candidates(
         setools,

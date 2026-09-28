@@ -46,6 +46,10 @@ in {
   config = lib.mkIf cfg.enable {
     assertions = [
       {
+        assertion = !(config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") || cfg.package == pkgs.aos-sandboxd;
+        message = "confined Cache signer requires the exact evaluated policy-labelled AOS executable";
+      }
+      {
         assertion = views.enable && controllerService.enable && policy.enable;
         message = "Cache signer service requires its two read-only views, Controller, and policy authority";
       }
@@ -98,25 +102,29 @@ in {
       requires = ["aos-sandbox-cache-signer-views.service" "aos-sandbox-cache-signerd.socket"];
       after = ["aos-sandbox-cache-signer-views.service" "aos-sandbox-cache-signerd.socket"];
       unitConfig.BindsTo = ["aos-sandbox-cache-signer-views.service"];
-      serviceConfig = signerServiceHardening // {
-        Type = "simple";
-        Sockets = ["aos-sandbox-cache-signerd.socket"];
-        StandardInput = "socket";
-        ExecStart = "${cfg.package}/bin/aos-sandbox-cache-signerd ${toString controller.uid} ${toString controller.gid} ${toString views.uid} ${toString views.gid}";
-        LoadCredential =
-          lib.optionals (cfg.credentials.seed != null) ["cache-signer-v2-seed:/run/credentials/@system/${cfg.credentials.seed}"]
-          ++ lib.optionals (cfg.credentials.publicKey != null) ["cache-owner-readback-public-key:/run/credentials/@system/${cfg.credentials.publicKey}"]
-          ++ lib.optionals (cfg.credentials.memoryCeiling != null) ["cache-signer-v2-memory-ceiling:/run/credentials/@system/${cfg.credentials.memoryCeiling}"];
-        User = "aos-cache-signer";
-        Group = "aos-cache-signer";
-        UMask = "0077";
+      serviceConfig =
+        signerServiceHardening
+        // {
+          SELinuxContext = lib.mkIf (config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") "system_u:system_r:aos_sandbox_cache_signer_t";
+          ProcSubset = "all";
+          Type = "simple";
+          Sockets = ["aos-sandbox-cache-signerd.socket"];
+          StandardInput = "socket";
+          ExecStart = "${cfg.package}/bin/aos-sandbox-cache-signerd ${toString controller.uid} ${toString controller.gid} ${toString views.uid} ${toString views.gid}";
+          LoadCredential =
+            lib.optionals (cfg.credentials.seed != null) ["cache-signer-v2-seed:/run/credentials/@system/${cfg.credentials.seed}"]
+            ++ lib.optionals (cfg.credentials.publicKey != null) ["cache-owner-readback-public-key:/run/credentials/@system/${cfg.credentials.publicKey}"]
+            ++ lib.optionals (cfg.credentials.memoryCeiling != null) ["cache-signer-v2-memory-ceiling:/run/credentials/@system/${cfg.credentials.memoryCeiling}"];
+          User = "aos-cache-signer";
+          Group = "aos-cache-signer";
+          UMask = "0077";
 
-        # Exact-name and legacy checks stat the original Cache root names.
-        # Their 0700 contents remain inaccessible outside the idmapped views.
-        InaccessiblePaths = [
-          "/run/aos/sandbox-policy-cache-journals"
-        ];
-      };
+          # Exact-name and legacy checks stat the original Cache root names.
+          # Their 0700 contents remain inaccessible outside the idmapped views.
+          InaccessiblePaths = [
+            "/run/aos/sandbox-policy-cache-journals"
+          ];
+        };
     };
   };
 }

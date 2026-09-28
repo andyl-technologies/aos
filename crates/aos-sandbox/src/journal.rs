@@ -28,8 +28,8 @@ use std::sync::Arc;
 
 use aos_sandbox_core::OperationId;
 use rustix::fs::{
-    AtFlags, CWD, FileType, FlockOperation, Mode, OFlags, ResolveFlags, flock, fstat, fsync,
-    openat2, renameat, statat, unlinkat,
+    AtFlags, CWD, FileType, FlockOperation, Mode, OFlags, ResolveFlags, fcntl_getfl, flock, fstat,
+    fsync, openat2, renameat, statat, unlinkat,
 };
 use sha2::{Digest, Sha256};
 
@@ -674,9 +674,18 @@ impl ProtectedJournalLockCustodyV1 {
     ///
     /// # Errors
     ///
-    /// Returns an error if the retained lock cannot be inspected.
+    /// Rejects a nonempty, nonregular, linked, incorrectly permissioned, or
+    /// non-read/write lock description, or an inspection failure.
     pub fn identity(&self) -> Result<(u64, u64, u32), JournalError> {
         let metadata = self.lock.metadata()?;
+        if !metadata.is_file()
+            || metadata.len() != 0
+            || metadata.nlink() != 1
+            || metadata.mode() & 0o7777 != 0o600
+            || fcntl_getfl(&self.lock).map_err(rustix_io)? & OFlags::ACCMODE != OFlags::RDWR
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
         Ok((metadata.dev(), metadata.ino(), metadata.uid()))
     }
 }
@@ -2027,7 +2036,9 @@ impl Journal {
         self.validate_held_protected_names()?;
         let lock = self._lock.try_clone()?;
         self.validate_held_protected_names()?;
-        Ok(ProtectedJournalLockCustodyV1 { lock })
+        let custody = ProtectedJournalLockCustodyV1 { lock };
+        custody.identity()?;
+        Ok(custody)
     }
 
     /// Checks a live root-owned writer against its original protected path.
@@ -6343,6 +6354,23 @@ mod tests {
         let (unprotected, _) =
             Journal::open(directory.journal(), JournalLimits::default()).unwrap();
         assert!(unprotected.loan_protected_lock_custody().is_err());
+    }
+
+    #[test]
+    fn protected_lock_custody_rejects_data_and_read_only_descriptions() {
+        let directory = TestDirectory::new("protected-lock-loan-shape");
+        let (journal, _) = protected_open(&directory.0).unwrap();
+        let loan = journal.loan_protected_lock_custody().unwrap();
+        loan.lock.set_len(1).unwrap();
+        assert!(loan.identity().is_err());
+        assert!(journal.loan_protected_lock_custody().is_err());
+        loan.lock.set_len(0).unwrap();
+
+        let read_only = ProtectedJournalLockCustodyV1 {
+            lock: File::open(directory.0.join("protected.journal.lock")).unwrap(),
+        };
+        assert!(read_only.identity().is_err());
+        assert!(loan.identity().is_ok());
     }
 
     #[test]

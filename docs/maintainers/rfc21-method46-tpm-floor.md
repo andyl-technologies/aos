@@ -180,25 +180,183 @@ releasing auth, and retains the exact child/pidfd/private sequenced-packet chann
 never execs/forks after this observation. No caller selects an image, device,
 TCTI, command line or session file. Secret bytes travel only in the private
 inherited channel, are zeroized, and never enter argv, environment or diagnostics.
-The first packet transfers only two exact protected lock open-file descriptions
-using the existing safe `SCM_RIGHTS` carrier. The child verifies their private
-regular-file identities and acknowledges both before opening the TPM. It
+The first packet transfers public role/salt/nonce fields and only two exact
+protected lock open-file descriptions using the existing safe `SCM_RIGHTS`
+carrier. The child verifies its enforcing role and the empty, private, RDWR
+regular-file identities, sets nondumpable, and acknowledges both with the
+original nonce. Only then does the parent send a separate bounded auth packet
+on that same private carrier; the child rejects a different nonce or index
+before opening the TPM. It
 receives neither journal data descriptors nor writer APIs. A lock loan keeps
 the original flock description alive but cannot prove TPM-close ordering or
 authorize a journal read, write, or effect.
 
 ```text
-hello160 = AOSBTH01 | version:1u16be | reserved2 | nonce32 | index:u32be |
-           salt-handle:u32be | salt-key-Name34 | index-auth32 | reserved2 |
+hello160 = AOSBTH02 | version:2u16be | reserved2 | nonce32 | index:u32be |
+           salt-handle:u32be | salt-key-Name34 | reserved34 |
            main-lock(device:u64be,inode:u64be,uid:u32be) |
            floor-lock(device:u64be,inode:u64be,uid:u32be)
-locks48 = AOSBTK01 | version:1u16be | reserved2 | nonce32 | count:2u16be | reserved2
-request84 = AOSBTQ01 | version:1u16be | operation:u8 | reserved1 |
+locks48 = AOSBTK02 | version:2u16be | reserved2 | nonce32 | count:2u16be | reserved2
+auth80 = AOSBTA02 | version:2u16be | reserved2 | nonce32 | index:u32be | index-auth32
+request84 = AOSBTQ02 | version:2u16be | operation:u8 | reserved1 |
             nonce32 | sequence:u64be | input32
-reply128 = AOSBTR01 | version:1u16be | operation:u8 | reserved1 |
+reply128 = AOSBTR02 | version:2u16be | operation:u8 | reserved1 |
            nonce32 | sequence:u64be | NV-Name34 | name-algorithm:u16be |
            attributes:u32be | size:u16be | policy-length:u16be | NV-value32
 ```
+
+The private version-1 combined HELLO/auth format is rejected. No deployed
+method-46 data is upgraded or reinterpreted by this unreleased correction.
+
+## Existing-role confinement source contract
+
+The normal Controller enters its distinct domain whenever the immutable
+enforcing profile is selected, independently of TPM mode. This keeps the
+purpose-specific Source/Cache journal writer out of `init_t`; legacy-closed
+TPM mode still closes methods 46–48. Storage's current domain selection remains
+required-mode-only pending its separate startup closure. The normal policy-authority unit
+has a distinct Root domain in the immutable SELinux image; its same-ELF Cache
+recovery invocation does not. These are explicit fixed-unit contexts, not a
+default executable transition from `init_t`. The one private helper ELF has
+source-specific Controller/helper and Storage/helper transitions. None of
+these changes creates a Linux UID, service, key, capability or TPM namespace.
+
+| Existing process | Domain / protected objects | Narrow boundary |
+| --- | --- | --- |
+| Controller | `aos_sandbox_controller_t`; Controller state, credentials and floor | Its own writer and status-only manager observations; Root socket pathname and `connectto` only |
+| Storage | `aos_sandbox_storage_t`; Storage state, credentials and floor | Its own writer and status-only manager observations; no Controller credential or floor access |
+| Normal Root | `aos_sandbox_policy_authority_t`; its own authority state, credentials and runtime socket | Own writer only; Controller cuts remain signed held-writer evidence, not direct UID-811 journal reads |
+| Controller private child | `aos_method46_controller_helper_t` | Its owner's private carrier and exact empty RDWR lock OFDs; fixed `/dev/tpmrm0` only |
+| Storage private child | `aos_method46_storage_helper_t` | Same boundary for Storage; no cross-owner lock, floor, credential or descriptor use |
+| Existing Guest root publisher | `aos_sandbox_guest_root_publisher_t` | Exact fixed executable and existing unit; Guest projection/publication permissions are a separate reviewed dependency |
+
+The existing compiled effective-policy checker expands attributes and checks
+the positive/negative owner matrix. In addition, it searches *all* sources for
+Root task-file read/open/ioctl, ptrace, accepted-endpoint FD use and socket
+read/write. Only the trusted kernel/PID1 and Root itself may appear in those
+task/endpoint cut queries; process entry into normal Root is restricted to
+PID1. A legitimate Controller connection does not grant use or writing
+of Root's accepted endpoint. Root self-ptrace, generic execution, role escape,
+policy mutation and capability escalation are denied. Checking a SID or an
+enforcing flag at runtime is not itself proof of this exact loaded matrix.
+An unconfined same-SID PID1 worker cannot be distinguished from PID1 by a MAC
+type; residual `init_t` actors therefore remain a preparation/installed-profile
+audit requirement, not a blanket trusted-worker exception.
+
+### Existing Source/Cache view producers (source-only)
+
+The immutable configuration reuses the three existing checked idmapped-view
+scripts, their actual Controller/signer UID/GID assignments and their existing
+five-capability preparation boundary. It does not add a mount service or a
+native duplicate of the mount implementation. Each exact script output is
+labelled separately. A source-built private tool package copies only the AOS
+Bash, stat, mkdir, chown, findmnt, mount and umount images into distinct immutable
+inodes; only the two existing preparation roles may execute those private tools
+without a domain transition. Shared `bin_t` interpreters are not an alias.
+The scripts clear interpreter/loader injection variables and prevent mount
+helper dispatch and writable mount-table updates. Mutable legacy scripts and
+their existing tool paths remain unchanged.
+
+The existing static fresh-only root provider runs as a fixed `ExecStartPre`
+of the existing Cache-journal-view unit. This keeps each labelled script
+package independent of the selected policy that labels it. Source and Cache
+signer-view units depend on that first preparation; they do not rerun root
+creation after a target has already been mounted. The provider preflights all
+enabled original roots and `/run` targets before creating any missing peer,
+rejects existing wrong type/mode/owner/label or a racing creation, and never
+repairs or relabels existing state. Only freshly created held directories may
+receive the image-compiled Controller UID/GID before durable admission.
+The provider's metadata-directory reopens use the existing preparer capability
+bound's DAC search permission. Its MAC profile explicitly denies protected
+journal, key, floor and lock file open/read; this is not a data-reader grant
+and adds no unit capability.
+
+The ext4 path retains the original fixed `/var` block-device, root-inode,
+mount-ID and attribute checks. A ZFS system-state image instead verifies the
+separately declared `${pool}/var/lib` dataset using actual bounded `statmount`
+filesystem type/magic, device, unique mount ID, source, mount root, mountpoint
+and writable/nosuid/nodev attributes. A subtree bind, ID map, read-only mount,
+foreign pool or undeclared mountpoint is refused. Its mounted `/var` and
+`/var/lib` root contexts are explicit image configuration, not relabelling
+stored children. The existing Network/ext4 provisioner behavior is unchanged;
+this view extension does not qualify a separate Network-on-ZFS producer.
+
+Normal Source and Cache signers have distinct cap-empty read-only domains,
+purpose-specific credential and socket types, and explicit fixed-unit contexts.
+Pinned systemd 261.2 uses that service context to select the activated listener's
+creation SID. The listener's `SO_PEERCRED` still names PID1, not the signer;
+this source change does not reinterpret it as actual signer-process evidence.
+Original and idmapped views share inode labels, while original-root DAC stays
+Controller-only. Root reads Cache through its existing checked view, never
+through a new capability or direct Controller-owned 0700-root grant.
+
+Protected types deliberately remain outside `file_type`. Explicit
+`filesystem:associate` grants follow the pinned refpolicy's actual `fs_t`
+ext4/ZFS xattr superblocks, `tmpfs_t` runtime/credential mounts and `device_t`
+devtmpfs. These source rules are not proof of actual mounted labels or delivery.
+
+The pure C reducer cases and shared effective-checker regressions are authored
+but unrun in this leaf. Module evaluation, compiled expanded policy, actual
+idmapped mount/association and signer/Controller startup all remain unqualified.
+In particular, `.fc` patterns do not prove that PID1's raw credential-file
+creation receives the intended type: the actual unit credential-root label,
+creation transition, input custody and delivered readback need a separate
+measured closure. Normal Controller/Root private-state preparation, the Storage
+prestart install/chmod contradiction, Cache-recovery's distinct state access,
+and deployment-provisioned broker peer SIDs are still explicit prerequisites.
+No signed manifest is rewritten, and neither selected policy paths nor a
+point-in-time policy-byte comparison mint a normal-Root matrix proof.
+
+The helper never receives a journal-data or credential FD. `SCM_RIGHTS`
+receive checks the descriptor's RDWR access mode, so its own lock type permits
+read/write but not pathname open, flock, append, truncate, rename or unlink.
+Both Rust and C require a regular, singly linked, empty 0600 descriptor with
+the original owner/device/inode. These permissions cannot grant the child a
+journal writer. Image/loader observation occurs before nondumpable and auth;
+the subsequent owner/helper SID and pidfd checks must also pass on the actual
+installed kernel without ptrace or `CAP_SYS_PTRACE` exceptions.
+
+### Fixed fresh owner-root preparation
+
+The existing static runtime-root program gains one fixed boot phase, not a
+generic directory or privileged-copy API. Required-mode flags and the actual
+Controller UID/GID are compiled from the immutable module assignment; no
+runtime scalar may select ownership. The same package, selected-kernel
+canonical `/policy.33` readback and source identity are used by stage 0,
+existing `/var` preparation, and Network preparation. The original Network
+root:root assignments and no-repair rules are unchanged.
+
+The phase preflights every enabled existing owner topology before creating a
+missing peer. It validates the exact ext4 `/var`, ancestry, labels, modes,
+mount IDs, inode identities and reopened names. Only a just-created, retained,
+correctly labelled Controller directory may be changed from birth root:root
+to the compiled owner before sync; an existing wrong-owner inode is refused,
+never repaired. It creates no credential, salt key, NV index, traffic/floor
+journal or initial checkpoint. Required owner-root preparation currently uses
+the existing ext4 state substrate; ZFS data pools are unaffected.
+
+### Explicit remaining startup dependencies
+
+File-context patterns do not prove PID1's effective credential-file creation
+label. The real `LoadCredential` input/delivery types and every residual
+root/`init_t` credential reader must be measured and narrowly closed. The
+existing Cache and Source view preparer subroles are named but their generated
+script/interpreter/tool, credential-input and mount producer closure is not
+implemented by this checkpoint. Their existing setup capabilities are not
+delegated to a normal owner. The Guest publisher still needs its independently
+reviewed template/workspace/authority/replay/loader and socket preparation
+closure. There is no generic `file_type`, `bin_t` or `init_t` access substitute.
+
+The actual Storage unprivileged `ExecStartPre` install/chmod commands also
+conflict with its chmod-denying syscall profile; this checkpoint does not
+make them privileged to hide that dependency. Normal Root signer-peer SIDs
+and each broker's signed peer configuration must be deliberately provisioned
+for the new roles. No `init_t` peer alias or silent signed-configuration rewrite
+is allowed. The source alone consequently does not claim working required-mode
+startup or a positive Root sender proof. Installed tests must additionally
+cover the real notify/logging/activation descriptors and each dependency/IPC
+path rather than treating a successful status-only manager call as startup
+closure.
 
 Only read (1, zero input) and extend (2, nonzero input) exist. Width, version,
 reserved bytes, correlation nonce/sequence, operation and public geometry are

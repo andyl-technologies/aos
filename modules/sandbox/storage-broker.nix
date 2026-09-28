@@ -195,7 +195,17 @@ in {
         }
       ]
       ++ brokerSessionConfiguration.assertions
-      ++ method46FloorConfiguration.assertions;
+      ++ method46FloorConfiguration.assertions
+      ++ [
+        {
+          assertion = !cfg.method46TpmFloor.required || (config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0" && config.aos.security.selinux.mode == "enforcing" && cfg.package == pkgs.aos-storaged);
+          message = "required Storage TPM floor requires immutable enforcing SELinux and the exact AOS Storage package";
+        }
+        {
+          assertion = !(config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") || worker.package == pkgs.aos-sandbox-zfs-worker;
+          message = "confined Guest publisher requires the exact policy-labelled AOS worker package";
+        }
+      ];
 
     # The controller receives traverse-only access to the socket directory. It
     # cannot unlink or replace the root-owned endpoint path.
@@ -377,6 +387,7 @@ in {
       };
       serviceConfig = {
         Type = "simple";
+        SELinuxContext = lib.mkIf cfg.method46TpmFloor.required "system_u:system_r:aos_sandbox_storage_t";
         OpenFile = lib.mkIf cfg.method46TpmFloor.required ["/proc/1/exe:aos-method46-pid1-image:read-only"];
         FileDescriptorStoreMax = lib.mkIf cfg.method46TpmFloor.required 0;
         ExecStartPre = brokerSessionConfiguration.installCommands;

@@ -24,6 +24,97 @@
     } \
 } while (0)
 
+static void public_hello_fixture(uint8_t hello[HELLO_BYTES])
+{
+    memset(hello, 0, HELLO_BYTES);
+    memcpy(hello, "AOSBTH02", 8);
+    hello[9] = 2;
+    memset(hello + 12, 7, 32);
+    put_u32(hello + 44, UINT32_C(0x0180a046));
+    put_u32(hello + 48, UINT32_C(0x8100a046));
+    hello[53] = 11;
+    memset(hello + 54, 8, 32);
+}
+
+static void public_hello_rejects_secrets_and_old_framing(void)
+{
+    uint8_t hello[HELLO_BYTES];
+    public_hello_fixture(hello);
+    REQUIRE(validate_hello(hello) == 0);
+    for (size_t offset = 86; offset < 120; ++offset) {
+        hello[offset] = 1;
+        REQUIRE(validate_hello(hello) != 0);
+        hello[offset] = 0;
+    }
+    memcpy(hello, "AOSBTH01", 8);
+    hello[9] = 1;
+    REQUIRE(validate_hello(hello) != 0);
+    public_hello_fixture(hello);
+    put_u32(hello + 48, UINT32_C(0x8100a047));
+    REQUIRE(validate_hello(hello) != 0);
+    public_hello_fixture(hello);
+    memset(hello + 12, 0, 32);
+    REQUIRE(validate_hello(hello) != 0);
+}
+
+static void authentication_is_exact_nonce_role_and_nonzero_secret(void)
+{
+    uint8_t hello[HELLO_BYTES];
+    uint8_t auth[AUTH_BYTES] = {0};
+    public_hello_fixture(hello);
+    memcpy(auth, "AOSBTA02", 8);
+    auth[9] = 2;
+    memcpy(auth + 12, hello + 12, 36);
+    memset(auth + 48, 9, 32);
+    REQUIRE(validate_auth(auth, hello) == 0);
+
+    const size_t changed_offsets[] = {0, 7, 8, 9, 10, 11, 12, 43, 44, 47};
+    for (size_t index = 0; index < sizeof(changed_offsets) / sizeof(changed_offsets[0]); ++index) {
+        size_t offset = changed_offsets[index];
+        auth[offset] ^= 1;
+        REQUIRE(validate_auth(auth, hello) != 0);
+        auth[offset] ^= 1;
+    }
+    memset(auth + 48, 0, 32);
+    REQUIRE(validate_auth(auth, hello) != 0);
+    erase(auth, sizeof(auth));
+}
+
+static void lock_shape_requires_empty_rdwr_and_distinct_identity(void)
+{
+    char paths[2][64] = {"/tmp/aos-tpm-lock-a-XXXXXX", "/tmp/aos-tpm-lock-b-XXXXXX"};
+    int locks[2] = {mkstemp(paths[0]), mkstemp(paths[1])};
+    uint8_t hello[HELLO_BYTES];
+    public_hello_fixture(hello);
+    for (size_t index = 0; index < 2; ++index) {
+        struct stat observed;
+        REQUIRE(locks[index] >= 3 && fstat(locks[index], &observed) == 0);
+        REQUIRE(fchmod(locks[index], 0600) == 0);
+        uint8_t *expected = hello + 120 + index * 20;
+        for (size_t byte = 0; byte < 8; ++byte) {
+            expected[7 - byte] = (uint8_t)((uint64_t)observed.st_dev >> (byte * 8));
+            expected[15 - byte] = (uint8_t)((uint64_t)observed.st_ino >> (byte * 8));
+        }
+        put_u32(expected + 16, (uint32_t)observed.st_uid);
+    }
+    REQUIRE(validate_locks(hello, locks) == 0);
+    REQUIRE(ftruncate(locks[0], 1) == 0);
+    REQUIRE(validate_locks(hello, locks) != 0);
+    REQUIRE(ftruncate(locks[0], 0) == 0);
+    int read_only = open(paths[0], O_RDONLY | O_CLOEXEC);
+    REQUIRE(read_only >= 3);
+    int changed[2] = {read_only, locks[1]};
+    REQUIRE(validate_locks(hello, changed) != 0);
+    REQUIRE(close(read_only) == 0);
+    changed[0] = locks[0];
+    changed[1] = locks[0];
+    REQUIRE(validate_locks(hello, changed) != 0);
+    for (size_t index = 0; index < 2; ++index) {
+        REQUIRE(close(locks[index]) == 0);
+        REQUIRE(unlink(paths[index]) == 0);
+    }
+}
+
 /* This test is not linked to Device-TCTI. An accidental production-open call
  * fails instead of opening a physical device; the real helper links normally. */
 TSS2_RC Tss2_Tcti_Device_Init(TSS2_TCTI_CONTEXT *context, size_t *size, const char *config)
@@ -411,6 +502,9 @@ int main(void)
         const char *name;
         void (*run)(void);
     } cases[] = {
+        {"public HELLO excludes auth and rejects old framing", public_hello_rejects_secrets_and_old_framing},
+        {"separate auth binds nonce, role and nonzero secret", authentication_is_exact_nonce_role_and_nonzero_secret},
+        {"lock custody is empty RDWR and nonaliasing", lock_shape_requires_empty_rdwr_and_distinct_identity},
         {
             "repeated Complete preserves exact initial cached response",
             repeated_complete_observes_initial_response_without_transport,
@@ -444,7 +538,7 @@ int main(void)
         cases[index].run();
         REQUIRE(printf("passed: %s\n", cases[index].name) > 0);
     }
-    REQUIRE(puts("tpm2-tss 4.2.0 ReadPublic cache regression: 7 tests passed") >= 0);
+    REQUIRE(puts("tpm2-tss 4.2.0 cache and private-custody regression: 10 tests passed") >= 0);
     REQUIRE(fflush(stdout) == 0);
     return EXIT_SUCCESS;
 }

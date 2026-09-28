@@ -8,6 +8,7 @@
 use super::format::NV_ATTRIBUTES_WRITTEN;
 use super::{FloorErrorV1, FloorIntentV1, FloorProfileV1};
 
+pub(super) mod confinement;
 mod helper_protocol;
 mod image;
 mod physical;

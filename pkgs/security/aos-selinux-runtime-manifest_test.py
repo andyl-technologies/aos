@@ -482,12 +482,47 @@ class ManifestEncodingTests(unittest.TestCase):
 
         isolate = launcher.index("isolate_root_handoff_mount_namespace();")
         verify = launcher.index("require_filesystem(root_prefix")
-        open_fd = launcher.index("open_verified_physical_store_target(")
-        execute_fd = launcher.index("execveat(provisioner_fd")
+        open_fd = launcher.index("handoff_fd = open_verified_runtime_roots_handoff(")
+        select_handoff = launcher.index("handoff_arguments[1] = (char *)AOS_RUNTIME_ROOTS_HANDOFF;")
+        close_inherited = launcher.index("syscall(SYS_close_range")
+        execute_fd = launcher.index('execveat(handoff_fd, "", handoff_arguments')
         self.assertLess(isolate, verify)
         self.assertLess(verify, open_fd)
-        self.assertLess(open_fd, execute_fd)
+        self.assertLess(open_fd, select_handoff)
+        self.assertLess(select_handoff, close_inherited)
+        self.assertLess(close_inherited, execute_fd)
         self.assertIn("AT_EMPTY_PATH", launcher)
+        self.assertNotIn("open_verified_physical_store_target(", launcher)
+
+        # The first retained executable establishes the narrower handoff role;
+        # the second opens the physical provisioner in that same private mount.
+        handoff_start = source.index("static void run_runtime_roots_handoff(")
+        handoff_end = source.index("\n}\n", handoff_start)
+        handoff = source[handoff_start:handoff_end]
+        context = handoff.index("require_current_context(EXPECTED_RUNTIME_ROOTS_HANDOFF_CONTEXT);")
+        private_mount = handoff.index("require_private_root_mount();")
+        verify = handoff.index("require_filesystem(root_prefix")
+        open_fd = handoff.index("provisioner_fd = open_verified_physical_store_target(")
+        execute_fd = handoff.index('execveat(provisioner_fd, "", provisioner_arguments')
+        self.assertLess(context, private_mount)
+        self.assertLess(private_mount, verify)
+        self.assertLess(verify, open_fd)
+        self.assertLess(open_fd, execute_fd)
+        self.assertIn(
+            "root_prefix,\n        AOS_PHYSICAL_RUNTIME_ROOTS_PATH,\n"
+            "        EXPECTED_RUNTIME_ROOTS_EXEC_CONTEXT,",
+            handoff,
+        )
+        self.assertIn("AT_EMPTY_PATH", handoff)
+
+        main_start = source.index("int main(int argc, char **argv)")
+        main_end = source.index("\n}\n", main_start)
+        main = source[main_start:main_end]
+        self.assertIn(
+            "strcmp(argv[1], AOS_RUNTIME_ROOTS_HANDOFF) == 0) {\n"
+            "        run_runtime_roots_handoff(argc, argv);",
+            main,
+        )
 
     def test_stage1_guard_executes_the_verified_systemd_inode(self) -> None:
         source = module_path.with_name("aos-selinux-stage0.c").read_text(

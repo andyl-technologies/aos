@@ -121,14 +121,17 @@ impl BrokerFloorV1 {
                     state: FloorStateV1::Legacy { mode },
                 })
             }
-            ImageFloorModeV1::Required => Ok(Self {
-                state: FloorStateV1::Required {
-                    mode,
-                    provision: ProvisionPinV1::open(endpoint)?,
-                    launch_image: launch_image.ok_or(FloorErrorV1::Unavailable)?,
-                    attached: None,
-                },
-            }),
+            ImageFloorModeV1::Required => {
+                super::backend::confinement::require_owner(endpoint)?;
+                Ok(Self {
+                    state: FloorStateV1::Required {
+                        mode,
+                        provision: ProvisionPinV1::open(endpoint)?,
+                        launch_image: launch_image.ok_or(FloorErrorV1::Unavailable)?,
+                        attached: None,
+                    },
+                })
+            }
         }
     }
 
@@ -286,6 +289,9 @@ pub(in crate::recovery::journal) fn require_launch_image_presence(
     };
     let mode = ModePinV1::open(endpoint)?;
     require_mode_image_presence(mode.mode(), supplied)?;
+    if mode.mode() == ImageFloorModeV1::Required {
+        super::backend::confinement::require_owner(endpoint)?;
+    }
     mode.revalidate()
 }
 
