@@ -30,6 +30,51 @@ pub(crate) type VerifiedMountAdmissionV1 = VerifiedBrokerAdmission;
 pub struct MountAuthorityV1(pub(super) BrokerAuthority);
 
 impl MountAuthorityV1 {
+    /// Admits only the independently signed original purpose-57 FUSE request.
+    ///
+    /// Common admission rechecks signatures, ownership, monotonic fences and
+    /// the original deadline. This is not a physical slot/Host/worker grant;
+    /// the broker must retain authenticated RequestPrepared and independently
+    /// bind those owners before writing a reservation.
+    pub(crate) fn admit_fuse_reserve_intent(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: &aos_sandbox_protocol::mount_fuse_reserve_intent::ValidatedFuseReserveIntentRequestV1,
+        request_body: &[u8],
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+    ) -> Result<VerifiedMountAdmissionV1, MountAdmissionError> {
+        let semantics = aos_sandbox_protocol::semantics::mount_fuse_reserve_intent::canonical_mount_fuse_reserve_intent_semantics_v1(request)
+            .map_err(|_| MountAdmissionError::RequestMismatch)?;
+        if aos_sandbox_core::BrokerArgumentCommitment::for_canonical_bytes(request_body)
+            .digest()
+            .as_bytes()
+            != request.request_commitment()
+        {
+            return Err(MountAdmissionError::RequestMismatch);
+        }
+        self.0.admit_fuse_intent(
+            artifacts,
+            AdmissionRequest {
+                audience: aos_sandbox_core::BrokerAudience::Mount,
+                protocol: ProtocolId::MountFuseBroker,
+                protocol_version: ProtocolVersion::new(3, 0),
+                assignment: assignment(request.fence())?,
+                request_id: *request.header().request_id(),
+                request_body,
+                descriptor_count: 0,
+                verb: semantics.verb(),
+                target: semantics.target(),
+                argument_commitment: semantics.commitment(),
+                request_deadline_boottime_nanoseconds: request
+                    .header()
+                    .deadline_boottime_nanoseconds(),
+            },
+            current_clock,
+            prior_fence,
+        )
+    }
+
     /// Constructs mount authority from already validated protected anchors.
     ///
     /// # Errors

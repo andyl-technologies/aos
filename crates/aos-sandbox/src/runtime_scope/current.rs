@@ -171,6 +171,59 @@ impl CurrentRuntimeScope {
         self.validity.expires_wall_seconds()
     }
 
+    pub(crate) const fn mount_plan_revocation_scope(&self) -> aos_sandbox_core::RevocationScopeId {
+        self.policy.mount_broker_anchor.revocation_scope()
+    }
+
+    /// Rebinds only purpose 57 to the actual current ownership and Host window.
+    ///
+    /// This leaves native Mount verification unchanged. The plan constructor
+    /// rejects native grants, other purposes and missing presentation negotiation.
+    pub(crate) fn verify_fuse_intent_plan<T>(
+        &self,
+        journal: &mut Journal,
+        signed: &SignedBrokerPlan,
+        request: BrokerPlanRequest,
+        clock: &mut T,
+    ) -> Result<(), CurrentRuntimeScopeError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        if request.verb != aos_sandbox_core::BrokerVerb::MountReserveFuseWorkerIntent {
+            return Err(CurrentRuntimeScopeError::MissingGrant);
+        }
+        let (lease, fresh) = self.verified_plan_lease(journal, clock)?;
+        let signature = decode_signature(signed.canonical_signature(), DecodeLimits::default())
+            .map_err(aos_sandbox_core::BrokerPlanVerificationError::from)?;
+        let verified = verify_broker_plan(
+            signed.canonical_plan(),
+            &signature,
+            &self.policy.mount_broker_anchor,
+            BrokerPlanExpectation {
+                audience: BrokerAudience::Mount,
+                protocol: aos_sandbox_core::ProtocolId::MountFuseBroker,
+                protocol_version: aos_sandbox_core::ProtocolVersion::new(3, 0),
+                assignment: self
+                    .binding
+                    .manifest()
+                    .broker_assignment()
+                    .map_err(|_| CurrentRuntimeScopeError::CurrentMismatch)?,
+                node: self.policy.node,
+                now_seconds: fresh.wall_seconds(),
+            },
+            DecodeLimits::default(),
+        )?;
+        if verified.plan().ownership_authority() != lease.signer()
+            || verified.plan().expires_seconds() > self.expires_wall_seconds()
+            || verified.plan().policy_commitment()
+                != self.binding.manifest().manifest().policy().digest()
+        {
+            return Err(CurrentRuntimeScopeError::CurrentMismatch);
+        }
+        verified.match_request(request)?;
+        self.recheck(journal, clock)
+    }
+
     /// Derives a desired attachment lease interval from current signed ownership.
     ///
     /// The short Host observation must remain current while issuing, but it

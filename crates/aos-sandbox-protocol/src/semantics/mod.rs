@@ -15,6 +15,7 @@ pub mod host_execution_argument;
 pub mod host_fuse_worker_session;
 pub mod host_output;
 pub mod mount;
+pub mod mount_fuse_reserve_intent;
 pub mod mount_scope;
 pub mod mount_source_acquisition;
 pub mod network;

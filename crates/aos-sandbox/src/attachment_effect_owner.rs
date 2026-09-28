@@ -72,6 +72,12 @@ use crate::runtime_scope::{
 use crate::{Journal, JournalError, SignedBrokerPlan};
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 
+mod fuse_reserve;
+
+pub use fuse_reserve::{
+    ControllerFuseIntentDispatchErrorV1, CurrentControllerFuseIntentDispatchV1,
+};
+
 /// Reports failure to bind a fresh Host observation to protected namespace authority.
 #[derive(Debug, thiserror::Error)]
 pub enum ProtectedAttachmentTargetErrorV1 {

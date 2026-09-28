@@ -303,6 +303,8 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     MountReleaseSourceAcquisition,
     /// Mount source-acquisition inventory.
     MountInventorySourceAcquisitions,
+    /// Exact purpose-57 FUSE intent; successful worker/read outcomes remain closed.
+    MountFuseReserveIntent,
 }
 
 /// Identifies which endpoint advanced client-to-broker request state.
@@ -469,6 +471,9 @@ pub const fn authenticated_broker_method_adapter_v1(
         BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => {
             AuthenticatedBrokerMethodSemanticsV1::MountInventorySourceAcquisitions
         }
+        BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1 => {
+            AuthenticatedBrokerMethodSemanticsV1::MountFuseReserveIntent
+        }
         BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT => {
             AuthenticatedBrokerMethodSemanticsV1::StorageAtomicSnapshot
         }
@@ -483,8 +488,7 @@ pub const fn authenticated_broker_method_adapter_v1(
         }
         // These provisional carriers remain closed until their independent
         // issuers and cross-owner currentness joins exist.
-        BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
-        | BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
         | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT => return None,
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
@@ -1698,8 +1702,19 @@ fn validate_request_semantics(
                 Some(*commitment.digest().as_bytes()),
             )
         }
-        BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
-        | BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
+        BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1 => {
+            let request = crate::mount_fuse_reserve_intent::decode_fuse_reserve_intent_request_v1(
+                body, peer, policy, now,
+            )?;
+            let semantics = crate::semantics::mount_fuse_reserve_intent::canonical_mount_fuse_reserve_intent_semantics_v1(&request)
+                .map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::MountFuseReserveIntent,
+                *request.header(),
+                Some(*semantics.commitment().digest().as_bytes()),
+            )
+        }
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
         | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_UNSPECIFIED => {

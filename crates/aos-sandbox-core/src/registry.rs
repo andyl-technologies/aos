@@ -375,7 +375,13 @@ pub const HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE: &str =
 /// Exact feature name for original Host/Mount worker preparation transport 1.0.
 pub const HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE: &str = "aos.sandbox.host.fuse-worker-session";
 
-const BASE_FEATURES: [FeatureDefinition; 20] = [
+/// Exact feature name for the separate Mount FUSE presentation contract 1.0.
+pub const MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE: &str = "aos.sandbox.mount.fuse-presentation";
+
+/// Maximum body size for the descriptor-free FUSE intent reservation purpose.
+pub const MOUNT_FUSE_RESERVE_INTENT_MAXIMUM_REQUEST_BYTES_V1: u32 = 1024 * 1024;
+
+const BASE_FEATURES: [FeatureDefinition; 21] = [
     feature("aos.sandbox.runtime.linux-systemd"),
     feature("aos.sandbox.identity.posix32"),
     feature("aos.sandbox.metadata.posix-acl"),
@@ -387,6 +393,7 @@ const BASE_FEATURES: [FeatureDefinition; 20] = [
     feature(BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE),
     feature(HOST_EXECUTION_SPEC_DESCRIPTOR_FEATURE_NAMESPACE),
     feature(HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE),
+    feature(MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE),
     feature("aos.sandbox.host.consumer-cgroup-readback"),
     feature("aos.sandbox.mount.source-acquisition"),
     feature("aos.sandbox.enforcement.zfs-quota"),

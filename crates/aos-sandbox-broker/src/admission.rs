@@ -222,6 +222,29 @@ impl BrokerAuthority {
         self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
     }
 
+    /// Admits only purpose 57 beside an existing Mount fence for the same assignment.
+    ///
+    /// The FUSE presentation grant has its own plan digest after native slot
+    /// preparation. This exact carve-out reuses the already current local
+    /// ownership lease; native Mount and other FUSE purposes remain unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another domain/profile, stale assignment or ownership, invalid
+    /// signatures, substituted complete intent semantics and expanded FD count.
+    pub fn admit_fuse_intent(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+    ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        if self.domain != BrokerDomain::Mount || !is_fuse_intent_admission(&request) {
+            return Err(BrokerAdmissionError::RequestMismatch);
+        }
+        self.admit_with_plan_rotation(artifacts, request, current_clock, prior_fence, true)
+    }
+
     /// Admits a distinct Host ATTACH grant on the shared runtime lease.
     ///
     /// # Errors
@@ -332,8 +355,9 @@ impl BrokerAuthority {
         prior_fence: Option<&[u8]>,
         allow_exact_plan_rotation: bool,
     ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
-        if !supports_signed_admission(request.protocol, request.protocol_version)
-            || request.audience.protocol() != request.protocol
+        let fuse_intent = is_fuse_intent_admission(&request);
+        if (!supports_signed_admission(request.protocol, request.protocol_version) && !fuse_intent)
+            || (request.audience.protocol() != request.protocol && !fuse_intent)
             || request.audience != self.domain.audience()
             || request.request_id == [0; 16]
             || request.request_body.is_empty()
@@ -730,6 +754,15 @@ impl BrokerAuthority {
     }
 }
 
+fn is_fuse_intent_admission(request: &AdmissionRequest<'_>) -> bool {
+    request.audience == BrokerAudience::Mount
+        && request.protocol == ProtocolId::MountFuseBroker
+        && request.protocol_version == ProtocolVersion::new(3, 0)
+        && request.verb == BrokerVerb::MountReserveFuseWorkerIntent
+        && matches!(request.target, BrokerGrantTarget::Resource(_))
+        && request.descriptor_count == 0
+}
+
 fn supports_signed_admission(protocol: ProtocolId, version: ProtocolVersion) -> bool {
     negotiate_protocol(protocol, version).is_ok()
         && (version.minor() >= 1
@@ -832,6 +865,50 @@ impl BrokerDomain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fuse_signed_admission_is_only_the_exact_purpose_fifty_seven_profile() {
+        let original = AdmissionRequest {
+            audience: BrokerAudience::Mount,
+            protocol: ProtocolId::MountFuseBroker,
+            protocol_version: ProtocolVersion::new(3, 0),
+            assignment: BrokerAssignment::new(
+                aos_sandbox_core::SandboxId::from_bytes([1; 16]),
+                aos_sandbox_core::IncarnationId::from_bytes([2; 16]),
+                aos_sandbox_core::AssignmentEpoch::new(1),
+                aos_sandbox_core::DesiredGeneration::new(1),
+                aos_sandbox_core::ObjectDigest::from_bytes([3; 32]),
+            )
+            .unwrap(),
+            request_id: [4; 16],
+            request_body: b"exact body",
+            descriptor_count: 0,
+            verb: BrokerVerb::MountReserveFuseWorkerIntent,
+            target: BrokerGrantTarget::Resource(
+                aos_sandbox_core::BrokerResourceHandle::from_bytes([5; 32]).unwrap(),
+            ),
+            argument_commitment: aos_sandbox_core::BrokerArgumentCommitment::for_canonical_bytes(
+                b"exact semantics",
+            ),
+            request_deadline_boottime_nanoseconds: 100,
+        };
+
+        assert!(is_fuse_intent_admission(&original));
+        for case in 0..7 {
+            let mut changed = original;
+            match case {
+                0 => changed.audience = BrokerAudience::Host,
+                1 => changed.protocol = ProtocolId::MountBroker,
+                2 => changed.protocol_version = ProtocolVersion::new(2, 0),
+                3 => changed.protocol_version = ProtocolVersion::new(3, 1),
+                4 => changed.verb = BrokerVerb::MountCreate,
+                5 => changed.target = BrokerGrantTarget::Assignment,
+                6 => changed.descriptor_count = 1,
+                _ => unreachable!(),
+            }
+            assert!(!is_fuse_intent_admission(&changed), "substitution {case}");
+        }
+    }
 
     #[test]
     fn all_broker_domains_admit_minor_zero_signed_requests() {

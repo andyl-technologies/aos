@@ -212,6 +212,32 @@ impl ControllerBrokerPlanSignerV1 {
         self.sign_with_authority(plan, now_seconds, &self.mount_authority)
     }
 
+    /// Signs purpose 57 only while the genuine fixed Controller owner is held.
+    ///
+    /// The owner builds the complete original intent grant and independently
+    /// verifies its returned signature against current assignment/lease/Host
+    /// state. No caller-selected plan or decoded request can use this seam.
+    pub(crate) fn sign_mount_fuse_intent<T>(
+        &self,
+        held: &mut aos_sandbox::attachment_effect_owner::CurrentControllerFuseIntentDispatchV1<'_>,
+        clock: &mut T,
+    ) -> Result<SignedBrokerPlan, ControllerBrokerPlanSignerError>
+    where
+        T: FnMut() -> Result<
+            aos_sandbox_core::RawPairedClockSample,
+            aos_sandbox::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        let plan = held
+            .plan_at(clock)
+            .map_err(|_| ControllerBrokerPlanSignerError::Completion)?;
+        let issued = plan.issued_seconds();
+        let signed = self.sign_with_authority(plan, issued, &self.mount_authority)?;
+        held.verify_signed_plan(&signed, clock)
+            .map_err(|_| ControllerBrokerPlanSignerError::Completion)?;
+        Ok(signed)
+    }
+
     /// Verifies the exact original Mount plan retained in a durable attempt.
     ///
     /// Recovery never signs a replacement under the same operation identity.

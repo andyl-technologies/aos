@@ -5382,6 +5382,94 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.reserve_exact_authenticated_request(authenticated, initialize)
     }
 
+    /// Selects exact unadvertised FUSE coordinates before owner-issued signing.
+    ///
+    /// Coordinates are data only. The Controller owner must still join its
+    /// current desired/runtime cut, sign purpose 57, and retain its borrow
+    /// through durable preparation and dispatch.
+    pub(crate) fn fuse_intent_request_coordinates(
+        &mut self,
+    ) -> Result<DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError> {
+        self.0.require_negotiated_client_method(
+            BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1,
+        )?;
+        let (request_id, deadline, maximum_response_bytes, protocol_version, audience) =
+            self.0.client_request_coordinates()?;
+        if protocol_version != ProtocolVersion::new(3, 0)
+            || audience != Audience::AUDIENCE_NODE_CONTROLLER
+        {
+            return Err(BrokerSessionSecurityError::manifest(
+                "FUSE session coordinates",
+            ));
+        }
+        Ok(DormantBrokerRequestCoordinatesV1 {
+            request_id,
+            deadline_boottime_nanoseconds: deadline,
+            maximum_response_bytes,
+            protocol_version,
+            audience,
+        })
+    }
+
+    /// Installs only the exact original FUSE packet in authenticated RequestPrepared.
+    ///
+    /// The upper composition retains genuine Controller custody. This lower
+    /// method validates/signs the packet and preserves commit ambiguity; it
+    /// does not adopt a Mount reservation, worker, or read authority.
+    pub(crate) fn prepare_authenticated_fuse_intent_request(
+        &mut self,
+        packet: &[u8],
+        request: &aos_sandbox_protocol::mount_fuse_reserve_intent::ValidatedFuseReserveIntentRequestV1,
+    ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
+        let method = BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1;
+        self.0.require_negotiated_client_method(method)?;
+        let envelope = BrokerRequestEnvelope::decode_from_slice(packet)
+            .map_err(|_| BrokerSessionSecurityError::manifest("FUSE signed envelope"))?;
+        let (maximum_deadline, maximum_response_bytes, protocol_version, audience) =
+            self.0.client_request_limits()?;
+        if protocol_version != ProtocolVersion::new(3, 0)
+            || audience != Audience::AUDIENCE_NODE_CONTROLLER
+            || request.header().deadline_boottime_nanoseconds() > maximum_deadline
+            || request.header().maximum_response_bytes() > maximum_response_bytes
+            || envelope.method.as_known() != Some(method)
+            || !envelope.__buffa_unknown_fields.is_empty()
+            || envelope.encode_to_vec() != packet
+            || !envelope.descriptors.is_empty()
+            || !envelope.signed_session_request.is_empty()
+            || aos_sandbox_core::BrokerArgumentCommitment::for_canonical_bytes(&envelope.body)
+                .digest()
+                .as_bytes()
+                != request.request_commitment()
+        {
+            return Err(BrokerSessionSecurityError::manifest(
+                "FUSE original session binding",
+            ));
+        }
+        let semantics = aos_sandbox_protocol::semantics::mount_fuse_reserve_intent::canonical_mount_fuse_reserve_intent_semantics_v1(request)
+            .map_err(|_| BrokerSessionSecurityError::manifest("FUSE complete original semantics"))?;
+        let (authenticated, initialize) = self.0.prepare_client_request(
+            envelope,
+            method,
+            0,
+            *request.header().request_id(),
+            request.header().deadline_boottime_nanoseconds(),
+            request.header().maximum_response_bytes(),
+        )?;
+        if authenticated.semantic_commitment() != *semantics.commitment().digest().as_bytes()
+            || aos_sandbox_core::BrokerArgumentCommitment::for_canonical_bytes(
+                authenticated.exact_body(),
+            )
+            .digest()
+            .as_bytes()
+                != request.request_commitment()
+        {
+            return Err(BrokerSessionSecurityError::manifest(
+                "FUSE authenticated original semantics",
+            ));
+        }
+        self.reserve_exact_authenticated_request(authenticated, initialize)
+    }
+
     pub(crate) fn mount_request_coordinates(
         &mut self,
     ) -> Result<DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError> {

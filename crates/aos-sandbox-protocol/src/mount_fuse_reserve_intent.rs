@@ -39,6 +39,7 @@ pub struct ValidatedFuseReserveIntentRequestV1 {
     namespace_allocation_digest: [u8; 32],
     runtime_handle: [u8; 32],
     payload_scope_handle: [u8; 32],
+    request_commitment: [u8; 32],
 }
 
 impl ValidatedFuseReserveIntentRequestV1 {
@@ -88,6 +89,12 @@ impl ValidatedFuseReserveIntentRequestV1 {
     #[must_use]
     pub const fn payload_scope_handle(&self) -> &[u8; 32] {
         &self.payload_scope_handle
+    }
+
+    /// Returns the complete canonical request commitment for comparison only.
+    #[must_use]
+    pub const fn request_commitment(&self) -> &[u8; 32] {
+        &self.request_commitment
     }
 }
 
@@ -142,7 +149,7 @@ fn decode_request(
 
     let request = ReserveFuseWorkerIntentRequestV1::decode_from_slice(bytes)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
-    if !request.__buffa_unknown_fields.is_empty() {
+    if !request.__buffa_unknown_fields.is_empty() || request.encode_to_vec() != bytes {
         return Err(ProtocolValidationError::UnknownFields);
     }
     let header = request
@@ -210,6 +217,9 @@ fn decode_request(
             &request.payload_scope_handle,
             "payload_scope_handle",
         )?,
+        request_commitment: *aos_sandbox_core::BrokerArgumentCommitment::for_canonical_bytes(bytes)
+            .digest()
+            .as_bytes(),
     })
 }
 
@@ -244,6 +254,13 @@ mod tests {
     }
 
     fn intent(presentation: AttachmentPresentation) -> AttachmentIntent {
+        intent_with_expiry(presentation, 20)
+    }
+
+    fn intent_with_expiry(
+        presentation: AttachmentPresentation,
+        expires_seconds: i64,
+    ) -> AttachmentIntent {
         let view = ObjectDescriptor::new(
             MediaType::new(PortableMediaType::View.as_str().to_owned()).unwrap(),
             ObjectDigest::from_bytes([7; 32]),
@@ -263,7 +280,7 @@ mod tests {
             AttachmentConsistency::ImmutableRevision,
             ViewMutation::ReadOnly,
             MountAttributes::new(true, true, true, true, true, false),
-            AttachmentLease::new(LeaseId::from_bytes([9; 16]), 10, 20).unwrap(),
+            AttachmentLease::new(LeaseId::from_bytes([9; 16]), 10, expires_seconds).unwrap(),
             presentation,
         )
         .unwrap()
@@ -321,6 +338,75 @@ mod tests {
         assert_eq!(validated.namespace_target_generation(), 5);
         assert_eq!(validated.namespace_allocation_digest(), &[13; 32]);
         assert_eq!(validated.payload_scope_handle(), &[14; 32]);
+    }
+
+    #[test]
+    fn purpose_fifty_seven_commits_complete_original_intent_and_dispatch() {
+        use crate::semantics::mount_fuse_reserve_intent::canonical_mount_fuse_reserve_intent_semantics_v1;
+        let original = request();
+        let compile = |wire: &ReserveFuseWorkerIntentRequestV1| {
+            let decoded =
+                decode_fuse_reserve_intent_request_v1(&wire.encode_to_vec(), peer(), policy(), 50)
+                    .unwrap();
+            canonical_mount_fuse_reserve_intent_semantics_v1(&decoded).unwrap()
+        };
+        let expected = compile(&original);
+
+        assert_eq!(
+            expected.verb(),
+            aos_sandbox_core::BrokerVerb::MountReserveFuseWorkerIntent
+        );
+        assert_eq!(
+            expected.target(),
+            aos_sandbox_core::BrokerGrantTarget::Resource(
+                aos_sandbox_core::BrokerResourceHandle::from_bytes([12; 32]).unwrap()
+            )
+        );
+        let prefix = b"aos.sandbox.mount.fuse-reserve-intent.v1\0";
+        assert!(expected.canonical_bytes().starts_with(prefix));
+        assert_eq!(
+            &expected.canonical_bytes()[prefix.len()..prefix.len() + 6],
+            &[0, 44, 0, 0, 0, 57]
+        );
+        assert_eq!(
+            &expected.canonical_bytes()[expected.canonical_bytes().len() - 2..],
+            &[0, 0]
+        );
+        for case in 0..8 {
+            let mut changed = original.clone();
+            match case {
+                0 => changed.header.as_option_mut().unwrap().request_id[0] ^= 1,
+                1 => {
+                    changed
+                        .header
+                        .as_option_mut()
+                        .unwrap()
+                        .deadline_boottime_nanoseconds += 1
+                }
+                2 => {
+                    changed
+                        .header
+                        .as_option_mut()
+                        .unwrap()
+                        .maximum_response_bytes += 1
+                }
+                3 => changed.fence.as_option_mut().unwrap().desired_generation += 1,
+                4 => changed.desired_record_digest[0] ^= 1,
+                5 => changed.namespace_allocation_digest[0] ^= 1,
+                6 => changed.payload_scope_handle[0] ^= 1,
+                7 => {
+                    changed.attachment_intent_v2 = encode_attachment_intent_v2(
+                        &intent_with_expiry(AttachmentPresentation::Fuse, 21),
+                    );
+                }
+                _ => unreachable!(),
+            }
+            assert_ne!(
+                compile(&changed).commitment(),
+                expected.commitment(),
+                "case {case}"
+            );
+        }
     }
 
     #[test]

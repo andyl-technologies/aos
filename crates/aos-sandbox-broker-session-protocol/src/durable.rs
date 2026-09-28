@@ -1173,6 +1173,22 @@ mod profile_binding_tests {
     }
 
     #[test]
+    fn purpose_fifty_seven_intent_pins_its_distinct_presentation_profile() {
+        // Independent complete encoding: method44/protocol5/FUSE3.0,
+        // Controller audience, SignedPlanLease + presentation1.0, and no FDs.
+        // Old unadvertised one-feature histories must not be reinterpreted.
+        let expected = [
+            0xd3, 0xf8, 0x76, 0x34, 0x13, 0x6c, 0x94, 0x0a, 0xc4, 0xb8, 0xd5, 0x93, 0x86, 0x4b,
+            0x38, 0x31, 0x16, 0x85, 0xcb, 0xc7, 0x86, 0x2f, 0xbd, 0x41, 0xb0, 0xd8, 0xad, 0xd1,
+            0x8b, 0x07, 0xd9, 0xb7,
+        ];
+        assert_eq!(
+            profile_binding(BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
     fn worker_preparation_has_a_distinct_complete_durable_profile() {
         let worker =
             profile_binding(BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1)
