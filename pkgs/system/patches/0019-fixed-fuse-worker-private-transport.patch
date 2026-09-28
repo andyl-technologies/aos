@@ -1,17 +1,15 @@
 diff --git a/src/core/dbus-manager.c b/src/core/dbus-manager.c
 --- a/src/core/dbus-manager.c
 +++ b/src/core/dbus-manager.c
-@@ -7,4 +7,9 @@
+@@ -7,4 +7,7 @@
  #include "alloc-util.h"
  #include "aos-fuse-worker.h"
 +#include "bus-message.h"
-+#if HAVE_SELINUX
-+#include <selinux/selinux.h>
-+#endif
++#include "selinux-util.h"
 +
  #include "architecture.h"
  #include "bitfield.h"
-@@ -1153,1 +1158,50 @@
+@@ -1153,1 +1156,51 @@
 +static int aos_fuse_worker_private_transport(Manager *m, sd_bus_message *message) {
 +        sd_bus *bus = sd_bus_message_get_bus(message);
 +        const char *sender;
@@ -44,8 +42,9 @@ diff --git a/src/core/dbus-manager.c b/src/core/dbus-manager.c
 +                return sd_bus_error_setf(error, SD_BUS_ERROR_ACCESS_DENIED,
 +                                         "Worker transport requires the pinned Host service");
 +#if HAVE_SELINUX
-+        _cleanup_free_ char *context = NULL;
-+        if (security_getenforce() != 1 || getcon(&context) < 0 ||
++        _cleanup_freecon_ char *context = NULL;
++        if (dlopen_libselinux(LOG_ERR) < 0 ||
++            sym_security_getenforce() != 1 || sym_getcon(&context) < 0 ||
 +            !streq_ptr(context, "system_u:system_r:init_t"))
 +                return sd_bus_error_setf(error, SD_BUS_ERROR_ACCESS_DENIED,
 +                                         "Worker transport requires enforcing PID 1");
@@ -62,7 +61,7 @@ diff --git a/src/core/dbus-manager.c b/src/core/dbus-manager.c
 +}
 +
  static int method_launch_aos_fuse_worker_v1(sd_bus_message *message, void *userdata, sd_bus_error *reterr_error) {
-@@ -1156,9 +1210,9 @@
+@@ -1156,9 +1209,9 @@
          Manager *m = ASSERT_PTR(userdata);
          Unit *u;
          int r;
@@ -73,8 +72,38 @@ diff --git a/src/core/dbus-manager.c b/src/core/dbus-manager.c
                  return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
                                           "Fixed FUSE launch requires the pinned Host service");
          r = sd_bus_message_read(message, "s", &instance);
-@@ -3204,1 +3258,4 @@
+@@ -3204,1 +3257,4 @@
 +        SD_BUS_METHOD_WITH_ARGS("OpenAosFuseWorkerPrivateTransportV1",
 +                                SD_BUS_NO_ARGS, SD_BUS_NO_RESULT,
 +                                method_open_aos_fuse_worker_private_transport_v1, SD_BUS_VTABLE_UNPRIVILEGED),
          SD_BUS_METHOD_WITH_ARGS("LaunchAosFuseWorkerV1",
+diff --git a/src/shared/selinux-util.h b/src/shared/selinux-util.h
+--- a/src/shared/selinux-util.h
++++ b/src/shared/selinux-util.h
+@@ -25,6 +25,7 @@
+ extern DLSYM_PROTOTYPE(fini_selinuxmnt);
+ extern DLSYM_PROTOTYPE(freecon);
++extern DLSYM_PROTOTYPE(getcon);
+ extern DLSYM_PROTOTYPE(getcon_raw);
+ extern DLSYM_PROTOTYPE(getfilecon_raw);
+ extern DLSYM_PROTOTYPE(getpeercon_raw);
+ extern DLSYM_PROTOTYPE(getpidcon_raw);
+diff --git a/src/shared/selinux-util.c b/src/shared/selinux-util.c
+--- a/src/shared/selinux-util.c
++++ b/src/shared/selinux-util.c
+@@ -64,6 +64,7 @@
+ DLSYM_PROTOTYPE(fini_selinuxmnt) = NULL;
+ DLSYM_PROTOTYPE(freecon) = NULL;
++DLSYM_PROTOTYPE(getcon) = NULL;
+ DLSYM_PROTOTYPE(getcon_raw) = NULL;
+ DLSYM_PROTOTYPE(getfilecon_raw) = NULL;
+ DLSYM_PROTOTYPE(getpeercon_raw) = NULL;
+ DLSYM_PROTOTYPE(getpidcon_raw) = NULL;
+@@ -110,6 +111,7 @@
+                         DLSYM_ARG(fini_selinuxmnt),
+                         DLSYM_ARG(freecon),
++                        DLSYM_ARG(getcon),
+                         DLSYM_ARG(getcon_raw),
+                         DLSYM_ARG(getfilecon_raw),
+                         DLSYM_ARG(getpeercon_raw),
+                         DLSYM_ARG(getpidcon_raw),
