@@ -264,6 +264,7 @@
 in
   assert support.validate packageNames;
   assert support.validateHelpers helperFiles;
+  assert support.helperInventory."security/_openssl-output-check.nix" == "cross-build-helper";
   assert support.validateExpressions packageExpressions;
   assert support.validateResources excludedResources;
   assert requiredPresent;

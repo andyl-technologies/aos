@@ -894,6 +894,7 @@ let
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
     "security/_aos-mount-executable-carrier.nix" = "linux-only-build-helper";
+    "security/_openssl-output-check.nix" = "cross-build-helper";
     "storage/_postgresql-cross.nix" = "cross-build-helper";
     "toolchain/_bazel-asm.nix" = "native-build-helper";
     "toolchain/_bazel-async-profiler-api.nix" = "native-build-helper";
