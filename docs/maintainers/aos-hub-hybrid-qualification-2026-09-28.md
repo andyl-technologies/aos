@@ -51,8 +51,10 @@ upload/recovery tests passed, including four new manifest cases for the 4 MiB
 boundary, interrupted-write cleanup, exact ownership/body/storage evidence,
 quota rejection and private completion identities. All 21 Native storage tests
 passed, including rejection of a paired Worker without manifest staging.
-The Worker handler passed Wasm compilation. The full signed-container fleet
-gate is rebuilding; these focused results do not yet qualify nonempty parity.
+The Worker handler passed Wasm compilation. All 13 real-TCP Native OCI tests
+also passed. The rebuilt shared application prerequisite passed all 3,980 tests,
+with six skipped. The full signed-container fleet has entered its four-machine
+execution; these prerequisite results do not yet qualify nonempty parity.
 
 A separate four-VM browser attempt passed the captured transport setup, then
 timed out on Chrome's first navigation through a disposable SOCKS bridge. It
@@ -208,6 +210,15 @@ of `aos-hub-bootstrap-root-password`. A loopback-only Native process verified
 the instance-owner membership, password login, authenticated console shell,
 CSRF token and logout; the diagnostic session was revoked and both the Native
 process and SQL connector were stopped. No credential values were logged.
+
+The route-reservation key ring and independent release and channel receipt
+signing seeds were subsequently provisioned as enabled numeric version `1` of
+their existing encrypted aliases. Preflight verified the single regional CMEK
+replica, exact Native accessor grant and absence of prior versions. Each key
+has 256 bits of entropy; exact stored-byte and CRC32C readback passed in memory.
+No secret values entered source, state, command arguments or logs. Public signer
+trust maps and domain-probe configuration remain unprovisioned. These credentials
+have not yet been mounted in a serving revision.
 
 This qualifies the database account, not a Cloud Run bootstrap execution or
 public Hybrid deployment. Signed serving delivery, credential mounts, origin
