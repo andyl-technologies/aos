@@ -197,6 +197,8 @@ pub use controller::{
     OperationCompilationError,
 };
 #[cfg(target_os = "linux")]
+pub use controller::{CurrentOriginalAttachConsumeCutV3, CurrentOriginalAttachHostConsumeDraftV3};
+#[cfg(target_os = "linux")]
 pub use destination_slot_effect::{
     CompletedCurrentDestinationSlotAttemptV1, DestinationSlotAttemptAdmissionOutcomeV1,
     DestinationSlotCompletionOutcomeV1, DestinationSlotDispatchClient, DestinationSlotEffectError,
