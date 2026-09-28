@@ -2674,6 +2674,9 @@ Positive proof construction additionally requires the genuine installed normal
 Root nondelegation/empty-capability matrix and exact image/launch provenance,
 including out-of-role endpoint fd-use/write, task-file theft, ptrace, transition,
 credential nomination and policy-mutation escape exclusions. An arbitrary path
-whose bytes match loaded policy does not prove that matrix. Until that complete
-producer join and installed qualification exist, the opaque client constructor
-and public readiness/effect gates remain closed.
+whose bytes match loaded policy does not prove that matrix. The generation-one
+coordinator constructs opaque client proofs only through that complete producer
+join while the actual Controller, Source and original Root flight remain held.
+This does not open public readiness/effect gates: those require the complete
+current all-owner barrier. Installed service, ordered phase-loss and crash-replay
+qualification are release requirements, not caller-supplied runtime flags.

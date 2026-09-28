@@ -8,8 +8,9 @@
 //!
 //! The profile resolves DT_NEEDED and the current executable mappings; it does
 //! not authenticate arbitrary future dlopen, freeze PID1 administration, prove
-//! continuous manager image identity after reexec. The original-flight proof
-//! constructor remains absent until the real held-owner coordinator exists.
+//! continuous manager image identity after reexec. The held-owner Source genesis
+//! coordinator consumes these comparisons together with the original Root stream;
+//! a selected profile alone cannot construct an original-flight proof.
 
 mod client;
 mod images;
