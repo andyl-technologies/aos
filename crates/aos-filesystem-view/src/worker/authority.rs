@@ -180,6 +180,14 @@ impl FuseCapabilities {
         self.extended_attributes
     }
 
+    pub(crate) const fn fallback_only(self) -> bool {
+        self.fallback_reads
+            && !self.posix_acl
+            && !self.extended_attributes
+            && !self.sparse_files
+            && !self.passthrough
+    }
+
     pub(crate) const fn requires_extended_operation_transport(self) -> bool {
         self.extended_attributes || self.sparse_files || self.passthrough || self.fallback_reads
     }

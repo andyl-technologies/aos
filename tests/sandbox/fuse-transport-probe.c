@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-/* Real-kernel metadata and mount-policy qualification for the installed bridge.
+/* Real-kernel callback and mount-policy fixtures for the installed bridge.
  * The fixed callback fixture deliberately does no credential authorization:
  * denied directory opens must therefore be enforced by the kernel mount.
  * Run only inside the AOS test VM, as root. */
@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <grp.h>
 #include <limits.h>
+#include <linux/capability.h>
 #include <poll.h>
 #include <sched.h>
 #include <signal.h>
@@ -22,6 +23,8 @@
 #include <sys/eventfd.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/prctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -298,11 +301,17 @@ static int list_directory(int parent, const char *name, bool rust_worker)
     return 0;
 }
 
-static int client(const char *mountpoint, uid_t uid, bool rust_worker)
+static int client(const char *mountpoint, uid_t uid, bool rust_worker, bool fallback)
 {
     if (setgroups(0, NULL) < 0 || setresgid(uid, uid, uid) < 0 ||
         setresuid(uid, uid, uid) < 0 || getuid() != uid || geteuid() != uid ||
         getgid() != uid || getegid() != uid || getgroups(0, NULL) != 0)
+        return -1;
+    struct __user_cap_header_struct header = {
+        .version = _LINUX_CAPABILITY_VERSION_3, .pid = 0};
+    struct __user_cap_data_struct capabilities[2] = {{0}, {0}};
+    if (syscall(SYS_capset, &header, capabilities) < 0 ||
+        prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0)
         return -1;
     int root = open(mountpoint, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (root < 0)
@@ -330,6 +339,26 @@ static int client(const char *mountpoint, uid_t uid, bool rust_worker)
                      status.st_ino == pinned_status.st_ino;
         close(pinned);
         if (!stable)
+            goto cleanup;
+    }
+    if (fallback) {
+        int content = openat(root, "public/leaf", O_RDONLY | O_CLOEXEC);
+        uint8_t bytes[4] = {0};
+        int valid = content >= 0 && read(content, bytes, sizeof(bytes)) == 1 &&
+                    bytes[0] == 42 && read(content, bytes, sizeof(bytes)) == 0 &&
+                    pread(content, bytes, sizeof(bytes), 1) == 0 &&
+                    pread(content, bytes, sizeof(bytes), 0) == 1 && bytes[0] == 42;
+        if (content >= 0)
+            close(content);
+        if (!valid)
+            goto cleanup;
+        int denied_content = openat(root, "private/leaf", O_RDONLY | O_CLOEXEC);
+        int denied_error = errno;
+        if (denied_content >= 0) {
+            close(denied_content);
+            goto cleanup;
+        }
+        if (denied_error != EACCES)
             goto cleanup;
     }
     char target[32];
@@ -370,7 +399,7 @@ cleanup:
 }
 
 static int run_client(const char *mountpoint, uid_t uid, int cancellation_fd,
-                      int result_fd, int release_fd, bool rust_worker)
+                      int result_fd, int release_fd, bool rust_worker, bool fallback)
 {
     pid_t child = fork();
     if (child < 0)
@@ -380,7 +409,7 @@ static int run_client(const char *mountpoint, uid_t uid, int cancellation_fd,
         close(cancellation_fd);
         close(result_fd);
         close(release_fd);
-        int result = client(mountpoint, uid, rust_worker);
+        int result = client(mountpoint, uid, rust_worker, fallback);
         if (result != 0)
             fprintf(stderr, "client uid=%u failed: %s\n", (unsigned)uid,
                     strerror(errno));
@@ -478,7 +507,8 @@ cleanup:
 /* Test-only process boundary: no transport-internal entry points are exposed.
  * The external worker receives exactly the three descriptors it owns. */
 static _Noreturn void exec_worker(const char *worker, int fuse_fd,
-                                  int cancellation_fd, int report_fd)
+                                  int cancellation_fd, int report_fd,
+                                  const char *fallback_root)
 {
     int descriptors[] = {fuse_fd, cancellation_fd, report_fd};
     char numbers[3][32];
@@ -492,7 +522,9 @@ static _Noreturn void exec_worker(const char *worker, int fuse_fd,
             flags < 0 || fcntl(descriptors[index], F_SETFD, flags & ~FD_CLOEXEC) < 0)
             _exit(2);
     }
-    char *arguments[] = {(char *)worker, numbers[0], numbers[1], numbers[2], NULL};
+    char *arguments[] = {(char *)worker, numbers[0], numbers[1], numbers[2],
+                         fallback_root != NULL ? (char *)"--fallback" : NULL,
+                         (char *)fallback_root, NULL};
     execv(worker, arguments);
     perror("exec Rust FUSE worker");
     _exit(2);
@@ -523,13 +555,21 @@ static int validate_report(int fd, bool rust_worker)
 int main(int argc, char **argv)
 {
     const char *worker = NULL;
+    const char *fallback_root = NULL;
     if (argc == 3 && strcmp(argv[1], "--rust-worker") == 0 && argv[2][0] == '/')
         worker = argv[2];
+    else if (argc == 4 && strcmp(argv[1], "--rust-fallback") == 0 &&
+             argv[2][0] == '/' && argv[3][0] == '/') {
+        worker = argv[2];
+        fallback_root = argv[3];
+    }
     else if (argc != 1) {
-        fprintf(stderr, "usage: %s [--rust-worker ABSOLUTE_WORKER_PATH]\n", argv[0]);
+        fprintf(stderr, "usage: %s [--rust-worker ABSOLUTE_WORKER_PATH | "
+                        "--rust-fallback ABSOLUTE_WORKER_PATH ABSOLUTE_FIXTURE_ROOT]\n", argv[0]);
         return 2;
     }
     bool rust_worker = worker != NULL;
+    bool fallback = fallback_root != NULL;
     alarm(60);
     signal(SIGPIPE, SIG_IGN);
     if (geteuid() != 0 || unshare(CLONE_NEWNS) < 0 ||
@@ -573,7 +613,7 @@ int main(int argc, char **argv)
         close(reports[0]);
         if (rust_worker) {
             close(release_fd);
-            exec_worker(worker, fuse_fd, cancel[0], reports[1]);
+            exec_worker(worker, fuse_fd, cancel[0], reports[1], fallback_root);
         }
         struct fixture fixture = {.release_notifications = release_fd};
         long page_size = sysconf(_SC_PAGESIZE);
@@ -618,9 +658,11 @@ int main(int argc, char **argv)
     close(reports[1]);
     reports[1] = -1;
     if (run_client(mountpoint, OTHER_ID, cancel[1], reports[0], release_fd,
-                   rust_worker) < 0 ||
+                   rust_worker, fallback) < 0 ||
         run_client(mountpoint, OWNER_ID, cancel[1], reports[0], release_fd,
-                   rust_worker) < 0)
+                   rust_worker, fallback) < 0 ||
+        (fallback && run_client(mountpoint, 0, cancel[1], reports[0], release_fd,
+                               rust_worker, fallback) < 0))
         goto cleanup;
     struct timespec idle = {.tv_sec = 2};
     while (nanosleep(&idle, &idle) < 0) {
@@ -628,7 +670,7 @@ int main(int argc, char **argv)
             goto cleanup;
     }
     if (run_client(mountpoint, OTHER_ID, cancel[1], reports[0], release_fd,
-                   rust_worker) < 0 ||
+                   rust_worker, fallback) < 0 ||
         (!rust_worker && await_releases(release_fd) < 0))
         goto cleanup;
     /* The callback acknowledges release before libfuse writes its reply. A
@@ -656,7 +698,14 @@ int main(int argc, char **argv)
     if (umount2(mountpoint, 0) < 0)
         goto cleanup;
     mounted = false;
-    if (rust_worker) {
+    if (fallback) {
+        printf("{\"schema_version\":\"aos.sandbox.fuse-rust-fallback-proof/v2\","
+               "\"architecture\":\"%s\",\"verified_read\":true,\"eof\":true,"
+               "\"mount_flags\":true,\"cross_uid_dac\":true,\"same_uid_dac\":true,"
+               "\"mode_zero_dac\":true,\"read_only\":true,\"idle_survives\":true,"
+               "\"cancelled\":true,\"borrowed_fds_retained\":true,\"worker_exited\":true,"
+               "\"disconnected\":true,\"unmounted\":true}\n", architecture());
+    } else if (rust_worker) {
         printf("{\"schema_version\":\"aos.sandbox.fuse-rust-metadata-proof/v1\","
                "\"architecture\":\"%s\",\"metadata\":true,"
                "\"mount_flags\":true,\"cross_uid_dac\":true,"

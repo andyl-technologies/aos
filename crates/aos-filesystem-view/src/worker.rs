@@ -564,6 +564,47 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
         })
     }
 
+    /// Creates a repository fixture's fallback-only connection and data plane.
+    ///
+    /// This bypasses broker qualification only in fixture builds. It creates
+    /// no backing, read grant, mount authority or sparse-allocation capability.
+    /// All structural, presentation and handle bounds still apply.
+    ///
+    /// # Errors
+    ///
+    /// Returns a worker error for invalid fixture preparation, or a data error
+    /// for invalid bounded fallback limits.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn new_fallback_test_fixture(
+        projection: &'prepared ValidatedViewProjection<'index, 'bytes>,
+        presentation: &'prepared PreparedPresentation<'index, 'bytes, 'plan>,
+        connection_key: [u8; 32],
+        inode_limits: InodeTableLimits,
+        directory_limits: DirectoryHandleLimits,
+        limits: WorkerLimits,
+        data_limits: DataPlaneLimits,
+    ) -> Result<(Self, DataPlane), ConnectionAuthorityError> {
+        let mut connection = Self::new_test_fixture(
+            projection,
+            presentation,
+            connection_key,
+            inode_limits,
+            directory_limits,
+            limits,
+        )
+        .map_err(|_| ConnectionAuthorityError::Unsupported("invalid fallback fixture"))?;
+        connection.capabilities =
+            FuseCapabilities::from_qualified(false, false, false, false, true);
+        let data = DataPlane::new(
+            data_limits,
+            DataOpenPolicy::FallbackOnly,
+            connection_key,
+            0,
+            u64::MAX,
+        )?;
+        Ok((connection, data))
+    }
+
     /// Creates one uninitialized worker bound to the presentation's exact index.
     ///
     /// # Errors
@@ -720,6 +761,14 @@ impl<'prepared, 'index, 'bytes, 'plan> MetadataConnection<'prepared, 'index, 'by
     #[must_use]
     pub const fn requires_extended_operation_transport(&self) -> bool {
         self.capabilities.requires_extended_operation_transport()
+    }
+
+    /// Reports whether only bounded fallback data, not other extensions, was admitted.
+    ///
+    /// This diagnostic installs no transport and grants no backing disclosure.
+    #[must_use]
+    pub const fn fallback_only_transport_admitted(&self) -> bool {
+        self.capabilities.fallback_only()
     }
 
     /// Reports whether authenticated admission included generic xattr reads.

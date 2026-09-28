@@ -16,8 +16,9 @@ use aos_filesystem_view::{
 };
 use aos_sandbox_core::format::{encode_directory, encode_tree, encode_view};
 use aos_sandbox_core::model::{
-    CacheDomain, CacheDomainKind, ContentLayout, Directory, DirectoryEntry, FileNode,
-    FilesystemMetadata, Node, SymlinkNode, Tree, View, ViewConsistency, ViewMutation, ViewSource,
+    CacheDomain, CacheDomainKind, ContentLayout, Directory, DirectoryEntry, Extent, FileNode,
+    FilesystemMetadata, Node, SparseContent, SymlinkNode, Tree, View, ViewConsistency,
+    ViewMutation, ViewSource,
 };
 use aos_sandbox_core::{
     CacheDomainId, DecodeLimits, FeatureRef, MediaType, ObjectDescriptor, ObjectDigest, PathName,
@@ -26,7 +27,7 @@ use aos_sandbox_core::{
 
 use super::*;
 
-fn limits() -> TransportLimits {
+pub(crate) fn limits() -> TransportLimits {
     TransportLimits {
         maximum_metadata_records: 4,
         maximum_name_bytes: 255,
@@ -42,7 +43,7 @@ fn limits() -> TransportLimits {
     }
 }
 
-fn budget() -> RequestBudget {
+pub(crate) fn budget() -> RequestBudget {
     RequestBudget::new(4096, 16, 4096).with_forget_entries(16)
 }
 
@@ -92,11 +93,63 @@ fn with_file_size(
         BorrowedFd<'_>,
     ),
 ) {
-    let content = ContentLayout::whole(ObjectDescriptor::new(
+    with_file_profile(
+        whole_content(file_size),
+        false,
+        |connection, _, scratch, connected, cancellation| {
+            action(connection, scratch, connected, cancellation)
+        },
+    );
+}
+
+pub(crate) fn with_fallback_connection(
+    sparse: bool,
+    action: impl FnOnce(
+        MetadataConnection<'_, '_, '_, '_>,
+        aos_filesystem_view::DataPlane,
+        &mut ReplyScratch,
+        BorrowedFd<'_>,
+        BorrowedFd<'_>,
+    ),
+) {
+    let content = if sparse {
+        let ContentLayout::Whole { content } = whole_content(1) else {
+            unreachable!()
+        };
+        ContentLayout::Sparse(
+            SparseContent::new(6, vec![Extent::new(2, 1, content).unwrap()]).unwrap(),
+        )
+    } else {
+        whole_content(1)
+    };
+    with_file_profile(
+        content,
+        true,
+        |connection, data, scratch, connected, cancellation| {
+            action(connection, data.unwrap(), scratch, connected, cancellation)
+        },
+    );
+}
+
+fn whole_content(file_size: u64) -> ContentLayout {
+    ContentLayout::whole(ObjectDescriptor::new(
         MediaType::new("application/vnd.aos.sandbox.content.v1").unwrap(),
         ObjectDigest::from_bytes([3; 32]),
         file_size,
-    ));
+    ))
+}
+
+fn with_file_profile(
+    content: ContentLayout,
+    fallback: bool,
+    action: impl FnOnce(
+        MetadataConnection<'_, '_, '_, '_>,
+        Option<aos_filesystem_view::DataPlane>,
+        &mut ReplyScratch,
+        BorrowedFd<'_>,
+        BorrowedFd<'_>,
+    ),
+) {
     let metadata = FilesystemMetadata::new(0o755, 0, 0, 0, 0, vec![], None).unwrap();
     let mut source = Source::default();
     let child = source.insert(
@@ -208,21 +261,48 @@ fn with_file_size(
         PreparedPresentation::prepare(&index, &plan, 1, [8; 32], PresentationLimits::new(4, 0, 2))
             .unwrap();
     let worker_limits = WorkerLimits::new(4096, 16, 4096, 65536).with_maximum_forget_entries(16);
-    let worker = MetadataConnection::new_test_fixture(
-        &projection,
-        &presentation,
-        [9; 32],
-        InodeTableLimits::new(32, 1_048_576, 64, 16, 16),
-        DirectoryHandleLimits::new(8, 16),
-        worker_limits,
-    )
-    .unwrap();
+    let inode = InodeTableLimits::new(32, 1_048_576, 64, 16, 16);
+    let directories = DirectoryHandleLimits::new(8, 16);
+    let (worker, data) = if fallback {
+        let (worker, data) = MetadataConnection::new_fallback_test_fixture(
+            &projection,
+            &presentation,
+            [9; 32],
+            inode,
+            directories,
+            worker_limits,
+            aos_filesystem_view::DataPlaneLimits {
+                maximum_read_bytes: 4096,
+                maximum_read_segments: 16,
+                maximum_plan_heap_bytes: 4096,
+                maximum_attempts_per_segment: 2,
+                maximum_retry_delay_ns: 1_000_000,
+                maximum_scratch_heap_bytes: 4096,
+            },
+        )
+        .unwrap();
+        (worker, Some(data))
+    } else {
+        (
+            MetadataConnection::new_test_fixture(
+                &projection,
+                &presentation,
+                [9; 32],
+                inode,
+                directories,
+                worker_limits,
+            )
+            .unwrap(),
+            None,
+        )
+    };
     let mut scratch = ReplyScratch::new(worker_limits).unwrap();
     let (connected, cancellation) = UnixStream::pair().unwrap();
     connected.set_nonblocking(true).unwrap();
     cancellation.set_nonblocking(true).unwrap();
     action(
         worker,
+        data,
         &mut scratch,
         connected.as_fd(),
         cancellation.as_fd(),

@@ -1,4 +1,4 @@
-//! Private in-process ABI matching the installed aos_fuse_transport.h version 1.
+//! Private in-process metadata V1 and dormant fallback V2 transport ABIs.
 //!
 //! These `repr(C)` objects cross a trusted synchronous library boundary, never
 //! a process or machine boundary. The C side validates all sizes and versions.
@@ -56,6 +56,7 @@ pub(crate) struct Limits {
 pub(crate) type ReplyOpen = unsafe extern "C" fn(*mut c_void, u64) -> c_int;
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub(crate) struct Operations {
     pub abi_major: u16,
     pub abi_minor: u16,
@@ -90,6 +91,30 @@ pub(crate) struct Operations {
 pub(crate) type Run =
     unsafe extern "C" fn(c_int, c_int, *const Operations, *mut c_void, *const Limits) -> c_int;
 
+#[repr(C)]
+pub(crate) struct FallbackOperationsV2 {
+    pub abi_major: u16,
+    pub abi_minor: u16,
+    pub struct_size: u32,
+    pub profile: u32,
+    pub reserved: u32,
+    pub metadata: Operations,
+    pub open: unsafe extern "C" fn(*mut c_void, u64, i32, u64, *mut c_void, ReplyOpen) -> c_int,
+    pub read:
+        unsafe extern "C" fn(*mut c_void, u64, u64, i64, u32, u64, *mut u8, u64, *mut u64) -> c_int,
+    pub release: unsafe extern "C" fn(*mut c_void, u64, u64, i32, u32, u64, u64) -> c_int,
+}
+
+#[repr(C)]
+pub(crate) struct FallbackLimitsV2 {
+    pub abi_major: u16,
+    pub abi_minor: u16,
+    pub struct_size: u32,
+    pub profile: u32,
+    pub reserved: u32,
+    pub metadata: Limits,
+}
+
 unsafe extern "C" {
     pub(crate) fn aos_fuse_transport_run(
         connected: c_int,
@@ -97,6 +122,13 @@ unsafe extern "C" {
         operations: *const Operations,
         context: *mut c_void,
         limits: *const Limits,
+    ) -> c_int;
+    pub(crate) fn aos_fuse_transport_run_fallback_v2(
+        connected: c_int,
+        cancellation: c_int,
+        operations: *const FallbackOperationsV2,
+        context: *mut c_void,
+        limits: *const FallbackLimitsV2,
     ) -> c_int;
 }
 
@@ -108,6 +140,9 @@ const _: () = {
     assert!(size_of::<DirectoryEntry>() == 24);
     assert!(size_of::<Limits>() == 64);
     assert!(size_of::<Operations>() == 96);
+    assert!(size_of::<FallbackOperationsV2>() == 136);
+    assert!(size_of::<FallbackLimitsV2>() == 80);
+    assert!(std::mem::offset_of!(FallbackOperationsV2, open) == 112);
     assert!(std::mem::offset_of!(Operations, lookup) == 32);
     assert!(std::mem::offset_of!(Attributes, kind) == 42);
     assert!(std::mem::offset_of!(DirectoryEntry, kind) == 22);

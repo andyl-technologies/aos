@@ -37,6 +37,9 @@ struct fake_core {
   unsigned committed;
   unsigned aborted;
   unsigned duplicate_refused;
+  unsigned file_open;
+  unsigned file_read;
+  unsigned file_release;
 };
 
 union aligned_buffer {
@@ -269,6 +272,174 @@ static void expect_error(int fd, uint64_t unique, int error) {
     fail("unexpected error reply");
 }
 
+static int core_file_open(void *opaque, uint64_t node, int32_t flags,
+                           uint64_t deadline_ns,
+                           struct aos_fuse_open_responder *responder,
+                           aos_fuse_reply_open_fn reply_open) {
+  struct fake_core *core = opaque;
+  core->file_open++;
+  if (node != 2 || flags != O_RDONLY || deadline_ns == 0)
+    return ESTALE;
+  int error = reply_open(responder, 91);
+  if (error == 0)
+    core->committed++;
+  else
+    core->aborted++;
+  return error;
+}
+
+static int core_file_read(void *opaque, uint64_t node, uint64_t handle,
+                           int64_t offset, uint32_t size, uint64_t deadline_ns,
+                           uint8_t *output, uint64_t capacity, uint64_t *length) {
+  struct fake_core *core = opaque;
+  core->file_read++;
+  if (node != 2 || handle != 91)
+    return ESTALE;
+  if (offset < 0 || size > capacity || deadline_ns == 0)
+    return EINVAL;
+  if (core->opendir_mode == 2) {
+    struct timespec delayed = {.tv_sec = 1, .tv_nsec = 200000000};
+    while (nanosleep(&delayed, &delayed) != 0 && errno == EINTR) {}
+  }
+  static const uint8_t data[] = {'a', 'b', 'c'};
+  *length = (uint64_t)offset >= sizeof(data) ? 0 : sizeof(data) - (uint64_t)offset;
+  if (*length > size)
+    *length = size;
+  if (*length != 0)
+    memcpy(output, data + (size_t)offset, (size_t)*length);
+  /* A provider prefix on error must never enter a kernel reply. */
+  return core->opendir_mode == 1 ? EIO : 0;
+}
+
+static int core_file_release(void *opaque, uint64_t node, uint64_t handle,
+                              int32_t flags, uint32_t release_flags,
+                              uint64_t lock_owner, uint64_t deadline_ns) {
+  struct fake_core *core = opaque;
+  core->file_release++;
+  return node == 2 && handle == 91 && flags == O_RDONLY &&
+                 release_flags == 0 && lock_owner == 0 && deadline_ns != 0
+             ? 0 : ESTALE;
+}
+
+static struct aos_fuse_fallback_operations_v2 fallback_operations(void) {
+  struct aos_fuse_fallback_operations_v2 result = {
+      .abi_major = 2, .abi_minor = 0, .struct_size = sizeof(result),
+      .profile = AOS_FUSE_PROFILE_BOUNDED_FALLBACK,
+      .open = core_file_open, .read = core_file_read, .release = core_file_release};
+  result.metadata = operations;
+  return result;
+}
+
+static struct aos_fuse_fallback_limits_v2 fallback_limits(void) {
+  struct aos_fuse_fallback_limits_v2 result = {
+      .abi_major = 2, .abi_minor = 0, .struct_size = sizeof(result),
+      .profile = AOS_FUSE_PROFILE_BOUNDED_FALLBACK};
+  result.metadata = limits;
+  result.metadata.request_timeout_seconds = 1;
+  return result;
+}
+
+static void test_fallback_v2(void) {
+  struct aos_fuse_fallback_operations_v2 ops = fallback_operations();
+  struct aos_fuse_fallback_limits_v2 bounds = fallback_limits();
+  if (sizeof(ops) != 136 || sizeof(bounds) != 80 ||
+      offsetof(struct aos_fuse_fallback_operations_v2, open) != 112)
+    fail("fallback ABI width or V1 embedding changed");
+  for (unsigned variant = 0; variant < 6; variant++) {
+    struct aos_fuse_fallback_operations_v2 bad = ops;
+    struct aos_fuse_fallback_limits_v2 bad_bounds = bounds;
+    switch (variant) {
+    case 0: bad.abi_major = 1; break;
+    case 1: bad.abi_minor = 1; break;
+    case 2: bad.profile = 2; break;
+    case 3: bad.metadata.flags = 1; break;
+    case 4: bad_bounds.abi_major = 1; break;
+    default: bad_bounds.reserved = 1; break;
+    }
+    if (aos_fuse_transport_run_fallback_v2_test_fd(-1, -1, &bad, NULL, &bad_bounds) != EINVAL)
+      fail("mixed fallback contract was not rejected before descriptor use");
+  }
+
+  for (int mode = 0; mode <= 2; mode++) {
+    int sockets[2];
+    int cancellation[2];
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0, sockets) != 0 ||
+        pipe2(cancellation, O_CLOEXEC | O_NONBLOCK) != 0)
+      fail("fallback fixture descriptors failed");
+    pid_t child = fork();
+    if (child < 0)
+      fail("fallback fork failed");
+    if (child == 0) {
+      signal(SIGPIPE, SIG_IGN);
+      close(sockets[0]);
+      close(cancellation[1]);
+      struct fake_core core = {.opendir_mode = mode};
+      int result = aos_fuse_transport_run_fallback_v2_test_fd(
+          sockets[1], cancellation[0], &ops, &core, &bounds);
+      bool valid = result == (mode == 2 ? ETIMEDOUT : ECANCELED) &&
+                   core.destroy == 1 && core.file_open == 1 && core.committed == 1 &&
+                   fcntl(sockets[1], F_GETFD) >= 0 && fcntl(cancellation[0], F_GETFD) >= 0;
+      close(sockets[1]);
+      close(cancellation[0]);
+      _exit(valid ? 0 : 3);
+    }
+    close(sockets[1]);
+    close(cancellation[0]);
+    union aligned_buffer reply;
+    struct fuse_init_in init = {.major = 7, .minor = 45, .flags = FUSE_INIT_EXT | FUSE_MAX_PAGES,
+                               .flags2 = (uint32_t)(FUSE_REQUEST_TIMEOUT >> 32)};
+    send_request(sockets[0], FUSE_INIT, 1, 0, &init, sizeof(init), NULL, 0);
+    (void)receive_reply(sockets[0], 1, reply.bytes, sizeof(reply.bytes));
+    struct fuse_open_in open = {.flags = O_RDONLY};
+    send_request(sockets[0], FUSE_OPEN, 2, 2, &open, sizeof(open), NULL, 0);
+    size_t received = receive_reply(sockets[0], 2, reply.bytes, sizeof(reply.bytes));
+    struct fuse_out_header *header = (struct fuse_out_header *)reply.bytes;
+    struct fuse_open_out *opened = (struct fuse_open_out *)(header + 1);
+    if (received != sizeof(*header) + sizeof(*opened) || header->error != 0 ||
+        opened->fh != 91 || opened->open_flags != FOPEN_DIRECT_IO)
+      fail("fallback OPEN did not publish exact direct-I/O handle");
+    struct fuse_read_in read = {.fh = 91, .offset = 0, .size = 4};
+    send_request(sockets[0], FUSE_READ, 3, 2, &read, sizeof(read), NULL, 0);
+    if (mode == 2) {
+      /* No fresh reply timeout may let a slow core publish after its bound. */
+      struct pollfd waiting = {.fd = sockets[0], .events = POLLIN | POLLHUP};
+      if (poll(&waiting, 1, 1800) < 0)
+        fail("expired fallback request observation failed");
+      if ((waiting.revents & POLLIN) != 0 &&
+          recv(sockets[0], reply.bytes, sizeof(reply.bytes), MSG_DONTWAIT) > 0)
+        fail("expired fallback request published a late reply");
+    } else if (mode == 1) {
+      expect_error(sockets[0], 3, EIO);
+    } else {
+      received = receive_reply(sockets[0], 3, reply.bytes, sizeof(reply.bytes));
+      if (received != sizeof(*header) + 3 || header->error != 0 || memcmp(header + 1, "abc", 3) != 0)
+        fail("fallback READ did not return exact verified length");
+      read.offset = 3;
+      send_request(sockets[0], FUSE_READ, 4, 2, &read, sizeof(read), NULL, 0);
+      received = receive_reply(sockets[0], 4, reply.bytes, sizeof(reply.bytes));
+      if (received != sizeof(*header) || header->error != 0)
+        fail("fallback EOF was not an empty successful reply");
+      read.fh = 92;
+      send_request(sockets[0], FUSE_READ, 5, 2, &read, sizeof(read), NULL, 0);
+      expect_error(sockets[0], 5, ESTALE);
+      read.fh = 91;
+      read.size = limits.maximum_write_bytes + 1;
+      send_request(sockets[0], FUSE_READ, 6, 2, &read, sizeof(read), NULL, 0);
+      expect_error(sockets[0], 6, ENOMEM);
+      struct fuse_release_in release = {.fh = 91, .flags = O_RDONLY};
+      send_request(sockets[0], FUSE_RELEASE, 7, 2, &release, sizeof(release), NULL, 0);
+      expect_error(sockets[0], 7, 0);
+    }
+    if (mode != 2 && write(cancellation[1], "x", 1) != 1)
+      fail("fallback cancellation failed");
+    int status = 0;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+      fail("fallback teardown or borrowed-FD contract failed");
+    close(sockets[0]);
+    close(cancellation[1]);
+  }
+}
+
 static pid_t start_child(int sockets[2], int cancellation[2],
                          int opendir_mode) {
   if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0,
@@ -395,6 +566,7 @@ static void wait_child(pid_t child) {
 int main(void) {
   if (fuse_version() != 318)
     fail("runtime libfuse version differs from the qualified 3.18.2 ABI");
+  test_fallback_v2();
 
   int short_sockets[2];
   int short_cancellation[2];

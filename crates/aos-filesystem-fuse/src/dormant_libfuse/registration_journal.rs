@@ -58,7 +58,8 @@ pub enum ProtectedFuseRegistrationErrorV2 {
 
 /// Owns the fixed protected filesystem-worker registration journal.
 ///
-/// The constructor accepts no path, basename, namespace, or resource limits.
+/// The production constructor accepts no path, basename, namespace or resource
+/// limits. A separate fixture feature permits a repository-owned test root.
 #[must_use = "retain the fixed owner while callback registration authority is live"]
 pub struct ProtectedFuseRegistrationOwnerV2 {
     journal: Journal,
@@ -71,6 +72,47 @@ impl core::fmt::Debug for ProtectedFuseRegistrationOwnerV2 {
 }
 
 impl ProtectedFuseRegistrationOwnerV2 {
+    /// Opens a repository fixture's genuinely protected registration journal.
+    ///
+    /// This path-selecting constructor is absent from default builds. It
+    /// authenticates no worker, mount or backing grant. Debug unit tests use
+    /// the existing Journal fixture opener that permits temporary ancestors;
+    /// exact leaf UID/mode, names, limits and real writer-lock checks remain.
+    /// Installed fixtures retain the normal ancestor checks as well.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsafe fixture paths, names or replay state.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn open_test_fixture(directory: &Path) -> Result<Self, ProtectedFuseRegistrationErrorV2> {
+        // SAFETY: geteuid returns a scalar process identity without pointers.
+        let uid = unsafe { libc::geteuid() };
+        #[cfg(not(all(test, debug_assertions)))]
+        let (journal, _) =
+            Journal::open_protected_at_for_uid(directory, PROTECTED_JOURNAL, limits(), uid)
+                .map_err(|_| ProtectedFuseRegistrationErrorV2::Storage)?;
+        #[cfg(all(test, debug_assertions))]
+        let (journal, _) =
+            Journal::open_protected_at_uid(directory, PROTECTED_JOURNAL, limits(), uid)
+                .map_err(|_| ProtectedFuseRegistrationErrorV2::Storage)?;
+        let mut owner = Self { journal };
+        owner.read_current()?;
+        Ok(owner)
+    }
+
+    pub(super) fn confirm_current_head<'owner>(
+        &'owner mut self,
+        expected_head: [u8; 32],
+    ) -> Result<ProtectedFuseRegistrationReadbackV2<'owner>, ProtectedFuseRegistrationErrorV2> {
+        let current = self
+            .read_current()?
+            .ok_or(ProtectedFuseRegistrationErrorV2::Currentness)?;
+        if current.head() != expected_head {
+            return Err(ProtectedFuseRegistrationErrorV2::Currentness);
+        }
+        self.confirm(&current)
+    }
+
     /// Opens and completely validates the fixed protected registration journal.
     ///
     /// This source-only constructor creates no directory and performs no
