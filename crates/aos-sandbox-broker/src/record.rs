@@ -40,6 +40,8 @@ use hmac::{Hmac, Mac as _};
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
+mod fuse_intent;
+
 const AUTHENTICATED_VERSION: u16 = 1;
 const AUTHENTICATED_FIXED_BYTES: usize = 8 + 2 + 1 + 1 + 16 + 4 + 32;
 const MAXIMUM_JOURNAL_KEY_BYTES: usize = 1_024;
@@ -175,6 +177,8 @@ enum AuthenticatedValueKind {
     AuthorizationFence = 1,
     EffectIntent = 2,
     LocalRecord = 3,
+    /// Distinct nonterminal purpose-57 framing; native Mount kinds stay closed.
+    MountFuseIntent = 4,
 }
 
 /// Domain-separates one audience-specific authenticated local record format.
@@ -380,9 +384,11 @@ impl BrokerEffectIntentV1 {
     /// # Errors
     ///
     /// Returns [`AuthorizationRecordError::InvalidPayload`] unless this record
-    /// is pending and the receipt is nonempty and at most one MiB.
+    /// is a terminal-capable pending effect and the receipt is nonempty and at
+    /// most one MiB. A purpose-57 FUSE intent remains nonterminal.
     pub fn complete(mut self, receipt: Vec<u8>) -> Result<Self, AuthorizationRecordError> {
         if self.status != BrokerEffectStatusV1::Pending
+            || self.verb == BrokerVerb::MountReserveFuseWorkerIntent
             || receipt.is_empty()
             || receipt.len() > MAXIMUM_RECEIPT_BYTES
         {
@@ -546,6 +552,12 @@ impl BrokerEffectIntentV1 {
                 | BrokerVerb::MountRematerializeDestinationSlot,
                 BrokerGrantTarget::Resource(_),
             ) => true,
+            (BrokerVerb::MountReserveFuseWorkerIntent, BrokerGrantTarget::Resource(_)) => {
+                self.status == BrokerEffectStatusV1::Pending
+                    && self.maximum_descriptors == 0
+                    && self.maximum_request_bytes
+                        <= aos_sandbox_core::MOUNT_FUSE_RESERVE_INTENT_MAXIMUM_REQUEST_BYTES_V1
+            }
             (
                 BrokerVerb::MountReplace,
                 BrokerGrantTarget::ResourcePair {
@@ -687,14 +699,18 @@ pub fn seal_effect_intent(
     intent: &BrokerEffectIntentV1,
 ) -> Result<Vec<u8>, AuthorizationRecordError> {
     intent.validate()?;
-    let payload = encode_effect(intent, mac_key.domain)?;
-    seal(
-        mac_key,
-        namespace,
-        journal_key,
-        AuthenticatedValueKind::EffectIntent,
-        &payload,
-    )
+    let (kind, payload) = if intent.verb == BrokerVerb::MountReserveFuseWorkerIntent {
+        (
+            AuthenticatedValueKind::MountFuseIntent,
+            fuse_intent::encode(intent, mac_key.domain)?,
+        )
+    } else {
+        (
+            AuthenticatedValueKind::EffectIntent,
+            encode_effect(intent, mac_key.domain)?,
+        )
+    };
+    seal(mac_key, namespace, journal_key, kind, &payload)
 }
 
 /// Authenticates and decodes one durable broker effect intent.
@@ -712,14 +728,17 @@ pub fn open_effect_intent(
     journal_key: &[u8],
     bytes: &[u8],
 ) -> Result<BrokerEffectIntentV1, AuthorizationRecordError> {
-    let payload = open(
-        mac_key,
-        namespace,
-        journal_key,
-        AuthenticatedValueKind::EffectIntent,
-        bytes,
-    )?;
-    decode_effect(payload, mac_key.domain)
+    // This byte chooses only a closed authenticated format. No payload field
+    // is interpreted until the MAC (which covers this kind) has verified.
+    let kind = match bytes.get(10).copied() {
+        Some(4) if mac_key.domain == BrokerDomain::Mount => AuthenticatedValueKind::MountFuseIntent,
+        _ => AuthenticatedValueKind::EffectIntent,
+    };
+    let payload = open(mac_key, namespace, journal_key, kind, bytes)?;
+    match kind {
+        AuthenticatedValueKind::MountFuseIntent => fuse_intent::decode(payload),
+        _ => decode_effect(payload, mac_key.domain),
+    }
 }
 
 pub(crate) fn seal_local_record(
@@ -837,6 +856,7 @@ fn open<'a>(
         1 => AuthenticatedValueKind::AuthorizationFence,
         2 => AuthenticatedValueKind::EffectIntent,
         3 => AuthenticatedValueKind::LocalRecord,
+        4 => AuthenticatedValueKind::MountFuseIntent,
         _ => return Err(AuthorizationRecordError::WrongKind),
     };
     if actual_kind != expected_kind {
@@ -994,11 +1014,19 @@ fn encode_effect(
     if domain == BrokerDomain::Mount {
         return encode_mount_effect_with_shared_codec(intent, encoded_verb);
     }
+    encode_effect_fields(intent, domain.effect_magic(), encoded_verb)
+}
+
+fn encode_effect_fields(
+    intent: &BrokerEffectIntentV1,
+    magic: &[u8; 8],
+    encoded_verb: u8,
+) -> Result<Vec<u8>, AuthorizationRecordError> {
     let lease_bytes = encode_local_lease_record(&intent.local_lease_record);
     let receipt_length = u32::try_from(intent.receipt.len())
         .map_err(|_| AuthorizationRecordError::InvalidPayload)?;
     let mut bytes = Vec::with_capacity(554 + intent.receipt.len());
-    bytes.extend_from_slice(domain.effect_magic());
+    bytes.extend_from_slice(magic);
     bytes.extend_from_slice(&EFFECT_VERSION.to_be_bytes());
     bytes.push(match intent.status {
         BrokerEffectStatusV1::Pending => 0,
@@ -1035,8 +1063,25 @@ fn decode_effect(
     if domain == BrokerDomain::Mount {
         return decode_mount_effect_with_shared_codec(bytes);
     }
+    decode_effect_fields(bytes, EffectPayloadProfile::Ordinary(domain))
+}
+
+#[derive(Clone, Copy)]
+enum EffectPayloadProfile {
+    Ordinary(BrokerDomain),
+    MountFuseIntent,
+}
+
+fn decode_effect_fields(
+    bytes: &[u8],
+    profile: EffectPayloadProfile,
+) -> Result<BrokerEffectIntentV1, AuthorizationRecordError> {
+    let magic = match profile {
+        EffectPayloadProfile::Ordinary(domain) => domain.effect_magic(),
+        EffectPayloadProfile::MountFuseIntent => fuse_intent::MAGIC,
+    };
     let mut decoder = Decoder::new(bytes);
-    if decoder.take::<8>()? != *domain.effect_magic() || decoder.u16()? != EFFECT_VERSION {
+    if decoder.take::<8>()? != *magic || decoder.u16()? != EFFECT_VERSION {
         return Err(AuthorizationRecordError::InvalidPayload);
     }
     let status = match decoder.u8()? {
@@ -1044,7 +1089,16 @@ fn decode_effect(
         1 => BrokerEffectStatusV1::Complete,
         _ => return Err(AuthorizationRecordError::InvalidPayload),
     };
-    let verb = decode_verb(domain, decoder.u8()?)?;
+    let code = decoder.u8()?;
+    let verb = match profile {
+        EffectPayloadProfile::Ordinary(domain) => decode_verb(domain, code)?,
+        EffectPayloadProfile::MountFuseIntent if code == 1 => {
+            BrokerVerb::MountReserveFuseWorkerIntent
+        }
+        EffectPayloadProfile::MountFuseIntent => {
+            return Err(AuthorizationRecordError::InvalidPayload);
+        }
+    };
     let target = decode_target(&mut decoder)?;
     let request_id = decoder.take::<16>()?;
     let transport_request_digest = ObjectDigest::from_bytes(decoder.take::<32>()?);
@@ -2031,7 +2085,7 @@ mod tests {
         }
     }
 
-    fn sample_intent() -> BrokerEffectIntentV1 {
+    pub(super) fn sample_intent() -> BrokerEffectIntentV1 {
         let lease = local_lease();
         BrokerEffectIntentV1 {
             status: BrokerEffectStatusV1::Pending,

@@ -2984,6 +2984,91 @@ mod tests {
             MountAuthorityV1::new(plan_anchor, lease_anchor, TEST_NODE, [46; 16], [47; 32]).unwrap()
         }
 
+        fn common_authority(&self) -> aos_sandbox_broker::BrokerAuthority {
+            let plan_anchor = aos_sandbox_core::BrokerPlanTrustAnchor::from_trusted_configuration(
+                self.plan_policy.clone(),
+                self.plan_policy_descriptor.clone(),
+                self.plan_scope,
+                self.plan_signer.clone(),
+                self.plan_key.verifying_key().to_bytes(),
+                self.revocation_scope,
+                DecodeLimits::default(),
+            )
+            .unwrap();
+            let lease_anchor = OwnershipLeaseTrustAnchor::from_trusted_configuration(
+                self.lease_policy.clone(),
+                self.lease_policy_descriptor.clone(),
+                self.lease_scope,
+                self.lease_signer.clone(),
+                self.lease_key.verifying_key().to_bytes(),
+                DecodeLimits::default(),
+            )
+            .unwrap();
+            aos_sandbox_broker::BrokerAuthority::new(
+                aos_sandbox_broker::BrokerDomain::Mount,
+                plan_anchor,
+                lease_anchor,
+                TEST_NODE,
+                [46; 16],
+                [47; 32],
+            )
+            .unwrap()
+        }
+
+        fn fuse_intent_artifacts(
+            &self,
+            request: aos_sandbox_broker::AdmissionRequest<'_>,
+            lease: &ValidatedUntrustedAuthorizationArtifacts,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let grant = BrokerGrant::new(
+                request.verb,
+                request.target,
+                request.argument_commitment,
+                u32::try_from(request.request_body.len()).unwrap(),
+                0,
+            )
+            .unwrap();
+            let plan = BrokerAuthorizationPlan::new(
+                BrokerAudience::Mount,
+                ProtocolId::MountFuseBroker,
+                ProtocolVersion::new(3, 0),
+                request.assignment,
+                TEST_NODE,
+                self.lease_signer.clone(),
+                vec![grant],
+                ObjectDigest::from_bytes([48; 32]),
+                self.revocation_scope,
+                100,
+                300,
+                vec![
+                    FeatureRef::new(
+                        aos_sandbox_core::MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE.to_owned(),
+                        1,
+                        0,
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap();
+            let broker_plan = encode_broker_authorization_plan(&plan);
+            let broker_plan_signature = signed_object(
+                &broker_plan,
+                PortableMediaType::BrokerAuthorizationPlan,
+                self.plan_scope,
+                self.plan_signer.clone(),
+                SignaturePurpose::BrokerAuthorization,
+                &self.plan_policy_descriptor,
+                &self.plan_key,
+            );
+            validated_artifacts(BrokerAuthorizationArtifactsV1 {
+                broker_plan,
+                broker_plan_signature,
+                ownership_lease: lease.ownership_lease().to_vec(),
+                ownership_lease_signature: lease.ownership_lease_signature().to_vec(),
+                ..Default::default()
+            })
+        }
+
         fn artifacts(
             &self,
             request_bytes: &[u8],
@@ -3350,6 +3435,141 @@ mod tests {
 
     fn clock() -> RawPairedClockSample {
         clock_at(TEST_WALL_SECONDS)
+    }
+
+    #[test]
+    fn fuse_intent_rotates_only_the_existing_exact_mount_assignment() {
+        use aos_sandbox_broker::{AdmissionRequest, BrokerAdmissionError};
+        use aos_sandbox_core::{
+            BrokerArgumentCommitment, BrokerGrantTarget, BrokerResourceHandle, BrokerVerb,
+        };
+
+        let fixture = AuthorityFixture::new();
+        let authority = fixture.common_authority();
+        let body = request(1);
+        let validated =
+            decode_mount_request(&body, peer(), policy(), TEST_BOOTTIME_NANOSECONDS).unwrap();
+        let catalog =
+            MountCatalogCommitmentV1::from_verified_digest(ObjectDigest::from_bytes([77; 32]))
+                .unwrap();
+        let semantics = crate::authorization::semantics_v1::canonical_mount_semantics_v1(
+            &validated,
+            Some(catalog),
+            &[],
+        )
+        .unwrap();
+        let assignment = BrokerAssignment::new(
+            SandboxId::from_bytes([1; 16]),
+            IncarnationId::from_bytes([2; 16]),
+            AssignmentEpoch::new(1),
+            DesiredGeneration::new(1),
+            ObjectDigest::from_bytes([6; 32]),
+        )
+        .unwrap();
+        let native = AdmissionRequest {
+            audience: BrokerAudience::Mount,
+            protocol: ProtocolId::MountBroker,
+            protocol_version: ProtocolVersion::new(2, 0),
+            assignment,
+            request_id: *validated.header().request_id(),
+            request_body: &body,
+            descriptor_count: 0,
+            verb: semantics.verb(),
+            target: semantics.target(),
+            argument_commitment: semantics.commitment(),
+            request_deadline_boottime_nanoseconds: validated
+                .header()
+                .deadline_boottime_nanoseconds(),
+        };
+        let native_artifacts =
+            fixture.artifacts(&body, Some(ObjectDigest::from_bytes([77; 32])), 1, &[&body]);
+        let prior = authority
+            .admit(&native_artifacts, native, &clock(), None)
+            .unwrap();
+        let sealed = authority
+            .seal_fence(assignment.sandbox().as_bytes(), &prior.fence)
+            .unwrap();
+        let fuse = AdmissionRequest {
+            protocol: ProtocolId::MountFuseBroker,
+            protocol_version: ProtocolVersion::new(3, 0),
+            request_id: [2; 16],
+            verb: BrokerVerb::MountReserveFuseWorkerIntent,
+            target: BrokerGrantTarget::Resource(
+                BrokerResourceHandle::from_bytes([80; 32]).unwrap(),
+            ),
+            argument_commitment: BrokerArgumentCommitment::for_canonical_bytes(
+                b"exact FUSE intent",
+            ),
+            ..native
+        };
+        let signed_fuse = fixture.fuse_intent_artifacts(fuse, &native_artifacts);
+
+        // The named phase accepts a distinct signed plan on the same genuine
+        // locally authenticated lease, but generic entry remains closed.
+        let accepted = authority
+            .admit_fuse_intent(&signed_fuse, fuse, &clock(), &sealed)
+            .unwrap();
+        assert_ne!(accepted.fence.plan_digest(), prior.fence.plan_digest());
+        assert_eq!(accepted.fence.assignment(), prior.fence.assignment());
+        assert_eq!(
+            accepted.fence.local_lease_record(),
+            prior.fence.local_lease_record()
+        );
+        let sealed_effect = authority
+            .seal_effect(&fuse.request_id, &accepted.effect)
+            .unwrap();
+        let renewed_native =
+            fixture.artifacts(&body, Some(ObjectDigest::from_bytes([77; 32])), 2, &[&body]);
+        let renewed_fuse = fixture.fuse_intent_artifacts(fuse, &renewed_native);
+        assert!(matches!(
+            authority.admit_fuse_intent(&renewed_fuse, fuse, &clock(), &sealed),
+            Err(BrokerAdmissionError::FenceRejected)
+        ));
+        assert_eq!(
+            authority
+                .open_effect(&fuse.request_id, &sealed_effect)
+                .unwrap(),
+            accepted.effect
+        );
+        for fence in [None, Some(sealed.as_slice())] {
+            assert!(matches!(
+                authority.admit(&signed_fuse, fuse, &clock(), fence),
+                Err(BrokerAdmissionError::RequestMismatch)
+            ));
+        }
+        assert!(matches!(
+            authority.admit_fuse_intent(&signed_fuse, fuse, &clock(), &[]),
+            Err(BrokerAdmissionError::FenceRejected)
+        ));
+
+        for case in 0..5 {
+            let changed = BrokerAssignment::new(
+                SandboxId::from_bytes(if case == 0 { [9; 16] } else { [1; 16] }),
+                IncarnationId::from_bytes(if case == 1 { [9; 16] } else { [2; 16] }),
+                AssignmentEpoch::new(if case == 2 { 2 } else { 1 }),
+                DesiredGeneration::new(if case == 3 { 2 } else { 1 }),
+                ObjectDigest::from_bytes(if case == 4 { [9; 32] } else { [6; 32] }),
+            )
+            .unwrap();
+            let changed_request = AdmissionRequest {
+                assignment: changed,
+                ..fuse
+            };
+            let changed_artifacts =
+                fixture.fuse_intent_artifacts(changed_request, &native_artifacts);
+            assert!(
+                matches!(
+                    authority.admit_fuse_intent(
+                        &changed_artifacts,
+                        changed_request,
+                        &clock(),
+                        &sealed
+                    ),
+                    Err(BrokerAdmissionError::FenceRejected)
+                ),
+                "changed assignment case {case}"
+            );
+        }
     }
 
     fn clock_at(wall_seconds: i64) -> RawPairedClockSample {

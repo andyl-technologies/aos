@@ -71,7 +71,7 @@ impl MountAuthorityV1 {
                     .deadline_boottime_nanoseconds(),
             },
             current_clock,
-            prior_fence,
+            prior_fence.ok_or(MountAdmissionError::FenceRejected)?,
         )
     }
 

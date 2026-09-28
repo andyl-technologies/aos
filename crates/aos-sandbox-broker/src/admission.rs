@@ -91,6 +91,14 @@ pub struct BrokerAuthority {
     journal_mac_key: NodeJournalMacKey,
 }
 
+/// Selects an owner-specific phase, never a request-supplied eligibility flag.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AdmissionPhase {
+    BasePlan,
+    ExactGrantRotation,
+    ExistingMountFuseIntent,
+}
+
 impl BrokerAuthority {
     /// Constructs authority from already validated protected anchors.
     ///
@@ -134,7 +142,13 @@ impl BrokerAuthority {
         current_clock: &RawPairedClockSample,
         prior_fence: Option<&[u8]>,
     ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
-        self.admit_with_plan_rotation(artifacts, request, current_clock, prior_fence, false)
+        self.admit_with_plan_rotation(
+            artifacts,
+            request,
+            current_clock,
+            prior_fence,
+            AdmissionPhase::BasePlan,
+        )
     }
 
     /// Admits an exact Host execution grant while retaining the prior lease.
@@ -161,7 +175,13 @@ impl BrokerAuthority {
         {
             return Err(BrokerAdmissionError::RequestMismatch);
         }
-        self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
+        self.admit_with_plan_rotation(
+            artifacts,
+            request,
+            current_clock,
+            Some(prior_fence),
+            AdmissionPhase::ExactGrantRotation,
+        )
     }
 
     /// Admits one provisional Host output reserve or read-only query grant.
@@ -188,7 +208,13 @@ impl BrokerAuthority {
         {
             return Err(BrokerAdmissionError::RequestMismatch);
         }
-        self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
+        self.admit_with_plan_rotation(
+            artifacts,
+            request,
+            current_clock,
+            Some(prior_fence),
+            AdmissionPhase::ExactGrantRotation,
+        )
     }
 
     /// Admits a one-shot Host argument observation or historical query grant.
@@ -219,7 +245,13 @@ impl BrokerAuthority {
         {
             return Err(BrokerAdmissionError::RequestMismatch);
         }
-        self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
+        self.admit_with_plan_rotation(
+            artifacts,
+            request,
+            current_clock,
+            Some(prior_fence),
+            AdmissionPhase::ExactGrantRotation,
+        )
     }
 
     /// Admits only purpose 57 beside an existing Mount fence for the same assignment.
@@ -237,12 +269,24 @@ impl BrokerAuthority {
         artifacts: &ValidatedUntrustedAuthorizationArtifacts,
         request: AdmissionRequest<'_>,
         current_clock: &RawPairedClockSample,
-        prior_fence: Option<&[u8]>,
+        prior_fence: &[u8],
     ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
         if self.domain != BrokerDomain::Mount || !is_fuse_intent_admission(&request) {
             return Err(BrokerAdmissionError::RequestMismatch);
         }
-        self.admit_with_plan_rotation(artifacts, request, current_clock, prior_fence, true)
+        // Open location-authenticated local state, not a caller assertion that
+        // a slot or previous assignment exists. The phase may rotate only the
+        // exact-grant plan, never create or advance the shared assignment.
+        let current = self.open_fence(request.assignment.sandbox().as_bytes(), prior_fence)?;
+        self.check_current_fence(&current)?;
+        require_same_fuse_assignment(Some(&current), request.assignment)?;
+        self.admit_with_plan_rotation(
+            artifacts,
+            request,
+            current_clock,
+            Some(prior_fence),
+            AdmissionPhase::ExistingMountFuseIntent,
+        )
     }
 
     /// Admits a distinct Host ATTACH grant on the shared runtime lease.
@@ -261,7 +305,13 @@ impl BrokerAuthority {
         if self.domain != BrokerDomain::Host || request.verb != BrokerVerb::HostInstallAttachGate {
             return Err(BrokerAdmissionError::RequestMismatch);
         }
-        self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
+        self.admit_with_plan_rotation(
+            artifacts,
+            request,
+            current_clock,
+            Some(prior_fence),
+            AdmissionPhase::ExactGrantRotation,
+        )
     }
 
     /// Verifies a distinct read-only Host attach query against the shared fence.
@@ -288,7 +338,13 @@ impl BrokerAuthority {
         {
             return Err(BrokerAdmissionError::RequestMismatch);
         }
-        self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
+        self.admit_with_plan_rotation(
+            artifacts,
+            request,
+            current_clock,
+            Some(prior_fence),
+            AdmissionPhase::ExactGrantRotation,
+        )
     }
 
     /// Verifies one read-only Host observation of an original Storage reserve.
@@ -314,7 +370,13 @@ impl BrokerAuthority {
         {
             return Err(BrokerAdmissionError::RequestMismatch);
         }
-        self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
+        self.admit_with_plan_rotation(
+            artifacts,
+            request,
+            current_clock,
+            Some(prior_fence),
+            AdmissionPhase::ExactGrantRotation,
+        )
     }
 
     /// Verifies one read-only Storage capture candidate on its retained fence.
@@ -344,7 +406,13 @@ impl BrokerAuthority {
         if current.assignment() != request.assignment {
             return Err(BrokerAdmissionError::FenceRejected);
         }
-        self.admit_with_plan_rotation(artifacts, request, current_clock, Some(prior_fence), true)
+        self.admit_with_plan_rotation(
+            artifacts,
+            request,
+            current_clock,
+            Some(prior_fence),
+            AdmissionPhase::ExactGrantRotation,
+        )
     }
 
     fn admit_with_plan_rotation(
@@ -353,9 +421,14 @@ impl BrokerAuthority {
         request: AdmissionRequest<'_>,
         current_clock: &RawPairedClockSample,
         prior_fence: Option<&[u8]>,
-        allow_exact_plan_rotation: bool,
+        phase: AdmissionPhase,
     ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
-        let fuse_intent = is_fuse_intent_admission(&request);
+        let fuse_intent = phase == AdmissionPhase::ExistingMountFuseIntent
+            && self.domain == BrokerDomain::Mount
+            && is_fuse_intent_admission(&request);
+        if phase == AdmissionPhase::ExistingMountFuseIntent && !fuse_intent {
+            return Err(BrokerAdmissionError::RequestMismatch);
+        }
         if (!supports_signed_admission(request.protocol, request.protocol_version) && !fuse_intent)
             || (request.audience.protocol() != request.protocol && !fuse_intent)
             || request.audience != self.domain.audience()
@@ -429,15 +502,25 @@ impl BrokerAuthority {
             })
             .transpose()
             .map_err(|_| BrokerAdmissionError::FenceRejected)?;
+        if phase == AdmissionPhase::ExistingMountFuseIntent {
+            require_same_fuse_assignment(prior.as_ref(), request.assignment)?;
+        }
         let prior_local = validate_prior_fence(
             prior.as_ref(),
             &verified_plan,
             request.assignment,
             self.node,
-            allow_exact_plan_rotation,
+            phase != AdmissionPhase::BasePlan,
         )?;
         let pending_lease = prepare_local_lease_record(prior_local, &verified_lease, current_clock)
             .map_err(|_| BrokerAdmissionError::FenceRejected)?;
+        if phase == AdmissionPhase::ExistingMountFuseIntent
+            && prior_local.is_none_or(|current| current != &pending_lease.record)
+        {
+            // This phase borrows the existing Mount lease; renewal or a new
+            // BOOTTIME fence belongs to the ordinary protected owner path.
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
         let intersection = intersect_broker_admission(
             matched,
             &verified_lease,
@@ -848,6 +931,16 @@ fn validate_prior_fence<'a>(
         Ok(Some(prior.local_lease_record()))
     } else {
         Ok(None)
+    }
+}
+
+fn require_same_fuse_assignment(
+    prior: Option<&BrokerAuthorizationFenceV1>,
+    assignment: BrokerAssignment,
+) -> Result<(), BrokerAdmissionError> {
+    match prior {
+        Some(current) if current.assignment() == assignment => Ok(()),
+        _ => Err(BrokerAdmissionError::FenceRejected),
     }
 }
 
