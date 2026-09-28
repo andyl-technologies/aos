@@ -27,6 +27,10 @@ use serde::{Deserialize, Serialize};
 use super::*;
 use crate::state::fuse_worker_reservation_v1::FuseWorkerReservationStateV1;
 
+mod worker_preparation;
+
+pub use worker_preparation::PreparedMountFuseWorkerObjectsV1;
+
 const ORIGIN_PREFIX: &[u8] = b"aos.mount.fuse.origin.v1\0";
 const PHASE_FENCE_PREFIX: &[u8] = b"aos.mount.fuse.phase-fence.v1\0";
 const MAXIMUM_ORIGIN_BYTES: usize = 8192;
