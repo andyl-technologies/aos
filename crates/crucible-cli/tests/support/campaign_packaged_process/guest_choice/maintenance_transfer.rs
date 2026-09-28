@@ -34,7 +34,7 @@ fn public_active_pause_restart_and_executable_transfer_rejects_incompatible_prov
     let recovery_configuration = json_string(&explanation["observation"], "child")?;
     let recovery = wait_for_choice(
         &source,
-        "campaign.recovery-policy",
+        "network.recovery-policy",
         &recovery_parent,
         &recovery_configuration,
     )?;
@@ -59,7 +59,7 @@ fn public_active_pause_restart_and_executable_transfer_rejects_incompatible_prov
     let fast_configuration = json_string(&fast_explanation["observation"], "child")?;
     let retry = wait_for_choice(
         &source,
-        "campaign.retry-quanta",
+        "network.retry-quanta",
         &fast_parent,
         &fast_configuration,
     )?;
