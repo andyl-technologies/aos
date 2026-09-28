@@ -12,7 +12,7 @@ pub use mount_request::{
     CurrentMountProviderSessionPlanV2, HistoricalMountInventoryAuthorizationV2,
     HistoricalMountReleaseAuthorizationV2, MountProviderAuthorityTrustProjectionV2,
     MountProviderRequestProjectionV2, MountProviderRequestSendRecoveryV2,
-    MountProviderSessionProjectionV2, MountProviderSignerProjectionV2,
+    MountProviderSessionProjectionV2, MountProviderSignerProjectionV2, PendingNativeMountAcquireV3,
     PreparedMountProviderRequestV2, ReceivedMountProviderOutcomePartsV2,
     RecoveredMountProviderOutcomePartsV2, RecoveredMountProviderOutcomeV2,
     ReopenedMountSourceRootV2, ReservedMountProviderRequestV2, RetainedRootRecoveryAuthorizationV2,

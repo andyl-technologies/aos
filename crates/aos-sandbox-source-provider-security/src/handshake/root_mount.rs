@@ -42,16 +42,16 @@ pub struct CurrentRootMountSourceProviderSessionV1 {
     pub(super) carrier: InertSourceProviderCarrierV1,
     pub(super) session: SourceProviderSessionV1,
     pub(super) provider_execution: ProcessExecutionEvidenceV1,
-    catalog_exchange: Option<RootCatalogExchangeV1>,
-    catalog_sequence: u64,
+    pub(super) catalog_exchange: Option<RootCatalogExchangeV1>,
+    pub(super) catalog_sequence: u64,
     catalog_floor: Option<(u64, ObjectDigest)>,
     recovery_exchange: Option<RootRecoveryExchangeV1>,
     inventory_readback_exchange: Option<RootInventoryReadbackExchangeV1>,
     recovery_sequence: u64,
 }
 
-struct RootCatalogExchangeV1 {
-    query: CatalogCurrentnessQueryV1,
+pub(super) struct RootCatalogExchangeV1 {
+    pub(super) query: CatalogCurrentnessQueryV1,
     sent: bool,
 }
 
@@ -132,7 +132,10 @@ pub enum AuthenticatedRootMountRecoveryObservationV2 {
 /// source effect, or descriptor authority.
 #[must_use = "a currentness proof must be consumed with a protected Mount floor"]
 pub struct AuthenticatedRootMountCatalogCurrentnessV1 {
-    signed: SignedCatalogCurrentnessV1,
+    pub(super) signed: SignedCatalogCurrentnessV1,
+    pub(super) query: CatalogCurrentnessQueryV1,
+    pub(super) socket_cookie: NonZeroU64,
+    pub(super) execution: ProcessExecutionEvidenceV1,
 }
 
 impl AuthenticatedRootMountCatalogCurrentnessV1 {
@@ -606,6 +609,12 @@ impl RootMountHelloSentV1 {
 }
 
 impl CurrentRootMountSourceProviderSessionV1 {
+    pub(super) fn has_pending_control_exchange(&self) -> bool {
+        self.catalog_exchange.is_some()
+            || self.recovery_exchange.is_some()
+            || self.inventory_readback_exchange.is_some()
+    }
+
     pub(super) fn advance_recovery_identity(
         &mut self,
         provider_id: [u8; 16],
@@ -881,7 +890,20 @@ impl CurrentRootMountSourceProviderSessionV1 {
         minimum: &ProviderCatalogFloorV1,
     ) -> Result<Option<AuthenticatedRootMountCatalogCurrentnessV1>, SourceProviderSecurityError>
     {
+        self.advance_catalog_currentness_checked(minimum, || Ok(()))
+    }
+
+    // Native preparation supplies its same original paired deadline. The
+    // legacy control API retains its existing behavior and no external caller
+    // can substitute this private per-I/O check for native signer custody.
+    pub(super) fn advance_catalog_currentness_checked(
+        &mut self,
+        minimum: &ProviderCatalogFloorV1,
+        mut require_current: impl FnMut() -> Result<(), SourceProviderSecurityError>,
+    ) -> Result<Option<AuthenticatedRootMountCatalogCurrentnessV1>, SourceProviderSecurityError>
+    {
         self.revalidate()?;
+        require_current().map_err(|error| self.poison(error))?;
         if self.recovery_exchange.is_some() || self.inventory_readback_exchange.is_some() {
             return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
@@ -923,6 +945,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             self.catalog_exchange = Some(RootCatalogExchangeV1 { query, sent: false });
         }
 
+        require_current().map_err(|error| self.poison(error))?;
         let exchange = self
             .catalog_exchange
             .as_mut()
@@ -934,6 +957,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 Err(CarrierFailureV1::Fatal(error)) => return Err(self.poison(error)),
             }
         }
+        require_current().map_err(|error| self.poison(error))?;
         let received = match self
             .carrier
             .receive_zero_descriptors(aos_sandbox_source_provider_protocol::MAXIMUM_FRAME_BYTES)
@@ -950,6 +974,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
         self.revalidate()?;
+        require_current().map_err(|error| self.poison(error))?;
         let exchange = self
             .catalog_exchange
             .take()
@@ -977,7 +1002,12 @@ impl CurrentRootMountSourceProviderSessionV1 {
             .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
         self.catalog_sequence = exchange.query.sequence();
         self.catalog_floor = Some(signed.floor());
-        Ok(Some(AuthenticatedRootMountCatalogCurrentnessV1 { signed }))
+        Ok(Some(AuthenticatedRootMountCatalogCurrentnessV1 {
+            signed,
+            query: exchange.query,
+            socket_cookie: self.carrier.socket().peer().socket_cookie(),
+            execution: received.execution,
+        }))
     }
 
     pub(crate) fn poison(

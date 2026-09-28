@@ -1,9 +1,11 @@
-//! Move-only Root Mount authorization for canonical Acquire-v2 traffic.
+//! Move-only Root Mount authorization for canonical provider requests.
 //!
 //! This module is the dormant Mount-facing custody seam. It signs only one
-//! fully validated Acquire-v2 request bound to the current authenticated
+//! fully validated request bound to the current authenticated
 //! session, and returns a one-shot outcome verifier for that exact attempt.
 //! It exposes neither a signing key nor a generic signing/verifying oracle.
+//! Local V2 catalog authorization and original-session remote native V3
+//! preparation remain distinct; V3 Provider admission and outcome gates are closed.
 
 use std::collections::BTreeSet;
 
@@ -42,6 +44,14 @@ mod outcome;
 mod projection;
 #[path = "mount_request/recovery.rs"]
 mod recovery;
+
+#[path = "mount_request/native_catalog.rs"]
+mod native_catalog;
+
+#[path = "mount_request/catalog_floor.rs"]
+mod catalog_floor;
+
+pub use native_catalog::PendingNativeMountAcquireV3;
 
 #[path = "mount_request/native_export_fence.rs"]
 mod native_export_fence;
@@ -577,6 +587,39 @@ impl CurrentRootMountSourceProviderSessionV1 {
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         plan: CurrentMountProviderSessionPlanV2,
     ) -> Result<(MountProviderSessionProjectionV2, u64, u64), SourceProviderSecurityError> {
+        let (session, request_sequence, response_sequence, snapshot) =
+            self.consume_current_mount_plan_with_snapshot(journal, plan)?;
+        drop(snapshot);
+        Ok((session, request_sequence, response_sequence))
+    }
+
+    fn consume_current_mount_plan_with_snapshot(
+        &mut self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        plan: CurrentMountProviderSessionPlanV2,
+    ) -> Result<
+        (
+            MountProviderSessionProjectionV2,
+            u64,
+            u64,
+            aos_sandbox::ProtectedJournalSnapshot,
+        ),
+        SourceProviderSecurityError,
+    > {
+        self.validate_current_mount_plan(journal, &plan)?;
+        Ok((
+            plan.session,
+            plan.current_request_sequence,
+            plan.current_response_sequence,
+            plan.journal_snapshot,
+        ))
+    }
+
+    fn validate_current_mount_plan(
+        &mut self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        plan: &CurrentMountProviderSessionPlanV2,
+    ) -> Result<(), SourceProviderSecurityError> {
         self.revalidate()?;
         let expected_freshness = mount_plan_freshness_digest(
             plan.session.signed_hellos(),
@@ -620,11 +663,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         {
             return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
-        Ok((
-            plan.session,
-            plan.current_request_sequence,
-            plan.current_response_sequence,
-        ))
+        Ok(())
     }
 
     /// Sends one exact custody-prepared request after protected reservation.
@@ -678,6 +717,14 @@ impl CurrentRootMountSourceProviderSessionV1 {
             self.poison(SourceProviderSecurityError::SessionContinuity);
             return Err(MountProviderRequestSendRecoveryV2 { reservation });
         }
+        if let Some(currentness) = &reservation.prepared.native_currentness {
+            if self
+                .require_native_acquire_currentness_v3(currentness)
+                .is_err()
+            {
+                return Err(MountProviderRequestSendRecoveryV2 { reservation });
+            }
+        }
         if let Err(failure) = self.carrier.send(&reservation.prepared.signed_request) {
             if let CarrierFailureV1::Fatal(error) = failure {
                 self.poison(error);
@@ -723,11 +770,6 @@ impl CurrentRootMountSourceProviderSessionV1 {
         current_catalog: crate::ProtectedCurrentCatalogPublicationV1,
         selection_acquisition_key: Option<Vec<u8>>,
     ) -> Result<AuthorizedMountAcquireVerificationFloorV2, SourceProviderSecurityError> {
-        use aos_sandbox_protocol::mount_source_acquisition_state::{
-            ProviderMethodV2, StoredRecordV2, decode_mount_source_state_record_v2,
-            protocol_selection_floor_v2,
-        };
-
         self.revalidate()?;
         let now = super::current_unix_seconds()?;
         let session = capture_session_projection(self, now).map_err(|error| self.poison(error))?;
@@ -766,67 +808,14 @@ impl CurrentRootMountSourceProviderSessionV1 {
             minimum_catalog_digest,
         )
         .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        let scope = (
-            session.authority_trust[0].authority.authority_id(),
-            provider.authority_id(),
-        );
-        if graph.provider_attempts.values().any(|attempt| {
-            if attempt.method != ProviderMethodV2::Acquire
-                || (
-                    attempt.scope.holder_authority_id,
-                    attempt.scope.provider_authority_id,
-                ) != scope
-            {
-                return false;
-            }
-            attempt
-                .acquire_verification_floor
-                .as_ref()
-                .is_none_or(|floor| {
-                    floor.catalog.minimum_catalog_generation > minimum_catalog_generation
-                        || (floor.catalog.minimum_catalog_generation == minimum_catalog_generation
-                            && floor.catalog.minimum_catalog_digest
-                                != *minimum_catalog_digest.as_bytes())
-                })
-        }) {
-            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-        }
-
-        let selection = match selection_acquisition_key {
-            Some(key) => {
-                let record = journal
-                    .get(&key)
-                    .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?
-                    .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-                let row = match decode_mount_source_state_record_v2(&key, record) {
-                    Ok(StoredRecordV2::Acquisition { value }) => value,
-                    _ => {
-                        return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-                    }
-                };
-                let evidence = row
-                    .evidence
-                    .as_ref()
-                    .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-                let historical = &evidence.historical_lease_signer;
-                let selection = protocol_selection_floor_v2(&historical.selection_floor)
-                    .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-                if graph.acquisitions.get(&row.acquisition_id) != Some(&row)
-                    || row.scope.holder_authority_id != scope.0
-                    || row.scope.provider_authority_id != scope.1
-                    || historical.selection_floor_digest != *selection.digest().as_bytes()
-                    || selection.acquisition_id().as_bytes()
-                        != &row.provider_acquisition.acquisition_id
-                    || selection.resource().catalog_generation() < minimum_catalog_generation
-                    || (selection.resource().catalog_generation() == minimum_catalog_generation
-                        && selection.resource().catalog_digest() != minimum_catalog_digest)
-                {
-                    return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-                }
-                Some(selection)
-            }
-            None => None,
-        };
+        let selection = catalog_floor::validate_mount_floor(
+            journal,
+            &graph,
+            &session,
+            &catalog,
+            selection_acquisition_key.as_deref(),
+        )
+        .map_err(|error| self.poison(error))?;
         self.revalidate()?;
         if journal
             .validate_mount_source_acquisition_snapshot(&journal_snapshot)
@@ -897,6 +886,30 @@ impl CurrentRootMountSourceProviderSessionV1 {
             ..
         } = floor_authorization;
         let current_catalog_head_commitment = current_catalog.projection.head_commitment();
+        self.prepare_acquire_from_catalog(
+            session_projection,
+            expected_request_sequence,
+            expected_response_sequence,
+            request,
+            normalized_intent,
+            catalog_floor,
+            selection_floor,
+            current_catalog_head_commitment,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_acquire_from_catalog(
+        &mut self,
+        session_projection: MountProviderSessionProjectionV2,
+        expected_request_sequence: u64,
+        expected_response_sequence: u64,
+        request: AcquireSourceRequestV1,
+        normalized_intent: NormalizedAcquisitionIntentV2,
+        catalog_floor: ProviderCatalogFloorV1,
+        selection_floor: Option<SourceSelectionFloorV1>,
+        current_catalog_head_commitment: ObjectDigest,
+    ) -> Result<PreparedMountProviderRequestV2, SourceProviderSecurityError> {
         let now = super::current_unix_seconds()?;
         let session_binding = self.session.binding();
         let signer_set_commitment = self.session.signer_set_commitment();
@@ -912,7 +925,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             let trust_digest = inner.trust().trust_digest();
             let revocation_generation = inner.trust().revocation_generation();
             let revocation_digest = inner.trust().revocation_digest();
-            let expected_intent = NormalizedAcquisitionIntentV2::from_acquire_request(
+            let expected_intent = NormalizedAcquisitionIntentV2::from_original_acquire_request(
                 &request,
                 provider.clone(),
                 holder.clone(),
@@ -1053,6 +1066,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             signed_request: signed_request.to_canonical_bytes(),
             projection,
             outcome,
+            native_currentness: None,
         })
     }
 
@@ -1478,6 +1492,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 historical_session: None,
             },
             signed_request: signed_request.to_canonical_bytes(),
+            native_currentness: None,
         })
     }
 }
