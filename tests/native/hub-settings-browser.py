@@ -1356,6 +1356,28 @@ class HubSettingsSmoke:
         self.chrome.drain_events(0.25)
 
     def report(self, failure=None):
+        failure_page = None
+        if failure is not None:
+            try:
+                # Capture headings and structural state, excluding form values,
+                # cookies, session metadata, and response bodies.
+                failure_page = self.chrome.evaluate("""
+                    (() => ({
+                        path: location.pathname,
+                        title: document.title,
+                        readyState: document.readyState,
+                        headings: Array.from(document.querySelectorAll('h1, h2'))
+                            .slice(0, 20).map(element => element.textContent.slice(0, 200)),
+                        messages: Array.from(document.querySelectorAll('.workflow-message p'))
+                            .slice(0, 10).map(element => element.textContent.slice(0, 500)),
+                        mainClass: document.querySelector('main')?.className ?? null,
+                        scopeHeaders: document.querySelectorAll('.scope-header').length,
+                        workflowStacks: document.querySelectorAll('.workflow-stack').length,
+                    }))()
+                """)
+            except Exception as error:
+                failure_page = {"diagnosticFailure": str(error)[:300]}
+
         return {
             "baseUrl": self.base_url,
             "checks": self.checks,
@@ -1368,6 +1390,7 @@ class HubSettingsSmoke:
             "expectedNetworkCancellations": self.chrome.expected_cancellations,
             "requestTimings": self.chrome.request_timing_report(),
             "requestTimingSummary": self.chrome.request_timing_summary(),
+            "failurePage": failure_page,
             "failure": str(failure) if failure is not None else None,
         }
 

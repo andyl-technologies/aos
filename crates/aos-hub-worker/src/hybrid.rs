@@ -1518,17 +1518,7 @@ fn is_forwarded_header(name: &str) -> bool {
         || name == "te"
         || name == "trailer"
         || name == "upgrade"
-        || name == "forwarded"
         || name == "cf-connecting-ip"
-        || name.starts_with("x-forwarded-")
-        || matches!(
-            name.as_str(),
-            "x-aos-hybrid-ingress"
-                | "x-aos-hybrid-delivery"
-                | "x-aos-hybrid-native-ms"
-                | "x-aos-hybrid-upload-phase"
-                | "x-aos-delivery-attestation"
-                | "x-aos-client-ip"
-                | "x-aos-console-route"
-        )
+        || name == "x-aos-hybrid-upload-phase"
+        || aos_hub_core::hybrid_ingress::is_hybrid_transport_header(&name)
 }

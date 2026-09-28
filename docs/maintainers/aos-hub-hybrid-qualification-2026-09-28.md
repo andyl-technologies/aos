@@ -139,6 +139,23 @@ probe. All 21 Native storage client tests passed, including matching, different
 and omitted bundle identities. The Worker passed Wasm compilation. These
 focused checks do not qualify a running pair with the new readiness fence.
 
+The sixth and seventh four-VM Chrome attempts loaded all four normalized
+console assets successfully from the Worker under `bd7cd34f`, with no JavaScript
+or console errors. Login and the browser session-token exchange returned HTTP
+200, but the settings workflow never rendered. The seventh report captured
+the page's "Permission required" heading. Both Hybrid hops were stripping
+`x-aos-console-route`; Native therefore returned an empty route permission set
+despite the authenticated root session. These attempts completed one assertion
+each and do not qualify the Hybrid settings application.
+
+Both hops now preserve this application input while sharing the reserved
+transport-header filter. Three Native ingress tests passed, including actual
+middleware preservation of the route/CSRF/Origin inputs and replacement or
+removal of spoofed transport evidence. Worker Wasm compilation passed. The
+updated production pair is building for another Chrome check. The browser
+helper now records failed-page headings and structural state without form
+values, session metadata or response bodies.
+
 ## Qualified paths
 
 The run passed signed publication of two releases and a stable channel,

@@ -249,20 +249,7 @@ async fn verify_hybrid_ingress(
     let untrusted_headers = parts
         .headers
         .keys()
-        .filter(|name| {
-            let name = name.as_str();
-            name == "forwarded"
-                || name.starts_with("x-forwarded-")
-                || matches!(
-                    name,
-                    "x-aos-hybrid-ingress"
-                        | "x-aos-hybrid-delivery"
-                        | "x-aos-hybrid-native-ms"
-                        | "x-aos-delivery-attestation"
-                        | "x-aos-client-ip"
-                        | "x-aos-console-route"
-                )
-        })
+        .filter(|name| aos_hub_core::hybrid_ingress::is_hybrid_transport_header(name.as_str()))
         .cloned()
         .collect::<Vec<_>>();
     for name in untrusted_headers {
@@ -1059,6 +1046,76 @@ mod hybrid_ingress_tests {
     use axum::http::Method;
     use sha2::{Digest as _, Sha256};
     use tower::ServiceExt as _;
+
+    #[tokio::test]
+    async fn hybrid_origin_preserves_console_scope_and_replaces_transport_evidence() {
+        let key = Arc::new(HybridIngressKey::new([9; 32]).unwrap());
+        let app =
+            Router::new()
+                .route(
+                    "/header-probe",
+                    get(|headers: HeaderMap| async move {
+                        assert_eq!(headers["x-aos-console-route"], "/-/instance");
+                        assert_eq!(headers["x-aos-csrf"], "session-bound-proof");
+                        assert_eq!(headers[header::ORIGIN], "https://hub.example.test");
+                        assert_eq!(headers[header::HOST], "hub.example.test");
+                        assert_eq!(headers["x-forwarded-for"], "192.0.2.7");
+                        assert_eq!(headers["x-forwarded-proto"], "https");
+                        for name in [
+                            HYBRID_INGRESS_HEADER,
+                            HYBRID_DELIVERY_HEADER,
+                            HYBRID_NATIVE_DURATION_HEADER,
+                            "x-aos-delivery-attestation",
+                            "forwarded",
+                        ] {
+                            assert!(!headers.contains_key(name), "{name}");
+                        }
+                        StatusCode::NO_CONTENT
+                    }),
+                )
+                .layer(axum::middleware::from_fn({
+                    let key = Arc::clone(&key);
+                    move |request, next| {
+                        let key = Arc::clone(&key);
+                        async move {
+                            verify_hybrid_ingress(key, "deployment-1".into(), request, next).await
+                        }
+                    }
+                }));
+
+        let now = aos_hub_core::clock::now_unix_secs();
+        let assertion = HybridIngressAssertion {
+            version: 1,
+            deployment_id: "deployment-1".into(),
+            issued_at: now,
+            expires_at: now + 30,
+            request_id: "console-header-request".into(),
+            scheme: "https".into(),
+            authority: "hub.example.test".into(),
+            method: "GET".into(),
+            path_and_query: "/header-probe".into(),
+            body_sha256: hex::encode(Sha256::digest([])),
+            client_ip: "192.0.2.7".into(),
+        };
+        let request = axum::http::Request::builder()
+            .uri("/header-probe")
+            .header(HYBRID_INGRESS_HEADER, key.sign(&assertion).unwrap())
+            .header("x-aos-console-route", "/-/instance")
+            .header("x-aos-csrf", "session-bound-proof")
+            .header(header::ORIGIN, "https://hub.example.test")
+            .header(header::HOST, "spoofed.example.test")
+            .header("x-forwarded-for", "203.0.113.1")
+            .header("x-forwarded-proto", "http")
+            .header(HYBRID_DELIVERY_HEADER, "caller-controlled")
+            .header(HYBRID_NATIVE_DURATION_HEADER, "caller-controlled")
+            .header("x-aos-delivery-attestation", "caller-controlled")
+            .header("forwarded", "caller-controlled")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
 
     #[tokio::test]
     async fn hybrid_origin_rejects_direct_and_mismatched_requests() {

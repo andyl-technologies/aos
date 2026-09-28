@@ -34,6 +34,27 @@ pub const MAX_HYBRID_PUBLICATION_PLACEMENTS: usize = 32;
 /// Maximum accepted body for one OCI resumable upload chunk.
 pub const MAX_HYBRID_OCI_CHUNK_BYTES: usize = 20 * 1024 * 1024;
 
+/// Identifies caller headers that cannot supply hybrid transport evidence.
+///
+/// Both the Worker and Native origin remove these headers before reconstructing
+/// transport context from the signed ingress assertion. Application inputs such
+/// as `x-aos-console-route` and `x-aos-csrf` remain subject to the shared router's
+/// session, CSRF, closed route, and live permission checks.
+#[must_use]
+pub fn is_hybrid_transport_header(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name == "forwarded"
+        || name.starts_with("x-forwarded-")
+        || matches!(
+            name.as_str(),
+            "x-aos-hybrid-ingress"
+                | "x-aos-hybrid-delivery"
+                | "x-aos-hybrid-native-ms"
+                | "x-aos-delivery-attestation"
+                | "x-aos-client-ip"
+        )
+}
+
 /// Checks the optional Distribution upload range against one contiguous chunk.
 #[must_use]
 pub fn oci_chunk_range_matches(value: Option<&str>, offset: u64, length: usize) -> bool {
@@ -777,6 +798,32 @@ fn validate_assertion(assertion: &HybridIngressAssertion) -> Result<(), HybridIn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_filter_preserves_application_authorization_inputs() {
+        for name in [
+            "x-aos-console-route",
+            "x-aos-csrf",
+            "authorization",
+            "cookie",
+            "origin",
+        ] {
+            assert!(!is_hybrid_transport_header(name), "{name}");
+        }
+
+        for name in [
+            "Forwarded",
+            "X-Forwarded-For",
+            "x-forwarded-proto",
+            HYBRID_INGRESS_HEADER,
+            HYBRID_DELIVERY_HEADER,
+            HYBRID_NATIVE_DURATION_HEADER,
+            "x-aos-delivery-attestation",
+            "x-aos-client-ip",
+        ] {
+            assert!(is_hybrid_transport_header(name), "{name}");
+        }
+    }
 
     #[test]
     fn oci_chunk_range_rejects_gaps_and_overflow() {

@@ -143,6 +143,14 @@ expired evidence and never enables `trusted_proxy` just because a header is
 present. The origin also applies its own request-body and timeout limits;
 edge limits are defense in depth, not its sole protection.
 
+Application headers remain application inputs. In particular, both hops
+preserve `x-aos-console-route` so the session-token exchange can calculate
+permissions for the requested closed management scope. It is not transport
+evidence and grants no permission itself: Native still checks the session,
+exact public Origin, session-bound CSRF proof, canonical route and live SQL
+grants. Both hops use the same reserved transport-header classification to
+avoid stripping this input or accepting caller-supplied transport evidence.
+
 The Worker streams request and response bodies for proxied control traffic
 within the control-plane size cap. It passes cookies and end-user
 authorization through to Native; it does not validate a login independently
