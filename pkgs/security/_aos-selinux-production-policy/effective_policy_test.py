@@ -180,6 +180,23 @@ class EffectivePolicyTest(unittest.TestCase):
             with self.subTest(access=access):
                 self.assert_missing_allow_rejected(access)
 
+    def test_host_requires_worker_image_inspection_without_execution_or_mutation(self) -> None:
+        executable = effective_policy.fuse_worker_policy.WORKER_EXECUTABLE
+        for permission in ("getattr", "open", "read"):
+            with self.subTest(missing_permission=permission):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access("aos_sandbox_host_t", executable, "file", permission)
+                )
+
+        for permission in (
+            "append", "create", "execute", "execute_no_trans", "execmod", "ioctl",
+            "link", "map", "relabelfrom", "relabelto", "rename", "setattr", "unlink", "write",
+        ):
+            with self.subTest(forbidden_permission=permission):
+                self.assert_forbidden_allow_rejected(
+                    effective_policy.Access("aos_sandbox_host_t", executable, "file", permission)
+                )
+
     def test_worker_requires_boot_id_read_without_sysctl_mutation(self) -> None:
         worker = effective_policy.fuse_worker_policy.WORKER_DOMAIN
         for access in (
