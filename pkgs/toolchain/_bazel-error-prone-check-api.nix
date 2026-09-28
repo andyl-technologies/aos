@@ -35,6 +35,7 @@ in
   mkDerivation {
     pname = "bazel-error-prone-check-api";
     inherit version;
+    passthru.sourceTargets = ["com/google/errorprone/error_prone_check_api/${version}/error_prone_check_api-${version}.jar"];
     src = fetchurl {
       urls = ["https://repo.maven.apache.org/maven2/com/google/errorprone/error_prone_check_api/${version}/error_prone_check_api-${version}-sources.jar"];
       inherit (release) hash;

@@ -233,6 +233,10 @@
   sourceModules =
     upstreamSourceModules
     // {
+      rules_python = import ./_bazel-rules-python-tools.nix {inherit buildPackages;} {
+        source = upstreamSourceModules.rules_python;
+        python = buildPython3;
+      };
       rules_java = import ./_bazel-rules-java-tools.nix {inherit buildPackages;} {
         source = upstreamSourceModules.rules_java;
         version =
@@ -266,7 +270,12 @@
           else "rules_java~~toolchains~remote_java_tools"
         }=${sourceRemoteJavaTools}"
       ]
-      ++ ["--override_repository=${sourcePythonRepositoryName}=${sourcePythonRuntime}"];
+      ++ ["--override_repository=${sourcePythonRepositoryName}=${sourcePythonRuntime}"]
+      ++ lib.optionals (builtins.compareVersions version "8.0.0" < 0) [
+        "--override_repository=grpc~~grpc_repo_deps_ext~com_google_googleapis=${sourceModules.grpc-googleapis}"
+        "--override_repository=grpc~~grpc_repo_deps_ext~envoy_api=${sourceModules.grpc-envoy-api}"
+        "--override_repository=grpc~~grpc_repo_deps_ext~com_github_cncf_udpa=${sourceModules.grpc-udpa}"
+      ];
   sourceModuleFlags =
     if source == null
     then []
@@ -274,7 +283,7 @@
       builtins.filter (flag: flag != null) (lib.mapAttrsToList (
           name: path:
           # Bazel 7's older protocol graph does not include these newer modules.
-            if path == null || (builtins.compareVersions version "8.0.0" < 0 && builtins.elem name ["chicory" "grpc-java" "rules_apple" "rules_foreign_cc" "rules_fuzzing" "rules_shell" "rules_swift"])
+            if path == null || (builtins.compareVersions version "8.0.0" < 0 && builtins.elem name ["chicory" "grpc-java" "grpc-googleapis" "grpc-envoy-api" "grpc-udpa" "rules_apple" "rules_foreign_cc" "rules_fuzzing" "rules_shell" "rules_swift"])
             then null
             else "--override_module=${name}=${path}"
         )
@@ -1418,6 +1427,22 @@ in
               rm snapshots.img)
           ''}
                   ${lib.optionalString (source != null) prepareFastutilTools}
+                  ${lib.optionalString (source != null) ''
+            # Source-built classifier JARs already contain only their
+            # target library. Info-ZIP returns 12 when no removal matches;
+            # preserve that valid archive while retaining other failures.
+            ${buildPython3}/bin/python3 - <<'PY'
+            from pathlib import Path
+
+            path = Path("third_party/BUILD")
+            original = path.read_text()
+            command = '"zip -qd $@ */license/* " + UNNECESSARY_DYNAMIC_LIBRARIES'
+            if command in original:
+                assert original.count(command) == 1
+                replacement = command.replace('"zip -qd', '"(zip -qd') + ' + " || test $$? -eq 12)"'
+                path.write_text(original.replace(command, replacement))
+            PY
+          ''}
                   # Apply patches (|| true — patches may not apply to all versions)
                   patch --batch -p1 < ${./bazel-patches/java_toolchain.patch} || true
                   if [ -f src/test/shell/bazel/list_source_repository.bzl ]; then
@@ -1741,22 +1766,41 @@ in
             fi
 
             ${lib.optionalString (source != null) ''
-              # A Git checkout lacks the generated Java classes in dist ZIPs.
-              # Start from the already source-built AOS bootstrap runner.
-              mkdir -p derived/maven
-              cp -R ${buildBazelBootstrap.passthru.offlineMavenJars}/maven/. derived/maven/
-              chmod -R u+w derived/maven
-              printf '%s\n' 'filegroup(name = "srcs", srcs = glob(["**/*.jar"]))' \
-                > derived/maven/BUILD.vendor
-              printf '%s\n' '${
+                # A Git checkout lacks the generated Java classes in dist ZIPs.
+                # Start from the already source-built AOS bootstrap runner.
+                cp -R ${buildBazelBootstrap}/share/bazel-bootstrap-derived/. derived/
+              chmod -R u+w derived
+              # The native bootstrap generates gRPC service sources alongside
+              # protobuf messages; their execution-time classpath must accompany
+              # the retained inputs consumed by starlark-deps.
+              mkdir -p derived/jars/aos-grpc
+              cp -rL ${buildBazelBootstrap.passthru.offlineMavenJars}/maven/io/grpc/. \
+                derived/jars/aos-grpc/
+              for support in com/google/auto/auto-common com/google/escapevelocity \
+                net/ltgt/gradle/incap com/squareup/javapoet; do
+                mkdir -p "derived/jars/aos-processors/$support"
+                cp -rL "${buildBazelBootstrap.passthru.offlineMavenJars}/maven/$support/." \
+                  "derived/jars/aos-processors/$support/"
+              done
+                mkdir -p derived/maven
+                # Use the analyzed source-backed Maven exports. The dist bootstrap
+                # normally overrides this repository with bundled JARs, which are
+                # absent from our Git checkout and are not valid release inputs.
+                cp -R "$VENDOR_ABS/${
+                if builtins.compareVersions version "8.0.0" >= 0
+                then "rules_jvm_external++maven+maven"
+                else "rules_jvm_external~~maven~maven"
+              }"/. derived/maven/
+                chmod -R u+w derived/maven
+                printf '%s\n' '${
                 if builtins.compareVersions version "8.0.0" >= 0
                 then "rules_jvm_external++maven+maven"
                 else "rules_jvm_external~~maven~maven"
               }' \
-                > derived/maven/MAVEN_CANONICAL_REPO_NAME
-              cp src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt \
-                tools/jdk/java_stub_template.txt
-              export BAZEL=${buildBazelBootstrap}/bin/bazel
+                  > derived/maven/MAVEN_CANONICAL_REPO_NAME
+                cp src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt \
+                  tools/jdk/java_stub_template.txt
+                export BAZEL=${buildBazelBootstrap}/bin/bazel
             ''}
 
             # Run the bootstrap build

@@ -46,6 +46,12 @@
     bazelByteBuddy114 = helperScope.bazelByteBuddy1_14;
     bazelJeroMq = helperScope.bazelJeromq;
     bazelZstdJni155 = callHelper ./_bazel-zstd-jni.nix {version = "1.5.5-11";};
+    nettyTcnative70Repositories = callHelper ./_bazel-netty-tcnative-2061-repositories.nix {
+      version = "2.0.70.Final";
+      bazelNettyTcnativeClasses2061 = callHelper ./_bazel-netty-tcnative-classes-2061.nix {
+        version = "2.0.70.Final";
+      };
+    };
     protobufJava = helperScope.bazelProtobufJava;
     xmlResolver = helperScope.bazelXmlResolver;
   };
@@ -104,6 +110,9 @@
         bazelGoogleJavaFormat = javaFormat;
       }
     else helperScope.bazelErrorProneCore;
+  errorProneRepositories =
+    (callHelper ./_bazel-maven-source-repositories.nix {mavenPackage = errorProneCore;})
+    // (callHelper ./_bazel-maven-source-repositories.nix {mavenPackage = errorProneCheckApi;});
   mavenSourceRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = callHelper ./_bazel-maven-bootstrap.nix {
       includeModernLibraries = true;
@@ -123,9 +132,17 @@
   tomcatAnnotationRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelTomcatAnnotations6053;
   };
-  googleAuthRepositories = callHelper ./_bazel-maven-source-repositories.nix {
-    mavenPackage = helperScope.bazelGoogleAuth123;
+  chicoryMavenRepositories = callHelper ./_bazel-maven-source-repositories.nix {
+    mavenPackage = callHelper ./_bazel-chicory-maven.nix {chicoryPackage = chicory;};
   };
+  googleAuthRepositories =
+    (callHelper ./_bazel-maven-source-repositories.nix {
+      mavenPackage = helperScope.bazelGoogleAuth123;
+    })
+    // lib.optionalAttrs (builtins.compareVersions bootstrapVersion "9.0.0" >= 0)
+    (callHelper ./_bazel-maven-source-repositories.nix {
+      mavenPackage = callHelper ./_bazel-google-auth-123.nix {version = "1.24.1";};
+    });
   googleHttpModernRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelGoogleHttp1433;
   };
@@ -133,7 +150,9 @@
     mavenPackage = helperScope.bazelNettyHttp2119;
   };
   modernAnnotationRepositories = callHelper ./_bazel-maven-source-repositories.nix {
-    mavenPackage = helperScope.bazelMavenModernAnnotations;
+    mavenPackage = callHelper ./_bazel-maven-modern-annotations.nix {
+      includeBazel9 = builtins.compareVersions bootstrapVersion "9.0.0" >= 0;
+    };
   };
   guavaModernRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelGuava3345;
@@ -147,8 +166,19 @@
   velocityRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelVelocity;
   };
-  nettyTcnativeClassesRepositories = callHelper ./_bazel-maven-source-repositories.nix {
-    mavenPackage = helperScope.bazelNettyTcnativeClasses2061;
+  nettyTcnativeClassesRepositories =
+    (callHelper ./_bazel-maven-source-repositories.nix {
+      mavenPackage = helperScope.bazelNettyTcnativeClasses2061;
+    })
+    // lib.optionalAttrs (builtins.compareVersions bootstrapVersion "9.0.0" >= 0)
+    (callHelper ./_bazel-maven-source-repositories.nix {
+      mavenPackage = callHelper ./_bazel-netty-tcnative-classes-2061.nix {version = "2.0.70.Final";};
+    });
+  nettyTcnative70Repositories = callHelper ./_bazel-netty-tcnative-2061-repositories.nix {
+    version = "2.0.70.Final";
+    bazelNettyTcnativeClasses2061 = callHelper ./_bazel-netty-tcnative-classes-2061.nix {
+      version = "2.0.70.Final";
+    };
   };
   protobufJava = helperScope.bazelProtobufJava;
   protobufJavaUtil = helperScope.bazelProtobufJavaUtil;
@@ -245,8 +275,11 @@ in
     passthru.offlineNettyBoringssl2061 = helperScope.bazelNettyBoringssl2061;
     passthru.offlineNettyTcnativeNative2061 = helperScope.bazelNettyTcnativeNative2061;
     passthru.offlineNettyTcnative2061NativeRepositories = helperScope.bazelNettyTcnative2061Repositories;
+    passthru.offlineNettyTcnative70NativeRepositories = nettyTcnative70Repositories;
     passthru.offlineRepositories =
       mavenSourceRepositories
+      // lib.optionalAttrs (builtins.compareVersions bootstrapVersion "9.0.0" >= 0) errorProneRepositories
+      // lib.optionalAttrs (builtins.compareVersions bootstrapVersion "9.0.0" >= 0) chicoryMavenRepositories
       // grpcNettyRepositories
       // asyncProfilerMavenRepositories
       // netty93Repositories
@@ -263,6 +296,7 @@ in
       // velocityRepositories
       // nettyTcnativeClassesRepositories
       // helperScope.bazelNettyTcnative2061Repositories.repositories
+      // lib.optionalAttrs (builtins.compareVersions bootstrapVersion "9.0.0" >= 0) nettyTcnative70Repositories.repositories
       // {platforms = helperScope.bazelPlatformsSource;}
       // helperScope.bazelAsyncProfilerRepositories
       // helperScope.bazelNetty119.repositories
@@ -443,6 +477,12 @@ in
           fi
           install -Dm644 "$OUTPUT_DIR/archive/libblaze.jar" \
             "$out/share/java/libblaze.jar"
+          # Git sources need the generated proto Java inputs that upstream
+          # normally carries in its distribution ZIP. Retain their source-built
+          # bootstrap libraries so the full Bazel graph can consume them offline.
+          mkdir -p "$out/share/bazel-bootstrap-derived/src"
+          cp -rL derived/src/java "$out/share/bazel-bootstrap-derived/src/"
+          cp -rL derived/jars "$out/share/bazel-bootstrap-derived/"
           cp -rL "$OUTPUT_DIR/archive" "$out/share/bazel-bootstrap-archive"
           ${lib.optionalString (builtins.compareVersions bootstrapVersion "8.0.0" >= 0) ''
             # The bootstrap archive runs with @bazel_tools, whose root BUILD
