@@ -13,6 +13,36 @@
   patchCopyCommands = builtins.concatStringsSep "\n" (map patchCopyCommand series.patchFiles);
   crucibleSource = import ../tools/crucible/_source.nix {inherit lib;};
   repoRoot = ../..;
+  repoRootString = toString repoRoot;
+  sourceEntries = [
+    ".dockerignore"
+    ".envrc"
+    ".gitattributes"
+    ".gitignore"
+    "AGENTS.md"
+    "CLAUDE.md"
+    "CONTRIBUTING.md"
+    "LICENSE"
+    "LICENSES"
+    "README.md"
+    "aos-dev"
+    "containers"
+    "crates"
+    "default.nix"
+    "dev"
+    "docs"
+    "flake.lock"
+    "flake.nix"
+    "justfile"
+    "lib"
+    "modules"
+    "pkgs"
+    "qualification"
+    "stdenv"
+    "systems"
+    "tests"
+    "tools"
+  ];
   characterizationGoldens = "${toString repoRoot}/tests/fixtures/system-characterization-goldens";
   aosBuildSource = builtins.path {
     path = repoRoot;
@@ -26,6 +56,16 @@
       && base != ".worktrees"
       && base != "target"
       && base != "result"
+      # Keep the repository's source layout without copying local tool state
+      # or generated files beside the checked-in build inputs.
+      && (
+        pathString == repoRootString
+        || builtins.any (
+          entry:
+            pathString == "${repoRootString}/${entry}"
+            || lib.hasPrefix "${repoRootString}/${entry}/" pathString
+        ) sourceEntries
+      )
       # Characterization goldens are review fixtures, not corresponding source
       # required to rebuild QEMU. Excluding them also prevents the base-lib's
       # frozen package inventory from feeding this package back into its own
