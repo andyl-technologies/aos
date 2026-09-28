@@ -90,6 +90,8 @@ pub use block::{
     install_cross_device_misdirected_persistence,
 };
 pub use clock::{VirtualClock, ns_to_tick};
+/// Canonical source-delivery key retained by each computed device response.
+pub use crucible_shmem::FrameDeliveryKey;
 pub use error::DeviceError;
 pub use fault::{DeviceRng, Probability};
 pub use harness::{
@@ -120,5 +122,6 @@ pub use request::{
 
 pub use subnode::{
     IoCore, IoCoreSnapshot, IoCoreSnapshotCodecError, IoRequestEnqueueFailure, IoSubNode,
-    ShmemDeliveryFailure, ShmemDeliveryResult, ShmemDequeueResult, ShmemInboxProcess,
+    SelectedDeliveryOutcome, ShmemDeliveryFailure, ShmemDeliveryResult, ShmemDequeueResult,
+    ShmemInboxProcess,
 };

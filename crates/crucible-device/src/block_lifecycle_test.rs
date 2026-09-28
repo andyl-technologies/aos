@@ -344,6 +344,100 @@ fn latency_depends_only_on_op_and_count() {
     assert_eq!(huge.latency_for(BlockOp::Read, u32::MAX), u64::MAX);
 }
 
+#[test]
+fn selected_transport_reset_waits_for_its_exact_publication() {
+    let latency = BlockLatency::new(100, 100, 0, 0, 0);
+    let mut dev = device_with_latency(PAGE_SIZE, latency);
+    let trigger = BlockRequest::get_length(41).with_identity(BlockRequestIdentity::new(7, 41));
+    let transition = ResolvedBlockControllerTransition {
+        failure_result: BlockFaultResult::IoError,
+        unadmitted: BlockTransitionUnadmitted::WaitForRecovery,
+        queued: BlockTransitionPending::Fail,
+        executing: BlockTransitionPending::RetryPreserveId,
+        resolved: BlockTransitionResolved::Complete,
+        completed_undelivered: BlockTransitionUndelivered::RetryNewId,
+        controller_buffer: BlockTransitionState::Preserve,
+        volatile_cache: BlockTransitionState::Preserve,
+        request_ids: BlockTransportRequestIds::NewEpochFromZero,
+        duplicate_history: BlockTransitionState::Lose,
+        topology: BlockTransitionTopology::Preserve,
+        recovery_nanos: 25,
+    };
+    let mut directive = ResolvedBlockFaultDirective::fault_free(&trigger, PAGE_SIZE as u64);
+    directive.duplicate_completions = vec![ResolvedBlockDuplicateCompletion::Reset {
+        gap_nanos: 10,
+        transition,
+    }];
+    ok(dev.install_storage_fault_directive(trigger.identity(), directive));
+    ok(dev.submit(0, &trigger));
+
+    let ring = RingHeader::new();
+    let mut entries = vec![FrameEntry::default(); 1];
+    let original = dev.core().snapshot().inflight;
+    let primary = &original[0];
+    let reset = &original[1];
+
+    assert_eq!(
+        ok(dev.deliver_selected_to_shmem(
+            primary.key.delivery_icount,
+            primary.key,
+            &primary.response.payload,
+            &ring,
+            &mut entries
+        )),
+        crate::SelectedDeliveryOutcome::Published,
+    );
+    assert_eq!(dev.storage_fault_state().transport_epoch(), Some(7));
+    let before = dev.snapshot();
+    assert_eq!(
+        ok(dev.deliver_selected_to_shmem(
+            reset.key.delivery_icount,
+            reset.key,
+            &reset.response.payload,
+            &ring,
+            &mut entries
+        )),
+        crate::SelectedDeliveryOutcome::Backpressured,
+    );
+    assert_eq!(dev.snapshot(), before);
+    assert!(ok(ring.dequeue(&entries)).is_some());
+
+    assert_eq!(
+        ok(dev.deliver_selected_to_shmem(
+            reset.key.delivery_icount,
+            reset.key,
+            &reset.response.payload,
+            &ring,
+            &mut entries
+        )),
+        crate::SelectedDeliveryOutcome::Published,
+    );
+    assert_eq!(dev.storage_fault_state().transport_epoch(), Some(8));
+    assert_eq!(
+        dev.storage_fault_state().recovery_until_ticks(),
+        Some(35_000)
+    );
+    let frame = ok(ring.dequeue(&entries)).unwrap_or_else(|| panic!("selected reset missing"));
+    assert_eq!(
+        ok(BlockResponse::decode(ok(frame.payload()))).status,
+        BlockStatus::TransportReset
+    );
+    let retained = dev.snapshot();
+    let failure = dev
+        .deliver_selected_to_shmem(
+            reset.key.delivery_icount,
+            reset.key,
+            &reset.response.payload,
+            &ring,
+            &mut entries,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("consumed reset selected twice"));
+    assert_eq!(failure.published, 0);
+    assert_eq!(dev.snapshot(), retained);
+    assert!(ok(ring.dequeue(&entries)).is_none());
+}
+
 fn reset_revision_fixture(with_victim: bool) -> BlockDevice {
     let latency = BlockLatency::new(100, 100, 0, 0, 0);
     let mut dev = device_with_latency(PAGE_SIZE, latency);
@@ -375,6 +469,47 @@ fn reset_revision_fixture(with_victim: bool) -> BlockDevice {
         ok(dev.submit(0, &victim));
     }
     dev
+}
+
+#[test]
+fn selected_reset_queue_rewrite_budget_is_reserved_before_publication() {
+    let mut dev = reset_revision_fixture(true);
+    let mut snapshot = dev.core().snapshot();
+    snapshot.queue_revision = std::num::NonZeroU64::new(u64::MAX - 2)
+        .unwrap_or_else(|| panic!("nonzero fixture revision"));
+    *dev.core_mut() = ok(IoCore::restore(&snapshot));
+    let outbox = RingHeader::new();
+    let mut entries = vec![FrameEntry::default(); 4];
+    let first = dev.core().snapshot().inflight[0].clone();
+    assert_eq!(
+        ok(dev.deliver_selected_to_shmem(
+            first.key.delivery_icount,
+            first.key,
+            &first.response.payload,
+            &outbox,
+            &mut entries,
+        )),
+        crate::SelectedDeliveryOutcome::Published,
+    );
+    assert!(ok(outbox.dequeue(&entries)).is_some());
+    let before = dev.snapshot();
+    let reset = dev.core().snapshot().inflight[0].clone();
+
+    let failure = dev
+        .deliver_selected_to_shmem(
+            reset.key.delivery_icount,
+            reset.key,
+            &reset.response.payload,
+            &outbox,
+            &mut entries,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("reset exhausted its post-publication rewrite budget"));
+
+    assert_eq!(failure.published, 0);
+    assert_eq!(failure.source, DeviceError::IoQueueRevisionExhausted);
+    assert_eq!(dev.snapshot(), before);
+    assert!(ok(outbox.dequeue(&entries)).is_none());
 }
 
 #[test]
