@@ -54,7 +54,10 @@ in
     # Scope OpenZFS 44aa82a's Linux 6.9+ superblock UUID path to the pinned
     # AOS kernel. It binds immutable pool and dataset GUIDs so Storage can
     # verify a detached snapshot by descriptor, not its replaceable ZFS name.
-    patches = [./zfs-mounted-fs-uuid.patch];
+    patches = [
+      ./zfs-mounted-fs-uuid.patch
+      ./zfs-build-script-shell.patch
+    ];
 
     buildDeps =
       [
@@ -140,7 +143,10 @@ in
               export KCFLAGS="''${KCFLAGS:-} -ffile-prefix-map=${kernel.dev}=/build/kernel-sdk"
             ''
           }
-          make -j$NIX_BUILD_CORES
+          # The upstream -c hook only prepares the in-tree test tool path;
+          # it is not a functional test run. Execute it with the AOS build
+          # shell, including for cross targets, and propagate hook failures.
+          make SHELL="$CONFIG_SHELL" -j$NIX_BUILD_CORES
         '';
       }
       {
@@ -150,7 +156,7 @@ in
           export ARCH=${kernelArch}
 
           # Override hardcoded paths that would install outside the store
-          make install \
+          make SHELL="$CONFIG_SHELL" install \
             ${
             if kernel == null
             then ""
