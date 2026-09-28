@@ -367,9 +367,8 @@
   # Mach-O helper is ever executed by the builder.
   darwinToolchainSetup = lib.optionalString isDarwinCross ''
     mkdir -p aos-darwin-toolchain
-    ${buildUnzip}/bin/unzip -jo "${buildBazel.src}" \
-      tools/cpp/unix_cc_toolchain_config.bzl \
-      -d aos-darwin-toolchain
+    cp "${buildBazel.src}/tools/cpp/unix_cc_toolchain_config.bzl" \
+      aos-darwin-toolchain/
     mkdir -p aos-darwin-toolchain/include
     ${buildTar}/bin/tar -xOf ${darwinMdnsResponderSrc} \
       --wildcards '*/mDNSShared/dns_sd.h' \
@@ -526,9 +525,8 @@
 
   linuxToolchainSetup = lib.optionalString isLinuxCross ''
     mkdir -p aos-linux-cross-toolchain
-    ${buildUnzip}/bin/unzip -jo "${buildBazel.src}" \
-      tools/cpp/unix_cc_toolchain_config.bzl \
-      -d aos-linux-cross-toolchain
+    cp "${buildBazel.src}/tools/cpp/unix_cc_toolchain_config.bzl" \
+      aos-linux-cross-toolchain/
 
     mkdir -p aos-linux-host-toolchain
     cp aos-linux-cross-toolchain/unix_cc_toolchain_config.bzl \
