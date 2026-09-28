@@ -177,6 +177,44 @@ fn checked_admission_projection_keeps_actual_inputs_and_advances_floor_once() {
         decision.authorized_wall_seconds()
     );
     assert_eq!(decision.time_floor.generation, 1);
+    let floor = decision.time_floor;
+    let full_revision = [
+        claims.id.as_bytes().as_slice(),
+        claims.revocation_scope.as_bytes().as_slice(),
+        &claims.revocation_generation.get().to_be_bytes(),
+        claims.policy_digest.as_bytes().as_slice(),
+        &decision.controller.generation.to_be_bytes(),
+        &decision.policy.generation().to_be_bytes(),
+        &floor.generation.to_be_bytes(),
+        floor.clock.provenance().as_bytes().as_slice(),
+        floor.clock.host_boot_id().as_slice(),
+        &floor.clock.wall_seconds().to_be_bytes(),
+        &floor.clock.boottime_nanoseconds().to_be_bytes(),
+        floor.digest.as_bytes().as_slice(),
+    ]
+    .concat();
+    assert_eq!(full_revision.len(), 176);
+    assert_eq!(
+        checked.revision,
+        AuthorizationRevisionDigestV1::commit(&full_revision)
+    );
+    for byte in 24..32 {
+        let mut changed = floor;
+        let mut digest = *changed.digest.as_bytes();
+        digest[byte] ^= 1;
+        changed.digest = ObjectDigest::from_bytes(digest);
+        assert_ne!(
+            protected_authorization_revision(
+                &capability,
+                decision.controller.generation,
+                decision.policy.generation(),
+                changed
+            ),
+            checked.revision,
+            "the complete trailing floor digest is committed"
+        );
+    }
+
     // One Begin, two Put records and Commit; conversion must not evaluate a
     // second time or re-advance the floor behind the retained projection.
     assert_eq!(journal.snapshot_sequence(), sequence + 4);

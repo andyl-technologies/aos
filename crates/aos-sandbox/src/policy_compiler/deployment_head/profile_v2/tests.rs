@@ -664,7 +664,7 @@ fn explicit_deployment_profile_v2_keeps_content_and_live_kernel_read_intersected
     let domain = AuthenticatedCacheDomainV1::authenticate(
         CacheDomain::new(
             CacheDomainKind::Project,
-            CacheDomainId::from_bytes([83; 16]),
+            CacheDomainId::from_bytes(*project.as_bytes()),
         ),
         CacheDomainBindingV1::Project(project),
         &verifier,

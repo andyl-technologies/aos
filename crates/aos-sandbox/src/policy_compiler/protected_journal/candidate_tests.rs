@@ -109,7 +109,10 @@ pub(super) fn compile_fixture(
     let sandbox = SandboxId::from_bytes([2; 16]);
     let verifier = SyntheticInputVerifier;
     let domain = AuthenticatedCacheDomainV1::authenticate(
-        CacheDomain::new(CacheDomainKind::Project, CacheDomainId::from_bytes([3; 16])),
+        CacheDomain::new(
+            CacheDomainKind::Project,
+            CacheDomainId::from_bytes(*project.as_bytes()),
+        ),
         CacheDomainBindingV1::Project(project),
         &verifier,
     )

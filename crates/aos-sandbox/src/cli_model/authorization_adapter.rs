@@ -1452,7 +1452,8 @@ fn protected_authorization_revision(
     time_floor: ProtectedTimeFloorRevisionV1,
 ) -> AuthorizationRevisionDigestV1 {
     let claims = capability.claims();
-    let mut exact_revision = [0_u8; 168];
+    // The 144-byte coordinate prefix is followed by the entire floor digest.
+    let mut exact_revision = [0_u8; 176];
     exact_revision[..16].copy_from_slice(claims.id.as_bytes());
     exact_revision[16..32].copy_from_slice(claims.revocation_scope.as_bytes());
     exact_revision[32..40].copy_from_slice(&claims.revocation_generation.get().to_be_bytes());
