@@ -479,6 +479,7 @@
   # role-bound external providers, and constructs the final disk bytes there.
   # Private material is intentionally neither an argument nor an environment
   # value of this derivation.
+  # The recipe pins native executables for the external Linux finalizer.
   unsignedAssembly = buildPackages.mkDerivation {
     pname = "aos-image-${name}-unsigned-assembly";
     inherit version;
@@ -570,7 +571,6 @@
             --arg secureBootRole ${lib.escapeShellArg sb.externalFinalization.secureBootRole} \
             --arg moduleRole ${lib.escapeShellArg sb.externalFinalization.moduleRole} \
             --arg pcrRole ${lib.escapeShellArg sb.externalFinalization.pcrRole} \
-            # External finalization runs on the builder, including cross images.
             --arg ukify ${lib.escapeShellArg "${buildPackages.systemd.tools}/bin/ukify"} \
             --arg measure ${lib.escapeShellArg "${buildPackages.systemd}/lib/systemd/systemd-measure"} \
             --arg objcopy ${lib.escapeShellArg "${buildPackages.binutils}/bin/objcopy"} \
