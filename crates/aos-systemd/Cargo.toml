@@ -19,11 +19,9 @@ serde = { workspace = true }
 zbus = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+aos-sandbox-linux.workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }
 sha2.workspace = true
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-aos-sandbox-linux.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
 rustix = { workspace = true, features = ["event"] }
