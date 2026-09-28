@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000..1863f1d
 --- /dev/null
 +++ b/src/core/aos-fuse-worker.c
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,266 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +
 +#include <fcntl.h>
@@ -253,12 +253,29 @@ index 0000000..1863f1d
 +        s->aos_fuse_worker_launch_armed = false;
 +        return 0;
 +}
++
++void aos_fuse_worker_release_launch_fds(Service *s) {
++        assert(s);
++        assert(aos_fuse_worker_protected_unit(UNIT(s)));
++        assert(!s->aos_fuse_worker_launch_armed);
++        assert(s->n_extra_fds == AOS_FUSE_WORKER_FDS);
++
++        /* The executor inherited its own serialized copies. Close the
++         * originals synchronously: async close is not a handoff barrier. */
++        FOREACH_ARRAY(i, s->extra_fds, s->n_extra_fds) {
++                i->fd = safe_close(i->fd);
++                free(i->fdname);
++        }
++
++        s->extra_fds = mfree(s->extra_fds);
++        s->n_extra_fds = 0;
++}
 diff --git a/systemd-261.2/src/core/aos-fuse-worker.h b/src/core/aos-fuse-worker.h
 new file mode 100644
 index 0000000..7d9bf29
 --- /dev/null
 +++ b/src/core/aos-fuse-worker.h
-@@ -0,0 +1,15 @@
+@@ -0,0 +1,16 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +#pragma once
 +
@@ -274,6 +291,7 @@ index 0000000..7d9bf29
 +int aos_fuse_worker_require_host(sd_bus_message *message);
 +int aos_fuse_worker_arm(Unit *u, sd_bus_message *message, sd_bus_error *error);
 +int aos_fuse_worker_take_launch(Service *s, ExecCommand *command);
++void aos_fuse_worker_release_launch_fds(Service *s);
 diff --git a/src/core/dbus-manager.c b/src/core/dbus-manager.c
 index 595136f..bf82bf0 100644
 --- a/src/core/dbus-manager.c
@@ -532,6 +550,16 @@ index 05e7344..32a9ea7 100644
          /* Every command, including privileged ExecCondition/ExecStartPre,
           * passes here. Repeat after daemon-reexec and on later restarts. */
          if (aos_network_image_guard_active()) {
+@@ -2228,6 +2235,9 @@ static int service_spawn_internal(
+         if (r < 0)
+                 return r;
+ 
++        if (aos_fuse_worker_protected_unit(UNIT(s)))
++                aos_fuse_worker_release_launch_fds(s);
++
+         s->exec_fd_event_source = TAKE_PTR(exec_fd_source);
+         s->exec_fd_hot = false;
+ 
 diff --git a/src/core/service.h b/src/core/service.h
 index b57634c..136f0e0 100644
 --- a/src/core/service.h
@@ -597,12 +625,15 @@ new file mode 100644
 index 0000000..df57565
 --- /dev/null
 +++ b/src/test/test-aos-fuse-worker.c
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,90 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++#include <fcntl.h>
 +
 +#include "alloc-util.h"
 +#include "aos-fuse-worker.h"
 +#include "load-fragment.h"
++#include "service.h"
 +#include "strv.h"
 +#include "tests.h"
 +
@@ -655,4 +686,33 @@ index 0000000..df57565
 +        ASSERT_FALSE(aos_network_protected_name("ordinary.service"));
 +}
 +
++TEST(launch_role_copies_close_synchronously) {
++        Service service = {
++                .meta.id = (char*) "aos-view-worker@00000000000000000000000000000001.service",
++                .n_extra_fds = 5,
++        };
++        int original_fds[5];
++
++        service.extra_fds = new0(ServiceExtraFD, service.n_extra_fds);
++        ASSERT_NOT_NULL(service.extra_fds);
++        for (size_t i = 0; i < service.n_extra_fds; i++) {
++                original_fds[i] = open("/dev/null", O_RDONLY|O_CLOEXEC);
++                ASSERT_OK(original_fds[i]);
++                service.extra_fds[i].fd = original_fds[i];
++                service.extra_fds[i].fdname = strdup("validated-role");
++                ASSERT_NOT_NULL(service.extra_fds[i].fdname);
++        }
++
++        aos_fuse_worker_release_launch_fds(&service);
++
++        ASSERT_NULL(service.extra_fds);
++        ASSERT_EQ(service.n_extra_fds, 0U);
++        for (size_t i = 0; i < ELEMENTSOF(original_fds); i++) {
++                errno = 0;
++                ASSERT_EQ(fcntl(original_fds[i], F_GETFD), -1);
++                ASSERT_EQ(errno, EBADF);
++        }
++}
++
 +DEFINE_TEST_MAIN(LOG_INFO);
++

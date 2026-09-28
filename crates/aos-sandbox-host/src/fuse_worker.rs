@@ -5,6 +5,8 @@
 //! not establish Mount's original FUSE OFD, attachment, lease, or private record
 //! channel. Only the held cross-owner composition may join them to a consumer.
 
+use std::fs::File;
+use std::io::Read as _;
 use std::os::fd::BorrowedFd;
 use std::path::Path;
 
@@ -17,6 +19,9 @@ use aos_systemd::{
 };
 
 use crate::{HostError, Result};
+
+const WORKER_CONTEXT: &[u8] = b"system_u:system_r:aos_filesystem_fuse_worker_t";
+const MAXIMUM_CONTEXT_BYTES: usize = 256;
 
 /// Retains one actual worker invocation without conferring consumer authority.
 ///
@@ -39,6 +44,9 @@ impl RetainedFuseWorkerHostLaunchV1 {
     /// The guard must retain the original authenticated Host/Mount submission
     /// and image/environment seal through actual activation and this readback.
     /// This transport composition registers no broker method or worker listener.
+    /// It consumes and closes its role table before worker readback. The
+    /// enclosing fixed dispatch must also finish and drop its original receive
+    /// packet and transport copies before acknowledging preparation.
     ///
     /// # Errors
     ///
@@ -53,12 +61,13 @@ impl RetainedFuseWorkerHostLaunchV1 {
     pub async fn launch_guarded(
         systemd: &SystemdClient,
         cgroup_root: &CgroupV2Root,
-        spec: &FuseWorkerUnitSpecV1,
+        spec: FuseWorkerUnitSpecV1,
         before_effect: &mut (dyn FnMut() -> Result<()> + Send),
     ) -> Result<Self> {
         let boot = KernelBootId::current().map_err(kernel_error)?;
+        let name = spec.name().clone();
         if systemd
-            .observe_fuse_worker_unit_v1(spec.name())
+            .observe_fuse_worker_unit_v1(&name)
             .await
             .map_err(manager_error)?
             .is_some()
@@ -67,19 +76,24 @@ impl RetainedFuseWorkerHostLaunchV1 {
         }
 
         let job = systemd
-            .start_fuse_worker_unit_guarded_v1(spec, before_effect)
+            .start_fuse_worker_unit_guarded_v1(&spec, before_effect)
             .await
             .map_err(|error| match error {
                 ExactStartError::Guard(error) => error,
                 ExactStartError::Systemd(error) => manager_error(error),
             })?;
+
+        // The executor inherited the role table. Close these local copies
+        // before readback; the enclosing dispatch owns its receive-packet barrier.
+        drop(spec);
+
         if job.result != JobResult::Done {
             return Err(HostError::Worker(
                 "FUSE worker start did not complete".to_owned(),
             ));
         }
 
-        let observation = observe_running(systemd, spec.name()).await?;
+        let observation = observe_running(systemd, &name).await?;
         let invocation = observation
             .invocation_id
             .ok_or_else(|| HostError::Worker("FUSE worker invocation is absent".to_owned()))?;
@@ -87,7 +101,7 @@ impl RetainedFuseWorkerHostLaunchV1 {
             .main_pid
             .ok_or_else(|| HostError::Worker("FUSE worker leader is absent".to_owned()))?;
         let process = PidFd::open(pid).map_err(kernel_error)?;
-        let cgroup_path = spec.name().cgroup_path();
+        let cgroup_path = name.cgroup_path();
         let relative = cgroup_path
             .as_str()
             .strip_prefix('/')
@@ -101,7 +115,7 @@ impl RetainedFuseWorkerHostLaunchV1 {
         let process_identity = process.process_identity().map_err(kernel_error)?;
 
         let retained = Self {
-            name: spec.name().clone(),
+            name,
             boot,
             invocation,
             process,
@@ -131,6 +145,10 @@ impl RetainedFuseWorkerHostLaunchV1 {
             return Err(HostError::Fence("FUSE worker process identity changed"));
         }
 
+        // Socketpair peer labels describe creation, not the post-exec worker.
+        // Read the actual pinned task SID between kernel/manager observations.
+        require_worker_context(self.process_identity.pid())?;
+
         let observed = observe_running(systemd, &self.name).await?;
         if observed.invocation_id != Some(self.invocation)
             || observed.main_pid.map(|pid| pid.get()) != Some(self.process_identity.pid())
@@ -143,6 +161,11 @@ impl RetainedFuseWorkerHostLaunchV1 {
             .map_err(kernel_error)?;
         if !self.process.is_alive().map_err(kernel_error)? {
             return Err(HostError::Fence("FUSE worker exited during readback"));
+        }
+
+        require_worker_context(self.process_identity.pid())?;
+        if self.process.process_identity().map_err(kernel_error)? != self.process_identity {
+            return Err(HostError::Fence("FUSE worker changed during MAC readback"));
         }
 
         Ok(())
@@ -173,6 +196,35 @@ impl RetainedFuseWorkerHostLaunchV1 {
     }
 }
 
+fn require_worker_context(pid: u32) -> Result<()> {
+    let descriptor = rustix::fs::open(
+        format!("/proc/{pid}/attr/current"),
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|error| HostError::Worker(format!("cannot inspect FUSE worker SID: {error}")))?;
+    let file = File::from(descriptor);
+    let mut context = Vec::new();
+    file.take((MAXIMUM_CONTEXT_BYTES + 1) as u64)
+        .read_to_end(&mut context)
+        .map_err(|error| HostError::Worker(format!("cannot read FUSE worker SID: {error}")))?;
+    if !is_worker_context(&context) {
+        return Err(HostError::Fence(
+            "FUSE worker is outside its fixed MAC domain",
+        ));
+    }
+    Ok(())
+}
+
+fn is_worker_context(context: &[u8]) -> bool {
+    // The configured policy is non-MLS. No caller-selected range, whitespace,
+    // alternate domain or extra attribute is admitted by this closed role.
+    context == WORKER_CONTEXT
+        || (context.len() == WORKER_CONTEXT.len() + 1
+            && context.starts_with(WORKER_CONTEXT)
+            && context.last() == Some(&0))
+}
+
 async fn observe_running(
     systemd: &SystemdClient,
     name: &FuseWorkerUnitNameV1,
@@ -195,4 +247,27 @@ fn manager_error(error: aos_systemd::Error) -> HostError {
 
 fn kernel_error(error: aos_sandbox_linux::Error) -> HostError {
     HostError::Worker(format!("FUSE worker kernel readback failed: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WORKER_CONTEXT, is_worker_context};
+
+    #[test]
+    fn requires_exact_current_worker_domain() {
+        assert!(is_worker_context(WORKER_CONTEXT));
+        let mut terminated = WORKER_CONTEXT.to_vec();
+        terminated.push(0);
+        assert!(is_worker_context(&terminated));
+
+        for context in [
+            b"system_u:system_r:init_t".as_slice(),
+            b"system_u:system_r:aos_filesystem_fuse_worker_t:s0".as_slice(),
+            b"system_u:system_r:aos_filesystem_fuse_worker_t\n".as_slice(),
+            b"system_u:system_r:aos_filesystem_fuse_worker_t\0\0".as_slice(),
+            b"".as_slice(),
+        ] {
+            assert!(!is_worker_context(context));
+        }
+    }
 }

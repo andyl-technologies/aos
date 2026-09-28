@@ -261,6 +261,10 @@ impl SystemdClient {
             .await
             .map_err(crate::Error::from)
             .map_err(ExactStartError::Systemd)?;
+
+        // The exact method reply follows complete role-table consumption.
+        // Close our transport copies before waiting for the worker invocation.
+        drop(descriptors);
         self.await_job(path).await.map_err(ExactStartError::Systemd)
     }
 }
