@@ -4,9 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    InventoryLeaseStateV1, SignedSourceExportLeaseV1, SignedSourceReleaseReceiptV1,
-    SourceProviderAuthorityV1, SourceProviderInventoryV1, SourceProviderMethod,
-    digest_provider_proof, digest_signed_export_lease, digest_signed_release_receipt,
+    InventoryLeaseStateV1, SignedSourceExportLeaseV1, SignedSourceProviderRequestV1,
+    SignedSourceReleaseReceiptV1, SourceProviderAuthorityV1, SourceProviderInventoryV1,
+    SourceProviderMethod, decode_acquire_request, digest_provider_proof,
+    digest_signed_export_lease, digest_signed_release_receipt,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -45,6 +46,23 @@ pub fn validate_acquisition_join(
     acquisition: &AcquisitionRecordV1,
     attempt: &AttemptRecordV1,
 ) -> Result<(), LedgerFormatErrorV1> {
+    if acquisition.normalized_intent.native_catalog().is_some()
+        && attempt.method == SourceProviderMethod::Acquire
+        && !attempt.signed_request.is_empty()
+    {
+        let signed = SignedSourceProviderRequestV1::from_canonical_bytes(&attempt.signed_request)
+            .map_err(|_| LedgerFormatErrorV1::Corrupt("native Acquire signed artifact"))?;
+        let request = decode_acquire_request(signed.subject())
+            .map_err(|_| LedgerFormatErrorV1::Corrupt("native Acquire subject"))?;
+        if !acquisition
+            .normalized_intent
+            .matches_original_acquire_request(&request)
+        {
+            return Err(LedgerFormatErrorV1::Corrupt(
+                "native Acquire normalization changes its original subject",
+            ));
+        }
+    }
     let common = acquisition.provider == attempt.provider
         && attempt_owns_holder_lineage(&acquisition.holder, attempt)
         && acquisition.current_attempt_digest == attempt.attempt_digest

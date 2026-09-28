@@ -152,6 +152,18 @@ impl SourceAcquisitionTableV2 {
             ProviderIntentV2::Acquire { value } => value.clone(),
             _ => return Err(state_error("Acquire retry root has wrong intent")),
         };
+        let original_normalization = root
+            .normalized_acquire_intent
+            .as_ref()
+            .ok_or_else(|| state_error("Acquire retry root lacks normalization"))?;
+        let original_normalized =
+            NormalizedAcquisitionIntentV2::from_canonical_bytes(&original_normalization.bytes)
+                .map_err(|_| state_error("Acquire retry root normalization is invalid"))?;
+        if original_normalized.digest().as_bytes() != &original_normalization.digest {
+            return Err(state_error(
+                "Acquire retry root normalization digest differs",
+            ));
+        }
         let number = tail
             .attempt_number
             .checked_add(1)
@@ -190,7 +202,8 @@ impl SourceAcquisitionTableV2 {
             stable.kernel_coupled,
         )
         .map_err(|_| state_error("table-derived Acquire retry is invalid"))?;
-        let normalized = NormalizedAcquisitionIntentV2::from_acquire_request(
+        let provider_request = restore_acquire_profile(&original_normalized, provider_request)?;
+        let normalized = NormalizedAcquisitionIntentV2::from_original_acquire_request(
             &provider_request,
             plan.session().authority_trust()[1].authority().clone(),
             plan.session().authority_trust()[0].authority().clone(),
@@ -318,6 +331,18 @@ impl SourceAcquisitionTableV2 {
             ],
         )?;
         confirm_reservation(journal, prepared, &attempt, &next_head)
+    }
+}
+
+/// Restores data from the retained original profile, never a caller mode flag.
+pub(super) fn restore_acquire_profile(
+    original: &NormalizedAcquisitionIntentV2,
+    request: AcquireSourceRequestV1,
+) -> Result<AcquireSourceRequestV1> {
+    match original.native_catalog() {
+        Some(catalog) => AcquireSourceRequestV1::new_native_v3(request, catalog.clone())
+            .map_err(|_| state_error("Acquire retry changes its native profile")),
+        None => Ok(request),
     }
 }
 

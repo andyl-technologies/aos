@@ -391,6 +391,22 @@ fn initial_signed_graph_for_session(
     catalog_digest: [u8; 32],
     catalog_head_commitment: [u8; 32],
 ) -> Vec<StoredRecordV2> {
+    initial_signed_graph_with_catalog(
+        session,
+        provider_deadline_seconds,
+        catalog_digest,
+        catalog_head_commitment,
+        None,
+    )
+}
+
+fn initial_signed_graph_with_catalog(
+    session: SourceProviderSessionV2,
+    provider_deadline_seconds: i64,
+    catalog_digest: [u8; 32],
+    catalog_head_commitment: [u8; 32],
+    native_catalog: Option<aos_sandbox_source_provider_protocol::NativeAcquireCatalogBindingV3>,
+) -> Vec<StoredRecordV2> {
     let (mount_bytes, mount) = mount_acquire_request();
     let provider_acquisition = ProviderAcquisitionIdentityV2 {
         holder_authority_id: session.scope.holder_authority_id,
@@ -477,7 +493,13 @@ fn initial_signed_graph_for_session(
         mount.kernel_coupled(),
     )
     .expect("valid provider Acquire request");
-    let normalized = NormalizedAcquisitionIntentV2::from_acquire_request(
+    let request = match native_catalog {
+        Some(catalog) => {
+            AcquireSourceRequestV1::new_native_v3(request, catalog).expect("native fixture request")
+        }
+        None => request,
+    };
+    let normalized = NormalizedAcquisitionIntentV2::from_original_acquire_request(
         &request,
         SourceProviderAuthorityV1::new(
             session.scope.provider_authority_id,
@@ -848,6 +870,137 @@ fn initial_signed_acquire_graph_passes_full_typed_replay() {
     validate_fixture_graph(&superseded_signed_graph());
     validate_fixture_graph(&restarted_signed_graph());
     validate_fixture_graph(&terminal_signed_graph());
+}
+
+fn initial_signed_native_graph() -> Vec<StoredRecordV2> {
+    let session = signed_session([19; 16], 31);
+    let catalog = aos_sandbox_source_provider_protocol::NativeAcquireCatalogBindingV3::new(
+        ObjectDigest::from_bytes(session.scope.resource_namespace_digest),
+        1,
+        ObjectDigest::from_bytes([62; 32]),
+        1,
+        ObjectDigest::from_bytes([62; 32]),
+        ObjectDigest::from_bytes([63; 32]),
+        ObjectDigest::from_bytes([64; 32]),
+    )
+    .unwrap();
+    initial_signed_graph_with_catalog(session, 500, [62; 32], [63; 32], Some(catalog))
+}
+
+#[test]
+fn native_normalization_survives_mount_cold_replay_and_retry_profile_reconstruction() {
+    let records = initial_signed_native_graph();
+    validate_fixture_graph(&records);
+    let StoredRecordV2::ProviderQueryAttempt { value: original } = &records[1] else {
+        panic!("native fixture attempt changed kind");
+    };
+    let normalized = original.normalized_acquire_intent.as_ref().unwrap();
+    let value = NormalizedAcquisitionIntentV2::from_canonical_bytes(&normalized.bytes).unwrap();
+    let native_catalog = value.native_catalog().unwrap().clone();
+
+    // Reconstruct only DATA here. The real signer deliberately refuses V3
+    // until the fresh remote-currentness and actual selection producer exists.
+    let legacy_records = initial_signed_graph();
+    let StoredRecordV2::ProviderQueryAttempt { value: legacy } = &legacy_records[1] else {
+        panic!("legacy fixture attempt changed kind");
+    };
+    let signed =
+        aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1::from_canonical_bytes(
+            &legacy.signed_request,
+        )
+        .unwrap();
+    let mut retry_bytes = signed.subject().to_vec();
+    retry_bytes[40..48].copy_from_slice(&2_u64.to_be_bytes());
+    let request =
+        aos_sandbox_source_provider_protocol::decode_acquire_request(&retry_bytes).unwrap();
+    let retry = super::super::retry::restore_acquire_profile(&value, request).unwrap();
+    assert_eq!(retry.native_catalog(), Some(&native_catalog));
+    assert!(value.matches_original_acquire_request(&retry));
+
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let uid = directory.path().metadata().unwrap().uid();
+    let (mut journal, _) = Journal::open_protected_at_uid(
+        directory.path(),
+        "normalized-native.journal",
+        JournalLimits::default(),
+        uid,
+    )
+    .unwrap();
+    commit_graph_delta(&mut journal, &[], &records, [91; 16]);
+    drop(journal);
+    let (reopened, _) = Journal::open_existing_protected_at_uid(
+        directory.path(),
+        "normalized-native.journal",
+        JournalLimits::default(),
+        uid,
+    )
+    .unwrap();
+    let replayed = validate_protected_graph(&reopened);
+    assert_eq!(
+        replayed.provider_attempts[&original.attempt_id]
+            .normalized_acquire_intent
+            .as_ref(),
+        Some(normalized)
+    );
+}
+
+#[test]
+fn native_normalization_substitution_is_rejected_after_local_record_repairs() {
+    use aos_sandbox_protocol::mount_source_acquisition_state::encode_mount_source_state_record_v2;
+
+    let mut records = initial_signed_native_graph();
+    let StoredRecordV2::ProviderQueryAttempt { value: original } = &records[1] else {
+        panic!("native fixture attempt changed kind");
+    };
+    let mut changed = original.clone();
+    let normalized = changed.normalized_acquire_intent.as_mut().unwrap();
+    normalized.bytes[587] ^= 1; // Legal alternate full publication digest.
+    let value = NormalizedAcquisitionIntentV2::from_canonical_bytes(&normalized.bytes).unwrap();
+    normalized.digest = *value.digest().as_bytes();
+    changed.record_digest = [0; 32];
+    let changed = reservation::sealed_attempt(changed).unwrap();
+    let reference = RecordRefV2 {
+        id: changed.attempt_id,
+        revision: changed.revision,
+        record_digest: changed.record_digest,
+    };
+    records[1] = StoredRecordV2::ProviderQueryAttempt { value: changed };
+    let StoredRecordV2::Acquisition { value: row } = &records[2] else {
+        panic!("native fixture row changed kind");
+    };
+    let mut row = row.clone();
+    row.acquire_lineage.root = reference;
+    row.acquire_lineage.tail = reference;
+    row.record_digest = [0; 32];
+    records[2] = StoredRecordV2::Acquisition {
+        value: reservation::sealed_row(row).unwrap(),
+    };
+    let StoredRecordV2::ProviderHead { value: head } = &records[3] else {
+        panic!("native fixture head changed kind");
+    };
+    let mut head = head.clone();
+    head.pending_attempt = Some(reference);
+    head.record_digest = [0; 32];
+    records[3] = StoredRecordV2::ProviderHead {
+        value: reservation::sealed_head(head).unwrap(),
+    };
+    let encoded: Vec<_> = records
+        .iter()
+        .map(|record| encode_mount_source_state_record_v2(record).unwrap())
+        .collect();
+    let error = validate_mount_source_state_graph_v2(
+        encoded
+            .iter()
+            .map(|(key, bytes)| (key.as_slice(), bytes.as_slice())),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("provider Acquire request contradicts immutable intent"),
+        "{error}"
+    );
 }
 
 #[test]

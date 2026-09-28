@@ -17,6 +17,14 @@ pub(crate) fn reserve_acquire(
     let existing_session = validate_projection(ledger, projection)?;
     validate_session_capacity(ledger, &existing_session, projection)?;
     let request = verified.request();
+    // Native V3 normalization is data only. Admission remains closed until
+    // the actual Provider owner rejoins every fresh catalog/current-row claim
+    // and the selected native tuple before any durable reservation or effect.
+    if request.acquisition_version()
+        == aos_sandbox_source_provider_protocol::ACQUIRE_SOURCE_REQUEST_VERSION_V3
+    {
+        return Err(ProviderLedgerError::Equivocation);
+    }
     let attempt_evidence = verified.attempt();
     let root_record_signer = projection.ordered_signers()[1].clone();
     let key = AttemptKeyV1 {
