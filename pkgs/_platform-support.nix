@@ -868,6 +868,7 @@ let
     "toolchain/_bazel-bouncycastle.nix" = "native-build-helper";
     "toolchain/_bazel-byte-buddy-1_14.nix" = "native-build-helper";
     "toolchain/_bazel-byte-buddy-bootstrap.nix" = "native-build-helper";
+    "toolchain/_bazel-chicory-maven.nix" = "native-build-helper";
     "toolchain/_bazel-chicory.nix" = "native-build-helper";
     "toolchain/_bazel-common-protos-241.nix" = "native-build-helper";
     "toolchain/_bazel-commons-csv.nix" = "native-build-helper";
@@ -939,6 +940,7 @@ let
     "toolchain/_bazel-proguard.nix" = "native-build-helper";
     "toolchain/_bazel-remote-java-tools.nix" = "native-build-helper";
     "toolchain/_bazel-rules-java-tools.nix" = "native-build-helper";
+    "toolchain/_bazel-rules-python-tools.nix" = "native-build-helper";
     "toolchain/_bazel-fastutil-source-tools.nix" = "native-build-helper";
     "toolchain/_bazel-offline-modules-7.nix" = "native-build-helper";
     "toolchain/_bazel-source-9-prepared.nix" = "native-build-helper";

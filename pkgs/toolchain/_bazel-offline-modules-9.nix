@@ -11,6 +11,14 @@
     inherit buildPackages fetchgit;
   };
   prepareModule = import ./_bazel-module-prepared.nix {inherit buildPackages;};
+  xdsSource = moduleSource {
+    name = "xds";
+    version = "0.0.0-20240423-555b57e";
+    url = "https://github.com/cncf/xds.git";
+    rev = "555b57ec207be86f811fb0c04752db6f85e3d7e2";
+    fetchCommit = true;
+    hash = "sha256-eLY6COTGXMTUrVARdNHUh0Zm3SDGnN7yz3qSr7FZIpg=";
+  };
   protocGenValidateSource = moduleSource {
     name = "protoc-gen-validate";
     version = "1.2.1";
@@ -184,6 +192,17 @@
     }
   ];
 in {
+  xds = prepareModule {
+    pname = "bazel-xds-source";
+    version = "0.0.0-20240423-555b57e";
+    source = xdsSource;
+    patches = [
+      (buildPackages.fetchurl {
+        urls = ["https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/xds/0.0.0-20240423-555b57e/patches/bzlmod.patch"];
+        hash = "sha256-zrpUCLxhXC7WrPx1SB5ZXy1xROlKk8ZOEaYkwCdiZg4=";
+      })
+    ];
+  };
   protoc-gen-validate = prepareModule {
     pname = "bazel-protoc-gen-validate-source";
     version = "1.2.1.bcr.1";

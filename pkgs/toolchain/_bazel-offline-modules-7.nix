@@ -1,4 +1,4 @@
-##! Bazel 7's pinned protocol dependencies and in-tree Google API source.
+##! Bazel 7's pinned protocol module and extension source dependencies.
 {
   buildPackages,
   fetchgit,
@@ -13,6 +13,22 @@
       urls = ["https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/${module}/${version}/patches/${patch.name}"];
       inherit (patch) hash;
     };
+  upbSource = moduleSource {
+    name = "upb";
+    version = "0.0.0-20220923-a547704";
+    url = "https://github.com/protocolbuffers/upb.git";
+    rev = "a5477045acaa34586420942098f5fecd3570f577";
+    fetchCommit = true;
+    hash = "sha256-F/fBSUOZkjlPwM48yhdxdN05+SksZ7W9us1HZ6qEO/s=";
+  };
+  rulesProtoSource = moduleSource {
+    name = "rules_proto";
+    version = "6.0.0";
+    url = "https://github.com/bazelbuild/rules_proto.git";
+    ref = "6.0.0";
+    rev = "d205d37866925569d99b4d6cdcba172326ecf812";
+    hash = "sha256-9DcA00GmdhOmybHQHbhNHqQgdWi1qWkGBYVP+D/al0Q=";
+  };
   protobufSource = moduleSource {
     name = "protobuf";
     version = "21.7";
@@ -29,9 +45,78 @@
     rev = "d52ed193d11dee797c0d51dc8db06032998b33f4";
     hash = "sha256-LTyKVX7SEPOGhY1bB7H15RDosT04yQPrDfqSJ7IkX2k=";
   };
+  grpcEnvoySource = moduleSource {
+    name = "grpc-envoy-api";
+    version = "9c42588c";
+    url = "https://github.com/envoyproxy/data-plane-api.git";
+    rev = "9c42588c956220b48eb3099d186487c2f04d32ec";
+    fetchCommit = true;
+    hash = "sha256-1ALZZTCGZeex0vas4t6FCnM+R/g2hJfZYClIyYikznE=";
+  };
 in
   sharedModules
   // {
+    grpc-envoy-api = prepareModule {
+      pname = "bazel-grpc-envoy-api-source";
+      version = "9c42588c";
+      source = grpcEnvoySource;
+      patches = [];
+      # The upstream archive repository supplies its root marker separately.
+      overlays."WORKSPACE" = builtins.toFile "grpc-envoy-api-WORKSPACE" "";
+    };
+    grpc-udpa = prepareModule {
+      pname = "bazel-grpc-udpa-source";
+      version = "cb28da34";
+      source = moduleSource {
+        name = "grpc-udpa";
+        version = "cb28da34";
+        url = "https://github.com/cncf/xds.git";
+        rev = "cb28da3451f158a947dfc45090fe92b07b243bc1";
+        fetchCommit = true;
+        hash = "sha256-zQkFrXlpv5NrFB51EZfUXLOJImiwt1eDL5ieze6GYtQ=";
+      };
+      patches = [];
+      overlays."WORKSPACE" = builtins.toFile "grpc-udpa-WORKSPACE" "";
+    };
+    grpc-googleapis = moduleSource {
+      name = "grpc-googleapis";
+      version = "2f9af297";
+      url = "https://github.com/googleapis/googleapis.git";
+      rev = "2f9af297c84c55c8b871ba4495e01ade42476c92";
+      fetchCommit = true;
+      hash = "sha256-2FGy1ZjWULIS6ZFRyLEiJxSXdVUAIj0B/Y3k4ObeFNU=";
+    };
+    upb = prepareModule {
+      pname = "bazel-upb-source";
+      version = "0.0.0-20220923-a547704";
+      source = upbSource;
+      patchStrip = 0;
+      patches = [
+        (registryPatch "upb" "0.0.0-20220923-a547704" {
+          name = "module_dot_bazel.patch";
+          hash = "sha256-wH4mNS6ZYy+8uC0HoAft/c7SDsq2Kxf+J8dUakXhaB0=";
+        })
+      ];
+    };
+    rules_cc = moduleSource {
+      name = "rules_cc";
+      version = "0.0.11";
+      url = "https://github.com/bazelbuild/rules_cc.git";
+      ref = "0.0.11";
+      rev = "be5e15fc2783b11573a9f82d8d89f0c940728fe1";
+      hash = "sha256-a+1+ubbnx27sEGPCqAQrSy71x8mk56BTleHoVQh7R5I=";
+    };
+    rules_proto = prepareModule {
+      pname = "bazel-rules-proto-source";
+      version = "6.0.0";
+      source = rulesProtoSource;
+      patches = [
+        (registryPatch "rules_proto" "6.0.0" {
+          name = "module_dot_bazel_version.patch";
+          hash = "sha256-fjQjxMdkMeumhvx9JdFSYeHH+Ex4TaTXNFMi554NF8E=";
+        })
+      ];
+    };
     googleapis = bazelSource + "/third_party/googleapis";
     rules_java = moduleSource {
       name = "rules_java";
@@ -45,8 +130,6 @@ in
       pname = "bazel-protobuf-source";
       version = "21.7";
       source = protobufSource;
-      # The Git checkout already contains all five conformance source files that
-      # the registry restores to its release archive with add_missing_files.patch.
       # The Git checkout already contains all five conformance files that
       # the registry restores to the release archive with add_missing_files.patch.
       patches = map (registryPatch "protobuf" "21.7") [
