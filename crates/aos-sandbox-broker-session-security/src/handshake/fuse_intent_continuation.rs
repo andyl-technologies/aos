@@ -104,6 +104,9 @@ pub(crate) struct HeldFuseIntentTransportV1<'session> {
     original_head: [u8; 32],
     binding: Binding,
     stage: Stage,
+    // Installed only by Controller-side worker issuance, never from a frame
+    // or on Mount's broker direction (whose original peer is Controller).
+    worker_mount_verifier: Option<aos_sandbox_host::peer::ControllerPeerVerifier>,
 }
 
 impl<'session> HeldFuseIntentTransportV1<'session> {
@@ -554,6 +557,7 @@ impl<'session> HeldFuseIntentTransportV1<'session> {
             } else {
                 Stage::ClientChallenge
             },
+            worker_mount_verifier: None,
         })
     }
 
@@ -575,7 +579,14 @@ impl<'session> HeldFuseIntentTransportV1<'session> {
             &self.session.transcript,
             self.session.socket.peer(),
         )?;
-        pending.recheck()?;
+        if let Some(verifier) = &self.worker_mount_verifier {
+            if self.request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            pending.recheck_mount_worker_peer(verifier)?;
+        } else {
+            pending.recheck()?;
+        }
         if pending.head_commitment() != self.original_head {
             return Err(BrokerSessionSecurityError::Currentness);
         }

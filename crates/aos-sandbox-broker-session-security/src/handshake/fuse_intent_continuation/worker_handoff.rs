@@ -48,6 +48,10 @@ impl HeldFuseIntentTransportV1<'_> {
     where
         T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
+        // A signed RootMount role and a live transcript do not select the
+        // fixed service. Retain its actual verifier before accepting any
+        // reservation/proposal; every later retry and wait rechecks it.
+        self.retain_controller_worker_mount_peer()?;
         self.require_worker_feature()?;
         // This is the actual original reservation/ACK, not adoption of a row.
         self.receive_worker_reservation(controller, clock)?;
@@ -258,6 +262,9 @@ impl HeldFuseIntentTransportV1<'_> {
         &mut self,
         worker: &WorkerPreparationPlanV1,
     ) -> Result<(), BrokerSessionSecurityError> {
+        if self.worker_mount_verifier.is_none() {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
         self.recheck()?;
         let Stage::WorkerIssuance(coordinates) = self.stage else {
             return Err(BrokerSessionSecurityError::Currentness);
@@ -285,6 +292,39 @@ impl HeldFuseIntentTransportV1<'_> {
         }
         Ok(())
     }
+
+    fn retain_controller_worker_mount_peer(
+        &mut self,
+    ) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
+        let result = (|| {
+            if self.request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend
+                || self.worker_mount_verifier.is_some()
+            {
+                return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
+            }
+            self.worker_mount_verifier =
+                Some(controller_worker_mount_verifier(&self.session.socket)?);
+            self.recheck()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.stage = Stage::ReconciliationRequired;
+        }
+        result
+    }
+}
+
+// Takes only the retained original socket, never RootMount claims in a body.
+// The returned verifier retains the fixed cgroup root; pending-head rechecks
+// repeat its actual service/pidfd membership proof throughout issuance.
+fn controller_worker_mount_verifier(
+    socket: &aos_sandbox_linux::seqpacket::SeqpacketSocket,
+) -> Result<aos_sandbox_host::peer::ControllerPeerVerifier, DormantBrokerSessionHandshakeErrorV1> {
+    let verifier = super::super::fixed_mount_peer_verifier()?;
+    verifier
+        .verify_mount_broker(socket.peer())
+        .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+    Ok(verifier)
 }
 
 fn worker_features_selected(
@@ -299,6 +339,29 @@ fn worker_features_selected(
         })
     };
     selected(required) && selected(advertised)
+}
+
+#[cfg(all(test, feature = "kernel-tests"))]
+mod kernel_peer_tests {
+    use super::*;
+
+    #[test]
+    fn controller_worker_issuer_rejects_a_live_peer_outside_fixed_mount_service() {
+        // The kernel fixture runs outside aos-sandbox-mountd.service. It calls
+        // the real issuer's initial gate with an original socket/pidfd, not
+        // decoded credentials or a structural RootMount role. A full signed
+        // pending flight and migration-between-effects remain installed tests.
+        let (socket, _endpoint) =
+            aos_sandbox_linux::seqpacket::SeqpacketSocket::pair_with_record_subjects().unwrap();
+        assert!(socket.peer().is_alive().unwrap());
+        assert_eq!(socket.peer().credentials().uid(), 0);
+        assert_eq!(socket.peer().credentials().gid(), 0);
+
+        assert!(controller_worker_mount_verifier(&socket).is_err());
+        assert!(controller_worker_mount_verifier(&socket).is_err());
+
+        assert!(socket.peer().is_alive().unwrap());
+    }
 }
 
 fn encode_worker_frame(

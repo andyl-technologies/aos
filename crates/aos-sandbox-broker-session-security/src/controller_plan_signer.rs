@@ -263,7 +263,13 @@ impl ControllerBrokerPlanSignerV1 {
             .host_worker_plan_at(body, worker, clock)
             .map_err(|_| ControllerBrokerPlanSignerError::Completion)?;
         let issued = plan.issued_seconds();
+        flight
+            .recheck_worker_issuance(worker)
+            .map_err(|_| ControllerBrokerPlanSignerError::Completion)?;
         let signed = self.sign_with_authority(plan, issued, &self.authority)?;
+        flight
+            .recheck_worker_issuance(worker)
+            .map_err(|_| ControllerBrokerPlanSignerError::Completion)?;
         let envelope = held
             .host_worker_envelope_at(body, worker, &signed, clock)
             .map_err(|_| ControllerBrokerPlanSignerError::Completion)?;

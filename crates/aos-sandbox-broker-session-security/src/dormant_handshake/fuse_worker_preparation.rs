@@ -12,6 +12,8 @@ use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_mount::broker::{MountBroker, PreparedMountFuseWorkerHandoffV1};
 use aos_sandbox_mount::worker::MountWorker;
 
+use crate::handshake::fixed_mount_peer_verifier;
+
 use super::{
     DormantAuthenticatedBrokerSessionV1, DormantBrokerDescriptorRequestReceiveProgressV1,
     DormantBrokerSessionHandshakeErrorV1, DormantReceivedBrokerDescriptorRequestV1,
@@ -370,20 +372,4 @@ impl DormantAuthenticatedBrokerSessionV1 {
         let mut transport = self.0.hold_fuse_intent_transport(&request.0)?;
         transport.with_original_worker_handoff(mount, host_cgroup_root, action)
     }
-}
-
-fn fixed_mount_peer_verifier()
--> Result<aos_sandbox_host::peer::ControllerPeerVerifier, DormantBrokerSessionHandshakeErrorV1> {
-    let descriptor = rustix::fs::open(
-        "/sys/fs/cgroup",
-        rustix::fs::OFlags::RDONLY
-            | rustix::fs::OFlags::DIRECTORY
-            | rustix::fs::OFlags::CLOEXEC
-            | rustix::fs::OFlags::NOFOLLOW,
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
-    let root = CgroupV2Root::from_owned(descriptor)
-        .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
-    Ok(aos_sandbox_host::peer::ControllerPeerVerifier::new(root))
 }
