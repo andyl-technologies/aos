@@ -528,6 +528,30 @@ class EffectivePolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing effective allow"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
 
+    def test_tenant_cannot_read_or_execute_generic_host_files(self) -> None:
+        for permission in ("entrypoint", "execute", "execute_no_trans", "map", "open", "read"):
+            with self.subTest(permission=permission):
+                policy = FakePolicy()
+                access = effective_policy.Access(
+                    effective_policy.GUEST_TENANT, "file_type", "file", permission
+                )
+                policy.allows[access] = [FakeRule("generic host file access")]
+
+                with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_missing_tenant_data_execution_permission_fails(self) -> None:
+        for target in ("aos_sandbox_guest_tenant_data_t", "aos_sandbox_guest_store_t"):
+            with self.subTest(target=target):
+                policy = FakePolicy()
+                access = effective_policy.Access(
+                    effective_policy.GUEST_TENANT, target, "file", "entrypoint"
+                )
+                policy.allows[access] = []
+
+                with self.assertRaisesRegex(ValueError, "missing effective allow"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def test_uid_zero_cannot_bypass_guest_owner_objects(self) -> None:
         for access in (
             effective_policy.Access(effective_policy.GUEST_TENANT, effective_policy.GUEST_OWNER, "file", "read"),

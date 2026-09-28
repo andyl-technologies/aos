@@ -410,7 +410,8 @@ allow aos_sandbox_guest_owner_t file_type:dir { getattr search };
 
 # An explicit Owner->Tenant exec may target the readonly package closure or
 # mutable tenant data. No default transition or Tenant->Owner edge exists.
-allow aos_sandbox_payload_t file_type:file { entrypoint execute execute_no_trans getattr map open read };
+# Generic host file types are not execution inputs. The copied closure is
+# projected to guest_store_t; mutable Tenant files use tenant_data_t.
 allow aos_sandbox_payload_t aos_sandbox_guest_tenant_data_t:file { append create entrypoint execute execute_no_trans getattr ioctl lock map open read rename setattr unlink write };
 allow aos_sandbox_payload_t aos_sandbox_guest_store_t:file { entrypoint execute execute_no_trans getattr map open read };
 allow aos_sandbox_payload_t aos_sandbox_guest_store_t:dir { getattr open read search };

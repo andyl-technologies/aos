@@ -539,6 +539,13 @@ POSITIVE_ACCESS = (
     ),
     Access(GUEST_TENANT, GUEST_OWNER, "fd", "use"),
     *accesses(GUEST_TENANT, GUEST_OWNER, "fifo_file", ("getattr", "ioctl", "open", "read", "write")),
+    *accesses(
+        GUEST_TENANT,
+        "aos_sandbox_guest_tenant_data_t",
+        "file",
+        ("entrypoint", "execute", "execute_no_trans", "getattr", "map", "open", "read", "write"),
+    ),
+    Access(GUEST_TENANT, "aos_sandbox_guest_store_t", "file", "entrypoint"),
     *(
         access
         for subject in (GUEST_OWNER, GUEST_TENANT)
@@ -999,6 +1006,7 @@ def negative_access() -> tuple[Access, ...]:
     checks.extend(accesses(GUEST_TENANT, "cgroup_t", "dir", ("add_name", "remove_name", "create", "write", "setattr")))
     checks.extend(accesses(GUEST_OWNER, "aos_sandbox_guest_tenant_data_t", "file", ("read", "map", "execute_no_trans")))
     checks.extend(accesses(GUEST_OWNER, "file_type", "file", ("read", "map", "execute_no_trans")))
+    checks.extend(accesses(GUEST_TENANT, "file_type", "file", ("entrypoint", "execute", "execute_no_trans", "map", "open", "read")))
 
     return tuple(sorted(set(checks)))
 
