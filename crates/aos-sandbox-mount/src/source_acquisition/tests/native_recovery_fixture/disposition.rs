@@ -890,6 +890,17 @@ fn disposition_later_acquire_and_release_advance_only_exact_tail_then_cold_repla
             ProviderMethodV2::Inventory => unreachable!(),
         };
         let first_row = first.acquisitions.values().next().unwrap();
+        let release_fence = first_row.release_inventory_fence.clone();
+        if method == ProviderMethodV2::Release {
+            assert_eq!(
+                first.provider_heads[&(HOLDER, PROVIDER)].inventory_observation_ordinal,
+                0
+            );
+            assert_eq!(
+                release_fence.as_ref().unwrap().inventory_observation_floor,
+                0
+            );
+        }
         let root = match method {
             ProviderMethodV2::Acquire => first_row.acquire_lineage.root,
             ProviderMethodV2::Release => first_row.release_lineage.as_ref().unwrap().root,
@@ -963,6 +974,7 @@ fn disposition_later_acquire_and_release_advance_only_exact_tail_then_cold_repla
         };
         assert_eq!(lineage.root, root);
         assert_eq!(lineage.tail, expected_tail);
+        assert_eq!(row.release_inventory_fence, release_fence);
         assert_ne!(root.id, expected_tail.id);
         assert_eq!(
             tentative.provider_attempts[&root.id],
@@ -982,4 +994,81 @@ fn disposition_later_acquire_and_release_advance_only_exact_tail_then_cold_repla
             tentative.state(),
         );
     }
+}
+
+#[test]
+fn release_inventory_floor_rejects_invented_observation_after_protected_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let uid = directory.path().metadata().unwrap().uid();
+    let (mut journal, _) = Journal::open_protected_at_uid(
+        directory.path(),
+        "root-release-inventory-floor.journal",
+        JournalLimits::default(),
+        uid,
+    )
+    .unwrap();
+    let initial = initial_table(&mut journal);
+    let (completed, observation) = complete_acquire(&initial);
+    let (transaction, acquired) = prepare(&initial, completed, Some(&observation));
+    journal.commit(&transaction).unwrap();
+    let (transaction, reserved, _) = reserve_release_fixture(&acquired);
+    journal.commit(&transaction).unwrap();
+
+    let original = reserved.acquisitions.values().next().unwrap();
+    assert_eq!(
+        original
+            .release_inventory_fence
+            .as_ref()
+            .unwrap()
+            .inventory_observation_floor,
+        0
+    );
+    assert_same_acquisition_state(
+        SourceAcquisitionTableV2::recover(&journal).unwrap().state(),
+        reserved.state(),
+    );
+
+    // A nonzero floor is not valid merely because it looks like an ordinal.
+    // Preserve the signed Release, projection, and lineage; only invent one
+    // preceding Complete Inventory, then reseal the ordinary record digest.
+    let mut forged = original.clone();
+    forged.revision += 1;
+    forged
+        .release_inventory_fence
+        .as_mut()
+        .unwrap()
+        .inventory_observation_floor = 1;
+    forged.record_digest = [0; 32];
+    let forged = reservation::sealed_row(forged).unwrap();
+    let mut hostile = reserved.clone();
+    hostile
+        .acquisitions
+        .insert(forged.acquisition_id, forged.clone());
+    let error = validate_recovered_table(&hostile.state()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Release Inventory fence observation floor does not reproduce")
+    );
+
+    // Bypass the planner only to model hostile protected-record corruption.
+    // Cold whole-graph recovery must reject the same authenticated row bytes.
+    commit_graph_delta(
+        &mut journal,
+        &[StoredRecordV2::Acquisition {
+            value: original.clone(),
+        }],
+        &[StoredRecordV2::Acquisition { value: forged }],
+        [98; 16],
+    );
+    drop(journal);
+    let (journal, _) = Journal::open_protected_at_uid(
+        directory.path(),
+        "root-release-inventory-floor.journal",
+        JournalLimits::default(),
+        uid,
+    )
+    .unwrap();
+    assert!(SourceAcquisitionTableV2::recover(&journal).is_err());
 }
