@@ -1,0 +1,24 @@
+# session.o belongs to both pinned server binaries. Share only the fixed client
+# mechanics; authentication capture and root-held monitor custody remain private
+# to sshd-session with the existing post-auth confinement ordering.
+diff --git a/Makefile.in b/Makefile.in
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -130,7 +130,7 @@ SSHD_SESSION_OBJS=sshd-session.o auth-rhosts.o auth-passwd.o \
+ 	auth2-chall.o groupaccess.o \
+ 	auth-bsdauth.o auth2-hostbased.o auth2-kbdint.o \
+ 	auth2-none.o auth2-passwd.o auth2-pubkey.o auth2-pubkeyfile.o \
+-	monitor.o monitor_wrap.o aos-attach-monitor.o aos-attach-confinement.o aos-attach-relay.o auth-krb5.o \
++	monitor.o monitor_wrap.o aos-attach-monitor.o aos-attach-confinement.o aos-attach-relay.o aos-attach-client.o auth-krb5.o \
+ 	auth2-gss.o gss-serv.o gss-serv-krb5.o \
+ 	loginrec.o auth-pam.o auth-shadow.o auth-sia.o \
+ 	sftp-server.o sftp-common.o \
+@@ -143,7 +143,7 @@ SSHD_AUTH_OBJS=sshd-auth.o \
+ 	groupaccess.o auth-bsdauth.o auth2-hostbased.o auth2-kbdint.o \
+ 	auth2-none.o auth2-passwd.o auth2-pubkey.o auth2-pubkeyfile.o \
+ 	auth2-gss.o gss-serv.o gss-serv-krb5.o \
+-	monitor_wrap.o auth-krb5.o \
++	monitor_wrap.o aos-attach-client.o aos-attach-relay.o auth-krb5.o \
+ 	audit.o audit-bsm.o audit-linux.o platform.o \
+ 	loginrec.o auth-pam.o auth-shadow.o auth-sia.o \
+ 	sandbox-null.o sandbox-rlimit.o sandbox-darwin.o \

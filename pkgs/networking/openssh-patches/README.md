@@ -6,6 +6,16 @@ The existing Guest daemon owner opts in with fixed launch arguments; no new
 listener, principal, key, credential issuer, or authentication bypass is added.
 Original configuration, AOSAPG01, certificate and base-route bytes are unchanged.
 
+The fifth patch follows the pinned binary object ownership: `session.o` is
+linked into both `sshd-auth` and `sshd-session`. Both therefore link the existing
+relay and shared `aos-attach-client.o` mechanics. The client object contains only
+the unchanged fixed MM request encoders/answer parsers and protected Guest
+connector; it has no accepted authentication record, retained root custody or
+monitor dispatcher. Authentication capture, full-auth acceptance, held
+pidfd/Guest connection, and confinement setup remain session-only objects.
+The pre-auth binary still sends its authenticated key state and exits; linking
+its shared session dependencies does not add a post-auth dispatch or authority.
+
 The privileged `mm_answer_keyverify` retains the actual Ed25519 certificate,
 original SSH userauth message, signature and root-held KEX session identifier
 only after its signature/session checks and authentication-option activation.
