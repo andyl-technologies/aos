@@ -49,19 +49,29 @@ generated file names and directory; there is no recursive cleanup.
 
 ## Validation envelope and refusal
 
-The normal validator is never bypassed. Its checked reservation is
-`encoded_index_bytes * 64 + 4096`, even though actual allocation may be smaller.
-The small profile retains the normal `TreeCompileLimits::working_bytes`
-ceiling. The million profile defaults to that same ceiling and can report a
-validation refusal with no workload results. That is an observation, not a
-successful million-node working-set qualification.
+The normal validator is never bypassed. The fixture calls its shared
+`index_validation_working_bytes` estimate against independently known fixture
+commitments. The estimate accounts for borrowed-node, dense coverage-bitset and
+link-count vectors, peak decoded-record scratch, retained hard-link records and
+conservative reconstructed paths. It does not authenticate full record/table
+semantics or claim allocator-exact heterogeneous-container accounting.
+Validation charges observed vector capacities too, and the cgroup ceiling
+remains the allocator/OOM backstop. Hard-link-heavy or large-record inputs may
+still refuse even when the flat empty-file fixture fits.
+
+Both profiles actually run validation at the unchanged normal
+`TreeCompileLimits::working_bytes` ceiling and report that admission or refusal.
+Every profile also runs the real validator at estimate-minus-one and requires
+an explicit pre-allocation refusal with no retained requested bytes. A refusal
+with no workload results is not successful million-node qualification.
 
 An explicitly supplied `--validation-envelope-bytes N` permits a separately
 declared test-only envelope in the million profile. The selected cap is the
 smaller of that envelope and the computed reservation. Choose a host/guest
 resource envelope before running; this does not reserve physical memory and
 must not silently change VM/image budgets or production limits. The report
-records the reservation, cap, normal-ceiling refusal, validation peak and
+records the estimate, cap, actual normal-ceiling admission/refusal,
+underbudget refusal, validation peak and
 validation resource snapshots independently of steady-state work. Allocation
 failure, malformed data or unexpected refusal is an error, not a performance
 pass. This initial slice adds no VM or fleet gate.

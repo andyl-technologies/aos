@@ -21,7 +21,8 @@ pub use index::{
     IndexExpectation, IndexExtentRange, IndexExtentView, IndexExtents, IndexFileView,
     IndexNodeBodyView, IndexNodeKind, IndexNodeSemantics, IndexNodeView, IndexObjectDescriptorView,
     IndexRecords, IndexSparseContentView, IndexStaging, IndexSummary, IndexXattrRange,
-    IndexXattrView, IndexXattrs, StagedIndex, ValidatedIndex, validate_index,
+    IndexXattrView, IndexXattrs, StagedIndex, ValidatedIndex, index_validation_working_bytes,
+    validate_index,
 };
 pub use limits::TreeCompileLimits;
 pub use presentation::{

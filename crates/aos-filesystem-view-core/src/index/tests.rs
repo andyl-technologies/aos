@@ -10,6 +10,8 @@ use aos_sandbox_core::model::FilesystemMetadata;
 use aos_sandbox_core::{MediaType, ObjectDescriptor, descriptor_for_bytes};
 use std::io::Cursor as IoCursor;
 
+mod validation_memory;
+
 const PAYLOAD_DIGEST_OFFSET: usize = 152;
 const RECORDS_BYTES_OFFSET: usize = 184;
 const LOOKUP_SLOTS_OFFSET: usize = 192;
@@ -2006,7 +2008,7 @@ fn authenticated_descriptor_is_required_before_semantic_parsing() {
     assert_eq!(validated.crosslinks().root, root);
     assert_eq!(validated.crosslinks().hardlink_groups, 0);
     assert_eq!(validated.crosslinks().hardlink_members, 0);
-    let exact_working = (bytes.len() as u64) * 64 + 4_096;
+    let exact_working = index_validation_working_bytes(&bytes, 4096, &expected).unwrap();
     validate_index(&bytes, 4096, exact_working, &expected)
         .unwrap_or_else(|error| panic!("exact working ceiling failed: {error}"));
     assert!(matches!(
@@ -2287,12 +2289,12 @@ fn valid_hardlink_path_reconstruction_requires_admission() {
         root: &root,
         tree_features: 0,
     };
-    let base_reservation = (bytes.len() as u64) * 64 + 4_096;
+    let admitted = index_validation_working_bytes(bytes, 4096, &expected).unwrap();
     assert!(matches!(
-        validate_index(bytes, 4096, base_reservation, &expected),
+        validate_index(bytes, 4096, admitted - 1, &expected),
         Err(IndexError::LimitExceeded)
     ));
-    let validated = validate_index(bytes, 4096, u64::MAX, &expected)
+    let validated = validate_index(bytes, 4096, admitted, &expected)
         .unwrap_or_else(|error| panic!("admitted validation failed: {error}"));
     assert_eq!(validated.crosslinks().hardlink_groups, 1);
     assert_eq!(validated.crosslinks().hardlink_members, 2);

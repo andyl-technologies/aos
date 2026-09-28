@@ -4,6 +4,13 @@ use super::view::*;
 use super::wire::*;
 use super::*;
 
+mod budget;
+mod input;
+mod tables;
+
+use budget::ValidationBudget;
+use input::authenticate_input;
+
 /// Records authenticated source links and validated hard-link membership.
 #[derive(Debug, Eq, PartialEq)]
 pub struct IndexCrosslinks {
@@ -71,12 +78,12 @@ pub(super) struct ParsedRecord {
     pub(super) symlink_target: Option<Vec<u8>>,
 }
 
-pub(super) struct IndexNodeRecord {
+pub(super) struct IndexNodeRecord<'a> {
     pub(super) parent: u64,
     pub(super) depth: u32,
     pub(super) sibling_ordinal: u32,
     pub(super) directory: bool,
-    pub(super) name: Vec<u8>,
+    pub(super) name: &'a [u8],
     pub(super) record_offset: u64,
 }
 
@@ -106,13 +113,36 @@ pub struct IndexExpectation<'a> {
     pub tree_features: u32,
 }
 
+/// Estimates conservative validation working bytes without granting validation authority.
+///
+/// The authenticated envelope and bounded borrowed frames determine vector,
+/// peak decoded-record, retained hard-link and path charges. This does not
+/// validate all record or table semantics and never returns a validated index.
+/// The estimate is not allocator-exact; observed vector capacity and the cgroup
+/// backstop still apply when validation runs.
+///
+/// # Errors
+///
+/// Returns an error for an unauthenticated envelope, malformed bounded frame,
+/// byte ceiling violation, or unrepresentable charge. Full semantic corruption
+/// can remain undetected until [`validate_index`] runs.
+pub fn index_validation_working_bytes(
+    bytes: &[u8],
+    maximum_bytes: u64,
+    expected: &IndexExpectation<'_>,
+) -> Result<u64, IndexError> {
+    let input = authenticate_input(bytes, maximum_bytes, expected)?;
+    let model = ValidationBudget::estimate(&input, expected.index.digest())?;
+    model.total(model.requested_vector_bytes()?)
+}
+
 /// Validates a complete index before a worker maps or serves it.
 ///
-/// Validation uses a conservative input-scaled model for its heterogeneous
-/// maps and decoded records; it does not claim allocator-exact accounting for
-/// those containers. The runtime cgroup memory ceiling remains the final
-/// allocator/OOM backstop. Builder table and scratch peaks are accounted from
-/// observed `Vec` capacities separately.
+/// Validation borrows retained names and checks the on-disk tables directly.
+/// Admission charges scalable vector capacities, the largest decoded record,
+/// and conservative retained hard-link records and reconstructed paths. The
+/// heterogeneous scratch/hard-link model is not allocator-exact; the runtime
+/// cgroup memory ceiling remains the final allocator/OOM backstop.
 ///
 /// # Errors
 ///
@@ -125,153 +155,43 @@ pub fn validate_index<'a>(
     maximum_working_bytes: u64,
     expected: &IndexExpectation<'_>,
 ) -> Result<ValidatedIndex<'a>, IndexError> {
-    if bytes.len() as u64 > maximum_bytes {
-        return Err(IndexError::LimitExceeded);
-    }
-    if bytes.len() < HEADER_BYTES {
-        return Err(IndexError::InvalidHeader);
-    }
-    let validation_reservation = (bytes.len() as u64)
-        .checked_mul(64)
-        .and_then(|value| value.checked_add(4_096))
-        .ok_or(IndexError::LimitExceeded)?;
-    if validation_reservation > maximum_working_bytes {
-        return Err(IndexError::LimitExceeded);
-    }
-    if expected.tree_features & !KNOWN_FEATURES != 0 {
-        return Err(IndexError::InvalidHeader);
-    }
-    let mut cursor = Cursor::new(bytes);
-    if cursor.take(8)? != MAGIC {
-        return Err(IndexError::InvalidHeader);
-    }
-    let version = cursor.u32()?;
-    let header_bytes = cursor.u32()? as usize;
-    if version != VERSION || header_bytes != HEADER_BYTES {
-        return Err(IndexError::InvalidHeader);
-    }
-    let index_media = MediaType::new(INDEX_MEDIA_TYPE).map_err(|_| IndexError::InvalidHeader)?;
-    if expected.index.media_type() != &index_media
-        || descriptor_for_bytes(index_media, bytes) != *expected.index
-    {
-        return Err(IndexError::DescriptorMismatch);
-    }
-    let compiler_abi = cursor.array::<32>()?;
-    let tree_digest = ObjectDigest::from_bytes(cursor.array::<32>()?);
-    let tree_size = cursor.u64()?;
-    let root_digest = ObjectDigest::from_bytes(cursor.array::<32>()?);
-    let root_size = cursor.u64()?;
-    let tree_features = cursor.u32()?;
-    if cursor.u32()? != 0 {
-        return Err(IndexError::InvalidHeader);
-    }
-    let records = cursor.u64()?;
-    if records == 0 {
-        return Err(IndexError::InvalidHeader);
-    }
-    let payload_bytes = cursor.u64()?;
-    let expected_hash = cursor.array::<32>()?;
-    let records_bytes = cursor.u64()?;
-    let lookup_slots = cursor.u64()?;
-    if cursor.u32()? as usize != LOOKUP_SLOT_BYTES
-        || cursor.u32()? != LOOKUP_HASH_SHA256
-        || cursor.u64()? != 0
-    {
-        return Err(IndexError::InvalidHeader);
-    }
-    let directory_slots = cursor.u64()?;
-    if cursor.u32()? as usize != DIRECTORY_SLOT_BYTES || cursor.u32()? != 0 {
-        return Err(IndexError::InvalidHeader);
-    }
-    let root_nlink = cursor.u64()?;
-    if root_nlink < 2 || cursor.u64()? != 0 {
-        return Err(IndexError::InvalidHeader);
-    }
-    let layout = IndexLayout {
-        records_bytes,
-        lookup_slots,
-        directory_slots,
-        root_nlink,
-    };
-    if compiler_abi != expected.compiler_abi
-        || tree_digest != expected.tree.digest()
-        || tree_size != expected.tree.encoded_size()
-        || root_digest != expected.root.digest()
-        || root_size != expected.root.encoded_size()
-        || tree_features != expected.tree_features
-        || validate_descriptor_role(DescriptorRole::ImmutableViewSource, expected.tree).is_err()
-        || validate_descriptor_role(DescriptorRole::DirectoryChild, expected.root).is_err()
-    {
-        return Err(IndexError::InvalidHeader);
-    }
-    let payload_len = usize::try_from(payload_bytes).map_err(|_| IndexError::LimitExceeded)?;
-    if cursor.remaining() != payload_len {
-        return Err(IndexError::InvalidHeader);
-    }
-    let payload = cursor.take(payload_len)?;
-    let actual_hash: [u8; 32] = Sha256::digest(payload).into();
-    if actual_hash != expected_hash {
-        return Err(IndexError::ChecksumMismatch);
-    }
-    let records_len = usize::try_from(records_bytes).map_err(|_| IndexError::LimitExceeded)?;
-    if records_len > payload.len() {
-        return Err(IndexError::InvalidHeader);
-    }
-    let canonical_slots = lookup_slot_count(records)?;
-    let lookup_bytes = lookup_allocation_bytes(canonical_slots)?;
-    let lookup_len = usize::try_from(lookup_bytes).map_err(|_| IndexError::LimitExceeded)?;
-    if records_len
-        .checked_add(lookup_len)
-        .ok_or(IndexError::LimitExceeded)?
-        > payload.len()
-    {
-        return Err(IndexError::InvalidHeader);
-    }
-    let records_payload = &payload[..records_len];
-    let lookup_payload = &payload[records_len..records_len + lookup_len];
-    let directory_payload = &payload[records_len + lookup_len..];
-    let canonical_slots_u64 =
-        u64::try_from(canonical_slots).map_err(|_| IndexError::LimitExceeded)?;
-    if lookup_slots != canonical_slots_u64 || lookup_bytes != lookup_payload.len() as u64 {
-        return Err(IndexError::InvalidHeader);
-    }
-    let directory_bytes = directory_allocation_bytes(canonical_slots)?;
-    if directory_slots != canonical_slots_u64 || directory_bytes != directory_payload.len() as u64 {
-        return Err(IndexError::InvalidHeader);
-    }
-    if records_bytes
-        .checked_add(lookup_bytes)
-        .and_then(|bytes| bytes.checked_add(directory_bytes))
-        .ok_or(IndexError::LimitExceeded)?
-        != payload_bytes
-    {
-        return Err(IndexError::InvalidHeader);
-    }
-    let mut records_cursor = Cursor::new(records_payload);
-    let record_capacity = usize::try_from(records).map_err(|_| IndexError::LimitExceeded)?;
-    if record_capacity > records_payload.len() / RECORD_FIXED_BYTES {
-        return Err(IndexError::InvalidHeader);
-    }
-    let mut nodes: Vec<IndexNodeRecord> = Vec::new();
-    nodes
-        .try_reserve_exact(record_capacity)
-        .map_err(|_| IndexError::AllocationRefused)?;
-    let mut siblings: std::collections::BTreeMap<u64, std::collections::BTreeMap<u32, Vec<u8>>> =
-        std::collections::BTreeMap::new();
+    let input = authenticate_input(bytes, maximum_bytes, expected)?;
+    let model = ValidationBudget::estimate(&input, expected.index.digest())?;
+    model.require(model.requested_vector_bytes()?, maximum_working_bytes)?;
+
+    // All scalable vectors are admitted before allocation. Charge observed
+    // capacities as well: try_reserve_exact need not return an exact capacity.
+    let mut nodes = Vec::new();
+    let mut seen = Vec::new();
+    let mut nlinks = Vec::new();
+    model.reserve_vectors(&mut nodes, &mut seen, &mut nlinks, maximum_working_bytes)?;
+
+    let mut records_cursor = Cursor::new(input.records);
     let mut hardlinks: std::collections::BTreeMap<ObjectDigest, Vec<IndexHardlinkMember>> =
         std::collections::BTreeMap::new();
     let mut observed_features = 0_u32;
-    for expected_id in 0..records {
-        let record_offset = header_bytes
-            .checked_add(records_cursor.position())
-            .ok_or(IndexError::LimitExceeded)?;
+    for expected_id in 0..input.summary.records {
+        let record_offset = records_cursor.position();
         let record = validate_record(&mut records_cursor, expected_id)?;
+        // The complete owned decoder above remains authoritative for metadata,
+        // content, feature and descriptor semantics. Only the retained name is
+        // borrowed, from the identical immutable frame at its validated offset.
+        let view = decode_record_view(
+            input.records,
+            record_offset,
+            expected_id,
+            expected.index.digest(),
+        )?;
+        if view.name != record.name.as_slice() {
+            return Err(IndexError::InvalidRecord);
+        }
         let parent = record.parent;
         let depth = record.depth;
         let directory = record.directory.is_some();
         if expected_id != 0 {
             let parent_index = usize::try_from(parent).map_err(|_| IndexError::InvalidRecord)?;
-            let parent_record = nodes.get(parent_index).ok_or(IndexError::InvalidRecord)?;
+            let parent_record: &IndexNodeRecord<'_> =
+                nodes.get(parent_index).ok_or(IndexError::InvalidRecord)?;
             if !parent_record.directory || parent_record.depth.checked_add(1) != Some(depth) {
                 return Err(IndexError::InvalidRecord);
             }
@@ -282,15 +202,6 @@ pub fn validate_index<'a>(
             return Err(IndexError::InvalidRecord);
         }
 
-        if expected_id != 0
-            && siblings
-                .entry(parent)
-                .or_default()
-                .insert(record.sibling_ordinal, record.name.clone())
-                .is_some()
-        {
-            return Err(IndexError::InvalidRecord);
-        }
         if record.metadata.acl().is_some() {
             observed_features |= FEATURE_ACL;
         }
@@ -301,13 +212,15 @@ pub fn validate_index<'a>(
                 observed_features |= FEATURE_PARENT_SYMLINK;
             }
         }
-        if let (Some(group), Some(content)) = (record.hardlink_group, record.content.clone()) {
+        if let (Some(group), Some(content)) = (record.hardlink_group, record.content) {
+            // The preflight reserves all encoded hard-link records under the
+            // conservative heterogeneous-container model before any map growth.
             hardlinks
                 .entry(group)
                 .or_default()
                 .push(IndexHardlinkMember {
                     node: expected_id,
-                    metadata: record.metadata.clone(),
+                    metadata: record.metadata,
                     content,
                 });
         }
@@ -316,27 +229,35 @@ pub fn validate_index<'a>(
             depth,
             sibling_ordinal: record.sibling_ordinal,
             directory,
-            name: record.name,
-            record_offset: record_offset as u64,
+            name: view.name,
+            record_offset: u64::try_from(
+                HEADER_BYTES
+                    .checked_add(record_offset)
+                    .ok_or(IndexError::LimitExceeded)?,
+            )
+            .map_err(|_| IndexError::LimitExceeded)?,
         });
     }
-    if records_cursor.remaining() != 0 {
+    if records_cursor.remaining() != 0 || observed_features & !expected.tree_features != 0 {
         return Err(IndexError::InvalidRecord);
     }
-    if observed_features & !tree_features != 0 {
-        return Err(IndexError::InvalidRecord);
-    }
-    validate_siblings(&siblings)?;
-    let hardlink_path_reservation = hardlink_path_reservation(&hardlinks, &nodes)?;
-    let total_validation_reservation = validation_reservation
-        .checked_add(hardlink_path_reservation)
-        .ok_or(IndexError::LimitExceeded)?;
-    if total_validation_reservation > maximum_working_bytes {
+    tables::validate_lookup_table(input.lookup, &nodes, &mut seen)?;
+    tables::validate_directory_table(
+        input.directory,
+        input.layout.root_nlink,
+        &nodes,
+        &hardlinks,
+        &mut seen,
+        &mut nlinks,
+    )?;
+    // Directory canonicality includes the old sibling-order check; reject it
+    // before the potentially depth-scaled hard-link path reconstruction.
+    // The depth/component preflight bounds these exact reconstructed paths;
+    // retain the original path-accounting and semantic checks as a crosscheck.
+    if hardlink_path_reservation(&hardlinks, &nodes)? > model.hardlink_paths {
         return Err(IndexError::LimitExceeded);
     }
     validate_index_hardlinks(&hardlinks, &nodes)?;
-    validate_lookup_table(lookup_payload, &nodes)?;
-    validate_directory_table(directory_payload, root_nlink, &nodes, &hardlinks)?;
     let hardlink_groups = u64::try_from(hardlinks.len()).map_err(|_| IndexError::LimitExceeded)?;
     let hardlink_members = hardlinks.values().try_fold(0_u64, |total, members| {
         let members = u64::try_from(members.len()).map_err(|_| IndexError::LimitExceeded)?;
@@ -345,24 +266,16 @@ pub fn validate_index<'a>(
     Ok(ValidatedIndex {
         bytes,
         descriptor: expected.index.clone(),
-        summary: IndexSummary {
-            compiler_abi,
-            tree_digest,
-            tree_size,
-            root_digest,
-            root_size,
-            records,
-            bytes: bytes.len() as u64,
-        },
+        summary: input.summary,
         crosslinks: IndexCrosslinks {
-            compiler_abi,
+            compiler_abi: expected.compiler_abi,
             tree: expected.tree.clone(),
             root: expected.root.clone(),
-            tree_features,
+            tree_features: expected.tree_features,
             hardlink_groups,
             hardlink_members,
         },
-        layout,
+        layout: input.layout,
     })
 }
 
@@ -404,119 +317,9 @@ pub(super) fn symlink_escapes_parent(target: &[u8], mut depth: usize) -> bool {
     false
 }
 
-pub(super) fn validate_siblings(
-    siblings: &std::collections::BTreeMap<u64, std::collections::BTreeMap<u32, Vec<u8>>>,
-) -> Result<(), IndexError> {
-    for entries in siblings.values() {
-        let mut previous: Option<&[u8]> = None;
-        for (expected, (ordinal, name)) in entries.iter().enumerate() {
-            let expected = u32::try_from(expected).map_err(|_| IndexError::InvalidRecord)?;
-            if *ordinal != expected || previous.is_some_and(|value| value >= name.as_slice()) {
-                return Err(IndexError::InvalidRecord);
-            }
-            previous = Some(name);
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn validate_lookup_table(
-    bytes: &[u8],
-    nodes: &[IndexNodeRecord],
-) -> Result<(), IndexError> {
-    let slots = bytes.len() / LOOKUP_SLOT_BYTES;
-    if !bytes.len().is_multiple_of(LOOKUP_SLOT_BYTES) {
-        return Err(IndexError::InvalidHeader);
-    }
-    let mut expected = Vec::new();
-    expected
-        .try_reserve_exact(slots)
-        .map_err(|_| IndexError::AllocationRefused)?;
-    for (record_id, node) in nodes.iter().enumerate().skip(1) {
-        let record_id = u64::try_from(record_id).map_err(|_| IndexError::LimitExceeded)?;
-        expected.push(LookupSlot {
-            parent: node.parent,
-            name_hash: lookup_hash(node.parent, &node.name),
-            record_offset: node.record_offset,
-            record_id,
-        });
-    }
-    expected.sort_unstable_by_key(|entry| (entry.parent, entry.name_hash, entry.record_id));
-    for (encoded, expected) in bytes.chunks_exact(LOOKUP_SLOT_BYTES).zip(expected) {
-        if encoded != encode_lookup_slot(expected) {
-            return Err(IndexError::InvalidRecord);
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn validate_directory_table(
-    bytes: &[u8],
-    root_nlink: u64,
-    nodes: &[IndexNodeRecord],
-    hardlinks: &std::collections::BTreeMap<ObjectDigest, Vec<IndexHardlinkMember>>,
-) -> Result<(), IndexError> {
-    if !bytes.len().is_multiple_of(DIRECTORY_SLOT_BYTES) {
-        return Err(IndexError::InvalidHeader);
-    }
-    let mut nlinks = Vec::new();
-    nlinks
-        .try_reserve_exact(nodes.len())
-        .map_err(|_| IndexError::AllocationRefused)?;
-    nlinks.extend(
-        nodes
-            .iter()
-            .map(|node| if node.directory { 2_u64 } else { 1_u64 }),
-    );
-    for node in nodes.iter().skip(1).filter(|node| node.directory) {
-        let parent = usize::try_from(node.parent).map_err(|_| IndexError::InvalidRecord)?;
-        let value = nlinks.get_mut(parent).ok_or(IndexError::InvalidRecord)?;
-        *value = value.checked_add(1).ok_or(IndexError::LimitExceeded)?;
-    }
-    for members in hardlinks.values() {
-        let count = u64::try_from(members.len()).map_err(|_| IndexError::LimitExceeded)?;
-        for member in members {
-            let index = usize::try_from(member.node).map_err(|_| IndexError::InvalidRecord)?;
-            *nlinks.get_mut(index).ok_or(IndexError::InvalidRecord)? = count;
-        }
-    }
-    if nlinks.first().copied() != Some(root_nlink) {
-        return Err(IndexError::InvalidRecord);
-    }
-
-    let mut expected = Vec::new();
-    expected
-        .try_reserve_exact(nodes.len().saturating_sub(1))
-        .map_err(|_| IndexError::AllocationRefused)?;
-    for (record_id, node) in nodes.iter().enumerate().skip(1) {
-        let record_id = u64::try_from(record_id).map_err(|_| IndexError::LimitExceeded)?;
-        let nlink = nlinks
-            .get(usize::try_from(record_id).map_err(|_| IndexError::LimitExceeded)?)
-            .copied()
-            .ok_or(IndexError::InvalidRecord)?;
-        expected.push((
-            node.parent,
-            node.sibling_ordinal,
-            DirectorySlot {
-                parent: node.parent,
-                record_offset: node.record_offset,
-                record_id,
-                nlink,
-            },
-        ));
-    }
-    expected.sort_unstable_by_key(|(parent, ordinal, slot)| (*parent, *ordinal, slot.record_id));
-    for (encoded, (_, _, expected)) in bytes.chunks_exact(DIRECTORY_SLOT_BYTES).zip(expected) {
-        if encoded != encode_directory_slot(expected) {
-            return Err(IndexError::InvalidRecord);
-        }
-    }
-    Ok(())
-}
-
 pub(super) fn validate_index_hardlinks(
     groups: &std::collections::BTreeMap<ObjectDigest, Vec<IndexHardlinkMember>>,
-    nodes: &[IndexNodeRecord],
+    nodes: &[IndexNodeRecord<'_>],
 ) -> Result<(), IndexError> {
     for (claimed, members) in groups {
         let first = members.first().ok_or(IndexError::InvalidRecord)?;
@@ -553,7 +356,7 @@ pub(super) fn validate_index_hardlinks(
 
 pub(super) fn hardlink_path_reservation(
     groups: &std::collections::BTreeMap<ObjectDigest, Vec<IndexHardlinkMember>>,
-    nodes: &[IndexNodeRecord],
+    nodes: &[IndexNodeRecord<'_>],
 ) -> Result<u64, IndexError> {
     groups.values().flatten().try_fold(0_u64, |total, member| {
         let mut node = member.node;
@@ -574,7 +377,7 @@ pub(super) fn hardlink_path_reservation(
 pub(super) fn compare_node_paths(
     left: u64,
     right: u64,
-    nodes: &[IndexNodeRecord],
+    nodes: &[IndexNodeRecord<'_>],
 ) -> std::cmp::Ordering {
     let mut left = left;
     let mut right = right;
@@ -600,7 +403,7 @@ pub(super) fn compare_node_paths(
             return left.cmp(&right);
         };
         if left_record.parent == right_record.parent {
-            return left_record.name.cmp(&right_record.name);
+            return left_record.name.cmp(right_record.name);
         }
         left = left_record.parent;
         right = right_record.parent;
@@ -610,7 +413,7 @@ pub(super) fn compare_node_paths(
 
 pub(super) fn reconstruct_path(
     node: u64,
-    nodes: &[IndexNodeRecord],
+    nodes: &[IndexNodeRecord<'_>],
 ) -> Result<RelativePath, IndexError> {
     let depth = nodes
         .get(node as usize)
@@ -628,7 +431,7 @@ pub(super) fn reconstruct_path(
         let mut name = Vec::new();
         name.try_reserve_exact(record.name.len())
             .map_err(|_| IndexError::AllocationRefused)?;
-        name.extend_from_slice(&record.name);
+        name.extend_from_slice(record.name);
         components.push(PathName::new(name).map_err(|_| IndexError::InvalidRecord)?);
         current = record.parent;
     }

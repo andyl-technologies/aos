@@ -13,7 +13,8 @@ use std::time::Instant;
 
 use aos_filesystem_view::{
     ForgetRequest, INDEX_MEDIA_TYPE, IndexError, IndexExpectation, InodeError, InodeLookup,
-    InodeTable, InodeTableLimits, ROOT_NODE_ID, TreeCompileLimits, ValidatedIndex, validate_index,
+    InodeTable, InodeTableLimits, ROOT_NODE_ID, TreeCompileLimits, ValidatedIndex,
+    index_validation_working_bytes, validate_index,
 };
 use aos_sandbox_core::{MediaType, descriptor_for_bytes};
 use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
@@ -22,7 +23,7 @@ use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, memfd_create};
 use super::fixture::{self, elapsed_ns, name};
 use super::report::{
     BATCHES, Config, Latency, MeasurementReport, OPENS, ResourceSnapshot, TOUCHED, WorkingSet,
-    WorkloadReport, validation_reservation,
+    WorkloadReport,
 };
 use crate::{Result, allocation};
 
@@ -310,11 +311,22 @@ fn workloads(index: &ValidatedIndex<'_>, config: Config) -> Result<WorkloadRepor
     })
 }
 
+struct MeasuredValidation {
+    reservation: u64,
+    cap: u64,
+    normal_refused: bool,
+    refusal_phase: allocation::AllocationPhase,
+    validated: bool,
+    phase: allocation::AllocationPhase,
+    before: ResourceSnapshot,
+    after: ResourceSnapshot,
+    elapsed: u64,
+    workload: Option<WorkloadReport>,
+}
+
 pub(super) fn run(directory: &Path, config: Config) -> Result<MeasurementReport> {
     let (file, index_bytes) = sealed_index(&directory.join("index.bin"))?;
     let (tree, root) = fixture::descriptors()?;
-    let reservation = validation_reservation(index_bytes)?;
-    let cap = reservation.min(config.validation_envelope_bytes);
     let normal = TreeCompileLimits::default().working_bytes;
     // Initialize output's persistent runtime state before the checked drop baseline.
     drop(std::io::stdout().lock());
@@ -332,32 +344,71 @@ pub(super) fn run(directory: &Path, config: Config) -> Result<MeasurementReport>
                 root: &root,
                 tree_features: 0,
             };
+            let reservation = index_validation_working_bytes(bytes, index_bytes, &expected)?;
+            let cap = reservation.min(config.validation_envelope_bytes);
+            let (normal_result, normal_phase) =
+                allocation::measure(|| validate_index(bytes, index_bytes, normal, &expected));
+            let normal_refused = match normal_result {
+                Ok(index) => {
+                    drop(index);
+                    false
+                }
+                Err(IndexError::LimitExceeded) if reservation > normal => true,
+                Err(error) => return Err(error.into()),
+            };
+            assert_eq!(
+                allocation::live_requested_bytes(),
+                normal_phase.baseline_requested_bytes
+            );
+
+            // Exercise refusal through the real validator, before scalable
+            // allocation. The shared estimator is diagnostic, not authority.
+            let underbudget = reservation
+                .checked_sub(1)
+                .ok_or("zero admission estimate")?;
+            let (refused, refusal_phase) =
+                allocation::measure(|| validate_index(bytes, index_bytes, underbudget, &expected));
+            assert!(matches!(refused, Err(IndexError::LimitExceeded)));
+            assert_eq!(
+                refusal_phase.live_requested_bytes,
+                refusal_phase.baseline_requested_bytes
+            );
+            assert!(
+                refusal_phase.peak_requested_bytes
+                    <= refusal_phase.baseline_requested_bytes + 4_096,
+                "underbudget refusal allocated more than fixed envelope scratch"
+            );
             let before = ResourceSnapshot::take()?;
-            let normal_refused = reservation > normal;
-            if normal_refused {
-                let (result, phase) =
-                    allocation::measure(|| validate_index(bytes, index_bytes, normal, &expected));
-                assert!(matches!(result, Err(IndexError::LimitExceeded)));
-                assert_eq!(phase.live_requested_bytes, phase.baseline_requested_bytes);
-            }
             let started = Instant::now();
             let (result, phase) =
                 allocation::measure(|| validate_index(bytes, index_bytes, cap, &expected));
             let elapsed = elapsed_ns(started)?;
             let after = ResourceSnapshot::take()?;
-            match result {
+            let (validated, workload) = match result {
                 Ok(index) => {
                     assert_eq!(index.summary().records, config.profile.children() + 1);
                     let workload = workloads(&index, config)?;
                     drop(index);
-                    Ok((true, phase, before, after, elapsed, Some(workload)))
+                    (true, Some(workload))
                 }
                 Err(IndexError::LimitExceeded) if cap < reservation => {
                     assert_eq!(phase.live_requested_bytes, phase.baseline_requested_bytes);
-                    Ok((false, phase, before, after, elapsed, None))
+                    (false, None)
                 }
-                Err(error) => Err(error.into()),
-            }
+                Err(error) => return Err(error.into()),
+            };
+            Ok(MeasuredValidation {
+                reservation,
+                cap,
+                normal_refused,
+                refusal_phase,
+                validated,
+                phase,
+                before,
+                after,
+                elapsed,
+                workload,
+            })
         },
     )??;
     let after_drop = allocation::live_requested_bytes();
@@ -371,16 +422,18 @@ pub(super) fn run(directory: &Path, config: Config) -> Result<MeasurementReport>
         mapping_kind: "sealed memfd/shmem; not filesystem page-cache or ARC".to_owned(),
         mapped_bytes: index_bytes,
         normal_validation_ceiling_bytes: normal,
-        normal_validation_refused: reservation > normal,
-        computed_validation_reservation_bytes: reservation,
-        selected_validation_cap_bytes: cap,
-        validated: mapped.0,
-        refusal: (!mapped.0).then(|| "declared test-only validation envelope is below the normal validator's reservation; workload did not run".to_owned()),
-        validation_elapsed_ns: mapped.4,
-        validation_allocation: mapped.1,
-        validation_before: mapped.2,
-        validation_after: mapped.3,
-        workload: mapped.5,
+        normal_validation_refused: mapped.normal_refused,
+        underbudget_validation_refused: true,
+        underbudget_validation_allocation: mapped.refusal_phase,
+        computed_validation_reservation_bytes: mapped.reservation,
+        selected_validation_cap_bytes: mapped.cap,
+        validated: mapped.validated,
+        refusal: (!mapped.validated).then(|| "declared test-only validation envelope is below the normal validator's reservation; workload did not run".to_owned()),
+        validation_elapsed_ns: mapped.elapsed,
+        validation_allocation: mapped.phase,
+        validation_before: mapped.before,
+        validation_after: mapped.after,
+        workload: mapped.workload,
         drop_baseline_requested_bytes: baseline,
         after_drop_requested_bytes: after_drop,
         after_unmap,
