@@ -38,7 +38,7 @@ in
         }
         {
           executable = "crucible-lib";
-          arguments = ["model::fault_signal::binding_runtime_test::finite_binding_search_choices_replay_once_and_reject_unused_overrides" "--exact"];
+          arguments = ["model::fault_signal::binding_runtime::tests::finite_binding_search_choices_replay_once_and_reject_unused_overrides" "--exact"];
           expectedCount = 1;
           evidence = "finite_binding_search_replay";
         }
