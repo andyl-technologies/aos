@@ -60,8 +60,7 @@
 
       # The probe inherits the unchanged production template's restrictions.
       # Keep test-harness output on the journal, never on the protocol socket.
-      systemd.services."aos-sandbox-held-snapshot-reader@".serviceConfig.ExecStartPre =
-        "${pkgs.bash}/bin/bash -c '${runFixture confinementTest} >&2'";
+      systemd.services."aos-sandbox-held-snapshot-reader@".serviceConfig.ExecStartPre = "${pkgs.bash}/bin/bash -c '${runFixture confinementTest} >&2'";
 
       aos.users.users.aos-sandboxd = {
         uid = config.aos.sandbox.controller.uid;
