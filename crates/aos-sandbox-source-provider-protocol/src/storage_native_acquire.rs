@@ -5,6 +5,11 @@
 //! Storage independently verifies them and durably accepts an exact receipt
 //! and original descriptor before returning one SourceRoot descriptor.
 //!
+//! This unreleased PR contract requires `kernel_coupled=false`, matching the
+//! immutable `ZfsHeldSnapshot` proof. `LocalLiveExport` and its kernel-grant
+//! semantics belong to a separate contract. This corrects the unreleased V2
+//! compatibility rule; no deployed RFC data requires migration.
+//!
 //! ```text
 //! AOSZNQ02 | version:u16be=2 | reserved[6]=0 |
 //! native-claims-length:u32be | AOSZHQ01-claims[.length] |
