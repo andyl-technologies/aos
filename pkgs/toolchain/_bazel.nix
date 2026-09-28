@@ -202,15 +202,33 @@
     if builtins.compareVersions version "8.0.0" >= 0
     then "rules_python++python+python_3_11_x86_64-unknown-linux-gnu"
     else "rules_python~~python~python_3_11_x86_64-unknown-linux-gnu";
-  sourceModules =
+  upstreamSourceModules =
     if builtins.compareVersions version "9.0.0" >= 0
     then
       import ./_bazel-offline-modules-9.nix {
         inherit buildPackages;
         fetchgit = lib.fetchgit;
         bazelSource = src;
+        rulesGraalvmBase = buildBazelBootstrap.passthru.offlineModules.rules_graalvm;
+        rulesKotlin = buildBazelBootstrap.passthru.offlineModules.rules_kotlin;
+        zstdJniBase = buildBazelBootstrap.passthru.offlineModules.zstd-jni;
       }
     else buildBazelBootstrap.passthru.offlineModules;
+  sourceModules =
+    upstreamSourceModules
+    // lib.optionalAttrs (builtins.compareVersions version "8.0.0" < 0) {
+      # Bazel 7 pins its Google API protos inside its own source checkout.
+      googleapis = src + "/third_party/googleapis";
+    }
+    // {
+      rules_java = import ./_bazel-rules-java-tools.nix {inherit buildPackages;} {
+        source = upstreamSourceModules.rules_java;
+        version =
+          if builtins.compareVersions version "9.0.0" >= 0
+          then "9.1.0"
+          else "8.14.0";
+      };
+    };
   sourceRepositoryFlags =
     if source == null
     then []
@@ -227,7 +245,13 @@
             else "--override_repository=${canonicalName}=${path}"
         )
         buildBazelBootstrap.passthru.offlineRepositories)
-      ++ lib.optional (builtins.compareVersions version "8.0.0" >= 0) "--override_repository=rules_java++toolchains+remote_java_tools=${sourceRemoteJavaTools}"
+      ++ [
+        "--override_repository=${
+          if builtins.compareVersions version "8.0.0" >= 0
+          then "rules_java++toolchains+remote_java_tools"
+          else "rules_java~~toolchains~remote_java_tools"
+        }=${sourceRemoteJavaTools}"
+      ]
       ++ lib.optional (builtins.compareVersions version "9.0.0" < 0) "--override_repository=${sourcePythonRepositoryName}=${sourcePythonRuntime}";
   sourceModuleFlags =
     if source == null
@@ -235,8 +259,8 @@
     else
       builtins.filter (flag: flag != null) (lib.mapAttrsToList (
           name: path:
-          # Chicory entered Bazel's module graph in version 8.
-            if path == null || (builtins.compareVersions version "8.0.0" < 0 && name == "chicory")
+          # Bazel 7 uses in-tree Google APIs without a grpc-java module.
+            if path == null || (builtins.compareVersions version "8.0.0" < 0 && builtins.elem name ["chicory" "grpc-java"])
             then null
             else "--override_module=${name}=${path}"
         )
@@ -1231,6 +1255,11 @@
                   --vendor_dir="$out" \
                   --verbose_failures \
                   --spawn_strategy=standalone \
+                  --tool_java_runtime_version=${bootstrapJavaRuntime} \
+                  --java_runtime_version=${bootstrapJavaRuntime} \
+                  --tool_java_language_version=21 \
+                  --java_language_version=21 \
+                  --extra_toolchains=@bazel_tools//tools/jdk:all \
                   "''${VENDOR_FLAGS[@]}"
 
                 # Clean non-reproducible artifacts
@@ -1549,19 +1578,6 @@ in
               -exec sed -i "1s|^#!/bin/sh$|#!${buildBash}/bin/bash|" {} +
 
             ${lib.optionalString (source != null && version == "7.7.1") ''
-              # rules_java's default compiler toolchain names a downloaded JDK.
-              # Use the source-built AOS JDK that local_jdk already exposes.
-              JAVA_TOOLCHAIN=../vendor_dir/rules_java~/toolchains/default_java_toolchain.bzl
-              test "$(grep -Fc 'java_runtime = Label("//toolchains:remotejdk_21")' "$JAVA_TOOLCHAIN")" = 1
-              sed -i \
-                's|java_runtime = Label("//toolchains:remotejdk_21")|java_runtime = Label("@local_jdk//:jdk")|' \
-                "$JAVA_TOOLCHAIN"
-              JAVA_TOOLCHAIN_BUILD=../vendor_dir/rules_java~/toolchains/BUILD
-              test "$(grep -Fc 'actual = ":singlejar_prebuilt_or_cc_binary"' "$JAVA_TOOLCHAIN_BUILD")" = 1
-              sed -i \
-                's|actual = ":singlejar_prebuilt_or_cc_binary"|actual = "@@//src/tools/singlejar:singlejar_local"|' \
-                "$JAVA_TOOLCHAIN_BUILD"
-
               # The source-built AutoValue processor loads support classes at
               # execution time, but rules_jvm_external omits those dependencies.
               MAVEN_BUILD=../vendor_dir/rules_jvm_external~~maven~maven/BUILD
@@ -1596,20 +1612,6 @@ in
               contents += 'jars = ["aos-incap.jar", "aos-escapevelocity.jar"])\n'
               build_file.write_text(contents)
               PY
-            ''}
-
-            ${lib.optionalString (version == "8.6.0") ''
-              # The vendored Java aliases select ELF binaries that require
-              # /lib64. Use the vendored source targets in the AOS build.
-              RULES_JAVA_TOOLCHAINS=../vendor_dir/rules_java+/toolchains/BUILD
-              test "$(grep -Fc 'actual = ":ijar_prebuilt_binary_or_cc_binary"' "$RULES_JAVA_TOOLCHAINS")" = 1
-              test "$(grep -Fc 'actual = ":singlejar_prebuilt_or_cc_binary"' "$RULES_JAVA_TOOLCHAINS")" = 1
-              test "$(grep -Fc 'actual = ":one_version_prebuilt_or_cc_binary"' "$RULES_JAVA_TOOLCHAINS")" = 1
-              sed -i \
-                -e 's|actual = ":ijar_prebuilt_binary_or_cc_binary"|actual = "@remote_java_tools//:ijar_cc_binary"|' \
-                -e 's|actual = ":singlejar_prebuilt_or_cc_binary"|actual = "@remote_java_tools//:singlejar_cc_bin"|' \
-                -e 's|actual = ":one_version_prebuilt_or_cc_binary"|actual = "@remote_java_tools//:one_version_cc_bin"|' \
-                "$RULES_JAVA_TOOLCHAINS"
             ''}
 
             ${lib.optionalString (isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64) ''

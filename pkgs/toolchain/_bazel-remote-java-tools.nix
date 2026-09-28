@@ -143,8 +143,32 @@ in
 
           source, output = map(Path, sys.argv[1:])
           build = source / "tools/jdk/BUILD.java_tools"
-          shutil.copyfile(build, output / "BUILD.bazel")
-          for relative in sorted(set(re.findall(r'"(java_tools/[^"\n]+)"', build.read_text()))):
+          contents = build.read_text()
+          if "${bazelBootstrap.version}" == "7.7.1":
+              # The source-only rules_java module resolves Protobuf directly.
+              # Use its public proto rules instead of an invisible rules_proto.
+              original_load = 'load("@rules_proto//proto:defs.bzl", "proto_library")'
+              if contents.count(original_load) != 1:
+                  raise SystemExit("unexpected Bazel 7 Java tools proto load")
+              contents = contents.replace(
+                  original_load,
+                  'load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")',
+              )
+
+              # Share the source-built coverage libraries with newer Bazel
+              # stages, retaining the Bazel 7 runner and relocation rules.
+              replacements = {
+                  "0.8.8": (8, "${bazelJacoco.version}"),
+                  "9.4": (6, "9.6"),
+                  "org.jacoco.report-sources.jar": (1, "org.jacoco.report-${bazelJacoco.version}-sources.jar"),
+              }
+              for original, (count, replacement) in replacements.items():
+                  if contents.count(original) != count:
+                      raise SystemExit(f"unexpected Bazel 7 coverage dependency: {original}")
+                  contents = contents.replace(original, replacement)
+
+          (output / "BUILD.bazel").write_text(contents)
+          for relative in sorted(set(re.findall(r'"(java_tools/[^"\n]+)"', contents))):
               if relative.endswith(".jar"):
                   continue
               original = relative.removeprefix("java_tools/")

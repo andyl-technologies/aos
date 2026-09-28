@@ -52,6 +52,12 @@
       inherit buildPackages;
       bootstrapVersion = "9.2.0";
     });
+  preparedSource = import ./_bazel-source-9-prepared.nix {
+    inherit buildPackages;
+    inherit (buildPackages) mkDerivation fetchurl;
+    bazelSource9 = bazelBootstrap9.passthru.offlineSource;
+    bazelJacoco = bazelBootstrap9.passthru.offlineJacoco;
+  };
   mkBazel = import ./_bazel.nix {
     inherit
       mkDerivation
@@ -90,7 +96,7 @@
 in
   mkBazel {
     inherit (upstream) version update;
-    source = bazelBootstrap9.passthru.offlineSource;
+    source = preparedSource;
     srcHash = "sha256-ga8CszEo7BkixrYCEt8/thULqpa7M9Mv+gIOX+1H/vw=";
     vendorDepsHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
   }
