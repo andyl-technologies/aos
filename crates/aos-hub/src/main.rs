@@ -20,13 +20,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use aos_hub_core::fetch::SurfaceProvider as _;
 use aos_hub_core::service::RouteReservationKeyring as _;
 use clap::{Args, Parser, Subcommand};
 
 use aos_hub::db::Database;
 use aos_hub::server::{router, AppState};
 
+mod indexing;
 mod logging;
 
 #[derive(Parser)]
@@ -203,10 +203,7 @@ enum Command {
         cloudflare_api_token_file: Option<PathBuf>,
     },
     /// Re-index one registry (or all) now.
-    Index {
-        /// Registry slug; omit to index everything.
-        slug: Option<String>,
-    },
+    Index(indexing::IndexArgs),
     /// Recover a native deployment by migrating its local database and
     /// optionally bootstrapping the root admin.
     Init {
@@ -1491,53 +1488,14 @@ async fn main() -> Result<()> {
                 .await?;
             }
         }
-        Command::Index { slug } => {
-            let db = Arc::new(open_db(&cli.root, &cli.target, cli.database_url.as_deref()).await?);
-            let root = resolve_root(cli.root.clone(), false)?;
-            let image_snapshots = aos_hub::image_snapshot::ImageSnapshotStore::open(&root)?;
-            image_snapshots.load_tracked(&db).await?;
-            let surfaces = aos_hub::coreports::HubSurfaceProvider::new(
-                Arc::clone(&db),
-                aos_hub::fetch::hardened_client().await,
-                Some(image_snapshots),
+        Command::Index(arguments) => {
+            indexing::run(
+                arguments,
+                &cli.root,
+                &cli.target,
+                cli.database_url.as_deref(),
             )
-            .for_image_indexing();
-            let registries = match slug {
-                Some(slug) => vec![db
-                    .registry_by_slug(&slug)
-                    .await?
-                    .with_context(|| format!("no registry '{slug}'"))?],
-                None => db.list_registries().await?,
-            };
-            for registry in registries {
-                let placement = db
-                    .reconciled_surface_reader(aos_hub_core::db::SurfaceTarget::Registry(
-                        registry.id,
-                    ))
-                    .await?;
-                let placement_id = placement.id;
-                let fetch = surfaces.placement_fetcher(&placement).await?;
-                match aos_hub_core::indexer::index_and_record_from_placement(
-                    db.as_ref(),
-                    fetch.as_ref(),
-                    &registry,
-                    Some(placement_id),
-                )
-                .await
-                {
-                    Ok(outcome) => {
-                        println!(
-                            "{}: {} packages, {} releases, {} channels @ {}",
-                            registry.slug,
-                            outcome.packages,
-                            outcome.releases,
-                            outcome.channels,
-                            outcome.commit,
-                        );
-                    }
-                    Err(err) => println!("{}: index failed: {err:#}", registry.slug),
-                }
-            }
+            .await?;
         }
         Command::Init {
             root_email,

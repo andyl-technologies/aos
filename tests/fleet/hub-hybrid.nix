@@ -1737,6 +1737,31 @@ in {
           timeout=180,
       )
 
+      # The operator command must use the same Worker storage adapter as the
+      # service. Copy fixtures into private files owned by the workload user,
+      # matching the secure credential loader rather than bypassing it.
+      native.succeed(textwrap.dedent(f"""
+          set -eu
+          ${pkgs.coreutils}/bin/install -d -m 0700 -o 802 -g 802 /var/lib/aos-hub/fleet-index
+          ${pkgs.coreutils}/bin/install -m 0600 -o 802 -g 802 \\
+            ${databaseUrl}/value /var/lib/aos-hub/fleet-index/database-url
+          ${pkgs.coreutils}/bin/install -m 0600 -o 802 -g 802 \\
+            ${storageKey}/value /var/lib/aos-hub/fleet-index/storage-key
+          ${pkgs.coreutils}/bin/install -m 0600 -o 802 -g 802 \\
+            ${secretVersionManifest}/value /var/lib/aos-hub/fleet-index/secret-version-manifest
+      """))
+      operator_index = native.succeed(
+          "HUB_DATABASE_URL_FILE=/var/lib/aos-hub/fleet-index/database-url "
+          "HUB_TOPOLOGY=hybrid HUB_DEPLOYMENT_ID=fleet-hybrid-v1 "
+          "HUB_HYBRID_WORKER_URL=https://aos.andyl.org "
+          "HUB_STORAGE_WORK_KEY_FILE=/var/lib/aos-hub/fleet-index/storage-key "
+          "HUB_SECRET_VERSION_MANIFEST_FILE=/var/lib/aos-hub/fleet-index/secret-version-manifest "
+          f"{CHROOT} ${pkgs.aos-hub}/bin/aos-hub index fleet/containers",
+          timeout=180,
+      )
+      assert re.search(r"fleet/containers: \d+ packages, 2 releases, \d+ channels @ ", operator_index), operator_index
+      print("standalone hybrid operator indexing:", operator_index.strip())
+
       # The same signed tags produced by APR must reach the authoritative DB.
       # Comparing exact object identities catches successful but partial walks.
       release_query = (

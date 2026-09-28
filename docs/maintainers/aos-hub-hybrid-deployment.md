@@ -182,6 +182,25 @@ maximum-sized documents through the external S3 adapter. Worker source-byte
 counts include documents read concurrently but deferred to the next page;
 those documents may be read again on continuation.
 
+For an operator-triggered refresh, run `aos-hub index` with the same database,
+deployment identity, and storage-work credentials as the Native service:
+
+```sh
+HUB_TOPOLOGY=hybrid \
+HUB_DATABASE_URL_FILE="$database_url_file" \
+HUB_DEPLOYMENT_ID="$deployment_id" \
+HUB_HYBRID_WORKER_URL="$probe_origin" \
+HUB_STORAGE_WORK_KEY_FILE="$storage_work_key_file" \
+HUB_SECRET_VERSION_MANIFEST_FILE="$secret_version_manifest_file" \
+aos-hub index "$registry_slug"
+```
+
+Omit the registry slug to refresh all registries. Run as the workload user
+with owner-private credential files; omit the secret manifest when no external
+provider credentials are needed. The command verifies the paired Worker's
+capabilities before indexing and returns a nonzero status if a registry fails.
+Native-only indexing uses `HUB_TOPOLOGY=native` and its local storage adapter.
+
 Only after those probes and recovery checks pass, render the same profile with
 both `--domain "$probe_hostname"` and `--domain "$public_hostname"`, then
 deploy it. This is the public cutover. Immediately verify public `/healthz`,
