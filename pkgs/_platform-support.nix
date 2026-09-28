@@ -1036,6 +1036,10 @@ let
   # Source fragments kept below underscore-prefixed directories are also
   # excluded from discovery, but are consumed by package factories.
   resourceInventory = {
+    "editors/_vim-darwin/api.h" = "target-independent-source";
+    "editors/_vim-darwin/appkit.tbd" = "target-independent-source";
+    "editors/_vim-darwin/text.h" = "target-independent-source";
+    "editors/_vim-darwin/coreservices.tbd" = "target-independent-source";
     "containers/_containerd-config/module.nix" = "linux-only-config-source";
     "containers/_containerd-tests/contract.nix" = "linux-only-test-source";
     "containers/_containerd-tests/lifecycle.nix" = "linux-only-test-source";
