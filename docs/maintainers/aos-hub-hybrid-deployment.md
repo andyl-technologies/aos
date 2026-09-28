@@ -19,14 +19,21 @@ admission; physical object presence alone never authorizes completion. An upload
 that does not converge within the bounded window returns a retryable error and
 cleans up its own staging objects.
 
-## Recover an ambiguous physical deletion
+## Recover an ambiguous physical mutation
 
-The R2 object guard persists a pending deletion before dispatching it and a
-terminal receipt before allowing another visible write. A lost response or
-restart between these steps leaves that object key fenced. The guard rejects
-both retrying the original physical deletion and a different deletion claim;
-visible puts and multipart completion remain blocked. Other object keys can
-continue working.
+The R2 object guard persists a pending operation before visible PUT, multipart
+completion or staging/claimed DELETE, then a terminal receipt before unlocking.
+A lost response or restart between these steps leaves that object key fenced.
+Visible mutations and storage-work HEAD observations remain blocked until the
+operation is recovered. Other object keys can continue working.
+
+A stored terminal receipt permits an exact replay without provider I/O; changed
+operation payloads are rejected. Multipart completion retains the provider
+upload identity and exact parts. The current ordinary PUT and staging-cleanup
+helpers allocate fresh attempt identities: a new workflow invocation cannot
+recover an earlier attempt unless it retained that identity. Explicit-operation
+helpers support this replay, but workflow-wide identity retention and an
+authenticated repair command remain incomplete.
 
 Do not clear the pending claim based on an absent HEAD result, elapsed time,
 lease expiry, or a restarted Worker. Those observations do not establish that
@@ -40,8 +47,10 @@ retained while Native can replay their action identities.
 R2's documented Worker deletion API accepts keys without a conditional
 argument; its consistency guarantee applies after the delete promise resolves.
 See the [R2 Worker API reference](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/#bucket-method-definitions).
-The pending fence is a conservative response to an unknown outcome, rather
-than evidence that R2 has delayed a deletion in the hosted qualification.
+The pending fence preserves safety while the provider outcome is unknown.
+External S3 and its frozen cleanup endpoint still need the same mutation
+boundary. R2 coverage requires an unchanged bucket attachment within one
+deployment identity and all visible Hybrid writes using the guarded path.
 
 ## Prepare the paired deployment
 

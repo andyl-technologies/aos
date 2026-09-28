@@ -4,11 +4,16 @@
 //! serializes writes, multipart completion, and identity-checked deletion
 //! without moving object bytes through the Native Hub. A durable delete
 //! receipt prevents a retried claim from deleting a later write at the key.
+//! Every visible provider mutation records its unknown-outcome fence before
+//! dispatch and its terminal receipt before unlocking. Fences never expire;
+//! HEAD absence cannot settle an outstanding mutation. External S3 and the
+//! frozen cleanup route are not connected to this coordinator yet.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context as _, Result};
+use aos_hub_core::storage_work::StorageObjectIdentity;
 use aos_hub_core::surface_write::PartTag;
 use futures_util::lock::{Mutex, OwnedMutexGuard};
 use serde::{Deserialize, Serialize};
@@ -21,22 +26,39 @@ use worker::{
 const BINDING: &str = "HYBRID_OBJECT_GUARD";
 const KEY_HEADER: &str = "x-aos-hybrid-object-key";
 
-use crate::hybrid_object_state::{recover_delete, DeleteReceipt};
+use crate::hybrid_object_state::{
+    observe_when_ready, recover_delete, recover_mutation, DeleteReceipt, Mutation, MutationKind,
+    MutationOutcome, MutationReceipt,
+};
 pub(crate) use crate::hybrid_object_state::{DeleteClaim, DeleteOutcome};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CompleteRequest {
+    operation_id: String,
     upload_id: String,
     parts: Vec<PartTag>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OperationRequest {
+    operation_id: String,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum GuardReply {
     Acknowledged,
-    MultipartCompleted { etag: String },
-    Delete { outcome: DeleteOutcome },
+    MultipartCompleted {
+        etag: String,
+    },
+    Delete {
+        outcome: DeleteOutcome,
+    },
+    Head {
+        object: Option<StorageObjectIdentity>,
+    },
 }
 
 /// Coordinates visible writes and reviewed deletion for one R2 object key.
@@ -69,35 +91,71 @@ impl DurableObject for HybridObjectGuard {
             .env
             .bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
         let result = match request.url()?.path() {
+            // This is an internal metadata RPC: POST preserves its JSON reply,
+            // unlike HTTP HEAD, whose response body may be stripped.
+            "/head" if request.method() == Method::Post => {
+                let pending = self.pending_mutation().await?;
+                let legacy = self.pending_delete().await?;
+                let object = observe_when_ready(pending.as_ref(), legacy.as_ref(), || {
+                    crate::surface::hybrid_r2_head(bucket, &key)
+                })
+                .await
+                .map_err(storage_error)?;
+                GuardReply::Head {
+                    object: object.map(|head| StorageObjectIdentity {
+                        key,
+                        size: head.size,
+                        etag: head.etag,
+                    }),
+                }
+            }
             "/put" if request.method() == Method::Put => {
-                if self.pending_delete().await?.is_some() {
-                    return Response::error("object deletion is pending", 503);
+                let operation: OperationRequest = request.json().await?;
+                let mutation =
+                    mutation(&key, &operation.operation_id, MutationKind::EmptyPut, &())?;
+                if self.begin_mutation(&mutation).await?.is_none() {
+                    crate::surface::hybrid_r2_put(bucket, &key, &[])
+                        .await
+                        .map_err(storage_error)?;
+                    self.finish_mutation(mutation, MutationOutcome::Acknowledged)
+                        .await?;
                 }
-                let bytes = request.bytes().await?;
-                if !bytes.is_empty() {
-                    return Response::error(
-                        "visible object bytes must be staged as multipart",
-                        400,
-                    );
-                }
-                crate::surface::hybrid_r2_put(bucket, &key, &bytes)
-                    .await
-                    .map_err(storage_error)?;
                 GuardReply::Acknowledged
             }
             "/complete" if request.method() == Method::Post => {
-                if self.pending_delete().await?.is_some() {
-                    return Response::error("object deletion is pending", 503);
-                }
                 let completion: CompleteRequest = request.json().await?;
-                let etag = crate::surface::hybrid_r2_complete(
-                    bucket,
+                if completion.upload_id.is_empty()
+                    || completion.upload_id.len() > 2048
+                    || completion.parts.is_empty()
+                    || completion.parts.len() > 10_000
+                {
+                    return Response::error("invalid multipart completion", 400);
+                }
+                let mutation = mutation(
                     &key,
-                    &completion.upload_id,
-                    &completion.parts,
-                )
-                .await
-                .map_err(storage_error)?;
+                    &completion.operation_id,
+                    MutationKind::MultipartCompletion,
+                    &(&completion.upload_id, &completion.parts),
+                )?;
+                let outcome = match self.begin_mutation(&mutation).await? {
+                    Some(outcome) => outcome,
+                    None => {
+                        let etag = crate::surface::hybrid_r2_complete(
+                            bucket,
+                            &key,
+                            &completion.upload_id,
+                            &completion.parts,
+                        )
+                        .await
+                        .map_err(storage_error)?;
+                        let outcome = MutationOutcome::MultipartCompleted { etag };
+                        self.finish_mutation(mutation, outcome.clone()).await?;
+                        outcome
+                    }
+                };
+                let MutationOutcome::MultipartCompleted { etag } = outcome else {
+                    return Response::error("invalid completion receipt", 500);
+                };
                 GuardReply::MultipartCompleted { etag }
             }
             "/delete" if request.method() == Method::Post => {
@@ -106,12 +164,20 @@ impl DurableObject for HybridObjectGuard {
                 GuardReply::Delete { outcome }
             }
             "/delete-staging" if request.method() == Method::Delete => {
-                if self.pending_delete().await?.is_some() {
-                    return Response::error("object deletion is pending", 503);
+                let operation: OperationRequest = request.json().await?;
+                let mutation = mutation(
+                    &key,
+                    &operation.operation_id,
+                    MutationKind::StagingDelete,
+                    &(),
+                )?;
+                if self.begin_mutation(&mutation).await?.is_none() {
+                    crate::surface::hybrid_r2_delete(bucket, &key)
+                        .await
+                        .map_err(storage_error)?;
+                    self.finish_mutation(mutation, MutationOutcome::Acknowledged)
+                        .await?;
                 }
-                crate::surface::hybrid_r2_delete(bucket, &key)
-                    .await
-                    .map_err(storage_error)?;
                 GuardReply::Acknowledged
             }
             _ => return Response::error("not found", 404),
@@ -129,6 +195,57 @@ impl HybridObjectGuard {
 
     async fn pending_delete(&self) -> worker::Result<Option<DeleteClaim>> {
         self.state.storage().get("pending-delete").await
+    }
+
+    async fn pending_mutation(&self) -> worker::Result<Option<Mutation>> {
+        self.state.storage().get("pending-mutation").await
+    }
+
+    async fn begin_mutation(&self, mutation: &Mutation) -> worker::Result<Option<MutationOutcome>> {
+        let receipt = self
+            .state
+            .storage()
+            .get::<MutationReceipt>(&receipt_key(mutation))
+            .await?;
+        let pending = self.pending_mutation().await?;
+        let legacy = self.pending_delete().await?;
+        let replay = recover_mutation(
+            mutation,
+            receipt.as_ref(),
+            pending.as_ref(),
+            legacy.as_ref(),
+        )
+        .map_err(storage_error)?;
+        if replay.is_some() {
+            if pending.as_ref() == Some(mutation) {
+                self.state.storage().delete("pending-mutation").await?;
+            }
+        } else {
+            // Persist before dispatch: process eviction must not unlock a late effect.
+            self.state
+                .storage()
+                .put("pending-mutation", mutation)
+                .await?;
+        }
+        Ok(replay)
+    }
+
+    async fn finish_mutation(
+        &self,
+        mutation: Mutation,
+        outcome: MutationOutcome,
+    ) -> worker::Result<()> {
+        let receipt = MutationReceipt { mutation, outcome };
+        self.state
+            .storage()
+            .put(&receipt_key(&receipt.mutation), &receipt)
+            .await?;
+        // A crash between these writes leaves a replayable receipt and its fence.
+        // Never let replay/late recovery clear a different operation's fence.
+        if self.pending_mutation().await?.as_ref() == Some(&receipt.mutation) {
+            self.state.storage().delete("pending-mutation").await?;
+        }
+        Ok(())
     }
 
     async fn delete_if_matches(
@@ -162,9 +279,14 @@ impl HybridObjectGuard {
             return Ok(outcome);
         }
 
-        let head = crate::surface::hybrid_r2_head(bucket.clone(), key)
-            .await
-            .map_err(storage_error)?;
+        // GC observation shares the mutation boundary. A provider HEAD (even
+        // absence) cannot authorize GC while an older write/delete may finish.
+        let mutation = self.pending_mutation().await?;
+        let head = observe_when_ready(mutation.as_ref(), pending.as_ref(), || {
+            crate::surface::hybrid_r2_head(bucket.clone(), key)
+        })
+        .await
+        .map_err(storage_error)?;
         let outcome = match head {
             None => DeleteOutcome::NotFound,
             Some(head) if head.size != claim.expected_size || head.etag != claim.expected_etag => {
@@ -196,6 +318,19 @@ impl HybridObjectGuard {
         }
         Ok(outcome)
     }
+}
+
+fn mutation<T: Serialize>(
+    key: &str,
+    operation_id: &str,
+    kind: MutationKind,
+    payload: &T,
+) -> worker::Result<Mutation> {
+    Mutation::new(key, operation_id, kind, payload).map_err(storage_error)
+}
+
+fn receipt_key(mutation: &Mutation) -> String {
+    format!("mutation-receipt:{}", mutation.operation_id)
 }
 
 async fn acquire_gate(gate: Arc<Mutex<()>>) -> OwnedMutexGuard<()> {
@@ -268,22 +403,38 @@ async fn call(
     response.json::<GuardReply>().await.map_err(Into::into)
 }
 
+/// Observes metadata while denying unknown mutation outcomes before provider I/O.
+///
+/// # Errors
+/// Returns an error while any mutation is fenced, for an invalid exact key,
+/// or for failed guard/provider access. Absence never retires a fence or receipt.
+pub(crate) async fn head(env: &Env, key: &str) -> Result<Option<crate::r2_adapter::R2HeadObject>> {
+    let reply = call(env, key, "/head", Method::Post, JsValue::NULL).await?;
+    match reply {
+        GuardReply::Head { object } => object
+            .map(|object| {
+                anyhow::ensure!(
+                    object.key == key,
+                    "guard HEAD returned a different object key"
+                );
+                Ok(crate::r2_adapter::R2HeadObject {
+                    size: object.size,
+                    etag: object.etag,
+                })
+            })
+            .transpose(),
+        _ => bail!("unexpected object HEAD reply"),
+    }
+}
+
 /// Stages bytes in R2 and commits the visible object through its guard.
+///
+/// Each invocation stages a new multipart upload (or allocates a new empty-PUT
+/// operation ID). Repeating this helper is not a logical idempotency protocol:
+/// an unknown earlier effect fences the key and rejects the new attempt.
 pub(crate) async fn put(env: &Env, key: &str, bytes: &[u8]) -> Result<()> {
     if bytes.is_empty() {
-        let reply = call(
-            env,
-            key,
-            "/put",
-            Method::Put,
-            js_sys::Uint8Array::new_with_length(0).into(),
-        )
-        .await?;
-        anyhow::ensure!(
-            matches!(reply, GuardReply::Acknowledged),
-            "unexpected put reply"
-        );
-        return Ok(());
+        return put_empty_with_operation(env, key, &uuid::Uuid::new_v4().to_string()).await;
     }
     anyhow::ensure!(
         bytes.len() <= aos_hub_core::hybrid_ingress::MAX_HYBRID_OCI_CHUNK_BYTES,
@@ -313,6 +464,28 @@ pub(crate) async fn put(env: &Env, key: &str, bytes: &[u8]) -> Result<()> {
     result
 }
 
+/// Commits an empty object with a caller-retained replay identity.
+///
+/// # Errors
+/// Returns an error for changed operation identity, an unknown prior mutation,
+/// or a provider/storage failure. The caller must reuse this ID only for the
+/// same operation; a later intentional write needs a new ID.
+pub(crate) async fn put_empty_with_operation(
+    env: &Env,
+    key: &str,
+    operation_id: &str,
+) -> Result<()> {
+    let body = serde_json::to_string(&OperationRequest {
+        operation_id: operation_id.into(),
+    })?;
+    let reply = call(env, key, "/put", Method::Put, JsValue::from_str(&body)).await?;
+    anyhow::ensure!(
+        matches!(reply, GuardReply::Acknowledged),
+        "unexpected put reply"
+    );
+    Ok(())
+}
+
 /// Completes multipart storage while serializing the new visible object.
 pub(crate) async fn complete(
     env: &Env,
@@ -320,7 +493,26 @@ pub(crate) async fn complete(
     upload_id: &str,
     parts: &[PartTag],
 ) -> Result<String> {
+    // Excluding parts from the ID lets the guard reject changed parts rather
+    // than treating them as a new operation for the same provider upload.
+    let operation_id = format!("complete:{}", hex::encode(Sha256::digest(upload_id)));
+    complete_with_operation(env, key, &operation_id, upload_id, parts).await
+}
+
+/// Completes one exact upload/parts payload with a caller-retained identity.
+///
+/// # Errors
+/// Returns an error for a changed payload, unknown prior mutation, or failed
+/// provider/storage operation. A matching receipt replays without provider I/O.
+pub(crate) async fn complete_with_operation(
+    env: &Env,
+    key: &str,
+    operation_id: &str,
+    upload_id: &str,
+    parts: &[PartTag],
+) -> Result<String> {
     let body = serde_json::to_string(&CompleteRequest {
+        operation_id: operation_id.into(),
         upload_id: upload_id.to_owned(),
         parts: parts.to_vec(),
     })?;
@@ -339,8 +531,35 @@ pub(crate) async fn complete(
 }
 
 /// Deletes a terminal staging key without crossing the Native byte boundary.
+///
+/// Each invocation allocates a fresh attempt ID. An unknown previous attempt
+/// remains fenced; callers needing receipt replay must retain an explicit ID.
 pub(crate) async fn delete_staging(env: &Env, key: &str) -> Result<()> {
-    let reply = call(env, key, "/delete-staging", Method::Delete, JsValue::NULL).await?;
+    delete_staging_with_operation(env, key, &uuid::Uuid::new_v4().to_string()).await
+}
+
+/// Deletes a staging key with a caller-retained replay identity.
+///
+/// # Errors
+/// Returns an error for a changed identity, unknown prior mutation, or failed
+/// provider/storage operation. Receipts do not expire or authorize settlement
+/// of any other operation.
+pub(crate) async fn delete_staging_with_operation(
+    env: &Env,
+    key: &str,
+    operation_id: &str,
+) -> Result<()> {
+    let body = serde_json::to_string(&OperationRequest {
+        operation_id: operation_id.into(),
+    })?;
+    let reply = call(
+        env,
+        key,
+        "/delete-staging",
+        Method::Delete,
+        JsValue::from_str(&body),
+    )
+    .await?;
     anyhow::ensure!(
         matches!(reply, GuardReply::Acknowledged),
         "unexpected delete reply"

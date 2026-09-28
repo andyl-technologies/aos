@@ -25,6 +25,24 @@ and the Worker `wasm32-unknown-unknown` check passed. These are state-contract
 and compilation checks, not an injected provider failure or hosted R2 test.
 Automatic provider settlement and safe receipt retirement remain incomplete.
 
+The guard now persists all visible deployment-R2 mutations: empty PUT,
+multipart completion and staging DELETE, alongside the existing claimed DELETE.
+Storage-work HEAD enters that same guard, so an unfinished mutation cannot
+authorize an absence-based GC decision. Eight focused state tests and Worker
+Wasm compilation passed. The actual rebuilt production Worker also passed six
+Miniflare scenario groups with persistent Durable Object storage and real R2
+emulation: restart fences, lost provider acknowledgements, receipt-before-unlock
+faults, exact multipart replay, replacement preservation, legacy records and
+signed storage-work HEAD routing. Provider effects were counted only after
+checking their durable pending fence. The previous Worker failed the negative
+control by reporting absence despite a persisted unfinished mutation.
+The qualified artifact is
+`/nix/store/8b1sx37sryrsskpwrx2mb8d2lklz95s9-aos-hub-worker-dist-0.1.0`.
+These checks cover the object protocol in the runner; they establish no hosted
+R2 settlement guarantee. External S3 coordination, identical-recreation
+incarnation checks, workflow-wide retained identities and safe retirement remain
+pending.
+
 The separate external cleanup wire contract now admits an exact OCI-key HEAD
 or conditional DELETE with one retained delete credential. Seven core tests
 passed for scope, credential fingerprint, lifetime/lease, replay identity,
@@ -356,8 +374,8 @@ registry configuration, and cache GC policy review also passed.
 
 This manual run used isolated Native SQLite, not the hosted Hybrid deployment.
 Its report and screenshots are retained at
-`/tmp/hub-native-empty-registry-browser-qualified`. Hybrid browser qualification
-remains pending.
+`/tmp/hub-native-empty-registry-browser-qualified`. Hybrid browser results are
+recorded above.
 
 ### ARM Native artifact qualification
 
@@ -367,7 +385,17 @@ The result is
 Executing its binary through the AOS-built `qemu-aarch64` returned
 `aos-hub 0.1.0` successfully. This capture predates the private receipt-file
 reader and console reference normalization. It qualifies compilation and
-startup of that artifact; ARM server, database and browser workflows remain
+startup of that artifact.
+
+The current Native source at `9f633298b4` subsequently cross-built as
+`/nix/store/kpvy8whncbmqmc4yfyp67cim5clhwxhy-aos-hub-0.1.0`. Its captured
+workspace matches all 2,292 non-Worker source files at that commit. AOS-built
+QEMU 11.1.1 executed the actual aarch64 ELF, version command, SQLite migration
+and root initialization, then served health and login pages. Password login
+returned HTTP 303 with a session cookie and the authenticated instance page
+returned HTTP 200; the server remained running. Generated credentials were
+removed and the test process stopped. This qualifies standalone Native with
+SQLite under ARM emulation. ARM PostgreSQL, Hybrid and browser workflows remain
 unqualified.
 
 ### OCI upload request framing

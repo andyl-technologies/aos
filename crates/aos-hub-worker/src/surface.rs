@@ -450,7 +450,9 @@ pub(crate) async fn execute_r2_storage_work(
     let (outcome, source_bytes) = match &plan.operation {
         StorageWorkOperation::Head { path } => {
             let key = plan.object_key(path)?;
-            let outcome = match fetcher.contract.head(&key).await? {
+            // Frozen R2 GC uses this same metadata plan. Observe through the
+            // physical-key guard so unknown writes/deletes cannot prove absence.
+            let outcome = match crate::hybrid_object::head(env, &key).await? {
                 Some(head) => StorageWorkOutcome::Head {
                     object: storage_object_identity(key, head),
                 },
