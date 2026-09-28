@@ -40,6 +40,7 @@ ET_DYN = 3
 PT_DYNAMIC = 2
 PT_INTERP = 3
 DT_NULL = 0
+DT_SONAME = 14
 DT_FLAGS_1 = 0x6FFFFFFB
 DF_1_PIE = 0x08000000
 
@@ -103,10 +104,11 @@ class ElfIdentity:
     object_type: int
     has_interpreter: bool
     has_pie_flag: bool
+    has_soname: bool
 
     @property
-    def is_pie(self) -> bool:
-        """Reports whether ELF metadata positively identifies a PIE."""
+    def has_executable_signal(self) -> bool:
+        """Reports whether ELF metadata identifies a runnable ET_DYN file."""
 
         return self.object_type == ET_DYN and (
             self.has_interpreter or self.has_pie_flag
@@ -295,6 +297,7 @@ def inspect_elf(path: Path) -> ElfIdentity | None:
 
         dynamic_entry_size = struct.calcsize(dynamic_entry_format)
         has_pie_flag = False
+        has_soname = False
         for file_offset, segment_size in dynamic_ranges:
             if segment_size > 4 * 1024 * 1024:
                 raise PlanError(f"oversized ELF dynamic table in {path}")
@@ -311,8 +314,10 @@ def inspect_elf(path: Path) -> ElfIdentity | None:
                     break
                 if tag == DT_FLAGS_1 and value & DF_1_PIE:
                     has_pie_flag = True
+                elif tag == DT_SONAME:
+                    has_soname = True
 
-        return ElfIdentity(object_type, has_interpreter, has_pie_flag)
+        return ElfIdentity(object_type, has_interpreter, has_pie_flag, has_soname)
 
 
 def _store_relative_path(path: str) -> str | None:
@@ -365,7 +370,15 @@ def classify_store_regular(path: str, source: Path, mode: int) -> str:
             return "bin_t"
         if identity.object_type != ET_DYN:
             return "usr_t"
-        if identity.is_pie:
+        # glibc's libc.so.6 has both a SONAME and PT_INTERP so it can also run
+        # directly. Its authoritative lib path keeps it a DSO unless it is PIE.
+        if (
+            identity.has_soname
+            and not identity.has_pie_flag
+            and _has_library_path_authority(path)
+        ):
+            return "lib_t"
+        if identity.has_executable_signal:
             if not executable:
                 raise PlanError(f"PIE file is not executable: {path}")
             return "bin_t"

@@ -7,6 +7,8 @@
 }: let
   cfg = config.aos.sandbox.networkWorker;
   loaderEnvironment = import ./_network-loader-environment.nix {inherit lib;};
+  immutableStoreView = import ./_network-immutable-store-view.nix {inherit lib;};
+  protectedRoots = config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
   lifecycleUnitName = "aos-sandbox-network-lifecycle-worker@.service";
   renderedLifecycleUnit = config.systemd.units.${lifecycleUnitName}.text;
   pinParent = "/sys/fs/bpf/aos/sandbox-network";
@@ -35,6 +37,10 @@ in {
       {
         assertion = loaderEnvironment.renderedUnitMatchesSourcePolicy renderedLifecycleUnit;
         message = "${lifecycleUnitName} must render the inherited-environment scrub without EnvironmentFile or PassEnvironment";
+      }
+      {
+        assertion = !protectedRoots || immutableStoreView.renderedUnitHasExactBind renderedLifecycleUnit;
+        message = "${lifecycleUnitName} must execute against the exact immutable lower-store view";
       }
     ];
 
@@ -293,7 +299,9 @@ in {
       description = "AOS authenticated Network lifecycle effect worker";
       requires = ["aos-sandbox-network-worker-ready.service"];
       after = ["aos-sandbox-network-worker-ready.service"];
-      unitConfig.RequiresMountsFor = ["/sys/fs/cgroup" cfg.authorityDirectory];
+      unitConfig.RequiresMountsFor =
+        ["/sys/fs/cgroup" cfg.authorityDirectory]
+        ++ lib.optionals protectedRoots ["/nix.lower/store"];
       serviceConfig = {
         Type = "exec";
         ExecStart = ''
@@ -306,6 +314,7 @@ in {
             ${pkgs.aos-sandbox-network-lease-gate-loader}/bin/aos-sandbox-network-lease-gate-loader \
             ${pkgs.aos-sandbox-network-lease-gate}/lib/bpf/aos-sandbox-network-lease-gate.bpf.o
         '';
+        BindReadOnlyPaths = lib.optionals protectedRoots [immutableStoreView.bind];
         StandardInput = "socket";
         StandardOutput = "socket";
         StandardError = "journal";

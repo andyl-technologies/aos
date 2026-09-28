@@ -28,6 +28,7 @@
   protectedRootsUnit = "aos-sandbox-network-roots.service";
 
   loaderEnvironment = import ./_network-loader-environment.nix {inherit lib;};
+  immutableStoreView = import ./_network-immutable-store-view.nix {inherit lib;};
   renderedDirectives = name: unitText:
     builtins.filter (lib.hasPrefix "${name}=") (map lib.trim (lib.splitString "\n" unitText));
   renderedInspectorUnit = config.systemd.units.${inspectorUnitName}.text;
@@ -94,6 +95,14 @@ in {
         }
         {
           assertion =
+            renderedDirectives "StandardInput" renderedInspectorUnit
+            == ["StandardInput=socket"]
+            && renderedDirectives "StandardOutput" renderedInspectorUnit == ["StandardOutput=socket"]
+            && renderedDirectives "StandardError" renderedInspectorUnit == ["StandardError=journal"];
+          message = "${inspectorUnitName} must retain the image-pinned accepted socket and inherited journal stderr";
+        }
+        {
+          assertion =
             config.aos.sandbox.networkBroker.enable
             && renderedDirectives "ExecStart" renderedBrokerUnit
             == ["ExecStart=${cfg.package}/bin/aos-netd ${toString config.aos.sandbox.networkBroker.maximumRetainedNamespaces}"];
@@ -143,6 +152,10 @@ in {
         {
           assertion = renderedEnvironmentScrub;
           message = "${inspectorUnitName} must render the inherited-environment scrub without EnvironmentFile or PassEnvironment";
+        }
+        {
+          assertion = immutableStoreView.renderedUnitHasExactBind renderedInspectorUnit;
+          message = "${inspectorUnitName} must execute against the exact immutable lower-store view";
         }
         {
           assertion = lib.hasInfix "RestrictSUIDSGID=true\n" renderedInspectorUnit;
@@ -210,6 +223,7 @@ in {
       unitConfig = {
         CollectMode = "inactive-or-failed";
         RequiresMountsFor = [
+          "/nix.lower/store"
           "/sys/fs/cgroup"
           "/var/lib/aos/sandbox-network/namespace-inspector/expected-final"
           "/var/lib/aos/sandbox-network/namespace-inspector/spent-staging"
@@ -219,6 +233,7 @@ in {
       serviceConfig = {
         Type = "exec";
         ExecStart = "${cfg.package}/bin/aos-sandbox-network-namespace-inspector";
+        BindReadOnlyPaths = [immutableStoreView.bind];
         LoadCredential = loadCredentials;
 
         # Accept=yes supplies the connected SOCK_SEQPACKET to this template;
@@ -273,8 +288,6 @@ in {
           "/var/lib/aos/sandbox-network/namespace-inspector/expected-staging"
         ];
         ReadOnlyPaths = [
-          "/nix/store"
-          "${cfg.managerQueryPackage}"
           "/var/lib/aos/sandbox-network/namespace-inspector/expected-final"
         ];
         ReadWritePaths = [

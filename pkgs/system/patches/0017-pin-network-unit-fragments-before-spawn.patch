@@ -1,0 +1,418 @@
+diff --git a/src/core/load-fragment.h b/src/core/load-fragment.h
+--- a/src/core/load-fragment.h
++++ b/src/core/load-fragment.h
+@@ -10,4 +10,9 @@ int unit_is_likely_recursive_template_dependency(Unit *u, const char *name, const char *format);
+ 
+ /* Config-parsing helpers relevant only for sources under src/core/ */
++bool aos_network_protected_name(const char *name);
++bool aos_network_protected_unit(const Unit *u);
++bool aos_network_image_guard_active(void);
++int aos_network_verify_loaded_fragment(const Unit *u);
++
+ int parse_crash_chvt(const char *value, int *data);
+ int parse_confirm_spawn(const char *value, char **console);
+diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
+--- a/src/core/load-fragment.c
++++ b/src/core/load-fragment.c
+@@ -5,3 +5,9 @@
+ #include <fcntl.h>
++#include <linux/magic.h>
++#include <linux/openat2.h>
+ #include <sched.h>
++#include <string.h>
++#include <sys/statfs.h>
++#include <sys/statvfs.h>
++#include <sys/syscall.h>
+ #include <unistd.h>
+@@ -30,3 +34,4 @@
+ #include "extract-word.h"
+ #include "fd-util.h"
++#include "fs-util.h"
+ #include "fstab-util.h"
+@@ -6121,19 +6128,213 @@ static int merge_by_names(Unit *u, Set *names, const char *id) {
+         return 0;
+ }
+ 
++bool aos_network_protected_name(const char *name) {
++        return streq_ptr(name, "aos-netd.service") ||
++               (name && startswith(name, "aos-sandbox-network-namespace-inspector@") && endswith(name, ".service")) ||
++               (name && startswith(name, "aos-sandbox-network-lifecycle-worker@") && endswith(name, ".service"));
++}
++
++bool aos_network_protected_unit(const Unit *u) {
++        const char *alias;
++
++        if (aos_network_protected_name(u->id))
++                return true;
++        SET_FOREACH(alias, u->aliases)
++                if (aos_network_protected_name(alias))
++                        return true;
++        return false;
++}
++
++bool aos_network_image_guard_active(void) {
++        struct statfs fs;
++
++        if (getpid_cached() != 1)
++                return false;
++        /* An unreadable root is treated as protected and fails the later
++         * authenticated-image check. Ext4 development guests stay available. */
++        return statfs("/", &fs) < 0 || fs.f_type == EROFS_SUPER_MAGIC_V1;
++}
++
++static const char *aos_network_template_name(const char *name) {
++        if (streq(name, "aos-netd.service"))
++                return name;
++        if (startswith(name, "aos-sandbox-network-namespace-inspector@") && endswith(name, ".service"))
++                return "aos-sandbox-network-namespace-inspector@.service";
++        if (startswith(name, "aos-sandbox-network-lifecycle-worker@") && endswith(name, ".service"))
++                return "aos-sandbox-network-lifecycle-worker@.service";
++        return NULL;
++}
++
++static int aos_network_open_image_path(const char *path, int flags) {
++        struct open_how how = {
++                .flags = flags | O_CLOEXEC,
++                .resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS |
++                           RESOLVE_NO_XDEV | RESOLVE_NO_SYMLINKS,
++        };
++        _cleanup_close_ int root_fd = -EBADF;
++        int fd;
++
++        /* A bind mount over any image component must not substitute an inode
++         * even if its backing filesystem has the same device number. */
++        if (!path || path[0] != '/' || path[1] == 0)
++                return -EINVAL;
++        root_fd = open("/", O_PATH | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
++        if (root_fd < 0)
++                return -errno;
++        fd = syscall(SYS_openat2, root_fd, path + 1, &how, sizeof(how));
++        return fd < 0 ? -errno : fd;
++}
++
++static int aos_network_image_link(
++                const char *link_path,
++                const char *expected_suffix,
++                dev_t image_device,
++                char **ret_path) {
++        static const char store_prefix[] = "/nix/store/";
++        _cleanup_free_ char *target = NULL;
++        const char *relative, *suffix;
++        struct stat st;
++        _cleanup_close_ int fd = -EBADF;
++        int r;
++
++        fd = aos_network_open_image_path(link_path, O_PATH | O_NOFOLLOW);
++        if (fd < 0)
++                return fd;
++        if (fstat(fd, &st) < 0)
++                return -errno;
++        if (!S_ISLNK(st.st_mode) || st.st_uid != 0 || st.st_dev != image_device)
++                return -EPERM;
++
++        r = readlinkat_malloc(fd, "", &target);
++        if (r < 0)
++                return r;
++        relative = startswith(target, store_prefix);
++        if (!relative || strlen(relative) < 34 || relative[32] != '-' ||
++            strspn(relative, "0123456789abcdfghijklmnpqrsvwxyz") != 32)
++                return -EPERM;
++
++        suffix = strchr(relative, '/');
++        if (expected_suffix ? !streq_ptr(suffix, expected_suffix) : suffix != NULL)
++                return -EPERM;
++
++        *ret_path = strjoin("/nix.lower/store/", relative);
++        return *ret_path ? 0 : -ENOMEM;
++}
++
++static int aos_network_image_fragment(
++                const char *unit_name,
++                char **ret_path,
++                int *ret_fd,
++                struct stat *ret_stat) {
++        _cleanup_free_ char *top = NULL, *units = NULL, *unit_link = NULL, *suffix = NULL;
++        const char *template_name;
++        struct stat root_st, st;
++        struct statfs fs;
++        struct statvfs vfs;
++        _cleanup_close_ int top_fd = -EBADF, units_fd = -EBADF, fd = -EBADF;
++        int r;
++
++        template_name = aos_network_template_name(unit_name);
++        if (!template_name)
++                return -EINVAL;
++
++        /* /aos-toplevel is part of the measured boot image. Follow only its
++         * fixed store-link chain through the physical EROFS lower store. */
++        if (stat("/", &root_st) < 0 || statfs("/", &fs) < 0 || statvfs("/", &vfs) < 0)
++                return -errno;
++        if (fs.f_type != EROFS_SUPER_MAGIC_V1 ||
++            !FLAGS_SET(vfs.f_flag, ST_RDONLY | ST_NODEV))
++                return -EPERM;
++
++        r = aos_network_image_link("/aos-toplevel", NULL, root_st.st_dev, &top);
++        if (r < 0)
++                return r;
++        top_fd = aos_network_open_image_path(top, O_PATH | O_DIRECTORY);
++        if (top_fd < 0)
++                return top_fd;
++        if (fstat(top_fd, &st) < 0)
++                return -errno;
++        if (!S_ISDIR(st.st_mode) || st.st_dev != root_st.st_dev || st.st_uid != 0)
++                return -EPERM;
++
++        unit_link = path_join(top, "systemd-units");
++        if (!unit_link)
++                return -ENOMEM;
++        r = aos_network_image_link(unit_link, NULL, root_st.st_dev, &units);
++        if (r < 0)
++                return r;
++        units_fd = aos_network_open_image_path(units, O_PATH | O_DIRECTORY);
++        if (units_fd < 0)
++                return units_fd;
++        if (fstat(units_fd, &st) < 0)
++                return -errno;
++        if (!S_ISDIR(st.st_mode) || st.st_dev != root_st.st_dev || st.st_uid != 0)
++                return -EPERM;
++
++        unit_link = mfree(unit_link);
++        unit_link = path_join(units, template_name);
++        suffix = strjoin("/", template_name);
++        if (!unit_link || !suffix)
++                return -ENOMEM;
++        r = aos_network_image_link(unit_link, suffix, root_st.st_dev, ret_path);
++        if (r < 0)
++                return r;
++
++        fd = aos_network_open_image_path(*ret_path, O_RDONLY | O_NOFOLLOW | O_NOCTTY);
++        if (fd < 0)
++                return fd;
++        if (fstat(fd, &st) < 0 || fstatfs(fd, &fs) < 0)
++                return -errno;
++        if (!S_ISREG(st.st_mode) || st.st_uid != 0 || st.st_gid != 0 || st.st_dev != root_st.st_dev ||
++            (st.st_mode & 0222) != 0 || fs.f_type != EROFS_SUPER_MAGIC_V1)
++                return -EPERM;
++        if (ret_stat)
++                *ret_stat = st;
++        if (ret_fd)
++                *ret_fd = TAKE_FD(fd);
++        return 0;
++}
++
++int aos_network_verify_loaded_fragment(const Unit *u) {
++        _cleanup_free_ char *expected = NULL;
++        struct stat st;
++        int r;
++
++        if (!aos_network_protected_unit(u))
++                return 0;
++        if (!aos_network_protected_name(u->id) || u->transient ||
++            u->load_state != UNIT_LOADED || !set_isempty(u->aliases) ||
++            !strv_isempty(u->dropin_paths) || !isempty(u->source_path))
++                return -EPERM;
++
++        r = aos_network_image_fragment(u->id, &expected, NULL, &st);
++        if (r < 0)
++                return r;
++        if (!u->aos_image_fragment_pinned ||
++            st.st_dev != u->aos_image_fragment_device ||
++            st.st_ino != u->aos_image_fragment_inode)
++                return -EPERM;
++        return streq_ptr(u->fragment_path,
++                         strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))) ? 0 : -EPERM;
++}
++
+ int unit_load_fragment(Unit *u) {
++        _cleanup_free_ char *image_fragment = NULL;
++        _cleanup_close_ int image_fd = -EBADF;
+         int r;
+ 
+         assert(u);
+         assert(u->load_state == UNIT_STUB);
+         assert(u->id);
+ 
+         if (u->transient) {
++                if (aos_network_image_guard_active() && aos_network_protected_unit(u))
++                        return -EPERM;
+                 u->access_selinux_context = mfree(u->access_selinux_context);
+                 u->load_state = UNIT_LOADED;
+                 return 0;
+         }
+ 
+         /* Possibly rebuild the fragment map to catch new units */
+         r = unit_file_build_name_map(&u->manager->lookup_paths,
+                                      &u->manager->unit_cache_timestamp_hash,
+@@ -6149,24 +6350,48 @@ int unit_load_fragment(Unit *u) {
+                                     &names);
+         if (r < 0 && r != -ENOENT)
+                 return r;
++
++        if (aos_network_image_guard_active() && aos_network_protected_name(u->id)) {
++                r = aos_network_image_fragment(u->id, &image_fragment, &image_fd, NULL);
++                if (r < 0)
++                        return log_unit_error_errno(u, r, "Cannot pin Network unit to boot-image EROFS: %m");
++                fragment = image_fragment;
++                names = set_free(names);
++        }
+ 
+         if (fragment) {
+                 /* Open the file, check if this is a mask, otherwise read. */
+                 _cleanup_fclose_ FILE *f = NULL;
+                 struct stat st;
+ 
+                 /* Try to open the file name. A symlink is OK, for example for linked files or masks. We
+                  * expect that all symlinks within the lookup paths have been already resolved, but we don't
+                  * verify this here. */
+-                f = fopen(fragment, "re");
++                if (image_fd >= 0) {
++                        /* Parse the exact verified EROFS inode, never a path reopened
++                         * after a mount-namespace race. */
++                        f = fdopen(image_fd, "r");
++                        if (f)
++                                image_fd = -EBADF;
++                } else
++                        f = fopen(fragment, "re");
+                 if (!f)
+                         return log_unit_notice_errno(u, errno, "Failed to open %s: %m", fragment);
+ 
+                 if (fstat(fileno(f), &st) < 0)
+                         return -errno;
+ 
+-                r = free_and_strdup(&u->fragment_path, fragment);
++                /* Keep the logical store path for independent V3 readback;
++                 * parse only the physical EROFS counterpart. */
++                r = free_and_strdup(&u->fragment_path,
++                                    image_fragment ? strjoina("/nix/store/", fragment + strlen("/nix.lower/store/"))
++                                                   : fragment);
+                 if (r < 0)
+                         return r;
++                if (image_fragment) {
++                        u->aos_image_fragment_device = st.st_dev;
++                        u->aos_image_fragment_inode = st.st_ino;
++                        u->aos_image_fragment_pinned = true;
++                }
+ 
+                 if (null_or_empty(&st)) {
+diff --git a/src/core/service.c b/src/core/service.c
+--- a/src/core/service.c
++++ b/src/core/service.c
+@@ -35,2 +35,3 @@
+ #include "image-policy.h"
++#include "load-fragment.h"
+ #include "log.h"
+@@ -1982,4 +1983,13 @@ static int service_spawn_internal(
+         assert(c);
+         assert(ret_pid);
+ 
++        /* Every command, including privileged ExecCondition/ExecStartPre,
++         * passes here. Repeat after daemon-reexec and on later restarts. */
++        if (aos_network_image_guard_active()) {
++                r = aos_network_verify_loaded_fragment(UNIT(s));
++                if (r < 0)
++                        return log_unit_error_errno(UNIT(s), r,
++                                                    "Refusing unpinned Network service command: %m");
++        }
++
+         log_unit_debug(UNIT(s), "Will spawn child (%s): %s", caller, c->path);
+diff --git a/src/core/dbus-unit.c b/src/core/dbus-unit.c
+--- a/src/core/dbus-unit.c
++++ b/src/core/dbus-unit.c
+@@ -22,3 +22,4 @@
+ #include "format-util.h"
+ #include "install.h"
++#include "load-fragment.h"
+ #include "locale-util.h"
+@@ -2594,4 +2595,9 @@ int bus_unit_set_properties(
+         assert(u);
+         assert(message);
+ 
++        /* Reject in-memory control overrides before the first setter runs. */
++        if (aos_network_image_guard_active() && aos_network_protected_unit(u))
++                return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
++                                         "Protected Network units do not accept property overrides");
++
+         /* We iterate through the array twice. First run just checks if all passed data is valid, second run
+diff --git a/src/core/unit.h b/src/core/unit.h
+--- a/src/core/unit.h
++++ b/src/core/unit.h
+@@ -258,3 +258,6 @@ typedef struct Unit {
+         char *fragment_path; /* if loaded from a config file this is the primary path to it */
++        dev_t aos_image_fragment_device;
++        ino_t aos_image_fragment_inode;
++        bool aos_image_fragment_pinned;
+         char *source_path; /* if converted, the source file */
+         char **dropin_paths;
+diff --git a/src/core/load-dropin.c b/src/core/load-dropin.c
+--- a/src/core/load-dropin.c
++++ b/src/core/load-dropin.c
+@@ -36,4 +36,8 @@ static int process_deps(Unit *u, UnitDependency dependency, const char *dir_suffix) {
+         if (r < 0)
+                 return r;
+ 
++        if (aos_network_image_guard_active() && aos_network_protected_unit(u) && !strv_isempty(paths))
++                return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
++                                            "Refusing Network unit dependency drop-ins: %m");
++
+         STRV_FOREACH(p, paths) {
+@@ -124,4 +132,8 @@ int unit_load_dropin(Unit *u) {
+         if (r <= 0)
+                 return 0;
+ 
++        if (aos_network_image_guard_active() && aos_network_protected_unit(u))
++                return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
++                                            "Refusing Network unit configuration drop-ins: %m");
++
+         r = strv_extend_strv_consume(&u->dropin_paths, TAKE_PTR(l), /* filter_duplicates= */ true);
+diff --git a/src/core/unit.c b/src/core/unit.c
+--- a/src/core/unit.c
++++ b/src/core/unit.c
+@@ -1801,4 +1801,19 @@ static int log_unit_internal(void *userdata, int level, int error, const char *file, int line, const char *func, const char *format, ...) {
+         return r;
+ }
+ 
++static int aos_network_unit_environment(Unit *u, char ***ret) {
++        char **env;
++
++        if (!aos_network_image_guard_active() || !aos_network_protected_unit(u))
++                return manager_get_effective_environment(u->manager, ret);
++
++        /* Manager SetEnvironment and transient imports are mutable after
++         * image authentication. The image unit owns every other assignment. */
++        env = strv_new(strjoina("PATH=", default_PATH()));
++        if (!env)
++                return -ENOMEM;
++        *ret = env;
++        return 0;
++}
++
+ static bool unit_test_condition(Unit *u) {
+@@ -1811,3 +1826,3 @@ static bool unit_test_condition(Unit *u) {
+-        r = manager_get_effective_environment(u->manager, &env);
++        r = aos_network_unit_environment(u, &env);
+         if (r < 0) {
+                 log_unit_error_errno(u, r, "Failed to determine effective environment: %m");
+@@ -1835,3 +1850,3 @@ static bool unit_test_assert(Unit *u) {
+-        r = manager_get_effective_environment(u->manager, &env);
++        r = aos_network_unit_environment(u, &env);
+         if (r < 0) {
+                 log_unit_error_errno(u, r, "Failed to determine effective environment: %m");
+@@ -5594,8 +5609,8 @@ int unit_set_exec_params(Unit *u, ExecParameters *p) {
+         assert(p);
+ 
+         /* Copy parameters from manager */
+-        r = manager_get_effective_environment(u->manager, &p->environment);
++        r = aos_network_unit_environment(u, &p->environment);
+         if (r < 0)
+                 return r;
+ 
+         p->runtime_scope = u->manager->runtime_scope;
+@@ -6664,4 +6679,8 @@ int unit_live_mount(
+         assert(u);
+         assert(UNIT_VTABLE(u)->live_mount);
+ 
++        if (aos_network_image_guard_active() && aos_network_protected_unit(u))
++                return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
++                                         "Protected Network units do not accept live mounts");
++
+         if (!UNIT_IS_ACTIVE_OR_RELOADING(unit_active_state(u))) {

@@ -57,12 +57,14 @@
 #include "systemd_runtime_manifest.h"
 
 #define AOS_ROOT_HANDOFF_PATH "/usr/lib/systemd/aos-selinux-root-handoff"
+#define AOS_RUNTIME_ROOTS_HANDOFF_PATH "/usr/lib/systemd/aos-selinux-runtime-roots-handoff"
 #define AOS_EMPTY_PRELOAD_PATH "/usr/lib/systemd/aos-empty-ld-so-preload"
 #define AOS_HANDOFF_MARKER_PATH "/run/aos/selinux-root-handoff"
 #define AOS_HANDOFF_PARAMETER "aos.selinux.root_handoff=1"
 #define AOS_HANDOFF_SWITCH "--aos-root-handoff=switch-root"
 #define AOS_HANDOFF_REEXEC "--aos-root-handoff=reexec"
 #define AOS_RUNTIME_ROOTS_LAUNCH "--launch-runtime-roots"
+#define AOS_RUNTIME_ROOTS_HANDOFF "--runtime-roots-handoff"
 #define AOS_MANIFEST_MAGIC "AOS_AUTHENTICATED_RUNTIME_CLOSURE"
 #define AOS_MANIFEST_VERSION "1"
 #define AOS_PHYSICAL_STORE_ROOT "/nix.lower/store"
@@ -76,6 +78,10 @@
 #define EXPECTED_LOADER_CONTEXT "system_u:object_r:ld_so_t"
 #define EXPECTED_RUNTIME_ROOTS_EXEC_CONTEXT \
     "system_u:object_r:aos_sandbox_runtime_roots_exec_t"
+#define EXPECTED_RUNTIME_ROOTS_HANDOFF_CONTEXT \
+    "system_u:system_r:aos_sandbox_runtime_roots_handoff_t"
+#define EXPECTED_RUNTIME_ROOTS_HANDOFF_EXEC_CONTEXT \
+    "system_u:object_r:aos_sandbox_runtime_roots_handoff_exec_t"
 
 #ifdef AOS_MOUNT_CARRIER_HANDOFF
 #define AOS_MOUNT_CARRIER_ROOT "/run/aos/mount-executable-carrier"
@@ -681,6 +687,62 @@ static int open_verified_stage1_systemd(char *observed_context, size_t context_c
         descriptor,
         AOS_SYSTEMD_PATH,
         EXPECTED_INIT_EXEC_CONTEXT,
+        observed_context,
+        context_capacity);
+    return descriptor;
+}
+
+static int open_verified_runtime_roots_handoff(
+    const char *root_prefix,
+    char *observed_context,
+    size_t context_capacity) {
+    struct open_how how = {
+        .flags = O_RDONLY | O_CLOEXEC | O_NOCTTY,
+        .resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS |
+                   RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV,
+    };
+    struct stat executable_status;
+    struct stat root_status;
+    struct statfs filesystem;
+    struct statvfs mount_status;
+    int descriptor;
+    int root_fd = open(root_prefix, O_PATH | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+
+    if (root_fd < 0) {
+        fail_closed("open runtime-root handoff EROFS root: %s", strerror(errno));
+    }
+    descriptor = (int)syscall(
+        SYS_openat2,
+        root_fd,
+        AOS_RUNTIME_ROOTS_HANDOFF_PATH + 1,
+        &how,
+        sizeof(how));
+    if (descriptor < 0) {
+        int saved_errno = errno;
+
+        close(root_fd);
+        fail_closed("open runtime-root handoff executable: %s", strerror(saved_errno));
+    }
+    if (fstat(root_fd, &root_status) < 0 ||
+        fstat(descriptor, &executable_status) < 0 ||
+        !S_ISREG(executable_status.st_mode) ||
+        executable_status.st_uid != 0 || executable_status.st_gid != 0 ||
+        (executable_status.st_mode & 0111) == 0 ||
+        executable_status.st_dev != root_status.st_dev ||
+        fstatfs(descriptor, &filesystem) < 0 ||
+        fstatvfs(descriptor, &mount_status) < 0 ||
+        filesystem.f_type != EROFS_SUPER_MAGIC_V1 ||
+        (mount_status.f_flag & (ST_RDONLY | ST_NODEV)) != (ST_RDONLY | ST_NODEV) ||
+        (mount_status.f_flag & ST_NOEXEC) != 0) {
+        close(descriptor);
+        close(root_fd);
+        fail_closed("runtime-root handoff is not an executable inode on the verified EROFS root");
+    }
+    close(root_fd);
+    require_fd_context(
+        descriptor,
+        AOS_RUNTIME_ROOTS_HANDOFF_PATH,
+        EXPECTED_RUNTIME_ROOTS_HANDOFF_EXEC_CONTEXT,
         observed_context,
         context_capacity);
     return descriptor;
@@ -1716,11 +1778,11 @@ static void run_runtime_roots_launcher(int argc, char **argv) {
     char guard_path[PATH_MAX];
     char lower_path[PATH_MAX];
     char executable_context[256];
-    char *provisioner_arguments[5];
+    char *handoff_arguments[6];
     const char *root_prefix;
     struct stat lower_status;
     struct stat root_status;
-    int provisioner_fd;
+    int handoff_fd;
 
     if (argc != 6 || strcmp(argv[2], AOS_RUNTIME_ROOTS_PATH) != 0 ||
         strcmp(argv[3], "--root") != 0 ||
@@ -1776,17 +1838,79 @@ static void run_runtime_roots_launcher(int argc, char **argv) {
         EXPECTED_INIT_EXEC_CONTEXT,
         executable_context,
         sizeof(executable_context));
+    handoff_fd = open_verified_runtime_roots_handoff(
+        root_prefix,
+        executable_context,
+        sizeof(executable_context));
+
+    handoff_arguments[0] = (char *)AOS_RUNTIME_ROOTS_HANDOFF_PATH;
+    handoff_arguments[1] = (char *)AOS_RUNTIME_ROOTS_HANDOFF;
+    handoff_arguments[2] = "--root";
+    handoff_arguments[3] = argv[4];
+    handoff_arguments[4] = argv[5];
+    handoff_arguments[5] = NULL;
+
+    // Only the retained executable crosses the first domain transition.
+    log_status("runtime-root handoff verified; closing inherited descriptors");
+    if ((handoff_fd > 0 && syscall(SYS_close_range, 0U, (unsigned int)handoff_fd - 1, 0U) < 0) ||
+        syscall(SYS_close_range, (unsigned int)handoff_fd + 1, UINT_MAX, 0U) < 0) {
+        _exit(EXIT_FAILURE);
+    }
+    execveat(handoff_fd, "", handoff_arguments, environ, AT_EMPTY_PATH);
+    _exit(EXIT_FAILURE);
+}
+
+static void run_runtime_roots_handoff(int argc, char **argv) {
+    char executable_context[256];
+    char *provisioner_arguments[5];
+    const char *root_prefix;
+    struct stat lower_status;
+    struct stat root_status;
+    int provisioner_fd;
+
+    if (argc != 5 || strcmp(argv[2], "--root") != 0 ||
+        (strcmp(argv[3], "/") != 0 && strcmp(argv[3], "/sysroot") != 0) ||
+        (strcmp(argv[4], "--prepare-var-base") != 0 &&
+         strcmp(argv[4], "--prepare-sandbox-network-roots") != 0) ||
+        ((strcmp(argv[3], "/sysroot") == 0) !=
+         (strcmp(argv[4], "--prepare-var-base") == 0))) {
+        fail_closed("runtime-root handoff arguments do not match the fixed phase contract");
+    }
+    root_prefix = argv[3];
+
+    require_current_context(EXPECTED_RUNTIME_ROOTS_HANDOFF_CONTEXT);
+    require_private_root_mount();
+    validate_command_line();
+    validate_loaded_policy();
+    require_clean_loader_environment();
+    require_filesystem(root_prefix, EROFS_SUPER_MAGIC_V1, ST_RDONLY | ST_NODEV, 0);
+    if (strcmp(root_prefix, "/") == 0) {
+        require_filesystem("/nix.lower", EROFS_SUPER_MAGIC_V1, ST_RDONLY | ST_NODEV, 0);
+        if (stat(root_prefix, &root_status) < 0 ||
+            stat("/nix.lower", &lower_status) < 0) {
+            fail_closed("inspect runtime-root handoff EROFS identity: %s", strerror(errno));
+        }
+    } else {
+        require_filesystem("/sysroot/nix.lower", EROFS_SUPER_MAGIC_V1, ST_RDONLY | ST_NODEV, 0);
+        if (stat(root_prefix, &root_status) < 0 ||
+            stat("/sysroot/nix.lower", &lower_status) < 0) {
+            fail_closed("inspect prefixed runtime-root handoff EROFS identity: %s", strerror(errno));
+        }
+    }
+    if (root_status.st_dev != lower_status.st_dev) {
+        fail_closed("runtime-root handoff lower store is not on the authenticated EROFS device");
+    }
+
     provisioner_fd = open_verified_physical_store_target(
         root_prefix,
         AOS_PHYSICAL_RUNTIME_ROOTS_PATH,
         EXPECTED_RUNTIME_ROOTS_EXEC_CONTEXT,
         executable_context,
         sizeof(executable_context));
-
     provisioner_arguments[0] = (char *)AOS_PHYSICAL_RUNTIME_ROOTS_PATH;
     provisioner_arguments[1] = "--root";
-    provisioner_arguments[2] = argv[4];
-    provisioner_arguments[3] = argv[5];
+    provisioner_arguments[2] = argv[3];
+    provisioner_arguments[3] = argv[4];
     provisioner_arguments[4] = NULL;
     execveat(provisioner_fd, "", provisioner_arguments, environ, AT_EMPTY_PATH);
     fail_closed("exec retained physical runtime-root provisioner: %s", strerror(errno));
@@ -1987,6 +2111,9 @@ static void run_inner_guard(void) {
 int main(int argc, char **argv) {
     if (argc >= 2 && strcmp(argv[1], AOS_RUNTIME_ROOTS_LAUNCH) == 0) {
         run_runtime_roots_launcher(argc, argv);
+    }
+    if (argc >= 2 && strcmp(argv[1], AOS_RUNTIME_ROOTS_HANDOFF) == 0) {
+        run_runtime_roots_handoff(argc, argv);
     }
 
     require_pid_one();

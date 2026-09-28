@@ -63,7 +63,7 @@
   varRootContextOption =
     lib.optionalString protectedSandboxNetworkRoots ",rootcontext=${varRootContext}";
   runtimeRootsExecutable =
-    "${pkgs.aos-selinux-runtime-roots}/bin/aos-selinux-runtime-roots";
+    "${pkgs.aosSelinuxRuntimeRootsForKernel config.system.build.kernel}/bin/aos-selinux-runtime-roots";
   recoveryEnabledJson =
     if config.aos.boot.recovery.enable
     then "true"

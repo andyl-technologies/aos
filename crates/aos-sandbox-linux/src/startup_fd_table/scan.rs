@@ -251,6 +251,47 @@ impl Drop for SignalMaskFence {
     }
 }
 
+pub(super) fn with_blocked_signals<T, E: From<Error>>(
+    operation: impl FnOnce() -> std::result::Result<T, E>,
+) -> std::result::Result<T, E> {
+    let mut mask = SignalMaskFence::block_all()?;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
+    if mask.restore().is_err() {
+        std::process::abort();
+    }
+    match result {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+pub(super) fn require_fixed_worker_descriptor_numbers() -> Result<()> {
+    let scanner = rustix::fs::open(
+        FD_DIRECTORY,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|source| Error::Syscall {
+        operation: "open fixed worker initial FD table",
+        source: source.into(),
+    })?;
+    if scanner.as_raw_fd() < 8 {
+        return Err(Error::invalid(
+            "fixed FUSE worker startup",
+            "a mandatory startup descriptor is absent",
+        ));
+    }
+    let mut expected = (0..8).collect::<BTreeSet<u32>>();
+    expected.insert(fd_number(scanner.as_raw_fd())?);
+    if scan_fd_numbers(scanner.as_raw_fd(), 9)? != expected {
+        return Err(Error::invalid(
+            "fixed FUSE worker startup",
+            "descriptor table is not stdio plus the exact five roles",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn revalidate_claimed_table(table: &ClaimedInitialProcessFdTableV1) -> Result<()> {
     revalidate_process(&table.execution)?;
     revalidate_process(&table.launcher)?;

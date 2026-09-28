@@ -25,6 +25,8 @@
   ...
 }: let
   cfg = config.aos.boot.secureBoot;
+  protectedVar = config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
+  varRootContext = config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
   externalFinalization = cfg.externalFinalization.enable;
   frozenArtifacts = config.aos.config.frozenArtifacts;
   configArtifacts = config.aos.config.artifacts;
@@ -665,7 +667,8 @@ in {
             case "$fs_type" in
               "")
                 klog "SB not enforcing yet — formatting plain ext4 /var (sealed once enforcing)"
-                "$mkfs" -q -L var "$dev"
+                "$mkfs" -q -L var ${lib.optionalString protectedVar "-E root_selinux=${varRootContext}"} "$dev"
+                sync "$dev"
                 ;;
               ext4)
                 klog "SB not enforcing yet — preserving existing plain ext4 /var"
@@ -675,6 +678,16 @@ in {
                 exit 1
                 ;;
             esac
+            ${lib.optionalString protectedVar ''
+            # Setup Mode may mount this filesystem more than once. Verify
+            # its durable root label without changing an existing volume.
+            var_label=$(${pkgs.e2fsprogs}/sbin/debugfs \
+              -R 'ea_get / security.selinux' "$dev" 2>/dev/null)
+            if [ "$var_label" != 'security.selinux (23) = "${varRootContext}"' ]; then
+              klog "plain /var root lacks its durable exact SELinux label"
+              exit 1
+            fi
+          ''}
             exit 0
           fi
 
@@ -686,7 +699,16 @@ in {
           dd if=/dev/urandom of="$keyf" bs=512 count=1 status=none
           "$cs" luksFormat --type luks2 --batch-mode "$dev" "$keyf"
           "$cs" open "$dev" var --key-file "$keyf"
-          "$mkfs" -q -L var /dev/mapper/var
+          "$mkfs" -q -L var ${lib.optionalString protectedVar "-E root_selinux=${varRootContext}"} /dev/mapper/var
+          ${lib.optionalString protectedVar ''
+            sync /dev/mapper/var
+            var_label=$(${pkgs.e2fsprogs}/sbin/debugfs \
+              -R 'ea_get / security.selinux' /dev/mapper/var 2>/dev/null)
+            if [ "$var_label" != 'security.selinux (23) = "${varRootContext}"' ]; then
+              klog "new encrypted /var root lacks its durable exact SELinux label"
+              exit 1
+            fi
+          ''}
           "$enroll" --unlock-key-file="$keyf" \
             --tpm2-device=auto \
             --tpm2-public-key="$pub" \
