@@ -963,6 +963,10 @@ pub(crate) fn verify_received_mount_fd(
 }
 
 #[cfg(test)]
+#[path = "held_snapshot_reader_vm_tests.rs"]
+mod vm_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Read as _;
@@ -1490,7 +1494,9 @@ mod tests {
                 let (measured, mount) = observation.unwrap();
                 assert_eq!(measured.mounted_snapshot_guid, snapshot_guid);
                 assert_ne!(measured.content_digest.as_bytes(), &[0; 32]);
-                assert!(measured.mount_id > 0 && measured.nodes > 0);
+                assert!(measured.mount_id > 0);
+                assert_eq!(measured.nodes, 5);
+                assert_eq!(measured.file_bytes, 31);
                 assert_eq!(measured.identity.root_attributes.uid(), 0);
                 assert_eq!(measured.identity.root_attributes.gid(), 0);
                 assert_eq!(measured.identity.maximum_portable_uid, 42);
@@ -1505,9 +1511,12 @@ mod tests {
                     measured.identity.distinct_inode_count
                 );
                 assert_ne!(measured.identity.identity_tree_digest.as_bytes(), &[0; 32]);
+                // Independently hash the documented identity-tree preimage:
+                // root, nested, nested/deeper, nested/deeper/data, payload.
+                // Directories are 0:0/0755; data is 0:0/0644; payload is 42:43/0644.
                 assert_eq!(
                     measured.identity.identity_tree_digest.to_string(),
-                    "sha256:d96f62fc5f9c09ace8b0e2ce8ec2d746df8aeee6d0d0661c7019a9e2924f76b7",
+                    "sha256:cbd8b117f5f23a573e18f47d8768a45fc0970152a0583b1ac3484e2b882dd206",
                 );
                 if variant == "matched-mount" {
                     let mount = mount.unwrap();
@@ -1528,6 +1537,19 @@ mod tests {
                     let mut contents = String::new();
                     payload.read_to_string(&mut contents).unwrap();
                     assert_eq!(contents, "held reader service payload\n");
+
+                    let nested = openat(
+                        mount.as_fd(),
+                        "nested/deeper/data",
+                        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                        Mode::empty(),
+                    )
+                    .unwrap();
+                    let mut contents = String::new();
+                    fs::File::from(nested)
+                        .read_to_string(&mut contents)
+                        .unwrap();
+                    assert_eq!(contents, "abc");
                 } else {
                     assert!(mount.is_none());
                 }
@@ -1538,6 +1560,141 @@ mod tests {
             }
             _ => panic!("unknown held-reader VM case"),
         }
+    }
+
+    #[test]
+    #[ignore = "requires UID0, held ZFS snapshot, and VM-only private mount namespace"]
+    fn systemd_reader_vm_mount_crossings() {
+        use crate::held_snapshot_tree::{
+            HeldSnapshotTreeErrorV1, measure_read_only_held_snapshot_tree,
+        };
+        use aos_sandbox_linux::mount::{DetachedMount, FileSystemContext, MountAttributes};
+        use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions};
+        use std::os::unix::fs::MetadataExt as _;
+
+        assert_eq!(rustix::process::geteuid().as_raw(), 0);
+        let namespace = fs::metadata("/proc/self/ns/mnt").unwrap();
+        let host_namespace = fs::metadata("/proc/1/ns/mnt").unwrap();
+        assert_ne!(
+            (namespace.dev(), namespace.ino()),
+            (host_namespace.dev(), host_namespace.ino()),
+            "mount mutations require the fleet's isolated test namespace",
+        );
+
+        let case = fs::read_to_string("/run/aos/held-reader-case").unwrap();
+        let fields = case.trim().split(':').collect::<Vec<_>>();
+        assert_eq!(fields.len(), 5);
+        let (measured, mount) = measure_bound_detached_snapshot_with_mount(
+            "aosproof/aos/project/workspace@held",
+            fields[1].parse().unwrap(),
+            fields[4].parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!((measured.nodes, measured.file_bytes), (5, 31));
+
+        let directory = private_test_state();
+        fs::create_dir(directory.path().join("root")).unwrap();
+        let parent = BeneathRoot::from_owned(
+            rustix::fs::open(
+                directory.path(),
+                OFlags::PATH | OFlags::DIRECTORY,
+                Mode::empty(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        mount
+            .attach(
+                &parent
+                    .resolve(Path::new("root"), ResolveOptions::directory())
+                    .unwrap(),
+            )
+            .unwrap();
+        let root_path = directory.path().join("root");
+        let root = BeneathRoot::from_owned(
+            rustix::fs::open(&root_path, OFlags::PATH | OFlags::DIRECTORY, Mode::empty()).unwrap(),
+        )
+        .unwrap();
+        let baseline = measure_read_only_held_snapshot_tree(
+            rustix::io::dup(root.as_fd()).unwrap(),
+            measured.content_digest,
+        )
+        .unwrap();
+        assert_eq!((baseline.nodes, baseline.file_bytes), (5, 31));
+
+        // Directory nesting is not mount nesting. Reject an actual mount
+        // crossing even when its device is identical to the selected root.
+        for same_filesystem in [true, false] {
+            let child = if same_filesystem {
+                DetachedMount::clone_from(
+                    &root
+                        .resolve(Path::new("nested/deeper"), ResolveOptions::directory())
+                        .unwrap(),
+                    false,
+                )
+                .unwrap()
+            } else {
+                FileSystemContext::open("tmpfs")
+                    .unwrap()
+                    .create()
+                    .unwrap()
+                    .mount()
+                    .unwrap()
+            };
+            child
+                .set_attributes(
+                    true,
+                    MountAttributes::secure_read_only().with_no_exec(true),
+                    None,
+                )
+                .unwrap();
+            child
+                .attach(
+                    &root
+                        .resolve(Path::new("nested"), ResolveOptions::directory())
+                        .unwrap(),
+                )
+                .unwrap();
+            let crossed = openat(
+                root.as_fd(),
+                "nested",
+                OFlags::PATH | OFlags::DIRECTORY,
+                Mode::empty(),
+            )
+            .unwrap();
+            assert_eq!(
+                fstat(&crossed).unwrap().st_dev == measured.root_device,
+                same_filesystem
+            );
+            assert_ne!(
+                MountId::from_fd(crossed.as_fd()).unwrap(),
+                measured.mount_id
+            );
+
+            let error = measure_read_only_held_snapshot_tree(
+                rustix::io::dup(root.as_fd()).unwrap(),
+                measured.content_digest,
+            )
+            .unwrap_err();
+            let HeldSnapshotTreeErrorV1::Linux(aos_sandbox_linux::Error::Syscall {
+                source, ..
+            }) = error
+            else {
+                panic!("walk did not reject the mount crossing with EXDEV: {error}");
+            };
+            assert_eq!(
+                source.raw_os_error(),
+                Some(rustix::io::Errno::XDEV.raw_os_error())
+            );
+            drop(crossed);
+            rustix::mount::unmount(
+                root_path.join("nested"),
+                rustix::mount::UnmountFlags::NOFOLLOW,
+            )
+            .unwrap();
+        }
+        drop(root);
+        rustix::mount::unmount(&root_path, rustix::mount::UnmountFlags::NOFOLLOW).unwrap();
     }
 
     #[test]
