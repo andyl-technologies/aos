@@ -131,7 +131,8 @@ in
           attribute_negative_module=aos_sandbox_attribute_negative
           export PYTHONPATH=${setools}/lib/python3/site-packages
 
-          ${python3}/bin/python3 ${policySupport}/effective_policy_test.py
+          AOS_SELINUX_PRODUCTION_RECIPE=${./aos-selinux-production-policy.nix} \
+            ${python3}/bin/python3 ${policySupport}/effective_policy_test.py
           # Compare the real indexed and stock matchers on bounded native data,
           # not mock policy rules or another full production-policy scan.
           ${checkpolicy}/bin/checkpolicy -c ${policyVersion} -U reject \
@@ -230,7 +231,8 @@ in
                 ;;
               aos_sandbox_guest_ancestor_negative)
                 grep -F "aos_sandbox_guest_owner_t" "$narrow_negative_module-diagnostic"
-                grep -F "var_t" "$narrow_negative_module-diagnostic"
+                # Both expanded targets are forbidden; query order is not evidence.
+                grep -E "target='(var_t|var_lib_t)'" "$narrow_negative_module-diagnostic"
                 grep -F "object_class='dir'" "$narrow_negative_module-diagnostic"
                 grep -F "permission='relabelfrom'" "$narrow_negative_module-diagnostic"
                 ;;
