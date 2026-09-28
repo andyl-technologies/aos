@@ -90,7 +90,11 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
     let (payload, subject, child) = {
         let bound = connection.bind_received_descriptors(record).unwrap();
         let (payload, subject, mut descriptors, peer) = bound.into_parts();
-        assert_eq!(subject.credentials(), peer.credentials());
+        let record_credentials = subject.credentials();
+        let peer_credentials = peer.credentials();
+        assert_eq!(record_credentials.pid(), peer_credentials.pid());
+        assert_eq!(record_credentials.uid(), peer_credentials.uid());
+        assert_eq!(record_credentials.gid(), peer_credentials.gid());
         assert_eq!(peer.credentials().uid(), 0);
         let child = PidFd::from_owned(descriptors.pop().unwrap()).unwrap();
         assert!(descriptors.is_empty());
