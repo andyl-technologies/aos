@@ -603,7 +603,16 @@ async fn spawn_registry_with_delayed_cancellation(
         aos_hub::image_snapshot::ImageSnapshotStore::open(temporary.path()).unwrap();
     let surface_root = temporary.path().join("surface");
     fs::create_dir_all(surface_root.join("objects")).unwrap();
-    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let database = if delay_first_cancel_response {
+        // A cancelled SQLx acquire can discard its connection. The retry must
+        // retain the committed upload state independently of that connection.
+        Database::open(&temporary.path().join("hub.sqlite"))
+            .await
+            .unwrap()
+    } else {
+        Database::open_in_memory().await.unwrap()
+    };
+    let db = Arc::new(database);
     let org_id = db.create_org("oci-native", "Native OCI").await.unwrap();
     let org = db.org_by_id(org_id).await.unwrap().unwrap();
     let registry_id = db
