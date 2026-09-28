@@ -293,6 +293,9 @@ pub struct RetentionPolicy {
 pub struct ReleasePlanV1 {
     /// Exact plan schema identifier.
     pub schema_version: String,
+    /// Limits publication to unqualified staging with no channel operations.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub staging_only: bool,
     /// Shared qualification contract; required by v2, absent in archival v1 plans.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qualification: Option<crate::qualification::QualificationContract>,
@@ -341,6 +344,9 @@ pub struct ReleasePlanV1 {
 pub struct ReleasePlanRequestV1 {
     /// Exact planner-input schema identifier.
     pub schema_version: String,
+    /// Builds and signs a staging publication without qualification execution.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub staging_only: bool,
     /// Same-registry preceding snapshot, required for shared server qualification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qualification_predecessor: Option<crate::qualification_evidence::QualificationPredecessor>,
@@ -403,6 +409,7 @@ impl ReleasePlanRequestV1 {
         }
         let plan = ReleasePlanV1 {
             schema_version: RELEASE_PLAN_V1.to_owned(),
+            staging_only: self.staging_only,
             qualification: None,
             qualification_predecessor: self.qualification_predecessor,
             release_id: self.release_id,
@@ -447,6 +454,11 @@ impl ReleasePlanV1 {
     /// Returns an error for an archival plan or invalid shared contract.
     pub fn require_current_qualification(&self) -> Result<()> {
         self.validate()?;
+        if self.staging_only {
+            bail!(
+                "staging-only publications cannot be qualified, promoted, or assigned to channels"
+            );
+        }
         if self.schema_version != crate::RELEASE_PLAN_V2
             || self
                 .qualification
@@ -477,6 +489,24 @@ impl ReleasePlanV1 {
         Ok(())
     }
 
+    /// Requires a current plan authorized to publish to the isolated staging Hub.
+    ///
+    /// # Errors
+    /// Returns an error for an archival plan, invalid contract, or private snapshot.
+    pub fn require_staging_publication(&self) -> Result<()> {
+        self.validate()?;
+        if self.schema_version != crate::RELEASE_PLAN_V2
+            || self
+                .qualification
+                .as_ref()
+                .is_none_or(|contract| contract.schema_version != crate::qualification::CONTRACT_V2)
+            || self.is_qualification_snapshot()
+        {
+            bail!("staging publication requires a current public release plan");
+        }
+        Ok(())
+    }
+
     /// Validates the complete frozen release contract.
     ///
     /// # Errors
@@ -486,6 +516,25 @@ impl ReleasePlanV1 {
     /// stable blockers, malformed gates/signers/channels, or absent mandatory
     /// signer roles.
     pub fn validate(&self) -> Result<()> {
+        if self.staging_only {
+            if self.registry != "andyl/testing"
+                || !self.intended_channels.is_empty()
+                || self.qualification_predecessor.is_some()
+            {
+                bail!(
+                    "staging-only publication requires andyl/testing with no channels or predecessor"
+                );
+            }
+            if self
+                .packages
+                .iter()
+                .flat_map(|package| &package.platforms)
+                .chain(self.images.iter().flat_map(|image| &image.platforms))
+                .any(|cell| matches!(cell.decision, MatrixCell::Blocked { .. }))
+            {
+                bail!("staging-only publication cannot omit blocked inventory cells");
+            }
+        }
         if self.schema_version != RELEASE_PLAN_V1 && self.schema_version != crate::RELEASE_PLAN_V2 {
             bail!("unsupported release plan schema: {}", self.schema_version);
         }
@@ -641,6 +690,10 @@ impl ReleasePlanV1 {
         }
         Ok(())
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 fn validate_cells(
