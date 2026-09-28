@@ -39,11 +39,11 @@ impl QemuNodeSet {
         for (index, run) in runs.iter().enumerate() {
             let backend = self
                 .nodes
-                .get_mut(&run.node)
+                .get_mut(run.node())
                 .ok_or_else(|| BackendError::Rejected {
                     message: format!(
                         "QEMU node `{}` has no concurrent event-staging allowance",
-                        run.node.name
+                        run.node().name
                     ),
                 })?;
             let allowance = quotient + usize::from(index < remainder);
