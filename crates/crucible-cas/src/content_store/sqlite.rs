@@ -32,6 +32,7 @@ const METADATA_DOMAIN: &[u8] = b"crucible.content-store.sqlite-metadata.v1";
 const MAX_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_BATCH_OBJECTS: usize = 64;
 const MAX_BATCH_BYTES: u64 = 4 * 1024 * 1024;
+const READ_STATEMENT_CACHE_CAPACITY: usize = 2;
 
 /// SQLite-backed durable immutable object leaf.
 ///
@@ -133,6 +134,9 @@ impl SqliteBlobBackend {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )
         .map_err(|source| database_error("open-sqlite-blob-reader", source))?;
+        // Retain only the two read query plans. Every execution still reads
+        // current rows and authenticates their bytes; no object data is cached.
+        read_connection.set_prepared_statement_cache_capacity(READ_STATEMENT_CACHE_CAPACITY);
 
         Ok(Self {
             name: name.into(),
@@ -176,12 +180,11 @@ impl SqliteBlobBackend {
             .map_err(|_| StoreError::Poisoned {
                 operation: "lock-sqlite-blob-reader",
             })?;
-        let length: Option<i64> = connection
-            .query_row(
-                "SELECT length(body) FROM objects WHERE id = ?1",
-                [id.encode()],
-                |row| row.get(0),
-            )
+        let mut statement = connection
+            .prepare_cached("SELECT length(body) FROM objects WHERE id = ?1")
+            .map_err(|source| database_error("read-sqlite-blob-length", source))?;
+        let length: Option<i64> = statement
+            .query_row([id.encode()], |row| row.get(0))
             .optional()
             .map_err(|source| database_error("read-sqlite-blob-length", source))?;
         let length = length.ok_or(StoreError::NotFound { id })?;
@@ -576,12 +579,13 @@ impl AuthenticatingSqliteReader {
             .connection
             .lock()
             .map_err(|_| io::Error::other("SQLite blob connection lock poisoned"))?;
-        let bytes: Option<Vec<u8>> = connection
-            .query_row(
-                "SELECT substr(body, ?2, ?3) FROM objects WHERE id = ?1",
-                params![self.id.encode(), offset, length as i64],
-                |row| row.get(0),
-            )
+        let mut statement = connection
+            .prepare_cached("SELECT substr(body, ?2, ?3) FROM objects WHERE id = ?1")
+            .map_err(io::Error::other)?;
+        let bytes: Option<Vec<u8>> = statement
+            .query_row(params![self.id.encode(), offset, length as i64], |row| {
+                row.get(0)
+            })
             .optional()
             .map_err(io::Error::other)?;
         let bytes = bytes.ok_or_else(invalid_object_data)?;
@@ -1180,6 +1184,56 @@ mod tests {
 
         let reopened = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("cold reopen");
         assert!(!reopened.contains(new).expect("rollback remains durable"));
+    }
+
+    #[test]
+    fn warmed_read_statements_observe_external_corruption_delete_and_repair() {
+        let root = tempfile::tempdir().expect("temporary database root");
+        let bytes = b"immutable campaign object";
+        let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
+        let backend = SqliteBlobBackend::open("sqlite-test", root.path()).expect("open database");
+        backend
+            .put_if_absent(id, &BlobHandle::from_bytes(bytes))
+            .expect("durable put");
+        assert!(backend.contains(id).expect("warm authenticated reader"));
+
+        // A separate writer changes the same-length body after both cached
+        // statements have run. Cached query plans must never cache row data.
+        let connection = Connection::open(root.path().join(DATABASE_FILE)).expect("open for fault");
+        connection
+            .execute(
+                "UPDATE objects SET body = ?1 WHERE id = ?2",
+                params![vec![b'x'; bytes.len()], id.encode()],
+            )
+            .expect("inject same-length corruption");
+        assert!(matches!(
+            backend.contains(id),
+            Err(StoreError::Corrupt { .. })
+        ));
+
+        connection
+            .execute("DELETE FROM objects WHERE id = ?1", [id.encode()])
+            .expect("remove corrupt object");
+        assert!(!backend.contains(id).expect("observe external deletion"));
+        assert!(matches!(
+            backend.read(id, None),
+            Err(StoreError::NotFound { .. })
+        ));
+
+        connection
+            .execute(
+                "INSERT INTO objects (id, body) VALUES (?1, ?2)",
+                params![id.encode(), bytes],
+            )
+            .expect("restore authentic bytes");
+        assert_eq!(
+            backend
+                .read(id, None)
+                .expect("restored handle")
+                .read_all(1024)
+                .expect("restored bytes"),
+            bytes
+        );
     }
 
     #[test]
