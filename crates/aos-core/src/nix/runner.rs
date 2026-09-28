@@ -16,6 +16,7 @@
 //! [`AosError::NixNotFound`] / [`AosError::RootNotFound`] so callers
 //! can map them to the standard exit codes.
 
+use std::collections::BTreeSet;
 use std::env;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -426,7 +427,11 @@ impl NixRunner {
                 anyhow::bail!("invalid exact Nix store path: {}", path.display());
             }
         }
-        for batch in paths.chunks(128) {
+        // Package aliases and configuration companions share store paths.
+        // Query each path once so shared inputs cannot cross batch boundaries.
+        let unique_paths: Vec<_> = paths.iter().collect::<BTreeSet<_>>().into_iter().collect();
+
+        for batch in unique_paths.chunks(128) {
             // The packaged Nix 2.24 emits v1 object JSON by default and does not
             // recognize the --json-format flag introduced in later releases.
             let mut arguments = vec![

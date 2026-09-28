@@ -43,6 +43,7 @@ in
       buildDeps = [
         buildPackages.binutils
         linux-headers
+        stdenv.binutils
       ];
       runtimeDeps = [];
       propagatedDeps = [];
@@ -56,9 +57,11 @@ in
             cp \
               ${expectedPolicy} \
               expected_policy.bin
-            ${buildPackages.binutils}/bin/ld \
+            # Produce objects for the target compiler; native readelf remains
+            # suitable for inspecting the linked executable below.
+            ${stdenv.binutils}/bin/ld \
               -r -b binary -o expected_policy.o expected_policy.bin
-            ${buildPackages.binutils}/bin/objcopy \
+            ${stdenv.binutils}/bin/objcopy \
               --rename-section .data=.rodata,alloc,load,readonly,data,contents \
               expected_policy.o
 
