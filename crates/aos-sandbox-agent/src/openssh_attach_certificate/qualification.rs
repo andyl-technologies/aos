@@ -8,7 +8,7 @@
 
 use std::fs;
 use std::io::Read as _;
-use std::net::TcpStream;
+use std::net::{Ipv4Addr, TcpStream};
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -25,6 +25,36 @@ const DIRECTORY: &str = "/etc/aos/sandbox-attach";
 const FIXTURE_DIRECTORY: &str = "/run/aos-attach-profile-qualification";
 const GATE: &str = "/usr/libexec/aos-sandbox-exec-gate";
 const MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES: u64 = 16 * 1024;
+
+#[derive(Clone, Copy)]
+enum ProfileCase {
+    Accepted,
+    MissingForceCommand,
+    ForeignOperation,
+    ForeignExecution,
+    ForwardingExtension,
+    ExpiredCertificate,
+    AcceptedHistorical,
+}
+
+impl ProfileCase {
+    fn coordinates(self) -> (&'static str, Ipv4Addr) {
+        let (name, source_octet) = match self {
+            Self::Accepted => ("accepted-profile", 2),
+            Self::MissingForceCommand => ("missing-force-command", 3),
+            Self::ForeignOperation => ("foreign-operation", 4),
+            Self::ForeignExecution => ("foreign-execution", 5),
+            Self::ForwardingExtension => ("forwarding-extension", 6),
+            Self::ExpiredCertificate => ("expired-certificate", 7),
+            Self::AcceptedHistorical => ("accepted-historical-profile", 8),
+        };
+
+        // Each case gets its own default /32 penalty bucket. Repeated hostile
+        // certificates must reach authentication rather than an earlier case's
+        // source penalty. The server's normal penalties remain enabled.
+        (name, Ipv4Addr::new(127, 0, 0, source_octet))
+    }
+}
 
 struct OwnedProcess(Child);
 
@@ -118,7 +148,7 @@ fn listener_failure(
         file.take(MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES)
             .read_to_end(&mut bytes)
     }) {
-        Ok(_) => String::from_utf8_lossy(&bytes).into_owned(),
+        Ok(_) => String::from_utf8_lossy(&bytes).replace("\r\n", "\n"),
         Err(error) => format!("diagnostic read failed: {error}"),
     };
 
@@ -200,9 +230,21 @@ fn assert_callback_denial(output: Output) {
 }
 
 fn ssh_command(ssh: &str, certificate: &str) -> Command {
+    ssh_command_from(ssh, certificate, None)
+}
+
+fn ssh_command_from(ssh: &str, certificate: &str, source: Option<Ipv4Addr>) -> Command {
     let certificate_path = PathBuf::from(format!("{FIXTURE_DIRECTORY}/holder-cert.pub"));
     protected_file(&certificate_path, certificate.as_bytes(), 0o644);
+    ssh_client_command(ssh, &certificate_path, source)
+}
+
+fn ssh_client_command(ssh: &str, certificate_path: &Path, source: Option<Ipv4Addr>) -> Command {
     let mut command = Command::new(ssh);
+    if let Some(source) = source {
+        command.args(["-b", &source.to_string()]);
+    }
+
     command
         .args([
             "-v",
@@ -239,14 +281,17 @@ fn ssh_authentication_failure(case: &str, output: &Output) -> String {
          stdout (first {maximum} bytes):\n{}\n\
          stderr (first {maximum} bytes):\n{}",
         output.status,
-        String::from_utf8_lossy(stdout),
-        String::from_utf8_lossy(stderr),
+        String::from_utf8_lossy(stdout).replace("\r\n", "\n"),
+        String::from_utf8_lossy(stderr).replace("\r\n", "\n"),
     )
 }
 
-fn ssh_authentication(ssh: &str, certificate: &str, case: &str, expected: bool) {
-    let output = ssh_command(ssh, certificate).output().unwrap();
-    let failure = ssh_authentication_failure(case, &output);
+fn ssh_authentication(ssh: &str, certificate: &str, case: ProfileCase, expected: bool) {
+    let (name, source) = case.coordinates();
+    let output = ssh_command_from(ssh, certificate, Some(source))
+        .output()
+        .unwrap();
+    let failure = ssh_authentication_failure(name, &output);
     let diagnostic = std::str::from_utf8(&output.stderr)
         .unwrap_or_else(|error| panic!("{failure}\ninvalid client diagnostic UTF-8: {error}"));
     let authenticated = diagnostic.contains("Authenticated to 127.0.0.1")
@@ -382,13 +427,18 @@ fn packaged_sshd_enforces_profile_and_confined_original_ticket_relay() {
     assert!(output.stderr.is_empty());
     assert_callback_denial(callback(&chroot, &accepted, 0, None));
     assert_callback_denial(callback(&chroot, &accepted, 1001, Some("extra")));
-    ssh_authentication(&ssh, &accepted, "accepted-profile", true);
+    ssh_authentication(&ssh, &accepted, ProfileCase::Accepted, true);
 
     let mut missing_command = builder(&claim, now - 1, now + 120);
     missing_command.extension("permit-pty", "").unwrap();
     let missing_command = certificate(missing_command);
     assert_callback_denial(callback(&chroot, &missing_command, 1001, None));
-    ssh_authentication(&ssh, &missing_command, "missing-force-command", false);
+    ssh_authentication(
+        &ssh,
+        &missing_command,
+        ProfileCase::MissingForceCommand,
+        false,
+    );
     for foreign_operation in [true, false] {
         let mut foreign = claim.clone();
         if foreign_operation {
@@ -402,9 +452,9 @@ fn packaged_sshd_enforces_profile_and_confined_original_ticket_relay() {
         ));
         assert_callback_denial(callback(&chroot, &encoded, 1001, None));
         let case = if foreign_operation {
-            "foreign-operation"
+            ProfileCase::ForeignOperation
         } else {
-            "foreign-execution"
+            ProfileCase::ForeignExecution
         };
         ssh_authentication(&ssh, &encoded, case, false);
     }
@@ -412,10 +462,10 @@ fn packaged_sshd_enforces_profile_and_confined_original_ticket_relay() {
     forwarding.extension("permit-port-forwarding", "").unwrap();
     let forwarding = certificate(forwarding);
     assert_callback_denial(callback(&chroot, &forwarding, 1001, None));
-    ssh_authentication(&ssh, &forwarding, "forwarding-extension", false);
+    ssh_authentication(&ssh, &forwarding, ProfileCase::ForwardingExtension, false);
     let expired = certificate(with_command(builder(&claim, now - 30, now - 1), &claim));
     assert_callback_denial(callback(&chroot, &expired, 1001, None));
-    ssh_authentication(&ssh, &expired, "expired-certificate", false);
+    ssh_authentication(&ssh, &expired, ProfileCase::ExpiredCertificate, false);
 
     // Public readback detects changed executable and configuration custody.
     fs::set_permissions(GATE, fs::Permissions::from_mode(0o777)).unwrap();
@@ -481,7 +531,7 @@ fn packaged_sshd_enforces_profile_and_confined_original_ticket_relay() {
     assert!(output.status.success());
     assert_eq!(output.stdout, b"aos_exec\n");
     assert!(output.stderr.is_empty());
-    ssh_authentication(&ssh, &accepted, "accepted-historical-profile", true);
+    ssh_authentication(&ssh, &accepted, ProfileCase::AcceptedHistorical, true);
 
     let mut expired = historical.clone();
     expired.binding.expires_at = i64::try_from(
@@ -553,6 +603,88 @@ fn ssh_authentication_failure_retains_case_status_and_bounded_output() {
     assert!(failure.contains(&"y".repeat(maximum)));
     assert!(!failure.contains("excluded stdout tail"));
     assert!(!failure.contains("excluded stderr tail"));
+}
+
+#[test]
+fn profile_cases_bind_distinct_loopback_sources_without_changing_ssh_arguments() {
+    use std::collections::BTreeSet;
+    use std::ffi::OsString;
+
+    let certificate_path = Path::new("/fixture/holder-cert.pub");
+    let expected: Vec<OsString> = [
+        "-v",
+        "-F",
+        "/dev/null",
+        "-oBatchMode=yes",
+        "-oStrictHostKeyChecking=yes",
+        &format!("-oUserKnownHostsFile={FIXTURE_DIRECTORY}/known_hosts"),
+        "-oGlobalKnownHostsFile=/dev/null",
+        "-oIdentitiesOnly=yes",
+        "-oIdentityAgent=none",
+        "-oCertificateFile=/fixture/holder-cert.pub",
+        "-oConnectTimeout=5",
+        "-i",
+        &format!("{FIXTURE_DIRECTORY}/holder"),
+        "-p",
+        "2222",
+        "aos_exec@127.0.0.1",
+        "true",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect();
+    let baseline = ssh_client_command("/fixture/ssh", certificate_path, None);
+    assert_eq!(baseline.get_program(), "/fixture/ssh");
+    assert_eq!(
+        baseline.get_args().map(OsString::from).collect::<Vec<_>>(),
+        expected
+    );
+
+    let cases = [
+        ProfileCase::Accepted,
+        ProfileCase::MissingForceCommand,
+        ProfileCase::ForeignOperation,
+        ProfileCase::ForeignExecution,
+        ProfileCase::ForwardingExtension,
+        ProfileCase::ExpiredCertificate,
+        ProfileCase::AcceptedHistorical,
+    ];
+    let mut sources = BTreeSet::new();
+    let mut names = BTreeSet::new();
+    for (index, case) in cases.into_iter().enumerate() {
+        let (name, source) = case.coordinates();
+        assert_eq!(source, Ipv4Addr::new(127, 0, 0, 2 + index as u8));
+        assert!(sources.insert(source));
+        assert!(names.insert(name));
+
+        let command = ssh_client_command("/fixture/ssh", certificate_path, Some(source));
+        let mut arguments = vec![OsString::from("-b"), OsString::from(source.to_string())];
+        arguments.extend(expected.iter().cloned());
+        assert_eq!(command.get_program(), baseline.get_program());
+        assert_eq!(
+            command.get_args().map(OsString::from).collect::<Vec<_>>(),
+            arguments
+        );
+    }
+}
+
+#[test]
+fn ssh_failure_normalizes_crlf_for_display_without_changing_capture() {
+    use std::os::unix::process::ExitStatusExt as _;
+
+    let output = Output {
+        status: std::process::ExitStatus::from_raw(256),
+        stdout: b"fixture stdout\r\n".to_vec(),
+        stderr: b"fixture stderr\r\n".to_vec(),
+    };
+
+    let failure = ssh_authentication_failure("missing-force-command", &output);
+
+    assert!(failure.contains("fixture stdout\n"));
+    assert!(failure.contains("fixture stderr\n"));
+    assert!(!failure.contains('\r'));
+    assert_eq!(output.stdout, b"fixture stdout\r\n");
+    assert_eq!(output.stderr, b"fixture stderr\r\n");
 }
 
 mod monitor_qualification;
