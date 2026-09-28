@@ -113,8 +113,16 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     positive.extend(accesses(root, "init_exec_t", "file", ("getattr", "read")))
     positive.extend(accesses(root, root, "lnk_file", ("getattr", "read")))
     profile = "aos_sandbox_policy_authority_profile_t"
-    for reader in (root, "init_t"):
+    for reader in (root, "init_t", "aos_sandbox_controller_t"):
         positive.extend(accesses(reader, profile, "file", file_read))
+    positive.extend(accesses(
+        "aos_sandbox_controller_t", "aos_sandbox_policy_authority_exec_t", "file", file_read,
+    ))
+    positive.extend(accesses("aos_sandbox_controller_t", "init_exec_t", "file", file_read))
+    negative.extend(accesses(
+        "aos_sandbox_controller_t", "aos_sandbox_policy_authority_exec_t", "file",
+        ("execute", "execute_no_trans", "entrypoint", "map", *file_mutate),
+    ))
     for source in all_roles:
         negative.extend(accesses(source, profile, "file", file_mutate + ("execute", "execute_no_trans", "map")))
     # Preserve precisely the trusted PID 1 inspection removed from the generic

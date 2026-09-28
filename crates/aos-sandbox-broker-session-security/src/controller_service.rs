@@ -341,9 +341,15 @@ where
 pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     let configuration = RuntimeConfiguration::from_process()?;
     configuration.validate_process_identity()?;
-    let (publisher_descriptor, launch_image) =
+    let (publisher_descriptor, launch_image, normal_root_capture) =
         crate::production_startup::capture_controller(configuration.publisher_ingress)
             .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
+    // This independently selected profile is retained before opening any
+    // journal. Root's concurrent startup is joined only on the original flight.
+    let normal_root_profile = normal_root_capture
+        .admit_selected(configuration.uid, configuration.gid)
+        .map_err(ControllerRuntimeError::NormalRootProfile)?
+        .map(Arc::new);
     let publisher_listener = publisher_descriptor
         .map(publisher_ingress::adopt_observed_listener)
         .transpose()
@@ -426,12 +432,14 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     let (events_tx, events_rx) = mpsc::channel();
     let (commands_tx, commands_rx) = mpsc::sync_channel(CONTROLLER_COMMAND_CAPACITY);
     let worker_capabilities = Arc::clone(&capabilities);
+    let worker_normal_root_profile = normal_root_profile.clone();
 
     std::thread::Builder::new()
         .name("aos-sandboxd-reconciler".to_owned())
         .spawn(move || {
             controller_worker(
                 controller,
+                worker_normal_root_profile,
                 node_id,
                 ownership,
                 attach_credentials,
@@ -447,6 +455,11 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
         .map_err(ControllerRuntimeError::WorkerSpawn)?;
 
     wait_for_initial_readiness(&events_rx)?;
+    if let Some(profile) = &normal_root_profile {
+        profile
+            .recheck()
+            .map_err(ControllerRuntimeError::NormalRootProfile)?;
+    }
     SystemdReadyNotifier::from_environment()?.notify_ready()?;
 
     let public_service = Arc::new(CapabilityService {
@@ -582,6 +595,9 @@ impl axum::serve::Listener for AuthenticatedDiagnosticListener {
 
 fn controller_worker(
     mut controller: ProductionController,
+    normal_root_profile: Option<
+        Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>,
+    >,
     node_id: [u8; 16],
     ownership: Option<ControllerOwnershipConfigurationV1>,
     attach_credentials: Option<ControllerAttachCredentialsV1>,
@@ -599,6 +615,14 @@ fn controller_worker(
     let mut attach_poll_cursor = 0;
     loop {
         if Instant::now() >= next_cycle {
+            // Retain this same original profile in the actual worker lifecycle;
+            // no Root readiness or genesis authority follows from this check.
+            if let Some(profile) = &normal_root_profile {
+                if let Err(error) = profile.recheck() {
+                    let _ = events.send(WorkerEvent::Fatal(error.to_string()));
+                    return;
+                }
+            }
             match run_controller_cycle(
                 &mut controller,
                 node_id,
@@ -5718,6 +5742,9 @@ pub enum ControllerRuntimeError {
     /// The optional Controller hold seed and role pin are unsafe or inconsistent.
     #[error("protected Controller hold readback credentials are invalid")]
     InvalidControllerHoldCredential,
+    /// The original image-selected normal-Root comparison inputs differ.
+    #[error("normal Root selected-profile custody failed: {0}")]
+    NormalRootProfile(#[source] aos_sandbox::normal_root::NormalRootStartupErrorV1),
     /// Protected cache Replay source import failed.
     #[error("protected controller cache Replay source failed: {0}")]
     CacheReplaySource(aos_sandbox::cache_residency::CacheReplayControllerBootstrapErrorV1),

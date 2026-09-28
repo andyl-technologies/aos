@@ -37,6 +37,7 @@ tokio.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aos-sandbox-linux.workspace = true
+aos-systemd.workspace = true
 rand.workspace = true
 rustls.workspace = true
 rustls-pemfile.workspace = true

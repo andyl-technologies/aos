@@ -1,4 +1,4 @@
-//! Inert profile/property cuts and actual wrong-FD measurement regressions.
+//! Inert shared profile/property cuts and actual wrong-FD measurement regressions.
 //!
 //! These tests never create a production startup owner, authenticated PID1
 //! launch, client proof or protected image. Installed positive startup is a
@@ -258,4 +258,191 @@ fn normal_root_actual_wrong_launch_file_cannot_be_adopted_as_image() {
         sha256: [1; 32],
     };
     assert!(images::retain_pin(&pin, Some(file), true).is_err());
+}
+
+#[test]
+fn controller_closed_table_preserves_existing_roles_and_one_selected_profile() {
+    let names = |entries: &[&str]| {
+        entries
+            .iter()
+            .map(|entry| (*entry).to_owned())
+            .collect::<Vec<_>>()
+    };
+    for entries in [
+        vec![],
+        vec!["aos-method46-pid1-image"],
+        vec![client::PROFILE_NAME],
+        vec!["aos-method46-pid1-image", client::PROFILE_NAME],
+    ] {
+        assert!(client::valid_names(&names(&entries), false));
+        let mut publisher = entries;
+        publisher.push("aos-sandboxd-publisher");
+        assert!(client::valid_names(&names(&publisher), true));
+    }
+    for entries in [
+        vec![client::PROFILE_NAME, client::PROFILE_NAME],
+        vec!["aos-method46-pid1-image", "aos-method46-pid1-image"],
+        vec!["aos-normal-root-pid1-image"],
+        vec!["unknown"],
+        vec!["aos-sandboxd-publisher"],
+    ] {
+        assert!(!client::valid_names(&names(&entries), false));
+    }
+    assert!(!client::valid_names(&names(&[client::PROFILE_NAME]), true));
+}
+
+fn controller_properties(tpm_image: bool) -> (Vec<OwnedValue>, Vec<OwnedValue>) {
+    let (mut service, mut unit) = properties();
+    service[0] = value("/aos.slice/aos-control.slice/aos-sandboxd.service");
+    let mut files = vec![(PROFILE.to_owned(), client::PROFILE_NAME.to_owned(), 1_u64)];
+    if tpm_image {
+        files.push((
+            "/proc/1/exe".to_owned(),
+            "aos-method46-pid1-image".to_owned(),
+            1,
+        ));
+    }
+    service[1] = value(files);
+    service[5] = value((false, "system_u:system_r:aos_sandbox_controller_t"));
+    unit[0] = value(format!("{ROOT}/aos-sandboxd.service"));
+    (service, unit)
+}
+
+#[test]
+fn controller_profile_delivery_is_fixed_unit_invocation_and_original_role_bound() {
+    for tpm in [false, true] {
+        let (service, unit) = controller_properties(tpm);
+        assert!(
+            client::decode_delivery(&service, &unit, std::path::Path::new(PROFILE), tpm).is_ok()
+        );
+        assert!(
+            client::decode_delivery(
+                &service,
+                &unit,
+                std::path::Path::new("/other/profile.json"),
+                tpm
+            )
+            .is_err()
+        );
+        assert!(
+            client::decode_delivery(&service, &unit, std::path::Path::new(PROFILE), !tpm).is_err()
+        );
+    }
+    let replacements = [
+        (0, value("/system.slice/aos-sandboxd.service")),
+        (
+            1,
+            value(vec![(
+                PROFILE.to_owned(),
+                PROFILE_FD_NAME.to_owned(),
+                1_u64,
+            )]),
+        ),
+        (
+            1,
+            value(vec![(
+                PROFILE.to_owned(),
+                client::PROFILE_NAME.to_owned(),
+                0_u64,
+            )]),
+        ),
+        (2, value(vec!["foreign".to_owned()])),
+        (3, OwnedValue::from(1_u32)),
+        (4, OwnedValue::from(1_u32)),
+        (5, value((false, CONTEXT))),
+        (6, OwnedValue::from(1_u64)),
+        (7, OwnedValue::from(1_u64)),
+        (8, OwnedValue::from(false)),
+    ];
+    for (index, replacement) in replacements {
+        let (mut service, unit) = controller_properties(false);
+        service[index] = replacement;
+        assert!(
+            client::decode_delivery(&service, &unit, std::path::Path::new(PROFILE), false).is_err()
+        );
+    }
+    for (index, replacement) in [
+        (0, value(format!("{ROOT}/{UNIT}"))),
+        (1, value(vec!["/run/mutable.conf".to_owned()])),
+        (2, OwnedValue::from(true)),
+        (3, value(vec![0_u8; 16])),
+    ] {
+        let (service, mut unit) = controller_properties(false);
+        unit[index] = replacement;
+        assert!(
+            client::decode_delivery(&service, &unit, std::path::Path::new(PROFILE), false).is_err()
+        );
+    }
+}
+
+type InertCommand = (String, Vec<String>, bool, u64, u64, u64, u64, u32, i32, i32);
+
+fn peer_command(path: &str, argv: Vec<String>, ignore_failure: bool, pid: u32) -> InertCommand {
+    (
+        path.to_owned(),
+        argv,
+        ignore_failure,
+        1_u64,
+        2_u64,
+        0_u64,
+        0_u64,
+        pid,
+        0_i32,
+        0_i32,
+    )
+}
+
+#[test]
+fn original_root_pid1_launch_requires_exact_image_argv_and_no_extra_commands() {
+    let profile =
+        NormalRootProfileV1::decode(&serde_json::to_vec(&inert_profile()).unwrap()).unwrap();
+    let argv = vec![
+        profile.executable.path.clone(),
+        "811".into(),
+        "811".into(),
+        "0".into(),
+        "0".into(),
+    ];
+    let empty = value(Vec::<InertCommand>::new());
+    let start = |path: &str, args: Vec<String>, ignore_failure: bool, pid: u32| {
+        value(vec![peer_command(path, args, ignore_failure, pid)])
+    };
+    let launch = vec![
+        start(&profile.executable.path, argv.clone(), false, 22),
+        empty.clone(),
+        empty.clone(),
+    ];
+    assert!(service::require_peer_launch(&launch, 22, &profile).is_ok());
+
+    let mut wrong_argv = argv.clone();
+    wrong_argv[1] = "812".into();
+    for replacement in [
+        start("/other/root", argv.clone(), false, 22),
+        start(&profile.executable.path, wrong_argv, false, 22),
+        start(&profile.executable.path, argv.clone(), true, 22),
+        start(&profile.executable.path, argv.clone(), false, 23),
+        empty,
+    ] {
+        let mut changed = launch.clone();
+        changed[0] = replacement;
+        assert!(service::require_peer_launch(&changed, 22, &profile).is_err());
+    }
+    for index in [1, 2] {
+        let mut changed = launch.clone();
+        changed[index] = launch[0].clone();
+        assert!(service::require_peer_launch(&changed, 22, &profile).is_err());
+    }
+    for malformed in [
+        vec![],
+        vec![launch[0].clone()],
+        vec![launch[0].clone(), launch[1].clone()],
+        vec![
+            launch[0].clone(),
+            launch[1].clone(),
+            launch[2].clone(),
+            launch[0].clone(),
+        ],
+    ] {
+        assert!(service::require_peer_launch(&malformed, 22, &profile).is_err());
+    }
 }

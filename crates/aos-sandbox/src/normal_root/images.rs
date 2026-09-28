@@ -1,4 +1,4 @@
-//! Original descriptor and self-process image observations, never peer authority.
+//! Shared original-descriptor and self-process image observations, never authority.
 
 use std::fs::File;
 use std::io::Read as _;
