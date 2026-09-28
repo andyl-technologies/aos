@@ -97,6 +97,7 @@ enum AdmissionPhase {
     BasePlan,
     ExactGrantRotation,
     ExistingMountFuseIntent,
+    ExistingHostFuseWorker,
 }
 
 impl BrokerAuthority {
@@ -289,6 +290,40 @@ impl BrokerAuthority {
         )
     }
 
+    /// Admits purpose 56 only on the exact already installed Host ownership cut.
+    ///
+    /// The worker's Resource grant rotates only its exact plan commitment.
+    /// Neither a newer assignment nor a renewed local lease can authorize this
+    /// preparation. The caller still owes original held Mount/session custody,
+    /// role-object validation and durable Host launch escrow before PID1.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another domain/profile, missing or changed location-authenticated
+    /// prior state, invalid signatures, substituted semantics, or any renewal
+    /// of the complete installed local ownership lease.
+    pub fn admit_host_fuse_worker(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        if self.domain != BrokerDomain::Host || !is_host_fuse_worker_admission(&request) {
+            return Err(BrokerAdmissionError::RequestMismatch);
+        }
+        let current = self.open_fence(request.assignment.sandbox().as_bytes(), prior_fence)?;
+        self.check_current_fence(&current)?;
+        require_same_fuse_assignment(Some(&current), request.assignment)?;
+        self.admit_with_plan_rotation(
+            artifacts,
+            request,
+            current_clock,
+            Some(prior_fence),
+            AdmissionPhase::ExistingHostFuseWorker,
+        )
+    }
+
     /// Admits a distinct Host ATTACH grant on the shared runtime lease.
     ///
     /// # Errors
@@ -429,6 +464,14 @@ impl BrokerAuthority {
         if phase == AdmissionPhase::ExistingMountFuseIntent && !fuse_intent {
             return Err(BrokerAdmissionError::RequestMismatch);
         }
+        let host_fuse_worker = phase == AdmissionPhase::ExistingHostFuseWorker
+            && self.domain == BrokerDomain::Host
+            && is_host_fuse_worker_admission(&request);
+        if (phase == AdmissionPhase::ExistingHostFuseWorker && !host_fuse_worker)
+            || (request.verb == BrokerVerb::HostPrepareFuseWorkerSession && !host_fuse_worker)
+        {
+            return Err(BrokerAdmissionError::RequestMismatch);
+        }
         if (!supports_signed_admission(request.protocol, request.protocol_version) && !fuse_intent)
             || (request.audience.protocol() != request.protocol && !fuse_intent)
             || request.audience != self.domain.audience()
@@ -502,7 +545,10 @@ impl BrokerAuthority {
             })
             .transpose()
             .map_err(|_| BrokerAdmissionError::FenceRejected)?;
-        if phase == AdmissionPhase::ExistingMountFuseIntent {
+        if matches!(
+            phase,
+            AdmissionPhase::ExistingMountFuseIntent | AdmissionPhase::ExistingHostFuseWorker
+        ) {
             require_same_fuse_assignment(prior.as_ref(), request.assignment)?;
         }
         let prior_local = validate_prior_fence(
@@ -514,10 +560,12 @@ impl BrokerAuthority {
         )?;
         let pending_lease = prepare_local_lease_record(prior_local, &verified_lease, current_clock)
             .map_err(|_| BrokerAdmissionError::FenceRejected)?;
-        if phase == AdmissionPhase::ExistingMountFuseIntent
-            && prior_local.is_none_or(|current| current != &pending_lease.record)
+        if matches!(
+            phase,
+            AdmissionPhase::ExistingMountFuseIntent | AdmissionPhase::ExistingHostFuseWorker
+        ) && prior_local.is_none_or(|current| current != &pending_lease.record)
         {
-            // This phase borrows the existing Mount lease; renewal or a new
+            // These phases borrow the installed local lease; renewal or a new
             // BOOTTIME fence belongs to the ordinary protected owner path.
             return Err(BrokerAdmissionError::FenceRejected);
         }
@@ -846,6 +894,16 @@ fn is_fuse_intent_admission(request: &AdmissionRequest<'_>) -> bool {
         && request.descriptor_count == 0
 }
 
+fn is_host_fuse_worker_admission(request: &AdmissionRequest<'_>) -> bool {
+    request.audience == BrokerAudience::Host
+        && request.protocol == ProtocolId::HostBroker
+        && request.protocol_version == ProtocolVersion::new(1, 0)
+        && request.verb == BrokerVerb::HostPrepareFuseWorkerSession
+        && matches!(request.target, BrokerGrantTarget::Resource(_))
+        && request.descriptor_count == 4
+        && request.request_body.len() <= 4096
+}
+
 fn supports_signed_admission(protocol: ProtocolId, version: ProtocolVersion) -> bool {
     negotiate_protocol(protocol, version).is_ok()
         && (version.minor() >= 1
@@ -958,6 +1016,52 @@ impl BrokerDomain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_admission_requires_exact_host_resource_and_four_roles() {
+        let original = AdmissionRequest {
+            audience: BrokerAudience::Host,
+            protocol: ProtocolId::HostBroker,
+            protocol_version: ProtocolVersion::new(1, 0),
+            assignment: BrokerAssignment::new(
+                aos_sandbox_core::SandboxId::from_bytes([1; 16]),
+                aos_sandbox_core::IncarnationId::from_bytes([2; 16]),
+                aos_sandbox_core::AssignmentEpoch::new(1),
+                aos_sandbox_core::DesiredGeneration::new(1),
+                ObjectDigest::from_bytes([3; 32]),
+            )
+            .unwrap(),
+            request_id: [4; 16],
+            request_body: b"exact body",
+            descriptor_count: 4,
+            verb: BrokerVerb::HostPrepareFuseWorkerSession,
+            target: BrokerGrantTarget::Resource(
+                aos_sandbox_core::BrokerResourceHandle::from_bytes([5; 32]).unwrap(),
+            ),
+            argument_commitment: BrokerArgumentCommitment::for_canonical_bytes(b"exact semantics"),
+            request_deadline_boottime_nanoseconds: 100,
+        };
+
+        assert!(is_host_fuse_worker_admission(&original));
+        for case in 0..8 {
+            let mut changed = original;
+            match case {
+                0 => changed.audience = BrokerAudience::Mount,
+                1 => changed.protocol = ProtocolId::MountBroker,
+                2 => changed.protocol_version = ProtocolVersion::new(1, 1),
+                3 => changed.verb = BrokerVerb::HostObserve,
+                4 => changed.target = BrokerGrantTarget::Assignment,
+                5 => changed.descriptor_count = 3,
+                6 => changed.descriptor_count = 5,
+                7 => changed.request_body = &[1; 4097],
+                _ => unreachable!(),
+            }
+            assert!(
+                !is_host_fuse_worker_admission(&changed),
+                "substitution {case}"
+            );
+        }
+    }
 
     #[test]
     fn fuse_signed_admission_is_only_the_exact_purpose_fifty_seven_profile() {

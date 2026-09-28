@@ -48,7 +48,7 @@ pub mod worker;
 pub use dormant_broker_session::{
     DormantHostBrokerCallErrorV1, DormantHostBrokerCallsiteV1, DormantHostBrokerCompositionV1,
     DormantHostBrokerObservationV1, DormantHostScopeReplayReservationV1,
-    DormantHostScopeReplayTicketV1,
+    DormantHostScopeReplayTicketV1, DormantOriginalHostFuseWorkerPreparationV1,
 };
 
 pub(crate) const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";

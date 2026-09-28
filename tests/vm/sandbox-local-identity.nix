@@ -156,6 +156,7 @@ in
 
       echo $$ > /sys/fs/cgroup/aos.slice/aos-control.slice/aos-sandboxd.service/cgroup.procs
       run_tests ${fixtures}/bin/aos_sandbox_mount peer::tests::controller_path_rejects_flat_and_alternate_same_named_services
+      run_tests ${fixtures}/bin/aos_sandbox_host peer::tests::unregistered_root_peer_cannot_prepare_a_fixed_mount_worker
 
       echo $$ > /sys/fs/cgroup/aos.slice/aos-control.slice/aos-sandbox-mountd.service/cgroup.procs
       run_tests ${fixtures}/bin/aos_sandbox_host peer::tests::registered_root_mount_path_accepts_only_the_distinct_peer_profile
