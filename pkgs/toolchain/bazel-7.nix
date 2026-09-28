@@ -80,6 +80,6 @@ in
   mkBazel {
     inherit (upstream) version update;
     srcHash = "sha256-YYGzVwwvZX2YmxFB+wwaCOtfCBBspXfcfcUufQI4N5o=";
-    vendorDepsHash = "sha256-aOh1Dpt3hTSypx7jKj//K1dSdeNsrtIJlvHiwy2epWQ=";
+    vendorDepsHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     source = buildPackages.bazel-bootstrap.passthru.offlineSource;
   }

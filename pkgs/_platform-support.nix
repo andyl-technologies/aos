@@ -905,6 +905,7 @@ let
     "toolchain/_bazel-maven-source-repositories.nix" = "native-build-helper";
     "toolchain/_bazel-mockito.nix" = "native-build-helper";
     "toolchain/_bazel-module-source.nix" = "target-independent-source";
+    "toolchain/_bazel-module-prepared.nix" = "target-independent-source";
     "toolchain/_bazel-msv-chain.nix" = "native-build-helper";
     "toolchain/_bazel-netty-119-native-repositories.nix" = "native-build-helper";
     "toolchain/_bazel-netty-119.nix" = "native-build-helper";

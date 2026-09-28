@@ -198,12 +198,17 @@
     then buildPackages.qemu-img
     else qemu-img;
   sourcePythonRuntime = import ./_bazel-python-runtime.nix {inherit buildPackages;};
+  sourcePythonRepositoryName =
+    if builtins.compareVersions version "8.0.0" >= 0
+    then "rules_python++python+python_3_11_x86_64-unknown-linux-gnu"
+    else "rules_python~~python~python_3_11_x86_64-unknown-linux-gnu";
   sourceModules =
     if builtins.compareVersions version "9.0.0" >= 0
     then
       import ./_bazel-offline-modules-9.nix {
         inherit buildPackages;
         fetchgit = lib.fetchgit;
+        bazelSource = src;
       }
     else buildBazelBootstrap.passthru.offlineModules;
   sourceRepositoryFlags =
@@ -217,20 +222,21 @@
               then name
               else builtins.replaceStrings ["+"] ["~"] name;
           in
-            if path == null || lib.strings.hasPrefix "+" name
+            if path == null || (lib.strings.hasPrefix "+" name && builtins.compareVersions version "8.0.0" < 0)
             then null
             else "--override_repository=${canonicalName}=${path}"
         )
         buildBazelBootstrap.passthru.offlineRepositories)
       ++ lib.optional (builtins.compareVersions version "8.0.0" >= 0) "--override_repository=rules_java++toolchains+remote_java_tools=${sourceRemoteJavaTools}"
-      ++ lib.optional (builtins.compareVersions version "8.0.0" >= 0 && builtins.compareVersions version "9.0.0" < 0) "--override_repository=rules_python++python+python_3_11_x86_64-unknown-linux-gnu=${sourcePythonRuntime}";
+      ++ lib.optional (builtins.compareVersions version "9.0.0" < 0) "--override_repository=${sourcePythonRepositoryName}=${sourcePythonRuntime}";
   sourceModuleFlags =
     if source == null
     then []
     else
       builtins.filter (flag: flag != null) (lib.mapAttrsToList (
           name: path:
-            if path == null
+          # Chicory entered Bazel's module graph in version 8.
+            if path == null || (builtins.compareVersions version "8.0.0" < 0 && name == "chicory")
             then null
             else "--override_module=${name}=${path}"
         )
