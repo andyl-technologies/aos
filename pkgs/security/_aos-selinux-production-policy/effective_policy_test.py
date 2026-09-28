@@ -500,6 +500,21 @@ class EffectivePolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing effective allow"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
 
+    def test_missing_fresh_manager_projection_permission_fails(self) -> None:
+        for object_class in ("dir", "file"):
+            with self.subTest(object_class=object_class):
+                policy = FakePolicy()
+                access = effective_policy.Access(
+                    effective_policy.GUEST_OWNER,
+                    "init_runtime_t",
+                    object_class,
+                    "relabelfrom",
+                )
+                policy.allows[access] = []
+
+                with self.assertRaisesRegex(ValueError, "missing effective allow"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def test_uid_zero_cannot_bypass_guest_owner_objects(self) -> None:
         for access in (
             effective_policy.Access(effective_policy.GUEST_TENANT, effective_policy.GUEST_OWNER, "file", "read"),

@@ -493,6 +493,18 @@ POSITIVE_ACCESS = (
         for filesystem in ("fs_t", "tmpfs_t")
     ),
     Access("aos_sandbox_guest_pty_t", "devpts_t", "filesystem", "associate"),
+    *accesses(
+        GUEST_OWNER,
+        "init_runtime_t",
+        "dir",
+        ("getattr", "open", "read", "relabelfrom", "search"),
+    ),
+    *accesses(
+        GUEST_OWNER,
+        "init_runtime_t",
+        "file",
+        ("getattr", "open", "read", "relabelfrom"),
+    ),
     *(
         access
         for subject in (GUEST_OWNER, GUEST_TENANT)
