@@ -1,14 +1,16 @@
 # RFC-0021 method-46 TPM floor
 
-This source-only checkpoint connects protected exact-transaction preparation
+This partial implementation connects protected exact-transaction preparation
 and reconciliation to the actual fixed journal owners and a private persistent
 ESYS helper. Required-mode journal open, replay, mutation, read and use pass
 through the floor; the helper and both journal writers stay retained together.
 Method 46 remains explicitly closed, including historical replay and effect
-handoff. No readiness or method advertisement is opened. Compiler/unit tests,
-authenticated TPM execution, power-cut behavior, restart/rollover, and installed
-sender/recipient gates remain unrun and unqualified. This checkpoint is not
-completion of the rollback workstream.
+handoff. No readiness or method advertisement is opened. Native helper
+compilation and the seven pinned-TSS cache regressions pass as described below.
+The selected native Rust library suite also passes as described below.
+Authenticated TPM execution, power-cut behavior, installed restart/rollover,
+and installed sender/recipient gates remain incomplete or unqualified. This
+is not completion of the rollback workstream.
 
 ## Exact scope
 
@@ -97,7 +99,7 @@ Subsequent public and NV reads
 use the same authenticated HMAC session. AES-128-CFB parameter encryption
 protects extend input and NV read output; ESYS validates response HMACs.
 
-### Pinned initial-response cache regression (source-only)
+### Pinned initial-response cache regression
 
 The helper package asserts the exact AOS `tpm2-tss` release `4.2.0` and compiles
 `pkgs/security/aos-method46-tpm-helper/readpublic-cache-test.c` against that
@@ -132,10 +134,24 @@ ESYS resource representation or TPM layout is parsed by the test.
 A native helper package build executes the regression and retains its report at
 `share/aos-method46-tpm-helper/readpublic-cache-regression.txt`. A cross build
 compiles it but records explicit `NOT RUN`, requiring execution on the target;
-it never labels a cross build as a passing test. Both source and check wiring
-remain uncompiled and unrun here. A future TSS upgrade requires review and actual
-regression execution before producer qualification; this source addition does
-not open method 46 or replace physical/installed qualification.
+it never labels a cross build as a passing test. A native ordinary build through
+the release entry point has compiled both executables with AOS C17 and
+`-O2 -Wall -Wextra -Werror`, then passed all seven regressions:
+
+```text
+bash ./aos-dev --release build package aos-method46-tpm-helper --no-out-link --max-jobs 1 --cores 1
+```
+
+The qualified mock-check artifact is
+`/nix/store/73s3sk64815v86xw8563wp4kld3wbrdb-aos-method46-tpm-helper-0.1.0`,
+from source commit `c9eb78a03e68a41f92b2b8b4e0233521b3f86bbc`. Its report records
+seven passing tests. Readback of the stripped helper matches its installed
+SHA-256 sidecar:
+`76547a6577566bb775fe15413d5138304ecd6e472c3ada60919a02d10701e81f`.
+Malformed-response negative cases emit expected TSS errors; the regression and
+package both exit successfully. A future TSS upgrade requires review and actual
+regression execution before producer qualification. This mocked check does not
+open method 46 or replace physical/installed qualification.
 
 Required mode loads these owner-specific systemd credentials under the existing
 `aos-sandboxd.service` or `aos-storaged.service` credential directory:
@@ -325,7 +341,9 @@ trusted-administrative manager reexec, and property readback still does not
 freeze policy. Genuine installed 261.2 launch delivery/property encoding,
 confinement, descriptor lifecycle, wrong/extra/missing slot failures and
 original-image identity must qualify; source inspection is not that evidence.
-The new shape/mode/flags/shared-offset/closed-set regressions are unrun.
+The native image-hash, read-only descriptor, shared-offset and Controller
+launch-table regressions pass in the selected library run below. They do not
+exercise installed PID 1 descriptor delivery or the full production process.
 
 The scope commits endpoint role, node identity, nonzero deployment epoch,
 stable endpoint manifest identity, and pinned salt-key Name digest. The fixed
@@ -499,8 +517,15 @@ guaranteed to yield only old/target; recovery treats that as unavailable.
 ## Remaining qualification
 
 The durable coordinator, sealed physical producer, image/credential wiring and
-actual owner hooks are source-only, uncompiled and unrun. Existing native
-Journal commits are reused through one mutation funnel, including archive
+actual owner hooks remain installed-unqualified. The selected combined native
+library run on `0aba3a682b64f0c67dc495b4a02532b9cc8df398` exits successfully:
+17 libraries, 3,032 distinct tests passed, zero failed, and 15 ignored. The
+broker-session security library contributes 291 passing tests. The run uses
+the AOS development shell with frozen, offline Cargo dependencies, two jobs,
+and `--no-fail-fast`; ignored kernel/installed prerequisites remain unqualified.
+This is selected library qualification, not the full package, daemon or
+installed RFC qualification. Existing native Journal commits are reused
+through one mutation funnel, including archive
 retention/retirement and terminal process rollover. Schema-only validation is
 private to the opaque retained reconciliation borrow; ordinary reads cannot
 skip the floor. No traffic-journal compaction/reset is exposed. Fixed-name
@@ -508,12 +533,14 @@ open/reopen requires noncreating, nonrepairing replay before reconciliation.
 The test-local factory and fake NV do not qualify installed startup, physical
 authentication, service confinement or effect boundaries.
 
-The new lock-loan, helper framing, startup-state and weakened-property tests
-are also unrun. Compiler/API qualification must cover the packaged TSS 4.2.0
+The native lock-loan, helper framing, startup-state, image-hash,
+weakened-property, durable recovery and mocked physical-backend tests pass in
+that run. Their temporary journals and fake NV do not establish actual TPM or
+service custody. Compiler/API qualification must cover the packaged TSS 4.2.0
 initial-response SAPI decode, not assume that a later public read refreshed
-the cached salt key. The new exact packaged-4.2.0 repeated-Complete regression
-and check wiring above remain uncompiled/unrun; they must pass before a future
-TSS upgrade or producer qualification. Required-mode
+the cached salt key. The exact packaged-4.2.0 repeated-Complete regression and
+check wiring above passed natively; neither uses a physical TPM. They must pass
+again before a future TSS upgrade or producer qualification. Required-mode
 effective unit policy and the exact old
 helper's TPM-close-before-next-owner ordering need genuine installed tests.
 

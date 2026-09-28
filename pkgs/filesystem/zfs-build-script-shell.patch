@@ -1,0 +1,27 @@
+Run build-time constrained-path preparation with Make's build-machine shell.
+The installed script's upstream env shebang is not a build dependency, and
+failure to prepare the in-tree path must not be silently ignored. Keep the
+distributed Makefile in sync without requiring autoreconf.
+
+--- a/scripts/Makefile.am
++++ b/scripts/Makefile.am
+@@ -80,7 +80,7 @@
+ 
+ ALL_LOCAL += scripts-all-local
+ scripts-all-local: %D%/common.sh $(PROGRAMS) $(SCRIPTS) $(DATA)
+-	-SCRIPT_COMMON=$< $(srcdir)/%D%/zfs-tests.sh -c
++	SCRIPT_COMMON=$< $(SHELL) $(srcdir)/%D%/zfs-tests.sh -c
+ 
+ CLEAN_LOCAL += scripts-clean-local
+ scripts-clean-local:
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -14584,7 +14584,7 @@
+ 		$< >$@
+ 	-$(AM_V_at)echo "$$SCRIPTS_EXTRA_ENVIRONMENT" >>$@
+ scripts-all-local: scripts/common.sh $(PROGRAMS) $(SCRIPTS) $(DATA)
+-	-SCRIPT_COMMON=$< $(srcdir)/scripts/zfs-tests.sh -c
++	SCRIPT_COMMON=$< $(SHELL) $(srcdir)/scripts/zfs-tests.sh -c
+ scripts-clean-local:
+ 	-$(RM) -r tests/zfs-tests/bin/
+ scripts-install-data-hook: scripts/common.sh.in Makefile
