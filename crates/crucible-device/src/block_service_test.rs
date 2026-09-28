@@ -34,7 +34,7 @@ fn block_snapshot_codec_round_trips_complete_device_state() {
 
     let mut unsupported_version = bytes.clone();
     let version_index = b"crucible.block-snapshot.v".len();
-    assert_eq!(unsupported_version[version_index], b'4');
+    assert_eq!(unsupported_version[version_index], b'6');
     unsupported_version[version_index] = b'?';
     assert_eq!(
         BlockSnapshot::from_canonical_bytes(&unsupported_version),
@@ -137,7 +137,9 @@ fn integrated_service_defers_real_mutation_and_survives_restore() {
         ok(original.overlay().read(original.base(), 0, 10)),
         vec![0xa5; 10]
     );
-    let outcomes = original.drain_storage_service_outcomes();
+    let outcomes = original
+        .drain_storage_service_outcomes()
+        .unwrap_or_else(|error| panic!("revision admission: {error}"));
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].sequence, 700);
     assert_eq!(outcomes[0].finished_ticks, 10_000);
@@ -226,7 +228,12 @@ fn admission_failure_bypasses_integrated_service() {
     assert_eq!(response.status, BlockStatus::Error);
     assert_eq!(ok(response.error_code()), BlockErrorCode::Offline);
     assert_eq!(device.overlay().page_count(), 0);
-    assert!(device.drain_storage_service_outcomes().is_empty());
+    assert!(
+        device
+            .drain_storage_service_outcomes()
+            .unwrap_or_else(|error| panic!("revision admission: {error}"))
+            .is_empty()
+    );
     assert_eq!(device.next_exact_local_event(), None);
 }
 
@@ -251,7 +258,9 @@ fn later_high_priority_admission_cannot_precede_queued_work() {
         ok(device.submit(*request_icount, request));
     }
 
-    let outcomes = device.drain_storage_service_outcomes();
+    let outcomes = device
+        .drain_storage_service_outcomes()
+        .unwrap_or_else(|error| panic!("revision admission: {error}"));
     assert_eq!(
         outcomes
             .iter()
@@ -266,7 +275,12 @@ fn later_high_priority_admission_cannot_precede_queued_work() {
     assert_eq!(device.overlay().page_count(), 1);
     assert_eq!(ok(device.advance_to(100_000)), 2);
     assert_eq!(device.next_exact_local_event(), Some(104_000));
-    assert!(device.drain_storage_service_outcomes().is_empty());
+    assert!(
+        device
+            .drain_storage_service_outcomes()
+            .unwrap_or_else(|error| panic!("revision admission: {error}"))
+            .is_empty()
+    );
 }
 
 #[test]
@@ -293,7 +307,12 @@ fn full_service_queue_returns_stable_busy_response() {
         .unwrap_or_else(|| panic!("full service queue should return Busy"));
     assert_eq!(ok(response.error_code()), BlockErrorCode::Busy);
     assert_eq!(device.overlay().page_count(), 0);
-    assert!(device.drain_storage_service_outcomes().is_empty());
+    assert!(
+        device
+            .drain_storage_service_outcomes()
+            .unwrap_or_else(|error| panic!("revision admission: {error}"))
+            .is_empty()
+    );
 }
 
 // ---- CoW: read / write / copy-up / base-never-mutated (IO-5,6) ----

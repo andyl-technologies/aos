@@ -278,7 +278,8 @@ impl<'a> IoSubNode for BlockServer<'a> {
 
     fn restore_compute_checkpoint(&mut self, checkpoint: Self::ComputeCheckpoint) {
         *self.overlay = checkpoint.0;
-        *self.storage_faults = checkpoint.1;
+        self.storage_faults
+            .restore_compute_transaction(checkpoint.1);
     }
 
     fn compute(&mut self, request: &Request) -> Result<ComputedResponse, DeviceError> {
