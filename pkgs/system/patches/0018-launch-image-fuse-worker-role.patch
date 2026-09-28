@@ -1,6 +1,6 @@
 diff --git a/systemd-261.2/src/core/aos-fuse-worker.c b/src/core/aos-fuse-worker.c
 new file mode 100644
-index 0000000..3bbc6c0
+index 0000000..1863f1d
 --- /dev/null
 +++ b/src/core/aos-fuse-worker.c
 @@ -0,0 +1,249 @@
@@ -95,7 +95,7 @@ index 0000000..3bbc6c0
 +        if (r < 0 || pinned_uid != sender_uid)
 +                return -EPERM;
 +        r = sd_bus_creds_get_cgroup(pinned, &cgroup);
-+        if (r < 0 || !streq_ptr(cgroup, "/aos.slice/aos-control.slice/aos-sandbox-hostd.service"))
++        if (r < 0 || !streq_ptr(cgroup, "/system.slice/aos-sandbox-hostd.service"))
 +                return -EPERM;
 +        return pidfd_send_signal(pidfd, 0, NULL, 0) < 0 ? -errno : 0;
 +}
