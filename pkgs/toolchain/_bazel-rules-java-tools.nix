@@ -70,6 +70,17 @@ buildPackages.mkDerivation {
             expected, 'java_runtime = Label("@local_jdk//:jdk")',
         ))
 
+        # Module overrides use this template directly, bypassing vendor path
+        # substitutions. Java execution tools must launch with AOS-built Bash.
+        launcher = Path("java/bazel/rules/java_stub_template.txt")
+        if launcher.exists():
+            contents = launcher.read_text()
+            if not contents.startswith("#!/usr/bin/env bash\n"):
+                raise SystemExit("unexpected Java launcher shebang")
+            launcher.write_text(contents.replace(
+                "#!/usr/bin/env bash\n", "#!${buildPackages.bash}/bin/bash\n", 1,
+            ))
+
         if "${version}" == "7.6.5":
             # The release archive embeds zlib. Our tools use its separately
             # pinned source module, which must be visible to this extension.

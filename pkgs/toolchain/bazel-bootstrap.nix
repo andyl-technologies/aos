@@ -46,12 +46,6 @@
     bazelByteBuddy114 = helperScope.bazelByteBuddy1_14;
     bazelJeroMq = helperScope.bazelJeromq;
     bazelZstdJni155 = callHelper ./_bazel-zstd-jni.nix {version = "1.5.5-11";};
-    nettyTcnative70Repositories = callHelper ./_bazel-netty-tcnative-2061-repositories.nix {
-      version = "2.0.70.Final";
-      bazelNettyTcnativeClasses2061 = callHelper ./_bazel-netty-tcnative-classes-2061.nix {
-        version = "2.0.70.Final";
-      };
-    };
     protobufJava = helperScope.bazelProtobufJava;
     xmlResolver = helperScope.bazelXmlResolver;
   };
@@ -143,9 +137,14 @@
     (callHelper ./_bazel-maven-source-repositories.nix {
       mavenPackage = callHelper ./_bazel-google-auth-123.nix {version = "1.24.1";};
     });
-  googleHttpModernRepositories = callHelper ./_bazel-maven-source-repositories.nix {
-    mavenPackage = helperScope.bazelGoogleHttp1433;
-  };
+  googleHttpModernRepositories =
+    (callHelper ./_bazel-maven-source-repositories.nix {
+      mavenPackage = helperScope.bazelGoogleHttp1433;
+    })
+    // lib.optionalAttrs (builtins.compareVersions bootstrapVersion "9.0.0" >= 0)
+    (callHelper ./_bazel-maven-source-repositories.nix {
+      mavenPackage = callHelper ./_bazel-google-http-1433.nix {version = "1.44.2";};
+    });
   nettyHttp2Repositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelNettyHttp2119;
   };
@@ -154,9 +153,14 @@
       includeBazel9 = builtins.compareVersions bootstrapVersion "9.0.0" >= 0;
     };
   };
-  guavaModernRepositories = callHelper ./_bazel-maven-source-repositories.nix {
-    mavenPackage = helperScope.bazelGuava3345;
-  };
+  guavaModernRepositories =
+    (callHelper ./_bazel-maven-source-repositories.nix {
+      mavenPackage = helperScope.bazelGuava3345;
+    })
+    // lib.optionalAttrs (builtins.compareVersions bootstrapVersion "9.0.0" >= 0)
+    (callHelper ./_bazel-maven-source-repositories.nix {
+      mavenPackage = callHelper ./_bazel-guava-3345.nix {version = "33.5.0-jre";};
+    });
   nettyDnsProxyRepositories = callHelper ./_bazel-maven-source-repositories.nix {
     mavenPackage = helperScope.bazelNettyDnsProxy119;
   };
@@ -304,6 +308,10 @@ in
       // {
         "rules_jvm_external++maven+com_google_api_grpc_proto_google_common_protos_2_41_0" = helperScope.bazelCommonProtos241.repository;
         "rules_jvm_external++maven+com_google_guava_listenablefuture_9999_0_empty_to_avoid_conflict_with_guava" = helperScope.bazelCommonProtos241.emptyListenableFuture;
+      }
+      // lib.optionalAttrs (builtins.compareVersions bootstrapVersion "9.0.0" >= 0) {
+        "rules_jvm_external++maven+com_google_api_grpc_proto_google_common_protos_2_51_0" =
+          (callHelper ./_bazel-common-protos-241.nix {version = "2.51.0";}).repository;
       }
       // {
         "grpc++grpc_repo_deps_ext+com_github_cncf_xds" = helperScope.bazelGrpcXdsSource;
