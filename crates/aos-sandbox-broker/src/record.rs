@@ -27,6 +27,8 @@
 //! Integers use network byte order. These records do not provide rollback
 //! resistance: a deployment with adversarial durable storage must additionally
 //! compare recovered state with a trusted non-rollback source.
+//! Host effect code 15 carries only pending fixed-worker launch escrow. Codes
+//! 1 through 14 retain their original meanings; older readers reject code 15.
 
 use aos_sandbox::journal::RecordNamespace;
 use aos_sandbox_core::model::{KeyReference, KeyUsage, StableKeyId};
@@ -36,6 +38,7 @@ use aos_sandbox_core::{
     ObjectDigest, RawPairedClockSample, SandboxId, decode_local_lease_record,
     encode_local_lease_record,
 };
+use aos_sandbox_protocol::host_fuse_worker_session::HOST_FUSE_WORKER_SESSION_BODY_MAXIMUM_BYTES_V1 as HOST_WORKER_BODY_MAXIMUM_BYTES;
 use hmac::{Hmac, Mac as _};
 use sha2::Sha256;
 use zeroize::Zeroizing;
@@ -385,10 +388,14 @@ impl BrokerEffectIntentV1 {
     ///
     /// Returns [`AuthorizationRecordError::InvalidPayload`] unless this record
     /// is a terminal-capable pending effect and the receipt is nonempty and at
-    /// most one MiB. A purpose-57 FUSE intent remains nonterminal.
+    /// most one MiB. Fixed-worker launch escrow and a purpose-57 FUSE intent
+    /// remain nonterminal.
     pub fn complete(mut self, receipt: Vec<u8>) -> Result<Self, AuthorizationRecordError> {
         if self.status != BrokerEffectStatusV1::Pending
-            || self.verb == BrokerVerb::MountReserveFuseWorkerIntent
+            || matches!(
+                self.verb,
+                BrokerVerb::HostPrepareFuseWorkerSession | BrokerVerb::MountReserveFuseWorkerIntent
+            )
             || receipt.is_empty()
             || receipt.len() > MAXIMUM_RECEIPT_BYTES
         {
@@ -540,6 +547,11 @@ impl BrokerEffectIntentV1 {
                 | BrokerVerb::HostObserve,
                 BrokerGrantTarget::Resource(_),
             ) => true,
+            (BrokerVerb::HostPrepareFuseWorkerSession, BrokerGrantTarget::Resource(_)) => {
+                self.status == BrokerEffectStatusV1::Pending
+                    && self.maximum_descriptors == 4
+                    && self.maximum_request_bytes as usize <= HOST_WORKER_BODY_MAXIMUM_BYTES
+            }
             (
                 BrokerVerb::MountCreate | BrokerVerb::MountMaterializeDestinationSlot,
                 BrokerGrantTarget::Assignment,
@@ -1360,6 +1372,7 @@ const fn verb_code(domain: BrokerDomain, verb: BrokerVerb) -> u8 {
         (BrokerDomain::Host, BrokerVerb::HostQueryExecutionArgument) => 12,
         (BrokerDomain::Host, BrokerVerb::HostTerminalNoApply) => 13,
         (BrokerDomain::Host, BrokerVerb::HostQueryNoApply) => 14,
+        (BrokerDomain::Host, BrokerVerb::HostPrepareFuseWorkerSession) => 15,
         (BrokerDomain::Mount, BrokerVerb::MountMaterializeDestinationSlot) => 6,
         (BrokerDomain::Mount, BrokerVerb::MountReapDestinationSlot) => 7,
         (BrokerDomain::Mount, BrokerVerb::MountRematerializeDestinationSlot) => 8,
@@ -1399,6 +1412,7 @@ fn decode_verb(domain: BrokerDomain, code: u8) -> Result<BrokerVerb, Authorizati
         (BrokerDomain::Host, 12) => Ok(BrokerVerb::HostQueryExecutionArgument),
         (BrokerDomain::Host, 13) => Ok(BrokerVerb::HostTerminalNoApply),
         (BrokerDomain::Host, 14) => Ok(BrokerVerb::HostQueryNoApply),
+        (BrokerDomain::Host, 15) => Ok(BrokerVerb::HostPrepareFuseWorkerSession),
         (BrokerDomain::Mount, 1) => Ok(BrokerVerb::MountCreate),
         (BrokerDomain::Mount, 2) => Ok(BrokerVerb::MountInstall),
         (BrokerDomain::Mount, 3) => Ok(BrokerVerb::MountReplace),
@@ -1785,6 +1799,145 @@ mod tests {
 
         assert_eq!(opened, intent);
         assert_eq!(opened.verb(), BrokerVerb::HostStop);
+    }
+
+    fn host_worker_escrow() -> BrokerEffectIntentV1 {
+        let mut intent = sample_intent();
+        intent.verb = BrokerVerb::HostPrepareFuseWorkerSession;
+        intent.target =
+            BrokerGrantTarget::Resource(BrokerResourceHandle::from_bytes([7; 32]).unwrap());
+        intent.maximum_descriptors = 4;
+        intent
+    }
+
+    #[test]
+    fn host_worker_escrow_round_trips_only_in_its_exact_authenticated_location() {
+        let intent = host_worker_escrow();
+        let key = NodeJournalMacKey::new(BrokerDomain::Host, [90; 16], [91; 32]).unwrap();
+        let payload = encode_effect(&intent, BrokerDomain::Host).unwrap();
+
+        assert_eq!(intent.validate(), Ok(()));
+        assert_eq!(&payload[..8], BrokerDomain::Host.effect_magic());
+        assert_eq!(&payload[8..10], &1_u16.to_be_bytes());
+        assert_eq!(payload[11], 15);
+        assert_eq!(
+            decode_effect(&payload, BrokerDomain::Host),
+            Ok(intent.clone())
+        );
+        assert_eq!(
+            encode_effect(
+                &decode_effect(&payload, BrokerDomain::Host).unwrap(),
+                BrokerDomain::Host,
+            ),
+            Ok(payload.clone())
+        );
+
+        let sealed =
+            seal_effect_intent(&key, RecordNamespace::Effect, intent.request_id(), &intent)
+                .unwrap();
+        assert_eq!(
+            open_effect_intent(&key, RecordNamespace::Effect, intent.request_id(), &sealed),
+            Ok(intent.clone())
+        );
+        assert!(open_effect_intent(&key, RecordNamespace::Effect, &[16; 16], &sealed).is_err());
+        assert!(
+            open_effect_intent(
+                &key,
+                RecordNamespace::DesiredState,
+                intent.request_id(),
+                &sealed,
+            )
+            .is_err()
+        );
+
+        for domain in [
+            BrokerDomain::Mount,
+            BrokerDomain::Storage,
+            BrokerDomain::Network,
+        ] {
+            let foreign_key = NodeJournalMacKey::new(domain, [90; 16], [91; 32]).unwrap();
+            assert!(encode_effect(&intent, domain).is_err());
+            assert!(decode_effect(&payload, domain).is_err());
+            assert!(
+                open_effect_intent(
+                    &foreign_key,
+                    RecordNamespace::Effect,
+                    intent.request_id(),
+                    &sealed,
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn host_worker_escrow_rejects_substituted_targets_bounds_and_terminal_status() {
+        let intent = host_worker_escrow();
+        let assert_rejected = |changed: &BrokerEffectIntentV1| {
+            assert_eq!(
+                changed.validate(),
+                Err(AuthorizationRecordError::InvalidPayload)
+            );
+
+            // Exercise untrusted decoding as well as the in-memory predicate.
+            let payload = encode_effect(changed, BrokerDomain::Host).unwrap();
+            assert_eq!(
+                decode_effect(&payload, BrokerDomain::Host),
+                Err(AuthorizationRecordError::InvalidPayload)
+            );
+        };
+
+        for target in [
+            BrokerGrantTarget::Assignment,
+            BrokerGrantTarget::ResourcePair {
+                previous: BrokerResourceHandle::from_bytes([7; 32]).unwrap(),
+                successor: BrokerResourceHandle::from_bytes([8; 32]).unwrap(),
+            },
+        ] {
+            let mut changed = intent.clone();
+            changed.target = target;
+            assert_rejected(&changed);
+        }
+        for descriptors in [0, 1, 3, 5, 16] {
+            let mut changed = intent.clone();
+            changed.maximum_descriptors = descriptors;
+            assert_rejected(&changed);
+        }
+        for bytes in [0, 4_097] {
+            let mut changed = intent.clone();
+            changed.maximum_request_bytes = bytes;
+            assert_rejected(&changed);
+        }
+
+        let mut changed = intent.clone();
+        changed.verb = BrokerVerb::HostLaunch;
+        assert_rejected(&changed);
+
+        changed = intent.clone();
+        changed.request_id = [0; 16];
+        assert_rejected(&changed);
+
+        changed = intent.clone();
+        changed.status = BrokerEffectStatusV1::Complete;
+        changed.receipt = vec![1];
+        assert_rejected(&changed);
+        assert_eq!(
+            intent.clone().complete(vec![1]),
+            Err(AuthorizationRecordError::InvalidPayload)
+        );
+
+        let mut payload = encode_effect(&intent, BrokerDomain::Host).unwrap();
+        payload[13..45].fill(0);
+        assert_eq!(
+            decode_effect(&payload, BrokerDomain::Host),
+            Err(AuthorizationRecordError::InvalidPayload)
+        );
+        payload = encode_effect(&intent, BrokerDomain::Host).unwrap();
+        payload[11] = 16;
+        assert_eq!(
+            decode_effect(&payload, BrokerDomain::Host),
+            Err(AuthorizationRecordError::InvalidPayload)
+        );
     }
 
     #[test]
