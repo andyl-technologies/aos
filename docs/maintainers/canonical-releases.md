@@ -66,7 +66,7 @@ The current implementation provides these fail-closed operations:
 - `aos release status` reconciles a captured journal without Nix or network;
 - `aos release stage` accepts only an already finalized signed bundle, pins the
   canonical staging deployment identity before and after upload, reuses the
-  bounded Hub publication protocol, reads every object back anonymously, and
+  bounded Hub publication protocol, omits public readback for staging-only plans, and
   writes a staging receipt plus successor journal;
 - `aos release qualify-run` dispatches each planned gate for every
   artifact-bearing platform to a bounded native adapter, validates exact
@@ -207,7 +207,7 @@ After constructing TUF metadata, compose a surface with
 `--publication-surface complete-registry-surface`, the independently trusted
 `--trusted-root-key` values, and their `--trusted-root-threshold`. Staging
 verifies that the surface adds only the exact signed TUF chain and public
-manifest target to the closed bundle, and reads back all uploaded objects.
+manifest target to the closed bundle. Staging-only plans omit public readback.
 Long uploads may use the approved Hub profile without `--token` or `AOS_TOKEN`;
 the publication adapter refreshes profile credentials before dispatching each
 object or multipart operation. Explicit tokens remain the caller's lifetime
@@ -554,7 +554,13 @@ Before closing the bundle, prepare a reviewed canonical advisory disposition.
 It binds the exact plan and SBOM, identifies each public advisory snapshot used
 for review. Production assembly requires no unresolved advisories. Plans with
 `staging_only = true` retain unresolved findings in the signed release evidence
-without requiring advisory approval or qualification before upload:
+without requiring advisory approval or qualification before upload.
+
+Staging-only bootstrap and publication also omit public HTTP readback. The Hub
+verifies the uploaded object bytes and returns its signed publication receipt;
+public download and range behavior can be exercised during subsequent testing.
+
+An advisory disposition has this shape:
 
 ```json
 {"authority_id":"release-security-review","plan_digest":"sha256:...","reviewed_at":"2026-09-03T13:30:00Z","sbom_digest":"sha256:...","schema_version":"aos.release.advisory-disposition/v1","sources":[{"name":"osv","snapshot":"sha256:..."}],"unresolved_advisories":[]}
@@ -800,7 +806,8 @@ Repeat with independent production intent envelopes, the production token,
 refuses a destination containing any publication, requires the resulting first
 publication to have no parent, checks its default commit against the plan,
 pins the environment deployment identity before and after upload, and performs
-complete and ranged public read-back. Preserve the emitted bootstrap evidence;
+complete and ranged public read-back unless the plan is staging-only. Preserve
+the emitted bootstrap evidence;
 all later release publications use this base publication as their explicit
 parent. Bootstrap is not a recurring release step.
 
@@ -821,9 +828,10 @@ aos release stage \
 
 Before any upload, the command verifies the complete bundle, signature
 threshold, and exact `Finalized` journal precondition. It checks the public
-deployment identity before and after upload, reads every committed object back
-anonymously through the public registry route, and compares its exact SHA-256
-and size. The Hub receipt is verified with an independently pinned,
+deployment identity before and after upload. Plans outside staging-only testing
+also read every committed object back anonymously through the public registry
+route and compare its exact SHA-256 and size. The Hub receipt is verified with
+an independently pinned,
 environment-specific receipt key rather than a release-manifest key. The new
 directory contains `staging-receipt.json` and a successor
 `release-journal.jsonl`; existing paths are never replaced.
