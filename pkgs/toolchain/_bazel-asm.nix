@@ -3,59 +3,99 @@
   mkDerivation,
   fetchurl,
   buildPackages,
+  includeBazel9 ? false,
 }: let
-  archives = [
-    {
-      version = "9.2";
-      component = "asm";
-      hash = "sha256-gegHAQYx8OgHSw+4XoCv1u+71+SzaUqtGelEwXGYD7c=";
-    }
-    {
-      version = "9.2";
-      component = "asm-tree";
-      hash = "sha256-w1vFtLbFS/FavsNKuCHPnQgBpkRR9PYHDZPcuHEiqgg=";
-    }
-    {
-      version = "9.2";
-      component = "asm-analysis";
-      hash = "sha256-xaZ2S7zunkvNjuHqM4CPlri1hzcfMpqnWi9UHy7hsNU=";
-    }
-    {
-      version = "9.2";
-      component = "asm-commons";
-      hash = "sha256-bZiDkTa+RdWx/9yg/SZH646vks/1dmSMu/lvCK/T7W0=";
-    }
-    {
-      version = "9.2";
-      component = "asm-util";
-      hash = "sha256-tjHUVhok6E6u7iwEla3e0hTklh7TKLAjAPfZsfQHyFM=";
-    }
-    {
-      version = "9.6";
-      component = "asm";
-      hash = "sha256-K24S8No9BlumKKAkqIUasNW101AdrPzBh2kkMlD0934=";
-    }
-    {
-      version = "9.6";
-      component = "asm-tree";
-      hash = "sha256-4vS+re8cMgPk0A9kYFxK0J14+0X8bJTsNkl9Y+azeWk=";
-    }
-    {
-      version = "9.6";
-      component = "asm-analysis";
-      hash = "sha256-eUKd7qMFJURIecgnvYXCrKGhvt2P3a4wlvR+Ap81bcQ=";
-    }
-    {
-      version = "9.6";
-      component = "asm-commons";
-      hash = "sha256-51cHAUWrBMfGh0BCkzt9hgBFa1/bzy0CKmzQqG5aRKE=";
-    }
-    {
-      version = "9.6";
-      component = "asm-util";
-      hash = "sha256-59txW4vER1HZml8MAsghmq41WSFGKhasynJ2YzjBQoc=";
-    }
-  ];
+  asmVersions =
+    ["9.2" "9.6"]
+    ++ (
+      if includeBazel9
+      then ["9.9"]
+      else []
+    );
+  archives =
+    [
+      {
+        version = "9.2";
+        component = "asm";
+        hash = "sha256-gegHAQYx8OgHSw+4XoCv1u+71+SzaUqtGelEwXGYD7c=";
+      }
+      {
+        version = "9.2";
+        component = "asm-tree";
+        hash = "sha256-w1vFtLbFS/FavsNKuCHPnQgBpkRR9PYHDZPcuHEiqgg=";
+      }
+      {
+        version = "9.2";
+        component = "asm-analysis";
+        hash = "sha256-xaZ2S7zunkvNjuHqM4CPlri1hzcfMpqnWi9UHy7hsNU=";
+      }
+      {
+        version = "9.2";
+        component = "asm-commons";
+        hash = "sha256-bZiDkTa+RdWx/9yg/SZH646vks/1dmSMu/lvCK/T7W0=";
+      }
+      {
+        version = "9.2";
+        component = "asm-util";
+        hash = "sha256-tjHUVhok6E6u7iwEla3e0hTklh7TKLAjAPfZsfQHyFM=";
+      }
+      {
+        version = "9.6";
+        component = "asm";
+        hash = "sha256-K24S8No9BlumKKAkqIUasNW101AdrPzBh2kkMlD0934=";
+      }
+      {
+        version = "9.6";
+        component = "asm-tree";
+        hash = "sha256-4vS+re8cMgPk0A9kYFxK0J14+0X8bJTsNkl9Y+azeWk=";
+      }
+      {
+        version = "9.6";
+        component = "asm-analysis";
+        hash = "sha256-eUKd7qMFJURIecgnvYXCrKGhvt2P3a4wlvR+Ap81bcQ=";
+      }
+      {
+        version = "9.6";
+        component = "asm-commons";
+        hash = "sha256-51cHAUWrBMfGh0BCkzt9hgBFa1/bzy0CKmzQqG5aRKE=";
+      }
+      {
+        version = "9.6";
+        component = "asm-util";
+        hash = "sha256-59txW4vER1HZml8MAsghmq41WSFGKhasynJ2YzjBQoc=";
+      }
+    ]
+    ++ (
+      if includeBazel9
+      then [
+        {
+          version = "9.9";
+          component = "asm";
+          hash = "sha256-43AAoqC8nwvvNzcUrX3eQIIhI1GEe3RhjUgwV6SuGGw=";
+        }
+        {
+          version = "9.9";
+          component = "asm-tree";
+          hash = "sha256-nR/iYfodKZBMqdvHaHg5bna8IlGRZ2qMFq0maaIFMho=";
+        }
+        {
+          version = "9.9";
+          component = "asm-analysis";
+          hash = "sha256-/3MdQB6iQHdZ6hm0sCWADTJJWlGpEvJVPZh83dpCR3M=";
+        }
+        {
+          version = "9.9";
+          component = "asm-commons";
+          hash = "sha256-IYu7ZI4kV4o4XLa2ohzv8iKiqPiy1faiVqgJndM23HY=";
+        }
+        {
+          version = "9.9";
+          component = "asm-util";
+          hash = "sha256-5RigCx0ASDLnLGRINRxIZZcayVp8/nj7AxXXass5OkY=";
+        }
+      ]
+      else []
+    );
 
   sources =
     builtins.map (
@@ -88,7 +128,7 @@ in
   mkDerivation {
     passthru.sourceArchives = sources;
     pname = "bazel-asm";
-    version = "9.2+9.6";
+    version = builtins.concatStringsSep "+" asmVersions;
     src = (builtins.head sources).src;
 
     buildDeps = [
@@ -110,7 +150,7 @@ in
           export PATH="${buildJdk}/bin:$PATH"
 
           mkdir -p jars
-          for version in 9.2 9.6; do
+          for version in ${builtins.concatStringsSep " " asmVersions}; do
             classpath=
             for component in asm asm-tree asm-analysis asm-commons asm-util; do
               class_dir="classes-$version-$component"
