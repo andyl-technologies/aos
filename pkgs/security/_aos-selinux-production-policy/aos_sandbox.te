@@ -28,7 +28,7 @@ require {
     type random_device_t;
     type urandom_device_t;
     type sysfs_t;
-    type systemd_var_run_t;
+    type init_runtime_t;
 
     class blk_file getattr;
     class capability { chown dac_override fowner fsetid kill setgid setuid sys_admin sys_chroot sys_ptrace };
@@ -366,8 +366,9 @@ type_transition aos_sandbox_guest_owner_t aos_sandbox_guest_config_t:file aos_sa
 # it never relabels tenant data or the immutable closure at runtime.
 allow aos_sandbox_guest_owner_t { root_t var_t device_t tmpfs_t }:dir { getattr open read relabelfrom search };
 allow aos_sandbox_guest_owner_t aos_sandbox_guest_anchor_t:dir relabelto;
-allow aos_sandbox_guest_owner_t { tmpfs_t systemd_var_run_t }:dir { getattr open read relabelfrom search };
-allow aos_sandbox_guest_owner_t { tmpfs_t systemd_var_run_t }:file { getattr open read relabelfrom };
+# Pinned refpolicy labels /run/systemd as init_runtime_t (init_var_run_t alias).
+allow aos_sandbox_guest_owner_t { tmpfs_t init_runtime_t }:dir { getattr open read relabelfrom search };
+allow aos_sandbox_guest_owner_t { tmpfs_t init_runtime_t }:file { getattr open read relabelfrom };
 allow aos_sandbox_guest_owner_t aos_sandbox_guest_private_t:dir relabelto;
 allow aos_sandbox_guest_owner_t aos_sandbox_guest_private_t:file relabelto;
 allow aos_nspawn_t aos_sandbox_guest_anchor_t:dir { getattr open read search };
