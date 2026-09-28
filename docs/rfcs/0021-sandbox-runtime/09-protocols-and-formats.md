@@ -2344,14 +2344,114 @@ Cache→Root/Mount held compiler/effect barrier. No daemon provisioning path,
 service, key, capability, worker-read admission, or public Create gate is opened
 by this source contract.
 
-Project V3 and request-layer provenance remain unimplemented. Their versioned
-contract must bind the exact accepted public policy descriptor and protected
-publisher project bytes to a reviewed, explicit typed request/project-layer
-mapping. A resolved Policy is not silently converted into `PolicyLayerV1`, and
-publisher ownership, absence, or inherited fields do not imply grants. The
-existing typed serializer versus lexical `serde_json::Value` output-validation
-ordering mismatch is a separate follow-up; this profile neither relaxes that
-validator nor rewrites the existing serializer.
+The existing typed serializer versus lexical `serde_json::Value`
+output-validation ordering mismatch is a separate follow-up; this profile
+neither relaxes that validator nor rewrites the existing serializer.
+
+### Publisher original compiler provenance and Project V3 (source-only)
+
+The public `CreateSandboxRequest.requested_policy` descriptor remains exactly
+`application/vnd.aos.sandbox.policy.v1+cbor`. The specification descriptor is
+separately `application/vnd.aos.sandbox.spec.v1+cbor`. Neither portable Policy,
+the specification, nor user data is interpreted as a request-layer document.
+There is no inverse Policy-to-layer algorithm or default grant.
+
+The original input producer takes an explicit constructor-validated
+`PolicyCompilerInputV1` and original target, runs the real complete
+`PolicyCompilerV1::compile`, and retains exact typed input/project/request
+bytes, normalized input, five plan commitments, and all four output byte
+strings. It supports the explicit parentless profile only. All six layer
+fields and the complete 16 portable plus 22 accounting limits remain under
+the existing normalizer/intersection compiler. The full input bytes use its
+existing typed canonical serializer with domain
+`aos.sandbox.publisher-original-compiler-input.v3`.
+
+The same protected Publisher revision/current-head transaction stores this
+provenance. The existing V1 `AOSPOLR1` and `AOSPOLH1` formats remain unchanged.
+The new `AOSPOLR2` keeps the old 84-byte revision prefix, substituting only
+the magic, followed by the exact Policy bytes and `u32be(origin-length)` plus
+the following bounded `AOSPCO03` origin:
+
+```text
+AOSPCO03 | project[16] | original-target[16] | normalized-input[32] |
+candidate[32] | authority/namespace/hard/advisory/explanation[5][32] |
+(u32be(length) | bytes)[7]
+```
+
+The seven fields are full original typed input, exact project input, exact
+request input, Policy CBOR, Optimization CBOR, namespace-graph bytes, and
+advisory-program bytes. Fixed origin size is 264 bytes; every field is
+nonempty and the complete origin is at most 4 MiB. The full revision,
+including both retained Policy copies and framing, must fit the unchanged
+4-MiB-plus-128-byte publisher record ceiling. No journal limit or allocator
+is expanded. Portable descriptors are derived from the exact four bytes in
+the existing Policy, Optimization, Content, Content media-type order. The
+candidate preimage reuses the existing five-plan/four-descriptor hash.
+Origin digest is SHA-256 of
+`aos.sandbox.publisher-compiler-origin.v3\0` followed by the exact origin.
+
+Cold decoding produces nonauthorizing retained data only. It cannot construct
+authenticated cache domains, catalogs, executable sources, compiler inputs,
+or a freshly prepared compiled publisher revision from raw bytes/JSON.
+Checking derivation requires an independently reconstructed typed original
+input and a real compile (or the same freshly compiled candidate supplied to
+the crate-private compare-only helper). Original target, all input bytes,
+normalized digest, all five plans and four outputs must match exactly.
+Retargeting compilation to a later Create's random child does not prove the
+original derivation.
+
+The 328-byte `AOSPPH03` uses a distinct project-role signature domain
+`aos.sandbox.policy-project-head.v3\0`:
+
+```text
+AOSPPH03 | project[16] | source-generation:u64 | issued/expires:i64 |
+publisher-generation:u64 | Policy-digest[32] | association-sha256[32] |
+ancestry/deployment/cache-domain/revocation-heads[4][32] |
+deployment-signer-generation:u64 | project-signer-generation:u64 |
+Ed25519-signature[64]
+```
+
+Its association bytes use the existing typed canonical serializer with
+domain `aos.sandbox.policy-project-request-association.v3` and the exact tuple
+`(3, project, source-generation, publisher-generation, full-Policy-descriptor,
+origin-digest, original-target, normalized-input, project-input-descriptor,
+request-input-descriptor)`. Only actual compiled publisher preparation
+produces this typed issuer input. The original project/request byte strings
+are retained in the protected publisher record, not obtained from a supplied
+JSON alias. V1/V2 records with no origin cannot supply this association.
+
+The consumer retains the real Controller writer and unchanged current
+parentless Create Operation/Effect/request/projection selector. It rejoins
+the exact requested/current publisher Policy descriptor and generation and
+recompiles the explicit original input before exposing borrowed typed
+project/request references. Root is acquired last; verification independently
+reads the protected deployment/project role pins, checks the actual current
+deployment V2 head and exact typed Node/Site/backend/catalog declarations,
+verifies the V3 signature, and compares publisher/cache-domain/revocation
+claims. It appends no project head or compiler binding. Source generation and
+ancestry remain signed claims, not current admitted Source/history authority.
+
+This is source association/derivation, not positive public Create or worker
+authority. Trusted publisher administration is unchanged; checksums,
+signature provenance, and input equality do not authenticate Source genesis
+or rollback floors, installed backends, live catalogs, Root history, or the
+all-owner held publication/effect barrier. Deployment-role dynamic revocation
+is still absent from `AOSPKP01`. No daemon provisioning, service, key, role,
+capability, TPM scope, public selector, or effective-policy gate is widened.
+Resource-read continuity after an initiating capability expires belongs to
+the separate durable resolved-policy/current-assignment/lease owner join,
+not a fresh public Create/Attach admission.
+
+The retained-input compiler entry runs the same complete algorithm without
+cloning the original owner model and keeps work admission first. A state
+derivation comparison retains a borrow of the exact expected typed input it
+freshly compiled. Its crate-private same-target publisher-origin hook reuses
+that candidate and the existing complete origin comparison while rechecking
+the held state writer before and after. It cannot substitute cold input data,
+remove any original input/output check, or treat a different original target
+as the current target; that case still requires independently reconstructed
+original typed input and its own compile. Both comparison results remain
+nonauthorizing and do not replace the real Root-last current owner join.
 
 ## Portable tree format
 

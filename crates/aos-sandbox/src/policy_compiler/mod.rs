@@ -58,13 +58,16 @@ pub(crate) use project_admission_root::{
     validate_root_project_capacity_transfer_v1,
 };
 mod project_source_v2;
+mod project_source_v3;
 mod protected_journal;
 mod protected_owner;
 mod public_create_source;
 pub(crate) use public_create_source::{
     HistoricalCreateProjectSourceHeadsV1, create_project_source_commitment_v1,
 };
+mod publisher_origin;
 mod resolved_policy;
+mod resource_read;
 mod resources;
 mod root_challenge_record;
 mod root_project_admission_proof;
@@ -234,6 +237,11 @@ pub use project_source_v2::{
     VerifiedSignedProjectPolicySourceV2, admit_fixed_signed_project_policy_source_v2,
     verify_signed_project_policy_source_v2,
 };
+pub use project_source_v3::{
+    HeldCurrentCreatePolicyInputsV3, PROJECT_POLICY_ASSOCIATION_PACKET_BYTES_V3,
+    ProjectPolicyAssociationV3, verify_held_project_policy_association_v3,
+    with_current_parentless_create_policy_inputs_v3,
+};
 pub use protected_journal::{
     AppliedPolicyPublicationV1, PolicyCheckpointCommitOutcomeV1, PolicyCheckpointOutcomeUnknownV1,
     PolicyCheckpointRecoveryV1, PolicyCompilerColdObservationV1, PolicyCompilerEffectHandoffV1,
@@ -253,7 +261,6 @@ pub use protected_owner::{
     PolicyCompilerProtectedObservationRecoveryV1, PolicyCompilerProtectedOpenReportV1,
     PolicyCompilerProtectedOwnerV1,
 };
-pub use resolved_policy::{HeldResolvedRuntimePolicyV1, PolicyCompilerStateReadbackOwnerV1};
 #[cfg(target_os = "linux")]
 pub use public_create_source::with_current_create_cache_signer_barrier_v5;
 #[cfg(target_os = "linux")]
@@ -273,6 +280,11 @@ pub use public_create_source::{
     with_current_create_policy_source_barrier_v3, with_current_create_policy_source_barrier_v4,
     with_current_parentless_create_ancestry_v1,
 };
+pub use publisher_origin::{
+    CompiledPublisherPolicyRevisionV2, RetainedPublisherCompilerOriginV3,
+    compile_publisher_policy_revision_v2,
+};
+pub use resolved_policy::{HeldResolvedRuntimePolicyV1, PolicyCompilerStateReadbackOwnerV1};
 pub use resources::{
     BackendEnforcementSetV1, HardEnforcementV1, HardLimitProvenanceV1, HardLimitRequestV1,
     HardLimitValueV1, HardResourceKeyV1, HardResourceModelError, HardResourcePlanV1,

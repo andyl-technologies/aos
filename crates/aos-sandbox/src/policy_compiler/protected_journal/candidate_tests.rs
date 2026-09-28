@@ -105,22 +105,63 @@ pub(super) fn compile_fixture(
     namespace_seed: Option<u8>,
     executable: bool,
 ) -> VerifiedPolicyPublicationV1 {
-    let project = ProjectId::from_bytes([1; 16]);
-    let sandbox = SandboxId::from_bytes([2; 16]);
-    let verifier = SyntheticInputVerifier;
-    let domain = AuthenticatedCacheDomainV1::authenticate(
-        CacheDomain::new(
-            CacheDomainKind::Project,
-            CacheDomainId::from_bytes(*project.as_bytes()),
-        ),
-        CacheDomainBindingV1::Project(project),
-        &verifier,
-    )
-    .expect("synthetic project domain");
     let (grants, namespace, advisory) = namespace_seed.map_or_else(
         || (Vec::new(), Vec::new(), Vec::new()),
         |seed| nonempty_rules(seed, executable),
     );
+    fixture_from_input(compiler_input_with_rules(
+        amount,
+        CacheDomainKind::Project,
+        grants,
+        namespace,
+        advisory,
+    ))
+}
+
+pub(super) fn compiler_input(
+    amount: u64,
+    domain: CacheDomainKind,
+    grants: Vec<Grant>,
+) -> PolicyCompilerInputV1 {
+    compiler_input_with_rules(amount, domain, grants, Vec::new(), Vec::new())
+}
+
+fn compiler_input_with_rules(
+    amount: u64,
+    domain: CacheDomainKind,
+    grants: Vec<Grant>,
+    namespace: Vec<NamespaceRuleV1>,
+    advisory: Vec<AdvisoryActionV1>,
+) -> PolicyCompilerInputV1 {
+    let project = ProjectId::from_bytes([1; 16]);
+    let sandbox = SandboxId::from_bytes([2; 16]);
+    let verifier = SyntheticInputVerifier;
+    let domain_id = match domain {
+        CacheDomainKind::Private => *sandbox.as_bytes(),
+        CacheDomainKind::Project => *project.as_bytes(),
+        CacheDomainKind::Public | CacheDomainKind::TrustDomain => [3; 16],
+    };
+    let core_domain = CacheDomain::new(domain, CacheDomainId::from_bytes(domain_id));
+    let domain = match domain {
+        CacheDomainKind::Public => AuthenticatedCacheDomainV1::public(core_domain),
+        CacheDomainKind::Private => AuthenticatedCacheDomainV1::authenticate(
+            core_domain,
+            CacheDomainBindingV1::Sandbox(sandbox),
+            &verifier,
+        ),
+        CacheDomainKind::Project => AuthenticatedCacheDomainV1::authenticate(
+            core_domain,
+            CacheDomainBindingV1::Project(project),
+            &verifier,
+        ),
+        CacheDomainKind::TrustDomain => AuthenticatedCacheDomainV1::authenticate(
+            core_domain,
+            CacheDomainBindingV1::TrustDomain(project),
+            &verifier,
+        ),
+    }
+    .expect("synthetic exact cache domain");
+    let has_namespace = !namespace.is_empty();
     let ceiling = PolicyLayerV1::new(
         grants.clone(),
         resources(Some(amount)),
@@ -139,7 +180,7 @@ pub(super) fn compile_fixture(
         RevocationInputV1::Inherit,
     )
     .expect("inherited fixture layer");
-    let input = PolicyCompilerInputV1::new(
+    PolicyCompilerInputV1::new(
         AuthenticatedSandboxProjectRelationV1::authenticate(sandbox, project, &verifier)
             .expect("synthetic relation"),
         NodePolicyInputV1::new(ceiling).expect("explicit node ceiling"),
@@ -153,7 +194,7 @@ pub(super) fn compile_fixture(
             .expect("empty fixture namespace"),
         BackendCapabilitiesV1::new(
             BackendEnforcementSetV1::new(ENFORCEMENT.to_vec()).expect("ordered fixture mechanisms"),
-            if namespace_seed.is_some() {
+            if has_namespace {
                 vec![
                     NamespaceBackendFeatureV1::Immutable,
                     NamespaceBackendFeatureV1::NoExecute,
@@ -161,7 +202,7 @@ pub(super) fn compile_fixture(
             } else {
                 Vec::new()
             },
-            if namespace_seed.is_some() {
+            if has_namespace {
                 vec![AdvisoryKindV1::Readahead, AdvisoryKindV1::CacheWeight]
             } else {
                 Vec::new()
@@ -170,7 +211,12 @@ pub(super) fn compile_fixture(
         .expect("fixture backend"),
         PolicyCompilerLimitsV1::DEFAULT,
     )
-    .expect("complete synthetic compiler input");
+    .expect("complete synthetic compiler input")
+}
+
+pub(super) fn fixture_from_input(input: PolicyCompilerInputV1) -> VerifiedPolicyPublicationV1 {
+    let project = input.project().project();
+    let sandbox = input.sandbox();
     let normalized_input = normalized_policy_input_digest_v1(&input).expect("normalized input");
     let candidate = PolicyCompilerV1::compile(input).expect("real pure compilation");
     let diagnostics =
