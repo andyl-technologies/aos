@@ -11,6 +11,7 @@
 //! Every present attach row, including legacy byte-one and partial v3 rows,
 //! permanently refuses another transfer; readback never reconstructs custody.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _};
@@ -65,6 +66,10 @@ pub(super) struct ProcessRecord {
     pub(super) pty: bool,
     #[serde(default)]
     pub(super) attach_io: Option<AttachIoShapeV3>,
+    #[serde(default)]
+    pub(super) cgroup: Option<u64>,
+    #[serde(default)]
+    pub(super) cancel_on_disconnect: Option<bool>,
     pub(super) canceled: bool,
     #[serde(default)]
     pub(super) terminal: Option<StoredOutcome>,
@@ -98,6 +103,7 @@ pub(super) enum Reservation {
 pub(super) struct Ledger {
     root: PathBuf,
     effect_barrier: Arc<Mutex<()>>,
+    live: Arc<Mutex<BTreeMap<[u8; 16], crate::process::LiveProcess>>>,
 }
 
 impl Ledger {
@@ -110,6 +116,7 @@ impl Ledger {
         Ok(Self {
             root,
             effect_barrier: Arc::new(Mutex::new(())),
+            live: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -119,6 +126,29 @@ impl Ledger {
     /// a process read. Ledger methods do not reacquire it recursively.
     pub(super) fn effect_barrier(&self) -> Arc<Mutex<()>> {
         Arc::clone(&self.effect_barrier)
+    }
+
+    pub(crate) fn live(&self) -> &Mutex<BTreeMap<[u8; 16], crate::process::LiveProcess>> {
+        &self.live
+    }
+
+    /// Uses the original in-memory owner handles, never a cold scalar record.
+    /// Caller keeps the existing effect barrier through every dependent effect.
+    pub(crate) fn require_live_process(
+        &self,
+        record: &ProcessRecord,
+    ) -> Result<bool, GuestProcessEffectErrorV1> {
+        if record.canceled || record.terminal.is_some() {
+            return Ok(false);
+        }
+        let live = self
+            .live
+            .lock()
+            .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+        let Some(process) = live.get(&record.execution) else {
+            return Ok(false);
+        };
+        process.tree.matches(record)
     }
 
     pub(super) fn processes(&self) -> Result<Vec<ProcessRecord>, GuestProcessEffectErrorV1> {
@@ -278,17 +308,6 @@ impl Ledger {
         self.read_process(ExecutionId::from_bytes(execution))
     }
 
-    pub(super) fn reserve_attach(
-        &self,
-        execution: [u8; 16],
-    ) -> Result<(), GuestProcessEffectErrorV1> {
-        create_record(
-            &self.root.join(format!("attach-{}", hex_bytes(&execution))),
-            &1_u8,
-        )?;
-        self.sync_directory()
-    }
-
     pub(super) fn reserve_original_attach_v3(
         &self,
         process: &ProcessRecord,
@@ -298,7 +317,13 @@ impl Ledger {
         let io = process
             .attach_io
             .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
-        if ticket == [0; 32] || custody == [0; 32] || process.canceled || process.terminal.is_some()
+        if process.version != 2
+            || process.cgroup.is_none_or(|id| id == 0)
+            || process.cancel_on_disconnect.is_none()
+            || ticket == [0; 32]
+            || custody == [0; 32]
+            || process.canceled
+            || process.terminal.is_some()
         {
             return Err(GuestProcessEffectErrorV1::InvalidRequest);
         }
@@ -366,7 +391,9 @@ fn verify_directory(path: &Path, private: bool) -> Result<(), GuestProcessEffect
 }
 
 fn validate_process(record: &ProcessRecord) -> Result<(), GuestProcessEffectErrorV1> {
-    if record.version != 1
+    if !matches!(record.version, 1 | 2)
+        || record.version == 2
+            && (record.cgroup.is_none_or(|id| id == 0) || record.cancel_on_disconnect.is_none())
         || record.execution == [0; 16]
         || record.incarnation == [0; 16]
         || record.assignment_epoch == 0
@@ -445,8 +472,53 @@ fn read_record_bytes(path: &Path) -> Result<Vec<u8>, GuestProcessEffectErrorV1> 
 
 #[cfg(test)]
 mod tests {
+    //! Durable one-use shape and barrier tests never reconstruct live tree custody.
+
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn cold_original_records_never_reconstruct_tree_custody() {
+        let ledger = Ledger {
+            root: PathBuf::new(),
+            effect_barrier: Arc::new(Mutex::new(())),
+            live: Arc::new(Mutex::new(BTreeMap::new())),
+        };
+        let mut historical = ProcessRecord {
+            version: 2,
+            runtime: [1; 32],
+            operation: [2; 16],
+            execution: [3; 16],
+            incarnation: [4; 16],
+            assignment_epoch: 1,
+            principal: [5; 16],
+            audit: [6; 16],
+            uid: 0,
+            pid: std::process::id(),
+            start_ticks: 1,
+            pty: true,
+            attach_io: Some(AttachIoShapeV3::Pty),
+            cgroup: Some(1),
+            cancel_on_disconnect: Some(true),
+            canceled: false,
+            terminal: None,
+        };
+        validate_process(&historical).unwrap();
+        assert!(!ledger.require_live_process(&historical).unwrap());
+
+        // Legacy metadata can remain readable, but neither version can adopt
+        // a same-PID or same-cgroup-number process after the handles are gone.
+        historical.version = 1;
+        historical.cgroup = None;
+        historical.cancel_on_disconnect = None;
+        validate_process(&historical).unwrap();
+        assert!(!ledger.require_live_process(&historical).unwrap());
+
+        historical.version = 2;
+        assert!(validate_process(&historical).is_err());
+        historical.cgroup = Some(1);
+        assert!(validate_process(&historical).is_err());
+    }
 
     #[test]
     #[ignore = "requires the dedicated root-owned Guest ledger fixture"]
@@ -457,9 +529,10 @@ mod tests {
         let ledger = Ledger {
             root: directory.path().to_path_buf(),
             effect_barrier: Arc::new(Mutex::new(())),
+            live: Arc::new(Mutex::new(BTreeMap::new())),
         };
         let process = ProcessRecord {
-            version: 1,
+            version: 2,
             runtime: [1; 32],
             operation: [2; 16],
             execution: [3; 16],
@@ -472,6 +545,8 @@ mod tests {
             start_ticks: 1,
             pty: true,
             attach_io: Some(AttachIoShapeV3::Pty),
+            cgroup: Some(1),
+            cancel_on_disconnect: Some(true),
             canceled: false,
             terminal: None,
         };

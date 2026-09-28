@@ -34,6 +34,8 @@ pub mod fixed_spawn;
 pub mod fuse_mount;
 pub mod fuse_worker_objects;
 pub mod fuse_worker_startup;
+pub mod guest_cgroup;
+pub mod guest_confinement;
 pub mod immutable_file;
 pub mod inherited_fd;
 pub mod inventory;

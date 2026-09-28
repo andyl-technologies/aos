@@ -11,6 +11,7 @@
   python3,
   aos-netd,
   aos-filesystem-fuse-worker,
+  aos-sandbox-zfs-worker,
 }: let
   policyVersion = "33";
   policySupport = ./_aos-selinux-production-policy;
@@ -18,6 +19,11 @@
   # the executable it labels. The system module co-installs this exact output.
   netdBasename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString aos-netd));
   netdBasenameRegex = builtins.replaceStrings ["."] ["\\."] netdBasename;
+  publisherBasename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString aos-sandbox-zfs-worker));
+  publisherBasenameRegex = builtins.replaceStrings ["."] ["\\."] publisherBasename;
+  exactPublisherLabel =
+    builtins.match "[a-z0-9]{32}-aos-sandbox-zfs-worker-[0-9]+\\.[0-9]+\\.[0-9]+" publisherBasename
+    != null;
   inspectorPathRegex = "/(nix|nix\\.lower)/store/${netdBasenameRegex}/bin/aos-sandbox-network-namespace-inspector";
   inspectorPath = basename: "/nix/store/${basename}/bin/aos-sandbox-network-namespace-inspector";
   siblingBasename =
@@ -59,12 +65,12 @@
     && builtins.match workerPathRegex (workerPath workerSibling) == null
     && builtins.match workerPathRegex (workerPath (workerBasename + "-alias")) == null;
   fileContexts =
-    if exactNetdLabel && exactWorkerLabel
+    if exactNetdLabel && exactWorkerLabel && exactPublisherLabel
     then
       builtins.toFile "aos_sandbox.fc" (
         builtins.replaceStrings
-        ["@AOS_NETD_BASENAME_REGEX@" "@AOS_FUSE_WORKER_BASENAME_REGEX@"]
-        [netdBasenameRegex workerBasenameRegex]
+        ["@AOS_NETD_BASENAME_REGEX@" "@AOS_FUSE_WORKER_BASENAME_REGEX@" "@AOS_ZFS_WORKER_BASENAME_REGEX@"]
+        [netdBasenameRegex workerBasenameRegex publisherBasenameRegex]
         (builtins.readFile (policySupport + "/aos_sandbox.fc"))
       )
     else throw "fixed service SELinux labels must match only their evaluated package roots";
@@ -129,6 +135,7 @@ in
 
           ${checkpolicy}/bin/checkpolicy -b -C \
             -o final-policy.cil final-policy.${policyVersion}
+          grep -Fx '(policycap nnp_nosuid_transition)' final-policy.cil
           ${python3}/bin/python3 ${policySupport}/effective_policy.py \
             final-policy.${policyVersion} > effective-policy.tsv
           test -s effective-policy.tsv

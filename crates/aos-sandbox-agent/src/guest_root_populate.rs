@@ -62,6 +62,14 @@ pub fn populate_fresh_guest_root_before_v1(
     verify_directory(&fs::symlink_metadata(template)?)?;
     verify_directory(&fs::symlink_metadata(workspace)?)?;
 
+    // A crash after physical labeling but before marker publication already
+    // has the exact copied tree. Do not chmod or rewrite those MAC-protected
+    // inodes merely to replay population; labeling/readback remains separate.
+    if let Ok(digest) = compare_guest_root_template_v1(template, workspace) {
+        check_deadline(&mut before_deadline)?;
+        return Ok(digest);
+    }
+
     let mut count = 0;
     copy_directory(template, workspace, &mut count, &mut before_deadline)?;
     check_deadline(&mut before_deadline)?;

@@ -1,8 +1,8 @@
 //! Fixed guest-local process I/O handoff for the authenticated SSH gate.
 //!
 //! The root-owned process ledger owns the PTY master or stream pipe ends. This
-//! socket hands them to one kernel-identified forced-command gate only after
-//! reading back the installed route claim and current process identity.
+//! socket hands them to the exact monitor-owned private relay only through the
+//! held original-ticket V3 consume. Legacy gate ancestry never releases IO.
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -18,26 +18,19 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use aos_sandbox_agent::openssh_gate::{
-    OpenSshGateBridgeRequestV1, OpenSshGateClaimV1, decode_openssh_gate_bridge_request_v1,
-};
+use aos_sandbox_agent::openssh_gate::{OpenSshGateBridgeRequestV1, OpenSshGateClaimV1};
 use aos_sandbox_linux::Error as LinuxError;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError, SeqpacketSocket};
 
 use crate::GuestProcessEffectErrorV1;
 use crate::ledger::Ledger;
-use crate::process::{process_identity, process_matches};
 
 const SOCKET_DIRECTORY: &str = "/run/aos-sandbox-agent";
 const SOCKET_PATH: &str = "/run/aos-sandbox-agent/exec-gate.sock";
-const GATE_EXECUTABLE: &str = "/usr/libexec/aos-sandbox-exec-gate";
-const SSHD_SESSION_EXECUTABLE: &str = "/usr/libexec/sshd-session";
 const GATE_RECORD: &str = "/etc/aos/sandbox-attach/gate-record.json";
-const REQUEST_BYTES: usize = 172;
 const MAX_GATE_RECORD_BYTES: u64 = 16 * 1024;
 const O_CLOEXEC: i32 = 0o2_000_000;
 const O_NOFOLLOW: i32 = 0o400_000;
-const PEER_DEADLINE: Duration = Duration::from_secs(5);
 
 enum AttachedIo {
     Pty(OwnedFd),
@@ -252,7 +245,7 @@ fn transfer_original_io_v3(
     if read_gate_claim()? != *claim
         || process.canceled
         || process.terminal.is_some()
-        || !process_matches(&process)?
+        || !ledger.require_live_process(&process)?
     {
         return Err(GuestProcessEffectErrorV1::InvalidRequest);
     }
@@ -281,11 +274,12 @@ fn transfer_original_io_v3(
     crate::process::check_deadline(deadline)?;
     original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
     recheck_custody(pending)?;
-    if read_gate_claim()? != *claim || !process_matches(&process)? {
+    if read_gate_claim()? != *claim || !ledger.require_live_process(&process)? {
         return Err(GuestProcessEffectErrorV1::InvalidRequest);
     }
     crate::process::check_deadline(deadline)?;
     original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
+    pending.io_attempted = true;
     match io {
         AttachedIo::Pty(master) => pending
             .socket
@@ -386,12 +380,27 @@ fn serve(
     monitors: crate::monitor::MonitorRegistry,
 ) {
     loop {
-        monitors.prune_closed(&ledger);
+        // One held barrier covers the real disconnect sample, subtree kill,
+        // recursive-empty/leader-exit evidence and durable terminal record.
+        let barrier = ledger.effect_barrier();
+        if let Ok(_current) = barrier.lock() {
+            match monitors.prune_closed(&ledger) {
+                Ok(Some(execution)) => {
+                    if let Ok(mut masters) = masters.lock() {
+                        masters.remove(&execution);
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => {} // The canceled durable row already forecloses IO.
+            }
+        } else {
+            break;
+        }
         if listener.validate_current().is_err() {
             break;
         }
         match listener.accept() {
-            Ok(mut socket) => {
+            Ok(socket) => {
                 if socket.peer().credentials().uid() == 0 {
                     // Only the measured live monitor can retain a binding.
                     // Registration exposes no I/O and never reaches reserve.
@@ -414,7 +423,9 @@ fn serve(
                 }
                 // Every accepted socket carries a pinned peer and a per-record
                 // subject. A denied request closes without an FD or success byte.
-                let _ = serve_one(&mut socket, &ledger, &masters);
+                // Ticket absence is not a legacy ancestry/byte1 shortcut.
+                // Only the typed original-monitor V3 owner consume sends IO.
+                drop(socket);
             }
             Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
                 thread::sleep(Duration::from_millis(5));
@@ -423,116 +434,6 @@ fn serve(
         }
     }
     monitors.close();
-}
-
-fn serve_one(
-    socket: &mut SeqpacketSocket,
-    ledger: &Ledger,
-    masters: &PtyRegistry,
-) -> Result<(), GuestProcessEffectErrorV1> {
-    let barrier = ledger.effect_barrier();
-    let _current = barrier
-        .lock()
-        .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
-    // V2 is custody data only. An unprivileged callback/gate cannot turn it
-    // into authenticated custody. A later trusted monitor and held consume
-    // must supply that evidence before this route can transfer descriptors.
-    match std::fs::symlink_metadata(aos_sandbox_agent::openssh_ticket::OPENSSH_TICKET_CLAIM_PATH_V2)
-    {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        _ => return Err(GuestProcessEffectErrorV1::InvalidRequest),
-    }
-    verify_executable(socket.peer().credentials().pid().get(), GATE_EXECUTABLE)?;
-    let deadline = Instant::now() + PEER_DEADLINE;
-    let received = loop {
-        match socket.receive(REQUEST_BYTES) {
-            Ok(record) => break record,
-            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted)
-                if Instant::now() < deadline =>
-            {
-                thread::sleep(Duration::from_millis(2));
-            }
-            Err(error) => return Err(error.into()),
-        }
-    };
-    let request = decode_openssh_gate_bridge_request_v1(received.payload())
-        .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
-    let peer = socket.peer();
-    let connector = peer.credentials();
-    let subject = received.subject();
-    let nominated = subject.credentials();
-    if connector.pid() != nominated.pid()
-        || connector.uid() != nominated.uid()
-        || connector.gid() != nominated.gid()
-        || !peer
-            .is_alive()
-            .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?
-        || !subject
-            .is_alive()
-            .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?
-    {
-        return Err(GuestProcessEffectErrorV1::InvalidRequest);
-    }
-
-    let claim = read_gate_claim()?;
-    let process = ledger.read_process_bytes(request.execution)?;
-    if !request_matches(&request, &claim, &process)
-        || connector.uid() != process.uid
-        || process.canceled
-        || process.terminal.is_some()
-        || !process_matches(&process)?
-    {
-        return Err(GuestProcessEffectErrorV1::InvalidRequest);
-    }
-    verify_gate_peer(
-        connector.pid().get(),
-        claim.sshd_pid,
-        claim.sshd_start_ticks,
-    )?;
-
-    let mut masters = masters
-        .lock()
-        .map_err(|_| GuestProcessEffectErrorV1::Unavailable("attach bridge registry poisoned"))?;
-    let descriptors =
-        masters
-            .get(&request.execution)
-            .ok_or(GuestProcessEffectErrorV1::Unavailable(
-                "execution I/O is not held",
-            ))?;
-    if !peer
-        .is_alive()
-        .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?
-        || !subject
-            .is_alive()
-            .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?
-    {
-        return Err(GuestProcessEffectErrorV1::InvalidRequest);
-    }
-
-    // The durable reservation precedes SCM_RIGHTS. A crash or short send may
-    // consume the attach right, but cannot permit duplicate terminal holders.
-    if read_gate_claim()? != claim {
-        return Err(GuestProcessEffectErrorV1::InvalidRequest);
-    }
-    ledger.reserve_attach(request.execution)?;
-    match descriptors {
-        AttachedIo::Pty(master) if claim.pty => {
-            socket.send_with_descriptors(b"AOSGOK01", &[master.as_fd()])?;
-        }
-        AttachedIo::Stream {
-            input,
-            output,
-            error,
-        } if !claim.pty => {
-            socket.send_with_descriptors(
-                b"AOSGOS01",
-                &[input.as_fd(), output.as_fd(), error.as_fd()],
-            )?;
-        }
-        _ => return Err(GuestProcessEffectErrorV1::LedgerConflict),
-    }
-    masters.remove(&request.execution);
-    Ok(())
 }
 
 fn read_gate_claim() -> Result<OpenSshGateClaimV1, GuestProcessEffectErrorV1> {
@@ -603,45 +504,4 @@ pub(super) fn request_matches(
         && request.process_start_ticks == claim.process_start_ticks
         && request.process_start_ticks == process.start_ticks
         && claim.pty == process.pty
-}
-
-fn verify_gate_peer(
-    pid: u32,
-    sshd_pid: u32,
-    sshd_start_ticks: u64,
-) -> Result<(), GuestProcessEffectErrorV1> {
-    verify_executable(pid, GATE_EXECUTABLE)?;
-    let gate = process_identity(pid)?.ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
-    verify_executable(gate.parent, SSHD_SESSION_EXECUTABLE)?;
-
-    let mut ancestor = gate.parent;
-    for _ in 0..16 {
-        let identity =
-            process_identity(ancestor)?.ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
-        if ancestor == sshd_pid {
-            if identity.start_ticks == sshd_start_ticks {
-                return Ok(());
-            }
-            break;
-        }
-        if identity.parent == 0 || identity.parent == ancestor {
-            break;
-        }
-        ancestor = identity.parent;
-    }
-    Err(GuestProcessEffectErrorV1::InvalidRequest)
-}
-
-fn verify_executable(pid: u32, expected: &str) -> Result<(), GuestProcessEffectErrorV1> {
-    let installed = fs::metadata(expected)?;
-    let observed = fs::metadata(format!("/proc/{pid}/exe"))?;
-    if !installed.is_file()
-        || installed.uid() != 0
-        || installed.mode() & 0o022 != 0
-        || installed.dev() != observed.dev()
-        || installed.ino() != observed.ino()
-    {
-        return Err(GuestProcessEffectErrorV1::InvalidRequest);
-    }
-    Ok(())
 }

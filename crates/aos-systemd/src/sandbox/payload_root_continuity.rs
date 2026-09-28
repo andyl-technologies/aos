@@ -263,10 +263,9 @@ const NSPAWN_ARGUMENT_POLICY_V1: &[NspawnArgumentPolicyV1<'_>] = &[
     },
     NspawnArgumentPolicyV1::Literal("--private-users-ownership=map"),
     NspawnArgumentPolicyV1::Literal("--notify-ready=yes"),
-    NspawnArgumentPolicyV1::Literal(concat!(
-        "--selinux-context=",
-        "system_u:system_r:aos_sandbox_payload_t:s0"
-    )),
+    NspawnArgumentPolicyV1::Literal(
+        aos_sandbox_linux::guest_confinement::GUEST_OWNER_NSPAWN_ARGUMENT,
+    ),
     NspawnArgumentPolicyV1::Literal("--no-new-privileges=yes"),
     NspawnArgumentPolicyV1::Literal(concat!(
         "--drop-capability=",

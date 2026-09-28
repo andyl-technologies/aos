@@ -4,6 +4,7 @@
 /(nix|nix\.lower)/store/@AOS_NETD_BASENAME_REGEX@/bin/aos-sandbox-network-namespace-inspector -- system_u:object_r:aos_sandbox_namespace_inspector_exec_t
 /(nix|nix\.lower)/store/@AOS_NETD_BASENAME_REGEX@/bin/aos-sandbox-network-lifecycle-worker -- system_u:object_r:aos_sandbox_network_lifecycle_worker_exec_t
 /(nix|nix\.lower)/store/@AOS_FUSE_WORKER_BASENAME_REGEX@/bin/aos-filesystem-fuse-worker -- system_u:object_r:aos_filesystem_fuse_worker_exec_t
+/(nix|nix\.lower)/store/@AOS_ZFS_WORKER_BASENAME_REGEX@/bin/aos-sandbox-guest-root-publisher -- system_u:object_r:aos_sandbox_guest_root_publisher_exec_t
 /(nix|nix\.lower)/store/[a-z0-9]{32}-aos-selinux-runtime-roots-[^/]+/bin/aos-selinux-runtime-roots -- system_u:object_r:aos_sandbox_runtime_roots_exec_t
 /usr/lib/systemd/aos-selinux-root-handoff -- system_u:object_r:init_exec_t
 /usr/lib/systemd/aos-selinux-runtime-roots-handoff -- system_u:object_r:aos_sandbox_runtime_roots_handoff_exec_t

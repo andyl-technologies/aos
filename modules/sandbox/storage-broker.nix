@@ -540,6 +540,7 @@ in {
       ];
       serviceConfig = {
         Type = "exec";
+        SELinuxContext = lib.mkIf (config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") "system_u:system_r:aos_sandbox_guest_root_publisher_t";
         ExecStart = ''
           ${worker.package}/bin/aos-sandbox-guest-root-publisher \
             ${cfg.guestRootTemplate} \

@@ -463,7 +463,14 @@ impl RetainedCgroupAnchor {
         Ok(child)
     }
 
-    fn validate_active(&self) -> Result<()> {
+    /// Rechecks the retained identity and an active kernfs control inode.
+    ///
+    /// This does not fence migration or grant write access to the cgroup.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed identity, a removed/inaccessible cgroup, or kernel error.
+    pub fn validate_active(&self) -> Result<()> {
         if uapi::filesystem_type(self.root.as_fd())? != CGROUP2_SUPER_MAGIC {
             return Err(Error::WrongDescriptorType {
                 expected: "kernel cgroup-v2 directory",

@@ -16,6 +16,7 @@ DOMAINS = (
     "aos_sandbox_namespace_inspector_t",
     "aos_sandbox_network_lifecycle_worker_t",
     "aos_nspawn_t",
+    "aos_sandbox_guest_owner_t",
     "aos_sandbox_payload_t",
     fuse_worker_policy.WORKER_DOMAIN,
 )
@@ -26,7 +27,26 @@ PAYLOAD_EXECUTABLE_TYPES = (
 PROVISIONER_DOMAIN = "aos_sandbox_runtime_roots_t"
 HANDOFF_DOMAIN = "aos_sandbox_runtime_roots_handoff_t"
 HANDOFF_EXECUTABLE = "aos_sandbox_runtime_roots_handoff_exec_t"
-ENFORCING_DOMAINS = ("kernel_t", "init_t", HANDOFF_DOMAIN, PROVISIONER_DOMAIN, *DOMAINS)
+GUEST_OWNER = "aos_sandbox_guest_owner_t"
+GUEST_TENANT = "aos_sandbox_payload_t"
+GUEST_ROOT_PUBLISHER = "aos_sandbox_guest_root_publisher_t"
+GUEST_PUBLICATION = "aos_sandbox_guest_publication_t"
+GUEST_PROTECTED_FILES = (
+    "aos_sandbox_guest_owner_exec_t",
+    "aos_sandbox_guest_store_t",
+    "aos_sandbox_guest_config_t",
+    "aos_sandbox_guest_runtime_metadata_t",
+    "aos_sandbox_guest_private_t",
+    GUEST_PUBLICATION,
+)
+ENFORCING_DOMAINS = (
+    "kernel_t",
+    "init_t",
+    HANDOFF_DOMAIN,
+    PROVISIONER_DOMAIN,
+    GUEST_ROOT_PUBLISHER,
+    *DOMAINS,
+)
 
 DOMAIN_EXECUTABLES = (
     ("aos_sandbox_host_t", "aos_sandbox_host_exec_t"),
@@ -39,6 +59,7 @@ DOMAIN_EXECUTABLES = (
     ),
     (HANDOFF_DOMAIN, HANDOFF_EXECUTABLE),
     (fuse_worker_policy.WORKER_DOMAIN, fuse_worker_policy.WORKER_EXECUTABLE),
+    ("aos_sandbox_guest_root_publisher_t", "aos_sandbox_guest_root_publisher_exec_t"),
 )
 NETWORK_SERVICE_DOMAINS = (
     "aos_sandbox_network_publisher_t",
@@ -49,7 +70,7 @@ NNP_FIXED_SERVICE_DOMAINS = (*NETWORK_SERVICE_DOMAINS, fuse_worker_policy.WORKER
 INSPECTOR_DOMAIN = "aos_sandbox_namespace_inspector_t"
 INSPECTOR_EXECUTABLE = "aos_sandbox_namespace_inspector_exec_t"
 PROVISIONER_EXECUTABLE = "aos_sandbox_runtime_roots_exec_t"
-FORBIDDEN_PROVISIONER_TRANSITION_SOURCES = ("init_t", *DOMAINS)
+FORBIDDEN_PROVISIONER_TRANSITION_SOURCES = ("init_t", *DOMAINS, GUEST_ROOT_PUBLISHER)
 
 PROTECTED_RECORDS = (
     "aos_sandbox_network_expected_record_t",
@@ -90,6 +111,8 @@ class Transition:
 
 TRANSITIONS = (
     Transition("init_t", fuse_worker_policy.WORKER_EXECUTABLE, "process", fuse_worker_policy.WORKER_DOMAIN),
+    Transition(GUEST_OWNER, "devpts_t", "chr_file", "aos_sandbox_guest_pty_t"),
+    Transition(GUEST_ROOT_PUBLISHER, GUEST_PUBLICATION, "file", GUEST_PUBLICATION),
     Transition("kernel_t", "init_exec_t", "process", "init_t"),
     Transition("init_t", "aos_sandbox_host_exec_t", "process", "aos_sandbox_host_t"),
     Transition("init_t", "aos_nspawn_exec_t", "process", "aos_nspawn_t"),
@@ -123,6 +146,7 @@ TRANSITIONS = (
         "process",
         PROVISIONER_DOMAIN,
     ),
+    Transition("init_t", "aos_sandbox_guest_root_publisher_exec_t", "process", "aos_sandbox_guest_root_publisher_t"),
     Transition(
         "aos_sandbox_network_publisher_t",
         "aos_sandbox_network_expected_staging_t",
@@ -169,6 +193,7 @@ def execution_access() -> tuple[Access, ...]:
 
 
 POSITIVE_ACCESS = (
+    Access("init_t", "aos_sandbox_guest_root_publisher_t", "process2", "nnp_transition"),
     Access("kernel_t", "init_t", "process", "transition"),
     Access("kernel_t", "init_exec_t", "file", "execute"),
     Access("init_t", "init_exec_t", "file", "entrypoint"),
@@ -435,7 +460,44 @@ POSITIVE_ACCESS = (
     Access("aos_nspawn_t", "aos_nspawn_t", "capability", "sys_admin"),
     Access("aos_nspawn_t", "aos_nspawn_t", "capability", "sys_chroot"),
     Access("aos_nspawn_t", "aos_nspawn_t", "process", "setexec"),
-    Access("aos_nspawn_t", "aos_sandbox_payload_t", "process", "transition"),
+    Access("aos_nspawn_t", GUEST_OWNER, "process", "transition"),
+    *accesses(
+        "aos_nspawn_t", GUEST_OWNER, "process2", ("nnp_transition", "nosuid_transition")
+    ),
+    *accesses(
+        "aos_nspawn_t",
+        "aos_sandbox_guest_store_t",
+        "file",
+        ("execute", "getattr", "map", "open", "read"),
+    ),
+    *accesses(
+        "aos_nspawn_t", "aos_sandbox_guest_config_t", "file", ("getattr", "open", "read")
+    ),
+    *accesses(
+        "aos_nspawn_t",
+        "aos_sandbox_guest_runtime_metadata_t",
+        "file",
+        ("getattr", "open", "read", "setattr", "write"),
+    ),
+    Access(GUEST_OWNER, GUEST_TENANT, "process", "transition"),
+    *accesses(GUEST_OWNER, GUEST_TENANT, "process2", ("nnp_transition", "nosuid_transition")),
+    Access(GUEST_OWNER, GUEST_OWNER, "process", "setexec"),
+    *(
+        Access(target, filesystem, "filesystem", "associate")
+        for target in (
+            *PAYLOAD_EXECUTABLE_TYPES,
+            *GUEST_PROTECTED_FILES,
+            "aos_sandbox_guest_anchor_t",
+            "aos_sandbox_guest_tenant_data_t",
+        )
+        for filesystem in ("fs_t", "tmpfs_t")
+    ),
+    Access("aos_sandbox_guest_pty_t", "devpts_t", "filesystem", "associate"),
+    *(
+        access
+        for subject in (GUEST_OWNER, GUEST_TENANT)
+        for access in accesses(subject, "aos_sandbox_guest_pty_t", "chr_file", ("getattr", "ioctl", "open", "read", "write"))
+    ),
     *accesses(
         "aos_nspawn_t",
         "aos_sandbox_payload_bootstrap_exec_t",
@@ -443,24 +505,56 @@ POSITIVE_ACCESS = (
         ("execute", "getattr", "map", "open", "read"),
     ),
     Access(
-        "aos_sandbox_payload_t",
+        GUEST_OWNER,
         "aos_sandbox_payload_bootstrap_exec_t",
         "file",
         "entrypoint",
     ),
     *accesses(
-        "aos_sandbox_payload_t",
+        GUEST_OWNER,
         "aos_sandbox_payload_systemd_exec_t",
         "file",
         ("execute", "execute_no_trans", "getattr", "map", "open", "read"),
     ),
     Access("aos_sandbox_host_t", "aos_sandbox_payload_t", "file", "read"),
     Access("aos_sandbox_host_t", "aos_sandbox_payload_t", "file", "ioctl"),
+    *accesses("aos_sandbox_host_t", GUEST_OWNER, "file", ("ioctl", "read")),
+    Access(GUEST_TENANT, GUEST_OWNER, "fd", "use"),
+    *accesses(GUEST_TENANT, GUEST_OWNER, "fifo_file", ("getattr", "ioctl", "open", "read", "write")),
+    *(
+        access
+        for subject in (GUEST_OWNER, GUEST_TENANT)
+        for access in accesses(subject, "aos_sandbox_guest_store_t", "file", ("execute", "execute_no_trans", "getattr", "map", "open", "read"))
+    ),
+    *(
+        access
+        for target in GUEST_PROTECTED_FILES
+        for access in accesses(
+            GUEST_ROOT_PUBLISHER, target, "file", ("getattr", "open", "read", "relabelto")
+        )
+    ),
+    *accesses(
+        GUEST_ROOT_PUBLISHER,
+        GUEST_PUBLICATION,
+        "dir",
+        ("add_name", "getattr", "open", "read", "remove_name", "search", "write"),
+    ),
+    *accesses(
+        GUEST_ROOT_PUBLISHER,
+        GUEST_PUBLICATION,
+        "file",
+        ("create", "getattr", "open", "read", "rename", "setattr", "unlink", "write"),
+    ),
+    *(
+        access
+        for subject in ("aos_sandbox_host_t", GUEST_OWNER)
+        for access in accesses(subject, GUEST_PUBLICATION, "file", ("getattr", "open", "read"))
+    ),
     *(
         access
         for executable in PAYLOAD_EXECUTABLE_TYPES
         for access in accesses(
-            "init_t", executable, "file", ("getattr", "open", "read", "relabelto")
+            "aos_sandbox_guest_root_publisher_t", executable, "file", ("getattr", "open", "read", "relabelto")
         )
     ),
     *(
@@ -845,6 +939,8 @@ def negative_access() -> tuple[Access, ...]:
     checks.append(
         Access("aos_nspawn_t", "aos_sandbox_payload_systemd_exec_t", "file", "execute")
     )
+    checks.append(Access("aos_nspawn_t", "aos_sandbox_guest_store_t", "file", "execute_no_trans"))
+    checks.extend(accesses("aos_nspawn_t", "aos_sandbox_guest_config_t", "file", RECORD_MUTATIONS))
 
     for domain in DOMAINS:
         for executable in PAYLOAD_EXECUTABLE_TYPES:
@@ -856,6 +952,35 @@ def negative_access() -> tuple[Access, ...]:
                     ("append", "create", "relabelto", "setattr", "unlink", "write"),
                 )
             )
+    for executable in PAYLOAD_EXECUTABLE_TYPES:
+        checks.append(Access("init_t", executable, "file", "relabelto"))
+
+    # UID-zero tenant and same-UID SSH children are different subjects. A
+    # domain-pair fd:use allow for stdio cannot grant these object permissions.
+    checks.extend(accesses(GUEST_TENANT, GUEST_OWNER, "file", ("read", "map", "ioctl", "write")))
+    checks.extend(accesses(GUEST_TENANT, GUEST_OWNER, "process", ("ptrace", "transition", "signal", "sigkill", "sigstop")))
+    checks.extend(accesses(GUEST_TENANT, GUEST_OWNER, "process2", ("nnp_transition", "nosuid_transition")))
+    checks.append(Access(GUEST_TENANT, GUEST_TENANT, "process", "setexec"))
+    # The adversarial VM adds a separately named, never-installed fixture
+    # entry module. Its measured Owner entry grant must not enter production.
+    checks.append(Access(GUEST_OWNER, "aos_sandbox_guest_owner_exec_t", "file", "entrypoint"))
+    for target in GUEST_PROTECTED_FILES:
+        checks.extend(accesses(GUEST_TENANT, target, "file", RECORD_MUTATIONS))
+        checks.extend(accesses(GUEST_TENANT, target, "dir", (*DIRECTORY_INODE_MUTATIONS, "add_name", "remove_name", "write")))
+        checks.extend(accesses(GUEST_TENANT, target, "lnk_file", ("create", "rename", "relabelto", "relabelfrom", "setattr", "unlink")))
+    for subject in ("init_t", *DOMAINS):
+        checks.extend(accesses(subject, GUEST_PUBLICATION, "file", RECORD_MUTATIONS))
+        checks.extend(
+            accesses(subject, GUEST_PUBLICATION, "dir", ("add_name", "remove_name", "write"))
+        )
+    checks.extend(accesses(GUEST_TENANT, "aos_sandbox_guest_anchor_t", "dir", DIRECTORY_INODE_MUTATIONS))
+    checks.extend(accesses(GUEST_TENANT, "aos_sandbox_guest_private_t", "sock_file", ("open", "read", "write")))
+    for object_class in ("unix_stream_socket", "unix_seqpacket_socket"):
+        checks.extend(accesses(GUEST_TENANT, GUEST_OWNER, object_class, ("connectto", "read", "write")))
+    checks.extend(accesses(GUEST_TENANT, "cgroup_t", "file", ("write", "append", "setattr")))
+    checks.extend(accesses(GUEST_TENANT, "cgroup_t", "dir", ("add_name", "remove_name", "create", "write", "setattr")))
+    checks.extend(accesses(GUEST_OWNER, "aos_sandbox_guest_tenant_data_t", "file", ("read", "map", "execute_no_trans")))
+    checks.extend(accesses(GUEST_OWNER, "file_type", "file", ("read", "map", "execute_no_trans")))
 
     return tuple(sorted(set(checks)))
 

@@ -132,6 +132,8 @@ in
     #          body does not reference the discarded descriptor.
     #   0017 — Pin protected Network service fragments to the measured image
     #          before every PID 1 spawn, including privileged prestart tasks.
+    #   0017-nspawn — Retain the payload cgroup and sealed original
+    #          credential/inode join for the fixed Guest owner bootstrap.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -150,6 +152,7 @@ in
       ./patches/0016-reject-truncated-bus-ancillary-data.patch
       ./patches/0017-pin-network-unit-fragments-before-spawn.patch
       ./patches/0018-launch-image-fuse-worker-role.patch
+      ./patches/0017-nspawn-guest-cgroup-custody.patch
     ];
 
     buildDeps = [

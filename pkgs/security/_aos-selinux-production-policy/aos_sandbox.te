@@ -4,6 +4,7 @@ require {
     role system_r;
 
     attribute domain;
+    attribute file_type;
     type init_t;
     type device_t;
     type fixed_disk_device_t;
@@ -20,20 +21,32 @@ require {
     type usr_t;
     type var_lib_t;
     type var_t;
+    type cgroup_t;
+    type devpts_t;
+    type ptmx_t;
+    type null_device_t;
+    type random_device_t;
+    type urandom_device_t;
+    type sysfs_t;
+    type systemd_var_run_t;
 
     class blk_file getattr;
-    class capability { sys_admin sys_chroot sys_ptrace };
-    class chr_file { getattr read write };
+    class capability { chown dac_override fowner fsetid kill setgid setuid sys_admin sys_chroot sys_ptrace };
+    class cap_userns { chown dac_override fowner fsetid kill setgid setuid };
+    class chr_file { getattr ioctl open read write };
     class dir { add_name create getattr open read relabelfrom relabelto remove_name rename rmdir search setattr write };
     class fd use;
-    class fifo_file { create getattr open read relabelto unlink write };
+    class fifo_file { append create getattr ioctl open read relabelto unlink write };
     class file { append create entrypoint execute execute_no_trans getattr ioctl link lock map open read relabelfrom relabelto rename setattr unlink write };
     class filesystem { associate getattr };
-    class lnk_file { getattr read };
-    class process { getattr noatsecure ptrace rlimitinh setexec setfscreate setsockcreate siginh transition };
-    class process2 nnp_transition;
+    class lnk_file { create getattr read relabelfrom relabelto rename setattr unlink };
+    class process { fork getcap getattr getpgid getsched noatsecure ptrace rlimitinh setexec setfscreate setpgid setrlimit setsched setsockcreate sigchld siginh sigkill signal sigstop transition };
+    class process2 { nnp_transition nosuid_transition };
     class security read_policy;
-    class unix_stream_socket { create getattr getopt read setopt write };
+    class memfd_file { getattr ioctl map open read };
+    class sock_file { create getattr open read rename setattr unlink write };
+    class unix_stream_socket { accept bind connect connectto create getattr getopt ioctl listen read setopt shutdown write };
+    class unix_seqpacket_socket { accept bind connect connectto create getattr getopt ioctl listen read setopt shutdown write };
 }
 
 # The fixed image worker has no pathname-opened FUSE, Cache, Root or channel
@@ -124,6 +137,18 @@ type aos_sandbox_runtime_roots_handoff_t;
 typeattribute aos_sandbox_runtime_roots_handoff_t domain;
 role system_r types aos_sandbox_runtime_roots_handoff_t;
 
+# The existing cap-empty Guest publisher is not the long-lived Storage broker.
+# It has a dedicated binary; its exact normal template selects this context.
+type aos_sandbox_guest_root_publisher_t;
+typeattribute aos_sandbox_guest_root_publisher_t domain;
+role system_r types aos_sandbox_guest_root_publisher_t;
+type aos_sandbox_guest_root_publisher_exec_t;
+allow init_t aos_sandbox_guest_root_publisher_exec_t:file { execute getattr map open read };
+allow init_t aos_sandbox_guest_root_publisher_t:process transition;
+allow init_t aos_sandbox_guest_root_publisher_t:process2 nnp_transition;
+allow aos_sandbox_guest_root_publisher_t aos_sandbox_guest_root_publisher_exec_t:file entrypoint;
+type_transition init_t aos_sandbox_guest_root_publisher_exec_t:process aos_sandbox_guest_root_publisher_t;
+
 # The outer nspawn supervisor and shifted guest payload are separate enforcing
 # subjects. Only the supervisor is granted mount/chroot capability by this
 # module; the payload cannot inherit that AOS-specific authority.
@@ -135,10 +160,45 @@ type aos_sandbox_payload_t;
 typeattribute aos_sandbox_payload_t domain;
 role system_r types aos_sandbox_payload_t;
 
+# UID zero remains a Tenant. Only the existing fixed Guest owner inherits this
+# separate subject before first exec; no Tenant entrypoint can enter it.
+type aos_sandbox_guest_owner_t;
+typeattribute aos_sandbox_guest_owner_t domain;
+role system_r types aos_sandbox_guest_owner_t;
+
+# None of these protected workspace types joins file_type. In particular, the
+# base unconfined file matrix cannot turn a Tenant UID-zero process into a
+# writer of the copied loader, libraries, units, credentials, or runtime TCB.
+type aos_sandbox_guest_owner_exec_t;
+type aos_sandbox_guest_store_t;
+type aos_sandbox_guest_anchor_t;
+type aos_sandbox_guest_config_t;
+type aos_sandbox_guest_runtime_metadata_t;
+type aos_sandbox_guest_private_t;
+type aos_sandbox_guest_publication_t;
+type aos_sandbox_guest_tenant_data_t;
+type aos_sandbox_guest_pty_t;
+
 # These labels are for the two copied workspace inodes, not their Nix-store
 # source binaries. A runtime publisher must apply and read back both labels.
 type aos_sandbox_payload_bootstrap_exec_t;
 type aos_sandbox_payload_systemd_exec_t;
+
+# Exact persistent ZFS and fresh runtime tmpfs association, without joining
+# the protected objects to file_type's generic UID-zero write matrix.
+allow {
+    aos_sandbox_payload_bootstrap_exec_t
+    aos_sandbox_payload_systemd_exec_t
+    aos_sandbox_guest_owner_exec_t
+    aos_sandbox_guest_store_t
+    aos_sandbox_guest_anchor_t
+    aos_sandbox_guest_config_t
+    aos_sandbox_guest_runtime_metadata_t
+    aos_sandbox_guest_private_t
+    aos_sandbox_guest_publication_t
+    aos_sandbox_guest_tenant_data_t
+} { fs_t tmpfs_t }:filesystem associate;
+allow aos_sandbox_guest_pty_t devpts_t:filesystem associate;
 
 type aos_sandbox_host_exec_t;
 type aos_sandbox_network_publisher_exec_t;
@@ -231,24 +291,156 @@ allow aos_nspawn_t aos_nspawn_exec_t:file entrypoint;
 type_transition init_t aos_nspawn_exec_t:process aos_nspawn_t;
 allow aos_nspawn_t self:capability { sys_admin sys_chroot };
 allow aos_nspawn_t self:process setexec;
-allow aos_nspawn_t aos_sandbox_payload_t:process transition;
+allow aos_nspawn_t aos_sandbox_guest_owner_t:process transition;
+allow aos_nspawn_t aos_sandbox_guest_owner_t:process2 { nnp_transition nosuid_transition };
 allow aos_nspawn_t aos_sandbox_payload_bootstrap_exec_t:file { execute getattr map open read };
-allow aos_sandbox_payload_t aos_sandbox_payload_bootstrap_exec_t:file entrypoint;
-allow aos_sandbox_payload_t aos_sandbox_payload_systemd_exec_t:file { execute execute_no_trans getattr map open read };
+allow aos_sandbox_guest_owner_t aos_sandbox_payload_bootstrap_exec_t:file entrypoint;
+allow aos_sandbox_guest_owner_t aos_sandbox_payload_systemd_exec_t:file { execute execute_no_trans getattr map open read };
 
-# The existing zero-cap Storage publisher runs under init_t. Linux delegates
+# The existing zero-cap Guest publisher runs in its own domain. Linux delegates
 # valid security.selinux xattr changes to relabel policy without CAP_MAC_ADMIN.
 # The kernel still checks ownership and relabelfrom on the copied source type;
 # only these two exact destination types are granted here. Storage and Host
 # subsequently read the physical xattrs before trusting a publication.
-allow init_t aos_sandbox_payload_bootstrap_exec_t:file { getattr open read relabelto };
-allow init_t aos_sandbox_payload_systemd_exec_t:file { getattr open read relabelto };
+allow aos_sandbox_guest_root_publisher_t aos_sandbox_payload_bootstrap_exec_t:file { getattr open read relabelto };
+allow aos_sandbox_guest_root_publisher_t aos_sandbox_payload_systemd_exec_t:file { getattr open read relabelto };
 allow aos_sandbox_host_t aos_sandbox_payload_bootstrap_exec_t:file { getattr open read };
 allow aos_sandbox_host_t aos_sandbox_payload_systemd_exec_t:file { getattr open read };
 
 # pidfs namespace ioctls use file read/ioctl against the target task SID.
 # Host's unit sandbox still carries no CAP_SYS_PTRACE or CAP_SYS_ADMIN.
 allow aos_sandbox_host_t aos_sandbox_payload_t:file { ioctl read };
+allow aos_sandbox_host_t aos_sandbox_guest_owner_t:file { ioctl read };
+
+# The existing fixed guest-root publisher, not the Storage broker or init_t,
+# projects and reads back the immutable substrate. Its entrypoint/domain is
+# installed by the existing-owner confinement policy; these are only its exact
+# Guest output types. Runtime Owner projection remains a separate fresh-mount cut.
+allow aos_sandbox_guest_root_publisher_t { aos_sandbox_guest_owner_exec_t aos_sandbox_guest_store_t aos_sandbox_guest_anchor_t aos_sandbox_guest_config_t aos_sandbox_guest_private_t aos_sandbox_guest_publication_t }:dir { getattr open read relabelto search };
+allow aos_sandbox_guest_root_publisher_t { aos_sandbox_guest_owner_exec_t aos_sandbox_guest_store_t aos_sandbox_guest_config_t aos_sandbox_guest_runtime_metadata_t aos_sandbox_guest_private_t aos_sandbox_guest_publication_t }:file { getattr open read relabelto };
+allow aos_sandbox_guest_root_publisher_t { aos_sandbox_guest_store_t aos_sandbox_guest_config_t aos_sandbox_guest_private_t }:lnk_file { getattr read relabelto };
+allow aos_sandbox_host_t { aos_sandbox_guest_anchor_t aos_sandbox_guest_store_t aos_sandbox_guest_config_t aos_sandbox_guest_private_t aos_sandbox_guest_publication_t }:dir { getattr open read search };
+allow aos_sandbox_host_t { aos_sandbox_guest_owner_exec_t aos_sandbox_guest_store_t aos_sandbox_guest_config_t aos_sandbox_guest_runtime_metadata_t aos_sandbox_guest_private_t aos_sandbox_guest_publication_t }:file { getattr open read };
+allow aos_sandbox_host_t { aos_sandbox_guest_store_t aos_sandbox_guest_config_t aos_sandbox_guest_private_t }:lnk_file { getattr read };
+
+# Marker format, signature and write ordering are unchanged. Only this fixed
+# existing publisher creates the temporary file and renames it within the
+# separately projected publication directory; no private-tree writer is added.
+allow aos_sandbox_guest_root_publisher_t aos_sandbox_guest_publication_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_guest_root_publisher_t aos_sandbox_guest_publication_t:file { create getattr open read rename setattr unlink write };
+type_transition aos_sandbox_guest_root_publisher_t aos_sandbox_guest_publication_t:file aos_sandbox_guest_publication_t;
+allow aos_sandbox_guest_owner_t aos_sandbox_guest_publication_t:dir { getattr open read search };
+allow aos_sandbox_guest_owner_t aos_sandbox_guest_publication_t:file { getattr open read };
+
+allow aos_sandbox_guest_owner_t self:process { fork getcap getattr getpgid getsched setexec setpgid setrlimit setsched sigchld sigkill signal sigstop };
+allow aos_sandbox_guest_owner_t self:file { getattr ioctl open read write };
+allow aos_sandbox_guest_owner_t self:dir { getattr open read search };
+allow aos_sandbox_guest_owner_t self:lnk_file { getattr read };
+allow aos_sandbox_guest_owner_t self:fd use;
+allow aos_sandbox_guest_owner_t self:capability { chown dac_override fowner fsetid kill setgid setuid };
+allow aos_sandbox_guest_owner_t self:cap_userns { chown dac_override fowner fsetid kill setgid setuid };
+allow aos_sandbox_guest_owner_t aos_sandbox_payload_t:process { getattr getpgid sigchld sigkill signal sigstop transition };
+allow aos_sandbox_guest_owner_t aos_sandbox_payload_t:process2 { nnp_transition nosuid_transition };
+allow aos_sandbox_guest_owner_t aos_sandbox_payload_t:file { getattr ioctl read };
+
+allow aos_sandbox_guest_owner_t aos_sandbox_guest_owner_exec_t:file { execute execute_no_trans getattr map open read };
+allow aos_sandbox_guest_owner_t aos_sandbox_guest_store_t:dir { getattr open read search };
+allow aos_sandbox_guest_owner_t aos_sandbox_guest_store_t:file { execute execute_no_trans getattr map open read };
+allow aos_sandbox_guest_owner_t aos_sandbox_guest_store_t:lnk_file { getattr read };
+allow aos_sandbox_guest_owner_t aos_sandbox_guest_anchor_t:dir { add_name getattr open read search write };
+allow aos_sandbox_guest_owner_t { aos_sandbox_guest_config_t aos_sandbox_guest_private_t }:dir { add_name create getattr open read remove_name search write };
+allow aos_sandbox_guest_owner_t { aos_sandbox_guest_config_t aos_sandbox_guest_private_t }:file { append create getattr ioctl lock open read rename setattr unlink write };
+allow aos_sandbox_guest_owner_t aos_sandbox_guest_config_t:lnk_file { getattr read };
+allow aos_sandbox_guest_owner_t aos_sandbox_guest_runtime_metadata_t:file { getattr open read setattr write };
+allow aos_sandbox_guest_owner_t aos_sandbox_guest_private_t:sock_file { create getattr open read rename setattr unlink write };
+allow aos_sandbox_guest_owner_t aos_sandbox_guest_private_t:lnk_file { create getattr read rename setattr unlink };
+type_transition aos_sandbox_guest_owner_t aos_sandbox_guest_anchor_t:dir aos_sandbox_guest_private_t;
+type_transition aos_sandbox_guest_owner_t aos_sandbox_guest_private_t:dir aos_sandbox_guest_private_t;
+type_transition aos_sandbox_guest_owner_t aos_sandbox_guest_private_t:file aos_sandbox_guest_private_t;
+type_transition aos_sandbox_guest_owner_t aos_sandbox_guest_private_t:sock_file aos_sandbox_guest_private_t;
+type_transition aos_sandbox_guest_owner_t aos_sandbox_guest_config_t:dir aos_sandbox_guest_config_t;
+type_transition aos_sandbox_guest_owner_t aos_sandbox_guest_config_t:file aos_sandbox_guest_config_t;
+
+# /run and /dev are fresh nspawn mounts, not copied workspace inodes. The fixed
+# bootstrap checks its actual Owner SID before relabeling those exact anchors;
+# it never relabels tenant data or the immutable closure at runtime.
+allow aos_sandbox_guest_owner_t { root_t var_t device_t tmpfs_t }:dir { getattr open read relabelfrom search };
+allow aos_sandbox_guest_owner_t aos_sandbox_guest_anchor_t:dir relabelto;
+allow aos_sandbox_guest_owner_t { tmpfs_t systemd_var_run_t }:dir { getattr open read relabelfrom search };
+allow aos_sandbox_guest_owner_t { tmpfs_t systemd_var_run_t }:file { getattr open read relabelfrom };
+allow aos_sandbox_guest_owner_t aos_sandbox_guest_private_t:dir relabelto;
+allow aos_sandbox_guest_owner_t aos_sandbox_guest_private_t:file relabelto;
+allow aos_nspawn_t aos_sandbox_guest_anchor_t:dir { getattr open read search };
+# The supervisor reads the copied interpreter/library closure before changing
+# subject. It cannot execute that closure without the explicit transition.
+# Only machine-id/resolver metadata has its separate existing setup writer;
+# hostname setup is a UTS syscall, not writable loader/NSS/PAM configuration.
+allow aos_nspawn_t aos_sandbox_guest_store_t:dir { getattr open read search };
+allow aos_nspawn_t aos_sandbox_guest_store_t:file { execute getattr map open read };
+allow aos_nspawn_t aos_sandbox_guest_store_t:lnk_file { getattr read };
+allow aos_nspawn_t aos_sandbox_guest_config_t:dir { getattr open read search };
+allow aos_nspawn_t aos_sandbox_guest_config_t:file { getattr open read };
+allow aos_nspawn_t aos_sandbox_guest_runtime_metadata_t:file { getattr open read setattr write };
+allow aos_sandbox_guest_owner_t security_t:dir { getattr open read search };
+allow aos_sandbox_guest_owner_t security_t:file { getattr open read };
+allow aos_sandbox_guest_owner_t security_t:filesystem getattr;
+allow aos_sandbox_guest_owner_t proc_t:dir { getattr open read search };
+allow aos_sandbox_guest_owner_t proc_t:file { getattr open read write };
+allow aos_sandbox_guest_owner_t proc_t:lnk_file { getattr read };
+allow aos_sandbox_guest_owner_t sysfs_t:dir { getattr open read search };
+allow aos_sandbox_guest_owner_t sysfs_t:file { getattr open read };
+allow aos_sandbox_guest_owner_t cgroup_t:dir { add_name create getattr open read remove_name search setattr write };
+allow aos_sandbox_guest_owner_t cgroup_t:file { getattr open read setattr write };
+allow aos_sandbox_guest_owner_t { cgroup_t devpts_t proc_t sysfs_t tmpfs_t }:filesystem getattr;
+allow aos_sandbox_guest_owner_t { null_device_t random_device_t urandom_device_t devpts_t }:chr_file { getattr ioctl open read write };
+allow aos_sandbox_guest_owner_t ptmx_t:chr_file { getattr ioctl open read write };
+type_transition aos_sandbox_guest_owner_t devpts_t:chr_file aos_sandbox_guest_pty_t;
+allow { aos_sandbox_guest_owner_t aos_sandbox_payload_t } aos_sandbox_guest_pty_t:chr_file { getattr ioctl open read write };
+allow aos_sandbox_guest_owner_t self:fifo_file { create getattr ioctl open read write };
+allow aos_sandbox_guest_owner_t self:unix_stream_socket { accept bind connect connectto create getattr getopt ioctl listen read setopt shutdown write };
+allow aos_sandbox_guest_owner_t self:unix_seqpacket_socket { accept bind connect connectto create getattr getopt ioctl listen read setopt shutdown write };
+allow aos_sandbox_guest_owner_t aos_sandbox_host_t:fd use;
+allow aos_sandbox_guest_owner_t aos_nspawn_t:fd use;
+allow aos_sandbox_guest_owner_t { aos_sandbox_host_t aos_nspawn_t }:file { getattr ioctl map open read };
+allow aos_sandbox_guest_owner_t { aos_sandbox_host_t aos_nspawn_t }:memfd_file { getattr ioctl map open read };
+allow aos_sandbox_guest_owner_t aos_sandbox_host_t:unix_seqpacket_socket { connectto getattr getopt ioctl read setopt shutdown write };
+allow aos_sandbox_guest_owner_t { aos_sandbox_guest_anchor_t aos_sandbox_guest_tenant_data_t }:dir { getattr search };
+allow aos_sandbox_guest_owner_t { file_type aos_sandbox_guest_tenant_data_t }:file { execute getattr };
+allow aos_sandbox_guest_owner_t file_type:dir { getattr search };
+
+# An explicit Owner->Tenant exec may target the readonly package closure or
+# mutable tenant data. No default transition or Tenant->Owner edge exists.
+allow aos_sandbox_payload_t file_type:file { entrypoint execute execute_no_trans getattr map open read };
+allow aos_sandbox_payload_t aos_sandbox_guest_tenant_data_t:file { append create entrypoint execute execute_no_trans getattr ioctl lock map open read rename setattr unlink write };
+allow aos_sandbox_payload_t aos_sandbox_guest_store_t:file { entrypoint execute execute_no_trans getattr map open read };
+allow aos_sandbox_payload_t aos_sandbox_guest_store_t:dir { getattr open read search };
+allow aos_sandbox_payload_t aos_sandbox_guest_store_t:lnk_file { getattr read };
+allow aos_sandbox_payload_t aos_sandbox_guest_config_t:dir { getattr open read search };
+allow aos_sandbox_payload_t aos_sandbox_guest_config_t:file { getattr open read };
+allow aos_sandbox_payload_t aos_sandbox_guest_runtime_metadata_t:file { getattr open read };
+allow aos_sandbox_payload_t aos_sandbox_guest_anchor_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_payload_t aos_sandbox_guest_tenant_data_t:dir { add_name create getattr open read remove_name rename rmdir search setattr write };
+allow aos_sandbox_payload_t aos_sandbox_guest_tenant_data_t:lnk_file { create getattr read rename setattr unlink };
+type_transition aos_sandbox_payload_t aos_sandbox_guest_anchor_t:dir aos_sandbox_guest_tenant_data_t;
+type_transition aos_sandbox_payload_t aos_sandbox_guest_anchor_t:file aos_sandbox_guest_tenant_data_t;
+type_transition aos_sandbox_payload_t aos_sandbox_guest_tenant_data_t:dir aos_sandbox_guest_tenant_data_t;
+type_transition aos_sandbox_payload_t aos_sandbox_guest_tenant_data_t:file aos_sandbox_guest_tenant_data_t;
+type_transition aos_sandbox_payload_t aos_sandbox_guest_tenant_data_t:lnk_file aos_sandbox_guest_tenant_data_t;
+allow aos_sandbox_payload_t self:process { fork getcap getattr getpgid getsched setpgid setrlimit setsched sigchld sigkill signal sigstop };
+allow aos_sandbox_payload_t self:fd use;
+allow aos_sandbox_payload_t self:file { getattr ioctl open read write };
+allow aos_sandbox_payload_t self:dir { getattr open read search };
+allow aos_sandbox_payload_t self:lnk_file { getattr read };
+allow aos_sandbox_payload_t self:fifo_file { create getattr ioctl open read write };
+allow aos_sandbox_payload_t self:capability { chown dac_override fowner fsetid kill setgid setuid };
+allow aos_sandbox_payload_t self:cap_userns { chown dac_override fowner fsetid kill setgid setuid };
+
+# fd:use is a domain pair, not an FD-number filter. The measured exec helper
+# closes every >=3 entry. Actual FIFO/PTY object checks admit only stdio; there
+# is deliberately no Tenant->Owner regular-file read/map or ptrace permission.
+allow aos_sandbox_payload_t aos_sandbox_guest_owner_t:fd use;
+allow aos_sandbox_payload_t aos_sandbox_guest_owner_t:fifo_file { getattr ioctl open read write };
+allow aos_sandbox_payload_t { null_device_t random_device_t urandom_device_t devpts_t }:chr_file { getattr ioctl open read write };
 
 # The static provisioner observes only its immutable execution substrate,
 # SELinux state, own proc attributes, and the two fixed /var device names.

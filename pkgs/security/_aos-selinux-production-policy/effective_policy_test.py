@@ -427,7 +427,7 @@ class EffectivePolicyTest(unittest.TestCase):
     def test_missing_publisher_label_authority_fails(self) -> None:
         policy = FakePolicy()
         access = effective_policy.Access(
-            "init_t", "aos_sandbox_payload_bootstrap_exec_t", "file", "relabelto"
+            "aos_sandbox_guest_root_publisher_t", "aos_sandbox_payload_bootstrap_exec_t", "file", "relabelto"
         )
         policy.allows[access] = []
 
@@ -499,6 +499,40 @@ class EffectivePolicyTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "missing effective allow"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_uid_zero_cannot_bypass_guest_owner_objects(self) -> None:
+        for access in (
+            effective_policy.Access(effective_policy.GUEST_TENANT, effective_policy.GUEST_OWNER, "file", "read"),
+            effective_policy.Access(effective_policy.GUEST_TENANT, "aos_sandbox_guest_store_t", "file", "write"),
+            effective_policy.Access(effective_policy.GUEST_TENANT, "cgroup_t", "file", "write"),
+            effective_policy.Access(effective_policy.GUEST_TENANT, effective_policy.GUEST_OWNER, "process2", "nnp_transition"),
+            effective_policy.Access(effective_policy.GUEST_OWNER, "file_type", "file", "execute_no_trans"),
+        ):
+            with self.subTest(access=access):
+                policy = FakePolicy()
+                policy.allows[access] = [FakeRule("attribute-expanded unsafe Guest allow")]
+                with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_missing_owner_tenant_nnp_transition_fails(self) -> None:
+        policy = FakePolicy()
+        access = effective_policy.Access(effective_policy.GUEST_OWNER, effective_policy.GUEST_TENANT, "process2", "nnp_transition")
+        policy.allows[access] = []
+
+        with self.assertRaisesRegex(ValueError, "missing effective allow"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_guest_marker_has_only_the_fixed_publisher_writer(self) -> None:
+        for subject in ("init_t", "aos_sandbox_host_t", effective_policy.GUEST_OWNER):
+            with self.subTest(subject=subject):
+                policy = FakePolicy()
+                access = effective_policy.Access(
+                    subject, effective_policy.GUEST_PUBLICATION, "file", "write"
+                )
+                policy.allows[access] = [FakeRule("unsafe marker writer")]
+
+                with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
 
     def test_missing_provisioner_transition_fails(self) -> None:
         policy = FakePolicy()
