@@ -211,7 +211,15 @@ fn resource_read_same_target_origin_reuses_exact_borrowed_derivation() {
             })
             .unwrap();
     }
-    assert_eq!(owner.journal.snapshot_sequence(), sequence);
+    drop(owner);
+    let (journal, _) = Journal::open_protected_at_uid(
+        root.path(),
+        POLICY_STATE_JOURNAL,
+        policy_state_journal_limits(),
+        fs::metadata(root.path()).unwrap().uid(),
+    )
+    .unwrap();
+    assert_eq!(journal.snapshot_sequence(), sequence);
 }
 
 #[test]
