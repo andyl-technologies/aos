@@ -6,6 +6,8 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use super::*;
 use crate::*;
 
+mod topology;
+
 fn d(byte: u8) -> ObjectDigest {
     ObjectDigest::from_bytes([byte; 32])
 }
@@ -16,7 +18,7 @@ struct Fixture {
     provider_key: SigningKey,
     storage_key: SigningKey,
     receipt: SignedStorageZfsHoldReceiptV1,
-    acceptance: SignedStorageNativeAcceptanceV2,
+    acceptance: SignedStorageNativeAcceptanceV3,
     descriptor: SourceRootObservationV1,
     verifier: StorageZfsHoldVerifierV1,
 }
@@ -165,14 +167,18 @@ impl Fixture {
         let receipt = sign_receipt(subject, signer, &storage_key);
         let descriptor =
             SourceRootObservationV1::new([6; 16], 49, 50, 51, true, true, true).unwrap();
-        let acceptance = StorageNativeAcceptanceV2::new(
+        let topology =
+            storage_native_nonrecursive_topology_v1(&request, &receipt, &descriptor, 2, 55)
+                .unwrap();
+        let acceptance = StorageNativeAcceptanceV3::new(
             [54; 16],
             request.digest(),
             receipt.digest(),
             descriptor.clone(),
+            topology,
         )
         .unwrap();
-        let acceptance = SignedStorageNativeAcceptanceV2::sign(acceptance, signer, &storage_key);
+        let acceptance = SignedStorageNativeAcceptanceV3::sign(acceptance, signer, &storage_key);
         let verifier =
             StorageZfsHoldVerifierV1::new(signer, storage_key.verifying_key().to_bytes()).unwrap();
         Self {
@@ -187,17 +193,17 @@ impl Fixture {
         }
     }
 
-    fn reply(&self) -> StorageNativeAcquireReplyV2 {
-        StorageNativeAcquireReplyV2::new(self.acceptance.clone(), self.receipt.clone()).unwrap()
+    fn reply(&self) -> StorageNativeAcquireReplyV3 {
+        StorageNativeAcquireReplyV3::new(self.acceptance.clone(), self.receipt.clone()).unwrap()
     }
 
     fn verify(
         &self,
-        reply: &StorageNativeAcquireReplyV2,
+        reply: &StorageNativeAcquireReplyV3,
         observed: &SourceRootObservationV1,
         roles: &[SourceProviderDescriptorRole],
-    ) -> Result<VerifiedStorageNativeAcquireV2, StorageNativeAcquireErrorV2> {
-        reply.verify_for(StorageNativeAcquireVerificationV2 {
+    ) -> Result<VerifiedStorageNativeAcquireV3, StorageNativeAcquireErrorV2> {
+        reply.verify_for(StorageNativeAcquireVerificationV3 {
             request: &self.request,
             provider_signer: self.request.signer(),
             provider_key: &self.provider_key.verifying_key().to_bytes(),
@@ -360,13 +366,17 @@ fn canonical_native_graph_is_distinct_from_negative_only_carrier() {
     assert!(StorageZfsHoldTransportRequestV1::from_canonical_bytes(&request).is_err());
     assert_eq!(
         fixture.acceptance.acceptance().to_canonical_bytes().len(),
-        136
+        216
     );
-    assert_eq!(fixture.acceptance.to_canonical_bytes().len(), 288);
+    assert_eq!(fixture.acceptance.to_canonical_bytes().len(), 368);
     let reply = fixture.reply();
-    assert_eq!(reply.to_canonical_bytes().len(), 1112);
+    assert_eq!(STORAGE_NATIVE_ACQUIRE_REPLY_BYTES_V3, 1192);
     assert_eq!(
-        StorageNativeAcquireReplyV2::from_canonical_bytes(&reply.to_canonical_bytes()).unwrap(),
+        reply.to_canonical_bytes().len(),
+        STORAGE_NATIVE_ACQUIRE_REPLY_BYTES_V3
+    );
+    assert_eq!(
+        StorageNativeAcquireReplyV3::from_canonical_bytes(&reply.to_canonical_bytes()).unwrap(),
         reply
     );
     let verified = fixture
@@ -378,6 +388,10 @@ fn canonical_native_graph_is_distinct_from_negative_only_carrier() {
         .unwrap();
     assert_eq!(verified.request_digest(), fixture.request.digest());
     assert_eq!(verified.receipt_digest(), fixture.receipt.digest());
+    assert_eq!(
+        verified.topology(),
+        fixture.acceptance.acceptance().topology()
+    );
     assert_eq!(
         verified.signed_acceptance_digest(),
         fixture.acceptance.digest()
@@ -406,7 +420,7 @@ fn canonical_native_graph_is_distinct_from_negative_only_carrier() {
         let mut changed = reply.to_canonical_bytes();
         changed[offset] ^= 1;
         assert!(
-            StorageNativeAcquireReplyV2::from_canonical_bytes(&changed).is_err(),
+            StorageNativeAcquireReplyV3::from_canonical_bytes(&changed).is_err(),
             "reply offset {offset}"
         );
     }
@@ -445,13 +459,13 @@ fn signatures_and_exact_original_request_cannot_be_replaced() {
     );
 
     let foreign_key = SigningKey::from_bytes(&[60; 32]);
-    let wrong_acceptance = SignedStorageNativeAcceptanceV2::sign(
+    let wrong_acceptance = SignedStorageNativeAcceptanceV3::sign(
         fixture.acceptance.acceptance().clone(),
         fixture.receipt.signer(),
         &foreign_key,
     );
     let wrong_reply =
-        StorageNativeAcquireReplyV2::new(wrong_acceptance, fixture.receipt.clone()).unwrap();
+        StorageNativeAcquireReplyV3::new(wrong_acceptance, fixture.receipt.clone()).unwrap();
     assert_eq!(
         fixture.verify(
             &wrong_reply,
@@ -460,29 +474,38 @@ fn signatures_and_exact_original_request_cannot_be_replaced() {
         ),
         Err(StorageNativeAcquireErrorV2::Authority)
     );
-    let wrong_subject = StorageNativeAcceptanceV2::new(
+    let wrong_subject = StorageNativeAcceptanceV3::new(
         [54; 16],
         d(61),
         fixture.receipt.digest(),
         fixture.descriptor.clone(),
+        fixture.acceptance.acceptance().topology().clone(),
     )
     .unwrap();
-    let wrong_reply = StorageNativeAcquireReplyV2::new(
-        SignedStorageNativeAcceptanceV2::sign(
+    let wrong_reply = StorageNativeAcquireReplyV3::new(
+        SignedStorageNativeAcceptanceV3::sign(
             wrong_subject,
             fixture.receipt.signer(),
             &fixture.storage_key,
         ),
         fixture.receipt.clone(),
-    )
-    .unwrap();
+    );
+    assert_eq!(wrong_reply, Err(StorageNativeAcquireErrorV2::Mismatch));
+
+    let old_domain_message = super::acceptance::storage_signing_message(
+        b"aos.sandbox.storage.native-acceptance.signature.v2\0",
+        &fixture.acceptance.acceptance().to_canonical_bytes(),
+        fixture.receipt.signer(),
+    );
+    let mut signed = fixture.acceptance.to_canonical_bytes();
+    let signature_offset = signed.len() - 64;
+    signed[signature_offset..]
+        .copy_from_slice(&fixture.storage_key.sign(&old_domain_message).to_bytes());
+    let old_domain_signature =
+        SignedStorageNativeAcceptanceV3::from_canonical_bytes(&signed).unwrap();
     assert_eq!(
-        fixture.verify(
-            &wrong_reply,
-            &fixture.descriptor,
-            &[SourceProviderDescriptorRole::SourceRoot]
-        ),
-        Err(StorageNativeAcquireErrorV2::Mismatch)
+        old_domain_signature.verify(fixture.verifier),
+        Err(StorageNativeAcquireErrorV2::Authority)
     );
 }
 
@@ -596,7 +619,7 @@ fn authenticated_cleanup_is_exact_and_never_a_positive_reply() {
         .verify_for(&query, &subject, fixture.verifier)
         .unwrap();
     assert!(
-        StorageNativeAcquireReplyV2::from_canonical_bytes(&response.to_canonical_bytes()).is_err()
+        StorageNativeAcquireReplyV3::from_canonical_bytes(&response.to_canonical_bytes()).is_err()
     );
 
     let other_query = StorageNativeCleanupRequestV2::new(
