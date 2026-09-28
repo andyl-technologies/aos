@@ -188,14 +188,25 @@ impl ExecutionTree {
         &self,
         record: &crate::ledger::ProcessRecord,
     ) -> Result<(), Error> {
+        self.require_original_identity(record)?;
+        if record.canceled || record.terminal.is_some() {
+            return Err(Error::InvalidRequest);
+        }
+        Ok(())
+    }
+
+    /// Joins historical terminal data to this originally retained tree only.
+    /// This permits no mutation, attach reservation or descriptor transfer.
+    pub(crate) fn require_original_identity(
+        &self,
+        record: &crate::ledger::ProcessRecord,
+    ) -> Result<(), Error> {
         aos_sandbox_linux::guest_confinement::require_guest_owner()?;
         self.anchor.validate_active()?;
         if record.version != 2
             || record.cgroup != Some(self.kernel_id())
             || record.pid != self.original_leader.pid()
             || record.start_ticks != self.original_leader.start_time_ticks()
-            || record.canceled
-            || record.terminal.is_some()
         {
             return Err(Error::InvalidRequest);
         }

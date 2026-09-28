@@ -64,6 +64,7 @@ in
               # Only the existing Guest owner can join a held consume cut.
               ${patch}/bin/patch -p1 < ${./openssh-patches/0001-fixed-attach-monitor-v2.patch}
               ${patch}/bin/patch -p1 < ${./openssh-patches/0002-fixed-confined-relay-v3.patch}
+              ${patch}/bin/patch -p1 < ${./openssh-patches/0003-original-terminal-status-v4.patch}
               cp ${./openssh-patches/aos-attach-monitor.c} aos-attach-monitor.c
               cp ${./openssh-patches/aos-attach-monitor.h} aos-attach-monitor.h
               cp ${./openssh-patches/aos-attach-confinement.c} aos-attach-confinement.c

@@ -2,6 +2,8 @@
 //!
 //! ```text
 //! AOSMCT04 | sequence:u64be | action:u8 | reserved[7] | arguments[8]
+//! AOSMCA04 | sequence:u64be | state:u8 | reserved[7] | waitstatus:u32be | reserved[4]
+//! AOSIOE04 | waitstatus:u32be
 //! ```
 //!
 //! Only the measured root monitor's retained connection can nominate a control
@@ -46,6 +48,77 @@ pub struct OpenSshSessionRequestV4 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OriginalExecutionWaitStatusV4(u32);
 
+/// Returns data on the original monitor connection without granting I/O.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OpenSshSessionStateV4 {
+    /// The original execution has not yet reached a proved terminal state.
+    Pending,
+    /// The original owned subtree is empty and its leader status was retained.
+    Terminal(OriginalExecutionWaitStatusV4),
+}
+
+/// Correlates a data reply with one original private monitor request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OpenSshSessionReplyV4 {
+    /// Exact request sequence, never a current-policy authorization witness.
+    pub sequence: u64,
+    /// Original owned terminal data or a nonterminal observation.
+    pub state: OpenSshSessionStateV4,
+}
+
+impl OpenSshSessionReplyV4 {
+    /// Encodes a bounded, nonauthorizing original-session reply.
+    ///
+    /// # Errors
+    /// Rejects the zero sequence sentinel.
+    pub fn encode(self) -> Result<[u8; OPENSSH_SESSION_RECORD_BYTES_V4], InvalidOpenSshSessionV4> {
+        if self.sequence == 0 {
+            return Err(InvalidOpenSshSessionV4);
+        }
+        let mut bytes = [0; OPENSSH_SESSION_RECORD_BYTES_V4];
+        bytes[..8].copy_from_slice(b"AOSMCA04");
+        bytes[8..16].copy_from_slice(&self.sequence.to_be_bytes());
+        if let OpenSshSessionStateV4::Terminal(status) = self.state {
+            bytes[16] = 1;
+            bytes[24..28].copy_from_slice(&status.raw().to_be_bytes());
+        }
+        Ok(bytes)
+    }
+
+    /// Decodes an exact canonical reply, not a substitute for sender custody.
+    ///
+    /// # Errors
+    /// Rejects unknown versions/states, malformed status, padding or bounds.
+    pub fn decode(bytes: &[u8]) -> Result<Self, InvalidOpenSshSessionV4> {
+        let bytes: &[u8; OPENSSH_SESSION_RECORD_BYTES_V4] =
+            bytes.try_into().map_err(|_| InvalidOpenSshSessionV4)?;
+        if &bytes[..8] != b"AOSMCA04" {
+            return Err(InvalidOpenSshSessionV4);
+        }
+        let sequence = u64::from_be_bytes(
+            bytes[8..16]
+                .try_into()
+                .map_err(|_| InvalidOpenSshSessionV4)?,
+        );
+        let state = match bytes[16] {
+            0 => OpenSshSessionStateV4::Pending,
+            1 => OpenSshSessionStateV4::Terminal(OriginalExecutionWaitStatusV4::new(
+                u32::from_be_bytes(
+                    bytes[24..28]
+                        .try_into()
+                        .map_err(|_| InvalidOpenSshSessionV4)?,
+                ),
+            )?),
+            _ => return Err(InvalidOpenSshSessionV4),
+        };
+        let reply = Self { sequence, state };
+        if reply.encode()?.as_slice() != bytes {
+            return Err(InvalidOpenSshSessionV4);
+        }
+        Ok(reply)
+    }
+}
+
 impl OriginalExecutionWaitStatusV4 {
     /// Validates a complete Linux exited/signaled status, not stopped/continued.
     ///
@@ -89,6 +162,28 @@ impl OriginalExecutionWaitStatusV4 {
     #[must_use]
     pub const fn core_dumped(self) -> bool {
         self.0 & 0x80 != 0
+    }
+
+    /// Encodes terminal data for the original one-use I/O connection.
+    #[must_use]
+    pub fn encode_io_terminal(self) -> [u8; 12] {
+        let mut bytes = [0; 12];
+        bytes[..8].copy_from_slice(b"AOSIOE04");
+        bytes[8..].copy_from_slice(&self.raw().to_be_bytes());
+        bytes
+    }
+
+    /// Decodes original terminal data without authenticating the channel.
+    ///
+    /// # Errors
+    /// Rejects partial/trailing data, unknown versions or nonterminal status.
+    pub fn decode_io_terminal(bytes: &[u8]) -> Result<Self, InvalidOpenSshSessionV4> {
+        if bytes.len() != 12 || bytes.get(..8) != Some(b"AOSIOE04".as_slice()) {
+            return Err(InvalidOpenSshSessionV4);
+        }
+        Self::new(u32::from_be_bytes(
+            bytes[8..].try_into().map_err(|_| InvalidOpenSshSessionV4)?,
+        ))
     }
 }
 
@@ -221,6 +316,72 @@ mod tests {
             let mut foreign = bytes;
             foreign[index] ^= 1;
             assert!(OpenSshSessionRequestV4::decode(&foreign).is_err());
+        }
+    }
+
+    #[test]
+    fn terminal_replies_require_exact_original_status_and_correlation_shape() {
+        let status = OriginalExecutionWaitStatusV4::new(11 | 0x80).unwrap();
+        let reply = OpenSshSessionReplyV4 {
+            sequence: 3,
+            state: OpenSshSessionStateV4::Terminal(status),
+        };
+        let bytes = reply.encode().unwrap();
+        assert_eq!(OpenSshSessionReplyV4::decode(&bytes).unwrap(), reply);
+        assert_eq!(
+            OriginalExecutionWaitStatusV4::decode_io_terminal(&status.encode_io_terminal())
+                .unwrap(),
+            status
+        );
+        for index in [0, 17, 28, 31] {
+            let mut foreign = bytes;
+            foreign[index] ^= 1;
+            assert!(OpenSshSessionReplyV4::decode(&foreign).is_err());
+        }
+        for length in 0..bytes.len() {
+            assert!(OpenSshSessionReplyV4::decode(&bytes[..length]).is_err());
+        }
+        let mut trailing = bytes.to_vec();
+        trailing.push(0);
+        assert!(OpenSshSessionReplyV4::decode(&trailing).is_err());
+        let mut foreign = bytes;
+        foreign[8..16].fill(0);
+        assert!(OpenSshSessionReplyV4::decode(&foreign).is_err());
+        foreign = bytes;
+        foreign[16] = 2;
+        assert!(OpenSshSessionReplyV4::decode(&foreign).is_err());
+
+        let pending = OpenSshSessionReplyV4 {
+            sequence: 4,
+            state: OpenSshSessionStateV4::Pending,
+        };
+        let mut bytes = pending.encode().unwrap();
+        bytes[27] = 9;
+        assert!(OpenSshSessionReplyV4::decode(&bytes).is_err());
+        assert!(OriginalExecutionWaitStatusV4::decode_io_terminal(b"AOSIOE04\0\0\0\x7f").is_err());
+    }
+
+    #[test]
+    fn terminal_data_retains_native_signals_without_a_shared_unknown_value() {
+        for signal in 1..=64 {
+            for core in [0, 0x80] {
+                let status = OriginalExecutionWaitStatusV4::new(signal | core).unwrap();
+                let reply = OpenSshSessionReplyV4 {
+                    sequence: 1,
+                    state: OpenSshSessionStateV4::Terminal(status),
+                };
+
+                assert_eq!(status.signal(), Some(signal as u8));
+                assert_eq!(
+                    OpenSshSessionReplyV4::decode(&reply.encode().unwrap()).unwrap(),
+                    reply
+                );
+                assert_eq!(
+                    OriginalExecutionWaitStatusV4::decode_io_terminal(&status.encode_io_terminal())
+                        .unwrap(),
+                    status
+                );
+            }
         }
     }
 }

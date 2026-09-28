@@ -108,7 +108,7 @@ require_nonblocking(int descriptor)
 }
 
 static void
-relay_descriptors(int *descriptors, size_t count)
+relay_descriptors(int *descriptors, size_t count, int original_connection)
 {
 	struct relay_buffer {
 		int source, target;
@@ -121,7 +121,11 @@ relay_descriptors(int *descriptors, size_t count)
 		{ .source = count == 1 ? -1 : descriptors[2], .target = STDERR_FILENO,
 		  .closed = count == 1 },
 	};
-	struct pollfd watches[6];
+	struct pollfd watches[7];
+	struct msghdr message;
+	struct iovec iov;
+	u_char terminal[13], ancillary[1];
+	int terminal_received = 0;
 	size_t index;
 	ssize_t length;
 	int result;
@@ -139,11 +143,29 @@ relay_descriptors(int *descriptors, size_t count)
 			watches[index * 2 + 1] = (struct pollfd){
 			    buffers[index].length == 0 ? -1 : buffers[index].target, POLLOUT, 0 };
 		}
-		result = poll(watches, 6, -1);
+		watches[6] = (struct pollfd){ terminal_received ? -1 : original_connection, POLLIN, 0 };
+		result = poll(watches, 7, -1);
 		if (result == -1 && errno == EINTR)
 			continue;
 		if (result <= 0)
 			_exit(1);
+		if ((watches[6].revents & POLLIN) != 0) {
+			memset(&message, 0, sizeof(message));
+			iov = (struct iovec){ terminal, sizeof(terminal) };
+			message.msg_iov = &iov;
+			message.msg_iovlen = 1;
+			message.msg_control = ancillary;
+			message.msg_controllen = sizeof(ancillary);
+			if (recvmsg(original_connection, &message, 0) != 12 ||
+			    message.msg_flags != 0 || message.msg_controllen != 0 ||
+			    memcmp(terminal, "AOSIOE04", 8) != 0)
+				_exit(1);
+			/* Data only. The root monitor independently reads the original
+			 * Guest waitstatus; the relay cannot nominate an exit result. */
+			terminal_received = 1;
+		} else if ((watches[6].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+			_exit(1);
+		}
 		for (index = 0; index < 3; index++) {
 			if (watches[index * 2].fd != -1 &&
 			    (watches[index * 2].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
@@ -178,7 +200,7 @@ relay_descriptors(int *descriptors, size_t count)
 			if ((watches[index * 2 + 1].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
 				_exit(1);
 		}
-		if (buffers[1].closed && buffers[2].closed &&
+		if (terminal_received && buffers[1].closed && buffers[2].closed &&
 		    buffers[1].length == 0 && buffers[2].length == 0)
 			_exit(0);
 	}
@@ -225,7 +247,8 @@ aos_attach_internal_relay(void)
 	memcpy(descriptors, CMSG_DATA(header), count * sizeof(int));
 	if (send(connection, "AOSRID03", 8, MSG_NOSIGNAL) != 8)
 		fatal("AOS attach relay handoff ambiguous");
-	close(connection);
-	relay_descriptors(descriptors, count);
+	/* This exact channel remains connected for the lifetime of the relay.
+	 * AOSRID03 is a transfer receipt, not an SSH disconnect event. */
+	relay_descriptors(descriptors, count, connection);
 	_exit(1);
 }

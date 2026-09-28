@@ -9,6 +9,8 @@
 #define AOS_ATTACH_READY_ANSWER 119
 #define AOS_ATTACH_RELAY_REQUEST 116
 #define AOS_ATTACH_RELAY_ANSWER 117
+#define AOS_ATTACH_TERMINAL_REQUEST 120
+#define AOS_ATTACH_TERMINAL_ANSWER 121
 
 struct ssh;
 struct sshbuf;
@@ -21,5 +23,7 @@ void aos_attach_monitor_parent(pid_t, int);
 void aos_attach_monitor_child(int);
 int aos_attach_monitor_connect_guest(void);
 int aos_attach_monitor_relay(struct ssh *, int, struct sshbuf *);
+int aos_attach_monitor_terminal(struct ssh *, int, struct sshbuf *);
+int aos_attach_original_waitstatus(void);
 
 #endif

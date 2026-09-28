@@ -24,6 +24,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -40,6 +41,7 @@
 #include "aos-attach-confinement.h"
 
 extern ServerOptions options;
+extern struct monitor *pmonitor;
 
 #define AOS_ATTACH_SOCKET "/run/aos-sandbox-agent/exec-gate.sock"
 #define AOS_ATTACH_MAXIMUM_RECORD 13312
@@ -49,6 +51,7 @@ static struct sshbuf *accepted_witness;
 static int fully_authenticated;
 static int held_child_pidfd = -1;
 static int held_guest_connection = -1;
+static uint64_t original_session_sequence = 1;
 
 static int64_t
 deadline_milliseconds(void)
@@ -79,6 +82,21 @@ wait_ready(int fd, short events, int64_t deadline)
 			fatal("AOS attach registration unavailable");
 		return;
 	}
+}
+
+static void
+require_original_child_live(void)
+{
+	struct pollfd child = { .fd = held_child_pidfd, .events = POLLIN };
+	int result;
+
+	/* The descriptor is retained from our exact unreaped fork. Polling cannot
+	 * replace it with a reused PID or revive custody after child exit. */
+	do {
+		result = poll(&child, 1, 0);
+	} while (result == -1 && errno == EINTR);
+	if (held_child_pidfd == -1 || result != 0 || child.revents != 0)
+		fatal("AOS attach original child unavailable");
 }
 
 /* Capture occurs only after root key/session/signature verification. It is
@@ -303,6 +321,89 @@ aos_attach_monitor_relay(struct ssh *ssh, int private_monitor, struct sshbuf *em
 		fatal("AOS attach relay registration rejected");
 	mm_request_send(private_monitor, AOS_ATTACH_RELAY_ANSWER, empty);
 	return 0;
+}
+
+/* The fixed empty MM operation reads data only from the original retained
+ * Guest connection. Neither a relay status nor a child-nominated PID/status
+ * can become the original execution result. No expiry or IO grant is renewed.
+ */
+int
+aos_attach_monitor_terminal(struct ssh *ssh, int private_monitor, struct sshbuf *empty)
+{
+	struct msghdr message = {0};
+	struct iovec iov;
+	u_char request[32] = {0}, response[33], ancillary[1];
+	uint32_t raw;
+	int64_t deadline;
+	int r;
+	size_t index;
+
+	(void)ssh;
+	if (!options.aos_attach_monitor_v2 || !fully_authenticated ||
+	    getuid() != 0 || geteuid() != 0 || held_child_pidfd == -1 ||
+	    held_guest_connection == -1 || sshbuf_len(empty) != 0 ||
+	    original_session_sequence == 0 || original_session_sequence == UINT64_MAX)
+		fatal("AOS attach original terminal unavailable");
+	require_original_child_live();
+	memcpy(request, "AOSMCT04", 8);
+	for (index = 0; index < 8; index++)
+		request[8 + index] = original_session_sequence >> (56 - index * 8);
+	request[16] = 3;
+	deadline = deadline_milliseconds() + AOS_ATTACH_TIMEOUT_MS;
+	wait_ready(held_guest_connection, POLLOUT, deadline);
+	if (send(held_guest_connection, request, sizeof(request), MSG_NOSIGNAL) != (ssize_t)sizeof(request))
+		fatal("AOS attach original terminal request ambiguous");
+	iov = (struct iovec){ response, sizeof(response) };
+	message.msg_iov = &iov;
+	message.msg_iovlen = 1;
+	message.msg_control = ancillary;
+	message.msg_controllen = sizeof(ancillary);
+	wait_ready(held_guest_connection, POLLIN, deadline);
+	if (recvmsg(held_guest_connection, &message, 0) != 32 ||
+	    message.msg_flags != 0 || message.msg_controllen != 0 ||
+	    memcmp(response, "AOSMCA04", 8) != 0 ||
+	    memcmp(response + 8, request + 8, 8) != 0 || response[16] != 1)
+		fatal("AOS attach original terminal reply rejected");
+	for (index = 17; index < 24; index++) {
+		if (response[index] != 0)
+			fatal("AOS attach original terminal reply rejected");
+	}
+	for (index = 28; index < 32; index++) {
+		if (response[index] != 0)
+			fatal("AOS attach original terminal reply rejected");
+	}
+	raw = ((uint32_t)response[24] << 24) | ((uint32_t)response[25] << 16) |
+	    ((uint32_t)response[26] << 8) | response[27];
+	if ((raw & ~0xffffU) != 0 ||
+	    (WIFEXITED(raw) ? (raw & 0xff) != 0 :
+	    !WIFSIGNALED(raw) || WTERMSIG(raw) > 64 || (raw & ~0xffU) != 0))
+		fatal("AOS attach original terminal status rejected");
+	if (deadline_milliseconds() >= deadline)
+		fatal("AOS attach original terminal reply expired");
+	require_original_child_live();
+	original_session_sequence++;
+	if ((r = sshbuf_put_u32(empty, raw)) != 0)
+		fatal_fr(r, "AOS attach original terminal result");
+	mm_request_send(private_monitor, AOS_ATTACH_TERMINAL_ANSWER, empty);
+	return 0;
+}
+
+int
+aos_attach_original_waitstatus(void)
+{
+	struct sshbuf *empty;
+	uint32_t raw;
+	int r;
+
+	if (!options.aos_attach_monitor_v2 || getuid() == 0 || geteuid() == 0 ||
+	    (empty = sshbuf_new()) == NULL)
+		fatal("AOS attach original terminal custody rejected");
+	mm_request_send(pmonitor->m_recvfd, AOS_ATTACH_TERMINAL_REQUEST, empty);
+	mm_request_receive_expect(pmonitor->m_recvfd, AOS_ATTACH_TERMINAL_ANSWER, empty);
+	if ((r = sshbuf_get_u32(empty, &raw)) != 0 || sshbuf_len(empty) != 0 || raw > 0xffff)
+		fatal("AOS attach original terminal answer rejected");
+	sshbuf_free(empty);
+	return (int)raw;
 }
 
 void

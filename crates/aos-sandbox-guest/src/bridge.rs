@@ -180,15 +180,33 @@ impl AttachBridge {
         Ok(())
     }
 
-    pub(super) fn remove(&self, execution: [u8; 16]) -> Result<(), GuestProcessEffectErrorV1> {
+    /// Closes the I/O factory without discarding consumed terminal-data custody.
+    ///
+    /// # Errors
+    /// Rejects poisoned monitor or I/O ownership locks.
+    pub(super) fn finish_execution(
+        &self,
+        execution: [u8; 16],
+    ) -> Result<(), GuestProcessEffectErrorV1> {
         // Owner effects already retain the shared barrier. Preserve lock order
         // for the later held consume: barrier, monitor custody, I/O registry.
-        self.monitors.remove(execution)?;
+        self.monitors.finish_execution(execution)?;
         let mut masters = self.masters.lock().map_err(|_| {
             GuestProcessEffectErrorV1::Unavailable("attach bridge registry poisoned")
         })?;
         masters.remove(&execution);
         Ok(())
+    }
+
+    /// Reports retained consumed-session data ownership, not attach permission.
+    ///
+    /// # Errors
+    /// Rejects a poisoned monitor ownership lock.
+    pub(super) fn has_original_session(
+        &self,
+        execution: [u8; 16],
+    ) -> Result<bool, GuestProcessEffectErrorV1> {
+        self.monitors.has_original_session(execution)
     }
 }
 

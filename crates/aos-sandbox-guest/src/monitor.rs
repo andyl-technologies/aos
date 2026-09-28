@@ -30,6 +30,8 @@ use crate::ledger::Ledger;
 
 const DEADLINE: Duration = Duration::from_secs(5);
 
+mod terminal;
+
 #[derive(Clone, Default)]
 pub(super) struct MonitorRegistry(Arc<Mutex<Registry>>);
 
@@ -55,7 +57,7 @@ struct MonitorCustody {
     pending_io: Option<RelayConnection>,
 }
 
-/// Holds only original consumed-channel liveness, never attach authority.
+/// Holds original consumed-channel liveness and terminal data, never authority.
 /// Certificate expiry or policy reads do not create or renew this record.
 struct SessionLiveness {
     execution: [u8; 16],
@@ -64,6 +66,9 @@ struct SessionLiveness {
     child: PidFd,
     relay: PidFd,
     io: RelayConnection,
+    original_witness: Vec<u8>,
+    next_sequence: u64,
+    terminal_notified: bool,
 }
 
 pub(super) struct RelayConnection {
@@ -91,8 +96,25 @@ impl MonitorRegistry {
     /// an authorization decision, reconnect adoption, or a new monitor grant.
     pub(super) fn prune_closed(&self, ledger: &Ledger) -> Result<Option<[u8; 16]>, Error> {
         let mut registry = self.0.lock().map_err(|_| Error::LedgerConflict)?;
+        let original_session_is_valid = {
+            let Registry {
+                installed, session, ..
+            } = &mut *registry;
+            match (installed.as_ref(), session.as_mut()) {
+                (Some(installed), Some(session)) => {
+                    terminal::refresh_original_terminal(installed, session, ledger).is_ok()
+                        && if session.terminal_notified {
+                            session.root_is_live()
+                        } else {
+                            session.is_live()
+                        }
+                }
+                (_, None) => true,
+                (None, Some(_)) => false,
+            }
+        };
         if let Some(session) = registry.session.as_ref() {
-            if !session.is_live() {
+            if !original_session_is_valid {
                 let execution = session.execution;
                 let process = ledger.read_process_bytes(execution)?;
                 if process.cancel_on_disconnect == Some(true) && process.terminal.is_none() {
@@ -124,7 +146,11 @@ impl MonitorRegistry {
         Ok(None)
     }
 
-    pub(super) fn remove(&self, execution: [u8; 16]) -> Result<(), Error> {
+    /// Forecloses new consume while retaining an already consumed data channel.
+    ///
+    /// # Errors
+    /// Rejects a poisoned monitor ownership lock.
+    pub(super) fn finish_execution(&self, execution: [u8; 16]) -> Result<(), Error> {
         let mut registry = self.0.lock().map_err(|_| Error::LedgerConflict)?;
         if registry
             .installed
@@ -132,10 +158,23 @@ impl MonitorRegistry {
             .is_some_and(|scope| scope.runtime.claim().binding.execution_id == execution)
         {
             registry.custody.take();
-            registry.session.take();
-            registry.installed.take();
+            if registry.session.is_none() {
+                registry.installed.take();
+            }
         }
         Ok(())
+    }
+
+    /// Reports original in-memory consumed-session ownership without recovery.
+    ///
+    /// # Errors
+    /// Rejects a poisoned monitor ownership lock.
+    pub(super) fn has_original_session(&self, execution: [u8; 16]) -> Result<bool, Error> {
+        let registry = self.0.lock().map_err(|_| Error::LedgerConflict)?;
+        Ok(registry
+            .session
+            .as_ref()
+            .is_some_and(|session| session.execution == execution))
     }
 
     pub(super) fn install(
@@ -453,6 +492,9 @@ impl MonitorRegistry {
                 child: original.child,
                 relay,
                 io,
+                original_witness: original.original_witness,
+                next_sequence: 1,
+                terminal_notified: false,
             });
         } else if action == OriginalAttachActionV3::Consume || result.is_err() {
             registry.custody.take();
@@ -462,17 +504,21 @@ impl MonitorRegistry {
 }
 
 impl SessionLiveness {
+    fn root_is_live(&self) -> bool {
+        self.subject.is_alive().unwrap_or(false)
+            && self.connection.peer().is_alive().unwrap_or(false)
+            && self.child.is_alive().unwrap_or(false)
+            && connected(&self.connection)
+    }
+
     fn is_live(&self) -> bool {
         // These original handles were retained after the one-use SCM attempt.
         // No callback bytes, expiry refresh, scalar PID or session identifier
         // can recreate them. This method cannot release any descriptor.
-        self.subject.is_alive().unwrap_or(false)
-            && self.connection.peer().is_alive().unwrap_or(false)
-            && self.child.is_alive().unwrap_or(false)
+        self.root_is_live()
             && self.relay.is_alive().unwrap_or(false)
             && self.io.subject.is_alive().unwrap_or(false)
             && self.io.socket.peer().is_alive().unwrap_or(false)
-            && connected(&self.connection)
             && connected(&self.io.socket)
     }
 }
@@ -744,7 +790,7 @@ mod tests {
     #[test]
     fn cold_registry_never_reconstructs_monitor_custody() {
         let registry = MonitorRegistry::default();
-        registry.remove([1; 16]).unwrap();
+        registry.finish_execution([1; 16]).unwrap();
         let cold = registry.0.lock().unwrap();
         assert!(cold.installed.is_none());
         assert!(cold.custody.is_none());

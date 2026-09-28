@@ -466,15 +466,26 @@ impl GuestProcessEffectsV1 {
     ) -> Result<StoredOutcome, GuestProcessEffectErrorV1> {
         self.bound_process(execution, runtime)?;
         let result = cancel_owned_execution(&self.ledger, execution, deadline)?;
-        self.bridge.remove(*execution.as_bytes())?;
-        if self
-            .gate
-            .as_ref()
-            .is_some_and(|gate| gate.execution() == *execution.as_bytes())
+        self.finish_execution(execution)?;
+        Ok(result)
+    }
+
+    fn finish_execution(
+        &mut self,
+        execution: ExecutionId,
+    ) -> Result<(), GuestProcessEffectErrorV1> {
+        // Close the I/O factory immediately, but retain an already consumed
+        // original monitor long enough to report the actual terminal status.
+        self.bridge.finish_execution(*execution.as_bytes())?;
+        if !self.bridge.has_original_session(*execution.as_bytes())?
+            && self
+                .gate
+                .as_ref()
+                .is_some_and(|gate| gate.execution() == *execution.as_bytes())
         {
             self.gate = None;
         }
-        Ok(result)
+        Ok(())
     }
 
     fn observe(
@@ -482,44 +493,10 @@ impl GuestProcessEffectsV1 {
         execution: ExecutionId,
         runtime: &AgentRuntimeBindingV1,
     ) -> Result<StoredOutcome, GuestProcessEffectErrorV1> {
-        let mut record = self.bound_process(execution, runtime)?;
-        if let Some(terminal) = &record.terminal {
-            return Ok(terminal.clone());
-        }
-        let mut live = self
-            .ledger
-            .live()
-            .lock()
-            .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
-        // A cold ledger cannot reconstruct a process tree or prove recursive
-        // exit from a PID, PGID, cgroup number, or a missing /proc entry.
-        let process = live
-            .get_mut(execution.as_bytes())
-            .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
-        if process.tree.empty_and_exited()? {
-            if let Some(status) = process.child.try_wait()? {
-                let raw = aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4::new(
-                    u32::try_from(status.into_raw())
-                        .map_err(|_| GuestProcessEffectErrorV1::AmbiguousEffect)?,
-                )
-                .map_err(|_| GuestProcessEffectErrorV1::AmbiguousEffect)?;
-                let result = terminal_outcome(raw, record.canceled);
-                record.terminal_waitstatus = Some(raw.raw());
-                record.terminal = Some(result.clone());
-                self.ledger.replace_process(execution, &record)?;
-                live.remove(execution.as_bytes());
-                drop(live);
-                self.bridge.remove(*execution.as_bytes())?;
-                if self
-                    .gate
-                    .as_ref()
-                    .is_some_and(|gate| gate.execution() == *execution.as_bytes())
-                {
-                    self.gate = None;
-                }
-                return Ok(result);
-            }
-            return Err(GuestProcessEffectErrorV1::AmbiguousEffect);
+        let record = self.bound_process(execution, runtime)?;
+        if let Some(result) = observe_owned_terminal(&self.ledger, execution)? {
+            self.finish_execution(execution)?;
+            return Ok(result);
         }
         // A dead leader with live descendants is not a terminal execution.
         Ok(outcome(
@@ -782,6 +759,48 @@ pub(super) fn terminal_outcome(
     result
 }
 
+/// Retains genuine terminal data while the caller holds the shared barrier.
+///
+/// An absent live tree is never reconstructed from a cold row or missing PID.
+///
+/// # Errors
+/// Rejects foreign original tree custody, missing live process ownership,
+/// ambiguous leader status, or failed protected terminal publication.
+pub(super) fn observe_owned_terminal(
+    ledger: &Ledger,
+    execution: ExecutionId,
+) -> Result<Option<StoredOutcome>, GuestProcessEffectErrorV1> {
+    let mut record = ledger.read_process(execution)?;
+    if let Some(terminal) = &record.terminal {
+        return Ok(Some(terminal.clone()));
+    }
+    let mut live = ledger
+        .live()
+        .lock()
+        .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+    let process = live
+        .get_mut(execution.as_bytes())
+        .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+    process.tree.require_original_identity(&record)?;
+    if !process.tree.empty_and_exited()? {
+        return Ok(None);
+    }
+    let status = process
+        .child
+        .try_wait()?
+        .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+    let status = aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4::new(
+        u32::try_from(status.into_raw()).map_err(|_| GuestProcessEffectErrorV1::AmbiguousEffect)?,
+    )
+    .map_err(|_| GuestProcessEffectErrorV1::AmbiguousEffect)?;
+    let result = terminal_outcome(status, record.canceled);
+    record.terminal_waitstatus = Some(status.raw());
+    record.terminal = Some(result.clone());
+    ledger.replace_process(execution, &record)?;
+    live.remove(execution.as_bytes());
+    Ok(Some(result))
+}
+
 fn write_specification(
     input: &mut ChildStdin,
     specification: &[u8],
@@ -825,9 +844,7 @@ pub(super) fn cancel_owned_execution(
     let process = live
         .get_mut(execution.as_bytes())
         .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
-    if record.version != 2 || record.cgroup != Some(process.tree.kernel_id()) {
-        return Err(GuestProcessEffectErrorV1::LedgerConflict);
-    }
+    process.tree.require_original_identity(&record)?;
 
     // Foreclose attach before kill. A failed/ambiguous wait leaves the durable
     // row canceled but nonterminal, never a false success or another IO slot.
