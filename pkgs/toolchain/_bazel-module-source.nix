@@ -11,6 +11,7 @@
   hash,
   fetchCommit ? false,
   extraExcludes ? [],
+  sparseDirectories ? null,
 }:
 fetchgit {
   inherit url ref rev hash fetchCommit;
@@ -22,8 +23,12 @@ fetchgit {
 
   # Partial clone omits excluded blobs before they enter the store.
   sparsePatterns =
-    [
-      "/*"
+    (
+      if sparseDirectories == null
+      then ["/*"]
+      else map (directory: "/${directory}/") sparseDirectories
+    )
+    ++ [
       "!*.jar"
       "!*.class"
       "!*.so"

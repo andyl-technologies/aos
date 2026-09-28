@@ -61,8 +61,6 @@ in
     buildDeps = [
       buildJdk
       buildPackages.python3
-      apr
-      bazelNettyBoringssl
       bazelNettyTcnativeClasses
     ];
     runtimeDeps = [apr bazelNettyBoringssl bazelNettyTcnativeClasses];
