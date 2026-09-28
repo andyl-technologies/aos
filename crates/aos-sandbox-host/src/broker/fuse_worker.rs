@@ -37,7 +37,7 @@ pub struct OriginalHostFuseWorkerReplyV1 {
     pub(crate) descriptors: [OwnedFd; 2],
 }
 
-impl<C: HostCatalog, S: HostStateStore, W: HostWorker + Sync> HostBroker<C, S, W> {
+impl<C: HostCatalog, S: HostStateStore + Sync, W: HostWorker + Sync> HostBroker<C, S, W> {
     pub(crate) async fn prepare_original_fuse_worker(
         &mut self,
         original: &AuthenticatedBrokerMethodRequestV1,
@@ -141,14 +141,15 @@ impl<C: HostCatalog, S: HostStateStore, W: HostWorker + Sync> HostBroker<C, S, W
             .map_err(|error| HostError::Worker(error.to_string()))?;
         let name = FuseWorkerUnitNameV1::from_instance(plan.worker_instance)
             .map_err(|error| HostError::Worker(error.to_string()))?;
-        // The serialized broker borrow prevents another Host commit while the
-        // launch awaits PID1. Borrow only the actual fixed authority/state in
-        // its final guard, not the unrelated catalog, store or worker adapter.
+        // The serialized broker excludes local commits, not filesystem drift
+        // during PID1 awaits. Load the protected store on each final guard and
+        // require the entire authenticated post-escrow snapshot, not absence.
         let authority = &self.authority;
         let state = &self.state;
+        let store = &self.store;
         let mut guard = || {
             pending_guard()?;
-            state.validate_authenticated(authority)?;
+            crate::state::require_current_worker_snapshot(store, state, authority)?;
             let now_base = state
                 .prior_authorization(request.fence().sandbox_id())
                 .ok_or(HostError::UnknownHandle)?;
@@ -168,17 +169,17 @@ impl<C: HostCatalog, S: HostStateStore, W: HostWorker + Sync> HostBroker<C, S, W
             &manager, &cgroups, name, roles, &mut guard,
         )
         .await?;
-        drop(guard);
         self.fuse_workers.insert(
             plan.worker_instance,
             RetainedOriginalHostFuseWorkerV1 { manager, launch },
         );
-        pending_guard()?;
+        guard()?;
         let retained = self
             .fuse_workers
             .get(&plan.worker_instance)
             .ok_or(HostError::UnknownHandle)?;
         retained.launch.recheck(&retained.manager).await?;
+        guard()?;
         let cgroup = FuseWorkerUnitNameV1::from_instance(plan.worker_instance)
             .map_err(|error| HostError::Worker(error.to_string()))?
             .cgroup_path();
@@ -212,7 +213,7 @@ impl<C: HostCatalog, S: HostStateStore, W: HostWorker + Sync> HostBroker<C, S, W
             duplicate(retained.launch.cgroup())?,
         ];
         retained.launch.recheck(&retained.manager).await?;
-        pending_guard()?;
+        guard()?;
         Ok(OriginalHostFuseWorkerReplyV1 { body, descriptors })
     }
 }

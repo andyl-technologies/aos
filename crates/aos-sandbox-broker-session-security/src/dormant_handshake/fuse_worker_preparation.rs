@@ -4,8 +4,9 @@
 //! Host scope readback, Mount signature/current slot admission, original
 //! reservation ACK, durable object-start marker and actual kernel-object
 //! producer. It registers no listener and changes no production advertisement.
-//! Host purpose-56 issuance/admission and the subsequent descriptor-copy,
-//! fresh HELLO, kernel INIT/idmap and Root resource-read joins remain separate.
+//! The separate Host entry admits purpose 56 and retains launch escrow before
+//! PID1. Controller issuance, complete descriptor-copy closure, fresh HELLO,
+//! kernel INIT/idmap and Root resource-read joins remain separate.
 
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_mount::broker::{MountBroker, PreparedMountFuseWorkerHandoffV1};
@@ -35,6 +36,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
         &mut self,
     ) -> Result<DormantBrokerDescriptorRequestReceiveProgressV1, DormantBrokerSessionHandshakeErrorV1>
     {
+        let verifier = fixed_mount_peer_verifier()?;
+        self.0.require_original_mount_worker_peer(&verifier)?;
         let (admission, descriptors) = match self.0.receive_authenticated_descriptor_request(4) {
             Ok(value) => value,
             Err(crate::handshake::DormantBrokerSessionHandshakeErrorV1::Transport) => {
@@ -42,6 +45,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             }
             Err(error) => return Err(error.into()),
         };
+        self.0.require_original_mount_worker_peer(&verifier)?;
         let (request, initialize) = match admission {
             crate::recovery::ProtectedBrokerReceivedRequestAdmissionV1::New {
                 request,
@@ -152,10 +156,12 @@ impl DormantAuthenticatedBrokerSessionV1 {
         let roles: [std::os::fd::OwnedFd; 4] = descriptors
             .try_into()
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+        let verifier = fixed_mount_peer_verifier()?;
+        self.0.require_original_mount_worker_peer(&verifier)?;
         let mut pending = self.0.hold_pending_request(&request)?;
-        pending.recheck()?;
+        pending.recheck_mount_worker_peer(&verifier)?;
         let mut guard = || {
-            pending.recheck().map_err(|_| {
+            pending.recheck_mount_worker_peer(&verifier).map_err(|_| {
                 aos_sandbox_host::HostError::Fence("original worker session custody changed")
             })
         };
@@ -164,11 +170,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
             .await
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
         drop(guard);
-        pending.recheck()?;
+        pending.recheck_mount_worker_peer(&verifier)?;
         let result = action(&reply);
         // Even a failed callback must not bypass the final currentness check.
         // Neither failure retires the durable launch or pending request.
-        pending.recheck()?;
+        pending.recheck_mount_worker_peer(&verifier)?;
         result
     }
 
@@ -212,4 +218,20 @@ impl DormantAuthenticatedBrokerSessionV1 {
         let mut transport = self.0.hold_fuse_intent_transport(&request.0)?;
         transport.with_original_worker_handoff(mount, host_cgroup_root, action)
     }
+}
+
+fn fixed_mount_peer_verifier()
+-> Result<aos_sandbox_host::peer::ControllerPeerVerifier, DormantBrokerSessionHandshakeErrorV1> {
+    let descriptor = rustix::fs::open(
+        "/sys/fs/cgroup",
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+    let root = CgroupV2Root::from_owned(descriptor)
+        .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+    Ok(aos_sandbox_host::peer::ControllerPeerVerifier::new(root))
 }

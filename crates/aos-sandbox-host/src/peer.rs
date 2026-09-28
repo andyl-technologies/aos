@@ -291,4 +291,27 @@ mod tests {
             )
         ));
     }
+
+    #[test]
+    fn unregistered_root_peer_cannot_prepare_a_fixed_mount_worker() {
+        // This negative kernel fixture runs outside the fixed Mount service.
+        // A real root socket and live pidfd still do not establish that role.
+        let root: OwnedFd = File::open("/sys/fs/cgroup").unwrap().into();
+        let verifier = ControllerPeerVerifier::new(CgroupV2Root::from_owned(root).unwrap());
+        let (socket, _other) = rustix::net::socketpair(
+            rustix::net::AddressFamily::UNIX,
+            rustix::net::SocketType::SEQPACKET,
+            rustix::net::SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        let identity =
+            ConnectionPeerIdentity::from_socket(std::os::fd::AsFd::as_fd(&socket)).unwrap();
+
+        assert!(identity.pidfd().is_alive().unwrap());
+        assert!(verifier.verify_mount_broker(&identity).is_err());
+        // The pending guard must repeat the actual service check, not cache
+        // root credentials or successful generic session admission.
+        assert!(verifier.verify_mount_broker(&identity).is_err());
+    }
 }

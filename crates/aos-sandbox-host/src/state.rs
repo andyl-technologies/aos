@@ -1701,9 +1701,6 @@ impl HostState {
             ));
         }
         let mut state = Self::default();
-        if wire.fuse_worker_launches.len() > MAXIMUM_REQUESTS {
-            return Err(HostError::ResourceExhausted);
-        }
         for launch in wire.fuse_worker_launches {
             launch.validate_shape()?;
             if state
@@ -2400,6 +2397,24 @@ pub trait HostStateStore {
     fn commit(&self, state: &HostState) -> Result<()>;
 }
 
+/// Requires the complete authenticated snapshot to remain physically current.
+///
+/// Missing state is an empty startup snapshot, never absence proof for a launch
+/// whose nonempty escrow has already committed. Comparing the whole snapshot
+/// also refuses another valid historical state, not just a changed worker row.
+pub(crate) fn require_current_worker_snapshot(
+    store: &impl HostStateStore,
+    expected: &HostState,
+    authority: &HostAuthorityV1,
+) -> Result<()> {
+    let current = store.load()?;
+    current.validate_authenticated(authority)?;
+    if current != *expected {
+        return Err(HostError::Fence("physical Host worker snapshot changed"));
+    }
+    Ok(())
+}
+
 /// Stores one checksummed snapshot beneath a retained private directory.
 #[derive(Clone, Debug)]
 pub struct FileHostStateStore {
@@ -3050,6 +3065,12 @@ mod tests {
         let prepared = authority
             .admit_fuse_worker(&artifacts, &request, &body, &test_clock(), &prior)
             .unwrap();
+        fuse_worker_launch::assert_signed_escrow_currentness_regressions(
+            &authority,
+            &request,
+            &prepared,
+            prior.clone(),
+        );
         assert_eq!(prepared.fence.assignment(), native.fence.assignment());
         assert_eq!(
             prepared.fence.local_lease_record(),

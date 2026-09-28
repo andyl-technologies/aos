@@ -1213,6 +1213,17 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    /// Checks the actual original peer against the fixed Mount service only.
+    pub(super) fn require_original_mount_worker_peer(
+        &self,
+        verifier: &aos_sandbox_host::peer::ControllerPeerVerifier,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        verifier
+            .verify_mount_broker(self.socket.peer())
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        Ok(())
+    }
+
     pub(super) fn hold_fuse_intent_transport<'session>(
         &'session mut self,
         request: &'session aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,

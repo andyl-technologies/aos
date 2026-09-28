@@ -217,6 +217,111 @@ impl HostState {
 }
 
 #[cfg(test)]
+pub(super) fn assert_signed_escrow_currentness_regressions(
+    authority: &HostAuthorityV1,
+    request: &ValidatedHostFuseWorkerSessionRequestV1,
+    admitted: &VerifiedBrokerAdmission,
+    base_fence: Vec<u8>,
+) {
+    // The phase and effect come from real signed purpose-56 admission. These
+    // fixed transcript commitments test storage authentication only; they do
+    // not replace the production constructor's genuine received-request join.
+    let id = *request.header().request_id();
+    let mut row = DurableFuseWorkerLaunchV1 {
+        binding: Binding {
+            version: 1,
+            request_id: id,
+            sandbox: *request.fence().sandbox_id(),
+            worker: request.worker_instance(),
+            boot: *admitted.effect.host_boot_id(),
+            plan: request.plan_digest(),
+            reservation: request.reservation_commitment(),
+            body_digest: *admitted.effect.transport_request_digest().as_bytes(),
+            signed_request: [121; 32],
+            session: [122; 32],
+            base_fence,
+            phase_fence: authority
+                .seal_fence(request.fence().sandbox_id(), &admitted.fence)
+                .unwrap(),
+            effect: authority.seal_effect(&id, &admitted.effect).unwrap(),
+        },
+        authentication: Vec::new(),
+    };
+    row.authentication = authority
+        .seal_execution_record(&id, &row.payload().unwrap())
+        .unwrap();
+    row.validate_authenticated(authority).unwrap();
+
+    for case in 0..8 {
+        let mut changed = row.clone();
+        match case {
+            0 => changed.binding.request_id[0] ^= 1,
+            1 => changed.binding.worker[0] ^= 1,
+            2 => changed.binding.plan[0] ^= 1,
+            3 => changed.binding.session[0] ^= 1,
+            4 => changed.binding.signed_request[0] ^= 1,
+            5 => changed.binding.body_digest[0] ^= 1,
+            6 => changed.binding.reservation[0] ^= 1,
+            7 => changed.authentication[0] ^= 1,
+            _ => unreachable!(),
+        }
+        assert!(
+            changed.validate_authenticated(authority).is_err(),
+            "MAC substitution {case}"
+        );
+    }
+    assert!(
+        authority
+            .open_execution_record(&[123; 16], &row.authentication)
+            .is_err()
+    );
+
+    let mut expected = HostState::default();
+    expected.fuse_worker_launches.insert(id, row);
+    expected.validate_authenticated(authority).unwrap();
+    let recovered = HostState::decode(&expected.encode().unwrap()).unwrap();
+    recovered.validate_authenticated(authority).unwrap();
+    assert_eq!(recovered, expected);
+    assert!(recovered.require_request_not_worker_escrow(&id).is_err());
+    assert!(recovered.query_effect(&id, request.plan_digest()).is_err());
+    assert!(recovered.query_effect(&id, [124; 32]).is_err());
+
+    let mut relocated = recovered.clone();
+    let retained = relocated.fuse_worker_launches.remove(&id).unwrap();
+    relocated.fuse_worker_launches.insert([123; 16], retained);
+    assert!(relocated.validate_authenticated(authority).is_err());
+
+    use super::{FileHostStateStore, HostStateStore, require_current_worker_snapshot};
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let parent = tempfile::tempdir().unwrap();
+    let named = parent.path().join("state");
+    let displaced = parent.path().join("old-state");
+    std::fs::create_dir(&named).unwrap();
+    std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let writer = FileHostStateStore::open_exclusive(&named).unwrap();
+    writer.commit(&expected).unwrap();
+    require_current_worker_snapshot(&writer, &expected, authority).unwrap();
+
+    // Every check uses the same actual protected store, as a resumed async
+    // launch does. Neither missing state nor another valid snapshot is absence.
+    std::fs::remove_file(named.join("state.bin")).unwrap();
+    assert!(require_current_worker_snapshot(&writer, &expected, authority).is_err());
+    writer.commit(&HostState::default()).unwrap();
+    assert!(require_current_worker_snapshot(&writer, &expected, authority).is_err());
+    writer.commit(&expected).unwrap();
+    require_current_worker_snapshot(&writer, &expected, authority).unwrap();
+
+    std::fs::rename(&named, &displaced).unwrap();
+    std::fs::create_dir(&named).unwrap();
+    std::fs::set_permissions(&named, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let replacement = FileHostStateStore::open_exclusive(&named).unwrap();
+    replacement.commit(&expected).unwrap();
+    assert!(require_current_worker_snapshot(&writer, &expected, authority).is_err());
+    assert!(displaced.join("state.bin").exists());
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -546,7 +546,7 @@ impl<Catalog, Store, Worker> DormantHostBrokerCallsiteV1
     for DormantHostBrokerCompositionV1<'_, Catalog, Store, Worker>
 where
     Catalog: HostCatalog,
-    Store: HostStateStore,
+    Store: HostStateStore + Sync,
     Worker: HostWorker + Sync,
 {
     fn prepare_original_fuse_worker<'call>(

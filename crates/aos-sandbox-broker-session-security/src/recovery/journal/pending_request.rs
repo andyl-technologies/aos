@@ -90,6 +90,18 @@ impl<'owner> ProtectedPendingBrokerRequestCutV1<'owner> {
         Ok(())
     }
 
+    /// Joins pending custody to the original peer's actual fixed Mount service.
+    pub(crate) fn recheck_mount_worker_peer(
+        &mut self,
+        verifier: &aos_sandbox_host::peer::ControllerPeerVerifier,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.recheck()?;
+        verifier
+            .verify_mount_broker(self.peer)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        self.recheck()
+    }
+
     /// Borrows the exact already-authenticated request for comparison only.
     pub(crate) const fn request(&self) -> &AuthenticatedBrokerMethodRequestV1 {
         self.request
