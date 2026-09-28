@@ -76,15 +76,18 @@ struct LicenseInventoryEntry<'a> {
 
 struct PayloadBuilder {
     root: PathBuf,
+    release_prefix: String,
     artifacts: Vec<ArtifactRecord>,
 }
 
 impl PayloadBuilder {
-    fn new(root: PathBuf) -> Result<Self> {
+    fn new(root: PathBuf, release_prefix: String) -> Result<Self> {
+        BundlePath::parse(release_prefix.clone())?;
         fs::create_dir(&root)
             .with_context(|| format!("creating release payload {}", root.display()))?;
         Ok(Self {
             root,
+            release_prefix,
             artifacts: Vec::new(),
         })
     }
@@ -97,6 +100,21 @@ impl PayloadBuilder {
         relative: String,
         attributes: ArtifactAttributes,
     ) -> Result<()> {
+        let relative = format!("{}/{}", self.release_prefix, relative);
+        self.copy_origin(source, id, kind, relative, attributes)
+    }
+
+    // Canonical Git and cache paths also belong to the signed manifest. Their
+    // consumers use protocol-defined locations outside the release namespace.
+    fn copy_origin(
+        &mut self,
+        source: &Path,
+        id: String,
+        kind: ArtifactKind,
+        relative: String,
+        attributes: ArtifactAttributes,
+    ) -> Result<()> {
+        BundlePath::parse(relative.clone())?;
         let destination = self.root.join(&relative);
         let parent = destination
             .parent()
@@ -252,7 +270,12 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
         .tempdir_in(parent)?;
     let assembled = temporary.path().join("assembled");
     fs::create_dir(&assembled)?;
-    let mut payload = PayloadBuilder::new(assembled.join("payload"))?;
+    let release_prefix = format!(
+        "releases/{}/{}/artifacts",
+        aos_release::tuf::TufRole::for_release(plan.release_class).as_str(),
+        plan.version
+    );
+    let mut payload = PayloadBuilder::new(assembled.join("payload"), release_prefix)?;
 
     payload.copy(
         &args.build_report,

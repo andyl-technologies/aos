@@ -13,7 +13,7 @@ use aos_release::receipt::{
     HubEnvironment, RegistryBootstrapIntentV1, verify_signed_receipt_with_key,
 };
 use aos_release::signing::SignerRole;
-use aos_remote::hub::{HubClient, hub_rpc};
+use aos_remote::hub::hub_rpc;
 
 use crate::cli::{HubAccessArgs, ReleaseBootstrapArgs};
 
@@ -96,11 +96,7 @@ pub(super) async fn run(args: &ReleaseBootstrapArgs, printer: &Printer) -> Resul
 
     let public_client = hub_transition::public_client()?;
     hub_transition::verify_deployment(&public_client, hub_url, deployment_id).await?;
-    let token = args
-        .token
-        .as_deref()
-        .context("registry bootstrap requires an environment-specific access token")?;
-    let hub = HubClient::connect_with_token(hub_url, token)?;
+    let hub = crate::commands::hub::release_hub_client(hub_url, args.token.as_deref()).await?;
     let existing = hub
         .call_topology(
             hub_rpc::ListRegistryPublications,
