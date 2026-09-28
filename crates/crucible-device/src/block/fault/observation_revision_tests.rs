@@ -359,3 +359,105 @@ fn dependency_blocked_graph_commit_refuses_before_any_durable_payload_write() {
     assert_eq!(state, before);
     assert_eq!(durable, CowOverlay::new());
 }
+
+fn registered_flash_read_owner() -> (BlockFaultState, ResolvedBlockFlashRule) {
+    use crate::block::flash::{
+        ResolvedBlockFlashProgramErase, ResolvedBlockFlashReadDisturb, ResolvedBlockFlashRetention,
+    };
+
+    let rule = ResolvedBlockFlashRule {
+        contributor: [1; 32],
+        choice_key: [2; 32],
+        erase_block_bytes: 8,
+        program_page_bytes: 4,
+        endurance_cycles: 100,
+        retention: ResolvedBlockFlashRetention {
+            minimum_age_nanos: 1,
+            wear_age_nanos: 0,
+            bit_probability_millionths: 0,
+            maximum_changed_bits: 1,
+        },
+        read_disturb: ResolvedBlockFlashReadDisturb {
+            read_threshold: 10,
+            neighbor_pages: 1,
+            bit_probability_millionths: 0,
+            maximum_changed_bits: 1,
+        },
+        program_erase: ResolvedBlockFlashProgramErase {
+            program_probability_millionths: 0,
+            erase_probability_millionths: 0,
+            worn_probability_millionths: 0,
+            partial_program: false,
+            partial_erase: false,
+        },
+    };
+    let mut state = BlockFaultState::write_through(32);
+    state
+        .flash
+        .read(
+            &BlockRequest::read(1, 0, 1),
+            0,
+            32,
+            std::slice::from_ref(&rule),
+            &mut [0],
+        )
+        .unwrap_or_else(|error| panic!("register actual flash page: {error}"));
+    (state, rule)
+}
+
+#[test]
+fn zero_length_selected_flash_read_tracks_actual_page_counter_changes() {
+    for offset in [0, 1] {
+        let (mut state, rule) = registered_flash_read_owner();
+        let base = BaseImage::new(vec![0; 32]);
+        let mut durable = CowOverlay::new();
+        let request = BlockRequest::read(2, offset, 0);
+        let mut directive = ResolvedBlockFaultDirective::fault_free(&request, 32);
+        directive.persistence_media_rules = vec![rule.clone()];
+        let before = state.clone();
+
+        let (response, wait) = state
+            .with_observation_mutation(|state| {
+                state.execute_wire(&base, &mut durable, &request, &directive)
+            })
+            .unwrap_or_else(|error| panic!("actual zero-length read: {error}"));
+
+        assert_eq!(response.status, BlockStatus::Ok);
+        assert_eq!(wait, 0);
+        assert_eq!(
+            state.flash.continuations()[&rule.contributor].pages[&0].reads_since_disturb,
+            2
+        );
+        assert_ne!(state.flash, before.flash);
+        assert_eq!(revision(&state), revision(&before) + 1);
+        let mut expected = before;
+        expected.flash = state.flash.clone();
+        expected.observation_revision = state.observation_revision;
+        assert_eq!(
+            state, expected,
+            "only actual flash state and its revision change"
+        );
+        assert_eq!(durable, CowOverlay::new());
+    }
+}
+
+#[test]
+fn zero_length_flash_read_at_nonzero_page_boundary_preserves_revision() {
+    let (mut state, rule) = registered_flash_read_owner();
+    let base = BaseImage::new(vec![0; 32]);
+    let mut durable = CowOverlay::new();
+    let request = BlockRequest::read(2, rule.program_page_bytes, 0);
+    let mut directive = ResolvedBlockFaultDirective::fault_free(&request, 32);
+    directive.persistence_media_rules = vec![rule];
+    let before = state.clone();
+
+    let (response, _) = state
+        .with_observation_mutation(|state| {
+            state.execute_wire(&base, &mut durable, &request, &directive)
+        })
+        .unwrap_or_else(|error| panic!("actual empty page range: {error}"));
+
+    assert_eq!(response.status, BlockStatus::Ok);
+    assert_eq!(state, before);
+    assert_eq!(durable, CowOverlay::new());
+}
