@@ -1378,6 +1378,14 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     // {
       referenceIntegrity = crucibleReferenceIntegrity;
     };
+
+  # Configuration publication runs on the build platform. Darwin releases
+  # contain packages without a system image, so their configuration companions
+  # use the Linux builder's base library and its frozen system artifacts.
+  releaseConfigurationBaseLib =
+    if stdenv.isCross && hostPlatform.isDarwin
+    then (import ./. {inherit system;}).systems.server.config.aos.config.evalAtBoot.baseLib
+    else discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
 in {
   inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions releaseQualificationExecutor allPackages;
   packageQualificationCoverage = qualificationPackageCoverageReport;
@@ -1390,14 +1398,14 @@ in {
     system = hostPlatform.system;
     packages = pkgs;
     names = pkgs.allPackageNames;
-    configurationBaseLib = discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
+    configurationBaseLib = releaseConfigurationBaseLib;
     configurationSources = [./lib ./modules ./systems/server.nix];
   };
   releasePackageDerivationRoots = pkgs.platformSupport.releaseDerivationRoots {
     system = hostPlatform.system;
     packages = pkgs;
     names = pkgs.allPackageNames;
-    configurationBaseLib = discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
+    configurationBaseLib = releaseConfigurationBaseLib;
   };
 
   # Pure package-maintenance content. Git and local-clone identities are added
