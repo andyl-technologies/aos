@@ -238,8 +238,9 @@ impl OriginalRootGenesisFlightV1 {
                         .stream
                         .try_borrow()
                         .map_err(|_| SourceGenesisErrorV1::Stale)?;
+                    let descriptor = stream.as_fd();
                     let mut fds = [rustix::event::PollFd::new(
-                        stream.as_fd(),
+                        &descriptor,
                         rustix::event::PollFlags::IN,
                     )];
                     rustix::event::poll(
