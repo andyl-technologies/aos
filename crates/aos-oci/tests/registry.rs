@@ -1057,10 +1057,13 @@ async fn upload_cancellation_stops_at_the_retry_deadline_and_preserves_its_check
         .await
         .expect_err("persistent unavailability must stop at the retry deadline");
     assert!(
-        error
-            .to_string()
-            .contains("upload cancellation retry window elapsed"),
+        format!("{error:#}").contains("upload cancellation retry window elapsed"),
         "unexpected deadline error: {error:#}"
+    );
+    assert!(
+        format!("{error:#}")
+            .contains("last upload cancellation attempt returned HTTP 503 Service Unavailable"),
+        "persistent unavailability must identify the last response: {error:#}"
     );
     assert!(
         cancellation_started.elapsed() >= std::time::Duration::from_secs(7),

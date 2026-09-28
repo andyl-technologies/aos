@@ -540,6 +540,23 @@ async fn spawn_registry_with_rollout(
     access_policy_kind: &str,
     container_rollout: aos_hub_core::container_rollout::ContainerRollout,
 ) -> RunningRegistry {
+    spawn_registry_with_delayed_cancellation(
+        visibility,
+        auxiliary_repository,
+        access_policy_kind,
+        container_rollout,
+        false,
+    )
+    .await
+}
+
+async fn spawn_registry_with_delayed_cancellation(
+    visibility: &str,
+    auxiliary_repository: bool,
+    access_policy_kind: &str,
+    container_rollout: aos_hub_core::container_rollout::ContainerRollout,
+    delay_first_cancel_response: bool,
+) -> RunningRegistry {
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
         .unwrap();
@@ -762,7 +779,34 @@ async fn spawn_registry_with_rollout(
         container_rollout,
         release_evidence: None,
     });
-    let app = router(state).await;
+    let mut app = router(state).await;
+    if delay_first_cancel_response {
+        let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let retry_arrived = Arc::new(tokio::sync::Notify::new());
+        app = app.layer(axum::middleware::from_fn(
+            move |request: axum::extract::Request, next: axum::middleware::Next| {
+                let first = Arc::clone(&first);
+                let retry_arrived = Arc::clone(&retry_arrived);
+                async move {
+                    let cancellation = request.method() == axum::http::Method::DELETE
+                        && request.uri().path().contains("/blobs/uploads/");
+                    let response = next.run(request).await;
+                    if cancellation {
+                        if response.status() == StatusCode::NO_CONTENT
+                            && first.swap(false, std::sync::atomic::Ordering::SeqCst)
+                        {
+                            // The actual handler has committed cancellation and cleanup.
+                            // Withhold only its response until the client retries.
+                            retry_arrived.notified().await;
+                        } else if !first.load(std::sync::atomic::Ordering::SeqCst) {
+                            retry_arrived.notify_one();
+                        }
+                    }
+                    response
+                }
+            },
+        ));
+    }
     let server = tokio::spawn(async move {
         let result = axum::serve(
             listener,
@@ -2348,6 +2392,159 @@ async fn real_client_mounts_cancels_and_roundtrips_a_complete_multi_platform_gra
     assert_eq!(pulled.platform, Platform::linux_arm64());
     assert_eq!(pulled.manifest.digest, arm64.manifest.digest);
     assert_eq!(pulled.layers, vec![arm64.layer]);
+}
+
+#[tokio::test]
+async fn real_client_retries_a_committed_upload_cancellation_after_response_timeout() {
+    let registry = spawn_registry_with_delayed_cancellation(
+        "private",
+        false,
+        "hub_auth",
+        aos_hub_core::container_rollout::ContainerRollout::all_enabled(),
+        true,
+    )
+    .await;
+    let token = exchange_oci_token(&registry, &["repository:aos:pull,push"]).await;
+    let graph = image_graph_for(
+        "cancel-response-timeout",
+        Platform::linux_amd64(),
+        vec![b'x'; 512 * 1024],
+        false,
+    );
+    let source = tempfile::tempdir().unwrap();
+    write_graph_layout(source.path(), &graph);
+    let reference =
+        RegistryReference::parse(&format!("{}/aos:cancel-timeout", registry.authority)).unwrap();
+    let client = RegistryClient::new(&reference, Some(&registry.origin), Some(token)).unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let cancellation = CancellationToken::new();
+    let cancel = cancellation.clone();
+    let digest = graph.layer.digest.to_string();
+    let (events, mut received) = mpsc::unbounded_channel();
+    let observer = tokio::spawn(async move {
+        while let Some(event) = received.recv().await {
+            if matches!(event, TransferEvent::Uploading { digest: ref uploaded, .. } if uploaded == &digest)
+            {
+                cancel.cancel();
+                return;
+            }
+        }
+    });
+    let options = PushOptions {
+        source: source.path().to_path_buf(),
+        platform: PlatformSelector::parse("linux/amd64").unwrap(),
+        state_directory: state.path().join("uploads"),
+        chunk_bytes: 4096,
+        cancellation,
+        events: Some(events),
+    };
+    let error = client.push(&reference, &options).await.unwrap_err();
+    assert!(format!("{error:#}").contains("cancelled"));
+    observer.await.unwrap();
+    drop(options);
+
+    // The first DELETE succeeds in the actual Hub before its response stalls.
+    // The second DELETE must acknowledge the same terminal cancellation.
+    assert_eq!(
+        client
+            .cancel_uploads(
+                &reference,
+                &state.path().join("uploads"),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap(),
+        1,
+    );
+    assert_eq!(
+        registry
+            .db
+            .oci_operations_metrics(aos_hub_core::clock::now_unix_secs())
+            .await
+            .unwrap()
+            .uploads_cancelled,
+        1,
+    );
+    let retained_files: Vec<_> = fs::read_dir(state.path().join("uploads"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(retained_files, [".aos-oci-upload-state"]);
+}
+
+#[tokio::test]
+async fn cancelled_upload_retries_preserve_owner_and_repository_scope() {
+    let registry = spawn_registry("private", true, "hub_auth").await;
+    let token = exchange_oci_token(
+        &registry,
+        &["repository:aos:pull,push", "repository:other:pull,push"],
+    )
+    .await;
+    let start = registry
+        .http
+        .post(format!("{}v2/aos/blobs/uploads/", registry.origin))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(start.status(), StatusCode::ACCEPTED);
+    let upload_url = resolved_location(&registry, start.headers()[LOCATION].to_str().unwrap());
+    let cancelled = registry
+        .http
+        .delete(&upload_url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cancelled.status(), StatusCode::NO_CONTENT);
+
+    let foreign_owner = registry
+        .keys
+        .mint_oci(
+            &OciTokenGrant {
+                subject: "test:foreign-upload-owner".to_string(),
+                authority: registry.authority.clone(),
+                registry_stable_id: registry.registry_stable_id.clone(),
+                grants: vec![OciRepositoryGrant {
+                    repository: RepositoryName::parse("aos").unwrap(),
+                    actions: vec!["pull".to_string(), "push".to_string()],
+                }],
+            },
+            300,
+        )
+        .unwrap();
+    for (location, bearer) in [
+        (upload_url.clone(), foreign_owner.as_str()),
+        (upload_url.replace("/v2/aos/", "/v2/other/"), token.as_str()),
+    ] {
+        let rejected = registry
+            .http
+            .delete(location)
+            .bearer_auth(bearer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::NOT_FOUND);
+        assert_eq!(error_code(rejected).await, "BLOB_UPLOAD_UNKNOWN");
+    }
+
+    let retry = registry
+        .http
+        .delete(&upload_url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(retry.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        registry
+            .db
+            .oci_operations_metrics(aos_hub_core::clock::now_unix_secs())
+            .await
+            .unwrap()
+            .uploads_cancelled,
+        1,
+    );
 }
 
 #[tokio::test]
