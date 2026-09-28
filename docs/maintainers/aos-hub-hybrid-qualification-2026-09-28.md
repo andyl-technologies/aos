@@ -201,6 +201,25 @@ correction is unchanged. A rebuilt runtime pair passes independent console-byte
 checks, and the remaining browser checks are being rerun. Neither focused
 database execution nor the earlier 77-check attempt establishes a full UI pass.
 
+The eleventh Hybrid Chrome run passed all 123 executed checks, with no
+JavaScript, console or recorded network errors. One check was skipped because
+the disposable fixture had no persisted delivery workflow. It covered login,
+management scopes, appearance, fonts, branding review/apply/restore, SPA/back
+navigation, interrupted asynchronous work, organization and registry settings,
+guided delivery planning, cache integrations, retention and GC policy planning.
+Native PostgreSQL, Worker/Miniflare, S3 and client ran on separate VMs. The
+fixture used a narrowly pinned TLS certificate and an independent successful
+SOCKS HTTPS probe before Chrome.
+
+This operator qualification mounted the exact rebuilt Native package
+`/nix/store/zy178y20zs9pamglvjq7kvmwp5d0lrv3-aos-hub-0.1.0` and Worker package
+`/nix/store/3f56014z8g08942563mndgzkqlc62sr5-aos-hub-worker-dist-0.1.0` onto
+previously captured fleet OS images while preserving the service policy. Native's
+version command and independent console-byte checks passed for both runtimes
+and edge assets under `bd7cd34f`. This qualifies the exercised browser paths;
+it is distinct from the pending current-source hermetic full nonempty fleet,
+saved-workflow resume coverage and hosted provider qualification.
+
 The next full nonempty fleet capture passed the 26-object inventory continuation
 check and again indexed two packages, two releases and one signed channel.
 Authenticated-page p95 was 15.486 ms at baseline and 12.524 ms during eight
