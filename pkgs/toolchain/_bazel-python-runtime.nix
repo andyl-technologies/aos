@@ -14,7 +14,17 @@
       phase
       // {
         script =
-          builtins.replaceStrings
+          (
+            if phase.name == "configure"
+            then ''
+              # Python 3.11's setup.py inspects configured search directories,
+              # rather than the compiler wrapper's implicit dependency paths.
+              export CPPFLAGS="${builtins.concatStringsSep " " (map (dependency: "-I${dependency}/include") original.runtimeDeps)} -I${buildPackages.ncurses}/include/ncursesw ''${CPPFLAGS:-}"
+              export LDFLAGS="${builtins.concatStringsSep " " (map (dependency: "-L${dependency}/lib -Wl,-rpath,${dependency}/lib") original.runtimeDeps)} ''${LDFLAGS:-}"
+            ''
+            else ""
+          )
+          + builtins.replaceStrings
           ["3.12.9" "python3.12" "${./python/python3-3_12-openssl4.patch}"]
           [version "python3.11" "${./_bazel-python311-openssl4.patch}"]
           phase.script;
