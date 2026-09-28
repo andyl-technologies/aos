@@ -4,6 +4,9 @@
 //! and signed source claims are deterministic test material, never production
 //! credentials or proof that the claimed publisher and ancestry heads are current.
 
+#[path = "aos-sandbox-q04-bootstrap-vm-probe/project_recovery.rs"]
+mod project_recovery;
+
 use std::error::Error;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
@@ -92,6 +95,24 @@ fn run() -> Result<(), Box<dyn Error>> {
         "source-signer-reject-unheld" => {
             require_uid(SOURCE_SIGNER_UID)?;
             source_signer_reject_unheld()?;
+        }
+        "source-signer-listener" => {
+            require_uid(0)?;
+            project_recovery::launch_source_signer()?;
+        }
+        "project-cancel-pending"
+        | "project-cancel-recover"
+        | "project-stage-abort"
+        | "project-stage-pending"
+        | "project-stage-recover"
+        | "project-recovery-history"
+        | "project-recovery-deny-fresh" => {
+            require_uid(CONTROLLER_UID)?;
+            project_recovery::run_controller_mode(&mode)?;
+        }
+        "project-expire-deployment" => {
+            require_uid(0)?;
+            project_recovery::expire_deployment_credential()?;
         }
         _ => return Err("unknown bootstrap mode".into()),
     }

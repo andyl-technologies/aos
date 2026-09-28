@@ -46,38 +46,60 @@ use std::{
 use aos_sandbox::cache_residency::{
     CLOSED_CACHE_OWNER_READBACK_BYTES_V2, PinnedCacheOwnerReadbackSignerV1,
 };
-use aos_sandbox::journal::{ProtectedJournalNamesV1, SourceDomainPolicyHoldV1};
+use aos_sandbox::journal::{
+    ProtectedJournalNamesV1, SOURCE_PROJECT_ADMISSION_CHALLENGE_BYTES_V1,
+    SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1, SourceDomainPolicyHoldV1,
+    SourceProjectAdmissionChallengeV1, SourceProjectAdmissionReservationV1,
+};
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
-    CLOSED_POLICY_BINDING_BYTES_V2, CacheSignerRootChallengeStatusV2,
-    CacheSignerRootSettlementStateV2, ClosedCacheReadbackRootChallengeV1,
-    ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, ClosedSourceTerminalClaimV1,
-    ControllerEffectAckChallengeV1, PinnedSourceHoldReadbackSignerV1, PolicyDeploymentInputsV1,
-    ROOT_V8_SETTLED_QUERY_MAGIC, RootV8HeldTerminalStepV1, StagedClosedPolicyRootBaseV2,
-    abandon_fixed_cache_signer_challenge_v2,
-    acknowledge_and_verify_fixed_closed_root_v8_terminal_v1,
+    CLOSED_POLICY_BINDING_BYTES_V2, CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1,
+    CacheSignerRootChallengeStatusV2, CacheSignerRootSettlementStateV2,
+    ClosedCacheReadbackRootChallengeV1, ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2,
+    ClosedSourceTerminalClaimV1, ControllerEffectAckChallengeV1, PinnedSourceHoldReadbackSignerV1,
+    PolicyDeploymentInputsV1, ROOT_PROJECT_ADMISSION_ABORT_QUERY_MAGIC,
+    ROOT_PROJECT_ADMISSION_COMMIT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_CURRENT_QUERY_MAGIC,
+    ROOT_PROJECT_ADMISSION_INTENT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_INTENT_REPLAY_MAGIC,
+    ROOT_PROJECT_ADMISSION_OUTCOME_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_STAGE_QUERY_MAGIC,
+    ROOT_PROJECT_RESERVATION_CANCEL_MAGIC, ROOT_PROJECT_RESERVATION_CANCEL_QUERY_MAGIC,
+    ROOT_V8_SETTLED_QUERY_MAGIC, RootV8HeldTerminalStepV1, SourceHoldReadbackChallengeV1,
+    StagedClosedPolicyRootBaseV2, abandon_fixed_cache_signer_challenge_v2,
+    abort_fixed_root_project_admission_v1, acknowledge_and_verify_fixed_closed_root_v8_terminal_v1,
     acknowledge_fixed_closed_root_effect_v1, acknowledge_fixed_closed_root_v8_effect_v1,
     acknowledge_verify_and_release_fixed_closed_root_v8_terminal_v1,
     admit_fixed_cache_readback_pin_v1, admit_fixed_controller_hold_pin_v1,
     admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
-    admit_fixed_source_hold_pin_v1, compact_fixed_cache_signer_root_journal_v2,
-    decode_policy_deployment_sources_v1, encode_root_v8_settled_reply_v1,
-    read_fixed_cache_signer_challenge_v2, read_fixed_inert_closed_policy_binding_hold_v1,
-    read_fixed_policy_cache_hold_v1, record_fixed_cache_signer_root_settlement_v2,
-    recover_fixed_cache_signer_abandonment_v2, recover_fixed_cache_signer_root_history_v2,
-    recover_fixed_cache_signer_root_settlement_v2, recover_fixed_closed_policy_binding_decision_v2,
-    recover_fixed_closed_root_effect_ack_v1, recover_fixed_closed_root_v8_effect_ack_v1,
+    admit_fixed_root_project_source_from_owner_proofs_v1, admit_fixed_source_hold_pin_v1,
+    cancel_fixed_root_project_reservation_v1, compact_fixed_cache_signer_root_journal_v2,
+    decode_policy_deployment_sources_v1, encode_root_current_project_admission_stage_reply_v1,
+    encode_root_project_admission_outcome_reply_v1, encode_root_project_admission_stage_reply_v1,
+    encode_root_project_admission_terminal_reply_v1, encode_root_project_intent_replay_reply_v1,
+    encode_root_project_intent_reply_v1, encode_root_project_reservation_cancel_reply_v1,
+    encode_root_v8_settled_reply_v1, fixed_root_project_admission_recovery_required_v1,
+    prepare_fixed_root_project_admission_intent_v1, read_fixed_cache_signer_challenge_v2,
+    read_fixed_inert_closed_policy_binding_hold_v1, read_fixed_policy_cache_hold_v1,
+    record_fixed_cache_signer_root_settlement_v2, recover_fixed_cache_signer_abandonment_v2,
+    recover_fixed_cache_signer_root_history_v2, recover_fixed_cache_signer_root_settlement_v2,
+    recover_fixed_closed_policy_binding_decision_v2, recover_fixed_closed_root_effect_ack_v1,
+    recover_fixed_closed_root_v8_effect_ack_v1,
     recover_fixed_closed_root_v8_predecessor_settlement_v1,
     recover_fixed_closed_root_v8_terminal_custody_v1,
     recover_fixed_closed_root_v8_verified_terminal_v1,
-    recover_fixed_committed_source_held_binding_v2, release_fixed_closed_policy_controller_hold_v1,
+    recover_fixed_committed_source_held_binding_v2,
+    recover_fixed_root_current_project_admission_stage_v1,
+    recover_fixed_root_project_admission_intent_v1,
+    recover_fixed_root_project_admission_outcome_v1, recover_fixed_root_project_admission_stage_v1,
+    recover_fixed_root_project_reservation_cancellation_v1,
+    recover_fixed_root_project_source_pin_v1, recover_fixed_root_unstaged_project_intent_v1,
+    release_fixed_closed_policy_controller_hold_v1,
     release_fixed_closed_policy_source_domain_hold_v1,
     release_fixed_inert_closed_policy_binding_hold_v1,
     require_no_fixed_closed_policy_binding_hold_v1, stage_fixed_cache_signer_challenge_v2,
-    staged_closed_policy_signer_challenge_v2, verify_fixed_policy_cache_owner_readback_v2,
-    verify_policy_deployment_head_v1, verify_signed_project_policy_source_v1,
-    verify_signed_project_policy_source_v2, with_fixed_closed_cache_readback_session_v1,
-    with_fixed_current_policy_head_lease_v1, with_fixed_explicit_closed_policy_binding_session_v2,
+    stage_fixed_root_project_admission_v1, staged_closed_policy_signer_challenge_v2,
+    verify_fixed_policy_cache_owner_readback_v2, verify_policy_deployment_head_v1,
+    verify_signed_project_policy_source_v1, verify_signed_project_policy_source_v2,
+    with_fixed_closed_cache_readback_session_v1, with_fixed_current_policy_head_lease_v1,
+    with_fixed_explicit_closed_policy_binding_session_v2,
 };
 use aos_sandbox::{Journal, controller_service::journal::production_journal_limits};
 use aos_sandbox_broker_session_security::cache_signer_exchange::{
@@ -145,6 +167,9 @@ use aos_sandbox_broker_session_security::policy_signer_credential::{
     PinnedPolicySignerV1, PolicySignerRoleV1,
 };
 use aos_sandbox_broker_session_security::source_signer_exchange::{
+    request_root_source_project_admission_readback_v1,
+    request_root_source_project_reservation_readback_v1,
+    request_root_source_project_retirement_readback_v1,
     request_root_source_signer_readback_with_names_v2, request_root_staged_q04_source_readback_v2,
 };
 use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
@@ -185,6 +210,15 @@ enum HeadRequestMode {
     RootV8TerminalRelease,
     RootV8TerminalReleaseReplay,
     RootV8SettledGrant,
+    ProjectAdmissionOutcomeReplay,
+    ProjectAdmissionIntent,
+    ProjectAdmissionIntentReplay,
+    ProjectAdmissionStage,
+    ProjectAdmissionCommit,
+    ProjectAdmissionAbort,
+    ProjectAdmissionCurrentStage,
+    ProjectReservationCancel,
+    ProjectReservationCancelReplay,
     ClosedBindingStage,
     ClosedBindingPreview,
     ClosedBindingSignerFlight,
@@ -196,6 +230,21 @@ enum HeadRequestMode {
     ClosedBindingSourceCasReplay,
     ClosedCacheReadback,
     StagedCacheSigner,
+}
+
+struct CurrentRootCredentials {
+    packet: Vec<u8>,
+    node: Vec<u8>,
+    site: Vec<u8>,
+    backend: Vec<u8>,
+    catalogs: Vec<u8>,
+    deployment_signer: PinnedPolicySignerV1,
+    project_signer: PinnedPolicySignerV1,
+    legacy_project: Option<(Vec<u8>, Vec<u8>)>,
+    explicit_project: Option<(Vec<u8>, Vec<u8>)>,
+    cache_pin: Option<Vec<u8>>,
+    controller_hold_pin: Option<Vec<u8>>,
+    source_hold_pin: Option<Vec<u8>>,
 }
 
 fn main() -> ExitCode {
@@ -495,107 +544,163 @@ fn run() -> Result<(), Box<dyn Error>> {
         return serve_held_binding_recovery(controller_uid, controller_gid);
     }
 
-    let root = Path::new(CREDENTIAL_ROOT);
-    let key_bytes = read_bounded(&root.join("deployment-public-key"), 80)?;
-    let deployment_signer =
-        PinnedPolicySignerV1::decode(PolicySignerRoleV1::Deployment, &key_bytes)?;
-    let packet = read_bounded(&root.join("deployment-head.packet"), 224)?;
-    let node = read_bounded(&root.join("node-policy.json"), 64 * 1024)?;
-    let site = read_bounded(&root.join("site-policy.json"), 64 * 1024)?;
-    let backend = read_bounded(&root.join("backend-capabilities.json"), 64 * 1024)?;
-    let catalogs = read_bounded(&root.join("catalogs.json"), 64 * 1024)?;
-    let project_key_bytes = read_bounded(&root.join("project-public-key"), 80)?;
-    let project_signer =
-        PinnedPolicySignerV1::decode(PolicySignerRoleV1::Project, &project_key_bytes)?;
-    let legacy_project =
-        read_optional_project(root, "project-head.packet", 312, "project-layer.json")?;
-    let explicit_project = read_optional_explicit_project(root)?;
-    require_single_project_source(legacy_project.is_some(), explicit_project.is_some())?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
-    let now_unix_seconds = i64::try_from(now.as_secs())?;
+    let current = (|| -> Result<CurrentRootCredentials, Box<dyn Error>> {
+        let root = Path::new(CREDENTIAL_ROOT);
+        let key_bytes = read_bounded(&root.join("deployment-public-key"), 80)?;
+        let deployment_signer =
+            PinnedPolicySignerV1::decode(PolicySignerRoleV1::Deployment, &key_bytes)?;
+        let packet = read_bounded(&root.join("deployment-head.packet"), 224)?;
+        let node = read_bounded(&root.join("node-policy.json"), 64 * 1024)?;
+        let site = read_bounded(&root.join("site-policy.json"), 64 * 1024)?;
+        let backend = read_bounded(&root.join("backend-capabilities.json"), 64 * 1024)?;
+        let catalogs = read_bounded(&root.join("catalogs.json"), 64 * 1024)?;
+        let project_key_bytes = read_bounded(&root.join("project-public-key"), 80)?;
+        let project_signer =
+            PinnedPolicySignerV1::decode(PolicySignerRoleV1::Project, &project_key_bytes)?;
+        let legacy_project =
+            read_optional_project(root, "project-head.packet", 312, "project-layer.json")?;
+        let explicit_project = read_optional_explicit_project(root)?;
+        require_single_project_source(legacy_project.is_some(), explicit_project.is_some())?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
+        let now_unix_seconds = i64::try_from(now.as_secs())?;
 
+        let inputs = PolicyDeploymentInputsV1 {
+            node: &node,
+            site: &site,
+            backend: &backend,
+            catalogs: &catalogs,
+        };
+        let deployment = verify_policy_deployment_head_v1(
+            &packet,
+            &inputs,
+            deployment_signer.verifying_key(),
+            now_unix_seconds,
+        )?;
+        let _typed_sources = decode_policy_deployment_sources_v1(&inputs, deployment)?;
+        if let Some((project_packet, project_input)) = legacy_project.as_ref() {
+            let project = verify_signed_project_policy_source_v1(
+                project_packet,
+                project_input,
+                project_signer.verifying_key(),
+                now_unix_seconds,
+            )?;
+            if project.head().prerequisite_claims()[1] != deployment.packet_digest() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "project deployment head mismatch",
+                )
+                .into());
+            }
+        }
+        if let Some((project_packet_v2, project_input_v2)) = explicit_project.as_ref() {
+            let verified = verify_signed_project_policy_source_v2(
+                project_packet_v2,
+                project_input_v2,
+                project_signer.verifying_key(),
+                now_unix_seconds,
+            )?;
+            if verified.head().prerequisite_claims()[1] != deployment.packet_digest()
+                || verified.head().deployment_signer_generation() != deployment_signer.generation()
+                || verified.head().project_signer_generation() != project_signer.generation()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "explicit project source does not match root signer pins or deployment head",
+                )
+                .into());
+            }
+        }
+        admit_fixed_policy_signer_pins_v1(
+            deployment_signer.generation(),
+            deployment_signer.verifying_key(),
+            project_signer.generation(),
+            project_signer.verifying_key(),
+        )?;
+        admit_fixed_policy_deployment_head_v1(
+            &packet,
+            &inputs,
+            deployment_signer.verifying_key(),
+            now_unix_seconds,
+        )?;
+        let cache_pin = read_optional_cache_pin(root)?;
+        admit_fixed_cache_readback_pin_v1(
+            cache_pin.as_deref(),
+            deployment_signer.generation(),
+            deployment_signer.verifying_key(),
+            project_signer.generation(),
+            project_signer.verifying_key(),
+        )?;
+        let controller_hold_pin = read_optional_pin(root, "controller-hold-public-key")?;
+        admit_fixed_controller_hold_pin_v1(
+            controller_hold_pin.as_deref(),
+            deployment_signer.generation(),
+            deployment_signer.verifying_key(),
+            project_signer.generation(),
+            project_signer.verifying_key(),
+        )?;
+        let source_hold_pin = read_optional_pin(root, "source-hold-public-key")?;
+        admit_fixed_source_hold_pin_v1(
+            source_hold_pin.as_deref(),
+            deployment_signer.generation(),
+            deployment_signer.verifying_key(),
+            project_signer.generation(),
+            project_signer.verifying_key(),
+        )?;
+
+        Ok(CurrentRootCredentials {
+            packet,
+            node,
+            site,
+            backend,
+            catalogs,
+            deployment_signer,
+            project_signer,
+            legacy_project,
+            explicit_project,
+            cache_pin,
+            controller_hold_pin,
+            source_hold_pin,
+        })
+    })();
+    let current = match current {
+        Ok(current) => current,
+        Err(error) => {
+            if fixed_root_project_admission_recovery_required_v1()? {
+                eprintln!(
+                    "aos-sandbox-policy-authorityd: current credentials unavailable; serving only exact project recovery: {error}"
+                );
+                recover_fixed_root_unstaged_project_intent_v1()?;
+                return serve_project_admission_recovery_only(
+                    controller_uid,
+                    controller_gid,
+                    source_signer_uid,
+                );
+            }
+            return Err(error);
+        }
+    };
+    let CurrentRootCredentials {
+        packet,
+        node,
+        site,
+        backend,
+        catalogs,
+        deployment_signer,
+        project_signer,
+        legacy_project,
+        explicit_project,
+        cache_pin,
+        controller_hold_pin,
+        source_hold_pin,
+    } = current;
     let inputs = PolicyDeploymentInputsV1 {
         node: &node,
         site: &site,
         backend: &backend,
         catalogs: &catalogs,
     };
-    let deployment = verify_policy_deployment_head_v1(
-        &packet,
-        &inputs,
-        deployment_signer.verifying_key(),
-        now_unix_seconds,
-    )?;
-    let _typed_sources = decode_policy_deployment_sources_v1(&inputs, deployment)?;
-    if let Some((project_packet, project_input)) = legacy_project.as_ref() {
-        let project = verify_signed_project_policy_source_v1(
-            project_packet,
-            project_input,
-            project_signer.verifying_key(),
-            now_unix_seconds,
-        )?;
-        if project.head().prerequisite_claims()[1] != deployment.packet_digest() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "project deployment head mismatch",
-            )
-            .into());
-        }
-    }
-    if let Some((project_packet_v2, project_input_v2)) = explicit_project.as_ref() {
-        let verified = verify_signed_project_policy_source_v2(
-            project_packet_v2,
-            project_input_v2,
-            project_signer.verifying_key(),
-            now_unix_seconds,
-        )?;
-        if verified.head().prerequisite_claims()[1] != deployment.packet_digest()
-            || verified.head().deployment_signer_generation() != deployment_signer.generation()
-            || verified.head().project_signer_generation() != project_signer.generation()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "explicit project source does not match root signer pins or deployment head",
-            )
-            .into());
-        }
-    }
-    admit_fixed_policy_signer_pins_v1(
-        deployment_signer.generation(),
-        deployment_signer.verifying_key(),
-        project_signer.generation(),
-        project_signer.verifying_key(),
-    )?;
-    admit_fixed_policy_deployment_head_v1(
-        &packet,
-        &inputs,
-        deployment_signer.verifying_key(),
-        now_unix_seconds,
-    )?;
-    let cache_pin = read_optional_cache_pin(root)?;
-    admit_fixed_cache_readback_pin_v1(
-        cache_pin.as_deref(),
-        deployment_signer.generation(),
-        deployment_signer.verifying_key(),
-        project_signer.generation(),
-        project_signer.verifying_key(),
-    )?;
-    let controller_hold_pin = read_optional_pin(root, "controller-hold-public-key")?;
-    admit_fixed_controller_hold_pin_v1(
-        controller_hold_pin.as_deref(),
-        deployment_signer.generation(),
-        deployment_signer.verifying_key(),
-        project_signer.generation(),
-        project_signer.verifying_key(),
-    )?;
-    let source_hold_pin = read_optional_pin(root, "source-hold-public-key")?;
-    admit_fixed_source_hold_pin_v1(
-        source_hold_pin.as_deref(),
-        deployment_signer.generation(),
-        deployment_signer.verifying_key(),
-        project_signer.generation(),
-        project_signer.verifying_key(),
-    )?;
+
+    recover_fixed_root_unstaged_project_intent_v1()?;
 
     let listener = bind_policy_socket(Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2))?;
 
@@ -647,6 +752,91 @@ fn serve_held_binding_recovery(
     Err(io::Error::new(io::ErrorKind::BrokenPipe, "authority listener ended").into())
 }
 
+fn serve_project_admission_recovery_only(
+    controller_uid: u32,
+    controller_gid: u32,
+    source_signer_uid: u32,
+) -> Result<(), Box<dyn Error>> {
+    let listener = bind_policy_socket(Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2))?;
+    for accepted in listener.incoming() {
+        let mut stream = accepted?;
+        if let Err(error) = serve_project_admission_recovery_request(
+            &mut stream,
+            controller_uid,
+            controller_gid,
+            source_signer_uid,
+        ) {
+            eprintln!("aos-sandbox-policy-authorityd: rejected project recovery: {error}");
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::BrokenPipe, "project recovery listener ended").into())
+}
+
+fn serve_project_admission_recovery_request(
+    stream: &mut std::os::unix::net::UnixStream,
+    controller_uid: u32,
+    controller_gid: u32,
+    source_signer_uid: u32,
+) -> Result<(), Box<dyn Error>> {
+    require_controller_peer(stream, controller_uid, controller_gid)?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let (request, mode) = read_head_request(stream, || Ok(()))?;
+    if !project_recovery_mode_allowed(mode) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "recovery-only Root cannot issue fresh policy authority",
+        )
+        .into());
+    }
+    require_no_fixed_closed_policy_binding_hold_v1()?;
+    match mode {
+        HeadRequestMode::ProjectAdmissionOutcomeReplay => {
+            serve_project_admission_outcome_replay(stream, &request[8..24])
+        }
+        HeadRequestMode::ProjectAdmissionCurrentStage => {
+            serve_project_admission_current_stage(stream, &request[8..24])
+        }
+        HeadRequestMode::ProjectReservationCancelReplay => {
+            serve_project_reservation_cancel_replay(stream, &request[8..24])
+        }
+        HeadRequestMode::ProjectAdmissionIntentReplay => {
+            serve_project_intent_replay(stream, &request[8..24])
+        }
+        HeadRequestMode::ProjectReservationCancel => {
+            serve_project_reservation_cancel(stream, &request[8..24])
+        }
+        HeadRequestMode::ProjectAdmissionAbort => {
+            let pin = recover_fixed_root_project_source_pin_v1()?.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "historical Source pin absent",
+                )
+            })?;
+            serve_project_admission_abort(
+                stream,
+                &request[8..24],
+                &pin,
+                source_signer_uid,
+                controller_gid,
+            )
+        }
+        _ => Err(io::Error::new(io::ErrorKind::InvalidData, "unknown recovery mode").into()),
+    }
+}
+
+fn project_recovery_mode_allowed(mode: HeadRequestMode) -> bool {
+    matches!(
+        mode,
+        HeadRequestMode::ProjectAdmissionOutcomeReplay
+            | HeadRequestMode::ProjectAdmissionCurrentStage
+            | HeadRequestMode::ProjectReservationCancelReplay
+            | HeadRequestMode::ProjectAdmissionIntentReplay
+            | HeadRequestMode::ProjectReservationCancel
+            | HeadRequestMode::ProjectAdmissionAbort
+    )
+}
+
 fn serve_held_binding_request(
     stream: &mut std::os::unix::net::UnixStream,
     controller_uid: u32,
@@ -670,6 +860,7 @@ fn serve_held_binding_request(
             | HeadRequestMode::RootV8TerminalRelease
             | HeadRequestMode::RootV8TerminalReleaseReplay
             | HeadRequestMode::RootV8SettledGrant
+            | HeadRequestMode::ProjectAdmissionOutcomeReplay
             | HeadRequestMode::ClosedBindingSourceCasReplay
     ) {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "replay only").into());
@@ -703,6 +894,12 @@ fn serve_held_binding_request(
             serve_root_v8_terminal_release_replay(stream, &request[8..24])
         }
         HeadRequestMode::RootV8SettledGrant => serve_root_v8_settled_grant(stream, &request[8..24]),
+        HeadRequestMode::ProjectAdmissionOutcomeReplay => {
+            serve_project_admission_outcome_replay(stream, &request[8..24])
+        }
+        HeadRequestMode::ProjectAdmissionCurrentStage => {
+            serve_project_admission_current_stage(stream, &request[8..24])
+        }
         HeadRequestMode::ClosedBindingSourceCasReplay => serve_closed_source_cas_replay_v8(
             stream,
             &request[8..24],
@@ -903,6 +1100,33 @@ fn read_head_request(
             HeadRequestMode::RootV8TerminalReleaseReplay
         }
         Some(magic) if magic == ROOT_V8_SETTLED_QUERY_MAGIC => HeadRequestMode::RootV8SettledGrant,
+        Some(magic) if magic == ROOT_PROJECT_ADMISSION_OUTCOME_QUERY_MAGIC => {
+            HeadRequestMode::ProjectAdmissionOutcomeReplay
+        }
+        Some(magic) if magic == ROOT_PROJECT_ADMISSION_INTENT_QUERY_MAGIC => {
+            HeadRequestMode::ProjectAdmissionIntent
+        }
+        Some(magic) if magic == ROOT_PROJECT_ADMISSION_INTENT_REPLAY_MAGIC => {
+            HeadRequestMode::ProjectAdmissionIntentReplay
+        }
+        Some(magic) if magic == ROOT_PROJECT_ADMISSION_STAGE_QUERY_MAGIC => {
+            HeadRequestMode::ProjectAdmissionStage
+        }
+        Some(magic) if magic == ROOT_PROJECT_ADMISSION_COMMIT_QUERY_MAGIC => {
+            HeadRequestMode::ProjectAdmissionCommit
+        }
+        Some(magic) if magic == ROOT_PROJECT_ADMISSION_ABORT_QUERY_MAGIC => {
+            HeadRequestMode::ProjectAdmissionAbort
+        }
+        Some(magic) if magic == ROOT_PROJECT_ADMISSION_CURRENT_QUERY_MAGIC => {
+            HeadRequestMode::ProjectAdmissionCurrentStage
+        }
+        Some(magic) if magic == ROOT_PROJECT_RESERVATION_CANCEL_MAGIC => {
+            HeadRequestMode::ProjectReservationCancel
+        }
+        Some(magic) if magic == ROOT_PROJECT_RESERVATION_CANCEL_QUERY_MAGIC => {
+            HeadRequestMode::ProjectReservationCancelReplay
+        }
         Some(magic) if magic == POLICY_BINDING_STAGE_QUERY_MAGIC_V4 => {
             HeadRequestMode::ClosedBindingStage
         }
@@ -976,6 +1200,15 @@ fn read_head_request(
             | HeadRequestMode::RootV8TerminalRelease
             | HeadRequestMode::RootV8TerminalReleaseReplay
             | HeadRequestMode::RootV8SettledGrant
+            | HeadRequestMode::ProjectAdmissionOutcomeReplay
+            | HeadRequestMode::ProjectAdmissionIntent
+            | HeadRequestMode::ProjectAdmissionIntentReplay
+            | HeadRequestMode::ProjectAdmissionStage
+            | HeadRequestMode::ProjectAdmissionCommit
+            | HeadRequestMode::ProjectAdmissionAbort
+            | HeadRequestMode::ProjectAdmissionCurrentStage
+            | HeadRequestMode::ProjectReservationCancel
+            | HeadRequestMode::ProjectReservationCancelReplay
     ) {
         if request[8..24] == [0; 16] {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "zero Q04 query nonce").into());
@@ -993,6 +1226,9 @@ fn read_head_request(
             | HeadRequestMode::RootV8TerminalRelease
             | HeadRequestMode::RootV8TerminalReleaseReplay
             | HeadRequestMode::RootV8SettledGrant
+            | HeadRequestMode::ProjectAdmissionOutcomeReplay
+            | HeadRequestMode::ProjectAdmissionCurrentStage
+            | HeadRequestMode::ProjectReservationCancelReplay
             | HeadRequestMode::ClosedBindingSourceCasReplay
     ) {
         root_custody_gate()?;
@@ -1079,6 +1315,199 @@ fn serve_current_head(
     }
     if matches!(mode, HeadRequestMode::RootV8SettledGrant) {
         serve_root_v8_settled_grant(stream, &request[8..24])?;
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::ProjectAdmissionOutcomeReplay) {
+        serve_project_admission_outcome_replay(stream, &request[8..24])?;
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::ProjectAdmissionCurrentStage) {
+        serve_project_admission_current_stage(stream, &request[8..24])?;
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::ProjectReservationCancelReplay) {
+        serve_project_reservation_cancel_replay(stream, &request[8..24])?;
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::ProjectAdmissionIntentReplay) {
+        serve_project_intent_replay(stream, &request[8..24])?;
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::ProjectAdmissionIntent) {
+        let mut reservation_bytes = [0; SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1];
+        stream.read_exact(&mut reservation_bytes)?;
+        require_stream_eof(stream)?;
+        let reservation =
+            SourceProjectAdmissionReservationV1::from_record_bytes(&reservation_bytes)?;
+        let nonce: [u8; 16] = request[8..24].try_into()?;
+        if reservation.client_nonce() != nonce {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "changed intent nonce").into());
+        }
+        let (project_packet, project_input) = explicit_project.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "explicit project source unavailable",
+            )
+        })?;
+        let now = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())?;
+        let intent = prepare_fixed_root_project_admission_intent_v1(
+            reservation,
+            project_packet,
+            project_input,
+            project_key,
+            project_signer_generation,
+            packet,
+            inputs,
+            verifying_key,
+            deployment_signer_generation,
+            now,
+        )?;
+        stream.write_all(&encode_root_project_intent_reply_v1(nonce, intent)?)?;
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::ProjectReservationCancel) {
+        serve_project_reservation_cancel(stream, &request[8..24])?;
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::ProjectAdmissionStage) {
+        let mut reservation_bytes = [0; SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1];
+        stream.read_exact(&mut reservation_bytes)?;
+        require_stream_eof(stream)?;
+        let reservation =
+            SourceProjectAdmissionReservationV1::from_record_bytes(&reservation_bytes)?;
+        let (project_packet, project_input) = explicit_project.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "explicit project source unavailable",
+            )
+        })?;
+        let controller_pin = controller_hold_pin.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Controller signer pin absent",
+            )
+        })?;
+        let source_pin = source_pin.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::PermissionDenied, "Source signer pin absent")
+        })?;
+        let now = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())?;
+        let nonce: [u8; 16] = request[8..24].try_into()?;
+        if reservation.client_nonce() != nonce {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "changed Source reservation nonce",
+            )
+            .into());
+        }
+        let signer = PinnedSourceHoldReadbackSignerV1::decode(source_pin)?;
+        let reservation_packet = request_root_source_project_reservation_readback_v1(
+            reservation,
+            &signer,
+            source_signer_uid,
+            controller_gid,
+        )?;
+        let stage = stage_fixed_root_project_admission_v1(
+            nonce,
+            project_packet,
+            project_input,
+            project_key,
+            project_signer_generation,
+            packet,
+            inputs,
+            verifying_key,
+            deployment_signer_generation,
+            controller_pin,
+            source_pin,
+            reservation,
+            &reservation_packet,
+            now,
+        )?;
+        stream.write_all(&encode_root_project_admission_stage_reply_v1(nonce, stage)?)?;
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::ProjectAdmissionAbort) {
+        let source_pin = source_pin.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::PermissionDenied, "Source signer pin absent")
+        })?;
+        serve_project_admission_abort(
+            stream,
+            &request[8..24],
+            source_pin,
+            source_signer_uid,
+            controller_gid,
+        )?;
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::ProjectAdmissionCommit) {
+        let (project_packet, project_input) = explicit_project.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "explicit project source unavailable",
+            )
+        })?;
+        let controller_pin = controller_hold_pin.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Controller signer pin absent",
+            )
+        })?;
+        let source_pin = source_pin.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::PermissionDenied, "Source signer pin absent")
+        })?;
+        let mut stage_bytes = [0; 32];
+        stream.read_exact(&mut stage_bytes)?;
+        let stage_digest = ObjectDigest::from_bytes(stage_bytes);
+        let mut controller_packet = [0; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1];
+        stream.read_exact(&mut controller_packet)?;
+        let mut source_bytes = [0; SOURCE_PROJECT_ADMISSION_CHALLENGE_BYTES_V1];
+        stream.read_exact(&mut source_bytes)?;
+        require_stream_eof(stream)?;
+        let source_row = SourceProjectAdmissionChallengeV1::from_record_bytes(&source_bytes)?;
+        let stage = recover_fixed_root_project_admission_stage_v1(stage_digest)?;
+        if source_row.project() != stage.project()
+            || source_row.nonce() != stage.root_nonce()
+            || source_row.cut() != stage.cut()
+            || source_row.stage() != stage_digest
+        {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidData, "changed Source challenge").into(),
+            );
+        }
+        let outcome = {
+            let signer = PinnedSourceHoldReadbackSignerV1::decode(source_pin)?;
+            let challenge = SourceHoldReadbackChallengeV1::new(stage.root_nonce(), stage.cut())?;
+            let source_packet = request_root_source_project_admission_readback_v1(
+                challenge,
+                source_row,
+                stage.source_reservation_digest(),
+                &signer,
+                source_signer_uid,
+                controller_gid,
+            )?;
+            let now = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())?;
+            admit_fixed_root_project_source_from_owner_proofs_v1(
+                stage_digest,
+                &controller_packet,
+                &source_bytes,
+                &source_packet,
+                controller_pin,
+                source_pin,
+                controller_uid,
+                project_packet,
+                project_input,
+                project_key,
+                project_signer_generation,
+                packet,
+                inputs,
+                verifying_key,
+                deployment_signer_generation,
+                now,
+            )?
+        };
+        let nonce: [u8; 16] = request[8..24].try_into()?;
+        stream.write_all(&encode_root_project_admission_terminal_reply_v1(
+            nonce, outcome,
+        )?)?;
         return Ok(());
     }
     if matches!(mode, HeadRequestMode::ClosedBindingSourceCasReplay) {
@@ -2146,6 +2575,162 @@ fn serve_root_v8_settled_grant(
     Ok(())
 }
 
+fn serve_project_admission_outcome_replay(
+    stream: &mut std::os::unix::net::UnixStream,
+    client_nonce: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    let mut stage_bytes = [0; 32];
+    stream.read_exact(&mut stage_bytes)?;
+    require_stream_eof(stream)?;
+    let stage = ObjectDigest::from_bytes(stage_bytes);
+    let outcome = recover_fixed_root_project_admission_outcome_v1(stage)?;
+    let nonce: [u8; 16] = client_nonce.try_into()?;
+    stream.write_all(&encode_root_project_admission_outcome_reply_v1(
+        nonce, stage, outcome,
+    )?)?;
+    Ok(())
+}
+
+fn serve_project_reservation_cancel_replay(
+    stream: &mut std::os::unix::net::UnixStream,
+    client_nonce: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    let mut reservation_bytes = [0; 32];
+    stream.read_exact(&mut reservation_bytes)?;
+    require_stream_eof(stream)?;
+    let reservation = ObjectDigest::from_bytes(reservation_bytes);
+    let marker = recover_fixed_root_project_reservation_cancellation_v1(reservation)?;
+    let nonce: [u8; 16] = client_nonce.try_into()?;
+    if marker.is_some_and(|marker| marker.client_nonce() != nonce) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "changed Root cancellation nonce",
+        )
+        .into());
+    }
+    stream.write_all(&encode_root_project_reservation_cancel_reply_v1(
+        nonce,
+        reservation,
+        marker,
+    )?)?;
+    Ok(())
+}
+
+fn serve_project_admission_current_stage(
+    stream: &mut std::os::unix::net::UnixStream,
+    client_nonce: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    require_stream_eof(stream)?;
+    let stage = recover_fixed_root_current_project_admission_stage_v1()?;
+    let nonce: [u8; 16] = client_nonce.try_into()?;
+    stream.write_all(&encode_root_current_project_admission_stage_reply_v1(
+        nonce, stage,
+    )?)?;
+    Ok(())
+}
+
+fn read_project_reservation_request(
+    stream: &mut std::os::unix::net::UnixStream,
+    client_nonce: &[u8],
+) -> Result<SourceProjectAdmissionReservationV1, Box<dyn Error>> {
+    let mut bytes = [0; SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1];
+    stream.read_exact(&mut bytes)?;
+    require_stream_eof(stream)?;
+    let reservation = SourceProjectAdmissionReservationV1::from_record_bytes(&bytes)?;
+    if reservation.client_nonce().as_slice() != client_nonce {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "changed Source reservation nonce",
+        )
+        .into());
+    }
+    Ok(reservation)
+}
+
+fn serve_project_intent_replay(
+    stream: &mut std::os::unix::net::UnixStream,
+    client_nonce: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    let reservation = read_project_reservation_request(stream, client_nonce)?;
+    let intent = recover_fixed_root_project_admission_intent_v1(reservation)?;
+    stream.write_all(&encode_root_project_intent_replay_reply_v1(
+        reservation,
+        intent,
+    )?)?;
+    Ok(())
+}
+
+fn serve_project_reservation_cancel(
+    stream: &mut std::os::unix::net::UnixStream,
+    client_nonce: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    let reservation = read_project_reservation_request(stream, client_nonce)?;
+    let marker = cancel_fixed_root_project_reservation_v1(reservation)?;
+    stream.write_all(&encode_root_project_reservation_cancel_reply_v1(
+        reservation.client_nonce(),
+        reservation.record_digest(),
+        Some(marker),
+    )?)?;
+    Ok(())
+}
+
+fn serve_project_admission_abort(
+    stream: &mut std::os::unix::net::UnixStream,
+    client_nonce: &[u8],
+    source_pin: &[u8],
+    source_signer_uid: u32,
+    controller_gid: u32,
+) -> Result<(), Box<dyn Error>> {
+    let mut stage_bytes = [0; 32];
+    stream.read_exact(&mut stage_bytes)?;
+    let stage_digest = ObjectDigest::from_bytes(stage_bytes);
+    let mut source_bytes = [0; SOURCE_PROJECT_ADMISSION_CHALLENGE_BYTES_V1];
+    stream.read_exact(&mut source_bytes)?;
+    require_stream_eof(stream)?;
+    let source_row = SourceProjectAdmissionChallengeV1::from_record_bytes(&source_bytes)?;
+    let stage = recover_fixed_root_project_admission_stage_v1(stage_digest)?;
+    if source_row.project() != stage.project()
+        || source_row.nonce() != stage.root_nonce()
+        || source_row.cut() != stage.cut()
+        || source_row.stage() != stage_digest
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "changed Source challenge").into());
+    }
+
+    let signer = PinnedSourceHoldReadbackSignerV1::decode(source_pin)?;
+    let challenge = SourceHoldReadbackChallengeV1::new(stage.root_nonce(), stage.cut())?;
+    let source_packet = request_root_source_project_retirement_readback_v1(
+        challenge,
+        source_row,
+        stage.source_reservation_digest(),
+        &signer,
+        source_signer_uid,
+        controller_gid,
+    )?;
+    let outcome = abort_fixed_root_project_admission_v1(
+        stage_digest,
+        &source_bytes,
+        &source_packet,
+        source_pin,
+    )?;
+    let nonce: [u8; 16] = client_nonce.try_into()?;
+    stream.write_all(&encode_root_project_admission_terminal_reply_v1(
+        nonce, outcome,
+    )?)?;
+    Ok(())
+}
+
+fn require_stream_eof(stream: &mut std::os::unix::net::UnixStream) -> io::Result<()> {
+    let mut trailing = [0];
+    if stream.read(&mut trailing)? != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "trailing project admission data",
+        ));
+    }
+    Ok(())
+}
+
 fn serve_root_v8_terminal(
     stream: &mut std::os::unix::net::UnixStream,
     client_nonce: &[u8],
@@ -3081,6 +3666,15 @@ fn select_project_source<'a>(
         | HeadRequestMode::RootV8TerminalRelease
         | HeadRequestMode::RootV8TerminalReleaseReplay
         | HeadRequestMode::RootV8SettledGrant
+        | HeadRequestMode::ProjectAdmissionOutcomeReplay
+        | HeadRequestMode::ProjectAdmissionIntent
+        | HeadRequestMode::ProjectAdmissionIntentReplay
+        | HeadRequestMode::ProjectAdmissionStage
+        | HeadRequestMode::ProjectAdmissionCommit
+        | HeadRequestMode::ProjectAdmissionAbort
+        | HeadRequestMode::ProjectAdmissionCurrentStage
+        | HeadRequestMode::ProjectReservationCancel
+        | HeadRequestMode::ProjectReservationCancelReplay
         | HeadRequestMode::ClosedBindingSourceCasReplay => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "held Q04 recovery has no project source",
@@ -3854,6 +4448,70 @@ mod tests {
             .is_err()
         );
         assert!(!root_custody_opened.get());
+    }
+
+    #[test]
+    fn project_reservation_cancel_and_replay_have_distinct_root_custody_modes() {
+        for (magic, expected, opens_root) in [
+            (
+                ROOT_PROJECT_RESERVATION_CANCEL_MAGIC,
+                HeadRequestMode::ProjectReservationCancel,
+                true,
+            ),
+            (
+                ROOT_PROJECT_RESERVATION_CANCEL_QUERY_MAGIC,
+                HeadRequestMode::ProjectReservationCancelReplay,
+                false,
+            ),
+        ] {
+            let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+            let mut request = [0_u8; REQUEST_BYTES];
+            request[..8].copy_from_slice(magic);
+            request[8..24].copy_from_slice(&[1; 16]);
+            client
+                .write_all(&request)
+                .expect("project cancellation header");
+            let root_custody_opened = Cell::new(false);
+            let (_, mode) = read_head_request(&mut server, || {
+                root_custody_opened.set(true);
+                Ok(())
+            })
+            .expect("distinct project cancellation mode");
+            assert!(std::mem::discriminant(&mode) == std::mem::discriminant(&expected));
+            assert_eq!(root_custody_opened.get(), opens_root);
+        }
+    }
+
+    #[test]
+    fn project_recovery_only_rejects_fresh_authority_before_root_custody() {
+        for magic in [
+            ROOT_PROJECT_ADMISSION_INTENT_QUERY_MAGIC,
+            ROOT_PROJECT_ADMISSION_STAGE_QUERY_MAGIC,
+            ROOT_PROJECT_ADMISSION_COMMIT_QUERY_MAGIC,
+        ] {
+            let (mut client, mut server) = UnixStream::pair().expect("local Root recovery socket");
+            let mut request = [0; REQUEST_BYTES];
+            request[..8].copy_from_slice(magic);
+            request[8..24].fill(1);
+            client.write_all(&request).unwrap();
+            client.shutdown(std::net::Shutdown::Write).unwrap();
+
+            let uid = rustix::process::getuid().as_raw();
+            let gid = rustix::process::getgid().as_raw();
+            let error = serve_project_admission_recovery_request(&mut server, uid, gid, uid)
+                .expect_err("expired credentials cannot mint fresh Root authority");
+            assert!(error.to_string().contains("recovery-only Root"));
+        }
+        for mode in [
+            HeadRequestMode::ProjectAdmissionOutcomeReplay,
+            HeadRequestMode::ProjectAdmissionCurrentStage,
+            HeadRequestMode::ProjectReservationCancelReplay,
+            HeadRequestMode::ProjectAdmissionIntentReplay,
+            HeadRequestMode::ProjectReservationCancel,
+            HeadRequestMode::ProjectAdmissionAbort,
+        ] {
+            assert!(project_recovery_mode_allowed(mode));
+        }
     }
 
     #[test]

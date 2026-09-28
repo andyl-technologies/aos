@@ -7,16 +7,18 @@
 
 use std::path::Path;
 
-use aos_sandbox_core::ProjectId;
+use aos_sandbox_core::{ObjectDigest, ProjectId};
 use ed25519_dalek::SigningKey;
 use thiserror::Error;
 
 use crate::cache_residency::signer_mount::require_signer_mount;
 use crate::hierarchy::protected_journal::replay_project_ancestry_head_v1;
-use crate::journal::replay_source_domain_challenge_v1;
 use crate::journal::{
     Journal, JournalError, ProtectedJournalNamesV1, ReadOnlyProtectedJournal,
     SourceDomainPolicyHoldV1,
+};
+use crate::journal::{
+    replay_source_domain_challenge_v1, replay_source_project_admission_challenge_v1,
 };
 use crate::lifecycle::protected_journal_join::{
     PROTECTED_SOURCE_DOMAIN_JOURNAL, PROTECTED_SOURCE_DOMAIN_ROOT, source_domain_journal_limits,
@@ -29,8 +31,73 @@ use super::source_hold_readback::{
 use super::source_hold_readback_v2::{
     SOURCE_HOLD_READBACK_BYTES_V2, sign_source_hold_readback_with_names_v2,
 };
+use super::source_project_admission_readback::{
+    SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1, SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1,
+    sign_source_project_admission_fields_v1, sign_source_project_reservation_fields_v1,
+};
 
 const SIGNER_SOURCE_VIEW: &str = "/run/aos/sandbox-source-signer-journal";
+
+/// Signs the exact unconsumed Source reservation from the independent view.
+///
+/// This cannot prove ancestry or replace the later AOSQPR03 admission packet.
+/// Root must serialize its stage against a durable cancellation marker.
+///
+/// # Errors
+///
+/// Rejects a missing/consumed row, changed digest or physical names, unsafe
+/// signer view, or invalid signer generation.
+pub fn sign_fixed_source_project_reservation_readback_v1(
+    expected_controller_uid: u32,
+    client_nonce: [u8; 16],
+    project: ProjectId,
+    expected_digest: ObjectDigest,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+) -> Result<[u8; SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1], SourceSignerReadbackErrorV1> {
+    if expected_controller_uid == 0
+        || signer_generation == 0
+        || client_nonce == [0; 16]
+        || project.as_bytes() == &[0; 16]
+        || expected_digest.as_bytes() == &[0; 32]
+    {
+        return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
+    }
+    with_source_signer_journal_view(expected_controller_uid, |readback| {
+        let row = readback
+            .journal_mut()
+            .source_project_admission_reservation_status_v1()?
+            .and_then(|(row, canceled)| (!canceled).then_some(row))
+            .ok_or(SourceSignerReadbackErrorV1::Stale)?;
+        let names = readback.physical_names_v1();
+        if row.client_nonce() != client_nonce
+            || row.project() != project
+            || row.record_digest() != expected_digest
+            || row.names() != names
+            || readback
+                .journal_mut()
+                .source_project_admission_status_v1()?
+                .is_some()
+        {
+            return Err(SourceSignerReadbackErrorV1::Stale);
+        }
+        let packet =
+            sign_source_project_reservation_fields_v1(row, signer_generation, signing_key)?;
+        if readback
+            .journal_mut()
+            .source_project_admission_reservation_status_v1()?
+            != Some((row, false))
+            || readback
+                .journal_mut()
+                .source_project_admission_status_v1()?
+                .is_some()
+            || readback.physical_names_v1() != names
+        {
+            return Err(SourceSignerReadbackErrorV1::Stale);
+        }
+        Ok(packet)
+    })
+}
 
 /// Reports a failed independent Source journal attestation.
 #[derive(Debug, Error)]
@@ -121,6 +188,143 @@ pub fn sign_fixed_source_signer_readback_v2(
     )
 }
 
+/// Signs a durable pre-Q04 project ancestry challenge from the Source-only view.
+///
+/// The signer replays the exact AOSQPA01 row, typed project ancestry, and
+/// fixed physical names twice around signing. It never accepts a caller-
+/// supplied ancestry digest or grants a project-source admission itself.
+///
+/// # Errors
+///
+/// Rejects a missing or changed mount, row, ancestry head, challenge, names,
+/// owner UID, or signer generation.
+pub fn sign_fixed_source_project_admission_readback_v1(
+    expected_controller_uid: u32,
+    project: ProjectId,
+    challenge: SourceHoldReadbackChallengeV1,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+) -> Result<[u8; SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1], SourceSignerReadbackErrorV1> {
+    if project.as_bytes() == &[0; 16] || signer_generation == 0 || expected_controller_uid == 0 {
+        return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
+    }
+    with_source_signer_journal_view(expected_controller_uid, |readback| {
+        let row = replay_source_project_admission_challenge_v1(readback.journal_mut())?
+            .ok_or(SourceSignerReadbackErrorV1::Stale)?;
+        let ancestry = replay_project_ancestry_head_v1(readback.journal_mut(), project)
+            .map_err(|_| SourceSignerReadbackErrorV1::Stale)?
+            .ok_or(SourceSignerReadbackErrorV1::Stale)?
+            .head();
+        let names = readback.physical_names_v1();
+        if !row.matches_current(
+            challenge.nonce(),
+            challenge.cut(),
+            project,
+            ancestry,
+            row.stage(),
+            names,
+        ) {
+            return Err(SourceSignerReadbackErrorV1::Stale);
+        }
+        let reservation = readback
+            .journal_mut()
+            .source_project_admission_reservation_v1()?
+            .ok_or(SourceSignerReadbackErrorV1::Stale)?;
+        if reservation.project() != project
+            || reservation.names() != names
+            || reservation.issue() != row.issue()
+        {
+            return Err(SourceSignerReadbackErrorV1::Stale);
+        }
+        let packet = sign_source_project_admission_fields_v1(
+            row,
+            reservation,
+            signer_generation,
+            signing_key,
+        )?;
+        let postflight = replay_source_project_admission_challenge_v1(readback.journal_mut())?;
+        let current_ancestry = replay_project_ancestry_head_v1(readback.journal_mut(), project)
+            .map_err(|_| SourceSignerReadbackErrorV1::Stale)?
+            .ok_or(SourceSignerReadbackErrorV1::Stale)?
+            .head();
+        if postflight != Some(row)
+            || readback
+                .journal_mut()
+                .source_project_admission_reservation_v1()?
+                != Some(reservation)
+            || current_ancestry != ancestry
+        {
+            return Err(SourceSignerReadbackErrorV1::Stale);
+        }
+        Ok(packet)
+    })
+}
+
+/// Signs only the exact pending Source row for Root's nonauthorizing abort.
+///
+/// Unlike admission, retirement does not claim current project ancestry. Its
+/// separate AOSQPR04 domain cannot satisfy Root's positive commit verifier.
+///
+/// # Errors
+///
+/// Rejects changed row, names, peer challenge, or unsafe read-only view.
+pub fn sign_fixed_source_project_retirement_readback_v1(
+    expected_controller_uid: u32,
+    project: ProjectId,
+    challenge: SourceHoldReadbackChallengeV1,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+) -> Result<[u8; SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1], SourceSignerReadbackErrorV1> {
+    if project.as_bytes() == &[0; 16] || signer_generation == 0 || expected_controller_uid == 0 {
+        return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
+    }
+    with_source_signer_journal_view(expected_controller_uid, |readback| {
+        let (row, settled) = readback
+            .journal_mut()
+            .source_project_admission_status_v1()?
+            .ok_or(SourceSignerReadbackErrorV1::Stale)?;
+        let names = readback.physical_names_v1();
+        if settled
+            || row.nonce() != challenge.nonce()
+            || row.cut() != challenge.cut()
+            || row.project() != project
+            || row.names() != names
+        {
+            return Err(SourceSignerReadbackErrorV1::Stale);
+        }
+        let reservation = readback
+            .journal_mut()
+            .source_project_admission_reservation_v1()?
+            .ok_or(SourceSignerReadbackErrorV1::Stale)?;
+        if reservation.project() != project
+            || reservation.names() != names
+            || reservation.issue() != row.issue()
+        {
+            return Err(SourceSignerReadbackErrorV1::Stale);
+        }
+        let packet =
+            super::source_project_admission_readback::sign_source_project_retirement_fields_v1(
+                row,
+                reservation,
+                signer_generation,
+                signing_key,
+            )?;
+        if readback
+            .journal_mut()
+            .source_project_admission_status_v1()?
+            != Some((row, false))
+            || readback
+                .journal_mut()
+                .source_project_admission_reservation_v1()?
+                != Some(reservation)
+            || readback.physical_names_v1() != names
+        {
+            return Err(SourceSignerReadbackErrorV1::Stale);
+        }
+        Ok(packet)
+    })
+}
+
 fn with_current_source_signer_view<const N: usize>(
     expected_controller_uid: u32,
     project: ProjectId,
@@ -134,6 +338,17 @@ fn with_current_source_signer_view<const N: usize>(
     if project.as_bytes() == &[0; 16] || signer_generation == 0 || expected_controller_uid == 0 {
         return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
     }
+    with_source_signer_journal_view(expected_controller_uid, |readback| {
+        let hold = replay_source_hold(readback, project)?;
+        let row = replay_source_domain_challenge_v1(readback.journal_mut())?;
+        sign(hold, readback.physical_names_v1(), row)
+    })
+}
+
+fn with_source_signer_journal_view<const N: usize>(
+    expected_controller_uid: u32,
+    sign: impl FnOnce(&mut ReadOnlyProtectedJournal) -> Result<[u8; N], SourceSignerReadbackErrorV1>,
+) -> Result<[u8; N], SourceSignerReadbackErrorV1> {
     let signer_uid = rustix::process::geteuid().as_raw();
     let mount = require_signer_mount(SIGNER_SOURCE_VIEW, PROTECTED_SOURCE_DOMAIN_ROOT, signer_uid)
         .map_err(|_| SourceSignerReadbackErrorV1::View)?;
@@ -148,9 +363,7 @@ fn with_current_source_signer_view<const N: usize>(
         signer_uid,
         mount.root_identity(),
     )?;
-    let hold = replay_source_hold(&mut readback, project)?;
-    let row = replay_source_domain_challenge_v1(readback.journal_mut())?;
-    let packet = sign(hold, readback.physical_names_v1(), row)?;
+    let packet = sign(&mut readback)?;
 
     readback.check_named_currentness()?;
     if require_signer_mount(SIGNER_SOURCE_VIEW, PROTECTED_SOURCE_DOMAIN_ROOT, signer_uid)

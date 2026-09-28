@@ -101,6 +101,7 @@ mod production_service;
 mod production_source_provider;
 mod production_source_provider_catalog;
 mod production_source_provider_storage;
+mod project_admission_coordinator;
 #[allow(
     dead_code,
     reason = "sealed handshake context access stays unreachable until P0-10"

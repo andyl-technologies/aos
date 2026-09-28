@@ -47,6 +47,7 @@ pub(crate) mod host_execution_fence;
 mod host_settlement_admission_gate;
 mod source_domain_challenge;
 mod source_domain_policy_hold;
+mod source_project_admission_challenge;
 pub use cache_policy_hold::CachePolicyHoldV1;
 pub(crate) use cache_policy_hold::NAME as CACHE_POLICY_HOLD_JOURNAL;
 pub(crate) use capacity_reservation::capacity_reservation_identity_is_exact_v1;
@@ -70,6 +71,13 @@ pub use source_domain_challenge::SourceDomainChallengeV1;
 pub(crate) use source_domain_challenge::replay_source_domain_challenge_v1;
 pub use source_domain_policy_hold::{
     SourceDomainPolicyHoldV1, SourceDomainPolicyV8PendingSettlementV1,
+};
+use source_project_admission_challenge::SourceProjectAdmissionTransition;
+pub(crate) use source_project_admission_challenge::replay_source_project_admission_challenge_v1;
+pub use source_project_admission_challenge::{
+    SOURCE_PROJECT_ADMISSION_CHALLENGE_BYTES_V1, SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1,
+    SourceProjectAdmissionChallengeKindV1, SourceProjectAdmissionChallengeV1,
+    SourceProjectAdmissionReservationV1,
 };
 mod mount_source_consumption;
 pub use mount_source_consumption::{
@@ -2034,7 +2042,53 @@ impl Journal {
         allow_host_currentness_fence_acquisition: bool,
         allow_host_settlement_admission_append: bool,
     ) -> Result<CommitResult, JournalError> {
+        self.commit_with_capacity_scope_and_project_admission(
+            transaction,
+            settling_reservation,
+            allow_capacity_records,
+            allow_policy_hold_transition,
+            allow_host_fence_acquisition,
+            allow_host_currentness_fence_acquisition,
+            allow_host_settlement_admission_append,
+            SourceProjectAdmissionTransition::None,
+        )
+    }
+
+    fn commit_source_project_admission_transition(
+        &mut self,
+        transaction: &JournalTransaction,
+        transition: SourceProjectAdmissionTransition,
+    ) -> Result<CommitResult, JournalError> {
+        self.commit_with_capacity_scope_and_project_admission(
+            transaction,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            transition,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_with_capacity_scope_and_project_admission(
+        &mut self,
+        transaction: &JournalTransaction,
+        settling_reservation: Option<[u8; 32]>,
+        allow_capacity_records: bool,
+        allow_policy_hold_transition: bool,
+        allow_host_fence_acquisition: bool,
+        allow_host_currentness_fence_acquisition: bool,
+        allow_host_settlement_admission_append: bool,
+        project_admission_transition: SourceProjectAdmissionTransition,
+    ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
+        source_project_admission_challenge::require_no_mutation(
+            &self.state,
+            transaction,
+            project_admission_transition,
+        )?;
         host_settlement_admission_gate::require_no_mutation(
             &self.state,
             transaction,
@@ -2172,7 +2226,60 @@ impl Journal {
         allow_capacity_records: bool,
         allow_policy_hold_transition: bool,
     ) -> Result<(), JournalError> {
+        self.preflight_transactions_with_capacity_scope_and_project_admission(
+            transactions,
+            settling_reservation,
+            allow_capacity_records,
+            allow_policy_hold_transition,
+            None,
+        )
+    }
+
+    fn preflight_source_project_admission_transactions(
+        &self,
+        transactions: &[JournalTransaction; 3],
+    ) -> Result<(), JournalError> {
+        self.preflight_transactions_with_capacity_scope_and_project_admission(
+            transactions,
+            None,
+            false,
+            false,
+            Some(&[
+                SourceProjectAdmissionTransition::Reserve,
+                SourceProjectAdmissionTransition::Acquire,
+                SourceProjectAdmissionTransition::Settle,
+            ]),
+        )
+    }
+
+    fn preflight_source_project_reservation_cancellation_transactions(
+        &self,
+        transactions: &[JournalTransaction; 2],
+    ) -> Result<(), JournalError> {
+        self.preflight_transactions_with_capacity_scope_and_project_admission(
+            transactions,
+            None,
+            false,
+            false,
+            Some(&[
+                SourceProjectAdmissionTransition::Reserve,
+                SourceProjectAdmissionTransition::CancelReservation,
+            ]),
+        )
+    }
+
+    fn preflight_transactions_with_capacity_scope_and_project_admission(
+        &self,
+        transactions: &[JournalTransaction],
+        settling_reservation: Option<[u8; 32]>,
+        allow_capacity_records: bool,
+        allow_policy_hold_transition: bool,
+        project_transitions: Option<&[SourceProjectAdmissionTransition]>,
+    ) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        if project_transitions.is_some_and(|transitions| transitions.len() != transactions.len()) {
+            return Err(JournalError::ProtectedBoundary);
+        }
         cache_policy_hold::check_unheld(self)?;
 
         let mut state = self.state.clone();
@@ -2183,7 +2290,14 @@ impl Journal {
         let mut committed_transactions = self.committed_transactions;
         let mut expected_length = self.file.metadata()?.len();
 
-        for transaction in transactions {
+        for (index, transaction) in transactions.iter().enumerate() {
+            source_project_admission_challenge::require_no_mutation(
+                &state,
+                transaction,
+                project_transitions
+                    .map(|transitions| transitions[index])
+                    .unwrap_or(SourceProjectAdmissionTransition::None),
+            )?;
             host_settlement_admission_gate::require_no_mutation(&state, transaction, false)?;
             host_currentness_fence::require_no_mutation(&state, transaction, false)?;
             host_execution_fence::require_no_mutation(&state, transaction, false)?;
@@ -2265,6 +2379,7 @@ impl Journal {
     /// Effect fence is held.
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        source_project_admission_challenge::require_no_compaction(&self.state)?;
         cache_policy_hold::require_valid_compaction(self)?;
         host_settlement_admission_gate::require_no_compaction(&self.state)?;
         host_currentness_fence::require_no_compaction(&self.state)?;
@@ -3356,6 +3471,7 @@ impl ProtectedJournalAuthority<'_> {
         let mut publisher_authority = false;
         let mut authority_publication = false;
         let mut effect = false;
+        let mut desired_state = false;
         let mut capacity_record = false;
         for record in transaction.records() {
             if !purpose.permits(record.namespace()) {
@@ -3365,6 +3481,7 @@ impl ProtectedJournalAuthority<'_> {
                 RecordNamespace::PublisherAuthority => publisher_authority = true,
                 RecordNamespace::AuthorityPublication => authority_publication = true,
                 RecordNamespace::Effect => effect = true,
+                RecordNamespace::DesiredState => desired_state = true,
                 RecordNamespace::GlobalCapacityReservation => capacity_record = true,
                 _ => return Err(JournalError::ForeignAuthorityNamespace),
             }
@@ -3374,6 +3491,7 @@ impl ProtectedJournalAuthority<'_> {
                 publisher_authority && authority_publication
             }
             GlobalCapacityReservationPurposeV1::RuntimeExecution => effect,
+            GlobalCapacityReservationPurposeV1::RootProjectAdmission => desired_state,
         };
         if !closed_shape || !capacity_record {
             return Err(JournalError::ForeignAuthorityNamespace);
@@ -3447,6 +3565,10 @@ impl ProtectedJournalAuthority<'_> {
             || self.scope
                 == ProtectedAuthorityScope::CapacityReservation(
                     GlobalCapacityReservationPurposeV1::PublisherCompletion,
+                )
+            || self.scope
+                == ProtectedAuthorityScope::CapacityReservation(
+                    GlobalCapacityReservationPurposeV1::RootProjectAdmission,
                 )
         {
             return Err(JournalError::ForeignAuthorityNamespace);

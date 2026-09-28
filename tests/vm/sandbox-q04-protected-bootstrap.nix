@@ -181,23 +181,67 @@ in
       mkdir -m 0710 /run/aos/sandbox-policy-authority
       chown 0:811 /run/aos/sandbox-policy-authority
       umask 0007
-      ${pkgs.util-linux}/bin/setpriv --regid 811 --clear-groups \
-        ${pkgs.aos-sandboxd}/bin/aos-sandbox-policy-authorityd 811 811 813 814 &
-      root_pid=$!
-      trap 'kill "$root_pid" 2>/dev/null || true; wait "$root_pid" 2>/dev/null || true; unmount_views; umount /var/lib/aos/sandbox' EXIT
+      ${probe}/bin/aos-sandbox-q04-bootstrap-vm-probe source-signer-listener \
+        ${pkgs.util-linux}/bin/setpriv \
+        ${pkgs.aos-sandboxd}/bin/aos-sandbox-source-signerd &
+      signer_pid=$!
+      root_pid=
+      trap 'if test -n "$root_pid"; then kill "$root_pid" 2>/dev/null || true; wait "$root_pid" 2>/dev/null || true; fi; kill "$signer_pid" 2>/dev/null || true; wait "$signer_pid" 2>/dev/null || true; unmount_views; umount /var/lib/aos/sandbox' EXIT
       for attempt in 1 2 3 4 5; do
-        test -S /run/aos/sandbox-policy-authority/current-head.sock && break
-        kill -0 "$root_pid"
+        test -S /run/aos/sandbox-source-signerd.sock && break
+        kill -0 "$signer_pid"
         sleep 1
       done
-      test -S /run/aos/sandbox-policy-authority/current-head.sock
+      test -S /run/aos/sandbox-source-signerd.sock
+      start_root() {
+        ${pkgs.util-linux}/bin/setpriv --regid 811 --clear-groups \
+          ${pkgs.aos-sandboxd}/bin/aos-sandbox-policy-authorityd 811 811 813 814 &
+        root_pid=$!
+        for attempt in 1 2 3 4 5; do
+          test -S /run/aos/sandbox-policy-authority/current-head.sock && break
+          kill -0 "$root_pid"
+          sleep 1
+        done
+        test -S /run/aos/sandbox-policy-authority/current-head.sock
+      }
+      stop_root() {
+        kill "$root_pid"
+        wait "$root_pid" 2>/dev/null || true
+        root_pid=
+        if test -S /run/aos/sandbox-policy-authority/current-head.sock; then
+          ${pkgs.coreutils}/bin/rm -- /run/aos/sandbox-policy-authority/current-head.sock
+        fi
+      }
+      start_root
       test "$(stat -c '%u:%g:%a' /run/aos/sandbox-policy-authority/current-head.sock)" = 0:811:770
       controller_probe root-settlement-absent
       ${probe}/bin/aos-sandbox-q04-bootstrap-vm-probe root-settlement-peer-denied
       kill -0 "$root_pid"
 
-      kill "$root_pid"
-      wait "$root_pid" 2>/dev/null || true
+      cp "$root_credentials/deployment-head.packet" /tmp/q04-deployment-head.valid
+      controller_probe project-cancel-pending
+      stop_root
+      ${probe}/bin/aos-sandbox-q04-bootstrap-vm-probe project-expire-deployment
+      start_root
+      controller_probe project-cancel-recover
+
+      # AbortOnly stages exercise historical and pending recovery without
+      # claiming the still-closed project ancestry authority.
+      stop_root
+      cp /tmp/q04-deployment-head.valid "$root_credentials/deployment-head.packet"
+      start_root
+      controller_probe project-stage-abort
+      controller_probe project-stage-pending
+      stop_root
+      ${probe}/bin/aos-sandbox-q04-bootstrap-vm-probe project-expire-deployment
+      start_root
+      controller_probe project-recovery-history
+      controller_probe project-stage-recover
+      controller_probe project-recovery-deny-fresh
+      stop_root
+
+      kill "$signer_pid"
+      wait "$signer_pid" 2>/dev/null || true
       trap 'unmount_views; umount /var/lib/aos/sandbox' EXIT
 
       unmount_views
