@@ -205,7 +205,17 @@ pub(crate) fn anchor_with_controller_floor(
     receipt: &SourceTreeGenesisReceiptV1,
     controller_floor: ObjectDigest,
 ) {
+    anchor_with_floors(journal, receipt, ack(receipt).root_floor, controller_floor);
+}
+
+pub(crate) fn anchor_with_floors(
+    journal: &mut Journal,
+    receipt: &SourceTreeGenesisReceiptV1,
+    root_floor: ObjectDigest,
+    controller_floor: ObjectDigest,
+) {
     let mut actual_ack = ack(receipt);
+    actual_ack.root_floor = root_floor;
     actual_ack.controller_floor = controller_floor;
     journal
         .commit_source_tree_genesis_v1(

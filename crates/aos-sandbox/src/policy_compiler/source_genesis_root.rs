@@ -10,6 +10,7 @@
 
 mod capacity;
 mod controller_readback;
+mod current;
 mod flight;
 mod pins;
 mod records;
@@ -27,6 +28,7 @@ pub use controller_readback::{
     sign_controller_source_genesis_completion_readback_v1,
     sign_controller_source_genesis_readback_v1,
 };
+pub use current::CurrentRootSourceGenesisFloorV1;
 pub use flight::{HeldRootSourceGenesisIntentV1, RootSourceGenesisFloorProofV1};
 pub use records::{
     ROOT_SOURCE_GENESIS_INTENT_BYTES_V1, RootSourceGenesisIntentRecordV1,
