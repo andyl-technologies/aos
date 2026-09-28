@@ -35,10 +35,14 @@ use anyhow::Result;
 use aos_core::output::Printer;
 use aos_remote::{hub_rpc as HubTopologyMethod, hub_types};
 pub(super) use client::container_hub_client;
+pub(super) use client::release_hub_client;
 pub(super) use input::parse_duration_seconds;
 pub(super) use mutation::{new_idempotency_key, topology_mutation, topology_read};
 pub(super) use output::print_topology_message;
 pub(crate) use publication::{prepare_registry_publication, upload_registry_publication};
+
+#[cfg(test)]
+pub(crate) use publication::inspect_publication_for_test;
 
 mod access_policy;
 mod access_token;

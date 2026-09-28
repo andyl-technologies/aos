@@ -198,6 +198,21 @@ no qualification observations, and the manifest cannot claim qualification
 evidence. The captured build identities, source artifacts, SBOM, signatures,
 and exact-byte public upload verification remain required.
 
+The assembler places logical evidence under
+`releases/<class>/<version>/artifacts/` and includes canonical Git and signed
+NAR cache paths in the same manifest. The public Git `HEAD` keeps the planned
+base commit; the isolated author's final `HEAD` remains release evidence.
+After constructing TUF metadata, compose a surface with
+`--base-surface finalized/bundle`. Supply it to `release stage` with
+`--publication-surface complete-registry-surface`, the independently trusted
+`--trusted-root-key` values, and their `--trusted-root-threshold`. Staging
+verifies that the surface adds only the exact signed TUF chain and public
+manifest target to the closed bundle, and reads back all uploaded objects.
+Long uploads may use the approved Hub profile without `--token` or `AOS_TOKEN`;
+the publication adapter refreshes profile credentials before dispatching each
+object or multipart operation. Explicit tokens remain the caller's lifetime
+responsibility.
+
 An empty staging registry may use the signed bootstrap procedure with
 `--environment staging`. This intent cannot bootstrap production, run
 qualification, promote to production, or advance channels. A later qualified
