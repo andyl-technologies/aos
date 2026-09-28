@@ -186,8 +186,10 @@ aos hub registry publish upload acme/cdn \
 The CLI inventories regular files beneath the root, rejects symlinks and
 non-machine paths, hashes every object, derives the immutable generation from
 the complete canonical object manifest, and binds the transaction to the
-current ready publication. For a separately reviewed or externally generated
-inventory, pass
+current ready publication. Manifest admission uses pages of at most 64 objects
+to bound each database transaction. Publication visibility still advances only
+after the complete surface is verified and committed. For a separately reviewed
+or externally generated inventory, pass
 `--manifest publication.json`; every declared size and digest is still checked
 against the local file before upload.
 

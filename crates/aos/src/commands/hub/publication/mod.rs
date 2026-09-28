@@ -603,7 +603,9 @@ async fn begin_registry_publication_chunked(
     client: &HubClient,
     request: &hub_types::BeginRegistryPublicationRequest,
 ) -> Result<hub_types::RegistryPublication> {
-    const MANIFEST_CHUNK_OBJECTS: usize = 256;
+    // Each object adds up to three SQL mutations. Smaller pages bound the
+    // time spent in one database transaction and leave room for the RPC deadline.
+    const MANIFEST_CHUNK_OBJECTS: usize = 64;
 
     let mut objects = request.objects.clone();
     objects.sort_by(|left, right| left.path.cmp(&right.path));

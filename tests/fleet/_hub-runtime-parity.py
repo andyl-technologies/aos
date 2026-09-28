@@ -278,16 +278,22 @@ def setup_and_publish_same_registry(
     reviewed("parity-promote", "placement promote registry:fleet/containers primary --if-version " + shlex.quote(placement["resource_version"]))
 
     token = refresh_token()
-    publication, token = publish_signed_surface(
-        machine,
-        lambda authorization: (
-            f"{tools['aos']} --json hub registry publish upload fleet/containers "
-            f"--root {shlex.quote(source_root)} --hub {origin} "
-            f"--token {shlex.quote(authorization)}"
-        ),
-        token,
-        refresh_token,
-    )
+    try:
+        publication, token = publish_signed_surface(
+            machine,
+            lambda authorization: (
+                f"{tools['aos']} --json hub registry publish upload fleet/containers "
+                f"--root {shlex.quote(source_root)} --hub {origin} "
+                f"--token {shlex.quote(authorization)}"
+            ),
+            token,
+            refresh_token,
+        )
+    except Exception:
+        print("Worker-only parity publication diagnostics:", machine.succeed(
+            "tail -n 100 /var/lib/hub-parity-worker/wrangler.log 2>/dev/null || true"
+        ))
+        raise
     assert publication["state"] == "ready", publication
     machine.wait_until_succeeds(
         command("registry show fleet/containers") + f" | {tools['jq']} -e '.data.registry.index_state == \"fresh\"' > /dev/null",
