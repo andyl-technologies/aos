@@ -3,8 +3,14 @@
 //! These `repr(C)` objects cross a trusted synchronous library boundary, never
 //! a process or machine boundary. The C side validates all sizes and versions.
 //! Callback pointers and buffers remain valid only during the scoped runner.
+//! The additive prepared-session ABI retains a process-local opaque owner
+//! without callbacks; its original startup roles outlive C destruction.
 
 use std::ffi::{c_int, c_void};
+use std::os::fd::AsRawFd as _;
+use std::ptr::NonNull;
+
+use aos_sandbox_linux::fuse_worker_startup::FixedFuseWorkerSessionV1;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -90,6 +96,80 @@ pub(crate) struct Operations {
 pub(crate) type Run =
     unsafe extern "C" fn(c_int, c_int, *const Operations, *mut c_void, *const Limits) -> c_int;
 
+#[repr(C)]
+struct Preparation {
+    struct_size: u32,
+    abi_major: u16,
+    abi_minor: u16,
+    flags: u32,
+    reserved: u32,
+    deadline_boottime_ns: u64,
+    limits: Limits,
+}
+
+// Only pointers returned by the installed synchronous preparation function
+// inhabit this private opaque type; its representation never crosses a wire.
+#[repr(C)]
+struct PreparedSession {
+    _private: [u8; 0],
+}
+
+/// Owns a preparation-only C session while its original roles stay retained.
+///
+/// This handle deliberately has no safe callback/continuation API. A genuine
+/// held Root/Mount dispatcher must be joined before that separate operation.
+pub(crate) struct PreparedTransport {
+    session: NonNull<PreparedSession>,
+}
+
+impl PreparedTransport {
+    pub(crate) fn prepare(
+        original: &FixedFuseWorkerSessionV1,
+        deadline_boottime_ns: u64,
+        limits: Limits,
+    ) -> Result<Self, std::io::Error> {
+        let preparation = Preparation {
+            struct_size: size_of::<Preparation>() as u32,
+            abi_major: 1,
+            abi_minor: 0,
+            flags: 0,
+            reserved: 0,
+            deadline_boottime_ns,
+            limits,
+        };
+        let mut session = std::ptr::null_mut();
+
+        // SAFETY: the enclosing Rust owner retains the exclusively captured
+        // original session through C destruction. Preparation installs no
+        // Rust callbacks and retains only its own duplicate of this same OFD;
+        // the cancellation reader remains owned by that original session.
+        let error = unsafe {
+            aos_fuse_transport_prepare_v1(
+                original.connection().as_raw_fd(),
+                original.cancellation().as_raw_fd(),
+                &preparation,
+                &mut session,
+            )
+        };
+        if error != 0 {
+            return Err(std::io::Error::from_raw_os_error(error));
+        }
+        let session = NonNull::new(session).ok_or_else(|| {
+            std::io::Error::other("FUSE preparation returned no retained session")
+        })?;
+        Ok(Self { session })
+    }
+}
+
+impl Drop for PreparedTransport {
+    fn drop(&mut self) {
+        // SAFETY: this non-cloneable owner stores exactly the pointer returned
+        // by successful preparation. No other API can take or destroy it, and
+        // its enclosing owner still retains both original transport roles.
+        unsafe { aos_fuse_transport_destroy_prepared_v1(self.session.as_ptr()) };
+    }
+}
+
 unsafe extern "C" {
     pub(crate) fn aos_fuse_transport_run(
         connected: c_int,
@@ -98,6 +178,15 @@ unsafe extern "C" {
         context: *mut c_void,
         limits: *const Limits,
     ) -> c_int;
+
+    fn aos_fuse_transport_prepare_v1(
+        connected: c_int,
+        cancellation: c_int,
+        preparation: *const Preparation,
+        session: *mut *mut PreparedSession,
+    ) -> c_int;
+
+    fn aos_fuse_transport_destroy_prepared_v1(session: *mut PreparedSession);
 }
 
 const _: () = {
@@ -108,6 +197,8 @@ const _: () = {
     assert!(size_of::<DirectoryEntry>() == 24);
     assert!(size_of::<Limits>() == 64);
     assert!(size_of::<Operations>() == 96);
+    assert!(size_of::<Preparation>() == 88);
+    assert!(std::mem::offset_of!(Preparation, limits) == 24);
     assert!(std::mem::offset_of!(Operations, lookup) == 32);
     assert!(std::mem::offset_of!(Attributes, kind) == 42);
     assert!(std::mem::offset_of!(DirectoryEntry, kind) == 22);
