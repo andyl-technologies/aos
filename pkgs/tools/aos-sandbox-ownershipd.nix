@@ -20,7 +20,7 @@
     inherit src;
     name = "aos-sandbox-ownershipd-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-tBzJ1rnxTBaKlE/KcWwb/cmrXCBOyoJfF+wc3mI1U/Y=";
+    hash = import ./crucible/_cargo-deps-hash.nix;
   };
   cargoEnv = {
     PROTOC = "${buildProtobuf}/bin/protoc";

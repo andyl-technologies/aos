@@ -128,7 +128,19 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
         match listener.accept() {
             Ok(connection) => break connection,
             Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
-                assert!(Instant::now() < deadline, "root monitor did not register");
+                assert!(
+                    Instant::now() < deadline,
+                    "root monitor did not register\noriginal monitor daemon:\n{}\n{}",
+                    owned_daemon_diagnostics(
+                        &daemon.qualification_exit_status(),
+                        &Path::new(FIXTURE_DIRECTORY).join("monitor.stderr"),
+                    ),
+                    owned_client_diagnostics(
+                        &client.try_wait(),
+                        client.stdout.as_ref().map(|pipe| pipe.as_fd()),
+                        client.stderr.as_ref().map(|pipe| pipe.as_fd()),
+                    ),
+                );
                 std::thread::sleep(Duration::from_millis(2));
             }
             Err(error) => panic!("monitor accept: {error}"),

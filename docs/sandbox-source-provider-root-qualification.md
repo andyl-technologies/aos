@@ -15,11 +15,17 @@ SourceRoot consume remains closed for two concrete reasons:
   precondition; Provider's systemd credentials currently install the signed
   catalog locator and manifest, not either authority tree. The fixed loaders
   fail closed if their trees are absent or invalid.
-- `ProductionSourceProviderStorageReadbackV1` implements authenticated Storage
-  readback only. Its descriptor-bearing and mutating backend methods return
-  `Unavailable`, so the production daemon cannot complete an Acquire with a
-  `SourceRoot`. Wiring Mount's dormant descriptor-consume methods to this
-  route would claim an effect and custody proof the runtime cannot provide.
+- The native Storage exchange in `ProductionSourceProviderStorageReadbackV1`
+  can receive authenticated original-FD custody. The private native Acquire
+  completion path joins that custody to the protected Provider request,
+  Storage receipt, physical SourceRoot and one-shot challenge. However, its
+  `QualifiedNativeBridgeV2` gate has no production constructor; fresh native
+  catalog requests remain no-dispatch, and historical native reopening and
+  retirement remain closed. The generic LocalLive acquire, reopen and release
+  methods still return `Unavailable`. The installed Mount connector does not
+  consume SourceRoot descriptors. Neither the received FD nor the private
+  completion implementation qualifies the complete production handoff or
+  enables source-backed Apply.
 
 ## External authority file contract
 
@@ -64,9 +70,10 @@ requirements; successful `ExecStartPre` is not a readiness or effect grant.
 
 Production enablement needs an explicit provisioning contract for both fixed
 trees, including role-local signing keys, trust and route material, peer
-execution policy, and protected journal ownership. It also needs a Provider
-backend that can acquire and reopen a real protected SourceRoot, a RootMount
+execution policy, and protected journal ownership. It also needs a qualified
+Provider native Acquire, exact reopening and retirement path, a RootMount
 manager-control handoff with authoritative presence and absence readback, and
-crash tests covering each ambiguous boundary before source-backed Apply can
-be admitted. A signed hello, filesystem path, catalog publication, or
-Inventory alone cannot substitute for these proofs.
+candidate-matched crash, restart, copied-descriptor custody and confinement
+tests covering each ambiguous boundary before source-backed Apply can be
+admitted. A signed hello, filesystem path, catalog publication, received FD,
+or Inventory alone cannot substitute for these proofs.

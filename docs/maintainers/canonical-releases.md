@@ -552,7 +552,9 @@ signed, and existing output paths are never replaced.
 
 Before closing the bundle, prepare a reviewed canonical advisory disposition.
 It binds the exact plan and SBOM, identifies each public advisory snapshot used
-for review, and must contain no unresolved release blockers:
+for review. Production assembly requires no unresolved advisories. Plans with
+`staging_only = true` retain unresolved findings in the signed release evidence
+without requiring advisory approval or qualification before upload:
 
 ```json
 {"authority_id":"release-security-review","plan_digest":"sha256:...","reviewed_at":"2026-09-03T13:30:00Z","sbom_digest":"sha256:...","schema_version":"aos.release.advisory-disposition/v1","sources":[{"name":"osv","snapshot":"sha256:..."}],"unresolved_advisories":[]}
