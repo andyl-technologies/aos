@@ -46,8 +46,9 @@ use role_direction::request_direction_for_endpoint;
 pub(crate) use journal::{
     ArchivedStorageInventoryHeadV1, AuthenticatedOriginalHostNoApplyJoinV1,
     HistoricalSessionCheckpointV1, ProtectedBrokerReceivedRequestAdmissionV1,
-    ProtectedBrokerSessionOwnerV1, ProtectedPriorAtomicStorageHistoryV1,
-    ProtectedPriorTerminalExchangeV1, ProtectedVerifiedAtomicStorageHistoryV1,
+    ProtectedBrokerSessionOwnerV1, ProtectedPendingBrokerRequestCutV1,
+    ProtectedPriorAtomicStorageHistoryV1, ProtectedPriorTerminalExchangeV1,
+    ProtectedVerifiedAtomicStorageHistoryV1,
 };
 pub(crate) use journal::{FixedEndpointCustodyV1, ProtectedBrokerSessionJournalV1};
 pub use journal::{

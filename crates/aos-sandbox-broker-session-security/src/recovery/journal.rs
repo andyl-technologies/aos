@@ -11,12 +11,14 @@
 mod historical_checkpoint;
 mod host_terminal_archive;
 mod owner;
+mod pending_request;
 mod storage_inventory_abandonment;
 mod storage_inventory_archive;
 pub(crate) use storage_inventory_archive::ArchivedStorageInventoryHeadV1;
 
 pub(crate) use historical_checkpoint::HistoricalSessionCheckpointV1;
 use owner::JournalOwnerV1;
+pub(crate) use pending_request::ProtectedPendingBrokerRequestCutV1;
 
 use std::path::{Path, PathBuf};
 
@@ -792,6 +794,24 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
 }
 
 impl ProtectedBrokerSessionOwnerV1 {
+    /// Borrows the actual broker writer while an exact admitted request is pending.
+    ///
+    /// This is transport/history custody, not signed-plan or consumer authority.
+    /// No terminal handoff can substitute for the current pending request.
+    pub(crate) fn hold_pending_request<'owner>(
+        &'owner mut self,
+        request: &'owner AuthenticatedBrokerMethodRequestV1,
+        transcript: &'owner VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &'owner ConnectionPeerIdentity,
+    ) -> Result<ProtectedPendingBrokerRequestCutV1<'owner>, BrokerSessionSecurityError> {
+        ProtectedPendingBrokerRequestCutV1::capture(
+            &mut self.journal,
+            request,
+            transcript,
+            connection_peer,
+        )
+    }
+
     /// Confirms exact protected archive custody before a method-37 socket send.
     pub(crate) fn confirm_original_host_argument_archive(
         &mut self,
