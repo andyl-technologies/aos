@@ -6,7 +6,7 @@ use ed25519_dalek::SigningKey;
 use super::{Reader, StorageNativeAcquireErrorV2, digest, header};
 use crate::crypto::{decode_signer, encode_signer, sign_bytes, verify_bytes};
 use crate::{
-    ACQUIRE_SOURCE_REQUEST_VERSION_V2, MAXIMUM_FRAME_BYTES,
+    ACQUIRE_SOURCE_REQUEST_VERSION_V2, ACQUIRE_SOURCE_REQUEST_VERSION_V3, MAXIMUM_FRAME_BYTES,
     MAXIMUM_STORAGE_ZFS_HOLD_REQUEST_PACKET_BYTES_V1, SignedSourceProviderRequestV1,
     SourceProviderKeyUsageV1, SourceProviderMethod, SourceProviderSignature,
     SourceProviderSigningKeyV1, StorageZfsHoldTransportRequestV1, decode_acquire_request,
@@ -29,7 +29,7 @@ pub struct StorageNativeAcquireRequestV2 {
 }
 
 impl StorageNativeAcquireRequestV2 {
-    /// Constructs matching claims without authenticating either owner.
+    /// Constructs matching claims for an exact version-two original request.
     ///
     /// The claim sequence orders Provider-to-Storage traffic. The embedded
     /// RootMount request sequence orders RootMount-to-Provider traffic. These
@@ -44,6 +44,46 @@ impl StorageNativeAcquireRequestV2 {
         claims: StorageZfsHoldTransportRequestV1,
         signed_root_request: SignedSourceProviderRequestV1,
     ) -> Result<Self, StorageNativeAcquireErrorV2> {
+        Self::new_for_version(
+            claims,
+            signed_root_request,
+            ACQUIRE_SOURCE_REQUEST_VERSION_V2,
+        )
+    }
+
+    /// Binds native claims to an exact version-three original RootMount request.
+    ///
+    /// Retains every original signed byte, including all seven native catalog
+    /// claims, without changing the version-two Storage envelope. The catalog
+    /// namespace and head must equal the carried catalog; the current-head
+    /// commitment must equal the claimed selection head. Holder, session,
+    /// acquisition, logical binding, and validity use the same checks as V2.
+    ///
+    /// This inert construction authenticates neither independently signed
+    /// catalog floor/publication evidence nor the complete protected selected
+    /// tuple. Those checks belong to the Provider owner before signing. Carrier
+    /// sequence, original Root sequence, and attempt identity remain distinct.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another embedded version, a missing native profile, kernel
+    /// coupling, or mismatched catalog, selection, identity, or validity claims.
+    pub fn new_native_v3(
+        claims: StorageZfsHoldTransportRequestV1,
+        signed_root_request: SignedSourceProviderRequestV1,
+    ) -> Result<Self, StorageNativeAcquireErrorV2> {
+        Self::new_for_version(
+            claims,
+            signed_root_request,
+            ACQUIRE_SOURCE_REQUEST_VERSION_V3,
+        )
+    }
+
+    fn new_for_version(
+        claims: StorageZfsHoldTransportRequestV1,
+        signed_root_request: SignedSourceProviderRequestV1,
+        root_version: u16,
+    ) -> Result<Self, StorageNativeAcquireErrorV2> {
         let root = decode_acquire_request(signed_root_request.subject())
             .map_err(|_| StorageNativeAcquireErrorV2::Noncanonical)?;
         let (holder, session) = claims.holder_session();
@@ -51,7 +91,7 @@ impl StorageNativeAcquireRequestV2 {
         let (binding, _) = claims.selection();
         let (issued, expires) = claims.validity();
         if signed_root_request.method() != SourceProviderMethod::Acquire
-            || root.acquisition_version() != ACQUIRE_SOURCE_REQUEST_VERSION_V2
+            || root.acquisition_version() != root_version
             || root.kernel_coupled()
             || holder != root.holder_authority_id()
             || session != root.session_binding()
@@ -66,6 +106,20 @@ impl StorageNativeAcquireRequestV2 {
         {
             return Err(StorageNativeAcquireErrorV2::Noncanonical);
         }
+
+        if root_version == ACQUIRE_SOURCE_REQUEST_VERSION_V3 {
+            let native = root
+                .native_catalog()
+                .ok_or(StorageNativeAcquireErrorV2::Noncanonical)?;
+            let catalog = claims.catalog();
+            if native.resource_namespace_digest() != catalog.namespace_digest()
+                || native.head() != (catalog.generation(), catalog.digest())
+                || native.current_head_commitment() != claims.selection().1
+            {
+                return Err(StorageNativeAcquireErrorV2::Noncanonical);
+            }
+        }
+
         Ok(Self {
             claims,
             signed_root_request,
@@ -142,7 +196,7 @@ impl SignedStorageNativeAcquireRequestV2 {
         &self.signer
     }
 
-    /// Encodes the sole canonical signed version-two request.
+    /// Encodes the canonical version-two envelope with its exact original request.
     #[must_use]
     pub fn to_canonical_bytes(&self) -> Vec<u8> {
         let mut bytes = self.request.encode();
@@ -175,7 +229,17 @@ impl SignedStorageNativeAcquireRequestV2 {
         let signed_root_request =
             SignedSourceProviderRequestV1::from_canonical_bytes(reader.bytes(root_length)?)
                 .map_err(|_| StorageNativeAcquireErrorV2::Noncanonical)?;
-        let request = StorageNativeAcquireRequestV2::new(claims, signed_root_request)?;
+        let root = decode_acquire_request(signed_root_request.subject())
+            .map_err(|_| StorageNativeAcquireErrorV2::Noncanonical)?;
+        let request = match root.acquisition_version() {
+            ACQUIRE_SOURCE_REQUEST_VERSION_V2 => {
+                StorageNativeAcquireRequestV2::new(claims, signed_root_request)?
+            }
+            ACQUIRE_SOURCE_REQUEST_VERSION_V3 => {
+                StorageNativeAcquireRequestV2::new_native_v3(claims, signed_root_request)?
+            }
+            _ => return Err(StorageNativeAcquireErrorV2::Noncanonical),
+        };
         let signer = decode_signer(reader.bytes(120)?)
             .map_err(|_| StorageNativeAcquireErrorV2::Noncanonical)?;
         let signature = SourceProviderSignature::from_bytes(reader.take()?);
