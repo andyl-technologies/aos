@@ -487,6 +487,7 @@ mod connect_path_tests {
             expected_hash: "sha256:example".to_string(),
             expected_byte_size: u64::MAX,
             expected_strong_etag: "\"strong\"".to_string(),
+            expected_provider_version: Some("reviewed-upload-v1".into()),
             inventory_entry_present: true,
             inventory_generation_id: "inventory-1".to_string(),
             binding_write_revision: "7".to_string(),
@@ -499,6 +500,7 @@ mod connect_path_tests {
         let encoded = serde_json::to_value(action).unwrap();
         assert_eq!(encoded["runId"], "gc-1");
         assert_eq!(encoded["objectKey"], "oci/blobs/sha256/example");
+        assert_eq!(encoded["expectedProviderVersion"], "reviewed-upload-v1");
         assert_eq!(encoded["expectedByteSize"], u64::MAX.to_string());
         assert_eq!(encoded["bindingWriteRevision"], "7");
         assert_eq!(encoded["deleteCredentialGeneration"], "3");

@@ -31,6 +31,8 @@ pub struct R2ListObject {
     pub size: u64,
     /// Provider-issued strong entity tag.
     pub etag: String,
+    /// Opaque identity of this particular upload at the key.
+    pub version: String,
 }
 
 /// Provider identity returned by one body-free R2 metadata lookup.
@@ -40,6 +42,8 @@ pub struct R2HeadObject {
     pub size: u64,
     /// Provider-issued strong entity tag.
     pub etag: String,
+    /// Opaque identity of this particular upload at the key.
+    pub version: String,
 }
 
 /// Narrow raw operations implemented by the real `worker::Bucket` adapter.
@@ -105,6 +109,10 @@ where
         let Some(object) = self.adapter.head(key).await? else {
             return Ok(None);
         };
+        anyhow::ensure!(
+            aos_hub_core::storage_work::valid_provider_version(&object.version),
+            "R2 head {key} returned an invalid upload version"
+        );
         let etag = aos_hub_core::surface_write::strong_if_match_etag(&object.etag)
             .with_context(|| format!("R2 head {key} returned an invalid strong ETag"))?;
         Ok(Some(R2HeadObject { etag, ..object }))
@@ -126,6 +134,7 @@ where
         if page.objects.len() > limit
             || page.objects.iter().any(|object| {
                 object.key.is_empty()
+                    || !aos_hub_core::storage_work::valid_provider_version(&object.version)
                     || aos_hub_core::surface_write::strong_if_match_etag(&object.etag).is_err()
             })
             || page.cursor.as_ref().is_some_and(|value| {
@@ -266,6 +275,7 @@ mod tests {
                     key: format!("{prefix}a"),
                     size: self.size.unwrap_or(0),
                     etag: "fixture-etag".into(),
+                    version: "fixture-upload-version".into(),
                 }],
                 cursor: Some("next".into()),
             })
@@ -275,6 +285,7 @@ mod tests {
             Ok(self.size.map(|size| R2HeadObject {
                 size,
                 etag: "fixture-etag".into(),
+                version: "fixture-upload-version".into(),
             }))
         }
         async fn read(&self, key: &str) -> Result<Option<Vec<u8>>> {

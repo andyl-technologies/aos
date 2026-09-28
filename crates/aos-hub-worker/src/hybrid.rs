@@ -948,6 +948,7 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
         version: 1,
         deployment_id: env.var("HUB_DEPLOYMENT_ID")?.to_string(),
         binding_kind: "deployment_r2".into(),
+        r2_gc_incarnation_v1: true,
         console_asset_version: Some(aos_hub_core::web::assets::asset_version().into()),
         operations: vec![
             "head".into(),

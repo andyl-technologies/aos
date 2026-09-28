@@ -187,6 +187,7 @@ impl OciGcDeletionController {
             deleter.as_ref(),
             &claim.object_key,
             SurfaceDeletePrecondition {
+                expected_provider_version: claim.expected_provider_version.clone(),
                 etag: Some(expected_etag.clone()),
                 content_hash: Some(claim.expected_hash.to_string()),
                 size: Some(expected_size),
@@ -447,6 +448,7 @@ mod tests {
             &surface,
             "oci/object",
             SurfaceDeletePrecondition {
+                expected_provider_version: None,
                 etag: Some(etag.clone()),
                 content_hash: Some(hash),
                 size: Some(bytes.len() as i64),
@@ -500,6 +502,7 @@ mod tests {
             &surface,
             "oci/object",
             SurfaceDeletePrecondition {
+                expected_provider_version: None,
                 etag: Some("\"reviewed\"".into()),
                 content_hash: None,
                 size: None,
@@ -530,6 +533,7 @@ mod tests {
             &surface,
             "oci/object",
             SurfaceDeletePrecondition {
+                expected_provider_version: None,
                 etag: Some(etag),
                 content_hash: Some(hash),
                 size: Some(bytes.len() as i64),

@@ -371,6 +371,7 @@ async fn exact_evidence(
 
 fn precondition(evidence: &crate::fetch::SurfaceObjectEvidence) -> SurfaceDeletePrecondition {
     SurfaceDeletePrecondition {
+        expected_provider_version: evidence.provider_version.clone(),
         etag: evidence.strong_etag.clone(),
         content_hash: Some(format!("sha256:{}", hex::encode(evidence.sha256))),
         size: Some(evidence.size),
@@ -421,6 +422,7 @@ mod tests {
         ) -> Result<Option<crate::fetch::SurfaceObjectEvidence>> {
             Ok(self.objects.lock().unwrap().get(path).map(|bytes| {
                 crate::fetch::SurfaceObjectEvidence {
+                    provider_version: None,
                     sha256: Sha256::digest(bytes).into(),
                     size: bytes.len() as i64,
                     strong_etag: Some(format!("\"{}\"", hex::encode(Sha256::digest(bytes)))),

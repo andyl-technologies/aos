@@ -40,6 +40,7 @@ impl SurfaceFetch for Storage {
         };
         assert!(bytes.len() as u64 <= maximum_bytes);
         Ok(Some(SurfaceObjectEvidence {
+            provider_version: None,
             sha256: *Sha256Digest::digest(bytes).as_bytes(),
             size: bytes.len() as i64,
             strong_etag: Some("\"stored-version\"".into()),

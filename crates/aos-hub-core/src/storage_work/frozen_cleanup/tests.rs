@@ -241,6 +241,7 @@ fn head_reply_binds_request_stable_scope_and_exact_object_metadata() {
         claim_token: request.claim_token.clone(),
         claim_fingerprint: request.claim_fingerprint().unwrap(),
         object: Some(super::super::StorageObjectIdentity {
+            provider_version: None,
             key: request.object_key().unwrap(),
             // A replacement still counts as present for an absence check.
             etag: "\"replacement\"".into(),

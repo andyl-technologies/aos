@@ -172,6 +172,8 @@ pub(crate) struct DeleteClaim {
     pub expected_etag: String,
     pub expected_size: u64,
     pub expected_hash: Option<String>,
+    #[serde(default)]
+    pub expected_provider_version: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,14 +211,29 @@ pub(crate) fn recover_delete(
         bail!("object deletion outcome is unknown; provider settlement is required");
     }
 
+    if claim.expected_provider_version.is_none() {
+        bail!("delete claim has no upload version; collect and review a fresh inventory");
+    }
+
     Ok(None)
+}
+
+/// Matches the frozen incarnation against one provider metadata snapshot.
+pub(crate) fn matches_delete_observation(
+    claim: &DeleteClaim,
+    head: &crate::r2_adapter::R2HeadObject,
+) -> bool {
+    head.size == claim.expected_size
+        && head.etag == claim.expected_etag
+        && Some(head.version.as_str()) == claim.expected_provider_version.as_deref()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_ready, observe_when_ready, recover_delete, recover_mutation, DeleteClaim,
-        DeleteOutcome, DeleteReceipt, Mutation, MutationKind, MutationOutcome, MutationReceipt,
+        ensure_ready, matches_delete_observation, observe_when_ready, recover_delete,
+        recover_mutation, DeleteClaim, DeleteOutcome, DeleteReceipt, Mutation, MutationKind,
+        MutationOutcome, MutationReceipt,
     };
 
     fn claim(id: &str) -> DeleteClaim {
@@ -225,6 +242,7 @@ mod tests {
             expected_etag: "\"original-etag\"".into(),
             expected_size: 42,
             expected_hash: None,
+            expected_provider_version: Some("original-upload-version".into()),
         }
     }
 
@@ -268,6 +286,99 @@ mod tests {
         let mut changed = original;
         changed.expected_size += 1;
         assert!(recover_delete(&changed, Some(&restored), None).is_err());
+    }
+
+    #[test]
+    fn legacy_terminal_receipt_replays_before_missing_version_rejection() {
+        let mut legacy = claim("legacy-action");
+        legacy.expected_provider_version = None;
+        let persisted = serde_json::to_vec(&DeleteReceipt {
+            claim: legacy.clone(),
+            outcome: DeleteOutcome::Deleted {
+                etag: legacy.expected_etag.clone(),
+            },
+        })
+        .unwrap();
+        let restored: DeleteReceipt = serde_json::from_slice(&persisted).unwrap();
+        let unrelated = claim("unrelated-action");
+
+        assert_eq!(
+            recover_delete(&legacy, Some(&restored), Some(&unrelated)).unwrap(),
+            Some(restored.outcome.clone())
+        );
+        assert!(recover_delete(&legacy, None, None)
+            .unwrap_err()
+            .to_string()
+            .contains("fresh inventory"));
+        assert!(recover_delete(&legacy, None, Some(&legacy)).is_err());
+    }
+
+    #[test]
+    fn versionless_inner_request_marks_the_protocol_and_rejects_an_old_guard() {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OldDeleteClaim {
+            claim_id: String,
+            expected_etag: String,
+            expected_size: u64,
+            expected_hash: Option<String>,
+        }
+
+        let mut legacy = claim("legacy-action");
+        legacy.expected_provider_version = None;
+        let current = serde_json::to_value(&legacy).unwrap();
+        assert_eq!(
+            current.get("expected_provider_version"),
+            Some(&serde_json::Value::Null)
+        );
+        assert!(serde_json::from_value::<OldDeleteClaim>(current.clone()).is_err());
+
+        let mut historical = current;
+        historical
+            .as_object_mut()
+            .unwrap()
+            .remove("expected_provider_version");
+        let old: OldDeleteClaim = serde_json::from_value(historical.clone()).unwrap();
+        assert_eq!(old.claim_id, legacy.claim_id);
+        assert_eq!(old.expected_etag, legacy.expected_etag);
+        assert_eq!(old.expected_size, legacy.expected_size);
+        assert_eq!(old.expected_hash, legacy.expected_hash);
+        assert_eq!(
+            serde_json::from_value::<DeleteClaim>(historical).unwrap(),
+            legacy
+        );
+    }
+
+    #[test]
+    fn identical_recreation_cannot_match_the_frozen_upload_incarnation() {
+        let original = claim("delayed-first-dispatch");
+        let mut provider = crate::r2_adapter::R2HeadObject {
+            size: original.expected_size,
+            etag: original.expected_etag.clone(),
+            version: original.expected_provider_version.clone().unwrap(),
+        };
+        assert!(matches_delete_observation(&original, &provider));
+
+        // Identical bytes can recreate the size and ETag, but not this version.
+        provider.version = "replacement-upload-version".into();
+        assert!(!matches_delete_observation(&original, &provider));
+
+        let mut legacy = original;
+        legacy.expected_provider_version = None;
+        assert!(!matches_delete_observation(&legacy, &provider));
+    }
+
+    #[test]
+    fn same_action_cannot_replay_with_another_upload_version() {
+        let original = claim("same-action");
+        let receipt = DeleteReceipt {
+            claim: original.clone(),
+            outcome: DeleteOutcome::NotFound,
+        };
+        let mut changed = original;
+        changed.expected_provider_version = Some("replacement-upload-version".into());
+
+        assert!(recover_delete(&changed, Some(&receipt), None).is_err());
     }
 
     fn mutation(kind: MutationKind, id: &str) -> Mutation {

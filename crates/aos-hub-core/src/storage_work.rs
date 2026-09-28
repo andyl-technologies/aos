@@ -62,6 +62,9 @@ pub struct StorageCapabilities {
     /// Hybrid website serving requires the Native bundle's exact identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub console_asset_version: Option<String>,
+    /// Requires provider upload versions before new guarded R2 GC dispatch.
+    #[serde(default)]
+    pub r2_gc_incarnation_v1: bool,
     /// Closed operation names accepted by this executor.
     pub operations: Vec<String>,
     /// Maximum bytes returned in one semantic result.
@@ -188,6 +191,9 @@ pub enum StorageWorkOperation {
         total: u64,
         /// Frozen strong provider tag from the inventory continuation.
         strong_etag: String,
+        /// Frozen provider upload version; required by the R2 executor.
+        #[serde(default)]
+        expected_provider_version: Option<String>,
         /// Portable SHA-256 state after exactly `start` bytes.
         sha256_state: crate::db::OciSha256State,
     },
@@ -234,6 +240,9 @@ pub enum StorageWorkOperation {
         expected_etag: String,
         /// Reviewed provider object length.
         expected_size: u64,
+        /// Frozen upload version; absence permits only legacy terminal replay.
+        #[serde(default)]
+        expected_provider_version: Option<String>,
         /// Reviewed content hash, when the inventory records one.
         expected_hash: Option<String>,
     },
@@ -382,6 +391,9 @@ pub struct StorageObjectIdentity {
     pub size: u64,
     /// Provider-issued strong entity tag.
     pub etag: String,
+    /// Provider-issued upload incarnation, when the backend exposes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_version: Option<String>,
 }
 
 /// One hash-checked Git object decoded beside a storage placement.
@@ -893,6 +905,7 @@ impl StorageWorkPlan {
                 end,
                 total,
                 strong_etag,
+                expected_provider_version,
                 sha256_state,
             } => {
                 if !admitted_oci_blob_path(path)
@@ -900,6 +913,9 @@ impl StorageWorkPlan {
                     || *end >= *total
                     || end.saturating_sub(*start).saturating_add(1)
                         > MAX_OCI_HASH_RANGE_BYTES as u64
+                    || expected_provider_version
+                        .as_deref()
+                        .is_some_and(|version| !valid_provider_version(version))
                     || sha256_state.validate().is_err()
                     || sha256_state.total_bytes != *start
                     || crate::surface_write::strong_if_match_etag(strong_etag).is_err()
@@ -970,6 +986,7 @@ impl StorageWorkPlan {
                 expected_etag,
                 expected_size,
                 expected_hash,
+                expected_provider_version,
             } => {
                 if !valid_relative_path(path, false)
                     || claim_id.is_empty()
@@ -979,6 +996,9 @@ impl StorageWorkPlan {
                     })
                     || crate::surface_write::strong_if_match_etag(expected_etag).is_err()
                     || *expected_size > MAX_VERIFY_SOURCE_BYTES
+                    || expected_provider_version
+                        .as_deref()
+                        .is_some_and(|version| !valid_provider_version(version))
                     || expected_hash
                         .as_ref()
                         .is_some_and(|hash| hash.is_empty() || hash.len() > 128)
@@ -1163,6 +1183,15 @@ fn valid_sha256_hex(digest: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+/// Returns whether an opaque provider upload version fits the wire contract.
+///
+/// Versions are nonempty strings of at most 512 bytes without control characters.
+/// Callers retain actual provider metadata instead of deriving versions from
+/// content hashes or keys; this validator does not establish provider provenance.
+pub fn valid_provider_version(version: &str) -> bool {
+    !version.is_empty() && version.len() <= 512 && !version.chars().any(char::is_control)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1192,6 +1221,60 @@ mod tests {
             issued_at: now,
             expires_at: now + 300,
         }
+    }
+
+    #[test]
+    fn provider_upload_versions_are_opaque_bounded_and_legacy_decode_is_nullable() {
+        assert!(valid_provider_version("opaque/v1 + case-sensitive"));
+        assert!(valid_provider_version(&"a".repeat(512)));
+        assert!(!valid_provider_version(""));
+        assert!(!valid_provider_version(&"a".repeat(513)));
+        assert!(!valid_provider_version("version\n"));
+        let operation: StorageWorkOperation = serde_json::from_value(serde_json::json!({
+            "kind": "delete_if_matches",
+            "path": "oci/blobs/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "claim_id": "old-action", "expected_etag": "\"etag\"",
+            "expected_size": 4, "expected_hash": null
+        })).unwrap();
+        assert!(matches!(
+            operation,
+            StorageWorkOperation::DeleteIfMatches {
+                expected_provider_version: None,
+                ..
+            }
+        ));
+        let serialized = serde_json::to_value(&operation).unwrap();
+        assert!(serialized
+            .as_object()
+            .unwrap()
+            .contains_key("expected_provider_version"));
+        assert!(serialized["expected_provider_version"].is_null());
+
+        // Old executors reject unknown fields per RPC even if a prior pairing
+        // probe reached a new isolate during a rolling deployment.
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct LegacyDelete {
+            kind: String,
+            path: String,
+            claim_id: String,
+            expected_etag: String,
+            expected_size: u64,
+            expected_hash: Option<String>,
+        }
+        assert!(serde_json::from_value::<LegacyDelete>(serialized.clone()).is_err());
+        let mut legacy = serialized;
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("expected_provider_version");
+        let decoded: LegacyDelete = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.kind, "delete_if_matches");
+        assert_eq!(decoded.claim_id, "old-action");
+        assert_eq!(decoded.expected_size, 4);
+        assert_eq!(decoded.expected_etag, "\"etag\"");
+        assert!(decoded.path.starts_with("oci/blobs/sha256/"));
+        assert!(decoded.expected_hash.is_none());
     }
 
     #[test]
@@ -1886,6 +1969,7 @@ mod tests {
         let mut work = plan(100);
         let path = format!("oci/blobs/sha256/{}", "a".repeat(64));
         work.operation = StorageWorkOperation::HashOciRange {
+            expected_provider_version: Some("upload-v1".into()),
             path,
             start: 0,
             end: 3,

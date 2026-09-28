@@ -8,6 +8,12 @@
 //! dispatch and its terminal receipt before unlocking. Fences never expire;
 //! HEAD absence cannot settle an outstanding mutation. External S3 and the
 //! frozen cleanup route are not connected to this coordinator yet.
+//!
+//! The guard namespace and storage authority ID must remain stable for the
+//! lifetime of a bucket/prefix. Rotating either while reusing that storage loses
+//! its durable fences and receipts. An upload version cannot settle an already
+//! dispatched unconditional R2 DELETE; authority rotation requires draining and
+//! settling outstanding effects or moving to a never-reused bucket/prefix.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,8 +33,8 @@ const BINDING: &str = "HYBRID_OBJECT_GUARD";
 const KEY_HEADER: &str = "x-aos-hybrid-object-key";
 
 use crate::hybrid_object_state::{
-    observe_when_ready, recover_delete, recover_mutation, DeleteReceipt, Mutation, MutationKind,
-    MutationOutcome, MutationReceipt,
+    matches_delete_observation, observe_when_ready, recover_delete, recover_mutation,
+    DeleteReceipt, Mutation, MutationKind, MutationOutcome, MutationReceipt,
 };
 pub(crate) use crate::hybrid_object_state::{DeleteClaim, DeleteOutcome};
 
@@ -106,6 +112,7 @@ impl DurableObject for HybridObjectGuard {
                         key,
                         size: head.size,
                         etag: head.etag,
+                        provider_version: Some(head.version),
                     }),
                 }
             }
@@ -289,7 +296,7 @@ impl HybridObjectGuard {
         .map_err(storage_error)?;
         let outcome = match head {
             None => DeleteOutcome::NotFound,
-            Some(head) if head.size != claim.expected_size || head.etag != claim.expected_etag => {
+            Some(head) if !matches_delete_observation(&claim, &head) => {
                 DeleteOutcome::PreconditionFailed
             }
             Some(_) => {
@@ -360,6 +367,10 @@ fn valid_claim(claim: &DeleteClaim) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
         && aos_hub_core::surface_write::strong_if_match_etag(&claim.expected_etag).is_ok()
         && claim
+            .expected_provider_version
+            .as_deref()
+            .is_none_or(aos_hub_core::storage_work::valid_provider_version)
+        && claim
             .expected_hash
             .as_ref()
             .is_none_or(|hash| !hash.is_empty() && hash.len() <= 128)
@@ -420,6 +431,9 @@ pub(crate) async fn head(env: &Env, key: &str) -> Result<Option<crate::r2_adapte
                 Ok(crate::r2_adapter::R2HeadObject {
                     size: object.size,
                     etag: object.etag,
+                    version: object
+                        .provider_version
+                        .context("guard HEAD returned no upload version")?,
                 })
             })
             .transpose(),

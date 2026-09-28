@@ -64,6 +64,8 @@ pub struct SurfaceDeletePrecondition {
     pub content_hash: Option<String>,
     /// Exact object size, when supplied by inventory.
     pub size: Option<i64>,
+    /// Upload incarnation frozen by inventory; never substituted from live HEAD.
+    pub expected_provider_version: Option<String>,
 }
 
 /// Immutable physical address and topology fence for one provider operation.
@@ -75,7 +77,10 @@ pub struct SurfaceDeletePrecondition {
 /// conditional-delete capability, while the durable claim revalidates this
 /// frozen snapshot and its retained credential hold. The adapter therefore
 /// resolves the exact frozen credential without consulting a capability or
-/// credential head that may legitimately advance after Apply. The frozen
+/// credential head that may legitimately advance after Apply. For R2, the same
+/// physical bucket/prefix must retain its guard namespace and authority identity
+/// for its lifetime: upload versions do not settle an already dispatched DELETE
+/// or make an authority rotation safe. The frozen
 /// capability identity remains part of durable audit evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrozenSurfaceAccess {

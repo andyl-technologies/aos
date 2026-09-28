@@ -33728,6 +33728,7 @@ impl RpcService {
                     store_hash: action.store_hash.clone(),
                     action: format!("delete_{}", action.phase),
                     inventory_version: action.inventory_generation.to_string(),
+                    expected_provider_version: action.expected_provider_version.clone(),
                 })
                 .collect(),
             coverage_failures: Vec::new(),
@@ -34253,6 +34254,7 @@ impl RpcService {
             last_error: job.error.clone().unwrap_or_default(),
             next_attempt_at: job.next_attempt_at.unwrap_or_default(),
             resource_version: job.resource_version.to_string(),
+            expected_provider_version: job.expected_provider_version.clone(),
         })
     }
 
@@ -36720,6 +36722,7 @@ mod cache_upload_tests {
                     bail!("provider failure reached an injected fetcher")
                 }
                 FetchBehavior::Evidence { bytes, strong_etag } => Ok(Some(SurfaceObjectEvidence {
+                    provider_version: None,
                     sha256: Sha256::digest(bytes).into(),
                     size: i64::try_from(bytes.len()).unwrap(),
                     strong_etag: Some(strong_etag.clone()),

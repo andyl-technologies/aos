@@ -27,7 +27,8 @@ use worker::{Bucket, Env};
 use aos_hub_core::db::{BindingWriteRevisionRecord, Database, SurfacePlacementRecord};
 use aos_hub_core::fetch::{
     DocumentationInspection, OriginFetch, StreamedRead, SurfaceDeliveryHead, SurfaceFetch,
-    SurfaceListPage, SurfaceListedEvidence, SurfaceObjectEvidence, SurfaceProvider,
+    SurfaceInventoryChunk, SurfaceInventoryHead, SurfaceListPage, SurfaceListedEvidence,
+    SurfaceObjectEvidence, SurfaceProvider,
 };
 use aos_hub_core::hybrid_ingress::HybridDeliveryTarget;
 use aos_hub_core::s3surface::{Method as S3Method, S3Surface};
@@ -181,6 +182,7 @@ pub(crate) async fn execute_external_storage_work(
                         key: plan.object_key(path)?,
                         size: object.size,
                         etag: object.strong_etag,
+                        provider_version: None,
                     },
                 }
             }
@@ -227,6 +229,7 @@ pub(crate) async fn execute_external_storage_work(
                         key: plan.object_key(path)?,
                         size,
                         etag,
+                        provider_version: None,
                     },
                 }
             };
@@ -280,6 +283,7 @@ pub(crate) async fn execute_external_storage_work(
                     key: plan.object_key(&relative)?,
                     size: listed_object.size,
                     etag: listed_object.strong_etag,
+                    provider_version: None,
                 });
             }
             let cursor = if truncated {
@@ -321,6 +325,7 @@ pub(crate) async fn execute_external_storage_work(
                         key: plan.object_key(path)?,
                         size,
                         etag,
+                        provider_version: evidence.provider_version,
                     },
                     sha256,
                 },
@@ -400,6 +405,7 @@ pub(crate) async fn execute_external_storage_work(
             end,
             total,
             strong_etag,
+            expected_provider_version,
             sha256_state,
         } => {
             hash_oci_range(
@@ -410,6 +416,7 @@ pub(crate) async fn execute_external_storage_work(
                 *end,
                 *total,
                 strong_etag,
+                expected_provider_version.as_deref(),
                 sha256_state,
             )
             .await?
@@ -483,6 +490,7 @@ pub(crate) async fn execute_r2_storage_work(
                     key: object.key,
                     size: object.size,
                     etag: object.etag,
+                    provider_version: Some(object.version),
                 })
                 .collect();
             (
@@ -518,7 +526,12 @@ pub(crate) async fn execute_r2_storage_work(
                 .context("R2 verification returned no strong ETag")?;
             (
                 StorageWorkOutcome::Sha256Evidence {
-                    object: StorageObjectIdentity { key, size, etag },
+                    object: StorageObjectIdentity {
+                        key,
+                        size,
+                        etag,
+                        provider_version: evidence.provider_version,
+                    },
                     sha256,
                 },
                 size,
@@ -590,6 +603,7 @@ pub(crate) async fn execute_r2_storage_work(
             end,
             total,
             strong_etag,
+            expected_provider_version,
             sha256_state,
         } => {
             hash_oci_range(
@@ -600,6 +614,7 @@ pub(crate) async fn execute_r2_storage_work(
                 *end,
                 *total,
                 strong_etag,
+                expected_provider_version.as_deref(),
                 sha256_state,
             )
             .await?
@@ -692,6 +707,7 @@ pub(crate) async fn execute_r2_storage_work(
             expected_etag,
             expected_size,
             expected_hash,
+            expected_provider_version,
         } => {
             let object_key = plan.object_key(path)?;
             let claim = crate::hybrid_object::DeleteClaim {
@@ -699,6 +715,7 @@ pub(crate) async fn execute_r2_storage_work(
                 expected_etag: expected_etag.clone(),
                 expected_size: *expected_size,
                 expected_hash: expected_hash.clone(),
+                expected_provider_version: expected_provider_version.clone(),
             };
             let outcome = crate::hybrid_object::delete_if_matches(env, &object_key, &claim).await?;
             let outcome = match outcome {
@@ -761,6 +778,7 @@ pub(crate) async fn execute_r2_storage_work(
                         key: object_key,
                         size: head.size,
                         etag: head.etag,
+                        provider_version: Some(head.version),
                     },
                 },
                 0,
@@ -867,6 +885,7 @@ async fn compose_oci_blob(
         key: object_key.to_string(),
         size: head.size,
         etag: head.etag,
+        provider_version: Some(head.version),
     })
 }
 
@@ -1075,6 +1094,7 @@ async fn read_bounded_source(
         key: plan.object_key(path)?,
         size: expected,
         etag,
+        provider_version: None,
     };
     Ok(Some((bytes, source)))
 }
@@ -1156,6 +1176,7 @@ async fn inspect_oci_range(
                 key: plan.object_key(path)?,
                 size: read.total,
                 etag,
+                provider_version: None,
             },
             start,
             end,
@@ -1173,6 +1194,7 @@ async fn hash_oci_range(
     end: u64,
     total: u64,
     strong_etag: &str,
+    expected_provider_version: Option<&str>,
     sha256_state: &aos_hub_core::db::OciSha256State,
 ) -> Result<(StorageWorkOutcome, u64)> {
     let requested_bytes = end - start + 1;
@@ -1186,6 +1208,7 @@ async fn hash_oci_range(
         chunk.total == total
             && chunk.range == (start, end)
             && chunk.strong_etag == strong_etag
+            && chunk.provider_version.as_deref() == expected_provider_version
             && chunk.bytes.len() as u64 == requested_bytes
             && chunk.bytes.len() <= MAX_OCI_HASH_RANGE_BYTES,
         "storage OCI inventory range changed identity or length"
@@ -1198,6 +1221,7 @@ async fn hash_oci_range(
                 key: plan.object_key(path)?,
                 size: chunk.total,
                 etag: chunk.strong_etag,
+                provider_version: chunk.provider_version,
             },
             start,
             end,
@@ -1207,11 +1231,24 @@ async fn hash_oci_range(
     ))
 }
 
+fn r2_object_version(object: &wasm_bindgen::JsValue, key: &str) -> Result<String> {
+    let version = js_sys::Reflect::get(object, &wasm_bindgen::JsValue::from_str("version"))
+        .map_err(|error| anyhow::anyhow!("R2 metadata {key}: version: {error:?}"))?
+        .as_string()
+        .context("R2 object has no string upload version")?;
+    anyhow::ensure!(
+        aos_hub_core::storage_work::valid_provider_version(&version),
+        "R2 object has an invalid upload version"
+    );
+    Ok(version)
+}
+
 fn storage_object_identity(key: String, head: R2HeadObject) -> StorageObjectIdentity {
     StorageObjectIdentity {
         key,
         size: head.size,
         etag: head.etag,
+        provider_version: Some(head.version),
     }
 }
 
@@ -1330,7 +1367,13 @@ impl R2BucketAdapter for WorkerR2BucketAdapter {
                 .map_err(|e| anyhow::anyhow!("R2 list {key}: etag: {e:?}"))?
                 .as_string()
                 .context("R2 list object has no string etag")?;
-            listed.push(R2ListObject { key, size, etag });
+            let version = r2_object_version(&object, &key)?;
+            listed.push(R2ListObject {
+                key,
+                size,
+                etag,
+                version,
+            });
         }
         let truncated = Reflect::get(&result, &JsValue::from_str("truncated"))
             .ok()
@@ -1381,6 +1424,7 @@ impl R2BucketAdapter for WorkerR2BucketAdapter {
         Ok(Some(R2HeadObject {
             size: size as u64,
             etag,
+            version: r2_object_version(&object, key)?,
         }))
     }
 
@@ -2233,118 +2277,12 @@ pub(crate) async fn hybrid_publication_companion_pack(
         .ok_or_else(|| anyhow::anyhow!("publication companion pack is absent"))
 }
 
-#[async_trait(?Send)]
-impl SurfaceFetch for R2SurfaceFetch {
-    async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        let key = keymap::r2_key(&self.prefix, path);
-        self.contract
-            .read_bounded(
-                &key,
-                usize::try_from(aos_hub_core::s3surface::MAX_S3_BUFFERED_OBJECT_BYTES)
-                    .context("R2 buffered-object cap exceeds usize")?,
-            )
-            .await
-    }
-
-    async fn list_page(&self, cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
-        anyhow::ensure!(
-            limit > 0 && limit <= aos_hub_core::fetch::WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS,
-            "invalid R2 listing page limit"
-        );
-        let listing_prefix = keymap::r2_key(&self.prefix, "");
-        let page = self.contract.list(&listing_prefix, cursor, limit).await?;
-        let mut entries = Vec::with_capacity(page.objects.len());
-        for object in page.objects {
-            if let Some(rel) = keymap::relative_key(&self.prefix, &object.key) {
-                if !rel.is_empty() {
-                    entries.push((
-                        rel,
-                        SurfaceListedEvidence {
-                            size: i64::try_from(object.size)
-                                .context("R2 listed object size exceeds i64")?,
-                            strong_etag: object.etag,
-                        },
-                    ));
-                }
-            }
-        }
-        entries.sort_by(|left, right| left.0.cmp(&right.0));
-        anyhow::ensure!(
-            !entries.windows(2).any(|pair| pair[0].0 == pair[1].0),
-            "R2 listing returned a duplicate relative key"
-        );
-        let paths = entries.iter().map(|(path, _)| path.clone()).collect();
-        let evidence = entries.into_iter().collect();
-        Ok(SurfaceListPage {
-            paths,
-            evidence,
-            next_cursor: page.cursor,
-        })
-    }
-
-    async fn inventory_evidence_bounded(
-        &self,
-        path: &str,
-        maximum_bytes: u64,
-    ) -> Result<Option<SurfaceObjectEvidence>> {
-        use futures_util::TryStreamExt as _;
-
-        // R2 binds the body, size, and ETag to one GET object snapshot. Hashing
-        // that body is stronger and cheaper than issuing separate GETs before
-        // and after it, whose bodies would be discarded merely to read ETags.
-        let Some(read) = self.fetch_stream(path, None).await? else {
-            return Ok(None);
-        };
-        let expected_size = read.total;
-        anyhow::ensure!(
-            expected_size <= maximum_bytes,
-            "R2 object '{path}' declares {expected_size} bytes, exceeding the {maximum_bytes}-byte inventory limit"
-        );
-        let strong_etag = read.strong_etag;
-        let mut stream = read.body.into_data_stream();
-        let mut hasher = Sha256::new();
-        let mut observed_size = 0_u64;
-        while let Some(chunk) = stream.try_next().await? {
-            observed_size = observed_size
-                .checked_add(chunk.len() as u64)
-                .with_context(|| format!("R2 object '{path}' size overflowed"))?;
-            anyhow::ensure!(
-                observed_size <= expected_size && observed_size <= maximum_bytes,
-                "R2 object '{path}' exceeded its bounded inventory length while streaming"
-            );
-            hasher.update(&chunk);
-        }
-        anyhow::ensure!(
-            observed_size == expected_size,
-            "R2 object '{path}' snapshot declared {expected_size} bytes but streamed {observed_size}"
-        );
-
-        Ok(Some(SurfaceObjectEvidence {
-            sha256: hasher.finalize().into(),
-            size: i64::try_from(observed_size).context("R2 object size exceeds i64")?,
-            strong_etag,
-        }))
-    }
-
-    async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
-        let key = keymap::r2_key(&self.prefix, path);
-        Ok(self.contract.head(&key).await?.map(|object| object.etag))
-    }
-
-    async fn inventory_size(&self, path: &str) -> Result<Option<i64>> {
-        let key = keymap::r2_key(&self.prefix, path);
-        self.contract
-            .head(&key)
-            .await?
-            .map(|object| i64::try_from(object.size).context("R2 object size exceeds i64"))
-            .transpose()
-    }
-
-    async fn fetch_stream(
+impl R2SurfaceFetch {
+    async fn fetch_snapshot(
         &self,
         path: &str,
         range: Option<(u64, u64)>,
-    ) -> Result<Option<aos_hub_core::fetch::StreamedRead>> {
+    ) -> Result<Option<(aos_hub_core::fetch::StreamedRead, String)>> {
         use futures_util::StreamExt as _;
 
         let key = keymap::r2_key(&self.prefix, path);
@@ -2370,6 +2308,7 @@ impl SurfaceFetch for R2SurfaceFetch {
         let Some(object) = object else {
             return Ok(None);
         };
+        let provider_version = r2_object_version(&object, &key)?;
         let total_value = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("size"))
             .ok()
             .and_then(|value| value.as_f64())
@@ -2402,13 +2341,16 @@ impl SurfaceFetch for R2SurfaceFetch {
             // over — serve a whole-object empty body (`range: None`) regardless of
             // what was requested, so `cache_serve` emits `Content-Length: 0`
             // rather than a positive length against an empty body.
-            return Ok(Some(aos_hub_core::fetch::StreamedRead {
-                body: axum::body::Body::empty(),
-                total,
-                range: None,
-                strong_etag,
-                snapshot_lease_id: None,
-            }));
+            return Ok(Some((
+                aos_hub_core::fetch::StreamedRead {
+                    body: axum::body::Body::empty(),
+                    total,
+                    range: None,
+                    strong_etag,
+                    snapshot_lease_id: None,
+                },
+                provider_version,
+            )));
         }
         let stream = r2_body_stream(body_js)?;
         // Bound a ranged R2 body to the exact requested length. The R2 read
@@ -2458,13 +2400,200 @@ impl SurfaceFetch for R2SurfaceFetch {
         // Worker), so the *same* `StreamedRead` the native file path returns
         // flows through the shared `cache_serve` and the streaming bridge.
         let body = axum::body::Body::from_stream(send_wrapper::SendWrapper::new(trimmed));
-        Ok(Some(aos_hub_core::fetch::StreamedRead {
-            body,
-            total,
-            range: served,
+        Ok(Some((
+            aos_hub_core::fetch::StreamedRead {
+                body,
+                total,
+                range: served,
+                strong_etag,
+                snapshot_lease_id: None,
+            },
+            provider_version,
+        )))
+    }
+}
+
+#[async_trait(?Send)]
+impl SurfaceFetch for R2SurfaceFetch {
+    async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        let key = keymap::r2_key(&self.prefix, path);
+        self.contract
+            .read_bounded(
+                &key,
+                usize::try_from(aos_hub_core::s3surface::MAX_S3_BUFFERED_OBJECT_BYTES)
+                    .context("R2 buffered-object cap exceeds usize")?,
+            )
+            .await
+    }
+
+    async fn list_page(&self, cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
+        anyhow::ensure!(
+            limit > 0 && limit <= aos_hub_core::fetch::WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS,
+            "invalid R2 listing page limit"
+        );
+        let listing_prefix = keymap::r2_key(&self.prefix, "");
+        let page = self.contract.list(&listing_prefix, cursor, limit).await?;
+        let mut entries = Vec::with_capacity(page.objects.len());
+        for object in page.objects {
+            if let Some(rel) = keymap::relative_key(&self.prefix, &object.key) {
+                if !rel.is_empty() {
+                    entries.push((
+                        rel,
+                        SurfaceListedEvidence {
+                            size: i64::try_from(object.size)
+                                .context("R2 listed object size exceeds i64")?,
+                            strong_etag: object.etag,
+                            provider_version: Some(object.version),
+                        },
+                    ));
+                }
+            }
+        }
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        anyhow::ensure!(
+            !entries.windows(2).any(|pair| pair[0].0 == pair[1].0),
+            "R2 listing returned a duplicate relative key"
+        );
+        let paths = entries.iter().map(|(path, _)| path.clone()).collect();
+        let evidence = entries.into_iter().collect();
+        Ok(SurfaceListPage {
+            paths,
+            evidence,
+            next_cursor: page.cursor,
+        })
+    }
+
+    async fn inventory_evidence_bounded(
+        &self,
+        path: &str,
+        maximum_bytes: u64,
+    ) -> Result<Option<SurfaceObjectEvidence>> {
+        use futures_util::TryStreamExt as _;
+
+        // R2 binds the body, size, and ETag to one GET object snapshot. Hashing
+        // that body is stronger and cheaper than issuing separate GETs before
+        // and after it, whose bodies would be discarded merely to read ETags.
+        let Some((read, provider_version)) = self.fetch_snapshot(path, None).await? else {
+            return Ok(None);
+        };
+        let expected_size = read.total;
+        anyhow::ensure!(
+            expected_size <= maximum_bytes,
+            "R2 object '{path}' declares {expected_size} bytes, exceeding the {maximum_bytes}-byte inventory limit"
+        );
+        let strong_etag = read.strong_etag;
+        let mut stream = read.body.into_data_stream();
+        let mut hasher = Sha256::new();
+        let mut observed_size = 0_u64;
+        while let Some(chunk) = stream.try_next().await? {
+            observed_size = observed_size
+                .checked_add(chunk.len() as u64)
+                .with_context(|| format!("R2 object '{path}' size overflowed"))?;
+            anyhow::ensure!(
+                observed_size <= expected_size && observed_size <= maximum_bytes,
+                "R2 object '{path}' exceeded its bounded inventory length while streaming"
+            );
+            hasher.update(&chunk);
+        }
+        anyhow::ensure!(
+            observed_size == expected_size,
+            "R2 object '{path}' snapshot declared {expected_size} bytes but streamed {observed_size}"
+        );
+
+        Ok(Some(SurfaceObjectEvidence {
+            sha256: hasher.finalize().into(),
+            size: i64::try_from(observed_size).context("R2 object size exceeds i64")?,
             strong_etag,
-            snapshot_lease_id: None,
+            provider_version: Some(provider_version),
         }))
+    }
+
+    async fn inventory_head(&self, path: &str) -> Result<Option<SurfaceInventoryHead>> {
+        let key = keymap::r2_key(&self.prefix, path);
+        self.contract
+            .head(&key)
+            .await?
+            .map(|head| {
+                Ok(SurfaceInventoryHead {
+                    size: i64::try_from(head.size).context("R2 object size exceeds i64")?,
+                    strong_etag: Some(head.etag),
+                    provider_version: Some(head.version),
+                })
+            })
+            .transpose()
+    }
+
+    async fn inventory_chunk_bounded(
+        &self,
+        path: &str,
+        offset: u64,
+        expected_total: u64,
+        maximum_bytes: u64,
+    ) -> Result<Option<SurfaceInventoryChunk>> {
+        use futures_util::TryStreamExt as _;
+
+        anyhow::ensure!(
+            maximum_bytes > 0 && offset < expected_total,
+            "invalid R2 inventory range"
+        );
+        let length = maximum_bytes.min(expected_total - offset);
+        let end = offset + length - 1;
+        let Some((read, provider_version)) = self.fetch_snapshot(path, Some((offset, end))).await?
+        else {
+            return Ok(None);
+        };
+        anyhow::ensure!(
+            read.total == expected_total && read.range == Some((offset, end)),
+            "R2 inventory range changed size or range"
+        );
+        let strong_etag = read
+            .strong_etag
+            .context("R2 inventory range has no strong ETag")?;
+        let mut bytes = Vec::new();
+        let mut stream = read.body.into_data_stream();
+        while let Some(chunk) = stream.try_next().await? {
+            anyhow::ensure!(
+                (bytes.len() as u64).saturating_add(chunk.len() as u64) <= length,
+                "R2 inventory range exceeded its bound"
+            );
+            bytes.extend_from_slice(&chunk);
+        }
+        anyhow::ensure!(
+            bytes.len() as u64 == length,
+            "R2 inventory range was truncated"
+        );
+        Ok(Some(SurfaceInventoryChunk {
+            bytes,
+            total: read.total,
+            range: (offset, end),
+            strong_etag,
+            provider_version: Some(provider_version),
+        }))
+    }
+
+    async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
+        let key = keymap::r2_key(&self.prefix, path);
+        Ok(self.contract.head(&key).await?.map(|object| object.etag))
+    }
+
+    async fn inventory_size(&self, path: &str) -> Result<Option<i64>> {
+        let key = keymap::r2_key(&self.prefix, path);
+        self.contract
+            .head(&key)
+            .await?
+            .map(|object| i64::try_from(object.size).context("R2 object size exceeds i64"))
+            .transpose()
+    }
+
+    async fn fetch_stream(
+        &self,
+        path: &str,
+        range: Option<(u64, u64)>,
+    ) -> Result<Option<StreamedRead>> {
+        Ok(self
+            .fetch_snapshot(path, range)
+            .await?
+            .map(|(read, _)| read))
     }
 
     async fn size(&self, path: &str) -> Result<Option<u64>> {
@@ -3198,6 +3327,11 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
             &JsValue::from_str("etag"),
             &JsValue::from_str("fixture-etag"),
         );
+        let _ = Reflect::set(
+            &listed,
+            &JsValue::from_str("version"),
+            &JsValue::from_str("fixture-upload-version"),
+        );
         let objects = Array::new();
         objects.push(&listed);
         let _ = Reflect::set(&object, &JsValue::from_str("objects"), &objects);
@@ -3226,6 +3360,11 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
             &object,
             &JsValue::from_str("etag"),
             &JsValue::from_str("fixture-etag"),
+        );
+        let _ = Reflect::set(
+            &object,
+            &JsValue::from_str("version"),
+            &JsValue::from_str("fixture-upload-version"),
         );
         Promise::resolve(&object).into()
     }) as Box<dyn FnMut(JsValue) -> JsValue>);
@@ -3368,6 +3507,7 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
                 key: "fixture/object".into(),
                 size: 3,
                 etag: "\"fixture-etag\"".into(),
+                version: "fixture-upload-version".into(),
             }]
             && first_page.cursor.as_deref() == Some("cursor-2"),
         "R2 first list response shape did not round-trip: objects={:?}, cursor={:?}",
@@ -3381,6 +3521,7 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
                 key: "fixture/object".into(),
                 size: 3,
                 etag: "\"fixture-etag\"".into(),
+                version: "fixture-upload-version".into(),
             }]
             && page.cursor.as_deref() == Some("cursor-2"),
         "R2 list response shape did not round-trip"

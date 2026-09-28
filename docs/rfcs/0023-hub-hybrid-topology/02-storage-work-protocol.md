@@ -109,6 +109,21 @@ requires the reviewed inventory identity, strong provider condition, and
 durable claim ID. The executor never turns a conditional mismatch into an
 unconditional retry.
 
+Deployment R2 executors advertise `r2_gc_incarnation_v1` in the authenticated
+capability reply. Native requires this capability before pairing with a Worker
+for versioned GC. Inventory hashing, pagination and reuse retain the provider
+upload version observed with the source bytes; Native carries that same version
+through SQL inventory, reviewed actions, claims and signed execution plans.
+Matching bytes, size and ETag alone do not identify a particular upload.
+
+The `expected_provider_version` member is always present in both the outer
+destructive operation and its inner claim, including an explicit JSON `null`
+when no version is recorded. Older closed schemas reject that member instead
+of executing a weakened request during a mixed-version deployment. A fresh R2
+delete requires a recorded version. An existing terminal receipt is replayed
+before that requirement is checked, so legacy completed actions remain
+recoverable without repeating provider effects.
+
 ### Retained external cleanup grants
 
 Applying OCI GC claims use a separate signed cleanup envelope when their

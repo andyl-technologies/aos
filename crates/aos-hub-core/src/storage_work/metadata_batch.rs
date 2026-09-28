@@ -247,6 +247,7 @@ mod tests {
             path: path.into(),
             document: bytes.map(|bytes| StorageMetadataDocument {
                 source: StorageObjectIdentity {
+                    provider_version: None,
                     key: plan.object_key(path).unwrap(),
                     size: bytes.len() as u64,
                     etag: "\"snapshot\"".into(),

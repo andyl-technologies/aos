@@ -443,6 +443,7 @@ impl PlacementScanController {
                 page_presences.push((
                     object.resource_version,
                     PlacementScanPresence {
+                        provider_version: evidence.provider_version,
                         surface_object_id: object.id,
                         state: if valid { "present" } else { "corrupt" }.to_string(),
                         observed_hash: Some(if valid {
@@ -495,6 +496,7 @@ impl PlacementScanController {
                     (
                         object.resource_version,
                         PlacementScanPresence {
+                            provider_version: None,
                             surface_object_id: object.id,
                             state: "missing".to_string(),
                             observed_hash: None,
@@ -786,11 +788,12 @@ fn reusable_listing_presence(
 
     let listed_etag = crate::surface_write::strong_if_match_etag(&listed.strong_etag).ok()?;
     let prior_etag = crate::surface_write::strong_if_match_etag(prior.etag.as_deref()?).ok()?;
-    if listed_etag != prior_etag {
+    if listed_etag != prior_etag || listed.provider_version != prior.provider_version {
         return None;
     }
 
     Some(PlacementScanPresence {
+        provider_version: listed.provider_version.clone(),
         surface_object_id: object.id,
         state: "present".into(),
         observed_hash: object.content_hash.clone(),
@@ -921,6 +924,7 @@ mod tests {
                 evidence: [(
                     "objects/aa/bb".into(),
                     SurfaceListedEvidence {
+                        provider_version: None,
                         size: 7,
                         strong_etag: "provider-version".into(),
                     },
@@ -976,6 +980,7 @@ mod tests {
             _path: &str,
         ) -> Result<Option<crate::fetch::SurfaceObjectEvidence>> {
             Ok(Some(crate::fetch::SurfaceObjectEvidence {
+                provider_version: None,
                 sha256: Sha256::digest(b"x").into(),
                 size: 1,
                 strong_etag: None,
@@ -1055,6 +1060,7 @@ mod tests {
                             (
                                 path.clone(),
                                 SurfaceListedEvidence {
+                                    provider_version: None,
                                     size: i64::try_from(bytes.len()).unwrap(),
                                     strong_etag: hex::encode(Sha256::digest(bytes)),
                                 },
@@ -1336,10 +1342,12 @@ mod tests {
             resource_version: 1,
         };
         let listed = SurfaceListedEvidence {
+            provider_version: None,
             size: 9,
             strong_etag: "provider-version".into(),
         };
         let mut prior = ReusablePlacementEvidence {
+            provider_version: None,
             surface_object_id: object.id,
             state: "present".into(),
             observed_hash: object.content_hash.clone(),
@@ -1779,6 +1787,7 @@ mod tests {
             &[(
                 first.resource_version,
                 PlacementScanPresence {
+                    provider_version: None,
                     surface_object_id: first.id,
                     state: "present".into(),
                     observed_hash: first.content_hash,
@@ -1829,6 +1838,7 @@ mod tests {
             &[(
                 concurrent.resource_version,
                 PlacementScanPresence {
+                    provider_version: None,
                     surface_object_id: concurrent.id,
                     state: "corrupt".into(),
                     observed_hash: Some("55".repeat(32)),
@@ -1922,6 +1932,7 @@ mod tests {
                 &[(
                     object.resource_version,
                     PlacementScanPresence {
+                        provider_version: None,
                         surface_object_id: object.id,
                         state: "present".into(),
                         observed_hash: object.content_hash,
@@ -1997,6 +2008,7 @@ mod tests {
             (
                 first.resource_version,
                 PlacementScanPresence {
+                    provider_version: None,
                     surface_object_id: first.id,
                     state: "present".into(),
                     observed_hash: first.content_hash,
@@ -2007,6 +2019,7 @@ mod tests {
             (
                 superseded.resource_version,
                 PlacementScanPresence {
+                    provider_version: None,
                     surface_object_id: superseded.id,
                     state: "present".into(),
                     observed_hash: superseded.content_hash,
@@ -2083,6 +2096,7 @@ mod tests {
             &[(
                 object.resource_version,
                 PlacementScanPresence {
+                    provider_version: None,
                     surface_object_id: object.id,
                     state: "present".into(),
                     observed_hash: Some(digest),

@@ -1358,6 +1358,9 @@ message ContainerGcPlacementAction {
   string delete_credential_generation = 29;
   string delete_capability_fingerprint = 30;
   string delete_capability_resource_version = 31;
+  // Provider upload incarnation frozen by the reviewed inventory. Absent for
+  // legacy or non-incarnation-aware providers; new R2 dispatch requires it.
+  optional string expected_provider_version = 32;
 }
 
 message ListContainerGcCandidatesResponse {
@@ -3619,6 +3622,8 @@ message CacheGcPlacementAction {
   string store_hash = 2;
   string action = 3;
   string inventory_version = 4;
+  // Provider upload incarnation frozen by the reviewed inventory.
+  optional string expected_provider_version = 5;
 }
 message CacheGcPlan {
   string plan_id = 1;
@@ -3688,6 +3693,8 @@ message CacheGcDeletionJob {
   string last_error = 7;
   int64 next_attempt_at = 8;
   string resource_version = 9;
+  // Reviewed upload incarnation retained through retries. Legacy rows may omit it.
+  optional string expected_provider_version = 10;
 }
 message GetCacheGcDeletionJobRequest {
   string cache_id = 1;

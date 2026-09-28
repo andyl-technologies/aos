@@ -45,6 +45,8 @@ use aos_oci_types::{
 };
 
 mod common;
+#[path = "dialect/incarnation.rs"]
+mod incarnation;
 
 fn oci_descriptor(media_type: MediaType, bytes: &[u8]) -> Descriptor {
     Descriptor {
@@ -432,6 +434,7 @@ async fn stage_dialect_inventory_candidate(
         db.stage_cache_object_presence(
             owner_token,
             &CacheObjectPresenceObservation {
+                provider_version: Some("inventory-upload-one".into()),
                 cache_id,
                 object_key: object_key.to_string(),
                 placement_id,
@@ -573,6 +576,17 @@ async fn exercise_topology_inventory_and_gc(
         .await
         .unwrap()
         .expect("corrected inventory publishes one normalized object");
+    for placement in placements {
+        let evidence = db
+            .reusable_placement_scan_evidence(placement.id)
+            .await
+            .unwrap();
+        assert_eq!(evidence.len(), 2);
+        assert!(evidence
+            .iter()
+            .all(|object| { object.provider_version.as_deref() == Some("inventory-upload-one") }));
+    }
+
     let state = db.cache_gc_topology_state(cache_id).await.unwrap().unwrap();
     assert_eq!(state.inventory_generation, 2);
     assert_eq!(state.epoch, 1);
@@ -1195,6 +1209,7 @@ async fn exercise(db: &Database) {
     // -- OCI digest ownership -------------------------------------------------
     exercise_oci_catalog_race(db, org, reg, &registry_placement).await;
     exercise_scoped_topology_lists(db, binding).await;
+    incarnation::exercise(db, org, binding).await;
 }
 
 #[tokio::test]

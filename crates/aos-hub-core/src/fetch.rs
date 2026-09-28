@@ -88,6 +88,8 @@ pub struct SurfaceListedEvidence {
     pub size: i64,
     /// Provider-issued strong entity tag for the listed representation.
     pub strong_etag: String,
+    /// Provider upload incarnation returned with the same listing entry.
+    pub provider_version: Option<String>,
 }
 
 impl SurfaceListPage {
@@ -109,6 +111,10 @@ impl SurfaceListPage {
         if self.evidence.iter().any(|(path, evidence)| {
             self.paths.binary_search(path).is_err()
                 || evidence.size < 0
+                || evidence
+                    .provider_version
+                    .as_deref()
+                    .is_some_and(|version| !crate::storage_work::valid_provider_version(version))
                 || crate::surface_write::strong_if_match_etag(&evidence.strong_etag).is_err()
         }) {
             bail!("surface listing returned invalid provider evidence");
@@ -302,6 +308,19 @@ pub struct SurfaceObjectEvidence {
     pub size: i64,
     /// Backend-issued strong entity tag, if the backend exposes one.
     pub strong_etag: Option<String>,
+    /// Provider-issued upload incarnation of the bytes that were hashed.
+    pub provider_version: Option<String>,
+}
+
+/// Metadata from one provider observation before or after inventory hashing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceInventoryHead {
+    /// Full physical object size in bytes.
+    pub size: i64,
+    /// Backend-issued strong tag for this snapshot.
+    pub strong_etag: Option<String>,
+    /// Provider-issued upload incarnation, when exposed by the backend.
+    pub provider_version: Option<String>,
 }
 
 /// One exact ranged object chunk used by resumable provider inventory.
@@ -315,6 +334,8 @@ pub struct SurfaceInventoryChunk {
     pub range: (u64, u64),
     /// Provider-issued strong entity tag for this object snapshot.
     pub strong_etag: String,
+    /// Provider upload version from the same ranged response.
+    pub provider_version: Option<String>,
 }
 
 /// One exact inventory range hashed into a portable SHA-256 continuation.
@@ -326,6 +347,8 @@ pub struct SurfaceInventoryHashChunk {
     pub range: (u64, u64),
     /// Provider-issued strong tag for the ranged object snapshot.
     pub strong_etag: String,
+    /// Provider upload version from the same ranged response.
+    pub provider_version: Option<String>,
     /// SHA-256 state after the exact range.
     pub sha256_state: crate::db::OciSha256State,
 }
@@ -647,6 +670,24 @@ pub trait SurfaceFetch: BackendBounds {
             .transpose()
     }
 
+    /// Observes inventory metadata without consuming the object body.
+    ///
+    /// Incarnation-aware backends override this fallback with a single HEAD.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for metadata transport failure or invalid size.
+    async fn inventory_head(&self, path: &str) -> Result<Option<SurfaceInventoryHead>> {
+        let Some(size) = self.inventory_size(path).await? else {
+            return Ok(None);
+        };
+        Ok(Some(SurfaceInventoryHead {
+            size,
+            strong_etag: self.inventory_strong_etag(path).await?,
+            provider_version: None,
+        }))
+    }
+
     /// Streams one object and derives placement-scoped inventory evidence.
     ///
     /// The default deliberately hashes the streamed bytes and separately asks
@@ -711,6 +752,7 @@ pub trait SurfaceFetch: BackendBounds {
         let size = i64::try_from(observed_size)
             .map_err(|_| anyhow::anyhow!("surface object '{path}' is too large"))?;
         Ok(Some(SurfaceObjectEvidence {
+            provider_version: None,
             sha256: hasher.finalize().into(),
             size,
             strong_etag: after_etag,
@@ -778,6 +820,7 @@ pub trait SurfaceFetch: BackendBounds {
             bail!("surface inventory chunk did not fill its requested range");
         }
         Ok(Some(SurfaceInventoryChunk {
+            provider_version: None,
             bytes,
             total: read.total,
             range: (offset, end),
@@ -799,6 +842,7 @@ pub trait SurfaceFetch: BackendBounds {
         expected_total: u64,
         maximum_bytes: u64,
         strong_etag: &str,
+        expected_provider_version: Option<&str>,
         mut sha256_state: crate::db::OciSha256State,
     ) -> Result<Option<SurfaceInventoryHashChunk>> {
         sha256_state.validate()?;
@@ -816,11 +860,16 @@ pub trait SurfaceFetch: BackendBounds {
             chunk.strong_etag == strong_etag,
             "inventory hash range changed its strong entity tag"
         );
+        anyhow::ensure!(
+            chunk.provider_version.as_deref() == expected_provider_version,
+            "inventory hash range changed its provider upload version"
+        );
         sha256_state.update(&chunk.bytes)?;
         Ok(Some(SurfaceInventoryHashChunk {
             total: chunk.total,
             range: chunk.range,
             strong_etag: chunk.strong_etag,
+            provider_version: chunk.provider_version,
             sha256_state,
         }))
     }
@@ -1049,6 +1098,7 @@ mod tests {
         invalid_evidence.evidence.insert(
             "outside-page".into(),
             SurfaceListedEvidence {
+                provider_version: None,
                 size: 1,
                 strong_etag: "version-1".into(),
             },

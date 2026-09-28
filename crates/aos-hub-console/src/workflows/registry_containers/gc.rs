@@ -685,7 +685,27 @@ fn ContainerGcRunDetail(client: ApiClient, registry: String, run_id: String) -> 
                             view! {
                                 <div class="resource-identity"><div><span>"Generation"</span><code>{run.run_id}</code></div><div><span>"Root set"</span><code>{run.root_set_digest}</code></div><div><span>"Inventory"</span><code>{run.placement_inventory_digest}</code></div><div><span>"Topology"</span><code>{run.topology_digest}</code></div></div>
                                 {(!blockers.blockers.is_empty()).then(|| view! { <div class="notice warning"><strong>"Blockers"</strong><ul>{blockers.blockers.iter().cloned().map(|blocker| view! { <li><code>{blocker.kind}</code>" — "{blocker.detail}</li> }).collect_view()}</ul></div> })}
-                                <div class="subworkflow-grid"><div class="subworkflow"><h3>"Candidate preview"</h3><p>{format!("{} loaded{}", candidates.candidates.len(), if candidates.next_page_token.is_empty() { "" } else { " · more available" })}</p><ul>{candidates.candidates.iter().cloned().map(|candidate| view! { <li><code>{candidate.digest}</code>" · "{format_bytes(candidate.byte_size)}</li> }).collect_view()}</ul></div><div class="subworkflow"><h3>"Placement actions"</h3><p>{format!("{} loaded{}", actions.actions.len(), if actions.next_page_token.is_empty() { "" } else { " · more available" })}</p><ul>{actions.actions.iter().cloned().map(|action| view! { <li><code>{action.placement_name}</code>" · "{action.state}" · "<code>{action.digest}</code><span class="muted">{format!("{} · ETag {} · binding revision {} · credential generation {} · version {}", action.object_key, action.expected_strong_etag, action.binding_write_revision, action.delete_credential_generation, action.resource_version)}</span></li> }).collect_view()}</ul></div></div>
+                                <div class="subworkflow-grid"><div class="subworkflow"><h3>"Candidate preview"</h3><p>{format!("{} loaded{}", candidates.candidates.len(), if candidates.next_page_token.is_empty() { "" } else { " · more available" })}</p><ul>{candidates.candidates.iter().cloned().map(|candidate| view! { <li><code>{candidate.digest}</code>" · "{format_bytes(candidate.byte_size)}</li> }).collect_view()}</ul></div><div class="subworkflow"><h3>"Placement actions"</h3><p>{format!("{} loaded{}", actions.actions.len(), if actions.next_page_token.is_empty() { "" } else { " · more available" })}</p><ul>{actions.actions.iter().cloned().map(|action| {
+                                    let object_version = action.expected_provider_version
+                                        .filter(|version| !version.is_empty())
+                                        .unwrap_or_else(|| "Not recorded".into());
+                                    let action_evidence = format!(
+                                        "{} · ETag {} · binding revision {} · credential generation {} · action version {}",
+                                        action.object_key,
+                                        action.expected_strong_etag,
+                                        action.binding_write_revision,
+                                        action.delete_credential_generation,
+                                        action.resource_version,
+                                    );
+
+                                    view! {
+                                        <li>
+                                            <code>{action.placement_name}</code>" · "{action.state}" · "<code>{action.digest}</code>
+                                            <span class="muted">{action_evidence}</span>
+                                            <span class="muted">"Object version: "<code>{object_version}</code></span>
+                                        </li>
+                                    }
+                                }).collect_view()}</ul></div></div>
                             }.into_any()
                         }
                         Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),

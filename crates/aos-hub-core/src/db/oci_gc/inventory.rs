@@ -158,6 +158,9 @@ pub struct OciProviderInventoryEntryInput {
     pub byte_size: u64,
     /// Strong provider entity tag used by conditional deletion.
     pub strong_etag: String,
+    /// Provider upload incarnation observed throughout hashing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_version: Option<String>,
 }
 
 /// One lease-fenced provider listing page and its durable continuation.
@@ -254,6 +257,8 @@ struct PersistedInventoryDigestEntry {
     observed_hash: String,
     byte_size: u64,
     strong_etag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_version: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -933,7 +938,7 @@ impl Database {
             .backend
             .query(
                 "SELECT object_key, object_digest, observed_hash, byte_size,
-                        strong_etag, classification
+                        strong_etag, classification, provider_version
                  FROM oci_provider_inventory_entries
                  WHERE generation_id = ?1 ORDER BY object_key LIMIT ?2",
                 &vals![
@@ -961,6 +966,7 @@ impl Database {
                 observed_hash: row.get(2)?,
                 byte_size,
                 strong_etag: row.get(4)?,
+                provider_version: row.get(6)?,
             });
         }
         let digest = Sha256Digest::digest(&serde_json::to_vec(&digest_entries)?);
@@ -1032,25 +1038,29 @@ impl Database {
                      SELECT placement_id, registry_id, id, ?2
                      FROM oci_provider_inventory_generations
                      WHERE id = ?1 AND state = 'complete'
-                     ON CONFLICT(placement_id) DO UPDATE SET
-                       registry_id = excluded.registry_id,
-                       generation_id = excluded.generation_id,
-                       updated_at = excluded.updated_at
-                     WHERE (SELECT observed_at
-                              FROM oci_provider_inventory_generations
-                             WHERE id = oci_provider_inventory_heads.generation_id)
-                           < (SELECT observed_at
-                                FROM oci_provider_inventory_generations
-                               WHERE id = excluded.generation_id)
-                        OR ((SELECT observed_at
-                               FROM oci_provider_inventory_generations
-                              WHERE id = oci_provider_inventory_heads.generation_id)
-                            = (SELECT observed_at
-                                 FROM oci_provider_inventory_generations
-                                WHERE id = excluded.generation_id)
-                            AND oci_provider_inventory_heads.generation_id
-                              < excluded.generation_id)",
+                     ON CONFLICT(placement_id) DO NOTHING",
                     vals![input.generation_id, input.now],
+                )
+                .unchecked(),
+                // Separate the initial insertion from the monotonic update:
+                // MariaDB has no conditional WHERE on an upsert. Both remain
+                // inside the fenced completion transaction, and one matching
+                // row is required even when this generation was just inserted.
+                Statement::new(
+                    "UPDATE oci_provider_inventory_heads
+                     SET generation_id = ?1, updated_at = ?2
+                     WHERE placement_id = (SELECT placement_id
+                       FROM oci_provider_inventory_generations
+                       WHERE id = ?1 AND state = 'complete')
+                       AND registry_id = (SELECT registry_id
+                         FROM oci_provider_inventory_generations WHERE id = ?1)
+                       AND (generation_id = ?1
+                         OR (SELECT observed_at FROM oci_provider_inventory_generations
+                              WHERE id = oci_provider_inventory_heads.generation_id) < ?3
+                         OR ((SELECT observed_at FROM oci_provider_inventory_generations
+                               WHERE id = oci_provider_inventory_heads.generation_id) = ?3
+                           AND generation_id < ?1))",
+                    vals![input.generation_id, input.now, input.observed_at],
                 )
                 .expecting(1),
             ])

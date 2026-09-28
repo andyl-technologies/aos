@@ -194,14 +194,49 @@ impl SqlDoBackend {
         }
     }
 
-    /// Proves indexed row counts and rollback against the real DO transaction binding.
+    /// Proves forward schema migration, indexed row counts, and real DO rollback.
     ///
     /// # Errors
     ///
-    /// Returns an error if fixture setup, the expected mismatch, rollback, or
-    /// the verification query does not behave as required.
+    /// Returns an error if the migrated schema, fixture setup, expected
+    /// mismatch, rollback, or verification query does not behave as required.
     #[cfg(feature = "do-e2e")]
     pub(crate) async fn e2e_assert_checked_batch_row_counts_and_rollback(&self) -> Result<()> {
+        let ledger = self
+            .query("SELECT applied, id FROM _do_migrations", &[])
+            .await?;
+        anyhow::ensure!(
+            ledger.len() == 1 && ledger[0].get::<i64>(0)? == 2 && ledger[0].get::<i64>(1)? == 0,
+            "real HubDb did not apply the incarnation forward migration"
+        );
+        for (table, column) in [
+            ("oci_provider_inventory_entries", "provider_version"),
+            ("oci_gc_placement_actions", "expected_provider_version"),
+            ("cache_inventory_listed_objects", "provider_version"),
+            ("cache_inventory_object_observations", "provider_version"),
+            ("object_placements", "provider_version"),
+            ("cache_gc_plan_actions", "expected_provider_version"),
+            ("object_deletion_jobs", "expected_provider_version"),
+            (
+                "object_deletion_attempt_receipts",
+                "expected_provider_version",
+            ),
+        ] {
+            let columns = self
+                .query(&format!("PRAGMA table_info({table})"), &[])
+                .await?;
+            let mut nullable_version_column = false;
+            for row in columns {
+                if row.get::<String>(1)? == column {
+                    nullable_version_column = row.get::<i64>(3)? == 0;
+                }
+            }
+            anyhow::ensure!(
+                nullable_version_column,
+                "real HubDb has no nullable {table}.{column} incarnation column"
+            );
+        }
+
         let unsafe_bind = self
             .query("SELECT ?1", &[Value::Int(JS_SAFE_INTEGER_MAX + 1)])
             .await;

@@ -9,7 +9,7 @@ use aos_hub_core::db::{
 use aos_hub_core::fetch::SurfaceProvider as _;
 use aos_hub_core::secret_version::{ResolvedSecretVersion, SecretVersionResolver};
 use aos_hub_core::storage_work::{
-    STORAGE_WORK_SIGNATURE_HEADER, StorageObjectIdentity, StorageWorkKey, StorageWorkResult,
+    StorageObjectIdentity, StorageWorkKey, StorageWorkResult, STORAGE_WORK_SIGNATURE_HEADER,
 };
 use aos_hub_core::surface_write::SurfaceWriteProvider as _;
 use axum::body::Bytes;
@@ -162,6 +162,7 @@ async fn frozen_hybrid_cleanup_keeps_old_address_after_placement_and_capability_
                         match objects.get(&object_key) {
                             Some(size) => StorageWorkOutcome::Head {
                                 object: StorageObjectIdentity {
+                                    provider_version: Some("current-upload-v2".into()),
                                     key: object_key,
                                     etag: "\"frozen-etag\"".into(),
                                     size: *size,
@@ -175,9 +176,14 @@ async fn frozen_hybrid_cleanup_keeps_old_address_after_placement_and_capability_
                         claim_id,
                         expected_etag,
                         expected_size,
+                        expected_provider_version,
                         ..
                     } => {
                         assert_eq!(claim_id, &"b".repeat(32));
+                        assert_eq!(
+                            expected_provider_version.as_deref(),
+                            Some("frozen-upload-v1")
+                        );
                         assert_eq!(expected_etag, "\"frozen-etag\"");
                         let object_key = plan.object_key(path).unwrap();
                         assert_eq!(objects.remove(&object_key), Some(*expected_size));
@@ -214,6 +220,7 @@ async fn frozen_hybrid_cleanup_keeps_old_address_after_placement_and_capability_
     let writes = HybridSurfaceWrites::new(db, work);
     let deleter = writes.frozen_placement_deleter(&access).await.unwrap();
     let expected = SurfaceDeletePrecondition {
+        expected_provider_version: Some("frozen-upload-v1".into()),
         etag: Some("\"frozen-etag\"".into()),
         content_hash: Some(format!("sha256:{}", "a".repeat(64))),
         size: Some(4),

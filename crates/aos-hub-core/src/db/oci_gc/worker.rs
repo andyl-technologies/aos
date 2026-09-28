@@ -31,6 +31,8 @@ pub struct OciGcPlacementActionClaim {
     pub expected_size: u64,
     /// Strong entity tag frozen by provider enumeration.
     pub expected_strong_etag: Option<String>,
+    /// Provider upload incarnation frozen by the reviewed inventory.
+    pub expected_provider_version: Option<String>,
     /// Whether the sealed inventory contained the exact canonical key.
     pub inventory_entry_present: bool,
     /// Frozen placement id.
@@ -1170,7 +1172,7 @@ impl Database {
                         snapshot.inventory_digest, snapshot.inventory_observed_at,
                         action.claim_token, action.lease_expires_at,
                         action.attempt_count, action.max_attempts,
-                        action.resource_version, action.inventory_entry_present
+                        action.resource_version, action.inventory_entry_present, action.expected_provider_version
                  FROM oci_gc_placement_actions action
                  JOIN oci_gc_candidates candidate
                    ON candidate.run_id = action.run_id
@@ -1214,6 +1216,7 @@ impl Database {
             expected_size: u64::try_from(row.get::<i64>(7)?)
                 .context("persisted OCI GC expected size is negative")?,
             expected_strong_etag: row.get(8)?,
+            expected_provider_version: row.get(31)?,
             inventory_entry_present: row.get::<i64>(30)? == 1,
             placement_id: row.get(9)?,
             placement_name: row.get(10)?,

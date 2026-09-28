@@ -587,7 +587,10 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// The first entry is the immutable first stable production baseline. Databases
 /// from development histories must be reset before deploying this checkpoint;
 /// subsequent production changes require new forward migrations.
-pub const MIGRATIONS: &[&str] = &[include_str!("schema.sql")];
+pub const MIGRATIONS: &[&str] = &[
+    include_str!("schema.sql"),
+    include_str!("002-r2-gc-incarnation.sql"),
+];
 
 /// Identifies the production migration lineage independently of its version.
 ///
@@ -2487,6 +2490,8 @@ pub struct PlacementScanPresence {
     pub observed_size: Option<i64>,
     /// Backend-issued strong entity tag, when available.
     pub etag: Option<String>,
+    /// Provider upload incarnation of the observed physical bytes.
+    pub provider_version: Option<String>,
 }
 
 /// Maximum number of placement observations persisted in one atomic batch.
@@ -2512,6 +2517,8 @@ pub struct ReusablePlacementEvidence {
     pub observed_size: Option<i64>,
     /// Provider-issued strong version identifier.
     pub etag: Option<String>,
+    /// Upload incarnation of the previously byte-verified physical object.
+    pub provider_version: Option<String>,
 }
 
 /// Operator-confirmed equivalence between two exact surface placements.
@@ -8884,7 +8891,7 @@ impl Database {
     ) -> Result<Vec<ReusablePlacementEvidence>> {
         self.backend
             .query(
-                "SELECT surface_object_id, state, observed_hash, observed_size, etag
+                "SELECT surface_object_id, state, observed_hash, observed_size, etag, provider_version
                    FROM object_placements
                   WHERE placement_id = ?1
                   ORDER BY surface_object_id",
@@ -8899,6 +8906,7 @@ impl Database {
                     observed_hash: row.get(2)?,
                     observed_size: row.get(3)?,
                     etag: row.get(4)?,
+                    provider_version: row.get(5)?,
                 })
             })
             .collect()
@@ -9025,7 +9033,8 @@ impl Database {
             if presence.state == "missing"
                 && (presence.observed_hash.is_some()
                     || presence.observed_size.is_some()
-                    || presence.etag.is_some())
+                    || presence.etag.is_some()
+                    || presence.provider_version.is_some())
             {
                 bail!("missing placement scan evidence cannot describe physical bytes");
             }
@@ -9033,6 +9042,13 @@ impl Database {
                 && (presence.observed_hash.is_none() || presence.observed_size.is_none())
             {
                 bail!("present placement scan evidence requires a digest and size");
+            }
+            if presence
+                .provider_version
+                .as_deref()
+                .is_some_and(|version| !crate::storage_work::valid_provider_version(version))
+            {
+                bail!("placement scan provider upload version is invalid");
             }
             if let Some(hash) = presence.observed_hash.as_deref() {
                 validate_key_bytes(hash, "placement scan observed hash", 128)?;
@@ -9073,9 +9089,9 @@ impl Database {
                        (surface_object_id, cache_id, registry_id, placement_id,
                         state, observed_hash, observed_size, etag,
                         observed_inventory_generation, observed_at,
-                        catalog_object_resource_version)
+                        catalog_object_resource_version, provider_version)
                      SELECT object.id, object.cache_id, object.registry_id, placement.id,
-                            ?6, ?7, ?8, ?9, ?3, ?13, object.resource_version
+                            ?6, ?7, ?8, ?9, ?3, ?13, object.resource_version, ?15
                      FROM surface_objects object
                      JOIN surface_placements placement
                        ON object.registry_id = placement.registry_id
@@ -9111,7 +9127,8 @@ impl Database {
                         claim_token,
                         operation_resource_version,
                         observed_at,
-                        claim_checked_at
+                        claim_checked_at,
+                        presence.provider_version
                     ],
                 )
                 .expecting(1),
@@ -27256,11 +27273,51 @@ source_nar_hash = ""
     }
 
     #[test]
+    fn r2_incarnation_migration_preserves_legacy_rows_as_nullable() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(MIGRATIONS[0]).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO oci_provider_inventory_entries
+                   (generation_id, registry_id, placement_id, object_key,
+                    object_digest, observed_hash, byte_size, strong_etag, classification)
+                 VALUES('legacy', 1, 1, 'key', 'digest', 'digest', 4, 'etag', 'untracked');
+                 INSERT INTO oci_gc_placement_actions
+                   (id, run_id, registry_id, digest, placement_id, object_key,
+                    expected_hash, expected_size, expected_strong_etag,
+                    inventory_generation_id, inventory_entry_present, state,
+                    next_attempt_at, confirmed_at)
+                 VALUES('action', 'run', 1, 'digest', 1, 'key', 'digest', 4,
+                        'etag', 'legacy', 1, 'confirmed_absent', 0, 1);",
+            )
+            .unwrap();
+        connection.execute_batch(MIGRATIONS[1]).unwrap();
+
+        let inventory_version: Option<String> = connection
+            .query_row(
+                "SELECT provider_version FROM oci_provider_inventory_entries
+                 WHERE generation_id = 'legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let action_version: Option<String> = connection
+            .query_row(
+                "SELECT expected_provider_version FROM oci_gc_placement_actions WHERE id='action'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(inventory_version, None);
+        assert_eq!(action_version, None);
+    }
+
+    #[test]
     fn fresh_schema_is_final_and_foreign_key_clean() {
         assert_eq!(
             MIGRATIONS.len(),
-            1,
-            "first production checkpoint has one baseline"
+            2,
+            "production baseline plus the R2 incarnation forward migration"
         );
         let connection = Connection::open_in_memory().unwrap();
         connection

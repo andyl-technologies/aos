@@ -5,8 +5,8 @@ use std::sync::Arc;
 use aos_hub_core::db::{Database, NewSurfacePlacementSpec, SurfaceTarget};
 use aos_hub_core::fetch::SurfaceFetch as _;
 use aos_hub_core::storage_work::{
-    STORAGE_WORK_SIGNATURE_HEADER, StorageObjectIdentity, StorageWorkKey, StorageWorkOperation,
-    StorageWorkOutcome, StorageWorkResult,
+    StorageBindingSnapshot, StorageObjectIdentity, StorageWorkKey, StorageWorkOperation,
+    StorageWorkOutcome, StorageWorkResult, STORAGE_WORK_SIGNATURE_HEADER,
 };
 use axum::body::Bytes;
 use axum::http::HeaderMap;
@@ -26,15 +26,60 @@ async fn surface(
     Arc<Mutex<Vec<StorageWorkOperation>>>,
     tokio::task::JoinHandle<()>,
 ) {
+    surface_with_binding(size, changed_range_etag, "deployment_r2", None).await
+}
+
+async fn surface_with_binding(
+    size: usize,
+    changed_range_etag: bool,
+    binding_kind: &str,
+    provider_version: Option<String>,
+) -> (
+    HybridSurfaceFetch,
+    Arc<Mutex<Vec<StorageWorkOperation>>>,
+    tokio::task::JoinHandle<()>,
+) {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
-    let registry_id = db
-        .register_registry("hybrid-control", &[], false)
+    let org_id = db
+        .create_org("control-owner", "Control owner")
         .await
         .unwrap();
-    let binding = db
-        .ensure_instance_default_binding("deployment_r2", None, Some("fleet-control"))
-        .await
-        .unwrap();
+    let registry_id = if binding_kind == "deployment_r2" {
+        db.register_registry("hybrid-control", &[], false)
+            .await
+            .unwrap()
+    } else {
+        db.create_managed_registry(org_id, "", "hybrid-control", "public", &[], false)
+            .await
+            .unwrap()
+    };
+    let binding = if binding_kind == "deployment_r2" {
+        db.ensure_instance_default_binding("deployment_r2", None, Some("fleet-control"))
+            .await
+            .unwrap()
+    } else {
+        let owner = db.org_by_id(org_id).await.unwrap().unwrap();
+        let binding_id = db
+            .create_topology_binding(
+                Some(org_id),
+                "control-binding",
+                &owner.stable_id,
+                "primary",
+                binding_kind,
+                None,
+                Some("fixture-bucket"),
+                Some("binding-prefix"),
+                Some("https"),
+                Some("dns"),
+                Some(b"storage.example.invalid"),
+                Some(443),
+                Some("fixture-region"),
+                Some("public"),
+            )
+            .await
+            .unwrap();
+        db.binding(binding_id).await.unwrap().unwrap()
+    };
     let placement = db
         .create_surface_placement(&NewSurfacePlacementSpec {
             surface: SurfaceTarget::Registry(registry_id),
@@ -56,6 +101,7 @@ async fn surface(
         "/",
         axum::routing::post(move |headers: HeaderMap, body: Bytes| {
             let requests = Arc::clone(&server_requests);
+            let provider_version = provider_version.clone();
             async move {
                 let key = StorageWorkKey::new(WORK_KEY).unwrap();
                 let plan = key
@@ -76,6 +122,7 @@ async fn surface(
                         0,
                         StorageWorkOutcome::Head {
                             object: StorageObjectIdentity {
+                                provider_version,
                                 key: plan.object_key(path).unwrap(),
                                 size: size as u64,
                                 etag: "\"initial-version\"".into(),
@@ -88,6 +135,7 @@ async fn surface(
                             bytes.len() as u64,
                             StorageWorkOutcome::OciRange {
                                 source: StorageObjectIdentity {
+                                    provider_version: None,
                                     key: plan.object_key(path).unwrap(),
                                     size: size as u64,
                                     etag: if changed_range_etag {
@@ -101,6 +149,31 @@ async fn surface(
                                 end: *end,
                                 content_base64: base64::engine::general_purpose::STANDARD
                                     .encode(bytes),
+                            },
+                        )
+                    }
+                    StorageWorkOperation::HashOciRange {
+                        path,
+                        start,
+                        end,
+                        sha256_state,
+                        ..
+                    } => {
+                        let bytes = vec![42; (end - start + 1) as usize];
+                        let mut sha256_state = sha256_state.clone();
+                        sha256_state.update(&bytes).unwrap();
+                        (
+                            bytes.len() as u64,
+                            StorageWorkOutcome::OciRangeHashed {
+                                source: StorageObjectIdentity {
+                                    provider_version,
+                                    key: plan.object_key(path).unwrap(),
+                                    size: size as u64,
+                                    etag: "\"initial-version\"".into(),
+                                },
+                                start: *start,
+                                end: *end,
+                                sha256_state,
                             },
                         )
                     }
@@ -125,6 +198,21 @@ async fn surface(
         RemoteStorageWorkClient::new("https://worker.example", "deployment-1".into(), WORK_KEY)
             .unwrap();
     work.endpoint = format!("http://{address}/");
+    if binding_kind != "deployment_r2" {
+        let now = aos_hub_core::clock::now_unix_secs();
+        let snapshot = StorageBindingSnapshot::from_binding(
+            "deployment-1".into(),
+            &binding,
+            &[],
+            now,
+            now + 120,
+        )
+        .unwrap();
+        work.published_bindings
+            .write()
+            .unwrap()
+            .insert(binding.id, snapshot);
+    }
     (
         HybridSurfaceFetch {
             db,
@@ -139,6 +227,84 @@ async fn surface(
 
 fn path() -> String {
     format!("oci/blobs/sha256/{}", "a".repeat(64))
+}
+
+#[tokio::test]
+async fn signed_inventory_head_requires_upload_versions_only_for_deployment_r2() {
+    for binding_kind in ["s3", "r2", "deployment_r2"] {
+        let (surface, requests, server) = surface_with_binding(10, false, binding_kind, None).await;
+
+        let result = surface.inventory_head(&path()).await;
+        if binding_kind == "deployment_r2" {
+            assert!(result.unwrap_err().to_string().contains("upload version"));
+        } else {
+            let head = result.unwrap().unwrap();
+            assert_eq!(head.size, 10);
+            assert_eq!(head.strong_etag.as_deref(), Some("\"initial-version\""));
+            assert_eq!(head.provider_version, None);
+        }
+        assert!(matches!(
+            requests.lock().await.as_slice(),
+            [StorageWorkOperation::Head { .. }]
+        ));
+        server.abort();
+    }
+
+    let (surface, requests, server) =
+        surface_with_binding(10, false, "deployment_r2", Some("upload-v1".into())).await;
+
+    let head = surface.inventory_head(&path()).await.unwrap().unwrap();
+    assert_eq!(head.provider_version.as_deref(), Some("upload-v1"));
+    assert_eq!(requests.lock().await.len(), 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn signed_external_inventory_hash_accepts_versionless_replies_and_fences_versions() {
+    for binding_kind in ["s3", "r2"] {
+        let (surface, requests, server) = surface_with_binding(10, false, binding_kind, None).await;
+
+        let chunk = surface
+            .inventory_hash_chunk_bounded(
+                &path(),
+                0,
+                10,
+                10,
+                "\"initial-version\"",
+                None,
+                aos_hub_core::db::OciSha256State::initial(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(chunk.provider_version, None);
+        assert_eq!(chunk.range, (0, 9));
+        assert_eq!(chunk.sha256_state.total_bytes, 10);
+
+        let error = surface
+            .inventory_hash_chunk_bounded(
+                &path(),
+                0,
+                10,
+                10,
+                "\"initial-version\"",
+                Some("another-upload"),
+                aos_hub_core::db::OciSha256State::initial(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("signed range or object"));
+        let requests = requests.lock().await;
+        assert_eq!(requests.len(), 2);
+        assert!(matches!(
+            &requests[0],
+            StorageWorkOperation::HashOciRange {
+                expected_provider_version: None,
+                ..
+            }
+        ));
+        server.abort();
+    }
 }
 
 #[tokio::test]

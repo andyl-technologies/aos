@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use aos_hub_core::db::{BindingRecord, Database};
 use aos_hub_core::fetch::SurfaceFetch;
 use aos_hub_core::storage_work::{StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan};
@@ -169,6 +169,7 @@ impl SurfaceWrite for FrozenR2Surface {
                 expected_etag: etag.clone(),
                 expected_size: u64::try_from(size)?,
                 expected_hash: expected.content_hash.clone(),
+                expected_provider_version: expected.expected_provider_version.clone(),
             })
             .await?;
         match outcome {
@@ -188,3 +189,6 @@ impl SurfaceWrite for FrozenR2Surface {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod absence_tests;

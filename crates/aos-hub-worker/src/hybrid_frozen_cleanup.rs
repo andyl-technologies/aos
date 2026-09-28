@@ -88,6 +88,7 @@ impl FrozenCleanupHead {
                     key: self.request.object_key()?,
                     size,
                     etag,
+                    provider_version: None,
                 })
             }
             _ => anyhow::bail!("cleanup HEAD did not return object metadata or absence"),

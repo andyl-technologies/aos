@@ -838,6 +838,7 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
         capabilities.version == 1
             && capabilities.deployment_id == deployment_id
             && capabilities.binding_kind == "deployment_r2"
+            && capabilities.r2_gc_incarnation_v1
             && capabilities.max_result_bytes == MAX_RESULT_BYTES
             && capabilities.max_verify_source_bytes == MAX_VERIFY_SOURCE_BYTES
             && [
@@ -1190,6 +1191,7 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
                 end,
                 total,
                 strong_etag,
+                expected_provider_version,
                 ..
             },
             StorageWorkOutcome::OciRangeHashed {
@@ -1204,6 +1206,11 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
                 source.key == plan.object_key(path)?
                     && source.size == *total
                     && source.etag == strong_etag.as_str()
+                    && source.provider_version.as_ref() == expected_provider_version.as_ref()
+                    && source
+                        .provider_version
+                        .as_deref()
+                        .is_none_or(aos_hub_core::storage_work::valid_provider_version)
                     && returned_start == start
                     && returned_end == end
                     && sha256_state.total_bytes == end.saturating_add(1)
@@ -1729,6 +1736,7 @@ impl SurfaceFetch for HybridSurfaceFetch {
         expected_total: u64,
         maximum_bytes: u64,
         strong_etag: &str,
+        expected_provider_version: Option<&str>,
         sha256_state: aos_hub_core::db::OciSha256State,
     ) -> Result<Option<SurfaceInventoryHashChunk>> {
         sha256_state.validate()?;
@@ -1748,6 +1756,7 @@ impl SurfaceFetch for HybridSurfaceFetch {
             &self.placement,
             &self.binding,
             StorageWorkOperation::HashOciRange {
+                expected_provider_version: expected_provider_version.map(str::to_string),
                 path: path.into(),
                 start: offset,
                 end,
@@ -1769,6 +1778,7 @@ impl SurfaceFetch for HybridSurfaceFetch {
                 total: source.size,
                 range: (start, end),
                 strong_etag: source.etag,
+                provider_version: source.provider_version,
                 sha256_state,
             })),
             _ => bail!("storage Worker returned an unexpected OCI hash result"),
@@ -1837,6 +1847,7 @@ impl SurfaceFetch for HybridSurfaceFetch {
             entries.push((
                 relative,
                 SurfaceListedEvidence {
+                    provider_version: object.provider_version,
                     size: i64::try_from(object.size)
                         .context("storage Worker object size exceeds i64")?,
                     strong_etag: object.etag,
@@ -1854,6 +1865,30 @@ impl SurfaceFetch for HybridSurfaceFetch {
             evidence,
             next_cursor: cursor,
         })
+    }
+
+    async fn inventory_head(
+        &self,
+        path: &str,
+    ) -> Result<Option<aos_hub_core::fetch::SurfaceInventoryHead>> {
+        self.head(path)
+            .await?
+            .map(|object| {
+                anyhow::ensure!(
+                    self.binding.kind != "deployment_r2"
+                        || object
+                            .provider_version
+                            .as_deref()
+                            .is_some_and(aos_hub_core::storage_work::valid_provider_version),
+                    "R2 inventory HEAD has no valid provider upload version"
+                );
+                Ok(aos_hub_core::fetch::SurfaceInventoryHead {
+                    size: i64::try_from(object.size).context("R2 object size exceeds i64")?,
+                    strong_etag: Some(object.etag),
+                    provider_version: object.provider_version,
+                })
+            })
+            .transpose()
     }
 
     async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
@@ -1892,6 +1927,7 @@ impl SurfaceFetch for HybridSurfaceFetch {
                     .try_into()
                     .map_err(|_| anyhow::anyhow!("Worker object digest has the wrong length"))?;
                 Ok(Some(SurfaceObjectEvidence {
+                    provider_version: object.provider_version,
                     sha256: digest,
                     size: i64::try_from(object.size).context("R2 object size exceeds i64")?,
                     strong_etag: Some(object.etag),
@@ -2092,6 +2128,7 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
             .try_into()
             .map_err(|_| anyhow::anyhow!("storage Worker returned an invalid OCI digest"))?;
         Ok(Some(SurfaceObjectEvidence {
+            provider_version: object.provider_version,
             sha256: digest,
             size: i64::try_from(object.size)?,
             strong_etag: Some(object.etag),
@@ -2275,6 +2312,7 @@ impl SurfaceWrite for HybridR2MultipartWriter {
                 expected_etag: etag.clone(),
                 expected_size: u64::try_from(size)?,
                 expected_hash: expected.content_hash.clone(),
+                expected_provider_version: expected.expected_provider_version.clone(),
             },
             aos_hub_core::clock::now_unix_secs(),
         )?;
@@ -2755,6 +2793,7 @@ mod tests {
             source_bytes: 4,
             outcome: StorageWorkOutcome::OciBlobComposed {
                 object: StorageObjectIdentity {
+                    provider_version: None,
                     key: plan.object_key(&path).unwrap(),
                     size: 4,
                     etag: "r2-etag".into(),
@@ -2778,6 +2817,7 @@ mod tests {
     #[test]
     fn readiness_rejects_another_deployment_or_missing_operation() {
         let mut capabilities = StorageCapabilities {
+            r2_gc_incarnation_v1: true,
             version: 1,
             deployment_id: "deployment-1".into(),
             binding_kind: "deployment_r2".into(),
@@ -2825,6 +2865,9 @@ mod tests {
         assert!(validate_console_asset_version(&decoded).is_err());
 
         assert!(validate_capabilities("deployment-2", &capabilities).is_err());
+        let mut without_incarnation_guard = capabilities.clone();
+        without_incarnation_guard.r2_gc_incarnation_v1 = false;
+        assert!(validate_capabilities("deployment-1", &without_incarnation_guard).is_err());
         let mut older = capabilities.clone();
         older
             .operations
@@ -2948,6 +2991,7 @@ mod tests {
             source_bytes: 0,
             outcome: StorageWorkOutcome::Head {
                 object: StorageObjectIdentity {
+                    provider_version: None,
                     key: "registry/HEAD".into(),
                     size: 5,
                     etag: "\"etag\"".into(),
@@ -2998,11 +3042,13 @@ mod tests {
             source_bytes: 8,
             outcome: StorageWorkOutcome::ObjectCopied {
                 source: StorageObjectIdentity {
+                    provider_version: None,
                     key: "source/web/blob".into(),
                     size: 8,
                     etag: "\"source-etag\"".into(),
                 },
                 destination: StorageObjectIdentity {
+                    provider_version: None,
                     key: "registry/web/blob".into(),
                     size: 8,
                     etag: "\"destination-etag\"".into(),
@@ -3056,6 +3102,7 @@ mod tests {
             source_bytes: 128,
             outcome: StorageWorkOutcome::GitObject {
                 source: StorageObjectIdentity {
+                    provider_version: None,
                     key: format!(
                         "registry/{}",
                         object::Oid::from_hex(&oid).unwrap().loose_path()
@@ -3108,6 +3155,7 @@ mod tests {
             .iter()
             .map(|(oid, bytes)| StorageGitObjectProjection {
                 source: StorageObjectIdentity {
+                    provider_version: None,
                     key: format!(
                         "registry/{}",
                         object::Oid::from_hex(oid).unwrap().loose_path()
@@ -3170,6 +3218,7 @@ mod tests {
             source_bytes: 3,
             outcome: StorageWorkOutcome::Metadata {
                 source: StorageObjectIdentity {
+                    provider_version: None,
                     key: "registry/HEAD".into(),
                     size: 3,
                     etag: "\"strong-etag\"".into(),
@@ -3221,6 +3270,7 @@ mod tests {
             source_bytes: 3,
             outcome: StorageWorkOutcome::OciRange {
                 source: StorageObjectIdentity {
+                    provider_version: None,
                     key: format!("registry/{path}"),
                     size: 100,
                     etag: "\"strong-etag\"".into(),
@@ -3257,6 +3307,7 @@ mod tests {
             credential_references: Vec::new(),
             placement_prefix: "registry/".into(),
             operation: StorageWorkOperation::HashOciRange {
+                expected_provider_version: Some("upload-v1".into()),
                 path: path.clone(),
                 start: 0,
                 end: 2,
@@ -3274,6 +3325,7 @@ mod tests {
             source_bytes: 3,
             outcome: StorageWorkOutcome::OciRangeHashed {
                 source: StorageObjectIdentity {
+                    provider_version: Some("upload-v1".into()),
                     key: format!("registry/{path}"),
                     size: 3,
                     etag: "\"strong-etag\"".into(),
@@ -3284,6 +3336,13 @@ mod tests {
             },
         };
         assert!(validate_result(&plan, &result).is_ok());
+        if let StorageWorkOutcome::OciRangeHashed { source, .. } = &mut result.outcome {
+            source.provider_version = Some("upload-v2".into());
+        }
+        assert!(validate_result(&plan, &result).is_err());
+        if let StorageWorkOutcome::OciRangeHashed { source, .. } = &mut result.outcome {
+            source.provider_version = Some("upload-v1".into());
+        }
         if let StorageWorkOutcome::OciRangeHashed { source, .. } = &mut result.outcome {
             source.etag = "\"another-etag\"".into();
         }

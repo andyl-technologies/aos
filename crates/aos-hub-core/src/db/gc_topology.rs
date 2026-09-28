@@ -548,6 +548,8 @@ pub struct ObjectDeletionJobRecord {
     pub leaked_bytes: i64,
     /// Optimistic concurrency version.
     pub resource_version: i64,
+    /// Provider upload incarnation frozen by the reviewed action.
+    pub expected_provider_version: Option<String>,
 }
 
 /// Durable backend request and response evidence for one deletion attempt.
@@ -569,6 +571,8 @@ pub struct ObjectDeletionAttemptReceipt {
     pub object_key: String,
     /// Exact entity tag captured by the inventory.
     pub expected_etag: Option<String>,
+    /// Provider upload incarnation captured by the complete inventory.
+    pub expected_provider_version: Option<String>,
     /// Exact content hash captured by the inventory.
     pub expected_hash: Option<String>,
     /// Exact byte size captured by the inventory.
@@ -707,6 +711,8 @@ pub struct CacheObjectPresenceObservation {
     pub observed_size: Option<i64>,
     /// Origin version token.
     pub etag: Option<String>,
+    /// Provider upload incarnation from the same byte observation.
+    pub provider_version: Option<String>,
     /// Building cache-wide inventory generation.
     pub inventory_generation: i64,
     /// Observation time.
@@ -724,6 +730,8 @@ pub struct CacheInventoryListedObject {
     pub observed_size: i64,
     /// Provider-issued strong version identifier, when available.
     pub etag: Option<String>,
+    /// Provider upload incarnation bound to the observed digest.
+    pub provider_version: Option<String>,
 }
 
 /// Maximum listing identities persisted by one inventory transaction.
@@ -830,6 +838,8 @@ pub struct CacheGcPlanActionInput {
     pub phase: String,
     /// Exact origin version token.
     pub expected_etag: Option<String>,
+    /// Exact provider upload incarnation from the complete inventory.
+    pub expected_provider_version: Option<String>,
     /// Exact observed hash.
     pub expected_hash: Option<String>,
     /// Exact observed bytes.
@@ -960,6 +970,8 @@ pub struct CacheGcPlanActionView {
     pub phase: String,
     /// Captured inventory generation.
     pub inventory_generation: i64,
+    /// Provider upload incarnation included in the reviewed manifest.
+    pub expected_provider_version: Option<String>,
 }
 
 fn validate_stable_key(value: &str, label: &str) -> Result<()> {
@@ -977,6 +989,13 @@ fn validate_store_hash(value: &str) -> Result<()> {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
     {
         bail!("store hash must be 1 through 64 lowercase ASCII alphanumeric bytes");
+    }
+    Ok(())
+}
+
+fn validate_optional_provider_version(version: Option<&str>) -> Result<()> {
+    if version.is_some_and(|value| !crate::storage_work::valid_provider_version(value)) {
+        bail!("cache provider upload version is malformed");
     }
     Ok(())
 }
@@ -1021,7 +1040,7 @@ fn cache_gc_manifest_digest(input: &CreateCacheGcPlan) -> Result<String> {
         .actions
         .iter()
         .map(|action| {
-            serde_json::json!({
+            let mut identity = serde_json::json!({
                 "action_id": action.action_id,
                 "surface_object_id": action.surface_object_id,
                 "placement_id": action.placement_id,
@@ -1034,7 +1053,12 @@ fn cache_gc_manifest_digest(input: &CreateCacheGcPlan) -> Result<String> {
                 "binding_resource_version": action.binding_resource_version,
                 "delete_credential_generation": action.delete_credential_generation,
                 "estimated_reclaimable_bytes": action.estimated_reclaimable_bytes,
-            })
+            });
+            // Optional-version backends retain their existing reviewed digest.
+            if let Some(version) = &action.expected_provider_version {
+                identity["expected_provider_version"] = serde_json::json!(version);
+            }
+            identity
         })
         .collect::<Vec<_>>();
     let object_actions = input
@@ -3410,6 +3434,7 @@ impl Database {
         }
         for action in &input.actions {
             validate_stable_key(&action.action_id, "cache GC action id")?;
+            validate_optional_provider_version(action.expected_provider_version.as_deref())?;
             if !matches!(action.phase.as_str(), "narinfo" | "nar")
                 || action.surface_object_id <= 0
                 || action.placement_id <= 0
@@ -3435,10 +3460,11 @@ impl Database {
                       placement_id, phase, expected_etag, expected_hash,
                       expected_size, expected_inventory_generation,
                       binding_id, binding_resource_version,
-                      delete_credential_generation, estimated_reclaimable_bytes)
+                      delete_credential_generation, estimated_reclaimable_bytes,
+                      expected_provider_version)
                      SELECT ?3, ?1, ?2, presence.surface_object_id,
                             presence.placement_id, ?6, ?7, ?8, ?9, ?10,
-                            ?11, ?12, ?13, ?14
+                            ?11, ?12, ?13, ?14, ?16
                      FROM object_placements presence
                      JOIN cache_gc_state state ON state.cache_id = presence.cache_id
                      JOIN surface_placements placement
@@ -3480,7 +3506,11 @@ impl Database {
                                OR (existing.expected_hash IS NULL AND CAST(?8 AS VARCHAR) IS NULL))
                              AND (existing.expected_size = ?9
                                OR (existing.expected_size IS NULL AND CAST(?9 AS BIGINT) IS NULL))
+                             AND (existing.expected_provider_version = ?16
+                               OR (existing.expected_provider_version IS NULL AND CAST(?16 AS VARCHAR) IS NULL))
                              AND existing.expected_inventory_generation = ?10)))
+                       AND (presence.provider_version = ?16
+                         OR (presence.provider_version IS NULL AND CAST(?16 AS VARCHAR) IS NULL))
                        AND presence.observed_inventory_generation = ?10
                        AND state.inventory_generation = ?10
                        AND scan.completed_at IS NOT NULL
@@ -3494,6 +3524,8 @@ impl Database {
                          AND credential_head.current_generation = ?13)
                          OR (binding.kind = 'deployment_r2'
                          AND binding.is_instance_default = 1
+                         AND CAST(?16 AS VARCHAR) IS NOT NULL
+                         AND length(?16) > 0
                          AND ?13 = 1
                          AND capability.state = 'valid'
                          AND capability.binding_resource_version =
@@ -3522,7 +3554,8 @@ impl Database {
                         action.binding_resource_version,
                         action.delete_credential_generation,
                         action.estimated_reclaimable_bytes,
-                        input.created_at.saturating_sub(DELETE_CAPABILITY_MAX_AGE_SECS)
+                        input.created_at.saturating_sub(DELETE_CAPABILITY_MAX_AGE_SECS),
+                        action.expected_provider_version
                     ],
                 )
                 .expecting(1),
@@ -3740,17 +3773,12 @@ impl Database {
                            binding.resource_version
                          OR capability.observed_at < ?2)))
                  LIMIT 1",
-                &vals![
-                    cache_id,
-                    now.saturating_sub(DELETE_CAPABILITY_MAX_AGE_SECS)
-                ],
+                &vals![cache_id, now.saturating_sub(DELETE_CAPABILITY_MAX_AGE_SECS)],
             )
             .await?
             .is_some()
         {
-            bail!(
-                "destructive GC requires a fresh identity-checked deletion capability"
-            );
+            bail!("destructive GC requires a fresh identity-checked deletion capability");
         }
         Ok(())
     }
@@ -5015,6 +5043,7 @@ impl Database {
         {
             bail!("present cache objects require an observed hash and size");
         }
+        validate_optional_provider_version(input.provider_version.as_deref())?;
         let statements = vec![
             Statement::new(
                 "UPDATE cache_inventory_placement_scans
@@ -5035,8 +5064,8 @@ impl Database {
             Statement::new(
                 "INSERT INTO cache_inventory_object_observations
                  (object_key, cache_id, generation, placement_id,
-                  state, observed_hash, observed_size, etag, observed_at)
-                 SELECT staged.object_key, ?3, ?4, placement.id, ?5, ?6, ?7, ?8, ?9
+                  state, observed_hash, observed_size, etag, observed_at, provider_version)
+                 SELECT staged.object_key, ?3, ?4, placement.id, ?5, ?6, ?7, ?8, ?9, ?11
                  FROM cache_inventory_staged_surface_objects staged
                  JOIN surface_placements placement ON placement.id = ?2
                  JOIN cache_inventory_generations inventory
@@ -5063,7 +5092,8 @@ impl Database {
                     input.observed_size,
                     input.etag,
                     input.observed_at,
-                    owner_token
+                    owner_token,
+                    input.provider_version
                 ],
             )
             .expecting(1),
@@ -5286,6 +5316,7 @@ impl Database {
                 observed_sha256: observed_sha256.to_string(),
                 observed_size,
                 etag: etag.map(str::to_string),
+                provider_version: None,
             }],
         )
         .await
@@ -5315,6 +5346,7 @@ impl Database {
         }
         let mut keys = BTreeSet::new();
         for object in objects {
+            validate_optional_provider_version(object.provider_version.as_deref())?;
             if object.object_key.is_empty()
                 || object.object_key.len() > 512
                 || object.observed_sha256.len() != 64
@@ -5345,8 +5377,8 @@ impl Database {
             CheckedStatement::unchecked(
                 "INSERT INTO cache_inventory_listed_objects
                     (cache_id, generation, placement_id, object_key,
-                     observed_sha256, observed_size, etag)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                     observed_sha256, observed_size, etag, provider_version)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 vals![
                     cache_id,
                     generation,
@@ -5354,7 +5386,8 @@ impl Database {
                     object.object_key.as_str(),
                     object.observed_sha256.as_str(),
                     object.observed_size,
-                    object.etag.as_deref()
+                    object.etag.as_deref(),
+                    object.provider_version.as_deref()
                 ]
                 .to_vec(),
             )
@@ -5374,12 +5407,13 @@ impl Database {
         placement_id: i64,
         owner_token: &str,
         object_key: &str,
-    ) -> Result<Option<(String, i64, Option<String>)>> {
+    ) -> Result<Option<(String, i64, Option<String>, Option<String>)>> {
         validate_stable_key(owner_token, "cache inventory owner token")?;
         let row = self
             .backend
             .query_opt(
-                "SELECT listed.observed_sha256, listed.observed_size, listed.etag
+                "SELECT listed.observed_sha256, listed.observed_size, listed.etag,
+                   listed.provider_version
                  FROM cache_inventory_listed_objects listed
                  JOIN cache_inventory_generations inventory
                    ON inventory.cache_id = listed.cache_id
@@ -5390,7 +5424,7 @@ impl Database {
                 &vals![cache_id, generation, placement_id, object_key, owner_token],
             )
             .await?;
-        row.map(|row| -> Result<_> { Ok((row.get(0)?, row.get(1)?, row.get(2)?)) })
+        row.map(|row| -> Result<_> { Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)) })
             .transpose()
     }
 
@@ -6056,12 +6090,12 @@ impl Database {
                  (surface_object_id, cache_id, registry_id, placement_id,
                   state, observed_hash, observed_size, etag,
                   observed_inventory_generation, observed_at,
-                  catalog_object_resource_version)
+                  catalog_object_resource_version, provider_version)
                  SELECT object.id, observation.cache_id,
                         NULL, observation.placement_id, observation.state,
                         observation.observed_hash, observation.observed_size,
                         observation.etag, observation.generation,
-                        observation.observed_at, object.resource_version
+                        observation.observed_at, object.resource_version, observation.provider_version
                  FROM cache_inventory_object_observations observation
                  JOIN surface_objects object
                    ON object.cache_id = observation.cache_id
@@ -6204,7 +6238,8 @@ impl Database {
                    (SELECT COUNT(*) FROM cache_gc_action_dependencies dependency
                      WHERE dependency.cache_id = action.cache_id
                        AND dependency.plan_id = action.plan_id
-                       AND dependency.action_id = action.action_id)
+                       AND dependency.action_id = action.action_id),
+                   action.expected_provider_version
                  FROM cache_gc_plan_actions action
                  WHERE cache_id = ?1 AND plan_id = ?2
                  ORDER BY action_id",
@@ -6281,6 +6316,7 @@ impl Database {
                         placement_id: row.get(2)?,
                         phase: row.get(3)?,
                         expected_etag: row.get(4)?,
+                        expected_provider_version: row.get(13)?,
                         expected_hash: row.get(5)?,
                         expected_size: row.get(6)?,
                         expected_inventory_generation: row.get(7)?,
@@ -6534,6 +6570,8 @@ impl Database {
                            OR
                            (binding.kind = 'deployment_r2'
                              AND binding.is_instance_default = 1
+                             AND action.expected_provider_version IS NOT NULL
+                             AND length(action.expected_provider_version) > 0
                              AND action.delete_credential_generation = 1
                              AND COALESCE(capability.state, '') = 'valid'
                              AND capability.binding_resource_version =
@@ -6551,6 +6589,8 @@ impl Database {
                              AND action.expected_size IS NULL))
                          OR NOT (presence.etag = action.expected_etag
                            OR (presence.etag IS NULL AND action.expected_etag IS NULL))
+                         OR COALESCE(presence.provider_version, '')
+                           <> COALESCE(action.expected_provider_version, '')
                          OR (presence.state NOT IN ('present', 'corrupt') AND NOT (
                            presence.state = 'deleting' AND EXISTS (
                              SELECT 1 FROM object_deletion_jobs existing
@@ -6561,6 +6601,9 @@ impl Database {
                                AND (existing.expected_etag = action.expected_etag
                                  OR (existing.expected_etag IS NULL
                                    AND action.expected_etag IS NULL))
+                               AND (existing.expected_provider_version = action.expected_provider_version
+                                 OR (existing.expected_provider_version IS NULL
+                                   AND action.expected_provider_version IS NULL))
                                AND (existing.expected_hash = action.expected_hash
                                  OR (existing.expected_hash IS NULL
                                    AND action.expected_hash IS NULL))
@@ -6712,6 +6755,7 @@ impl Database {
             let binding_resource_version: i64 = row.get(9)?;
             let delete_credential_generation: i64 = row.get(10)?;
             let dependency_count: i64 = row.get(12)?;
+            let expected_provider_version: Option<String> = row.get(13)?;
             let initial_state = if dependency_count == 0 {
                 "pending"
             } else {
@@ -6728,10 +6772,10 @@ impl Database {
                       delete_credential_generation,
                       state, active_slot, attempt_count, max_attempts,
                       confirmed_reclaimed_bytes, leaked_bytes, resource_version,
-                      created_at)
+                      created_at, expected_provider_version)
                      SELECT ?1, ?2, ?3, 'binary_cache', cache.stable_id,
                             ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                            ?14, 1, 0, ?15, 0, 0, 1, ?16
+                            ?14, 1, 0, ?15, 0, 0, 1, ?16, ?19
                      FROM binary_caches cache
                      WHERE cache.id = ?2
                        AND EXISTS (SELECT 1 FROM cache_gc_apply_claims
@@ -6757,7 +6801,8 @@ impl Database {
                         max_attempts,
                         input.now,
                         input.plan_id,
-                        input.claim_id
+                        input.claim_id,
+                        expected_provider_version
                     ],
                 )
                 .unchecked(),
@@ -6778,6 +6823,9 @@ impl Database {
                       AND (existing.expected_etag = action.expected_etag
                         OR (existing.expected_etag IS NULL
                           AND action.expected_etag IS NULL))
+                      AND (existing.expected_provider_version = action.expected_provider_version
+                        OR (existing.expected_provider_version IS NULL
+                          AND action.expected_provider_version IS NULL))
                       AND (existing.expected_hash = action.expected_hash
                         OR (existing.expected_hash IS NULL
                           AND action.expected_hash IS NULL))
@@ -6883,8 +6931,8 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error for a stale version, an exhausted/not-due job,
-    /// unsatisfied dependencies, a live placement-scoped NAR reference, or
-    /// database failure.
+    /// unsatisfied dependencies, a live placement-scoped NAR reference, a
+    /// legacy R2 job without a captured upload version, or database failure.
     pub async fn claim_cache_gc_deletion_job(
         &self,
         cache_id: i64,
@@ -6912,6 +6960,11 @@ impl Database {
              WHERE cache_id = ?1 AND job_id = ?2 AND resource_version = ?3
                AND state IN ('pending', 'failed', 'blocked')
                AND active_slot = 1 AND attempt_count < max_attempts
+               AND EXISTS (SELECT 1 FROM bindings binding
+                 WHERE binding.id = object_deletion_jobs.binding_id
+                   AND (binding.kind NOT IN ('deployment_r2', 'r2')
+                     OR (object_deletion_jobs.expected_provider_version IS NOT NULL
+                       AND length(object_deletion_jobs.expected_provider_version) > 0)))
                AND (next_attempt_at IS NULL OR next_attempt_at <= ?4)
                AND NOT EXISTS (SELECT 1 FROM cache_gc_action_jobs link
                  JOIN cache_gc_action_dependencies dependency
@@ -6946,13 +6999,13 @@ impl Database {
               surface_object_id, object_key, expected_etag, expected_hash,
               expected_size, expected_inventory_generation, binding_id,
               binding_resource_version, delete_credential_generation,
-              state, requested_at)
+              state, requested_at, expected_provider_version)
              SELECT ?4, job.cache_id, job.job_id, job.attempt_count,
                     job.placement_id, job.surface_object_id, object.object_key,
                     job.expected_etag, job.expected_hash, job.expected_size,
                     job.expected_inventory_generation, job.binding_id,
                     job.binding_resource_version, job.delete_credential_generation,
-                    'requested', ?5
+                    'requested', ?5, job.expected_provider_version
              FROM object_deletion_jobs job
              JOIN surface_objects object ON object.id = job.surface_object_id
                AND object.cache_id = job.cache_id
@@ -7047,9 +7100,15 @@ impl Database {
                          WHERE cache_id = ?1 AND job_id = ?2)
                      OR (etag IS NULL AND (SELECT expected_etag
                          FROM object_deletion_jobs WHERE cache_id = ?1 AND job_id = ?2) IS NULL))
+                   AND COALESCE(provider_version, '') = COALESCE(
+                     (SELECT expected_provider_version FROM object_deletion_jobs
+                       WHERE cache_id = ?1 AND job_id = ?2), '')
                    AND EXISTS (SELECT 1 FROM object_deletion_attempt_receipts receipt
                      WHERE receipt.request_id = ?5 AND receipt.cache_id = ?1
                        AND receipt.job_id = ?2 AND receipt.state = 'responded'
+                       AND COALESCE(receipt.expected_provider_version, '') = COALESCE(
+                         (SELECT expected_provider_version FROM object_deletion_jobs
+                           WHERE cache_id = ?1 AND job_id = ?2), '')
                        AND receipt.outcome IN ('deleted', 'not_found'))",
                 vals![cache_id, job_id, expected_version, finished_at, request_id],
             )
@@ -9050,7 +9109,8 @@ impl Database {
                 "SELECT job_id, cache_id, originating_operation_id,
                  surface_object_id, placement_id, phase, state, attempt_count,
                  max_attempts, next_attempt_at, error_class, error,
-                 confirmed_reclaimed_bytes, leaked_bytes, resource_version
+                 confirmed_reclaimed_bytes, leaked_bytes, resource_version,
+                 expected_provider_version
                  FROM object_deletion_jobs WHERE cache_id = ?1 AND job_id = ?2",
                 &vals![cache_id, job_id],
             )
@@ -9077,7 +9137,7 @@ impl Database {
                    delete_credential_generation, state, outcome,
                    response_etag, response_hash, response_size,
                    error_class, response_detail, requested_at, responded_at,
-                   finalized_at
+                   finalized_at, expected_provider_version
                  FROM object_deletion_attempt_receipts WHERE request_id = ?1",
                 &vals![request_id],
             )
@@ -9108,7 +9168,8 @@ impl Database {
                    receipt.outcome, receipt.response_etag,
                    receipt.response_hash, receipt.response_size,
                    receipt.error_class, receipt.response_detail,
-                   receipt.requested_at, receipt.responded_at, receipt.finalized_at
+                   receipt.requested_at, receipt.responded_at, receipt.finalized_at,
+                   receipt.expected_provider_version
                  FROM object_deletion_attempt_receipts receipt
                  JOIN object_deletion_jobs job ON job.job_id = receipt.job_id
                    AND job.cache_id = receipt.cache_id
@@ -9143,12 +9204,18 @@ impl Database {
                 "SELECT job_id, cache_id, originating_operation_id,
                    surface_object_id, placement_id, phase, state, attempt_count,
                    max_attempts, next_attempt_at, error_class, error,
-                   confirmed_reclaimed_bytes, leaked_bytes, resource_version
+                   confirmed_reclaimed_bytes, leaked_bytes, resource_version,
+                   expected_provider_version
                  FROM object_deletion_jobs
                  WHERE active_slot = 1 AND (
                    state = 'running' OR (
                      state IN ('pending', 'failed', 'blocked')
                      AND attempt_count < max_attempts
+                     AND EXISTS (SELECT 1 FROM bindings binding
+                       WHERE binding.id = object_deletion_jobs.binding_id
+                         AND (binding.kind NOT IN ('deployment_r2', 'r2')
+                           OR (object_deletion_jobs.expected_provider_version IS NOT NULL
+                             AND length(object_deletion_jobs.expected_provider_version) > 0)))
                      AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
                      AND NOT EXISTS (SELECT 1 FROM cache_gc_action_jobs link
                        JOIN cache_gc_action_dependencies dependency
@@ -9335,7 +9402,7 @@ impl Database {
                        job.attempt_count, job.max_attempts,
                        job.next_attempt_at, job.error_class, job.error,
                        job.confirmed_reclaimed_bytes, job.leaked_bytes,
-                       job.resource_version
+                       job.resource_version, job.expected_provider_version
                      FROM cache_gc_operation_jobs link
                      JOIN object_deletion_jobs job ON job.job_id = link.job_id
                        AND job.cache_id = link.cache_id
@@ -9351,7 +9418,7 @@ impl Database {
                        surface_object_id, placement_id, phase, state,
                        attempt_count, max_attempts, next_attempt_at,
                        error_class, error, confirmed_reclaimed_bytes,
-                       leaked_bytes, resource_version
+                       leaked_bytes, resource_version, expected_provider_version
                      FROM object_deletion_jobs WHERE cache_id = ?1
                      ORDER BY created_at DESC, job_id",
                     &vals![cache_id],
@@ -9479,7 +9546,7 @@ impl Database {
             .query(
                 "SELECT action.action_id, candidate.store_hash,
                    action.placement_id, action.phase,
-                   action.expected_inventory_generation
+                   action.expected_inventory_generation, action.expected_provider_version
                  FROM cache_gc_plan_object_actions link
                  JOIN cache_gc_plan_actions action
                    ON action.action_id = link.action_id
@@ -9502,6 +9569,7 @@ impl Database {
                     placement_id: row.get(2)?,
                     phase: row.get(3)?,
                     inventory_generation: row.get(4)?,
+                    expected_provider_version: row.get(5)?,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -9802,7 +9870,7 @@ impl Database {
         let mut object_action_keys = BTreeSet::new();
         let mut narinfo_by_object_placement = BTreeMap::new();
         let mut nar_by_object_placement = BTreeMap::new();
-        let mut deletion_capabilities = BTreeMap::<i64, (i64, i64, i64)>::new();
+        let mut deletion_capabilities = BTreeMap::<i64, (i64, i64, i64, bool)>::new();
         for object in &objects {
             let (narinfo_surface_object_id, nar_surface_object_id) = object_surfaces
                 .get(&object.cache_object_id)
@@ -9827,7 +9895,7 @@ impl Database {
                 .query(
                     "SELECT surface_object_id, placement_id, state,
                        observed_hash, observed_size, etag,
-                       observed_inventory_generation
+                       observed_inventory_generation, provider_version
                      FROM object_placements
                      WHERE cache_id = ?1
                        AND (surface_object_id = ?2 OR surface_object_id = ?3)
@@ -9852,6 +9920,8 @@ impl Database {
                 let expected_hash: Option<String> = presence.get(3)?;
                 let expected_size: Option<i64> = presence.get(4)?;
                 let expected_inventory_generation: i64 = presence.get(6)?;
+                let expected_provider_version: Option<String> = presence.get(7)?;
+                validate_optional_provider_version(expected_provider_version.as_deref())?;
                 let deletion_capability =
                     if let Some(capability) = deletion_capabilities.get(&placement_id) {
                         Some(*capability)
@@ -9861,7 +9931,8 @@ impl Database {
                             .query_opt(
                                 "SELECT binding.id, binding.resource_version,
                                    CASE WHEN binding.kind = 'deployment_r2'
-                                     THEN 1 ELSE credential.generation END
+                                     THEN 1 ELSE credential.generation END,
+                                   binding.kind = 'deployment_r2'
                              FROM surface_placements placement
                              JOIN bindings binding
                                ON binding.id = placement.binding_id
@@ -9905,8 +9976,8 @@ impl Database {
                                 ],
                             )
                             .await?
-                            .map(|row| -> Result<(i64, i64, i64)> {
-                                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                            .map(|row| -> Result<(i64, i64, i64, bool)> {
+                                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
                             })
                             .transpose()?;
                         if let Some(capability) = capability {
@@ -9914,13 +9985,22 @@ impl Database {
                         }
                         capability
                     };
-                let Some((binding_id, binding_resource_version, delete_credential_generation)) =
-                    deletion_capability
+                let Some((
+                    binding_id,
+                    binding_resource_version,
+                    delete_credential_generation,
+                    requires_version,
+                )) = deletion_capability
                 else {
                     bail!(
                         "placement {placement_id} lacks a validated identity-checked deletion capability"
                     );
                 };
+                if requires_version && expected_provider_version.is_none() {
+                    bail!(
+                        "placement {placement_id} lacks the provider upload version for surface object {surface_object_id}; rescan complete inventory before planning R2 GC"
+                    );
+                }
                 if expected_etag
                     .as_deref()
                     .is_none_or(|etag| crate::surface_write::strong_if_match_etag(etag).is_err())
@@ -9940,6 +10020,7 @@ impl Database {
                             placement_id,
                             phase: phase.to_string(),
                             expected_etag,
+                            expected_provider_version,
                             expected_hash,
                             expected_size,
                             expected_inventory_generation,
@@ -10198,6 +10279,7 @@ fn row_to_object_deletion_job(row: &Row) -> Result<ObjectDeletionJobRecord> {
         confirmed_reclaimed_bytes: row.get(12)?,
         leaked_bytes: row.get(13)?,
         resource_version: row.get(14)?,
+        expected_provider_version: row.get(15)?,
     })
 }
 
@@ -10365,6 +10447,7 @@ fn row_to_object_deletion_attempt_receipt(row: &Row) -> Result<ObjectDeletionAtt
         requested_at: row.get(21)?,
         responded_at: row.get(22)?,
         finalized_at: row.get(23)?,
+        expected_provider_version: row.get(24)?,
     })
 }
 
@@ -10931,6 +11014,8 @@ impl Database {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
+    mod provider_version;
+
     use super::*;
     use crate::db::SurfaceTarget;
 
@@ -11591,6 +11676,23 @@ mod tests {
         placement_id: i64,
         narinfo_hash: &str,
     ) {
+        stage_test_inventory_candidate_with_version(
+            db,
+            generation,
+            placement_id,
+            narinfo_hash,
+            None,
+        )
+        .await;
+    }
+
+    async fn stage_test_inventory_candidate_with_version(
+        db: &Database,
+        generation: i64,
+        placement_id: i64,
+        narinfo_hash: &str,
+        provider_version: Option<&str>,
+    ) {
         let owner_token = "inventory-owner";
         let text = "StorePath: /nix/store/abc123-demo-1.0\n\
                     URL: nar/demo.nar.zst\n\
@@ -11644,6 +11746,7 @@ mod tests {
                     observed_hash: Some(hash.to_string()),
                     observed_size: Some(size),
                     etag: Some(format!("etag-{key}")),
+                    provider_version: provider_version.map(str::to_string),
                     inventory_generation: generation,
                     observed_at: 20,
                 },
@@ -12114,6 +12217,7 @@ mod tests {
                 observed_hash: Some("a".repeat(64)),
                 observed_size: Some(20),
                 etag: Some("primary-etag".into()),
+                provider_version: None,
                 inventory_generation: 2,
                 observed_at: 10,
             },

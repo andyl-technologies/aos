@@ -1256,6 +1256,7 @@ mod tests {
         db.stage_cache_object_presence(
             "placement-read-test",
             &CacheObjectPresenceObservation {
+                provider_version: None,
                 cache_id: cache,
                 object_key: object.object_key.clone(),
                 placement_id: first.id,

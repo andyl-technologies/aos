@@ -4376,6 +4376,7 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
         let verified = verify_system_image_object(
             &StorageLocalImageFetch {
                 evidence: SurfaceObjectEvidence {
+                    provider_version: None,
                     sha256: Sha256::digest(bytes).into(),
                     size: bytes.len() as i64,
                     strong_etag: Some("\"fixture-version\"".into()),
@@ -4393,6 +4394,7 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
 
         let corrupted = StorageLocalImageFetch {
             evidence: SurfaceObjectEvidence {
+                provider_version: None,
                 sha256: Sha256::digest(b"other").into(),
                 size: bytes.len() as i64,
                 strong_etag: Some("\"fixture-version\"".into()),

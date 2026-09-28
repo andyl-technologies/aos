@@ -127,7 +127,15 @@ as multipart parts in R2 by the ingress Worker; only compact completion
 metadata crosses to the guard. R2's Worker API has no atomic conditional
 delete operation, so the guard serializes HEAD, identity comparison, and
 DELETE with writes to the same key. A deletion plan carries the SQL claim ID,
-strong ETag, size, and reviewed hash. The guard persists the claim before
+strong ETag, size, reviewed hash, and provider upload version. The guard compares
+the reviewed upload version with the current R2 object before issuing DELETE;
+an identical replacement with the same bytes and ETag still fails that check.
+Inventory and cache scans persist the observed version through their reviewed
+digests, frozen actions, jobs and immutable attempt receipts. Existing
+versionless candidates require a new scan before a first R2 deletion; a
+terminal legacy receipt remains replayable without provider I/O.
+
+The guard persists the claim before
 deleting and retains its outcome indefinitely; a retried claim cannot delete
 a replacement at the same key. A crash or lost provider response before outcome
 persistence leaves the key fenced by the pending claim. Neither a subsequent
@@ -139,6 +147,17 @@ it does not automatically clear it on a timer. This guard is a correctness depen
 distinct from the optional parsed-result cache above. Other backends need
 their own positively observed atomic condition or an equivalent serialized
 mutation boundary before physical GC can run.
+
+An already absent object is confirmed through signed HEAD in the same guard.
+Native accepts that observation only for the reviewed claim and records bounded
+absence evidence; a pending mutation prevents confirmation. A provider upload
+version does not establish settlement of an already dispatched DELETE.
+
+The deployment and guard namespace must remain stable for the lifetime of a
+reused bucket and prefix. Resetting SQL or rotating credentials cannot retire
+pending fences or terminal receipts. A topology reset that reuses storage must
+preserve this authority; safe receipt retirement needs a separate protocol
+that proves old requests can no longer take effect.
 
 ## Failure and cost controls
 

@@ -1,5 +1,53 @@
 # Hybrid Hub fleet qualification: 2026-09-28
 
+## Latest qualification scope
+
+The latest coherent provider-version implementation passed the real SQLite,
+PostgreSQL and MariaDB VM gate, including migration 002, populated inventory,
+reviewed GC identities, cache presence reuse and atomic inventory publication.
+The result is
+`/nix/store/zra97jh7crfzwjm4nzvcvz90iyvrd0vm-aos-vm-test-aos-hub-live-sql-dialects-0`.
+
+Independent review then found and corrected two Native adapter regressions:
+external S3 inventory HEAD and range-hash replies legitimately omit R2 upload
+versions. Five focused signed-loopback control tests pass with real SQLite
+bindings and placements. External versionless replies remain valid, deployment
+R2 HEAD requires a version, and range replies must match their signed expected
+version. These adapter corrections postdate the SQL artifact above; the SQL
+migration and controller source are unchanged.
+
+The ordinary production Worker artifact
+`/nix/store/5z39dr462qyi6z4ykxnm6ba1l7phkkd9-aos-hub-worker-dist-0.1.0`
+passed 14 actual workerd checks with persistent Miniflare R2 and SQLite Durable
+Objects. A test wrapper injects pending state, provider faults and effect
+counters; normal signed HEAD and hash operations use the production handlers.
+Checks include identical-byte replacement rejection, exact-version deletion,
+terminal and legacy replay, missing-version rejection, unknown-outcome fences,
+range identity and forward migration from persisted baseline storage. These
+are local runtime checks; they establish no live Cloudflare provider guarantee.
+
+The most recent completed full fleet attempt used earlier source and failed at
+the Native-only parity ingress route. A focused fresh-VM reproduction proved
+the corrected fixture route returns HTTP 200 through ordinary control APIs.
+The full nonempty SQL and typed projection comparison has not passed on the
+current source. A new consolidated fleet run is required before qualification.
+
+That failed fleet also missed the RFC's public latency target: baseline p95
+was 17.968 ms and concurrent-upload p95 was 169.995 ms, a 9.46-fold increase.
+Direct Native p95 was 8.790 ms. Reported Worker handler p95 was 6 ms, but it
+excludes TLS and admission. The loaded curl `time_appconnect` p95 of 97.737 ms
+is cumulative time from request start through TLS completion, not isolated
+handshake time. Emulator and client contention remain hypotheses; independent
+percentiles do not establish causality.
+
+The same attempt recorded 2,942,396 bytes of offered Native-to-Worker plans,
+5,800,451 bytes of inbound results and 8,425,239,271 bytes processed beside
+storage. These are local payload counters, not GCP billing measurements.
+Current browser, ARM and hosted qualification remain outstanding. Earlier
+results below retain their original artifact scope.
+
+## Earlier fleet qualification
+
 The four-VM fleet gate passed on implementation commit `6e81197430` using:
 
 ```sh

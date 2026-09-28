@@ -17,7 +17,8 @@ use aos_hub_core::db::{
     RouteSpec, SurfacePlacementRecord, SurfaceTarget,
 };
 use aos_hub_core::fetch::{
-    StreamedRead, SurfaceFetch, SurfaceListPage, SurfaceListedEvidence, SurfaceProvider,
+    StreamedRead, SurfaceFetch, SurfaceInventoryChunk, SurfaceInventoryHead, SurfaceListPage,
+    SurfaceListedEvidence, SurfaceObjectEvidence, SurfaceProvider,
 };
 use aos_hub_core::surface_write::{
     MultipartAbortOutcome, PartTag, SurfaceDeleteOutcome, SurfaceDeletePrecondition, SurfaceWrite,
@@ -47,7 +48,8 @@ impl DoE2eSurfaceProvider {
                object_key TEXT PRIMARY KEY,
                byte_size INTEGER NOT NULL,
                content_hash TEXT NOT NULL,
-               strong_etag TEXT NOT NULL
+               strong_etag TEXT NOT NULL,
+               provider_version TEXT NOT NULL
              )",
             None,
         )?;
@@ -570,6 +572,13 @@ struct DoE2eSurface {
     prefix: String,
 }
 
+struct DoE2eObjectSnapshot {
+    bytes: Vec<u8>,
+    strong_etag: String,
+    byte_size: i64,
+    provider_version: String,
+}
+
 impl DoE2eSurface {
     fn object_key(&self, path: &str) -> String {
         let prefix = self.prefix.trim_matches('/');
@@ -587,17 +596,17 @@ impl DoE2eSurface {
         }
     }
 
-    fn load_object(&self, path: &str) -> Result<Option<(Vec<u8>, String, String, i64)>> {
+    fn load_object(&self, path: &str) -> Result<Option<DoE2eObjectSnapshot>> {
         let object_key = self.object_key(path);
         let cursor = self.sql.exec(
-            "SELECT byte_size, content_hash, strong_etag FROM aos_e2e_surface_objects
+            "SELECT byte_size, content_hash, strong_etag, provider_version FROM aos_e2e_surface_objects
              WHERE object_key = ?",
             Some(vec![SqlStorageValue::String(object_key.clone())]),
         )?;
         let Some(row) = cursor.raw().next().transpose()? else {
             return Ok(None);
         };
-        let [SqlStorageValue::Integer(byte_size), SqlStorageValue::String(content_hash), SqlStorageValue::String(strong_etag)] =
+        let [SqlStorageValue::Integer(byte_size), SqlStorageValue::String(content_hash), SqlStorageValue::String(strong_etag), SqlStorageValue::String(provider_version)] =
             row.as_slice()
         else {
             anyhow::bail!("test object metadata row had an invalid shape");
@@ -626,12 +635,12 @@ impl DoE2eSurface {
             bytes.len() == usize::try_from(*byte_size)?,
             "test object chunk coverage is incomplete"
         );
-        Ok(Some((
+        Ok(Some(DoE2eObjectSnapshot {
             bytes,
-            content_hash.clone(),
-            strong_etag.clone(),
-            *byte_size,
-        )))
+            strong_etag: strong_etag.clone(),
+            byte_size: *byte_size,
+            provider_version: provider_version.clone(),
+        }))
     }
 }
 
@@ -682,7 +691,7 @@ impl SurfaceWriteProvider for DoE2eSurfaceProvider {
 #[async_trait(?Send)]
 impl SurfaceFetch for DoE2eSurface {
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        Ok(self.load_object(path)?.map(|(bytes, _, _, _)| bytes))
+        Ok(self.load_object(path)?.map(|object| object.bytes))
     }
 
     async fn list_page(&self, cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
@@ -701,7 +710,7 @@ impl SurfaceFetch for DoE2eSurface {
             .map(|cursor| self.object_key(cursor))
             .unwrap_or_else(|| prefix.clone());
         let cursor = self.sql.exec(
-            "SELECT object_key, byte_size, strong_etag
+            "SELECT object_key, byte_size, strong_etag, provider_version
              FROM aos_e2e_surface_objects
              WHERE substr(object_key, 1, ?) = ? AND object_key > ?
              ORDER BY object_key LIMIT ?",
@@ -716,7 +725,7 @@ impl SurfaceFetch for DoE2eSurface {
         let mut evidence = std::collections::BTreeMap::new();
         for row in cursor.raw() {
             let row = row?;
-            let [SqlStorageValue::String(object_key), SqlStorageValue::Integer(byte_size), SqlStorageValue::String(strong_etag)] =
+            let [SqlStorageValue::String(object_key), SqlStorageValue::Integer(byte_size), SqlStorageValue::String(strong_etag), SqlStorageValue::String(provider_version)] =
                 row.as_slice()
             else {
                 anyhow::bail!("test object listing row had an invalid shape");
@@ -732,6 +741,7 @@ impl SurfaceFetch for DoE2eSurface {
                 SurfaceListedEvidence {
                     size: *byte_size,
                     strong_etag: strong_etag.clone(),
+                    provider_version: Some(provider_version.clone()),
                 },
             );
         }
@@ -748,6 +758,81 @@ impl SurfaceFetch for DoE2eSurface {
             evidence,
             next_cursor,
         })
+    }
+
+    async fn inventory_head(&self, path: &str) -> Result<Option<SurfaceInventoryHead>> {
+        let cursor = self.sql.exec(
+            "SELECT byte_size, strong_etag, provider_version FROM aos_e2e_surface_objects WHERE object_key = ?",
+            Some(vec![SqlStorageValue::String(self.object_key(path))]),
+        )?;
+        let Some(row) = cursor.raw().next().transpose()? else {
+            return Ok(None);
+        };
+        let [SqlStorageValue::Integer(size), SqlStorageValue::String(etag), SqlStorageValue::String(version)] =
+            row.as_slice()
+        else {
+            anyhow::bail!("test inventory metadata row had an invalid shape");
+        };
+        Ok(Some(SurfaceInventoryHead {
+            size: *size,
+            strong_etag: Some(etag.clone()),
+            provider_version: Some(version.clone()),
+        }))
+    }
+
+    async fn inventory_evidence_bounded(
+        &self,
+        path: &str,
+        maximum_bytes: u64,
+    ) -> Result<Option<SurfaceObjectEvidence>> {
+        let Some(head) = self.inventory_head(path).await? else {
+            return Ok(None);
+        };
+        anyhow::ensure!(
+            u64::try_from(head.size)? <= maximum_bytes,
+            "test inventory body exceeds its bound"
+        );
+        let object = self
+            .load_object(path)?
+            .context("test inventory object disappeared")?;
+        anyhow::ensure!(
+            object.bytes.len() as u64 <= maximum_bytes,
+            "test inventory body grew beyond its bound"
+        );
+        Ok(Some(SurfaceObjectEvidence {
+            sha256: Sha256::digest(&object.bytes).into(),
+            size: object.byte_size,
+            strong_etag: Some(object.strong_etag),
+            provider_version: Some(object.provider_version),
+        }))
+    }
+
+    async fn inventory_chunk_bounded(
+        &self,
+        path: &str,
+        offset: u64,
+        expected_total: u64,
+        maximum_bytes: u64,
+    ) -> Result<Option<SurfaceInventoryChunk>> {
+        anyhow::ensure!(
+            maximum_bytes > 0 && offset < expected_total,
+            "invalid test inventory range"
+        );
+        let Some(object) = self.load_object(path)? else {
+            return Ok(None);
+        };
+        anyhow::ensure!(
+            u64::try_from(object.byte_size)? == expected_total,
+            "test inventory object changed size"
+        );
+        let end = offset + maximum_bytes.min(expected_total - offset) - 1;
+        Ok(Some(SurfaceInventoryChunk {
+            bytes: object.bytes[usize::try_from(offset)?..=usize::try_from(end)?].to_vec(),
+            total: expected_total,
+            range: (offset, end),
+            strong_etag: object.strong_etag,
+            provider_version: Some(object.provider_version),
+        }))
     }
 
     async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
@@ -777,25 +862,25 @@ impl SurfaceFetch for DoE2eSurface {
         path: &str,
         range: Option<(u64, u64)>,
     ) -> Result<Option<StreamedRead>> {
-        let Some((bytes, _, strong_etag, byte_size)) = self.load_object(path)? else {
+        let Some(object) = self.load_object(path)? else {
             return Ok(None);
         };
-        let total = u64::try_from(byte_size).context("test object size is negative")?;
+        let total = u64::try_from(object.byte_size).context("test object size is negative")?;
         let (body, served) = match range {
             Some((start, end)) if start < total => {
                 let end = end.min(total.saturating_sub(1));
                 (
-                    bytes[start as usize..=end as usize].to_vec(),
+                    object.bytes[start as usize..=end as usize].to_vec(),
                     Some((start, end)),
                 )
             }
-            _ => (bytes, None),
+            _ => (object.bytes, None),
         };
         Ok(Some(StreamedRead {
             body: axum::body::Body::from(body),
             total,
             range: served,
-            strong_etag: Some(strong_etag),
+            strong_etag: Some(object.strong_etag),
             snapshot_lease_id: None,
         }))
     }
@@ -837,6 +922,8 @@ impl SurfaceWrite for DoE2eSurface {
         let content_hash = hex::encode(Sha256::digest(bytes));
         let strong_etag = format!("\"do-{content_hash}\"");
         let object_key = self.object_key(path);
+        // Each visible write creates an incarnation independently of its bytes.
+        let provider_version = uuid::Uuid::new_v4().to_string();
         for (chunk_number, chunk) in bytes.chunks(SURFACE_CHUNK_BYTES).enumerate() {
             self.sql.exec(
                 "INSERT INTO aos_e2e_surface_chunks
@@ -854,16 +941,18 @@ impl SurfaceWrite for DoE2eSurface {
         let byte_size = i64::try_from(bytes.len()).context("test object is too large")?;
         self.sql.exec(
             "INSERT INTO aos_e2e_surface_objects
-             (object_key, byte_size, content_hash, strong_etag)
-             VALUES (?, ?, ?, ?)
+             (object_key, byte_size, content_hash, strong_etag, provider_version)
+             VALUES (?, ?, ?, ?, ?)
              ON CONFLICT(object_key) DO UPDATE SET
                byte_size = excluded.byte_size, content_hash = excluded.content_hash,
-               strong_etag = excluded.strong_etag",
+               strong_etag = excluded.strong_etag,
+               provider_version = excluded.provider_version",
             Some(vec![
                 SqlStorageValue::String(object_key.clone()),
                 SqlStorageValue::Integer(byte_size),
                 SqlStorageValue::String(content_hash),
                 SqlStorageValue::String(strong_etag),
+                SqlStorageValue::String(provider_version),
             ]),
         )?;
         self.sql.exec(
@@ -898,14 +987,14 @@ impl SurfaceWrite for DoE2eSurface {
     ) -> Result<SurfaceDeleteOutcome> {
         let object_key = self.object_key(path);
         let cursor = self.sql.exec(
-            "SELECT content_hash, byte_size FROM aos_e2e_surface_objects
+            "SELECT content_hash, byte_size, provider_version FROM aos_e2e_surface_objects
              WHERE object_key = ?",
             Some(vec![SqlStorageValue::String(object_key.clone())]),
         )?;
         let Some(row) = cursor.raw().next().transpose()? else {
             return Ok(SurfaceDeleteOutcome::NotFound);
         };
-        let [SqlStorageValue::String(content_hash), SqlStorageValue::Integer(size)] =
+        let [SqlStorageValue::String(content_hash), SqlStorageValue::Integer(size), SqlStorageValue::String(provider_version)] =
             row.as_slice()
         else {
             anyhow::bail!("test object identity row had an invalid shape");
@@ -917,6 +1006,10 @@ impl SurfaceWrite for DoE2eSurface {
             .context("test identity-checked deletion requires a content hash or ETag")?;
         if !content_hash.eq_ignore_ascii_case(expected_hash)
             || expected
+                .expected_provider_version
+                .as_deref()
+                .is_some_and(|version| version != provider_version)
+            || expected
                 .size
                 .is_some_and(|expected_size| expected_size != *size)
         {
@@ -926,11 +1019,12 @@ impl SurfaceWrite for DoE2eSurface {
         }
         let deleted = self.sql.exec(
             "DELETE FROM aos_e2e_surface_objects
-             WHERE object_key = ? AND content_hash = ? AND byte_size = ?",
+             WHERE object_key = ? AND content_hash = ? AND byte_size = ? AND provider_version = ?",
             Some(vec![
                 SqlStorageValue::String(object_key),
                 SqlStorageValue::String(content_hash.clone()),
                 SqlStorageValue::Integer(*size),
+                SqlStorageValue::String(provider_version.clone()),
             ]),
         )?;
         if deleted.rows_written() != 1 {
@@ -1011,10 +1105,10 @@ impl SurfaceWrite for DoE2eSurface {
         )?;
         let rows = cursor.raw().collect::<worker::Result<Vec<_>>>()?;
         if rows.is_empty() {
-            let (_, _, strong_etag, _) = self
+            let object = self
                 .load_object(path)?
                 .context("completed test multipart object disappeared")?;
-            return Ok(strong_etag);
+            return Ok(object.strong_etag);
         }
         anyhow::ensure!(rows.len() == parts.len(), "multipart part count changed");
         for (row, expected) in rows.into_iter().zip(parts) {

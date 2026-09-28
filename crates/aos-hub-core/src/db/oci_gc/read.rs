@@ -690,7 +690,7 @@ pub(super) const GC_ACTION_COLUMNS: &str = "action.id, action.run_id,
     snapshot.delete_capability_fingerprint,
     snapshot.delete_capability_resource_version, action.state,
     action.attempt_count, action.max_attempts, action.next_attempt_at,
-    action.last_error, action.confirmed_at, action.resource_version";
+    action.last_error, action.confirmed_at, action.resource_version, action.expected_provider_version";
 
 fn row_to_generation(row: &Row) -> Result<OciGcGenerationRecord> {
     Ok(OciGcGenerationRecord {
@@ -764,6 +764,7 @@ pub(super) fn row_to_action(row: &Row) -> Result<OciGcPlacementActionRecord> {
         expected_hash: Sha256Digest::parse(&row.get::<String>(5)?)?,
         expected_size: count(row, 6, "placement action expected byte")?,
         expected_strong_etag: row.get(7)?,
+        expected_provider_version: row.get(32)?,
         inventory_entry_present: row.get::<i64>(8)? == 1,
         inventory_generation_id: row.get(9)?,
         inventory_digest: Sha256Digest::parse(&row.get::<String>(10)?)?,
