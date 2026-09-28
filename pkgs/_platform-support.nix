@@ -843,12 +843,13 @@ let
     "tools/workerd/_cargo-bazel.nix" = "native-build-helper";
     "tools/workerd/_cross-clang.nix" = "cross-build-helper";
     "tools/workerd/_cross-toolchain.nix" = "cross-build-helper";
+    "tools/workerd/_darwin-toolchain.nix" = "cross-build-helper";
     "tools/workerd/_emscripten-acorn.nix" = "native-build-helper";
     "tools/workerd/_emscripten-llvm.nix" = "native-build-helper";
     "tools/workerd/_emscripten.nix" = "native-build-helper";
     "tools/workerd/_esbuild-repository.nix" = "native-build-helper";
     "tools/workerd/_esbuild.nix" = "native-build-helper";
-    "tools/workerd/_modern.nix" = "linux-only-build-helper";
+    "tools/workerd/_modern.nix" = "cross-build-helper";
     "tools/workerd/_native-clang.nix" = "linux-only-build-helper";
     "tools/workerd/_node-repository.nix" = "native-build-helper";
     "tools/workerd/_pyodide-esbuild.nix" = "native-build-helper";
@@ -856,7 +857,7 @@ let
     "tools/workerd/_pyodide.nix" = "native-build-helper";
     "tools/workerd/_python-repositories.nix" = "native-build-helper";
     "tools/workerd/_runtime-check.nix" = "native-build-helper";
-    "tools/workerd/_rust-repository.nix" = "native-build-helper";
+    "tools/workerd/_rust-repository.nix" = "cross-build-helper";
     "_platform-support.nix" = "platform-policy";
     "build-support/_cargo-artifacts.nix" = "native-build-helper";
     "build-support/_cargo-source-vendor.nix" = "native-build-helper";
