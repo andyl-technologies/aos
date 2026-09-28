@@ -32,6 +32,9 @@ use crucible_cas::content_store::{
 use crucible_daemon::{CanonicalPlannerProcessConfig, CanonicalPlannerProcessSupervisor};
 use rustix::time::{ClockId, Timespec, clock_gettime};
 
+#[path = "gate_campaign_metadata_million/store_profile.rs"]
+mod campaign_store_profile;
+
 const CAMPAIGN: &str = "million-real-admissions";
 const REQUEST_SIZE: usize = 16;
 const PAGE_SIZE: usize = 512;
@@ -208,11 +211,21 @@ fn run_corpus(
     );
 
     let (blobs, maintenance) = sqlite_blob_graph(root)?;
+    let profiler = std::env::var_os("CRUCIBLE_CAMPAIGN_STORE_PROFILE").map(|_| {
+        Arc::new(campaign_store_profile::ProfileBackend::new(Arc::clone(
+            &blobs,
+        )))
+    });
+    let repository_blobs: Arc<dyn crucible_cas::content_store::ImmutableBlobBackend> =
+        match &profiler {
+            Some(profiler) => profiler.clone(),
+            None => blobs.clone(),
+        };
     let refs = Arc::new(DirectoryRefBackend::new(root.join("refs")));
     let planner_authority = PlannerAuthorityKey::from_bytes([0x91; 32])?;
     let debugger_authority = DebuggerAuthorityKey::from_bytes([0x92; 32])?;
     let repository = Arc::new(CampaignRepository::with_component_authorities(
-        blobs.clone(),
+        repository_blobs,
         refs.clone(),
         planner_authority.clone(),
         debugger_authority.clone(),
@@ -316,6 +329,9 @@ fn run_corpus(
     let mut ancestry_depth = 3_usize;
     let mut setup_elapsed = Duration::ZERO;
     let mut planner_elapsed = Duration::ZERO;
+    if let Some(profiler) = &profiler {
+        profiler.report(0, "initialization");
+    }
     let emit_plan_ids = std::env::var_os("CRUCIBLE_CAMPAIGN_MILLION_DIAGNOSTIC_REQUESTS").is_some();
     for request_index in 0..admissions / REQUEST_SIZE {
         let setup_started = clock_gettime(ClockId::Monotonic);
@@ -329,6 +345,9 @@ fn run_corpus(
         repository.submit_operator_branch_request(CAMPAIGN, discovered.new_snapshot, &request)?;
         ancestry_depth += 2;
         setup_elapsed += measurement_elapsed_since(setup_started)?;
+        if let Some(profiler) = &profiler {
+            profiler.report(request_index + 1, "setup");
+        }
 
         let step_started = clock_gettime(ClockId::Monotonic);
         let outcome = planner.step(CAMPAIGN)?;
@@ -357,6 +376,9 @@ fn run_corpus(
         parent = result.new_snapshot;
         ancestry_depth += 1;
         planner_elapsed += measurement_elapsed_since(step_started)?;
+        if let Some(profiler) = &profiler {
+            profiler.report(request_index + 1, "planner");
+        }
         if (request_index + 1) % 1_024 == 0 {
             println!(
                 "campaign_million_progress admissions={} requests={} setup_ns={} planner_ns={}",
