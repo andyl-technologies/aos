@@ -28,6 +28,9 @@ use aos_hub::server::{router, AppState};
 
 mod indexing;
 mod logging;
+mod password_input;
+
+use password_input::read_password;
 
 #[derive(Parser)]
 #[command(name = "aos-hub", version, about = "AOS registry hub server")]
@@ -211,11 +214,14 @@ enum Command {
         #[arg(long)]
         root_email: Option<String>,
         /// The root admin password. Prefer --root-password-stdin.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["root_password_stdin", "root_password_file"])]
         root_password: Option<String>,
         /// Read the root admin password from stdin (one line).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "root_password_file")]
         root_password_stdin: bool,
+        /// Read the root admin password from an owner-private UTF-8 file.
+        #[arg(long, requires = "root_email")]
+        root_password_file: Option<PathBuf>,
     },
     /// Reset (or create) a root admin's password.
     ///
@@ -226,11 +232,14 @@ enum Command {
         #[arg(long)]
         email: String,
         /// The new password. Prefer --password-stdin.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["password_stdin", "password_file"])]
         password: Option<String>,
         /// Read the new password from stdin (one line).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "password_file")]
         password_stdin: bool,
+        /// Read the new password from an owner-private UTF-8 file.
+        #[arg(long)]
+        password_file: Option<PathBuf>,
     },
     /// Inspect the database schema.
     Schema {
@@ -1501,6 +1510,7 @@ async fn main() -> Result<()> {
             root_email,
             root_password,
             root_password_stdin,
+            root_password_file,
         } => {
             // `open_db` opens and migrates the local database. Worker HubDb
             // bootstrap is handled by the Worker command family.
@@ -1512,7 +1522,11 @@ async fn main() -> Result<()> {
             };
             println!("schema migrated ({database})");
             if let Some(email) = root_email {
-                let plaintext = read_password(root_password, root_password_stdin)?;
+                let plaintext = read_password(
+                    root_password,
+                    root_password_stdin,
+                    root_password_file.as_deref(),
+                )?;
                 let (email, id) = ensure_root(&db, &email, &plaintext).await?;
                 println!("root admin '{email}' ready (user id {id})");
             }
@@ -1521,9 +1535,10 @@ async fn main() -> Result<()> {
             email,
             password,
             password_stdin,
+            password_file,
         } => {
             let db = open_db(&cli.root, &cli.target, cli.database_url.as_deref()).await?;
-            let plaintext = read_password(password, password_stdin)?;
+            let plaintext = read_password(password, password_stdin, password_file.as_deref())?;
             let (email, id) = ensure_root(&db, &email, &plaintext).await?;
             println!("reset root password for '{email}' (user id {id})");
         }
@@ -1572,27 +1587,6 @@ async fn ensure_root(db: &Database, email: &str, plaintext: &str) -> Result<(Str
     Ok((email, user_id))
 }
 
-/// Reads a password from `password`, or stdin when `from_stdin`, trimming a
-/// trailing newline.
-///
-/// # Errors
-///
-/// Returns an error if neither source is given, or stdin cannot be read.
-fn read_password(password: Option<String>, from_stdin: bool) -> Result<String> {
-    if let Some(p) = password {
-        return Ok(p);
-    }
-    if from_stdin {
-        use std::io::Read;
-        let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .context("reading password from stdin")?;
-        return Ok(buf.trim_end_matches(['\n', '\r']).to_string());
-    }
-    anyhow::bail!("provide --password / --root-password or the --*-stdin form");
-}
-
 /// Dispatches the `worker` subcommands (provision/deploy/install) for the
 /// selected hosting provider.
 ///
@@ -1626,7 +1620,7 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
             .clone()
             .or_else(|| std::env::var("HUB_SEAL_KEY").ok())
             .context("no seal key: pass --seal-key or set HUB_SEAL_KEY (the deploy value)")?;
-        let plaintext = read_password(args.password.clone(), args.password_stdin)?;
+        let plaintext = read_password(args.password.clone(), args.password_stdin, None)?;
         let id =
             cloudflare::bootstrap_root_remote(&args.url, &seal, &args.email, &plaintext).await?;
         println!("root admin '{}' ready (user id {id})", args.email);
@@ -1701,7 +1695,7 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
             let seal = deploy_worker(&assets, args, cloudflare::DeployMode::Install).await?;
             if let Some(email) = &args.root_email {
                 let plaintext =
-                    read_password(args.root_password.clone(), args.root_password_stdin)?;
+                    read_password(args.root_password.clone(), args.root_password_stdin, None)?;
                 let Some(seal) = seal else {
                     anyhow::bail!(
                         "cannot bootstrap root: this deploy preserved an existing \

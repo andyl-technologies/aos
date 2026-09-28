@@ -92,11 +92,21 @@ in {
         printf '%s' '[]' > /var/lib/hub-container-credentials/probe-signers
         printf '%s' '1111111111111111111111111111111111111111111111111111111111111111' \\
           > /var/lib/hub-container-credentials/seal
+        printf '%s\\n' 'container-bootstrap-password' \\
+          > /var/lib/hub-container-credentials/root-password
         chmod 0600 /var/lib/hub-container-credentials/*
         ${nerdctl} run --rm --net host \\
           --mount type=bind,src=/var/lib/hub-container-state,dst=/state \\
+          --mount type=bind,src=/var/lib/hub-container-credentials,dst=/credentials,readonly \\
           --env HUB_ROOT=/state aos-hub:latest \\
-          init --root-email container-root@example.test --root-password container-test-password
+          init --root-email container-root@example.test --root-password-file /credentials/root-password
+        printf '%s\\n' 'container-test-password' \\
+          > /var/lib/hub-container-credentials/root-password
+        ${nerdctl} run --rm --net host \\
+          --mount type=bind,src=/var/lib/hub-container-state,dst=/state \\
+          --mount type=bind,src=/var/lib/hub-container-credentials,dst=/credentials,readonly \\
+          --env HUB_ROOT=/state aos-hub:latest \\
+          reset-root --email container-root@example.test --password-file /credentials/root-password
     """), timeout=120)
 
     runtime.succeed(textwrap.dedent("""
