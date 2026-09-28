@@ -196,6 +196,10 @@ fn native_v3_signed_catalog_fields_cannot_be_substituted() {
             digest_acquire_request(&changed),
             digest_acquire_request(&request)
         );
+        assert_ne!(
+            source_provider_acquire_intent_digest_v1(&changed),
+            source_provider_acquire_intent_digest_v1(&request)
+        );
 
         let substituted = replace_signed_subject(&signed, &subject);
         assert!(
@@ -221,4 +225,111 @@ fn native_v3_cannot_be_downgraded_under_the_original_signature() {
             aos_sandbox_source_provider_protocol::verify_request(&downgraded, &key_bytes).is_err()
         );
     }
+}
+
+#[test]
+fn native_v3_intent_is_distinct_while_original_v1_v2_projection_is_unchanged() {
+    let legacy = acquire_with([1; 16], DEADLINE, 600, true, 4, false);
+    let v2 = request_v2(false);
+    let v3 = request_v3();
+
+    // Freeze the original deadline-free schema independently of the production
+    // projection. Neither old acquisition identity nor version is in it.
+    let template = mount_template();
+    let binding = b"binding-v1";
+    let mut old_preimage = b"aos-source-provider-acquire-intent-v1\0".to_vec();
+    old_preimage.extend_from_slice(&(template.len() as u32).to_be_bytes());
+    old_preimage.extend_from_slice(&template);
+    old_preimage.extend_from_slice(legacy.prospective_apply_template_digest().as_bytes());
+    old_preimage.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0]);
+    old_preimage.extend_from_slice(&[4; 16]);
+    old_preimage.extend_from_slice(&[5; 16]);
+    old_preimage.extend_from_slice(&[31; 16]);
+    old_preimage.extend_from_slice(&32_u64.to_be_bytes());
+    old_preimage.extend_from_slice(&[33; 32]);
+    old_preimage.extend_from_slice(&(binding.len() as u32).to_be_bytes());
+    old_preimage.extend_from_slice(binding);
+    old_preimage.extend_from_slice(legacy.binding_digest().as_bytes());
+    old_preimage.extend_from_slice(&600_u64.to_be_bytes());
+    old_preimage.extend_from_slice(&[90; 32]);
+    old_preimage.extend_from_slice(&[1, 0, 0, 0]);
+    old_preimage.extend_from_slice(&4_u32.to_be_bytes());
+    let old_digest = ObjectDigest::from_bytes(Sha256::digest(&old_preimage).into());
+
+    assert_eq!(
+        source_provider_acquire_intent_digest_v1(&legacy),
+        old_digest
+    );
+    assert_eq!(source_provider_acquire_intent_digest_v1(&v2), old_digest);
+    assert_ne!(source_provider_acquire_intent_digest_v1(&v3), old_digest);
+
+    // Independently pin V3's distinct domain, explicit profile, all seven
+    // catalog fields, and the unchanged common semantic projection.
+    let wire = encode_acquire_request(&v3);
+    let mut native_preimage = b"aos-source-provider-native-acquire-intent-v3\0".to_vec();
+    native_preimage.extend_from_slice(&wire[..184]);
+    native_preimage
+        .extend_from_slice(&old_preimage[b"aos-source-provider-acquire-intent-v1\0".len()..]);
+    assert_eq!(
+        source_provider_acquire_intent_digest_v1(&v3),
+        ObjectDigest::from_bytes(Sha256::digest(native_preimage).into())
+    );
+}
+
+#[test]
+fn native_v3_intent_remains_stable_across_transport_and_deadline_renewal() {
+    let original = request_v3();
+    let mut bytes = encode_acquire_request(&original);
+    bytes[184..216].copy_from_slice(&[66; 32]);
+    bytes[216..224].copy_from_slice(&2_u64.to_be_bytes());
+    bytes[224..240].copy_from_slice(&[8; 16]);
+    let changed_acquisition = source_acquisition_id_v2([31; 16], 32, digest(33), 18);
+    bytes[240..272].copy_from_slice(changed_acquisition.as_bytes());
+    bytes[272..280].copy_from_slice(&18_u64.to_be_bytes());
+    let deadline_offset = bytes.len() - 56;
+    bytes[deadline_offset..deadline_offset + 8].copy_from_slice(&(DEADLINE + 100).to_be_bytes());
+    let renewed = decode_acquire_request(&bytes).unwrap();
+
+    assert_ne!(
+        digest_acquire_request(&renewed),
+        digest_acquire_request(&original)
+    );
+    assert_eq!(renewed.native_catalog(), original.native_catalog());
+    assert_eq!(
+        source_provider_acquire_intent_digest_v1(&renewed),
+        source_provider_acquire_intent_digest_v1(&original)
+    );
+}
+
+#[test]
+fn legacy_normalized_intent_rejects_native_v3_without_discarding_catalog() {
+    let key = SigningKey::from_bytes(&[51; 32]);
+    let provider = provider_authority(&key);
+    let holder = SourceProviderAuthorityV1::new([31; 16], 32, digest(33)).unwrap();
+    let normalize = |request: &AcquireSourceRequestV1| {
+        NormalizedAcquisitionIntentV2::from_acquire_request(
+            request,
+            provider.clone(),
+            holder.clone(),
+            [4; 16],
+            [5; 16],
+            [55; 16],
+            56,
+            digest(57),
+            digest(61),
+            91,
+            digest(90),
+        )
+    };
+
+    let original = normalize(&request_v2(false)).unwrap();
+    assert_eq!(
+        NormalizedAcquisitionIntentV2::from_canonical_bytes(&original.to_canonical_bytes())
+            .unwrap(),
+        original
+    );
+    assert_eq!(
+        normalize(&request_v3()),
+        Err(NormalizedAcquisitionIntentError::Invalid)
+    );
 }
