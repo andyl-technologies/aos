@@ -934,6 +934,24 @@ fn validate_feature_conditions(
     {
         return Err(BrokerSessionNegotiationError::FeatureCondition);
     }
+
+    // Dormant registration does not waive the exact presentation contract
+    // already enforced on authenticated traffic.
+    let selects_fuse_intent = required_methods
+        .iter()
+        .chain(advertised_methods)
+        .any(|method| *method == BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1);
+    if selects_fuse_intent
+        && (protocol != BrokerSessionProtocolV1::MountFuse
+            || !has_feature(required_features, MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE)
+            || !has_feature(
+                advertised_features,
+                MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE,
+            ))
+    {
+        return Err(BrokerSessionNegotiationError::FeatureCondition);
+    }
+
     let requests_source = required_methods
         .iter()
         .copied()
@@ -1234,6 +1252,62 @@ mod tests {
                 validate_authenticated_negotiation_v1(&client, &missing, protocol, 3, 0, audience)
                     .is_err()
             );
+
+            for (major, minor) in [(2, 0), (1, 1)] {
+                let mut substituted_client = client.clone();
+                let client_feature = substituted_client
+                    .required_features
+                    .iter_mut()
+                    .find(|value| value.namespace == feature)
+                    .unwrap();
+                client_feature.major = major;
+                client_feature.minor = minor;
+                assert!(
+                    validate_authenticated_negotiation_v1(
+                        &substituted_client,
+                        &broker,
+                        protocol,
+                        3,
+                        0,
+                        audience,
+                    )
+                    .is_err(),
+                    "client {feature} {major}.{minor}",
+                );
+
+                let mut substituted_broker = broker.clone();
+                let broker_feature = substituted_broker
+                    .features
+                    .iter_mut()
+                    .find(|value| value.namespace == feature)
+                    .unwrap();
+                broker_feature.major = major;
+                broker_feature.minor = minor;
+                assert!(
+                    validate_authenticated_negotiation_v1(
+                        &client,
+                        &substituted_broker,
+                        protocol,
+                        3,
+                        0,
+                        audience,
+                    )
+                    .is_err(),
+                    "broker {feature} {major}.{minor}",
+                );
+                assert!(
+                    validate_authenticated_negotiation_v1(
+                        &substituted_client,
+                        &substituted_broker,
+                        protocol,
+                        3,
+                        0,
+                        audience,
+                    )
+                    .is_err(),
+                    "both {feature} {major}.{minor}",
+                );
+            }
         }
         assert!(
             validate_authenticated_negotiation_v1(&client, &broker, protocol, 2, 0, audience)
@@ -1308,49 +1382,128 @@ mod tests {
     }
 
     #[test]
+    fn advertised_fuse_intent_requires_exact_presentation_features_on_both_sides() {
+        let method = BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1;
+        let exact = feature_refs(&production_features_for_methods(&[method])).unwrap();
+        let presentation = exact
+            .iter()
+            .position(|feature| feature.namespace() == MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE)
+            .unwrap();
+
+        // MountFuse has only one legal method, so an advertised-only full
+        // HELLO cannot retain nonempty client methods. This exercises the
+        // private feature condition, not acceptance of an empty HELLO.
+        let mut missing = exact.clone();
+        missing.remove(presentation);
+        for (required, advertised) in [(&missing, &exact), (&exact, &missing)] {
+            assert_eq!(
+                validate_feature_conditions(
+                    BrokerSessionProtocolV1::MountFuse,
+                    required,
+                    advertised,
+                    &[],
+                    &[method],
+                ),
+                Err(BrokerSessionNegotiationError::FeatureCondition),
+            );
+        }
+
+        for (major, minor) in [(2, 0), (1, 1)] {
+            let mut substituted = exact.clone();
+            substituted[presentation] =
+                FeatureRef::new(MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE, major, minor).unwrap();
+            for (required, advertised) in [(&substituted, &exact), (&exact, &substituted)] {
+                assert_eq!(
+                    validate_feature_conditions(
+                        BrokerSessionProtocolV1::MountFuse,
+                        required,
+                        advertised,
+                        &[],
+                        &[method],
+                    ),
+                    Err(BrokerSessionNegotiationError::FeatureCondition),
+                );
+            }
+        }
+
+        for protocol in [
+            BrokerSessionProtocolV1::Host,
+            BrokerSessionProtocolV1::Storage,
+            BrokerSessionProtocolV1::Mount,
+            BrokerSessionProtocolV1::Network,
+        ] {
+            assert_eq!(
+                validate_feature_conditions(protocol, &exact, &exact, &[], &[method]),
+                Err(BrokerSessionNegotiationError::FeatureCondition),
+            );
+        }
+    }
+
+    #[test]
     fn production_hello_profiles_cover_every_registered_endpoint_role() {
-        let profiles = [
+        // These ordered wire inventories pin production advertisement,
+        // independently of the larger registry of provisional carriers.
+        let profiles: &[(BrokerSessionProtocolV1, Audience, &[i32], usize)] = &[
             (
                 BrokerSessionProtocolV1::Host,
                 Audience::AUDIENCE_NODE_CONTROLLER,
-                13,
+                &[1, 2, 3, 11, 12, 17, 26, 27, 28, 29, 30, 35, 36, 42, 43],
                 3,
             ),
             (
                 BrokerSessionProtocolV1::Host,
                 Audience::AUDIENCE_ROOT_MOUNT,
-                1,
+                &[13],
+                2,
+            ),
+            (
+                BrokerSessionProtocolV1::Host,
+                Audience::AUDIENCE_STORAGE_BROKER,
+                &[48],
                 2,
             ),
             (
                 BrokerSessionProtocolV1::Storage,
                 Audience::AUDIENCE_NODE_CONTROLLER,
-                7,
+                &[7, 18, 20, 21, 25, 31, 32],
                 2,
             ),
             (
                 BrokerSessionProtocolV1::Mount,
                 Audience::AUDIENCE_NODE_CONTROLLER,
-                8,
+                &[4, 6, 14, 15, 16, 22, 23, 24],
                 3,
             ),
             (
                 BrokerSessionProtocolV1::Network,
                 Audience::AUDIENCE_NODE_CONTROLLER,
-                3,
+                &[9, 10, 19],
                 2,
             ),
         ];
 
-        for (protocol, audience, method_count, feature_count) in profiles {
+        for &(protocol, audience, expected_methods, feature_count) in profiles {
             let client =
                 production_broker_client_hello_v1(protocol, audience, RESPONSE_MAXIMUM).unwrap();
             let broker =
                 production_broker_server_hello_v1(protocol, audience, RESPONSE_MAXIMUM).unwrap();
             let (major, minor) = supported_broker_session_version_v1(protocol);
 
-            assert_eq!(client.required_methods.len(), method_count);
-            assert_eq!(broker.methods.len(), method_count);
+            let client_methods = client
+                .required_methods
+                .iter()
+                .map(|method| method.as_known().unwrap() as i32)
+                .collect::<Vec<_>>();
+            let broker_methods = broker
+                .methods
+                .iter()
+                .map(|method| method.as_known().unwrap() as i32)
+                .collect::<Vec<_>>();
+
+            assert_eq!(client_methods.as_slice(), expected_methods);
+            assert_eq!(broker_methods.as_slice(), expected_methods);
+            assert_eq!(client.required_methods.len(), expected_methods.len());
+            assert_eq!(broker.methods.len(), expected_methods.len());
             assert_eq!(client.required_features.len(), feature_count);
             assert_eq!(broker.features.len(), feature_count);
             validate_authenticated_negotiation_v1(
