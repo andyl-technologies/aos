@@ -13,6 +13,7 @@
   meson,
   ninja,
   pkg-config,
+  patch,
 }: let
   version = "3.18.2";
   source = fetchurl {
@@ -32,6 +33,7 @@ in
       meson
       ninja
       pkg-config
+      patch
     ];
     runtimeDeps = [];
     propagatedDeps = [];
@@ -44,6 +46,7 @@ in
           meson
           ninja
           pkg-config
+          patch
         ];
       };
     };
@@ -54,6 +57,12 @@ in
         script = ''
           tar xf $src
           cd fuse-${version}
+        '';
+      }
+      {
+        name = "patch";
+        script = ''
+          patch --fuzz=0 -p1 < ${./aos-fuse3-allow-idmap.patch}
         '';
       }
       {
@@ -349,6 +358,7 @@ in
             WIRE_FUSE_INIT_EXT = 1U << 30,
             WIRE_FUSE_INIT_RESERVED = 1U << 31,
             WIRE_FUSE_PASSTHROUGH_FLAGS2 = 1U << (37 - 32),
+            WIRE_FUSE_ALLOW_IDMAP_FLAGS2 = 1U << (40 - 32),
           };
 
           struct wire_in_header {
@@ -410,6 +420,9 @@ in
             unsigned int destroy_calls;
             unsigned int read_calls;
             int negotiated_passthrough;
+            int request_idmap;
+            int capable_idmap;
+            int negotiated_idmap;
           };
 
           static ssize_t custom_read(int fd, void *buf, size_t len,
@@ -435,6 +448,11 @@ in
               conn->proto_major == 7 && conn->proto_minor == 45 &&
               (conn->capable_ext & FUSE_CAP_PASSTHROUGH) != 0 &&
               fuse_set_feature_flag(conn, FUSE_CAP_PASSTHROUGH);
+            state->capable_idmap =
+              (conn->capable_ext & FUSE_CAP_ALLOW_IDMAP) != 0;
+            if (state->request_idmap)
+              state->negotiated_idmap =
+                fuse_set_feature_flag(conn, FUSE_CAP_ALLOW_IDMAP);
             conn->max_backing_stack_depth = FUSE_BACKING_STACKED_OVER;
           }
 
@@ -481,7 +499,7 @@ in
             }
           }
 
-          int main(void) {
+          static int run_probe(int offer_idmap, int request_idmap) {
             _Static_assert(sizeof(struct wire_in_header) == 40,
                            "incorrect FUSE request header layout");
             _Static_assert(sizeof(struct wire_init_in) == 64,
@@ -495,7 +513,7 @@ in
 
             char *argv[] = { (char *)"fuse3-custom-fd", NULL };
             struct fuse_args args = FUSE_ARGS_INIT(1, argv);
-            struct callback_state state = {0};
+            struct callback_state state = { .request_idmap = request_idmap };
             struct fuse_lowlevel_ops operations = {
               .init = initialize,
               .destroy = destroy,
@@ -556,7 +574,8 @@ in
                 .minor = 45,
                 .max_readahead = 128 * 1024,
                 .flags = WIRE_FUSE_INIT_EXT,
-                .flags2 = WIRE_FUSE_PASSTHROUGH_FLAGS2,
+                .flags2 = WIRE_FUSE_PASSTHROUGH_FLAGS2 |
+                  (offer_idmap ? WIRE_FUSE_ALLOW_IDMAP_FLAGS2 : 0U),
               },
             };
             if ((request.body.flags & WIRE_FUSE_INIT_EXT) == 0 ||
@@ -591,6 +610,11 @@ in
                 response.body.max_stack_depth != FUSE_BACKING_STACKED_OVER + 1 ||
                 !state.negotiated_passthrough || state.init_calls != 1)
               return fail("passthrough capability negotiation failed");
+            if (state.capable_idmap != offer_idmap ||
+                state.negotiated_idmap != (offer_idmap && request_idmap) ||
+                ((response.body.flags2 & WIRE_FUSE_ALLOW_IDMAP_FLAGS2) != 0) !=
+                  (offer_idmap && request_idmap))
+              return fail("IDMAP must be both offered and explicitly selected");
             for (size_t index = 0;
                  index < sizeof(response.body.unused) /
                    sizeof(response.body.unused[0]);
@@ -613,6 +637,13 @@ in
             close(peer_fd);
             fuse_opt_free_args(&args);
             return 0;
+          }
+
+          int main(void) {
+            _Static_assert(FUSE_CAP_ALLOW_IDMAP == (UINT64_C(1) << 32),
+                           "IDMAP capability must not alias a legacy bit");
+            return run_probe(0, 0) || run_probe(1, 0) ||
+              run_probe(0, 1) || run_probe(1, 1);
           }
         '';
       };

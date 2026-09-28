@@ -1,0 +1,46 @@
+From: Dylan Plecki
+Subject: [PATCH] Add explicit opt-in low-level idmapped mount negotiation
+
+The pinned Linux wire header already defines FUSE_ALLOW_IDMAP. Expose its
+independent 64-bit connection capability and preserve the default-disabled
+behavior. This does not create a mount or replace default_permissions.
+
+--- a/include/fuse_common.h
++++ b/include/fuse_common.h
+@@ -511,6 +511,16 @@
+  */
+ #define FUSE_CAP_OVER_IO_URING (1UL << 31)
+ 
++/**
++ * Indicates support for idmapped mounts when default_permissions is enabled.
++ *
++ * This feature is disabled by default. A low-level filesystem must explicitly
++ * request it through want_ext only after verifying its own mapping semantics.
++ * This capability occupies the first unused extended bit and has no alias in
++ * the legacy 32-bit capable/want fields.
++ */
++#define FUSE_CAP_ALLOW_IDMAP (UINT64_C(1) << 32)
++
+ /**
+  * Ioctl flags
+  *
+--- a/lib/fuse_lowlevel.c
++++ b/lib/fuse_lowlevel.c
+@@ -2750,6 +2750,8 @@
+ 			se->conn.capable_ext |= FUSE_CAP_NO_EXPORT_SUPPORT;
+ 		if (inargflags & FUSE_OVER_IO_URING)
+ 			se->conn.capable_ext |= FUSE_CAP_OVER_IO_URING;
++		if (inargflags & FUSE_ALLOW_IDMAP)
++			se->conn.capable_ext |= FUSE_CAP_ALLOW_IDMAP;
+ 
+ 	} else {
+ 		se->conn.max_readahead = 0;
+@@ -2904,6 +2906,8 @@
+ 		outargflags |= FUSE_OVER_IO_URING;
+ 		enable_io_uring = true;
+ 	}
++	if (se->conn.want_ext & FUSE_CAP_ALLOW_IDMAP)
++		outargflags |= FUSE_ALLOW_IDMAP;
+ 
+ 	if ((inargflags & FUSE_REQUEST_TIMEOUT) && se->conn.request_timeout) {
+ 		outargflags |= FUSE_REQUEST_TIMEOUT;
