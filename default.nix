@@ -1891,6 +1891,9 @@ in {
         sandbox-local-identity = import ./tests/vm/sandbox-local-identity.nix {
           inherit testing pkgs lib;
         };
+        sandbox-openssh-attach-profile = import ./tests/vm/sandbox-openssh-attach-profile.nix {
+          inherit testing pkgs lib;
+        };
         sandbox-policy-negative = import ./tests/vm/sandbox-policy-negative.nix {
           inherit testing pkgs lib;
         };

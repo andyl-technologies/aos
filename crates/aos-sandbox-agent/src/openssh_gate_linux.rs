@@ -12,6 +12,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use aos_sandbox_core::public_attach_route::{
+    PUBLIC_ATTACH_CERTIFICATE_TYPE_V1, PUBLIC_ATTACH_GATE_PATH_V1, public_attach_force_command_v1,
+    valid_public_attach_user_v1,
+};
 use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
 use ssh_key::{Algorithm, PrivateKey, PublicKey};
@@ -26,7 +30,7 @@ const CONFIG_PATH: &str = "/etc/aos/sandbox-attach/sshd_config";
 const CA_PATH: &str = "/etc/aos/sandbox-attach/trusted_user_ca.pub";
 const HOST_KEY_PATH: &str = "/etc/aos/sandbox-attach/host_key";
 const HOST_PUBLIC_KEY_PATH: &str = "/etc/aos/sandbox-attach/host_key.pub";
-const GATE_PATH: &str = "/usr/libexec/aos-sandbox-exec-gate";
+const GATE_PATH: &str = PUBLIC_ATTACH_GATE_PATH_V1;
 const CLAIM_PATH: &str = "/etc/aos/sandbox-attach/gate-record.json";
 const O_CLOEXEC: i32 = 0o2_000_000;
 const O_NOFOLLOW: i32 = 0o400_000;
@@ -38,6 +42,9 @@ pub struct RunningOpenSshGateV1 {
     binding: OpenSshGateBindingV1,
     config_device: u64,
     config_inode: u64,
+    gate_device: u64,
+    gate_inode: u64,
+    gate_digest: [u8; 32],
 }
 
 impl RunningOpenSshGateV1 {
@@ -64,10 +71,26 @@ impl RunningOpenSshGateV1 {
         binding
             .validate()
             .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidBinding)?;
-        let config = check_installed_files(&binding)?;
+        let installed = check_installed_files(&binding)?;
         let executable_path = fs::canonicalize(SSHD_PATH)?;
         let executable = read_protected_file(&executable_path, MAXIMUM_EXECUTABLE_BYTES, true)?;
         if executable.bytes.is_empty() {
+            return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
+        }
+
+        // Pin the exact callback opened during installation, then recheck it
+        // immediately before launch. A later physical readback must still
+        // match this identity before the guest can report certificate readiness.
+        let gate_digest = digest(&installed.gate_executable.bytes);
+        let gate = read_protected_file(
+            &fs::canonicalize(GATE_PATH)?,
+            MAXIMUM_EXECUTABLE_BYTES,
+            true,
+        )?;
+        if gate.device != installed.gate_executable.device
+            || gate.inode != installed.gate_executable.inode
+            || digest(&gate.bytes) != gate_digest
+        {
             return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
         }
 
@@ -80,8 +103,11 @@ impl RunningOpenSshGateV1 {
         Ok(Self {
             child,
             binding,
-            config_device: config.device,
-            config_inode: config.inode,
+            config_device: installed.configuration.device,
+            config_inode: installed.configuration.inode,
+            gate_device: installed.gate_executable.device,
+            gate_inode: installed.gate_executable.inode,
+            gate_digest,
         })
     }
 
@@ -149,6 +175,13 @@ impl RunningOpenSshGateV1 {
             MAXIMUM_EXECUTABLE_BYTES,
             true,
         )?;
+        let gate_digest = digest(&gate.bytes);
+        if gate.device != self.gate_device
+            || gate.inode != self.gate_inode
+            || gate_digest != self.gate_digest
+        {
+            return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
+        }
         let host_key = read_protected_file(Path::new(HOST_KEY_PATH), 16 * 1024, false)?;
         if host_key.mode & 0o077 != 0 {
             return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
@@ -161,7 +194,7 @@ impl RunningOpenSshGateV1 {
             sshd_pid: pid,
             sshd_start_ticks: start_ticks,
             sshd_executable_digest: digest(&executable.bytes),
-            gate_executable_digest: digest(&gate.bytes),
+            gate_executable_digest: gate_digest,
             host_private_key_digest: digest(&host_key.bytes),
         };
         let readback = OpenSshGateReadbackV1 {
@@ -193,23 +226,20 @@ pub fn expected_openssh_gate_config_v1(
     binding
         .validate()
         .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidBinding)?;
-    if !binding.user.bytes().enumerate().all(|(index, byte)| {
-        byte.is_ascii_alphanumeric() || byte == b'_' || (index != 0 && byte == b'-')
-    }) {
+    if !valid_public_attach_user_v1(&binding.user) {
         return Err(OpenSshGatePhysicalErrorV1::InvalidBinding);
     }
-    let command = format!(
-        "{GATE_PATH} --operation-id {} --execution-id {} --incarnation-id {} --assignment-epoch {} --principal-id {} --audit-id {}",
-        hex_id(&binding.attach_operation_id),
-        hex_id(&binding.execution_id),
-        hex_id(&binding.incarnation_id),
+    let command = public_attach_force_command_v1(
+        &binding.attach_operation_id,
+        &binding.execution_id,
+        &binding.incarnation_id,
         binding.assignment_epoch,
-        hex_id(&binding.principal_id),
-        hex_id(&binding.audit_id),
+        &binding.principal_id,
+        &binding.audit_id,
     );
     Ok(format!(
-        "Port {}\nHostKey {HOST_KEY_PATH}\nHostKeyAlgorithms ssh-ed25519\nPubkeyAuthentication yes\nPubkeyAcceptedAlgorithms ssh-ed25519-cert-v01@openssh.com\nTrustedUserCAKeys {CA_PATH}\nAuthenticationMethods publickey\nAuthorizedKeysFile none\nAuthorizedKeysCommand none\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nHostbasedAuthentication no\nPermitRootLogin no\nAllowUsers {}\nForceCommand {command}\nDisableForwarding yes\nPermitTTY yes\nPermitUserEnvironment no\nPermitUserRC no\nUsePAM no\nStrictModes yes\nLogLevel VERBOSE\n",
-        binding.port, binding.user,
+        "Port {}\nHostKey {HOST_KEY_PATH}\nHostKeyAlgorithms ssh-ed25519\nPubkeyAuthentication yes\nPubkeyAcceptedAlgorithms {PUBLIC_ATTACH_CERTIFICATE_TYPE_V1}\nTrustedUserCAKeys {CA_PATH}\nAuthenticationMethods publickey\nAuthorizedPrincipalsFile none\nAuthorizedPrincipalsCommand {GATE_PATH} --authorized-principals %t %k\nAuthorizedPrincipalsCommandUser {}\nAuthorizedKeysFile none\nAuthorizedKeysCommand none\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nHostbasedAuthentication no\nPermitRootLogin no\nAllowUsers {}\nForceCommand {command}\nDisableForwarding yes\nPermitTTY yes\nPermitUserEnvironment no\nPermitUserRC no\nUsePAM no\nStrictModes yes\nLogLevel VERBOSE\n",
+        binding.port, binding.user, binding.user,
     )
     .into_bytes())
 }
@@ -264,9 +294,14 @@ struct ProtectedFile {
     mode: u32,
 }
 
+struct InstalledGateFiles {
+    configuration: ProtectedFile,
+    gate_executable: ProtectedFile,
+}
+
 fn check_installed_files(
     binding: &OpenSshGateBindingV1,
-) -> Result<ProtectedFile, OpenSshGatePhysicalErrorV1> {
+) -> Result<InstalledGateFiles, OpenSshGatePhysicalErrorV1> {
     let config = read_protected_file(Path::new(CONFIG_PATH), 4096, false)?;
     if digest(&config.bytes) != binding.gate_config_digest
         || config.bytes != expected_openssh_gate_config_v1(binding)?
@@ -297,12 +332,15 @@ fn check_installed_files(
     {
         return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
     }
-    read_protected_file(
+    let gate_executable = read_protected_file(
         &fs::canonicalize(GATE_PATH)?,
         MAXIMUM_EXECUTABLE_BYTES,
         true,
     )?;
-    Ok(config)
+    Ok(InstalledGateFiles {
+        configuration: config,
+        gate_executable,
+    })
 }
 
 fn read_protected_file(
@@ -402,16 +440,6 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
-fn hex_id(bytes: &[u8; 16]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut result = String::with_capacity(32);
-    for byte in bytes {
-        result.push(char::from(HEX[usize::from(byte >> 4)]));
-        result.push(char::from(HEX[usize::from(byte & 15)]));
-    }
-    result
-}
-
 /// Reports invalid installed files or a missing live daemon.
 #[derive(Debug, thiserror::Error)]
 pub enum OpenSshGatePhysicalErrorV1 {
@@ -454,5 +482,10 @@ mod tests {
         assert!(config.contains("DisableForwarding yes\n"));
         assert!(config.contains("--assignment-epoch 4 --principal-id"));
         assert!(config.contains("ForceCommand /usr/libexec/aos-sandbox-exec-gate"));
+        assert!(config.contains("AuthorizedPrincipalsFile none\n"));
+        assert!(config.contains("AuthorizedPrincipalsCommand /usr/libexec/aos-sandbox-exec-gate --authorized-principals %t %k\n"));
+        assert!(config.contains("AuthorizedPrincipalsCommandUser aos_exec\n"));
+        assert!(config.contains("AuthorizedKeysFile none\nAuthorizedKeysCommand none\n"));
+        assert!(config.contains("PermitUserEnvironment no\nPermitUserRC no\n"));
     }
 }

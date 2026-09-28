@@ -169,6 +169,12 @@ fn verify_static_login_uid_contents(
     nss_policy: &str,
     database: &str,
 ) -> Result<(), GuestProcessEffectErrorV1> {
+    // The certificate callback runs as the existing execution login, never
+    // root. A differently named UID-zero alias must not bypass this boundary.
+    if expected_uid == 0 {
+        return Err(GuestProcessEffectErrorV1::InvalidRequest);
+    }
+
     let mut found_policy = false;
     for line in nss_policy.lines() {
         let policy = line.split('#').next().unwrap_or("").trim();
@@ -264,6 +270,16 @@ mod tests {
         );
         assert!(
             verify_static_login_uid_contents("missing", 1001, "passwd: files\n", passwd).is_err()
+        );
+        assert!(verify_static_login_uid_contents("root", 0, "passwd: files\n", passwd).is_err());
+        assert!(
+            verify_static_login_uid_contents(
+                "aos_exec",
+                0,
+                "passwd: files\n",
+                "aos_exec:x:0:0::/:/bin/false\n"
+            )
+            .is_err()
         );
     }
 
