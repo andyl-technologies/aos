@@ -115,6 +115,7 @@ mod tests {
         })
         .collect::<Vec<_>>();
         let package = PackagePlan {
+            platform_versions: Default::default(),
             name: "example".into(),
             publication: Some(PackagePublicationMetadata {
                 version: "1.0.0".into(),

@@ -661,6 +661,7 @@ mod tests {
                 contributor_authorization_digest: digest("authorization"),
             },
             packages: vec![PackagePlan {
+                platform_versions: Default::default(),
                 name: "example".to_owned(),
                 publication: None,
                 platforms: platforms.clone(),
