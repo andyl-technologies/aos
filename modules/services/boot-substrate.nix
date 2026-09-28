@@ -58,12 +58,15 @@
   zfsPackage = config.aos.filesystems.zfs.package;
   protectedSandboxNetworkRoots =
     config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
+  protectedSandboxOwnerRoots =
+    config.aos.sandbox.controllerService.method46TpmFloor.required
+    || config.aos.sandbox.storageBroker.method46TpmFloor.required;
+  protectedSandboxRoots = protectedSandboxNetworkRoots || protectedSandboxOwnerRoots;
   varRootContext =
     config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
   varRootContextOption =
-    lib.optionalString protectedSandboxNetworkRoots ",rootcontext=${varRootContext}";
-  runtimeRootsExecutable =
-    "${pkgs.aosSelinuxRuntimeRootsForKernel config.system.build.kernel}/bin/aos-selinux-runtime-roots";
+    lib.optionalString protectedSandboxRoots ",rootcontext=${varRootContext}";
+  runtimeRootsExecutable = "${config.aos.security.selinux._runtimeRootsProvisioner}/bin/aos-selinux-runtime-roots";
   recoveryEnabledJson =
     if config.aos.boot.recovery.enable
     then "true"
@@ -156,13 +159,21 @@
           fi
         fi
         ${
-          if protectedSandboxNetworkRoots
+          if protectedSandboxRoots
           then ''
             # Establish the exact /var and /var/lib base before anything can
             # create a generically labeled state directory beneath it.
             /sysroot/usr/lib/systemd/aos-selinux-root-handoff \
               --launch-runtime-roots ${runtimeRootsExecutable} \
               --root /sysroot --prepare-var-base
+
+            ${lib.optionalString protectedSandboxOwnerRoots ''
+              # Same existing boot setup owner; no daemon credential copying,
+              # NV/journal creation, repair or new provisioning service.
+              /sysroot/usr/lib/systemd/aos-selinux-root-handoff \
+                --launch-runtime-roots ${runtimeRootsExecutable} \
+                --root /sysroot --prepare-sandbox-owner-roots
+            ''}
 
             # The protected base phase already created /var/lib, so the
             # generic mkdir cannot bypass its exact label and metadata checks.

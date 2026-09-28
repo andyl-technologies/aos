@@ -19,8 +19,8 @@ use sha2::{Digest as _, Sha256};
 
 use super::super::{FloorErrorV1, FloorProfileV1};
 use super::helper_protocol::{
-    HelperObservationV1, HelperOperationV1, LOCK_ACK_BYTES, RESPONSE_BYTES, decode_response_v1,
-    encode_hello_v1, encode_request_v1, require_lock_ack_v1,
+    HelperObservationV1, HelperOperationV1, LOCK_ACK_BYTES, RESPONSE_BYTES, decode_response_v2,
+    encode_auth_v2, encode_hello_v2, encode_request_v2, require_lock_ack_v2,
 };
 use super::image::MeasuredHelperImageV1;
 use super::service_policy::RetainedFloorServicePolicyV1;
@@ -64,6 +64,7 @@ impl PhysicalTpmNvIoV1 {
         locks: [ProtectedJournalLockCustodyV1; 2],
         launch_image: &crate::production_startup::Pid1LaunchImageV1,
     ) -> Result<Self, FloorErrorV1> {
+        super::confinement::require_owner(profile.endpoint())?;
         if Sha256::digest(salt_name).as_slice() != profile.salt_key_name_digest() {
             return Err(FloorErrorV1::Provisioning);
         }
@@ -76,7 +77,7 @@ impl PhysicalTpmNvIoV1 {
             locks[0].identity().map_err(|_| FloorErrorV1::Unavailable)?,
             locks[1].identity().map_err(|_| FloorErrorV1::Unavailable)?,
         ];
-        let hello = encode_hello_v1(profile.endpoint(), nonce, salt_name, auth, identities)?;
+        let hello = encode_hello_v2(profile.endpoint(), nonce, salt_name, identities)?;
         let (channel, child_channel) =
             SeqpacketSocket::pair_with_record_subjects().map_err(|_| FloorErrorV1::Unavailable)?;
         let child = OwnedHelperChildV1(
@@ -95,6 +96,7 @@ impl PhysicalTpmNvIoV1 {
             .process_identity()
             .map_err(|_| FloorErrorV1::Unavailable)?;
         image.require_executed(pid.get())?;
+        super::confinement::require_helper(profile.endpoint(), pid.get())?;
         image.revalidate()?;
 
         let mut owner = Self {
@@ -113,9 +115,15 @@ impl PhysicalTpmNvIoV1 {
         owner.service.require_child(&owner.pidfd)?;
         owner.send_frame(&hello[..], Some(&locks))?;
         let acknowledgment = owner.receive_frame(LOCK_ACK_BYTES)?;
-        require_lock_ack_v1(acknowledgment.payload(), nonce)?;
-        // Child acknowledges both validated lock-only OFDs before opening the
-        // TPM. It receives no journal data/writer API; later frames carry no FD.
+        require_lock_ack_v2(acknowledgment.payload(), nonce)?;
+        // Image/loader observation precedes HELLO. ACK means that the exact
+        // child validated both lock-only OFDs and became nondumpable. No secret
+        // or device access is permitted before this point.
+        owner.require_custody()?;
+        let authentication = encode_auth_v2(profile.endpoint(), nonce, auth)?;
+        owner.send_frame(&authentication[..], None)?;
+        drop(authentication);
+        // Later frames carry neither journal descriptors nor credentials.
         owner.read(profile.endpoint().nv_index())?;
         Ok(owner)
     }
@@ -159,6 +167,7 @@ impl PhysicalTpmNvIoV1 {
             return Err(FloorErrorV1::Unavailable);
         }
         self.image.revalidate()?;
+        super::confinement::require_helper(self.profile.endpoint(), self.child.0.id())?;
         self.service.revalidate()?;
         self.service.require_child(&self.pidfd)?;
         if !self
@@ -177,12 +186,12 @@ impl PhysicalTpmNvIoV1 {
         input: [u8; 32],
     ) -> Result<HelperObservationV1, FloorErrorV1> {
         self.require_custody()?;
-        let request = encode_request_v1(operation, self.nonce, self.sequence, input)?;
+        let request = encode_request_v2(operation, self.nonce, self.sequence, input)?;
         let result = (|| {
             self.send_frame(&request, None)?;
             let response = self.receive_frame(RESPONSE_BYTES)?;
             let observation =
-                decode_response_v1(response.payload(), operation, self.nonce, self.sequence)?;
+                decode_response_v2(response.payload(), operation, self.nonce, self.sequence)?;
             self.require_custody()?;
             self.sequence = self
                 .sequence

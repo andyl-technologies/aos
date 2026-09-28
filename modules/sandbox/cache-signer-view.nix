@@ -7,13 +7,14 @@
 }: let
   cfg = config.aos.sandbox.cacheSignerView;
   controller = config.aos.sandbox.controller;
+  preparer = import ./_view-preparer.nix {inherit config pkgs;};
   journalSource = "/var/lib/aos/sandbox/cache-residency-journals";
   objectSource = "/var/lib/aos/sandbox/cache-residency-objects";
   journalView = "/run/aos/sandbox-cache-signer-journals";
   objectView = "/run/aos/sandbox-cache-signer-objects";
   otherUsers = builtins.attrValues (lib.filterAttrs (name: _: name != "aos-cache-signer") config.aos.users.users);
   otherGroups = builtins.attrValues (lib.filterAttrs (name: _: name != "aos-cache-signer") config.aos.users.groups);
-  prepareViews = pkgs.writeShellScriptBin "aos-sandbox-cache-signer-views" ''
+  prepareViews = preparer.writeScript "aos-sandbox-cache-signer-views" ''
     set -eu
 
     controller_uid=${toString controller.uid}
@@ -23,8 +24,8 @@
 
     require_root_directory() {
       test ! -L "$1"
-      test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g' "$1")" = directory:0:0
-      mode="$(${pkgs.coreutils}/bin/stat --format='%a' "$1")"
+      test "$(${preparer.coreutils}/stat --format='%F:%u:%g' "$1")" = directory:0:0
+      mode="$(${preparer.coreutils}/stat --format='%a' "$1")"
       test $((8#$mode & 022)) -eq 0
       # The signer must stat original Cache root names without entering them.
       test $((8#$mode & 001)) -ne 0
@@ -32,7 +33,7 @@
 
     for directory in /var /var/lib /var/lib/aos /var/lib/aos/sandbox /run /run/aos; do
       if ! test -e "$directory"; then
-        ${pkgs.coreutils}/bin/mkdir --mode=0755 "$directory"
+        ${preparer.coreutils}/mkdir --mode=0755 "$directory"
       fi
       require_root_directory "$directory"
     done
@@ -43,7 +44,7 @@
     test ! -e "$legacy" && test ! -L "$legacy"
 
     test ! -L ${journalSource}
-    test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g:%a' ${journalSource})" = \
+    test "$(${preparer.coreutils}/stat --format='%F:%u:%g:%a' ${journalSource})" = \
       "directory:$controller_uid:$controller_gid:700"
     for entry in ${journalSource}/* ${journalSource}/.[!.]* ${journalSource}/..?*; do
       if ! test -e "$entry" && ! test -L "$entry"; then
@@ -57,7 +58,7 @@
         *) exit 1 ;;
       esac
       test ! -L "$entry"
-      test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g:%a:%h' "$entry")" = \
+      test "$(${preparer.coreutils}/stat --format='%F:%u:%g:%a:%h' "$entry")" = \
         "regular file:$controller_uid:$controller_gid:600:1"
     done
 
@@ -65,16 +66,16 @@
       exit 1
     fi
     if ! test -e ${objectSource}; then
-      ${pkgs.coreutils}/bin/mkdir --mode=0700 ${objectSource}
-      ${pkgs.coreutils}/bin/chown "$controller_uid:$controller_gid" ${objectSource}
+      ${preparer.coreutils}/mkdir --mode=0700 ${objectSource}
+      ${preparer.coreutils}/chown "$controller_uid:$controller_gid" ${objectSource}
     fi
-    test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g:%a' ${objectSource})" = \
+    test "$(${preparer.coreutils}/stat --format='%F:%u:%g:%a' ${objectSource})" = \
       "directory:$controller_uid:$controller_gid:700"
     for name in .owner.lock owner-state; do
       entry=${objectSource}/$name
       if test -e "$entry" || test -L "$entry"; then
         test ! -L "$entry"
-        test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g:%a:%h' "$entry")" = \
+        test "$(${preparer.coreutils}/stat --format='%F:%u:%g:%a:%h' "$entry")" = \
           "regular file:$controller_uid:$controller_gid:600:1"
       fi
     done
@@ -82,35 +83,35 @@
     for view in ${journalView} ${objectView}; do
       test ! -L "$view"
       if ! test -e "$view"; then
-        ${pkgs.coreutils}/bin/mkdir --mode=0700 "$view"
+        ${preparer.coreutils}/mkdir --mode=0700 "$view"
       fi
-      test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g:%a' "$view")" = directory:0:0:700
-      if ${pkgs.util-linux}/bin/findmnt --mountpoint "$view" --noheadings >/dev/null; then
+      test "$(${preparer.coreutils}/stat --format='%F:%u:%g:%a' "$view")" = directory:0:0:700
+      if ${preparer.utilLinux}/findmnt --mountpoint "$view" --noheadings >/dev/null; then
         exit 1
       fi
     done
 
-    ${pkgs.util-linux}/bin/mount --bind \
+    ${preparer.utilLinux}/mount --internal-only --no-mtab --bind \
       --map-users "$controller_uid:$signer_uid:1" \
       --map-groups "$controller_gid:$signer_gid:1" \
       --options ro,nosuid,nodev,noexec,nosymfollow \
       ${journalSource} ${journalView}
-    trap '${pkgs.util-linux}/bin/umount --no-canonicalize ${journalView}' EXIT
-    ${pkgs.util-linux}/bin/mount --bind \
+    trap '${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize ${journalView}' EXIT
+    ${preparer.utilLinux}/mount --internal-only --no-mtab --bind \
       --map-users "$controller_uid:$signer_uid:1" \
       --map-groups "$controller_gid:$signer_gid:1" \
       --options ro,nosuid,nodev,noexec,nosymfollow \
       ${objectSource} ${objectView}
-    trap '${pkgs.util-linux}/bin/umount --no-canonicalize ${objectView}; ${pkgs.util-linux}/bin/umount --no-canonicalize ${journalView}' EXIT
+    trap '${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize ${objectView}; ${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize ${journalView}' EXIT
 
     for pair in '${journalSource}:${journalView}' '${objectSource}:${objectView}'; do
       source="''${pair%%:*}"
       view="''${pair#*:}"
-      test "$(${pkgs.coreutils}/bin/stat --format='%d:%i' "$source")" = \
-        "$(${pkgs.coreutils}/bin/stat --format='%d:%i' "$view")"
-      test "$(${pkgs.coreutils}/bin/stat --format='%F:%u:%g:%a' "$view")" = \
+      test "$(${preparer.coreutils}/stat --format='%d:%i' "$source")" = \
+        "$(${preparer.coreutils}/stat --format='%d:%i' "$view")"
+      test "$(${preparer.coreutils}/stat --format='%F:%u:%g:%a' "$view")" = \
         "directory:$signer_uid:$signer_gid:700"
-      options="$(${pkgs.util-linux}/bin/findmnt --noheadings --mountpoint "$view" --output VFS-OPTIONS)"
+      options="$(${preparer.utilLinux}/findmnt --noheadings --mountpoint "$view" --output VFS-OPTIONS)"
       for option in ro nosuid nodev noexec nosymfollow; do
         case ",$options," in
           *,$option,*) ;;
@@ -120,14 +121,29 @@
     done
     trap - EXIT
   '';
-  stopViews = pkgs.writeShellScriptBin "aos-sandbox-cache-signer-views-stop" ''
+  stopViews = preparer.writeScript "aos-sandbox-cache-signer-views-stop" ''
     status=0
-    ${pkgs.util-linux}/bin/umount --no-canonicalize ${objectView} || status=1
-    ${pkgs.util-linux}/bin/umount --no-canonicalize ${journalView} || status=1
+    ${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize ${objectView} || status=1
+    ${preparer.utilLinux}/umount --internal-only --no-mtab --no-canonicalize ${journalView} || status=1
     exit "$status"
   '';
 in {
   options.aos.sandbox.cacheSignerView = {
+    _preparerPackage = lib.mkOption {
+      type = lib.types.package;
+      internal = true;
+      readOnly = true;
+      default = prepareViews;
+      description = "Exact immutable checked cache view entrypoint selected by the production policy.";
+    };
+
+    _stopPackage = lib.mkOption {
+      type = lib.types.package;
+      internal = true;
+      readOnly = true;
+      default = stopViews;
+      description = "Exact immutable checked Cache view teardown entrypoint.";
+    };
     enable = lib.mkEnableOption "the read-only idmapped Cache signer journal and object views";
 
     uid = lib.mkOption {
@@ -182,23 +198,26 @@ in {
         BindsTo = ["aos-sandbox-cache-journal-view.service"];
         RequiresMountsFor = ["/var/lib/aos/sandbox"];
       };
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = "${prepareViews}/bin/aos-sandbox-cache-signer-views";
-        ExecStop = "${stopViews}/bin/aos-sandbox-cache-signer-views-stop";
-        User = "root";
-        Group = "root";
-        UMask = "0077";
-        CapabilityBoundingSet = [
-          "CAP_CHOWN"
-          "CAP_DAC_READ_SEARCH"
-          "CAP_SETGID"
-          "CAP_SETUID"
-          "CAP_SYS_ADMIN"
-        ];
-        RestrictAddressFamilies = ["AF_UNIX"];
-      };
+      serviceConfig =
+        preparer.serviceConfig
+        // {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          SELinuxContext = lib.mkIf preparer.confined "system_u:system_r:aos_sandbox_cache_view_preparer_t";
+          ExecStart = "${prepareViews}/bin/aos-sandbox-cache-signer-views";
+          ExecStop = "${stopViews}/bin/aos-sandbox-cache-signer-views-stop";
+          User = "root";
+          Group = "root";
+          UMask = "0077";
+          CapabilityBoundingSet = [
+            "CAP_CHOWN"
+            "CAP_DAC_READ_SEARCH"
+            "CAP_SETGID"
+            "CAP_SETUID"
+            "CAP_SYS_ADMIN"
+          ];
+          RestrictAddressFamilies = ["AF_UNIX"];
+        };
     };
   };
 }

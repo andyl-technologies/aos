@@ -3,10 +3,24 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 
 import effective_policy
+
+
+@dataclass(frozen=True)
+class FakeAttribute:
+    """Expands a source attribute without hiding its concrete members."""
+
+    name: str
+    members: tuple[str, ...]
+
+    def expand(self) -> tuple[str, ...]:
+        return self.members
+
+    def __str__(self) -> str:
+        return self.name
 
 
 @dataclass(frozen=True)
@@ -16,6 +30,7 @@ class FakeRule:
     text: str
     active: bool = True
     default: str | None = None
+    source: str | FakeAttribute = ""
 
     def enabled(self) -> bool:
         return self.active
@@ -66,15 +81,15 @@ class FakeQuery:
 
     def results(self) -> list[FakeRule]:
         if self.criteria["ruletype"] == ["allow"]:
-            source = str(self.criteria["source"])
+            source = self.criteria.get("source")
             target = self.criteria.get("target")
             object_class = str(self.criteria["tclass"][0])
             permission = str(self.criteria["perms"][0])
 
             return [
-                rule
+                replace(rule, source=rule.source or access.source)
                 for access, rules in self.policy.allows.items()
-                if access.source == source
+                if (source is None or access.source == str(source))
                 and (target is None or access.target == str(target))
                 and access.object_class == object_class
                 and access.permission == permission
@@ -82,6 +97,14 @@ class FakeQuery:
             ]
 
         if "default" in self.criteria:
+            if "source" not in self.criteria:
+                return [
+                    rule
+                    for transition, rules in self.policy.transitions.items()
+                    if transition.default == str(self.criteria["default"])
+                    and transition.object_class == str(self.criteria["tclass"][0])
+                    for rule in rules
+                ]
             transition = effective_policy.Transition(
                 str(self.criteria["source"]),
                 str(self.criteria["target"]),
@@ -157,6 +180,8 @@ class EffectivePolicyTest(unittest.TestCase):
             len(evidence),
             len(effective_policy.ENFORCING_DOMAINS)
             + len(effective_policy.TRANSITIONS)
+            + len(effective_policy.owner_policy.NO_DEFAULT_ENTRY)
+            + len(effective_policy.owner_policy.ROOT_CUSTODY_CUTS)
             + 1
             + len(effective_policy.FORBIDDEN_PROVISIONER_TRANSITION_SOURCES)
             + len(effective_policy.GUARDED_OBJECT_TYPES)
@@ -314,6 +339,91 @@ class EffectivePolicyTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_view_preparer_cannot_modify_generic_ancestry_or_foreign_target(self) -> None:
+        for target, object_class, permission in (
+            ("var_lib_t", "dir", "add_name"),
+            ("aos_sandbox_view_parent_t", "dir", "write"),
+            ("aos_sandbox_cache_view_mount_t", "dir", "mounton"),
+            ("bin_t", "file", "execute_no_trans"),
+            ("aos_sandbox_source_journal_t", "file", "open"),
+        ):
+            with self.subTest(target=target, permission=permission):
+                policy = FakePolicy()
+                access = effective_policy.Access(
+                    "aos_sandbox_source_view_preparer_t", target, object_class, permission,
+                )
+                policy.allows[access] = [FakeRule("foreign preparation permission", active=False)]
+                with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_static_view_provider_dac_search_never_opens_protected_data(self) -> None:
+        for target in (
+            "aos_sandbox_source_journal_t",
+            "aos_sandbox_cache_journal_t",
+            "aos_sandbox_cache_object_t",
+            "aos_sandbox_source_signer_credential_t",
+            "aos_sandbox_controller_credential_t",
+            "aos_method46_storage_floor_t",
+            "aos_method46_controller_lock_t",
+        ):
+            with self.subTest(target=target):
+                policy = FakePolicy()
+                access = effective_policy.Access(
+                    "aos_sandbox_runtime_roots_t", target, "file", "open",
+                )
+                policy.allows[access] = [FakeRule("foreign protected data access", active=False)]
+                with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_signer_has_no_write_capability_or_foreign_seed_fallback(self) -> None:
+        for domain, target, object_class, permission in (
+            ("aos_sandbox_source_signer_t", "aos_sandbox_source_journal_t", "file", "write"),
+            ("aos_sandbox_cache_signer_t", "aos_sandbox_cache_signer_t", "capability", "dac_read_search"),
+            ("init_t", "aos_sandbox_source_signer_credential_t", "file", "read"),
+            ("aos_sandbox_controller_t", "aos_sandbox_cache_signer_credential_t", "file", "read"),
+        ):
+            with self.subTest(domain=domain, permission=permission):
+                policy = FakePolicy()
+                access = effective_policy.Access(domain, target, object_class, permission)
+                policy.allows[access] = [FakeRule("signer authority widening")]
+                with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_protected_association_is_a_required_object_to_superblock_grant(self) -> None:
+        for object_type, filesystem in (
+            ("aos_sandbox_source_journal_t", "fs_t"),
+            ("aos_sandbox_cache_view_mount_t", "tmpfs_t"),
+            ("aos_method46_tpm_device_t", "device_t"),
+        ):
+            with self.subTest(object_type=object_type):
+                policy = FakePolicy()
+                access = effective_policy.Access(object_type, filesystem, "filesystem", "associate")
+                policy.allows[access] = []
+                with self.assertRaisesRegex(ValueError, "missing effective allow"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_view_provider_entry_preserves_closed_boot_handoff(self) -> None:
+        cache_preparer = "aos_sandbox_cache_view_preparer_t"
+        for source in (effective_policy.HANDOFF_DOMAIN, cache_preparer):
+            self.assertIn(
+                effective_policy.Transition(
+                    source,
+                    effective_policy.PROVISIONER_EXECUTABLE,
+                    "process",
+                    effective_policy.PROVISIONER_DOMAIN,
+                ),
+                effective_policy.TRANSITIONS,
+            )
+
+        self.assertIn("init_t", effective_policy.FORBIDDEN_PROVISIONER_TRANSITION_SOURCES)
+        self.assertNotIn(cache_preparer, effective_policy.FORBIDDEN_PROVISIONER_TRANSITION_SOURCES)
+        self.assertIn(cache_preparer, effective_policy.owner_policy.NO_DEFAULT_ENTRY)
+        self.assertNotIn(effective_policy.PROVISIONER_DOMAIN, effective_policy.owner_policy.NO_DEFAULT_ENTRY)
+        self.assertNotIn(
+            (effective_policy.PROVISIONER_DOMAIN, effective_policy.PROVISIONER_EXECUTABLE),
+            effective_policy.DOMAIN_EXECUTABLES,
+        )
 
     def test_missing_transition_fails(self) -> None:
         policy = FakePolicy()
@@ -476,6 +586,118 @@ class EffectivePolicyTest(unittest.TestCase):
                 "nosuid_transition",
             )
         )
+
+    def test_normal_owner_has_no_shared_elf_default_promotion(self) -> None:
+        policy = FakePolicy()
+        transition = effective_policy.Transition(
+            "init_t", "aos_sandbox_policy_authority_exec_t", "process",
+            "aos_sandbox_policy_authority_t",
+        )
+        policy.transitions[transition] = [
+            FakeRule("automatic Root entry", default=transition.default),
+        ]
+        with self.assertRaisesRegex(ValueError, "automatic entry transition"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_unknown_role_cannot_capture_or_write_root_endpoint(self) -> None:
+        for object_class, permission in (
+            ("fd", "use"), ("unix_stream_socket", "write"),
+            ("file", "read"), ("process", "ptrace"), ("process", "transition"),
+        ):
+            with self.subTest(object_class=object_class, permission=permission):
+                policy = FakePolicy()
+                access = effective_policy.Access(
+                    "unlisted_actor_t", "aos_sandbox_policy_authority_t",
+                    object_class, permission,
+                )
+                policy.allows[access] = [FakeRule("unknown foreign Root custody")]
+                with self.assertRaisesRegex(ValueError, "foreign normal Root custody"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_source_attribute_and_inactive_foreign_root_grants_fail(self) -> None:
+        for active in (False, True):
+            with self.subTest(active=active):
+                policy = FakePolicy()
+                attribute = FakeAttribute(
+                    "root_capture_attribute", ("init_t", "unlisted_actor_t"),
+                )
+                access = effective_policy.Access(
+                    attribute.name, "aos_sandbox_policy_authority_t", "fd", "use",
+                )
+                policy.allows[access] = [FakeRule(
+                    "attribute-expanded Root custody", active=active, source=attribute,
+                )]
+                with self.assertRaisesRegex(ValueError, "foreign normal Root custody"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_controller_connect_does_not_grant_root_endpoint_ownership(self) -> None:
+        for object_class, permission in (
+            ("fd", "use"), ("unix_stream_socket", "read"),
+            ("unix_stream_socket", "write"),
+        ):
+            policy = FakePolicy()
+            access = effective_policy.Access(
+                "aos_sandbox_controller_t", "aos_sandbox_policy_authority_t",
+                object_class, permission,
+            )
+            policy.allows[access] = [FakeRule("delegated Root accepted FD")]
+            with self.assertRaisesRegex(ValueError, "foreign normal Root custody"):
+                effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_helper_cannot_open_unlock_or_truncate_loaned_lock(self) -> None:
+        for permission in ("open", "lock", "setattr"):
+            policy = FakePolicy()
+            access = effective_policy.Access(
+                "aos_method46_controller_helper_t", "aos_method46_controller_lock_t",
+                "file", permission,
+            )
+            policy.allows[access] = [FakeRule("lock pathname/unlock/truncate escape")]
+            with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_helper_cannot_enter_other_owner_or_read_its_credentials(self) -> None:
+        for access in (
+            effective_policy.Access(
+                "aos_sandbox_controller_t", "aos_method46_storage_helper_t",
+                "process", "transition",
+            ),
+            effective_policy.Access(
+                "aos_method46_storage_helper_t", "aos_sandbox_storage_credential_t",
+                "file", "read",
+            ),
+            effective_policy.Access(
+                "aos_method46_storage_helper_t", "aos_method46_storage_floor_t",
+                "file", "read",
+            ),
+        ):
+            policy = FakePolicy()
+            policy.allows[access] = [FakeRule("crossed helper custody")]
+            with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_owner_cannot_change_manager_or_policy_or_cgroup(self) -> None:
+        for access in (
+            effective_policy.Access(
+                "aos_sandbox_controller_t", "init_t", "system", "reload",
+            ),
+            effective_policy.Access(
+                "aos_sandbox_storage_t", "systemd_unit_file_t", "service", "start",
+            ),
+            effective_policy.Access(
+                "aos_sandbox_policy_authority_t", "security_t", "security", "setenforce",
+            ),
+            effective_policy.Access(
+                "aos_sandbox_controller_t", "cgroup_t", "file", "write",
+            ),
+            effective_policy.Access(
+                "aos_sandbox_policy_authority_t", "aos_sandbox_policy_authority_t",
+                "process", "ptrace",
+            ),
+        ):
+            policy = FakePolicy()
+            policy.allows[access] = [FakeRule("owner authority escape")]
+            with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                effective_policy.check_policy(FAKE_SETOOLS, policy)
 
     def test_missing_nspawn_transition_fails(self) -> None:
         policy = FakePolicy()

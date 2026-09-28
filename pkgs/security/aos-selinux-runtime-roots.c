@@ -37,6 +37,20 @@
 #define MAXIMUM_POLICY_BYTES (64U * 1024U * 1024U)
 #define MAXIMUM_CONTEXT_BYTES 256U
 
+/* These values come only from the immutable package recipe, never argv/env. */
+#ifndef AOS_CONTROLLER_UID
+#define AOS_CONTROLLER_UID 811U
+#endif
+#ifndef AOS_CONTROLLER_GID
+#define AOS_CONTROLLER_GID 811U
+#endif
+#ifndef AOS_CONTROLLER_FLOOR_REQUIRED
+#define AOS_CONTROLLER_FLOOR_REQUIRED 0
+#endif
+#ifndef AOS_STORAGE_FLOOR_REQUIRED
+#define AOS_STORAGE_FLOOR_REQUIRED 0
+#endif
+
 extern const unsigned char _binary_expected_policy_bin_start[];
 extern const unsigned char _binary_expected_policy_bin_end[];
 
@@ -45,6 +59,8 @@ struct directory_spec {
         const char *display_path;
         const char *context;
         mode_t mode;
+        uid_t owner;
+        gid_t group;
 };
 
 struct directory_identity {
@@ -55,30 +71,30 @@ struct directory_identity {
 };
 
 static const struct directory_spec var_lib_spec = {
-        "lib", "/var/lib", VAR_LIB_CONTEXT, 0755,
+        "lib", "/var/lib", VAR_LIB_CONTEXT, 0755, 0, 0,
 };
 static const struct directory_spec aos_spec = {
-        "aos", "/var/lib/aos", VAR_LIB_CONTEXT, 0755,
+        "aos", "/var/lib/aos", VAR_LIB_CONTEXT, 0755, 0, 0,
 };
 static const struct directory_spec network_spec = {
-        "sandbox-network", "/var/lib/aos/sandbox-network", NETWORK_ROOT_CONTEXT, 0700,
+        "sandbox-network", "/var/lib/aos/sandbox-network", NETWORK_ROOT_CONTEXT, 0700, 0, 0,
 };
 static const struct directory_spec broker_state_spec = {
-        "broker-state", "/var/lib/aos/sandbox-network/broker-state", NETWORK_STATE_CONTEXT, 0700,
+        "broker-state", "/var/lib/aos/sandbox-network/broker-state", NETWORK_STATE_CONTEXT, 0700, 0, 0,
 };
 static const struct directory_spec inspector_spec = {
         "namespace-inspector", "/var/lib/aos/sandbox-network/namespace-inspector",
-        INSPECTOR_ROOT_CONTEXT, 0700,
+        INSPECTOR_ROOT_CONTEXT, 0700, 0, 0,
 };
 static const struct directory_spec inspector_children[] = {
         {"expected-staging", "/var/lib/aos/sandbox-network/namespace-inspector/expected-staging",
-         EXPECTED_STAGING_CONTEXT, 0700},
+         EXPECTED_STAGING_CONTEXT, 0700, 0, 0},
         {"expected-final", "/var/lib/aos/sandbox-network/namespace-inspector/expected-final",
-         EXPECTED_FINAL_CONTEXT, 0700},
+         EXPECTED_FINAL_CONTEXT, 0700, 0, 0},
         {"spent-staging", "/var/lib/aos/sandbox-network/namespace-inspector/spent-staging",
-         SPENT_STAGING_CONTEXT, 0700},
+         SPENT_STAGING_CONTEXT, 0700, 0, 0},
         {"spent-final", "/var/lib/aos/sandbox-network/namespace-inspector/spent-final",
-         SPENT_FINAL_CONTEXT, 0700},
+         SPENT_FINAL_CONTEXT, 0700, 0, 0},
 };
 
 static void errorf(const char *format, ...) {
@@ -410,10 +426,10 @@ static int inspect_directory(int fd, const struct directory_spec *spec, uint64_t
                 errorf("cannot stat '%s': %s", spec->display_path, strerror(errno));
                 return -1;
         }
-        if (!S_ISDIR(st.st_mode) || st.st_uid != 0 || st.st_gid != 0 ||
+        if (!S_ISDIR(st.st_mode) || st.st_uid != spec->owner || st.st_gid != spec->group ||
             (st.st_mode & 07777) != spec->mode) {
-                errorf("'%s' is not the exact root:root %04o directory", spec->display_path,
-                       spec->mode);
+                errorf("'%s' is not the exact %u:%u %04o directory", spec->display_path,
+                       (unsigned)spec->owner, (unsigned)spec->group, spec->mode);
                 errno = EPERM;
                 return -1;
         }
@@ -491,17 +507,30 @@ static int open_or_create_directory(int parent_fd, const struct directory_spec *
         static const uint64_t resolve =
                 RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV;
         int fd;
+        bool created = false;
 
         fd = openat2_directory(parent_fd, spec->name, resolve);
         if (fd < 0 && errno == ENOENT) {
                 if (create_directory(parent_fd, spec) < 0)
                         return -1;
+                created = true;
                 fd = openat2_directory(parent_fd, spec->name, resolve);
         }
         if (fd < 0) {
                 errorf("cannot open '%s' without aliases or mount crossings: %s",
                        spec->display_path, strerror(errno));
                 return -1;
+        }
+        if (created && (spec->owner != 0 || spec->group != 0)) {
+                struct directory_spec birth = *spec;
+                struct directory_identity original;
+                birth.owner = 0;
+                birth.group = 0;
+                /* Only this just-created, already-labelled held inode may
+                 * change owner. Existing wrong ownership is never repaired. */
+                if (inspect_directory(fd, &birth, mount_id, device, &original) < 0 ||
+                    fchown(fd, spec->owner, spec->group) < 0)
+                        goto fail;
         }
         if (inspect_directory(fd, spec, mount_id, device, identity) < 0)
                 goto fail;
@@ -802,9 +831,122 @@ static int select_var_device(struct stat *device_st) {
         return -1;
 }
 
-static int provision(const char *root_path, bool prepare_network_roots) {
+struct owner_tree_spec {
+        bool enabled;
+        struct directory_spec root;
+        struct directory_spec broker;
+        struct directory_spec floor;
+        bool separate_floor;
+};
+
+static const struct owner_tree_spec owner_trees[] = {
+        {
+                AOS_CONTROLLER_FLOOR_REQUIRED,
+                {"sandboxd", "/var/lib/aos/sandboxd", "system_u:object_r:aos_sandbox_controller_state_t",
+                 0700, AOS_CONTROLLER_UID, AOS_CONTROLLER_GID},
+                {"broker-session", "/var/lib/aos/sandboxd/broker-session", "system_u:object_r:aos_sandbox_controller_state_t",
+                 0700, AOS_CONTROLLER_UID, AOS_CONTROLLER_GID},
+                {"storage", "/var/lib/aos/sandboxd/broker-session/storage", "system_u:object_r:aos_method46_controller_floor_t",
+                 0700, AOS_CONTROLLER_UID, AOS_CONTROLLER_GID},
+                true,
+        },
+        {
+                AOS_STORAGE_FLOOR_REQUIRED,
+                {"sandbox-storage", "/var/lib/aos/sandbox-storage", "system_u:object_r:aos_sandbox_storage_state_t",
+                 0700, 0, 0},
+                {"broker-session", "/var/lib/aos/sandbox-storage/broker-session", "system_u:object_r:aos_method46_storage_floor_t",
+                 0700, 0, 0},
+                {NULL, NULL, NULL, 0, 0, 0},
+                false,
+        },
+};
+
+static int owner_directory_step(int parent, const struct directory_spec *spec,
+                                uint64_t mount_id, dev_t device, bool create,
+                                struct directory_identity *identity) {
+        int fd = -1;
+        if (create)
+                return open_or_create_directory(parent, spec, mount_id, device, identity);
+        if (open_existing_directory(parent, spec, mount_id, device, &fd) < 0)
+                return -2;
+        return fd;
+}
+
+static int walk_owner_tree(int aos_fd, const struct owner_tree_spec *tree,
+                           uint64_t mount_id, dev_t device, bool create) {
+        struct directory_identity identities[3];
+        const struct directory_spec *specs[] = {&tree->root, &tree->broker, &tree->floor};
+        int descriptors[3] = {-1, -1, -1};
+        size_t count = tree->separate_floor ? 3 : 2;
+        int parent = aos_fd;
+        int result = -1;
+
+        for (size_t index = 0; index < count; ++index) {
+                descriptors[index] = owner_directory_step(parent, specs[index], mount_id,
+                                                         device, create, &identities[index]);
+                if (descriptors[index] == -1 && !create) {
+                        result = 0;
+                        goto out;
+                }
+                if (descriptors[index] < 0)
+                        goto out;
+                /* Preflight's existing opener also validates every fixed inode. */
+                if (inspect_directory(descriptors[index], specs[index], mount_id,
+                                      device, &identities[index]) < 0)
+                        goto out;
+                parent = descriptors[index];
+        }
+        if (identities_are_distinct(identities, count) < 0)
+                goto out;
+        parent = aos_fd;
+        for (size_t index = 0; index < count; ++index) {
+                if (reopen_matches(parent, specs[index], mount_id, device, &identities[index]) < 0)
+                        goto out;
+                parent = descriptors[index];
+        }
+        result = 0;
+out:
+        for (size_t index = 0; index < count; ++index) {
+                if (descriptors[index] >= 0)
+                        close(descriptors[index]);
+        }
+        return result;
+}
+
+static int prepare_owner_roots(int lib_fd, uint64_t mount_id, dev_t device) {
+        struct directory_identity identity;
+        int aos_fd = -1;
+        int result = -1;
+
+        /* Validate every existing peer before creating anything missing. */
+        if (open_existing_directory(lib_fd, &aos_spec, mount_id, device, &aos_fd) < 0)
+                return -1;
+        if (aos_fd >= 0) {
+                for (size_t index = 0; index < sizeof(owner_trees) / sizeof(owner_trees[0]); ++index) {
+                        if (owner_trees[index].enabled &&
+                            walk_owner_tree(aos_fd, &owner_trees[index], mount_id, device, false) < 0)
+                                goto out;
+                }
+                close(aos_fd);
+        }
+        aos_fd = open_or_create_directory(lib_fd, &aos_spec, mount_id, device, &identity);
+        if (aos_fd < 0)
+                return -1;
+        for (size_t index = 0; index < sizeof(owner_trees) / sizeof(owner_trees[0]); ++index) {
+                if (owner_trees[index].enabled &&
+                    walk_owner_tree(aos_fd, &owner_trees[index], mount_id, device, true) < 0)
+                        goto out;
+        }
+        result = reopen_matches(lib_fd, &aos_spec, mount_id, device, &identity);
+out:
+        if (aos_fd >= 0)
+                close(aos_fd);
+        return result;
+}
+
+static int provision(const char *root_path, bool prepare_network_roots, bool prepare_owners) {
         static const struct directory_spec var_spec = {
-                "var", "/var", VAR_CONTEXT, 0755,
+                "var", "/var", VAR_CONTEXT, 0755, 0, 0,
         };
         static const char *const network_children[] = {"broker-state", "namespace-inspector"};
         static const char *const inspector_child_names[] = {
@@ -873,6 +1015,8 @@ static int provision(const char *root_path, bool prepare_network_roots) {
         if (reopen_var_matches(root_fd, &var_spec, var_mount_id, var_st.st_dev, &identities[0]) <
                     0 ||
             reopen_matches(var_fd, &var_lib_spec, var_mount_id, var_st.st_dev, &identities[1]) < 0)
+                goto out;
+        if (prepare_owners && prepare_owner_roots(lib_fd, var_mount_id, var_st.st_dev) < 0)
                 goto out;
         if (!prepare_network_roots) {
                 if (verify_ext4_mount(var_mount_id, var_st.st_dev) < 0 ||
@@ -1012,19 +1156,39 @@ out:
         return result;
 }
 
+#include "view-roots.h"
+
 int main(int argc, char **argv) {
         bool prepare_network_roots;
+        bool prepare_owners = false;
+
+        if (argc == 4 && strcmp(argv[1], "--root") == 0 && strcmp(argv[2], "/") == 0 &&
+            strcmp(argv[3], "--prepare-sandbox-view-roots") == 0) {
+                if ((!AOS_SOURCE_VIEW_REQUIRED && !AOS_CACHE_VIEW_REQUIRED) ||
+                    verify_selinux_authority() < 0)
+                        return 1;
+                return provision_view_roots() < 0 ? 1 : 0;
+        }
 
         if (argc != 4 || strcmp(argv[1], "--root") != 0 ||
             (strcmp(argv[2], "/sysroot") != 0 && strcmp(argv[2], "/") != 0)) {
                 errorf("usage: aos-selinux-runtime-roots --root /sysroot|/ "
-                       "--prepare-var-base|--prepare-sandbox-network-roots");
+                       "--prepare-var-base|--prepare-sandbox-network-roots|"
+                       "--prepare-sandbox-owner-roots|--prepare-sandbox-view-roots");
                 return 2;
         }
         if (strcmp(argv[3], "--prepare-var-base") == 0)
                 prepare_network_roots = false;
         else if (strcmp(argv[3], "--prepare-sandbox-network-roots") == 0)
                 prepare_network_roots = true;
+        else if (strcmp(argv[3], "--prepare-sandbox-owner-roots") == 0) {
+                prepare_network_roots = false;
+                prepare_owners = true;
+                if (!AOS_CONTROLLER_FLOOR_REQUIRED && !AOS_STORAGE_FLOOR_REQUIRED) {
+                        errorf("owner preparation is not enabled in this immutable image");
+                        return 2;
+                }
+        }
         else {
                 errorf("unknown preparation phase '%s'", argv[3]);
                 return 2;
@@ -1036,7 +1200,7 @@ int main(int argc, char **argv) {
         }
         if (verify_selinux_authority() < 0)
                 return 1;
-        if (provision(argv[2], prepare_network_roots) < 0)
+        if (provision(argv[2], prepare_network_roots, prepare_owners) < 0)
                 return 1;
 
         printf("aos-selinux-runtime-roots: verified %s in %s\n", argv[3],

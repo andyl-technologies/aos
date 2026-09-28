@@ -12,6 +12,11 @@
   aos-netd,
   aos-filesystem-fuse-worker,
   aos-sandbox-zfs-worker,
+  aos-sandboxd,
+  aos-storaged,
+  aos-method46-tpm-helper,
+  aos-sandbox-view-preparer-tools,
+  viewPreparers ? [],
 }: let
   policyVersion = "33";
   policySupport = ./_aos-selinux-production-policy;
@@ -24,6 +29,31 @@
   exactPublisherLabel =
     builtins.match "[a-z0-9]{32}-aos-sandbox-zfs-worker-[0-9]+\\.[0-9]+\\.[0-9]+" publisherBasename
     != null;
+  exactPackageBasename = name: package: let
+    basename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString package));
+  in
+    if builtins.match "[a-z0-9]{32}-${name}-[0-9]+\\.[0-9]+\\.[0-9]+" basename != null
+    then builtins.replaceStrings ["."] ["\\."] basename
+    else throw "${name} SELinux label requires its exact evaluated package root";
+  ownerModule = builtins.toFile "aos_sandbox.te" (
+    builtins.readFile (policySupport + "/aos_sandbox.te")
+    + "\n"
+    + builtins.readFile (policySupport + "/owner_confinement.te")
+    + "\n"
+    + builtins.readFile (policySupport + "/view_confinement.te")
+  );
+  viewEntrypointContext = entry: let
+    basename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString entry.package));
+    allowedPrograms =
+      if entry.role == "source"
+      then ["aos-sandbox-source-signer-view"]
+      else if entry.role == "cache"
+      then ["aos-sandbox-cache-journal-view" "aos-sandbox-cache-signer-views" "aos-sandbox-cache-signer-views-stop"]
+      else [];
+  in
+    if builtins.elem entry.program allowedPrograms && builtins.match "[a-z0-9]{32}-${entry.program}" basename != null
+    then "/(nix|nix\\.lower)/store/${basename}/bin/${entry.program} -- system_u:object_r:aos_sandbox_${entry.role}_view_preparer_exec_t\n"
+    else throw "view preparation requires an exact evaluated fixed Source/Cache script entrypoint";
   inspectorPathRegex = "/(nix|nix\\.lower)/store/${netdBasenameRegex}/bin/aos-sandbox-network-namespace-inspector";
   inspectorPath = basename: "/nix/store/${basename}/bin/aos-sandbox-network-namespace-inspector";
   siblingBasename =
@@ -69,9 +99,10 @@
     then
       builtins.toFile "aos_sandbox.fc" (
         builtins.replaceStrings
-        ["@AOS_NETD_BASENAME_REGEX@" "@AOS_FUSE_WORKER_BASENAME_REGEX@" "@AOS_ZFS_WORKER_BASENAME_REGEX@"]
-        [netdBasenameRegex workerBasenameRegex publisherBasenameRegex]
+        ["@AOS_NETD_BASENAME_REGEX@" "@AOS_FUSE_WORKER_BASENAME_REGEX@" "@AOS_ZFS_WORKER_BASENAME_REGEX@" "@AOS_CONTROLLER_BASENAME_REGEX@" "@AOS_STORAGE_BASENAME_REGEX@" "@AOS_TPM_HELPER_BASENAME_REGEX@" "@AOS_VIEW_TOOLS_BASENAME_REGEX@"]
+        [netdBasenameRegex workerBasenameRegex publisherBasenameRegex (exactPackageBasename "aos-sandboxd" aos-sandboxd) (exactPackageBasename "aos-storaged" aos-storaged) (exactPackageBasename "aos-method46-tpm-helper" aos-method46-tpm-helper) (exactPackageBasename "aos-sandbox-view-preparer-tools" aos-sandbox-view-preparer-tools)]
         (builtins.readFile (policySupport + "/aos_sandbox.fc"))
+        + builtins.concatStringsSep "" (map viewEntrypointContext viewPreparers)
       )
     else throw "fixed service SELinux labels must match only their evaluated package roots";
 in
@@ -102,7 +133,7 @@ in
 
           ${python3}/bin/python3 ${policySupport}/effective_policy_test.py
           ${checkpolicy}/bin/checkmodule -m \
-            -o "$aos_module.mod" ${policySupport}/aos_sandbox.te
+            -o "$aos_module.mod" ${ownerModule}
           ${semodule-utils}/bin/semodule_package \
             -o "$aos_module.pp" \
             -m "$aos_module.mod" \
@@ -311,6 +342,8 @@ in
             ${policySupport}/aos_sandbox_attribute_negative.te \
             ${policySupport}/aos_sandbox_loader_negative.te \
             ${policySupport}/aos_sandbox_context_negative.te \
+            ${policySupport}/view_confinement.te \
+            ${policySupport}/view_policy.py \
             attribute-negative-diagnostic \
             aos_sandbox_loader_negative-diagnostic \
             aos_sandbox_context_negative-diagnostic \

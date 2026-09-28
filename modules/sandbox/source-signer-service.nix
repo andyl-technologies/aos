@@ -39,6 +39,10 @@ in {
   config = lib.mkIf cfg.enable {
     assertions = [
       {
+        assertion = !(config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") || cfg.package == pkgs.aos-sandboxd;
+        message = "confined Source signer requires the exact evaluated policy-labelled AOS executable";
+      }
+      {
         assertion = view.enable && policy.enable && config.aos.sandbox.controllerService.enable;
         message = "Source signer requires its read-only view, Controller, and policy authority";
       }
@@ -85,18 +89,22 @@ in {
       requires = ["aos-sandbox-source-signer-view.service" "aos-sandbox-source-signerd.socket"];
       after = ["aos-sandbox-source-signer-view.service" "aos-sandbox-source-signerd.socket"];
       unitConfig.BindsTo = ["aos-sandbox-source-signer-view.service"];
-      serviceConfig = signerServiceHardening // {
-        Type = "simple";
-        Sockets = ["aos-sandbox-source-signerd.socket"];
-        StandardInput = "socket";
-        ExecStart = "${cfg.package}/bin/aos-sandbox-source-signerd ${toString controller.uid} ${toString controller.gid} ${toString view.uid} ${toString view.gid}";
-        LoadCredential =
-          lib.optionals (cfg.credentials.seed != null) ["source-hold-signing-seed:/run/credentials/@system/${cfg.credentials.seed}"]
-          ++ lib.optionals (cfg.credentials.publicKey != null) ["source-hold-public-key:/run/credentials/@system/${cfg.credentials.publicKey}"];
-        User = "aos-source-signer";
-        Group = "aos-source-signer";
-        UMask = "0077";
-      };
+      serviceConfig =
+        signerServiceHardening
+        // {
+          SELinuxContext = lib.mkIf (config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") "system_u:system_r:aos_sandbox_source_signer_t";
+          ProcSubset = "all";
+          Type = "simple";
+          Sockets = ["aos-sandbox-source-signerd.socket"];
+          StandardInput = "socket";
+          ExecStart = "${cfg.package}/bin/aos-sandbox-source-signerd ${toString controller.uid} ${toString controller.gid} ${toString view.uid} ${toString view.gid}";
+          LoadCredential =
+            lib.optionals (cfg.credentials.seed != null) ["source-hold-signing-seed:/run/credentials/@system/${cfg.credentials.seed}"]
+            ++ lib.optionals (cfg.credentials.publicKey != null) ["source-hold-public-key:/run/credentials/@system/${cfg.credentials.publicKey}"];
+          User = "aos-source-signer";
+          Group = "aos-source-signer";
+          UMask = "0077";
+        };
     };
   };
 }
