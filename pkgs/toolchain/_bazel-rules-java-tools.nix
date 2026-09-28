@@ -34,6 +34,8 @@ buildPackages.mkDerivation {
             ':one_version_prebuilt_or_cc_binary': '@remote_java_tools//:one_version_cc_bin',
             ':turbine_direct_graal_or_java': '@remote_java_tools//:TurbineDirect',
         }
+        if "${version}" == "7.6.5":
+            del replacements[':one_version_prebuilt_or_cc_binary']
 
         # Keep the full local singlejar, including desugaring checks. Turbine's
         # upstream Java backend uses our source-built JAR and native JDK;
@@ -43,6 +45,17 @@ buildPackages.mkDerivation {
             if contents.count(expected) != 1:
                 raise SystemExit(f"unexpected Java tool alias layout: {original}")
             contents = contents.replace(expected, f'actual = "{replacement}"')
+
+        if "${version}" == "9.1.0":
+            # These generated compiler toolchains override the base runtime.
+            # Keep every language target and use the native AOS JDK here too.
+            expected = 'configuration = DEFAULT_TOOLCHAIN_CONFIGURATION | {"java_runtime": ":remotejdk_25"}'
+            if contents.count(expected) != 1:
+                raise SystemExit("unexpected Java 9 compiler runtime configuration")
+            contents = contents.replace(
+                expected,
+                'configuration = DEFAULT_TOOLCHAIN_CONFIGURATION | {"java_runtime": "@local_jdk//:jdk"}',
+            )
 
         build.write_text(contents)
 
@@ -56,6 +69,15 @@ buildPackages.mkDerivation {
         toolchain.write_text(contents.replace(
             expected, 'java_runtime = Label("@local_jdk//:jdk")',
         ))
+
+        if "${version}" == "7.6.5":
+            # The release archive embeds zlib. Our tools use its separately
+            # pinned source module, which must be visible to this extension.
+            module = Path("MODULE.bazel")
+            contents = module.read_text()
+            if 'bazel_dep(name = "zlib"' in contents:
+                raise SystemExit("unexpected Bazel 7 Java rules zlib dependency")
+            module.write_text(contents + '\nbazel_dep(name = "zlib", version = "1.3.1.bcr.3")\n')
         PY
       '';
     }

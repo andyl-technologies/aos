@@ -938,6 +938,8 @@ let
     "toolchain/_bazel-proguard.nix" = "native-build-helper";
     "toolchain/_bazel-remote-java-tools.nix" = "native-build-helper";
     "toolchain/_bazel-rules-java-tools.nix" = "native-build-helper";
+    "toolchain/_bazel-fastutil-source-tools.nix" = "native-build-helper";
+    "toolchain/_bazel-offline-modules-7.nix" = "native-build-helper";
     "toolchain/_bazel-source-9-prepared.nix" = "native-build-helper";
     "toolchain/_bazel-pcollections-sources.nix" = "target-independent-source";
     "toolchain/_bazel-pcollections.nix" = "native-build-helper";
