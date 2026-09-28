@@ -152,16 +152,19 @@ impl OpenSshMonitorRuntimeV2 {
         }
         self.installation
             .listener_executable
-            .require_file(&fs::canonicalize(SSHD_PATH)?)?;
+            .require_file(&canonicalize_physical_path(SSHD_PATH)?)?;
         self.installation
             .listener_executable
-            .require_file(&fs::canonicalize(format!("/proc/{}/exe", listener.pid()))?)?;
+            .require_file(&canonicalize_physical_path(format!(
+                "/proc/{}/exe",
+                listener.pid()
+            ))?)?;
         self.installation
             .session_executable
-            .require_file(&fs::canonicalize(SSHD_SESSION_PATH)?)?;
+            .require_file(&canonicalize_physical_path(SSHD_SESSION_PATH)?)?;
         self.installation
             .gate_executable
-            .require_file(&fs::canonicalize(GATE_PATH)?)?;
+            .require_file(&canonicalize_physical_path(GATE_PATH)?)?;
         Ok(())
     }
 
@@ -234,7 +237,10 @@ impl OpenSshMonitorRuntimeV2 {
         }
         self.installation
             .session_executable
-            .require_file(&fs::canonicalize(format!("/proc/{}/exe", identity.pid()))?)?;
+            .require_file(&canonicalize_physical_path(format!(
+                "/proc/{}/exe",
+                identity.pid()
+            ))?)?;
         if !monitor
             .is_alive()
             .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?
@@ -262,7 +268,10 @@ impl OpenSshMonitorRuntimeV2 {
             .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
         self.installation
             .session_executable
-            .require_file(&fs::canonicalize(format!("/proc/{}/exe", identity.pid()))?)?;
+            .require_file(&canonicalize_physical_path(format!(
+                "/proc/{}/exe",
+                identity.pid()
+            ))?)?;
         Ok(())
     }
 
@@ -383,7 +392,7 @@ impl RunningOpenSshGateV1 {
             .validate()
             .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidBinding)?;
         let installed = check_installed_files(&binding)?;
-        let executable_path = fs::canonicalize(SSHD_PATH)?;
+        let executable_path = canonicalize_physical_path(SSHD_PATH)?;
         let executable = read_protected_file(&executable_path, MAXIMUM_EXECUTABLE_BYTES, true)?;
         if executable.bytes.is_empty() {
             return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
@@ -394,7 +403,7 @@ impl RunningOpenSshGateV1 {
         // match this identity before the guest can report certificate readiness.
         let gate_digest = digest(&installed.gate_executable.bytes);
         let gate = read_protected_file(
-            &fs::canonicalize(GATE_PATH)?,
+            &canonicalize_physical_path(GATE_PATH)?,
             MAXIMUM_EXECUTABLE_BYTES,
             true,
         )?;
@@ -407,7 +416,7 @@ impl RunningOpenSshGateV1 {
 
         let session_executable = if monitor {
             Some(read_protected_file(
-                &fs::canonicalize(SSHD_SESSION_PATH)?,
+                &canonicalize_physical_path(SSHD_SESSION_PATH)?,
                 MAXIMUM_EXECUTABLE_BYTES,
                 true,
             )?)
@@ -424,7 +433,7 @@ impl RunningOpenSshGateV1 {
                     .as_ref()
                     .ok_or(OpenSshGatePhysicalErrorV1::InvalidInstallation)?,
             )
-            .require_file(&fs::canonicalize(SSHD_SESSION_PATH)?)?;
+            .require_file(&canonicalize_physical_path(SSHD_SESSION_PATH)?)?;
         }
         let mut child = command
             .stdin(Stdio::null())
@@ -557,7 +566,7 @@ impl RunningOpenSshGateV1 {
         if let Some(monitor) = &self.monitor_installation {
             monitor
                 .session_executable
-                .require_file(&fs::canonicalize(SSHD_SESSION_PATH)?)?;
+                .require_file(&canonicalize_physical_path(SSHD_SESSION_PATH)?)?;
         }
         if installed.configuration.device != self.config_device
             || installed.configuration.inode != self.config_inode
@@ -574,18 +583,22 @@ impl RunningOpenSshGateV1 {
             return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
         }
         let executable_path = PathBuf::from(format!("/proc/{pid}/exe"));
-        if fs::read_link(&executable_path)? != fs::canonicalize(SSHD_PATH)? {
+        if fs::read_link(&executable_path).inspect_err(|_error| {
+            #[cfg(test)]
+            qualification_io_failure("read_link", &executable_path, _error);
+        })? != canonicalize_physical_path(SSHD_PATH)?
+        {
             return Err(OpenSshGatePhysicalErrorV1::DaemonUnavailable);
         }
         let executable = read_protected_file(
-            &fs::canonicalize(&executable_path)?,
+            &canonicalize_physical_path(&executable_path)?,
             MAXIMUM_EXECUTABLE_BYTES,
             true,
         )?;
         // Sample the callback again after claim and process observation. The
         // measured bytes must still be the original installation-opened file.
         let gate = read_protected_file(
-            &fs::canonicalize(GATE_PATH)?,
+            &canonicalize_physical_path(GATE_PATH)?,
             MAXIMUM_EXECUTABLE_BYTES,
             true,
         )?;
@@ -781,7 +794,7 @@ fn check_installed_files(
         return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
     }
     let gate_executable = read_protected_file(
-        &fs::canonicalize(GATE_PATH)?,
+        &canonicalize_physical_path(GATE_PATH)?,
         MAXIMUM_EXECUTABLE_BYTES,
         true,
     )?;
@@ -800,8 +813,15 @@ fn read_protected_file(
     let mut file = OpenOptions::new()
         .read(true)
         .custom_flags(O_NOFOLLOW | O_CLOEXEC)
-        .open(path)?;
-    let metadata = file.metadata()?;
+        .open(path)
+        .inspect_err(|_error| {
+            #[cfg(test)]
+            qualification_io_failure("protected open", path, _error);
+        })?;
+    let metadata = file.metadata().inspect_err(|_error| {
+        #[cfg(test)]
+        qualification_io_failure("opened-file metadata", path, _error);
+    })?;
     if !metadata.is_file()
         || metadata.uid() != 0
         || metadata.mode() & 0o022 != 0
@@ -812,7 +832,10 @@ fn read_protected_file(
         return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    file.read_to_end(&mut bytes)?;
+    file.read_to_end(&mut bytes).inspect_err(|_error| {
+        #[cfg(test)]
+        qualification_io_failure("protected read_to_end", path, _error);
+    })?;
     if bytes.len() as u64 != metadata.len() {
         return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
     }
@@ -841,7 +864,10 @@ pub fn load_original_ticket_claim_v2() -> Result<Vec<u8>, OpenSshGatePhysicalErr
 
 fn check_protected_ancestors(path: &Path) -> Result<(), OpenSshGatePhysicalErrorV1> {
     for parent in path.ancestors().skip(1) {
-        let metadata = fs::symlink_metadata(parent)?;
+        let metadata = fs::symlink_metadata(parent).inspect_err(|_error| {
+            #[cfg(test)]
+            qualification_io_failure("protected ancestor metadata", parent, _error);
+        })?;
         if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
             return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
         }
@@ -850,7 +876,14 @@ fn check_protected_ancestors(path: &Path) -> Result<(), OpenSshGatePhysicalError
 }
 
 fn process_start_ticks(pid: u32) -> Result<u64, OpenSshGatePhysicalErrorV1> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).inspect_err(|_error| {
+        #[cfg(test)]
+        qualification_io_failure(
+            "process stat read",
+            Path::new(&format!("/proc/{pid}/stat")),
+            _error,
+        );
+    })?;
     let fields = stat
         .rsplit_once(')')
         .ok_or(OpenSshGatePhysicalErrorV1::DaemonUnavailable)?
@@ -871,8 +904,26 @@ fn process_start_ticks(pid: u32) -> Result<u64, OpenSshGatePhysicalErrorV1> {
 
 fn owns_listening_socket(pid: u32, port: u16) -> Result<bool, OpenSshGatePhysicalErrorV1> {
     let mut inodes = BTreeSet::new();
-    for entry in fs::read_dir(format!("/proc/{pid}/fd"))? {
-        let target = fs::read_link(entry?.path())?;
+    for entry in fs::read_dir(format!("/proc/{pid}/fd")).inspect_err(|_error| {
+        #[cfg(test)]
+        qualification_io_failure(
+            "descriptor directory open",
+            Path::new(&format!("/proc/{pid}/fd")),
+            _error,
+        );
+    })? {
+        let entry = entry.inspect_err(|_error| {
+            #[cfg(test)]
+            qualification_io_failure(
+                "descriptor directory entry",
+                Path::new(&format!("/proc/{pid}/fd")),
+                _error,
+            );
+        })?;
+        let target = fs::read_link(entry.path()).inspect_err(|_error| {
+            #[cfg(test)]
+            qualification_io_failure("descriptor read_link", &entry.path(), _error);
+        })?;
         let text = target.to_string_lossy();
         if let Some(inode) = text
             .strip_prefix("socket:[")
@@ -882,7 +933,10 @@ fn owns_listening_socket(pid: u32, port: u16) -> Result<bool, OpenSshGatePhysica
         }
     }
     for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
-        let contents = fs::read_to_string(table)?;
+        let contents = fs::read_to_string(table).inspect_err(|_error| {
+            #[cfg(test)]
+            qualification_io_failure("TCP table read", Path::new(table), _error);
+        })?;
         for row in contents.lines().skip(1) {
             let fields: Vec<_> = row.split_whitespace().collect();
             if fields.len() < 10 || fields[3] != "0A" || !inodes.contains(fields[9]) {
@@ -897,6 +951,26 @@ fn owns_listening_socket(pid: u32, port: u16) -> Result<bool, OpenSshGatePhysica
         }
     }
     Ok(false)
+}
+
+// One filesystem call resolves the same physical name; test-only context
+// observes an error without replacing it or authorizing the resolved path.
+fn canonicalize_physical_path(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+    let path = path.as_ref();
+    fs::canonicalize(path).inspect_err(|_error| {
+        #[cfg(test)]
+        qualification_io_failure("canonicalize", path, _error);
+    })
+}
+
+// Diagnostic output exists only in library-test qualification. inspect_err
+// preserves the original Io(error); no content or authorization is reflected.
+#[cfg(test)]
+fn qualification_io_failure(operation: &str, path: &Path, error: &std::io::Error) {
+    eprintln!(
+        "OpenSSH qualification-only physical readback {operation} failed at {}: {error}",
+        path.display(),
+    );
 }
 
 fn digest(bytes: &[u8]) -> [u8; 32] {
@@ -923,6 +997,40 @@ pub enum OpenSshGatePhysicalErrorV1 {
 #[cfg(test)]
 mod tests {
     use super::{OpenSshGateBindingV1, expected_openssh_gate_config_v1};
+
+    #[test]
+    fn canonical_path_diagnostics_preserve_resolved_path_and_original_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let expected = std::fs::canonicalize(directory.path()).unwrap();
+
+        let resolved = super::canonicalize_physical_path(directory.path()).unwrap();
+        let error = super::canonicalize_physical_path(directory.path().join("absent")).unwrap_err();
+
+        assert_eq!(resolved, expected);
+        assert_eq!(error.raw_os_error(), Some(2));
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn qualification_context_preserves_original_os_error() {
+        let error = Err::<(), _>(std::io::Error::from_raw_os_error(2))
+            .inspect_err(|error| {
+                super::qualification_io_failure(
+                    "descriptor read_link",
+                    std::path::Path::new("/proc/qualification/fd/7"),
+                    error,
+                );
+            })
+            .unwrap_err();
+
+        let super::OpenSshGatePhysicalErrorV1::Io(error) =
+            super::OpenSshGatePhysicalErrorV1::from(error)
+        else {
+            panic!("qualification changed the physical error class");
+        };
+        assert_eq!(error.raw_os_error(), Some(2));
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
 
     #[test]
     fn fixed_config_forces_exact_certificate_command_and_denies_forwarding() {

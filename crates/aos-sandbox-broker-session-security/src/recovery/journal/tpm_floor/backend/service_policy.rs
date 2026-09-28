@@ -25,7 +25,7 @@ use rustix::fs::{Mode, OFlags, open};
 
 use super::super::FloorErrorV1;
 use super::super::format::FloorEndpointV1;
-use super::image::MeasuredFileV1;
+use super::image::{MeasuredFileV1, open_original_pid1_image};
 
 const PROPERTY_TIMEOUT: Duration = Duration::from_secs(5);
 const SERVICE_PROPERTIES: &[&str] = &[
@@ -72,7 +72,7 @@ impl RetainedFloorServicePolicyV1 {
                 }
             })
             .map_err(|_| FloorErrorV1::Provisioning)?;
-        let manager = MeasuredFileV1::open_pid1(launch_image)?;
+        let manager = open_original_pid1_image(launch_image)?;
         let parent =
             PidFd::open(NonZeroU32::new(std::process::id()).ok_or(FloorErrorV1::Unavailable)?)
                 .map_err(|_| FloorErrorV1::Unavailable)?;

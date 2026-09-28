@@ -293,6 +293,56 @@ impl MountCreatedFuseWorkerObjectsV1 {
             .map(|descriptor| descriptor.as_fd())
     }
 
+    /// Takes the sole original worker endpoint into the fixed four-role table.
+    ///
+    /// The plan, fresh FUSE OFD and cancellation reader are duplicated from
+    /// this actual producer; the channel endpoint is moved, not duplicated.
+    /// The retained cancellation writer never enters the table. Taking the
+    /// endpoint precedes every fallible inspection/duplication, so failure
+    /// cannot make this object's launch table available a second time.
+    ///
+    /// This is descriptor custody, not Host admission or a copy-close proof.
+    /// The sender must retain its owning Mount borrow, and account for every
+    /// outgoing packet/transport copy before any fresh worker challenge. Local
+    /// callers can still duplicate borrowed descriptors; this method cannot
+    /// establish their absence or infer live worker authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another producer, a taken/closed endpoint, changed object labels,
+    /// or failed duplication. The original detached mount and namespace remain
+    /// retained, but the endpoint cannot be reissued after an error.
+    pub fn take_original_worker_launch_roles(&mut self) -> Result<[OwnedFd; 4]> {
+        let endpoint = self.worker_channel.take().ok_or_else(|| {
+            Error::invalid("worker launch roles", "original endpoint already consumed")
+        })?;
+        require_fixed_mount_process()?;
+        require_object_context(self.plan.as_fd(), FUSE_WORKER_PLAN_CONTEXT_V1)?;
+        require_object_context(self.fuse.device(), FUSE_WORKER_DEVICE_CONTEXT_V1)?;
+        require_object_context(endpoint.as_fd(), FUSE_WORKER_CHANNEL_CONTEXT_V1)?;
+        require_object_context(
+            self.cancellation_reader.as_fd(),
+            FUSE_WORKER_CANCEL_CONTEXT_V1,
+        )?;
+
+        let duplicate = |descriptor: BorrowedFd<'_>| {
+            descriptor
+                .try_clone_to_owned()
+                .map_err(|source| Error::Syscall {
+                    operation: "retain original worker launch role",
+                    source,
+                })
+        };
+        let roles = [
+            duplicate(self.plan.as_fd())?,
+            duplicate(self.fuse.device())?,
+            endpoint,
+            duplicate(self.cancellation_reader.as_fd())?,
+        ];
+        require_fixed_mount_process()?;
+        Ok(roles)
+    }
+
     /// Closes Mount's worker-end copy after the exact Host handoff barrier.
     ///
     /// The enclosing dispatch must also drop its consumed receive message and
