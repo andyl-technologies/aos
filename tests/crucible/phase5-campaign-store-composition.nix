@@ -201,10 +201,13 @@ in
               --lib "$recovery_test" -- --exact --test-threads=1
           done
 
-          # Exercise the daemon owner's restart, interrupted journal, quota,
-          # cache, write-back-root, packed, and S3 global-GC paths.
+          # Exercise daemon restart, durable transfer repair/retry, interrupted
+          # journals, quota, cache, write-back roots, packed, and S3 global GC.
           for daemon_test in \
             campaign_bootstrap::tests::deployment_contracts::default_sqlite_store_reopens \
+            campaign_transfer::tests::durable_transfer_stages_source_metadata_and_retries_idempotently \
+            campaign_transfer::tests::corrupt_destination_object_retains_ownership_and_retries_after_repair \
+            campaign_transfer::tests::reopening_cleans_a_torn_staging_file_without_losing_complete_records \
             campaign_gc::tests::policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy \
             campaign_gc::tests::write_back_roots_retain_exact_pending_objects_and_refs_retain_closures \
             campaign_gc::tests::direct_transfer_root_promoted_to_hot_root_revalidates_its_closure \
