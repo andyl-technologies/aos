@@ -13,8 +13,8 @@ use crate::pidfd::SingleThreadedProcess;
 use crate::pidfd::{NamespaceFd, NamespaceKind};
 use crate::uapi::{
     self, FSCONFIG_CMD_CREATE, FSCONFIG_SET_FD, FSCONFIG_SET_FLAG, FSCONFIG_SET_STRING,
-    MOUNT_ATTR_IDMAP, MOUNT_ATTR_NOATIME, MOUNT_ATTR_NODEV, MOUNT_ATTR_NOEXEC, MOUNT_ATTR_NOSUID,
-    MOUNT_ATTR_RDONLY, RawMountAttr,
+    MOUNT_ATTR_ATIME_MASK, MOUNT_ATTR_IDMAP, MOUNT_ATTR_NOATIME, MOUNT_ATTR_NODEV,
+    MOUNT_ATTR_NOEXEC, MOUNT_ATTR_NOSUID, MOUNT_ATTR_RDONLY, RawMountAttr,
 };
 use crate::{Error, Result};
 use std::os::unix::ffi::OsStrExt as _;
@@ -165,7 +165,10 @@ impl MountAttributes {
         self
     }
 
-    /// Enables or disables access-time suppression.
+    /// Requests access-time suppression when enabled.
+    ///
+    /// When disabled, the attribute set leaves the kernel's current atime mode
+    /// unchanged; it does not actively select relatime or strictatime.
     #[must_use]
     pub const fn with_no_atime(mut self, enabled: bool) -> Self {
         self.no_atime = enabled;
@@ -208,6 +211,9 @@ impl MountAttributes {
             set |= MOUNT_ATTR_NODEV;
         }
         if self.no_atime {
+            // Linux treats atime as a mode, not independent bits. Selecting
+            // NOATIME requires clearing the entire MOUNT_ATTR__ATIME mask.
+            clear |= MOUNT_ATTR_ATIME_MASK;
             set |= MOUNT_ATTR_NOATIME;
         }
         match self.no_exec {
@@ -532,10 +538,76 @@ mod tests {
                 | MOUNT_ATTR_NOATIME
         );
         assert_eq!(read_only.userns_fd, 0);
-        assert_eq!(read_only.attr_clr, 0);
+        assert_eq!(read_only.attr_clr, MOUNT_ATTR_ATIME_MASK);
 
         let writable = MountAttributes::secure_writable().raw(None).unwrap();
         assert_eq!(writable.attr_set, MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV);
         assert_eq!(writable.attr_clr, MOUNT_ATTR_RDONLY);
+    }
+
+    #[test]
+    fn requested_noatime_clears_the_complete_mode_without_changing_other_flags() {
+        let profile = MountAttributes::secure_writable().with_no_exec(false);
+        let unchanged = profile.raw(None).unwrap();
+        let noatime = profile.with_no_atime(true).raw(None).unwrap();
+
+        assert_eq!(noatime.attr_set, unchanged.attr_set | MOUNT_ATTR_NOATIME);
+        assert_eq!(noatime.attr_clr, unchanged.attr_clr | MOUNT_ATTR_ATIME_MASK);
+        assert_eq!(noatime.attr_set & MOUNT_ATTR_ATIME_MASK, MOUNT_ATTR_NOATIME);
+        assert_eq!(
+            noatime.attr_clr & MOUNT_ATTR_ATIME_MASK,
+            MOUNT_ATTR_ATIME_MASK
+        );
+        assert_eq!(noatime.attr_clr & MOUNT_ATTR_IDMAP, 0);
+        assert_eq!(noatime.userns_fd, unchanged.userns_fd);
+        assert_eq!(noatime.propagation, unchanged.propagation);
+        assert_eq!(noatime.attr_clr & MOUNT_ATTR_RDONLY, MOUNT_ATTR_RDONLY);
+        assert_eq!(noatime.attr_clr & MOUNT_ATTR_NOEXEC, MOUNT_ATTR_NOEXEC);
+    }
+
+    #[test]
+    fn disabled_or_unspecified_noatime_preserves_the_existing_kernel_mode() {
+        let profile = MountAttributes::secure_read_only().with_no_exec(true);
+        for attributes in [
+            profile,
+            profile.with_no_atime(false),
+            profile.with_no_atime(true).with_no_atime(false),
+        ] {
+            let raw = attributes.raw(None).unwrap();
+
+            assert_eq!(raw.attr_set & MOUNT_ATTR_ATIME_MASK, 0);
+            assert_eq!(raw.attr_clr & MOUNT_ATTR_ATIME_MASK, 0);
+            assert_eq!(
+                raw.attr_set,
+                MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC
+            );
+            assert_eq!(raw.attr_clr, 0);
+        }
+    }
+
+    #[test]
+    fn noatime_keeps_exact_typed_user_namespace_idmap_encoding() {
+        // Encoder-only regression over a real typed nsfs descriptor; this
+        // neither calls mount_setattr nor proves INIT or mount readiness.
+        let descriptor: OwnedFd = File::open("/proc/self/ns/user").unwrap().into();
+        let namespace = NamespaceFd::from_owned(descriptor, NamespaceKind::User).unwrap();
+        let profile = MountAttributes::secure_read_only()
+            .with_no_exec(true)
+            .with_no_atime(true);
+        let without_idmap = profile.raw(None).unwrap();
+        let with_idmap = profile.raw(Some(&namespace)).unwrap();
+
+        assert_eq!(
+            with_idmap.attr_set,
+            without_idmap.attr_set | MOUNT_ATTR_IDMAP
+        );
+        assert_eq!(with_idmap.attr_clr, without_idmap.attr_clr);
+        assert_eq!(with_idmap.attr_clr, MOUNT_ATTR_ATIME_MASK);
+        assert_eq!(with_idmap.userns_fd, namespace.as_fd().as_raw_fd() as u64);
+        assert_eq!(with_idmap.propagation, 0);
+
+        let descriptor: OwnedFd = File::open("/proc/self/ns/mnt").unwrap().into();
+        let wrong_namespace = NamespaceFd::from_owned(descriptor, NamespaceKind::Mount).unwrap();
+        assert!(profile.raw(Some(&wrong_namespace)).is_err());
     }
 }
