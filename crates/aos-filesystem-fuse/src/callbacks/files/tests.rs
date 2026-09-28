@@ -4,6 +4,7 @@
 //! installed VM fixture independently exercises the real sealed-FD provider.
 
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::PermissionsExt;
 
 use aos_filesystem_view::{
     DataError, DataReadScratch, DurableStateLimits, ExtendedAttributeLimits, MonotonicClock,
@@ -92,7 +93,10 @@ fn with_profile_context(
             let limits = crate::tests::limits();
             let budget = crate::tests::budget();
             crate::initialize_metadata(&mut connection, cancellation, limits, budget).unwrap();
-            let directory = tempfile::tempdir().unwrap();
+            let directory = tempfile::Builder::new()
+                .permissions(std::fs::Permissions::from_mode(0o700))
+                .tempdir()
+                .unwrap();
             let mut owner =
                 ProtectedFuseRegistrationOwnerV2::open_test_fixture(directory.path()).unwrap();
             let mut reader = ScriptedReader {
