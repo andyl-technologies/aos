@@ -19,7 +19,25 @@ use aos_sandbox_protocol::host_fuse_worker_session::decode_host_fuse_worker_sess
 use aos_systemd::{FixedFuseWorkerPid1ClientV1, FuseWorkerUnitNameV1};
 
 use super::*;
+use crate::dormant_broker_session::{
+    OriginalHostFuseWorkerTransportActionV1 as TransportAction,
+    OriginalHostFuseWorkerTransportCallbackV1 as TransportCallback,
+    OriginalHostFuseWorkerTransportProgressV1 as TransportProgress,
+};
 use crate::fuse_worker::RetainedFuseWorkerHostLaunchV1;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ComparisonReplyMode {
+    Retain,
+    Send,
+}
+
+fn check_original_transport(transport: &mut TransportCallback<'_>) -> Result<()> {
+    if transport(TransportAction::CheckCurrentness)? != TransportProgress::Checked {
+        return Err(HostError::Fence("original worker transport check changed"));
+    }
+    Ok(())
+}
 
 pub(super) struct RetainedOriginalHostFuseWorkerV1 {
     manager: FixedFuseWorkerPid1ClientV1,
@@ -44,8 +62,53 @@ impl<C: HostCatalog, S: HostStateStore + Sync, W: HostWorker + Sync> HostBroker<
         roles: [OwnedFd; 4],
         pending_guard: &mut (dyn FnMut() -> Result<()> + Send),
     ) -> Result<OriginalHostFuseWorkerReplyV1> {
+        let mut transport = |action: TransportAction<'_>| match action {
+            TransportAction::CheckCurrentness => {
+                pending_guard()?;
+                Ok(TransportProgress::Checked)
+            }
+            TransportAction::SendComparison { .. } => {
+                Err(HostError::Fence("comparison transport was not supplied"))
+            }
+        };
+        self.prepare_original_worker_on_transport(
+            original,
+            roles,
+            ComparisonReplyMode::Retain,
+            &mut transport,
+        )
+        .await
+    }
+
+    pub(crate) async fn send_original_fuse_worker_comparison(
+        &mut self,
+        original: &AuthenticatedBrokerMethodRequestV1,
+        roles: [OwnedFd; 4],
+        transport: &mut TransportCallback<'_>,
+    ) -> Result<()> {
+        let reply = self
+            .prepare_original_worker_on_transport(
+                original,
+                roles,
+                ComparisonReplyMode::Send,
+                transport,
+            )
+            .await?;
+        // These are comparison copies only. Launch/process/private-PID1
+        // custody remains in the serialized Host owner on success or error.
+        drop(reply);
+        Ok(())
+    }
+
+    async fn prepare_original_worker_on_transport(
+        &mut self,
+        original: &AuthenticatedBrokerMethodRequestV1,
+        roles: [OwnedFd; 4],
+        reply_mode: ComparisonReplyMode,
+        transport: &mut TransportCallback<'_>,
+    ) -> Result<OriginalHostFuseWorkerReplyV1> {
         self.ensure_healthy()?;
-        pending_guard()?;
+        check_original_transport(transport)?;
         if original.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
             || original.method() != BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
         {
@@ -121,7 +184,7 @@ impl<C: HostCatalog, S: HostStateStore + Sync, W: HostWorker + Sync> HostBroker<
             &self.authority,
         )?;
         self.commit_state(&proposed)?;
-        pending_guard()?;
+        check_original_transport(transport)?;
 
         // All failures after durable reservation leave the locator occupied.
         // Do not reconstruct launch custody or rearm from a historical row.
@@ -147,8 +210,8 @@ impl<C: HostCatalog, S: HostStateStore + Sync, W: HostWorker + Sync> HostBroker<
         let authority = &self.authority;
         let state = &self.state;
         let store = &self.store;
-        let mut guard = || {
-            pending_guard()?;
+        let check = |transport: &mut TransportCallback<'_>| -> Result<()> {
+            check_original_transport(transport)?;
             crate::state::require_current_worker_snapshot(store, state, authority)?;
             let now_base = state
                 .prior_authorization(request.fence().sandbox_id())
@@ -165,21 +228,24 @@ impl<C: HostCatalog, S: HostStateStore + Sync, W: HostWorker + Sync> HostBroker<
             })?;
             Ok(())
         };
-        let launch = RetainedFuseWorkerHostLaunchV1::launch_guarded(
-            &manager, &cgroups, name, roles, &mut guard,
-        )
-        .await?;
+        let launch = {
+            let mut guard = || check(transport);
+            RetainedFuseWorkerHostLaunchV1::launch_guarded(
+                &manager, &cgroups, name, roles, &mut guard,
+            )
+            .await?
+        };
         self.fuse_workers.insert(
             plan.worker_instance,
             RetainedOriginalHostFuseWorkerV1 { manager, launch },
         );
-        guard()?;
+        check(transport)?;
         let retained = self
             .fuse_workers
             .get(&plan.worker_instance)
             .ok_or(HostError::UnknownHandle)?;
         retained.launch.recheck(&retained.manager).await?;
-        guard()?;
+        check(transport)?;
         let cgroup = FuseWorkerUnitNameV1::from_instance(plan.worker_instance)
             .map_err(|error| HostError::Worker(error.to_string()))?
             .cgroup_path();
@@ -213,7 +279,44 @@ impl<C: HostCatalog, S: HostStateStore + Sync, W: HostWorker + Sync> HostBroker<
             duplicate(retained.launch.cgroup())?,
         ];
         retained.launch.recheck(&retained.manager).await?;
-        guard()?;
+        check(transport)?;
+        if reply_mode == ComparisonReplyMode::Send {
+            loop {
+                retained.launch.recheck(&retained.manager).await?;
+                check(transport)?;
+                let progress = transport(TransportAction::SendComparison {
+                    body: &body,
+                    descriptors: descriptors.each_ref().map(AsFd::as_fd),
+                })?;
+                check(transport)?;
+                retained.launch.recheck(&retained.manager).await?;
+                check(transport)?;
+                match progress {
+                    TransportProgress::Sent => break,
+                    TransportProgress::Backpressure => continue,
+                    TransportProgress::Checked => {
+                        return Err(HostError::Fence("original comparison was not sent"));
+                    }
+                }
+            }
+        }
         Ok(OriginalHostFuseWorkerReplyV1 { body, descriptors })
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+
+    #[test]
+    fn a_send_result_never_substitutes_for_current_owner_readback() {
+        for substituted in [TransportProgress::Sent, TransportProgress::Backpressure] {
+            let mut transport = |_action: TransportAction<'_>| Ok(substituted);
+
+            assert!(check_original_transport(&mut transport).is_err());
+        }
+        let mut checked = |_action: TransportAction<'_>| Ok(TransportProgress::Checked);
+
+        assert!(check_original_transport(&mut checked).is_ok());
     }
 }

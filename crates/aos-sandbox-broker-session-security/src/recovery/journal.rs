@@ -860,6 +860,21 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
 }
 
 impl ProtectedBrokerSessionOwnerV1 {
+    /// Retains pending Host49 custody without enabling ordinary client captures.
+    pub(crate) fn hold_host_worker_comparison<'owner>(
+        &'owner mut self,
+        request: &'owner AuthenticatedBrokerMethodRequestV1,
+        transcript: &'owner VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &'owner ConnectionPeerIdentity,
+    ) -> Result<ProtectedPendingBrokerRequestCutV1<'owner>, BrokerSessionSecurityError> {
+        ProtectedPendingBrokerRequestCutV1::capture_host_worker_comparison(
+            &mut self.journal,
+            request,
+            transcript,
+            connection_peer,
+        )
+    }
+
     pub(crate) fn hold_fuse_intent_request<'owner>(
         &'owner mut self,
         request: &'owner AuthenticatedBrokerMethodRequestV1,
