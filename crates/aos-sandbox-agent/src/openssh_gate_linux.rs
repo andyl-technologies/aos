@@ -334,7 +334,7 @@ impl RunningOpenSshGateV1 {
     /// Returns an error if any installed file, CA, host key, gate executable,
     /// or exact configuration is absent or unsafe, or if sshd cannot launch.
     pub fn start(binding: OpenSshGateBindingV1) -> Result<Self, OpenSshGatePhysicalErrorV1> {
-        Self::start_profile(binding, false)
+        Self::start_profile(binding, false, Stdio::null())
     }
 
     /// Starts the fixed binding-only root-monitor prerequisite.
@@ -347,12 +347,37 @@ impl RunningOpenSshGateV1 {
     pub fn start_with_monitor_v2(
         binding: OpenSshGateBindingV1,
     ) -> Result<Self, OpenSshGatePhysicalErrorV1> {
-        Self::start_profile(binding, true)
+        Self::start_profile(binding, true, Stdio::null())
+    }
+
+    /// Retains ephemeral qualification stderr through the actual launch checks.
+    ///
+    /// # Errors
+    /// Returns the original installation, custody, or daemon-launch error.
+    #[cfg(test)]
+    pub(crate) fn start_for_qualification(
+        binding: OpenSshGateBindingV1,
+        monitor: bool,
+        diagnostic: fs::File,
+    ) -> Result<Self, OpenSshGatePhysicalErrorV1> {
+        Self::start_profile(binding, monitor, Stdio::from(diagnostic))
+    }
+
+    /// Samples exit status from the qualification's original owned daemon.
+    ///
+    /// # Errors
+    /// Returns an error if the original child status cannot be read.
+    #[cfg(test)]
+    pub(crate) fn qualification_exit_status(
+        &mut self,
+    ) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.child.try_wait()
     }
 
     fn start_profile(
         binding: OpenSshGateBindingV1,
         monitor: bool,
+        stderr: Stdio,
     ) -> Result<Self, OpenSshGatePhysicalErrorV1> {
         binding
             .validate()
@@ -404,7 +429,7 @@ impl RunningOpenSshGateV1 {
         let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(stderr)
             .spawn()?;
         let monitor_installation = match session_executable
             .map(|session| {

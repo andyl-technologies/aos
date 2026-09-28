@@ -7,8 +7,9 @@
 //! I/O authority or qualification of the Controller/Host/Guest held consume.
 
 use std::fs;
+use std::io::Read as _;
 use std::net::TcpStream;
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -23,6 +24,7 @@ use crate::openssh_gate_linux::{RunningOpenSshGateV1, expected_openssh_gate_conf
 const DIRECTORY: &str = "/etc/aos/sandbox-attach";
 const FIXTURE_DIRECTORY: &str = "/run/aos-attach-profile-qualification";
 const GATE: &str = "/usr/libexec/aos-sandbox-exec-gate";
+const MAXIMUM_DAEMON_DIAGNOSTIC_BYTES: u64 = 16 * 1024;
 
 struct OwnedProcess(Child);
 
@@ -60,6 +62,72 @@ fn process_start_ticks(pid: u32) -> u64 {
         .unwrap()
         .parse()
         .unwrap()
+}
+
+fn start_qualification_daemon(
+    binding: OpenSshGateBindingV1,
+    monitor: bool,
+    diagnostic_name: &str,
+) -> RunningOpenSshGateV1 {
+    let diagnostic_path = Path::new(FIXTURE_DIRECTORY).join(diagnostic_name);
+    let diagnostic = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&diagnostic_path)
+        .unwrap();
+    let mut daemon =
+        RunningOpenSshGateV1::start_for_qualification(binding, monitor, diagnostic).unwrap();
+
+    // This TCP-only probe sends no authentication or certificate. Claims and
+    // all authentication/custody checks still precede the actual SSH client.
+    wait_listener(|| daemon.qualification_exit_status(), &diagnostic_path);
+    daemon
+}
+
+fn wait_listener(
+    mut exit_status: impl FnMut() -> std::io::Result<Option<std::process::ExitStatus>>,
+    diagnostic_path: &Path,
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let connection_error = match TcpStream::connect(("127.0.0.1", 2222)) {
+            Ok(_) => return,
+            Err(error) => error,
+        };
+
+        let status = exit_status();
+        if !matches!(status, Ok(None)) || Instant::now() >= deadline {
+            panic!(
+                "{}",
+                listener_failure(&status, &connection_error, diagnostic_path)
+            );
+        }
+
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn listener_failure(
+    status: &std::io::Result<Option<std::process::ExitStatus>>,
+    connection_error: &std::io::Error,
+    diagnostic_path: &Path,
+) -> String {
+    let mut bytes = Vec::new();
+    let stderr = match fs::File::open(diagnostic_path).and_then(|file| {
+        file.take(MAXIMUM_DAEMON_DIAGNOSTIC_BYTES)
+            .read_to_end(&mut bytes)
+    }) {
+        Ok(_) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(error) => format!("diagnostic read failed: {error}"),
+    };
+
+    format!(
+        "packaged sshd listener unavailable; original child status: {status:?}; \
+         TCP error: {connection_error}; stderr (first {MAXIMUM_DAEMON_DIAGNOSTIC_BYTES} bytes) \
+         at {}:\n{stderr}",
+        diagnostic_path.display()
+    )
 }
 
 fn builder(claim: &OpenSshGateClaimV1, after: u64, before: u64) -> Builder {
@@ -264,7 +332,7 @@ fn packaged_sshd_enforces_profile_and_confined_original_ticket_relay() {
     let config = expected_openssh_gate_config_v1(&binding).unwrap();
     binding.gate_config_digest = Sha256::digest(&config).into();
     protected_file(format!("{DIRECTORY}/sshd_config"), &config, 0o644);
-    let mut daemon = RunningOpenSshGateV1::start(binding.clone()).unwrap();
+    let mut daemon = start_qualification_daemon(binding.clone(), false, "profile.stderr");
     let (sshd_pid, sshd_start_ticks) = daemon.daemon_identity().unwrap();
     let claim = OpenSshGateClaimV1 {
         binding,
@@ -278,11 +346,6 @@ fn packaged_sshd_enforces_profile_and_confined_original_ticket_relay() {
     };
     write_claim(&claim);
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while TcpStream::connect(("127.0.0.1", 2222)).is_err() {
-        assert!(Instant::now() < deadline, "packaged sshd did not start");
-        std::thread::sleep(Duration::from_millis(10));
-    }
     let measured = daemon
         .physical_readback([12; 32], claim.route_digest, [13; 32])
         .unwrap();
@@ -371,7 +434,7 @@ fn packaged_sshd_enforces_profile_and_confined_original_ticket_relay() {
     // This is profile/authentication-only evidence. Preserve the original
     // certificate and historical leader bytes after the real leader exits;
     // strict provisioning and the absent actual IO owner still deny custody.
-    let mut daemon = RunningOpenSshGateV1::start(claim.binding.clone()).unwrap();
+    let mut daemon = start_qualification_daemon(claim.binding.clone(), false, "historical.stderr");
     let mut historical = claim.clone();
     (historical.sshd_pid, historical.sshd_start_ticks) = daemon.daemon_identity().unwrap();
     write_claim(&historical);
@@ -405,6 +468,37 @@ fn packaged_sshd_enforces_profile_and_confined_original_ticket_relay() {
     assert!(crate::openssh_gate_linux::load_unexpired_openssh_attach_profile_v5().is_err());
     assert_callback_denial(callback(&chroot, &accepted, 1001, None));
     write_claim(&historical);
+}
+
+#[test]
+fn listener_failure_retains_original_exit_and_stderr() {
+    use std::os::unix::process::ExitStatusExt as _;
+
+    let diagnostic = tempfile::NamedTempFile::new().unwrap();
+    fs::write(diagnostic.path(), b"fixture daemon startup error\n").unwrap();
+    let status = Ok(Some(std::process::ExitStatus::from_raw(256)));
+    let connection_error = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+
+    let failure = listener_failure(&status, &connection_error, diagnostic.path());
+
+    assert!(failure.contains(&format!("original child status: {status:?}")));
+    assert!(failure.contains("ConnectionRefused") || failure.contains("connection refused"));
+    assert!(failure.contains("fixture daemon startup error\n"));
+}
+
+#[test]
+fn listener_failure_bounds_ephemeral_stderr() {
+    let diagnostic = tempfile::NamedTempFile::new().unwrap();
+    let mut bytes = vec![b'x'; MAXIMUM_DAEMON_DIAGNOSTIC_BYTES as usize];
+    bytes.extend_from_slice(b"excluded tail");
+    fs::write(diagnostic.path(), &bytes).unwrap();
+    let connection_error = std::io::Error::from(std::io::ErrorKind::NetworkUnreachable);
+
+    let failure = listener_failure(&Ok(None), &connection_error, diagnostic.path());
+
+    assert!(failure.contains("original child status: Ok(None)"));
+    assert!(failure.contains("first 16384 bytes"));
+    assert!(!failure.contains("excluded tail"));
 }
 
 mod monitor_qualification;
