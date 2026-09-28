@@ -683,6 +683,14 @@ pub struct PreparedDomainTransactionV1<S: ProtectedDomainSchemaV1> {
 }
 
 impl<S: ProtectedDomainSchemaV1> PreparedDomainTransactionV1<S> {
+    /// Borrows prepared canonical members for a same-owner atomic composition.
+    ///
+    /// These records retain the existing framing and digest algorithm; they
+    /// grant no commit, postcommit, live custody or publication authority.
+    pub(crate) fn journal_records(&self) -> &[JournalRecord] {
+        self.transaction.records()
+    }
+
     /// Returns the stable transaction identifier bound into durable members.
     #[must_use]
     pub const fn transaction_id(&self) -> [u8; 16] {

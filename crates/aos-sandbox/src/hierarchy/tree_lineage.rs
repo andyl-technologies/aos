@@ -21,7 +21,7 @@ use aos_sandbox_core::{ObjectDigest, ProjectId, Revision};
 
 #[cfg(test)]
 use crate::journal::JournalLimits;
-use crate::journal::{Journal, JournalError};
+use crate::journal::{Journal, JournalError, JournalRecord, RecordNamespace};
 use crate::lifecycle::protected_journal_adapter::decode_reducer_payload_with_validator;
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use crate::lifecycle::protected_journal_join::{
@@ -199,6 +199,7 @@ pub(super) struct ClosedTreeLineageHeadV1 {
     pub(super) tree: SandboxTreeV1,
     pub(super) tree_head: ObjectDigest,
     pub(super) lineage_head: ObjectDigest,
+    initial_seed_packet: [u8; CONTROLLER_SOURCE_TREE_SEED_BYTES_V1],
 }
 
 /// Replays local structure only; it never certifies Source currentness.
@@ -316,6 +317,10 @@ fn verify_closed_tree_lineage_projection_v1(
                 tree,
                 tree_head: record.digest(),
                 lineage_head: *lineage_head,
+                initial_seed_packet: project_links
+                    .first()
+                    .and_then(|(link, _)| link.initial_seed_packet)
+                    .ok_or_else(invalid)?,
             },
         );
     }
@@ -478,39 +483,14 @@ impl<'owner> ClosedSourceTreeLineageWriterV1<'owner> {
         initial_seed_packet: Option<[u8; CONTROLLER_SOURCE_TREE_SEED_BYTES_V1]>,
         transaction_id: [u8; 16],
     ) -> Result<HierarchyJournalCommitOutcomeV1, HierarchyProtectedJournalErrorV1> {
-        let tree_key = tree_key(tree.project())?;
-        let tree_envelope = hierarchy_reducer_envelope_v1(
-            tree_key,
-            tree.tree_generation().get(),
+        let envelopes = source_tree_pair_envelopes(
+            tree,
             prior_tree_head,
-            HierarchyReducerRecordV1::Tree(tree),
-            &self.validator,
-        )?;
-        let commitment = tree_commitment_v1(tree)
-            .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?;
-        let link = ClosedTreeLineageRecordV1::new(
-            tree.project(),
-            tree.tree_generation().get(),
-            prior_tree_head,
-            tree_envelope.digest(),
             prior_lineage_head,
-            commitment,
             initial_seed_packet,
-        )
-        .ok_or(HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?;
-        let lineage_envelope = hierarchy_reducer_envelope_v1(
-            HierarchyProtectedJournalKeyV1::new(
-                HierarchyProtectedRecordKindV1::TreeLineage,
-                link.identity().to_vec(),
-            )?,
-            1,
-            None,
-            HierarchyReducerRecordV1::TreeLineage(&link),
             &self.validator,
         )?;
-        let prepared = self
-            .journal
-            .plan(transaction_id, vec![tree_envelope, lineage_envelope])?;
+        let prepared = self.journal.plan(transaction_id, envelopes)?;
         let expected_uid = self.authority.expected_source_uid;
         match &self.location {
             HeldSourceLocationV1::Fixed => self.journal.commit_at_named_location(
@@ -533,6 +513,125 @@ impl<'owner> ClosedSourceTreeLineageWriterV1<'owner> {
             }
         }
     }
+}
+
+fn source_tree_pair_envelopes(
+    tree: &SandboxTreeV1,
+    prior_tree_head: Option<ObjectDigest>,
+    prior_lineage_head: Option<ObjectDigest>,
+    initial_seed_packet: Option<[u8; CONTROLLER_SOURCE_TREE_SEED_BYTES_V1]>,
+    validator: &HierarchyProtectedReplayValidatorV1,
+) -> Result<
+    Vec<super::protected_journal::HierarchyProtectedJournalEnvelopeV1>,
+    HierarchyProtectedJournalErrorV1,
+> {
+    let tree_key = tree_key(tree.project())?;
+    let tree_envelope = hierarchy_reducer_envelope_v1(
+        tree_key,
+        tree.tree_generation().get(),
+        prior_tree_head,
+        HierarchyReducerRecordV1::Tree(tree),
+        validator,
+    )?;
+    let commitment = tree_commitment_v1(tree)
+        .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?;
+    let link = ClosedTreeLineageRecordV1::new(
+        tree.project(),
+        tree.tree_generation().get(),
+        prior_tree_head,
+        tree_envelope.digest(),
+        prior_lineage_head,
+        commitment,
+        initial_seed_packet,
+    )
+    .ok_or(HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?;
+    let lineage_envelope = hierarchy_reducer_envelope_v1(
+        HierarchyProtectedJournalKeyV1::new(
+            HierarchyProtectedRecordKindV1::TreeLineage,
+            link.identity().to_vec(),
+        )?,
+        1,
+        None,
+        HierarchyReducerRecordV1::TreeLineage(&link),
+        validator,
+    )?;
+    Ok(vec![tree_envelope, lineage_envelope])
+}
+
+/// Holds canonical planned member data, never Source append authority.
+pub(super) struct PreparedSourceTreeGenesisPairV1 {
+    pub(super) tree_head: ObjectDigest,
+    pub(super) lineage_head: ObjectDigest,
+    pub(super) records: Vec<JournalRecord>,
+}
+
+/// Reuses the existing structural Tree/lineage plan under the retained writer.
+///
+/// The genuine genesis owner must independently retain Controller acceptance
+/// and the original Root intent, and join receipt/pending rows before commit.
+pub(super) fn prepare_source_tree_genesis_pair_v1(
+    journal: &mut Journal,
+    packet: [u8; CONTROLLER_SOURCE_TREE_SEED_BYTES_V1],
+    transaction_id: [u8; 16],
+) -> Result<PreparedSourceTreeGenesisPairV1, HierarchyProtectedJournalErrorV1> {
+    let seed = seed_claims(&packet).ok_or(HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?;
+    let validator = recover_hierarchy_replay_validator_for_closed_lineage_v1(journal)?;
+    let claimed = claim_hierarchy_protected_journal_v1(journal, validator.clone())?;
+    if verify_closed_tree_lineage_projection_v1(&claimed.replay()?, &validator)?
+        .contains_key(&seed.project())
+    {
+        return Err(HierarchyProtectedJournalErrorV1::CompareAndSwapFailed);
+    }
+    let tree =
+        SandboxTreeV1::from_records(seed.project(), Revision::new(1), seed.limits(), Vec::new())
+            .map_err(|_| HierarchyProtectedJournalErrorV1::NonCanonicalRecord)?;
+    let envelopes = source_tree_pair_envelopes(&tree, None, None, Some(packet), &validator)?;
+    let tree_head = envelopes[0].digest();
+    let lineage_head = envelopes[1].digest();
+    let prepared = claimed.plan(transaction_id, envelopes)?;
+    Ok(PreparedSourceTreeGenesisPairV1 {
+        tree_head,
+        lineage_head,
+        records: prepared.journal_records().to_vec(),
+    })
+}
+
+/// Rejoins exact generation-one member data; it never certifies Root currentness.
+pub(super) fn source_tree_genesis_members_v1(
+    journal: &Journal,
+    head: &ClosedTreeLineageHeadV1,
+    project: ProjectId,
+    seed_packet: &[u8; CONTROLLER_SOURCE_TREE_SEED_BYTES_V1],
+) -> Result<(ObjectDigest, ObjectDigest, Vec<u8>, Vec<u8>), HierarchyProtectedJournalErrorV1> {
+    if head.tree.project() != project
+        || head.tree.tree_generation().get() != 1
+        || &head.initial_seed_packet != seed_packet
+        || head.tree.records().next().is_some()
+        || head.tree.tombstones().next().is_some()
+    {
+        return Err(HierarchyProtectedJournalErrorV1::NonCanonicalRecord);
+    }
+    let tree_key = tree_key(project)?;
+    let mut identity = [0; 48];
+    identity[..16].copy_from_slice(project.as_bytes());
+    identity[24..32].copy_from_slice(&1_u64.to_be_bytes());
+    identity[32..].copy_from_slice(project.as_bytes());
+    let lineage_key = HierarchyProtectedJournalKeyV1::new(
+        HierarchyProtectedRecordKindV1::TreeLineage,
+        identity.to_vec(),
+    )?;
+    let get = |key: &[u8]| {
+        journal
+            .get(RecordNamespace::DesiredState, key)
+            .map(<[u8]>::to_vec)
+            .ok_or(HierarchyProtectedJournalErrorV1::NonCanonicalRecord)
+    };
+    Ok((
+        head.tree_head,
+        head.lineage_head,
+        get(tree_key.as_bytes())?,
+        get(lineage_key.as_bytes())?,
+    ))
 }
 
 fn tree_key(

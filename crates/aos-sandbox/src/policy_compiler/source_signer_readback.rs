@@ -24,6 +24,10 @@ use crate::lifecycle::protected_journal_join::{
     PROTECTED_SOURCE_DOMAIN_JOURNAL, PROTECTED_SOURCE_DOMAIN_ROOT, source_domain_journal_limits,
 };
 
+use super::source_genesis_readback::{
+    SOURCE_TREE_GENESIS_READBACK_BYTES_V1, SourceTreeGenesisChallengeV1,
+    sign_source_tree_genesis_fields_v1,
+};
 use super::source_hold_readback::{
     SOURCE_HOLD_READBACK_BYTES_V1, SourceHoldReadbackChallengeV1, SourceHoldReadbackErrorV1,
     sign_fields,
@@ -37,6 +41,95 @@ use super::source_project_admission_readback::{
 };
 
 const SIGNER_SOURCE_VIEW: &str = "/run/aos/sandbox-source-signer-journal";
+
+/// Observes initial materialization only through the existing fixed reader view.
+///
+/// Empty is joined absence of every Tree, lineage and genesis row, never a
+/// project lookup miss. Prepared/Anchored require the exact original intent.
+/// This Source-purpose signature does not authenticate Root sender authority,
+/// a current Root floor, or a Controller-retained writer.
+///
+/// # Errors
+///
+/// Rejects unsafe view/owner/names, malformed or legacy materialization, a
+/// missing or substituted intent/project, mixed ACK state or changed replay.
+pub fn sign_fixed_source_tree_genesis_readback_v1(
+    expected_controller_uid: u32,
+    project: Option<ProjectId>,
+    challenge: SourceTreeGenesisChallengeV1,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+) -> Result<[u8; SOURCE_TREE_GENESIS_READBACK_BYTES_V1], SourceSignerReadbackErrorV1> {
+    if expected_controller_uid == 0
+        || signer_generation == 0
+        || project.is_some_and(|project| project.as_bytes() == &[0; 16])
+        || project.is_some() != challenge.intent().is_some()
+    {
+        return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
+    }
+    with_source_signer_journal_view(expected_controller_uid, |readback| {
+        sign_genesis_readback_from_view(
+            readback,
+            project,
+            challenge,
+            signer_generation,
+            signing_key,
+        )
+    })
+}
+
+/// Reuses actual read-only replay; no fixture or supplied receipt can mint it.
+pub(super) fn sign_genesis_readback_from_view(
+    readback: &mut ReadOnlyProtectedJournal,
+    project: Option<ProjectId>,
+    challenge: SourceTreeGenesisChallengeV1,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+) -> Result<[u8; SOURCE_TREE_GENESIS_READBACK_BYTES_V1], SourceSignerReadbackErrorV1> {
+    let rows = crate::hierarchy::source_genesis::validate_actual_rows(readback.journal_mut())
+        .map_err(|_| SourceSignerReadbackErrorV1::Stale)?;
+    let names = readback.physical_names_v1();
+    let sequence = readback.journal_mut().snapshot_sequence();
+    let receipt = match project {
+        Some(project) => Some(
+            rows.receipts
+                .get(&project)
+                .ok_or(SourceSignerReadbackErrorV1::Stale)?,
+        ),
+        None if rows.receipts.is_empty() && rows.pending.is_none() && rows.acks.is_empty() => None,
+        None => return Err(SourceSignerReadbackErrorV1::Stale),
+    };
+    if receipt.map(|receipt| receipt.intent_digest()) != challenge.intent()
+        || rows.pending.as_ref().is_some_and(|pending| {
+            Some(pending.project) == project
+                && (pending.nonce != challenge.nonce() || pending.names != names)
+        })
+    {
+        return Err(SourceSignerReadbackErrorV1::Stale);
+    }
+    let ack = project
+        .and_then(|project| rows.acks.get(&project))
+        .map(|ack| (ack.root_floor, ack.digest()));
+    let packet = sign_source_tree_genesis_fields_v1(
+        challenge,
+        names,
+        sequence,
+        receipt,
+        ack,
+        signer_generation,
+        signing_key,
+    )?;
+
+    if readback.physical_names_v1() != names
+        || readback.journal_mut().snapshot_sequence() != sequence
+        || crate::hierarchy::source_genesis::validate_actual_rows(readback.journal_mut())
+            .map_err(|_| SourceSignerReadbackErrorV1::Stale)?
+            != rows
+    {
+        return Err(SourceSignerReadbackErrorV1::Stale);
+    }
+    Ok(packet)
+}
 
 /// Signs the exact unconsumed Source reservation from the independent view.
 ///

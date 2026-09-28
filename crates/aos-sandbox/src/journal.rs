@@ -51,6 +51,7 @@ mod host_settlement_admission_gate;
 mod source_domain_challenge;
 mod source_domain_policy_hold;
 mod source_project_admission_challenge;
+pub(crate) mod source_tree_genesis;
 pub use cache_policy_hold::CachePolicyHoldV1;
 pub(crate) use cache_policy_hold::NAME as CACHE_POLICY_HOLD_JOURNAL;
 pub(crate) use capacity_reservation::capacity_reservation_identity_is_exact_v1;
@@ -2263,11 +2264,44 @@ impl Journal {
         project_admission_transition: SourceProjectAdmissionTransition,
         controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
     ) -> Result<CommitResult, JournalError> {
+        self.commit_with_capacity_scope_and_source_genesis(
+            transaction,
+            settling_reservation,
+            allow_capacity_records,
+            allow_policy_hold_transition,
+            allow_host_fence_acquisition,
+            allow_host_currentness_fence_acquisition,
+            allow_host_settlement_admission_append,
+            project_admission_transition,
+            controller_genesis_transition,
+            source_tree_genesis::SourceGenesisTransitionV1::None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_with_capacity_scope_and_source_genesis(
+        &mut self,
+        transaction: &JournalTransaction,
+        settling_reservation: Option<[u8; 32]>,
+        allow_capacity_records: bool,
+        allow_policy_hold_transition: bool,
+        allow_host_fence_acquisition: bool,
+        allow_host_currentness_fence_acquisition: bool,
+        allow_host_settlement_admission_append: bool,
+        project_admission_transition: SourceProjectAdmissionTransition,
+        controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
+        source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
+    ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
         controller_source_genesis::require_no_mutation(
             &self.state,
             transaction,
             controller_genesis_transition,
+        )?;
+        source_tree_genesis::require_no_mutation(
+            &self.state,
+            transaction,
+            source_genesis_transition,
         )?;
         source_project_admission_challenge::require_no_mutation(
             &self.state,
@@ -2447,6 +2481,29 @@ impl Journal {
             &[controller_source_genesis::ControllerSourceGenesisTransition],
         >,
     ) -> Result<(), JournalError> {
+        self.preflight_transactions_with_capacity_scope_and_source_genesis(
+            transactions,
+            settling_reservation,
+            allow_capacity_records,
+            allow_policy_hold_transition,
+            project_transitions,
+            controller_genesis_transitions,
+            None,
+        )
+    }
+
+    fn preflight_transactions_with_capacity_scope_and_source_genesis(
+        &self,
+        transactions: &[JournalTransaction],
+        settling_reservation: Option<[u8; 32]>,
+        allow_capacity_records: bool,
+        allow_policy_hold_transition: bool,
+        project_transitions: Option<&[SourceProjectAdmissionTransition]>,
+        controller_genesis_transitions: Option<
+            &[controller_source_genesis::ControllerSourceGenesisTransition],
+        >,
+        genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
+    ) -> Result<(), JournalError> {
         self.ensure_healthy()?;
         if project_transitions.is_some_and(|transitions| transitions.len() != transactions.len()) {
             return Err(JournalError::ProtectedBoundary);
@@ -2454,6 +2511,9 @@ impl Journal {
         if controller_genesis_transitions
             .is_some_and(|transitions| transitions.len() != transactions.len())
         {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        if genesis_transitions.is_some_and(|transitions| transitions.len() != transactions.len()) {
             return Err(JournalError::ProtectedBoundary);
         }
         cache_policy_hold::check_unheld(self)?;
@@ -2473,6 +2533,13 @@ impl Journal {
                 controller_genesis_transitions
                     .map(|transitions| transitions[index])
                     .unwrap_or(controller_source_genesis::ControllerSourceGenesisTransition::None),
+            )?;
+            source_tree_genesis::require_no_mutation(
+                &state,
+                transaction,
+                genesis_transitions
+                    .map(|transitions| transitions[index])
+                    .unwrap_or(source_tree_genesis::SourceGenesisTransitionV1::None),
             )?;
             source_project_admission_challenge::require_no_mutation(
                 &state,
@@ -2562,6 +2629,7 @@ impl Journal {
     /// Effect fence is held.
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        source_tree_genesis::require_no_compaction(&self.state)?;
         source_project_admission_challenge::require_no_compaction(&self.state)?;
         controller_source_genesis::require_no_compaction(&self.state)?;
         cache_policy_hold::require_valid_compaction(self)?;
