@@ -225,7 +225,8 @@ in {
     url = "https://github.com/google/benchmark.git";
     ref = "v1.9.4";
     rev = "eddb0241389718a23a42db6af5f0164b6e0139af";
-    hash = "sha256-P7wJcKkIBoWtN9FCRticpBzYbEZPq71a0iW/2oDTZRU=";
+    extraExcludes = ["!/docs/assets/images"];
+    hash = "sha256-41DXV3FqcDYMdZ82nLgVfT6Td3eFljyz7KvbbUjCDW4=";
   };
   onetbb = prepareModule {
     pname = "bazel-onetbb-source";
@@ -236,8 +237,10 @@ in {
       url = "https://github.com/uxlfoundation/oneTBB.git";
       ref = "v2022.2.0";
       rev = "06ce6212da6710f4bb2d20a1904b018aa44069bf";
-      extraExcludes = ["!/doc"];
-      hash = "sha256-HlGk8MqpdogVX88NWakbIFBaf4hLuu3NK8h9DQ18eCE=";
+      # Retain library sources while omitting documentation artwork and the
+      # precompiled interface resource of an unrelated example application.
+      extraExcludes = ["!/doc" "!/rfcs" "!*.nib" "!*.ico" "!*.gif"];
+      hash = "sha256-NGKel1zeZpfix1f2dB+EvCrLXyxo+CjSYXbpCQaUHz4=";
     };
     overlays = builtins.mapAttrs (name: hash:
       buildPackages.fetchurl {
@@ -580,6 +583,9 @@ in {
         script = ''
           # Preserve Bazel's pinned visibility, gRPC, and Java generator fixes.
           patch --batch --fuzz=0 -p1 < ${bazelSource}/third_party/protobuf.patch
+          # The retained binary integrity table names protoc 33.0. Validate the
+          # source-built compiler against the library's real 33.4 version.
+          patch --batch --forward --fuzz=0 -p1 < ${./bazel-patches/protobuf-source-toolchain-version.patch}
         '';
       }
       {

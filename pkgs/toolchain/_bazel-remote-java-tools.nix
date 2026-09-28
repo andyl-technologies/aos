@@ -149,18 +149,12 @@ in
               if contents.count(original_zlib) != 5:
                   raise SystemExit("unexpected Bazel 7 Java tools zlib dependencies")
               contents = contents.replace(original_zlib, '"@zlib"')
-              ${
-            if bazelBootstrap.version == "7.7.1"
-            then ''
               # singlejar includes src/main/protobuf rather than the archive
               # repository's java_tools prefix. Preserve that generated path.
               proto_source = '    srcs = ["java_tools/src/main/protobuf/desugar_deps.proto"],\n'
               if contents.count(proto_source) != 1:
                   raise SystemExit("unexpected Bazel 7 desugar proto declaration")
               contents = contents.replace(proto_source, proto_source + '    strip_import_prefix = "java_tools",\n')
-            ''
-            else ""
-          }
 
               # Share the source-built coverage libraries with newer Bazel
               # stages, retaining the Bazel 7 runner and relocation rules.
@@ -187,6 +181,13 @@ in
               destination = output / relative
               destination.parent.mkdir(parents=True, exist_ok=True)
               shutil.copyfile(original_path, destination)
+              if "${bazelBootstrap.version}" == "7.7.1" and destination.suffix in {".cc", ".h"}:
+                  # Fully qualify this repository's headers so the bootstrap
+                  # bazel_tools include directory cannot shadow them.
+                  contents = destination.read_text()
+                  for prefix in ["src/tools/singlejar/", "third_party/ijar/"]:
+                      contents = contents.replace('"' + prefix, '"java_tools/' + prefix)
+                  destination.write_text(contents)
           PY
 
           mkdir -p "$out/java_tools/third_party/java/jacoco" \

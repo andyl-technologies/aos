@@ -582,7 +582,7 @@
     ]
     ++ lib.optional isDarwinCross llvm
   );
-  buildToolsPath =
+  baseBuildToolsPath =
     if isCross
     then
       lib.makeBinPath [
@@ -606,6 +606,10 @@
         buildFile
       ]
     else toolsPath;
+  # Bazel 9 samples compiler-worker memory through ps on the Linux executor.
+  buildToolsPath =
+    baseBuildToolsPath
+    + lib.optionalString needsRulesJavaRuntime ":${buildPackages.procps-ng}/bin";
 
   # Cross builds keep the javac bootstrap and execution actions on Linux. A
   # separate Darwin crosstool is selected only for target C/C++ actions,
@@ -1409,7 +1413,8 @@ in
         buildPatchelf
       ]
       ++ lib.optional (source != null) buildQemuImg
-      ++ lib.optionals (source != null) [buildProguard buildOpenjdk8];
+      ++ lib.optionals (source != null) [buildProguard buildOpenjdk8]
+      ++ lib.optional needsRulesJavaRuntime buildPackages.procps-ng;
     runtimeDeps =
       [
         bash
