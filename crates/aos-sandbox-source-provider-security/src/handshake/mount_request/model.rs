@@ -10,6 +10,7 @@ pub struct PreparedMountProviderRequestV2 {
     pub(super) signed_request: Vec<u8>,
     pub(super) projection: MountProviderRequestProjectionV2,
     pub(super) outcome: AuthorizedMountProviderOutcomeV2,
+    pub(super) native_currentness: Option<super::native_catalog::NativeAcquireCurrentnessGuardV3>,
 }
 
 /// Authorizes one exact protected catalog and optional retained-selection floor.
@@ -71,7 +72,7 @@ impl core::fmt::Debug for MountProviderRequestSendRecoveryV2 {
     }
 }
 
-/// Projects the exact identities committed by an authorized Acquire-v2 request.
+/// Projects the exact identities committed by an authorized provider request.
 pub struct MountProviderRequestProjectionV2 {
     pub(super) method: SourceProviderMethod,
     pub(super) session: MountProviderSessionProjectionV2,
