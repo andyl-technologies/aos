@@ -81,19 +81,33 @@ API types.
 - [x] **T-CAM-1.6** Add schema corruption, authoring-order canonicalization,
   stale-command, single-writer ownership, crash-window, and provenance-lineage
   tests.
-- [ ] **T-CAM-1.7** Automate the Phase 1 public-surface model path: create,
+- [x] **T-CAM-1.7** Automate the Phase 1 public-surface model path: create,
   inspect, derive, reject a stale command, pause, resume, and audit linear
   snapshot ancestry using only public object/API surfaces.
 
 **Gates:** `gate:campaign-model`, `gate:content-address`,
 `gate:campaign-cold-continuity` model tier.
 
-`gate:campaign-model` is an isolable `crucible-campaign` target. Its public-
-surface gate covers canonical authoring order, linear control, stale-command
-rejection, derivation, and restart reconstruction; the same gate runs the full
-crate suite for corrupt closure, lost-CAS, cached-projection, and provenance
-regressions. Close T-CAM-1.7 when the exact-head gate records a green result
-for the complete public-surface path.
+`gate:campaign-model` exercises create, authenticated inspection, stale-command
+rejection, pause, resume, derivation, and linear snapshot ancestry through the
+public `CampaignRepository` API. The public flight also checks exact command
+retry after later mutations, command-ID reuse rejection, unchanged source refs,
+and derivation retry after the target advances. Reopening the same immutable
+store reconstructs both histories and their distinct lifecycle states.
+
+The complete gate runs the campaign crate suite and the required exact model
+measurement and raw replay evidence tests. It can be qualified independently:
+
+```text
+bash ./aos-dev --release build check \
+  crucible.phase1.gates.campaignModel.isolatedGate --no-out-link
+```
+
+This target uses the same complete gate script with no predecessor dependencies;
+the normal
+phase gate retains its content-address and determinism prerequisites. This
+completes T-CAM-1.7's public model path without claiming packaged campaign or
+native QEMU qualification.
 
 ## 11.4 Phase 2 — Typed choice model and guest protocol
 
