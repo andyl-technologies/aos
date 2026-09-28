@@ -319,17 +319,26 @@ in rec {
         };
         dependencies = [layer0Determinism];
       };
-      campaignModel = greenBeforeAdvance {
-        attrPath = "checks.crucible.phase1.gates.campaignModel";
-        # lint needle: campaignModel = import ./phase1-campaign-model.nix
-        gate = import ./phase1-campaign-model.nix {
-          inherit pkgs lib;
+      campaignModel =
+        (greenBeforeAdvance {
           attrPath = "checks.crucible.phase1.gates.campaignModel";
-          taskIds = ["T-CAM-1.1" "T-CAM-1.2" "T-CAM-1.3" "T-CAM-1.4" "T-CAM-1.5" "T-CAM-1.6" "T-CAM-1.7" "T-CAM-3.1"];
-          dependencies = [contentAddress.rawGate];
+          # lint needle: campaignModel = import ./phase1-campaign-model.nix
+          gate = import ./phase1-campaign-model.nix {
+            inherit pkgs lib;
+            attrPath = "checks.crucible.phase1.gates.campaignModel";
+            taskIds = ["T-CAM-1.1" "T-CAM-1.2" "T-CAM-1.3" "T-CAM-1.4" "T-CAM-1.5" "T-CAM-1.6" "T-CAM-1.7" "T-CAM-3.1"];
+            dependencies = [contentAddress.rawGate];
+          };
+          dependencies = [contentAddress];
+        })
+        // {
+          # Runs the complete model gate independently of earlier phase gates.
+          isolatedGate = import ./phase1-campaign-model.nix {
+            inherit pkgs lib;
+            attrPath = "checks.crucible.phase1.gates.campaignModel.isolatedGate";
+            dependencies = [];
+          };
         };
-        dependencies = [contentAddress];
-      };
       replayOracle = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.replayOracle";
         # lint needle: replayOracle = import ./phase1-replay-oracle.nix
