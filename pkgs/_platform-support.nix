@@ -894,6 +894,7 @@ let
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
     "security/_aos-mount-executable-carrier.nix" = "linux-only-build-helper";
+    "security/_openssl-output-check.nix" = "cross-build-helper";
     "storage/_postgresql-cross.nix" = "cross-build-helper";
     "toolchain/_bazel-asm.nix" = "native-build-helper";
     "toolchain/_bazel-async-profiler-api.nix" = "native-build-helper";
@@ -918,6 +919,7 @@ let
     "toolchain/_bazel-google-http-1433.nix" = "native-build-helper";
     "toolchain/_bazel-google-http.nix" = "native-build-helper";
     "toolchain/_bazel-google-java-format.nix" = "native-build-helper";
+    "toolchain/_bazel-caffeine.nix" = "native-build-helper";
     "toolchain/_bazel-grpc-java-plugin.nix" = "native-build-helper";
     "toolchain/_bazel-grpc-netty.nix" = "native-build-helper";
     "toolchain/_bazel-grpc-xds-source.nix" = "target-independent-source";
