@@ -16,17 +16,23 @@ use rustix::termios::{
 
 use crate::GuestProcessEffectErrorV1 as Error;
 
-pub(super) struct PreparedOriginalPtyModes {
-    terminal: Termios,
-    geometry: Winsize,
+/// Keeps initial mode setup distinct from geometry-only resize of the retained PTY.
+pub(super) enum PreparedOriginalPtySettings {
+    /// Applies the initially requested terminal modes and geometry.
+    Initial {
+        terminal: Termios,
+        geometry: Winsize,
+    },
+    /// Applies geometry without reading or writing application terminal modes.
+    Resize { geometry: Winsize },
 }
 
-impl PreparedOriginalPtyModes {
+impl PreparedOriginalPtySettings {
     /// Prepares exact native settings without changing the retained PTY.
     ///
     /// # Errors
     /// Rejects malformed modes, unsupported native values or failed PTY reads.
-    pub(super) fn prepare(
+    pub(super) fn prepare_initial(
         master: BorrowedFd<'_>,
         geometry: OpenSshPtyGeometryV5,
         modes: &[u8],
@@ -84,20 +90,25 @@ impl PreparedOriginalPtyModes {
                 _ => {} // RFC 4254 permits ignoring unknown platform modes.
             }
         }
-        let mut native_geometry = tcgetwinsize(master)?;
-        // A zero initial dimension is the SSH client's unspecified value, not
-        // permission to manufacture a PTY or alter original execution topology.
-        if geometry.rows != 0 {
-            native_geometry.ws_row = geometry.rows;
-        }
-        if geometry.columns != 0 {
-            native_geometry.ws_col = geometry.columns;
-        }
-        native_geometry.ws_xpixel = geometry.xpixel;
-        native_geometry.ws_ypixel = geometry.ypixel;
-        Ok(Self {
+        Ok(Self::Initial {
             terminal,
-            geometry: native_geometry,
+            geometry: prepare_geometry(master, geometry)?,
+        })
+    }
+
+    /// Prepares geometry only; a running application's termios is never captured.
+    ///
+    /// # Errors
+    /// Rejects unspecified resize dimensions or a failed retained PTY read.
+    pub(super) fn prepare_resize(
+        master: BorrowedFd<'_>,
+        geometry: OpenSshPtyGeometryV5,
+    ) -> Result<Self, Error> {
+        if geometry.rows == 0 || geometry.columns == 0 {
+            return Err(Error::InvalidRequest);
+        }
+        Ok(Self::Resize {
+            geometry: prepare_geometry(master, geometry)?,
         })
     }
 
@@ -115,30 +126,61 @@ impl PreparedOriginalPtyModes {
         mut recheck: impl FnMut() -> Result<(), Error>,
     ) -> Result<(), Error> {
         recheck()?;
+        // The typed Resize variant cannot enter the termios mutation path.
         // An attempted kernel mutation cannot be replayed after any later
         // syscall, deadline, currentness or readback failure.
         let attempted = (|| {
-            tcsetattr(master, OptionalActions::Now, &self.terminal)?;
+            if let Self::Initial { terminal, .. } = self {
+                tcsetattr(master, OptionalActions::Now, terminal)?;
+                recheck()?;
+            }
+            let expected_geometry = match self {
+                Self::Initial { geometry, .. } | Self::Resize { geometry } => *geometry,
+            };
+            tcsetwinsize(master, expected_geometry)?;
             recheck()?;
-            tcsetwinsize(master, self.geometry)?;
-            recheck()?;
-            let terminal = tcgetattr(master)?;
-            let geometry = tcgetwinsize(master)?;
-            if terminal.input_modes.bits() != self.terminal.input_modes.bits()
-                || terminal.output_modes.bits() != self.terminal.output_modes.bits()
-                || terminal.control_modes.bits() != self.terminal.control_modes.bits()
-                || terminal.local_modes.bits() != self.terminal.local_modes.bits()
-                || !same_character_codes(&terminal, &self.terminal)
-                || terminal.input_speed() != self.terminal.input_speed()
-                || terminal.output_speed() != self.terminal.output_speed()
-                || geometry != self.geometry
-            {
+
+            if let Self::Initial { terminal, .. } = self {
+                let actual = tcgetattr(master)?;
+                if !same_terminal_settings(&actual, terminal) {
+                    return Err(Error::AmbiguousEffect);
+                }
+            }
+            if tcgetwinsize(master)? != expected_geometry {
                 return Err(Error::AmbiguousEffect);
             }
             recheck()
         })();
         attempted.map_err(|_| Error::AmbiguousEffect)
     }
+}
+
+fn prepare_geometry(
+    master: BorrowedFd<'_>,
+    geometry: OpenSshPtyGeometryV5,
+) -> Result<Winsize, Error> {
+    let mut native_geometry = tcgetwinsize(master)?;
+    // A zero initial dimension is the SSH client's unspecified value, not
+    // permission to manufacture a PTY or alter original execution topology.
+    if geometry.rows != 0 {
+        native_geometry.ws_row = geometry.rows;
+    }
+    if geometry.columns != 0 {
+        native_geometry.ws_col = geometry.columns;
+    }
+    native_geometry.ws_xpixel = geometry.xpixel;
+    native_geometry.ws_ypixel = geometry.ypixel;
+    Ok(native_geometry)
+}
+
+fn same_terminal_settings(left: &Termios, right: &Termios) -> bool {
+    left.input_modes.bits() == right.input_modes.bits()
+        && left.output_modes.bits() == right.output_modes.bits()
+        && left.control_modes.bits() == right.control_modes.bits()
+        && left.local_modes.bits() == right.local_modes.bits()
+        && same_character_codes(left, right)
+        && left.input_speed() == right.input_speed()
+        && left.output_speed() == right.output_speed()
 }
 
 fn same_character_codes(left: &Termios, right: &Termios) -> bool {
@@ -192,7 +234,7 @@ mod tests {
             xpixel: 640,
             ypixel: 480,
         };
-        let prepared = PreparedOriginalPtyModes::prepare(
+        let prepared = PreparedOriginalPtySettings::prepare_initial(
             master.as_fd(),
             geometry,
             &[1, 0, 0, 0, 3, 53, 0, 0, 0, 0, 0],
@@ -235,13 +277,20 @@ mod tests {
             ypixel: 0,
         };
         assert!(
-            PreparedOriginalPtyModes::prepare(master.as_fd(), geometry, &[1, 0, 0, 1, 0, 0])
-                .is_err()
+            PreparedOriginalPtySettings::prepare_initial(
+                master.as_fd(),
+                geometry,
+                &[1, 0, 0, 1, 0, 0]
+            )
+            .is_err()
         );
         let before = tcgetattr(&master).unwrap();
-        let prepared =
-            PreparedOriginalPtyModes::prepare(master.as_fd(), geometry, &[53, 0, 0, 0, 0, 0])
-                .unwrap();
+        let prepared = PreparedOriginalPtySettings::prepare_initial(
+            master.as_fd(),
+            geometry,
+            &[53, 0, 0, 0, 0, 0],
+        )
+        .unwrap();
 
         assert!(
             prepared
@@ -264,7 +313,7 @@ mod tests {
         let mut original = tcgetattr(&master).unwrap();
         original.local_modes.insert(LocalModes::ECHO);
         tcsetattr(&master, OptionalActions::Now, &original).unwrap();
-        let prepared = PreparedOriginalPtyModes::prepare(
+        let prepared = PreparedOriginalPtySettings::prepare_initial(
             master.as_fd(),
             OpenSshPtyGeometryV5 {
                 rows: 33,
@@ -295,5 +344,126 @@ mod tests {
                 .contains(LocalModes::ECHO)
         );
         assert_eq!(tcgetwinsize(&master).unwrap(), before_geometry);
+    }
+
+    #[test]
+    fn resize_never_enters_termios_path_or_overwrites_application_changes() {
+        let master =
+            openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC).unwrap();
+        grantpt(&master).unwrap();
+        unlockpt(&master).unwrap();
+        let before = tcgetattr(&master).unwrap();
+        let prepared = PreparedOriginalPtySettings::prepare_resize(
+            master.as_fd(),
+            OpenSshPtyGeometryV5 {
+                rows: 41,
+                columns: 101,
+                xpixel: 720,
+                ypixel: 560,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            &prepared,
+            PreparedOriginalPtySettings::Resize { .. }
+        ));
+
+        // A separate application actor changes modes after resize preflight.
+        // Resize has no retained termios snapshot and cannot enter tcsetattr.
+        let application_fd = rustix::io::dup(&master).unwrap();
+        let speed = if before.output_speed() == 19200 {
+            9600
+        } else {
+            19200
+        };
+        let application = std::thread::spawn(move || {
+            let mut application = tcgetattr(&application_fd).unwrap();
+            application.local_modes.toggle(LocalModes::ECHO);
+            application.set_input_speed(speed).unwrap();
+            application.set_output_speed(speed).unwrap();
+            tcsetattr(&application_fd, OptionalActions::Now, &application).unwrap();
+            tcgetattr(&application_fd).unwrap()
+        })
+        .join()
+        .unwrap();
+        assert!(!same_terminal_settings(&application, &before));
+
+        let mut rechecks = 0;
+        prepared
+            .apply(master.as_fd(), || {
+                rechecks += 1;
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(same_terminal_settings(
+            &tcgetattr(&master).unwrap(),
+            &application
+        ));
+        assert_eq!(
+            tcgetwinsize(&master).unwrap(),
+            Winsize {
+                ws_row: 41,
+                ws_col: 101,
+                ws_xpixel: 720,
+                ws_ypixel: 560
+            },
+        );
+        // Initial setup has an extra mode-syscall recheck; Resize cannot take it.
+        assert_eq!(rechecks, 3);
+    }
+
+    #[test]
+    fn resize_cut_failure_is_effect_free_before_attempt_and_ambiguous_after_it() {
+        let master =
+            openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC).unwrap();
+        grantpt(&master).unwrap();
+        unlockpt(&master).unwrap();
+        let before = tcgetwinsize(&master).unwrap();
+        let geometry = OpenSshPtyGeometryV5 {
+            rows: 35,
+            columns: 91,
+            xpixel: 600,
+            ypixel: 400,
+        };
+        let prepared =
+            PreparedOriginalPtySettings::prepare_resize(master.as_fd(), geometry).unwrap();
+
+        assert!(matches!(
+            prepared.apply(master.as_fd(), || Err(Error::InvalidRequest)),
+            Err(Error::InvalidRequest),
+        ));
+        assert_eq!(tcgetwinsize(&master).unwrap(), before);
+        let mut checks = 0;
+        let result = prepared.apply(master.as_fd(), || {
+            checks += 1;
+            if checks == 1 {
+                Ok(())
+            } else {
+                Err(Error::InvalidRequest)
+            }
+        });
+
+        assert!(matches!(result, Err(Error::AmbiguousEffect)));
+        assert_eq!(checks, 2);
+        assert_eq!(
+            tcgetwinsize(&master).unwrap(),
+            Winsize {
+                ws_row: 35,
+                ws_col: 91,
+                ws_xpixel: 600,
+                ws_ypixel: 400
+            },
+        );
+        assert!(
+            PreparedOriginalPtySettings::prepare_resize(
+                master.as_fd(),
+                OpenSshPtyGeometryV5 {
+                    rows: 0,
+                    ..geometry
+                }
+            )
+            .is_err()
+        );
     }
 }

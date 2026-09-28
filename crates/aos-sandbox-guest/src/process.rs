@@ -898,15 +898,17 @@ pub(super) fn apply_owned_original_control_v5(
                 .pty_master
                 .as_ref()
                 .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
-            let modes = match &request.action {
-                OpenSshControlActionV5::Pty { modes, .. } => modes.as_slice(),
-                _ => &[],
-            };
-            Some(crate::openssh_pty::PreparedOriginalPtyModes::prepare(
-                master.as_fd(),
-                *geometry,
-                modes,
-            )?)
+            use crate::openssh_pty::PreparedOriginalPtySettings;
+
+            Some(match &request.action {
+                OpenSshControlActionV5::Resize(_) => {
+                    PreparedOriginalPtySettings::prepare_resize(master.as_fd(), *geometry)?
+                }
+                OpenSshControlActionV5::Pty { modes, .. } => {
+                    PreparedOriginalPtySettings::prepare_initial(master.as_fd(), *geometry, modes)?
+                }
+                _ => return Err(GuestProcessEffectErrorV1::InvalidRequest),
+            })
         }
     };
     ledger.reserve_original_control_v5(&record, ticket, session, request)?;
