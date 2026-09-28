@@ -33,7 +33,9 @@ const MAGIC: &[u8; 8] = b"AOSPSC02";
 const KEY_MAGIC: &[u8; 8] = b"AOSPAK02";
 const VERSION: u16 = 2;
 const BODY_BYTES: usize = 160;
-pub(super) const PACKET_BYTES: usize = BODY_BYTES + 64;
+/// Bounds the exact independently signed project-authorization source packet.
+pub const PROJECT_AUTHORIZATION_SOURCE_BYTES_V2: usize = BODY_BYTES + 64;
+pub(super) const PACKET_BYTES: usize = PROJECT_AUTHORIZATION_SOURCE_BYTES_V2;
 const KEY_BYTES: usize = ROLE_CREDENTIAL_BYTES;
 const SIGNING_DOMAIN: &[u8] =
     b"aos.sandbox.publisher-project-authorization-source.v2\0/var/lib/aos/sandboxd/controller.journal\0";

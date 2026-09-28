@@ -89,6 +89,9 @@ use aos_sandbox::controller_service::public_projection::{
     AuthorizedPublicProjectionReadV1, PublicProjectionKindV1, PublicProjectionQueryV1,
     PublicProjectionRecordV1,
 };
+use aos_sandbox::hierarchy::controller_genesis_input::{
+    ControllerSourceGenesisInputErrorV1, ProvisionedControllerSourceGenesisInputV1,
+};
 use aos_sandbox::host_catalog_publication::{
     HostCatalogPublicationDraftV1, HostCatalogPublicationError,
 };
@@ -349,6 +352,8 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
         .transpose()
         .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
     let node_id = read_node_id()?;
+    let source_genesis_input =
+        ProvisionedControllerSourceGenesisInputV1::from_systemd_credentials_optional()?;
     let publisher_registration = if let Some(listener) = publisher_listener {
         let scope = publisher_ingress::PublisherServiceScopeV1::from_process_credential(
             NodeId::from_bytes(node_id),
@@ -416,6 +421,38 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
         publisher_policy_source::install_from_process_credentials(&mut controller, scope)
             .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
     }
+    if let Some(input) = &source_genesis_input {
+        match controller.inspect_provisioned_source_genesis_v1(input) {
+            Ok(()) => {}
+            Err(ControllerSourceGenesisInputErrorV1::MissingCurrentAuthorization) => {
+                // Delivery is not admission: do not invent an authorization
+                // head, spend the epoch, or strand a pending Controller row.
+                eprintln!(
+                    "aos-sandboxd: Source genesis input awaits retained current authorization; coordinator remains closed"
+                );
+            }
+            Err(error)
+                if matches!(
+                    &error,
+                    ControllerSourceGenesisInputErrorV1::Seed(
+                        aos_sandbox::hierarchy::source_seed::ControllerSourceTreeSeedErrorV1::Stale
+                    ) | ControllerSourceGenesisInputErrorV1::Authorization(
+                        aos_sandbox::publisher_policy::ProjectAuthorizationSourceErrorV2::Stale
+                    ) | ControllerSourceGenesisInputErrorV1::Owner(
+                        aos_sandbox::hierarchy::genesis_profile::SourceGenesisErrorV1::Stale
+                    )
+                ) =>
+            {
+                // A valid old pair can still select exact historical recovery;
+                // an old current head is never promoted to fresh admission.
+                input.recheck()?;
+                eprintln!(
+                    "aos-sandboxd: Source genesis current cut unavailable; coordinator remains closed: {error}"
+                );
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
     let listener = runtime.block_on(into_async_diagnostic_listener(listener))?;
     let public_listener = if configuration.public_api {
         Some(runtime.block_on(public_api::bind(configuration.uid))?)
@@ -437,6 +474,7 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
                 attach_credentials,
                 attach_plan_signer,
                 guest_root_pins,
+                source_genesis_input,
                 publisher_registration,
                 worker_capabilities,
                 sessions,
@@ -587,6 +625,7 @@ fn controller_worker(
     attach_credentials: Option<ControllerAttachCredentialsV1>,
     attach_plan_signer: Option<ControllerBrokerPlanSignerV1>,
     guest_root_pins: Option<aos_sandbox::guest_root_publication::GuestRootTemplatePinsV1>,
+    source_genesis_input: Option<ProvisionedControllerSourceGenesisInputV1>,
     mut publisher_registration: Option<publisher_ingress::PublisherRegistrationOwnerV1>,
     capabilities: Arc<Mutex<CapabilityState>>,
     sessions: SharedControllerBrokerSessions,
@@ -599,6 +638,12 @@ fn controller_worker(
     let mut attach_poll_cursor = 0;
     loop {
         if Instant::now() >= next_cycle {
+            if let Some(input) = &source_genesis_input {
+                if let Err(error) = input.recheck() {
+                    let _ = events.send(WorkerEvent::Fatal(error.to_string()));
+                    return;
+                }
+            }
             match run_controller_cycle(
                 &mut controller,
                 node_id,
@@ -5718,6 +5763,9 @@ pub enum ControllerRuntimeError {
     /// The optional Controller hold seed and role pin are unsafe or inconsistent.
     #[error("protected Controller hold readback credentials are invalid")]
     InvalidControllerHoldCredential,
+    /// Protected Source genesis delivery or read-only current-cut validation failed.
+    #[error(transparent)]
+    SourceGenesisInput(#[from] ControllerSourceGenesisInputErrorV1),
     /// Protected cache Replay source import failed.
     #[error("protected controller cache Replay source failed: {0}")]
     CacheReplaySource(aos_sandbox::cache_residency::CacheReplayControllerBootstrapErrorV1),

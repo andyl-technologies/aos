@@ -377,7 +377,12 @@ impl HeldControllerSourceGenesisV1<'_> {
     }
 }
 
-fn require_controller(journal: &Journal, uid: u32) -> Result<(), SourceGenesisErrorV1> {
+/// Rechecks only the fixed genuine Controller writer location and ownership.
+///
+/// # Errors
+///
+/// Rejects root ownership, another protected location or lost named custody.
+pub(super) fn require_controller(journal: &Journal, uid: u32) -> Result<(), SourceGenesisErrorV1> {
     if uid == 0 {
         return Err(SourceGenesisErrorV1::Stale);
     }
