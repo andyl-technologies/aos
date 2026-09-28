@@ -1107,6 +1107,7 @@ let
     "security/_aos-selinux-production-policy/aos_sandbox_guest_ancestor_negative.te" = "linux-only-test-source";
     "security/_aos-selinux-production-policy/aos_sandbox_guest_file_negative.te" = "linux-only-test-source";
     "security/_aos-selinux-production-policy/aos_sandbox_loader_negative.te" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/aos_sandbox_root_custody_negative.te" = "linux-only-test-source";
     "security/_aos-selinux-production-policy/coverage.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/coverage_test.py" = "linux-only-test-source";
     "security/_aos-selinux-production-policy/context_plan.py" = "linux-only-build-source";
@@ -1121,6 +1122,7 @@ let
     "security/_aos-selinux-production-policy/owner_policy.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/refpolicy-explicit-contexts.patch" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/refpolicy-explicit-loaders.patch" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/refpolicy-private-root-custody.patch" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/refpolicy-linux-6.18.33.patch" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/verify_context_dump.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/verify_context_dump_test.py" = "linux-only-test-source";
