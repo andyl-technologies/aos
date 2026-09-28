@@ -632,7 +632,7 @@ impl SourceAcquisitionTableV2 {
                 let prepared = match super::native_selection::commit_after_native_preflight(
                     prepared,
                     preflight,
-                    || journal.commit(&transaction).map_err(Into::into),
+                    || journal.commit(&transaction).map(|_| ()).map_err(Into::into),
                 )? {
                     super::native_selection::NativeCommitAttemptV3::Committed(prepared) => prepared,
                     super::native_selection::NativeCommitAttemptV3::Unconfirmed {
