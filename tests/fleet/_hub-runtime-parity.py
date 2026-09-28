@@ -129,6 +129,7 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
         setup_and_publish_same_registry(
             machine, origin, token, trust_key, source_root, tools,
             refresh_token=lambda: browser_session_token(machine, origin, email, password, curl),
+            provision_worker_binding=mode == "worker_only",
         )
         print("signed parity registry published:", mode)
 
@@ -217,7 +218,10 @@ def copy_signed_surface(client, destination, corpus_path, corpus_size, corpus_di
     destination.succeed(f"{tools['tar']} -C {source_root} -xf {archive}", timeout=60)
 
 
-def setup_and_publish_same_registry(machine, origin, token, trust_key, source_root, tools, *, refresh_token):
+def setup_and_publish_same_registry(
+    machine, origin, token, trust_key, source_root, tools, *, refresh_token,
+    provision_worker_binding=False,
+):
     """Create the same reviewed registry and publish exact pre-authored bytes."""
     def command(subcommand, mutation=""):
         return f"{tools['aos']} --json hub {subcommand} --hub {origin} --token {shlex.quote(token)} {mutation}"
@@ -233,6 +237,15 @@ def setup_and_publish_same_registry(machine, origin, token, trust_key, source_ro
             f"--confirm-hash {shlex.quote(planned['confirmation_hash'])} "
             f"--yes --idempotency-key {shlex.quote(label + '-apply')}",
         ), timeout=180))
+
+    # Native provisions its filesystem binding at startup. A fresh Worker uses
+    # the reviewed topology API to attach its deployment-owned R2 bucket.
+    if provision_worker_binding:
+        reviewed(
+            "parity-worker-storage",
+            "binding create --name default --stable-id instance-default "
+            "--kind deployment-r2 --bucket-binding REGISTRY_BUCKET",
+        )
 
     reviewed("parity-org", "org create --slug fleet --display-name 'Hybrid fleet'")
     org = json.loads(machine.succeed(command("org show fleet")))["data"]["organization"]
