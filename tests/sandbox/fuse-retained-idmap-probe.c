@@ -578,16 +578,17 @@ int main(void)
     struct mount_attr secure = {
         .attr_set = MOUNT_ATTR_IDMAP | MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID |
                     MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC,
-        .userns_fd = (uint64_t)userns};
+        .userns_fd = (__u64)(unsigned int)userns};
     if (syscall(SYS_mount_setattr, mount_fd, "", AT_EMPTY_PATH, &secure, sizeof(secure)) < 0 ||
         mount_id(mount_fd) != original_id)
         goto cleanup;
     /* Exact original-object denials, not a clone or an arbitrary failure. */
-    struct mount_attr again = {.attr_set = MOUNT_ATTR_IDMAP, .userns_fd = (uint64_t)userns};
+    struct mount_attr again = {
+        .attr_set = MOUNT_ATTR_IDMAP, .userns_fd = (__u64)(unsigned int)userns};
     if (syscall(SYS_mount_setattr, mount_fd, "", AT_EMPTY_PATH, &again, sizeof(again)) != -1 ||
         errno != EPERM)
         goto cleanup;
-    again.userns_fd = (uint64_t)remap_ns;
+    again.userns_fd = (__u64)(unsigned int)remap_ns;
     if (syscall(SYS_mount_setattr, mount_fd, "", AT_EMPTY_PATH, &again, sizeof(again)) != -1 ||
         errno != EPERM || mount_id(mount_fd) != original_id)
         goto cleanup;
@@ -638,8 +639,13 @@ cleanup:
      * is the bounded fallback when the child cannot reach its terminal loop. */
     if (child > 0) {
         char cancel_byte = 'X';
-        if (cancel[1] >= 0)
-            (void)write(cancel[1], &cancel_byte, 1);
+        if (cancel[1] >= 0) {
+            ssize_t written = write(cancel[1], &cancel_byte, 1);
+            if (written < 0)
+                perror("best-effort retained fixture cancellation");
+            else if (written != 1)
+                fprintf(stderr, "best-effort retained fixture cancellation: short write\n");
+        }
         kill_child(child);
     }
     if (fuse_fd >= 0)
