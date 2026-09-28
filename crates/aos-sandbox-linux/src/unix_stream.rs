@@ -1,10 +1,12 @@
 //! Retained connected Unix stream peer identity and duplicate continuity.
 //!
-//! This module adopts an already-connected Unix `SOCK_STREAM`; it neither
-//! connects to a pathname nor sends or receives protocol bytes. Adoption pins
+//! This module adopts or connects one Unix `SOCK_STREAM`. Adoption pins
 //! the connection establisher with `SO_PEERCRED` and `SO_PEERPIDFD` while
 //! retaining the exact socket endpoint. A duplicate can be made only from that
 //! retained endpoint and must preserve its kernel `SO_COOKIE`.
+//! A separately enabled receive profile retains independent kernel subject
+//! evidence for every bounded stream chunk; framing and role authority remain
+//! higher-level responsibilities. It creates no second connection or carrier.
 //!
 //! Peer identity is connection-level kernel evidence, not application-role
 //! authentication and not proof of which process later uses a delegated
@@ -21,12 +23,17 @@ use std::path::{Component, Path};
 use crate::pidfd::{PidFd, PidFdInfo};
 use crate::{Error, Result, uapi};
 
+mod subject;
+
+pub use subject::UnixStreamSubjectChunk;
+
 /// Owns one connected Unix stream and its kernel-pinned connection peer.
 #[derive(Debug)]
 pub struct RetainedUnixStream {
     fd: OwnedFd,
     peer: UnixStreamPeerIdentity,
     socket_cookie: NonZeroU64,
+    subject_state: subject::StreamSubjectState,
 }
 
 impl RetainedUnixStream {
@@ -104,6 +111,7 @@ impl RetainedUnixStream {
                 initial_info,
             },
             socket_cookie,
+            subject_state: subject::StreamSubjectState::Dormant,
         })
     }
 
@@ -122,6 +130,29 @@ impl RetainedUnixStream {
     #[must_use]
     pub const fn peer(&self) -> &UnixStreamPeerIdentity {
         &self.peer
+    }
+
+    /// Rechecks this original endpoint's cookie and still-live creator process.
+    ///
+    /// This correlation does not prove a later descriptor user's identity;
+    /// the configured subject profile must independently cover every chunk.
+    ///
+    /// # Errors
+    /// Rejects changed socket identity or creator credentials, process exit,
+    /// unavailable peer metadata, or inconsistent pidfd observations.
+    pub fn revalidate_original(&self) -> Result<()> {
+        let credentials =
+            UnixStreamPeerCredentials::from_raw(uapi::peer_credentials(self.as_fd())?)?;
+        if nonzero_socket_cookie(uapi::socket_cookie(self.as_fd())?)? != self.socket_cookie
+            || credentials != self.peer.credentials
+            || self.peer.pidfd.info()?.pid() != credentials.pid().get()
+            || !self.peer.is_alive()?
+        {
+            return Err(peer_identity_error(
+                "original stream or live creator changed",
+            ));
+        }
+        Ok(())
     }
 
     /// Duplicates this exact retained socket endpoint as close-on-exec.

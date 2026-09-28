@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use aos_sandbox_core::{ObjectDigest, ProjectId};
+use sha2::{Digest as _, Sha256};
 #[cfg(any(target_os = "linux", test))]
 use thiserror::Error;
 
@@ -438,7 +439,7 @@ impl PublisherPolicyStore<'_> {
     ///
     /// Rejects absent, malformed, or replaced issuer custody and all invalid
     /// packet, current-head, or journal states.
-    pub(super) fn retain_project_authorization_from_fixed_issuer_v2(
+    pub(crate) fn retain_project_authorization_from_fixed_issuer_v2(
         &mut self,
         transaction_id: [u8; 16],
         project: ProjectId,
@@ -458,6 +459,170 @@ impl PublisherPolicyStore<'_> {
         issuer.recheck()?;
         self.require_fixed_controller_writer_v2()?;
         Ok(result)
+    }
+
+    /// Joins both administrative signatures to actual current publisher state.
+    pub(crate) fn prepare_source_genesis_acceptance_from_fixed_issuers_v1(
+        &mut self,
+        project: ProjectId,
+        seed: [u8; 224],
+        authorization: [u8; 224],
+    ) -> Result<
+        crate::hierarchy::genesis_profile::ControllerSourceGenesisAcceptanceRecordV1,
+        crate::hierarchy::genesis_profile::SourceGenesisErrorV1,
+    > {
+        use crate::hierarchy::genesis_profile::{SourceGenesisErrorV1, hash};
+
+        let claims = parse_unverified_project_authorization_claims_v2(&authorization)?;
+        if claims.project != project {
+            return Err(SourceGenesisErrorV1::NonCanonical);
+        }
+        let transaction = hash(
+            b"aos.sandbox.source-genesis.project-authorization-retention.v1\0",
+            &authorization,
+        );
+        let mut transaction_id = [0; 16];
+        transaction_id.copy_from_slice(&transaction.as_bytes()[..16]);
+        self.retain_project_authorization_from_fixed_issuer_v2(
+            transaction_id,
+            project,
+            claims.request_id,
+            &authorization,
+        )?;
+        self.current_source_genesis_acceptance_from_fixed_issuers_v1(project, seed, authorization)
+    }
+
+    pub(crate) fn current_source_genesis_acceptance_from_fixed_issuers_v1(
+        &self,
+        project: ProjectId,
+        seed: [u8; 224],
+        authorization: [u8; 224],
+    ) -> Result<
+        crate::hierarchy::genesis_profile::ControllerSourceGenesisAcceptanceRecordV1,
+        crate::hierarchy::genesis_profile::SourceGenesisErrorV1,
+    > {
+        use crate::hierarchy::genesis_profile::{
+            ControllerSourceGenesisAcceptanceRecordV1, SourceGenesisErrorV1,
+        };
+        use crate::public_api_session::PinnedSystemdCredential;
+
+        self.preflight_current_source_tree_seed_from_fixed_issuers_v1(project, &seed)
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        let current = self
+            .current_authenticated_project_authorization_from_fixed_issuer_v2(project)?
+            .ok_or(SourceGenesisErrorV1::Stale)?;
+        if current.packet_digest() != commitment(PACKET_DOMAIN, &authorization) {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        let authorization_head = self.current_project_authorization_head_digest_v2(project)?;
+        let seed_pin = PinnedSystemdCredential::load_controller_source_tree_seed_issuer_v1()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        let authorization_pin = PinnedSystemdCredential::load_project_authorization_issuer_v2()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        let seed_issuer =
+            crate::hierarchy::source_seed::PinnedControllerSourceTreeSeedIssuerV1::decode(
+                seed_pin.bytes(),
+            )?;
+        let authorization_issuer =
+            PinnedPublisherProjectAuthorizationIssuerV2::decode(authorization_pin.bytes())?;
+        if seed_issuer.verifying_key() == authorization_issuer.verifying_key() {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        let roles = Sha256::new()
+            .chain_update(b"aos.sandbox.source-genesis.administrative-roles.v1\0")
+            .chain_update(seed_pin.bytes())
+            .chain_update(authorization_pin.bytes())
+            .finalize();
+        seed_pin
+            .recheck()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        authorization_pin
+            .recheck()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        self.require_fixed_controller_writer_v2()?;
+        ControllerSourceGenesisAcceptanceRecordV1::new(
+            seed,
+            authorization,
+            current.publisher_head_digest(),
+            current.publisher_revision_digest(),
+            authorization_head,
+            ObjectDigest::from_bytes(roles.into()),
+        )
+    }
+
+    /// Rejoins completed genesis provenance without claiming old heads are current.
+    pub(crate) fn recheck_historical_source_genesis_acceptance_from_fixed_issuers_v1(
+        &self,
+        acceptance: &crate::hierarchy::genesis_profile::ControllerSourceGenesisAcceptanceRecordV1,
+    ) -> Result<(), crate::hierarchy::genesis_profile::SourceGenesisErrorV1> {
+        use super::project_authorization_source_v2::verify_signed_project_authorization_claims_v2;
+        use crate::hierarchy::genesis_profile::{SourceGenesisErrorV1, hash};
+        use crate::hierarchy::source_seed::{
+            ControllerSourceTreeSeedExpectedV1,
+            verify_controller_source_tree_seed_from_fixed_issuer_v1,
+        };
+        use crate::public_api_session::PinnedSystemdCredential;
+
+        self.require_fixed_controller_writer_v2()?;
+        let seed = acceptance.seed_claims()?;
+        let bytes = self
+            .journal
+            .get(
+                RecordNamespace::PublisherPolicy,
+                &row_key(acceptance.project(), seed.request_id()),
+            )
+            .ok_or(SourceGenesisErrorV1::Stale)?;
+        let row = decode_row(bytes)?;
+        validate_historical_row(self.journal, &row)?;
+        if &row.packet != acceptance.auth_packet()
+            || row.publisher_head_digest != acceptance.publisher_pointer()
+            || row.publisher_revision_digest != acceptance.publisher_revision()
+        {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        let historical_head = encode_head(RetainedProjectAuthorizationHeadV2 {
+            project: row.project,
+            epoch: row.epoch,
+            request_id: row.request_id,
+            row_digest: project_auth_row_digest(bytes),
+        });
+        if commitment(RETAINED_HEAD_DOMAIN, &historical_head) != acceptance.authorization_head() {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        let seed_pin = PinnedSystemdCredential::load_controller_source_tree_seed_issuer_v1()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        let authorization_pin = PinnedSystemdCredential::load_project_authorization_issuer_v2()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        let roles = [seed_pin.bytes(), authorization_pin.bytes()].concat();
+        if hash(
+            b"aos.sandbox.source-genesis.administrative-roles.v1\0",
+            &roles,
+        ) != acceptance.administrative_roles()
+        {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        let issuer =
+            PinnedPublisherProjectAuthorizationIssuerV2::decode(authorization_pin.bytes())?;
+        verify_signed_project_authorization_claims_v2(acceptance.auth_packet(), &issuer)?;
+        verify_controller_source_tree_seed_from_fixed_issuer_v1(
+            acceptance.seed_packet(),
+            ControllerSourceTreeSeedExpectedV1::new(
+                row.project,
+                row.publisher_generation,
+                row.publisher_head_digest,
+                acceptance.authorization_head(),
+                row.request_id,
+                0,
+            )?,
+        )?;
+        seed_pin
+            .recheck()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        authorization_pin
+            .recheck()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        self.require_fixed_controller_writer_v2()?;
+        Ok(())
     }
 
     /// Retains a signed administrative decision with an already checked pin.

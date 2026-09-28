@@ -44,6 +44,7 @@ pub(crate) use mount_manager_startup::{
 mod cache_policy_hold;
 mod capacity_reservation;
 mod controller_policy_hold;
+pub(crate) mod controller_source_genesis;
 pub(crate) mod host_currentness_fence;
 pub(crate) mod host_execution_fence;
 mod host_settlement_admission_gate;
@@ -2209,6 +2210,7 @@ impl Journal {
             allow_host_currentness_fence_acquisition,
             allow_host_settlement_admission_append,
             SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
         )
     }
 
@@ -2226,6 +2228,25 @@ impl Journal {
             false,
             false,
             transition,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+        )
+    }
+
+    pub(crate) fn commit_controller_source_genesis_transition(
+        &mut self,
+        transaction: &JournalTransaction,
+        transition: controller_source_genesis::ControllerSourceGenesisTransition,
+    ) -> Result<CommitResult, JournalError> {
+        self.commit_with_capacity_scope_and_project_admission(
+            transaction,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            SourceProjectAdmissionTransition::None,
+            transition,
         )
     }
 
@@ -2240,8 +2261,14 @@ impl Journal {
         allow_host_currentness_fence_acquisition: bool,
         allow_host_settlement_admission_append: bool,
         project_admission_transition: SourceProjectAdmissionTransition,
+        controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
     ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
+        controller_source_genesis::require_no_mutation(
+            &self.state,
+            transaction,
+            controller_genesis_transition,
+        )?;
         source_project_admission_challenge::require_no_mutation(
             &self.state,
             transaction,
@@ -2390,6 +2417,22 @@ impl Journal {
             allow_capacity_records,
             allow_policy_hold_transition,
             None,
+            None,
+        )
+    }
+
+    pub(crate) fn preflight_controller_source_genesis_transitions(
+        &self,
+        transactions: &[JournalTransaction],
+        transitions: &[controller_source_genesis::ControllerSourceGenesisTransition],
+    ) -> Result<(), JournalError> {
+        self.preflight_transactions_with_capacity_scope_and_project_admission(
+            transactions,
+            None,
+            false,
+            false,
+            None,
+            Some(transitions),
         )
     }
 
@@ -2400,9 +2443,17 @@ impl Journal {
         allow_capacity_records: bool,
         allow_policy_hold_transition: bool,
         project_transitions: Option<&[SourceProjectAdmissionTransition]>,
+        controller_genesis_transitions: Option<
+            &[controller_source_genesis::ControllerSourceGenesisTransition],
+        >,
     ) -> Result<(), JournalError> {
         self.ensure_healthy()?;
         if project_transitions.is_some_and(|transitions| transitions.len() != transactions.len()) {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        if controller_genesis_transitions
+            .is_some_and(|transitions| transitions.len() != transactions.len())
+        {
             return Err(JournalError::ProtectedBoundary);
         }
         cache_policy_hold::check_unheld(self)?;
@@ -2416,6 +2467,13 @@ impl Journal {
         let mut expected_length = self.file.metadata()?.len();
 
         for (index, transaction) in transactions.iter().enumerate() {
+            controller_source_genesis::require_no_mutation(
+                &state,
+                transaction,
+                controller_genesis_transitions
+                    .map(|transitions| transitions[index])
+                    .unwrap_or(controller_source_genesis::ControllerSourceGenesisTransition::None),
+            )?;
             source_project_admission_challenge::require_no_mutation(
                 &state,
                 transaction,
@@ -2505,6 +2563,7 @@ impl Journal {
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
         source_project_admission_challenge::require_no_compaction(&self.state)?;
+        controller_source_genesis::require_no_compaction(&self.state)?;
         cache_policy_hold::require_valid_compaction(self)?;
         host_settlement_admission_gate::require_no_compaction(&self.state)?;
         host_currentness_fence::require_no_compaction(&self.state)?;
@@ -3649,6 +3708,7 @@ impl ProtectedJournalAuthority<'_> {
                 source_provider_authority
             }
             GlobalCapacityReservationPurposeV1::ControllerProjectAdmission => effect,
+            GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor => desired_state,
         };
         if !closed_shape || !capacity_record {
             return Err(JournalError::ForeignAuthorityNamespace);
@@ -3730,6 +3790,10 @@ impl ProtectedJournalAuthority<'_> {
             || self.scope
                 == ProtectedAuthorityScope::CapacityReservation(
                     GlobalCapacityReservationPurposeV1::ControllerProjectAdmission,
+                )
+            || self.scope
+                == ProtectedAuthorityScope::CapacityReservation(
+                    GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor,
                 )
         {
             return Err(JournalError::ForeignAuthorityNamespace);

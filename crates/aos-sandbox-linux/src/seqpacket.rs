@@ -993,7 +993,7 @@ impl SeqpacketError {
     }
 }
 
-fn map_kernel_error(error: Error) -> SeqpacketError {
+pub(crate) fn map_kernel_error(error: Error) -> SeqpacketError {
     if matches!(
         &error,
         Error::Syscall { source, .. }
@@ -1011,7 +1011,7 @@ fn map_kernel_error(error: Error) -> SeqpacketError {
     }
 }
 
-fn validate_record_subject(
+pub(crate) fn validate_record_subject(
     ancillary: Vec<RawAncillary>,
 ) -> Result<KernelAuthorizedRecordSubject, SeqpacketError> {
     let mut credentials = None;
@@ -1037,6 +1037,11 @@ fn validate_record_subject(
             RawAncillary::Rights(descriptors) => {
                 drop(descriptors);
                 return Err(SeqpacketError::Ancillary("SCM_RIGHTS is forbidden"));
+            }
+            RawAncillary::SecurityContext(_) => {
+                return Err(SeqpacketError::Ancillary(
+                    "SCM_SECURITY is forbidden by this record profile",
+                ));
             }
             RawAncillary::Unknown { level, kind } => {
                 let _ = (level, kind);
