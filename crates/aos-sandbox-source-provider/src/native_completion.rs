@@ -17,6 +17,8 @@ use crate::{FixedProviderOwnerV1, ProviderLedgerError, ProviderLedgerV1, SourceR
 #[path = "native_completion/runtime.rs"]
 mod runtime;
 
+pub(crate) use runtime::RetainedNativeChallengeRequestV1;
+
 #[path = "native_completion/live.rs"]
 mod live;
 

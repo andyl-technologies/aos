@@ -583,6 +583,43 @@ fn native_original_clock_is_canonical_immutable_and_no_clock_v6_stays_closed() {
 }
 
 #[test]
+fn native_clock_wrong_boot_version_pairs_and_legacy_width_hole_are_closed() {
+    let row = requested();
+    let key = native_completion_key_v2(row.acquisition_id);
+    let bytes = crate::ledger::format::encode_native_completion_v2(&row);
+    let mut wrong_envelope = bytes.clone();
+    wrong_envelope[8..10].copy_from_slice(&6_u16.to_be_bytes());
+    assert!(decode_record(&key, &wrong_envelope).is_err());
+
+    let mut wrong_boot = encode_body(&row);
+    wrong_boot[BODY_BYTES + 32 + 16] ^= 1;
+    assert!(decode_body(&key, &wrong_boot, 1, 0).is_err());
+    let request = row.canonical_request.as_ref().unwrap();
+    let initial = row.original_clock.unwrap().initial();
+    let overflow = aos_sandbox_core::RawPairedClockSample::new_untrusted(
+        initial.provenance(),
+        initial.host_boot_id(),
+        initial.wall_seconds(),
+        u64::MAX,
+    )
+    .unwrap();
+    assert!(NativeAcquireClockAnchorV1::new_untrusted(overflow, request).is_err());
+
+    let mut historical = row;
+    historical.original_clock = None;
+    let mut old_envelope = crate::ledger::format::encode_native_completion_v2(&historical);
+    old_envelope[8..10].copy_from_slice(&7_u16.to_be_bytes());
+    assert!(decode_record(&key, &old_envelope).is_err());
+    // Adding body-4 capacity must not admit a body-3 record in the old/new
+    // width gap. Reject before attempting any large nested request decoding.
+    for width in MAXIMUM_BODY_BYTES - clock::CLOCK_BYTES + 1..=MAXIMUM_BODY_BYTES {
+        let mut old_body = vec![0; width];
+        old_body[..8].copy_from_slice(REQUESTED_BODY_MAGIC);
+        assert!(decode_body(&key, &old_body, 1, 0).is_err());
+    }
+}
+
+#[test]
 fn native_requested_rejects_rewritten_nonce_request_scope_and_premature_active() {
     let original = requested();
     type Mutation = fn(&mut NativeAcquireCompletionRecordV2);

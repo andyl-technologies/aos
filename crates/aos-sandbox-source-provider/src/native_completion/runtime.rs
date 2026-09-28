@@ -17,7 +17,83 @@ use crate::held_snapshot_selection::{
     current_native_attempt_window, select_current_held_snapshot_claim,
     validate_current_native_attempt,
 };
-use crate::zfs_hold_challenge::{ProtectedZfsHoldChallengesV1, current_seconds, expiry};
+use crate::zfs_hold_challenge::{
+    ProtectedZfsHoldChallengesV1, StagedZfsHoldChallengeV1, current_seconds, expiry,
+};
+
+/// Joins exact durable Requested readback to the protected current owner graph.
+///
+/// Only this runtime module constructs the token. It carries no Storage send
+/// authority and cannot be recovered from caller-supplied signed bytes alone.
+pub(crate) struct RetainedNativeChallengeRequestV1<'a> {
+    record: &'a NativeAcquireCompletionRecordV2,
+}
+
+impl<'a> RetainedNativeChallengeRequestV1<'a> {
+    fn from_owner_readback(
+        ledger: &ProviderLedgerV1<'_>,
+        record: &'a NativeAcquireCompletionRecordV2,
+    ) -> Result<Self, ProviderLedgerError> {
+        super::clock::retained_clock_anchor(record)?;
+        if ledger.qualified_native_bridge.is_none()
+            || record.original_clock.is_none()
+            || !matches!(
+                record.state,
+                NativeAcquireCompletionStateV2::Requested
+                    | NativeAcquireCompletionStateV2::Prepared
+            )
+            || ledger
+                .recovered
+                .native_completions
+                .get(&record.acquisition_id)
+                != Some(record)
+            || ledger
+                .journal
+                .get(&native_completion_key_v2(record.acquisition_id))?
+                != Some(crate::format::encode_native_completion_v2(record).as_slice())
+        {
+            return Err(ProviderLedgerError::Unavailable);
+        }
+        let acquisition = ledger
+            .recovered
+            .acquisitions
+            .values()
+            .find(|row| row.acquisition_id == record.acquisition_id)
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let attempt = ledger
+            .recovered
+            .attempts
+            .values()
+            .find(|row| row.attempt_digest == record.attempt_digest)
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let session = ledger
+            .recovered
+            .sessions
+            .get(&(record.provider_id, record.holder_id))
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        record
+            .validate_provider_graph(attempt, acquisition)
+            .map_err(crate::transaction::map_pure_ledger_error)?;
+        if session.session_binding != record.session_binding
+            || session.pending_attempt_digest != Some(record.attempt_digest)
+            || attempt.state != crate::model::ProviderAttemptStateV1::Reserved
+        {
+            return Err(ProviderLedgerError::Unavailable);
+        }
+        crate::native_no_dispatch_capacity::validate_set(&ledger.journal, &ledger.recovered)?;
+        ledger
+            .native_acquire_custody
+            .get(&record.acquisition_id)
+            .ok_or(ProviderLedgerError::Unavailable)?
+            .clock
+            .require_record(record)?;
+        Ok(Self { record })
+    }
+
+    pub(crate) const fn record(&self) -> &NativeAcquireCompletionRecordV2 {
+        self.record
+    }
+}
 
 /// Retains the exact suffix preflight while the Provider writer stays held.
 pub(crate) struct NativeAcquireSuffixCapacityV2 {
@@ -85,6 +161,7 @@ impl ProviderLedgerV1<'_> {
         }
         let reservation_digest = match self.recovered.native_completions.get(&acquisition_id) {
             Some(record) => {
+                super::clock::retained_clock_anchor(record)?;
                 if record
                     .canonical_request
                     .as_ref()
@@ -164,15 +241,14 @@ impl ProviderLedgerV1<'_> {
         {
             return Err(ProviderLedgerError::Equivocation);
         }
+        let mut staged_challenge = None;
         let record = match self
             .recovered
             .native_completions
             .get(&acquisition.acquisition_id)
         {
             Some(record) => {
-                if record.original_clock.is_none() {
-                    return Err(ProviderLedgerError::Unavailable);
-                }
+                super::clock::retained_clock_anchor(record)?;
                 let request = record
                     .canonical_request
                     .as_ref()
@@ -192,8 +268,15 @@ impl ProviderLedgerV1<'_> {
                         .values()
                         .find(|attempt| attempt.attempt_digest == record.attempt_digest)
                         .ok_or(ProviderLedgerError::Unavailable)?;
-                    let challenge = challenges.retained_for(record.challenge)?;
-                    require_exact_challenge(record, challenge)?;
+                    if let Some(challenge) = challenges.retained_for_attempt(
+                        record.provider_id,
+                        record.holder_id,
+                        record.attempt_digest,
+                    )? {
+                        require_exact_challenge(record, challenge)?;
+                    } else if record.state != NativeAcquireCompletionStateV2::Requested {
+                        return Err(ProviderLedgerError::Unavailable);
+                    }
                     let clock =
                         std::sync::Arc::new(NativeAcquireClockGuardV1::from_retained_record(
                             record,
@@ -212,12 +295,13 @@ impl ProviderLedgerV1<'_> {
                     .get(&record.acquisition_id)
                     .ok_or(ProviderLedgerError::Unavailable)?
                     .clock
-                    .require_request(request)?;
+                    .require_record(record)?;
                 record.clone()
             }
             None => {
-                let signed =
+                let (signed, staged) =
                     self.sign_native_reserved_request_v2(challenges, &permit, current_catalog)?;
+                staged_challenge = Some(staged);
                 if signed.request().signed_root_request() != original {
                     return Err(ProviderLedgerError::Equivocation);
                 }
@@ -247,7 +331,11 @@ impl ProviderLedgerV1<'_> {
                 record
             }
         };
-        let challenge = challenges.retained_for(record.challenge)?;
+        // The two journals are not atomic. Requested + ORIGINAL clock is
+        // durable and read back FIRST; only then can its exact nonce be issued
+        // or recovered. A crash at this cut cannot force a replacement nonce.
+        let retained = RetainedNativeChallengeRequestV1::from_owner_readback(self, &record)?;
+        let challenge = challenges.ensure_for_retained_request(&retained, staged_challenge)?;
         require_exact_challenge(&record, challenge)?;
         if !matches!(
             record.state,
@@ -273,7 +361,13 @@ impl ProviderLedgerV1<'_> {
         challenges: &mut ProtectedZfsHoldChallengesV1,
         permit: &DurableAcquireEffectPermitV1,
         current_catalog: (&[u8], &[u8]),
-    ) -> Result<SignedStorageNativeAcquireRequestV2, ProviderLedgerError> {
+    ) -> Result<
+        (
+            SignedStorageNativeAcquireRequestV2,
+            StagedZfsHoldChallengeV1,
+        ),
+        ProviderLedgerError,
+    > {
         let plan = permit.plan();
         let binding = self
             .recovered
@@ -305,13 +399,15 @@ impl ProviderLedgerV1<'_> {
             plan.holder_id(),
             attempt_digest,
         )?;
+        // A challenge without Requested has no durable original clock fence.
+        // It is historical/incomplete, not permission to issue or re-sign.
+        if retained.is_some() {
+            return Err(ProviderLedgerError::Unavailable);
+        }
         if !self
             .native_acquire_custody
             .contains_key(&plan.acquisition_id())
         {
-            if retained.is_some() {
-                return Err(ProviderLedgerError::Unavailable);
-            }
             let clock = std::sync::Arc::new(NativeAcquireClockGuardV1::before_challenge(
                 &original,
                 attempt_digest,
@@ -334,33 +430,28 @@ impl ProviderLedgerV1<'_> {
                 .clock,
         );
         clock.require_original(&original, attempt_digest)?;
-        let challenge = match retained {
-            Some(record) => record,
-            None => {
-                let issued = current_seconds()?;
-                let expires = expiry(issued)?.min(deadline);
-                validate_current_native_attempt(
-                    self,
-                    &claim,
-                    plan.acquisition_id(),
-                    attempt_digest,
-                    issued,
-                    expires,
-                )?;
-                let challenge = challenges.issue(ChallengeRecordV1::new(
-                    plan.provider_id(),
-                    plan.holder_id(),
-                    claim.session_binding,
-                    attempt_digest,
-                    plan.acquisition_id(),
-                    binding,
-                    claim.publication_head_commitment(),
-                    issued,
-                    expires,
-                ))?;
-                challenges.retained_for(challenge.nonce())?
-            }
-        };
+        let issued = current_seconds()?;
+        let expires = expiry(issued)?.min(deadline);
+        validate_current_native_attempt(
+            self,
+            &claim,
+            plan.acquisition_id(),
+            attempt_digest,
+            issued,
+            expires,
+        )?;
+        let staged = challenges.stage(ChallengeRecordV1::new(
+            plan.provider_id(),
+            plan.holder_id(),
+            claim.session_binding,
+            attempt_digest,
+            plan.acquisition_id(),
+            binding,
+            claim.publication_head_commitment(),
+            issued,
+            expires,
+        ))?;
+        let challenge = staged.record();
         let (issued, expires) = challenge.challenge.validity();
         validate_current_native_attempt(
             self,
@@ -418,7 +509,7 @@ impl ProviderLedgerV1<'_> {
             .sign_current_storage_native_request_v2(&selected, request)
             .map_err(ProviderLedgerError::from)?;
         clock.require_request(&signed)?;
-        Ok(signed)
+        Ok((signed, staged))
     }
 }
 
@@ -478,3 +569,7 @@ fn capacity_transaction(
         .collect();
     Ok(JournalTransaction::new(id, records)?)
 }
+
+#[cfg(test)]
+#[path = "runtime_tests.rs"]
+mod tests;

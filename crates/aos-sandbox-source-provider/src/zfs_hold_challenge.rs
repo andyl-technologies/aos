@@ -21,7 +21,10 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
+use aos_sandbox::{
+    Journal, JournalLimits, JournalRecord, JournalTransaction, ProtectedJournalPreflight,
+    RecordNamespace,
+};
 use aos_sandbox_core::ObjectDigest;
 use rustix::rand::GetRandomFlags;
 use sha2::{Digest as _, Sha256};
@@ -42,6 +45,19 @@ const SPENT: u8 = 2;
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.source-provider.native-hold-challenge.v1\0";
 
 type ChallengeAttemptIndexV1 = BTreeMap<([u8; 16], [u8; 16], ObjectDigest), ChallengeRecordV1>;
+
+/// Proposes one nonce without committing or authorizing a Storage send.
+pub(crate) struct StagedZfsHoldChallengeV1 {
+    record: ChallengeRecordV1,
+    transaction: JournalTransaction,
+    preflight: ProtectedJournalPreflight,
+}
+
+impl StagedZfsHoldChallengeV1 {
+    pub(crate) const fn record(&self) -> ChallengeRecordV1 {
+        self.record
+    }
+}
 
 /// Carries one durable Provider-issued challenge for an exact native attempt.
 ///
@@ -138,8 +154,24 @@ impl ProtectedZfsHoldChallengesV1 {
 
     pub(crate) fn issue(
         &mut self,
-        mut record: ChallengeRecordV1,
+        record: ChallengeRecordV1,
     ) -> Result<ProviderZfsHoldChallengeV1, ProviderLedgerError> {
+        let staged = self.stage(record)?;
+        Ok(self.commit_staged(staged)?.challenge)
+    }
+
+    /// Stages the exact nonce and append headroom without writing either journal.
+    ///
+    /// Native dispatch must retain Requested and its original clock first.
+    ///
+    /// # Errors
+    ///
+    /// Rejects expiry, duplicate attempts, corruption, limits or insufficient
+    /// durable challenge capacity before Requested may be retained.
+    pub(crate) fn stage(
+        &mut self,
+        mut record: ChallengeRecordV1,
+    ) -> Result<StagedZfsHoldChallengeV1, ProviderLedgerError> {
         let now = current_seconds()?;
         if !record.is_issued_now(now) {
             return Err(ProviderLedgerError::Unavailable);
@@ -167,6 +199,121 @@ impl ProtectedZfsHoldChallengesV1 {
                 "native hold challenge proposal",
             ));
         }
+        let authority = self
+            .journal
+            .claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
+        validate_location(self.location, &authority)?;
+        if authority.get(&key)?.is_some() {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        let transaction = challenge_transaction(key, value)?;
+        let preflight = authority.preflight_transactions(std::slice::from_ref(&transaction))?;
+        Ok(StagedZfsHoldChallengeV1 {
+            record,
+            transaction,
+            preflight,
+        })
+    }
+
+    fn commit_staged(
+        &mut self,
+        staged: StagedZfsHoldChallengeV1,
+    ) -> Result<ChallengeRecordV1, ProviderLedgerError> {
+        let (_, attempts) = self.validate_records()?;
+        if attempts.contains_key(&(
+            staged.record.provider_id,
+            staged.record.holder_id,
+            staged.record.challenge.attempt_digest,
+        )) {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        if !staged.record.is_issued_now(current_seconds()?) {
+            return Err(ProviderLedgerError::Unavailable);
+        }
+        let mut authority = self
+            .journal
+            .claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
+        validate_location(self.location, &authority)?;
+        authority.validate_preflight_for_effect(
+            &staged.preflight,
+            std::slice::from_ref(&staged.transaction),
+        )?;
+        authority.commit(&staged.transaction)?;
+        let key = key(staged.record.challenge.nonce);
+        let retained = authority
+            .get(&key)?
+            .ok_or(ProviderLedgerError::RuntimePoisoned)?;
+        if ChallengeRecordV1::decode(&key, retained)? != staged.record {
+            return Err(ProviderLedgerError::RuntimePoisoned);
+        }
+        Ok(staged.record)
+    }
+
+    /// Appends or recovers only the nonce already retained in protected Requested.
+    ///
+    /// The opaque caller token comes from exact owner readback and graph joins.
+    /// Neither a raw nonce nor signed bytes alone can authorize this recovery.
+    ///
+    /// # Errors
+    ///
+    /// Rejects any changed subject, legacy no-clock row, expiry, attempted
+    /// renewal, missing challenge after acceptance, or insufficient capacity.
+    pub(crate) fn ensure_for_retained_request(
+        &mut self,
+        requested: &crate::native_completion::RetainedNativeChallengeRequestV1<'_>,
+        staged: Option<StagedZfsHoldChallengeV1>,
+    ) -> Result<ChallengeRecordV1, ProviderLedgerError> {
+        let row = requested.record();
+        if row.original_clock.is_none() {
+            return Err(ProviderLedgerError::Unavailable);
+        }
+        let mut expected = ChallengeRecordV1::new(
+            row.provider_id,
+            row.holder_id,
+            row.session_binding,
+            row.attempt_digest,
+            row.acquisition_id,
+            row.binding_digest,
+            row.publication_head,
+            row.challenge_issued_seconds,
+            row.challenge_valid_until_seconds,
+        );
+        expected.challenge.nonce = row.challenge;
+        let (count, attempts) = self.validate_records()?;
+        if let Some(actual) = attempts.get(&(row.provider_id, row.holder_id, row.attempt_digest)) {
+            if !actual.same_subject(expected)
+                || actual
+                    .spent_receipt()
+                    .is_some_and(|receipt| receipt != row.receipt_digest)
+                || staged.is_some()
+            {
+                return Err(ProviderLedgerError::Equivocation);
+            }
+            return Ok(*actual);
+        }
+        if row.state != crate::ledger::native_completion::NativeAcquireCompletionStateV2::Requested
+            || row.original_clock.is_none()
+            || !expected.is_issued_now(current_seconds()?)
+        {
+            return Err(ProviderLedgerError::Unavailable);
+        }
+        if count >= MAXIMUM_CHALLENGES {
+            return Err(ProviderLedgerError::LimitExceeded("native hold challenges"));
+        }
+        if let Some(staged) = staged {
+            if staged.record != expected {
+                return Err(ProviderLedgerError::Equivocation);
+            }
+            return self.commit_staged(staged);
+        }
+
+        // A crash after Requested but before this journal append reuses its
+        // EXACT retained proposal. It never samples a replacement random nonce.
+        let key = key(expected.challenge.nonce);
+        let value = expected.encode();
+        if ChallengeRecordV1::decode(&key, &value)? != expected {
+            return Err(ProviderLedgerError::Equivocation);
+        }
         let mut authority = self
             .journal
             .claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
@@ -178,10 +325,10 @@ impl ProtectedZfsHoldChallengesV1 {
         let retained = authority
             .get(&key)?
             .ok_or(ProviderLedgerError::RuntimePoisoned)?;
-        if ChallengeRecordV1::decode(&key, retained)? != record {
+        if ChallengeRecordV1::decode(&key, retained)? != expected {
             return Err(ProviderLedgerError::RuntimePoisoned);
         }
-        Ok(record.challenge)
+        Ok(expected)
     }
 
     pub(crate) fn issued_for(
@@ -826,6 +973,19 @@ fn commit(
     key: Vec<u8>,
     value: Vec<u8>,
 ) -> Result<(), ProviderLedgerError> {
+    let transaction = challenge_transaction(key, value)?;
+    validate_location(location, authority)?;
+    let preflight = authority.preflight_transactions(std::slice::from_ref(&transaction))?;
+    authority.validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))?;
+    validate_location(location, authority)?;
+    authority.commit(&transaction)?;
+    Ok(())
+}
+
+fn challenge_transaction(
+    key: Vec<u8>,
+    value: Vec<u8>,
+) -> Result<JournalTransaction, ProviderLedgerError> {
     let mut hasher = Sha256::new();
     hasher.update(TRANSACTION_DOMAIN);
     hasher.update(&key);
@@ -833,20 +993,14 @@ fn commit(
     let digest: [u8; 32] = hasher.finalize().into();
     let mut transaction_id = [0; 16];
     transaction_id.copy_from_slice(&digest[..16]);
-    let transaction = JournalTransaction::new(
+    Ok(JournalTransaction::new(
         transaction_id,
         vec![JournalRecord::put(
             RecordNamespace::SourceProviderAuthority,
             key,
             value,
         )],
-    )?;
-    validate_location(location, authority)?;
-    let preflight = authority.preflight_transactions(std::slice::from_ref(&transaction))?;
-    authority.validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))?;
-    validate_location(location, authority)?;
-    authority.commit(&transaction)?;
-    Ok(())
+    )?)
 }
 
 fn validate_location(

@@ -121,3 +121,32 @@ fn conservative_deadline(
             "native clock deadline overflow or expiry",
         ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_clock_deadline_rejects_exact_expiry_fraction_and_arithmetic_overflow() {
+        let sample = RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
+            [1; 16],
+            100,
+            1_000_000_000,
+        )
+        .unwrap();
+        assert_eq!(conservative_deadline(sample, 130).unwrap(), 30_000_000_000);
+        for expiry in [99, 100, 101] {
+            assert!(conservative_deadline(sample, expiry).is_err());
+        }
+        assert!(conservative_deadline(sample, i64::MAX).is_err());
+        let overflow = RawPairedClockSample::new_untrusted(
+            sample.provenance(),
+            sample.host_boot_id(),
+            100,
+            u64::MAX,
+        )
+        .unwrap();
+        assert!(conservative_deadline(overflow, 130).is_err());
+    }
+}

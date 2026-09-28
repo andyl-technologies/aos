@@ -19,6 +19,22 @@ use crate::ledger::native_completion::{
 
 const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
 
+/// Requires the protected original anchor at every live runtime entry.
+///
+/// # Errors
+///
+/// Rejects malformed canonical artifacts or any historical no-clock row.
+pub(crate) fn retained_clock_anchor(
+    record: &NativeAcquireCompletionRecordV2,
+) -> Result<NativeAcquireClockAnchorV1, ProviderLedgerError> {
+    record
+        .validate_canonical_artifacts()
+        .map_err(crate::transaction::map_pure_ledger_error)?;
+    record
+        .original_clock
+        .ok_or(ProviderLedgerError::Unavailable)
+}
+
 #[derive(Debug)]
 pub(crate) struct NativeAcquireClockGuardV1 {
     initial: RawPairedClockSample,
@@ -43,12 +59,10 @@ impl NativeAcquireClockGuardV1 {
         attempt: &crate::model::AttemptRecordV1,
         acquisition: &crate::model::AcquisitionRecordV1,
     ) -> Result<Self, ProviderLedgerError> {
+        let anchor = retained_clock_anchor(record)?;
         record
             .validate_provider_graph(attempt, acquisition)
             .map_err(crate::transaction::map_pure_ledger_error)?;
-        let anchor = record
-            .original_clock
-            .ok_or(ProviderLedgerError::Unavailable)?;
         let signed = record
             .canonical_request
             .as_ref()
@@ -96,6 +110,25 @@ impl NativeAcquireClockGuardV1 {
             return Err(ProviderLedgerError::Equivocation);
         }
         Ok(anchor)
+    }
+
+    /// Joins the retained clock block to the same live original anchor.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing historical metadata or any substituted original pair.
+    pub(crate) fn require_record(
+        &self,
+        record: &NativeAcquireCompletionRecordV2,
+    ) -> Result<(), ProviderLedgerError> {
+        let request = record
+            .canonical_request
+            .as_ref()
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        if record.original_clock != Some(self.durable_anchor(request)?) {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        Ok(())
     }
 
     /// Captures the kernel pair before the first challenge and Requested append.
