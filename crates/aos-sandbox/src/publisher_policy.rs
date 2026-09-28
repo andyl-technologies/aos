@@ -66,6 +66,8 @@ mod project_authorization_store_v2;
 pub(crate) use project_authorization_source_v2::{
     parse_unverified_project_authorization_claims_v2, verify_signed_project_authorization_claims_v2,
 };
+#[cfg(any(target_os = "linux", test))]
+pub(crate) use project_authorization_store_v2::CurrentSourceTreeSeedPreflightErrorV1;
 #[cfg(test)]
 mod project_authorization_test_fixture;
 pub use model::{
@@ -74,8 +76,9 @@ pub use model::{
     PublisherResourceBindingV1, PublisherRevocationHeadV1,
 };
 pub use project_authorization_source_v2::{
-    PinnedPublisherProjectAuthorizationIssuerV2, ProjectAuthorizationSourceErrorV2,
-    ProjectAuthorizationSourceExpectedV2, VerifiedPublisherProjectAuthorizationSourceV2,
+    PROJECT_AUTHORIZATION_SOURCE_BYTES_V2, PinnedPublisherProjectAuthorizationIssuerV2,
+    ProjectAuthorizationSourceErrorV2, ProjectAuthorizationSourceExpectedV2,
+    VerifiedPublisherProjectAuthorizationSourceV2,
     encode_project_authorization_issuer_credential_v2,
     verify_current_project_authorization_source_v2,
 };

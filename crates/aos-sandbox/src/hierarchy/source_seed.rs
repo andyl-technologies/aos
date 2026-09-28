@@ -364,6 +364,31 @@ pub fn verify_controller_source_tree_seed_v1(
     issuer: &PinnedControllerSourceTreeSeedIssuerV1,
     expected: ControllerSourceTreeSeedExpectedV1,
 ) -> Result<VerifiedControllerSourceTreeSeedV1, ControllerSourceTreeSeedErrorV1> {
+    let verified = verify_signed_controller_source_tree_seed_v1(bytes, issuer)?;
+    let seed = verified.seed;
+    if seed.project != expected.project
+        || seed.publisher_generation != expected.publisher_generation
+        || seed.publisher_head != expected.publisher_head
+        || seed.project_authorization_head != expected.project_authorization_head
+        || seed.request_id != expected.request_id
+        || seed.epoch <= expected.last_epoch
+    {
+        return Err(ControllerSourceTreeSeedErrorV1::Stale);
+    }
+    Ok(verified)
+}
+
+/// Checks only the canonical seed signature for protected packet delivery.
+///
+/// This supplies no current head or expected replay epoch.
+///
+/// # Errors
+///
+/// Rejects malformed framing, limits, a rotated issuer or invalid signature.
+pub(super) fn verify_signed_controller_source_tree_seed_v1(
+    bytes: &[u8],
+    issuer: &PinnedControllerSourceTreeSeedIssuerV1,
+) -> Result<VerifiedControllerSourceTreeSeedV1, ControllerSourceTreeSeedErrorV1> {
     if bytes.len() != CONTROLLER_SOURCE_TREE_SEED_BYTES_V1 {
         return Err(ControllerSourceTreeSeedErrorV1::NonCanonical);
     }
@@ -384,15 +409,6 @@ pub fn verify_controller_source_tree_seed_v1(
         .key
         .verify_strict(&signature_preimage(body), &signature)
         .map_err(|_| ControllerSourceTreeSeedErrorV1::Signature)?;
-    if seed.project != expected.project
-        || seed.publisher_generation != expected.publisher_generation
-        || seed.publisher_head != expected.publisher_head
-        || seed.project_authorization_head != expected.project_authorization_head
-        || seed.request_id != expected.request_id
-        || seed.epoch <= expected.last_epoch
-    {
-        return Err(ControllerSourceTreeSeedErrorV1::Stale);
-    }
     let packet_digest = ObjectDigest::from_bytes(Sha256::digest(bytes).into());
     Ok(VerifiedControllerSourceTreeSeedV1 {
         seed,

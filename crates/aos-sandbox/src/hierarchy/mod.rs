@@ -10,6 +10,8 @@ pub mod artifact_codec;
 pub mod codec;
 #[cfg(target_os = "linux")]
 pub mod controller_genesis;
+#[cfg(target_os = "linux")]
+pub mod controller_genesis_input;
 pub mod evidence;
 pub mod exports;
 pub mod genesis_profile;

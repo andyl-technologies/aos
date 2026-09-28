@@ -2967,6 +2967,48 @@ where
         PublisherCapabilityRegistry::load(self.reconciler.journal_mut(), limits)
     }
 
+    /// Inspects a provisioned genesis pair against its actual current writer.
+    ///
+    /// This read spends no epoch and creates no acceptance, Source append or
+    /// Root proof. In particular, an absent actual authorization head remains
+    /// unavailable rather than being synthesized from the delivered packets.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed delivery, fixed writer custody, missing current
+    /// authorization or a pair that does not match actual protected heads.
+    #[cfg(target_os = "linux")]
+    pub fn inspect_provisioned_source_genesis_v1(
+        &mut self,
+        input: &crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+    ) -> Result<(), crate::hierarchy::controller_genesis_input::ControllerSourceGenesisInputErrorV1>
+    {
+        input.inspect_current(self.reconciler.journal_mut())
+    }
+
+    /// Borrows genuine provisioned genesis admission under the sole writer.
+    ///
+    /// Only the forthcoming exact coordinator may use this trusted owner seam,
+    /// after it can consume the original pair through the genuine Root flight.
+    /// Startup deliberately does not call it: admission fences every unrelated
+    /// mutation until Source ACK completion and cannot be accepted then dropped
+    /// as an ordinary ready-controller bootstrap. No public API route is added.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed packet/pin delivery and the existing held producer's
+    /// stale heads, epoch/input conflict, missing role or capacity conditions.
+    #[cfg(target_os = "linux")]
+    pub fn hold_provisioned_source_genesis_v1<'held>(
+        &'held mut self,
+        input: &'held crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+    ) -> Result<
+        crate::hierarchy::controller_genesis::HeldControllerSourceGenesisV1<'held>,
+        crate::hierarchy::controller_genesis_input::ControllerSourceGenesisInputErrorV1,
+    > {
+        input.hold(self.reconciler.journal_mut())
+    }
+
     /// Issues or replays a first public capability from signed deployment entitlement.
     ///
     /// The request supplies only an idempotency key. Fixed protected credential
