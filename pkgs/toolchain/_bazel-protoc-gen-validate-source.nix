@@ -4,6 +4,7 @@
   fetchgit,
   buildPackages,
   bazelOfflineModules,
+  pythonRuntimeProvidedByDeps ? false,
 }: let
   revision = "4694024279bdac52b77e22dc87808bd0fd732b69";
   moduleSource = import ./_bazel-module-source.nix {inherit fetchgit buildPackages;};
@@ -31,7 +32,25 @@ in
           mkdir source
           cp -R "$src"/. source/
           chmod -R u+w source
-          (cd source && patch -p1 < ${bazelOfflineModules.grpc}/third_party/protoc-gen-validate.patch)
+          (cd source && patch --batch --forward --fuzz=0 -p1 < ${bazelOfflineModules.grpc}/third_party/protoc-gen-validate.patch)
+          ${
+            if pythonRuntimeProvidedByDeps
+            then ''
+              # Protobuf 21 compares labels before repository aliases are resolved.
+              # Keep the explicit runtime dependency and suppress its duplicate.
+              python3 - <<'PYTHON'
+              from pathlib import Path
+
+              path = Path("source/validate/BUILD")
+              original = path.read_text()
+              dependency = '    deps = ["@com_google_protobuf//:protobuf_python"],\n'
+              if original.count(dependency) != 1:
+                  raise SystemExit("Expected one explicit validate_py runtime dependency")
+              path.write_text(original.replace(dependency, dependency + "    default_runtime = None,\n"))
+              PYTHON
+            ''
+            else ""
+          }
         '';
       }
       {

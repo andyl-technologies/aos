@@ -1,16 +1,20 @@
-##! Guava 33.4.5 JRE compiled from audited Java sources.
+##! Pinned Guava JRE libraries compiled from audited Java sources.
 {
   mkDerivation,
   fetchurl,
   buildPackages,
   bazelMavenBootstrap,
   bazelMavenModernAnnotations,
+  version ? "33.4.5-jre",
 }: let
-  version = "33.4.5-jre";
+  sourceHash =
+    if version == "33.5.0-jre"
+    then "sha256-eUI66HoiA5UODjzioAaCs7jYVX5jG79mLbpUlP47Vcs="
+    else assert version == "33.4.5-jre"; "sha256-Gr3CSuT4TS9AIiVLCJqm3sJr0Pft8/suPTaR/WkQuyE=";
   buildJdk = buildPackages.openjdk-17;
   source = fetchurl {
     urls = ["https://repo.maven.apache.org/maven2/com/google/guava/guava/${version}/guava-${version}-sources.jar"];
-    hash = "sha256-Gr3CSuT4TS9AIiVLCJqm3sJr0Pft8/suPTaR/WkQuyE=";
+    hash = sourceHash;
   };
 in
   mkDerivation {
