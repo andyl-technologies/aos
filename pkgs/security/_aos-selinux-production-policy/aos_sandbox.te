@@ -4,6 +4,7 @@ require {
     role system_r;
 
     attribute domain;
+    attribute aos_explicit_loader_domain;
     attribute file_type;
     type init_t;
     type device_t;
@@ -53,6 +54,7 @@ require {
 # transfer; PID 1's sealed five-role launch narrows otherwise type-wide fd use.
 type aos_filesystem_fuse_worker_t;
 typeattribute aos_filesystem_fuse_worker_t domain;
+typeattribute aos_filesystem_fuse_worker_t aos_explicit_loader_domain;
 role system_r types aos_filesystem_fuse_worker_t;
 type aos_filesystem_fuse_worker_exec_t;
 type aos_filesystem_fuse_worker_plan_t;
@@ -95,6 +97,9 @@ allow aos_filesystem_fuse_worker_t sysctl_kernel_t:dir search;
 allow aos_filesystem_fuse_worker_t sysctl_kernel_t:file { getattr open read };
 allow aos_filesystem_fuse_worker_t root_t:dir { getattr search };
 allow aos_filesystem_fuse_worker_t usr_t:dir search;
+# The actual transport and libfuse SONAME links live in the immutable store;
+# context_plan labels their symlink inodes usr_t, not their lib_t targets.
+allow aos_filesystem_fuse_worker_t usr_t:lnk_file { getattr read };
 allow aos_filesystem_fuse_worker_t lib_t:dir search;
 allow aos_filesystem_fuse_worker_t lib_t:file { execute getattr map open read };
 allow aos_filesystem_fuse_worker_t ld_so_t:file { execute getattr map open read };
@@ -157,12 +162,14 @@ role system_r types aos_nspawn_t;
 
 type aos_sandbox_payload_t;
 typeattribute aos_sandbox_payload_t domain;
+typeattribute aos_sandbox_payload_t aos_explicit_loader_domain;
 role system_r types aos_sandbox_payload_t;
 
 # UID zero remains a Tenant. Only the existing fixed Guest owner inherits this
 # separate subject before first exec; no Tenant entrypoint can enter it.
 type aos_sandbox_guest_owner_t;
 typeattribute aos_sandbox_guest_owner_t domain;
+typeattribute aos_sandbox_guest_owner_t aos_explicit_loader_domain;
 role system_r types aos_sandbox_guest_owner_t;
 
 # None of these protected workspace types joins file_type. In particular, the

@@ -9664,3 +9664,24 @@ not authorize Host Apply, public Create, Observe dispatch, or `RUNNING`.
 
 The original one-shot argument handoff, physical Storage backing, ordered
 cross-owner barrier, and installed Host/guest qualification remain open.
+
+### Explicit production loader boundary (source repair, unqualified)
+
+The production-only reference-policy patch declares the deny-only
+`aos_explicit_loader_domain` marker and excludes its members from the two
+blanket `domain` loader interfaces. Its exact initial members are the fixed
+FUSE worker, Guest Owner, and Tenant; all retain `domain` membership and the
+base neverallows. Ordinary host domains retain their upstream textrel support.
+The guest roles load only their explicitly typed copied closure, not generic
+host libraries. The worker retains its explicit library/loader file accesses
+and read-only `usr_t` symlink access for the actual transport and libfuse SONAME
+links. Stage0 requires the host loader cache to be absent; this repair adds no
+cache, textrel, mutation, or generic host-executable authority to the worker.
+
+The effective-policy gate checks exact marker membership, ordinary host
+textrel access, explicit worker loaders, and the existing full negative
+matrix. A separate linked attribute-based textrel mutant must pass normal
+base expansion and then fail that same gate. Forty-nine checker unit tests
+pass, and the pinned upstream patch applies and reverses with zero fuzz.
+These source checks do not qualify the compiled production policy, actual
+worker startup, copied guest closure, or any public runtime operation.

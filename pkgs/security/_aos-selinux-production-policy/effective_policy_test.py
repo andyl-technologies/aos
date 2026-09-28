@@ -30,6 +30,10 @@ class FakePolicy:
     def __init__(self) -> None:
         self.permissive: set[str] = set()
         self.file_types: set[str] = set()
+        self.attributes = {
+            "domain": set(effective_policy.ENFORCING_DOMAINS),
+            effective_policy.EXPLICIT_LOADER_ATTRIBUTE: set(effective_policy.EXPLICIT_LOADER_DOMAINS),
+        }
         self.queries: list[dict[str, object]] = []
         self.allows = {
             access: [FakeRule(f"allow {access}")]
@@ -94,24 +98,27 @@ class FakeQuery:
 
 
 class FakeTypeAttribute:
-    """Exposes fixture file_type members to the effective-policy checker."""
+    """Exposes fixture attribute members to the effective-policy checker."""
 
-    def __init__(self, policy: FakePolicy) -> None:
-        self.policy = policy
+    def __init__(self, members: set[str]) -> None:
+        self.members = members
 
     def expand(self) -> set[str]:
-        return self.policy.file_types
+        return self.members
 
 
 class FakeTypeAttributeQuery:
-    """Returns the one required file_type attribute."""
+    """Returns each declared fixture attribute."""
 
     def __init__(self, policy: FakePolicy, name: str) -> None:
         self.policy = policy
         self.name = name
 
     def results(self) -> list[FakeTypeAttribute]:
-        return [FakeTypeAttribute(self.policy)] if self.name == "file_type" else []
+        if self.name == "file_type":
+            return [FakeTypeAttribute(self.policy.file_types)]
+        members = self.policy.attributes.get(self.name)
+        return [FakeTypeAttribute(members)] if members is not None else []
 
 
 FAKE_SETOOLS = SimpleNamespace(
@@ -150,8 +157,49 @@ class EffectivePolicyTest(unittest.TestCase):
             + 1
             + len(effective_policy.FORBIDDEN_PROVISIONER_TRANSITION_SOURCES)
             + len(effective_policy.GUARDED_OBJECT_TYPES)
+            + 2 * len(effective_policy.EXPLICIT_LOADER_DOMAINS)
             + len(effective_policy.POSITIVE_ACCESS)
             + len(effective_policy.NEGATIVE_ACCESS),
+        )
+
+    def test_explicit_loader_membership_is_exact_and_preserves_domains(self) -> None:
+        marker = effective_policy.EXPLICIT_LOADER_ATTRIBUTE
+        for domain in effective_policy.EXPLICIT_LOADER_DOMAINS:
+            with self.subTest(domain=domain):
+                policy = FakePolicy()
+                policy.attributes[marker].remove(domain)
+                with self.assertRaisesRegex(ValueError, "unexpected explicit-loader membership"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+                policy = FakePolicy()
+                policy.attributes["domain"].remove(domain)
+                with self.assertRaisesRegex(ValueError, "lost domain membership"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+        policy = FakePolicy()
+        policy.attributes[marker].add("init_t")
+        with self.assertRaisesRegex(ValueError, "unexpected explicit-loader membership"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+        policy = FakePolicy()
+        del policy.attributes[marker]
+        with self.assertRaisesRegex(ValueError, "exactly one explicit-loader attribute"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_loader_exclusion_preserves_ordinary_textrel_and_explicit_worker_loads(self) -> None:
+        self.assert_missing_allow_rejected(
+            effective_policy.Access("init_t", "textrel_shlib_t", "file", "execmod")
+        )
+        worker = effective_policy.fuse_worker_policy.WORKER_DOMAIN
+        for object_type in ("lib_t", "ld_so_t"):
+            for permission in ("read", "map", "execute"):
+                with self.subTest(object_type=object_type, permission=permission):
+                    self.assert_missing_allow_rejected(
+                        effective_policy.Access(worker, object_type, "file", permission)
+                    )
+
+        self.assert_forbidden_allow_rejected(
+            effective_policy.Access(worker, "textrel_shlib_t", "file", "execmod")
         )
 
     def test_protected_network_type_cannot_join_file_type(self) -> None:

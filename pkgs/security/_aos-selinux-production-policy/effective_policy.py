@@ -29,6 +29,8 @@ HANDOFF_DOMAIN = "aos_sandbox_runtime_roots_handoff_t"
 HANDOFF_EXECUTABLE = "aos_sandbox_runtime_roots_handoff_exec_t"
 GUEST_OWNER = "aos_sandbox_guest_owner_t"
 GUEST_TENANT = "aos_sandbox_payload_t"
+EXPLICIT_LOADER_ATTRIBUTE = "aos_explicit_loader_domain"
+EXPLICIT_LOADER_DOMAINS = (fuse_worker_policy.WORKER_DOMAIN, GUEST_OWNER, GUEST_TENANT)
 GUEST_ROOT_PUBLISHER = "aos_sandbox_guest_root_publisher_t"
 GUEST_PUBLICATION = "aos_sandbox_guest_publication_t"
 GUEST_PROTECTED_FILES = (
@@ -193,6 +195,9 @@ def execution_access() -> tuple[Access, ...]:
 
 
 POSITIVE_ACCESS = (
+    # Excluding the three explicit-loader roles must not remove ordinary host
+    # textrel support or weaken their membership in the base domain boundary.
+    Access("init_t", "textrel_shlib_t", "file", "execmod"),
     Access("init_t", "aos_sandbox_guest_root_publisher_t", "process2", "nnp_transition"),
     Access("kernel_t", "init_t", "process", "transition"),
     Access("kernel_t", "init_exec_t", "file", "execute"),
@@ -1128,6 +1133,25 @@ def check_policy(setools: Any, policy: Any) -> list[str]:
         evidence.append(
             f"deny-transition\t{source}\t{PROVISIONER_EXECUTABLE}\tprocess"
         )
+
+    loader_attributes = list(
+        setools.TypeAttributeQuery(policy, name=EXPLICIT_LOADER_ATTRIBUTE).results()
+    )
+    if len(loader_attributes) != 1:
+        raise ValueError("effective policy must contain exactly one explicit-loader attribute")
+    loader_domains = {str(domain) for domain in loader_attributes[0].expand()}
+    if loader_domains != set(EXPLICIT_LOADER_DOMAINS):
+        raise ValueError(f"unexpected explicit-loader membership: {sorted(loader_domains)}")
+
+    domain_attributes = list(setools.TypeAttributeQuery(policy, name="domain").results())
+    if len(domain_attributes) != 1:
+        raise ValueError("effective policy must contain exactly one domain attribute")
+    domains = {str(domain) for domain in domain_attributes[0].expand()}
+    for domain in EXPLICIT_LOADER_DOMAINS:
+        if domain not in domains:
+            raise ValueError(f"explicit-loader role lost domain membership: {domain}")
+        evidence.append(f"member-attribute\t{domain}\t{EXPLICIT_LOADER_ATTRIBUTE}")
+        evidence.append(f"member-attribute\t{domain}\tdomain")
 
     file_type_attributes = list(setools.TypeAttributeQuery(policy, name="file_type").results())
     if len(file_type_attributes) != 1:

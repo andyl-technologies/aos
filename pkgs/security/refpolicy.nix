@@ -64,6 +64,9 @@ in
               # final-policy gate independently derives and verifies this map
               # from the pinned kernel source.
               patch -p1 < ${./_aos-selinux-production-policy/refpolicy-linux-6.18.33.patch}
+              # Copied guest closures and the fixed FUSE worker must not gain
+              # ambient host-loader or textrel access through domain membership.
+              patch --fuzz=0 -p1 < ${./_aos-selinux-production-policy/refpolicy-explicit-loaders.patch}
               sed -i 's/^UNK_PERMS.*/UNK_PERMS = reject/' build.conf
               # Both fixed AOS transitions retain NNP/nosuid. They use explicit
               # process2 permissions rather than weakening the inherited guard.
