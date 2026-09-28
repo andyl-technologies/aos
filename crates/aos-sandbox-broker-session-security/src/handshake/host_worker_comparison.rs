@@ -382,7 +382,7 @@ fn encode(
     encode_profile(MAGIC, CONTRACT, binding, body, maximum)
 }
 
-// Mechanical fixed-header reuse for these two privately enumerated profiles.
+// Mechanical fixed-header reuse for the privately enumerated phase profiles.
 // No caller-selected contract is exposed through an owner or public transport.
 fn encode_profile(
     magic: &[u8; 8],

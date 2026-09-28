@@ -99,6 +99,24 @@ pub enum OriginalHostFuseWorkerTransportActionV1<'record> {
         challenge:
             &'record aos_sandbox_protocol::fuse_worker_preparation::WorkerRendezvousChallengeV2,
     },
+    /// Schedules kernel-only INIT while the same physical/live Host cut is held.
+    SendKernelInitStart {
+        /// Binds the original fresh flight, not another worker or initialized FD.
+        challenge:
+            &'record aos_sandbox_protocol::fuse_worker_preparation::WorkerRendezvousChallengeV2,
+    },
+    /// Receives Mount's original idmap-effect and same-session preparation ACK.
+    ReceiveKernelIdmapApplied {
+        /// Names the same original fresh flight; this is no read grant.
+        challenge:
+            &'record aos_sandbox_protocol::fuse_worker_preparation::WorkerRendezvousChallengeV2,
+    },
+    /// Confirms preparation after another complete physical/live Host recheck.
+    SendKernelPreparationConfirmed {
+        /// Names the same flight with metadata/backing still closed.
+        challenge:
+            &'record aos_sandbox_protocol::fuse_worker_preparation::WorkerRendezvousChallengeV2,
+    },
 }
 
 /// Reports one original transport operation without claiming copy closure.
@@ -113,6 +131,8 @@ pub enum OriginalHostFuseWorkerTransportProgressV1 {
     Backpressure,
     /// The same fixed Mount peer sent its exact preparation ACK, not a grant.
     RendezvousJoined,
+    /// The fixed Mount peer completed its distinct kernel-only preparation ACK.
+    KernelIdmapApplied,
 }
 
 /// Borrows the fixed original comparison transport throughout Host dispatch.

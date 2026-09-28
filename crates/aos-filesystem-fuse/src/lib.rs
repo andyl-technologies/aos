@@ -19,7 +19,8 @@
 //! publication authority remain bound to that session. No production fallback
 //! installer is registered and [`run_metadata`] remains unchanged.
 //! [`worker_kernel_init`] retains the fixed startup session through kernel-only
-//! INIT; no safe metadata/backing continuation or entry activation is installed.
+//! INIT in the original held preparation entry; no safe metadata/backing
+//! continuation or production advertisement is installed.
 //!
 //! Each connection has exactly one runner. Its descriptors must refer to a
 //! broker-prepared mount with independently qualified permission policy. A
