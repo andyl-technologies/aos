@@ -63,6 +63,9 @@ const MAXIMUM_DEPTH: usize = 64;
 mod model;
 mod project_authorization_source_v2;
 mod project_authorization_store_v2;
+pub(crate) use project_authorization_source_v2::{
+    parse_unverified_project_authorization_claims_v2, verify_signed_project_authorization_claims_v2,
+};
 #[cfg(test)]
 mod project_authorization_test_fixture;
 pub use model::{

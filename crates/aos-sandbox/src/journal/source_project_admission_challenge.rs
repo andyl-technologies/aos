@@ -1219,6 +1219,7 @@ impl Journal {
                 SourceProjectAdmissionTransition::Settle,
                 SourceProjectAdmissionTransition::AcknowledgeRetirement,
             ]),
+            None,
         )?;
         self.preflight_source_project_negative_capacity_v1(client_nonce, project, names)
     }
@@ -1274,6 +1275,7 @@ impl Journal {
                 SourceProjectAdmissionTransition::CancelReservation,
                 SourceProjectAdmissionTransition::AcknowledgeRetirement,
             ]),
+            None,
         )
     }
 

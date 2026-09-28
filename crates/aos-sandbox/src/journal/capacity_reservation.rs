@@ -34,6 +34,8 @@ pub enum GlobalCapacityReservationPurposeV1 {
     RootProjectAdmission = 4,
     /// Controller acceptance and exact Root-history retirement in one Effect.
     ControllerProjectAdmission = 5,
+    /// Root-owned initial Source intent and exact semantic-floor settlement.
+    RootSourceGenesisAnchor = 6,
 }
 
 impl GlobalCapacityReservationPurposeV1 {
@@ -44,6 +46,7 @@ impl GlobalCapacityReservationPurposeV1 {
             Self::RootProjectAdmission => RecordNamespace::DesiredState,
             Self::SourceProviderNativeTerminal => RecordNamespace::SourceProviderAuthority,
             Self::ControllerProjectAdmission => RecordNamespace::Effect,
+            Self::RootSourceGenesisAnchor => RecordNamespace::DesiredState,
         }
     }
 
@@ -73,6 +76,10 @@ impl GlobalCapacityReservationPurposeV1 {
                 namespace,
                 RecordNamespace::Effect | RecordNamespace::GlobalCapacityReservation
             ),
+            Self::RootSourceGenesisAnchor => matches!(
+                namespace,
+                RecordNamespace::DesiredState | RecordNamespace::GlobalCapacityReservation
+            ),
         }
     }
 
@@ -83,6 +90,7 @@ impl GlobalCapacityReservationPurposeV1 {
             3 => Ok(Self::SourceProviderNativeTerminal),
             4 => Ok(Self::RootProjectAdmission),
             5 => Ok(Self::ControllerProjectAdmission),
+            6 => Ok(Self::RootSourceGenesisAnchor),
             _ => Err(JournalError::MalformedRecord(
                 "unknown global capacity reservation purpose",
             )),
@@ -251,6 +259,48 @@ impl GlobalCapacityReservationV1 {
 }
 
 impl Journal {
+    /// Rejoins only one exact fixed-Root genesis reservation after cold replay.
+    pub(crate) fn root_source_genesis_capacity_identity_v1(
+        &self,
+        request: &GlobalCapacityReservationRequestV1,
+        admission: [u8; 16],
+    ) -> Result<[u8; 32], JournalError> {
+        crate::policy_compiler::require_root_source_genesis_capacity_owner_v1(self)?;
+        if request.purpose != GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        let identity = reservation_id(request, admission);
+        let retained = self.recover_global_capacity_reservation_v1(identity)?;
+        if !retained.matches_request(request, admission) {
+            return Err(JournalError::AuthorityPreflightMismatch);
+        }
+        Ok(identity)
+    }
+
+    pub(crate) fn root_source_genesis_capacity_ids_v1(
+        &self,
+    ) -> Result<Vec<[u8; 32]>, JournalError> {
+        self.ensure_healthy()?;
+        self.records(RecordNamespace::GlobalCapacityReservation)
+            .filter_map(|(key, value)| {
+                let decoded = decode_reservation(value).and_then(|(request, _, identity)| {
+                    decode_capacity_record(key, value)?;
+                    Ok((request, identity))
+                });
+                match decoded {
+                    Ok((request, identity))
+                        if request.purpose
+                            == GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor =>
+                    {
+                        Some(Ok(identity))
+                    }
+                    Ok(_) => None,
+                    Err(error) => Some(Err(error)),
+                }
+            })
+            .collect()
+    }
+
     /// Lists only canonical Controller-history capacity identities for replay.
     pub(crate) fn controller_project_capacity_ids_v1(&self) -> Result<Vec<[u8; 32]>, JournalError> {
         self.ensure_healthy()?;
@@ -411,6 +461,9 @@ impl Journal {
     ) -> Result<PreparedGlobalCapacityReservationV1, JournalError> {
         self.ensure_healthy()?;
         validate_request(&request, self)?;
+        if request.purpose == GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor {
+            crate::policy_compiler::require_root_source_genesis_capacity_owner_v1(self)?;
+        }
         if admission_transaction_id == [0; 16] {
             return Err(JournalError::InvalidTransaction);
         }
@@ -442,6 +495,13 @@ impl Journal {
         prepared: PreparedGlobalCapacityReservationV1,
         transaction: &JournalTransaction,
     ) -> Result<(CommitResult, GlobalCapacityReservationV1), JournalError> {
+        if prepared.request.purpose == GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor {
+            crate::policy_compiler::validate_root_source_genesis_capacity_admission_v1(
+                self,
+                transaction,
+                &prepared.request,
+            )?;
+        }
         if transaction.id != prepared.admission_transaction_id
             || transaction
                 .records
@@ -638,6 +698,14 @@ pub(super) fn validate_settlement_shape(
     }
     if reservation.request.purpose == GlobalCapacityReservationPurposeV1::RootProjectAdmission {
         crate::policy_compiler::validate_root_project_capacity_settlement_v1(
+            journal,
+            transaction,
+            &reservation.request,
+            reservation.reservation_id,
+        )?;
+    }
+    if reservation.request.purpose == GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor {
+        crate::policy_compiler::validate_root_source_genesis_capacity_settlement_v1(
             journal,
             transaction,
             &reservation.request,
@@ -904,7 +972,8 @@ fn valid_future_transactions(purpose: GlobalCapacityReservationPurposeV1, count:
         GlobalCapacityReservationPurposeV1::RootProjectAdmission => (1..=2).contains(&count),
         GlobalCapacityReservationPurposeV1::PublisherCompletion
         | GlobalCapacityReservationPurposeV1::RuntimeExecution
-        | GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal => count == 1,
+        | GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal
+        | GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor => count == 1,
     }
 }
 
@@ -1104,6 +1173,7 @@ mod purpose_tests {
             GlobalCapacityReservationPurposeV1::PublisherCompletion,
             GlobalCapacityReservationPurposeV1::RuntimeExecution,
             GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal,
+            GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor,
         ] {
             for count in [0, 2, 3, 4] {
                 let mut request = root_request();
@@ -1127,6 +1197,37 @@ mod purpose_tests {
             GlobalCapacityReservationPurposeV1::ControllerProjectAdmission,
             4
         ));
+    }
+
+    #[test]
+    fn root_genesis_capacity_is_a_distinct_single_slot_purpose() {
+        let mut request = root_request();
+        request.purpose = GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor;
+        request.owner_namespace = request.purpose.owner_namespace();
+        let admission = [7; 16];
+        let identifier = reservation_id(&request, admission);
+        let bytes = encode_reservation(&request, admission, identifier);
+
+        assert_eq!(bytes.len(), VALUE_BYTES_V1);
+        assert_eq!(decode_reservation(&bytes).unwrap().0, request);
+        assert!(request.purpose.permits(RecordNamespace::DesiredState));
+        assert!(
+            !request
+                .purpose
+                .permits(RecordNamespace::SourceProviderAuthority)
+        );
+        assert!(!request.purpose.permits(RecordNamespace::Effect));
+
+        for foreign in [
+            GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal,
+            GlobalCapacityReservationPurposeV1::RootProjectAdmission,
+            GlobalCapacityReservationPurposeV1::ControllerProjectAdmission,
+        ] {
+            let mut changed = request;
+            changed.purpose = foreign;
+            changed.owner_namespace = foreign.owner_namespace();
+            assert_ne!(reservation_id(&changed, admission), identifier);
+        }
     }
 
     #[test]

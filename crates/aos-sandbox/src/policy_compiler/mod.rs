@@ -73,9 +73,25 @@ mod root_challenge_record;
 mod root_project_admission_proof;
 mod root_v8_released_proof;
 mod root_v8_settled_grant;
+#[cfg(target_os = "linux")]
+mod source_genesis_root;
 mod source_hold_pin;
 mod source_hold_readback;
 mod source_hold_readback_v2;
+#[cfg(target_os = "linux")]
+pub use source_genesis_root::{
+    CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1, HeldRootSourceGenesisIntentV1,
+    ROOT_SOURCE_GENESIS_INTENT_BYTES_V1, RootSourceGenesisAuthorityV1,
+    RootSourceGenesisFloorProofV1, RootSourceGenesisIntentRecordV1,
+    SOURCE_GENESIS_DEPLOYMENT_INSTANCE_BYTES_V1, SOURCE_HIERARCHY_FLOOR_BYTES_V1,
+    SourceHierarchyFloorRecordV1, sign_controller_source_genesis_readback_v1,
+};
+#[cfg(target_os = "linux")]
+pub(crate) use source_genesis_root::{
+    require_root_source_genesis_capacity_owner_v1,
+    validate_root_source_genesis_capacity_admission_v1,
+    validate_root_source_genesis_capacity_settlement_v1,
+};
 mod source_project_admission_readback;
 #[cfg(target_os = "linux")]
 mod source_signer_readback;
