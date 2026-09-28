@@ -1707,6 +1707,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       # deployed package remains the no-argument discovered derivation.
       aosSelinuxStage0With = arguments:
         callPackage ./security/aos-selinux-stage0.nix arguments;
+      aosSelinuxRuntimeRootsWith = arguments:
+        callPackage ./security/aos-selinux-runtime-roots.nix arguments;
       aosSelinuxKernelPolicyReadbackForKernel = kernel:
         callPackage ./security/aos-selinux-kernel-policy-readback.nix {
           linux = kernel;

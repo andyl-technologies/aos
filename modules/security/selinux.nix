@@ -26,7 +26,20 @@
   canonicalReadbackPath = "${canonicalReadback}/policy.33";
   productionAdmissionUnit = "aos-selinux-stage0-hold.target";
   selectedStage0 = config.aos.boot.initrd.stage0;
-  runtimeRootsProvisioner = pkgs.aos-selinux-runtime-roots;
+  controllerFloorRequired = config.aos.sandbox.controllerService.method46TpmFloor.required;
+  storageFloorRequired = config.aos.sandbox.storageBroker.method46TpmFloor.required;
+  ownerFloorRequired = controllerFloorRequired || storageFloorRequired;
+  runtimeRootsProvisioner =
+    if immutableStage0
+    then
+      pkgs.aosSelinuxRuntimeRootsWith {
+        controllerUid = config.aos.sandbox.controller.uid;
+        controllerGid = config.aos.sandbox.controller.gid;
+        inherit controllerFloorRequired storageFloorRequired;
+        expectedPolicy = canonicalReadbackPath;
+        expectedPolicyKernel = config.system.build.kernel;
+      }
+    else pkgs.aos-selinux-runtime-roots;
   strictKernelConfig = builtins.readFile ../../pkgs/kernel/config/selinux-immutable.config;
   semodule = "${pkgs.policycoreutils}/sbin/semodule";
   loadPolicy = "${pkgs.policycoreutils}/sbin/load_policy";
@@ -321,6 +334,14 @@ in {
       description = "Allows signed test images to replace the production admission hold with the normal initrd target.";
     };
 
+    _runtimeRootsProvisioner = lib.mkOption {
+      type = lib.types.package;
+      internal = true;
+      readOnly = true;
+      default = runtimeRootsProvisioner;
+      description = "Same immutable fixed runtime-root image used by stage 0 and both existing preparation routes.";
+    };
+
     protectedSandboxNetworkRoots = {
       enable = lib.mkEnableOption ''
         the fixed SELinux-labeled sandbox Network state-root topology
@@ -342,6 +363,10 @@ in {
         {
           assertion = cfg.enable || !immutableStage0;
           message = "immutable SELinux stage 0 requires aos.security.selinux.enable.";
+        }
+        {
+          assertion = !ownerFloorRequired || (immutableStage0 && cfg.enable && cfg.mode == "enforcing" && !(config.aos.filesystems.zfs.enable && config.aos.filesystems.zfs.systemState));
+          message = "required TPM owner-root preparation currently requires immutable enforcing SELinux and the existing exact ext4 /var substrate (ZFS data pools are unaffected)";
         }
         {
           assertion = !protectedSandboxNetworkRoots || cfg.enable;
@@ -558,6 +583,10 @@ in {
           message = "immutable SELinux stage 0 must authenticate the canonical runtime-root provisioner.";
         }
         {
+          assertion = config.aos.security.selinux._runtimeRootsProvisioner == runtimeRootsProvisioner && (runtimeRootsProvisioner.passthru.expectedPolicy or null) == canonicalReadbackPath && (runtimeRootsProvisioner.passthru.expectedPolicyKernel or null) == config.system.build.kernel;
+          message = "all immutable runtime-root preparation routes must use the selected-kernel canonical readback image, never the input policy or a substituted preparation image.";
+        }
+        {
           assertion = selectedStage0 != null && (selectedStage0.passthru.qualificationPostPinGate or null) == "";
           message = "immutable SELinux stage 0 forbids the qualification post-pin gate in production composition.";
         }
@@ -577,6 +606,7 @@ in {
         "rootflags=nodev"
       ];
       aos.boot.initrd.stage0 = pkgs.aosSelinuxStage0With {
+        aos-selinux-runtime-roots = runtimeRootsProvisioner;
         expectedPolicy = canonicalReadbackPath;
         expectedPolicyKernel = config.system.build.kernel;
       };

@@ -11,6 +11,9 @@
   python3,
   aos-netd,
   aos-sandbox-zfs-worker,
+  aos-sandboxd,
+  aos-storaged,
+  aos-method46-tpm-helper,
 }: let
   policyVersion = "33";
   policySupport = ./_aos-selinux-production-policy;
@@ -20,6 +23,17 @@
   netdBasenameRegex = builtins.replaceStrings ["."] ["\\."] netdBasename;
   workerBasename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString aos-sandbox-zfs-worker));
   workerBasenameRegex = builtins.replaceStrings ["."] ["\\."] workerBasename;
+  exactPackageBasename = name: package: let
+    basename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString package));
+  in
+    if builtins.match "[a-z0-9]{32}-${name}-[0-9]+\\.[0-9]+\\.[0-9]+" basename != null
+    then builtins.replaceStrings ["."] ["\\."] basename
+    else throw "${name} SELinux label requires its exact evaluated package root";
+  ownerModule = builtins.toFile "aos_sandbox.te" (
+    builtins.readFile (policySupport + "/aos_sandbox.te")
+    + "\n"
+    + builtins.readFile (policySupport + "/owner_confinement.te")
+  );
   inspectorPathRegex = "/(nix|nix\\.lower)/store/${netdBasenameRegex}/bin/aos-sandbox-network-namespace-inspector";
   inspectorPath = basename: "/nix/store/${basename}/bin/aos-sandbox-network-namespace-inspector";
   siblingBasename =
@@ -48,8 +62,8 @@
     then
       builtins.toFile "aos_sandbox.fc" (
         builtins.replaceStrings
-        ["@AOS_NETD_BASENAME_REGEX@" "@AOS_ZFS_WORKER_BASENAME_REGEX@"]
-        [netdBasenameRegex workerBasenameRegex]
+        ["@AOS_NETD_BASENAME_REGEX@" "@AOS_ZFS_WORKER_BASENAME_REGEX@" "@AOS_CONTROLLER_BASENAME_REGEX@" "@AOS_STORAGE_BASENAME_REGEX@" "@AOS_TPM_HELPER_BASENAME_REGEX@"]
+        [netdBasenameRegex workerBasenameRegex (exactPackageBasename "aos-sandboxd" aos-sandboxd) (exactPackageBasename "aos-storaged" aos-storaged) (exactPackageBasename "aos-method46-tpm-helper" aos-method46-tpm-helper)]
         (builtins.readFile (policySupport + "/aos_sandbox.fc"))
       )
     else throw "aos-netd SELinux label must match only the evaluated package root";
@@ -81,7 +95,7 @@ in
 
           ${python3}/bin/python3 ${policySupport}/effective_policy_test.py
           ${checkpolicy}/bin/checkmodule -m \
-            -o "$aos_module.mod" ${policySupport}/aos_sandbox.te
+            -o "$aos_module.mod" ${ownerModule}
           ${semodule-utils}/bin/semodule_package \
             -o "$aos_module.pp" \
             -m "$aos_module.mod" \

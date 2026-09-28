@@ -413,6 +413,10 @@ in {
       ++ method46FloorConfiguration.assertions
       ++ [
         {
+          assertion = !cfg.method46TpmFloor.required || (config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0" && config.aos.security.selinux.mode == "enforcing" && cfg.package == pkgs.aos-sandboxd);
+          message = "required Controller TPM floor requires immutable enforcing SELinux and the exact AOS package; owner IDs are independently compiled from the immutable module assignment";
+        }
+        {
           assertion =
             !(cfg.method46TpmFloor.required && brokers.storageBroker.method46TpmFloor.required)
             || (cfg.method46TpmFloor.indexAuthCredential
@@ -507,6 +511,7 @@ in {
       };
       serviceConfig = {
         Type = "notify";
+        SELinuxContext = lib.mkIf cfg.method46TpmFloor.required "system_u:system_r:aos_sandbox_controller_t";
         NotifyAccess = "main";
         ExecStart =
           "${cfg.package}/bin/aos-sandboxd ${toString controller.uid} ${toString controller.gid}"
@@ -575,7 +580,11 @@ in {
         PrivateDevices = !cfg.method46TpmFloor.required;
         PrivateNetwork = true;
         PrivateTmp = true;
-        ProcSubset = "pid";
+        # KernelBootId::current requires the read-only boot-ID proc subtree.
+        ProcSubset =
+          if cfg.method46TpmFloor.required
+          then "all"
+          else "pid";
         ProtectClock = true;
         ProtectControlGroups = true;
         ProtectHome = true;

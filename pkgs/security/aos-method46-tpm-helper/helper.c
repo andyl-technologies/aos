@@ -13,6 +13,8 @@
  */
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
+#include <linux/magic.h>
 #include <poll.h>
 #include <stdbool.h>
 #include <signal.h>
@@ -22,6 +24,7 @@
 #include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <unistd.h>
 
 #include <openssl/evp.h>
@@ -31,6 +34,7 @@
 
 #define HELLO_BYTES 160U
 #define LOCK_ACK_BYTES 48U
+#define AUTH_BYTES 80U
 #define REQUEST_BYTES 84U
 #define RESPONSE_BYTES 128U
 #define WRITTEN_ATTRIBUTES UINT32_C(0x20040044)
@@ -186,6 +190,8 @@ static int validate_locks(const uint8_t hello[HELLO_BYTES], const int locks[2])
         const uint8_t *expected = hello + 120U + index * 20U;
         if (locks[index] < 3 || fstat(locks[index], &observed[index]) != 0
             || !S_ISREG(observed[index].st_mode) || observed[index].st_nlink != 1
+            || observed[index].st_size != 0
+            || (fcntl(locks[index], F_GETFL) & O_ACCMODE) != O_RDWR
             || (observed[index].st_mode & 07777U) != 0600U
             || observed[index].st_uid != geteuid()
             || (uint64_t)observed[index].st_dev != get_u64(expected)
@@ -323,18 +329,74 @@ static void close_context(struct floor_context *context)
     erase(context, sizeof(*context));
 }
 
-static int open_context(struct floor_context *context, const uint8_t hello[HELLO_BYTES])
+static int validate_hello(const uint8_t hello[HELLO_BYTES])
 {
     uint32_t index = get_u32(hello + 44);
     uint32_t salt = get_u32(hello + 48);
     if (!((index == UINT32_C(0x0180a046) && salt == UINT32_C(0x8100a046))
         || (index == UINT32_C(0x0180a047) && salt == UINT32_C(0x8100a047))))
         return -1;
-    if (memcmp(hello, "AOSBTH01", 8) != 0 || hello[8] != 0 || hello[9] != 1
-        || hello[10] != 0 || hello[11] != 0 || hello[118] != 0 || hello[119] != 0
+    if (memcmp(hello, "AOSBTH02", 8) != 0 || hello[8] != 0 || hello[9] != 2
+        || hello[10] != 0 || hello[11] != 0 || nonzero(hello + 86, 34)
         || !nonzero(hello + 12, 32) || hello[52] != 0 || hello[53] != 11
-        || !nonzero(hello + 54, 32) || !nonzero(hello + 86, 32))
+        || !nonzero(hello + 54, 32))
         return -1;
+    return 0;
+}
+
+static int validate_auth(const uint8_t auth[AUTH_BYTES], const uint8_t hello[HELLO_BYTES])
+{
+    return memcmp(auth, "AOSBTA02", 8) == 0 && auth[8] == 0 && auth[9] == 2
+        && auth[10] == 0 && auth[11] == 0
+        && memcmp(auth + 12, hello + 12, 36) == 0
+        && nonzero(auth + 48, 32) ? 0 : -1;
+}
+
+static int require_fixed_text(const char *path, long magic, const char *expected)
+{
+    uint8_t bytes[256];
+    struct statfs filesystem;
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
+    int valid = fstatfs(fd, &filesystem) == 0 && filesystem.f_type == magic;
+    size_t length = 0;
+    while (valid && length < sizeof(bytes)) {
+        ssize_t count = read(fd, bytes + length, sizeof(bytes) - length);
+        if (count < 0 && errno == EINTR)
+            continue;
+        if (count < 0)
+            valid = 0;
+        if (count <= 0)
+            break;
+        length += (size_t)count;
+    }
+    close(fd);
+    if (!valid || length == 0 || length == sizeof(bytes))
+        return -1;
+    if (bytes[length - 1] == '\n' || bytes[length - 1] == '\0')
+        --length;
+    return length == strlen(expected)
+        && memcmp(bytes, expected, length) == 0 ? 0 : -1;
+}
+
+static int require_helper_role(const uint8_t hello[HELLO_BYTES])
+{
+    const char *context = get_u32(hello + 44) == UINT32_C(0x0180a046)
+        ? "system_u:system_r:aos_method46_controller_helper_t"
+        : "system_u:system_r:aos_method46_storage_helper_t";
+    return require_fixed_text("/sys/fs/selinux/enforce", SELINUX_MAGIC, "1") == 0
+        && require_fixed_text("/proc/self/attr/current", PROC_SUPER_MAGIC, context) == 0 ? 0 : -1;
+}
+
+static int open_context(struct floor_context *context, const uint8_t hello[HELLO_BYTES],
+    const uint8_t authentication[AUTH_BYTES])
+{
+    if (validate_hello(hello) != 0 || validate_auth(authentication, hello) != 0
+        || prctl(PR_GET_DUMPABLE) != 0 || require_helper_role(hello) != 0)
+        return -1;
+    uint32_t index = get_u32(hello + 44);
+    uint32_t salt = get_u32(hello + 48);
     memcpy(context->salt_name, hello + 52, sizeof(context->salt_name));
     context->index_handle = index;
     if (lstat(FIXED_DEVICE, &context->device_identity) != 0
@@ -371,7 +433,7 @@ static int open_context(struct floor_context *context, const uint8_t hello[HELLO
         return -1;
 
     TPM2B_AUTH auth = { .size = 32 };
-    memcpy(auth.buffer, hello + 86, 32);
+    memcpy(auth.buffer, authentication + 48, 32);
     TSS2_RC status = Esys_TR_SetAuth(context->esys, context->index, &auth);
     erase(&auth, sizeof(auth));
     return status == TSS2_RC_SUCCESS && same_device(context) == 0 ? 0 : -1;
@@ -435,6 +497,7 @@ int main(int argc, char **argv)
         .session = ESYS_TR_NONE,
     };
     uint8_t hello[HELLO_BYTES] = {0};
+    uint8_t authentication[AUTH_BYTES] = {0};
     uint8_t nonce[32] = {0};
     uint64_t sequence = 1;
     int status = EXIT_FAILURE;
@@ -443,20 +506,27 @@ int main(int argc, char **argv)
     if (argc != 1 || parent <= 1 || prctl(PR_SET_PDEATHSIG, SIGKILL) != 0
         || getppid() != parent || close_range(3, ~0U, 0) != 0
         || receive_frame(hello, sizeof(hello), parent, 2U, locks) != 0
+        || validate_hello(hello) != 0
+        || require_helper_role(hello) != 0
         || validate_locks(hello, locks) != 0)
         goto finished;
     memcpy(nonce, hello + 12, sizeof(nonce));
-    /* The parent checks the fixed executed image before sending credentials.
-     * No later exec or fork occurs; custody is pidfd + the private channel. */
+    /* Public HELLO follows the parent's fixed image/loader observation. Become
+     * nondumpable before acknowledging custody, and only then receive auth.
+     * No later exec or fork occurs; no device is opened before authentication. */
     uint8_t acknowledgment[LOCK_ACK_BYTES] = {0};
-    memcpy(acknowledgment, "AOSBTK01", 8);
-    acknowledgment[9] = 1;
+    memcpy(acknowledgment, "AOSBTK02", 8);
+    acknowledgment[9] = 2;
     memcpy(acknowledgment + 12, nonce, sizeof(nonce));
     acknowledgment[45] = 2;
     if (prctl(PR_SET_DUMPABLE, 0) != 0
+        || prctl(PR_GET_DUMPABLE) != 0
         || send_frame(acknowledgment, sizeof(acknowledgment)) != 0
-        || open_context(&context, hello) != 0)
+        || receive_frame(authentication, sizeof(authentication), parent, 0U, locks) != 0
+        || validate_auth(authentication, hello) != 0
+        || open_context(&context, hello, authentication) != 0)
         goto finished;
+    erase(authentication, sizeof(authentication));
     erase(hello, sizeof(hello));
 
     for (;;) {
@@ -465,7 +535,7 @@ int main(int argc, char **argv)
         if (receive_frame(request, sizeof(request), parent, 0U, locks) != 0)
             break;
         uint8_t operation = request[10];
-        if (memcmp(request, "AOSBTQ01", 8) != 0 || request[8] != 0 || request[9] != 1
+        if (memcmp(request, "AOSBTQ02", 8) != 0 || request[8] != 0 || request[9] != 2
             || request[11] != 0 || memcmp(request + 12, nonce, sizeof(nonce)) != 0
             || get_u64(request + 44) != sequence || sequence == UINT64_MAX
             || (operation != 1 && operation != 2)
@@ -474,8 +544,8 @@ int main(int argc, char **argv)
             break;
         if (operation == 2 && extend_index(&context, request + 52) != 0)
             break;
-        memcpy(reply, "AOSBTR01", 8);
-        reply[9] = 1;
+        memcpy(reply, "AOSBTR02", 8);
+        reply[9] = 2;
         reply[10] = operation;
         memcpy(reply + 12, nonce, sizeof(nonce));
         memcpy(reply + 44, request + 44, 8);
@@ -485,6 +555,7 @@ int main(int argc, char **argv)
         ++sequence;
     }
 finished:
+    erase(authentication, sizeof(authentication));
     erase(hello, sizeof(hello));
     close_context(&context);
     /* Explicit orderly close drains TPM before dropping custody. SIGKILL's

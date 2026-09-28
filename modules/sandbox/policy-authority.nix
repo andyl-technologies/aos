@@ -183,6 +183,10 @@ in {
       requiredCredentials
       ++ [
         {
+          assertion = !(config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") || cfg.package == pkgs.aos-sandboxd;
+          message = "confined normal policy authority requires the exact policy-labelled AOS package; the same-ELF recovery invocation remains outside the normal role";
+        }
+        {
           assertion =
             (cfg.credentials.projectHeadPacket == null)
             == (cfg.credentials.projectLayer == null);
@@ -275,6 +279,8 @@ in {
         ++ lib.optional sourceSignerView.enable "aos-sandbox-source-signer-view.service";
       serviceConfig = {
         Type = "simple";
+        # Recovery CLI uses the same ELF but never inherits this normal role.
+        SELinuxContext = lib.mkIf (config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") "system_u:system_r:aos_sandbox_policy_authority_t";
         # Zero identities disable signer flights unless their separate services and views are enabled.
         ExecStart = "${cfg.package}/bin/aos-sandbox-policy-authorityd ${toString controller.uid} ${toString controller.gid} ${toString cacheSignerUid} ${toString sourceSignerUid}";
         LoadCredential =
@@ -301,7 +307,7 @@ in {
         NoNewPrivileges = true;
         PrivateDevices = true;
         PrivateTmp = true;
-        ProcSubset = "pid";
+        ProcSubset = "all";
         ProtectClock = true;
         ProtectControlGroups = true;
         ProtectHome = true;
