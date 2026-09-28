@@ -493,6 +493,10 @@ impl Graph {
     }
 
     fn refresh_inventory(&mut self) {
+        self.try_refresh_inventory().unwrap();
+    }
+
+    fn try_refresh_inventory(&mut self) -> Result<(), crate::ledger::LedgerFormatErrorV1> {
         let rows = self.rows();
         let (digest, count) = crate::ledger::reducer::inventory_state_digest(
             self.authority.provider.authority_id(),
@@ -500,10 +504,10 @@ impl Graph {
             self.catalog.catalog_digest,
             rows.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
             1024,
-        )
-        .unwrap();
+        )?;
         self.authority.inventory_state_digest = digest;
         self.authority.active_lease_count = count;
+        Ok(())
     }
 
     fn active(&mut self) {
@@ -2315,7 +2319,12 @@ fn native_faulted_replay_requires_original_artifacts_and_exact_current_release_i
             release.acquisition_record_digest =
                 record_digest(&encode_acquisition(&foreign.acquisition)).unwrap();
         }
-        foreign.refresh_inventory();
+        let inventory = foreign.try_refresh_inventory();
+        assert_eq!(
+            inventory.is_err(),
+            (7..=13).contains(&mutation),
+            "malformed canonical artifact {mutation}",
+        );
         let rows = foreign.rows();
         assert!(
             aos_sandbox_source_provider_ledger::validate_prospective_records(
