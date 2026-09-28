@@ -24,7 +24,7 @@ use crate::openssh_gate_linux::{RunningOpenSshGateV1, expected_openssh_gate_conf
 const DIRECTORY: &str = "/etc/aos/sandbox-attach";
 const FIXTURE_DIRECTORY: &str = "/run/aos-attach-profile-qualification";
 const GATE: &str = "/usr/libexec/aos-sandbox-exec-gate";
-const MAXIMUM_DAEMON_DIAGNOSTIC_BYTES: u64 = 16 * 1024;
+const MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES: u64 = 16 * 1024;
 
 struct OwnedProcess(Child);
 
@@ -115,7 +115,7 @@ fn listener_failure(
 ) -> String {
     let mut bytes = Vec::new();
     let stderr = match fs::File::open(diagnostic_path).and_then(|file| {
-        file.take(MAXIMUM_DAEMON_DIAGNOSTIC_BYTES)
+        file.take(MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES)
             .read_to_end(&mut bytes)
     }) {
         Ok(_) => String::from_utf8_lossy(&bytes).into_owned(),
@@ -124,7 +124,7 @@ fn listener_failure(
 
     format!(
         "packaged sshd listener unavailable; original child status: {status:?}; \
-         TCP error: {connection_error}; stderr (first {MAXIMUM_DAEMON_DIAGNOSTIC_BYTES} bytes) \
+         TCP error: {connection_error}; stderr (first {MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES} bytes) \
          at {}:\n{stderr}",
         diagnostic_path.display()
     )
@@ -227,23 +227,45 @@ fn ssh_command(ssh: &str, certificate: &str) -> Command {
     command
 }
 
-fn ssh_authentication(ssh: &str, certificate: &str, expected: bool) {
+fn ssh_authentication_failure(case: &str, output: &Output) -> String {
+    let maximum = MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES as usize;
+    let stdout = &output.stdout[..output.stdout.len().min(maximum)];
+    let stderr = &output.stderr[..output.stderr.len().min(maximum)];
+
+    // Only the ephemeral fixture client's output is included. Certificates
+    // and private-key file contents are never supplied to this diagnostic.
+    format!(
+        "SSH fixture case {case}; original client status: {}; \
+         stdout (first {maximum} bytes):\n{}\n\
+         stderr (first {maximum} bytes):\n{}",
+        output.status,
+        String::from_utf8_lossy(stdout),
+        String::from_utf8_lossy(stderr),
+    )
+}
+
+fn ssh_authentication(ssh: &str, certificate: &str, case: &str, expected: bool) {
     let output = ssh_command(ssh, certificate).output().unwrap();
-    let diagnostic = String::from_utf8(output.stderr).unwrap();
+    let failure = ssh_authentication_failure(case, &output);
+    let diagnostic = std::str::from_utf8(&output.stderr)
+        .unwrap_or_else(|error| panic!("{failure}\ninvalid client diagnostic UTF-8: {error}"));
     let authenticated = diagnostic.contains("Authenticated to 127.0.0.1")
         && diagnostic.contains("using \"publickey\"");
-    assert_eq!(
-        authenticated, expected,
-        "SSH authentication outcome differs"
-    );
+    assert_eq!(authenticated, expected, "{failure}");
     if !expected {
-        assert!(diagnostic.contains("Permission denied (publickey)"));
+        assert!(
+            diagnostic.contains("Permission denied (publickey)"),
+            "{failure}"
+        );
     }
     // The administrator's fixed command cannot run `true` or transfer I/O:
     // this fixture deliberately has no process bridge to serve a descriptor.
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(!Path::new("/run/aos-sandbox-agent/exec-gate.sock").exists());
+    assert!(!output.status.success(), "{failure}");
+    assert!(output.stdout.is_empty(), "{failure}");
+    assert!(
+        !Path::new("/run/aos-sandbox-agent/exec-gate.sock").exists(),
+        "{failure}"
+    );
 }
 
 #[test]
@@ -360,13 +382,13 @@ fn packaged_sshd_enforces_profile_and_confined_original_ticket_relay() {
     assert!(output.stderr.is_empty());
     assert_callback_denial(callback(&chroot, &accepted, 0, None));
     assert_callback_denial(callback(&chroot, &accepted, 1001, Some("extra")));
-    ssh_authentication(&ssh, &accepted, true);
+    ssh_authentication(&ssh, &accepted, "accepted-profile", true);
 
     let mut missing_command = builder(&claim, now - 1, now + 120);
     missing_command.extension("permit-pty", "").unwrap();
     let missing_command = certificate(missing_command);
     assert_callback_denial(callback(&chroot, &missing_command, 1001, None));
-    ssh_authentication(&ssh, &missing_command, false);
+    ssh_authentication(&ssh, &missing_command, "missing-force-command", false);
     for foreign_operation in [true, false] {
         let mut foreign = claim.clone();
         if foreign_operation {
@@ -379,16 +401,21 @@ fn packaged_sshd_enforces_profile_and_confined_original_ticket_relay() {
             &foreign,
         ));
         assert_callback_denial(callback(&chroot, &encoded, 1001, None));
-        ssh_authentication(&ssh, &encoded, false);
+        let case = if foreign_operation {
+            "foreign-operation"
+        } else {
+            "foreign-execution"
+        };
+        ssh_authentication(&ssh, &encoded, case, false);
     }
     let mut forwarding = with_command(builder(&claim, now - 1, now + 120), &claim);
     forwarding.extension("permit-port-forwarding", "").unwrap();
     let forwarding = certificate(forwarding);
     assert_callback_denial(callback(&chroot, &forwarding, 1001, None));
-    ssh_authentication(&ssh, &forwarding, false);
+    ssh_authentication(&ssh, &forwarding, "forwarding-extension", false);
     let expired = certificate(with_command(builder(&claim, now - 30, now - 1), &claim));
     assert_callback_denial(callback(&chroot, &expired, 1001, None));
-    ssh_authentication(&ssh, &expired, false);
+    ssh_authentication(&ssh, &expired, "expired-certificate", false);
 
     // Public readback detects changed executable and configuration custody.
     fs::set_permissions(GATE, fs::Permissions::from_mode(0o777)).unwrap();
@@ -454,7 +481,7 @@ fn packaged_sshd_enforces_profile_and_confined_original_ticket_relay() {
     assert!(output.status.success());
     assert_eq!(output.stdout, b"aos_exec\n");
     assert!(output.stderr.is_empty());
-    ssh_authentication(&ssh, &accepted, true);
+    ssh_authentication(&ssh, &accepted, "accepted-historical-profile", true);
 
     let mut expired = historical.clone();
     expired.binding.expires_at = i64::try_from(
@@ -489,7 +516,7 @@ fn listener_failure_retains_original_exit_and_stderr() {
 #[test]
 fn listener_failure_bounds_ephemeral_stderr() {
     let diagnostic = tempfile::NamedTempFile::new().unwrap();
-    let mut bytes = vec![b'x'; MAXIMUM_DAEMON_DIAGNOSTIC_BYTES as usize];
+    let mut bytes = vec![b'x'; MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES as usize];
     bytes.extend_from_slice(b"excluded tail");
     fs::write(diagnostic.path(), &bytes).unwrap();
     let connection_error = std::io::Error::from(std::io::ErrorKind::NetworkUnreachable);
@@ -499,6 +526,33 @@ fn listener_failure_bounds_ephemeral_stderr() {
     assert!(failure.contains("original child status: Ok(None)"));
     assert!(failure.contains("first 16384 bytes"));
     assert!(!failure.contains("excluded tail"));
+}
+
+#[test]
+fn ssh_authentication_failure_retains_case_status_and_bounded_output() {
+    use std::os::unix::process::ExitStatusExt as _;
+
+    let maximum = MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES as usize;
+    let mut stdout = vec![b'x'; maximum];
+    stdout.extend_from_slice(b"excluded stdout tail");
+    let mut stderr = vec![b'y'; maximum];
+    stderr.extend_from_slice(b"excluded stderr tail");
+    let output = Output {
+        status: std::process::ExitStatus::from_raw(256),
+        stdout,
+        stderr,
+    };
+
+    let failure = ssh_authentication_failure("missing-force-command", &output);
+
+    assert!(failure.contains("SSH fixture case missing-force-command"));
+    assert!(failure.contains(&format!("original client status: {}", output.status)));
+    assert!(failure.contains(&format!("stdout (first {maximum} bytes):\n")));
+    assert!(failure.contains(&format!("stderr (first {maximum} bytes):\n")));
+    assert!(failure.contains(&"x".repeat(maximum)));
+    assert!(failure.contains(&"y".repeat(maximum)));
+    assert!(!failure.contains("excluded stdout tail"));
+    assert!(!failure.contains("excluded stderr tail"));
 }
 
 mod monitor_qualification;
