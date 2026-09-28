@@ -5,6 +5,7 @@ require {
 
     attribute domain;
     attribute aos_explicit_loader_domain;
+    attribute aos_no_context_translation_domain;
     attribute file_type;
     type init_t;
     type device_t;
@@ -55,6 +56,7 @@ require {
 type aos_filesystem_fuse_worker_t;
 typeattribute aos_filesystem_fuse_worker_t domain;
 typeattribute aos_filesystem_fuse_worker_t aos_explicit_loader_domain;
+typeattribute aos_filesystem_fuse_worker_t aos_no_context_translation_domain;
 role system_r types aos_filesystem_fuse_worker_t;
 type aos_filesystem_fuse_worker_exec_t;
 type aos_filesystem_fuse_worker_plan_t;

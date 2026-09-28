@@ -98,7 +98,6 @@ in
           base_package="$module_dir/base.pp"
           aos_module=aos_sandbox
           attribute_negative_module=aos_sandbox_attribute_negative
-          loader_negative_module=aos_sandbox_loader_negative
           export PYTHONPATH=${setools}/lib/python3/site-packages
 
           ${python3}/bin/python3 ${policySupport}/effective_policy_test.py
@@ -116,13 +115,15 @@ in
             -o "$attribute_negative_module.pp" \
             -m "$attribute_negative_module.mod"
           test -s "$attribute_negative_module.pp"
-          ${checkpolicy}/bin/checkmodule -m \
-            -o "$loader_negative_module.mod" \
-            ${policySupport}/aos_sandbox_loader_negative.te
-          ${semodule-utils}/bin/semodule_package \
-            -o "$loader_negative_module.pp" \
-            -m "$loader_negative_module.mod"
-          test -s "$loader_negative_module.pp"
+          for narrow_negative_module in aos_sandbox_loader_negative aos_sandbox_context_negative; do
+            ${checkpolicy}/bin/checkmodule -m \
+              -o "$narrow_negative_module.mod" \
+              ${policySupport}/"$narrow_negative_module.te"
+            ${semodule-utils}/bin/semodule_package \
+              -o "$narrow_negative_module.pp" \
+              -m "$narrow_negative_module.mod"
+            test -s "$narrow_negative_module.pp"
+          done
 
           test -f "$base_package"
           set -- "$base_package"
@@ -148,27 +149,39 @@ in
             final-policy.${policyVersion} > effective-policy.tsv
           test -s effective-policy.tsv
 
-          # A separate mutant restores textrel access through an attribute.
-          # It must pass normal base assertions, then fail the same effective
-          # checker that qualified the production binary above.
-          ${semodule-utils}/bin/semodule_link \
-            -o loader-negative-linked-policy.mod \
-            "$@" "$loader_negative_module.pp"
-          ${semodule-utils}/bin/semodule_expand \
-            -c ${policyVersion} \
-            loader-negative-linked-policy.mod \
-            loader-negative-policy.${policyVersion}
-          if ${python3}/bin/python3 ${policySupport}/effective_policy.py \
-            loader-negative-policy.${policyVersion} \
-            > loader-negative-effective-policy.tsv \
-            2> loader-negative-diagnostic
-          then
-            echo "attribute-expanded textrel grant unexpectedly passed" >&2
-            exit 1
-          fi
-          grep -F "forbidden allow exists" loader-negative-diagnostic
-          grep -F "aos_filesystem_fuse_worker_t" loader-negative-diagnostic
-          grep -F "execmod" loader-negative-diagnostic
+          # Separate mutants restore textrel or translation socket access
+          # through an attribute. Both must pass normal base assertions, then
+          # fail the same effective checker as the production binary above.
+          for narrow_negative_module in aos_sandbox_loader_negative aos_sandbox_context_negative; do
+            ${semodule-utils}/bin/semodule_link \
+              -o "$narrow_negative_module-linked.mod" \
+              "$@" "$narrow_negative_module.pp"
+            ${semodule-utils}/bin/semodule_expand \
+              -c ${policyVersion} \
+              "$narrow_negative_module-linked.mod" \
+              "$narrow_negative_module-policy.${policyVersion}"
+            if ${python3}/bin/python3 ${policySupport}/effective_policy.py \
+              "$narrow_negative_module-policy.${policyVersion}" \
+              > "$narrow_negative_module-effective.tsv" \
+              2> "$narrow_negative_module-diagnostic"
+            then
+              echo "attribute-expanded grant unexpectedly passed: $narrow_negative_module" >&2
+              exit 1
+            fi
+            grep -F "forbidden allow exists" "$narrow_negative_module-diagnostic"
+            grep -F "aos_filesystem_fuse_worker_t" "$narrow_negative_module-diagnostic"
+            case "$narrow_negative_module" in
+              aos_sandbox_loader_negative) grep -F "execmod" "$narrow_negative_module-diagnostic" ;;
+              aos_sandbox_context_negative)
+                grep -F "sock_file" "$narrow_negative_module-diagnostic"
+                grep -F "permission='open'" "$narrow_negative_module-diagnostic"
+                ;;
+              *)
+                echo "unknown negative module: $narrow_negative_module" >&2
+                exit 1
+                ;;
+            esac
+          done
 
           # Link a deliberately forbidden attribute-based process:ptrace rule
           # into a second loadable binary. This proves the production checker
@@ -297,8 +310,10 @@ in
             ${policySupport}/aos_sandbox.te \
             ${policySupport}/aos_sandbox_attribute_negative.te \
             ${policySupport}/aos_sandbox_loader_negative.te \
+            ${policySupport}/aos_sandbox_context_negative.te \
             attribute-negative-diagnostic \
-            loader-negative-diagnostic \
+            aos_sandbox_loader_negative-diagnostic \
+            aos_sandbox_context_negative-diagnostic \
             deficient-source-diagnostic \
             deficient-binary-diagnostic \
             "$evidence_root/"

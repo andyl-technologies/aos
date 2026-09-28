@@ -31,6 +31,11 @@ GUEST_OWNER = "aos_sandbox_guest_owner_t"
 GUEST_TENANT = "aos_sandbox_payload_t"
 EXPLICIT_LOADER_ATTRIBUTE = "aos_explicit_loader_domain"
 EXPLICIT_LOADER_DOMAINS = (fuse_worker_policy.WORKER_DOMAIN, GUEST_OWNER, GUEST_TENANT)
+NO_CONTEXT_TRANSLATION_ATTRIBUTE = "aos_no_context_translation_domain"
+EXPLICIT_DOMAIN_ATTRIBUTES = (
+    (EXPLICIT_LOADER_ATTRIBUTE, EXPLICIT_LOADER_DOMAINS),
+    (NO_CONTEXT_TRANSLATION_ATTRIBUTE, (fuse_worker_policy.WORKER_DOMAIN,)),
+)
 GUEST_ROOT_PUBLISHER = "aos_sandbox_guest_root_publisher_t"
 GUEST_PUBLICATION = "aos_sandbox_guest_publication_t"
 GUEST_PROTECTED_FILES = (
@@ -198,6 +203,7 @@ POSITIVE_ACCESS = (
     # Excluding the three explicit-loader roles must not remove ordinary host
     # textrel support or weaken their membership in the base domain boundary.
     Access("init_t", "textrel_shlib_t", "file", "execmod"),
+    Access("init_t", "setrans_runtime_t", "sock_file", "open"),
     Access("init_t", "aos_sandbox_guest_root_publisher_t", "process2", "nnp_transition"),
     Access("kernel_t", "init_t", "process", "transition"),
     Access("kernel_t", "init_exec_t", "file", "execute"),
@@ -1074,6 +1080,15 @@ def transition_candidates(
     return list(query.results())
 
 
+def attribute_members(setools: Any, policy: Any, name: str) -> set[str]:
+    """Returns one effective attribute's expanded members, rejecting ambiguity."""
+
+    attributes = list(setools.TypeAttributeQuery(policy, name=name).results())
+    if len(attributes) != 1:
+        raise ValueError(f"effective policy must contain exactly one {name} attribute")
+    return {str(member) for member in attributes[0].expand()}
+
+
 def check_policy(setools: Any, policy: Any) -> list[str]:
     """Returns deterministic evidence lines or raises on a policy mismatch."""
 
@@ -1134,29 +1149,18 @@ def check_policy(setools: Any, policy: Any) -> list[str]:
             f"deny-transition\t{source}\t{PROVISIONER_EXECUTABLE}\tprocess"
         )
 
-    loader_attributes = list(
-        setools.TypeAttributeQuery(policy, name=EXPLICIT_LOADER_ATTRIBUTE).results()
-    )
-    if len(loader_attributes) != 1:
-        raise ValueError("effective policy must contain exactly one explicit-loader attribute")
-    loader_domains = {str(domain) for domain in loader_attributes[0].expand()}
-    if loader_domains != set(EXPLICIT_LOADER_DOMAINS):
-        raise ValueError(f"unexpected explicit-loader membership: {sorted(loader_domains)}")
+    domains = attribute_members(setools, policy, "domain")
+    for attribute, required_domains in EXPLICIT_DOMAIN_ATTRIBUTES:
+        members = attribute_members(setools, policy, attribute)
+        if members != set(required_domains):
+            raise ValueError(f"unexpected {attribute} membership: {sorted(members)}")
+        for domain in required_domains:
+            if domain not in domains:
+                raise ValueError(f"protected role lost domain membership: {domain}")
+            evidence.append(f"member-attribute\t{domain}\t{attribute}")
+            evidence.append(f"member-attribute\t{domain}\tdomain")
 
-    domain_attributes = list(setools.TypeAttributeQuery(policy, name="domain").results())
-    if len(domain_attributes) != 1:
-        raise ValueError("effective policy must contain exactly one domain attribute")
-    domains = {str(domain) for domain in domain_attributes[0].expand()}
-    for domain in EXPLICIT_LOADER_DOMAINS:
-        if domain not in domains:
-            raise ValueError(f"explicit-loader role lost domain membership: {domain}")
-        evidence.append(f"member-attribute\t{domain}\t{EXPLICIT_LOADER_ATTRIBUTE}")
-        evidence.append(f"member-attribute\t{domain}\tdomain")
-
-    file_type_attributes = list(setools.TypeAttributeQuery(policy, name="file_type").results())
-    if len(file_type_attributes) != 1:
-        raise ValueError("effective policy must contain exactly one file_type attribute")
-    file_types = {str(object_type) for object_type in file_type_attributes[0].expand()}
+    file_types = attribute_members(setools, policy, "file_type")
     for object_type in GUARDED_OBJECT_TYPES:
         if object_type in file_types:
             raise ValueError(f"protected object inherited broad file_type: {object_type}")

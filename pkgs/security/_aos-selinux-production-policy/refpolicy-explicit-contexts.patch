@@ -1,0 +1,21 @@
+diff --git a/policy/modules/kernel/domain.te b/policy/modules/kernel/domain.te
+--- a/policy/modules/kernel/domain.te
++++ b/policy/modules/kernel/domain.te
+@@ -20,6 +20,10 @@
+ # This marker grants nothing; ordinary host domains retain upstream behavior.
+ attribute aos_explicit_loader_domain;
+ 
++# Fixed raw-label clients do not contact the context-translation service.
++# Keep ordinary domains' MLS/MCS translation and socket access unchanged.
++attribute aos_no_context_translation_domain;
++
+ # Transitions only allowed from domains to other domains
+ neverallow domain ~domain:process { dyntransition transition };
+ 
+@@ -153,5 +157,5 @@
+ 
+ optional_policy(`
+-	setrans_translate_context(domain)
++	setrans_translate_context({ domain -aos_no_context_translation_domain })
+ ')
+ 

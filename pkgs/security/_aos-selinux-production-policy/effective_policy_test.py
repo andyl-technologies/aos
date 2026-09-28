@@ -33,6 +33,9 @@ class FakePolicy:
         self.attributes = {
             "domain": set(effective_policy.ENFORCING_DOMAINS),
             effective_policy.EXPLICIT_LOADER_ATTRIBUTE: set(effective_policy.EXPLICIT_LOADER_DOMAINS),
+            effective_policy.NO_CONTEXT_TRANSLATION_ATTRIBUTE: {
+                effective_policy.fuse_worker_policy.WORKER_DOMAIN
+            },
         }
         self.queries: list[dict[str, object]] = []
         self.allows = {
@@ -157,7 +160,7 @@ class EffectivePolicyTest(unittest.TestCase):
             + 1
             + len(effective_policy.FORBIDDEN_PROVISIONER_TRANSITION_SOURCES)
             + len(effective_policy.GUARDED_OBJECT_TYPES)
-            + 2 * len(effective_policy.EXPLICIT_LOADER_DOMAINS)
+            + 2 * sum(len(domains) for _, domains in effective_policy.EXPLICIT_DOMAIN_ATTRIBUTES)
             + len(effective_policy.POSITIVE_ACCESS)
             + len(effective_policy.NEGATIVE_ACCESS),
         )
@@ -168,7 +171,7 @@ class EffectivePolicyTest(unittest.TestCase):
             with self.subTest(domain=domain):
                 policy = FakePolicy()
                 policy.attributes[marker].remove(domain)
-                with self.assertRaisesRegex(ValueError, "unexpected explicit-loader membership"):
+                with self.assertRaisesRegex(ValueError, f"unexpected {marker} membership"):
                     effective_policy.check_policy(FAKE_SETOOLS, policy)
 
                 policy = FakePolicy()
@@ -178,13 +181,37 @@ class EffectivePolicyTest(unittest.TestCase):
 
         policy = FakePolicy()
         policy.attributes[marker].add("init_t")
-        with self.assertRaisesRegex(ValueError, "unexpected explicit-loader membership"):
+        with self.assertRaisesRegex(ValueError, f"unexpected {marker} membership"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
 
         policy = FakePolicy()
         del policy.attributes[marker]
-        with self.assertRaisesRegex(ValueError, "exactly one explicit-loader attribute"):
+        with self.assertRaisesRegex(ValueError, f"exactly one {marker} attribute"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_raw_worker_exclusion_preserves_ordinary_context_translation(self) -> None:
+        marker = effective_policy.NO_CONTEXT_TRANSLATION_ATTRIBUTE
+        worker = effective_policy.fuse_worker_policy.WORKER_DOMAIN
+        policy = FakePolicy()
+        policy.attributes[marker].clear()
+        with self.assertRaisesRegex(ValueError, f"unexpected {marker} membership"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+        policy = FakePolicy()
+        policy.attributes[marker].add(effective_policy.GUEST_OWNER)
+        with self.assertRaisesRegex(ValueError, f"unexpected {marker} membership"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+        self.assert_missing_allow_rejected(
+            effective_policy.Access("init_t", "setrans_runtime_t", "sock_file", "open")
+        )
+        for access in (
+            effective_policy.Access(worker, "setrans_runtime_t", "sock_file", "open"),
+            effective_policy.Access(worker, worker, "unix_stream_socket", "create"),
+            effective_policy.Access(worker, "setrans_t", "unix_stream_socket", "connectto"),
+        ):
+            with self.subTest(access=access):
+                self.assert_forbidden_allow_rejected(access)
 
     def test_loader_exclusion_preserves_ordinary_textrel_and_explicit_worker_loads(self) -> None:
         self.assert_missing_allow_rejected(

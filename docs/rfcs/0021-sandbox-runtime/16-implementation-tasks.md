@@ -9685,3 +9685,23 @@ base expansion and then fail that same gate. Forty-nine checker unit tests
 pass, and the pinned upstream patch applies and reverses with zero fuzz.
 These source checks do not qualify the compiled production policy, actual
 worker startup, copied guest closure, or any public runtime operation.
+
+### Raw worker context boundary (source repair, unqualified)
+
+The actual compiled loader repair passed normal linking and neverallow
+expansion, then the effective checker found inherited worker pathname socket
+access from `setrans_translate_context(domain)`. A separate production-only
+`aos_no_context_translation_domain` marker now excludes exactly the worker
+from that interface. Its startup reads raw `/proc/self/attr/current` and its
+object checks read raw `security.selinux` xattrs; neither uses the translation
+daemon. Ordinary host translation access remains required by the checker.
+Domain membership, both loader exclusions, and every existing negative query
+remain intact. The two deny-only markers have separate exact membership
+contracts and share the existing attribute-expansion validation mechanics.
+
+A separate normally expanded context-socket mutant must fail the same full
+effective checker. The textrel mutant retains its distinct diagnosis; the
+two share only build mechanics. Fifty checker unit tests pass. Both pinned
+base patches apply and reverse with zero fuzz, restoring the original source.
+The compiled retry, actual raw-label worker startup, and all installed runtime
+qualification remain outstanding; no public operation is enabled.
