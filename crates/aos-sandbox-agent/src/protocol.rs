@@ -168,6 +168,10 @@ pub enum AgentFrameV1 {
     OriginalAttachRequestV3(Vec<u8>),
     /// Returns non-authorizing custody or the exact transfer completion.
     OriginalAttachResponseV3(Vec<u8>),
+    /// Polls or applies an exact original-monitor control on the protected channel.
+    OriginalControlRequestV5(Vec<u8>),
+    /// Returns signed original-monitor queue or completed effect evidence.
+    OriginalControlResponseV5(Vec<u8>),
     /// Carries one bounded Authorize reference with exactly one sealed memfd.
     SealedAuthorizeRequest(AgentSealedAuthorizeReferenceV1),
 }
@@ -222,6 +226,14 @@ pub fn encode_frame_v1(frame: &AgentFrameV1) -> Vec<u8> {
             bytes.push(11);
             put_bytes(&mut bytes, packet);
         }
+        AgentFrameV1::OriginalControlRequestV5(packet) => {
+            bytes.push(12);
+            put_bytes(&mut bytes, packet);
+        }
+        AgentFrameV1::OriginalControlResponseV5(packet) => {
+            bytes.push(13);
+            put_bytes(&mut bytes, packet);
+        }
     }
     bytes
 }
@@ -264,6 +276,16 @@ pub fn decode_frame_v1(bytes: &[u8]) -> Result<AgentFrameV1, AgentProtocolError>
         11 => AgentFrameV1::OriginalAttachResponseV3(
             cursor
                 .length_prefixed(crate::openssh_consume::MAXIMUM_CONSUME_BYTES_V3)?
+                .to_vec(),
+        ),
+        12 => AgentFrameV1::OriginalControlRequestV5(
+            cursor
+                .length_prefixed(crate::openssh_control_channel::MAXIMUM_ORIGINAL_CONTROL_BYTES_V5)?
+                .to_vec(),
+        ),
+        13 => AgentFrameV1::OriginalControlResponseV5(
+            cursor
+                .length_prefixed(crate::openssh_control_channel::MAXIMUM_ORIGINAL_CONTROL_BYTES_V5)?
                 .to_vec(),
         ),
         _ => return Err(AgentProtocolError::UnknownValue),

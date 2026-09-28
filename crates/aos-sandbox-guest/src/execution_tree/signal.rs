@@ -22,20 +22,33 @@ const MAXIMUM_PROCS_BYTES: usize = MAXIMUM_TGIDS * 11;
 impl ExecutionTree {
     /// Requires the caller's original durable effect reservation and tree barrier.
     pub(crate) fn signal(&self, code: u8, deadline: Instant) -> Result<(), Error> {
+        self.signal_with_current_cut(code, deadline, || Ok(()))
+    }
+
+    /// Rechecks the owning effect's narrowed wall/BOOTTIME cut at each send.
+    /// The callback can deny but cannot select a process or construct permission.
+    pub(crate) fn signal_with_current_cut(
+        &self,
+        code: u8,
+        deadline: Instant,
+        mut current: impl FnMut() -> Result<(), Error>,
+    ) -> Result<(), Error> {
         if !(1..=64).contains(&code) {
             return Err(Error::InvalidRequest);
         }
         aos_sandbox_linux::guest_confinement::require_guest_owner()?;
         self.anchor.validate_active()?;
         crate::process::check_deadline(deadline)?;
+        current()?;
         if self.empty_and_exited()? {
             return Err(Error::Unavailable("original execution has exited"));
         }
         if code == 9 {
             // cgroup.kill fences concurrent forks and reaches every original
             // descendant, including changed sessions and a dead leader's tree.
-            self.anchor.kill_all()?;
-            crate::process::check_deadline(deadline)?;
+            self.anchor.kill_all().map_err(|_| Error::AmbiguousEffect)?;
+            current().map_err(|_| Error::AmbiguousEffect)?;
+            crate::process::check_deadline(deadline).map_err(|_| Error::AmbiguousEffect)?;
             return Ok(());
         }
 
@@ -44,13 +57,16 @@ impl ExecutionTree {
         // Even a failed write may have changed the kernel request. Always
         // restore the exact original request before returning ordinary success.
         let result = (|| {
+            current()?;
             self.anchor
                 .request_freezer_state(CgroupFreezerState::Frozen)?;
             self.wait_frozen(deadline)?;
             let members = self.pin_frozen_members(deadline)?;
             self.recheck_frozen_members(&members, deadline)?;
+            current()?;
             for (process, identity) in &members {
                 crate::process::check_deadline(deadline)?;
+                current()?;
                 if self.own_freezer_request()? != CgroupFreezerState::Frozen
                     || self.anchor.freezer_state()? != CgroupFreezerState::Frozen
                 {
@@ -64,8 +80,10 @@ impl ExecutionTree {
                 process
                     .send_thread_group_signal(code)
                     .map_err(|_| Error::AmbiguousEffect)?;
+                current()?;
             }
-            self.recheck_frozen_members(&members, deadline)
+            self.recheck_frozen_members(&members, deadline)?;
+            current()
         })();
 
         // Cleanup is nonauthorizing and must still restore an owned request
@@ -322,6 +340,24 @@ mod tests {
         tree.anchor
             .request_freezer_state(CgroupFreezerState::Thawed)
             .unwrap();
+
+        // Losing the held cut after the first real TGID send is ambiguous,
+        // but cleanup still restores the original own request, not an ancestor.
+        let mut current_checks = 0;
+        let partial = tree.signal_with_current_cut(18, deadline, || {
+            current_checks += 1;
+            if current_checks < 5 {
+                Ok(())
+            } else {
+                Err(Error::InvalidRequest)
+            }
+        });
+        assert!(matches!(partial, Err(Error::AmbiguousEffect)));
+        assert_eq!(current_checks, 5);
+        assert_eq!(
+            tree.own_freezer_request().unwrap(),
+            CgroupFreezerState::Thawed
+        );
 
         // An ancestor's independent request must survive a child's SIGCONT.
         root.request_freezer_state(CgroupFreezerState::Frozen)

@@ -386,6 +386,20 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
         }
         HostExecutionGrantRequestV1::AttachGate(request) => {
             let agent = agent.ok_or(HostExecutionHandoffErrorV1::RecoveryRequired)?;
+            if request.original_session_control_v5().is_some() {
+                agent.validate_claim(&claim)?;
+                let mut routes = HostOpenSshAttachRouteOwnerV1::open()?;
+                let evidence = reservation.apply_original_control_v5(&mut routes, &claim, agent)?;
+                agent.validate_claim(&claim)?;
+                if !reservation.matches(method, request_id, body, &claim) {
+                    return Err(HostExecutionHandoffErrorV1::Conflict);
+                }
+                claim.revalidate()?;
+                check_kernel_boot(protected_boot_id)?;
+                let encoded = evidence.encode_wire();
+                host.complete_authenticated_execution(&reservation, &claim, &encoded)?;
+                return Ok(encoded);
+            }
             if request.original_ticket_consume_v3().is_some() {
                 agent.validate_claim(&claim)?;
                 let mut routes = HostOpenSshAttachRouteOwnerV1::open()?;

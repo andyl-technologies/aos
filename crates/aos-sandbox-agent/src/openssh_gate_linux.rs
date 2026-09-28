@@ -195,6 +195,23 @@ impl OpenSshMonitorRuntimeV2 {
         self.require_original_monitor_identity(monitor)
     }
 
+    /// Checks physical original monitor custody for an unexpired owner control.
+    ///
+    /// Original leader coordinates remain historical. The Guest must separately
+    /// retain and validate the actual active execution subtree under its barrier;
+    /// this physical observation cannot replace current policy or authorize I/O.
+    ///
+    /// # Errors
+    /// Rejects expiry, physical substitution, dead/foreign monitors or PID reuse.
+    pub fn require_original_control_monitor_v5(
+        &self,
+        monitor: &aos_sandbox_linux::pidfd::PidFd,
+    ) -> Result<(), OpenSshGatePhysicalErrorV1> {
+        require_original_control_expiry_v5(&self.claim)?;
+        self.require_original_session_installation_v4()?;
+        self.require_original_monitor_identity(monitor)
+    }
+
     fn require_original_monitor_identity(
         &self,
         monitor: &aos_sandbox_linux::pidfd::PidFd,
@@ -482,6 +499,33 @@ impl RunningOpenSshGateV1 {
         route_digest: [u8; 32],
         channel_binding: [u8; 32],
     ) -> Result<OpenSshGateReadbackV1, OpenSshGatePhysicalErrorV1> {
+        let claim = load_openssh_gate_claim_v1()?;
+        self.physical_readback_from_installed_claim(challenge, route_digest, channel_binding, claim)
+    }
+
+    /// Measures the original installation for a separately held active-tree control.
+    ///
+    /// # Errors
+    /// Rejects expired or substituted installation, trust, listener or executable.
+    /// It does not check or authorize an execution; the Guest owner holds that cut.
+    pub fn original_control_physical_readback_v5(
+        &mut self,
+        challenge: [u8; 32],
+        route_digest: [u8; 32],
+        channel_binding: [u8; 32],
+    ) -> Result<OpenSshGateReadbackV1, OpenSshGatePhysicalErrorV1> {
+        let claim = load_installed_gate_claim()?;
+        require_original_control_expiry_v5(&claim)?;
+        self.physical_readback_from_installed_claim(challenge, route_digest, channel_binding, claim)
+    }
+
+    fn physical_readback_from_installed_claim(
+        &mut self,
+        challenge: [u8; 32],
+        route_digest: [u8; 32],
+        channel_binding: [u8; 32],
+        claim: OpenSshGateClaimV1,
+    ) -> Result<OpenSshGateReadbackV1, OpenSshGatePhysicalErrorV1> {
         if self.child.try_wait()?.is_some() {
             return Err(OpenSshGatePhysicalErrorV1::DaemonUnavailable);
         }
@@ -498,7 +542,6 @@ impl RunningOpenSshGateV1 {
         }
         let pid = self.child.id();
         let start_ticks = process_start_ticks(pid)?;
-        let claim = load_openssh_gate_claim_v1()?;
         if claim.binding != self.binding
             || claim.route_digest != route_digest
             || claim.sshd_pid != pid
@@ -612,6 +655,19 @@ pub fn load_openssh_gate_claim_v1() -> Result<OpenSshGateClaimV1, OpenSshGatePhy
         return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
     }
     Ok(claim)
+}
+
+fn require_original_control_expiry_v5(
+    claim: &OpenSshGateClaimV1,
+) -> Result<(), OpenSshGatePhysicalErrorV1> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidInstallation)?
+        .as_secs();
+    if i64::try_from(now).map_or(true, |now| claim.binding.expires_at <= now) {
+        return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
+    }
+    Ok(())
 }
 
 fn load_installed_gate_claim() -> Result<OpenSshGateClaimV1, OpenSshGatePhysicalErrorV1> {

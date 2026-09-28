@@ -11,6 +11,8 @@
 #define AOS_ATTACH_RELAY_ANSWER 117
 #define AOS_ATTACH_TERMINAL_REQUEST 120
 #define AOS_ATTACH_TERMINAL_ANSWER 121
+#define AOS_ATTACH_CONTROL_REQUEST 122
+#define AOS_ATTACH_CONTROL_ANSWER 123
 
 struct ssh;
 struct sshbuf;
@@ -25,5 +27,10 @@ int aos_attach_monitor_connect_guest(void);
 int aos_attach_monitor_relay(struct ssh *, int, struct sshbuf *);
 int aos_attach_monitor_terminal(struct ssh *, int, struct sshbuf *);
 int aos_attach_original_waitstatus(void);
+int aos_attach_monitor_control(struct ssh *, int, struct sshbuf *);
+int aos_attach_original_signal(int);
+int aos_attach_original_resize(unsigned int, unsigned int, unsigned int, unsigned int);
+int aos_attach_original_pty(const char *, unsigned int, unsigned int,
+    unsigned int, unsigned int, const unsigned char *, size_t);
 
 #endif

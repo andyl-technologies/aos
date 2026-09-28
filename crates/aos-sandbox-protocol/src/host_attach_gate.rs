@@ -44,6 +44,7 @@ pub struct ValidatedHostAttachGateRequestV1 {
     execution_id: [u8; 16],
     original_ticket_binding_v2: Vec<u8>,
     original_ticket_consume_v3: Option<([u8; 32], [u8; 32])>,
+    original_session_control_v5: Vec<u8>,
 }
 
 impl std::fmt::Debug for ValidatedHostAttachGateRequestV1 {
@@ -192,6 +193,16 @@ pub fn decode_host_attach_readiness_v1(
 }
 
 impl ValidatedHostAttachGateRequestV1 {
+    /// Returns exact original-session control correlation and canonical request data.
+    /// No selected process or scalar correlation creates permission.
+    #[must_use]
+    pub fn original_session_control_v5(&self) -> Option<([u8; 32], [u8; 32], &[u8])> {
+        let bytes = &self.original_session_control_v5;
+        let binding = bytes.get(..32)?.try_into().ok()?;
+        let challenge = bytes.get(32..64)?.try_into().ok()?;
+        Some((binding, challenge, bytes.get(64..)?))
+    }
+
     /// Returns exact consume correlation, never an authorizing constructor.
     #[must_use]
     pub const fn original_ticket_consume_v3(&self) -> Option<([u8; 32], [u8; 32])> {
@@ -216,6 +227,18 @@ impl ValidatedHostAttachGateRequestV1 {
         crate::semantics::host_attach_gate::CanonicalHostAttachGateSemanticsV1,
         crate::semantics::host_attach_gate::HostAttachGateSemanticErrorV1,
     > {
+        if let Some((binding, challenge, request)) = self.original_session_control_v5() {
+            return crate::semantics::host_attach_gate::canonical_host_attach_control_semantics_v5(
+                assignment,
+                self.pending_grant(),
+                self.original_ticket_binding_v2().ok_or(
+                    crate::semantics::host_attach_gate::HostAttachGateSemanticErrorV1::InvalidGrant,
+                )?,
+                aos_sandbox_core::ObjectDigest::from_bytes(binding),
+                challenge,
+                request,
+            );
+        }
         if let Some((binding, challenge)) = self.original_ticket_consume_v3() {
             return crate::semantics::host_attach_gate::canonical_host_attach_consume_semantics_v3(
                 assignment,
@@ -335,6 +358,42 @@ pub fn decode_host_attach_gate_request_v1(
             )?,
         ))
     };
+    if !request.original_session_control_v5.is_empty() {
+        let bytes = &request.original_session_control_v5;
+        if request.original_ticket_binding_v2.is_empty()
+            || original_ticket_consume_v3.is_some()
+            || bytes.len()
+                > 64 + aos_sandbox_agent::openssh_control::OPENSSH_CONTROL_MAXIMUM_REQUEST_BYTES_V5
+        {
+            return Err(ProtocolValidationError::InvalidField(
+                "original_session_control_v5",
+            ));
+        }
+        exact_nonzero::<32>(
+            bytes
+                .get(..32)
+                .ok_or(ProtocolValidationError::InvalidField(
+                    "original_session_control_v5",
+                ))?,
+            "monitor_binding",
+        )?;
+        exact_nonzero::<32>(
+            bytes
+                .get(32..64)
+                .ok_or(ProtocolValidationError::InvalidField(
+                    "original_session_control_v5",
+                ))?,
+            "observation_challenge",
+        )?;
+        aos_sandbox_agent::openssh_control::OpenSshControlRequestV5::decode(
+            bytes
+                .get(64..)
+                .ok_or(ProtocolValidationError::InvalidField(
+                    "original_session_control_v5",
+                ))?,
+        )
+        .map_err(|_| ProtocolValidationError::InvalidField("original_session_control_v5"))?;
+    }
     Ok(ValidatedHostAttachGateRequestV1 {
         header,
         pending_grant,
@@ -342,6 +401,7 @@ pub fn decode_host_attach_gate_request_v1(
         execution_id,
         original_ticket_binding_v2: request.original_ticket_binding_v2,
         original_ticket_consume_v3,
+        original_session_control_v5: request.original_session_control_v5,
     })
 }
 
@@ -359,6 +419,30 @@ pub fn decode_host_attach_gate_evidence_v1(
     request: &ValidatedHostAttachGateRequestV1,
 ) -> Result<HostAttachGateEvidenceV1, ProtocolValidationError> {
     let evidence = decode_host_attach_gate_evidence_shape_v1(bytes)?;
+    if let Some((binding, challenge, control)) = request.original_session_control_v5() {
+        let (observation, physical) =
+            aos_sandbox_agent::openssh_control_channel::decode_original_control_response_shape_v5(
+                &evidence.original_session_observation_v5,
+            )
+            .map_err(|_| {
+                ProtocolValidationError::InvalidField("original_session_observation_v5")
+            })?;
+        if observation.phase
+            != aos_sandbox_agent::openssh_control_channel::OriginalControlPhaseV5::Applied
+            || observation.binding != binding
+            || observation.request != control
+            || physical != evidence.signed_ticket_readback_v2
+        {
+            return Err(ProtocolValidationError::InvalidField(
+                "original_session_observation_v5",
+            ));
+        }
+        require_gate_challenge(&evidence, challenge)?;
+    } else if !evidence.original_session_observation_v5.is_empty() {
+        return Err(ProtocolValidationError::InvalidField(
+            "original_session_observation_v5",
+        ));
+    }
     if request.original_ticket_consume_v3().is_none()
         && !evidence.original_attach_observation_v3.is_empty()
     {
@@ -381,27 +465,7 @@ pub fn decode_host_attach_gate_evidence_v1(
                 "original_attach_observation_v3",
             ));
         }
-        // Fresh physical readback contains this exact correlation challenge;
-        // signatures are independently checked by the authenticated owners.
-        let packet = &evidence.signed_gate_readback;
-        let length = u32::from_be_bytes(packet.get(8..12).and_then(|b| b.try_into().ok()).ok_or(
-            ProtocolValidationError::InvalidField("signed_gate_readback"),
-        )?) as usize;
-        if length > 8192 {
-            return Err(ProtocolValidationError::InvalidField(
-                "signed_gate_readback",
-            ));
-        }
-        let readback: aos_sandbox_agent::openssh_gate::OpenSshGateReadbackV1 =
-            serde_json::from_slice(packet.get(12..12 + length).ok_or(
-                ProtocolValidationError::InvalidField("signed_gate_readback"),
-            )?)
-            .map_err(|_| ProtocolValidationError::InvalidField("signed_gate_readback"))?;
-        if readback.challenge != challenge {
-            return Err(ProtocolValidationError::InvalidField(
-                "observation_challenge",
-            ));
-        }
+        require_gate_challenge(&evidence, challenge)?;
     }
     match request.original_ticket_binding_v2() {
         Some(ticket)
@@ -443,6 +507,39 @@ pub fn decode_host_attach_gate_evidence_v1(
     Ok(evidence)
 }
 
+fn require_gate_challenge(
+    evidence: &HostAttachGateEvidenceV1,
+    challenge: [u8; 32],
+) -> Result<(), ProtocolValidationError> {
+    // Fresh physical readback contains this exact correlation challenge;
+    // signatures are independently checked by the authenticated owners.
+    let packet = &evidence.signed_gate_readback;
+    let length = u32::from_be_bytes(
+        packet
+            .get(8..12)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(ProtocolValidationError::InvalidField(
+                "signed_gate_readback",
+            ))?,
+    ) as usize;
+    if length > 8192 {
+        return Err(ProtocolValidationError::InvalidField(
+            "signed_gate_readback",
+        ));
+    }
+    let readback: aos_sandbox_agent::openssh_gate::OpenSshGateReadbackV1 =
+        serde_json::from_slice(packet.get(12..12 + length).ok_or(
+            ProtocolValidationError::InvalidField("signed_gate_readback"),
+        )?)
+        .map_err(|_| ProtocolValidationError::InvalidField("signed_gate_readback"))?;
+    if readback.challenge != challenge {
+        return Err(ProtocolValidationError::InvalidField(
+            "observation_challenge",
+        ));
+    }
+    Ok(())
+}
+
 /// Validates a fresh Host route readback against an accepted operation query.
 ///
 /// The caller must accept this body only inside a verified Host broker outcome
@@ -456,6 +553,22 @@ pub fn decode_host_attach_route_evidence_v1(
     request: &ValidatedHostAttachRouteQueryV1,
 ) -> Result<HostAttachGateEvidenceV1, ProtocolValidationError> {
     let evidence = decode_host_attach_gate_evidence_shape_v1(bytes)?;
+    if !evidence.original_session_observation_v5.is_empty() {
+        let (observation, _) =
+            aos_sandbox_agent::openssh_control_channel::decode_original_control_response_shape_v5(
+                &evidence.original_session_observation_v5,
+            )
+            .map_err(|_| {
+                ProtocolValidationError::InvalidField("original_session_observation_v5")
+            })?;
+        if observation.phase
+            == aos_sandbox_agent::openssh_control_channel::OriginalControlPhaseV5::Applied
+        {
+            return Err(ProtocolValidationError::InvalidField(
+                "original_session_observation_v5",
+            ));
+        }
+    }
     if !evidence.original_attach_observation_v3.is_empty() {
         let (observation, _) =
             aos_sandbox_agent::openssh_consume::decode_original_attach_response_v3(
@@ -488,6 +601,20 @@ fn decode_host_attach_gate_evidence_shape_v1(
     }
     let evidence = HostAttachGateEvidenceV1::decode_from_slice(bytes)
         .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    if !evidence.original_session_observation_v5.is_empty() {
+        let (_, physical) =
+            aos_sandbox_agent::openssh_control_channel::decode_original_control_response_shape_v5(
+                &evidence.original_session_observation_v5,
+            )
+            .map_err(|_| {
+                ProtocolValidationError::InvalidField("original_session_observation_v5")
+            })?;
+        if physical != evidence.signed_ticket_readback_v2 {
+            return Err(ProtocolValidationError::InvalidField(
+                "original_session_observation_v5",
+            ));
+        }
+    }
     if !evidence.original_attach_observation_v3.is_empty() {
         let (_, physical) = aos_sandbox_agent::openssh_consume::decode_original_attach_response_v3(
             &evidence.original_attach_observation_v3,
@@ -730,6 +857,75 @@ mod tests {
         foreign_grant[415] ^= 1;
         foreign.original_ticket_binding_v2 = original_ticket(foreign_grant);
         assert!(decode(&foreign).is_err());
+    }
+
+    #[test]
+    fn original_control_requires_ticket_canonical_request_and_exclusive_version() {
+        let decode = |request: &InstallHostAttachGateRequestV1| {
+            decode_host_attach_gate_request_v1(
+                &request.encode_to_vec(),
+                PeerCredentials {
+                    uid: 100,
+                    gid: 101,
+                    pid: Some(102),
+                },
+                PeerPolicy {
+                    uid: 100,
+                    gid: Some(101),
+                    audience: Audience::AUDIENCE_NODE_CONTROLLER,
+                },
+                10,
+            )
+        };
+        let mut request = request();
+        request.original_ticket_binding_v2 =
+            original_ticket(request.pending_grant.as_slice().try_into().unwrap());
+        let control = aos_sandbox_agent::openssh_control::OpenSshControlRequestV5 {
+            sequence: 7,
+            action: aos_sandbox_agent::openssh_control::OpenSshControlActionV5::Signal(15),
+        }
+        .encode()
+        .unwrap();
+        request.original_session_control_v5 =
+            [vec![20; 32], vec![21; 32], control.clone()].concat();
+        let valid = decode(&request).unwrap();
+        assert_eq!(
+            valid.original_session_control_v5(),
+            Some(([20; 32], [21; 32], control.as_slice()))
+        );
+        let mut missing = request.clone();
+        missing.original_ticket_binding_v2.clear();
+        assert!(decode(&missing).is_err());
+        let mut crossed = request.clone();
+        crossed.original_ticket_consume_v3 = [vec![20; 32], vec![21; 32]].concat();
+        assert!(decode(&crossed).is_err());
+        // An empty additive field preserves binding-only installation; it is
+        // not a V5 control and cannot enter the original-session effect path.
+        let mut binding_only = request.clone();
+        binding_only.original_session_control_v5.clear();
+        assert!(
+            decode(&binding_only)
+                .unwrap()
+                .original_session_control_v5()
+                .is_none()
+        );
+
+        for length in 1..request.original_session_control_v5.len() {
+            let mut partial = request.clone();
+            partial.original_session_control_v5.truncate(length);
+            assert!(decode(&partial).is_err());
+        }
+        for index in [0, 32] {
+            let mut zero = request.clone();
+            zero.original_session_control_v5[index..index + 32].fill(0);
+            assert!(decode(&zero).is_err());
+        }
+        let mut padding = request.clone();
+        padding.original_session_control_v5[64 + 17] = 1;
+        assert!(decode(&padding).is_err());
+        let mut trailing = request;
+        trailing.original_session_control_v5.push(0);
+        assert!(decode(&trailing).is_err());
     }
 
     #[test]

@@ -17,6 +17,58 @@ const READINESS_DOMAIN: &[u8] = b"aos.sandbox.host.attach-gate-readiness.v1\0";
 const ROUTE_QUERY_DOMAIN: &[u8] = b"aos.sandbox.host.attach-gate-route-query.v1\0";
 const TICKET_DOMAIN_V2: &[u8] = b"aos.sandbox.host.attach-original-ticket-binding.v2\0";
 const CONSUME_DOMAIN_V3: &[u8] = b"aos.sandbox.host.attach-original-ticket-consume.v3\0";
+const CONTROL_DOMAIN_V5: &[u8] = b"aos.sandbox.host.attach-original-session-control.v5\0";
+
+/// Commits one exact original-session control under the existing ATTACH verb.
+///
+/// Request bytes, monitor binding and challenge are nonauthorizing data. The
+/// existing owners must independently retain genuine current LifecycleControl
+/// policy, original ticket/holder and actual monitor/execution custody through
+/// the effect and receipt. This compiler does not create a session or grant.
+///
+/// # Errors
+/// Rejects malformed/substituted originals, missing correlation or a control
+/// outside the bounded closed signal/resize/original-PTY profile.
+pub fn canonical_host_attach_control_semantics_v5(
+    assignment: BrokerAssignment,
+    packet: &[u8],
+    ticket: &[u8],
+    monitor_binding: ObjectDigest,
+    observation_challenge: [u8; 32],
+    request: &[u8],
+) -> Result<CanonicalHostAttachGateSemanticsV1, HostAttachGateSemanticErrorV1> {
+    validate_original_ticket_packet(packet, ticket)?;
+    aos_sandbox_agent::openssh_control::OpenSshControlRequestV5::decode(request)
+        .map_err(|_| HostAttachGateSemanticErrorV1::InvalidGrant)?;
+    if monitor_binding.as_bytes() == &[0; 32] || observation_challenge == [0; 32] {
+        return Err(HostAttachGateSemanticErrorV1::InvalidGrant);
+    }
+
+    let mut bytes = assignment_bytes(CONTROL_DOMAIN_V5, assignment);
+    bytes.extend_from_slice(packet);
+    append_bounded_bytes(&mut bytes, ticket)?;
+    bytes.extend_from_slice(monitor_binding.as_bytes());
+    bytes.extend_from_slice(&observation_challenge);
+    append_bounded_bytes(&mut bytes, request)?;
+    Ok(CanonicalHostAttachGateSemanticsV1 {
+        verb: BrokerVerb::HostInstallAttachGate,
+        target: BrokerGrantTarget::Assignment,
+        commitment: BrokerArgumentCommitment::for_canonical_bytes(&bytes),
+    })
+}
+
+fn append_bounded_bytes(
+    bytes: &mut Vec<u8>,
+    section: &[u8],
+) -> Result<(), HostAttachGateSemanticErrorV1> {
+    bytes.extend_from_slice(
+        &u32::try_from(section.len())
+            .map_err(|_| HostAttachGateSemanticErrorV1::InvalidGrant)?
+            .to_be_bytes(),
+    );
+    bytes.extend_from_slice(section);
+    Ok(())
+}
 
 /// Compiles an exact original-ticket consume under the existing ATTACH verb.
 ///
@@ -325,6 +377,77 @@ mod tests {
             )
             .is_err()
         );
+        let control = aos_sandbox_agent::openssh_control::OpenSshControlRequestV5 {
+            sequence: 1,
+            action: aos_sandbox_agent::openssh_control::OpenSshControlActionV5::Signal(15),
+        };
+        let exact = control.encode().unwrap();
+        let control_semantics = super::canonical_host_attach_control_semantics_v5(
+            assignment, &packet, &ticket, binding, [13; 32], &exact,
+        )
+        .unwrap();
+        assert_eq!(control_semantics.verb(), BrokerVerb::HostInstallAttachGate);
+        assert_ne!(control_semantics.commitment(), original.commitment());
+        for changed in [
+            aos_sandbox_agent::openssh_control::OpenSshControlRequestV5 {
+                sequence: 2,
+                ..control.clone()
+            },
+            aos_sandbox_agent::openssh_control::OpenSshControlRequestV5 {
+                action: aos_sandbox_agent::openssh_control::OpenSshControlActionV5::Signal(9),
+                ..control
+            },
+        ] {
+            let other = super::canonical_host_attach_control_semantics_v5(
+                assignment,
+                &packet,
+                &ticket,
+                binding,
+                [13; 32],
+                &changed.encode().unwrap(),
+            )
+            .unwrap();
+            assert_ne!(other.commitment(), control_semantics.commitment());
+        }
+        assert_ne!(
+            super::canonical_host_attach_control_semantics_v5(
+                assignment,
+                &packet,
+                &ticket,
+                ObjectDigest::from_bytes([14; 32]),
+                [13; 32],
+                &exact,
+            )
+            .unwrap()
+            .commitment(),
+            control_semantics.commitment()
+        );
+        assert_ne!(
+            super::canonical_host_attach_control_semantics_v5(
+                assignment, &packet, &ticket, binding, [14; 32], &exact,
+            )
+            .unwrap()
+            .commitment(),
+            control_semantics.commitment()
+        );
+        assert!(
+            super::canonical_host_attach_control_semantics_v5(
+                assignment, &packet, &ticket, binding, [0; 32], &exact,
+            )
+            .is_err()
+        );
+        assert!(
+            super::canonical_host_attach_control_semantics_v5(
+                assignment,
+                &packet,
+                &ticket,
+                binding,
+                [13; 32],
+                &[],
+            )
+            .is_err()
+        );
+
         packet[40] ^= 1;
         assert!(
             super::canonical_host_attach_consume_semantics_v3(

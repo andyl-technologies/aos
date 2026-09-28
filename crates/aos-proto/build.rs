@@ -68,7 +68,7 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     // This covers the complete comment-free V1 schema rather than a sample of
     // declarations: every method tag, enum value, message field/type/
     // cardinality/oneof, reserved tag, and RPC signature are compatibility-owned.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x8d64_64b8_d1ff_dfba;
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0xf6b8_728a_8d97_9fd3;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(
@@ -317,7 +317,13 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     verify_scoped_declarations(
         &source_declarations,
         "message InstallHostAttachGateRequestV1 {",
-        &["RequestHeader header = 1;", "bytes pending_grant = 2;"],
+        &[
+            "RequestHeader header = 1;",
+            "bytes pending_grant = 2;",
+            "bytes original_ticket_binding_v2 = 3;",
+            "bytes original_ticket_consume_v3 = 4;",
+            "bytes original_session_control_v5 = 5;",
+        ],
     )?;
     verify_scoped_declarations(
         &source_declarations,
@@ -328,6 +334,10 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
             "bytes route_digest = 14;",
             "bytes gate_observation_commitment = 15;",
             "bytes signed_gate_readback = 16;",
+            "bytes original_ticket_digest_v2 = 17;",
+            "bytes signed_ticket_readback_v2 = 18;",
+            "bytes original_attach_observation_v3 = 19;",
+            "bytes original_session_observation_v5 = 20;",
         ],
     )?;
     verify_scoped_declarations(

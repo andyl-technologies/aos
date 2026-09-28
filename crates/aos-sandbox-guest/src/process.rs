@@ -653,6 +653,60 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
         Ok(result)
     }
 
+    fn original_control_v5(
+        &mut self,
+        action: aos_sandbox_agent::openssh_control_channel::OriginalControlActionV5,
+        binding: [u8; 32],
+        control: &[u8],
+        authority_expires_at: i64,
+        effect_deadline_boottime_nanoseconds: u64,
+        request: &OpenSshGateObserveRequestV1,
+        ticket: &[u8],
+        runtime: &AgentRuntimeBindingV1,
+        channel: ObjectDigest,
+        deadline: Instant,
+    ) -> Result<
+        (
+            OpenSshGateReadbackV1,
+            aos_sandbox_agent::openssh_control_channel::OriginalControlObservationV5,
+        ),
+        ProtectedGuestAgentErrorV1,
+    > {
+        let barrier = self.ledger.effect_barrier();
+        let _current = barrier
+            .lock()
+            .map_err(|_| effect_error(GuestProcessEffectErrorV1::LedgerConflict))?;
+        check_deadline(deadline).map_err(effect_error)?;
+        if self.quiesced {
+            return Err(effect_error(GuestProcessEffectErrorV1::InvalidRequest));
+        }
+        let gate = self
+            .gate
+            .as_mut()
+            .ok_or_else(|| effect_error(GuestProcessEffectErrorV1::InvalidRequest))?;
+        let readback = gate
+            .observe_original_control_v5(request, runtime, channel, &self.ledger, deadline)
+            .map_err(effect_error)?;
+        let observation = self
+            .bridge
+            .original_control_v5(
+                action,
+                binding,
+                control,
+                authority_expires_at,
+                effect_deadline_boottime_nanoseconds,
+                ticket,
+                &self.ledger,
+                deadline,
+            )
+            .map_err(effect_error)?;
+        // The effect owner has physically rechecked installation before/after
+        // its effect and ACK. KILL may empty the original tree; that is not a
+        // fresh active-tree permission for another control or consume.
+        check_deadline(deadline).map_err(effect_error)?;
+        Ok((readback, observation))
+    }
+
     fn original_attach_v3(
         &mut self,
         action: aos_sandbox_agent::openssh_consume::OriginalAttachActionV3,
@@ -799,6 +853,113 @@ pub(super) fn observe_owned_terminal(
     ledger.replace_process(execution, &record)?;
     live.remove(execution.as_bytes());
     Ok(Some(result))
+}
+
+/// Applies only a queued original-session control while all owner cuts stay held.
+///
+/// The monitor owner supplies the already matched immutable ticket/session and
+/// root-owned request; it retains the shared barrier and custody through this
+/// call. This private method cannot select another process, create a PTY or
+/// infer authority from the parsed action. Every actual effect follows its
+/// durable exact sequence reservation, and a failure never permits redispatch.
+///
+/// # Errors
+/// Rejects absent/foreign original tree or PTY ownership, closed process state,
+/// unsupported topology, lost currentness, ambiguous reservation or effect.
+pub(super) fn apply_owned_original_control_v5(
+    ledger: &Ledger,
+    execution: ExecutionId,
+    ticket: [u8; 32],
+    session: [u8; 32],
+    request: &aos_sandbox_agent::openssh_control::OpenSshControlRequestV5,
+    deadline: Instant,
+    mut current_deadline: impl FnMut() -> Result<(), GuestProcessEffectErrorV1>,
+    mut recheck: impl FnMut() -> Result<(), GuestProcessEffectErrorV1>,
+) -> Result<(), GuestProcessEffectErrorV1> {
+    use std::os::fd::AsFd as _;
+
+    use aos_sandbox_agent::openssh_control::OpenSshControlActionV5;
+
+    recheck()?;
+    current_deadline()?;
+    check_deadline(deadline)?;
+    let record = ledger.read_process(execution)?;
+    let live = ledger
+        .live()
+        .lock()
+        .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+    let process = live
+        .get(execution.as_bytes())
+        .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+    process.tree.require_original_scope(&record)?;
+    if process.tree.empty_and_exited()? {
+        return Err(GuestProcessEffectErrorV1::InvalidRequest);
+    }
+
+    // Preflight every mode and the actual retained descriptor before reserving.
+    // The client terminal label is committed data, never an environment update.
+    let prepared_pty = match &request.action {
+        OpenSshControlActionV5::Signal(_) => None,
+        OpenSshControlActionV5::Resize(geometry) | OpenSshControlActionV5::Pty { geometry, .. } => {
+            if record.attach_io != Some(AttachIoShapeV3::Pty) || !record.pty {
+                return Err(GuestProcessEffectErrorV1::InvalidRequest);
+            }
+            let master = process
+                .pty_master
+                .as_ref()
+                .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+            let modes = match &request.action {
+                OpenSshControlActionV5::Pty { modes, .. } => modes.as_slice(),
+                _ => &[],
+            };
+            Some(crate::openssh_pty::PreparedOriginalPtyModes::prepare(
+                master.as_fd(),
+                *geometry,
+                modes,
+            )?)
+        }
+    };
+    ledger.reserve_original_control_v5(&record, ticket, session, request)?;
+    recheck()?;
+    current_deadline()?;
+    check_deadline(deadline)?;
+    process.tree.require_original_scope(&record)?;
+    match (&request.action, prepared_pty) {
+        (OpenSshControlActionV5::Signal(signal), None) => {
+            process
+                .tree
+                .signal_with_current_cut(*signal, deadline, || {
+                    recheck()?;
+                    current_deadline()
+                })?;
+        }
+        (_, Some(settings)) => {
+            let master = process
+                .pty_master
+                .as_ref()
+                .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+            settings.apply(master.as_fd(), || {
+                recheck()?;
+                current_deadline()?;
+                check_deadline(deadline)?;
+                process.tree.require_original_scope(&record)?;
+                if process.tree.empty_and_exited()? {
+                    return Err(GuestProcessEffectErrorV1::InvalidRequest);
+                }
+                Ok(())
+            })?;
+        }
+        _ => return Err(GuestProcessEffectErrorV1::InvalidRequest),
+    }
+    // The effect has already been attempted. Any final custody or deadline
+    // failure is ambiguous rather than permission to try the sequence again.
+    (|| {
+        recheck()?;
+        current_deadline()?;
+        check_deadline(deadline)?;
+        process.tree.require_original_scope(&record)
+    })()
+    .map_err(|_| GuestProcessEffectErrorV1::AmbiguousEffect)
 }
 
 fn write_specification(

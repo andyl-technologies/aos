@@ -118,12 +118,61 @@ permits vendor exit-signal names. Standard POSIX names stay unchanged; other
 genuine Linux terminal signals use `LINUX<number>@andyl.com`, not the upstream
 shared unknown-signal sentinel. Public terminal result V2 separately retains
 exact native signal/core status without expanding the seven selectable control
-signals. SSH Signal/PTY setup/resize routing through fresh held original-grant
-authority remains unfinished, not advertised as complete.
+signals.
+
+The fourth patch routes original PTY setup, resize and the seven existing SSH
+signal names through private monitor opcodes122/123. The confined child supplies
+bounded mode/geometry/signal data only, never a PID/PGID, ticket, route, expiry or
+sequence. The already authenticated root monitor assigns the next sequence on
+the same retained Guest connection. Initial PTY acknowledgement precedes relay
+registration and SCM; no intermediate sshd PTY, passwd shell or replacement TERM
+environment is introduced. Resize preserves row, column and both pixel counts
+without truncating SSH unsigned values. The Guest applies the bounded RFC4254
+mode table to its actual retained original master and requires native readback;
+unknown platform modes remain ignored according to the RFC.
+
+`AOSMCQ05` contains a root-owned sequence, closed action and bounded payload.
+The Guest can queue this data before or after original SCM, but queuing grants
+nothing. The existing Controller forward poll reauthorizes the original
+LifecycleControl capability/holder under current protected policy, revocation,
+trust and registration. Its borrowed writer signs an exact Host ATTACH plan
+committing the original grant/ticket, monitor binding, readback challenge and
+request bytes. Host retains the original runtime/assignment and named route
+journal writer through a durable per-ticket/session/sequence reservation,
+protected Guest dispatch and final receipt. A partial or equal reservation is
+not recoverable permission or a redispatch path.
+
+The Guest holds one barrier across its monitor lock, actual original execution
+tree/PTY owner, durable sequence reservation, kernel effect and original-root
+acknowledgement. Whole-tree Signal uses the existing freeze/pin/preflight/recheck
+producer and restores exactly its own original freezer request; KILL uses the
+original descendant `cgroup.kill`. No leader-only/PGID substitute is accepted.
+The narrowed original certificate/capability/policy expiry and local BOOTTIME
+deadline remain mandatory for controls even when the original leader exited or
+descendants legitimately changed credentials or session IDs. The V4 terminal
+reader remains separately nonauthorizing after expiry.
+
+Signed `AOSHCR05` queue/effect evidence uses the existing provisioned agent
+runtime key for readback only, not a grant or second certificate. The packet
+commits the original monitor witness, physical ticket readback, exact request
+and whether original SCM was attempted; an attempt may be ambiguous and cannot
+authorize another transfer. Sequence state moves with actual consumed custody
+and is never re-created from a cold row. Any partial effect/readback/ACK is
+ambiguous and drops custody without automatic redispatch. This full source
+producer is still unqualified, not an installed readiness assertion.
+
+V5 preserves an already retained original session after its execution leader
+exits or descendants change credentials. It does not relax the earlier profile
+callback, initial monitor registration or V3 consume checks, which still tie
+initial admission to that leader's live/current identity. A valid original
+subtree can therefore remain unavailable for a first attach after those changes.
+Completing that availability path needs a separate actual active-original-tree
+and full root/holder custody cut, not reuse of V4 historical terminal evidence.
 
 Compatibility follows the pinned upstream private monitor layout. The patch
 adds a default-off global option. V3 uses private readiness opcodes 118/119 and
-relay opcodes116/117 and data-only terminal opcodes120/121. Legacy114/115 cannot
+relay opcodes116/117, data-only terminal opcodes120/121 and original control
+opcodes122/123. Legacy114/115 cannot
 mint v3 custody. It does not widen
 the public SSH protocol. The Guest registration decoder has an explicit v3
 magic and closed canonical profile, not a generic root-command

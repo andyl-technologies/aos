@@ -50,6 +50,47 @@ pub(super) struct AttachBridge {
 }
 
 impl AttachBridge {
+    /// Applies only existing original-monitor controls under the caller's barrier.
+    ///
+    /// # Errors
+    /// Rejects a closed bridge, expired/nonnarrowed deadline, absent custody,
+    /// replay, unsupported original topology or ambiguous effects/ACK.
+    pub(super) fn original_control_v5(
+        &self,
+        action: aos_sandbox_agent::openssh_control_channel::OriginalControlActionV5,
+        binding: [u8; 32],
+        request: &[u8],
+        authority_expires_at: i64,
+        effect_deadline_boottime_nanoseconds: u64,
+        ticket: &[u8],
+        ledger: &Ledger,
+        deadline: Instant,
+    ) -> Result<
+        aos_sandbox_agent::openssh_control_channel::OriginalControlObservationV5,
+        GuestProcessEffectErrorV1,
+    > {
+        if self.server.is_finished() {
+            return Err(GuestProcessEffectErrorV1::Unavailable(
+                "attach bridge stopped",
+            ));
+        }
+        let deadline = original_authority_deadline(
+            authority_expires_at,
+            effect_deadline_boottime_nanoseconds,
+        )?
+        .min(deadline);
+        self.monitors.original_control_v5(
+            action,
+            binding,
+            request,
+            ticket,
+            ledger,
+            deadline,
+            authority_expires_at,
+            effect_deadline_boottime_nanoseconds,
+        )
+    }
+
     pub(super) fn original_attach_v3(
         &self,
         action: aos_sandbox_agent::openssh_consume::OriginalAttachActionV3,
@@ -210,7 +251,14 @@ impl AttachBridge {
     }
 }
 
-fn original_authority_deadline(
+/// Narrows a local wait by current wall-clock expiry and the admitted BOOTTIME cut.
+///
+/// Repeating this nonauthorizing check detects suspension and forward wall-clock
+/// changes during an effect; it does not refresh either original deadline.
+///
+/// # Errors
+/// Rejects expired, negative, overflowing or unrepresentable deadlines.
+pub(super) fn original_authority_deadline(
     expires_at: i64,
     effect_deadline_boottime_nanoseconds: u64,
 ) -> Result<Instant, GuestProcessEffectErrorV1> {

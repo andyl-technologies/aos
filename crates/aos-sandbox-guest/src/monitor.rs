@@ -30,6 +30,7 @@ use crate::ledger::Ledger;
 
 const DEADLINE: Duration = Duration::from_secs(5);
 
+mod control;
 mod terminal;
 
 #[derive(Clone, Default)]
@@ -55,6 +56,7 @@ struct MonitorCustody {
     original_expiry: u64,
     relay: Option<PidFd>,
     pending_io: Option<RelayConnection>,
+    controls: control::OriginalSessionControlsV5,
 }
 
 /// Holds original consumed-channel liveness and terminal data, never authority.
@@ -67,7 +69,8 @@ struct SessionLiveness {
     relay: PidFd,
     io: RelayConnection,
     original_witness: Vec<u8>,
-    next_sequence: u64,
+    original_expiry: u64,
+    controls: control::OriginalSessionControlsV5,
     terminal_notified: bool,
 }
 
@@ -291,6 +294,7 @@ impl MonitorRegistry {
             original_expiry,
             relay: None,
             pending_io: None,
+            controls: control::OriginalSessionControlsV5::new(),
         });
         // Retention itself must not turn an earlier valid sample into an
         // unexpired/current record. This remains only a point-in-time check.
@@ -493,7 +497,8 @@ impl MonitorRegistry {
                 relay,
                 io,
                 original_witness: original.original_witness,
-                next_sequence: 1,
+                original_expiry: original.original_expiry,
+                controls: original.controls,
                 terminal_notified: false,
             });
         } else if action == OriginalAttachActionV3::Consume || result.is_err() {
@@ -624,14 +629,14 @@ fn refresh_relay(
     custody: &mut MonitorCustody,
     ledger: &Ledger,
 ) -> Result<(), Error> {
-    let record = match custody.connection.receive_with_descriptors(8, 1) {
+    let record = match custody.connection.receive_with_descriptors(
+        aos_sandbox_agent::openssh_control::OPENSSH_CONTROL_MAXIMUM_REQUEST_BYTES_V5,
+        1,
+    ) {
         Ok(record) => record,
         Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    if custody.relay.is_some() {
-        return Err(Error::LedgerConflict);
-    }
     let record = custody
         .connection
         .bind_received_descriptors(record)
@@ -639,12 +644,29 @@ fn refresh_relay(
     let (payload, subject, mut descriptors, peer) = record.into_parts();
     let sender = subject.credentials();
     let connector = peer.credentials();
-    if payload != b"AOSRLY03"
-        || sender.pid() != connector.pid()
+    if sender.pid() != connector.pid()
         || sender.uid() != connector.uid()
         || sender.gid() != connector.gid()
-        || descriptors.len() != 1
     {
+        return Err(Error::InvalidRequest);
+    }
+    if payload.get(..8) == Some(b"AOSMCQ05".as_slice()) {
+        if !descriptors.is_empty() {
+            return Err(Error::InvalidRequest);
+        }
+        control::require_same_root_subject(&subject, &custody.subject)?;
+        control::require_control_custody(
+            installed,
+            &custody.connection,
+            &custody.subject,
+            &custody.child,
+            &custody.original_witness,
+            custody.original_expiry,
+            ledger,
+        )?;
+        return custody.controls.queue(&payload);
+    }
+    if payload != b"AOSRLY03" || descriptors.len() != 1 || custody.relay.is_some() {
         return Err(Error::InvalidRequest);
     }
     installed

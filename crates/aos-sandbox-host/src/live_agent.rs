@@ -850,6 +850,9 @@ impl HostAgentLiveSessionV1 {
             ) | (
                 Ok(AgentFrameV1::OriginalAttachRequestV3(_)),
                 Ok(AgentFrameV1::OriginalAttachResponseV3(_))
+            ) | (
+                Ok(AgentFrameV1::OriginalControlRequestV5(_)),
+                Ok(AgentFrameV1::OriginalControlResponseV5(_))
             )
         ) {
             return Err(HostAgentLiveErrorV1::Unauthenticated);
@@ -866,7 +869,8 @@ impl OpenSshGateAgentExchangeV1 for HostAgentLiveSessionV1 {
                 decode_frame_v1(request),
                 Ok(AgentFrameV1::OpenSshGateObserveRequest(_)
                     | AgentFrameV1::OpenSshTicketBindRequestV2(_)
-                    | AgentFrameV1::OriginalAttachRequestV3(_))
+                    | AgentFrameV1::OriginalAttachRequestV3(_)
+                    | AgentFrameV1::OriginalControlRequestV5(_))
             )
         {
             return Err(std::io::Error::other(

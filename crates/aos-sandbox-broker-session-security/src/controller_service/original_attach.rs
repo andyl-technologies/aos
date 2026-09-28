@@ -16,11 +16,11 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
     AuthenticatedBrokerOutcomeDirectionV1,
 };
-use rand::{TryRngCore as _, rngs::OsRng};
 
 use crate::controller_ownership::sample_ownership_clock;
 use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_publication::ControllerHostPublication;
+use crate::entropy::{KernelEntropy, nonzero_random};
 
 use super::{ProductionController, SharedControllerBrokerSessions};
 
@@ -60,12 +60,33 @@ pub(super) fn poll_one(
         let outcome = host
             .query_attach_gate_route(ticket.operation_id, ticket.execution_id, &authorization)
             .map_err(|_| denied())?;
+        let route = accepted_route_evidence(&outcome, &ticket, cut.original_ticket())?;
+        if !route.original_session_observation_v5.is_empty() {
+            let (control, physical) = aos_sandbox_agent::openssh_control_channel::decode_original_control_response_shape_v5(
+                &route.original_session_observation_v5,
+            ).map_err(|_| denied())?;
+            if physical != route.signed_ticket_readback_v2 { return Err(denied()); }
+            if control.phase == aos_sandbox_agent::openssh_control_channel::OriginalControlPhaseV5::Queued {
+                let challenge = nonzero_random::<32, _>(&mut KernelEntropy).map_err(|_| denied())?;
+                let draft = cut.prepare_host_control_plan_v5(ObjectDigest::from_bytes(control.binding), challenge, &control.request)?;
+                let authorization = sign_borrowed_plan(&draft, signer)?;
+                draft.recheck()?;
+                let outcome = host.apply_original_monitor_control_v5(draft.original_grant(), draft.original_ticket(),
+                    control.binding, challenge, &control.request, &authorization).map_err(|_| denied())?;
+                require_control_completion(&outcome)?;
+                draft.recheck()?;
+            } else if control.phase != aos_sandbox_agent::openssh_control_channel::OriginalControlPhaseV5::Idle {
+                return Err(denied());
+            }
+            // An already attempted transfer is never redispatched. Initial
+            // PTY ACK precedes relay registration, so a later poll sees V3 ready.
+            return Ok(());
+        }
         let Some(binding) = ready_binding(&outcome, &ticket, cut.original_ticket())? else {
             return Ok(());
         };
 
-        let mut challenge = [0; 32];
-        OsRng.try_fill_bytes(&mut challenge).map_err(|_| denied())?;
+        let challenge = nonzero_random::<32, _>(&mut KernelEntropy).map_err(|_| denied())?;
         let consume =
             cut.prepare_host_consume_plan_v3(ObjectDigest::from_bytes(binding), challenge)?;
         let authorization = sign_borrowed_plan(&consume, signer)?;
@@ -108,6 +129,25 @@ fn ready_binding(
     ticket: &PublicAttachTicketBindingV2,
     original_bytes: &[u8],
 ) -> Result<Option<[u8; 32]>, ControllerServiceError> {
+    let evidence = accepted_route_evidence(outcome, ticket, original_bytes)?;
+    let (observation, physical) =
+        decode_original_attach_response_v3(&evidence.original_attach_observation_v3)
+            .map_err(|_| denied())?;
+    if physical != evidence.signed_ticket_readback_v2 {
+        return Err(denied());
+    }
+    match observation.phase {
+        OriginalAttachPhaseV3::Pending => Ok(None),
+        OriginalAttachPhaseV3::Ready => Ok(Some(observation.binding)),
+        OriginalAttachPhaseV3::Transferred => Err(denied()),
+    }
+}
+
+fn accepted_route_evidence(
+    outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    ticket: &PublicAttachTicketBindingV2,
+    original_bytes: &[u8],
+) -> Result<aos_proto::aos::sandbox::local::v1::HostAttachGateEvidenceV1, ControllerServiceError> {
     require_received_method(
         outcome,
         BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE,
@@ -140,17 +180,33 @@ fn ready_binding(
     {
         return Err(denied());
     }
-    let (observation, physical) =
-        decode_original_attach_response_v3(&evidence.original_attach_observation_v3)
-            .map_err(|_| denied())?;
-    if physical != evidence.signed_ticket_readback_v2 {
+    Ok(evidence)
+}
+
+fn require_control_completion(
+    outcome: &AuthenticatedBrokerMethodOutcomeV1,
+) -> Result<(), ControllerServiceError> {
+    require_received_method(
+        outcome,
+        BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE,
+    )?;
+    let now = sample_ownership_clock().map_err(|_| denied())?;
+    let request = aos_sandbox_protocol::decode_host_attach_gate_request_v1(
+        outcome.request().exact_body(),
+        outcome.request().peer(),
+        outcome.request().peer_policy(),
+        now.boottime_nanoseconds(),
+    )
+    .map_err(|_| denied())?;
+    if request.original_session_control_v5().is_none() {
         return Err(denied());
     }
-    match observation.phase {
-        OriginalAttachPhaseV3::Pending => Ok(None),
-        OriginalAttachPhaseV3::Ready => Ok(Some(observation.binding)),
-        OriginalAttachPhaseV3::Transferred => Err(denied()),
-    }
+    let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result() else {
+        return Err(denied());
+    };
+    aos_sandbox_protocol::decode_host_attach_gate_evidence_v1(exact_body, &request)
+        .map_err(|_| denied())?;
+    Ok(())
 }
 
 fn require_consume_completion(

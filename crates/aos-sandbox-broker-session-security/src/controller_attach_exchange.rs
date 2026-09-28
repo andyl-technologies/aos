@@ -37,6 +37,11 @@ enum HostAttachIntentV1 {
         ticket: Vec<u8>,
         correlation: [u8; 64],
     },
+    OriginalControlV5 {
+        grant: [u8; PUBLIC_ATTACH_GRANT_BYTES],
+        ticket: Vec<u8>,
+        control: Vec<u8>,
+    },
     Readiness,
     Route {
         operation_id: [u8; 16],
@@ -70,6 +75,7 @@ impl HostAttachIntentV1 {
             | Self::ConsumeOriginalTicketV3 { .. } => {
                 BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
             }
+            Self::OriginalControlV5 { .. } => BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE,
             Self::Readiness => BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS,
             Self::Route { .. } => BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE,
         }
@@ -90,6 +96,18 @@ impl HostAttachIntentV1 {
             ..Default::default()
         };
         let body = match self {
+            Self::OriginalControlV5 {
+                grant,
+                ticket,
+                control,
+            } => InstallHostAttachGateRequestV1 {
+                header: Some(header).into(),
+                pending_grant: grant.to_vec(),
+                original_ticket_binding_v2: ticket.clone(),
+                original_session_control_v5: control.clone(),
+                ..Default::default()
+            }
+            .encode_to_vec(),
             Self::ConsumeOriginalTicketV3 {
                 grant,
                 ticket,
@@ -147,6 +165,46 @@ pub(crate) struct ControllerHostAttachGateExchangeV1 {
 }
 
 impl ControllerHostAttachGateExchangeV1 {
+    pub(crate) fn original_control_v5(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        grant: &[u8],
+        ticket: &[u8],
+        monitor_binding: [u8; 32],
+        challenge: [u8; 32],
+        request: &[u8],
+        authorization: &BrokerAuthorizationArtifactsV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
+        let original =
+            aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2::decode(ticket)
+                .map_err(|_| {
+                    EffectFailure::Permanent("invalid original attach ticket".to_owned())
+                })?;
+        aos_sandbox_agent::openssh_control::OpenSshControlRequestV5::decode(request)
+            .map_err(|_| EffectFailure::Permanent("invalid original monitor control".to_owned()))?;
+        if original.pending_grant.as_slice() != grant
+            || monitor_binding == [0; 32]
+            || challenge == [0; 32]
+        {
+            return Err(EffectFailure::Permanent(
+                "original monitor control substitution".to_owned(),
+            ));
+        }
+        let mut control = Vec::with_capacity(64 + request.len());
+        control.extend_from_slice(&monitor_binding);
+        control.extend_from_slice(&challenge);
+        control.extend_from_slice(request);
+        self.exchange(
+            session,
+            HostAttachIntentV1::OriginalControlV5 {
+                grant: original.pending_grant,
+                ticket: ticket.to_vec(),
+                control,
+            },
+            Some(authorization),
+        )
+    }
+
     pub(crate) fn consume_original_ticket_v3(
         &mut self,
         session: &mut DormantAuthenticatedBrokerSessionV1,

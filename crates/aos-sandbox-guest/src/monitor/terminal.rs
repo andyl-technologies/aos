@@ -7,8 +7,8 @@
 //! after the actual retained execution subtree became empty.
 
 use aos_sandbox_agent::openssh_session::{
-    OPENSSH_SESSION_RECORD_BYTES_V4, OpenSshSessionActionV4, OpenSshSessionReplyV4,
-    OpenSshSessionRequestV4, OpenSshSessionStateV4, OriginalExecutionWaitStatusV4,
+    OpenSshSessionActionV4, OpenSshSessionReplyV4, OpenSshSessionRequestV4, OpenSshSessionStateV4,
+    OriginalExecutionWaitStatusV4,
 };
 
 use super::{
@@ -58,7 +58,10 @@ pub(super) fn refresh_original_terminal(
         }
     }
 
-    let record = match session.connection.receive(OPENSSH_SESSION_RECORD_BYTES_V4) {
+    let record = match session
+        .connection
+        .receive(aos_sandbox_agent::openssh_control::OPENSSH_CONTROL_MAXIMUM_REQUEST_BYTES_V5)
+    {
         Ok(record) => record,
         Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => return Ok(()),
         Err(error) => return Err(error.into()),
@@ -68,6 +71,19 @@ pub(super) fn refresh_original_terminal(
         .bind_received(record)
         .map_err(|_| Error::InvalidRequest)?;
     let (payload, subject, _) = bound.into_parts();
+    if payload.get(..8) == Some(b"AOSMCQ05".as_slice()) {
+        super::control::require_same_root_subject(&subject, &session.subject)?;
+        super::control::require_control_custody(
+            installed,
+            &session.connection,
+            &session.subject,
+            &session.child,
+            &session.original_witness,
+            session.original_expiry,
+            ledger,
+        )?;
+        return session.controls.queue(&payload);
+    }
     let sender = subject.credentials();
     let original = session.subject.credentials();
     if sender.pid() != original.pid()
@@ -86,14 +102,18 @@ pub(super) fn refresh_original_terminal(
         return Err(Error::InvalidRequest);
     }
     let request = OpenSshSessionRequestV4::decode(&payload).map_err(|_| Error::InvalidRequest)?;
-    if request.sequence != session.next_sequence
+    if request.sequence != session.controls.next_sequence
         || request.action != OpenSshSessionActionV4::Terminal
     {
         return Err(Error::InvalidRequest);
     }
     // Correlation is session-private and cannot authorize a signal or resize.
     // Reserve before the reply: ambiguity closes custody, never replays it.
-    session.next_sequence = session
+    if session.controls.pending.is_some() {
+        return Err(Error::InvalidRequest);
+    }
+    session.controls.next_sequence = session
+        .controls
         .next_sequence
         .checked_add(1)
         .ok_or(Error::LedgerConflict)?;

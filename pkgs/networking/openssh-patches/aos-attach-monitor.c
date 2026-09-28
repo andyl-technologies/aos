@@ -406,6 +406,161 @@ aos_attach_original_waitstatus(void)
 	return (int)raw;
 }
 
+/* The confined child nominates only bounded control data, never a target,
+ * ticket, expiry, sequence or authorization. Current Controller/Host policy
+ * must still authorize this exact queue through the existing forward channel.
+ */
+int
+aos_attach_monitor_control(struct ssh *ssh, int private_monitor, struct sshbuf *data)
+{
+	struct msghdr message = {0};
+	struct iovec iov;
+	u_char request[1192] = {0}, response[25], ancillary[1], action;
+	const u_char *payload;
+	size_t length, index;
+	int64_t deadline;
+	int r;
+
+	(void)ssh;
+	if (!options.aos_attach_monitor_v2 || !fully_authenticated ||
+	    getuid() != 0 || geteuid() != 0 || held_child_pidfd == -1 ||
+	    held_guest_connection == -1 || original_session_sequence == 0 ||
+	    original_session_sequence == UINT64_MAX ||
+	    sshbuf_len(data) > 1169 || (r = sshbuf_get_u8(data, &action)) != 0 ||
+	    (r = sshbuf_get_string_direct(data, &payload, &length)) != 0 ||
+	    sshbuf_len(data) != 0 || length > sizeof(request) - 28 ||
+	    action < 1 || action > 3 || (action == 1 && length != 1) ||
+	    (action == 2 && length != 8) || (action == 3 && length < 12))
+		fatal("AOS attach original control rejected");
+	require_original_child_live();
+	memcpy(request, "AOSMCQ05", 8);
+	for (index = 0; index < 8; index++)
+		request[8 + index] = original_session_sequence >> (56 - index * 8);
+	request[16] = action;
+	for (index = 0; index < 4; index++)
+		request[24 + index] = length >> (24 - index * 8);
+	memcpy(request + 28, payload, length);
+	deadline = deadline_milliseconds() + AOS_ATTACH_TIMEOUT_MS;
+	wait_ready(held_guest_connection, POLLOUT, deadline);
+	if (send(held_guest_connection, request, 28 + length, MSG_NOSIGNAL) != (ssize_t)(28 + length))
+		fatal("AOS attach original control ambiguous");
+	iov = (struct iovec){ response, sizeof(response) };
+	message.msg_iov = &iov;
+	message.msg_iovlen = 1;
+	message.msg_control = ancillary;
+	message.msg_controllen = sizeof(ancillary);
+	wait_ready(held_guest_connection, POLLIN, deadline);
+	if (recvmsg(held_guest_connection, &message, 0) != 24 ||
+	    message.msg_flags != 0 || message.msg_controllen != 0 ||
+	    memcmp(response, "AOSMCA05", 8) != 0 ||
+	    memcmp(response + 8, request + 8, 8) != 0)
+		fatal("AOS attach original control acknowledgement rejected");
+	for (index = 16; index < 24; index++) {
+		if (response[index] != 0)
+			fatal("AOS attach original control acknowledgement rejected");
+	}
+	if (deadline_milliseconds() >= deadline)
+		fatal("AOS attach original control expired");
+	require_original_child_live();
+	original_session_sequence++;
+	sshbuf_reset(data);
+	mm_request_send(private_monitor, AOS_ATTACH_CONTROL_ANSWER, data);
+	return 0;
+}
+
+static int
+original_control(u_char action, struct sshbuf *payload)
+{
+	struct sshbuf *data;
+	int r;
+
+	if (!options.aos_attach_monitor_v2 || getuid() == 0 || geteuid() == 0 ||
+	    (data = sshbuf_new()) == NULL)
+		fatal("AOS attach original control custody rejected");
+	if ((r = sshbuf_put_u8(data, action)) != 0 ||
+	    (r = sshbuf_put_stringb(data, payload)) != 0)
+		fatal_fr(r, "AOS attach original control encoding");
+	mm_request_send(pmonitor->m_recvfd, AOS_ATTACH_CONTROL_REQUEST, data);
+	mm_request_receive_expect(pmonitor->m_recvfd, AOS_ATTACH_CONTROL_ANSWER, data);
+	if (sshbuf_len(data) != 0)
+		fatal("AOS attach original control answer rejected");
+	sshbuf_free(data);
+	return 1;
+}
+
+static struct sshbuf *
+original_geometry(unsigned int rows, unsigned int columns,
+    unsigned int xpixel, unsigned int ypixel)
+{
+	struct sshbuf *data;
+	int r;
+
+	if (rows > UINT16_MAX || columns > UINT16_MAX || xpixel > UINT16_MAX ||
+	    ypixel > UINT16_MAX || (data = sshbuf_new()) == NULL)
+		return NULL;
+	if ((r = sshbuf_put_u16(data, rows)) != 0 ||
+	    (r = sshbuf_put_u16(data, columns)) != 0 ||
+	    (r = sshbuf_put_u16(data, xpixel)) != 0 ||
+	    (r = sshbuf_put_u16(data, ypixel)) != 0)
+		fatal_fr(r, "AOS attach original geometry encoding");
+	return data;
+}
+
+int
+aos_attach_original_signal(int signal)
+{
+	struct sshbuf *payload;
+	int result, r;
+
+	if (signal != 1 && signal != 2 && signal != 3 && signal != 9 &&
+	    signal != 10 && signal != 12 && signal != 15)
+		return 0;
+	if ((payload = sshbuf_new()) == NULL)
+		fatal("AOS attach original control allocation failed");
+	if ((r = sshbuf_put_u8(payload, signal)) != 0)
+		fatal_fr(r, "AOS attach original signal encoding");
+	result = original_control(1, payload);
+	sshbuf_free(payload);
+	return result;
+}
+
+int
+aos_attach_original_resize(unsigned int rows, unsigned int columns,
+    unsigned int xpixel, unsigned int ypixel)
+{
+	struct sshbuf *payload;
+	int result;
+
+	if (rows == 0 || columns == 0 ||
+	    (payload = original_geometry(rows, columns, xpixel, ypixel)) == NULL)
+		return 0;
+	result = original_control(2, payload);
+	sshbuf_free(payload);
+	return result;
+}
+
+int
+aos_attach_original_pty(const char *terminal, unsigned int rows,
+    unsigned int columns, unsigned int xpixel, unsigned int ypixel,
+    const unsigned char *modes, size_t modes_length)
+{
+	struct sshbuf *payload;
+	size_t terminal_length = strlen(terminal);
+	int result, r;
+
+	if (terminal_length > 128 || modes_length > 1024 ||
+	    (payload = original_geometry(rows, columns, xpixel, ypixel)) == NULL)
+		return 0;
+	if ((r = sshbuf_put_u16(payload, terminal_length)) != 0 ||
+	    (r = sshbuf_put(payload, terminal, terminal_length)) != 0 ||
+	    (r = sshbuf_put_u16(payload, modes_length)) != 0 ||
+	    (r = sshbuf_put(payload, modes, modes_length)) != 0)
+		fatal_fr(r, "AOS attach original PTY encoding");
+	result = original_control(3, payload);
+	sshbuf_free(payload);
+	return result;
+}
+
 void
 aos_attach_monitor_child(int private_monitor)
 {
