@@ -124,14 +124,21 @@ const SESSION_RECORD_MAXIMUM_BYTES: usize =
     ENVELOPE_BYTES + SESSION_FIXED_BYTES + 2 * MAXIMUM_SIGNED_HELLO_BYTES;
 const ATTEMPT_RECORD_MAXIMUM_BYTES: usize =
     ENVELOPE_BYTES + ATTEMPT_FIXED_BYTES + 2 * MAXIMUM_SIGNED_REQUEST_OR_RESPONSE_BYTES;
-const ACQUISITION_RECORD_MAXIMUM_BYTES: usize = ENVELOPE_BYTES
+const ACQUISITION_RECORD_COMMON_MAXIMUM_BYTES: usize = ENVELOPE_BYTES
     + ACQUISITION_FIXED_BYTES
-    + crate::MAXIMUM_NORMALIZED_ACQUISITION_INTENT_BYTES
     + crate::limits::MAXIMUM_BACKEND_EVIDENCE_PAYLOAD_BYTES
     + 120
     + 256
     + MAXIMUM_SIGNED_LEASE_BYTES
     + LEASE_LINEAGE_BYTES * crate::limits::MAXIMUM_LEASE_HISTORY_PER_ACQUISITION;
+
+// Only the nested normalized profile grows; the ledger's fixed layout is shared.
+const ACQUISITION_RECORD_LEGACY_INTENT_MAXIMUM_BYTES: usize =
+    ACQUISITION_RECORD_COMMON_MAXIMUM_BYTES
+        + aos_sandbox_source_provider_protocol::MAXIMUM_NORMALIZED_ACQUISITION_INTENT_V2_BYTES;
+const ACQUISITION_RECORD_MAXIMUM_BYTES: usize =
+    ACQUISITION_RECORD_COMMON_MAXIMUM_BYTES + crate::MAXIMUM_NORMALIZED_ACQUISITION_INTENT_BYTES;
+
 const RELEASE_RECORD_MAXIMUM_BYTES: usize = ENVELOPE_BYTES
     + RELEASE_FIXED_BYTES
     + crate::limits::MAXIMUM_BACKEND_EVIDENCE_PAYLOAD_BYTES
@@ -208,7 +215,11 @@ const _: () =
 const _: () = assert!(RELEASE_SEMANTIC_BYTES == RELEASE_FIXED_BYTES);
 const _: () = assert!(SESSION_RECORD_MAXIMUM_BYTES == 9_488);
 const _: () = assert!(ATTEMPT_RECORD_MAXIMUM_BYTES == 2_098_176);
-const _: () = assert!(ACQUISITION_RECORD_MAXIMUM_BYTES == 487_052);
+const _: () = assert!(ACQUISITION_RECORD_LEGACY_INTENT_MAXIMUM_BYTES == 487_052);
+const _: () = assert!(ACQUISITION_RECORD_MAXIMUM_BYTES == 487_228);
+const _: () = assert!(
+    ACQUISITION_RECORD_MAXIMUM_BYTES - ACQUISITION_RECORD_LEGACY_INTENT_MAXIMUM_BYTES == 176
+);
 const _: () = assert!(8 + 16 + 32 + 32 == LEASE_LINEAGE_BYTES);
 const _: () = assert!(RELEASE_RECORD_MAXIMUM_BYTES == 131_720);
 
@@ -1568,6 +1579,36 @@ mod native_selected_reservation_tests {
     }
 
     #[test]
+    fn acquisition_profile_geometry_preserves_legacy_bound_and_full_owner_budget() {
+        // These literal format widths independently pin the shared artifacts.
+        let common_bytes = 64 + 824 + 65_536 + 120 + 256 + 262_144 + 88 * 1_024;
+        assert_eq!(
+            ACQUISITION_RECORD_LEGACY_INTENT_MAXIMUM_BYTES,
+            common_bytes + 67_996
+        );
+        assert_eq!(ACQUISITION_RECORD_MAXIMUM_BYTES, common_bytes + 68_172);
+        assert_eq!(
+            NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2[1],
+            487_228 + 99 + 9
+        );
+
+        assert_eq!(
+            NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2
+                .iter()
+                .sum::<usize>(),
+            MAXIMUM_NATIVE_ACQUIRE_COMPLETION_OWNER_BYTES_V2
+        );
+        assert_eq!(
+            MAXIMUM_NATIVE_RELEASE_ADMISSION_OWNER_BYTES_V1,
+            MAXIMUM_NATIVE_ACQUIRE_COMPLETION_OWNER_BYTES_V2 + 131_720 + 99 + 9
+        );
+        assert!(
+            MAXIMUM_NATIVE_RELEASE_ADMISSION_OWNER_BYTES_V1
+                < crate::limits::MAXIMUM_TRANSACTION_BYTES
+        );
+    }
+
+    #[test]
     fn native_selected_applying_record_remains_proofless_until_completion() {
         let provider = SourceProviderAuthorityV1::new([21; 16], 22, digest(23)).unwrap();
         let holder = SourceProviderAuthorityV1::new([7; 16], 8, digest(9)).unwrap();
@@ -1747,6 +1788,9 @@ mod native_selected_reservation_tests {
             resource.catalog_digest(),
         );
         let native_bytes = encode_acquisition(&native_acquisition);
+        assert_eq!(native_bytes.len(), bytes.len() + 176);
+        assert_eq!(&bytes[8..10], &5_u16.to_be_bytes());
+        assert_eq!(&native_bytes[8..10], &5_u16.to_be_bytes());
         let DecodedRecordV1::Acquisition(decoded_native) =
             decode_record(&key, &native_bytes).unwrap()
         else {
