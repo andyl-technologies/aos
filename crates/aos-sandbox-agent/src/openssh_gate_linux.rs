@@ -380,6 +380,21 @@ fn read_protected_file(
     })
 }
 
+/// Reads the actual immutable v2 ticket claim without claiming SSH custody.
+///
+/// # Errors
+/// Rejects missing, writable, foreign, symlinked, oversized, or malformed data.
+pub fn load_original_ticket_claim_v2() -> Result<Vec<u8>, OpenSshGatePhysicalErrorV1> {
+    let file = read_protected_file(
+        Path::new(crate::openssh_ticket::OPENSSH_TICKET_CLAIM_PATH_V2),
+        aos_sandbox_core::public_attach_ticket::PUBLIC_ATTACH_TICKET_MAXIMUM_BYTES_V2 as u64,
+        false,
+    )?;
+    aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2::decode(&file.bytes)
+        .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidInstallation)?;
+    Ok(file.bytes)
+}
+
 fn check_protected_ancestors(path: &Path) -> Result<(), OpenSshGatePhysicalErrorV1> {
     for parent in path.ancestors().skip(1) {
         let metadata = fs::symlink_metadata(parent)?;

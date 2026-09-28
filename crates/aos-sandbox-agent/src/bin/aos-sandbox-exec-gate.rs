@@ -88,6 +88,24 @@ fn emit_authorized_principal(arguments: &[OsString]) {
         let (certificate_type, certificate_base64) = certificate_arguments(arguments)?;
         let claim = load_openssh_gate_claim_v1().ok()?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+        match std::fs::symlink_metadata(
+            aos_sandbox_agent::openssh_ticket::OPENSSH_TICKET_CLAIM_PATH_V2,
+        ) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                let ticket =
+                    aos_sandbox_agent::openssh_gate_linux::load_original_ticket_claim_v2().ok()?;
+                aos_sandbox_agent::openssh_ticket::validate_original_ticket_certificate_v2(
+                    &claim,
+                    &ticket,
+                    certificate_type,
+                    certificate_base64,
+                    now,
+                )
+                .ok()?;
+            }
+            Err(_) => return None,
+        }
         validate_openssh_attach_certificate_v1(&claim, certificate_type, certificate_base64, now)
             .ok()
             .map(|principal| format!("{principal}\n"))

@@ -197,6 +197,14 @@ fn serve_one(
     ledger: &Ledger,
     masters: &PtyRegistry,
 ) -> Result<(), GuestProcessEffectErrorV1> {
+    // V2 is custody data only. An unprivileged callback/gate cannot turn it
+    // into authenticated custody. A later trusted monitor and held consume
+    // must supply that evidence before this route can transfer descriptors.
+    match std::fs::symlink_metadata(aos_sandbox_agent::openssh_ticket::OPENSSH_TICKET_CLAIM_PATH_V2)
+    {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        _ => return Err(GuestProcessEffectErrorV1::InvalidRequest),
+    }
     verify_executable(socket.peer().credentials().pid().get(), GATE_EXECUTABLE)?;
     let deadline = Instant::now() + PEER_DEADLINE;
     let received = loop {

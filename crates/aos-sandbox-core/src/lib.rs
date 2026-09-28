@@ -31,6 +31,7 @@ pub mod operator_recovery_probe_attestation;
 pub mod ownership_lease;
 pub mod public_attach_grant;
 pub mod public_attach_route;
+pub mod public_attach_ticket;
 pub mod publisher;
 pub mod registry;
 pub mod resources;

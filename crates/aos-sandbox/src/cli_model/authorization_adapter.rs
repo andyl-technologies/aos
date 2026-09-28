@@ -633,6 +633,7 @@ pub(crate) struct CurrentProtectedCliAuthorizationV1 {
     surface: CliAuthorizedSurfaceV1,
     authorized_wall_seconds: i64,
     policy_generation: u64,
+    original_coordinates: super::provenance::OriginalPublicMutationCoordinatesV2,
 }
 
 impl CurrentProtectedCliAuthorizationV1 {
@@ -726,21 +727,38 @@ impl CurrentProtectedCliAuthorizationV1 {
             )
             .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
 
+        let revision = protected_authorization_revision(
+            &capability,
+            controller.generation,
+            policy.generation(),
+            time_floor,
+        );
         Ok(Self {
             identity: authenticated_identity_commitment(context.holder)?,
             session: channel.session,
             channel: authenticated_channel_commitment(context.channel_binding)?,
             request: canonical_request_commitment(&decoded.canonical_request)?,
-            revision: protected_authorization_revision(
-                &capability,
-                controller.generation,
-                policy.generation(),
-                time_floor,
-            ),
+            revision,
             schema: channel.schema,
             surface: decoded.surface,
             authorized_wall_seconds: trusted_now,
             policy_generation: policy.generation(),
+            original_coordinates: super::provenance::OriginalPublicMutationCoordinatesV2 {
+                capability: *capability_id.as_bytes(),
+                revocation_scope: *claims.revocation_scope.as_bytes(),
+                revocation_generation: claims.revocation_generation.get(),
+                policy_digest: *claims.policy_digest.as_bytes(),
+                policy_generation: policy.generation(),
+                controller: *controller.principal.as_bytes(),
+                controller_generation: controller.generation,
+                capability_not_before: claims.not_before,
+                capability_expires_at: claims.expires_at,
+                policy_not_before: policy.not_before(),
+                policy_expires_at: policy.expires_at(),
+                channel_binding: *context.channel_binding.as_bytes(),
+                session_commitment: *channel.session.0.as_bytes(),
+                authorization_revision: *revision.digest().as_bytes(),
+            },
         })
     }
 }
@@ -824,6 +842,7 @@ pub(crate) struct DormantAuthenticatedCliRequestV1 {
     decoded: DecodedAuthenticatedCliRequestV1,
     authorized_wall_seconds: i64,
     policy_generation: u64,
+    original_coordinates: super::provenance::OriginalPublicMutationCoordinatesV2,
 }
 
 impl DormantAuthenticatedCliRequestV1 {
@@ -876,6 +895,7 @@ impl DormantAuthenticatedCliRequestV1 {
             decoded,
             authorized_wall_seconds: authorization.authorized_wall_seconds,
             policy_generation: authorization.policy_generation,
+            original_coordinates: authorization.original_coordinates,
         })
     }
 
@@ -984,7 +1004,8 @@ impl DormantAuthenticatedCliRequestV1 {
             self.provenance,
             self.authorized_wall_seconds,
             self.policy_generation,
-        ))
+        )
+        .with_original_coordinates(self.original_coordinates))
     }
 }
 

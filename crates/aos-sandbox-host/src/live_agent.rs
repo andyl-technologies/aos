@@ -841,7 +841,7 @@ impl HostAgentLiveSessionV1 {
         )?;
         if !matches!(
             decode_frame_v1(&response),
-            Ok(AgentFrameV1::OpenSshGateReadback(_))
+            Ok(AgentFrameV1::OpenSshGateReadback(_) | AgentFrameV1::OpenSshTicketReadbackV2(_))
         ) {
             return Err(HostAgentLiveErrorV1::Unauthenticated);
         }

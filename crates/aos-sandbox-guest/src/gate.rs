@@ -39,6 +39,41 @@ pub(super) struct GuestOpenSshGate {
 }
 
 impl GuestOpenSshGate {
+    pub(super) fn bind_ticket_v2(
+        &mut self,
+        request: &OpenSshGateObserveRequestV1,
+        ticket_bytes: &[u8],
+        runtime: &AgentRuntimeBindingV1,
+        channel: ObjectDigest,
+        ledger: &Ledger,
+        deadline: Instant,
+    ) -> Result<(OpenSshGateReadbackV1, [u8; 32]), GuestProcessEffectErrorV1> {
+        let ticket = aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2::decode(
+            ticket_bytes,
+        )
+        .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?
+            .as_secs();
+        aos_sandbox_agent::openssh_ticket::validate_ticket_profile_v2(&self.claim, &ticket, now)
+            .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
+        // Admission and physical process state precede immutable installation.
+        // A partial create is never repaired: cold replay must reject it.
+        self.observe(request, runtime, channel, ledger, deadline)?;
+        install_original_ticket_v2(ticket_bytes)?;
+        let readback = self.observe(request, runtime, channel, ledger, deadline)?;
+        let installed = aos_sandbox_agent::openssh_gate_linux::load_original_ticket_claim_v2()
+            .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+        if installed != ticket_bytes {
+            return Err(GuestProcessEffectErrorV1::LedgerConflict);
+        }
+        Ok((
+            readback,
+            aos_sandbox_agent::openssh_ticket::ticket_digest_v2(&installed),
+        ))
+    }
+
     pub(super) fn execution(&self) -> [u8; 16] {
         self.claim.binding.execution_id
     }
@@ -339,6 +374,41 @@ fn install_protected_file(
     file.sync_all()?;
     fs::set_permissions(&temporary, fs::Permissions::from_mode(mode))?;
     fs::rename(&temporary, target)?;
+    File::open(DIRECTORY)?.sync_all()?;
+    Ok(())
+}
+
+fn install_original_ticket_v2(bytes: &[u8]) -> Result<(), GuestProcessEffectErrorV1> {
+    let path = aos_sandbox_agent::openssh_ticket::OPENSSH_TICKET_CLAIM_PATH_V2;
+    // Reuse the protected reader on replay; equal bytes are the only success.
+    // No rename/replacement path exists for a post-issuance sidecar.
+    match fs::symlink_metadata(path) {
+        Ok(_) => {
+            let previous = aos_sandbox_agent::openssh_gate_linux::load_original_ticket_claim_v2()
+                .map_err(|_| GuestProcessEffectErrorV1::UnprotectedLedger)?;
+            return if previous == bytes {
+                Ok(())
+            } else {
+                Err(GuestProcessEffectErrorV1::LedgerConflict)
+            };
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    for directory in ["/etc", "/etc/aos", DIRECTORY] {
+        let metadata = fs::symlink_metadata(directory)?;
+        if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
+            return Err(GuestProcessEffectErrorV1::UnprotectedLedger);
+        }
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .custom_flags(O_CLOEXEC | O_NOFOLLOW)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
     File::open(DIRECTORY)?.sync_all()?;
     Ok(())
 }

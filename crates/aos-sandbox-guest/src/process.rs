@@ -538,6 +538,25 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
             .observe(request, runtime, channel, &self.ledger, deadline)
             .map_err(effect_error)
     }
+
+    fn bind_openssh_ticket_v2(
+        &mut self,
+        request: &OpenSshGateObserveRequestV1,
+        ticket: &[u8],
+        runtime: &AgentRuntimeBindingV1,
+        channel: ObjectDigest,
+        deadline: Instant,
+    ) -> Result<(OpenSshGateReadbackV1, [u8; 32]), ProtectedGuestAgentErrorV1> {
+        if self.quiesced || !self.live.contains_key(&request.binding.execution_id) {
+            return Err(effect_error(GuestProcessEffectErrorV1::InvalidRequest));
+        }
+        // Binding never installs/reconstructs a process or base route.
+        self.gate
+            .as_mut()
+            .ok_or_else(|| effect_error(GuestProcessEffectErrorV1::LedgerConflict))?
+            .bind_ticket_v2(request, ticket, runtime, channel, &self.ledger, deadline)
+            .map_err(effect_error)
+    }
 }
 
 pub(crate) fn check_deadline(deadline: Instant) -> Result<(), GuestProcessEffectErrorV1> {

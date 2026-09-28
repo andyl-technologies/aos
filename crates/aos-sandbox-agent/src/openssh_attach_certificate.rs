@@ -16,7 +16,7 @@ use ssh_key::{Algorithm, Certificate, HashAlg, PublicKey, certificate::CertType}
 
 use crate::openssh_gate::OpenSshGateClaimV1;
 
-const MAXIMUM_CERTIFICATE_BYTES: usize = 4096;
+use aos_sandbox_core::public_attach_ticket::PUBLIC_ATTACH_TICKET_MAXIMUM_CERTIFICATE_BYTES_V2 as MAXIMUM_CERTIFICATE_BYTES;
 
 /// Checks the actual sshd certificate against the protected v1 gate profile.
 ///
@@ -34,6 +34,21 @@ pub fn validate_openssh_attach_certificate_v1<'a>(
     certificate_base64: &str,
     now_seconds: u64,
 ) -> Result<&'a str, OpenSshAttachCertificateErrorV1> {
+    checked_openssh_attach_certificate_v1(
+        claim,
+        certificate_type,
+        certificate_base64,
+        now_seconds,
+    )?;
+    Ok(&claim.binding.user)
+}
+
+pub(crate) fn checked_openssh_attach_certificate_v1(
+    claim: &OpenSshGateClaimV1,
+    certificate_type: &str,
+    certificate_base64: &str,
+    now_seconds: u64,
+) -> Result<Certificate, OpenSshAttachCertificateErrorV1> {
     let rejected = OpenSshAttachCertificateErrorV1;
     claim.validate().map_err(|_| rejected)?;
     if certificate_type != PUBLIC_ATTACH_CERTIFICATE_TYPE_V1
@@ -109,7 +124,7 @@ pub fn validate_openssh_attach_certificate_v1<'a>(
         .validate_at(now_seconds, [&ca.fingerprint(HashAlg::Sha256)])
         .map_err(|_| rejected)?;
 
-    Ok(&binding.user)
+    Ok(certificate)
 }
 
 /// Reports a rejected certificate without exposing credential bytes.
@@ -209,6 +224,60 @@ mod tests {
             builder.extension("permit-pty", "").unwrap();
         }
         builder
+    }
+
+    #[test]
+    fn v2_rejects_another_same_profile_certificate_and_retained_holder_substitution() {
+        use crate::openssh_ticket::{
+            validate_original_ticket_certificate_v2, validate_ticket_profile_v2,
+        };
+        use aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2;
+        let claim = claim();
+        let original = certificate(profiled(&claim, 17), 8);
+        let cert = Certificate::from_openssh(&original).unwrap();
+        let mut receipt = [0; 416];
+        receipt[..8].copy_from_slice(b"AOSAPG01");
+        receipt[8..24].copy_from_slice(&claim.binding.attach_operation_id);
+        receipt[24..40].copy_from_slice(&claim.binding.execution_id);
+        let ticket = PublicAttachTicketBindingV2 {
+            operation_id: claim.binding.attach_operation_id,
+            execution_id: claim.binding.execution_id,
+            incarnation_id: claim.binding.incarnation_id,
+            principal_id: claim.binding.principal_id,
+            audit_id: claim.binding.audit_id,
+            assignment_epoch: claim.binding.assignment_epoch,
+            valid_after: cert.valid_after(),
+            expires_at: cert.valid_before(),
+            holder_public_key: cert.public_key().ed25519().unwrap().0,
+            request_digest: [18; 32],
+            decision_digest: [19; 32],
+            pending_grant: receipt,
+            base_route_digest: claim.route_digest,
+            certificate: original.as_bytes().to_vec(),
+        };
+        let encoded = ticket.encode().unwrap();
+        let (kind, base64) = original.split_once(' ').unwrap();
+        validate_original_ticket_certificate_v2(&claim, &encoded, kind, base64, 1100).unwrap();
+        let other_holder = certificate(profiled(&claim, 20), 8);
+        let mut new_serial = profiled(&claim, 17);
+        new_serial.serial(999).unwrap();
+        for alternate in [other_holder, certificate(new_serial, 8)] {
+            assert!(check(&claim, &alternate, 1100));
+            let (kind, base64) = alternate.split_once(' ').unwrap();
+            assert!(
+                validate_original_ticket_certificate_v2(&claim, &encoded, kind, base64, 1100)
+                    .is_err()
+            );
+        }
+        let mut substituted = ticket.clone();
+        substituted.holder_public_key = [21; 32];
+        assert!(validate_ticket_profile_v2(&claim, &substituted, 1100).is_err());
+        substituted = ticket.clone();
+        substituted.base_route_digest = [22; 32];
+        assert!(validate_ticket_profile_v2(&claim, &substituted, 1100).is_err());
+        assert!(validate_ticket_profile_v2(&claim, &ticket, 999).is_err());
+        assert!(validate_ticket_profile_v2(&claim, &ticket, 1300).is_err());
+        assert_eq!(ticket.certificate, original.as_bytes());
     }
 
     #[test]

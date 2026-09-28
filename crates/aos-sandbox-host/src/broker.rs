@@ -63,12 +63,11 @@ use aos_sandbox_protocol::host_storage_output_readback::{
 use aos_sandbox_protocol::semantics::{
     CanonicalHostAttachGateSemanticsV1, CanonicalHostExecutionArgumentSemanticsV1,
     CanonicalHostExecutionSemanticsV1, CanonicalHostOutputSemanticsV1,
-    canonical_host_attach_gate_semantics_v1, canonical_host_attach_readiness_semantics_v1,
-    canonical_host_attach_route_query_semantics_v1, canonical_host_execution_apply_semantics_v1,
-    canonical_host_execution_query_semantics_v1, host_execution_argument_no_apply_grant_v1,
-    host_execution_argument_observe_grant_v1, host_execution_argument_query_grant_v1,
-    host_execution_argument_query_no_apply_grant_v1, host_output_query_grant_v1,
-    host_output_reserve_grant_v1,
+    canonical_host_attach_readiness_semantics_v1, canonical_host_attach_route_query_semantics_v1,
+    canonical_host_execution_apply_semantics_v1, canonical_host_execution_query_semantics_v1,
+    host_execution_argument_no_apply_grant_v1, host_execution_argument_observe_grant_v1,
+    host_execution_argument_query_grant_v1, host_execution_argument_query_no_apply_grant_v1,
+    host_output_query_grant_v1, host_output_reserve_grant_v1,
 };
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
@@ -864,11 +863,9 @@ where
                         request.pending_grant(),
                     )
                     .map_err(|_| HostError::Fence("Host attach pending grant is invalid"))?;
-                    let semantics = canonical_host_attach_gate_semantics_v1(
-                        assignment,
-                        request.pending_grant(),
-                    )
-                    .map_err(|_| HostError::Fence("Host attach semantics are invalid"))?;
+                    let semantics = request
+                        .semantics(assignment)
+                        .map_err(|_| HostError::Fence("Host attach semantics are invalid"))?;
                     (
                         *request.header(),
                         grant.operation_id,
