@@ -301,8 +301,16 @@ fn replace_output(bytes: &[u8], index: usize, replacement: &[u8]) -> Vec<u8> {
     let fields = candidate_output_bytes(bytes).expect("original canonical outputs");
     let mut changed = bytes[..header.output_offset].to_vec();
     let descriptor_offset = 314 + 41 * index;
+    let media_kind = match index {
+        0 => PortableMediaType::Policy,
+        1 => PortableMediaType::Optimization,
+        2 | 3 => PortableMediaType::Content,
+        _ => panic!("fixture output index"),
+    };
+    let descriptor =
+        descriptor_for_bytes(MediaType::new(media_kind.as_str()).unwrap(), replacement);
     changed[descriptor_offset + 1..descriptor_offset + 33]
-        .copy_from_slice(&Sha256::digest(replacement));
+        .copy_from_slice(descriptor.digest().as_bytes());
     changed[descriptor_offset + 33..descriptor_offset + 41]
         .copy_from_slice(&(replacement.len() as u64).to_be_bytes());
     for (position, field) in fields.into_iter().enumerate() {
@@ -355,6 +363,26 @@ fn candidate_v3_roundtrip_retains_exact_existing_compiler_preimage_and_outputs()
     )
     .expect("unchanged original commitment tuple");
     assert_eq!(header.candidate, original_hash);
+}
+
+#[test]
+fn candidate_outputs_reject_plain_payload_hashes_in_both_versions() {
+    let (bytes, _) = encoded_fixture(&fixture(4096));
+    let outputs = candidate_output_bytes(&bytes).unwrap();
+
+    for version in [bytes.clone(), legacy_v2(&bytes)] {
+        validate_candidate_payload(&version).expect("genuine descriptor profile");
+        for (index, output) in outputs.iter().enumerate() {
+            let mut changed = version.clone();
+            let digest_offset = 315 + 41 * index;
+            changed[digest_offset..digest_offset + 32].copy_from_slice(&Sha256::digest(output));
+
+            assert!(
+                validate_candidate_payload(&changed).is_err(),
+                "output {index} must bind media and length, including legacy observation"
+            );
+        }
+    }
 }
 
 #[test]

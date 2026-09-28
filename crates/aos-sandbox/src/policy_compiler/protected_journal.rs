@@ -17,7 +17,10 @@ use std::{
 use aos_sandbox_core::{
     DecodeLimits, MediaType, ObjectDescriptor, ObjectDigest, PortableMediaType, ProjectId,
     SandboxId,
-    format::{decode_optimization, decode_policy, encode_optimization, encode_policy},
+    format::{
+        decode_optimization, decode_policy, descriptor_for_bytes, encode_optimization,
+        encode_policy,
+    },
 };
 use sha2::{Digest as _, Sha256};
 
@@ -2327,7 +2330,17 @@ pub(super) fn validated_candidate_body(
             .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
         let actual_size = u64::try_from(payload.len())
             .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-        let actual_digest = ObjectDigest::from_bytes(Sha256::digest(payload).into());
+        let media_kind = match index {
+            0 => PortableMediaType::Policy,
+            1 => PortableMediaType::Optimization,
+            2 | 3 => PortableMediaType::Content,
+            _ => return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication),
+        };
+        let media = MediaType::new(media_kind.as_str())
+            .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
+        // Core descriptors bind the registered media type and exact length,
+        // not just the payload. Reuse the compiler's descriptor profile.
+        let actual_digest = descriptor_for_bytes(media, payload).digest();
         if actual_size == 0 || actual_size != *expected_size || actual_digest != *digest {
             return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
         }

@@ -3,8 +3,8 @@
 use std::fs;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
+use aos_sandbox_core::format::descriptor_for_bytes;
 use aos_sandbox_core::model::CacheDomainKind;
-use sha2::{Digest as _, Sha256};
 
 use super::*;
 use crate::JournalTransaction;
@@ -51,7 +51,11 @@ fn held_policy_claim_all_four_domains_retain_exact_outputs_and_writer() {
                 assert_eq!(claim.policy_bytes(), publication.policy);
                 assert_eq!(
                     claim.policy_descriptor().digest(),
-                    ObjectDigest::from_bytes(Sha256::digest(&publication.policy).into())
+                    descriptor_for_bytes(
+                        claim.policy_descriptor().media_type().clone(),
+                        &publication.policy,
+                    )
+                    .digest()
                 );
                 assert_eq!(claim.candidate(), (publication.candidate, 1));
                 assert_eq!(claim.normalized_input(), publication.input);
@@ -103,7 +107,10 @@ fn held_policy_claim_v3_reuses_exact_compiler_outputs_and_cold_evidence() {
                 let fields = candidate_output_bytes(claim.candidate_bytes()).unwrap();
                 for (descriptor, bytes) in claim.outputs().iter().zip(fields) {
                     assert_eq!(descriptor.encoded_size(), bytes.len() as u64);
-                    assert_eq!(descriptor.digest().as_bytes(), &Sha256::digest(bytes)[..]);
+                    assert_eq!(
+                        descriptor_for_bytes(descriptor.media_type().clone(), bytes),
+                        *descriptor
+                    );
                 }
             })
             .unwrap();

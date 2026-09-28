@@ -54,6 +54,18 @@ fn canonical_output_nonempty_compiler_profiles_preserve_declared_field_order() {
 }
 
 #[test]
+fn canonical_output_empty_compiler_profiles_roundtrip_without_synthetic_rules() {
+    let verified = compile_fixture(4096, None, false);
+    let portable = verified.candidate.portable();
+
+    assert!(verified.candidate.namespace().rules().is_empty());
+    assert!(verified.candidate.advisory().decisions().is_empty());
+    validate_namespace(portable.namespace_graph_bytes()).expect("empty namespace profile");
+    validate_advisory(portable.advisory_program_bytes()).expect("empty advisory profile");
+    validate_diagnostics(&verified.diagnostics).expect("complete empty-input diagnostics");
+}
+
+#[test]
 fn canonical_output_namespace_rejects_hostile_fields_shapes_and_rule_order() {
     let verified = compile_fixture(4096, Some(32), false);
     let bytes = verified.candidate.portable().namespace_graph_bytes();

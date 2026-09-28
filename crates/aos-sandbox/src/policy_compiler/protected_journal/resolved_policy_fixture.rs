@@ -81,8 +81,14 @@ pub(in crate::policy_compiler) fn publication(domain: CacheDomainKind) -> Fixtur
     append_prerequisite_tuple(&mut body, &prerequisites);
     body.extend_from_slice(&1_u64.to_be_bytes());
     for (index, bytes) in outputs.iter().enumerate() {
+        let media = match index {
+            0 => PortableMediaType::Policy,
+            1 => PortableMediaType::Optimization,
+            _ => PortableMediaType::Content,
+        };
+        let descriptor = descriptor_for_bytes(MediaType::new(media.as_str()).unwrap(), bytes);
         body.push(index as u8 + 1);
-        body.extend_from_slice(&Sha256::digest(bytes));
+        body.extend_from_slice(descriptor.digest().as_bytes());
         body.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
     }
     assert_eq!(body.len(), 478);
