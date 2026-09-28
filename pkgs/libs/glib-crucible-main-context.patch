@@ -410,7 +410,7 @@
    if (context->in_check_or_prepare)
      {
        g_warning ("g_main_context_check() called recursively from within a source's check() or "
-@@ -6592,3 +6769,475 @@
+@@ -6592,3 +6769,481 @@
   * Returns: the value that @fd_ptr previously had
   * Since: 2.70
   */
@@ -643,6 +643,12 @@
 +         hold->process == crucible_process_identity () &&
 +         g_atomic_int_get (&crucible_context_registry_epoch) == hold->generation &&
 +         g_atomic_int_get (&crucible_context_registry_hold_epoch) == hold->generation;
++}
++
++gboolean
++g_crucible_main_context_dispatch_fenced (void)
++{
++  return g_atomic_int_get (&crucible_context_registry_hold_epoch) != 0;
 +}
 +
 +gboolean
@@ -888,7 +894,7 @@
 +}
 --- /dev/null
 +++ b/glib/gcrucible-main-context.h
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,121 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +/* Native process-private observation API; not a cross-process protocol. */
 +#ifndef G_CRUCIBLE_MAIN_CONTEXT_H
@@ -929,6 +935,12 @@
 +GLIB_AVAILABLE_IN_ALL
 +gboolean g_crucible_main_context_registry_current (
 +    const GCrucibleMainContextRegistryHold *hold);
++/* Physical global dispatch fence, including a stale or partially released
++ * holder. This observer grants no ownership or release authority.
++ */
++GLIB_AVAILABLE_IN_ALL
++gboolean g_crucible_main_context_dispatch_fenced (void);
++
 +GLIB_AVAILABLE_IN_ALL
 +gboolean g_crucible_main_context_registry_release (
 +    GCrucibleMainContextRegistryHold *hold);
