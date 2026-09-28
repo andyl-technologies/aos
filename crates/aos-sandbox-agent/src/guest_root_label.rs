@@ -281,6 +281,7 @@ fn project_tree(
 ) -> Result<(), GuestRootLabelErrorV1> {
     verify_root(directory)?;
     label_descriptor(directory, expected, install, before_deadline)?;
+    let root = BeneathRoot::from_owned(rustix::io::fcntl_dupfd_cloexec(directory, 0)?)?;
     let anchor = format!("/proc/self/fd/{}", directory.as_raw_fd());
     let entries = std::fs::read_dir(&anchor)?;
     for entry in entries {
@@ -300,12 +301,9 @@ fn project_tree(
         }
         match FileType::from_raw_mode(stat.st_mode) {
             FileType::Directory => {
-                let child = openat(
-                    directory,
-                    &name,
-                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                    Mode::empty(),
-                )?;
+                // Every edge needs NO_XDEV, including same-filesystem bind
+                // mounts: the child's device/inode alone cannot prove this.
+                let child = open_directory(root.as_fd(), Path::new(&name))?;
                 require_same_inode(child.as_fd(), &stat)?;
                 project_tree(
                     child.as_fd(),
@@ -318,12 +316,7 @@ fn project_tree(
                 )?;
             }
             FileType::RegularFile => {
-                let child = openat(
-                    directory,
-                    &name,
-                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-                    Mode::empty(),
-                )?;
+                let child = root.open_regular(Path::new(&name))?;
                 require_same_inode(child.as_fd(), &stat)?;
                 verify_root(child.as_fd())?;
                 label_descriptor(child.as_fd(), expected, install, before_deadline)?;
@@ -530,5 +523,127 @@ mod tests {
         assert_ne!(RUNTIME_METADATA_LABEL, CONFIG_LABEL);
         assert_ne!(PUBLICATION_LABEL, PRIVATE_LABEL);
         assert!(!PRIVATE_DIRECTORIES.contains(&PUBLICATION_DIRECTORY));
+    }
+
+    #[test]
+    #[ignore = "requires root, enforcing SELinux, new mount API and AOS_TEST_UNSHARE"]
+    fn recursive_projection_rejects_directory_and_file_submounts() {
+        const CHILD_ROOT: &str = "AOS_GUEST_LABEL_MOUNT_TEST_ROOT";
+        const TEST: &str =
+            "guest_root_label::tests::recursive_projection_rejects_directory_and_file_submounts";
+
+        let Some(directory) = std::env::var_os(CHILD_ROOT) else {
+            // The child owns a private mount namespace. Its exit removes every
+            // fixture mount before the parent removes the temporary files.
+            let directory = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(
+                std::env::var_os("AOS_TEST_UNSHARE").expect("AOS unshare fixture path"),
+            )
+            .args(["--mount", "--propagation", "private", "--"])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", TEST, "--test-threads=1"])
+            .env(CHILD_ROOT, directory.path())
+            .output()
+            .unwrap();
+
+            assert!(
+                output.status.success(),
+                "stdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        };
+
+        assert_eq!(rustix::process::geteuid().as_raw(), 0);
+        let base = BeneathRoot::from_owned(File::open(&directory).unwrap().into()).unwrap();
+        let mut label = [0_u8; MAXIMUM_LABEL_BYTES];
+        let length = fgetxattr(base.as_fd(), XATTR_NAME, &mut label[..]).unwrap();
+        let expected = &label[..length];
+
+        for case in ["directory-bind", "file-bind", "directory-tmpfs"] {
+            let case_path = Path::new(&directory).join(case);
+            std::fs::create_dir(&case_path).unwrap();
+            let is_file = case == "file-bind";
+            let source_path = Path::new(&directory).join(format!("{case}-source"));
+            let destination_path = case_path.join("mounted");
+            if is_file {
+                File::create(&source_path).unwrap();
+                File::create(&destination_path).unwrap();
+            } else {
+                std::fs::create_dir(&source_path).unwrap();
+                std::fs::create_dir(&destination_path).unwrap();
+            }
+            for path in [&case_path, &source_path, &destination_path] {
+                let file = File::open(path).unwrap();
+                fsetxattr(file.as_fd(), XATTR_NAME, expected, XattrFlags::empty()).unwrap();
+            }
+            let case_root =
+                BeneathRoot::from_owned(File::open(&case_path).unwrap().into()).unwrap();
+            project_tree(
+                case_root.as_fd(),
+                0,
+                &mut 0,
+                expected,
+                false,
+                false,
+                &mut || true,
+            )
+            .unwrap();
+
+            let source = base
+                .resolve(
+                    Path::new(&format!("{case}-source")),
+                    aos_sandbox_linux::path::ResolveOptions::any(),
+                )
+                .unwrap();
+            let destination = case_root
+                .resolve(
+                    Path::new("mounted"),
+                    aos_sandbox_linux::path::ResolveOptions::any(),
+                )
+                .unwrap();
+            let mount = if case == "directory-tmpfs" {
+                aos_sandbox_linux::mount::FileSystemContext::open("tmpfs")
+                    .unwrap()
+                    .create()
+                    .unwrap()
+                    .mount()
+                    .unwrap()
+            } else {
+                aos_sandbox_linux::mount::DetachedMount::clone_from(&source, false).unwrap()
+            };
+            mount.attach(&destination).unwrap();
+
+            if case != "directory-tmpfs" {
+                // This is a different mount of the exact same filesystem inode,
+                // so a device/inode comparison cannot reject the substitution.
+                let mounted =
+                    statat(case_root.as_fd(), "mounted", AtFlags::SYMLINK_NOFOLLOW).unwrap();
+                let original = fstat(source.as_fd()).unwrap();
+                assert_eq!(mounted.st_dev, original.st_dev);
+                assert_eq!(mounted.st_ino, original.st_ino);
+            }
+            for install in [false, true] {
+                let error = project_tree(
+                    case_root.as_fd(),
+                    0,
+                    &mut 0,
+                    expected,
+                    false,
+                    install,
+                    &mut || true,
+                )
+                .unwrap_err();
+                assert!(matches!(
+                    error,
+                    GuestRootLabelErrorV1::Path(aos_sandbox_linux::Error::Syscall {
+                        operation: "openat2",
+                        source,
+                    }) if source.raw_os_error() == Some(rustix::io::Errno::XDEV.raw_os_error())
+                ));
+            }
+        }
     }
 }
