@@ -1,21 +1,34 @@
-##! Netty TCNative 2.0.61 Java API compiled from audited sources.
+##! Pinned Netty TCNative Java APIs compiled from audited sources.
 {
   mkDerivation,
   fetchurl,
   buildPackages,
+  version ? "2.0.61.Final",
 }: let
-  version = "2.0.61.Final";
+  sourcePin =
+    if version == "2.0.70.Final"
+    then {
+      revision = "431c098de23145edbd7112d96ad3fc30955a0e3b";
+      hash = "sha256-XOP3q8N51dMZPgFlH33ctqVyr6OSyFoPWm4mJBrzMvE=";
+      javaFiles = 25;
+    }
+    else
+      assert version == "2.0.61.Final"; {
+        revision = "ea87032e1dd058f7d3d5a8c5d1852e690a5142a3";
+        hash = "sha256-tUI3C+atTXI+AVb8Qf/A2576MIMw5xrsGM3rDfw6RNA=";
+        javaFiles = 24;
+      };
   buildJdk = buildPackages.openjdk-21;
   source = fetchurl {
     urls = ["https://repo.maven.apache.org/maven2/io/netty/netty-tcnative-classes/${version}/netty-tcnative-classes-${version}-sources.jar"];
-    hash = "sha256-tUI3C+atTXI+AVb8Qf/A2576MIMw5xrsGM3rDfw6RNA=";
+    inherit (sourcePin) hash;
   };
   license = fetchurl {
-    urls = ["https://raw.githubusercontent.com/netty/netty-tcnative/ea87032e1dd058f7d3d5a8c5d1852e690a5142a3/LICENSE.txt"];
+    urls = ["https://raw.githubusercontent.com/netty/netty-tcnative/${sourcePin.revision}/LICENSE.txt"];
     hash = "sha256-xx0jnfkXJvxRnG63LTGOxlggYnIysveWIZ6H3PNdCrQ=";
   };
   notice = fetchurl {
-    urls = ["https://raw.githubusercontent.com/netty/netty-tcnative/ea87032e1dd058f7d3d5a8c5d1852e690a5142a3/NOTICE.txt"];
+    urls = ["https://raw.githubusercontent.com/netty/netty-tcnative/${sourcePin.revision}/NOTICE.txt"];
     hash = "sha256-ewnB5LERiOiFLzc+5YTMN3WX+QdgoS+ZSPH5pEpynYo=";
   };
 in
@@ -48,7 +61,7 @@ in
                       raise SystemExit(f"Unsafe TCNative Java source: {path}")
                   if member.is_dir():
                       continue
-                  if path.suffix not in {".java", ".xml"} and str(path) != "META-INF/MANIFEST.MF":
+                  if path.suffix not in {".java", ".xml", ".yml"} and str(path) != "META-INF/MANIFEST.MF":
                       raise SystemExit(f"Unexpected TCNative Java source: {path}")
                   data = archive.read(member)
                   if b"\0" in data:
@@ -61,8 +74,8 @@ in
                   destination.write_bytes(data)
                   java_files.append(destination)
 
-          if len(java_files) != 24:
-              raise SystemExit(f"Expected 24 TCNative Java sources, found {len(java_files)}")
+          if len(java_files) != ${toString sourcePin.javaFiles}:
+              raise SystemExit(f"Expected ${toString sourcePin.javaFiles} TCNative Java sources, found {len(java_files)}")
           Path("java-sources").write_text("".join(f"{path}\n" for path in sorted(java_files)))
           PY
         '';
