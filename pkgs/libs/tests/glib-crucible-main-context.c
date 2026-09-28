@@ -667,6 +667,195 @@ static void test_closed_control_cohort(gconstpointer opaque)
     g_mutex_clear(&fixture.mutex);
 }
 
+typedef struct ControlEntryRace {
+    GCrucibleMainContextControlHold control;
+    gint run;
+    gint stop;
+    gint probes;
+    gint callbacks;
+} ControlEntryRace;
+
+static gboolean entry_race_callback(gpointer opaque)
+{
+    ControlEntryRace *race = opaque;
+
+    g_assert_true(g_main_context_is_owner(race->control.context));
+    g_atomic_int_inc(&race->callbacks);
+    return G_SOURCE_CONTINUE;
+}
+
+static gpointer entry_race_reader(gpointer opaque)
+{
+    ControlEntryRace *race = opaque;
+
+    while (!g_atomic_int_get(&race->run)) {
+        g_thread_yield();
+    }
+    while (!g_atomic_int_get(&race->stop)) {
+        /* Both public current and entry overlap release before/after active
+         * publication. The token storage stays alive until this thread joins.
+         */
+        g_crucible_main_context_control_current(&race->control);
+        g_crucible_main_context_control_iteration(&race->control);
+        g_atomic_int_inc(&race->probes);
+    }
+    return NULL;
+}
+
+static void test_control_entry_release_race(void)
+{
+    ControlEntryRace race = { 0 };
+    GMainContext *context = g_main_context_new();
+    GMainContext *contexts[64];
+    GCrucibleMainContextHold holds[64] = { 0 };
+    GCrucibleMainContextRegistryHold registry = { 0 };
+    GCrucibleSourceObservation sources[8];
+    GCrucibleMainContextObservation observation;
+    GSource *source = g_idle_source_new();
+    GThread *reader;
+    guint count = 0;
+    guint selected = G_MAXUINT;
+    gint64 deadline;
+
+    g_crucible_source_set_role(source, G_CRUCIBLE_SOURCE_CONTROL, &race);
+    g_source_set_callback(source, entry_race_callback, &race, NULL);
+    g_source_attach(source, context);
+    reader = g_thread_new("control-entry-race", entry_race_reader, &race);
+    g_assert_true(g_crucible_main_contexts_try_hold(&registry, contexts, holds,
+                                                   64, &count));
+    for (guint index = 0; index < count; index++) {
+        if (contexts[index] == context) {
+            selected = index;
+        }
+    }
+    g_assert_cmpuint(selected, !=, G_MAXUINT);
+    g_assert_true(g_crucible_main_context_inventory(&holds[selected], sources,
+                                                    8, &observation));
+    g_assert_true(g_crucible_main_context_control_try_arm(&registry,
+        &holds[selected], sources, observation.sources, reader, &race.control));
+    g_atomic_int_set(&race.run, 1);
+    deadline = g_get_monotonic_time() + 5000000;
+    while (g_atomic_int_get(&race.probes) < 1000) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_thread_yield();
+    }
+    while (!g_crucible_main_context_control_try_release(&race.control)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_assert_true(g_crucible_main_context_dispatch_fenced());
+        g_thread_yield();
+    }
+    /* Keep the actual reader probing the cleared token before releasing the
+     * context references: every public path must reject without dereferencing
+     * ordinary identity fields cleared by the acknowledged release.
+     */
+    g_assert_false(g_crucible_main_context_control_current(&race.control));
+    g_atomic_int_set(&race.stop, 1);
+    g_thread_join(reader);
+    for (guint index = 0; index < count; index++) {
+        release_context(&holds[index]);
+        g_main_context_unref(contexts[index]);
+    }
+    release_registry(&registry);
+    g_source_destroy(source);
+    g_source_unref(source);
+    g_main_context_unref(context);
+}
+
+static void test_control_after_fork_membership(void)
+{
+    ControlFixture fixture = { 0 };
+    GCrucibleMainContextRegistryHold registry = { 0 };
+    GMainContext *contexts[64];
+    GCrucibleMainContextHold holds[64] = { 0 };
+    GCrucibleSourceObservation observations[8];
+    GCrucibleMainContextObservation observation;
+    GSource *source = g_idle_source_new();
+    GThread *reader;
+    guint count = 0;
+    guint selected = G_MAXUINT;
+    guint source_id;
+    pid_t child;
+    int status;
+
+    g_mutex_init(&fixture.mutex);
+    g_cond_init(&fixture.cond);
+    fixture.context = g_main_context_new();
+    g_crucible_source_set_role(source, G_CRUCIBLE_SOURCE_CONTROL, &fixture);
+    g_source_set_callback(source, bounded_control_callback, &fixture, NULL);
+    source_id = g_source_attach(source, fixture.context);
+    reader = g_thread_new("parent-control-reader", control_reader, &fixture);
+    g_assert_true(g_crucible_main_contexts_try_hold(&registry, contexts, holds,
+                                                   64, &count));
+    for (guint index = 0; index < count; index++) {
+        if (contexts[index] == fixture.context) {
+            selected = index;
+        }
+    }
+    g_assert_cmpuint(selected, !=, G_MAXUINT);
+    g_assert_true(g_crucible_main_context_inventory(&holds[selected],
+        observations, 8, &observation));
+    g_assert_true(g_crucible_main_context_control_try_arm(&registry,
+        &holds[selected], observations, observation.sources, reader,
+        &fixture.control));
+    child = fork();
+    g_assert_cmpint(child, >=, 0);
+    if (!child) {
+        GCrucibleMainContextControlHold copied = fixture.control;
+        GCrucibleMainContextRegistryHold stale = registry;
+
+        stale.generation++;
+        g_assert_false(g_crucible_main_context_control_current(&fixture.control));
+        g_assert_false(g_crucible_main_context_registry_after_fork_child(
+            &stale, contexts, holds, count));
+        g_assert_true(g_crucible_main_context_registry_after_fork_child(
+            &registry, contexts, holds, count));
+        g_assert_null(fixture.control.context);
+        g_assert_false(g_crucible_main_context_control_current(&copied));
+        g_assert_false(g_crucible_main_context_control_iteration(&copied));
+        g_assert_true(g_source_get_context(source) == fixture.context);
+        g_assert_cmpuint(g_source_get_id(source), ==, source_id);
+        g_assert_true(g_crucible_main_context_inventory(&holds[selected],
+            observations, 8, &observation));
+        g_assert_cmpuint(observation.sources, ==, 1);
+        g_assert_true(observations[0].source == source);
+        g_assert_cmpuint(observations[0].source_id, ==, source_id);
+        g_assert_false(g_main_context_iteration(fixture.context, FALSE));
+        for (guint index = 0; index < count; index++) {
+            g_assert_true(g_crucible_main_context_current(&holds[index]));
+            release_context(&holds[index]);
+            g_main_context_unref(contexts[index]);
+        }
+        release_registry(&registry);
+        g_source_destroy(source);
+        g_source_unref(source);
+        g_main_context_unref(fixture.context);
+        _exit(0);
+    }
+    g_assert_cmpint(waitpid(child, &status, 0), ==, child);
+    g_assert_true(WIFEXITED(status));
+    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
+    g_assert_true(g_crucible_main_context_control_current(&fixture.control));
+    g_assert_true(g_source_get_context(source) == fixture.context);
+    g_assert_cmpuint(g_source_get_id(source), ==, source_id);
+    g_assert_true(g_crucible_main_context_control_try_release(&fixture.control));
+    for (guint index = 0; index < count; index++) {
+        release_context(&holds[index]);
+        g_main_context_unref(contexts[index]);
+    }
+    release_registry(&registry);
+    g_mutex_lock(&fixture.mutex);
+    fixture.run = TRUE;
+    fixture.resume = TRUE;
+    g_cond_broadcast(&fixture.cond);
+    g_mutex_unlock(&fixture.mutex);
+    g_thread_join(reader);
+    g_source_destroy(source);
+    g_source_unref(source);
+    g_main_context_unref(fixture.context);
+    g_cond_clear(&fixture.cond);
+    g_mutex_clear(&fixture.mutex);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -684,5 +873,9 @@ int main(int argc, char **argv)
                           test_closed_control_cohort);
     g_test_add_data_func("/crucible/control-invoke-unknown-queued", GINT_TO_POINTER(1),
                           test_closed_control_cohort);
+    g_test_add_func("/crucible/control-entry-release-race",
+                    test_control_entry_release_race);
+    g_test_add_func("/crucible/control-after-fork-membership",
+                    test_control_after_fork_membership);
     return g_test_run();
 }

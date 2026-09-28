@@ -8,7 +8,7 @@
  
  #include "garray.h"
  #include "giochannel.h"
-@@ -190,6 +191,20 @@
+@@ -190,6 +191,21 @@
  
    gint ref_count;  /* (atomic) */
  
@@ -25,11 +25,12 @@
 +  GCrucibleSourceObservation *crucible_control_sources;
 +  gint crucible_control_revoked;
 +  gint crucible_control_active;
++  gboolean crucible_control_retiring_refs;
 +
    GHashTable *sources;              /* guint -> GSource */
  
    GPtrArray *pending_dispatches;
-@@ -289,6 +304,8 @@
+@@ -289,6 +305,8 @@
    GSourceDisposeFunc dispose;
  
    gboolean static_name;
@@ -38,10 +39,12 @@
  };
  
  typedef struct _GSourceIter
-@@ -302,6 +319,56 @@
+@@ -302,6 +320,58 @@
  #define LOCK_CONTEXT(context) g_mutex_lock (&context->mutex)
  #define UNLOCK_CONTEXT(context) g_mutex_unlock (&context->mutex)
  #define G_THREAD_SELF g_thread_self ()
++
++static gboolean crucible_control_token_matches (const GCrucibleMainContextControlHold *control);
 +
 +static gboolean crucible_control_iteration_allowed_unlocked (GMainContext *context);
 +static gboolean crucible_control_source_allowed_unlocked (GMainContext *context,
@@ -95,7 +98,7 @@
  
  #define SOURCE_DESTROYED(source) (((source)->flags & G_HOOK_FLAG_ACTIVE) == 0)
  #define SOURCE_BLOCKED(source) (((source)->flags & G_SOURCE_BLOCKED) != 0)
-@@ -433,6 +500,46 @@
+@@ -433,6 +503,46 @@
  G_LOCK_DEFINE_STATIC (main_context_list);
  static GSList *main_context_list = NULL;
  
@@ -142,7 +145,7 @@
  GSourceFuncs g_timeout_funcs =
  {
    NULL, /* prepare */
-@@ -511,6 +618,7 @@
+@@ -511,6 +621,7 @@
      return;
  
    G_LOCK (main_context_list);
@@ -150,7 +153,7 @@
    main_context_list = g_slist_remove (main_context_list, context);
    G_UNLOCK (main_context_list);
  
-@@ -665,6 +773,7 @@
+@@ -665,6 +776,7 @@
    g_main_context_add_poll_unlocked (context, 0, &context->wake_up_rec);
  
    G_LOCK (main_context_list);
@@ -158,7 +161,7 @@
    main_context_list = g_slist_append (main_context_list, context);
  
  #ifdef G_MAIN_POLL_DEBUG
-@@ -975,7 +1084,12 @@
+@@ -975,7 +1087,12 @@
    g_return_if_fail (source != NULL);
    g_return_if_fail (source->priv->dispose == NULL);
    g_return_if_fail (g_atomic_int_get (&source->ref_count) > 0);
@@ -171,7 +174,7 @@
  }
  
  /* Holds context's lock */
-@@ -1169,6 +1283,8 @@
+@@ -1169,6 +1286,8 @@
    GSList *tmp_list;
    guint id;
  
@@ -180,7 +183,7 @@
    /* The counter may have wrapped, so we must ensure that we do not
     * reuse the source id of an existing source.
     */
-@@ -1275,6 +1391,8 @@
+@@ -1275,6 +1394,8 @@
    if (!have_lock)
      LOCK_CONTEXT (context);
    
@@ -189,7 +192,7 @@
    if (!SOURCE_DESTROYED (source))
      {
        GSList *tmp_list;
-@@ -1291,9 +1409,11 @@
+@@ -1291,9 +1412,11 @@
  
        if (old_cb_funcs)
  	{
@@ -201,7 +204,7 @@
  	}
  
        if (!SOURCE_BLOCKED (source))
-@@ -1453,6 +1573,8 @@
+@@ -1453,6 +1576,8 @@
    if (context)
      LOCK_CONTEXT (context);
    
@@ -210,7 +213,7 @@
    source->poll_fds = g_slist_prepend (source->poll_fds, fd);
  
    if (context)
-@@ -1490,6 +1612,8 @@
+@@ -1490,6 +1615,8 @@
    if (context)
      LOCK_CONTEXT (context);
    
@@ -219,7 +222,7 @@
    source->poll_fds = g_slist_remove (source->poll_fds, fd);
  
    if (context)
-@@ -1546,6 +1670,8 @@
+@@ -1546,6 +1673,8 @@
    if (context)
      LOCK_CONTEXT (context);
  
@@ -228,7 +231,7 @@
    TRACE (GLIB_SOURCE_ADD_CHILD_SOURCE (source, child_source));
  
    source->priv->child_sources = g_slist_prepend (source->priv->child_sources,
-@@ -1567,6 +1693,8 @@
+@@ -1567,6 +1696,8 @@
                                  GMainContext *context)
  {
    GSource *parent_source = child_source->priv->parent_source;
@@ -237,7 +240,7 @@
  
    parent_source->priv->child_sources =
      g_slist_remove (parent_source->priv->child_sources, child_source);
-@@ -1697,6 +1825,8 @@
+@@ -1697,6 +1828,8 @@
                                                  callback_funcs->get));
      }
  
@@ -246,7 +249,7 @@
    old_cb_data = source->callback_data;
    old_cb_funcs = source->callback_funcs;
  
-@@ -1707,7 +1837,22 @@
+@@ -1707,7 +1840,22 @@
      UNLOCK_CONTEXT (context);
    
    if (old_cb_funcs)
@@ -270,7 +273,7 @@
  }
  
  /**
-@@ -1795,6 +1940,8 @@
+@@ -1795,6 +1943,8 @@
    g_return_if_fail (source->priv->parent_source == NULL ||
  		    source->priv->parent_source->priority == priority);
  
@@ -279,7 +282,7 @@
    TRACE (GLIB_SOURCE_SET_PRIORITY (source, context, priority));
  
    if (context)
-@@ -1944,6 +2091,8 @@
+@@ -1944,6 +2094,8 @@
        return;
      }
  
@@ -288,7 +291,7 @@
    source->priv->ready_time = ready_time;
  
    TRACE (GLIB_SOURCE_SET_READY_TIME (source, ready_time));
-@@ -2002,6 +2151,8 @@
+@@ -2002,6 +2154,8 @@
    if (context)
      LOCK_CONTEXT (context);
    
@@ -297,7 +300,7 @@
    if (can_recurse)
      source->flags |= G_SOURCE_CAN_RECURSE;
    else
-@@ -2043,6 +2194,8 @@
+@@ -2043,6 +2197,8 @@
  
    if (context)
      LOCK_CONTEXT (context);
@@ -306,7 +309,7 @@
  
    TRACE (GLIB_SOURCE_SET_NAME (source, name));
  
-@@ -2212,8 +2365,19 @@
+@@ -2212,8 +2368,19 @@
    if (!have_lock && context)
      LOCK_CONTEXT (context);
  
@@ -326,7 +329,7 @@
        /* If there's a dispose function, call this first */
        if (source->priv->dispose)
          {
-@@ -2230,6 +2394,8 @@
+@@ -2230,6 +2397,8 @@
             * case we simply return from here before freeing the source */
            if (!g_atomic_int_dec_and_test (&source->ref_count))
              {
@@ -335,7 +338,7 @@
                if (!have_lock && context)
                  UNLOCK_CONTEXT (context);
                return;
-@@ -2312,6 +2478,8 @@
+@@ -2312,6 +2481,8 @@
        source->priv = NULL;
  
        g_free (source);
@@ -344,7 +347,7 @@
      }
  
    if (!have_lock && context)
-@@ -2655,6 +2823,8 @@
+@@ -2655,6 +2826,8 @@
    if (context)
      LOCK_CONTEXT (context);
  
@@ -353,7 +356,7 @@
    source->priv->fds = g_slist_prepend (source->priv->fds, poll_fd);
  
    if (context)
-@@ -2702,7 +2872,12 @@
+@@ -2702,7 +2875,12 @@
    context = source->context;
    poll_fd = tag;
  
@@ -366,7 +369,7 @@
  
    if (context)
      g_main_context_wakeup (context);
-@@ -2742,6 +2917,8 @@
+@@ -2742,6 +2920,8 @@
  
    if (context)
      LOCK_CONTEXT (context);
@@ -375,7 +378,7 @@
  
    source->priv->fds = g_slist_remove (source->priv->fds, poll_fd);
  
-@@ -3301,6 +3478,16 @@
+@@ -3301,6 +3481,16 @@
    GMainDispatch *current = get_dispatch ();
    guint i;
  
@@ -392,7 +395,7 @@
    for (i = 0; i < context->pending_dispatches->len; i++)
      {
        GSource *source = context->pending_dispatches->pdata[i];
-@@ -3310,7 +3497,9 @@
+@@ -3310,7 +3500,9 @@
  
        source->flags &= ~G_SOURCE_READY;
  
@@ -403,7 +406,7 @@
  	{
  	  gboolean was_in_call;
  	  gpointer user_data = NULL;
-@@ -3439,6 +3628,13 @@
+@@ -3439,6 +3631,13 @@
  {
    GThread *self = G_THREAD_SELF;
  
@@ -417,7 +420,7 @@
    if (!context->owner)
      {
        context->owner = self;
-@@ -3485,6 +3681,16 @@
+@@ -3485,6 +3684,16 @@
  static void
  g_main_context_release_unlocked (GMainContext *context)
  {
@@ -434,7 +437,7 @@
    /* NOTE: We should also have the following assert here:
     * g_return_if_fail (context->owner == G_THREAD_SELF);
     * However, this breaks NetworkManager, which has been (non-compliantly but
-@@ -3697,6 +3903,15 @@
+@@ -3697,6 +3906,15 @@
    GSource *source;
    GSourceIter iter;
  
@@ -450,7 +453,7 @@
    context->time_is_fresh = FALSE;
  
    if (context->in_check_or_prepare)
-@@ -3737,7 +3952,9 @@
+@@ -3737,7 +3955,9 @@
      {
        gint64 source_timeout_usec = -1;
  
@@ -461,7 +464,7 @@
  	continue;
        if ((n_ready > 0) && (source->priority > current_priority))
  	break;
-@@ -4005,6 +4222,16 @@
+@@ -4005,6 +4225,16 @@
    if (context == NULL)
      context = g_main_context_default ();
     
@@ -478,7 +481,7 @@
    if (context->in_check_or_prepare)
      {
        g_warning ("g_main_context_check() called recursively from within a source's check() or "
-@@ -4070,7 +4297,9 @@
+@@ -4070,7 +4300,9 @@
    g_source_iter_init (&iter, context, TRUE);
    while (g_source_iter_next (&iter, &source))
      {
@@ -489,7 +492,7 @@
  	continue;
        if ((n_ready > 0) && (source->priority > max_priority))
  	break;
-@@ -6491,7 +6720,8 @@
+@@ -6491,7 +6723,8 @@
    if (!context)
      context = g_main_context_default ();
  
@@ -499,7 +502,7 @@
      {
        while (function (data));
        if (notify != NULL)
-@@ -6507,7 +6737,8 @@
+@@ -6507,7 +6740,8 @@
        if (!thread_default)
          thread_default = g_main_context_default ();
  
@@ -509,7 +512,7 @@
          {
            while (function (data));
  
-@@ -6592,3 +6823,746 @@
+@@ -6592,3 +6826,876 @@
   * Returns: the value that @fd_ptr previously had
   * Since: 2.70
   */
@@ -781,6 +784,46 @@
 +  return accepted;
 +}
 +
++/* Child-only structural validation of the copied parent cohort. It cannot
++ * admit the vanished reader. Every exact source and retained reference joins
++ * the real locked hash table before its copied dispatch permit is consumed.
++ */
++static gboolean
++crucible_control_child_join_unlocked (GMainContext *context,
++                                     const GCrucibleMainContextRegistryHold *registry,
++                                     const GCrucibleMainContextHold *hold)
++{
++  GCrucibleMainContextControlHold *control = context->crucible_control;
++
++  if (!crucible_control_token_matches (control) ||
++      control->controller != hold->thread ||
++      control->process != registry->process ||
++      control->generation != hold->generation ||
++      control->registry_generation != registry->generation ||
++      !control->reader || control->source_count > 8192 ||
++      control->source_count != g_hash_table_size (context->sources) ||
++      context->owner || context->owner_count ||
++      g_atomic_int_get (&context->crucible_control_active) ||
++      g_atomic_int_get (&context->crucible_control_revoked))
++    return FALSE;
++  for (guint index = 0; index < control->source_count; index++)
++    {
++      const GCrucibleSourceObservation *entry =
++          &context->crucible_control_sources[index];
++      GSource *source = entry->source;
++
++      if (!source || !entry->owner || source->context != context ||
++          SOURCE_DESTROYED (source) || source->source_id != entry->source_id ||
++          source->priv->crucible_role != entry->role ||
++          source->priv->crucible_owner != entry->owner ||
++          g_atomic_int_get (&source->ref_count) <= 1 ||
++          g_hash_table_lookup (context->sources, &source->source_id) !=
++              &source->source_id)
++        return FALSE;
++    }
++  return TRUE;
++}
++
 +/* Exact retained holder revalidation. All context mutexes and the actual
 + * registry mutex are acquired nonblockingly; no callback is entered here.
 + */
@@ -791,6 +834,8 @@
 +                             guint count, gboolean after_fork)
 +{
 +  guint locked = 0;
++  GCrucibleSourceObservation *retired_sources[64] = { 0 };
++  GThread *retired_readers[64] = { 0 };
 +  guint64 process = crucible_process_identity ();
 +  GThread *thread = G_THREAD_SELF;
 +  gboolean accepted = FALSE;
@@ -830,8 +875,11 @@
 +      if (!g_mutex_trylock (&context->mutex))
 +        goto out;
 +      locked++;
-+      if (context->owner != thread || context->owner_count != 1 ||
-+          context->crucible_holder != thread || context->crucible_control ||
++      if ((context->crucible_control ?
++             (!after_fork || !crucible_control_child_join_unlocked (
++                 context, registry, hold)) :
++             (context->owner != thread || context->owner_count != 1)) ||
++          context->crucible_holder != thread ||
 +          context->crucible_callbacks ||
 +          context->in_check_or_prepare || context->crucible_mutators ||
 +          context->waiters || g_hash_table_size (context->sources) > 8192 ||
@@ -858,6 +906,31 @@
 +      GCrucibleMainContextHold *hold = &holds[index];
 +      if (after_fork)
 +        {
++          GCrucibleMainContextControlHold *control = context->crucible_control;
++
++          if (control)
++            {
++              retired_sources[index] = context->crucible_control_sources;
++              retired_readers[index] = control->reader;
++              /* All references were proved nonfinal under this exact mutex.
++               * Dropping this internal cache cannot run dispose/finalize or
++               * change source identity. The copied reader permit is consumed,
++               * never rebased into a fresh child permission.
++               */
++              context->crucible_control_retiring_refs = TRUE;
++              for (guint source_index = 0; source_index < control->source_count;
++                   source_index++)
++                g_source_unref_internal (
++                    retired_sources[index][source_index].source, context, TRUE);
++              context->crucible_control_retiring_refs = FALSE;
++              g_atomic_pointer_set (&context->crucible_control, NULL);
++              context->crucible_control_sources = NULL;
++              context->crucible_control_identity =
++                  (GCrucibleMainContextControlHold) { 0 };
++              *control = (GCrucibleMainContextControlHold) { 0 };
++              context->owner = thread;
++              context->owner_count = 1;
++            }
 +          g_cond_clear (&context->cond);
 +          g_cond_init (&context->cond);
 +        }
@@ -881,6 +954,12 @@
 +  while (locked)
 +    g_mutex_unlock (&contexts[--locked]->mutex);
 +  G_UNLOCK (main_context_list);
++  for (guint index = 0; index < count; index++)
++    {
++      g_free (retired_sources[index]);
++      if (retired_readers[index])
++        g_thread_unref (retired_readers[index]);
++    }
 +  return accepted;
 +}
 +
@@ -1019,8 +1098,9 @@
 +         control->source_count == actual->source_count;
 +}
 +
-+gboolean
-+g_crucible_main_context_control_current (
++/* Context mutex held; the registry/physical holder owns the context lifetime. */
++static gboolean
++crucible_control_current_unlocked (
 +    const GCrucibleMainContextControlHold *control)
 +{
 +  return crucible_control_token_matches (control) &&
@@ -1036,6 +1116,49 @@
 +             control->registry_generation;
 +}
 +
++/* Public entry never reads mutable token identity before the registry lock.
++ * Registry membership then pins the real context while its mutex serializes
++ * installation/removal and the entire pre-active interval. Dispatch runs only
++ * after both locks have been released.
++ */
++static GMainContext *
++crucible_control_entry_try_lock (const GCrucibleMainContextControlHold *control)
++{
++  GMainContext *context;
++
++  if (!control || !G_TRYLOCK (main_context_list))
++    return NULL;
++  context = control->context;
++  if (!context || !g_slist_find (main_context_list, context) ||
++      !g_mutex_trylock (&context->mutex))
++    {
++      G_UNLOCK (main_context_list);
++      return NULL;
++    }
++  return context;
++}
++
++static void
++crucible_control_entry_unlock (GMainContext *context)
++{
++  UNLOCK_CONTEXT (context);
++  G_UNLOCK (main_context_list);
++}
++
++gboolean
++g_crucible_main_context_control_current (
++    const GCrucibleMainContextControlHold *control)
++{
++  GMainContext *context = crucible_control_entry_try_lock (control);
++  gboolean current;
++
++  if (!context)
++    return FALSE;
++  current = crucible_control_current_unlocked (control);
++  crucible_control_entry_unlock (context);
++  return current;
++}
++
 +static gboolean
 +crucible_control_iteration_allowed_unlocked (GMainContext *context)
 +{
@@ -1044,7 +1167,7 @@
 +
 +  return control && g_atomic_int_get (&context->crucible_control_active) &&
 +         control->reader == G_THREAD_SELF &&
-+         g_crucible_main_context_control_current (control);
++         crucible_control_current_unlocked (control);
 +}
 +
 +static gboolean
@@ -1083,9 +1206,15 @@
 +      count > 8192 || !g_crucible_main_context_registry_current (registry) ||
 +      !g_crucible_main_context_current (context_hold))
 +    return FALSE;
-+  context = context_hold->context;
-+  if (!g_mutex_trylock (&context->mutex))
++  if (!G_TRYLOCK (main_context_list))
 +    return FALSE;
++  context = context_hold->context;
++  if (!g_slist_find (main_context_list, context) ||
++      !g_mutex_trylock (&context->mutex))
++    {
++      G_UNLOCK (main_context_list);
++      return FALSE;
++    }
 +  if (!g_crucible_main_context_registry_current (registry) ||
 +      !g_crucible_main_context_current (context_hold) ||
 +      context->crucible_control || context->owner != G_THREAD_SELF ||
@@ -1147,7 +1276,7 @@
 +  accepted = TRUE;
 +
 +out:
-+  UNLOCK_CONTEXT (context);
++  crucible_control_entry_unlock (context);
 +  return accepted;
 +}
 +
@@ -1158,24 +1287,22 @@
 +  GMainContext *context;
 +  gboolean ready;
 +
-+  if (!control || control->reader != G_THREAD_SELF ||
-+      !g_crucible_main_context_control_current (control))
++  context = crucible_control_entry_try_lock (control);
++  if (!context)
 +    return FALSE;
-+  context = control->context;
-+  if (!g_mutex_trylock (&context->mutex))
-+    return FALSE;
-+  if (!g_crucible_main_context_control_current (control) ||
++  if (control->reader != G_THREAD_SELF ||
++      !crucible_control_current_unlocked (control) ||
 +      context->owner || context->owner_count || context->waiters ||
 +      context->crucible_mutators || context->in_check_or_prepare ||
 +      g_atomic_int_get (&context->crucible_control_active))
 +    {
-+      UNLOCK_CONTEXT (context);
++      crucible_control_entry_unlock (context);
 +      return FALSE;
 +    }
 +  context->owner = G_THREAD_SELF;
 +  context->owner_count = 1;
 +  g_atomic_int_set (&context->crucible_control_active, 1);
-+  UNLOCK_CONTEXT (context);
++  crucible_control_entry_unlock (context);
 +
 +  g_main_context_push_thread_default (context);
 +  LOCK_CONTEXT (context);
@@ -1205,21 +1332,24 @@
 +  guint count;
 +  GThread *reader;
 +
++  context = crucible_control_entry_try_lock (control);
++  if (!context)
++    return FALSE;
 +  if (!crucible_control_token_matches (control) ||
 +      control->controller != G_THREAD_SELF ||
 +      control->process != crucible_process_identity ())
-+    return FALSE;
-+  context = control->context;
++    {
++      crucible_control_entry_unlock (context);
++      return FALSE;
++    }
 +  g_atomic_int_set (&context->crucible_control_revoked, 1);
-+  g_main_context_wakeup (context);
-+  if (!g_mutex_trylock (&context->mutex))
-+    return FALSE;
-+  if (!crucible_control_token_matches (control) || context->owner ||
++  if (context->owner ||
 +      context->owner_count || context->in_check_or_prepare ||
 +      context->crucible_callbacks ||
 +      g_atomic_int_get (&context->crucible_control_active))
 +    {
-+      UNLOCK_CONTEXT (context);
++      crucible_control_entry_unlock (context);
++      g_main_context_wakeup (context);
 +      return FALSE;
 +    }
 +  count = control->source_count;
@@ -1231,7 +1361,8 @@
 +  context->owner = G_THREAD_SELF;
 +  context->owner_count = 1;
 +  *control = (GCrucibleMainContextControlHold) { 0 };
-+  UNLOCK_CONTEXT (context);
++  crucible_control_entry_unlock (context);
++  g_main_context_wakeup (context);
 +
 +  /* Source retirement/finalization callbacks always run outside both locks. */
 +  for (guint index = 0; index < count; index++)
@@ -1245,8 +1376,10 @@
 +static gboolean
 +crucible_control_retained_reference_unlocked (GMainContext *context, GSource *source)
 +{
-+  if (!context || !g_atomic_int_get (&context->crucible_control_active) ||
-+      context->crucible_control_identity.reader != G_THREAD_SELF ||
++  if (!context ||
++      (!context->crucible_control_retiring_refs &&
++       (!g_atomic_int_get (&context->crucible_control_active) ||
++        context->crucible_control_identity.reader != G_THREAD_SELF)) ||
 +      !g_atomic_pointer_get (&context->crucible_control) ||
 +      g_atomic_int_get (&source->ref_count) <= 1)
 +    return FALSE;
