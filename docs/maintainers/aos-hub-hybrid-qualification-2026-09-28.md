@@ -400,9 +400,26 @@ signing seeds were subsequently provisioned as enabled numeric version `1` of
 their existing encrypted aliases. Preflight verified the single regional CMEK
 replica, exact Native accessor grant and absence of prior versions. Each key
 has 256 bits of entropy; exact stored-byte and CRC32C readback passed in memory.
-No secret values entered source, state, command arguments or logs. Public signer
-trust maps and domain-probe configuration remain unprovisioned. These credentials
-have not yet been mounted in a serving revision.
+No secret values entered source, state, command arguments or logs. These
+credentials have not yet been mounted in a serving revision.
+
+The remaining serving configurations are now enabled numeric version `1`, with
+exact stored-byte readback: `domain-probe-signers`, `release-publication-keys`
+and `qualification-keys`. The initial domain manifest has no entries because
+the new Hub has no custom-domain terminators; it cannot sign a domain proof.
+Publication trust names the actual Native receipt public key as
+`aos-hub-hybrid-staging-release-receipt-v1`. The separate qualification verifier
+is `aos-hub-hybrid-staging-qualification-v1`; its generated private seed is
+retained encrypted under the staging CMEK. No qualification receipt was issued.
+These versions configure verification authority and do not establish that a
+release passed qualification.
+
+A dedicated archive identity was also generated, with only its public recipient
+available to registration source. Its private identity was encrypted under the
+same staging CMEK and the plaintext file removed. Publishing that encrypted
+identity to its dedicated Secret Manager resource remains pending the reviewed
+delivery authority registration. Neither private identity is a Native serving
+credential.
 
 Native receipt signing seeds now use the same private credential reader as the
 database and other signing keys. Temporary encoded buffers are zeroized after
