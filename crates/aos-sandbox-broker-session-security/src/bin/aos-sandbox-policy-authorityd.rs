@@ -277,6 +277,9 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
+    // Capture every inherited descriptor before credentials/journals/listeners
+    // or readback threads open anything. This is independent of method46 mode.
+    let startup = aos_sandbox_broker_session_security::production_normal_root::ProductionNormalRootStartupCaptureV1::capture()?;
     if rustix::process::geteuid().as_raw() != 0 || rustix::process::getuid().as_raw() != 0 {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "root required").into());
     }
@@ -286,6 +289,9 @@ fn run() -> Result<(), Box<dyn Error>> {
     let first = arguments
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "controller UID required"))?;
+    if first.starts_with("--") {
+        startup.require_non_normal_invocation()?;
+    }
     if first == "--serve-cache-signer-recovery" {
         let controller_uid: u32 = arguments
             .next()
@@ -556,11 +562,18 @@ fn run() -> Result<(), Box<dyn Error>> {
         );
     }
 
+    let startup = startup.admit_normal([
+        controller_uid,
+        controller_gid,
+        cache_signer_uid,
+        source_signer_uid,
+    ])?;
+
     // An unresolved CAS never reaches credential admission. Its isolated
     // service admits only historical replay and the qualified, nonauthorizing
     // Controller ACK exchange; Root validates the pinned signer before writing.
     if read_fixed_inert_closed_policy_binding_hold_v1()?.is_some() {
-        return serve_held_binding_recovery(controller_uid, controller_gid);
+        return serve_held_binding_recovery(controller_uid, controller_gid, startup);
     }
 
     let current = (|| -> Result<CurrentRootCredentials, Box<dyn Error>> {
@@ -697,6 +710,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                     controller_uid,
                     controller_gid,
                     source_signer_uid,
+                    startup.as_ref(),
                 );
             }
             return Err(error);
@@ -732,8 +746,12 @@ fn run() -> Result<(), Box<dyn Error>> {
             Ok(stream) => stream,
             Err(error) => return Err(error.into()),
         };
+        if let Some(owner) = &startup {
+            owner.recheck()?;
+        }
         if let Err(error) = serve_current_head(
             &mut stream,
+            startup.as_ref(),
             controller_uid,
             controller_gid,
             cache_signer_uid,
@@ -763,10 +781,16 @@ fn run() -> Result<(), Box<dyn Error>> {
 fn serve_held_binding_recovery(
     controller_uid: u32,
     controller_gid: u32,
+    startup: Option<
+        aos_sandbox_broker_session_security::production_normal_root::ProductionNormalRootStartupV1,
+    >,
 ) -> Result<(), Box<dyn Error>> {
     let listener = bind_policy_socket(Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2))?;
     for accepted in listener.incoming() {
         let mut stream = accepted?;
+        if let Some(owner) = &startup {
+            owner.recheck()?;
+        }
         if let Err(error) = serve_held_binding_request(&mut stream, controller_uid, controller_gid)
         {
             eprintln!("aos-sandbox-policy-authorityd: rejected held Q04 recovery: {error}");
@@ -779,15 +803,22 @@ fn serve_project_admission_recovery_only(
     controller_uid: u32,
     controller_gid: u32,
     source_signer_uid: u32,
+    startup: Option<
+        &aos_sandbox_broker_session_security::production_normal_root::ProductionNormalRootStartupV1,
+    >,
 ) -> Result<(), Box<dyn Error>> {
     let listener = bind_policy_socket(Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2))?;
     for accepted in listener.incoming() {
         let mut stream = accepted?;
+        if let Some(owner) = startup {
+            owner.recheck()?;
+        }
         if let Err(error) = serve_project_admission_recovery_request(
             &mut stream,
             controller_uid,
             controller_gid,
             source_signer_uid,
+            startup,
         ) {
             eprintln!("aos-sandbox-policy-authorityd: rejected project recovery: {error}");
         }
@@ -800,6 +831,9 @@ fn serve_project_admission_recovery_request(
     controller_uid: u32,
     controller_gid: u32,
     source_signer_uid: u32,
+    startup: Option<
+        &aos_sandbox_broker_session_security::production_normal_root::ProductionNormalRootStartupV1,
+    >,
 ) -> Result<(), Box<dyn Error>> {
     require_controller_peer(stream, controller_uid, controller_gid)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -816,6 +850,7 @@ fn serve_project_admission_recovery_request(
     match mode {
         HeadRequestMode::SourceGenesis => serve_root_source_genesis_recovery_v1(
             stream,
+            startup,
             request[8..24].try_into()?,
             controller_uid,
             controller_gid,
@@ -1319,6 +1354,9 @@ fn require_controller_peer(
 
 fn serve_current_head(
     stream: &mut std::os::unix::net::UnixStream,
+    startup: Option<
+        &aos_sandbox_broker_session_security::production_normal_root::ProductionNormalRootStartupV1,
+    >,
     controller_uid: u32,
     controller_gid: u32,
     cache_signer_uid: u32,
@@ -1340,6 +1378,9 @@ fn serve_current_head(
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
     let (request, mode) = read_head_request(stream, || {
+        if let Some(owner) = startup {
+            owner.recheck()?;
+        }
         require_no_fixed_closed_policy_binding_hold_v1()?;
         Ok(())
     })?;
@@ -1349,6 +1390,7 @@ fn serve_current_head(
         // existing UID by the installed Source owner and read-only view.
         return serve_root_source_genesis_flight_v1(
             stream,
+            startup,
             request[8..24].try_into()?,
             controller_uid,
             controller_gid,
@@ -4776,7 +4818,7 @@ mod tests {
 
             let uid = rustix::process::getuid().as_raw();
             let gid = rustix::process::getgid().as_raw();
-            let error = serve_project_admission_recovery_request(&mut server, uid, gid, uid)
+            let error = serve_project_admission_recovery_request(&mut server, uid, gid, uid, None)
                 .expect_err("expired credentials cannot mint fresh Root authority");
             assert!(error.to_string().contains("recovery-only Root"));
         }

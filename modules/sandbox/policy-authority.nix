@@ -7,6 +7,41 @@
 }: let
   cfg = config.aos.sandbox.policyAuthority;
   controller = config.aos.sandbox.controller;
+  confined = config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0";
+  normalUnit = config.systemd.services.aos-sandbox-policy-authorityd;
+  systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
+  # Replace only the explicit profile self-reference. All other final selected
+  # service bytes (including global environment and external overrides) remain
+  # committed without a profile→unit→profile derivation cycle.
+  normalizedNormalUnit =
+    normalUnit
+    // {
+      environment = config.systemd.globalEnvironment // normalUnit.environment;
+      serviceConfig =
+        normalUnit.serviceConfig
+        // {
+          OpenFile = [
+            "/proc/1/exe:aos-normal-root-pid1-image:read-only"
+            "@AOS_NORMAL_ROOT_PROFILE@:aos-normal-root-profile:read-only"
+          ];
+        };
+    };
+  renderedNormalUnit = systemdLib.serviceToUnit normalizedNormalUnit;
+  # Match makeUnit's existing build-side substitution for actual job scripts.
+  # Committing eval-only placeholders would not bind the installed unit bytes.
+  materializedNormalUnit =
+    builtins.replaceStrings
+    (builtins.map (job: job.placeholder) renderedNormalUnit.jobScripts)
+    (builtins.map (job: job.path) renderedNormalUnit.jobScripts)
+    renderedNormalUnit.text;
+  normalRootProfile = pkgs.aosNormalRootStartupProfileWith {
+    aos-sandboxd = cfg.package;
+    systemd = config.systemd.package;
+    aos-selinux-production-policy = config.aos.security.selinux._productionPolicy;
+    aos-selinux-kernel-policy-readback = config.aos.security.selinux._canonicalReadback;
+    unitContract = materializedNormalUnit;
+    identities = [controller.uid controller.gid cacheSignerUid sourceSignerUid];
+  };
   preparer = import ./_view-preparer.nix {inherit config pkgs;};
   cacheRecovery = config.systemd.services.aos-sandbox-policy-cache-recovery;
   cacheRecoveryConfig = cacheRecovery.serviceConfig;
@@ -154,6 +189,16 @@ in {
       readOnly = true;
       default = prepareCacheJournalView;
       description = "Exact immutable checked cache view entrypoint selected by the production policy.";
+    };
+    _normalStartupProfile = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      internal = true;
+      readOnly = true;
+      default =
+        if confined
+        then normalRootProfile
+        else null;
+      description = "Selected-image server-local normal Root startup inputs, never a client or FUSE read grant.";
     };
     enable = lib.mkEnableOption "the root-owned signed deployment policy input authority";
 
@@ -309,7 +354,11 @@ in {
       serviceConfig = {
         Type = "simple";
         # Recovery CLI uses the same ELF but never inherits this normal role.
-        SELinuxContext = lib.mkIf (config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") "system_u:system_r:aos_sandbox_policy_authority_t";
+        SELinuxContext = lib.mkIf confined "system_u:system_r:aos_sandbox_policy_authority_t:s0";
+        OpenFile = lib.mkIf confined [
+          "/proc/1/exe:aos-normal-root-pid1-image:read-only"
+          "${normalRootProfile}/profile.json:aos-normal-root-profile:read-only"
+        ];
         # Zero identities disable signer flights unless their separate services and views are enabled.
         ExecStart = "${cfg.package}/bin/aos-sandbox-policy-authorityd ${toString controller.uid} ${toString controller.gid} ${toString cacheSignerUid} ${toString sourceSignerUid}";
         LoadCredential =

@@ -1711,6 +1711,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         callPackage ./security/aos-selinux-runtime-roots.nix arguments;
       aosSelinuxProductionPolicyWith = arguments:
         callPackage ./security/aos-selinux-production-policy.nix arguments;
+      aosNormalRootStartupProfileWith = arguments:
+        callPackage ./security/_aos-normal-root-profile.nix arguments;
       aosSelinuxKernelPolicyReadbackWith = arguments:
         callPackage ./security/aos-selinux-kernel-policy-readback.nix arguments;
       aosSelinuxKernelPolicyReadbackForKernel = kernel:
