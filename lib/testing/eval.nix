@@ -140,6 +140,8 @@
     then throw "postFinalize must preserve the caller's script"
     else "post-finalize ordered after fixup, scrub, and target metadata";
 
+  selinuxKernelPolicyReadback = import ./selinux-kernel-policy-readback.nix {inherit lib;};
+
   mergeImageManifest = import ../build/merge-image-manifest.nix {inherit lib;};
   activationImageOverride = let
     hostnameUnit = "aos-hostname.service";
@@ -1704,6 +1706,7 @@ in
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "verity LUKS gate: exact (${verityDisablesGenericLuks})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
+        echo "SELinux kernel policy readback: ${selinuxKernelPolicyReadback}"
         echo "server SSH:      waits for live host policy (${serverSshWaitsForLiveHostPolicy})"
         echo "activation recovery: routed sources (${activationRestoresRoutedSources})"
         echo "activation overlay: changed job scripts and removed image artifacts (${activationImageOverride}), structural replacements (${activationStructuralReplacement})"
