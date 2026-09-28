@@ -282,6 +282,7 @@
     ../../stdenv/filter-runtime-scripts.pl
   ];
   nativeToolImages = !pkgs.stdenv.hostPlatform.isDarwin && !pkgs.stdenv.isCross;
+  viewToolImagesSupported = support.supportsTarget pkgs.stdenv.hostPlatform.system "aos-sandbox-view-preparer-tools";
   bashRecipes =
     if nativeToolImages
     then nativeToolRecipes
@@ -343,8 +344,9 @@ in
   assert sourceStorePaths pkgs.bash.passthru.sourceRecipes == sourceStorePaths bashRecipes;
   assert sourceStorePaths pkgs.bash.passthru.evidenceSources == sourceStorePaths ([pkgs.bash.src] ++ bashPatches ++ bashRecipes);
   assert !nativeToolImages || sourceStorePaths pkgs.coreutils.passthru.evidenceSources == sourceStorePaths ([pkgs.coreutils.src] ++ coreutilsRecipes);
-  assert sourceStorePaths pkgs.util-linux.passthru.evidenceSources == sourceStorePaths [pkgs.util-linux.src utilLinuxRecipe];
-  assert (releasePackageByName "aos-sandbox-view-preparer-tools").source_store_paths == sourceStorePaths expectedViewToolSources;
+  # Unsupported targets must not force Linux-only dependencies or release roots.
+  assert !viewToolImagesSupported || sourceStorePaths pkgs.util-linux.passthru.evidenceSources == sourceStorePaths [pkgs.util-linux.src utilLinuxRecipe];
+  assert !viewToolImagesSupported || (releasePackageByName "aos-sandbox-view-preparer-tools").source_store_paths == sourceStorePaths expectedViewToolSources;
   assert configuredPackage.configuration.module_artifact
   == "package/k3s-worker/${pkgs.stdenv.hostPlatform.system}/config";
   assert configuredPackage.configuration.evaluation_base_artifact
