@@ -306,6 +306,15 @@ pub(crate) fn recover_records<'record>(
     }
 
     let recovery_work = recovery_work(&attempts, &acquisitions, &native_completions);
+    if acquisitions.values().any(|acquisition| {
+        crate::native_completion::is_native_dispatch_acquisition(acquisition)
+            && acquisition.state != ProviderAcquisitionStateV1::Applying
+            && !native_completions.contains_key(&acquisition.acquisition_id)
+    }) {
+        return Err(ProviderLedgerError::Corrupt(
+            "native acquisition missing completion",
+        ));
+    }
     for record in native_completions.values() {
         let attempt = attempts
             .values()

@@ -586,4 +586,4 @@ fn capacity_transaction(
 
 #[cfg(test)]
 #[path = "runtime_tests.rs"]
-mod tests;
+pub(crate) mod tests;

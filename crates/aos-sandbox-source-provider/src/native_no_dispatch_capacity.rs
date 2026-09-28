@@ -65,7 +65,8 @@ fn request(
     };
     if !phase_matches
         || (!is_native_no_dispatch_acquisition(acquisition) && !dispatch)
-        || acquisition.current_attempt_digest != attempt.attempt_digest
+        || ((!dispatch || native.is_none())
+            && acquisition.current_attempt_digest != attempt.attempt_digest)
         || acquisition.effect_attempt_digest != attempt.attempt_digest
         || session.session_binding != attempt.session_binding
         || acquisition.provider != attempt.provider
@@ -160,26 +161,41 @@ fn validate_committed_graph(ledger: &mut ProviderLedgerV1<'_>) -> Result<(), Pro
 #[path = "native_completion/capacity_tests.rs"]
 mod native_capacity_tests;
 
+#[cfg(test)]
+#[path = "native_completion/graph_capacity_tests.rs"]
+mod native_graph_capacity_tests;
+
 /// Validates the exact union of both native owners and rejects orphan capacity.
 pub(crate) fn validate_set(
     journal: &ProtectedJournalAuthority<'_>,
     recovered: &RecoveredProviderLedgerV1,
 ) -> Result<(), ProviderLedgerError> {
     let mut expected = BTreeSet::new();
-    for acquisition in recovered.acquisitions.values().filter(|record| {
-        (record.state == ProviderAcquisitionStateV1::Applying
-            && is_native_no_dispatch_acquisition(record))
-            || (is_native_dispatch_acquisition(record)
-                && recovered.native_completions.get(&record.acquisition_id).is_none_or(|native| {
-                    native.state != crate::ledger::native_completion::NativeAcquireCompletionStateV2::CleanupRequired
-                }))
-    }) {
+    for acquisition in recovered.acquisitions.values() {
+        let needs_floor = if is_native_dispatch_acquisition(acquisition) {
+            !dispatch_terminal_in_validated_graph(acquisition, recovered)?
+        } else {
+            acquisition.state == ProviderAcquisitionStateV1::Applying
+                && is_native_no_dispatch_acquisition(acquisition)
+        };
+        if !needs_floor {
+            continue;
+        }
+        let native = recovered
+            .native_completions
+            .get(&acquisition.acquisition_id);
+        // Release/recovery can move the ordinary current attempt and session.
+        // The dispatch floor ALWAYS retains its original Acquire provenance.
+        let attempt_digest = native
+            .filter(|_| is_native_dispatch_acquisition(acquisition))
+            .map_or(acquisition.current_attempt_digest, |record| {
+                record.attempt_digest
+            });
         let attempt = recovered
             .attempts
             .values()
-            .find(|record| record.attempt_digest == acquisition.current_attempt_digest)
+            .find(|record| record.attempt_digest == attempt_digest)
             .ok_or(ProviderLedgerError::Corrupt("native capacity attempt"))?;
-        let native = recovered.native_completions.get(&acquisition.acquisition_id);
         let session = match native {
             Some(native) => recovered.session_history.get(&(
                 acquisition.provider.authority_id(),
@@ -190,7 +206,10 @@ pub(crate) fn validate_set(
                 acquisition.provider.authority_id(),
                 acquisition.holder.authority_id(),
             )),
-        }.ok_or(ProviderLedgerError::Corrupt("native capacity original session"))?;
+        }
+        .ok_or(ProviderLedgerError::Corrupt(
+            "native capacity original session",
+        ))?;
         let reservation = exact_reservation(journal, acquisition, attempt, session, native)?;
         if !expected.insert(reservation.reservation_id()) {
             return Err(ProviderLedgerError::Equivocation);
@@ -198,6 +217,53 @@ pub(crate) fn validate_set(
     }
     journal.validate_global_capacity_reservation_set_v1(&expected)?;
     Ok(())
+}
+
+// CleanupRequired is a local observation, not ordinary lease deauthorization.
+// Only a canonical Released acquisition with its exact tombstone is terminal
+// for this Provider floor. This does NOT prove Root/Storage custody absence or
+// authorize Storage retirement; the native terminal caller remains unwired.
+fn dispatch_terminal_in_validated_graph(
+    acquisition: &AcquisitionRecordV1,
+    recovered: &RecoveredProviderLedgerV1,
+) -> Result<bool, ProviderLedgerError> {
+    if acquisition.state != ProviderAcquisitionStateV1::Released {
+        return Ok(false);
+    }
+    let native = recovered
+        .native_completions
+        .get(&acquisition.acquisition_id)
+        .ok_or(ProviderLedgerError::Corrupt(
+            "native terminal completion missing",
+        ))?;
+    let release = recovered
+        .releases
+        .get(&crate::model::ReleaseKeyV1 {
+            provider_id: acquisition.provider.authority_id(),
+            holder_id: acquisition.holder.authority_id(),
+            acquisition_id: acquisition.acquisition_id,
+        })
+        .ok_or(ProviderLedgerError::Corrupt(
+            "native terminal release missing",
+        ))?;
+    let attempt = recovered
+        .attempts
+        .values()
+        .find(|attempt| attempt.attempt_digest == acquisition.current_attempt_digest)
+        .ok_or(ProviderLedgerError::Corrupt(
+            "native terminal release attempt missing",
+        ))?;
+    if native.state
+        != crate::ledger::native_completion::NativeAcquireCompletionStateV2::CleanupRequired
+        || release.state != crate::model::ProviderReleaseStateV1::Tombstone
+    {
+        return Err(ProviderLedgerError::Corrupt(
+            "native terminal phase contradiction",
+        ));
+    }
+    crate::ledger::reducer::validate_release_join(acquisition, release, attempt)
+        .map_err(crate::transaction::map_pure_ledger_error)?;
+    Ok(true)
 }
 
 /// Atomically commits a native Applying row and its one-use terminal headroom.

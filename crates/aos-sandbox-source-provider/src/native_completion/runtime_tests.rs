@@ -20,6 +20,14 @@ fn digest(byte: u8) -> ObjectDigest {
 }
 
 fn requested(nonce: [u8; 32], issued: i64) -> NativeAcquireCompletionRecordV2 {
+    requested_with_session(nonce, issued, digest(1))
+}
+
+pub(crate) fn requested_with_session(
+    nonce: [u8; 32],
+    issued: i64,
+    session_binding: ObjectDigest,
+) -> NativeAcquireCompletionRecordV2 {
     let mut template = Vec::new();
     for tag in 1_u8..=27 {
         let value = match tag {
@@ -35,7 +43,7 @@ fn requested(nonce: [u8; 32], issued: i64) -> NativeAcquireCompletionRecordV2 {
     let binding = b"native-requested-first-fixture".to_vec();
     let binding_digest = digest_logical_binding_bytes(&binding);
     let root = AcquireSourceRequestV1::new_v2(
-        digest(1),
+        session_binding,
         2,
         [3; 16],
         4,
@@ -108,7 +116,11 @@ fn requested(nonce: [u8; 32], issued: i64) -> NativeAcquireCompletionRecordV2 {
     let claims = StorageZfsHoldTransportRequestV1::new(
         1,
         nonce,
-        digest(32),
+        source_provider_request_attempt_digest_v1(
+            signed_root.signer(),
+            SourceProviderMethod::Acquire,
+            root.request_id(),
+        ),
         [33; 16],
         root.holder_authority_id(),
         root.session_binding(),
@@ -120,6 +132,7 @@ fn requested(nonce: [u8; 32], issued: i64) -> NativeAcquireCompletionRecordV2 {
         catalog,
     )
     .unwrap();
+    let provider_key = SigningKey::from_bytes(&[54; 32]);
     let signer = SourceProviderSigningKeyV1::for_signing_key(
         [33; 16],
         35,
@@ -127,13 +140,13 @@ fn requested(nonce: [u8; 32], issued: i64) -> NativeAcquireCompletionRecordV2 {
         [37; 16],
         38,
         SourceProviderKeyUsageV1::ProviderOutcome,
-        &key,
+        &provider_key,
     )
     .unwrap();
     let signed = SignedStorageNativeAcquireRequestV2::sign(
         StorageNativeAcquireRequestV2::new(claims, signed_root).unwrap(),
         signer,
-        &key,
+        &provider_key,
     )
     .unwrap();
     let initial = RawPairedClockSample::new_untrusted(
@@ -161,7 +174,9 @@ fn challenge_proposal(record: &NativeAcquireCompletionRecordV2) -> ChallengeReco
     )
 }
 
-fn prepared(requested: &NativeAcquireCompletionRecordV2) -> NativeAcquireCompletionRecordV2 {
+pub(crate) fn prepared(
+    requested: &NativeAcquireCompletionRecordV2,
+) -> NativeAcquireCompletionRecordV2 {
     let signed = requested.canonical_request.as_ref().unwrap();
     let catalog = signed.request().claims().catalog();
     let (resource, snapshot) = catalog
@@ -211,11 +226,12 @@ fn prepared(requested: &NativeAcquireCompletionRecordV2) -> NativeAcquireComplet
     )
     .unwrap();
     let original_key = SigningKey::from_bytes(&[51; 32]).verifying_key().to_bytes();
+    let provider_key = SigningKey::from_bytes(&[54; 32]).verifying_key().to_bytes();
     let verified = reply
         .verify_for(StorageNativeAcquireVerificationV3 {
             request: signed,
             provider_signer: signed.signer(),
-            provider_key: &original_key,
+            provider_key: &provider_key,
             root_signer: signed.request().signed_root_request().signer(),
             root_key: &original_key,
             storage_verifier: StorageZfsHoldVerifierV1::new(signer, key.verifying_key().to_bytes())

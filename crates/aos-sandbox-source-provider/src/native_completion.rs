@@ -19,6 +19,11 @@ mod runtime;
 
 pub(crate) use runtime::RetainedNativeChallengeRequestV1;
 
+#[cfg(test)]
+pub(crate) use runtime::tests::{
+    prepared as fixture_prepared, requested_with_session as fixture_requested,
+};
+
 #[path = "native_completion/live.rs"]
 mod live;
 

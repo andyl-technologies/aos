@@ -90,7 +90,10 @@ pub(super) fn validate_graph(
             || (!acquisition.normalized_intent.kernel_coupled()
                 && acquisition.resource_id != [0; 32]
                 && acquisition.proof_class == 0
-                && acquisition.backend_id == native_closed_backend_id);
+                && acquisition.backend_id == native_closed_backend_id)
+            || (!acquisition.normalized_intent.kernel_coupled()
+                && acquisition.resource_id != [0; 32]
+                && crate::native_completion::is_native_dispatch_acquisition(acquisition));
         if effect_attempt.method != SourceProviderMethod::Acquire
             || effect_attempt.provider != acquisition.provider
             || effect_attempt.holder != acquisition.holder

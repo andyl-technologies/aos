@@ -841,6 +841,40 @@ pub fn validate_prospective_records<'record>(
                 "duplicate acquisition lineage",
             ));
         }
+        let selected_native =
+            !acquisition.normalized_intent.kernel_coupled() && acquisition.resource_id != [0; 32];
+        let no_dispatch_id_matches = selected_native
+            && acquisition.proof_class == 0
+            && acquisition.backend_id
+                == identity::acquire_native_no_dispatch_id_v1(
+                    acquisition.normalized_intent.digest(),
+                    acquisition.catalog_generation,
+                    acquisition.catalog_digest,
+                );
+        let dispatch_id_matches = selected_native
+            && acquisition.backend_id
+                == identity::acquire_native_dispatch_id_v2(
+                    acquisition.normalized_intent.digest(),
+                    acquisition.catalog_generation,
+                    acquisition.catalog_digest,
+                    acquisition.effect_attempt_digest,
+                );
+        let native = decoded.iter().find_map(|record| match record {
+            DecodedRecordV1::NativeCompletion(value)
+                if value.acquisition_id == acquisition.acquisition_id =>
+            {
+                Some(value)
+            }
+            _ => None,
+        });
+        if dispatch_id_matches
+            && acquisition.state != ProviderAcquisitionStateV1::Applying
+            && native.is_none()
+        {
+            return Err(LedgerFormatErrorV1::Corrupt(
+                "native acquisition missing completion",
+            ));
+        }
         if identity::acquire_effect_id_v1(
             acquisition.acquisition_id,
             acquisition.effect_attempt_digest,
@@ -850,6 +884,8 @@ pub fn validate_prospective_records<'record>(
                 acquisition.catalog_generation,
                 acquisition.catalog_digest,
             ) != acquisition.backend_id
+                && !no_dispatch_id_matches
+                && !dispatch_id_matches
             || acquisition.lease_history.iter().any(|lineage| {
                 identity::lease_id_v1(
                     acquisition.acquisition_id,
