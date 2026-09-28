@@ -224,6 +224,47 @@ pub(super) fn encode_policy_signer_pins_v1(
     Ok(encoded)
 }
 
+/// Decodes canonical role-pin data without establishing journal authority.
+///
+/// # Errors
+///
+/// Rejects malformed keys, zero generations, or a different canonical record.
+pub(super) fn decode_policy_signer_pins_v1(
+    pins: &[u8],
+) -> Result<(u64, VerifyingKey, u64, VerifyingKey), PolicyDeploymentHeadErrorV1> {
+    if pins.len() != 120 || &pins[..8] != SIGNER_PINS_MAGIC {
+        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
+    }
+    let deployment_generation = read_u64(pins, 8)?;
+    let project_generation = read_u64(pins, 48)?;
+    let key_at = |offset: usize| {
+        let bytes = pins
+            .get(offset..offset + 32)
+            .and_then(|field| field.try_into().ok())
+            .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
+        VerifyingKey::from_bytes(bytes).map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)
+    };
+    let deployment = key_at(16)?;
+    let project = key_at(56)?;
+    if encode_policy_signer_pins_v1(
+        deployment_generation,
+        &deployment,
+        project_generation,
+        &project,
+    )?
+    .as_slice()
+        != pins
+    {
+        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
+    }
+    Ok((
+        deployment_generation,
+        deployment,
+        project_generation,
+        project,
+    ))
+}
+
 /// Retains the four exact canonical deployment inputs bound by one signed head.
 pub struct PolicyDeploymentInputsV1<'a> {
     /// Canonical node-policy input bytes.

@@ -304,29 +304,7 @@ fn read_deployment_role(
     let pins = authority
         .get(SIGNER_PINS_KEY)?
         .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
-    if pins.len() != 120 || &pins[..8] != SIGNER_PINS_MAGIC {
-        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
-    }
-    let deployment_generation = read_u64(pins, 8)?;
-    let project_generation = read_u64(pins, 48)?;
-    let key_at = |offset: usize| {
-        let bytes = pins
-            .get(offset..offset + 32)
-            .and_then(|field| field.try_into().ok())
-            .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
-        VerifyingKey::from_bytes(bytes).map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)
-    };
-    let deployment = key_at(16)?;
-    let project = key_at(56)?;
-    if encode_policy_signer_pins_v1(
-        deployment_generation,
-        &deployment,
-        project_generation,
-        &project,
-    )? != pins
-    {
-        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
-    }
+    let (deployment_generation, deployment, _, _) = decode_policy_signer_pins_v1(pins)?;
     Ok((deployment, deployment_generation))
 }
 

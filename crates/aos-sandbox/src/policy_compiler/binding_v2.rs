@@ -43,8 +43,8 @@ use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV
 use super::cache_journal_readback::read_fixed_policy_cache_hold_v1;
 use super::cache_readback_pin::CACHE_PIN_KEY;
 use super::deployment_head::{
-    HEAD_KEY, PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, SIGNER_PINS_KEY, encode_policy_signer_pins_v1,
-    verify_historical_packet,
+    HEAD_KEY, PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, SIGNER_PINS_KEY, decode_policy_signer_pins_v1,
+    encode_policy_signer_pins_v1, verify_historical_packet,
 };
 use super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
 use super::protected_owner::{
@@ -2117,43 +2117,9 @@ fn recover_committed_source_held_binding_in_journal_v2(
     let pins = journal
         .get(namespace, SIGNER_PINS_KEY)
         .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-    if pins.len() != 120 {
-        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-    }
-    let deployment_generation = u64::from_be_bytes(
-        pins[8..16]
-            .try_into()
-            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
-    );
-    let deployment_key = VerifyingKey::from_bytes(
-        &pins[16..48]
-            .try_into()
-            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
-    )
-    .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-    let project_generation = u64::from_be_bytes(
-        pins[48..56]
-            .try_into()
-            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
-    );
-    let project_key = VerifyingKey::from_bytes(
-        &pins[56..88]
-            .try_into()
-            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?,
-    )
-    .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-    if encode_policy_signer_pins_v1(
-        deployment_generation,
-        &deployment_key,
-        project_generation,
-        &project_key,
-    )
-    .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
-    .as_slice()
-        != pins
-    {
-        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-    }
+    let (deployment_generation, deployment_key, project_generation, project_key) =
+        decode_policy_signer_pins_v1(pins)
+            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
     let deployment = journal
         .get(namespace, HEAD_KEY)
         .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
