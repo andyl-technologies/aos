@@ -344,6 +344,7 @@ mod tests {
             canonical_request: None,
             accepted_reply: None,
             reservation_acquisition_digest: None,
+            original_clock: None,
         }
     }
 

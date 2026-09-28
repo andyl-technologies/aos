@@ -200,6 +200,16 @@ fn native_capacity_refuses_ordered_suffix_before_dispatch_without_spending_floor
             .recover_unique_global_capacity_reservation_v1(&changed)
             .is_err()
     );
+    // Old body-6 geometry is a different exact reservation, never an
+    // implicitly upgraded floor for the additional original-clock block.
+    let mut old_geometry = binding(request);
+    old_geometry.terminal_bytes -= 56;
+    old_geometry.poison_bytes -= 56;
+    assert!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&old_geometry)
+            .is_err()
+    );
     owner
         .validate_global_capacity_reservation_set_v1(&BTreeSet::from(
             [reservation.reservation_id()],

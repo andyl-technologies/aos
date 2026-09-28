@@ -118,7 +118,15 @@ pub(crate) fn requested() -> NativeAcquireCompletionRecordV2 {
         &key,
     )
     .unwrap();
-    NativeAcquireCompletionRecordV2::requested(request, d(39)).unwrap()
+    let initial = aos_sandbox_core::RawPairedClockSample::new_untrusted(
+        aos_sandbox_core::RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
+        root.boot_id(),
+        900,
+        1_000_000_000,
+    )
+    .unwrap();
+    let anchor = NativeAcquireClockAnchorV1::new_untrusted(initial, &request).unwrap();
+    NativeAcquireCompletionRecordV2::requested(request, d(39), anchor).unwrap()
 }
 
 pub(crate) fn prepared() -> NativeAcquireCompletionRecordV2 {
@@ -170,23 +178,34 @@ pub(crate) fn prepared() -> NativeAcquireCompletionRecordV2 {
         receipt,
     )
     .unwrap();
+    let verified = verify_reply(signed, &reply);
+    requested.prepare_accepted(reply, &verified).unwrap()
+}
+
+fn verify_reply(
+    request: &SignedStorageNativeAcquireRequestV2,
+    reply: &StorageNativeAcquireReplyV3,
+) -> VerifiedStorageNativeAcquireV3 {
     let original_key = SigningKey::from_bytes(&[51; 32]).verifying_key().to_bytes();
-    let verified = reply
+    let key = SigningKey::from_bytes(&[66; 32]);
+    reply
         .verify_for(StorageNativeAcquireVerificationV3 {
-            request: signed,
-            provider_signer: signed.signer(),
+            request,
+            provider_signer: request.signer(),
             provider_key: &original_key,
-            root_signer: signed.request().signed_root_request().signer(),
+            root_signer: request.request().signed_root_request().signer(),
             root_key: &original_key,
-            storage_verifier: StorageZfsHoldVerifierV1::new(signer, key.verifying_key().to_bytes())
-                .unwrap(),
+            storage_verifier: StorageZfsHoldVerifierV1::new(
+                reply.acceptance().signer(),
+                key.verifying_key().to_bytes(),
+            )
+            .unwrap(),
             expected_receipt: reply.receipt().receipt(),
-            observed_descriptor: &descriptor,
+            observed_descriptor: reply.acceptance().acceptance().descriptor(),
             descriptor_roles: &[SourceProviderDescriptorRole::SourceRoot],
             now_seconds: 910,
         })
-        .unwrap();
-    requested.prepare_accepted(reply, &verified).unwrap()
+        .unwrap()
 }
 
 #[test]
@@ -200,6 +219,7 @@ fn native_prepared_v3_roundtrip_retains_exact_bundle_and_spent_crash_cut() {
         bytes.len(),
         64 + BODY_BYTES
             + 40
+            + clock::CLOCK_BYTES
             + prepared
                 .canonical_request
                 .as_ref()
@@ -456,6 +476,7 @@ fn native_full_width_geometry_exceeds_no_dispatch_budget_and_fits_owner_limit() 
         MAXIMUM_BODY_BYTES,
         BODY_BYTES
             + 40
+            + clock::CLOCK_BYTES
             + MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2
             + STORAGE_NATIVE_ACQUIRE_REPLY_BYTES_V3
     );
@@ -471,8 +492,12 @@ fn native_requested_retains_canonical_bytes_and_explicit_version() {
         .to_canonical_bytes();
     let key = native_completion_key_v2(record.acquisition_id);
     let encoded = crate::ledger::format::encode_native_completion_v2(&record);
-    assert_eq!(&encoded[8..10], &6_u16.to_be_bytes());
-    assert_eq!(encoded.len(), 64 + BODY_BYTES + 40 + signed.len());
+    assert_eq!(&encoded[8..10], &7_u16.to_be_bytes());
+    assert_eq!(&encoded[64..72], CLOCKED_BODY_MAGIC);
+    assert_eq!(
+        encoded.len(),
+        64 + BODY_BYTES + 40 + clock::CLOCK_BYTES + signed.len()
+    );
     let crate::ledger::model::DecodedRecordV1::NativeCompletion(decoded) =
         crate::ledger::format::decode_record(&key, &encoded).unwrap()
     else {
@@ -502,6 +527,59 @@ fn native_requested_retains_canonical_bytes_and_explicit_version() {
     let mut over_bound = vec![0; MAXIMUM_BODY_BYTES + 1];
     over_bound[..8].copy_from_slice(REQUESTED_BODY_MAGIC);
     assert!(decode_body(&key, &over_bound, 1, 0).is_err());
+}
+
+#[test]
+fn native_original_clock_is_canonical_immutable_and_no_clock_v6_stays_closed() {
+    let requested = requested();
+    let prepared = prepared();
+    let anchor = requested.original_clock.unwrap();
+    assert_eq!(anchor.initial().wall_seconds(), 900);
+    assert_eq!(anchor.initial().boottime_nanoseconds(), 1_000_000_000);
+    assert_eq!(anchor.deadline(), 30_000_000_000);
+    assert_eq!(prepared.original_clock, Some(anchor));
+    for phase in [
+        NativeAcquireCompletionStateV2::Active,
+        NativeAcquireCompletionStateV2::CleanupRequired,
+    ] {
+        assert_eq!(
+            prepared.advance(phase).unwrap().original_clock,
+            Some(anchor)
+        );
+    }
+
+    let body = encode_body(&requested);
+    let key = native_completion_key_v2(requested.acquisition_id);
+    let clock_start = BODY_BYTES + 32;
+    // No sentinels, boot substitution, wall-after-issue or arbitrary deadline.
+    for offset in [0, 16, 32, 40, 48] {
+        let mut changed = body.clone();
+        let width = if offset < 32 { 16 } else { 8 };
+        if offset < 32 {
+            changed[clock_start + offset..clock_start + offset + width].fill(0);
+        } else {
+            changed[clock_start + offset + width - 1] ^= 1;
+        }
+        assert!(
+            decode_body(&key, &changed, 1, 0).is_err(),
+            "clock offset {offset}"
+        );
+    }
+    assert!(decode_body(&key, &body[..clock_start + clock::CLOCK_BYTES - 1], 1, 0).is_err());
+
+    let mut historical = requested.clone();
+    historical.original_clock = None;
+    let bytes = crate::ledger::format::encode_native_completion_v2(&historical);
+    assert_eq!(&bytes[8..10], &6_u16.to_be_bytes());
+    let DecodedRecordV1::NativeCompletion(decoded) = decode_record(&key, &bytes).unwrap() else {
+        panic!("wrong native family");
+    };
+    assert_eq!(decoded.original_clock, None);
+    assert!(requested.validate_successor(&decoded).is_err());
+    assert!(decoded.validate_successor(&requested).is_err());
+    let reply = prepared.accepted_reply.clone().unwrap();
+    let verified = verify_reply(decoded.canonical_request.as_ref().unwrap(), &reply);
+    assert!(decoded.prepare_accepted(reply, &verified).is_err());
 }
 
 #[test]

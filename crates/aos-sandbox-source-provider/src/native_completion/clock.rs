@@ -2,8 +2,9 @@
 //!
 //! One paired kernel sample and conservative BOOTTIME deadline precede
 //! Requested. Every retry retains that same anchor; it cannot create one from
-//! historical wall bounds. The guard is intentionally not serialized, so a
-//! cold owner preserves unresolved rows and interests but cannot complete.
+//! historical wall bounds. Version-7 Requested retains the same raw pair and
+//! fixed deadline. Only exact protected replay and the same kernel adapter can
+//! restore continuity; historical rows without that block remain closed.
 
 use aos_sandbox_core::{ObjectDigest, RawClockProvenance, RawPairedClockSample};
 use aos_sandbox_source_provider_protocol::{
@@ -12,6 +13,11 @@ use aos_sandbox_source_provider_protocol::{
 };
 
 use crate::ProviderLedgerError;
+use crate::ledger::native_completion::{
+    NativeAcquireClockAnchorV1, NativeAcquireCompletionRecordV2,
+};
+
+const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
 
 #[derive(Debug)]
 pub(crate) struct NativeAcquireClockGuardV1 {
@@ -26,6 +32,72 @@ pub(crate) struct NativeAcquireClockGuardV1 {
 }
 
 impl NativeAcquireClockGuardV1 {
+    /// Reconstitutes an original anchor after the owner joins the protected row.
+    ///
+    /// # Errors
+    ///
+    /// Rejects historical no-clock rows, changed protected graph links, a
+    /// foreign clock adapter, expired authorization, or kernel discontinuity.
+    pub(crate) fn from_retained_record(
+        record: &NativeAcquireCompletionRecordV2,
+        attempt: &crate::model::AttemptRecordV1,
+        acquisition: &crate::model::AcquisitionRecordV1,
+    ) -> Result<Self, ProviderLedgerError> {
+        record
+            .validate_provider_graph(attempt, acquisition)
+            .map_err(crate::transaction::map_pure_ledger_error)?;
+        let anchor = record
+            .original_clock
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let signed = record
+            .canonical_request
+            .as_ref()
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let root = decode_acquire_request(signed.request().signed_root_request().subject())
+            .map_err(|_| ProviderLedgerError::Unavailable)?;
+        let expires_seconds = signed.request().claims().validity().1;
+        if anchor.initial().provenance().as_bytes() != KERNEL_CLOCK_PROVENANCE
+            || anchor.initial().wall_seconds() < attempt.verified_at_seconds
+            || expires_seconds > attempt.deadline_seconds
+            || expires_seconds > root.deadline_seconds()
+            || signed.request().signed_root_request().to_canonical_bytes() != attempt.signed_request
+        {
+            return Err(ProviderLedgerError::Unavailable);
+        }
+        let guard = Self {
+            initial: anchor.initial(),
+            deadline: anchor.deadline(),
+            root_request_digest: record.root_request_digest,
+            acquisition_id: record.acquisition_id,
+            attempt_digest: record.attempt_digest,
+            session_binding: record.session_binding,
+            issued_seconds: attempt.verified_at_seconds,
+            expires_seconds,
+        };
+        guard.require_request(signed)?;
+        Ok(guard)
+    }
+
+    /// Projects the same original pair for one exact Requested carrier.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed request scope or an expiry extending the original guard.
+    pub(crate) fn durable_anchor(
+        &self,
+        request: &SignedStorageNativeAcquireRequestV2,
+    ) -> Result<NativeAcquireClockAnchorV1, ProviderLedgerError> {
+        self.require_request(request)?;
+        let anchor = NativeAcquireClockAnchorV1::new_untrusted(self.initial, request)
+            .map_err(crate::transaction::map_pure_ledger_error)?;
+        if anchor.deadline() > self.deadline
+            || request.request().claims().validity().1 > self.expires_seconds
+        {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        Ok(anchor)
+    }
+
     /// Captures the kernel pair before the first challenge and Requested append.
     ///
     /// # Errors
@@ -179,7 +251,7 @@ fn kernel_clock() -> Result<RawPairedClockSample, ProviderLedgerError> {
         })
         .ok_or(ProviderLedgerError::Unavailable)?;
     RawPairedClockSample::new_untrusted(
-        RawClockProvenance::new_untrusted(*b"aos-kernel-clock")
+        RawClockProvenance::new_untrusted(KERNEL_CLOCK_PROVENANCE)
             .map_err(|_| ProviderLedgerError::Unavailable)?,
         boot,
         wall,

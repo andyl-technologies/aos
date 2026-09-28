@@ -1,0 +1,123 @@
+//! Non-authorizing original paired-clock metadata in the native owner row.
+//!
+//! The protected owner records this block once before dispatch. Decoding raw
+//! clock claims does not authenticate a clock, restore a session, or renew the
+//! original request. Positive recovery needs the owner's exact graph joins
+//! and a fresh sample from the same kernel adapter.
+//!
+//! ```text
+//! provenance:16 | original-boot:16 | original-wall:i64be |
+//! original-boottime:u64be | fixed-deadline:u64be
+//! ```
+
+use aos_sandbox_core::{RawClockProvenance, RawPairedClockSample};
+use aos_sandbox_source_provider_protocol::{
+    SignedStorageNativeAcquireRequestV2, decode_acquire_request,
+};
+
+use super::super::LedgerFormatErrorV1;
+use super::super::codec::{Decoder, Encoder};
+
+pub(super) const CLOCK_BYTES: usize = 56;
+
+/// Retains raw original clock claims without granting completion authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeAcquireClockAnchorV1 {
+    initial: RawPairedClockSample,
+    deadline: u64,
+}
+
+impl NativeAcquireClockAnchorV1 {
+    /// Binds one raw original pair to the exact signed native expiry.
+    ///
+    /// # Errors
+    ///
+    /// Rejects negative wall time, wrong original boot, a pair after issuance,
+    /// or a conservative deadline that is expired or cannot be represented.
+    pub fn new_untrusted(
+        initial: RawPairedClockSample,
+        request: &SignedStorageNativeAcquireRequestV2,
+    ) -> Result<Self, LedgerFormatErrorV1> {
+        let anchor = Self {
+            initial,
+            deadline: conservative_deadline(initial, request.request().claims().validity().1)?,
+        };
+        anchor.validate_request(request)?;
+        Ok(anchor)
+    }
+
+    /// Returns the immutable raw original pair.
+    #[must_use]
+    pub const fn initial(self) -> RawPairedClockSample {
+        self.initial
+    }
+
+    /// Returns the exclusive, immutable local BOOTTIME deadline.
+    #[must_use]
+    pub const fn deadline(self) -> u64 {
+        self.deadline
+    }
+
+    /// Checks canonical clock/request crosslinks, not clock authenticity.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed boot, original wall bounds, or a noncanonical deadline.
+    pub fn validate_request(
+        self,
+        request: &SignedStorageNativeAcquireRequestV2,
+    ) -> Result<(), LedgerFormatErrorV1> {
+        let root = decode_acquire_request(request.request().signed_root_request().subject())
+            .map_err(|_| LedgerFormatErrorV1::Corrupt("native clock Root request"))?;
+        let (issued, expires) = request.request().claims().validity();
+        if self.initial.host_boot_id() != root.boot_id()
+            || self.initial.wall_seconds() < 0
+            || self.initial.wall_seconds() > issued
+            || self.deadline <= self.initial.boottime_nanoseconds()
+            || self.deadline != conservative_deadline(self.initial, expires)?
+        {
+            return Err(LedgerFormatErrorV1::Corrupt("native original clock claims"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn encode(self, body: &mut Encoder) {
+        body.array(&self.initial.provenance().as_bytes());
+        body.array(&self.initial.host_boot_id());
+        body.i64(self.initial.wall_seconds());
+        body.u64(self.initial.boottime_nanoseconds());
+        body.u64(self.deadline);
+    }
+
+    pub(super) fn decode(body: &mut Decoder<'_>) -> Result<Self, LedgerFormatErrorV1> {
+        let provenance = RawClockProvenance::new_untrusted(body.nonzero_array()?)
+            .map_err(|_| LedgerFormatErrorV1::Corrupt("native clock provenance"))?;
+        let initial = RawPairedClockSample::new_untrusted(
+            provenance,
+            body.nonzero_array()?,
+            body.nonnegative_i64()?,
+            body.u64()?,
+        )
+        .map_err(|_| LedgerFormatErrorV1::Corrupt("native original clock pair"))?;
+        Ok(Self {
+            initial,
+            deadline: body.u64()?,
+        })
+    }
+}
+
+fn conservative_deadline(
+    initial: RawPairedClockSample,
+    expires: i64,
+) -> Result<u64, LedgerFormatErrorV1> {
+    expires
+        .checked_sub(initial.wall_seconds())
+        .and_then(|seconds| seconds.checked_sub(1))
+        .and_then(|seconds| u64::try_from(seconds).ok())
+        .filter(|seconds| *seconds > 0)
+        .and_then(|seconds| seconds.checked_mul(1_000_000_000))
+        .and_then(|remaining| initial.boottime_nanoseconds().checked_add(remaining))
+        .ok_or(LedgerFormatErrorV1::Corrupt(
+            "native clock deadline overflow or expiry",
+        ))
+}

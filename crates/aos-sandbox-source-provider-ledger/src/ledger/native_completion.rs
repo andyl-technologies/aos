@@ -2,9 +2,10 @@
 //!
 //! This pure model grants no signing, descriptor, effect, or release authority.
 //! Digest-only inert records retain their version-5 envelope/body. Live request
-//! retention uses version 6 with `AOSNCR03`, followed by the same fixed claims,
-//! original reservation digest, bounded signed request and optional typed reply.
-//! No version-5 row can supply live request or completion authority.
+//! retention originally used version 6 with `AOSNCR03`. Version 7 `AOSNCR04`
+//! adds mandatory original paired-clock metadata after the reservation digest,
+//! before the bounded signed request and optional typed reply. Versions 5 and 6
+//! remain historical; neither may infer an anchor or enable positive recovery.
 //!
 //! ```text
 //! AOSNCR02 | provider:16 | holder:16 | session:32 | attempt:32 |
@@ -31,14 +32,21 @@ use super::model::{
     AcquisitionRecordV1, AttemptRecordV1, ProviderAcquisitionStateV1, SourceRootIdentityV1,
 };
 
+#[path = "native_completion/clock.rs"]
+mod clock;
+
+pub use clock::NativeAcquireClockAnchorV1;
+
 pub(super) const BODY_BYTES: usize = 544;
 pub(super) const MAXIMUM_BODY_BYTES: usize = BODY_BYTES
     + 32
+    + clock::CLOCK_BYTES
     + 8
     + MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2
     + STORAGE_NATIVE_ACQUIRE_REPLY_BYTES_V3;
 const BODY_MAGIC: &[u8; 8] = b"AOSNCR02";
 const REQUESTED_BODY_MAGIC: &[u8; 8] = b"AOSNCR03";
+const CLOCKED_BODY_MAGIC: &[u8; 8] = b"AOSNCR04";
 const KEY_MAGIC: &[u8; 8] = b"AOSNCK02";
 
 /// Names one irreversible native completion recovery phase.
@@ -113,6 +121,8 @@ pub struct NativeAcquireCompletionRecordV2 {
     pub accepted_reply: Option<StorageNativeAcquireReplyV3>,
     /// Commits the original Applying acquisition for durable capacity recovery.
     pub reservation_acquisition_digest: Option<ObjectDigest>,
+    /// Retains the original local clock pair; absent only for historical rows.
+    pub original_clock: Option<NativeAcquireClockAnchorV1>,
 }
 
 impl NativeAcquireCompletionRecordV2 {
@@ -123,10 +133,25 @@ impl NativeAcquireCompletionRecordV2 {
     ///
     /// # Errors
     ///
-    /// Rejects malformed original RootMount bytes or a sentinel reservation.
+    /// Rejects malformed RootMount bytes, a sentinel reservation, or a clock
+    /// block inconsistent with the exact original signed request.
     pub fn requested(
         request: SignedStorageNativeAcquireRequestV2,
         reservation_acquisition_digest: ObjectDigest,
+        original_clock: NativeAcquireClockAnchorV1,
+    ) -> Result<Self, LedgerFormatErrorV1> {
+        original_clock.validate_request(&request)?;
+        Self::requested_artifacts(
+            request,
+            reservation_acquisition_digest,
+            Some(original_clock),
+        )
+    }
+
+    fn requested_artifacts(
+        request: SignedStorageNativeAcquireRequestV2,
+        reservation_acquisition_digest: ObjectDigest,
+        original_clock: Option<NativeAcquireClockAnchorV1>,
     ) -> Result<Self, LedgerFormatErrorV1> {
         if reservation_acquisition_digest.as_bytes() == &[0; 32] {
             return Err(LedgerFormatErrorV1::Corrupt("native reservation digest"));
@@ -166,6 +191,7 @@ impl NativeAcquireCompletionRecordV2 {
             canonical_request: Some(request),
             accepted_reply: None,
             reservation_acquisition_digest: Some(reservation_acquisition_digest),
+            original_clock,
         })
     }
 
@@ -179,7 +205,8 @@ impl NativeAcquireCompletionRecordV2 {
         reply: StorageNativeAcquireReplyV3,
         verified: &VerifiedStorageNativeAcquireV3,
     ) -> Result<Self, LedgerFormatErrorV1> {
-        if self.state != NativeAcquireCompletionStateV2::Requested {
+        if self.state != NativeAcquireCompletionStateV2::Requested || self.original_clock.is_none()
+        {
             return Err(LedgerFormatErrorV1::Corrupt(
                 "native acceptance already retained",
             ));
@@ -261,6 +288,7 @@ impl NativeAcquireCompletionRecordV2 {
             if self.state == NativeAcquireCompletionStateV2::Requested
                 || self.accepted_reply.is_some()
                 || self.reservation_acquisition_digest.is_some()
+                || self.original_clock.is_some()
             {
                 return Err(LedgerFormatErrorV1::Corrupt(
                     "missing native request retention",
@@ -268,12 +296,16 @@ impl NativeAcquireCompletionRecordV2 {
             }
             return Ok(());
         };
-        let mut requested = Self::requested(
+        if let Some(clock) = self.original_clock {
+            clock.validate_request(request)?;
+        }
+        let mut requested = Self::requested_artifacts(
             request.clone(),
             self.reservation_acquisition_digest
                 .ok_or(LedgerFormatErrorV1::Corrupt(
                     "missing native reservation digest",
                 ))?,
+            self.original_clock,
         )?;
         if let Some(reply) = self.accepted_reply.clone() {
             requested = requested.with_accepted_reply(reply)?;
@@ -369,6 +401,9 @@ impl NativeAcquireCompletionRecordV2 {
         )?;
 
         if self.provider_id != acquisition.provider.authority_id()
+            || self
+                .original_clock
+                .is_some_and(|clock| clock.initial().wall_seconds() < attempt.verified_at_seconds)
             || self.holder_id != acquisition.holder.authority_id()
             || attempt.provider != acquisition.provider
             || attempt.holder != acquisition.holder
@@ -598,7 +633,9 @@ pub fn native_completion_key_v2(acquisition_id: ObjectDigest) -> Vec<u8> {
 
 pub(super) fn encode_body(value: &NativeAcquireCompletionRecordV2) -> Vec<u8> {
     let mut body = Encoder::with_capacity(BODY_BYTES);
-    body.array(if value.canonical_request.is_some() {
+    body.array(if value.original_clock.is_some() {
+        CLOCKED_BODY_MAGIC
+    } else if value.canonical_request.is_some() {
         REQUESTED_BODY_MAGIC
     } else {
         BODY_MAGIC
@@ -634,6 +671,9 @@ pub(super) fn encode_body(value: &NativeAcquireCompletionRecordV2) -> Vec<u8> {
     debug_assert_eq!(body.len(), BODY_BYTES);
     if let Some(request) = value.canonical_request.as_ref() {
         body.optional_digest(value.reservation_acquisition_digest);
+        if let Some(clock) = value.original_clock {
+            clock.encode(&mut body);
+        }
         let request = request.to_canonical_bytes();
         body.u32(request.len() as u32);
         body.bytes(&request);
@@ -641,7 +681,11 @@ pub(super) fn encode_body(value: &NativeAcquireCompletionRecordV2) -> Vec<u8> {
             .accepted_reply
             .as_ref()
             .map(StorageNativeAcquireReplyV3::to_canonical_bytes);
-        let expected_bytes = BODY_BYTES + 40 + request.len() + reply.as_ref().map_or(0, Vec::len);
+        let expected_bytes = BODY_BYTES
+            + 40
+            + value.original_clock.map_or(0, |_| clock::CLOCK_BYTES)
+            + request.len()
+            + reply.as_ref().map_or(0, Vec::len);
         body.u32(reply.as_ref().map_or(0, Vec::len) as u32);
         if let Some(reply) = reply {
             body.bytes(&reply);
@@ -657,7 +701,9 @@ pub(super) fn encode_body(value: &NativeAcquireCompletionRecordV2) -> Vec<u8> {
 pub(crate) mod request_tests;
 
 pub(super) fn envelope_version(body: &[u8]) -> u16 {
-    if body.get(..8) == Some(REQUESTED_BODY_MAGIC.as_slice()) {
+    if body.get(..8) == Some(CLOCKED_BODY_MAGIC.as_slice()) {
+        7
+    } else if body.get(..8) == Some(REQUESTED_BODY_MAGIC.as_slice()) {
         6
     } else {
         5
@@ -670,9 +716,13 @@ pub(super) fn decode_body(
     revision: u64,
     state: u8,
 ) -> Result<NativeAcquireCompletionRecordV2, LedgerFormatErrorV1> {
-    let retained = bytes.get(..8) == Some(REQUESTED_BODY_MAGIC.as_slice());
+    let clocked = bytes.get(..8) == Some(CLOCKED_BODY_MAGIC.as_slice());
+    let retained = clocked || bytes.get(..8) == Some(REQUESTED_BODY_MAGIC.as_slice());
+    let clock_bytes = if clocked { clock::CLOCK_BYTES } else { 0 };
     if (!retained && (bytes.len() != BODY_BYTES || bytes.get(..8) != Some(BODY_MAGIC.as_slice())))
-        || (retained && (bytes.len() < BODY_BYTES + 40 || bytes.len() > MAXIMUM_BODY_BYTES))
+        || (retained
+            && (bytes.len() < BODY_BYTES + 40 + clock_bytes
+                || bytes.len() > MAXIMUM_BODY_BYTES - clock::CLOCK_BYTES + clock_bytes))
     {
         return Err(LedgerFormatErrorV1::Corrupt(
             "native completion version or width",
@@ -718,9 +768,13 @@ pub(super) fn decode_body(
         canonical_request: None,
         accepted_reply: None,
         reservation_acquisition_digest: None,
+        original_clock: None,
     };
     if retained {
         value.reservation_acquisition_digest = Some(body.nonzero_digest()?);
+        if clocked {
+            value.original_clock = Some(NativeAcquireClockAnchorV1::decode(&mut body)?);
+        }
         let request_length = body.u32()? as usize;
         if request_length == 0
             || request_length > MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2
@@ -815,6 +869,7 @@ mod tests {
             canonical_request: None,
             accepted_reply: None,
             reservation_acquisition_digest: None,
+            original_clock: None,
         }
     }
 

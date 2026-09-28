@@ -38,6 +38,8 @@ const DISPATCH_OWNER_DOMAIN: &[u8] =
 const DISPATCH_TERMINAL_RECORDS: u32 = 7;
 // Six namespace-41 owner rows and the exact namespace-46 deletion. Journal
 // framing is 72 bytes per record plus Begin/Commit frames and 40 payload bytes.
+// The shared carrier bound includes mandatory body-7 clock bytes. An older,
+// smaller private dispatch floor fails exact recovery; it is never upgraded.
 const DISPATCH_TERMINAL_BYTES: u64 =
     aos_sandbox_source_provider_ledger::ledger::format::MAXIMUM_NATIVE_ACQUIRE_COMPLETION_OWNER_BYTES_V2
         as u64

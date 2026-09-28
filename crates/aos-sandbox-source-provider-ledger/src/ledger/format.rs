@@ -12,6 +12,8 @@
 //! ambiguous dual interpretation of records without protected completion time.
 //! Digest-only native completion uses a version-5 envelope and version-2 body.
 //! Exact native request retention uses a version-6 envelope and version-3 body.
+//! Original paired-clock retention uses a version-7 envelope and version-4 body;
+//! version-6 rows cannot infer an anchor or supply positive recovery authority.
 //! Mixed graphs retain version-5 baseline records; older readers reject the
 //! new native body and cannot silently activate it.
 //!

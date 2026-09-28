@@ -90,6 +90,7 @@ impl ProviderLedgerV1<'_> {
                     .as_ref()
                     .map(|signed| signed.request().signed_root_request())
                     != Some(original)
+                    || record.original_clock.is_none()
                     || !matches!(
                         record.state,
                         NativeAcquireCompletionStateV2::Requested
@@ -169,6 +170,9 @@ impl ProviderLedgerV1<'_> {
             .get(&acquisition.acquisition_id)
         {
             Some(record) => {
+                if record.original_clock.is_none() {
+                    return Err(ProviderLedgerError::Unavailable);
+                }
                 let request = record
                     .canonical_request
                     .as_ref()
@@ -176,8 +180,34 @@ impl ProviderLedgerV1<'_> {
                 if request.request().signed_root_request() != original {
                     return Err(ProviderLedgerError::Equivocation);
                 }
-                // A cold row or challenge cannot acquire a replacement local
-                // anchor from historical wall bounds, even if Storage lives.
+                if !self
+                    .native_acquire_custody
+                    .contains_key(&record.acquisition_id)
+                {
+                    // The protected block is the ORIGINAL pair, not a fresh
+                    // delivery/restart anchor. Old no-clock rows stay closed.
+                    let attempt = self
+                        .recovered
+                        .attempts
+                        .values()
+                        .find(|attempt| attempt.attempt_digest == record.attempt_digest)
+                        .ok_or(ProviderLedgerError::Unavailable)?;
+                    let challenge = challenges.retained_for(record.challenge)?;
+                    require_exact_challenge(record, challenge)?;
+                    let clock =
+                        std::sync::Arc::new(NativeAcquireClockGuardV1::from_retained_record(
+                            record,
+                            attempt,
+                            &acquisition,
+                        )?);
+                    self.native_acquire_custody.insert(
+                        record.acquisition_id,
+                        super::NativeAcquireHotCustodyV3 {
+                            clock,
+                            source_root: None,
+                        },
+                    );
+                }
                 self.native_acquire_custody
                     .get(&record.acquisition_id)
                     .ok_or(ProviderLedgerError::Unavailable)?
@@ -192,8 +222,13 @@ impl ProviderLedgerV1<'_> {
                     return Err(ProviderLedgerError::Equivocation);
                 }
                 let record = NativeAcquireCompletionRecordV2::requested(
-                    signed,
+                    signed.clone(),
                     crate::format::record_digest(&crate::format::encode_acquisition(&acquisition))?,
+                    self.native_acquire_custody
+                        .get(&acquisition.acquisition_id)
+                        .ok_or(ProviderLedgerError::Unavailable)?
+                        .clock
+                        .durable_anchor(&signed)?,
                 )
                 .map_err(crate::transaction::map_pure_ledger_error)?;
                 let key = native_completion_key_v2(record.acquisition_id);
