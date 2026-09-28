@@ -35,7 +35,7 @@ use crate::lifecycle::protected_journal_adapter::{
 use crate::{Journal, RecoveryReport};
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 /// Retains the existing fixed Policy state writer without acquiring Root early.
 ///

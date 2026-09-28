@@ -90,18 +90,36 @@ fn resources(amount: Option<u64>) -> HardResourceProfileV1 {
     .expect("complete fixture resource profile")
 }
 
-pub(super) fn fixture(amount: u64) -> VerifiedPolicyPublicationV1 {
+pub(super) fn compiler_input(
+    amount: u64,
+    domain: CacheDomainKind,
+    grants: Vec<aos_sandbox_core::Grant>,
+) -> PolicyCompilerInputV1 {
     let project = ProjectId::from_bytes([1; 16]);
     let sandbox = SandboxId::from_bytes([2; 16]);
     let verifier = SyntheticInputVerifier;
-    let domain = AuthenticatedCacheDomainV1::authenticate(
-        CacheDomain::new(CacheDomainKind::Project, CacheDomainId::from_bytes([3; 16])),
-        CacheDomainBindingV1::Project(project),
-        &verifier,
-    )
-    .expect("synthetic project domain");
+    let core_domain = CacheDomain::new(domain, CacheDomainId::from_bytes([3; 16]));
+    let domain = match domain {
+        CacheDomainKind::Public => AuthenticatedCacheDomainV1::public(core_domain),
+        CacheDomainKind::Private => AuthenticatedCacheDomainV1::authenticate(
+            core_domain,
+            CacheDomainBindingV1::Sandbox(sandbox),
+            &verifier,
+        ),
+        CacheDomainKind::Project => AuthenticatedCacheDomainV1::authenticate(
+            core_domain,
+            CacheDomainBindingV1::Project(project),
+            &verifier,
+        ),
+        CacheDomainKind::TrustDomain => AuthenticatedCacheDomainV1::authenticate(
+            core_domain,
+            CacheDomainBindingV1::TrustDomain(project),
+            &verifier,
+        ),
+    }
+    .expect("synthetic exact cache domain");
     let ceiling = PolicyLayerV1::new(
-        Vec::new(),
+        grants.clone(),
         resources(Some(amount)),
         Vec::new(),
         Vec::new(),
@@ -110,7 +128,7 @@ pub(super) fn fixture(amount: u64) -> VerifiedPolicyPublicationV1 {
     )
     .expect("explicit synthetic ceiling");
     let inherited = PolicyLayerV1::new(
-        Vec::new(),
+        grants,
         resources(None),
         Vec::new(),
         Vec::new(),
@@ -118,7 +136,7 @@ pub(super) fn fixture(amount: u64) -> VerifiedPolicyPublicationV1 {
         RevocationInputV1::Inherit,
     )
     .expect("inherited fixture layer");
-    let input = PolicyCompilerInputV1::new(
+    PolicyCompilerInputV1::new(
         AuthenticatedSandboxProjectRelationV1::authenticate(sandbox, project, &verifier)
             .expect("synthetic relation"),
         NodePolicyInputV1::new(ceiling).expect("explicit node ceiling"),
@@ -138,7 +156,16 @@ pub(super) fn fixture(amount: u64) -> VerifiedPolicyPublicationV1 {
         .expect("fixture backend"),
         PolicyCompilerLimitsV1::DEFAULT,
     )
-    .expect("complete synthetic compiler input");
+    .expect("complete synthetic compiler input")
+}
+
+pub(super) fn fixture(amount: u64) -> VerifiedPolicyPublicationV1 {
+    fixture_from_input(compiler_input(amount, CacheDomainKind::Project, Vec::new()))
+}
+
+pub(super) fn fixture_from_input(input: PolicyCompilerInputV1) -> VerifiedPolicyPublicationV1 {
+    let project = input.project().project();
+    let sandbox = input.sandbox();
     let normalized_input = normalized_policy_input_digest_v1(&input).expect("normalized input");
     let candidate = PolicyCompilerV1::compile(input).expect("real pure compilation");
     let diagnostics =

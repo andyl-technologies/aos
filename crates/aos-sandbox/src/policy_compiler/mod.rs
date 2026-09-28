@@ -38,6 +38,7 @@ mod protected_journal;
 mod protected_owner;
 mod public_create_source;
 mod resolved_policy;
+mod resource_read;
 mod resources;
 mod root_challenge_record;
 mod root_project_admission_proof;

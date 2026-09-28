@@ -103,6 +103,26 @@ pub(in crate::policy_compiler) fn publication(domain: CacheDomainKind) -> Fixtur
 /// Reuses the real pure compiler fixture, not an installed input authority.
 pub(in crate::policy_compiler) fn compiled_publication() -> FixturePublicationV1 {
     let verified = super::candidate_tests::fixture(4096);
+    compiled_publication_from_verified(verified)
+}
+
+pub(in crate::policy_compiler) fn compiler_input(
+    amount: u64,
+    domain: CacheDomainKind,
+    grants: Vec<aos_sandbox_core::Grant>,
+) -> PolicyCompilerInputV1 {
+    super::candidate_tests::compiler_input(amount, domain, grants)
+}
+
+pub(in crate::policy_compiler) fn compiled_publication_from_input(
+    input: PolicyCompilerInputV1,
+) -> FixturePublicationV1 {
+    compiled_publication_from_verified(super::candidate_tests::fixture_from_input(input))
+}
+
+fn compiled_publication_from_verified(
+    verified: VerifiedPolicyPublicationV1,
+) -> FixturePublicationV1 {
     let diagnostics = digest_bytes(DIAGNOSTICS_DOMAIN, &verified.diagnostics);
     let body = encode_candidate_payload(1, &verified, diagnostics).unwrap();
     let policy = verified.candidate.portable().policy_bytes().to_vec();

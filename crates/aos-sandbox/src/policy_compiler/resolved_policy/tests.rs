@@ -12,7 +12,7 @@ use crate::policy_compiler::protected_journal::{
     candidate_output_bytes, resolved_policy_fixture as fixture, validate_candidate_payload,
 };
 
-fn open(root: &Path) -> PolicyCompilerStateReadbackOwnerV1 {
+pub(in crate::policy_compiler) fn open(root: &Path) -> PolicyCompilerStateReadbackOwnerV1 {
     PolicyCompilerStateReadbackOwnerV1 {
         journal: Journal::open_protected_at_uid(
             root,
@@ -26,6 +26,14 @@ fn open(root: &Path) -> PolicyCompilerStateReadbackOwnerV1 {
             fixture_root: Some(root.to_path_buf()),
         },
     }
+}
+
+pub(in crate::policy_compiler) fn commit_fixture(
+    owner: &mut PolicyCompilerStateReadbackOwnerV1,
+    publication: &fixture::FixturePublicationV1,
+) -> u64 {
+    fixture::commit(&mut owner.journal, publication);
+    owner.journal.snapshot_sequence()
 }
 
 #[test]

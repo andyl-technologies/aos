@@ -2395,6 +2395,56 @@ pub(super) fn validated_candidate_body(
     Ok((header, outputs))
 }
 
+/// Compares retained V3 claims with one complete typed compiler derivation.
+///
+/// This is shared byte consistency, not publication or read authority. The
+/// eventual Root-last owner must independently authenticate input provenance,
+/// the complete prerequisite tuple and current owner cuts. In particular,
+/// neither a normalized-input digest nor these bytes reconstruct typed input.
+///
+/// # Errors
+///
+/// Rejects legacy evidence, changed target/generation/prerequisites, any
+/// substituted plan, diagnostic or portable output, or noncanonical framing.
+pub(super) fn compare_recompiled_candidate_derivation_v1(
+    bytes: &[u8],
+    input: &PolicyCompilerInputV1,
+    candidate: &CompiledPolicyCandidateV1,
+    generation: u64,
+    prerequisites: &PolicyPublicationPrerequisitesV1,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    let (header, outputs) = validated_candidate_body(bytes)?;
+    let diagnostics = super::model::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
+    if header.project != input.project().project()
+        || header.sandbox != input.sandbox()
+        || header.generation != generation
+        || header.prerequisite_tuple != *prerequisites
+        || header.prerequisites != prerequisites.digest()
+        || header.normalized_input != normalized_policy_input_digest_v1(input)?
+        || header.candidate != candidate.commitment().digest()
+        || header.preimage != Some(candidate.commitment_preimage())
+        || header.diagnostics != digest_bytes(DIAGNOSTICS_DOMAIN, &diagnostics)
+    {
+        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+    }
+
+    let portable = candidate.portable();
+    let expected_bytes = [
+        portable.policy_bytes(),
+        portable.optimization_bytes(),
+        portable.namespace_graph_bytes(),
+        portable.advisory_program_bytes(),
+    ];
+    for (index, (_, _, descriptor)) in output_descriptors(portable).into_iter().enumerate() {
+        if outputs[index] != expected_bytes[index]
+            || header.outputs[index] != (descriptor.digest(), descriptor.encoded_size())
+        {
+            return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+        }
+    }
+    Ok(())
+}
+
 fn validate_canonical_json_domain(
     bytes: &[u8],
     expected_domain: &[u8],
