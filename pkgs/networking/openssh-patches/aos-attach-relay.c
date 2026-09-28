@@ -28,6 +28,7 @@
 
 #include "sshbuf.h"
 #include "log.h"
+#include "misc.h"
 #include "servconf.h"
 #include "monitor.h"
 #include "monitor_fdpass.h"

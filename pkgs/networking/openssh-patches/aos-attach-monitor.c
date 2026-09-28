@@ -34,6 +34,7 @@
 #include "sshbuf.h"
 #include "ssherr.h"
 #include "log.h"
+#include "misc.h"
 #include "servconf.h"
 #include "monitor.h"
 #include "monitor_fdpass.h"
