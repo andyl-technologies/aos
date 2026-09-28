@@ -16,6 +16,7 @@ use crate::{Error, Result};
 // publish these constants even when the running kernel implements the ABI.
 pub(crate) const SO_PASSPIDFD: libc::c_int = 76;
 pub(crate) const SCM_PIDFD: libc::c_int = 0x04;
+pub(crate) const SCM_SECURITY: libc::c_int = 0x03;
 pub(crate) const SO_PEERPIDFD: libc::c_int = 77;
 pub(crate) const SO_COOKIE: libc::c_int = 57;
 
@@ -49,6 +50,7 @@ pub(crate) fn get_aos_no_setid() -> Result<i32> {
 pub(crate) enum RawAncillary {
     Credentials(libc::ucred),
     PidFd(OwnedFd),
+    SecurityContext(Vec<u8>),
     Rights(Vec<OwnedFd>),
     Unknown { level: i32, kind: i32 },
     Malformed(Vec<OwnedFd>),
@@ -1797,6 +1799,22 @@ pub(crate) fn enable_seqpacket_identity(fd: BorrowedFd<'_>) -> Result<()> {
     set_socket_bool(fd, SO_PASSPIDFD, "setsockopt(SO_PASSPIDFD)")
 }
 
+pub(crate) fn enable_stream_subject(fd: BorrowedFd<'_>) -> Result<()> {
+    enable_seqpacket_identity(fd)?;
+    set_socket_bool(fd, libc::SO_PASSSEC, "setsockopt(SO_PASSSEC)")
+}
+
+pub(crate) fn require_stream_subject(fd: BorrowedFd<'_>) -> Result<()> {
+    require_seqpacket_identity(fd)?;
+    if socket_integer_option(fd, libc::SO_PASSSEC, "getsockopt(SO_PASSSEC)")? != 1 {
+        return Err(Error::invalid(
+            "stream subject options",
+            "SO_PASSSEC must remain enabled",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn peer_credentials(fd: BorrowedFd<'_>) -> Result<libc::ucred> {
     // All-zero is valid for this integer-only output structure.
     // SAFETY: `ucred` contains only integer scalars.
@@ -1999,6 +2017,9 @@ fn decode_cmsg(level: i32, kind: i32, payload: &[u8]) -> RawAncillary {
         return RawAncillary::Credentials(unsafe {
             std::ptr::read_unaligned(payload.as_ptr().cast::<libc::ucred>())
         });
+    }
+    if kind == SCM_SECURITY {
+        return RawAncillary::SecurityContext(payload.to_vec());
     }
     if kind == libc::SCM_RIGHTS || kind == SCM_PIDFD {
         let descriptors = adopt_descriptors(payload);

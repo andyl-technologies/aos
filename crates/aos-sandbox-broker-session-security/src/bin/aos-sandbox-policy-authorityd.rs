@@ -31,6 +31,10 @@
 //! `--release-source-domain-hold` retains Controller and source-domain writers
 //! in that order before exact root cold readback; it must precede Controller
 //! release when both journals are held.
+//! `AOSSGQ01` separately opens the genuine local-Root Source genesis writer
+//! last, under independently pinned Controller/Source readbacks. Its original
+//! stream remains held through all durable floor/ACK joins. Raw reply records
+//! cannot mint the separately qualified live Root client proof.
 
 use std::{
     error::Error,
@@ -64,10 +68,10 @@ use aos_sandbox::policy_compiler::{
     ROOT_PROJECT_ADMISSION_OUTCOME_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_STAGE_QUERY_MAGIC,
     ROOT_PROJECT_HISTORY_FLOOR_QUERY_MAGIC, ROOT_PROJECT_HISTORY_RETIRE_MAGIC,
     ROOT_PROJECT_NEGATIVE_INTENT_QUERY_MAGIC, ROOT_PROJECT_RESERVATION_CANCEL_MAGIC,
-    ROOT_PROJECT_RESERVATION_CANCEL_QUERY_MAGIC, ROOT_V8_SETTLED_QUERY_MAGIC,
-    RootV8HeldTerminalStepV1, SourceHoldReadbackChallengeV1, StagedClosedPolicyRootBaseV2,
-    abandon_fixed_cache_signer_challenge_v2, abort_fixed_root_project_admission_v1,
-    acknowledge_and_verify_fixed_closed_root_v8_terminal_v1,
+    ROOT_PROJECT_RESERVATION_CANCEL_QUERY_MAGIC, ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1,
+    ROOT_V8_SETTLED_QUERY_MAGIC, RootV8HeldTerminalStepV1, SourceHoldReadbackChallengeV1,
+    StagedClosedPolicyRootBaseV2, abandon_fixed_cache_signer_challenge_v2,
+    abort_fixed_root_project_admission_v1, acknowledge_and_verify_fixed_closed_root_v8_terminal_v1,
     acknowledge_fixed_closed_root_effect_v1, acknowledge_fixed_closed_root_v8_effect_v1,
     acknowledge_verify_and_release_fixed_closed_root_v8_terminal_v1,
     admit_fixed_cache_readback_pin_v1, admit_fixed_controller_hold_pin_v1,
@@ -82,6 +86,7 @@ use aos_sandbox::policy_compiler::{
     encode_root_v8_settled_reply_v1, fixed_root_project_admission_recovery_required_v1,
     fixed_root_project_history_readback_available_v1,
     fixed_root_project_negative_recovery_available_v1,
+    fixed_root_source_genesis_recovery_available_v1,
     prepare_fixed_root_project_admission_intent_v1, prepare_fixed_root_project_negative_intent_v1,
     read_fixed_cache_signer_challenge_v2, read_fixed_inert_closed_policy_binding_hold_v1,
     read_fixed_policy_cache_hold_v1, record_fixed_cache_signer_root_settlement_v2,
@@ -173,6 +178,9 @@ use aos_sandbox_broker_session_security::policy_root_ack_v8_client::{
 use aos_sandbox_broker_session_security::policy_signer_credential::{
     PinnedPolicySignerV1, PolicySignerRoleV1,
 };
+use aos_sandbox_broker_session_security::source_genesis_flight::{
+    serve_root_source_genesis_flight_v1, serve_root_source_genesis_recovery_v1,
+};
 use aos_sandbox_broker_session_security::source_signer_exchange::{
     request_root_source_project_admission_readback_v1,
     request_root_source_project_reservation_readback_v1,
@@ -205,6 +213,7 @@ const CACHE_SIGNER_RPC_TIMEOUT: Duration = Duration::from_secs(75);
 enum HeadRequestMode {
     Query,
     Lease,
+    SourceGenesis,
     ClosedBinding,
     QualifiedClosedBinding,
     ClosedBindingReplay,
@@ -678,9 +687,10 @@ fn run() -> Result<(), Box<dyn Error>> {
             if fixed_root_project_admission_recovery_required_v1()?
                 || fixed_root_project_history_readback_available_v1()?
                 || fixed_root_project_negative_recovery_available_v1()?
+                || fixed_root_source_genesis_recovery_available_v1()?
             {
                 eprintln!(
-                    "aos-sandbox-policy-authorityd: current credentials unavailable; serving only exact project recovery: {error}"
+                    "aos-sandbox-policy-authorityd: current credentials unavailable; serving only exact retained recovery: {error}"
                 );
                 recover_fixed_root_unstaged_project_intent_v1()?;
                 return serve_project_admission_recovery_only(
@@ -804,6 +814,15 @@ fn serve_project_admission_recovery_request(
     }
     require_no_fixed_closed_policy_binding_hold_v1()?;
     match mode {
+        HeadRequestMode::SourceGenesis => serve_root_source_genesis_recovery_v1(
+            stream,
+            request[8..24].try_into()?,
+            controller_uid,
+            controller_gid,
+            controller_uid,
+            source_signer_uid,
+        )
+        .map_err(Into::into),
         HeadRequestMode::ProjectNegativeIntent => {
             serve_project_negative_intent(stream, &request[8..24], controller_uid)
         }
@@ -854,7 +873,8 @@ fn serve_project_admission_recovery_request(
 fn project_recovery_mode_allowed(mode: HeadRequestMode) -> bool {
     matches!(
         mode,
-        HeadRequestMode::ProjectNegativeIntent
+        HeadRequestMode::SourceGenesis
+            | HeadRequestMode::ProjectNegativeIntent
             | HeadRequestMode::ProjectHistoryFloorReplay
             | HeadRequestMode::ProjectHistoryRetirement
             | HeadRequestMode::ProjectAdmissionOutcomeReplay
@@ -1100,6 +1120,9 @@ fn read_head_request(
     let mode = match request.get(..8) {
         Some(magic) if magic == POLICY_HEAD_QUERY_MAGIC_V2 => HeadRequestMode::Query,
         Some(magic) if magic == POLICY_HEAD_LEASE_QUERY_MAGIC_V3 => HeadRequestMode::Lease,
+        Some(magic) if magic == ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1 => {
+            HeadRequestMode::SourceGenesis
+        }
         Some(magic) if magic == POLICY_BINDING_QUERY_MAGIC_V4 => {
             if request[24..] == *POLICY_BINDING_HELD_MARKER_V4 {
                 HeadRequestMode::QualifiedClosedBinding
@@ -1218,7 +1241,8 @@ fn read_head_request(
     }
     if matches!(
         mode,
-        HeadRequestMode::ClosedBindingReplay
+        HeadRequestMode::SourceGenesis
+            | HeadRequestMode::ClosedBindingReplay
             | HeadRequestMode::ClosedBindingStage
             | HeadRequestMode::ClosedBindingPreview
             | HeadRequestMode::ClosedBindingSignerFlight
@@ -1319,6 +1343,20 @@ fn serve_current_head(
         require_no_fixed_closed_policy_binding_hold_v1()?;
         Ok(())
     })?;
+    if matches!(mode, HeadRequestMode::SourceGenesis) {
+        // The Source signer process UID is separate from the physical Source
+        // journal owner. The latter is explicitly configured as Controller's
+        // existing UID by the installed Source owner and read-only view.
+        return serve_root_source_genesis_flight_v1(
+            stream,
+            request[8..24].try_into()?,
+            controller_uid,
+            controller_gid,
+            controller_uid,
+            source_signer_uid,
+        )
+        .map_err(Into::into);
+    }
     if matches!(mode, HeadRequestMode::ClosedBindingReplay) {
         serve_closed_binding_replay(stream, &request[8..24])?;
         return Ok(());
@@ -3788,7 +3826,8 @@ fn select_project_source<'a>(
                 "legacy project source is unavailable",
             )
         }),
-        HeadRequestMode::ClosedBindingReplay
+        HeadRequestMode::SourceGenesis
+        | HeadRequestMode::ClosedBindingReplay
         | HeadRequestMode::RootEffectAck
         | HeadRequestMode::RootEffectAckReplay
         | HeadRequestMode::RootV8EffectAck
@@ -3824,6 +3863,51 @@ mod tests {
     use std::os::unix::net::UnixStream;
 
     use super::*;
+
+    #[test]
+    fn genesis_query_is_nonce_bound_and_requires_root_custody_gate() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        let mut request = [0; REQUEST_BYTES];
+        request[..8].copy_from_slice(ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1);
+        request[8..24].copy_from_slice(&[1; 16]);
+        client.write_all(&request).unwrap();
+        let gates = Cell::new(0);
+
+        let (_, mode) = read_head_request(&mut server, || {
+            gates.set(gates.get() + 1);
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(matches!(mode, HeadRequestMode::SourceGenesis));
+        assert_eq!(gates.get(), 1);
+        assert!(project_recovery_mode_allowed(mode));
+        assert!(select_project_source(mode, None, None).is_err());
+    }
+
+    #[test]
+    fn malformed_genesis_query_refuses_before_root_custody() {
+        for malformed in [false, true] {
+            let (mut client, mut server) = UnixStream::pair().unwrap();
+            let mut request = [0; REQUEST_BYTES];
+            request[..8].copy_from_slice(ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1);
+            if malformed {
+                request[8..24].copy_from_slice(&[1; 16]);
+                request[31] = 1;
+            }
+            client.write_all(&request).unwrap();
+            let gates = Cell::new(0);
+
+            assert!(
+                read_head_request(&mut server, || {
+                    gates.set(gates.get() + 1);
+                    Ok(())
+                })
+                .is_err()
+            );
+            assert_eq!(gates.get(), 0);
+        }
+    }
 
     #[test]
     fn historical_cache_recovery_is_only_on_the_separate_endpoint() {

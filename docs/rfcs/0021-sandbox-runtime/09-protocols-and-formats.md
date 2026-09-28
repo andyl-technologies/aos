@@ -2546,3 +2546,107 @@ or restore semantics. The snapshot format remains independently versioned.
 The existing difference between strict canonical document decoding and
 extensible RPC projection decoding must be tested explicitly rather than
 hidden behind one global JSON policy.
+
+## Local protected-Root Source genesis profile
+
+This distinct fresh-install profile trusts the protected Root state and the
+kernel/PID1. It does **not** claim resistance to rollback of the whole host disk,
+and must not be advertised as an off-host or hardware rollback anchor. Q04
+project-history retirement ACKs do not supply this Source ancestry anchor.
+
+Controller accepts the exact existing-role signed `AOSCSE01` seed and independent
+`AOSPSC02` project authorization, including all seven explicitly signed ancestry
+limits. Neither publisher policy, readback signatures nor unsigned caller limits
+replace that administrative authority. Existing `AOSCSK01` and `AOSPAK02` pins
+are independently retained; the Controller/Source readback keys are distinct.
+The accepted `AOSSGC01[608]` record binds both packets, project, original publisher
+pointer/revision, authorization head and exact administrative role tuple.
+
+Root creates `AOSSDI01[80]` deployment-instance identity only once from kernel
+entropy under its actual protected writer. Missing identity may be initialized
+only after the real held Source writer's **global** Empty cut and independently
+signed all-row Empty observation agree. Preexisting Tree, lineage, receipt,
+pending or ACK rows cannot be adopted as fresh custody. Under an existing Root
+instance, a held vacant-project DATA cut may select another absent project;
+it is never signed Empty, NotFound authority, or authority over other projects.
+
+Root's `AOSSGI01[792]` intent binds the instance, target project, privileged
+Source-owner UID, original Root nonce, exact Controller acceptance and all pinned
+roles. Its dedicated Root-only capacity purpose 6 reserves the exact future
+floor/intent-delete/capacity-delete transaction before Source mutation. Generic
+lifecycle adapters and foreign purposes cannot consume this reservation.
+
+Source atomically appends the existing canonical Tree and lineage members,
+`AOSSGR01[672]` receipt and one global pending marker. The receipt commits to the
+instance, intent, accepted original packets and both member heads. Its semantic
+materialization digest includes length-framed canonical Tree/lineage member
+bytes and immutable receipt prefix `[0..640]`, excluding the final digest itself.
+ACK/pending rows, physical names and diagnostic frame sequence are excluded.
+This authenticates the selected Tree materialization, **not the entire Source
+journal**. A pending flight fences every unrelated Source append and compaction.
+Unsigned ordinary Tree replay and later mutation authority remain closed.
+
+`AOSHGF01[792]` is the exact per-project semantic floor, currently genesis
+revision 1 with no predecessor. It embeds the actual receipt and pinned role
+tuple. Root atomically settles its reserved suffix and deletes the matching
+intent. Frame sequence is diagnostic and cannot replace semantic CAS across
+legitimate compaction. Later successors require equivalent exact mutation
+authority; no unsigned successor or new floor is inferred from a lookup miss.
+
+The existing normal Root endpoint accepts `AOSSGQ01[32]` only with a nonzero
+client nonce. After Controller and Source are held, Root is acquired last and
+returns `AOSSGH01[56]`: version/reserved header, echoed client nonce, fresh Root
+nonce and privileged configured Source/Controller UIDs. It never opens
+Controller's private UID-owned journal; genuine held Controller signatures and
+the existing independently pinned read-only Source signer provide those cuts.
+
+Subsequent frames have an exact 32-byte header:
+
+```text
+magic[8] | version:u16=1 | reserved[6] | original Root-flight nonce[16] | payload
+```
+
+| Phase | Magic | Fixed payload bytes |
+| --- | --- | ---: |
+| Controller prepare readback | `AOSSGP01` | 864 |
+| Root prepared intent + admission expiry | `AOSSGI01` | 800 |
+| Controller post-append readback | `AOSSGF01` | 864 |
+| Root anchored floor | `AOSSGA01` | 792 |
+| Controller final readback | `AOSSGC01` | 864 |
+| Root completed floor digest | `AOSSGD01` | 32 |
+| Client final consumption ACK | `AOSSGE01` | 32 |
+
+Exact floor recovery returns Anchored directly without issuing a new intent.
+Historical intent recovery returns zero admission expiry: it cannot authorize
+a new Source append. If current administrative/deployment inputs are unavailable,
+the recovery listener rejects all current Empty and vacant admission readbacks,
+even when an old durable deployment HEAD has not yet expired.
+
+Ordering is Controller floor acceptance/readback, Source ACK/readback, Controller
+completion/readback, then Root's final actual signed Anchored observation. Root
+requires the dedicated Controller readback kind 3, issued only after its actual
+durable Complete row rejoins the exact anchored Source ACK. Ordinary historical
+kind 1 cannot finalize Root release; it remains available for exact recovery
+after Source ACK but before Controller completion, avoiding a circular prerequisite.
+Kinds 0 and 2 remain current Empty and vacant-project admission respectively.
+These closed kinds share the existing Controller-purpose signature profile and
+864-byte packet; no caller flag or decoded ACK can select final authority.
+
+Root keeps its writer through the client's final consumption ACK. Every exit shuts
+down the original accepted stream before releasing Root; the client checks
+original receive-queue shutdown as well as creator pidfd liveness. Lost replies
+retain exact durable records for replay and do not grant a replacement
+administrative request/intent nonce, decision, Tree or floor. Fresh per-flight
+readback nonces correlate observations only. All ordered recovery suffixes are reserved
+before the first respective owner mutation.
+
+These codecs and signatures are DATA, not detachable Root proofs. Every Root
+reply fragment must carry the exact original live daemon credential pidfd and
+bounded socket SID on the original stream. Socket SID alone is not task identity.
+Positive proof construction additionally requires the genuine installed normal
+Root nondelegation/empty-capability matrix and exact image/launch provenance,
+including out-of-role endpoint fd-use/write, task-file theft, ptrace, transition,
+credential nomination and policy-mutation escape exclusions. An arbitrary path
+whose bytes match loaded policy does not prove that matrix. Until that complete
+producer join and installed qualification exist, the opaque client constructor
+and public readiness/effect gates remain closed.

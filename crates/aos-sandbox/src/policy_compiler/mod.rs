@@ -73,9 +73,31 @@ mod root_challenge_record;
 mod root_project_admission_proof;
 mod root_v8_released_proof;
 mod root_v8_settled_grant;
+mod source_genesis_readback;
+#[cfg(target_os = "linux")]
+mod source_genesis_root;
 mod source_hold_pin;
 mod source_hold_readback;
 mod source_hold_readback_v2;
+#[cfg(target_os = "linux")]
+pub use source_genesis_root::{
+    CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1, HeldRootSourceGenesisIntentV1,
+    ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1, ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1,
+    ROOT_SOURCE_GENESIS_INTENT_BYTES_V1, ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1,
+    RootSourceGenesisAuthorityV1, RootSourceGenesisFloorProofV1, RootSourceGenesisFrameKindV1,
+    RootSourceGenesisIntentRecordV1, SOURCE_GENESIS_DEPLOYMENT_INSTANCE_BYTES_V1,
+    SOURCE_HIERARCHY_FLOOR_BYTES_V1, SourceHierarchyFloorRecordV1,
+    decode_root_source_genesis_frame_v1, encode_root_source_genesis_frame_v1,
+    fixed_root_source_genesis_recovery_available_v1,
+    sign_controller_source_genesis_completion_readback_v1,
+    sign_controller_source_genesis_readback_v1,
+};
+#[cfg(target_os = "linux")]
+pub(crate) use source_genesis_root::{
+    require_root_source_genesis_capacity_owner_v1, require_root_source_genesis_mutation_v1,
+    validate_root_source_genesis_capacity_admission_v1,
+    validate_root_source_genesis_capacity_settlement_v1,
+};
 mod source_project_admission_readback;
 #[cfg(target_os = "linux")]
 mod source_signer_readback;
@@ -324,6 +346,10 @@ pub use root_v8_settled_grant::{
     ROOT_V8_SETTLED_QUERY_MAGIC, RootV8SettledGrantV1, encode_root_v8_settled_reply_v1,
     query_fixed_root_v8_settled_grant_v1,
 };
+pub use source_genesis_readback::{
+    SOURCE_TREE_GENESIS_READBACK_BYTES_V1, SourceTreeGenesisChallengeV1,
+    VerifiedSourceTreeGenesisReadbackV1, verify_source_tree_genesis_readback_v1,
+};
 pub use source_hold_pin::{SourceHoldPinErrorV1, admit_fixed_source_hold_pin_v1};
 pub use source_hold_readback::{
     PinnedSourceHoldReadbackSignerV1, SOURCE_HOLD_READBACK_BYTES_V1, SourceHoldReadbackChallengeV1,
@@ -356,7 +382,7 @@ pub use source_signer_readback::{
     SourceSignerReadbackErrorV1, sign_fixed_source_project_admission_readback_v1,
     sign_fixed_source_project_reservation_readback_v1,
     sign_fixed_source_project_retirement_readback_v1, sign_fixed_source_signer_readback_v1,
-    sign_fixed_source_signer_readback_v2,
+    sign_fixed_source_signer_readback_v2, sign_fixed_source_tree_genesis_readback_v1,
 };
 #[cfg(target_os = "linux")]
 pub use v8_successor_clear::clear_current_create_v8_successor_fences_v1;

@@ -683,6 +683,14 @@ pub struct PreparedDomainTransactionV1<S: ProtectedDomainSchemaV1> {
 }
 
 impl<S: ProtectedDomainSchemaV1> PreparedDomainTransactionV1<S> {
+    /// Borrows prepared canonical members for a same-owner atomic composition.
+    ///
+    /// These records retain the existing framing and digest algorithm; they
+    /// grant no commit, postcommit, live custody or publication authority.
+    pub(crate) fn journal_records(&self) -> &[JournalRecord] {
+        self.transaction.records()
+    }
+
     /// Returns the stable transaction identifier bound into durable members.
     #[must_use]
     pub const fn transaction_id(&self) -> [u8; 16] {
@@ -2391,7 +2399,8 @@ fn validate_capacity_domain_shape(
         }
         GlobalCapacityReservationPurposeV1::RootProjectAdmission
         | GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal
-        | GlobalCapacityReservationPurposeV1::ControllerProjectAdmission => false,
+        | GlobalCapacityReservationPurposeV1::ControllerProjectAdmission
+        | GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor => false,
     };
     closed
         .then_some(())

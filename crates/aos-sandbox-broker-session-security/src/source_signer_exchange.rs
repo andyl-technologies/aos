@@ -28,15 +28,18 @@ use aos_sandbox::policy_compiler::{
     PinnedSourceHoldReadbackSignerV1, SOURCE_HOLD_READBACK_BYTES_V1, SOURCE_HOLD_READBACK_BYTES_V2,
     SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1,
     SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1,
-    SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1, SourceHoldReadbackChallengeV1,
+    SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1, SOURCE_TREE_GENESIS_READBACK_BYTES_V1,
+    SourceHoldReadbackChallengeV1, SourceTreeGenesisChallengeV1,
     StagedClosedPolicySignerChallengeV2, sign_fixed_source_project_admission_readback_v1,
     sign_fixed_source_project_completed_terminal_readback_v1,
     sign_fixed_source_project_reservation_readback_v1,
     sign_fixed_source_project_retirement_readback_v1, sign_fixed_source_signer_readback_v1,
-    sign_fixed_source_signer_readback_v2, verify_current_source_hold_readback_v1,
-    verify_source_hold_readback_with_names_v2, verify_source_project_admission_readback_v1,
+    sign_fixed_source_signer_readback_v2, sign_fixed_source_tree_genesis_readback_v1,
+    verify_current_source_hold_readback_v1, verify_source_hold_readback_with_names_v2,
+    verify_source_project_admission_readback_v1,
     verify_source_project_completed_terminal_readback_v1,
     verify_source_project_reservation_readback_v1, verify_source_project_retirement_readback_v1,
+    verify_source_tree_genesis_readback_v1,
 };
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use rustix::net::sockopt::{socket_acceptconn, socket_peercred};
@@ -59,6 +62,9 @@ const REQUEST_RESERVATION_MAGIC: &[u8; 8] = b"AOSSSR05";
 const REPLY_RESERVATION_MAGIC: &[u8; 8] = b"AOSSSP05";
 const REQUEST_COMPLETED_MAGIC: &[u8; 8] = b"AOSSSR06";
 const REPLY_COMPLETED_MAGIC: &[u8; 8] = b"AOSSSP06";
+const REQUEST_GENESIS_MAGIC: &[u8; 8] = b"AOSSSR07";
+const REPLY_GENESIS_MAGIC: &[u8; 8] = b"AOSSSP07";
+const REPLY_GENESIS_BYTES: usize = 8 + SOURCE_TREE_GENESIS_READBACK_BYTES_V1;
 const REPLY_COMPLETED_BYTES: usize = 8 + SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1;
 const REQUEST_BYTES: usize = 72;
 const REPLY_BYTES: usize = 8 + SOURCE_HOLD_READBACK_BYTES_V1;
@@ -67,6 +73,87 @@ const REPLY_PROJECT_BYTES: usize = 8 + SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V
 const REPLY_RESERVATION_BYTES: usize = 8 + SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1;
 const FLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Requests an actual Source genesis observation through the existing signer.
+///
+/// A missing project/intent requests global Empty, not per-project NotFound.
+/// The caller must independently retain genuine Controller/Source and Root
+/// flight custody; these authenticated observation bytes cannot reconstruct it.
+///
+/// # Errors
+///
+/// Rejects mixed Empty/populated scope, unsafe signer custody, changed Source
+/// role/key/correlation, malformed reply or transport loss.
+pub fn request_root_source_tree_genesis_readback_v1(
+    challenge: SourceTreeGenesisChallengeV1,
+    project: Option<ProjectId>,
+    signer: &PinnedSourceHoldReadbackSignerV1,
+    signer_uid: u32,
+    socket_gid: u32,
+) -> io::Result<[u8; SOURCE_TREE_GENESIS_READBACK_BYTES_V1]> {
+    if signer_uid == 0 || socket_gid == 0 {
+        return Err(invalid_data("invalid Source genesis signer identity"));
+    }
+    let request = encode_genesis_request(challenge, project)?;
+    let mut stream = connect_source_signer(signer_uid, socket_gid)?;
+    stream.write_all(&request)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let packet = read_framed_reply::<REPLY_GENESIS_BYTES, SOURCE_TREE_GENESIS_READBACK_BYTES_V1>(
+        &mut stream,
+        REPLY_GENESIS_MAGIC,
+    )?;
+    let verified = verify_source_tree_genesis_readback_v1(&packet, signer, challenge)
+        .map_err(io::Error::other)?;
+    if verified.receipt().map(|receipt| receipt.project()) != project {
+        return Err(invalid_data("changed Source genesis project"));
+    }
+    Ok(packet)
+}
+
+fn encode_genesis_request(
+    challenge: SourceTreeGenesisChallengeV1,
+    project: Option<ProjectId>,
+) -> io::Result<[u8; REQUEST_BYTES]> {
+    if project.is_some() != challenge.intent().is_some()
+        || project.is_some_and(|project| project.as_bytes() == &[0; 16])
+    {
+        return Err(invalid_data("mixed Source genesis scope"));
+    }
+    let mut request = [0; REQUEST_BYTES];
+    request[..8].copy_from_slice(REQUEST_GENESIS_MAGIC);
+    request[8..24].copy_from_slice(&challenge.nonce());
+    if let Some(intent) = challenge.intent() {
+        request[24..56].copy_from_slice(intent.as_bytes());
+    }
+    if let Some(project) = project {
+        request[56..72].copy_from_slice(project.as_bytes());
+    }
+    Ok(request)
+}
+
+fn decode_genesis_request(
+    request: &[u8; REQUEST_BYTES],
+) -> io::Result<(SourceTreeGenesisChallengeV1, Option<ProjectId>)> {
+    if request[..8] != *REQUEST_GENESIS_MAGIC {
+        return Err(invalid_data("foreign Source genesis request"));
+    }
+    let nonce = request[8..24]
+        .try_into()
+        .map_err(|_| invalid_data("invalid genesis nonce"))?;
+    let intent_bytes: [u8; 32] = request[24..56]
+        .try_into()
+        .map_err(|_| invalid_data("invalid genesis intent"))?;
+    let project_bytes: [u8; 16] = request[56..72]
+        .try_into()
+        .map_err(|_| invalid_data("invalid genesis project"))?;
+    let intent = (intent_bytes != [0; 32]).then_some(ObjectDigest::from_bytes(intent_bytes));
+    let project = (project_bytes != [0; 16]).then_some(ProjectId::from_bytes(project_bytes));
+    let challenge = SourceTreeGenesisChallengeV1::new(nonce, intent).map_err(io::Error::other)?;
+    if encode_genesis_request(challenge, project)? != *request {
+        return Err(invalid_data("noncanonical Source genesis request"));
+    }
+    Ok((challenge, project))
+}
 
 /// Requests only the exact completed Source terminal from its existing reader.
 ///
@@ -514,6 +601,20 @@ fn serve_request(
     if stream.read(&mut trailing)? != 0 {
         return Err(invalid_data("trailing Source signer request bytes").into());
     }
+    if request[..8] == *REQUEST_GENESIS_MAGIC {
+        let (challenge, project) = decode_genesis_request(&request)?;
+        let signing_key = credentials.signing_key()?;
+        let packet = sign_fixed_source_tree_genesis_readback_v1(
+            controller_uid,
+            project,
+            challenge,
+            credentials.generation(),
+            &signing_key,
+        )?;
+        write_framed_reply::<REPLY_GENESIS_BYTES>(stream, REPLY_GENESIS_MAGIC, &packet)?;
+        stream.shutdown(std::net::Shutdown::Write)?;
+        return Ok(());
+    }
     let (challenge, project, mode) = decode_request_mode(&request)?;
     let signing_key = credentials.signing_key()?;
     if mode == SourceSignerRequestModeV1::ProjectCompletedTerminal {
@@ -633,6 +734,73 @@ enum SourceSignerRequestModeV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn genesis_requests_keep_global_empty_distinct_from_populated_and_legacy_modes() {
+        let empty = SourceTreeGenesisChallengeV1::new([1; 16], None).unwrap();
+        let bytes = encode_genesis_request(empty, None).unwrap();
+        assert_eq!(decode_genesis_request(&bytes).unwrap(), (empty, None));
+        assert!(decode_request_mode(&bytes).is_err());
+
+        let project = ProjectId::from_bytes([2; 16]);
+        let populated =
+            SourceTreeGenesisChallengeV1::new([3; 16], Some(ObjectDigest::from_bytes([4; 32])))
+                .unwrap();
+        let bytes = encode_genesis_request(populated, Some(project)).unwrap();
+        assert_eq!(
+            decode_genesis_request(&bytes).unwrap(),
+            (populated, Some(project))
+        );
+        assert!(encode_genesis_request(populated, None).is_err());
+        assert!(encode_genesis_request(empty, Some(project)).is_err());
+        for range in [8..24, 24..56, 56..72] {
+            let mut malformed = bytes;
+            malformed[range].fill(0);
+            assert!(decode_genesis_request(&malformed).is_err());
+        }
+        let mut foreign = bytes;
+        foreign[..8].copy_from_slice(REQUEST_NAMES_MAGIC);
+        assert!(decode_genesis_request(&foreign).is_err());
+    }
+
+    #[test]
+    fn genesis_replies_require_exact_domain_width_and_eof() {
+        let payload = [7; SOURCE_TREE_GENESIS_READBACK_BYTES_V1];
+        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+        write_framed_reply::<REPLY_GENESIS_BYTES>(&mut sender, REPLY_GENESIS_MAGIC, &payload)
+            .unwrap();
+        sender.shutdown(std::net::Shutdown::Write).unwrap();
+        assert_eq!(
+            read_framed_reply::<REPLY_GENESIS_BYTES, SOURCE_TREE_GENESIS_READBACK_BYTES_V1>(
+                &mut receiver,
+                REPLY_GENESIS_MAGIC,
+            )
+            .unwrap(),
+            payload
+        );
+
+        for mutation in 0..3 {
+            let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+            let mut bytes = vec![7; REPLY_GENESIS_BYTES];
+            bytes[..8].copy_from_slice(REPLY_GENESIS_MAGIC);
+            match mutation {
+                0 => bytes[..8].copy_from_slice(REPLY_COMPLETED_MAGIC),
+                1 => {
+                    bytes.pop();
+                }
+                _ => bytes.push(0),
+            }
+            sender.write_all(&bytes).unwrap();
+            sender.shutdown(std::net::Shutdown::Write).unwrap();
+            assert!(
+                read_framed_reply::<REPLY_GENESIS_BYTES, SOURCE_TREE_GENESIS_READBACK_BYTES_V1>(
+                    &mut receiver,
+                    REPLY_GENESIS_MAGIC,
+                )
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn framed_project_replies_require_exact_magic_length_and_eof() {

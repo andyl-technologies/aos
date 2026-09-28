@@ -251,18 +251,18 @@ impl VerifiedPublisherProjectAuthorizationSourceV2 {
 }
 
 /// Parses packet claims without treating them as authenticated authority.
-pub(super) struct UnverifiedProjectAuthorizationClaimsV2 {
-    pub(super) project: ProjectId,
-    pub(super) limits: TreeLimitsV1,
-    pub(super) issuer_generation: u64,
-    pub(super) publisher_generation: u64,
-    pub(super) publisher_head_digest: ObjectDigest,
-    pub(super) publisher_revision_digest: ObjectDigest,
-    pub(super) request_id: [u8; 16],
-    pub(super) epoch: u64,
+pub(crate) struct UnverifiedProjectAuthorizationClaimsV2 {
+    pub(crate) project: ProjectId,
+    pub(crate) limits: TreeLimitsV1,
+    pub(crate) issuer_generation: u64,
+    pub(crate) publisher_generation: u64,
+    pub(crate) publisher_head_digest: ObjectDigest,
+    pub(crate) publisher_revision_digest: ObjectDigest,
+    pub(crate) request_id: [u8; 16],
+    pub(crate) epoch: u64,
 }
 
-pub(super) fn parse_unverified_project_authorization_claims_v2(
+pub(crate) fn parse_unverified_project_authorization_claims_v2(
     bytes: &[u8],
 ) -> Result<UnverifiedProjectAuthorizationClaimsV2, ProjectAuthorizationSourceErrorV2> {
     if bytes.len() != PACKET_BYTES {
@@ -327,16 +327,7 @@ pub fn verify_current_project_authorization_source_v2(
     issuer: &PinnedPublisherProjectAuthorizationIssuerV2,
     expected: ProjectAuthorizationSourceExpectedV2,
 ) -> Result<VerifiedPublisherProjectAuthorizationSourceV2, ProjectAuthorizationSourceErrorV2> {
-    let claims = parse_unverified_project_authorization_claims_v2(bytes)?;
-    let body = &bytes[..BODY_BYTES];
-    if claims.issuer_generation != issuer.generation {
-        return Err(ProjectAuthorizationSourceErrorV2::Stale);
-    }
-    let signature = Signature::from_bytes(&take::<64>(bytes, BODY_BYTES)?);
-    issuer
-        .key
-        .verify_strict(&signing_preimage(body), &signature)
-        .map_err(|_| ProjectAuthorizationSourceErrorV2::Signature)?;
+    let claims = verify_signed_project_authorization_claims_v2(bytes, issuer)?;
 
     if claims.project != expected.project
         || claims.request_id != expected.request_id
@@ -379,6 +370,23 @@ pub fn verify_current_project_authorization_source_v2(
         epoch: claims.epoch,
         packet_digest: commitment(PACKET_DOMAIN, bytes),
     })
+}
+
+/// Checks only the independent role signature; callers separately join owners.
+pub(crate) fn verify_signed_project_authorization_claims_v2(
+    bytes: &[u8],
+    issuer: &PinnedPublisherProjectAuthorizationIssuerV2,
+) -> Result<UnverifiedProjectAuthorizationClaimsV2, ProjectAuthorizationSourceErrorV2> {
+    let claims = parse_unverified_project_authorization_claims_v2(bytes)?;
+    if claims.issuer_generation != issuer.generation {
+        return Err(ProjectAuthorizationSourceErrorV2::Stale);
+    }
+    let signature = Signature::from_bytes(&take::<64>(bytes, BODY_BYTES)?);
+    issuer
+        .key
+        .verify_strict(&signing_preimage(&bytes[..BODY_BYTES]), &signature)
+        .map_err(|_| ProjectAuthorizationSourceErrorV2::Signature)?;
+    Ok(claims)
 }
 
 pub(super) fn commitment(domain: &[u8], bytes: &[u8]) -> ObjectDigest {
