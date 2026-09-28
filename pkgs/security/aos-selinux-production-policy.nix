@@ -155,7 +155,7 @@ in
             -o "$attribute_negative_module.pp" \
             -m "$attribute_negative_module.mod"
           test -s "$attribute_negative_module.pp"
-          for narrow_negative_module in aos_sandbox_loader_negative aos_sandbox_context_negative aos_sandbox_guest_file_negative aos_sandbox_guest_ancestor_negative aos_sandbox_root_custody_negative aos_sandbox_helper_socket_negative; do
+          for narrow_negative_module in aos_sandbox_loader_negative aos_sandbox_context_negative aos_sandbox_guest_file_negative aos_sandbox_guest_ancestor_negative aos_sandbox_root_custody_negative aos_sandbox_helper_socket_negative aos_sandbox_signer_socket_negative; do
             ${checkpolicy}/bin/checkmodule -m \
               -o "$narrow_negative_module.mod" \
               ${policySupport}/"$narrow_negative_module.te"
@@ -190,9 +190,9 @@ in
           test -s effective-policy.tsv
 
           # Separate mutants restore textrel, translation, Guest host-file
-          # access/relabeling, foreign Root custody or helper socket connections.
+          # access/relabeling, foreign Root custody or fixed-role connections.
           # Normal base assertions remain enabled; each fails the same checker.
-          for narrow_negative_module in aos_sandbox_loader_negative aos_sandbox_context_negative aos_sandbox_guest_file_negative aos_sandbox_guest_ancestor_negative aos_sandbox_root_custody_negative aos_sandbox_helper_socket_negative; do
+          for narrow_negative_module in aos_sandbox_loader_negative aos_sandbox_context_negative aos_sandbox_guest_file_negative aos_sandbox_guest_ancestor_negative aos_sandbox_root_custody_negative aos_sandbox_helper_socket_negative aos_sandbox_signer_socket_negative; do
             ${semodule-utils}/bin/semodule_link \
               -o "$narrow_negative_module-linked.mod" \
               "$@" "$narrow_negative_module.pp"
@@ -244,6 +244,13 @@ in
                 grep -F "permission='connect'" "$narrow_negative_module-diagnostic"
                 grep -F "aos_sandbox_negative_helper_socket_sources" "$narrow_negative_module-diagnostic"
                 grep -F "aos_sandbox_negative_helper_socket_targets" "$narrow_negative_module-diagnostic"
+                ;;
+              aos_sandbox_signer_socket_negative)
+                grep -F "aos_sandbox_cache_signer_t" "$narrow_negative_module-diagnostic"
+                grep -F "object_class='unix_stream_socket'" "$narrow_negative_module-diagnostic"
+                grep -F "permission='connect'" "$narrow_negative_module-diagnostic"
+                grep -F "aos_sandbox_negative_signer_socket_sources" "$narrow_negative_module-diagnostic"
+                grep -F "aos_sandbox_negative_signer_socket_targets" "$narrow_negative_module-diagnostic"
                 ;;
               *)
                 echo "unknown negative module: $narrow_negative_module" >&2
@@ -384,6 +391,7 @@ in
             ${policySupport}/aos_sandbox_guest_ancestor_negative.te \
             ${policySupport}/aos_sandbox_root_custody_negative.te \
             ${policySupport}/aos_sandbox_helper_socket_negative.te \
+            ${policySupport}/aos_sandbox_signer_socket_negative.te \
             ${policySupport}/view_confinement.te \
             ${policySupport}/view_policy.py \
             attribute-negative-diagnostic \
@@ -392,6 +400,7 @@ in
             aos_sandbox_guest_ancestor_negative-diagnostic \
             aos_sandbox_root_custody_negative-diagnostic \
             aos_sandbox_helper_socket_negative-diagnostic \
+            aos_sandbox_signer_socket_negative-diagnostic \
             deficient-source-diagnostic \
             deficient-binary-diagnostic \
             "$evidence_root/"

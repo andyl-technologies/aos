@@ -261,7 +261,22 @@ class EffectivePolicyTest(unittest.TestCase):
         worker = effective_policy.fuse_worker_policy.WORKER_DOMAIN
         self.assertEqual(
             set(effective_policy.NO_CONTEXT_TRANSLATION_DOMAINS),
-            {worker, "aos_method46_controller_helper_t", "aos_method46_storage_helper_t"},
+            {
+                worker,
+                "aos_method46_controller_helper_t",
+                "aos_method46_storage_helper_t",
+                "aos_sandbox_cache_signer_t",
+                "aos_sandbox_source_signer_t",
+            },
+        )
+        self.assertEqual(
+            set(effective_policy.NO_CONTEXT_TRANSLATION_DOMAINS),
+            {
+                access.source for access in effective_policy.NEGATIVE_ACCESS
+                if access.target == "*"
+                and access.object_class == "unix_stream_socket"
+                and access.permission == "connect"
+            },
         )
 
         for domain in effective_policy.NO_CONTEXT_TRANSLATION_DOMAINS:
@@ -276,7 +291,11 @@ class EffectivePolicyTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "lost domain membership"):
                     effective_policy.check_policy(FAKE_SETOOLS, policy)
 
-        for ordinary in ("init_t", effective_policy.GUEST_OWNER, "aos_sandbox_controller_t"):
+        for ordinary in (
+            "init_t", effective_policy.GUEST_OWNER, "aos_sandbox_controller_t",
+            "aos_sandbox_policy_authority_t", "aos_sandbox_source_view_preparer_t",
+            "aos_sandbox_cache_view_preparer_t",
+        ):
             with self.subTest(ordinary=ordinary):
                 policy = FakePolicy()
                 policy.attributes[marker].add(ordinary)
@@ -310,20 +329,41 @@ class EffectivePolicyTest(unittest.TestCase):
                         effective_policy.Access(helper, owner, "unix_stream_socket", permission)
                     )
 
-    def test_disabled_indirect_helper_socket_grant_is_forbidden(self) -> None:
-        members = (*effective_policy.owner_policy.HELPER_DOMAINS, "init_t")
-        for helper in effective_policy.owner_policy.HELPER_DOMAINS:
+    def test_signer_inherited_listener_channels_remain_required(self) -> None:
+        for signer in effective_policy.view_policy.SIGNER_DOMAINS:
+            for permission in ("bind", "create", "getattr", "getopt", "listen", "setopt"):
+                with self.subTest(signer=signer, permission=permission):
+                    self.assert_missing_allow_rejected(
+                        effective_policy.Access("init_t", signer, "unix_stream_socket", permission)
+                    )
+
+            self.assert_missing_allow_rejected(
+                effective_policy.Access(
+                    "aos_sandbox_policy_authority_t", signer, "unix_stream_socket", "connectto",
+                )
+            )
+
+        self.assert_missing_allow_rejected(
+            effective_policy.Access(
+                "aos_sandbox_controller_t", "aos_sandbox_cache_signer_t",
+                "unix_stream_socket", "connectto",
+            )
+        )
+
+    def test_disabled_indirect_raw_client_socket_grant_is_forbidden(self) -> None:
+        members = (*effective_policy.NO_CONTEXT_TRANSLATION_DOMAINS, "init_t")
+        for client in effective_policy.NO_CONTEXT_TRANSLATION_DOMAINS:
             for permission in ("connect", "connectto", "create", "listen"):
-                with self.subTest(helper=helper, permission=permission):
+                with self.subTest(client=client, permission=permission):
                     policy = FakePolicy()
                     # Both axes retain an ordinary member. Default-off grants
                     # remain forbidden even though no positive rule uses them.
                     access = effective_policy.Access(
-                        "indirect_helpers", "indirect_channels", "unix_stream_socket", permission,
+                        "indirect_clients", "indirect_channels", "unix_stream_socket", permission,
                     )
                     policy.allows[access] = [FakeRule(
-                        "disabled indirect helper socket grant", active=False,
-                        source=FakeAttribute("indirect_helpers", (helper, "init_t")),
+                        "disabled indirect raw-client socket grant", active=False,
+                        source=FakeAttribute("indirect_clients", (client, "init_t")),
                         target=FakeTypeAttribute(set(members)),
                     )]
                     with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
