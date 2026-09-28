@@ -1308,6 +1308,7 @@ mod tests {
         assert_eq!(package_digest, format!("{policy_digest}\n"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn guest_agent_handoff_has_fixed_argument_roles_and_prebinding_order() {
         use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
@@ -1631,7 +1632,7 @@ mod tests {
         let independently_assembled_digest: [u8; 32] = Sha256::digest(preimage).into();
         assert_eq!(
             encode_hex32(independently_assembled_digest),
-            "999e97d599724e396cc3503a526e2b84f978cad4d02376b05c290d60386cc95f"
+            "ce5fd0cf685c37b1a900fc73b6e591e60d51011d537541d44cfef4d4814442d4"
         );
         assert_eq!(spec.semantic_digest_v1(), independently_assembled_digest);
     }

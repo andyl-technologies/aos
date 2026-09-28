@@ -16,9 +16,6 @@ use crate::{Error, Result, uapi};
 
 /// Names the existing trusted Guest owner, independently of its current UID.
 pub const GUEST_OWNER_CONTEXT: &str = "system_u:system_r:aos_sandbox_guest_owner_t:s0";
-/// Names the fixed pre-firstexec nspawn Owner context argument.
-pub const GUEST_OWNER_NSPAWN_ARGUMENT: &str =
-    "--selinux-context=system_u:system_r:aos_sandbox_guest_owner_t:s0";
 /// Names every original admitted tenant, including UID zero.
 pub const GUEST_TENANT_CONTEXT: &str = "system_u:system_r:aos_sandbox_payload_t:s0";
 

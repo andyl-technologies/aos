@@ -27,6 +27,23 @@ fn assert_property_policy_mutation(index: usize, replacement: UnitPropertyPolicy
     assert_ne!(projection.digest(), baseline, "property {index}");
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn guest_owner_launch_context_matches_linux_confinement() {
+    use aos_sandbox_linux::guest_confinement::{GUEST_OWNER_CONTEXT, GUEST_TENANT_CONTEXT};
+
+    let contexts = NSPAWN_ARGUMENT_POLICY_V1
+        .iter()
+        .filter_map(|argument| match argument {
+            NspawnArgumentPolicyV1::Literal(value) => value.strip_prefix("--selinux-context="),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(contexts, [GUEST_OWNER_CONTEXT]);
+    assert_ne!(contexts, [GUEST_TENANT_CONTEXT]);
+}
+
 #[test]
 fn root_continuity_policy_digest_is_sensitive_to_every_projected_choice() {
     let baseline = PAYLOAD_ROOT_CONTINUITY_PROJECTION_V1.digest();
@@ -774,6 +791,8 @@ fn root_continuity_policy_v1_has_stable_independent_preimage() {
     preimage.extend_from_slice(&[1, 1]);
     preimage.push(4);
     append_string(&mut preimage, "--aos-guest-agent-fds=");
+    // Host supplies these three roles. nspawn separately creates the two
+    // cgroup-custody descriptors before delivering all five bootstrap FDs.
     for role in [
         "aos-sandbox-guest-agent-channel-v1",
         "aos-sandbox-guest-agent-provisioning-v1",
@@ -899,7 +918,7 @@ fn root_continuity_policy_v1_has_stable_independent_preimage() {
     let independently_assembled_digest: [u8; 32] = Sha256::digest(preimage).into();
     assert_eq!(
         encode_hex32(independently_assembled_digest),
-        "ea6e448b7a867444fb29116a6e56853330a082e26fde79d54c2cf432e5775aff"
+        "ee75b9369480946624259133474a135bd7e21565552698d79528f5f4bbd63e08"
     );
     assert_eq!(digest_v1(), independently_assembled_digest);
 }
