@@ -47,6 +47,7 @@ mod inventory;
 mod lifecycle;
 mod model;
 mod native_recovery;
+mod native_selection;
 mod outcome;
 mod projection;
 mod provider_exchange;

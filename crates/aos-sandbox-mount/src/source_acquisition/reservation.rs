@@ -19,8 +19,9 @@ use aos_sandbox_source_provider_protocol::{
     digest_logical_binding_bytes,
 };
 use aos_sandbox_source_provider_security::{
-    AuthorizedMountAcquireVerificationFloorV2, CurrentRootMountSourceProviderSessionV1,
-    PreparedMountProviderRequestV2, ReservedMountProviderRequestV2, SentMountProviderRequestV2,
+    AuthorizedMountAcquireVerificationFloorV2, CurrentMountProviderSessionPlanV2,
+    CurrentRootMountSourceProviderSessionV1, PreparedMountProviderRequestV2,
+    ReservedMountProviderRequestV2, SentMountProviderRequestV2,
 };
 
 use super::SourceAcquisitionTableV2;
@@ -31,7 +32,9 @@ use super::format::{
 use super::model::*;
 use super::projection::{projection_entries, projection_from_entries};
 use super::security::{session_from_projection, session_from_request};
-use super::transition::{MutationIdentityV2, commit_mutation, next_revision, record_ref, seal};
+use super::transition::{
+    MutationIdentityV2, commit_mutation, next_revision, prepare_mutation, record_ref, seal,
+};
 use crate::Result;
 
 /// Retains the sole send authority for one durably Reserved provider attempt.
@@ -166,6 +169,69 @@ impl SourceAcquisitionTableV2 {
         verification_floor: AuthorizedMountAcquireVerificationFloorV2,
         provider_deadline_seconds: i64,
     ) -> Result<ReservedProviderQueryV2> {
+        let (plan, projected_session, request) = self.plan_acquire_draft_v2(
+            journal,
+            session,
+            holder_authority_id,
+            provider_authority_id,
+            live_request,
+            &mount_request,
+            mount_plan_digest,
+            ownership_lease_digest,
+            provider_deadline_seconds,
+        )?;
+        let normalized = NormalizedAcquisitionIntentV2::from_acquire_request(
+            &request,
+            plan.session().authority_trust()[1].authority().clone(),
+            plan.session().authority_trust()[0].authority().clone(),
+            projected_session.node_id,
+            projected_session.kernel_boot_id,
+            projected_session.scope.route_id,
+            projected_session.route_generation,
+            ObjectDigest::from_bytes(projected_session.route_digest),
+            ObjectDigest::from_bytes(projected_session.scope.resource_namespace_digest),
+            projected_session.revocation_generation,
+            ObjectDigest::from_bytes(projected_session.revocation_digest),
+        )
+        .map_err(|_| state_error("table-derived provider Acquire normalization is invalid"))?;
+        let prepared = session
+            .prepare_acquire_v2(
+                journal,
+                catalog_journal,
+                plan,
+                request,
+                normalized,
+                verification_floor,
+            )
+            .map_err(|_| state_error("protected provider Acquire preparation failed"))?;
+        self.admit_acquire_v2(
+            journal,
+            live_request,
+            mount_request,
+            mount_plan_digest,
+            ownership_lease_digest,
+            prepared,
+        )
+    }
+
+    /// Derives common request data from the same protected Mount planning cut.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn plan_acquire_draft_v2(
+        &self,
+        journal: &ProtectedJournalAuthority<'_>,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        holder_authority_id: [u8; 16],
+        provider_authority_id: [u8; 16],
+        live_request: &LiveValidatedAcquireMountSourceRequest,
+        mount_request: &[u8],
+        mount_plan_digest: [u8; 32],
+        ownership_lease_digest: [u8; 32],
+        provider_deadline_seconds: i64,
+    ) -> Result<(
+        CurrentMountProviderSessionPlanV2,
+        SourceProviderSessionV2,
+        AcquireSourceRequestV1,
+    )> {
         let identity = (holder_authority_id, provider_authority_id);
         let current_head = self.provider_heads.get(&identity).cloned();
         if current_head.as_ref().is_some_and(|head| {
@@ -233,7 +299,7 @@ impl SourceAcquisitionTableV2 {
             value: acquire_intent(
                 projected_session.scope,
                 mount,
-                mount_request.clone(),
+                mount_request.to_vec(),
                 mount_plan_digest,
                 ownership_lease_digest,
             ),
@@ -272,38 +338,7 @@ impl SourceAcquisitionTableV2 {
             mount.kernel_coupled(),
         )
         .map_err(|_| state_error("table-derived provider Acquire request is invalid"))?;
-        let normalized = NormalizedAcquisitionIntentV2::from_acquire_request(
-            &request,
-            plan.session().authority_trust()[1].authority().clone(),
-            plan.session().authority_trust()[0].authority().clone(),
-            projected_session.node_id,
-            projected_session.kernel_boot_id,
-            projected_session.scope.route_id,
-            projected_session.route_generation,
-            ObjectDigest::from_bytes(projected_session.route_digest),
-            ObjectDigest::from_bytes(projected_session.scope.resource_namespace_digest),
-            projected_session.revocation_generation,
-            ObjectDigest::from_bytes(projected_session.revocation_digest),
-        )
-        .map_err(|_| state_error("table-derived provider Acquire normalization is invalid"))?;
-        let prepared = session
-            .prepare_acquire_v2(
-                journal,
-                catalog_journal,
-                plan,
-                request,
-                normalized,
-                verification_floor,
-            )
-            .map_err(|_| state_error("protected provider Acquire preparation failed"))?;
-        self.admit_acquire_v2(
-            journal,
-            live_request,
-            mount_request,
-            mount_plan_digest,
-            ownership_lease_digest,
-            prepared,
-        )
+        Ok((plan, projected_session, request))
     }
 
     /// Commits a fresh Acquire intent and exact prepared provider request.
@@ -326,6 +361,57 @@ impl SourceAcquisitionTableV2 {
         ownership_lease_digest: [u8; 32],
         prepared: PreparedMountProviderRequestV2,
     ) -> Result<ReservedProviderQueryV2> {
+        match self.admit_acquire_from_preparation(
+            journal,
+            live_request,
+            mount_request,
+            mount_plan_digest,
+            ownership_lease_digest,
+            prepared,
+            None,
+        )? {
+            super::native_selection::NativeProviderAcquireProgressV3::Reserved(reservation) => {
+                Ok(reservation)
+            }
+            _ => Err(state_error(
+                "legacy admission produced a native recovery boundary",
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn admit_native_acquire_v3(
+        &mut self,
+        journal: &mut ProtectedJournalAuthority<'_>,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        live_request: &LiveValidatedAcquireMountSourceRequest,
+        mount_request: Vec<u8>,
+        mount_plan_digest: [u8; 32],
+        ownership_lease_digest: [u8; 32],
+        prepared: PreparedMountProviderRequestV2,
+    ) -> Result<super::native_selection::NativeProviderAcquireProgressV3> {
+        self.admit_acquire_from_preparation(
+            journal,
+            live_request,
+            mount_request,
+            mount_plan_digest,
+            ownership_lease_digest,
+            prepared,
+            Some(&mut *session),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn admit_acquire_from_preparation(
+        &mut self,
+        journal: &mut ProtectedJournalAuthority<'_>,
+        live_request: &LiveValidatedAcquireMountSourceRequest,
+        mount_request: Vec<u8>,
+        mount_plan_digest: [u8; 32],
+        ownership_lease_digest: [u8; 32],
+        prepared: PreparedMountProviderRequestV2,
+        native_session: Option<&mut CurrentRootMountSourceProviderSessionV1>,
+    ) -> Result<super::native_selection::NativeProviderAcquireProgressV3> {
         let historical = decode_historical_acquire_mount_source_request(&mount_request)?;
         if historical.request() != live_request.request()
             || mount_plan_digest == [0; 32]
@@ -413,6 +499,11 @@ impl SourceAcquisitionTableV2 {
             .ok_or_else(|| state_error("prepared Acquire lacks normalized intent digest"))?;
         let normalized = NormalizedAcquisitionIntentV2::from_canonical_bytes(normalized_bytes)
             .map_err(|_| state_error("prepared Acquire normalization is invalid"))?;
+        if normalized.native_catalog().is_some() != native_session.is_some() {
+            return Err(state_error(
+                "native Acquire requires its original held admission path",
+            ));
+        }
         let (catalog_floor, selection_floor, current_catalog_head_commitment) = projection
             .verification_floors()
             .ok_or_else(|| state_error("prepared Acquire lacks verification floors"))?;
@@ -518,24 +609,57 @@ impl SourceAcquisitionTableV2 {
                 value: session.clone(),
             });
         }
-        commit_mutation(
-            self,
-            journal,
-            MutationIdentityV2 {
-                tag: MutationTagV2::InitialAdmission,
-                holder_id: scope.holder_authority_id,
-                provider_id: scope.provider_authority_id,
-                next_holder_sequence_revision: holder_sequence.revision,
-                next_head_revision: head.revision,
-                acquisition_id: Some(row.acquisition_id),
-                next_row_revision: Some(row.revision),
-                attempt_id: Some(attempt.attempt_id),
-                next_attempt_revision: Some(attempt.revision),
-                session_id: Some(session.session_id),
-            },
-            records,
-        )?;
+        let mutation = MutationIdentityV2 {
+            tag: MutationTagV2::InitialAdmission,
+            holder_id: scope.holder_authority_id,
+            provider_id: scope.provider_authority_id,
+            next_holder_sequence_revision: holder_sequence.revision,
+            next_head_revision: head.revision,
+            acquisition_id: Some(row.acquisition_id),
+            next_row_revision: Some(row.revision),
+            attempt_id: Some(attempt.attempt_id),
+            next_attempt_revision: Some(attempt.revision),
+            session_id: Some(session.session_id),
+        };
+        match native_session {
+            Some(session) => {
+                let coordinates =
+                    super::native_selection::reservation_coordinates(&attempt, &head)?;
+                let (transaction, tentative) = prepare_mutation(self, mutation, records)?;
+                let preflight = session
+                    .revalidate_native_acquire_preparation_v3(journal, &prepared)
+                    .map_err(|_| state_error("native admission drifted before commit"));
+                let prepared = match super::native_selection::commit_after_native_preflight(
+                    prepared,
+                    preflight,
+                    || journal.commit(&transaction).map_err(Into::into),
+                )? {
+                    super::native_selection::NativeCommitAttemptV3::Committed(prepared) => prepared,
+                    super::native_selection::NativeCommitAttemptV3::Unconfirmed {
+                        custody: prepared,
+                        error,
+                    } => {
+                        session.invalidate_native_acquire_commit_v3();
+                        return Ok(super::native_selection::NativeProviderAcquireProgressV3::CommitUnconfirmed {
+                            custody: super::native_selection::RetainedNativeAcquireCommitV3 { prepared, attempt, head },
+                            error,
+                        });
+                    }
+                };
+                *self = tentative;
+                return super::native_selection::confirm_native_reservation(
+                    journal,
+                    session,
+                    prepared,
+                    attempt,
+                    head,
+                    coordinates,
+                );
+            }
+            None => commit_mutation(self, journal, mutation, records)?,
+        }
         confirm_reservation(journal, prepared, &attempt, &head)
+            .map(super::native_selection::NativeProviderAcquireProgressV3::Reserved)
     }
 }
 
