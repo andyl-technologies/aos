@@ -60,7 +60,7 @@ struct OriginalNativeDeadlineV3 {
     initial: RawPairedClockSample,
     // This exact whole-second bound is written into the signed native request.
     expires_seconds: i64,
-    // The original wall ceiling and live Mount cutoff independently limit I/O.
+    // The finalized signed expiry conservatively bounds this absolute I/O cutoff.
     boottime_deadline: u64,
 }
 
@@ -728,19 +728,6 @@ impl OriginalNativeDeadlineV3 {
         expires_seconds: i64,
         mount_deadline: u64,
     ) -> Result<Self, SourceProviderSecurityError> {
-        // Wall time is observed in whole seconds. Subtract its maximum omitted
-        // fraction rather than letting a BOOTTIME fence extend the expiry.
-        let remaining = expires_seconds
-            .checked_sub(initial.wall_seconds())
-            .and_then(|seconds| seconds.checked_sub(1))
-            .and_then(|seconds| u64::try_from(seconds).ok())
-            .filter(|seconds| *seconds > 0)
-            .and_then(|seconds| seconds.checked_mul(1_000_000_000))
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let boottime_deadline = initial
-            .boottime_nanoseconds()
-            .checked_add(remaining)
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
         // Round the Mount's remaining interval down and use the lower observed
         // wall second. The signed remote expiry cannot outlive its original
         // BOOTTIME cutoff; a subsecond-only interval is not representable.
@@ -754,9 +741,25 @@ impl OriginalNativeDeadlineV3 {
             .wall_seconds()
             .checked_add(mount_remaining_seconds)
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let expires_seconds = expires_seconds.min(mount_expires_seconds);
+
+        // Derive BOOTTIME only after finalizing the signed expiry. Removing the
+        // omitted wall fraction also rejects a later wall-before-BOOTTIME sample
+        // that straddles that expiry within the paired-clock drift tolerance.
+        let remaining = expires_seconds
+            .checked_sub(initial.wall_seconds())
+            .and_then(|seconds| seconds.checked_sub(1))
+            .and_then(|seconds| u64::try_from(seconds).ok())
+            .filter(|seconds| *seconds > 0)
+            .and_then(|seconds| seconds.checked_mul(1_000_000_000))
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let boottime_deadline = initial
+            .boottime_nanoseconds()
+            .checked_add(remaining)
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
         let deadline = Self {
             initial,
-            expires_seconds: expires_seconds.min(mount_expires_seconds),
+            expires_seconds,
             boottime_deadline: boottime_deadline.min(mount_deadline),
         };
         deadline.require_current(initial)?;
@@ -1101,7 +1104,8 @@ mod tests {
         // The original Mount BOOTTIME header can only shorten this fence.
         let deadline =
             OriginalNativeDeadlineV3::from_sample(initial, 110, 203_000_000_000).unwrap();
-        assert!(deadline.require_current(clock(102, 202, 1)).is_ok());
+        assert!(deadline.require_current(clock(101, 201, 1)).is_ok());
+        assert!(deadline.require_current(clock(102, 202, 1)).is_err());
         assert!(deadline.require_current(clock(103, 203, 1)).is_err());
     }
 
@@ -1109,8 +1113,8 @@ mod tests {
     fn signed_wall_bound_intersects_original_mount_cutoff_without_rounding_up() {
         let initial = clock(100, 200, 1);
         for (request_expiry, mount_cutoff, signed_expiry, io_cutoff) in [
-            (700, 205_000_000_000, 105, 205_000_000_000),
-            (700, 205_999_999_999, 105, 205_999_999_999),
+            (700, 205_000_000_000, 105, 204_000_000_000),
+            (700, 205_999_999_999, 105, 204_000_000_000),
             (104, 205_000_000_000, 104, 203_000_000_000),
         ] {
             let deadline =
@@ -1121,13 +1125,39 @@ mod tests {
             assert!(deadline.require_current(clock(101, 201, 1)).is_ok());
             assert_eq!(deadline.expires_seconds, signed_expiry);
         }
-        for mount_cutoff in [199_999_999_999, 200_000_000_000, 200_999_999_999] {
+        for mount_cutoff in [
+            199_999_999_999,
+            200_000_000_000,
+            200_999_999_999,
+            201_000_000_000,
+            201_999_999_999,
+        ] {
             assert!(OriginalNativeDeadlineV3::from_sample(initial, 700, mount_cutoff).is_err());
         }
         let deadline =
             OriginalNativeDeadlineV3::from_sample(initial, 700, 205_000_000_000).unwrap();
         assert!(deadline.require_current(clock(105, 204, 1)).is_err());
         assert!(deadline.require_current(clock(104, 205, 1)).is_err());
+    }
+
+    #[test]
+    fn finalized_signed_expiry_rejects_a_tolerated_straddling_clock_pair() {
+        let initial = clock(100, 200, 1);
+        let deadline =
+            OriginalNativeDeadlineV3::from_sample(initial, 700, 205_000_000_000).unwrap();
+        let straddling = RawPairedClockSample::new_untrusted(
+            initial.provenance(),
+            initial.host_boot_id(),
+            104,
+            204_100_000_000,
+        )
+        .unwrap();
+
+        assert!(initial.validate_later_sample(straddling).is_ok());
+        assert_eq!(deadline.expires_seconds, 105);
+        assert_eq!(deadline.boottime_deadline, 204_000_000_000);
+        assert!(deadline.require_current(clock(103, 203, 1)).is_ok());
+        assert!(deadline.require_current(straddling).is_err());
     }
 
     fn native_deadline_draft(expires_seconds: i64) -> AcquireSourceRequestV1 {
