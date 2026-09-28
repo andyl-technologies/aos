@@ -40,6 +40,7 @@ use buffa::Message as _;
 use crate::Result;
 
 mod checkpoint;
+mod disposition_lineage;
 mod format;
 mod history;
 mod inventory;
