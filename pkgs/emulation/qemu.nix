@@ -1416,6 +1416,7 @@ in
               build/tests/unit/test-rcu-list --tap -p /rcu/hot-fork/barrier
               build/tests/unit/test-coroutine --tap -p /locking/co-sleep
               build/tests/unit/test-crucible-vfio-timer --tap
+              build/tests/unit/test-crucible-vga-blink --tap
               # A nested poll must retain the active BH until callback accounting ends.
               build/tests/unit/test-aio --tap -p /aio/bh/callback-delete/nested
               build/tests/unit/test-aio --tap -p /aio/bh/callback-delete/nested-oneshot

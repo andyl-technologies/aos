@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "e9fe4113bc9c1316d48d865f488bf1e3006d5e96cf54d12e9f3d258bf46f7e37";
+  sha256 = "4825f3843ba139f438a052cec28b287bb21c491ecc97757b433dcb29b4c04baf";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -73,9 +73,14 @@
     "arming and pending rearming. Convert configured milliseconds with checked"
     "arithmetic and exercise the actual callbacks, notifier and timer dispatch"
     "with fractional clock samples and explicit IRQ/mmap hardware doubles."
+    ""
+    "Retain fractional virtual origins in VGA text cursor and blink display"
+    "cache deadlines. Preserve the existing periods, mode-change resets and"
+    "non-TCG millisecond policy, and exercise actual glyph rendering at exact"
+    "fractional boundaries without changing serialized device state."
   ];
-  commit = "553445cb303b12e9228d1da70d9cdd8ccf6f3a55";
-  tree = "66db7c0014d408a9aeed9171ca0b2771327a0761";
+  commit = "2185645d9792464aaf4755b4bff53b12989d615e";
+  tree = "b07ff710692f154669835644858b9c5ea6c5fc50";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -84,7 +89,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "d0f15b74cc9751564786674ce49c81e7ad994d8413b376c72312153ca36ef5d5";
+  bundleSha256 = "0c4324982166ff88f5689df28da76cd5bffb81779b9063ab8ad8b8583da714c8";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
