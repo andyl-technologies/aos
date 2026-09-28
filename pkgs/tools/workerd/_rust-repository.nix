@@ -6,6 +6,15 @@
 }: let
   triple = stdenv.hostPlatform.config;
   execTriple = stdenv.buildPlatform.config;
+  dylibExtension =
+    if stdenv.hostPlatform.isDarwin
+    then ".dylib"
+    else ".so";
+  stdlibLinkFlags =
+    if stdenv.hostPlatform.isDarwin
+    # Rust links with -nodefaultlibs, including when C++ archives are present.
+    then ''["-lSystem", "-lc++", "-lc++abi", "-lunwind"]''
+    else ''["-ldl", "-lpthread"]'';
   compiler =
     if stdenv.isCross
     then rust.passthru.buildTool
@@ -63,8 +72,8 @@ in
               allocator_library = "@rules_rust//ffi/rs:empty",
               binary_ext = "",
               staticlib_ext = ".a",
-              dylib_ext = ".so",
-              stdlib_linkflags = ["-ldl", "-lpthread"],
+              dylib_ext = "${dylibExtension}",
+              stdlib_linkflags = ${stdlibLinkFlags},
               default_edition = "2024",
               exec_triple = "${execTriple}",
               target_triple = "${triple}",
