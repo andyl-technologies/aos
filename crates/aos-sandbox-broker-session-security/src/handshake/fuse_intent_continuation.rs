@@ -102,6 +102,112 @@ pub(crate) struct HeldFuseIntentTransportV1<'session> {
 }
 
 impl<'session> HeldFuseIntentTransportV1<'session> {
+    /// Completes the original client challenge/query without releasing owners.
+    pub(crate) fn complete_original_host_query<T>(
+        &mut self,
+        controller: &mut CurrentControllerFuseIntentDispatchV1<'_>,
+        clock: &mut T,
+    ) -> Result<(), DormantBrokerSessionHandshakeErrorV1>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        loop {
+            match self.receive_preparation_control() {
+                Ok(()) => break,
+                Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+                    self.wait_original_socket(false)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        loop {
+            match self.send_preparation_control() {
+                Ok(()) => break,
+                Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+                    self.wait_original_socket(true)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        loop {
+            match self.send_original_host_scope_query(controller, clock) {
+                Ok(()) => return Ok(()),
+                Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+                    self.wait_original_socket(true)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// Holds actual Host and Mount preparation beneath the original broker flight.
+    ///
+    /// This does not complete the request or release its reservation. The
+    /// callback is the subsequent fixed worker/Root owner composition, not a
+    /// response-byte or scalar currentness adapter.
+    pub(crate) fn with_original_mount_preparation<W, F, R>(
+        &mut self,
+        mount: &mut aos_sandbox_mount::broker::MountBroker<W>,
+        host_cgroup_root: &CgroupV2Root,
+        action: F,
+    ) -> Result<R, DormantBrokerSessionHandshakeErrorV1>
+    where
+        W: aos_sandbox_mount::worker::MountWorker,
+        F: FnOnce(
+            &mut Self,
+            &mut aos_sandbox_mount::broker::HeldMountFuseIntentPreparationV1<'_, W>,
+        ) -> Result<R, DormantBrokerSessionHandshakeErrorV1>,
+    {
+        loop {
+            match self.send_preparation_control() {
+                Ok(()) => break,
+                Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+                    self.wait_original_socket(true)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        loop {
+            match self.receive_preparation_control() {
+                Ok(()) => break,
+                Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+                    self.wait_original_socket(false)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let scope = loop {
+            match self.observe_original_host_scope(host_cgroup_root) {
+                Ok(scope) => break scope,
+                Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
+                    self.wait_original_socket(false)?;
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        self.with_mount_preparation(mount, scope, action)
+    }
+
+    fn wait_original_socket(
+        &mut self,
+        write: bool,
+    ) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
+        let result = (|| {
+            self.recheck()?;
+            crate::dormant_handshake::wait_for_handshake_readiness(
+                self.session.as_fd()?,
+                write,
+                self.binding.deadline,
+            )?;
+            self.recheck()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.stage = Stage::ReconciliationRequired;
+        }
+        result
+    }
+
     /// Sends only the query produced by this genuine held Controller cut.
     ///
     /// The packet carries an existing signed Host grant. It does not authorize

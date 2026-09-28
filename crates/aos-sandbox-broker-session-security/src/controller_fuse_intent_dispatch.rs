@@ -15,6 +15,7 @@ use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
 use crate::{
     BrokerSessionSecurityError, DormantAuthenticatedBrokerSessionV1,
     DormantBrokerRequestPreparationV1, DormantBrokerRequestSendProgressV1,
+    DormantOutstandingBrokerRequestV1,
 };
 
 /// Retains real writers and every durable/transport ambiguity disposition.
@@ -33,6 +34,8 @@ pub(crate) struct ControllerFuseIntentPendingFlightV1<'controller, 'session> {
 enum FlightState {
     Prepared(DormantBrokerRequestPreparationV1),
     Transport(DormantBrokerRequestSendProgressV1),
+    /// Retains the original sent custody; preparation cannot be reentered.
+    Preparation(DormantOutstandingBrokerRequestV1),
     /// The signed RequestPrepared remains in the held journal; no reissue is allowed.
     ReconciliationRequired,
 }
@@ -43,6 +46,9 @@ impl<'controller, 'session> ControllerFuseIntentPendingFlightV1<'controller, 'se
     /// The callback receives real borrows, not reconstructed wire facts. It
     /// must additionally join genuine Mount custody before Host-purpose-56
     /// issuance; Host must not call back into this held Controller writer.
+    /// The original challenge/query is driven once before the callback. An
+    /// error or return retains its sent custody for exact reconciliation; it
+    /// cannot restart the preparation challenge on the same pending request.
     pub(crate) fn with_preparation_custody<T, F, R>(
         &mut self,
         clock: &mut T,
@@ -58,13 +64,20 @@ impl<'controller, 'session> ControllerFuseIntentPendingFlightV1<'controller, 'se
         self.controller
             .recheck(clock)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        if !matches!(
-            self.state,
-            FlightState::Transport(DormantBrokerRequestSendProgressV1::Sent(_))
-        ) {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
+        let original = std::mem::replace(&mut self.state, FlightState::ReconciliationRequired);
+        self.state = match original {
+            FlightState::Transport(DormantBrokerRequestSendProgressV1::Sent(sent)) => {
+                FlightState::Preparation(sent)
+            }
+            other => {
+                self.state = other;
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+        };
         let mut transport = self.session.hold_fuse_intent_transport(&self.original)?;
+        transport
+            .complete_original_host_query(&mut self.controller, clock)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         let result = action(&mut self.controller, &mut transport);
         transport.recheck()?;
         drop(transport);
@@ -72,26 +85,6 @@ impl<'controller, 'session> ControllerFuseIntentPendingFlightV1<'controller, 'se
             .recheck(clock)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         result
-    }
-
-    /// Borrows the same sent flight while the Controller owner stays held.
-    ///
-    /// Only nonterminal transport custody is returned. Local Host-purpose-56
-    /// issuance must still join the real Mount reservation and original owners;
-    /// received coordinates alone cannot authorize it.
-    pub(crate) fn hold_preparation_transport(
-        &mut self,
-    ) -> Result<
-        crate::handshake::fuse_intent_continuation::HeldFuseIntentTransportV1<'_>,
-        BrokerSessionSecurityError,
-    > {
-        if !matches!(
-            self.state,
-            FlightState::Transport(DormantBrokerRequestSendProgressV1::Sent(_))
-        ) {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        self.session.hold_fuse_intent_transport(&self.original)
     }
 
     /// Signs and durably prepares while retaining both original owners.
