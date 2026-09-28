@@ -7,7 +7,7 @@
 //! Replies are data: only the separately qualified original-stream client may
 //! mint a non-detachable Root proof. This module does not enable that factory.
 
-use std::io::{Read as _, Write as _};
+use std::io::{self, Read as _, Write as _};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
@@ -23,9 +23,10 @@ use aos_sandbox::policy_compiler::{
 use crate::source_signer_exchange::request_root_source_tree_genesis_readback_v1;
 
 // The client's original 60-second deadline starts before connection. Root's
-// hold begins later and lasts at most 65 seconds; it never expires before the
-// client's maximum custody interval. Each I/O uses the remaining bound rather
-// than extending it with a new per-phase timeout.
+// phase deadline begins later and is 65 seconds; it never expires before the
+// client's maximum custody interval. Every stream fragment uses its remaining
+// bound. Blocking owner/signature RPC work may delay release, but cannot admit
+// a late phase or extend the client's original custody deadline.
 const ROOT_HOLD_LIMIT: Duration = Duration::from_secs(65);
 
 /// Serves genuine genesis preparation, anchoring and ACK readback under Root.
@@ -216,16 +217,44 @@ impl RootHeldStreamFlight<'_> {
         &mut self,
         kind: RootSourceGenesisFrameKindV1,
     ) -> Result<Vec<u8>, SourceGenesisErrorV1> {
-        self.set_remaining_timeout()?;
         let mut frame = vec![0; ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + kind.payload_bytes()];
-        self.stream.0.read_exact(&mut frame)?;
+        let mut received = 0;
+        while received < frame.len() {
+            self.set_remaining_timeout()?;
+            match self.stream.0.read(&mut frame[received..]) {
+                Ok(0) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "original Root genesis request ended before its exact frame",
+                    )
+                    .into());
+                }
+                Ok(count) => received += count,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
         self.recheck()?;
         decode_root_source_genesis_frame_v1(&frame, kind, self.owner.nonce()).map(Vec::from)
     }
 
     fn write(&mut self, bytes: &[u8]) -> Result<(), SourceGenesisErrorV1> {
-        self.set_remaining_timeout()?;
-        self.stream.0.write_all(bytes)?;
+        let mut written = 0;
+        while written < bytes.len() {
+            self.set_remaining_timeout()?;
+            match self.stream.0.write(&bytes[written..]) {
+                Ok(0) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "original Root genesis reply made no progress",
+                    )
+                    .into());
+                }
+                Ok(count) => written += count,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
         self.recheck()
     }
 
@@ -277,8 +306,6 @@ fn require_final_ack(
 
 #[cfg(test)]
 mod tests {
-    use std::io;
-
     use super::*;
 
     #[test]
