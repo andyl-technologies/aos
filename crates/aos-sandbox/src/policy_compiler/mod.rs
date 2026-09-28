@@ -81,14 +81,14 @@ mod source_hold_readback;
 mod source_hold_readback_v2;
 #[cfg(target_os = "linux")]
 pub use source_genesis_root::{
-    CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1, HeldRootSourceGenesisIntentV1,
-    ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1, ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1,
-    ROOT_SOURCE_GENESIS_INTENT_BYTES_V1, ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1,
-    RootSourceGenesisAuthorityV1, RootSourceGenesisFloorProofV1, RootSourceGenesisFrameKindV1,
-    RootSourceGenesisIntentRecordV1, SOURCE_GENESIS_DEPLOYMENT_INSTANCE_BYTES_V1,
-    SOURCE_HIERARCHY_FLOOR_BYTES_V1, SourceHierarchyFloorRecordV1,
-    decode_root_source_genesis_frame_v1, encode_root_source_genesis_frame_v1,
-    fixed_root_source_genesis_recovery_available_v1,
+    CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1, CurrentRootSourceGenesisFloorV1,
+    HeldRootSourceGenesisIntentV1, ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1,
+    ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1, ROOT_SOURCE_GENESIS_INTENT_BYTES_V1,
+    ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1, RootSourceGenesisAuthorityV1,
+    RootSourceGenesisFloorProofV1, RootSourceGenesisFrameKindV1, RootSourceGenesisIntentRecordV1,
+    SOURCE_GENESIS_DEPLOYMENT_INSTANCE_BYTES_V1, SOURCE_HIERARCHY_FLOOR_BYTES_V1,
+    SourceHierarchyFloorRecordV1, decode_root_source_genesis_frame_v1,
+    encode_root_source_genesis_frame_v1, fixed_root_source_genesis_recovery_available_v1,
     sign_controller_source_genesis_completion_readback_v1,
     sign_controller_source_genesis_readback_v1,
 };

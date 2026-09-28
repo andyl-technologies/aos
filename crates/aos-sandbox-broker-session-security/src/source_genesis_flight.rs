@@ -170,13 +170,20 @@ fn serve(
         .source_observation(&completed)?
         .ok_or(SourceGenesisErrorV1::Conflict)?;
     flight.recheck()?;
-    flight.owner.confirm_source_ack(&source, &floor)?;
+    // Borrow the actual settled Root row through the original final exchange.
+    // This stays local: it is not the still-closed client floor/read factory.
+    let current = flight.owner.current_anchored_floor(&source)?;
+    if current.floor() != &floor {
+        return Err(SourceGenesisErrorV1::Conflict);
+    }
+    current.recheck()?;
     flight.send(
         RootSourceGenesisFrameKindV1::Completed,
-        floor.digest().as_bytes(),
+        current.floor().digest().as_bytes(),
     )?;
     let final_ack = flight.read(RootSourceGenesisFrameKindV1::Finish)?;
-    require_final_ack(&final_ack, &floor)?;
+    require_final_ack(&final_ack, current.floor())?;
+    current.recheck()?;
     flight.recheck()
 }
 
@@ -222,15 +229,13 @@ impl RootHeldStreamFlight<'_, '_> {
         Ok(())
     }
 
-    fn read(
-        &mut self,
-        kind: RootSourceGenesisFrameKindV1,
-    ) -> Result<Vec<u8>, SourceGenesisErrorV1> {
+    fn read(&self, kind: RootSourceGenesisFrameKindV1) -> Result<Vec<u8>, SourceGenesisErrorV1> {
         let mut frame = vec![0; ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + kind.payload_bytes()];
         let mut received = 0;
+        let mut stream = &*self.stream.0;
         while received < frame.len() {
             self.set_remaining_timeout()?;
-            match self.stream.0.read(&mut frame[received..]) {
+            match stream.read(&mut frame[received..]) {
                 Ok(0) => {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
@@ -247,11 +252,12 @@ impl RootHeldStreamFlight<'_, '_> {
         decode_root_source_genesis_frame_v1(&frame, kind, self.owner.nonce()).map(Vec::from)
     }
 
-    fn write(&mut self, bytes: &[u8]) -> Result<(), SourceGenesisErrorV1> {
+    fn write(&self, bytes: &[u8]) -> Result<(), SourceGenesisErrorV1> {
         let mut written = 0;
+        let mut stream = &*self.stream.0;
         while written < bytes.len() {
             self.set_remaining_timeout()?;
-            match self.stream.0.write(&bytes[written..]) {
+            match stream.write(&bytes[written..]) {
                 Ok(0) => {
                     return Err(io::Error::new(
                         io::ErrorKind::WriteZero,
@@ -268,7 +274,7 @@ impl RootHeldStreamFlight<'_, '_> {
     }
 
     fn send(
-        &mut self,
+        &self,
         kind: RootSourceGenesisFrameKindV1,
         payload: &[u8],
     ) -> Result<(), SourceGenesisErrorV1> {
