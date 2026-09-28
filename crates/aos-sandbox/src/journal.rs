@@ -2236,39 +2236,6 @@ impl Journal {
         )
     }
 
-    fn preflight_source_project_admission_transactions(
-        &self,
-        transactions: &[JournalTransaction; 3],
-    ) -> Result<(), JournalError> {
-        self.preflight_transactions_with_capacity_scope_and_project_admission(
-            transactions,
-            None,
-            false,
-            false,
-            Some(&[
-                SourceProjectAdmissionTransition::Reserve,
-                SourceProjectAdmissionTransition::Acquire,
-                SourceProjectAdmissionTransition::Settle,
-            ]),
-        )
-    }
-
-    fn preflight_source_project_reservation_cancellation_transactions(
-        &self,
-        transactions: &[JournalTransaction; 2],
-    ) -> Result<(), JournalError> {
-        self.preflight_transactions_with_capacity_scope_and_project_admission(
-            transactions,
-            None,
-            false,
-            false,
-            Some(&[
-                SourceProjectAdmissionTransition::Reserve,
-                SourceProjectAdmissionTransition::CancelReservation,
-            ]),
-        )
-    }
-
     fn preflight_transactions_with_capacity_scope_and_project_admission(
         &self,
         transactions: &[JournalTransaction],
@@ -3493,6 +3460,7 @@ impl ProtectedJournalAuthority<'_> {
             }
             GlobalCapacityReservationPurposeV1::RuntimeExecution => effect,
             GlobalCapacityReservationPurposeV1::RootProjectAdmission => desired_state,
+            GlobalCapacityReservationPurposeV1::ControllerProjectAdmission => effect,
         };
         if !closed_shape || !capacity_record {
             return Err(JournalError::ForeignAuthorityNamespace);
@@ -3570,6 +3538,10 @@ impl ProtectedJournalAuthority<'_> {
             || self.scope
                 == ProtectedAuthorityScope::CapacityReservation(
                     GlobalCapacityReservationPurposeV1::RootProjectAdmission,
+                )
+            || self.scope
+                == ProtectedAuthorityScope::CapacityReservation(
+                    GlobalCapacityReservationPurposeV1::ControllerProjectAdmission,
                 )
         {
             return Err(JournalError::ForeignAuthorityNamespace);
@@ -3896,6 +3868,16 @@ pub(super) fn encoded_transaction_record_bytes(
         })
 }
 
+/// Measures canonical append framing without granting admission or capacity.
+pub(crate) fn encoded_transaction_append_bytes(
+    transaction: &JournalTransaction,
+) -> Result<u64, JournalError> {
+    encode_transaction(transaction, 0)?
+        .iter()
+        .try_fold(0_u64, |total, frame| total.checked_add(frame.len() as u64))
+        .ok_or(JournalError::JournalTooLarge)
+}
+
 fn validate_reserved_capacity(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     prospective_materialized_bytes: usize,
@@ -3946,10 +3928,10 @@ fn validate_reserved_capacity(
             }
         }
     }
-    let (reserved_records, reserved_bytes) =
-        reservations
-            .values()
-            .try_fold((0_usize, 0_u64), |(records, bytes), reservation| {
+    let (reserved_records, reserved_bytes, reserved_transactions) =
+        reservations.values().try_fold(
+            (0_usize, 0_u64, 0_usize),
+            |(records, bytes, transactions), reservation| {
                 Ok::<_, JournalError>((
                     records
                         .checked_add(reservation.maximum_records)
@@ -3957,8 +3939,12 @@ fn validate_reserved_capacity(
                     bytes
                         .checked_add(reservation.maximum_bytes)
                         .ok_or(JournalError::JournalTooLarge)?,
+                    transactions
+                        .checked_add(reservation.maximum_transactions)
+                        .ok_or(JournalError::LimitExceeded("reserved transaction count"))?,
                 ))
-            })?;
+            },
+        )?;
     let projected_entries = projected_materialized_record_count(state, records)?;
     if prospective_materialized_bytes
         .checked_add(
@@ -3973,7 +3959,7 @@ fn validate_reserved_capacity(
             .checked_add(reserved_bytes)
             .is_none_or(|bytes| bytes > limits.maximum_journal_bytes)
         || prospective_transactions
-            .checked_add(reservations.len())
+            .checked_add(reserved_transactions)
             .is_none_or(|count| count > limits.maximum_transactions)
     {
         return Err(JournalError::LimitExceeded(
