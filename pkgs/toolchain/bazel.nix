@@ -2,6 +2,7 @@
 {
   mkDerivation,
   mkManualUpstream,
+  callPackage,
   fetchurl,
   lib,
   stdenv,
@@ -26,7 +27,7 @@
   xz,
   file,
   patchelf,
-  bazel-bootstrap,
+  qemu-img,
   bootstrapTools,
   gcc-libs,
   llvm,
@@ -35,6 +36,7 @@
     inherit
       mkDerivation
       mkManualUpstream
+      callPackage
       fetchurl
       lib
       stdenv
@@ -59,7 +61,7 @@
       xz
       file
       patchelf
-      bazel-bootstrap
+      qemu-img
       bootstrapTools
       gcc-libs
       llvm
