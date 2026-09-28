@@ -18,24 +18,33 @@ use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 
 const DECISION_PREFIX: &[u8] = b"original-attach-decision-v2/";
 const GRANT_PREFIX: &[u8] = b"original-attach-grant-v2/";
+const TICKET_PREFIX: &[u8] = b"original-attach-ticket-v2/";
 const MAXIMUM_DECISION_BYTES: usize = 128 * 1024;
 
+/// Retains historical accepted coordinates without granting current authority.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct OriginalDecisionV2 {
+pub(crate) struct OriginalDecisionV2 {
     version: u32,
-    request: Vec<u8>,
-    coordinates: OriginalPublicMutationCoordinatesV2,
-    public_tls_trust: [[u8; 32]; 4],
-    caller: PrincipalId,
-    project: ProjectId,
-    accepted_wall_seconds: i64,
-    original_ticket: Option<OriginalTicketCoordinatesV2>,
+    /// Exact canonical public request accepted under the original capability.
+    pub(crate) request: Vec<u8>,
+    /// Original capability, policy, controller, revocation, key, and time bounds.
+    pub(crate) coordinates: OriginalPublicMutationCoordinatesV2,
+    /// Original fixed server, CA, registration, and registered leaf fingerprints.
+    pub(crate) public_tls_trust: [[u8; 32]; 4],
+    /// Principal authenticated at original public admission.
+    pub(crate) caller: PrincipalId,
+    /// Registered original project boundary, not a new permission grant.
+    pub(crate) project: ProjectId,
+    /// Original protected admission wall time, never refreshed by consume.
+    pub(crate) accepted_wall_seconds: i64,
+    /// Immutable issuance coordinates after the original certificate is retained.
+    pub(crate) original_ticket: Option<OriginalTicketCoordinatesV2>,
 }
 
+/// Binds the accepted decision to exact original issuance and base route bytes.
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-/// Binds the accepted decision to exact original issuance and base route bytes.
 pub(crate) struct OriginalTicketCoordinatesV2 {
     /// Commitment to the original serialized CA-signed certificate.
     pub(crate) certificate_digest: [u8; 32],
@@ -145,6 +154,90 @@ pub(crate) fn original_ticket_coordinates(
     decode_decision(bytes)?
         .original_ticket
         .ok_or(Error::DurableRecord)
+}
+
+/// Loads historical accepted coordinates, never current authorization.
+///
+/// # Errors
+/// Rejects unavailable custody, missing decisions, or incomplete issuance.
+pub(crate) fn original_decision(
+    journal: &Journal,
+    operation: OperationId,
+) -> Result<OriginalDecisionV2, Error> {
+    journal
+        .ensure_protected_authority()
+        .map_err(|_| Error::DurableRecord)?;
+    let bytes = journal
+        .get(RecordNamespace::PublicAttachRoute, &decision_key(operation))
+        .ok_or(Error::DurableRecord)?;
+    let decision = decode_decision(bytes)?;
+    decision.original_ticket.ok_or(Error::DurableRecord)?;
+    Ok(decision)
+}
+
+/// Borrows the exact original ticket retained before its first Host binding.
+///
+/// # Errors
+/// Rejects missing, foreign, noncanonical, or unavailable ticket custody.
+pub(crate) fn original_ticket(journal: &Journal, operation: OperationId) -> Result<&[u8], Error> {
+    journal
+        .ensure_protected_authority()
+        .map_err(|_| Error::DurableRecord)?;
+    let bytes = journal
+        .get(RecordNamespace::PublicAttachRoute, &ticket_key(operation))
+        .ok_or(Error::DurableRecord)?;
+    let ticket = aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2::decode(bytes)
+        .map_err(|_| Error::DurableRecord)?;
+    if ticket.operation_id != *operation.as_bytes()
+        || ticket.encode().map_err(|_| Error::DurableRecord)? != bytes
+    {
+        return Err(Error::DurableRecord);
+    }
+    Ok(bytes)
+}
+
+/// Streams bounded original ticket data without constructing authorization.
+///
+/// # Errors
+/// Rejects unavailable protected custody or malformed/foreign canonical rows.
+/// Each item is historical data; current owner checks remain mandatory.
+pub(crate) fn original_ticket_records(
+    journal: &Journal,
+) -> Result<
+    impl Iterator<
+        Item = Result<
+            (
+                OperationId,
+                aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2,
+            ),
+            Error,
+        >,
+    > + '_,
+    Error,
+> {
+    journal
+        .ensure_protected_authority()
+        .map_err(|_| Error::DurableRecord)?;
+    Ok(journal
+        .records(RecordNamespace::PublicAttachRoute)
+        .filter_map(|(key, bytes)| {
+            let suffix = key.strip_prefix(TICKET_PREFIX)?;
+            Some((|| {
+                let operation =
+                    OperationId::from_bytes(suffix.try_into().map_err(|_| Error::DurableRecord)?);
+                let ticket =
+                    aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2::decode(
+                        bytes,
+                    )
+                    .map_err(|_| Error::DurableRecord)?;
+                if ticket.operation_id != *operation.as_bytes()
+                    || ticket.encode().map_err(|_| Error::DurableRecord)? != bytes
+                {
+                    return Err(Error::DurableRecord);
+                }
+                Ok((operation, ticket))
+            })())
+        }))
 }
 
 /// Rejoins immutable original custody with an independently checked current request.
@@ -284,8 +377,7 @@ pub(crate) fn retain_original_ticket(
     journal
         .ensure_protected_authority()
         .map_err(|_| Error::DurableRecord)?;
-    let mut key = b"original-attach-ticket-v2/".to_vec();
-    key.extend_from_slice(operation.as_bytes());
+    let key = ticket_key(operation);
     if let Some(previous) = journal.get(RecordNamespace::PublicAttachRoute, &key) {
         return if previous == bytes {
             Ok(())
@@ -342,7 +434,7 @@ pub(crate) fn decision_key(operation: OperationId) -> Vec<u8> {
     key
 }
 
-fn same_original_scope(
+pub(crate) fn same_original_scope(
     original: &OriginalPublicMutationCoordinatesV2,
     checked: &OriginalPublicMutationCoordinatesV2,
 ) -> bool {
@@ -366,6 +458,12 @@ fn same_original_scope(
 fn grant_key(pending_digest: [u8; 32]) -> Vec<u8> {
     let mut key = GRANT_PREFIX.to_vec();
     key.extend_from_slice(&pending_digest);
+    key
+}
+
+fn ticket_key(operation: OperationId) -> Vec<u8> {
+    let mut key = TICKET_PREFIX.to_vec();
+    key.extend_from_slice(operation.as_bytes());
     key
 }
 
