@@ -36,6 +36,17 @@ The full four-VM rerun using these corrections is pending. It must compare
 nonempty container projections across Hybrid, Native-only and Workers-only;
 the earlier empty-container comparison below remains a narrower qualification.
 
+The next completed run passed all 3,976 shared tests (six skipped), but again
+failed with HTTP 503 at manifest admission. An additional missing path remains:
+the Hybrid frozen OCI staging writer accepts probe objects only, while manifest
+admission writes a new staged control document before validating its graph.
+That bounded write must be implemented before nonempty parity can pass.
+
+A separate four-VM browser attempt passed the captured transport setup, then
+timed out on Chrome's first navigation through a disposable SOCKS bridge. It
+completed zero browser assertions and does not qualify the Hybrid UI. The
+earlier Native-only Chrome result below remains separate evidence.
+
 ## Qualified paths
 
 The run passed signed publication of two releases and a stable channel,
