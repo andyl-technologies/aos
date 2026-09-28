@@ -55,11 +55,19 @@ impl CampaignRepository {
         self.validate_planner_request_inputs_with_mode(request, false)
     }
 
+    /// Authenticates request inputs and returns their resolved invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store, codec, or integrity error when the invocation, by-value
+    /// basis, or bundled input is missing, corrupt, or mismatched.
     pub(in crate::repository) fn preflight_planner_request_inputs(
         &self,
         request: &PlannerRequest,
-    ) -> Result<(), CampaignRepositoryError> {
-        self.validate_planner_request_inputs_with_mode(request, true)
+    ) -> Result<PlannerInvocation, CampaignRepositoryError> {
+        let invocation = self.load_planner_invocation(request.invocation_id()?)?;
+        self.validate_planner_request_inputs_with_invocation(request, true, &invocation)?;
+        Ok(invocation)
     }
 
     fn validate_planner_request_inputs_with_mode(
@@ -67,11 +75,25 @@ impl CampaignRepository {
         request: &PlannerRequest,
         allow_unpublished_derived_inputs: bool,
     ) -> Result<(), CampaignRepositoryError> {
+        let invocation = self.load_planner_invocation(request.invocation_id()?)?;
+        self.validate_planner_request_inputs_with_invocation(
+            request,
+            allow_unpublished_derived_inputs,
+            &invocation,
+        )
+    }
+
+    fn validate_planner_request_inputs_with_invocation(
+        &self,
+        request: &PlannerRequest,
+        allow_unpublished_derived_inputs: bool,
+        invocation: &PlannerInvocation,
+    ) -> Result<(), CampaignRepositoryError> {
         self.require_record_kind(
             request.expected_snapshot().content_id(),
             crate::CampaignRecordKind::Snapshot,
         )?;
-        if self.load_planner_invocation(request.invocation_id()?)? != *request.invocation() {
+        if invocation.id()? != request.invocation_id()? || invocation != request.invocation() {
             return Err(integrity("planner-request-invocation-mismatch"));
         }
 
