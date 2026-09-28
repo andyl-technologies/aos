@@ -167,7 +167,8 @@ the genuine unique PID 1 bus owner, exact unit ID/MainPID/invocation, and only
 `activating/start` or `active/running`. This allows startup checks before a
 notify service reports ready; it does not manufacture readiness.
 
-The owner also verifies the measured packaged PID 1, its own direct parent
+The owner also verifies the retained actual PID 1 launch image against the
+independently compiled package pin, its own direct parent
 and retained pidfd/cgroup, the helper's exact process and same cgroup, a
 nontransient immutable image fragment, empty drop-ins, and the selected
 effective lifetime/kill/stop properties. This is a point-in-time observation,
@@ -231,13 +232,60 @@ or all direct cross-domain cgroup migration. Final installed tests must measure
 the actual enforcing policy, manager authorization and unit-mount boundaries
 for these negative cases; nominal Nix settings are not that evidence.
 
-The actual PID 1 executable readback also remains an installation blocker for
-the unprivileged Controller: its `ProtectProc=invisible` and the cross-UID
-ptrace-read check can deny `/proc/1/exe`. The conservative producer refuses
-rather than adding `CAP_SYS_PTRACE` or accepting a tool claim. Qualification
-must resolve that access/evidence seam through the scoped existing trusted
-boot/PID 1 contract; no extra principal, capability or generic verifier is
-introduced here.
+### Original PID 1 launch image (source-only)
+
+Required mode adds only this existing systemd activation contract to the same
+two fixed units, with no `graceful` option or new service/capability:
+
+```text
+OpenFile=/proc/1/exe:aos-method46-pid1-image:read-only
+FileDescriptorStoreMax=0
+```
+
+systemd 261.2 selects `OpenFile` only for `ExecStart`, not `ExecStartPre`.
+Its executor opens the original regular inode and reopens that inode read-only
+before service mount/proc confinement or UID reduction. The FD joins the
+existing named activation table; it is not a tool-produced copy or a path claim.
+See the pinned [service spawn](https://raw.githubusercontent.com/systemd/systemd/v261.2/src/core/service.c)
+and [execution ordering](https://raw.githubusercontent.com/systemd/systemd/v261.2/src/core/exec-invoke.c).
+
+The Controller captures zero to two entries (optional existing publisher plus
+required-only image); Storage captures two to seven (its existing exact socket
+roles plus required-only image). Every slot is copied before opening retained
+credentials, state, bus or cgroup files. Existing safe `F_DUPFD_CLOEXEC` and
+original `FD_CLOEXEC` operations avoid new Rust unsafe ownership transfer. Two
+complete bounded procfs scans reject extra inherited entries, not just entries
+named by `LISTEN_FDS`; temporary scanners close before other state opens.
+The earlier no-set-ID startup check also closes its temporary scanner. The
+single-threaded startup interval, not environment values or the scan itself,
+establishes table stability. Names/PID/count remain correlation hints only.
+
+Only actual process-start capture creates the opaque parent-only launch
+observation. Immutable mode requires its exact presence, and the existing
+fixed Storage role/handshake carries it into the journal floor. Constructors
+lacking that observation remain required-mode closed. Legacy mode accepts no
+image slot and continues to close execution-output methods. This introduces
+no scalar or caller-FD authority factory, global image registry, helper frame
+field, or extra child descriptor: the child still receives only two lock OFDs.
+
+Before helper spawn and each physical floor operation, the existing genuine
+PID 1/fixed-unit/direct-parent/cgroup/invocation guard requires the exact
+`OpenFile` `(path,name,read-only flags)` tuple, empty extra-FD names, zero store
+maximum and zero stored FDs, alongside the effective exit/kill/timeout policy.
+The parent retains the actual launch FD, not a reopened package ELF used as
+executed-image evidence. Its read-only regular inode, dev/inode/length, owner,
+mode, immutable lower-store mount/name and SHA-256 content must match the
+independently compiled AOS PID 1 package artifact. Offset-independent reads
+preserve shared-OFD cursors across session reconnects and revalidate contents
+at every NV boundary. No confined `/proc/1/exe` reopen or `CAP_SYS_PTRACE` is
+needed in this source path.
+
+The retained FD measures PID 1's actual image at launch, not a subsequent
+trusted-administrative manager reexec, and property readback still does not
+freeze policy. Genuine installed 261.2 launch delivery/property encoding,
+confinement, descriptor lifecycle, wrong/extra/missing slot failures and
+original-image identity must qualify; source inspection is not that evidence.
+The new shape/mode/flags/shared-offset/closed-set regressions are unrun.
 
 The scope commits endpoint role, node identity, nonzero deployment epoch,
 stable endpoint manifest identity, and pinned salt-key Name digest. The fixed
@@ -423,7 +471,9 @@ authentication, service confinement or effect boundaries.
 The new lock-loan, helper framing, startup-state and weakened-property tests
 are also unrun. Compiler/API qualification must cover the packaged TSS 4.2.0
 initial-response SAPI decode, not assume that a later public read refreshed
-the cached salt key. Required-mode effective unit policy and the exact old
+the cached salt key. It must include an exact packaged-4.2.0 repeated-Complete
+regression before a future TSS upgrade or producer qualification. Required-mode
+effective unit policy and the exact old
 helper's TPM-close-before-next-owner ordering need genuine installed tests.
 
 Qualify the AOS-built helper and both normal daemon binaries, then key/device/

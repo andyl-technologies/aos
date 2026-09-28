@@ -377,6 +377,8 @@ in {
       };
       serviceConfig = {
         Type = "simple";
+        OpenFile = lib.mkIf cfg.method46TpmFloor.required ["/proc/1/exe:aos-method46-pid1-image:read-only"];
+        FileDescriptorStoreMax = lib.mkIf cfg.method46TpmFloor.required 0;
         ExecStartPre = brokerSessionConfiguration.installCommands;
         ExecStart = ''
           ${cfg.package}/bin/aos-storaged \

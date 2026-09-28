@@ -46,6 +46,7 @@ enum FloorStateV1 {
     Required {
         mode: ModePinV1,
         provision: ProvisionPinV1,
+        launch_image: crate::production_startup::Pid1LaunchImageV1,
         attached: Option<AttachedFloorV1<PhysicalTpmNvIoV1>>,
     },
 }
@@ -68,8 +69,12 @@ impl BrokerFloorV1 {
         directory: &Path,
         protocol: BrokerSessionProtocolV1,
         role: BrokerSessionDurableEndpointV1,
+        launch_image: Option<crate::production_startup::Pid1LaunchImageV1>,
     ) -> Result<Self, FloorErrorV1> {
         if protocol != BrokerSessionProtocolV1::Storage {
+            if launch_image.is_some() {
+                return Err(FloorErrorV1::Provisioning);
+            }
             // A different protected role cannot bypass the two fixed Storage
             // directories by opening their journal as an unrelated protocol.
             if matches!(
@@ -108,6 +113,9 @@ impl BrokerFloorV1 {
         let mode = ModePinV1::open(endpoint)?;
         match mode.mode() {
             ImageFloorModeV1::LegacyClosed => {
+                if launch_image.is_some() {
+                    return Err(FloorErrorV1::Provisioning);
+                }
                 require_no_floor_names(directory)?;
                 Ok(Self {
                     state: FloorStateV1::Legacy { mode },
@@ -117,6 +125,7 @@ impl BrokerFloorV1 {
                 state: FloorStateV1::Required {
                     mode,
                     provision: ProvisionPinV1::open(endpoint)?,
+                    launch_image: launch_image.ok_or(FloorErrorV1::Unavailable)?,
                     attached: None,
                 },
             }),
@@ -138,6 +147,7 @@ impl BrokerFloorV1 {
             FloorStateV1::Required {
                 mode,
                 provision,
+                launch_image,
                 attached,
             } => {
                 // Main writer is already retained. Open sidecar next, then
@@ -150,7 +160,7 @@ impl BrokerFloorV1 {
                 let auth = provision.current_auth()?;
                 let salt_name = provision.salt_name();
                 *attached = Some(attach_broker_floor_v1(owner, profile, |locks| {
-                    PhysicalTpmNvIoV1::open(profile, salt_name, &auth, locks)
+                    PhysicalTpmNvIoV1::open(profile, salt_name, &auth, locks, launch_image)
                 })?);
                 provision.revalidate()?;
                 mode.revalidate()
@@ -184,6 +194,7 @@ impl BrokerFloorV1 {
                 mode,
                 provision,
                 attached,
+                ..
             } => {
                 mode.revalidate()?;
                 provision.revalidate()?;
@@ -208,6 +219,7 @@ impl BrokerFloorV1 {
                 mode,
                 provision,
                 attached,
+                ..
             } => {
                 let retained = attached.take().ok_or(FloorErrorV1::Unavailable)?;
                 *attached = Some(commit_broker_floor_v1(owner, retained, transaction)?);
@@ -257,6 +269,31 @@ fn is_output_method(method: BrokerMethod) -> bool {
             | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
     )
+}
+
+pub(in crate::recovery::journal) fn require_launch_image_presence(
+    endpoint: crate::ProtectedBrokerSessionFixedEndpointV1,
+    supplied: bool,
+) -> Result<(), FloorErrorV1> {
+    let endpoint = match endpoint {
+        crate::ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient => {
+            FloorEndpointV1::ControllerStorageClient
+        }
+        crate::ProtectedBrokerSessionFixedEndpointV1::StorageBroker => {
+            FloorEndpointV1::StorageBroker
+        }
+        _ => return Err(FloorErrorV1::Provisioning),
+    };
+    let mode = ModePinV1::open(endpoint)?;
+    require_mode_image_presence(mode.mode(), supplied)?;
+    mode.revalidate()
+}
+
+fn require_mode_image_presence(mode: ImageFloorModeV1, supplied: bool) -> Result<(), FloorErrorV1> {
+    if supplied != matches!(mode, ImageFloorModeV1::Required) {
+        return Err(FloorErrorV1::Provisioning);
+    }
+    Ok(())
 }
 
 fn require_no_floor_names(directory: &Path) -> Result<(), FloorErrorV1> {
@@ -353,7 +390,8 @@ mod tests {
                 BrokerFloorV1::configure(
                     Path::new(directory),
                     BrokerSessionProtocolV1::Host,
-                    BrokerSessionDurableEndpointV1::Client
+                    BrokerSessionDurableEndpointV1::Client,
+                    None,
                 )
                 .is_err()
             );
@@ -375,5 +413,13 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), b"retained");
             std::fs::remove_file(path).unwrap();
         }
+    }
+
+    #[test]
+    fn tpm_floor_startup_image_presence_cannot_downgrade_required_mode() {
+        assert!(require_mode_image_presence(ImageFloorModeV1::LegacyClosed, false).is_ok());
+        assert!(require_mode_image_presence(ImageFloorModeV1::Required, true).is_ok());
+        assert!(require_mode_image_presence(ImageFloorModeV1::Required, false).is_err());
+        assert!(require_mode_image_presence(ImageFloorModeV1::LegacyClosed, true).is_err());
     }
 }

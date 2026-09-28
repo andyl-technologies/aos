@@ -513,6 +513,8 @@ in {
           + lib.optionalString cfg.publicApi.enable " --public-api"
           + lib.optionalString cfg.publisherIngress.enable " --publisher-ingress";
         Sockets = lib.optional cfg.publisherIngress.enable "aos-sandboxd-publisher.socket";
+        OpenFile = lib.mkIf cfg.method46TpmFloor.required ["/proc/1/exe:aos-method46-pid1-image:read-only"];
+        FileDescriptorStoreMax = lib.mkIf cfg.method46TpmFloor.required 0;
         ExecStartPre = brokerSessionConfiguration.installCommands;
         LoadCredential =
           nodeCredentials

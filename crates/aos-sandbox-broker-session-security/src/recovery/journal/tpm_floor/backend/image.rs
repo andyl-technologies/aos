@@ -7,8 +7,8 @@
 //! execs or forks after this observation.
 
 use std::fs::{File, Metadata};
-use std::io::{Read as _, Seek as _};
-use std::os::unix::fs::MetadataExt as _;
+use std::io::Read as _;
+use std::os::unix::fs::{FileExt as _, MetadataExt as _};
 use std::path::{Path, PathBuf};
 
 use rustix::fs::{CWD, Mode, OFlags, StatVfsMountFlags, fstatvfs, openat};
@@ -142,7 +142,9 @@ impl MeasuredFileV1 {
         Self::open_with_profile(path, None, 64 * 1024, false)
     }
 
-    pub(super) fn open_pid1() -> Result<Self, FloorErrorV1> {
+    pub(super) fn open_pid1(
+        launch_image: &crate::production_startup::Pid1LaunchImageV1,
+    ) -> Result<Self, FloorErrorV1> {
         let path =
             PathBuf::from(option_env!("AOS_METHOD46_TPM_PID1").ok_or(FloorErrorV1::Unavailable)?);
         let package = path
@@ -160,9 +162,15 @@ impl MeasuredFileV1 {
             return Err(FloorErrorV1::Provisioning);
         }
         let digest = decode_hash(pin.get(9..74).ok_or(FloorErrorV1::Provisioning)?)?;
-        let retained = Self::open(path, digest)?;
-        retained.require_executed(1)?;
-        Ok(retained)
+        // Retain the actual launch inode, not a reopened package image asserted
+        // to be executing. OpenFile runs before service UID/proc confinement.
+        let file = launch_image
+            .file()
+            .try_clone()
+            .map_err(|_| FloorErrorV1::Unavailable)?;
+        let flags = rustix::fs::fcntl_getfl(&file).map_err(|_| FloorErrorV1::Unavailable)?;
+        require_readonly_launch_flags(flags)?;
+        Self::retain_with_profile(path, file, Some(digest), MAXIMUM_IMAGE_BYTES, true)
     }
 
     fn open_with_profile(
@@ -185,6 +193,21 @@ impl MeasuredFileV1 {
             )
             .map_err(|_| FloorErrorV1::Unavailable)?,
         );
+        Self::retain_with_profile(path, file, expected_digest, maximum_bytes, executable)
+    }
+
+    fn retain_with_profile(
+        path: PathBuf,
+        file: File,
+        expected_digest: Option<[u8; 32]>,
+        maximum_bytes: u64,
+        executable: bool,
+    ) -> Result<Self, FloorErrorV1> {
+        if !path.starts_with("/nix/store")
+            || std::fs::canonicalize(&path).map_err(|_| FloorErrorV1::Provisioning)? != path
+        {
+            return Err(FloorErrorV1::Provisioning);
+        }
         let metadata = file.metadata().map_err(|_| FloorErrorV1::Unavailable)?;
         let mut measured = Self {
             file,
@@ -257,14 +280,13 @@ impl MeasuredFileV1 {
     }
 
     fn current_digest(&mut self) -> Result<[u8; 32], FloorErrorV1> {
-        self.file.rewind().map_err(|_| FloorErrorV1::Unavailable)?;
         let mut hash = Sha256::new();
         let mut buffer = [0; 8192];
         let mut total = 0_u64;
         loop {
             let count = self
                 .file
-                .read(&mut buffer)
+                .read_at(&mut buffer, total)
                 .map_err(|_| FloorErrorV1::Unavailable)?;
             if count == 0 {
                 break;
@@ -280,6 +302,15 @@ impl MeasuredFileV1 {
         }
         Ok(hash.finalize().into())
     }
+}
+
+fn require_readonly_launch_flags(flags: OFlags) -> Result<(), FloorErrorV1> {
+    if flags
+        .intersects(OFlags::PATH | OFlags::WRONLY | OFlags::RDWR | OFlags::APPEND | OFlags::TRUNC)
+    {
+        return Err(FloorErrorV1::Provisioning);
+    }
+    Ok(())
 }
 
 fn identity(metadata: &Metadata) -> (u64, u64, u64) {
@@ -338,6 +369,8 @@ fn decode_hash(bytes: &[u8]) -> Result<[u8; 32], FloorErrorV1> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Seek as _, SeekFrom, Write as _};
+
     use super::*;
 
     #[test]
@@ -354,5 +387,47 @@ mod tests {
         ] {
             assert!(decode_hash(&bytes).is_err());
         }
+    }
+
+    #[test]
+    fn tpm_floor_pid1_launch_image_rejects_non_readonly_descriptor_flags() {
+        assert!(require_readonly_launch_flags(OFlags::RDONLY | OFlags::CLOEXEC).is_ok());
+        for flags in [
+            OFlags::WRONLY,
+            OFlags::RDWR,
+            OFlags::PATH,
+            OFlags::RDONLY | OFlags::APPEND,
+            OFlags::RDONLY | OFlags::TRUNC,
+        ] {
+            assert!(require_readonly_launch_flags(flags).is_err());
+        }
+    }
+
+    #[test]
+    fn tpm_floor_image_hashing_ignores_and_preserves_shared_file_offset() {
+        let mut file = tempfile::tempfile().unwrap();
+        let bytes = b"bounded original image bytes";
+        file.write_all(bytes).unwrap();
+        file.seek(SeekFrom::Start(7)).unwrap();
+        let mut duplicate = file.try_clone().unwrap();
+        let mut measurement = MeasuredFileV1 {
+            identity: identity(&file.metadata().unwrap()),
+            file,
+            path: PathBuf::from("/hash-only-test-not-image-authority"),
+            digest: [0; 32],
+            maximum_bytes: bytes.len() as u64,
+            executable: false,
+        };
+        let expected: [u8; 32] = Sha256::digest(bytes).into();
+
+        assert_eq!(measurement.current_digest().unwrap(), expected);
+        assert_eq!(duplicate.stream_position().unwrap(), 7);
+        duplicate.seek(SeekFrom::Start(3)).unwrap();
+        assert_eq!(measurement.current_digest().unwrap(), expected);
+        assert_eq!(duplicate.stream_position().unwrap(), 3);
+        measurement.maximum_bytes -= 1;
+        assert!(measurement.current_digest().is_err());
+        // Hashing test-local bytes never admits a package/launcher image.
+        assert!(measurement.revalidate().is_err());
     }
 }

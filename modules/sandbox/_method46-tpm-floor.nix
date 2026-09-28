@@ -4,7 +4,7 @@
     required = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Pins this image to an already provisioned TPM floor for every Storage broker-session journal boundary. False permanently closes execution-output methods without disabling unrelated Storage methods; missing required state never falls back.";
+      description = "Pins this existing Controller-Storage client or Storage broker owner to its already provisioned TPM floor at every broker-session journal boundary. False permanently closes execution-output methods without disabling unrelated Storage methods; missing required state never falls back.";
     };
 
     provisionCredential = lib.mkOption {

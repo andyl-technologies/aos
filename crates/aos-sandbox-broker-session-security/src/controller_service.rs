@@ -171,6 +171,7 @@ type SharedControllerBrokerSessions = Arc<Mutex<ControllerBrokerSessions>>;
 /// Retains authenticated transports and their durable sequence owners across cycles.
 #[derive(Default)]
 struct ControllerBrokerSessions {
+    launch_image: Option<crate::production_startup::Pid1LaunchImageV1>,
     host: Option<ControllerHostPublication>,
     mount: Option<crate::DormantMountLifecycleInventoryOwnerV1>,
     storage: Option<crate::DormantStorageLifecycleInventoryOwnerV1>,
@@ -338,14 +339,13 @@ where
 pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     let configuration = RuntimeConfiguration::from_process()?;
     configuration.validate_process_identity()?;
-    let publisher_listener = if configuration.publisher_ingress {
-        Some(
-            publisher_ingress::adopt_listener()
-                .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?,
-        )
-    } else {
-        None
-    };
+    let (publisher_descriptor, launch_image) =
+        crate::production_startup::capture_controller(configuration.publisher_ingress)
+            .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
+    let publisher_listener = publisher_descriptor
+        .map(publisher_ingress::adopt_observed_listener)
+        .transpose()
+        .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
     let node_id = read_node_id()?;
     let publisher_registration = if let Some(listener) = publisher_listener {
         let scope = publisher_ingress::PublisherServiceScopeV1::from_process_credential(
@@ -375,7 +375,10 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     let guest_root_pins = load_guest_root_template_pins_optional()
         .map_err(|_| ControllerRuntimeError::InvalidGuestRootCredential)?;
     let listener = bind_diagnostic_socket(&configuration)?;
-    let sessions = Arc::new(Mutex::new(ControllerBrokerSessions::default()));
+    let sessions = Arc::new(Mutex::new(ControllerBrokerSessions {
+        launch_image,
+        ..ControllerBrokerSessions::default()
+    }));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1429,9 +1432,10 @@ fn ensure_controller_broker_sessions(
     if sessions.storage.is_none() {
         sessions.storage = Some(
             crate::DormantStorageLifecycleInventoryOwnerV1::from_protected_session(
-                connect_controller_session(
+                connect_controller_storage_session(
                     crate::ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
                     node_id,
+                    sessions.launch_image.as_ref(),
                 )?,
             ),
         );
@@ -1453,7 +1457,18 @@ fn connect_controller_session(
     endpoint: crate::ProtectedBrokerSessionFixedEndpointV1,
     node_id: [u8; 16],
 ) -> Result<crate::DormantAuthenticatedBrokerSessionV1, CycleFailure> {
+    connect_controller_storage_session(endpoint, node_id, None)
+}
+
+fn connect_controller_storage_session(
+    endpoint: crate::ProtectedBrokerSessionFixedEndpointV1,
+    node_id: [u8; 16],
+    launch_image: Option<&crate::production_startup::Pid1LaunchImageV1>,
+) -> Result<crate::DormantAuthenticatedBrokerSessionV1, CycleFailure> {
     let custody = crate::ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(endpoint)
+        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+    let custody = custody
+        .retain_launch_image(launch_image.cloned())
         .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
     let deadline = crate::production_deadline_after(Duration::from_secs(10))
         .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
@@ -2032,11 +2047,6 @@ impl RuntimeConfiguration {
                     ));
                 }
             }
-        }
-        if !publisher_ingress && std::env::var_os("LISTEN_FDS").is_some() {
-            return Err(ControllerRuntimeError::InvalidArguments(
-                "unexpected controller socket activation",
-            ));
         }
         Ok(Self {
             uid,

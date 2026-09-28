@@ -62,12 +62,13 @@ impl PhysicalTpmNvIoV1 {
         salt_name: [u8; 34],
         auth: &[u8; 32],
         locks: [ProtectedJournalLockCustodyV1; 2],
+        launch_image: &crate::production_startup::Pid1LaunchImageV1,
     ) -> Result<Self, FloorErrorV1> {
         if Sha256::digest(salt_name).as_slice() != profile.salt_key_name_digest() {
             return Err(FloorErrorV1::Provisioning);
         }
         let mut image = MeasuredHelperImageV1::open()?;
-        let service = RetainedFloorServicePolicyV1::open(profile.endpoint())?;
+        let service = RetainedFloorServicePolicyV1::open(profile.endpoint(), launch_image)?;
 
         let nonce = crate::entropy::nonzero_random::<32, _>(&mut crate::entropy::KernelEntropy)
             .map_err(|_| FloorErrorV1::Unavailable)?;

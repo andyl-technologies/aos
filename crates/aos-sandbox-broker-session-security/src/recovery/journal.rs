@@ -116,6 +116,14 @@ const MAXIMUM_STORAGE_INVENTORY_ARCHIVES: usize = 16;
 const MAXIMUM_STORAGE_INVENTORY_ABANDONMENTS: usize = 16;
 const PROTECTED_SESSION_JOURNAL: &str = "session.journal";
 
+pub(crate) fn require_launch_image_presence(
+    endpoint: ProtectedBrokerSessionFixedEndpointV1,
+    supplied: bool,
+) -> Result<(), BrokerSessionSecurityError> {
+    tpm_floor::runtime::require_launch_image_presence(endpoint, supplied)
+        .map_err(|_| BrokerSessionSecurityError::Currentness)
+}
+
 fn request_id_unused(request_id: [u8; 16], prior: impl IntoIterator<Item = [u8; 16]>) -> bool {
     request_id != [0; 16] && prior.into_iter().all(|previous| previous != request_id)
 }
@@ -521,6 +529,13 @@ enum ProtectedEndpointV1 {
 }
 
 impl ProtectedEndpointV1 {
+    fn launch_image(&self) -> Option<crate::production_startup::Pid1LaunchImageV1> {
+        match self {
+            Self::Client(endpoint) => endpoint.launch_image(),
+            Self::Broker(endpoint) => endpoint.launch_image(),
+        }
+    }
+
     fn broker_outcome_verifier(
         &mut self,
     ) -> Result<aos_sandbox_protocol::BrokerTerminalCommitVerifierV1, BrokerSessionSecurityError>
@@ -746,6 +761,30 @@ impl core::fmt::Debug for ProtectedBrokerSessionFixedCustodyV1 {
 }
 
 impl ProtectedBrokerSessionFixedCustodyV1 {
+    /// Carries only the actual startup observation into its exact Storage role.
+    pub(crate) fn retain_launch_image(
+        mut self,
+        image: Option<crate::production_startup::Pid1LaunchImageV1>,
+    ) -> Result<Self, BrokerSessionSecurityError> {
+        if let Some(image) = image {
+            let endpoint = match (&self.custody, self.protocol) {
+                (FixedEndpointCustodyV1::Client(_), BrokerSessionProtocolV1::Storage) => {
+                    ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient
+                }
+                (FixedEndpointCustodyV1::Broker(_), BrokerSessionProtocolV1::Storage) => {
+                    ProtectedBrokerSessionFixedEndpointV1::StorageBroker
+                }
+                _ => return Err(BrokerSessionSecurityError::Currentness),
+            };
+            image.require_endpoint(endpoint)?;
+            match &mut self.custody {
+                FixedEndpointCustodyV1::Client(custody) => custody.retain_launch_image(image),
+                FixedEndpointCustodyV1::Broker(custody) => custody.retain_launch_image(image),
+            }
+        }
+        Ok(self)
+    }
+
     /// Loads one compile-time endpoint root for dormant protected handshaking.
     ///
     /// # Errors
@@ -3019,9 +3058,13 @@ impl ProtectedBrokerSessionJournalV1 {
         if protocol == BrokerSessionProtocolV1::Storage && name != PROTECTED_SESSION_JOURNAL {
             return Err(BrokerSessionSecurityError::Currentness);
         }
-        let floor =
-            tpm_floor::runtime::BrokerFloorV1::configure(&directory, protocol, endpoint.role())
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let floor = tpm_floor::runtime::BrokerFloorV1::configure(
+            &directory,
+            protocol,
+            endpoint.role(),
+            endpoint.launch_image(),
+        )
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         let owner = JournalOwnerV1::capture(endpoint.role());
         let existing = match std::fs::symlink_metadata(directory.join(name)) {
             Ok(_) => true,

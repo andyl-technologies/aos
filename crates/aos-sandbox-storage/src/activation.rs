@@ -1,12 +1,13 @@
 //! Exact systemd record-subject socket activation for `aos-storaged`.
 
-use aos_sandbox_linux::inherited_fd::duplicate_inherited_descriptor;
+use std::os::fd::OwnedFd;
+
+use aos_sandbox_linux::inherited_fd::duplicate_initial_activation_table;
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 use aos_sandbox_protocol::operator_storage_repair_transport_v3::OPERATOR_STORAGE_REPAIR_SOCKET_PATH_V3;
 
 use crate::service::StorageServiceError;
 
-const ACTIVATION_FD: i32 = 3;
 const EXPECTED_FD_NAME: &str = "aos-storaged";
 const EXPORT_FD_NAME: &str = "aos-storaged-root-export";
 const LIVE_EXPORT_FD_NAME: &str = "aos-storaged-live-export-request";
@@ -14,73 +15,94 @@ const ZFS_HOLD_FD_NAME: &str = "aos-storaged-zfs-hold-request";
 const OPERATOR_REPAIR_FD_NAME: &str = "aos-storaged-operator-repair";
 const EXISTING_OUTPUT_FD_NAME: &str = "aos-storaged-existing-output";
 
+/// Names the parent-only original PID 1 image delivered by fixed-unit OpenFile.
+pub const PID1_LAUNCH_IMAGE_FD_NAME: &str = "aos-method46-pid1-image";
+
+/// The fixed Storage listener roles, without any TPM or image authorization.
+pub type StorageSystemdListenersV1 = (
+    RecordSubjectListener,
+    RecordSubjectListener,
+    Option<RecordSubjectListener>,
+    Option<RecordSubjectListener>,
+    Option<RecordSubjectListener>,
+    Option<RecordSubjectListener>,
+);
+
+/// Owns an observed complete startup table, not authenticated image custody.
+pub struct CapturedStorageStartupV1 {
+    listeners: StorageSystemdListenersV1,
+    pid1_image: Option<OwnedFd>,
+}
+
+impl CapturedStorageStartupV1 {
+    /// Returns observed listener roles and an unverified original launch image.
+    #[must_use]
+    pub fn into_parts(self) -> (StorageSystemdListenersV1, Option<OwnedFd>) {
+        (self.listeners, self.pid1_image)
+    }
+}
+
 /// Adopts the required listeners and an optional closed Provider request listener.
 ///
 /// # Errors
 ///
 /// Rejects wrong PID, count, names, descriptor type, or missing record subjects.
-pub fn take_systemd_listeners() -> Result<
-    (
-        RecordSubjectListener,
-        RecordSubjectListener,
-        Option<RecordSubjectListener>,
-        Option<RecordSubjectListener>,
-        Option<RecordSubjectListener>,
-        Option<RecordSubjectListener>,
-    ),
-    StorageServiceError,
-> {
+pub fn take_systemd_listeners() -> Result<StorageSystemdListenersV1, StorageServiceError> {
+    let (listeners, image) = take_systemd_startup()?.into_parts();
+    if image.is_some() {
+        return Err(activation_error(
+            "legacy listener adoption cannot consume a PID 1 image",
+        ));
+    }
+    Ok(listeners)
+}
+
+/// Captures fixed listeners and at most one observed parent-only image FD.
+///
+/// Every numeric entry is copied before opening any other retained descriptor.
+/// Names and environment are correlation hints only. The security owner must
+/// independently authenticate the fixed unit, image mode, and actual image.
+///
+/// # Errors
+///
+/// Rejects malformed names/counts, a nonclosed startup table, invalid listeners,
+/// or an unknown descriptor. This single-shot operation cannot be retried.
+pub fn take_systemd_startup() -> Result<CapturedStorageStartupV1, StorageServiceError> {
     let listen_pid = environment_u32("LISTEN_PID")?;
     let current_pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
         .map_err(|_| activation_error("current PID does not fit u32"))?;
     let descriptor_count = environment_u32("LISTEN_FDS")?;
-    if listen_pid != current_pid || !(2..=6).contains(&descriptor_count) {
-        return Err(activation_error("two to six named listeners are required"));
+    if listen_pid != current_pid || !(2..=7).contains(&descriptor_count) {
+        return Err(activation_error(
+            "two to seven named startup entries are required",
+        ));
     }
 
     let names = std::env::var("LISTEN_FDNAMES")
         .map_err(|_| activation_error("activated descriptor names are absent"))?;
+    if names.len() > 7 * 256
+        || !names.is_ascii()
+        || names.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err(activation_error(
+            "activated descriptor names exceed fixed bounds",
+        ));
+    }
     let names: Vec<_> = names.split(':').collect();
-    if !valid_listener_names(&names, descriptor_count) {
+    if !valid_startup_names(&names, descriptor_count) {
         return Err(activation_error("activated descriptor names are invalid"));
     }
 
     // Duplicate every inherited entry before a new descriptor can reuse a slot.
-    let first = duplicate_inherited_descriptor(ACTIVATION_FD)?;
-    let second = duplicate_inherited_descriptor(ACTIVATION_FD + 1)?;
-    let third = if descriptor_count >= 3 {
-        Some(duplicate_inherited_descriptor(ACTIVATION_FD + 2)?)
-    } else {
-        None
-    };
-    let fourth = if descriptor_count >= 4 {
-        Some(duplicate_inherited_descriptor(ACTIVATION_FD + 3)?)
-    } else {
-        None
-    };
-    let fifth = if descriptor_count >= 5 {
-        Some(duplicate_inherited_descriptor(ACTIVATION_FD + 4)?)
-    } else {
-        None
-    };
-    let sixth = if descriptor_count == 6 {
-        Some(duplicate_inherited_descriptor(ACTIVATION_FD + 5)?)
-    } else {
-        None
-    };
+    let descriptors = duplicate_initial_activation_table(descriptor_count as usize)?;
     let mut controller = None;
     let mut export = None;
     let mut live_export = None;
     let mut zfs_hold = None;
     let mut operator_repair = None;
     let mut existing_output = None;
-    for (name, descriptor) in
-        names
-            .into_iter()
-            .zip([Some(first), Some(second), third, fourth, fifth, sixth])
-    {
-        let descriptor =
-            descriptor.ok_or_else(|| activation_error("activation descriptor is absent"))?;
+    let mut pid1_image = None;
+    for (name, descriptor) in names.into_iter().zip(descriptors) {
         match name {
             EXPECTED_FD_NAME => controller = Some(descriptor),
             EXPORT_FD_NAME => export = Some(descriptor),
@@ -88,6 +110,7 @@ pub fn take_systemd_listeners() -> Result<
             ZFS_HOLD_FD_NAME => zfs_hold = Some(descriptor),
             OPERATOR_REPAIR_FD_NAME => operator_repair = Some(descriptor),
             EXISTING_OUTPUT_FD_NAME => existing_output = Some(descriptor),
+            PID1_LAUNCH_IMAGE_FD_NAME => pid1_image = Some(descriptor),
             _ => return Err(activation_error("activated descriptor name is unknown")),
         }
     }
@@ -133,14 +156,33 @@ pub fn take_systemd_listeners() -> Result<
             "/run/aos/sandbox-storage/existing-output.sock",
         ))?;
     }
-    Ok((
-        controller,
-        export,
-        live_export,
-        zfs_hold,
-        operator_repair,
-        existing_output,
-    ))
+    Ok(CapturedStorageStartupV1 {
+        listeners: (
+            controller,
+            export,
+            live_export,
+            zfs_hold,
+            operator_repair,
+            existing_output,
+        ),
+        pid1_image,
+    })
+}
+
+fn valid_startup_names(names: &[&str], descriptor_count: u32) -> bool {
+    let images = names
+        .iter()
+        .filter(|name| **name == PID1_LAUNCH_IMAGE_FD_NAME)
+        .count();
+    let listeners = names
+        .iter()
+        .copied()
+        .filter(|name| *name != PID1_LAUNCH_IMAGE_FD_NAME)
+        .collect::<Vec<_>>();
+    (2..=7).contains(&descriptor_count)
+        && names.len() == descriptor_count as usize
+        && images <= 1
+        && valid_listener_names(&listeners, descriptor_count - images as u32)
 }
 
 fn valid_listener_names(names: &[&str], descriptor_count: u32) -> bool {
@@ -259,6 +301,36 @@ mod tests {
                 EXISTING_OUTPUT_FD_NAME
             ],
             4,
+        ));
+    }
+
+    #[test]
+    fn activation_pid1_image_is_unique_and_separate_from_listener_roles() {
+        assert!(valid_startup_names(
+            &[EXPECTED_FD_NAME, EXPORT_FD_NAME, PID1_LAUNCH_IMAGE_FD_NAME],
+            3
+        ));
+        assert!(valid_startup_names(&[EXPECTED_FD_NAME, EXPORT_FD_NAME], 2));
+        assert!(!valid_listener_names(
+            &[EXPECTED_FD_NAME, EXPORT_FD_NAME, PID1_LAUNCH_IMAGE_FD_NAME],
+            3
+        ));
+        assert!(!valid_startup_names(
+            &[
+                EXPECTED_FD_NAME,
+                EXPORT_FD_NAME,
+                PID1_LAUNCH_IMAGE_FD_NAME,
+                PID1_LAUNCH_IMAGE_FD_NAME
+            ],
+            4
+        ));
+        assert!(!valid_startup_names(
+            &[EXPECTED_FD_NAME, PID1_LAUNCH_IMAGE_FD_NAME],
+            2
+        ));
+        assert!(!valid_startup_names(
+            &[EXPECTED_FD_NAME, EXPORT_FD_NAME, "wrong-image"],
+            3
         ));
     }
 }
