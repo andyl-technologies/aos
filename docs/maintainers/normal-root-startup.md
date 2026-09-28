@@ -2,8 +2,9 @@
 
 The existing `aos-sandbox-policy-authorityd.service` now has a server-local,
 nonauthorizing startup owner in the immutable enforcing profile. The legacy
-and administrative CLI paths remain separate. This does not enable method46,
-Source genesis client Intent/Floor construction, public Create, or FUSE reads.
+and administrative CLI paths remain separate. Provisioned initial Source
+genesis now has a genuine original-flight Controller client; this does not
+enable method46, public Create, later ancestry mutation, or FUSE reads.
 
 The actual normal executable captures the entire inherited table before it
 opens credentials, journals or listeners. PID1 delivers exactly two read-only
@@ -52,11 +53,26 @@ reads only public immutable profile/code objects; no Root task-file or FD-use
 exception is added. This object cannot serialize or become a peer/read proof.
 The signed administrative packet pair is delivered and retained independently
 as described in `source-genesis-input.md`. Its delivery is not current-cut or
-Root authority. The genuine held-owner coordinator and bounded same-stream
-transport remain unwired, so the original-flight constructor is closed and
-neither Intent nor Floor can be constructed. A Root self-report,
-canonical-policy equality, supplied digest or path cannot replace the original
-peer join.
+Root authority. The real production executor now joins its retained Source
+writer and sole Controller journal to this private original-stream client.
+Its deadline starts before the fixed socket connects. Only known unadmitted
+socket absence/refusal may retry; accepted connections, partial frames or
+ambiguous replies never reopen within the flight. Every reply fragment must
+retain the selected original Root subject/process/invocation and live pidfd.
+A Root self-report, canonical-policy equality, supplied digest or path cannot
+replace that join or construct the borrowed Intent/Floor.
+
+Configured genesis completes before ordinary Controller readiness: actual
+authorization retention and Controller acceptance, Root Intent, exact Source
+Tree/lineage/receipt append, durable Root floor, Controller floor ACK, Source
+ACK, Controller Complete, Root Completed and client Finish. Each phase derives
+its fresh physical names and frame sequence under the same actual writers;
+the semantic floor intentionally excludes local pending/ACK suffixes. An
+anchored recovery skips Source append, and an existing prepared receipt keeps
+its original durable intent nonce rather than the new transport nonce.
+Failures leave exact records fenced for restart; Root ACK alone is not success.
+No configured pair leaves ordinary startup unchanged. Missing selected profile
+or any incomplete configured attempt keeps startup closed.
 FUSE also still needs the genuine Root-last current history/revocation,
 Source floor, Cache, original Publisher, assignment/lease, two current content
 grants and connected Mount/worker read barrier.
@@ -67,8 +83,8 @@ OpenFile delivery and physical labels/filesystem association, exact normal
 unit/credential startup, property/invocation/image mutation negatives, and
 installed Root and Controller process/cgroup/stream tests. The delivered signed
 seed and project-authorization pair still needs qualification together with
-the actual current authorization-head route and real held Controller/Source/Root
-coordinator.
+the actual authorization-head admission route and real held Controller/Source/
+Root coordinator, including phase loss and restart through final Finish.
 Runtime dependencies, loader-cache and
 future dlopen/environment behavior need actual fixed-image qualification;
 DT_NEEDED resolution plus current maps is not an arbitrary future-load proof.

@@ -66,7 +66,9 @@ use sha2::{Digest as _, Sha256};
 use crate::controller_attach_credentials::ControllerAttachCredentialsV1;
 use crate::controller_cache_readback_credential::validate_process_cache_readback_credentials_v1;
 use crate::controller_guest_root_credentials::load_guest_root_template_pins_optional;
-use crate::controller_hold_credential::validate_process_controller_hold_credentials_v1;
+use crate::controller_hold_credential::{
+    validate_process_controller_hold_credentials_v1, with_process_controller_hold_signer_v1,
+};
 use crate::controller_ownership::{ControllerOwnershipConfigurationV1, sample_ownership_clock};
 use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_publication::{ControllerHostPublication, ControllerHostPublicationError};
@@ -420,6 +422,21 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
         attachment_host,
         attachment_mount,
     )?;
+    let replay_genesis = source_genesis_input
+        .as_ref()
+        .map(|input| controller.has_retained_provisioned_source_genesis_v1(input))
+        .transpose()?
+        .unwrap_or(false);
+    if replay_genesis {
+        // Historical owner recovery must not wait behind an expired or updated
+        // unrelated publisher bootstrap credential. This selector grants no
+        // authority: the coordinator still rejoins the actual original attempt.
+        complete_configured_source_genesis(
+            &mut controller,
+            source_genesis_input.as_ref(),
+            normal_root_profile.as_deref(),
+        )?;
+    }
     if let Some(scope) = publisher_registration
         .as_ref()
         .map(|owner| owner.service_scope())
@@ -427,37 +444,12 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
         publisher_policy_source::install_from_process_credentials(&mut controller, scope)
             .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
     }
-    if let Some(input) = &source_genesis_input {
-        match controller.inspect_provisioned_source_genesis_v1(input) {
-            Ok(()) => {}
-            Err(ControllerSourceGenesisInputErrorV1::MissingCurrentAuthorization) => {
-                // Delivery is not admission: do not invent an authorization
-                // head, spend the epoch, or strand a pending Controller row.
-                eprintln!(
-                    "aos-sandboxd: Source genesis input awaits retained current authorization; coordinator remains closed"
-                );
-            }
-            Err(error)
-                if matches!(
-                    &error,
-                    ControllerSourceGenesisInputErrorV1::Seed(
-                        aos_sandbox::hierarchy::source_seed::ControllerSourceTreeSeedErrorV1::Stale
-                    ) | ControllerSourceGenesisInputErrorV1::Authorization(
-                        aos_sandbox::publisher_policy::ProjectAuthorizationSourceErrorV2::Stale
-                    ) | ControllerSourceGenesisInputErrorV1::Owner(
-                        aos_sandbox::hierarchy::genesis_profile::SourceGenesisErrorV1::Stale
-                    )
-                ) =>
-            {
-                // A valid old pair can still select exact historical recovery;
-                // an old current head is never promoted to fresh admission.
-                input.recheck()?;
-                eprintln!(
-                    "aos-sandboxd: Source genesis current cut unavailable; coordinator remains closed: {error}"
-                );
-            }
-            Err(error) => return Err(error.into()),
-        }
+    if !replay_genesis {
+        complete_configured_source_genesis(
+            &mut controller,
+            source_genesis_input.as_ref(),
+            normal_root_profile.as_deref(),
+        )?;
     }
     let listener = runtime.block_on(into_async_diagnostic_listener(listener))?;
     let public_listener = if configuration.public_api {
@@ -537,6 +529,24 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     ));
     runtime.shutdown_timeout(Duration::from_secs(1));
     result
+}
+
+fn complete_configured_source_genesis(
+    controller: &mut ProductionController,
+    input: Option<&ProvisionedControllerSourceGenesisInputV1>,
+    profile: Option<&aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>,
+) -> Result<(), ControllerSourceGenesisInputErrorV1> {
+    let Some(input) = input else {
+        return Ok(());
+    };
+    let profile = profile.ok_or(ControllerSourceGenesisInputErrorV1::Owner(
+        aos_sandbox::hierarchy::genesis_profile::SourceGenesisErrorV1::AdmissionClosed,
+    ))?;
+    // Configured genesis is a real startup obligation, not an advisory
+    // inspection. Failure keeps readiness closed; restarting rejoins the
+    // exact original pair and protected rows through final Root Finish.
+    controller.coordinate_provisioned_source_genesis_v1(input, profile)?;
+    Ok(())
 }
 
 async fn serve_until_worker_failure(
@@ -4063,6 +4073,29 @@ fn reject_unqualified_delete_effect(plan: &EffectPlan) -> Result<(), EffectFailu
 }
 
 impl SingleNodeEffectExecutor for ProductionEffectExecutor {
+    fn coordinate_provisioned_source_genesis_v1(
+        &mut self,
+        journal: &mut Journal,
+        input: &ProvisionedControllerSourceGenesisInputV1,
+        profile: &aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<ObjectDigest, ControllerSourceGenesisInputErrorV1> {
+        // This is the existing fixed Controller-purpose role, independently
+        // pinned by Root. It supplies no administrative seed or Root authority.
+        with_process_controller_hold_signer_v1(|generation, signer| {
+            Ok(
+                aos_sandbox::policy_compiler::coordinate_provisioned_source_genesis_v1(
+                    journal,
+                    &mut self.source_domains,
+                    input,
+                    profile,
+                    generation,
+                    signer,
+                ),
+            )
+        })
+        .map_err(aos_sandbox::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?
+    }
+
     fn prepare_guardian_plan(
         &mut self,
         _operation_id: OperationId,

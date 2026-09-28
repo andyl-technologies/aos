@@ -217,7 +217,7 @@ impl ProductionControllerNormalRootProfileV1 {
             .map_err(|_| NormalRootStartupErrorV1::Service)
     }
 
-    // Only the eventual original-flight coordinator can consume this real
+    // Only the original-flight coordinator can consume this real
     // stream join. No public digest/path/peer or readiness factory exists.
     pub(crate) fn observe_original_peer<'profile>(
         &'profile self,

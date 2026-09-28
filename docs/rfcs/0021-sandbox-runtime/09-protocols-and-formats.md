@@ -2580,6 +2580,8 @@ signed all-row Empty observation agree. Preexisting Tree, lineage, receipt,
 pending or ACK rows cannot be adopted as fresh custody. Under an existing Root
 instance, a held vacant-project DATA cut may select another absent project;
 it is never signed Empty, NotFound authority, or authority over other projects.
+Global Empty excludes every record in every Source journal namespace, not just
+the selected project's Tree/genesis records.
 
 Root's `AOSSGI01[792]` intent binds the instance, target project, privileged
 Source-owner UID, original Root nonce, exact Controller acceptance and all pinned
@@ -2651,6 +2653,20 @@ administrative request/intent nonce, decision, Tree or floor. Fresh per-flight
 readback nonces correlate observations only. All ordered recovery suffixes are reserved
 before the first respective owner mutation.
 
+The separate Source signer uses the bounded `AOSSSR08[736]` request and
+`AOSSSP08` reply wrapper; legacy `AOSSSR07` is unsupported. Its prefix is the
+fresh nonce, intent digest and project, followed by `AOSSGX01[664]` comparison
+data: version/reserved header, configured Source UID, reserved word, exact
+Root-role tuple and original `AOSSGC01[608]` acceptance. Global Empty requires
+zero project/intent/context padding. Root derives populated comparison data
+from its actual retained intent or floor under its writer; decoded context
+alone grants nothing. The signer reconstructs the canonical original intent
+using its actual pending instance and durable nonce, requiring the receipt's
+exact intent digest, packets and acceptance. After Source ACK removes pending,
+the exact ACK-floor digest binds the receipt and Root roles instead. The
+`AOSSGO01` signed observation format and fresh correlation remain unchanged;
+neither reconnection nor observation may rewrite a durable nonce.
+
 These codecs and signatures are DATA, not detachable Root proofs. Every Root
 reply fragment must carry the exact original live daemon credential pidfd and
 bounded socket SID on the original stream. Socket SID alone is not task identity.
@@ -2658,6 +2674,9 @@ Positive proof construction additionally requires the genuine installed normal
 Root nondelegation/empty-capability matrix and exact image/launch provenance,
 including out-of-role endpoint fd-use/write, task-file theft, ptrace, transition,
 credential nomination and policy-mutation escape exclusions. An arbitrary path
-whose bytes match loaded policy does not prove that matrix. Until that complete
-producer join and installed qualification exist, the opaque client constructor
-and public readiness/effect gates remain closed.
+whose bytes match loaded policy does not prove that matrix. The generation-one
+coordinator constructs opaque client proofs only through that complete producer
+join while the actual Controller, Source and original Root flight remain held.
+This does not open public readiness/effect gates: those require the complete
+current all-owner barrier. Installed service, ordered phase-loss and crash-replay
+qualification are release requirements, not caller-supplied runtime flags.

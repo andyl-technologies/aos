@@ -52,7 +52,7 @@ impl RootSourceGenesisFrameKindV1 {
         }
     }
 
-    const fn magic(self) -> &'static [u8; 8] {
+    pub(super) const fn magic(self) -> &'static [u8; 8] {
         match self {
             Self::Prepare => b"AOSSGP01",
             Self::Prepared => b"AOSSGI01",

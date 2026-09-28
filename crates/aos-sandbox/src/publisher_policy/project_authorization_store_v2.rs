@@ -490,11 +490,55 @@ impl PublisherPolicyStore<'_> {
         crate::hierarchy::genesis_profile::SourceGenesisErrorV1,
     > {
         use crate::hierarchy::genesis_profile::{SourceGenesisErrorV1, hash};
+        use crate::public_api_session::PinnedSystemdCredential;
 
+        self.require_fixed_controller_writer_v2()?;
         let claims = parse_unverified_project_authorization_claims_v2(&authorization)?;
         if claims.project != project {
             return Err(SourceGenesisErrorV1::NonCanonical);
         }
+        // Reject an invalid seed or mismatched prospective head before the
+        // administrative epoch is retained. This is a read-only precondition
+        // under the actual writer, never prospective-current authority. Both
+        // original issuer files stay retained across the effect and readback.
+        let seed_pin = PinnedSystemdCredential::load_controller_source_tree_seed_issuer_v1()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        let authorization_pin = PinnedSystemdCredential::load_project_authorization_issuer_v2()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        let seed_issuer = PinnedControllerSourceTreeSeedIssuerV1::decode(seed_pin.bytes())?;
+        let authorization_issuer =
+            PinnedPublisherProjectAuthorizationIssuerV2::decode(authorization_pin.bytes())?;
+        seed_pin
+            .recheck()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        authorization_pin
+            .recheck()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        self.preflight_source_genesis_retention_v1(
+            project,
+            claims.request_id,
+            seed,
+            authorization,
+            &seed_issuer,
+            &authorization_issuer,
+            administrative_roles_digest_v1(seed_pin.bytes(), authorization_pin.bytes()),
+        )
+        .map_err(|error| match error {
+            CurrentSourceTreeSeedPreflightErrorV1::MissingAuthorization => {
+                SourceGenesisErrorV1::Stale
+            }
+            CurrentSourceTreeSeedPreflightErrorV1::Authorization(error) => error.into(),
+            CurrentSourceTreeSeedPreflightErrorV1::Seed(error) => error.into(),
+            CurrentSourceTreeSeedPreflightErrorV1::Acceptance(error) => error,
+        })?;
+        seed_pin
+            .recheck()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        authorization_pin
+            .recheck()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        self.require_fixed_controller_writer_v2()?;
+
         let transaction = hash(
             b"aos.sandbox.source-genesis.project-authorization-retention.v1\0",
             &authorization,
@@ -507,7 +551,48 @@ impl PublisherPolicyStore<'_> {
             claims.request_id,
             &authorization,
         )?;
+        seed_pin
+            .recheck()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        authorization_pin
+            .recheck()
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        self.require_fixed_controller_writer_v2()?;
+        // Reauthenticate the actual committed current head; the preflight DATA
+        // is never cached across this journal effect or a coordinator phase.
         self.current_source_genesis_acceptance_from_fixed_issuers_v1(project, seed, authorization)
+    }
+
+    #[cfg(any(target_os = "linux", test))]
+    #[allow(clippy::too_many_arguments)]
+    fn preflight_source_genesis_retention_v1(
+        &self,
+        project: ProjectId,
+        request_id: [u8; 16],
+        seed: [u8; 224],
+        authorization: [u8; 224],
+        seed_issuer: &PinnedControllerSourceTreeSeedIssuerV1,
+        authorization_issuer: &PinnedPublisherProjectAuthorizationIssuerV2,
+        administrative_roles: ObjectDigest,
+    ) -> Result<(), CurrentSourceTreeSeedPreflightErrorV1> {
+        let (verified, _) = self.verify_project_authorization_retention_v2(
+            project,
+            request_id,
+            &authorization,
+            authorization_issuer,
+        )?;
+        let row = row_from_verified(verified, &authorization)?;
+        let head = head_for_row(&row);
+        assemble_current_source_genesis_pair_v1(
+            seed,
+            authorization,
+            verified,
+            commitment(RETAINED_HEAD_DOMAIN, &encode_head(head)),
+            seed_issuer,
+            authorization_issuer,
+            administrative_roles,
+        )?;
+        Ok(())
     }
 
     pub(crate) fn current_source_genesis_acceptance_from_fixed_issuers_v1(
@@ -681,6 +766,45 @@ impl PublisherPolicyStore<'_> {
         packet: &[u8],
         issuer: &PinnedPublisherProjectAuthorizationIssuerV2,
     ) -> Result<ProjectAuthorizationRetentionV2, ProjectAuthorizationSourceErrorV2> {
+        let (verified, exact_replay) =
+            self.verify_project_authorization_retention_v2(project, request_id, packet, issuer)?;
+        if exact_replay {
+            return Ok(ProjectAuthorizationRetentionV2::ExactReplay);
+        }
+        let row = row_from_verified(verified, packet)?;
+        let row_bytes = encode_row(&row);
+        let next_head = head_for_row(&row);
+        let result = self.commit_bounded(
+            transaction_id,
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::PublisherPolicy,
+                    row_key(project, request_id),
+                    row_bytes,
+                ),
+                JournalRecord::put(
+                    RecordNamespace::PublisherPolicy,
+                    head_key(project),
+                    encode_head(next_head),
+                ),
+            ],
+        )?;
+        Ok(ProjectAuthorizationRetentionV2::Committed(result))
+    }
+
+    // Shares only the exact current publisher/request/epoch calculation used
+    // by retention and its pre-effect seed check. No journal effect or opaque
+    // current/Root authority is created by these ephemeral verified DATA.
+    fn verify_project_authorization_retention_v2(
+        &self,
+        project: ProjectId,
+        request_id: [u8; 16],
+        packet: &[u8],
+        issuer: &PinnedPublisherProjectAuthorizationIssuerV2,
+    ) -> Result<
+        (VerifiedPublisherProjectAuthorizationSourceV2, bool),
+        ProjectAuthorizationSourceErrorV2,
+    > {
         self.journal
             .ensure_protected_authority()
             .map_err(PublisherPolicyError::from)?;
@@ -719,34 +843,7 @@ impl PublisherPolicyStore<'_> {
         let expected = ProjectAuthorizationSourceExpectedV2::new(project, request_id, floor)?;
         let verified =
             verify_current_project_authorization_source_v2(self, packet, issuer, expected)?;
-        if exact_replay {
-            return Ok(ProjectAuthorizationRetentionV2::ExactReplay);
-        }
-
-        let row = row_from_verified(verified, packet)?;
-        let row_bytes = encode_row(&row);
-        let next_head = RetainedProjectAuthorizationHeadV2 {
-            project,
-            epoch: row.epoch,
-            request_id,
-            row_digest: commitment(ROW_DOMAIN, &row_bytes),
-        };
-        let result = self.commit_bounded(
-            transaction_id,
-            vec![
-                JournalRecord::put(
-                    RecordNamespace::PublisherPolicy,
-                    row_key(project, request_id),
-                    row_bytes,
-                ),
-                JournalRecord::put(
-                    RecordNamespace::PublisherPolicy,
-                    head_key(project),
-                    encode_head(next_head),
-                ),
-            ],
-        )?;
-        Ok(ProjectAuthorizationRetentionV2::Committed(result))
+        Ok((verified, exact_replay))
     }
 
     /// Reads the retained current decision only while its publisher cut matches.
@@ -811,6 +908,15 @@ impl PublisherPolicyStore<'_> {
             return Err(ProjectAuthorizationSourceErrorV2::Stale);
         }
         Ok(Some(row))
+    }
+}
+
+fn head_for_row(row: &RetainedProjectAuthorizationRowV2) -> RetainedProjectAuthorizationHeadV2 {
+    RetainedProjectAuthorizationHeadV2 {
+        project: row.project,
+        epoch: row.epoch,
+        request_id: row.request_id,
+        row_digest: commitment(ROW_DOMAIN, &encode_row(row)),
     }
 }
 
@@ -950,6 +1056,206 @@ mod tests {
             .publish_policy_from_trusted_controller([3; 16], None, &policy(project, 1))
             .unwrap();
         store
+    }
+
+    #[test]
+    fn prospective_seed_preflight_precedes_retention_and_matches_actual_head() {
+        // Actual protected journal and signature-leaf fixtures, not fixed
+        // production credentials, a Root flight, or an ancestry/read grant.
+        let directory = TestDirectory::new();
+        let project = ProjectId::from_bytes([17; 16]);
+        let authorization_signer = SigningKey::from_bytes(&[18; 32]);
+        let seed_signer = SigningKey::from_bytes(&[19; 32]);
+        let authorization_issuer = pin(&authorization_signer);
+        let seed_credential =
+            encode_controller_source_tree_seed_credential_v1(11, &seed_signer.verifying_key())
+                .unwrap();
+        let seed_issuer = PinnedControllerSourceTreeSeedIssuerV1::decode(&seed_credential).unwrap();
+        let authorization_credential = encode_project_authorization_issuer_credential_v2(
+            7,
+            &authorization_signer.verifying_key(),
+        )
+        .unwrap();
+        let roles = administrative_roles_digest_v1(&seed_credential, &authorization_credential);
+        let mut journal = directory.open();
+        let mut store = initial_store(&mut journal, project);
+        let authorization = packet(&store, project, [20; 16], 9, &authorization_signer);
+        let (verified, replay) = store
+            .verify_project_authorization_retention_v2(
+                project,
+                [20; 16],
+                &authorization,
+                &authorization_issuer,
+            )
+            .unwrap();
+        assert!(!replay);
+        let row = row_from_verified(verified, &authorization).unwrap();
+        let expected_head = encode_head(RetainedProjectAuthorizationHeadV2 {
+            project,
+            epoch: 9,
+            request_id: [20; 16],
+            row_digest: commitment(ROW_DOMAIN, &encode_row(&row)),
+        });
+        let expected_digest = commitment(RETAINED_HEAD_DOMAIN, &expected_head);
+        let seed = ControllerSourceTreeSeedV1::new(
+            project,
+            verified.limits(),
+            verified.publisher_generation(),
+            verified.publisher_head_digest(),
+            expected_digest,
+            [20; 16],
+            9,
+        )
+        .unwrap();
+        let seed_packet = sign_controller_source_tree_seed_v1(seed, 11, &seed_signer).unwrap();
+        let initial_sequence = store.journal.snapshot_sequence();
+        let initial_rows = store
+            .journal
+            .all_records()
+            .map(|(namespace, key, value)| (namespace, key.to_vec(), value.to_vec()))
+            .collect::<Vec<_>>();
+
+        let mut altered = seed_packet;
+        altered[223] ^= 1;
+        assert!(matches!(
+            store.preflight_source_genesis_retention_v1(
+                project,
+                [20; 16],
+                altered,
+                authorization,
+                &seed_issuer,
+                &authorization_issuer,
+                roles,
+            ),
+            Err(CurrentSourceTreeSeedPreflightErrorV1::Seed(
+                ControllerSourceTreeSeedErrorV1::Signature
+            ))
+        ));
+        let wrong_head_seed = ControllerSourceTreeSeedV1::new(
+            project,
+            verified.limits(),
+            verified.publisher_generation(),
+            verified.publisher_head_digest(),
+            ObjectDigest::from_bytes([21; 32]),
+            [20; 16],
+            9,
+        )
+        .unwrap();
+        let wrong_head =
+            sign_controller_source_tree_seed_v1(wrong_head_seed, 11, &seed_signer).unwrap();
+        assert!(matches!(
+            store.preflight_source_genesis_retention_v1(
+                project,
+                [20; 16],
+                wrong_head,
+                authorization,
+                &seed_issuer,
+                &authorization_issuer,
+                roles,
+            ),
+            Err(CurrentSourceTreeSeedPreflightErrorV1::Seed(
+                ControllerSourceTreeSeedErrorV1::Stale
+            ))
+        ));
+        store
+            .preflight_source_genesis_retention_v1(
+                project,
+                [20; 16],
+                seed_packet,
+                authorization,
+                &seed_issuer,
+                &authorization_issuer,
+                roles,
+            )
+            .unwrap();
+        assert_eq!(store.journal.snapshot_sequence(), initial_sequence);
+        assert_eq!(
+            store
+                .journal
+                .all_records()
+                .map(|(namespace, key, value)| (namespace, key.to_vec(), value.to_vec()))
+                .collect::<Vec<_>>(),
+            initial_rows
+        );
+        assert!(
+            store
+                .current_retained_project_authorization_v2(project)
+                .unwrap()
+                .is_none()
+        );
+
+        store
+            .retain_project_authorization_source_v2(
+                [22; 16],
+                project,
+                [20; 16],
+                &authorization,
+                &authorization_issuer,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .current_project_authorization_head_digest_v2(project)
+                .unwrap(),
+            expected_digest
+        );
+        assert_eq!(
+            store
+                .journal
+                .get(RecordNamespace::PublisherPolicy, &head_key(project))
+                .unwrap(),
+            expected_head.as_slice()
+        );
+        let retained_sequence = store.journal.snapshot_sequence();
+        store
+            .preflight_source_genesis_retention_v1(
+                project,
+                [20; 16],
+                seed_packet,
+                authorization,
+                &seed_issuer,
+                &authorization_issuer,
+                roles,
+            )
+            .unwrap();
+        assert!(matches!(
+            store
+                .retain_project_authorization_source_v2(
+                    [22; 16],
+                    project,
+                    [20; 16],
+                    &authorization,
+                    &authorization_issuer,
+                )
+                .unwrap(),
+            ProjectAuthorizationRetentionV2::ExactReplay
+        ));
+        assert_eq!(store.journal.snapshot_sequence(), retained_sequence);
+
+        let successor = packet(&store, project, [23; 16], 10, &authorization_signer);
+        store
+            .retain_project_authorization_source_v2(
+                [24; 16],
+                project,
+                [23; 16],
+                &successor,
+                &authorization_issuer,
+            )
+            .unwrap();
+        assert!(matches!(
+            store.preflight_source_genesis_retention_v1(
+                project,
+                [20; 16],
+                seed_packet,
+                authorization,
+                &seed_issuer,
+                &authorization_issuer,
+                roles,
+            ),
+            Err(CurrentSourceTreeSeedPreflightErrorV1::Authorization(
+                ProjectAuthorizationSourceErrorV2::Stale
+            ))
+        ));
     }
 
     #[test]

@@ -44,7 +44,7 @@ pub use receipt::{SOURCE_TREE_GENESIS_RECEIPT_BYTES_V1, SourceTreeGenesisReceipt
 /// Distinguishes global absence, a vacant target and actual prepared/ACK data.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SourceTreeGenesisStateV1 {
-    /// No Tree, lineage, receipt, pending or ACK exists anywhere in this writer.
+    /// No row exists anywhere in this Source writer.
     Empty,
     /// An absent target under actual existing-instance data, never signed Empty.
     VacantProject,
@@ -462,6 +462,40 @@ pub fn observe_vacant_source_tree_genesis_project_v1(
     )
 }
 
+// Selection is derived under the real named writer, not nominated by a
+// caller or recovered from a failed lookup. Root independently verifies this
+// whole-source cut before granting the deployment instance or project floor.
+#[cfg(target_os = "linux")]
+pub(crate) fn observe_source_genesis_attempt_v1(
+    source: &mut ProtectedSourceDomainJournalOwnerV1,
+    expected_source_uid: u32,
+    project: ProjectId,
+) -> Result<HeldSourceTreeGenesisObservationV1<'_>, SourceGenesisErrorV1> {
+    let journal = source.journal();
+    require_location(journal, expected_source_uid)?;
+    let rows = validate_actual_rows(journal)?;
+    let selection = if rows.receipts.contains_key(&project) {
+        SourceGenesisSelectionV1::Present(project)
+    } else if rows.receipts.is_empty() {
+        // Fresh deployment instance creation requires whole-source absence,
+        // not just a missing Tree. Reject locally before Controller admission;
+        // Root's separate Source signer still verifies all-source Empty itself.
+        if journal.all_records().next().is_some() {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        SourceGenesisSelectionV1::GlobalEmpty
+    } else {
+        SourceGenesisSelectionV1::Vacant(project)
+    };
+    capture_validated_observation(
+        journal,
+        expected_source_uid,
+        selection,
+        SourceGenesisLocationV1::Fixed,
+        rows,
+    )
+}
+
 fn observation(
     journal: &mut Journal,
     uid: u32,
@@ -491,9 +525,26 @@ fn capture_observation(
 ) -> Result<HeldSourceTreeGenesisObservationV1<'_>, SourceGenesisErrorV1> {
     location.recheck(journal, uid)?;
     let rows = validate_actual_rows(journal)?;
+    capture_validated_observation(journal, uid, selection, location, rows)
+}
+
+// Both callers validate these rows under the same unchanged sole-writer
+// borrow. This avoids a second full Tree/lineage replay just to select a cut;
+// it cannot adopt decoded/historical rows across owners or coordinator phases.
+fn capture_validated_observation(
+    journal: &mut Journal,
+    uid: u32,
+    selection: SourceGenesisSelectionV1,
+    location: SourceGenesisLocationV1,
+    rows: SourceGenesisRowsV1,
+) -> Result<HeldSourceTreeGenesisObservationV1<'_>, SourceGenesisErrorV1> {
+    location.recheck(journal, uid)?;
     let valid_selection = match selection {
         SourceGenesisSelectionV1::GlobalEmpty => {
-            rows.receipts.is_empty() && rows.pending.is_none() && rows.acks.is_empty()
+            rows.receipts.is_empty()
+                && rows.pending.is_none()
+                && rows.acks.is_empty()
+                && journal.all_records().next().is_none()
         }
         SourceGenesisSelectionV1::Present(project) => rows.receipts.contains_key(&project),
         SourceGenesisSelectionV1::Vacant(project) => {

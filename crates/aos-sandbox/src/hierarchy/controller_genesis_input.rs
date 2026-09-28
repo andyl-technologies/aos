@@ -9,8 +9,8 @@
 //! Delivery checks signatures and matching administrative claims, not current
 //! publisher heads, a spent epoch, Source append permission or a Root floor.
 //! The real coordinator must retain this input and the sole Controller writer
-//! before entering the existing held admission producer. Startup only delivers
-//! the pair; it never admits and abandons a durable pending genesis.
+//! before entering the existing held admission producer. Delivery alone never
+//! admits or abandons a durable pending genesis as a ready Controller.
 
 use aos_sandbox_core::ProjectId;
 
@@ -131,6 +131,35 @@ impl ProvisionedControllerSourceGenesisInputV1 {
             return Err(ControllerSourceGenesisInputErrorV1::Pair);
         }
         Ok(())
+    }
+
+    // This DATA-only route selector permits exact historical recovery before
+    // unrelated bootstrap policy installation (whose credential may expire).
+    // The actual coordinator still verifies original Root and both real owners.
+    pub(crate) fn has_retained_attempt(
+        &self,
+        journal: &mut Journal,
+    ) -> Result<bool, ControllerSourceGenesisInputErrorV1> {
+        self.recheck()?;
+        let uid = journal
+            .protected_owner_uid()
+            .map_err(SourceGenesisErrorV1::from)?;
+        require_controller(journal, uid)?;
+        let retained = crate::journal::controller_source_genesis::rows(journal, self.project)?;
+        if crate::journal::controller_source_genesis::pending(journal)?
+            .is_some_and(|pending| pending.project() != self.project)
+        {
+            return Err(SourceGenesisErrorV1::Conflict.into());
+        }
+        if retained.as_ref().is_some_and(|row| {
+            row.acceptance.seed_packet().as_slice() != self.packets[0].bytes()
+                || row.acceptance.auth_packet().as_slice() != self.packets[1].bytes()
+        }) {
+            return Err(SourceGenesisErrorV1::Conflict.into());
+        }
+        self.recheck()?;
+        require_controller(journal, uid)?;
+        Ok(retained.is_some())
     }
 
     /// Inspects actual current heads through the fixed NodeController writer funnel.

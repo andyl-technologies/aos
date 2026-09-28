@@ -3,6 +3,7 @@
 mod agent_launch;
 mod consumer_cgroup;
 mod existing_output;
+mod fuse_worker;
 mod guardian_transaction;
 mod mount_scope;
 mod original_attach;
@@ -143,6 +144,7 @@ pub struct HostBroker<C, S, W> {
     state_healthy: bool,
     observed_leaders: BTreeMap<HostRuntimeIdentity, PinnedLeader>,
     pub(crate) runtime_pins: BTreeMap<HostRuntimeIdentity, RetainedRuntimePins>,
+    fuse_workers: BTreeMap<[u8; 16], fuse_worker::RetainedOriginalHostFuseWorkerV1>,
     #[cfg(test)]
     fail_runtime_retention: bool,
 }
@@ -539,6 +541,7 @@ where
             state_healthy: true,
             observed_leaders: BTreeMap::new(),
             runtime_pins: BTreeMap::new(),
+            fuse_workers: BTreeMap::new(),
             #[cfg(test)]
             fail_runtime_retention: false,
         })

@@ -382,7 +382,7 @@ impl HeldControllerSourceGenesisV1<'_> {
 /// # Errors
 ///
 /// Rejects root ownership, another protected location or lost named custody.
-pub(super) fn require_controller(journal: &Journal, uid: u32) -> Result<(), SourceGenesisErrorV1> {
+pub(crate) fn require_controller(journal: &Journal, uid: u32) -> Result<(), SourceGenesisErrorV1> {
     if uid == 0 {
         return Err(SourceGenesisErrorV1::Stale);
     }

@@ -26,8 +26,8 @@ use super::super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
 use super::super::source_genesis_readback::{
-    SourceTreeGenesisChallengeV1, VerifiedSourceTreeGenesisReadbackV1,
-    verify_source_tree_genesis_readback_v1,
+    SourceTreeGenesisChallengeV1, SourceTreeGenesisIntentContextV1,
+    VerifiedSourceTreeGenesisReadbackV1, verify_source_tree_genesis_readback_v1,
 };
 use super::capacity;
 use super::controller_readback::{self, VerifiedControllerSourceGenesisReadbackV1};
@@ -102,6 +102,45 @@ impl RootSourceGenesisAuthorityV1 {
     #[must_use]
     pub const fn source_readback_pin(&self) -> &PinnedSourceHoldReadbackSignerV1 {
         &self.pins.source
+    }
+
+    /// Derives comparison data from the exact retained intent or semantic floor.
+    ///
+    /// The signer treats this as untrusted data and rejoins its actual receipt.
+    /// This projection never supplies the original pending nonce: only the
+    /// Source journal retains it after Root settles and deletes its intent.
+    ///
+    /// # Errors
+    /// Rejects missing/foreign historical acceptance, changed Root custody,
+    /// conflicting intent/floor roles, or mismatched original accepted input.
+    pub fn source_genesis_intent_context_v1(
+        &self,
+    ) -> Result<SourceTreeGenesisIntentContextV1, SourceGenesisErrorV1> {
+        self.recheck()?;
+        let accepted = self.accepted.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+        if !accepted.historical {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        let project = accepted.acceptance.project();
+        let context = if let Some(intent) = self.intent(project)? {
+            require_acceptance(&intent, accepted, self.source_uid)?;
+            SourceTreeGenesisIntentContextV1::new(
+                intent.source_uid(),
+                intent.roles(),
+                intent.accepted_input().clone(),
+            )?
+        } else {
+            let floor = self.floor(project)?.ok_or(SourceGenesisErrorV1::Conflict)?;
+            let context = SourceTreeGenesisIntentContextV1::new(
+                self.source_uid,
+                floor.roles(),
+                accepted.acceptance.clone(),
+            )?;
+            context.require_actual_receipt(floor.receipt(), None)?;
+            context
+        };
+        self.recheck()?;
+        Ok(context)
     }
 
     /// Returns the currently held deployment expiry, or zero for exact history.

@@ -305,6 +305,8 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     MountInventorySourceAcquisitions,
     /// Exact purpose-57 FUSE intent; successful worker/read outcomes remain closed.
     MountFuseReserveIntent,
+    /// Exact four-role purpose-56 preparation; terminal/read outcomes stay closed.
+    HostPrepareFuseWorkerSession,
 }
 
 /// Identifies which endpoint advanced client-to-broker request state.
@@ -486,10 +488,12 @@ pub const fn authenticated_broker_method_adapter_v1(
         BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 => {
             AuthenticatedBrokerMethodSemanticsV1::HostQueryNoApplySettlement
         }
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 => {
+            AuthenticatedBrokerMethodSemanticsV1::HostPrepareFuseWorkerSession
+        }
         // These provisional carriers remain closed until their independent
         // issuers and cross-owner currentness joins exist.
-        BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
-        | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+        BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT => return None,
         BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
     };
@@ -1714,8 +1718,20 @@ fn validate_request_semantics(
                 Some(*semantics.commitment().digest().as_bytes()),
             )
         }
-        BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
-        | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 => {
+            let request =
+                crate::host_fuse_worker_session::decode_host_fuse_worker_session_request_v1(
+                    body, peer, policy, now,
+                )?;
+            let semantics = crate::semantics::host_fuse_worker_session::canonical_host_fuse_worker_session_semantics_v1(&request)
+                .map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::HostPrepareFuseWorkerSession,
+                *request.header(),
+                Some(*semantics.commitment().digest().as_bytes()),
+            )
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
         | BrokerMethod::BROKER_METHOD_UNSPECIFIED => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);

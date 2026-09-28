@@ -26,7 +26,7 @@ use crate::lifecycle::protected_journal_join::{
 
 use super::source_genesis_readback::{
     SOURCE_TREE_GENESIS_READBACK_BYTES_V1, SourceTreeGenesisChallengeV1,
-    sign_source_tree_genesis_fields_v1,
+    SourceTreeGenesisIntentContextV1, sign_source_tree_genesis_fields_v1,
 };
 use super::source_hold_readback::{
     SOURCE_HOLD_READBACK_BYTES_V1, SourceHoldReadbackChallengeV1, SourceHoldReadbackErrorV1,
@@ -44,8 +44,10 @@ const SIGNER_SOURCE_VIEW: &str = "/run/aos/sandbox-source-signer-journal";
 
 /// Observes initial materialization only through the existing fixed reader view.
 ///
-/// Empty is joined absence of every Tree, lineage and genesis row, never a
+/// Empty is joined absence of every Source journal row, never a
 /// project lookup miss. Prepared/Anchored require the exact original intent.
+/// The V2 request supplies comparison data only; the signed observation remains
+/// V1. Actual pending rows or ACK commitments, not a fresh nonce, bind replay.
 /// This Source-purpose signature does not authenticate Root sender authority,
 /// a current Root floor, or a Controller-retained writer.
 ///
@@ -53,10 +55,11 @@ const SIGNER_SOURCE_VIEW: &str = "/run/aos/sandbox-source-signer-journal";
 ///
 /// Rejects unsafe view/owner/names, malformed or legacy materialization, a
 /// missing or substituted intent/project, mixed ACK state or changed replay.
-pub fn sign_fixed_source_tree_genesis_readback_v1(
+pub fn sign_fixed_source_tree_genesis_readback_v2(
     expected_controller_uid: u32,
     project: Option<ProjectId>,
     challenge: SourceTreeGenesisChallengeV1,
+    intent_context: Option<&SourceTreeGenesisIntentContextV1>,
     signer_generation: u64,
     signing_key: &SigningKey,
 ) -> Result<[u8; SOURCE_TREE_GENESIS_READBACK_BYTES_V1], SourceSignerReadbackErrorV1> {
@@ -64,6 +67,8 @@ pub fn sign_fixed_source_tree_genesis_readback_v1(
         || signer_generation == 0
         || project.is_some_and(|project| project.as_bytes() == &[0; 16])
         || project.is_some() != challenge.intent().is_some()
+        || project.is_some() != intent_context.is_some()
+        || intent_context.is_some_and(|context| context.source_uid() != expected_controller_uid)
     {
         return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
     }
@@ -72,6 +77,7 @@ pub fn sign_fixed_source_tree_genesis_readback_v1(
             readback,
             project,
             challenge,
+            intent_context,
             signer_generation,
             signing_key,
         )
@@ -83,6 +89,7 @@ pub(super) fn sign_genesis_readback_from_view(
     readback: &mut ReadOnlyProtectedJournal,
     project: Option<ProjectId>,
     challenge: SourceTreeGenesisChallengeV1,
+    intent_context: Option<&SourceTreeGenesisIntentContextV1>,
     signer_generation: u64,
     signing_key: &SigningKey,
 ) -> Result<[u8; SOURCE_TREE_GENESIS_READBACK_BYTES_V1], SourceSignerReadbackErrorV1> {
@@ -96,16 +103,41 @@ pub(super) fn sign_genesis_readback_from_view(
                 .get(&project)
                 .ok_or(SourceSignerReadbackErrorV1::Stale)?,
         ),
-        None if rows.receipts.is_empty() && rows.pending.is_none() && rows.acks.is_empty() => None,
+        None if rows.receipts.is_empty()
+            && rows.pending.is_none()
+            && rows.acks.is_empty()
+            && readback.journal_mut().all_records().next().is_none() =>
+        {
+            None
+        }
         None => return Err(SourceSignerReadbackErrorV1::Stale),
     };
     if receipt.map(|receipt| receipt.intent_digest()) != challenge.intent()
-        || rows.pending.as_ref().is_some_and(|pending| {
-            Some(pending.project) == project
-                && (pending.nonce != challenge.nonce() || pending.names != names)
-        })
+        || receipt.is_some() != intent_context.is_some()
+        || rows
+            .pending
+            .as_ref()
+            .is_some_and(|pending| Some(pending.project) == project && pending.names != names)
     {
         return Err(SourceSignerReadbackErrorV1::Stale);
+    }
+    if let (Some(receipt), Some(context)) = (receipt, intent_context) {
+        // The challenge correlates this observation only. The original nonce
+        // comes from the durable pending marker and must reconstruct the exact
+        // intent committed by this actual receipt, including UID and roles.
+        context
+            .require_actual_receipt(
+                receipt,
+                rows.pending
+                    .as_ref()
+                    .filter(|pending| pending.project == receipt.project()),
+            )
+            .map_err(|_| SourceSignerReadbackErrorV1::Stale)?;
+        if let Some(ack) = rows.acks.get(&receipt.project()) {
+            context
+                .require_actual_ack(receipt, ack.root_floor)
+                .map_err(|_| SourceSignerReadbackErrorV1::Stale)?;
+        }
     }
     let ack = project
         .and_then(|project| rows.acks.get(&project))

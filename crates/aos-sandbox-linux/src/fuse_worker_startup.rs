@@ -336,6 +336,25 @@ fn require_executable(pin: BorrowedFd<'_>) -> Result<()> {
     require_object_context(actual.as_fd(), FUSE_WORKER_EXECUTABLE_CONTEXT_V1)
 }
 
+/// Checks the four fixed launch objects without adopting worker authority.
+///
+/// Labels and descriptor shapes cannot prove an original fresh FUSE connection,
+/// held Mount reservation or received-packet provenance. Host must independently
+/// admit those producers before its actual fixed launch.
+///
+/// # Errors
+///
+/// Rejects a wrong label/type/access mode, linked FIFO, incomplete seals, changed
+/// fixed device or unsupported channel identity profile.
+pub fn validate_fixed_fuse_worker_launch_roles(roles: [BorrowedFd<'_>; 4]) -> Result<()> {
+    let [plan, connection, records, cancellation] = roles;
+    require_object_context(plan, FUSE_WORKER_PLAN_CONTEXT_V1)?;
+    require_object_context(connection, FUSE_WORKER_DEVICE_CONTEXT_V1)?;
+    require_object_context(records, FUSE_WORKER_CHANNEL_CONTEXT_V1)?;
+    require_object_context(cancellation, FUSE_WORKER_CANCEL_CONTEXT_V1)?;
+    require_role_shapes(plan, connection, records, cancellation)
+}
+
 fn require_role_shapes(
     plan: BorrowedFd<'_>,
     connection: BorrowedFd<'_>,
