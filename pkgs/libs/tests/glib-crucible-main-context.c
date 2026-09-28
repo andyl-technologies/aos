@@ -297,6 +297,7 @@ static void test_atomic_all_context_hold(void)
     g_assert_false(g_crucible_main_contexts_try_hold(&registry, contexts,
                                                     holds, 16, &count));
     g_assert_cmpint(registry.generation, ==, 0);
+    g_assert_false(g_crucible_main_context_dispatch_fenced());
     g_assert_cmpuint(count, ==, 99);
     g_main_context_release(context);
     g_assert_true(g_crucible_main_contexts_try_hold(&registry, contexts,
@@ -311,7 +312,9 @@ static void test_atomic_all_context_hold(void)
      * Guest dispatch until its final release succeeds.
      */
     g_assert_false(g_main_context_iteration(context, FALSE));
+    g_assert_true(g_crucible_main_context_dispatch_fenced());
     release_registry(&registry);
+    g_assert_false(g_crucible_main_context_dispatch_fenced());
     for (guint i = 0; i < count; i++) {
         g_main_context_unref(contexts[i]);
     }
