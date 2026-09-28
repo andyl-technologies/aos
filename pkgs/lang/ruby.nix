@@ -20,8 +20,10 @@
 }: let
   version = "4.0.6";
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isSupportedCross = isLinuxCross || isDarwinCross;
   rustForBuild =
-    if isLinuxCross
+    if isSupportedCross
     then rust.passthru.buildTool
     else rust;
   crossTestFlags = lib.optionalString isLinuxCross (
@@ -39,8 +41,9 @@ in
     };
 
     buildDeps =
-      [gnumake pkg-config rust buildPackages.glibc-locales]
-      ++ lib.optionals isLinuxCross [buildPackages.ruby rustForBuild];
+      [gnumake pkg-config rustForBuild buildPackages.glibc-locales]
+      ++ lib.optionals isSupportedCross [buildPackages.ruby]
+      ++ lib.optionals isDarwinCross [buildPackages.gawk];
     runtimeDeps = [
       openssl
       zlib
@@ -65,7 +68,7 @@ in
       {
         name = "configure";
         script =
-          lib.optionalString isLinuxCross ''
+          lib.optionalString isSupportedCross ''
             # Ruby executes its source generators on the build machine. YJIT
             # still needs Rust to emit the target architecture's static library.
             export BASERUBY=${buildPackages.ruby}/bin/ruby
@@ -76,6 +79,18 @@ in
             EOF
             chmod +x .aos-build-tools/rustc-for-target
             export RUSTC="$PWD/.aos-build-tools/rustc-for-target"
+          ''
+          + lib.optionalString isDarwinCross ''
+            # Runtime and propagated dependencies share runpaths. Ruby's
+            # configure treats linker diagnostics as a failed probe, so emit
+            # each runpath once while retaining every distinct dependency.
+            NIX_LDFLAGS=$(printf '%s\n' "$NIX_LDFLAGS" | ${buildPackages.gawk}/bin/awk '{
+              for (i = 1; i <= NF; i++) {
+                if ($i ~ /^-Wl,-rpath,/ && seen[$i]++) continue
+                printf "%s ", $i
+              }
+            }')
+            export NIX_LDFLAGS
           ''
           + ''
             ./configure $configureFlags \
@@ -95,7 +110,9 @@ in
       }
       {
         name = "check";
-        script = ''
+        # Darwin execution qualification is deferred; a Linux builder cannot
+        # run its interpreter or extension suite. Retain Linux runtime checks.
+        script = lib.optionalString (!isDarwinCross) ''
           export LOCPATH=${buildPackages.glibc-locales}/lib/locale
           export LC_ALL=C.UTF-8
           check_cores=$NIX_BUILD_CORES
@@ -116,10 +133,12 @@ in
         script =
           ''
             make install
+          ''
+          + lib.optionalString (!isDarwinCross) ''
             "$out/bin/ruby" -ropenssl -rzlib -rpsych -e \
               'abort unless RUBY_VERSION == "${version}"'
           ''
-          + lib.optionalString isLinuxCross ''
+          + lib.optionalString isSupportedCross ''
             # Bundled gems retain object files and mkmf probe logs with
             # paths to the build compiler, which is not a runtime dependency.
             find "$out/lib/ruby/gems" -type f \( -name '*.o' -o -name 'mkmf.log' \) -delete
