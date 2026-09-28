@@ -61,6 +61,22 @@ impl<'owner> ProtectedPendingBrokerRequestCutV1<'owner> {
         Self::capture_pending(journal, request, transcript, peer)
     }
 
+    /// Borrows only the two original endpoints of pending Host method 49.
+    pub(super) fn capture_host_worker_comparison(
+        journal: &'owner mut ProtectedBrokerSessionJournalV1,
+        request: &'owner AuthenticatedBrokerMethodRequestV1,
+        transcript: &'owner VerifiedBrokerSessionTranscriptV1,
+        peer: &'owner ConnectionPeerIdentity,
+    ) -> Result<Self, BrokerSessionSecurityError> {
+        if transcript.protocol() != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Host
+            || request.method() != aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
+            || !transcript.negotiated_methods().contains(&request.method())
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Self::capture_pending(journal, request, transcript, peer)
+    }
+
     fn capture_pending(
         journal: &'owner mut ProtectedBrokerSessionJournalV1,
         request: &'owner AuthenticatedBrokerMethodRequestV1,

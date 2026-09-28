@@ -65,6 +65,44 @@ impl DormantOriginalHostFuseWorkerPreparationV1 {
     }
 }
 
+/// Selects one operation on the original worker's held comparison transport.
+///
+/// This private-production callback contract carries no copy-absence, worker
+/// lease, terminal outcome or read authority. The security owner performs each
+/// operation on its original authenticated socket and still-held journal.
+#[doc(hidden)]
+pub enum OriginalHostFuseWorkerTransportActionV1<'record> {
+    /// Rechecks the actual original pending head, deadline and fixed Mount peer.
+    CheckCurrentness,
+    /// Sends the exact comparison body and two original Host-produced copies.
+    SendComparison {
+        /// Borrows the original bounded response, never an alternate body.
+        body: &'record [u8],
+        /// Borrows the worker pidfd and cgroup comparison copies in that order.
+        descriptors: [BorrowedFd<'record>; 2],
+    },
+}
+
+/// Reports one original transport operation without claiming copy closure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[doc(hidden)]
+pub enum OriginalHostFuseWorkerTransportProgressV1 {
+    /// The original owner completed its currentness check.
+    Checked,
+    /// The kernel accepted the complete comparison record on the same socket.
+    Sent,
+    /// No complete record was sent; the same flight waited for retry readiness.
+    Backpressure,
+}
+
+/// Borrows the fixed original comparison transport throughout Host dispatch.
+#[doc(hidden)]
+pub type OriginalHostFuseWorkerTransportCallbackV1<'owner> = dyn for<'record> FnMut(
+        OriginalHostFuseWorkerTransportActionV1<'record>,
+    ) -> Result<OriginalHostFuseWorkerTransportProgressV1, HostError>
+    + Send
+    + 'owner;
+
 /// Reports rejection at the dormant broker-session-to-Host boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum DormantHostBrokerCallErrorV1 {
@@ -222,6 +260,23 @@ pub trait DormantHostBrokerCallsiteV1: sealed::Sealed {
                 > + 'call,
         >,
     >;
+
+    /// Sends the original nonterminal comparison under Host's live launch cut.
+    ///
+    /// The transport owner must retain the same pending writer and socket.
+    /// Successful send does not settle the request or prove descriptor-copy
+    /// absence. Every error after launch preserves the permanent escrow.
+    ///
+    /// # Errors
+    ///
+    /// Rejects the original admission/launch failures and any changed physical
+    /// Host state, worker invocation, pending peer or comparison send custody.
+    fn send_original_fuse_worker_comparison<'call>(
+        &'call mut self,
+        request: &'call AuthenticatedBrokerMethodRequestV1,
+        roles: [OwnedFd; 4],
+        transport: &'call mut OriginalHostFuseWorkerTransportCallbackV1<'call>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), DormantHostBrokerCallErrorV1>> + 'call>>;
 
     /// Transfers an authenticated launch-owned guest channel after Host commit.
     ///
@@ -549,6 +604,20 @@ where
     Store: HostStateStore + Sync,
     Worker: HostWorker + Sync,
 {
+    fn send_original_fuse_worker_comparison<'call>(
+        &'call mut self,
+        request: &'call AuthenticatedBrokerMethodRequestV1,
+        roles: [OwnedFd; 4],
+        transport: &'call mut OriginalHostFuseWorkerTransportCallbackV1<'call>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), DormantHostBrokerCallErrorV1>> + 'call>> {
+        Box::pin(async move {
+            self.broker
+                .send_original_fuse_worker_comparison(request, roles, transport)
+                .await?;
+            Ok(())
+        })
+    }
+
     fn prepare_original_fuse_worker<'call>(
         &'call mut self,
         request: &'call AuthenticatedBrokerMethodRequestV1,

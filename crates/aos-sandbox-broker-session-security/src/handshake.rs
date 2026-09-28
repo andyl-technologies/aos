@@ -10,6 +10,7 @@
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
 pub(crate) mod fuse_intent_continuation;
+pub(super) mod host_worker_comparison;
 
 use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
 use aos_sandbox_broker_session_protocol::{
@@ -1215,6 +1216,13 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
 /// Opens the sole cgroup root used by both fixed Mount worker-peer boundaries.
 pub(super) fn fixed_mount_peer_verifier()
 -> Result<aos_sandbox_host::peer::ControllerPeerVerifier, DormantBrokerSessionHandshakeErrorV1> {
+    Ok(aos_sandbox_host::peer::ControllerPeerVerifier::new(
+        fixed_worker_cgroup_root()?,
+    ))
+}
+
+fn fixed_worker_cgroup_root()
+-> Result<aos_sandbox_linux::cgroup::CgroupV2Root, DormantBrokerSessionHandshakeErrorV1> {
     let descriptor = rustix::fs::open(
         "/sys/fs/cgroup",
         rustix::fs::OFlags::RDONLY
@@ -1224,12 +1232,33 @@ pub(super) fn fixed_mount_peer_verifier()
         rustix::fs::Mode::empty(),
     )
     .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
-    let root = aos_sandbox_linux::cgroup::CgroupV2Root::from_owned(descriptor)
-        .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
-    Ok(aos_sandbox_host::peer::ControllerPeerVerifier::new(root))
+    aos_sandbox_linux::cgroup::CgroupV2Root::from_owned(descriptor)
+        .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    /// Sends only the two comparison roles of the held method-49 continuation.
+    fn send_host_worker_comparison_packet(
+        &mut self,
+        packet: &[u8],
+        descriptors: [BorrowedFd<'_>; 2],
+    ) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
+        self.owner
+            .revalidate_transport(&self.transcript, self.socket.peer())?;
+        let sent = self
+            .socket
+            .send_with_descriptors(packet, &descriptors)
+            .map_err(|error| match error {
+                SeqpacketError::WouldBlock | SeqpacketError::Interrupted => {
+                    DormantBrokerSessionHandshakeErrorV1::Transport
+                }
+                _ => DormantBrokerSessionHandshakeErrorV1::RemoteInvalid,
+            });
+        self.owner
+            .revalidate_transport(&self.transcript, self.socket.peer())?;
+        sent
+    }
+
     /// Checks the actual original peer against the fixed Mount service only.
     pub(super) fn require_original_mount_worker_peer(
         &self,
