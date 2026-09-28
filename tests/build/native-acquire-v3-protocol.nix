@@ -24,7 +24,6 @@ in
       "test --no-run --frozen --offline -j1 -p aos-sandbox-source-provider-protocol"
     ];
     cargoTestFlags = "-j1 -p aos-sandbox-source-provider-protocol";
-    cargoNextest = false;
     buildType = "debug";
     checkType = "debug";
     doCheck = true;
