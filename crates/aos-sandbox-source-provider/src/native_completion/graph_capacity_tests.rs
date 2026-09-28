@@ -868,9 +868,9 @@ fn complete_attempt(
         SourceProviderMethod::Acquire => {
             encode_acquire_response(&AcquireSourceResponseV1::new(signed, result).unwrap())
         }
-        SourceProviderMethod::Release => {
-            encode_release_response(&ReleaseSourceResponseV1::new(signed, result).unwrap())
-        }
+        SourceProviderMethod::Release => ReleaseSourceResponseProfileV2::from_parts(signed, result)
+            .unwrap()
+            .to_canonical_bytes(),
         _ => panic!("unexpected fixture method"),
     };
     attempt.revision += 1;
@@ -1137,6 +1137,16 @@ fn complete_release_status_suffix(
     graph: &mut Graph,
     status: SourceProviderStatus,
 ) {
+    complete_release_result_suffix(owner, id, graph, status, None);
+}
+
+fn complete_release_result_suffix(
+    owner: &mut ProtectedJournalAuthority<'_>,
+    id: u8,
+    graph: &mut Graph,
+    status: SourceProviderStatus,
+    result: Option<Vec<u8>>,
+) {
     let before = recover_graph(owner).unwrap();
     let capacity = crate::native_release_capacity::exact_reservation(
         owner,
@@ -1149,7 +1159,7 @@ fn complete_release_status_suffix(
     complete_attempt(
         &mut completed,
         status,
-        None,
+        result,
         session.signers[3].clone(),
         session.next_response_sequence,
         503,
@@ -1427,7 +1437,7 @@ fn native_graph_rejects_wrong_backend_attempt_session_and_early_floor_deletion()
         let mut owner = journal
             .claim_source_provider_native_terminal_authority_v1()
             .unwrap();
-        admit(&mut owner, &graph);
+        let _retained_floor = admit(&mut owner, &graph);
         // Raw protected append deliberately creates a hostile graph, without
         // pretending the production prospective validator would authorize it.
         owner.commit(&transaction(106 + wrong, rows)).unwrap();
@@ -2232,4 +2242,226 @@ fn native_release_fence_faulted_observation_retains_exact_original_and_status_fl
             .and_then(|recovered| validate_set(&owner, &recovered))
             .is_err()
     );
+}
+
+#[test]
+fn native_export_fence_result_crash_reopen_consumes_only_status4_and_never_terminalizes() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut graph = Graph::applying();
+    let mut journal = open(directory.path());
+    let mut owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let original_floor = admit(&mut owner, &graph).request();
+    graph.native = fixture_prepared(&graph.native);
+    commit_graph(&mut owner, 155, &graph);
+    graph.active();
+    commit_graph(&mut owner, 156, &graph);
+    graph.releasing();
+    let status_floor = admit_release_suffix(&mut owner, 157, &graph, true);
+    let exact_status_floor = status_floor.request();
+    let native_bytes = encode_native_completion_v2(&graph.native);
+
+    // Admission is already the export fence. Crash before result production
+    // leaves both protected floors and all original artifacts intact.
+    drop(owner);
+    drop(journal);
+    let mut journal = open(directory.path());
+    let mut owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let current = recover_graph(&owner).unwrap();
+    validate_set(&owner, &current).unwrap();
+    let status_floor = crate::native_release_capacity::exact_reservation(
+        &owner,
+        &current,
+        graph.acquisition.acquisition_id,
+    )
+    .unwrap();
+    assert_eq!(status_floor.request(), exact_status_floor);
+    let records = graph.rows().into_iter().collect::<Vec<_>>();
+    let subject = crate::ledger::native_completion::export_result::native_export_fence_subject_v1(
+        &records,
+        graph.attempts.last().unwrap().attempt_digest,
+        owner.snapshot().unwrap().sequence(),
+        status_floor.admission_transaction_id(),
+        status_floor.reservation_id(),
+    )
+    .unwrap();
+    let signed = SignedSourceProviderNativeExportFenceV1::sign(
+        subject,
+        graph.sessions.last().unwrap().signers[3].clone(),
+        &SigningKey::from_bytes(&[54; 32]),
+    )
+    .unwrap();
+    let result = signed.to_canonical_bytes();
+    complete_release_result_suffix(
+        &mut owner,
+        158,
+        &mut graph,
+        SourceProviderStatus::Pending,
+        Some(result.clone()),
+    );
+    let exact_response = graph.attempts.last().unwrap().completed_response.clone();
+    assert_eq!(
+        exact_response.len(),
+        MAXIMUM_NATIVE_RELEASE_RESPONSE_BYTES_V2
+    );
+    assert_eq!(encode_native_completion_v2(&graph.native), native_bytes);
+    assert_eq!(
+        graph.acquisition.state,
+        ProviderAcquisitionStateV1::Releasing
+    );
+    assert_eq!(
+        graph.release.as_ref().unwrap().state,
+        ProviderReleaseStateV1::Intent
+    );
+    assert!(graph.release.as_ref().unwrap().backend_evidence.is_none());
+    assert!(graph.release.as_ref().unwrap().signed_receipt.is_empty());
+    assert_eq!(
+        graph.native.state,
+        NativeAcquireCompletionStateV2::CleanupRequired
+    );
+    assert!(
+        crate::ledger::native_completion::validate_native_complete_export_v1(
+            &graph.acquisition,
+            Some(&graph.native),
+            &graph.attempts[0]
+        )
+        .is_err()
+    );
+    assert_eq!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&binding(original_floor))
+            .unwrap()
+            .request(),
+        original_floor
+    );
+    assert!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&binding(exact_status_floor))
+            .is_err()
+    );
+    drop(owner);
+    drop(journal);
+
+    // Lost send/readback cannot cause a new fence/request or free native7.
+    let mut journal = open(directory.path());
+    let owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let current = recover_graph(&owner).unwrap();
+    validate_set(&owner, &current).unwrap();
+    let attempt = current
+        .attempts
+        .values()
+        .find(|row| row.method == SourceProviderMethod::Release)
+        .unwrap();
+    assert_eq!(attempt.completed_response, exact_response);
+    let profile =
+        ReleaseSourceResponseProfileV2::from_canonical_bytes(&attempt.completed_response).unwrap();
+    assert_eq!(profile.status(), SourceProviderStatus::Pending);
+    assert_eq!(profile.signed_result(), Some(result.as_slice()));
+    assert_eq!(profile.native_fence(), Some(&signed));
+    // Exercise the actual durable-reply parser without granting a carrier,
+    // production ingress configuration or permission to send descriptors.
+    let reply = crate::backend::DurableProviderReplyV1 {
+        response: attempt.completed_response.clone(),
+        source_root: None,
+        durability: crate::backend::DurableReplyAuthorityV1::RevalidatedReplay {
+            snapshot: owner.snapshot().unwrap(),
+            attempt_key: Vec::new(),
+        },
+    };
+    assert_eq!(reply.session_binding().unwrap(), attempt.session_binding);
+    signed
+        .verify(SigningKey::from_bytes(&[54; 32]).verifying_key().as_bytes())
+        .unwrap();
+    assert_eq!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&binding(original_floor))
+            .unwrap()
+            .request(),
+        original_floor
+    );
+}
+
+#[test]
+fn native_export_fence_result_rejects_resigned_original_artifact_or_release_substitution() {
+    let mut graph = Graph::applying();
+    graph.native = fixture_prepared(&graph.native);
+    graph.active();
+    graph.releasing();
+    let records = graph.rows().into_iter().collect::<Vec<_>>();
+    let attempt = graph.attempts.last().unwrap();
+    let original = crate::ledger::native_completion::export_result::native_export_fence_subject_v1(
+        &records,
+        attempt.attempt_digest,
+        99,
+        [98; 16],
+        [97; 32],
+    )
+    .unwrap();
+    for mutation in 0..8 {
+        let mut release = original.release().clone();
+        let mut acquire = original.acquire().clone();
+        let mut signed_acceptance_digest = original.signed_acceptance_digest();
+        let mut cut = original.cut();
+        let mut acceptance = original.acceptance().clone();
+        match mutation {
+            0 => release.attempt_digest = digest(96),
+            1 => release.typed_request_digest = digest(96),
+            2 => acquire.attempt_digest = digest(96),
+            3 => acquire.session_binding = digest(96),
+            4 => signed_acceptance_digest = digest(96),
+            5 => cut.reservation_id = [96; 32],
+            6 => {
+                acceptance = StorageNativeAcceptanceV3::new(
+                    [96; 16],
+                    acceptance.request_digest(),
+                    acceptance.receipt_digest(),
+                    acceptance.descriptor().clone(),
+                    acceptance.topology().clone(),
+                )
+                .unwrap()
+            }
+            _ => {
+                acceptance = StorageNativeAcceptanceV3::new(
+                    acceptance.issuance_id(),
+                    acceptance.request_digest(),
+                    digest(96),
+                    acceptance.descriptor().clone(),
+                    acceptance.topology().clone(),
+                )
+                .unwrap()
+            }
+        }
+        let subject = SourceProviderNativeExportFenceV1::new(
+            release,
+            acquire,
+            original.native_request_digest(),
+            signed_acceptance_digest,
+            acceptance,
+            cut,
+        )
+        .unwrap();
+        let signed = SignedSourceProviderNativeExportFenceV1::sign(
+            subject,
+            graph.sessions.last().unwrap().signers[3].clone(),
+            &SigningKey::from_bytes(&[54; 32]),
+        )
+        .unwrap();
+        let mut completed = attempt.clone();
+        complete_attempt(
+            &mut completed,
+            SourceProviderStatus::Pending,
+            Some(signed.to_canonical_bytes()),
+            graph.sessions.last().unwrap().signers[3].clone(),
+            graph.sessions.last().unwrap().next_response_sequence,
+            503,
+            empty_descriptor_set_commitment_v1(),
+        );
+        assert!(crate::ledger::native_completion::export_result::validate_native_export_fence_result_v1(&records, attempt.attempt_digest, &completed.completed_response).is_err());
+    }
 }

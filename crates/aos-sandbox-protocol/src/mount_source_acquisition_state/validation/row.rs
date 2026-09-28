@@ -73,6 +73,13 @@ pub(super) fn validate_row(
         ));
     }
     validate_release_row(row, table)?;
+    if let Some(lineage) = row.release_lineage.as_ref() {
+        super::super::native_export_fence::validate_native_export_fence_v1(
+            row,
+            exact_attempt(table, lineage.tail)?,
+            table,
+        )?;
+    }
     validate_scalar_evidence(row)?;
     validate_manager_custody(row, table)?;
     validate_manager_custody_loss(row, table)?;

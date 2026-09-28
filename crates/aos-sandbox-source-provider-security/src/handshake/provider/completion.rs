@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn completion_status_subject(
+pub(super) fn completion_status_subject(
     authorization: &super::ProviderOutcomeAuthorizationV1,
     status: SourceProviderStatus,
     result_digest: aos_sandbox_core::ObjectDigest,
@@ -56,7 +56,7 @@ fn encode_typed_response(
     .map_err(|_| SourceProviderSecurityError::SessionContinuity)
 }
 
-fn completion_records_for_plan(
+pub(super) fn completion_records_for_plan(
     journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
     authorization: &super::ProviderOutcomeAuthorizationV1,
     attempt_key: &[u8],
@@ -72,7 +72,7 @@ fn completion_records_for_plan(
     collect_bounded_current_records(journal)
 }
 
-fn collect_bounded_current_records(
+pub(super) fn collect_bounded_current_records(
     journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
 ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, SourceProviderSecurityError> {
     journal
@@ -120,7 +120,7 @@ fn prepare_finalized_builder(
     )
 }
 
-fn prepare_finalized_builder_with_native_status_capacity(
+pub(super) fn prepare_finalized_builder_with_native_status_capacity(
     session: &mut CurrentProviderIngressSessionV1,
     journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
     authorization: &super::ProviderOutcomeAuthorizationV1,

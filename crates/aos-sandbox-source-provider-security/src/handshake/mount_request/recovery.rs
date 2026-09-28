@@ -637,10 +637,13 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 &AcquireSourceResponseV1::new(status, artifact)
                     .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?,
             ),
-            SourceProviderMethod::Release => encode_release_response(
-                &ReleaseSourceResponseV1::new(status, artifact)
-                    .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?,
-            ),
+            SourceProviderMethod::Release => {
+                aos_sandbox_source_provider_protocol::ReleaseSourceResponseProfileV2::from_parts(
+                    status, artifact,
+                )
+                .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?
+                .to_canonical_bytes()
+            }
             SourceProviderMethod::Inventory => encode_inventory_response(
                 &InventorySourceResponseV1::new(status, artifact)
                     .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?,

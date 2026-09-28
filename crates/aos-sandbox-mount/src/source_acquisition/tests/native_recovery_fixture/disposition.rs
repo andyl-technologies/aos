@@ -3,6 +3,9 @@
 //! Test signatures and metadata exercise whole-graph structure, not installed
 //! security/FD authority. No runtime owner capability is constructed here.
 
+#[path = "disposition/export_fence.rs"]
+mod export_fence;
+
 use super::*;
 use aos_sandbox_protocol::mount_source_acquisition_state::*;
 use aos_sandbox_source_provider_protocol::*;
@@ -63,9 +66,11 @@ fn consumed(
         SourceProviderMethod::Acquire => encode_acquire_response(
             &AcquireSourceResponseV1::new(signed_status.clone(), result.clone()).unwrap(),
         ),
-        SourceProviderMethod::Release => encode_release_response(
-            &ReleaseSourceResponseV1::new(signed_status.clone(), result.clone()).unwrap(),
-        ),
+        SourceProviderMethod::Release => {
+            ReleaseSourceResponseProfileV2::from_parts(signed_status.clone(), result.clone())
+                .unwrap()
+                .to_canonical_bytes()
+        }
         _ => unreachable!(),
     };
     let mut anchor = OutcomeVerificationAnchorV2 {

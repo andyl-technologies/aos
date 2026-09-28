@@ -256,14 +256,14 @@ fn split_canonical_response(
             ))
         }
         SourceProviderMethod::Release => {
-            let response = decode_release_response(payload)
+            let response = aos_sandbox_source_provider_protocol::ReleaseSourceResponseProfileV2::from_canonical_bytes(payload)
                 .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-            if encode_release_response(&response) != payload {
+            if response.to_canonical_bytes() != payload {
                 return Err(SourceProviderSecurityError::SessionContinuity);
             }
             Ok((
                 response.signed_status().to_canonical_bytes(),
-                response.signed_receipt().unwrap_or_default().to_vec(),
+                response.signed_result().unwrap_or_default().to_vec(),
                 false,
             ))
         }

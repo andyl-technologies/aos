@@ -1732,7 +1732,7 @@ fn execute_disposition(
             ledger
                 .complete_release_disposition(
                     permit,
-                    aos_sandbox_source_provider_protocol::SourceProviderStatus::Unavailable,
+                    aos_sandbox_source_provider_protocol::SourceProviderStatus::Pending,
                 )
                 .map(PreparedFixedProviderBackendOutcomeV1::Reply)
         }

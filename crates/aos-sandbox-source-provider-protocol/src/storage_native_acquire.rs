@@ -73,7 +73,7 @@ pub use request::{
 };
 pub use topology::{
     MAXIMUM_STORAGE_NATIVE_TOPOLOGY_LOGICAL_BYTES_V1, MAXIMUM_STORAGE_NATIVE_TOPOLOGY_NODES_V1,
-    storage_native_nonrecursive_topology_v1,
+    storage_native_nonrecursive_topology_v1, validate_storage_native_topology_commitments_v1,
 };
 
 use aos_sandbox_core::ObjectDigest;

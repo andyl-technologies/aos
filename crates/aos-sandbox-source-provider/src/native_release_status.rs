@@ -95,6 +95,6 @@ impl ProviderLedgerV1<'_> {
             completion_capacity: crate::transaction::CompletionCapacityV1::NativeReleaseStatus,
             signing_authorization,
         };
-        self.complete_release_disposition(permit, SourceProviderStatus::Unavailable)
+        self.complete_release_disposition(permit, SourceProviderStatus::Pending)
     }
 }

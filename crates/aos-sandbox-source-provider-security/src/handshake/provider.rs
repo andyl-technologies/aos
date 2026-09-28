@@ -14,11 +14,11 @@ use aos_sandbox_source_provider_protocol::{
     SourceProviderMethod, SourceProviderPeerRole, SourceProviderReceiptV1,
     SourceProviderResponseStatusV1, SourceProviderStatus, SourceReleaseReceiptV1,
     StorageLiveExportRequestV1, decode_acquire_response, decode_inventory_response, decode_message,
-    decode_release_response, digest_signed_export_lease, digest_signed_hello,
-    empty_descriptor_set_commitment_v1, encode_acquire_response, encode_inventory_response,
-    encode_message, encode_release_response, response_result_digest_v1, sign_export_lease,
-    sign_hello, sign_inventory, sign_provider_receipt, sign_release_receipt, sign_response_status,
-    verify_hello, verify_provider_request,
+    digest_signed_export_lease, digest_signed_hello, empty_descriptor_set_commitment_v1,
+    encode_acquire_response, encode_inventory_response, encode_message, encode_release_response,
+    response_result_digest_v1, sign_export_lease, sign_hello, sign_inventory,
+    sign_provider_receipt, sign_release_receipt, sign_response_status, verify_hello,
+    verify_provider_request,
 };
 
 use super::{
@@ -33,6 +33,8 @@ use crate::execution::ProcessExecutionEvidenceV1;
 const MAXIMUM_CURRENT_REQUEST_LIFETIME_SECONDS: i64 = 300;
 #[path = "provider/completion.rs"]
 mod completion;
+#[path = "provider/native_export_fence.rs"]
+mod native_export_fence;
 #[path = "provider/native_release_status.rs"]
 mod native_release_status;
 #[path = "provider/session.rs"]
@@ -1116,12 +1118,12 @@ fn validate_send_response(
             )
         }
         SourceProviderMethod::Release => {
-            let response = decode_release_response(bytes)
+            let response = aos_sandbox_source_provider_protocol::ReleaseSourceResponseProfileV2::from_canonical_bytes(bytes)
                 .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
             (
                 response.signed_status().clone(),
                 false,
-                encode_release_response(&response),
+                response.to_canonical_bytes(),
             )
         }
         SourceProviderMethod::Inventory => {
@@ -1192,9 +1194,9 @@ fn completion_response_matches(
             .ok()
             .filter(|value| encode_acquire_response(value) == bytes)
             .map(|value| value.signed_status().clone()),
-        SourceProviderMethod::Release => decode_release_response(bytes)
+        SourceProviderMethod::Release => aos_sandbox_source_provider_protocol::ReleaseSourceResponseProfileV2::from_canonical_bytes(bytes)
             .ok()
-            .filter(|value| encode_release_response(value) == bytes)
+            .filter(|value| value.to_canonical_bytes() == bytes)
             .map(|value| value.signed_status().clone()),
         SourceProviderMethod::Inventory => decode_inventory_response(bytes)
             .ok()

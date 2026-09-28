@@ -963,6 +963,40 @@ the original boot/device/inode/mount ID under uninterrupted live FD custody;
 cold remount or total custody loss cannot become exact replay. This codec profile
 alone opens no positive Acquire, FD send, cleanup, or release authority.
 
+The unreleased native **NoFutureSourceProviderExports** result uses a separate
+`AOSNEF01` claim (888 bytes), `AOSNES01` ProviderOutcome-signed envelope
+(1,088 bytes), and `AOSNER02` Release response V2 (1,488 bytes). Its only
+disposition is zero-FD `Pending`. Generic Release V1 keeps its existing empty
+Pending and generic Complete meanings; this profile cannot be decoded as a
+generic Complete receipt or used as `release_proof` or negative-custody proof.
+It binds the new signed Root Release request, Release attempt and current
+session to the original Acquire attempt/session, signed Root request, lease,
+derived native dispatch backend, signed native-request and signed-acceptance
+digests, and the complete unsigned V3 acceptance, including issuance,
+descriptor and topology. Full native request bytes remain in the existing
+protected native carrier, not in this fixed result. Existing full Attempt and
+status4 capacity bounds cover the result without reducing request limits.
+
+The signed cut is explicitly **pre-result and Provider-local**: the held
+protected sequence, exact status4 reservation/admission identity, unchanged
+CleanupRequired native carrier and exact Release-status binding are committed
+before signing and appending the result. Status completion consumes only
+status4; original native7, original descriptors and Release intent remain.
+Neither that cut nor the result claims independent Storage currentness,
+physical hold retirement, total FD absence, or completion of native cleanup.
+
+Root retains the result in its existing consumed Release Attempt, validates
+the complete immutable graph and exact historical ProviderOutcome signer,
+then reads back the exact Attempt and acquisition bytes before issuing an
+opaque local acceptance receipt. The original signed Provider lease's topology
+commitment is recomputed against original content/counts/authority/cut and the
+result's request/receipt/descriptor commitments. Root did not independently
+retain the original signed native Storage request, Storage receipt or issuance
+acceptance; those identities are Provider-asserted historical lineage, not an
+independent Root verification of Storage issuance. This acceptance neither
+drops Root/PID1 custody nor authorizes physical retirement. The public native
+dispatch gate remains closed pending installed bridge qualification.
+
 Composite Acquire verification requires the verified signed Stage 2A session and outer
 status before interpreting any disposition. It requires `issued <= now < expires`, expiry no
 later than the Acquire deadline or current ownership bound, and nonzero duration

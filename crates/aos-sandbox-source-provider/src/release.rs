@@ -232,6 +232,11 @@ fn complete_release_disposition(
         permit.completion_capacity,
         crate::transaction::CompletionCapacityV1::NativeReleaseStatus
     );
+    if native_status && status != SourceProviderStatus::Pending {
+        return Err(ProviderLedgerError::InvalidTransition(
+            "native export-fence result must remain Pending",
+        ));
+    }
     let pending_plan = (status == SourceProviderStatus::Pending && !native_status).then(|| {
         (
             permit.plan.clone(),
@@ -368,7 +373,7 @@ fn complete_release_disposition(
     .map_err(crate::transaction::map_pure_ledger_error)?;
     let facade = custody.provider_outcome_facade(&ledger.journal, &permit.signing_authorization)?;
     let builder = if native_status {
-        facade.prepare_native_release_status_completion(plan, status)?
+        facade.prepare_native_export_fence_completion(plan)?
     } else {
         facade.prepare_release_status_completion(plan, status)?
     };

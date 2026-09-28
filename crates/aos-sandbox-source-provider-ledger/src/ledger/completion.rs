@@ -930,7 +930,11 @@ fn decode_response(
     if let Ok(value) = decode_acquire_response(bytes) {
         return Ok((value.signed_status().clone(), SourceProviderMethod::Acquire));
     }
-    if let Ok(value) = decode_release_response(bytes) {
+    if let Ok(value) =
+        aos_sandbox_source_provider_protocol::ReleaseSourceResponseProfileV2::from_canonical_bytes(
+            bytes,
+        )
+    {
         return Ok((value.signed_status().clone(), SourceProviderMethod::Release));
     }
     if let Ok(value) = decode_inventory_response(bytes) {

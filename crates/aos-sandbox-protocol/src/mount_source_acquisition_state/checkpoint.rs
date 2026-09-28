@@ -5,13 +5,12 @@
 //! future live transitions must present fresh protected trust again.
 
 use aos_sandbox_source_provider_protocol::{
-    AcquireSourceResponseV1, InventorySourceResponseV1, ReleaseSourceResponseV1,
-    SignedSourceProviderHelloV1, SignedSourceProviderRequestV1, SignedSourceProviderStatusV1,
-    SourceProviderKeyUsageV1, SourceProviderMethod, SourceProviderPeerRole,
-    SourceProviderSigningKeyV1, SourceProviderStatus, decode_acquire_request,
-    decode_inventory_request, decode_release_request, digest_signed_hello, digest_signed_request,
-    empty_descriptor_set_commitment_v1, encode_acquire_response, encode_inventory_response,
-    encode_release_response, response_result_digest_v1, source_provider_session_binding_v1,
+    AcquireSourceResponseV1, InventorySourceResponseV1, SignedSourceProviderHelloV1,
+    SignedSourceProviderRequestV1, SignedSourceProviderStatusV1, SourceProviderKeyUsageV1,
+    SourceProviderMethod, SourceProviderPeerRole, SourceProviderSigningKeyV1, SourceProviderStatus,
+    decode_acquire_request, decode_inventory_request, decode_release_request, digest_signed_hello,
+    digest_signed_request, empty_descriptor_set_commitment_v1, encode_acquire_response,
+    encode_inventory_response, response_result_digest_v1, source_provider_session_binding_v1,
     source_provider_signer_set_commitment_v1, verify_hello, verify_request, verify_response_status,
 };
 use sha2::{Digest as _, Sha256};
@@ -294,7 +293,10 @@ pub fn validate_attempt_checkpoint(
             verify_response_status(&envelope, &session.signers[3].public_key)
                 .map_err(|_| state_error("retained SourceProvider status signature is invalid"))?;
             let complete = *status == ProviderStatusV2::Complete;
-            if complete != !signed_result.is_empty() {
+            let native_pending = attempt.method == ProviderMethodV2::Release
+                && *status == ProviderStatusV2::Pending
+                && aos_sandbox_source_provider_protocol::SignedSourceProviderNativeExportFenceV1::from_canonical_bytes(signed_result).is_ok();
+            if !native_pending && complete != !signed_result.is_empty() {
                 return Err(state_error(
                     "SourceProvider result presence contradicts status",
                 ));
@@ -338,10 +340,14 @@ fn canonical_response_digest(
             &AcquireSourceResponseV1::new(signed_status, result)
                 .map_err(|_| state_error("retained Acquire response shape is invalid"))?,
         ),
-        ProviderMethodV2::Release => encode_release_response(
-            &ReleaseSourceResponseV1::new(signed_status, result)
-                .map_err(|_| state_error("retained Release response shape is invalid"))?,
-        ),
+        ProviderMethodV2::Release => {
+            aos_sandbox_source_provider_protocol::ReleaseSourceResponseProfileV2::from_parts(
+                signed_status,
+                result,
+            )
+            .map_err(|_| state_error("retained Release response shape is invalid"))?
+            .to_canonical_bytes()
+        }
         ProviderMethodV2::Inventory => encode_inventory_response(
             &InventorySourceResponseV1::new(signed_status, result)
                 .map_err(|_| state_error("retained Inventory response shape is invalid"))?,

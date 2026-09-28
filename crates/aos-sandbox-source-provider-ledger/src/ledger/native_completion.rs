@@ -45,6 +45,9 @@ pub use export_fence::{validate_native_complete_export_v1, validate_native_expor
 #[path = "native_completion/release_fence.rs"]
 pub mod release_fence;
 
+#[path = "native_completion/export_result.rs"]
+pub mod export_result;
+
 pub(super) const BODY_BYTES: usize = 544;
 pub(super) const MAXIMUM_BODY_BYTES: usize = BODY_BYTES
     + 32

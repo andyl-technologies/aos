@@ -129,9 +129,15 @@ pub(super) fn validate_historical_signatures(
                 }
             }
             SourceProviderMethod::Release => {
-                let response = decode_release_response(&attempt.completed_response)
+                let response = aos_sandbox_source_provider_protocol::ReleaseSourceResponseProfileV2::from_canonical_bytes(&attempt.completed_response)
                     .map_err(|_| ProviderLedgerError::Corrupt("historical Release response"))?;
-                if let Some(bytes) = response.signed_receipt() {
+                if let Some(fence) = response.native_fence() {
+                    let key = key_at(fence.signer(), attempt.verified_at_seconds)
+                        .ok_or(ProviderLedgerError::ConfigurationMismatch)?;
+                    fence.verify(key).map_err(|_| {
+                        ProviderLedgerError::Corrupt("historical native fence signature")
+                    })?;
+                } else if let Some(bytes) = response.signed_result() {
                     let receipt = SignedSourceReleaseReceiptV1::from_canonical_bytes(bytes)
                         .map_err(|_| ProviderLedgerError::Corrupt("historical Release receipt"))?;
                     let key = key_at(receipt.signer(), receipt.subject().released_seconds())

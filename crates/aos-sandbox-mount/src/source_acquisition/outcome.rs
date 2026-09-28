@@ -21,8 +21,8 @@ use aos_sandbox_source_provider_protocol::{
     InventoryLeaseStateV1, SignedSourceExportLeaseV1, SignedSourceProviderInventoryV1,
     SignedSourceProviderReceiptV1, SignedSourceReleaseReceiptV1, SourceProviderMethod,
     SourceProviderStatus, SourceRootObservationV1, SourceSelectionFloorV1, decode_acquire_response,
-    decode_inventory_response, decode_release_response, digest_inventory, digest_provider_proof,
-    digest_signed_export_lease, provider_resource_commitment_v1, response_result_digest_v1,
+    decode_inventory_response, digest_inventory, digest_provider_proof, digest_signed_export_lease,
+    provider_resource_commitment_v1, response_result_digest_v1,
     source_root_descriptor_commitment_v1,
 };
 use aos_sandbox_source_provider_security::{
@@ -305,7 +305,7 @@ impl SourceAcquisitionTableV2 {
         let observation = recovered.source_root_observation().cloned();
 
         match recovered.into_parts() {
-            RecoveredMountProviderOutcomePartsV2::WithoutSourceRoot(outcome) => {
+            RecoveredMountProviderOutcomePartsV2::WithoutSourceRoot(mut outcome) => {
                 if !already_consumed {
                     if self
                         .consume_verified_provider_outcome_v2(journal, attempt_id, &outcome, None)?
@@ -316,6 +316,9 @@ impl SourceAcquisitionTableV2 {
                         ));
                     }
                 }
+                session
+                    .seal_committed_native_export_fence_v1(journal, attempt_id, &mut outcome)
+                    .map_err(|_| state_error("native fence protected readback failed"))?;
                 Ok(RecoveredProviderOutcomeConsumptionV2::WithoutSourceRoot { outcome })
             }
             RecoveredMountProviderOutcomePartsV2::CompleteAcquire {
@@ -451,7 +454,7 @@ impl SourceAcquisitionTableV2 {
         let observation = received.source_root_observation().cloned();
 
         match received.into_parts() {
-            ReceivedMountProviderOutcomePartsV2::WithoutSourceRoot(outcome) => {
+            ReceivedMountProviderOutcomePartsV2::WithoutSourceRoot(mut outcome) => {
                 if self
                     .consume_verified_provider_outcome_v2(journal, attempt_id, &outcome, None)?
                     .is_some()
@@ -460,6 +463,9 @@ impl SourceAcquisitionTableV2 {
                         "provider outcome without a SourceRoot deferred an Acquire commit",
                     ));
                 }
+                session
+                    .seal_committed_native_export_fence_v1(journal, attempt_id, &mut outcome)
+                    .map_err(|_| state_error("native fence protected readback failed"))?;
                 Ok(ConsumedProviderOutcomeV2::WithoutSourceRoot { outcome })
             }
             ReceivedMountProviderOutcomePartsV2::CompleteAcquire {
@@ -1217,13 +1223,13 @@ fn decode_disposition(method: ProviderMethodV2, response: &[u8]) -> Result<Decod
             )
         }
         ProviderMethodV2::Release => {
-            let decoded = decode_release_response(response)
+            let decoded = aos_sandbox_source_provider_protocol::ReleaseSourceResponseProfileV2::from_canonical_bytes(response)
                 .map_err(|_| state_error("verified Release response is invalid"))?;
             (
                 decoded.status(),
                 decoded.signed_status().to_canonical_bytes(),
                 decoded
-                    .signed_receipt()
+                    .signed_result()
                     .map_or_else(Vec::new, ToOwned::to_owned),
             )
         }
