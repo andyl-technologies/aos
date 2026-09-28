@@ -655,6 +655,14 @@ int main(void)
         errno = disconnected_error;
         goto cleanup;
     }
+    /* Custody and disconnection checks are complete. Drop the original mount
+     * reference so it cannot make strict unmount busy. Linux consumes the FD
+     * even on a close error; report failure without retrying that numeric FD. */
+    stage = "close original mount reference before strict unmount";
+    int mount_close_result = close(mount_fd);
+    mount_fd = -1;
+    if (mount_close_result < 0)
+        goto cleanup;
     stage = "umount2 original attachment flags=0";
     if (umount2(mountpoint, 0) < 0)
         goto cleanup;
