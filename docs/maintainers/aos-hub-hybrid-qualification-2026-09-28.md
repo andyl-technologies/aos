@@ -188,8 +188,18 @@ Artifact Registry push compatibility or qualify a hosted Hub deployment.
 
 The dedicated GCP project, PostgreSQL and credential resources are provisioned,
 but no paired Native serving endpoint or public hybrid Worker route is deployed.
-Signed delivery setup, serving credentials, root administrator initialization,
-origin shielding and real cross-cloud latency/byte measurements remain pending.
+After explicit operator approval, the staging root account for
+`dylan@andyl.com` was initialized against the actual Cloud SQL database using
+the qualified Native binary from the strict credential image. Its generated
+password is retained only in encrypted Secret Manager as numeric version `1`
+of `aos-hub-bootstrap-root-password`. A loopback-only Native process verified
+the instance-owner membership, password login, authenticated console shell,
+CSRF token and logout; the diagnostic session was revoked and both the Native
+process and SQL connector were stopped. No credential values were logged.
+
+This qualifies the database account, not a Cloud Run bootstrap execution or
+public Hybrid deployment. Signed serving delivery, credential mounts, origin
+shielding and real cross-cloud latency/byte measurements remain pending.
 
 Frozen external S3 physical GC, safe retirement of obsolete object coordination
 state, and whole-Hub snapshot/restore also remain to be implemented. This successful fleet
