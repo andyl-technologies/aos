@@ -26,6 +26,17 @@ use crate::openssh_session::{
 
 const SOCKET: &str = "/run/aos-sandbox-agent/exec-gate.sock";
 
+fn monitor_runtime_failure(
+    error: &crate::openssh_gate_linux::OpenSshGatePhysicalErrorV1,
+    status: &std::io::Result<Option<std::process::ExitStatus>>,
+    diagnostic_path: &Path,
+) -> String {
+    format!(
+        "original monitor runtime readback failed: {error:?}\n{}",
+        owned_daemon_diagnostics(status, diagnostic_path),
+    )
+}
+
 pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1, original: &str) {
     let passwd = fs::read_to_string("/etc/passwd").unwrap();
     let shell = format!("{FIXTURE_DIRECTORY}/hostile-shell");
@@ -86,17 +97,10 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
     let runtime = daemon.monitor_runtime_v2(&claim).unwrap_or_else(|error| {
         let status = daemon.qualification_exit_status();
         let diagnostic_path = Path::new(FIXTURE_DIRECTORY).join("monitor.stderr");
-        let failure = match &error {
-            crate::openssh_gate_linux::OpenSshGatePhysicalErrorV1::Io(io_error) => {
-                listener_failure(&status, io_error, &diagnostic_path)
-            }
-            _ => listener_failure(
-                &status,
-                &std::io::Error::other("monitor runtime readback denied"),
-                &diagnostic_path,
-            ),
-        };
-        panic!("original monitor runtime readback failed: {error:?}\n{failure}");
+        panic!(
+            "{}",
+            monitor_runtime_failure(&error, &status, &diagnostic_path)
+        );
     });
     assert!(
         runtime
@@ -608,4 +612,29 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs()
+}
+
+#[test]
+fn monitor_readback_failure_preserves_error_without_inferred_listener_or_tcp_failure() {
+    let diagnostic = tempfile::NamedTempFile::new().unwrap();
+    fs::write(diagnostic.path(), b"fixture monitor stderr\r\n").unwrap();
+    let error = crate::openssh_gate_linux::OpenSshGatePhysicalErrorV1::Io(
+        std::io::Error::from_raw_os_error(2),
+    );
+    let status = Ok(Some(std::process::ExitStatus::from_raw(256)));
+
+    let failure = monitor_runtime_failure(&error, &status, diagnostic.path());
+
+    assert!(failure.contains(&format!(
+        "original monitor runtime readback failed: {error:?}"
+    )));
+    assert!(failure.contains(&format!("original child status: {status:?}")));
+    assert!(failure.contains("stderr (first 16384 bytes)"));
+    assert!(failure.contains("fixture monitor stderr\n"));
+    assert!(!failure.contains("TCP"));
+    assert!(!failure.contains("listener unavailable"));
+    assert_eq!(
+        fs::read(diagnostic.path()).unwrap(),
+        b"fixture monitor stderr\r\n"
+    );
 }

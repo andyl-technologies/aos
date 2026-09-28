@@ -150,34 +150,21 @@ impl OpenSshMonitorRuntimeV2 {
         {
             return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
         }
-        self.installation.listener_executable.require_file(
-            &fs::canonicalize(SSHD_PATH).inspect_err(|_error| {
-                #[cfg(test)]
-                qualification_io_failure("canonicalize", Path::new(SSHD_PATH), _error);
-            })?,
-        )?;
-        self.installation.listener_executable.require_file(
-            &fs::canonicalize(format!("/proc/{}/exe", listener.pid())).inspect_err(|_error| {
-                #[cfg(test)]
-                qualification_io_failure(
-                    "canonicalize",
-                    Path::new(&format!("/proc/{}/exe", listener.pid())),
-                    _error,
-                );
-            })?,
-        )?;
-        self.installation.session_executable.require_file(
-            &fs::canonicalize(SSHD_SESSION_PATH).inspect_err(|_error| {
-                #[cfg(test)]
-                qualification_io_failure("canonicalize", Path::new(SSHD_SESSION_PATH), _error);
-            })?,
-        )?;
-        self.installation.gate_executable.require_file(
-            &fs::canonicalize(GATE_PATH).inspect_err(|_error| {
-                #[cfg(test)]
-                qualification_io_failure("canonicalize", Path::new(GATE_PATH), _error);
-            })?,
-        )?;
+        self.installation
+            .listener_executable
+            .require_file(&canonicalize_physical_path(SSHD_PATH)?)?;
+        self.installation
+            .listener_executable
+            .require_file(&canonicalize_physical_path(format!(
+                "/proc/{}/exe",
+                listener.pid()
+            ))?)?;
+        self.installation
+            .session_executable
+            .require_file(&canonicalize_physical_path(SSHD_SESSION_PATH)?)?;
+        self.installation
+            .gate_executable
+            .require_file(&canonicalize_physical_path(GATE_PATH)?)?;
         Ok(())
     }
 
@@ -248,16 +235,12 @@ impl OpenSshMonitorRuntimeV2 {
         {
             return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
         }
-        self.installation.session_executable.require_file(
-            &fs::canonicalize(format!("/proc/{}/exe", identity.pid())).inspect_err(|_error| {
-                #[cfg(test)]
-                qualification_io_failure(
-                    "canonicalize",
-                    Path::new(&format!("/proc/{}/exe", identity.pid())),
-                    _error,
-                );
-            })?,
-        )?;
+        self.installation
+            .session_executable
+            .require_file(&canonicalize_physical_path(format!(
+                "/proc/{}/exe",
+                identity.pid()
+            ))?)?;
         if !monitor
             .is_alive()
             .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?
@@ -283,16 +266,12 @@ impl OpenSshMonitorRuntimeV2 {
         let identity = child
             .process_identity()
             .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
-        self.installation.session_executable.require_file(
-            &fs::canonicalize(format!("/proc/{}/exe", identity.pid())).inspect_err(|_error| {
-                #[cfg(test)]
-                qualification_io_failure(
-                    "canonicalize",
-                    Path::new(&format!("/proc/{}/exe", identity.pid())),
-                    _error,
-                );
-            })?,
-        )?;
+        self.installation
+            .session_executable
+            .require_file(&canonicalize_physical_path(format!(
+                "/proc/{}/exe",
+                identity.pid()
+            ))?)?;
         Ok(())
     }
 
@@ -413,10 +392,7 @@ impl RunningOpenSshGateV1 {
             .validate()
             .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidBinding)?;
         let installed = check_installed_files(&binding)?;
-        let executable_path = fs::canonicalize(SSHD_PATH).inspect_err(|_error| {
-            #[cfg(test)]
-            qualification_io_failure("canonicalize", Path::new(SSHD_PATH), _error);
-        })?;
+        let executable_path = canonicalize_physical_path(SSHD_PATH)?;
         let executable = read_protected_file(&executable_path, MAXIMUM_EXECUTABLE_BYTES, true)?;
         if executable.bytes.is_empty() {
             return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
@@ -427,10 +403,7 @@ impl RunningOpenSshGateV1 {
         // match this identity before the guest can report certificate readiness.
         let gate_digest = digest(&installed.gate_executable.bytes);
         let gate = read_protected_file(
-            &fs::canonicalize(GATE_PATH).inspect_err(|_error| {
-                #[cfg(test)]
-                qualification_io_failure("canonicalize", Path::new(GATE_PATH), _error);
-            })?,
+            &canonicalize_physical_path(GATE_PATH)?,
             MAXIMUM_EXECUTABLE_BYTES,
             true,
         )?;
@@ -443,10 +416,7 @@ impl RunningOpenSshGateV1 {
 
         let session_executable = if monitor {
             Some(read_protected_file(
-                &fs::canonicalize(SSHD_SESSION_PATH).inspect_err(|_error| {
-                    #[cfg(test)]
-                    qualification_io_failure("canonicalize", Path::new(SSHD_SESSION_PATH), _error);
-                })?,
+                &canonicalize_physical_path(SSHD_SESSION_PATH)?,
                 MAXIMUM_EXECUTABLE_BYTES,
                 true,
             )?)
@@ -463,12 +433,7 @@ impl RunningOpenSshGateV1 {
                     .as_ref()
                     .ok_or(OpenSshGatePhysicalErrorV1::InvalidInstallation)?,
             )
-            .require_file(&fs::canonicalize(SSHD_SESSION_PATH).inspect_err(
-                |_error| {
-                    #[cfg(test)]
-                    qualification_io_failure("canonicalize", Path::new(SSHD_SESSION_PATH), _error);
-                },
-            )?)?;
+            .require_file(&canonicalize_physical_path(SSHD_SESSION_PATH)?)?;
         }
         let mut child = command
             .stdin(Stdio::null())
@@ -599,12 +564,9 @@ impl RunningOpenSshGateV1 {
         }
         let installed = check_installed_files(&self.binding)?;
         if let Some(monitor) = &self.monitor_installation {
-            monitor.session_executable.require_file(
-                &fs::canonicalize(SSHD_SESSION_PATH).inspect_err(|_error| {
-                    #[cfg(test)]
-                    qualification_io_failure("canonicalize", Path::new(SSHD_SESSION_PATH), _error);
-                })?,
-            )?;
+            monitor
+                .session_executable
+                .require_file(&canonicalize_physical_path(SSHD_SESSION_PATH)?)?;
         }
         if installed.configuration.device != self.config_device
             || installed.configuration.inode != self.config_inode
@@ -624,27 +586,19 @@ impl RunningOpenSshGateV1 {
         if fs::read_link(&executable_path).inspect_err(|_error| {
             #[cfg(test)]
             qualification_io_failure("read_link", &executable_path, _error);
-        })? != fs::canonicalize(SSHD_PATH).inspect_err(|_error| {
-            #[cfg(test)]
-            qualification_io_failure("canonicalize", Path::new(SSHD_PATH), _error);
-        })? {
+        })? != canonicalize_physical_path(SSHD_PATH)?
+        {
             return Err(OpenSshGatePhysicalErrorV1::DaemonUnavailable);
         }
         let executable = read_protected_file(
-            &fs::canonicalize(&executable_path).inspect_err(|_error| {
-                #[cfg(test)]
-                qualification_io_failure("canonicalize", &executable_path, _error);
-            })?,
+            &canonicalize_physical_path(&executable_path)?,
             MAXIMUM_EXECUTABLE_BYTES,
             true,
         )?;
         // Sample the callback again after claim and process observation. The
         // measured bytes must still be the original installation-opened file.
         let gate = read_protected_file(
-            &fs::canonicalize(GATE_PATH).inspect_err(|_error| {
-                #[cfg(test)]
-                qualification_io_failure("canonicalize", Path::new(GATE_PATH), _error);
-            })?,
+            &canonicalize_physical_path(GATE_PATH)?,
             MAXIMUM_EXECUTABLE_BYTES,
             true,
         )?;
@@ -840,10 +794,7 @@ fn check_installed_files(
         return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
     }
     let gate_executable = read_protected_file(
-        &fs::canonicalize(GATE_PATH).inspect_err(|_error| {
-            #[cfg(test)]
-            qualification_io_failure("canonicalize", Path::new(GATE_PATH), _error);
-        })?,
+        &canonicalize_physical_path(GATE_PATH)?,
         MAXIMUM_EXECUTABLE_BYTES,
         true,
     )?;
@@ -1002,6 +953,16 @@ fn owns_listening_socket(pid: u32, port: u16) -> Result<bool, OpenSshGatePhysica
     Ok(false)
 }
 
+// One filesystem call resolves the same physical name; test-only context
+// observes an error without replacing it or authorizing the resolved path.
+fn canonicalize_physical_path(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+    let path = path.as_ref();
+    fs::canonicalize(path).inspect_err(|_error| {
+        #[cfg(test)]
+        qualification_io_failure("canonicalize", path, _error);
+    })
+}
+
 // Diagnostic output exists only in library-test qualification. inspect_err
 // preserves the original Io(error); no content or authorization is reflected.
 #[cfg(test)]
@@ -1036,6 +997,19 @@ pub enum OpenSshGatePhysicalErrorV1 {
 #[cfg(test)]
 mod tests {
     use super::{OpenSshGateBindingV1, expected_openssh_gate_config_v1};
+
+    #[test]
+    fn canonical_path_diagnostics_preserve_resolved_path_and_original_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let expected = std::fs::canonicalize(directory.path()).unwrap();
+
+        let resolved = super::canonicalize_physical_path(directory.path()).unwrap();
+        let error = super::canonicalize_physical_path(directory.path().join("absent")).unwrap_err();
+
+        assert_eq!(resolved, expected);
+        assert_eq!(error.raw_os_error(), Some(2));
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
 
     #[test]
     fn qualification_context_preserves_original_os_error() {

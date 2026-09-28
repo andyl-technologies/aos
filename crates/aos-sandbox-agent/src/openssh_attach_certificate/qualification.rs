@@ -143,6 +143,18 @@ fn listener_failure(
     connection_error: &std::io::Error,
     diagnostic_path: &Path,
 ) -> String {
+    format!(
+        "packaged sshd listener unavailable; TCP error: {connection_error}; {}",
+        owned_daemon_diagnostics(status, diagnostic_path),
+    )
+}
+
+// Status and bounded stderr are observations, not a conclusion about which
+// listener, process or physical readback predicate failed.
+fn owned_daemon_diagnostics(
+    status: &std::io::Result<Option<std::process::ExitStatus>>,
+    diagnostic_path: &Path,
+) -> String {
     let mut bytes = Vec::new();
     let stderr = match fs::File::open(diagnostic_path).and_then(|file| {
         file.take(MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES)
@@ -153,8 +165,7 @@ fn listener_failure(
     };
 
     format!(
-        "packaged sshd listener unavailable; original child status: {status:?}; \
-         TCP error: {connection_error}; stderr (first {MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES} bytes) \
+        "original child status: {status:?}; stderr (first {MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES} bytes) \
          at {}:\n{stderr}",
         diagnostic_path.display()
     )
@@ -558,6 +569,7 @@ fn listener_failure_retains_original_exit_and_stderr() {
 
     let failure = listener_failure(&status, &connection_error, diagnostic.path());
 
+    assert!(failure.contains("packaged sshd listener unavailable; TCP error:"));
     assert!(failure.contains(&format!("original child status: {status:?}")));
     assert!(failure.contains("ConnectionRefused") || failure.contains("connection refused"));
     assert!(failure.contains("fixture daemon startup error\n"));
