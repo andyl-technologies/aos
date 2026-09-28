@@ -16,7 +16,9 @@ use aos_package::registry::release::{
     require_active_signing_key,
 };
 use aos_package::registry::support::SupportSectionWrite;
-use aos_package::registry_ops::{ContainerReleaseAttachment, load_container_release_attachment};
+use aos_package::registry_ops::{
+    ContainerReleaseAttachment, load_container_release_attachment, local_registry_name,
+};
 use aos_package::types::ProfileScope;
 use aos_package::{DSSE_SIGNATURE_NAMESPACE, ProvenanceSignature, ProvenanceSigner};
 use aos_release::build::BuildReportV1;
@@ -69,10 +71,13 @@ pub(super) async fn prepare(
     let intent = registry_intent(&plan, &report, plan_digest)?;
     let publications = publication_map(&plan)?;
     let config = ApmConfig::load(ProfileScope::User)?;
+    // Hub destinations are owner/name pairs; local authoring uses the name
+    // committed in the source registry's manifest.
+    let authoring_registry = local_registry_name(&args.source_registry)?;
     let (transaction, prepared) = {
         let mut author = CanonicalRegistryEntryAuthor::new(
             &config,
-            &plan.registry,
+            &authoring_registry,
             &publications,
             &mut signer,
             printer,
