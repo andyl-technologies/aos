@@ -7,7 +7,8 @@
 use std::fmt::{self, Write as _};
 
 use crucible::{
-    AdvanceOutcome, Configuration, Decision, Icount, ScenarioDefForm, SingleSchedulerCheckpoint,
+    AdvanceOutcome, Configuration, Decision, Icount, SIM_TICKS_PER_INSTRUCTION, ScenarioDefForm,
+    SingleSchedulerCheckpoint,
 };
 use crucible_campaign::{CampaignHash, ConfigurationId, ScenarioDefId, SelectionOrigin};
 use crucible_protocol::SelectionReply;
@@ -476,18 +477,27 @@ fn replay_one_nonselection_boundary<T: GuardedReplayPhysicalNode>(
 ) -> Result<T::Observation, QemuVmRealizationError> {
     reject_unrecorded_local_request(node)?;
     let at = node.current_icount(&state)?;
-    let retired = at
+    // Physical replay carries picosecond coordinates. A one-tick hop would
+    // not retire the intended instruction.
+    let next_tick_ps = at
         .retired
-        .checked_add(1)
+        .checked_add(SIM_TICKS_PER_INSTRUCTION)
         .ok_or_else(|| invalid_replay_selection("non-selection replay count overflowed"))?;
-    if retired > target_icount.retired {
+    if next_tick_ps > target_icount.retired {
         return Err(invalid_replay_selection(
             "non-selection replay would cross the exact target count",
         ));
     }
 
-    let state = node.advance_to_ceiling(state, Icount { retired })?.state;
-    if node.current_icount(&state)?.retired != retired {
+    let state = node
+        .advance_to_ceiling(
+            state,
+            Icount {
+                retired: next_tick_ps,
+            },
+        )?
+        .state;
+    if node.current_icount(&state)?.retired != next_tick_ps {
         return Err(invalid_replay_selection(
             "non-selection replay paused before its one-instruction boundary",
         ));

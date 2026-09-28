@@ -104,6 +104,131 @@ impl GuardedReplayPhysicalNode for ScriptedPhysicalReplay {
     }
 }
 
+struct TickCalibratedReplay {
+    physical: ScriptedPhysicalReplay,
+    raw_instructions: u64,
+    bias_ps: u64,
+}
+
+impl GuardedReplayPhysicalNode for TickCalibratedReplay {
+    type Observation = Icount;
+
+    fn node(&self) -> &NodeId {
+        self.physical.node()
+    }
+
+    fn current_icount(
+        &mut self,
+        state: &Self::Observation,
+    ) -> Result<Icount, QemuVmRealizationError> {
+        self.physical.current_icount(state)
+    }
+
+    fn advance_to_ceiling(
+        &mut self,
+        state: Self::Observation,
+        ceiling: Icount,
+    ) -> Result<ReplayPhysicalAdvance<Self::Observation>, QemuVmRealizationError> {
+        let advance = self.physical.advance_to_ceiling(state, ceiling)?;
+        // This models the pre-cutover trace: a sub-instruction ceiling moved
+        // the exact clock without retiring an instruction.
+        self.raw_instructions +=
+            (advance.state.retired - state.retired) / crucible::SIM_TICKS_PER_INSTRUCTION;
+        self.bias_ps =
+            advance.state.retired - self.raw_instructions * crucible::SIM_TICKS_PER_INSTRUCTION;
+        Ok(advance)
+    }
+
+    fn drain_pending(
+        &mut self,
+    ) -> Result<Vec<SelectablePlanPendingRequest>, QemuVmRealizationError> {
+        self.physical.drain_pending()
+    }
+
+    fn enqueue_reply(
+        &mut self,
+        pending: &SelectablePlanPendingRequest,
+        reply: &SelectionReply,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.physical.enqueue_reply(pending, reply)
+    }
+
+    fn enqueue_input(
+        &mut self,
+        state: Self::Observation,
+        input: BackendInput,
+        delivery: crucible::SimInstant,
+    ) -> Result<Self::Observation, QemuVmRealizationError> {
+        self.physical.enqueue_input(state, input, delivery)
+    }
+}
+
+fn empty_physical_replay() -> ScriptedPhysicalReplay {
+    ScriptedPhysicalReplay {
+        node: NodeId {
+            name: String::from("choice-node"),
+        },
+        upcoming: VecDeque::new(),
+        pending: None,
+        replies: Vec::new(),
+        advances: Vec::new(),
+        inputs: Vec::new(),
+    }
+}
+
+#[test]
+fn nonselection_instruction_steps_preserve_source_clock_calibration()
+-> Result<(), Box<dyn std::error::Error>> {
+    // These common second-choice and target coordinates belong to the joined
+    // source/fat/thin generations in the exact-workload diagnostic.
+    let after_choice_ps = 555_283_890_250;
+    let target_ps = 555_377_677_100;
+    let initial_raw_instructions = 5_823_692_702;
+    let initial_bias_ps = 264_099_255_150;
+    let mut reference = TickCalibratedReplay {
+        physical: empty_physical_replay(),
+        raw_instructions: initial_raw_instructions,
+        bias_ps: initial_bias_ps,
+    };
+    let mut partitioned = TickCalibratedReplay {
+        physical: empty_physical_replay(),
+        raw_instructions: initial_raw_instructions,
+        bias_ps: initial_bias_ps,
+    };
+    let target = Icount { retired: target_ps };
+    let initial = Icount {
+        retired: after_choice_ps,
+    };
+
+    reference.advance_to_ceiling(initial, target)?;
+    let mut state = initial;
+    for _ in 0..5 {
+        state = replay_one_nonselection_boundary(&mut partitioned, state, target)?;
+    }
+    partitioned.advance_to_ceiling(state, target)?;
+
+    assert_eq!(reference.raw_instructions, 5_825_568_439);
+    assert_eq!(reference.bias_ps, initial_bias_ps);
+    assert_eq!(partitioned.raw_instructions, reference.raw_instructions);
+    assert_eq!(partitioned.bias_ps, reference.bias_ps);
+    Ok(())
+}
+
+#[test]
+fn nonselection_instruction_step_rejects_overflow_and_target_crossing() {
+    for (at_ps, target_ps) in [(100, 149), (u64::MAX - 25, u64::MAX)] {
+        let mut replay = empty_physical_replay();
+        let result = replay_one_nonselection_boundary(
+            &mut replay,
+            Icount { retired: at_ps },
+            Icount { retired: target_ps },
+        );
+
+        assert!(result.is_err());
+        assert!(replay.advances.is_empty());
+    }
+}
+
 fn replay_choice_fixture()
 -> Result<(ScenarioDefForm, NodeId, [SelectablePlanPendingRequest; 2]), Box<dyn std::error::Error>>
 {
@@ -168,6 +293,9 @@ fn replay_choice_fixture()
 #[test]
 fn delivery_order_keeps_interleaved_inputs_at_their_physical_counts()
 -> Result<(), Box<dyn std::error::Error>> {
+    let first_delivery_ps = SIM_TICKS_PER_INSTRUCTION;
+    let second_delivery_ps = 2 * SIM_TICKS_PER_INSTRUCTION;
+    let target_ps = 3 * SIM_TICKS_PER_INSTRUCTION;
     let node = NodeId {
         name: String::from("receiver"),
     };
@@ -188,12 +316,16 @@ fn delivery_order_keeps_interleaved_inputs_at_their_physical_counts()
         payload: b"second".to_vec(),
     };
     let delivery_order = Decision::DeliveryOrder(DeliveryOrderDecision {
-        at: VirtualTime { ticks: 1 },
+        at: VirtualTime {
+            ticks: first_delivery_ps,
+        },
         order: Vec::new(),
     });
     let preemption = Decision::Preemption(PreemptionDecision {
         node,
-        at: crucible::SimInstant { ticks: 1 },
+        at: crucible::SimInstant {
+            ticks: first_delivery_ps,
+        },
         kind: PreemptionKind::InterruptAt {
             target_vcpu: VcpuId { index: 0 },
             irq: IrqVector { vector: 32 },
@@ -201,33 +333,58 @@ fn delivery_order_keeps_interleaved_inputs_at_their_physical_counts()
     });
 
     let state = replay.enqueue_input(
-        Icount { retired: 1 },
+        Icount {
+            retired: first_delivery_ps,
+        },
         first,
-        crucible::SimInstant { ticks: 1 },
+        crucible::SimInstant {
+            ticks: first_delivery_ps,
+        },
     )?;
     let state = replay_one_nonselection_decision_boundary(
         &mut replay,
         state,
-        Icount { retired: 3 },
+        Icount { retired: target_ps },
         &delivery_order,
     )?;
-    assert_eq!(state.retired, 1);
+    assert_eq!(state.retired, first_delivery_ps);
     let state = replay_one_nonselection_decision_boundary(
         &mut replay,
         state,
-        Icount { retired: 3 },
+        Icount { retired: target_ps },
         &preemption,
     )?;
-    assert_eq!(state.retired, 2);
-    let state = replay.enqueue_input(state, second, crucible::SimInstant { ticks: 2 })?;
+    assert_eq!(state.retired, second_delivery_ps);
+    let state = replay.enqueue_input(
+        state,
+        second,
+        crucible::SimInstant {
+            ticks: second_delivery_ps,
+        },
+    )?;
 
-    assert_eq!(state.retired, 2);
-    assert_eq!(replay.advances, vec![Icount { retired: 2 }]);
+    assert_eq!(state.retired, second_delivery_ps);
+    assert_eq!(
+        replay.advances,
+        vec![Icount {
+            retired: second_delivery_ps,
+        }]
+    );
     assert_eq!(
         replay.inputs,
         vec![
-            (crucible::SimInstant { ticks: 1 }, b"first".to_vec()),
-            (crucible::SimInstant { ticks: 2 }, b"second".to_vec())
+            (
+                crucible::SimInstant {
+                    ticks: first_delivery_ps,
+                },
+                b"first".to_vec()
+            ),
+            (
+                crucible::SimInstant {
+                    ticks: second_delivery_ps,
+                },
+                b"second".to_vec()
+            )
         ]
     );
     Ok(())
@@ -296,7 +453,7 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         Icount { retired: 0 },
         Icount { retired: 5_000 },
     )?;
-    assert_eq!(after_rng_icount.retired, 1);
+    assert_eq!(after_rng_icount.retired, SIM_TICKS_PER_INSTRUCTION);
     let after_first_icount = replay_one_local_guest_choice(
         &mut replay,
         after_rng_icount,
