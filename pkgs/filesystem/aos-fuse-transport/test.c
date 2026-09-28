@@ -42,6 +42,9 @@ struct fake_core {
   unsigned file_release;
 };
 
+/* Packet scratch is static in this single-thread, fork-isolated fixture.
+ * GCC may inline helpers; packet-sized automatic buffers would accumulate
+ * in the caller's frame and exceed the standard sandbox stack ceiling. */
 union aligned_buffer {
   max_align_t alignment;
   uint8_t bytes[BUFFER_BYTES];
@@ -225,7 +228,7 @@ static void fail(const char *message) {
 static void send_request(int fd, uint32_t opcode, uint64_t unique,
                          uint64_t node, const void *body, size_t body_length,
                          const void *tail, size_t tail_length) {
-  union aligned_buffer storage;
+  static union aligned_buffer storage;
   uint8_t *packet = storage.bytes;
   size_t length = sizeof(struct fuse_in_header) + body_length + tail_length;
   if (length > sizeof(storage.bytes))
@@ -265,7 +268,7 @@ static size_t receive_reply(int fd, uint64_t unique, uint8_t *buffer,
 }
 
 static void expect_error(int fd, uint64_t unique, int error) {
-  union aligned_buffer storage;
+  static union aligned_buffer storage;
   size_t length = receive_reply(fd, unique, storage.bytes, sizeof(storage.bytes));
   struct fuse_out_header *header = (struct fuse_out_header *)storage.bytes;
   if (length != sizeof(*header) || header->error != -error)
@@ -385,7 +388,7 @@ static void test_fallback_v2(void) {
     }
     close(sockets[1]);
     close(cancellation[0]);
-    union aligned_buffer reply;
+    static union aligned_buffer reply;
     struct fuse_init_in init = {.major = 7, .minor = 45, .flags = FUSE_INIT_EXT | FUSE_MAX_PAGES,
                                .flags2 = (uint32_t)(FUSE_REQUEST_TIMEOUT >> 32)};
     send_request(sockets[0], FUSE_INIT, 1, 0, &init, sizeof(init), NULL, 0);
@@ -578,7 +581,7 @@ int main(void) {
   if (setsockopt(short_sockets[0], SOL_SOCKET, SO_SNDBUF, &send_buffer,
                  sizeof(send_buffer)) != 0)
     fail("short-write send buffer setup failed");
-  union aligned_buffer short_payload;
+  static union aligned_buffer short_payload;
   memset(short_payload.bytes, 0x5a, sizeof(short_payload.bytes));
   int short_terminal = 0;
   size_t first_length = sizeof(short_payload.bytes) / 2;
@@ -688,7 +691,7 @@ int main(void) {
   int cancellation[2];
   pid_t child = start_child(sockets, cancellation, 0);
   uint64_t unique = 1;
-  union aligned_buffer reply_storage;
+  static union aligned_buffer reply_storage;
   uint8_t *reply = reply_storage.bytes;
 
   struct fuse_init_in init = {
