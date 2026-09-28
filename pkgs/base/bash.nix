@@ -13,6 +13,14 @@
 }: let
   sourceVersion = "5.3";
   version = "${sourceVersion}p15";
+  src = fetchurl {
+    urls = ["https://mirrors.kernel.org/gnu/bash/bash-${sourceVersion}.tar.gz"];
+    hash = "1fii1xaxbng9x0klxmxkm0xhmycngfz72jsgyrna4sgqcmlxhp0d";
+  };
+  sourceRecipe = builtins.path {
+    path = ./bash.nix;
+    name = "bash.nix";
+  };
 
   bashPatch = number: hash:
     fetchurl {
@@ -40,12 +48,7 @@
 in
   mkDerivation {
     pname = "bash";
-    inherit version;
-
-    src = fetchurl {
-      urls = ["https://mirrors.kernel.org/gnu/bash/bash-${sourceVersion}.tar.gz"];
-      hash = "1fii1xaxbng9x0klxmxkm0xhmycngfz72jsgyrna4sgqcmlxhp0d";
-    };
+    inherit version src;
 
     buildDeps = [m4 flex bison autoconf automake texinfo gnumake];
     # Recursive consumers race the generated builtins on highly parallel hosts.
@@ -123,6 +126,12 @@ in
         -e 's|^SHELL = .*|SHELL = bash|' \
         "$out/lib/bash/Makefile.inc"
     '';
+
+    passthru = {
+      appliedPatches = bashPatches;
+      sourceRecipes = [sourceRecipe];
+      evidenceSources = [src sourceRecipe] ++ bashPatches;
+    };
 
     meta = {
       description = "GNU Bourne-Again SHell";
