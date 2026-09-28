@@ -37,7 +37,9 @@ use aos_sandbox_source_provider_protocol::{
 use sha2::{Digest as _, Sha256};
 
 use crate::broker::{StorageHeldSnapshotCatalogCutV1, StorageHeldSnapshotSelectorV1};
-use crate::live_export_request_trust::AuthenticatedStorageNativeRequestV2;
+use crate::live_export_request_trust::{
+    AuthenticatedStorageNativeAcceptanceReadbackQueryV1, AuthenticatedStorageNativeRequestV2,
+};
 use crate::runtime::StorageHeldSnapshotReadbackWithMountV1;
 use crate::{CatalogPlanV1, StorageAdmissionCoordinator};
 use aos_sandbox_source_provider_protocol::StorageNativeAcquireReplyV3;
@@ -98,6 +100,37 @@ struct PreparedStorageNativeRetirementV1 {
     original: NativeIssuanceRowV1,
     provider_terminal_digest: ObjectDigest,
     cleanup_digest: ObjectDigest,
+}
+
+/// Retains one protected historical metadata observation without live authority.
+///
+/// Only the issuance owner constructs this projection. Found may name an active
+/// or tombstoned row; NotFound is transient and does not fence future admission.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StorageNativeAcceptanceMetadataV1 {
+    query_digest: ObjectDigest,
+    issuance_sequence: u64,
+    acceptance: Option<StorageNativeAcceptanceV3>,
+}
+
+impl StorageNativeAcceptanceMetadataV1 {
+    /// Returns the diagnostic sequence of the retained issuance writer.
+    pub(crate) const fn sequence(&self) -> u64 {
+        self.issuance_sequence
+    }
+
+    /// Returns immutable unsigned acceptance metadata, including tombstones.
+    pub(crate) fn acceptance(&self) -> Option<&StorageNativeAcceptanceV3> {
+        self.acceptance.as_ref()
+    }
+
+    /// Checks exact signed metadata intent, not historical Acquire validity.
+    pub(crate) fn matches_query(
+        &self,
+        authenticated: &AuthenticatedStorageNativeAcceptanceReadbackQueryV1<'_>,
+    ) -> bool {
+        self.query_digest == authenticated.query().digest()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -281,6 +314,51 @@ enum NativeIssuanceCustodyV1 {
 }
 
 impl StorageNativeIssuanceLedgerV1 {
+    /// Observes exact original metadata without reviving a retired acquisition.
+    ///
+    /// Historical holder and signed request bytes are immutable. An occupied
+    /// Provider/acquisition key with different claims is a conflict, never a
+    /// negative lookup. No original expiry, receipt, hold, or FD is renewed.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed current query trust, unsafe or poisoned journal custody,
+    /// noncanonical retained state, or an occupied-key scope/digest conflict.
+    pub(crate) fn readback_acceptance(
+        &mut self,
+        authenticated: &AuthenticatedStorageNativeAcceptanceReadbackQueryV1<'_>,
+    ) -> Result<StorageNativeAcceptanceMetadataV1, StorageNativeIssuanceErrorV1> {
+        authenticated
+            .recheck()
+            .map_err(|_| StorageNativeIssuanceErrorV1::Noncanonical)?;
+        self.validate_boundary()?;
+        let signed = authenticated.query();
+        let query = signed.query();
+        let (provider, holder, acquisition) = query.scope();
+        let mut acceptance = None;
+        for row in self.rows()? {
+            let claims = row.request.request().claims();
+            if claims.provider_acquisition() != (provider, acquisition) {
+                continue;
+            }
+            if claims.holder_session().0 != holder || row.request.digest() != query.request_digest()
+            {
+                return Err(StorageNativeIssuanceErrorV1::Conflict);
+            }
+            acceptance = Some(row.acceptance);
+        }
+
+        authenticated
+            .recheck()
+            .map_err(|_| StorageNativeIssuanceErrorV1::Noncanonical)?;
+        self.validate_boundary()?;
+        Ok(StorageNativeAcceptanceMetadataV1 {
+            query_digest: signed.digest(),
+            issuance_sequence: self.journal.snapshot_sequence(),
+            acceptance,
+        })
+    }
+
     /// Checks retained identity before any physical measurement or remount.
     ///
     /// # Errors
@@ -643,6 +721,33 @@ pub(crate) fn try_native_issuance_fixture_for_test(
     directory: &Path,
 ) -> Result<StorageNativeIssuanceLedgerV1, StorageNativeIssuanceErrorV1> {
     tests::open(directory, journal_limits())
+}
+
+#[cfg(test)]
+pub(crate) fn populate_native_metadata_fixture_for_test(
+    owner: &mut StorageNativeIssuanceLedgerV1,
+    retired: bool,
+) -> (
+    SignedStorageNativeAcquireRequestV2,
+    StorageNativeAcceptanceV3,
+) {
+    let prepared = tests::fixture(1, 42);
+    owner.accept(&prepared, &prepared.cut).unwrap();
+    if retired {
+        owner
+            .retire(&PreparedStorageNativeRetirementV1 {
+                original: prepared.row.clone(),
+                provider_terminal_digest: ObjectDigest::from_bytes([40; 32]),
+                cleanup_digest: ObjectDigest::from_bytes([41; 32]),
+            })
+            .unwrap();
+    }
+    (prepared.row.request, prepared.row.acceptance)
+}
+
+#[cfg(test)]
+pub(crate) fn native_metadata_request_fixture_for_test() -> SignedStorageNativeAcquireRequestV2 {
+    tests::fixture(1, 42).row.request
 }
 
 #[cfg(test)]

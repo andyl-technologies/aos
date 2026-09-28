@@ -14,8 +14,9 @@
 //! measured SourceRoot under the held Storage cut. Storage also
 //! derives a nonauthorizing AOSZHR01 head from its protected journal cut and
 //! confined physical readback. The key exposes no raw key or general signing
-//! method. A
-//! retained readback does not prove that the hold or journal remains current.
+//! method. Its separate AOSZNS01 metadata domain signs only an owner's original
+//! unsigned acceptance observation and grants no descriptor or hold authority.
+//! A retained readback does not prove the hold or journal remains current.
 
 use std::path::PathBuf;
 
@@ -24,14 +25,18 @@ use aos_sandbox_source_provider_protocol::storage_zfs_hold_receipt::{
     StorageZfsHoldHeadV1, StorageZfsHoldSignerV1, StorageZfsHoldVerifierV1,
 };
 use aos_sandbox_source_provider_protocol::{
-    SignedStorageNativeAcceptanceV3, SignedStorageZfsHoldReceiptV1, StorageNativeAcceptanceV3,
-    StorageNativeAcquireReplyV3, StorageZfsHoldReceiptV1, storage_native_nonrecursive_topology_v1,
+    SignedStorageNativeAcceptanceReadbackV1, SignedStorageNativeAcceptanceV3,
+    SignedStorageZfsHoldReceiptV1, StorageNativeAcceptanceV3, StorageNativeAcquireReplyV3,
+    StorageZfsHoldReceiptV1, storage_native_nonrecursive_topology_v1,
 };
 use ed25519_dalek::{Signer as _, SigningKey};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
-use crate::live_export_request_trust::AuthenticatedStorageNativeRequestV2;
+use crate::live_export_request_trust::{
+    AuthenticatedStorageNativeAcceptanceReadbackQueryV1, AuthenticatedStorageNativeRequestV2,
+};
+use crate::native_issuance::StorageNativeAcceptanceMetadataV1;
 use crate::operator_recovery_credentials::{
     FileIdentity, PinnedCredential, open_directory, read_credential,
 };
@@ -65,6 +70,45 @@ enum StorageZfsHoldKeyCustodyV1 {
 }
 
 impl StorageZfsHoldKeyV1 {
+    /// Signs only an owner's exact historical acceptance metadata observation.
+    ///
+    /// This dedicated metadata domain is not a positive receipt or acceptance.
+    /// The caller retains and rejoins all owner cuts through descriptor-free
+    /// send. No historical signing key, receipt, validity, or mount is restored.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed credentials/current query pins or a foreign observation.
+    pub(crate) fn sign_native_acceptance_readback(
+        &self,
+        authenticated: &AuthenticatedStorageNativeAcceptanceReadbackQueryV1<'_>,
+        observed: &StorageNativeAcceptanceMetadataV1,
+    ) -> Result<SignedStorageNativeAcceptanceReadbackV1, StorageServiceError> {
+        self.recheck()?;
+        authenticated
+            .recheck()
+            .map_err(|_| invalid("native metadata query trust changed"))?;
+        if !observed.matches_query(authenticated) {
+            return Err(invalid("native metadata observation names another query"));
+        }
+        let reply = SignedStorageNativeAcceptanceReadbackV1::sign(
+            authenticated.query(),
+            observed.sequence(),
+            observed.acceptance().cloned(),
+            self.signer,
+            &SigningKey::from_bytes(&self.seed),
+        )
+        .map_err(|_| invalid("native metadata observation is invalid"))?;
+        reply
+            .verify_for(authenticated.query(), self.verifier)
+            .map_err(|_| invalid("native metadata signature is invalid"))?;
+        self.recheck()?;
+        authenticated
+            .recheck()
+            .map_err(|_| invalid("native metadata query trust changed"))?;
+        Ok(reply)
+    }
+
     /// Loads and pins the existing dedicated-role systemd credential.
     ///
     /// # Errors
@@ -320,7 +364,16 @@ impl StorageZfsHoldKeyV1 {
 
     #[cfg(test)]
     pub(crate) fn synthetic_key_for_test() -> Self {
-        let (signer, verifier, seed) = decode_key_record(&tests::record()).unwrap();
+        Self::synthetic_rotated_key_for_test([7; 32], 5)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn synthetic_rotated_key_for_test(seed: [u8; 32], generation: u64) -> Self {
+        let mut record = tests::record();
+        record[88..96].copy_from_slice(&generation.to_be_bytes());
+        record[96..128].copy_from_slice(&SigningKey::from_bytes(&seed).verifying_key().to_bytes());
+        record[128..160].copy_from_slice(&seed);
+        let (signer, verifier, seed) = decode_key_record(&record).unwrap();
         Self {
             custody: StorageZfsHoldKeyCustodyV1::SyntheticFixture,
             signer,

@@ -677,6 +677,74 @@ pub(crate) struct ValidatedPendingStorageWorkspaceCatalogV1 {
 }
 
 impl ValidatedPendingStorageWorkspaceCatalogV1 {
+    /// Rejoins the fixed workspace writer for a metadata-only owner readback.
+    ///
+    /// # Errors
+    ///
+    /// Rejects poisoned or replaced root-owned journal names or snapshot drift.
+    pub(crate) fn native_metadata_readback_cut(
+        &self,
+        state_directory: &Path,
+    ) -> Result<StorageWorkspaceCatalogSnapshotV1, StorageWorkspaceCatalogError> {
+        self.pending
+            .journal
+            .validate_held_root_owned_at(state_directory, WORKSPACE_JOURNAL_FILE)?;
+        self.current_metadata_snapshot()
+    }
+
+    fn current_metadata_snapshot(
+        &self,
+    ) -> Result<StorageWorkspaceCatalogSnapshotV1, StorageWorkspaceCatalogError> {
+        let current = snapshot_binding(
+            &self.pending.journal,
+            self.pending.identity_pool,
+            self.pending.head.as_ref(),
+        )?;
+        if current != self.pending.snapshot {
+            return Err(StorageWorkspaceCatalogError::CorruptRecord);
+        }
+        Ok(current)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn native_metadata_readback_cut_for_test(
+        &self,
+        state_directory: &Path,
+        uid: u32,
+    ) -> Result<StorageWorkspaceCatalogSnapshotV1, StorageWorkspaceCatalogError> {
+        self.pending
+            .journal
+            .validate_held_protected_at_uid_for_test(
+                state_directory,
+                WORKSPACE_JOURNAL_FILE,
+                uid,
+            )?;
+        self.current_metadata_snapshot()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_protected_metadata_fixture(
+        self,
+        state_directory: &Path,
+        uid: u32,
+    ) -> Result<Self, StorageWorkspaceCatalogError> {
+        let Self { pending, plan } = self;
+        let PendingStorageWorkspaceCatalogV1 {
+            journal,
+            identity_pool,
+            ..
+        } = pending;
+        drop(journal);
+        let (journal, recovery) = Journal::open_protected_at_uid(
+            state_directory,
+            WORKSPACE_JOURNAL_FILE,
+            workspace_journal_limits(),
+            uid,
+        )?;
+        PendingStorageWorkspaceCatalogV1::recover(journal, recovery, identity_pool)?
+            .validate_plan(plan)
+    }
+
     /// Returns the structurally validated workspace-catalog snapshot binding.
     pub(crate) const fn snapshot(&self) -> StorageWorkspaceCatalogSnapshotV1 {
         self.pending.snapshot

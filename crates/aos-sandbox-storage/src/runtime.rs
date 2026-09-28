@@ -15,6 +15,7 @@
 //! cgroup scans; it does not itself authorize a Repair commit.
 
 mod native_acquire;
+mod native_readback;
 mod repair_worker_drain;
 pub(crate) use native_acquire::{StorageNativeDeliveryOutcomeV2, validate_native_request_clock};
 
@@ -434,6 +435,8 @@ pub struct StorageBrokerRuntime {
     native_escrow: native_acquire::StorageNativeEscrowV2,
     #[cfg(test)]
     native_fixture: Option<native_acquire::SyntheticNativeRuntimeV2>,
+    #[cfg(test)]
+    native_readback_fixture_uid: Option<u32>,
     pin_contract: ZfsHelperContract,
     pin_io: Box<dyn WorkspacePinRuntimeIo + Send>,
     helper: StorageMutationHelper<Box<dyn ZfsProcessBackend + Send>>,
@@ -1225,6 +1228,8 @@ impl StorageBrokerRuntime {
             native_escrow: native_acquire::StorageNativeEscrowV2::default(),
             #[cfg(test)]
             native_fixture: None,
+            #[cfg(test)]
+            native_readback_fixture_uid: None,
             pin_contract: contract.clone(),
             pin_io: Box::new(pin_io),
             helper: StorageMutationHelper::new(
@@ -1283,6 +1288,7 @@ impl StorageBrokerRuntime {
             native_issuance: None,
             native_escrow: native_acquire::StorageNativeEscrowV2::default(),
             native_fixture: None,
+            native_readback_fixture_uid: None,
             pin_contract,
             pin_io: Box::new(pin_io),
             helper: helper.into_boxed(),
@@ -1331,6 +1337,7 @@ impl StorageBrokerRuntime {
             native_issuance: None,
             native_escrow: native_acquire::StorageNativeEscrowV2::default(),
             native_fixture: None,
+            native_readback_fixture_uid: None,
             pin_contract,
             pin_io,
             helper,

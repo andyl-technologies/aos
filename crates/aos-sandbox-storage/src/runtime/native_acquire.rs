@@ -24,6 +24,13 @@ pub(super) struct StorageNativeEscrowV2 {
     originals: BTreeMap<[u8; 32], NativeOriginalV2>,
 }
 
+#[cfg(test)]
+impl StorageNativeEscrowV2 {
+    pub(super) fn count_for_test(&self) -> usize {
+        self.originals.len()
+    }
+}
+
 /// Supplies synthetic physical evidence only to unit tests of real owner ordering.
 #[cfg(test)]
 pub(super) struct SyntheticNativeRuntimeV2 {
