@@ -56,6 +56,12 @@ pub struct StorageCapabilities {
     pub deployment_id: String,
     /// Physical binding resolved by this executor.
     pub binding_kind: String,
+    /// Immutable console bundle identity served by this Worker.
+    ///
+    /// Storage-only clients may accept older executors without this field.
+    /// Hybrid website serving requires the Native bundle's exact identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub console_asset_version: Option<String>,
     /// Closed operation names accepted by this executor.
     pub operations: Vec<String>,
     /// Maximum bytes returned in one semantic result.

@@ -728,7 +728,7 @@ async fn main() -> Result<()> {
                     deployment_id.clone(),
                     &storage_key,
                 )?;
-                work.check_ready().await?;
+                work.check_console_ready().await?;
                 Some((deployment_id, Arc::new(ingress_key), Arc::new(work)))
             } else {
                 None

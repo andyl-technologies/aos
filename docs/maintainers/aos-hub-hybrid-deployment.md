@@ -88,6 +88,8 @@ runtime hashes or embeds its assets. Verify that every immutable console URL in
 Native's authenticated page is served by the Worker's local bundle; Native ELF
 scrubbing must not change the bundle identity. Console asset bodies remain at
 the edge and must not fall back to downloads from the Native origin.
+Hybrid Native startup probes the paired Worker's authenticated capabilities
+and rejects a missing or different console identity before opening its listener.
 The image execs `/usr/bin/aos-hub serve` directly and has no initialized database,
 credentials, or package-manager initialization step.
 

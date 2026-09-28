@@ -88,8 +88,20 @@ The normalized console package built successfully as
 `/nix/store/45la5qn84262x0k8x8z36gs1s7rg9ks3-aos-hub-console-dist-0.1.0`.
 Its JavaScript, Wasm and CSS match the previous package with only diagnostic
 store hashes normalized; repeating cleanup leaves every byte unchanged. The
-resulting asset hash is `bd7cd34f`, matching the Native page. Actual rebuilt
-Native and Worker packages, followed by Chrome execution, remain pending.
+resulting asset hash is `bd7cd34f`, matching the Native page. The rebuilt Native
+package `/nix/store/1vzzy2mh76z966q7w7xyn2jgcz86sm5s-aos-hub-0.1.0` and Worker
+package `/nix/store/c5yj69yhx5iirhz01piqgny6vqaczcry-aos-hub-worker-dist-0.1.0`
+both embed those exact JavaScript, Wasm and CSS bytes after package cleanup.
+The Worker's immutable static files match them too. Native's version command
+passed. This pair predates the additional readiness fence; successful Chrome
+execution remains pending.
+
+Hybrid serving now checks the authenticated Worker capability's console bundle
+identity before opening Native's listener. A missing or different identity
+fails readiness; storage-only clients retain the independent storage-contract
+probe. All 21 Native storage client tests passed, including matching, different
+and omitted bundle identities. The Worker passed Wasm compilation. These
+focused checks do not qualify a running pair with the new readiness fence.
 
 ## Qualified paths
 

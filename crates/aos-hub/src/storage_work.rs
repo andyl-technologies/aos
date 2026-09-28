@@ -163,6 +163,24 @@ impl RemoteStorageWorkClient {
     /// Returns an error if the Worker is unavailable, unauthenticated,
     /// mismatched, or missing a required operation or R2 binding.
     pub async fn check_ready(&self) -> Result<()> {
+        self.capabilities().await.map(|_| ())
+    }
+
+    /// Confirms storage readiness and the console bundle used by Native pages.
+    ///
+    /// Hybrid serving requires this probe because the Worker serves console
+    /// assets locally, using the immutable URLs rendered by Native.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a failed storage probe or a missing or different
+    /// Worker console bundle identity.
+    pub async fn check_console_ready(&self) -> Result<()> {
+        let capabilities = self.capabilities().await?;
+        validate_console_asset_version(&capabilities)
+    }
+
+    async fn capabilities(&self) -> Result<StorageCapabilities> {
         let signature = self.key.sign_body(STORAGE_CAPABILITIES_CHALLENGE)?;
         let response = self
             .http
@@ -180,7 +198,8 @@ impl RemoteStorageWorkClient {
         let body = read_bounded_response(response, 4096).await?;
         let capabilities: StorageCapabilities =
             serde_json::from_slice(&body).context("decoding storage Worker capabilities")?;
-        validate_capabilities(&self.deployment_id, &capabilities)
+        validate_capabilities(&self.deployment_id, &capabilities)?;
+        Ok(capabilities)
     }
 
     /// Runs one unvalidated capability probe beside its object store.
@@ -795,6 +814,15 @@ async fn read_observed_response(
         body.extend_from_slice(&chunk);
     }
     Ok(body)
+}
+
+fn validate_console_asset_version(capabilities: &StorageCapabilities) -> Result<()> {
+    anyhow::ensure!(
+        capabilities.console_asset_version.as_deref()
+            == Some(aos_hub_core::web::assets::asset_version()),
+        "hybrid Worker console bundle is missing or differs from the Native bundle"
+    );
+    Ok(())
 }
 
 fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities) -> Result<()> {
@@ -2719,6 +2747,7 @@ mod tests {
             version: 1,
             deployment_id: "deployment-1".into(),
             binding_kind: "deployment_r2".into(),
+            console_asset_version: Some(aos_hub_core::web::assets::asset_version().into()),
             operations: vec![
                 "head".into(),
                 "list_page".into(),
@@ -2747,6 +2776,20 @@ mod tests {
             max_verify_source_bytes: MAX_VERIFY_SOURCE_BYTES,
         };
         assert!(validate_capabilities("deployment-1", &capabilities).is_ok());
+        assert!(validate_console_asset_version(&capabilities).is_ok());
+
+        let mut another_bundle = capabilities.clone();
+        another_bundle.console_asset_version = Some("another-bundle".into());
+        assert!(validate_capabilities("deployment-1", &another_bundle).is_ok());
+        assert!(validate_console_asset_version(&another_bundle).is_err());
+
+        let mut storage_only = capabilities.clone();
+        storage_only.console_asset_version = None;
+        let encoded = serde_json::to_vec(&storage_only).unwrap();
+        let decoded: StorageCapabilities = serde_json::from_slice(&encoded).unwrap();
+        assert!(validate_capabilities("deployment-1", &decoded).is_ok());
+        assert!(validate_console_asset_version(&decoded).is_err());
+
         assert!(validate_capabilities("deployment-2", &capabilities).is_err());
         let mut older = capabilities.clone();
         older

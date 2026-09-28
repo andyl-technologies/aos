@@ -86,9 +86,16 @@ up.
 
 ## Origin shielding and cache policy
 
-The Worker serves the console's hashed static assets and other immutable
-assets at the edge. It may cache anonymous, public `GET`/`HEAD` responses
-only when Native or a versioned route policy explicitly marks them cacheable.
+The Worker serves the console's hashed static assets at the edge, using the
+same build as Native. Its authenticated capabilities include
+`console_asset_version`. Before opening its listener, Hybrid Native
+requires this identity to match the bundle referenced by its rendered pages;
+a missing or different identity fails readiness. Storage-only clients may
+probe the executor's storage contract without requiring a console bundle.
+
+It also serves other immutable assets and may cache anonymous, public
+`GET`/`HEAD` responses only when Native or a versioned route policy explicitly
+marks them cacheable.
 The cache key includes public authority, full relevant path/query, encoding,
 response version or publication generation, and every variant that affects
 content. It never includes a bearer token or session identifier as a way to
