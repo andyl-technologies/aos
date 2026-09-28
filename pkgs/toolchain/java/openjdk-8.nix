@@ -378,7 +378,7 @@ in
                 esac
               done
 
-              exec ${buildTools.cc}/bin/c++ "''${native_args[@]}"
+              exec ${buildTools.cc}/bin/c++ "''${native_args[@]}" -std=gnu++98
               NATIVECXXEOF
                 chmod +x $TOOLS/native-cxx
                 export PATH="$TOOLS:$PATH"
@@ -416,7 +416,7 @@ in
           script = ''
             export PATH="$(pwd)/tools-bin:${buildTools.pkg-config}/bin:$PATH"
             # Set CFLAGS/CXXFLAGS for modern GCC compatibility
-            export CFLAGS="-std=gnu17 -fcommon -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -Wno-error=int-conversion${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"}"
+            export CFLAGS="${lib.optionalString (!isDarwinCross) "-std=gnu17 "}-fcommon -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -Wno-error=int-conversion${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"}"
             export CXXFLAGS="-fcommon -Wno-error${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"}"
 
             # Set X11 extension include path
@@ -499,7 +499,7 @@ in
             find . \( -name 'configure' -o -name 'Makefile.in' \) 2>/dev/null | while read f; do
               touch -t 200001010200.00 "$f" 2>/dev/null || true
             done
-            export CFLAGS="-std=gnu17 -fcommon -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -Wno-error=int-conversion${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"} -I${xorg-stubs}/include"
+            export CFLAGS="${lib.optionalString (!isDarwinCross) "-std=gnu17 "}-fcommon -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -Wno-error=int-conversion${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"} -I${xorg-stubs}/include"
             export CXXFLAGS="-fcommon -Wno-error${lib.optionalString isDarwinCross " -Wno-reserved-user-defined-literal -Wno-register"} -I${xorg-stubs}/include"
             export LDFLAGS="-L${xorg-stubs}/lib"
 
@@ -988,6 +988,13 @@ in
                                        openjdk/jdk/src/macosx \
                                        openjdk/hotspot/agent/src/os/bsd \
                                        | wc -l)" -eq 91
+
+                                     # HotSpot 8 compiles C++98 sources with the shared CFLAGS
+                                     # variable. Keep the C language selector out of Darwin's
+                                     # common flags and select C++ only in this VM recipe.
+                                     vmMake=openjdk/hotspot/make/bsd/makefiles/vm.make
+                                     test -f "$vmMake"
+                                     printf '\n%s\n' 'CFLAGS += -std=gnu++98' >> "$vmMake"
 
                                      for adlcMake in \
                                        openjdk-boot/hotspot/make/linux/makefiles/adlc.make \

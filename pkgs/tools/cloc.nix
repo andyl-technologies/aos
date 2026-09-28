@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
   perl,
   perl-algorithm-diff,
   perl-class-method-modifiers,
@@ -24,6 +25,9 @@
     perl-sub-quote
   ];
   modulePath = builtins.concatStringsSep " " (map (module: "${module}/lib/perl5") modules);
+  # The installed script targets Perl on the host platform; build checks run
+  # with native Perl so a Linux builder can validate Darwin output.
+  buildPerl = buildPackages.perl;
 in
   mkDerivation {
     pname = "cloc";
@@ -32,7 +36,7 @@ in
       urls = ["https://github.com/AlDanial/cloc/archive/refs/tags/v${version}.tar.gz"];
       hash = "sha256-qPrDX0z0Jyh2VYC6Ea/CVorSBVCaIiBGY/UmFpVIQ20=";
     };
-    buildDeps = [];
+    buildDeps = [buildPerl];
     runtimeDeps = [perl] ++ modules;
     propagatedDeps = [];
     phases = [
@@ -52,12 +56,12 @@ in
             -e "2i use lib qw(${modulePath});" \
             cloc
           install -m 0755 cloc "$out/bin/cloc"
-          ${perl}/bin/pod2man --section=1 --release='cloc ${version}' cloc.1.pod cloc.1
+          ${buildPerl}/bin/pod2man --section=1 --release='cloc ${version}' cloc.1.pod cloc.1
           install -m 0644 cloc.1 "$out/share/man/man1/cloc.1"
 
-          "$out/bin/cloc" --version | grep -qx '${version}'
+          ${buildPerl}/bin/perl "$out/bin/cloc" --version | grep -qx '${version}'
           printf 'fn main() {}\n' > example.rs
-          "$out/bin/cloc" --quiet --csv example.rs | grep -q ',Rust,'
+          ${buildPerl}/bin/perl "$out/bin/cloc" --quiet --csv example.rs | grep -q ',Rust,'
         '';
       }
     ];

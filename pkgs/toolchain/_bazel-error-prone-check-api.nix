@@ -5,23 +5,40 @@
   buildPackages,
   bazelMavenBootstrap,
   bazelErrorProneDataflow,
+  version ? "2.36.0",
 }: let
-  version = "2.36.0";
+  release =
+    {
+      "2.36.0" = {
+        hash = "sha256-RBTgPTUTPHFp7RuNGCQ/6N9YMxqyq5TT1IUoJGy2yBA=";
+        sourceCount = 189;
+        revision = "ab522c7dcac5e83b84828d5670595e5582d71fb3";
+      };
+      "2.41.0" = {
+        hash = "sha256-7VyakPC37zX30KEkUzFvfXwZBPPC7vg/ABsHOLwMXIo=";
+        sourceCount = 184;
+        revision = "d6539d63084b7f366a58bdcafbb889cf897b5297";
+      };
+    }.${
+      version
+    }
+    or (throw "unsupported Error Prone check API source version: ${version}");
   buildJdk = buildPackages.openjdk-17;
   dataflowVersion = bazelErrorProneDataflow.version;
   dataflowJar = "${bazelErrorProneDataflow}/maven/io/github/eisop/dataflow-errorprone/${dataflowVersion}/dataflow-errorprone-${dataflowVersion}.jar";
 
   license = fetchurl {
-    urls = ["https://raw.githubusercontent.com/google/error-prone/ab522c7dcac5e83b84828d5670595e5582d71fb3/COPYING"];
+    urls = ["https://raw.githubusercontent.com/google/error-prone/${release.revision}/COPYING"];
     hash = "sha256-z8d0m5b2O9McPEK1xHG/dWgUBT6EfBDz6wA0F7xSPTA=";
   };
 in
   mkDerivation {
     pname = "bazel-error-prone-check-api";
     inherit version;
+    passthru.sourceTargets = ["com/google/errorprone/error_prone_check_api/${version}/error_prone_check_api-${version}.jar"];
     src = fetchurl {
       urls = ["https://repo.maven.apache.org/maven2/com/google/errorprone/error_prone_check_api/${version}/error_prone_check_api-${version}-sources.jar"];
-      hash = "sha256-RBTgPTUTPHFp7RuNGCQ/6N9YMxqyq5TT1IUoJGy2yBA=";
+      inherit (release) hash;
     };
 
     buildDeps = [
@@ -71,8 +88,8 @@ in
                   destination.write_bytes(data)
 
           sources = sorted(Path("source").rglob("*.java"))
-          if len(sources) != 189:
-              raise SystemExit(f"Expected 189 Error Prone check API sources, found {len(sources)}")
+          if len(sources) != ${toString release.sourceCount}:
+              raise SystemExit(f"Expected ${toString release.sourceCount} Error Prone check API sources, found {len(sources)}")
           Path("java-sources").write_text("".join(f"{path}\n" for path in sources))
           PY
         '';

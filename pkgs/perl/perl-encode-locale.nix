@@ -1,12 +1,13 @@
 ##! perl-encode-locale — Locale encoding detection for Perl
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
 }: let
   version = "1.05";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-encode-locale";
     inherit version;
     src = fetchurl {

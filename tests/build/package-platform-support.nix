@@ -104,6 +104,18 @@
     packages.aos = throw "blocked package must not be evaluated";
     configurationBaseLib = throw "blocked configuration base must not be evaluated";
   };
+  # Internal GPL components must stay selectable for Linux builds, while
+  # release planning must never evaluate them as standalone publication roots.
+  internalComponentNames = ["qemu-crucible" "crucible-qemu-plugin"];
+  internalComponentDerivations = support.releaseDerivations {
+    system = "x86_64-linux";
+    names = internalComponentNames;
+    packages = builtins.listToAttrs (map (name: {
+        inherit name;
+        value = throw "internal component must not be planned as a standalone release";
+      })
+      internalComponentNames);
+  };
   x86Packages = publicationMatrix.x86_64-darwin;
   armPackages = publicationMatrix.aarch64-darwin;
   x86LinuxPackages = publicationMatrix.x86_64-linux;
@@ -290,6 +302,17 @@ in
   assert builtins.length (releasePackageByName "docker-compose").source_store_paths >= 2;
   assert builtins.length (releasePackageByName "envoy").source_store_paths >= 2;
   assert releaseInventory.schema_version == "aos.release.package-inventory/v1";
+  assert internalComponentDerivations.packages == [];
+  assert builtins.all (system:
+    builtins.all (name:
+      support.supportsTarget system name
+      && (support.publicationDecision system name).state == "not-applicable"
+      && (support.publicationDecision system name).rule == "package-aggregate-component/v1")
+    internalComponentNames)
+  ["x86_64-linux" "aarch64-linux"];
+  assert (decisionFor "crucible" "x86_64-linux").state == "eligible";
+  assert (decisionFor "qemu-crucible-source" "x86_64-linux").state == "eligible";
+  assert (decisionFor "qemu-crucible-reference" "x86_64-linux").state == "eligible";
   assert blockedDarwinDerivations.packages == [];
   assert blockedDarwinRoots == [];
   assert rootDerivationPaths == plannedDerivationPaths;
@@ -326,8 +349,14 @@ in
   assert (decisionFor "systemd" "x86_64-linux").state == "eligible";
   assert (decisionFor "systemd" "x86_64-linux").blockers == [];
   assert (decisionFor "systemd" "aarch64-darwin").state == "not-applicable";
+  assert (decisionFor "iperf3" "x86_64-linux").state == "eligible";
+  assert (decisionFor "iperf3" "x86_64-darwin").rule == "package-linux-interface/v1";
   assert (decisionFor "pango" "aarch64-darwin").rule == "package-darwin-release-scope/v1";
   assert (decisionFor "pango" "x86_64-linux").state == "eligible";
+  assert (decisionFor "crucible-controller" "x86_64-linux").state == "eligible";
+  assert (decisionFor "crucible-controller" "x86_64-darwin").rule == "package-darwin-release-scope/v1";
+  assert (decisionFor "crucible-fleet-store" "aarch64-linux").state == "eligible";
+  assert (decisionFor "crucible-fleet-store" "aarch64-darwin").rule == "package-darwin-release-scope/v1";
   assert (decisionFor "darwin-runtimes" "aarch64-darwin").state == "eligible";
   assert (decisionFor "rust" "x86_64-linux").blockers == [];
   assert (decisionFor "rust" "x86_64-darwin").blockers != [];

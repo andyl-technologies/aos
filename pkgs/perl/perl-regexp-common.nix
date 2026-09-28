@@ -1,12 +1,13 @@
 ##! perl-regexp-common — Common regular expression patterns for Perl
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
 }: let
   version = "2017060201";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-regexp-common";
     inherit version;
     src = fetchurl {

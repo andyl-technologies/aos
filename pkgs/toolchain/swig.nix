@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   autoconf,
   automake,
   libtool,
@@ -58,7 +60,10 @@ in
         name = "install";
         script = ''
           make install
-          "$out/bin/swig" -version | grep -q 'SWIG Version ${version}'
+          # Cross executables run through checks.tool on their target platform.
+          ${lib.optionalString (!stdenv.isCross) ''
+            "$out/bin/swig" -version | grep -q 'SWIG Version ${version}'
+          ''}
         '';
       }
     ];
