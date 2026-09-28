@@ -34,6 +34,7 @@ impl IoCore {
             .ok_or(DeviceError::ResponseSequenceOverflow {
                 sequence: self.next_seq,
             })?;
+        let revision = self.next_queue_revision()?;
         let mut prepared = Vec::with_capacity(computed.additional.len() + 1);
         prepared.push((delivery_icount, primary));
         for additional in computed.additional {
@@ -42,6 +43,7 @@ impl IoCore {
                 .add_ticks(delivery_icount, additional.gap_ticks)?;
             prepared.push((additional_tick, additional.response));
         }
+        self.queue_revision = revision;
         for (delivery_icount, response) in prepared {
             self.insert_computed_response(delivery_icount, response)?;
         }
@@ -63,6 +65,7 @@ impl IoCore {
     where
         D: IoSubNode,
     {
+        let revision = self.next_queue_revision()?;
         let latency_ns = device.latency_model().latency_ns(&request);
         let immutable_delivery_icount = self.clock.add_ns(request.request_icount, latency_ns)?;
         let current_icount = self.clock.current_icount();
@@ -125,6 +128,7 @@ impl IoCore {
                 return Err(error);
             }
         };
+        self.queue_revision = revision;
         for (delivery_icount, response) in prepared {
             self.insert_computed_response(delivery_icount, response)?;
         }

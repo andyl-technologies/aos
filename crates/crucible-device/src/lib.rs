@@ -117,7 +117,8 @@ pub use request::{
     AdditionalCompletion, AffineLatency, ComputedResponse, LatencyModel, Request, RequestId,
     Response, ResponseStatus,
 };
+
 pub use subnode::{
-    IoCore, IoCoreSnapshot, IoCoreSnapshotCodecError, IoSubNode, ShmemDeliveryFailure,
-    ShmemDeliveryResult, ShmemDequeueResult, ShmemInboxProcess,
+    IoCore, IoCoreSnapshot, IoCoreSnapshotCodecError, IoRequestEnqueueFailure, IoSubNode,
+    ShmemDeliveryFailure, ShmemDeliveryResult, ShmemDequeueResult, ShmemInboxProcess,
 };

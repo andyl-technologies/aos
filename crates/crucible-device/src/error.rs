@@ -20,6 +20,9 @@ use crate::ninep::codec::NinepCodecError;
 /// loudly and reproducibly.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DeviceError {
+    /// The retained I/O queue revision cannot advance without wrapping.
+    #[error("I/O queue revision is exhausted")]
+    IoQueueRevisionExhausted,
     /// An explorer-supplied draw vector does not match the active fault table.
     #[error("invalid injected network draw vector: {message}")]
     InvalidInjectedDraws {

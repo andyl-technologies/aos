@@ -216,9 +216,7 @@ pub(super) fn round_trip(dev: &mut NinepDevice, t: u64, req: &[u8]) -> (u64, Vec
     ok(dev.submit(request_tick, req));
     let lim = dev.core().next_exact_local_event().unwrap_or(request_tick);
     ok(dev.advance_to(lim));
-    let reply = dev
-        .next_response()
-        .unwrap_or_else(|| panic!("expected a reply"));
+    let reply = ok(dev.next_response()).unwrap_or_else(|| panic!("expected a reply"));
     (lim, reply)
 }
 

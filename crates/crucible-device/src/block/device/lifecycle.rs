@@ -38,9 +38,7 @@ impl BlockDevice {
         let uniform = Request::new(request_icount, request.request_id, wire);
         self.core
             .enqueue_request(uniform)
-            .map_err(|rejected| DeviceError::RingFull {
-                capacity: rejected.capacity,
-            })?;
+            .map_err(|rejected| rejected.source)?;
         // Borrow split: process_inbox needs `&mut self.core` and `&mut device`
         // simultaneously, so serve through a detached server view.
         Self::process_pending(
@@ -211,6 +209,7 @@ impl BlockDevice {
         core.check_response_sequence_capacity(immediate.len())?;
 
         let mut inflight = Vec::with_capacity(core.inflight_len().saturating_sub(1));
+        let mut rewrites_remaining = false;
         for mut pending in core.take_inflight_from_snapshot() {
             if pending.key == event.key {
                 continue;
@@ -243,11 +242,21 @@ impl BlockDevice {
                             )
                         }
                     };
-                    pending.response = block_response_to_uniform_device(&replacement)?;
+                    let replacement = block_response_to_uniform_device(&replacement)?;
+                    rewrites_remaining |= replacement != pending.response;
+                    pending.response = replacement;
                 }
             }
             inflight.push(pending);
         }
+        // The selected reset is published before this rewrite commits. Reserve
+        // the whole queue transaction budget before that irreversible publication.
+        let transactions = immediate
+            .len()
+            .checked_add(1)
+            .and_then(|count| count.checked_add(usize::from(rewrites_remaining)))
+            .ok_or(DeviceError::IoQueueRevisionExhausted)?;
+        core.check_queue_revision_capacity(transactions)?;
         Ok(PreparedBlockTransportReset {
             storage_faults: next_faults,
             inflight,
@@ -260,8 +269,9 @@ impl BlockDevice {
         storage_faults: &mut BlockFaultState,
         prepared: PreparedBlockTransportReset,
     ) -> Result<(), DeviceError> {
-        let _discarded = core.take_inflight();
-        core.replace_inflight(prepared.inflight);
+        core.check_queue_rewrite_capacity(&prepared.inflight, prepared.immediate.len())?;
+        core.check_response_sequence_capacity(prepared.immediate.len())?;
+        core.replace_inflight(prepared.inflight)?;
         *storage_faults = prepared.storage_faults;
         for response in prepared.immediate {
             core.schedule_response_now(response)?;
@@ -531,7 +541,7 @@ impl BlockDevice {
     /// can surface only if the outbound ring was restored from an untrusted
     /// snapshot whose bytes were not produced by this codec.
     pub fn next_response(&mut self) -> Result<Option<BlockResponse>, DeviceError> {
-        match self.core.pop_response() {
+        match self.core.pop_response()? {
             Some(pending) => {
                 let decoded =
                     BlockResponse::decode(&pending.response.payload).map_err(DeviceError::Codec)?;

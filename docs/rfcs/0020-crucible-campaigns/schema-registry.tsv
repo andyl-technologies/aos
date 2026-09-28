@@ -372,7 +372,7 @@ crucible.whitebox-doorbell.instruction	4	crucible-protocol::doorbell_abi	process
 # Crucible/QEMU and device formats
 crucible.device.block-fault-state	3	crucible-device::block::fault::checkpoint_codec	device-state	gate:exact-closure-streaming
 crucible.device.block-snapshot	4	crucible-device::block::device::snapshot	device-state	gate:exact-closure-streaming
-crucible.device.io-core-snapshot	4	crucible-device::subnode::snapshot	device-state	gate:exact-closure-streaming
+crucible.device.io-core-snapshot	5	crucible-device::subnode::snapshot	device-state	gate:exact-closure-streaming
 crucible.device.link-snapshot	4	crucible-device::netlink::link::snapshot	device-state	gate:exact-closure-streaming
 crucible.device.ninep-snapshot	4	crucible-device::ninep::device::snapshot	device-state	gate:exact-closure-streaming
 crucible.device.ninep.fs-tree	1	crucible-device::ninep::tree	device-state	gate:exact-closure-streaming

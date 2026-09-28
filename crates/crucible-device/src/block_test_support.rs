@@ -51,7 +51,7 @@ pub(super) fn run_sequence(skew: usize) -> Vec<(u64, Vec<u8>)> {
         ok(dev.submit(t, req));
         let lim = dev.core().next_exact_local_event().unwrap_or(t);
         ok(dev.advance_to(lim));
-        while let Some(pending) = dev.core_mut().pop_response() {
+        while let Some(pending) = ok(dev.core_mut().pop_response()) {
             out.push((pending.delivery_icount(), pending.response.payload));
         }
         t = lim;

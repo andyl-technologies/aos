@@ -2,6 +2,7 @@
 
 use super::test_support::*;
 use super::*;
+use crate::{DeviceError, IoCore};
 use crucible_shmem::{FrameEntry, KIND_VM, NodeSlot, RingHeader};
 
 #[test]
@@ -341,4 +342,93 @@ fn latency_depends_only_on_op_and_count() {
     // Saturating: a hostile per-byte parameter cannot overflow.
     let huge = BlockLatency::new(1000, 1500, 500, 100, u64::MAX);
     assert_eq!(huge.latency_for(BlockOp::Read, u32::MAX), u64::MAX);
+}
+
+fn reset_revision_fixture(with_victim: bool) -> BlockDevice {
+    let latency = BlockLatency::new(100, 100, 0, 0, 0);
+    let mut dev = device_with_latency(PAGE_SIZE, latency);
+    let trigger = BlockRequest::get_length(41).with_identity(BlockRequestIdentity::new(7, 41));
+    let victim = BlockRequest::read(42, 0, 8).with_identity(BlockRequestIdentity::new(7, 42));
+    let transition = ResolvedBlockControllerTransition {
+        failure_result: BlockFaultResult::IoError,
+        unadmitted: BlockTransitionUnadmitted::WaitForRecovery,
+        queued: BlockTransitionPending::Fail,
+        executing: BlockTransitionPending::RetryPreserveId,
+        resolved: BlockTransitionResolved::Complete,
+        completed_undelivered: BlockTransitionUndelivered::RetryNewId,
+        controller_buffer: BlockTransitionState::Preserve,
+        volatile_cache: BlockTransitionState::Preserve,
+        request_ids: BlockTransportRequestIds::NewEpochFromZero,
+        duplicate_history: BlockTransitionState::Lose,
+        topology: BlockTransitionTopology::Preserve,
+        recovery_nanos: 25,
+    };
+    let mut directive = ResolvedBlockFaultDirective::fault_free(&trigger, PAGE_SIZE as u64);
+    directive.duplicate_completions = vec![ResolvedBlockDuplicateCompletion::Reset {
+        gap_nanos: 10,
+        transition,
+    }];
+    ok(dev.install_storage_fault_directive(trigger.identity(), directive));
+
+    ok(dev.submit(0, &trigger));
+    if with_victim {
+        ok(dev.submit(0, &victim));
+    }
+    dev
+}
+
+#[test]
+fn reset_queue_rewrite_exhaustion_refuses_before_shared_publication() {
+    let mut dev = reset_revision_fixture(true);
+    let mut snapshot = dev.core().snapshot();
+    snapshot.queue_revision = std::num::NonZeroU64::new(u64::MAX - 2)
+        .unwrap_or_else(|| panic!("nonzero fixture revision"));
+    *dev.core_mut() = ok(IoCore::restore(&snapshot));
+    let outbox = RingHeader::new();
+    let mut entries = vec![FrameEntry::default(); 4];
+    let consumer = NodeSlot::new(KIND_VM);
+    assert_eq!(
+        ok(dev.advance_to_shmem(0, &outbox, &mut entries, &consumer)).delivered,
+        1
+    );
+    assert!(ok(outbox.dequeue(&entries)).is_some());
+    let before = dev.snapshot();
+    let consumer_before = consumer.snapshot();
+
+    assert_eq!(
+        dev.advance_to_shmem(10_000, &outbox, &mut entries, &consumer),
+        Err(DeviceError::IoQueueRevisionExhausted)
+    );
+    assert_eq!(dev.snapshot(), before);
+    assert_eq!(consumer.snapshot(), consumer_before);
+    assert!(ok(outbox.dequeue(&entries)).is_none());
+}
+
+#[test]
+fn reset_without_remaining_rewrite_uses_only_actual_publication_revision() {
+    let mut dev = reset_revision_fixture(false);
+    let outbox = RingHeader::new();
+    let mut entries = vec![FrameEntry::default(); 4];
+    let consumer = NodeSlot::new(KIND_VM);
+    assert_eq!(
+        ok(dev.advance_to_shmem(0, &outbox, &mut entries, &consumer)).delivered,
+        1
+    );
+    assert!(ok(outbox.dequeue(&entries)).is_some());
+    let mut snapshot = dev.core().snapshot();
+    snapshot.queue_revision = std::num::NonZeroU64::new(u64::MAX - 1)
+        .unwrap_or_else(|| panic!("nonzero fixture revision"));
+    *dev.core_mut() = ok(IoCore::restore(&snapshot));
+
+    assert_eq!(
+        ok(dev.advance_to_shmem(10_000, &outbox, &mut entries, &consumer)).delivered,
+        1
+    );
+    assert_eq!(dev.core().queue_revision(), std::num::NonZeroU64::MAX);
+    assert_eq!(dev.storage_fault_state().transport_epoch(), Some(8));
+    let reset = ok(outbox.dequeue(&entries)).unwrap_or_else(|| panic!("reset publication missing"));
+    assert_eq!(
+        ok(BlockResponse::decode(ok(reset.payload()))).status,
+        BlockStatus::TransportReset
+    );
 }
