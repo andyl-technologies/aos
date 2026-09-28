@@ -819,10 +819,22 @@ impl BlockFaultState {
                         &directive.persistence_media_rules,
                         &mut bytes,
                     );
-                    // Registration can survive a later read refusal. A
-                    // successful selected read advances real page counters.
-                    self.observation_changed |= self.flash.continuations().len() != registered
-                        || (result.is_ok() && request.count != 0);
+                    // Registration can survive a later read refusal. Mirror
+                    // the successful read's actual page range: even a zero-
+                    // byte read inside a page advances its disturb counter.
+                    // Success guarantees validated nonzero page geometry.
+                    let touched_pages = result.is_ok()
+                        && request
+                            .offset
+                            .checked_add(u64::from(request.count))
+                            .is_some_and(|end| {
+                                directive.persistence_media_rules.iter().any(|rule| {
+                                    request.offset / rule.program_page_bytes
+                                        <= end.saturating_sub(1) / rule.program_page_bytes
+                                })
+                            });
+                    self.observation_changed |=
+                        self.flash.continuations().len() != registered || touched_pages;
                     result?;
                 }
                 self.flash
