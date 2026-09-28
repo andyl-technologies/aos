@@ -1418,6 +1418,7 @@ in
               build/tests/unit/test-crucible-vfio-timer --tap
               build/tests/unit/test-crucible-vga-blink --tap
               build/tests/unit/test-crucible-rtc-phase --tap
+              build/tests/unit/test-crucible-nvme-phase --tap
               # A nested poll must retain the active BH until callback accounting ends.
               build/tests/unit/test-aio --tap -p /aio/bh/callback-delete/nested
               build/tests/unit/test-aio --tap -p /aio/bh/callback-delete/nested-oneshot
