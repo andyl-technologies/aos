@@ -328,7 +328,16 @@ fn role_keys(
     Ok(keys)
 }
 
-fn require_policy_match(root: &RootMetadataV1, plan: &ReleasePlanV1, role: TufRole) -> Result<()> {
+/// Requires one root role to retain its exact frozen release signer policy.
+///
+/// # Errors
+///
+/// Returns an error for a missing role or different key IDs or threshold.
+pub(super) fn require_policy_match(
+    root: &RootMetadataV1,
+    plan: &ReleasePlanV1,
+    role: TufRole,
+) -> Result<()> {
     let policy = root_policy(root, role)?;
     let requirement = plan_requirement(plan, role)?;
     let mut root_ids = policy.key_ids.clone();

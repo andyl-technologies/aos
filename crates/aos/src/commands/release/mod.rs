@@ -18,6 +18,7 @@ mod finalize_registry;
 mod hub_transition;
 mod plan;
 mod promote;
+mod publication_metadata;
 mod qualification_executor;
 mod qualification_run;
 mod qualification_transition;
