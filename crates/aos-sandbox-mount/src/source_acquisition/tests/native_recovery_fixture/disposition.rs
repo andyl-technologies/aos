@@ -1033,7 +1033,8 @@ fn release_inventory_floor_rejects_invented_observation_after_protected_reopen()
     // Preserve the signed Release, projection, and lineage; only invent one
     // preceding Complete Inventory, then reseal the ordinary record digest.
     let mut forged = original.clone();
-    forged.revision += 1;
+    // Corrupt the retained row in place. A revision advance would fail the
+    // reserved-attempt causal join before reaching the observation-floor check.
     forged
         .release_inventory_fence
         .as_mut()
@@ -1049,7 +1050,8 @@ fn release_inventory_floor_rejects_invented_observation_after_protected_reopen()
     assert!(
         error
             .to_string()
-            .contains("Release Inventory fence observation floor does not reproduce")
+            .contains("Release Inventory fence observation floor does not reproduce"),
+        "unexpected protected-graph rejection: {error}"
     );
 
     // Bypass the planner only to model hostile protected-record corruption.
