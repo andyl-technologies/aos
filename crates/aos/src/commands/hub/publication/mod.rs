@@ -19,6 +19,19 @@ use aos_remote::{HubClient, hub_rpc as HubTopologyMethod, hub_types};
 use futures_util::stream;
 use futures_util::stream::{StreamExt as _, TryStreamExt as _};
 
+#[cfg(test)]
+/// Inventories an offline fixture through the actual publication adapter.
+///
+/// # Errors
+///
+/// Returns an error for inadmissible paths, Git pointers, or NAR identities.
+pub(crate) fn inspect_publication_for_test(
+    root: &std::path::Path,
+    registry: &str,
+) -> Result<hub_types::BeginRegistryPublicationRequest> {
+    Ok(publication_from_root(root, registry)?.request)
+}
+
 /// Handles the hub publish command family through the public API.
 ///
 /// # Errors
@@ -181,7 +194,6 @@ async fn upload_registry_publication_with_commit(
         let (immutable_objects, pointer_objects) = objects.split_at(pointer_start);
 
         upload_publication_object_class(
-            &client,
             access,
             &publication_id,
             &pinned.root,
@@ -192,7 +204,6 @@ async fn upload_registry_publication_with_commit(
         )
         .await?;
         upload_publication_object_class(
-            &client,
             access,
             &publication_id,
             &pinned.root,
@@ -233,7 +244,6 @@ async fn upload_registry_publication_with_commit(
 
 /// Uploads one publication class with bounded request concurrency.
 async fn upload_publication_object_class(
-    client: &HubClient,
     access: &HubAccessArgs,
     publication_id: &str,
     root: &std::os::fd::OwnedFd,
@@ -337,7 +347,6 @@ async fn upload_publication_object_class(
                 None
             };
             upload_declared_publication_object(
-                client,
                 access,
                 publication_id,
                 root,
@@ -357,7 +366,6 @@ async fn upload_publication_object_class(
 }
 
 async fn upload_declared_publication_object(
-    client: &HubClient,
     access: &HubAccessArgs,
     publication_id: &str,
     root: &std::os::fd::OwnedFd,
@@ -379,7 +387,10 @@ async fn upload_declared_publication_object(
         .await
         .with_context(|| format!("uploading publication path {}", object.path))
     } else {
-        client
+        // Object queues can outlive an access token. Resolve the saved profile
+        // at dispatch, just as multipart operations do for each bounded part.
+        publication_client(access)
+            .await?
             .upload_publication_object(&object.upload_url, file, &object.path)
             .await
             .with_context(|| format!("uploading publication path {}", object.path))?;

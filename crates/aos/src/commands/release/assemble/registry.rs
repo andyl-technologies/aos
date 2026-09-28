@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use aos_package::registry::release::{FinalizedRegistryRelease, RegistryStaticSurfaceFile};
 use aos_package::registry::static_upload::collect_static_origin_files;
 use aos_release::artifact::{ArtifactKind, BundlePath};
@@ -47,7 +47,7 @@ pub(super) fn assemble(
             .get(file.relative_path.as_str())
             .with_context(|| format!("unreviewed registry path {}", file.relative_path))?;
         validate_identity(identity, &file)?;
-        let relative = format!("registry/{}", file.relative_path);
+        let relative = file.relative_path.clone();
         BundlePath::parse(relative.clone())?;
         let id = format!(
             "registry/{}",
@@ -58,7 +58,31 @@ pub(super) fn assemble(
             expected: Some((identity.byte_size, Sha256Digest::parse(&identity.sha256)?)),
             ..ArtifactAttributes::plain(file.content_type)
         };
-        payload.copy(
+        if relative == "HEAD" {
+            // Retain the finalized author's HEAD as evidence while staging
+            // keeps discovery on the approved base until a channel operation.
+            payload.copy(
+                &file.source,
+                id,
+                ArtifactKind::RegistryObject,
+                "registry/HEAD".to_owned(),
+                attributes,
+            )?;
+            let head = format!("{}\n", plan.registry_base_commit);
+            let source = payload.root.join(".publication-head");
+            super::write_new(&source, head.as_bytes())?;
+            let copied = payload.copy_origin(
+                &source,
+                "registry/publication-head".to_owned(),
+                ArtifactKind::RegistryObject,
+                relative,
+                ArtifactAttributes::exact("text/plain", head.as_bytes())?,
+            );
+            std::fs::remove_file(&source)?;
+            copied?;
+            continue;
+        }
+        payload.copy_origin(
             &file.source,
             id,
             ArtifactKind::RegistryObject,
