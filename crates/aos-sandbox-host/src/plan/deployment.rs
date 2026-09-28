@@ -1,9 +1,9 @@
 //! Non-authorizing startup verification of deployed Host backend evidence.
 //!
-//! A missing optional phase-0 credential preserves observation-only service;
-//! a present invalid credential or independent probe report fails startup.
-//! Successful partial verification retains a revalidatable proof but never
-//! constructs `NspawnConfig`.
+//! A missing optional phase-0 credential preserves observation-only service.
+//! When a signed fixed-target report is configured, the installed Host still
+//! repeats the zero-capability pidfd inspection before serving requests.
+//! Successful partial verification never constructs `NspawnConfig`.
 
 use std::fs::File;
 use std::io::Read as _;
@@ -16,6 +16,8 @@ use aos_sandbox_linux::pidfd::{NamespaceKind, PidFd};
 use aos_systemd::{OwnedValue, SandboxUnitSpec, SystemdClient};
 use ed25519_dalek::VerifyingKey;
 use rustix::fs::{Mode, OFlags, open};
+#[cfg(target_arch = "x86_64")]
+use serde::Deserialize;
 
 use super::readiness::verified_packaged_nspawn_digest;
 use super::{
@@ -32,6 +34,28 @@ const PROBE_DIRECTORY: &str = "/var/lib/aos/sandbox-host-phase0";
 const PROBE_RECORD: &str = "probe-v2";
 const PROBE_PUBLIC_KEY: &str = "phase0-probe-public-key-v1";
 const PROBE_TARGET_SERVICE: &str = "aos-sandbox-host-phase0-target.service";
+const HOST_SERVICE: &str = "aos-sandbox-hostd.service";
+const HOST_FILTER_PROPERTIES: &[&str] = &[
+    "SystemCallFilter",
+    "SystemCallArchitectures",
+    "SystemCallErrorNumber",
+];
+
+// PID 1 uses this profile's filter tokens. The sorted syscall expansion pins
+// systemd 261.2 on x86_64 and must be requalified against live PID 1 on change.
+#[cfg(target_arch = "x86_64")]
+const HOST_SYSCALL_PROFILE: &str = include_str!("host_syscall_profile_v1.json");
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostSyscallProfileV1 {
+    architectures: Vec<String>,
+    #[serde(rename = "syscallsX86_64")]
+    syscalls_x86_64: Vec<String>,
+    error_number: String,
+}
+
 // This must match the fixed inspector's target-unit readback policy.
 const TARGET_HARDENING_PROPERTIES: &[&str] = &[
     "NoNewPrivileges",
@@ -156,7 +180,8 @@ impl VerifiedPhase0ClaimV1 {
 /// The protected phase-0 credential is optional because Host observation must
 /// remain available before independent shifted-payload and payload-root
 /// producers exist. A separately configured signed shifted-target probe is
-/// always verified, even when this credential is absent.
+/// verified and physically reinspected by the installed Host even when this
+/// credential is absent.
 ///
 /// # Errors
 ///
@@ -182,9 +207,10 @@ pub async fn verify_optional_backend_deployment_v1(
 /// Produces a non-authorizing proof of the installed phase-0 claim.
 ///
 /// The optional protected readiness credential permits observation-only Host
-/// service when absent. A present claim requires exact independent readback
-/// and returns an owned proof that can be revalidated without trusting the
-/// original publisher. The remaining blockers still prohibit `NspawnConfig`.
+/// service when absent, but cannot bypass an installed signed fixed-target
+/// probe. A present claim requires exact independent readback and returns an
+/// owned proof that can be revalidated without trusting the original publisher.
+/// The remaining blockers still prohibit `NspawnConfig`.
 ///
 /// # Errors
 ///
@@ -207,6 +233,25 @@ pub async fn verify_optional_phase0_claim_v1(
         nspawn_executable,
     )?
     else {
+        // A signed fixed-target report is useful before a readiness publisher
+        // exists only if the installed, zero-capability Host can repeat its
+        // pidfd inspection. The absence of a readiness claim cannot skip it.
+        if let Some((digest, observation)) = probe {
+            let systemd = SystemdClient::connect()
+                .await
+                .map_err(|error| HostError::State(format!("PID 1 bus unavailable: {error}")))?;
+            verify_host_shifted_target_access(&systemd, observation).await?;
+            let final_probe = verify_optional_protected_phase0_probe(
+                credential_directory,
+                nspawn_executable,
+                selinux_policy,
+            )?;
+            if final_probe != Some((digest, observation)) {
+                return Err(HostError::State(
+                    "phase-0 probe changed during Host readback".to_owned(),
+                ));
+            }
+        }
         return Ok(None);
     };
 
@@ -348,6 +393,9 @@ async fn verify_host_shifted_target_access(
     systemd: &SystemdClient,
     expected: Phase0ProbeObservationV2,
 ) -> Result<()> {
+    let host_pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
+        .map_err(|_| HostError::State("Host PID is invalid".to_owned()))?;
+    verify_live_host_filter(systemd, host_pid).await?;
     verify_zero_capability_host_status()?;
 
     let service = systemd
@@ -415,6 +463,8 @@ async fn verify_host_shifted_target_access(
         .info()
         .map_err(|error| HostError::State(format!("shifted target recheck failed: {error}")))?;
     verify_live_target_unit_hardening(systemd, expected.target_pid).await?;
+    verify_live_host_filter(systemd, host_pid).await?;
+    verify_zero_capability_host_status()?;
     if before != after
         || anchor
             .verify_exact_membership(&target)
@@ -434,6 +484,74 @@ async fn verify_host_shifted_target_access(
         ));
     }
     Ok(())
+}
+
+async fn verify_live_host_filter(systemd: &SystemdClient, host_pid: u32) -> Result<()> {
+    // PID 1's current unit properties are observation evidence, not a seal on
+    // the seccomp program loaded at this process's exec. They cannot open launch.
+    let values = systemd
+        .observe_pid1_service_properties(HOST_SERVICE, host_pid, HOST_FILTER_PROPERTIES)
+        .await
+        .map_err(|error| HostError::State(format!("Host unit readback failed: {error}")))?;
+    verify_host_filter_properties(&values)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn verify_host_filter_properties(values: &[OwnedValue]) -> Result<()> {
+    let [filter, architectures, error_number] = values else {
+        return Err(HostError::State(
+            "Host seccomp policy readback is incomplete".to_owned(),
+        ));
+    };
+    let (allow_list, syscalls) = <(bool, Vec<String>)>::try_from(
+        filter
+            .try_clone()
+            .map_err(|_| HostError::State("Host seccomp filter cannot be cloned".to_owned()))?,
+    )
+    .map_err(|_| HostError::State("Host seccomp filter is malformed".to_owned()))?;
+    let architectures =
+        Vec::<String>::try_from(architectures.try_clone().map_err(|_| {
+            HostError::State("Host seccomp architectures cannot be cloned".to_owned())
+        })?)
+        .map_err(|_| HostError::State("Host seccomp architectures are malformed".to_owned()))?;
+    let error_number = i32::try_from(
+        error_number
+            .try_clone()
+            .map_err(|_| HostError::State("Host seccomp errno cannot be cloned".to_owned()))?,
+    )
+    .map_err(|_| HostError::State("Host seccomp errno is malformed".to_owned()))?;
+    let profile: HostSyscallProfileV1 = serde_json::from_str(HOST_SYSCALL_PROFILE)
+        .map_err(|error| HostError::State(format!("Host seccomp manifest is invalid: {error}")))?;
+    if !profile
+        .syscalls_x86_64
+        .windows(2)
+        .all(|pair| pair[0] < pair[1])
+    {
+        return Err(HostError::State(
+            "Host seccomp manifest is not canonical".to_owned(),
+        ));
+    }
+
+    let mut syscalls = syscalls;
+    syscalls.sort_unstable();
+    if !allow_list
+        || architectures != profile.architectures
+        || syscalls != profile.syscalls_x86_64
+        || profile.error_number != "EPERM"
+        || error_number != rustix::io::Errno::PERM.raw_os_error()
+    {
+        return Err(HostError::State(
+            "PID 1 Host seccomp policy differs from the fixed profile".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn verify_host_filter_properties(_values: &[OwnedValue]) -> Result<()> {
+    Err(HostError::State(
+        "Host phase-0 seccomp profile is not qualified for this architecture".to_owned(),
+    ))
 }
 
 async fn verify_live_target_unit_hardening(systemd: &SystemdClient, target_pid: u32) -> Result<()> {
@@ -594,6 +712,8 @@ fn read_protected_exact(path: &Path, length: usize) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_arch = "x86_64")]
+    use super::{HOST_SYSCALL_PROFILE, HostSyscallProfileV1, verify_host_filter_properties};
     use super::{
         matching_signed_probe, verify_shifted_process_identity, verify_shifted_service_pid,
         verify_target_unit_hardening, verify_zero_capability_status,
@@ -666,6 +786,64 @@ Seccomp_filters:\t1\n";
         ] {
             assert!(verify_zero_capability_status(&changed).is_err());
         }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn host_pid1_filter_requires_the_installed_allow_list_and_architecture() {
+        let profile: HostSyscallProfileV1 = serde_json::from_str(HOST_SYSCALL_PROFILE).unwrap();
+        let syscalls = profile.syscalls_x86_64;
+        let filter = |allowed: bool, names: Vec<String>| {
+            OwnedValue::try_from(Value::from((allowed, names))).unwrap()
+        };
+        let architectures = |names: Vec<String>| OwnedValue::try_from(Value::from(names)).unwrap();
+        let errno = |number: i32| OwnedValue::try_from(Value::from(number)).unwrap();
+        let values = [
+            filter(true, syscalls.clone()),
+            architectures(profile.architectures.clone()),
+            errno(rustix::io::Errno::PERM.raw_os_error()),
+        ];
+        assert!(verify_host_filter_properties(&values).is_ok());
+
+        let mut widened = syscalls.clone();
+        widened.push("ptrace".to_owned());
+        let mut widened_keyring = syscalls.clone();
+        widened_keyring.push("keyctl".to_owned());
+        for changed in [
+            [
+                filter(false, syscalls.clone()),
+                architectures(vec!["native".to_owned()]),
+                errno(rustix::io::Errno::PERM.raw_os_error()),
+            ],
+            [
+                filter(true, widened),
+                architectures(vec!["native".to_owned()]),
+                errno(rustix::io::Errno::PERM.raw_os_error()),
+            ],
+            [
+                filter(true, widened_keyring),
+                architectures(vec!["native".to_owned()]),
+                errno(rustix::io::Errno::PERM.raw_os_error()),
+            ],
+            [
+                filter(true, vec!["read".to_owned()]),
+                architectures(vec!["native".to_owned()]),
+                errno(rustix::io::Errno::PERM.raw_os_error()),
+            ],
+            [
+                filter(true, syscalls.clone()),
+                architectures(Vec::new()),
+                errno(1),
+            ],
+            [
+                filter(true, syscalls),
+                architectures(vec!["native".to_owned()]),
+                errno(38),
+            ],
+        ] {
+            assert!(verify_host_filter_properties(&changed).is_err());
+        }
+        assert!(verify_host_filter_properties(&values[..1]).is_err());
     }
 
     #[test]

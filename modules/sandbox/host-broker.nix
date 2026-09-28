@@ -9,6 +9,9 @@
   controller = config.aos.sandbox.controller;
   canonicalReadback = pkgs.aosSelinuxKernelPolicyReadbackForKernel config.system.build.kernel;
   canonicalReadbackPath = "${canonicalReadback}/policy.33";
+
+  # One image-owned profile drives both PID 1's unit and Host's exact readback.
+  hostSyscallProfile = builtins.fromJSON (builtins.readFile ../../crates/aos-sandbox-host/src/plan/host_syscall_profile_v1.json);
   brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
   brokerSessionEndpoints = [
     {
@@ -155,6 +158,10 @@ in {
       ++ brokerSessionConfiguration.assertions
       ++ [
         {
+          assertion = pkgs.systemd.version == hostSyscallProfile.systemdVersion;
+          message = "Host seccomp profile requires systemd ${hostSyscallProfile.systemdVersion}";
+        }
+        {
           assertion =
             (cfg.credentials.opensshAttachTrust == null)
             == (cfg.credentials.opensshAttachGrantPublicKey == null);
@@ -229,14 +236,12 @@ in {
 
     systemd.services.aos-sandbox-hostd = {
       description = "AOS fixed-function sandbox host broker";
-      requires =
-        [
-          "aos-sandbox-hostd.socket"
-          "aos-sandbox-host-root-mount.socket"
-          "aos-sandbox-host-storage.socket"
-          "dbus.socket"
-        ]
-        ++ lib.optional phase0ProbeActive "aos-sandbox-host-phase0-inspector.service";
+      requires = [
+        "aos-sandbox-hostd.socket"
+        "aos-sandbox-host-root-mount.socket"
+        "aos-sandbox-host-storage.socket"
+        "dbus.socket"
+      ];
       after =
         [
           "aos-sandbox-hostd.socket"
@@ -247,6 +252,8 @@ in {
         ]
         ++ lib.optional phase0ProbeActive "aos-sandbox-host-phase0-inspector.service";
       unitConfig = {
+        # An exited probe cannot remain authoritative after its target dies.
+        BindsTo = lib.optional phase0ProbeActive "aos-sandbox-host-phase0-inspector.service";
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
       };
@@ -275,10 +282,9 @@ in {
         RuntimeDirectoryMode = "0710";
         UMask = "0077";
 
-        # hostd probes the pidfs namespace ioctls against itself under this
-        # exact service sandbox. Do not grant CAP_SYS_PTRACE merely to cross
-        # the distinct ptrace check for a user-namespace-shifted payload;
-        # launch remains gated until that narrow access is proven separately.
+        # hostd probes the fixed shifted target under this exact service
+        # sandbox. That does not prove access to a real nspawn payload; do not
+        # add CAP_SYS_PTRACE to make such access appear to work.
         CapabilityBoundingSet = "";
         DevicePolicy = "closed";
         LockPersonality = true;
@@ -299,6 +305,9 @@ in {
         RestrictNamespaces = true;
         RestrictRealtime = true;
         RestrictSUIDSGID = true;
+        SystemCallArchitectures = hostSyscallProfile.architectures;
+        SystemCallFilter = hostSyscallProfile.filter;
+        SystemCallErrorNumber = hostSyscallProfile.errorNumber;
       };
     };
 
@@ -308,7 +317,6 @@ in {
       serviceConfig = {
         Type = "exec";
         ExecStart = "${cfg.package}/bin/aos-sandbox-host-phase0-probe target";
-        RuntimeMaxSec = "60s";
         TimeoutStopSec = "1s";
         Restart = "no";
         User = "root";
@@ -334,9 +342,10 @@ in {
 
     systemd.services.aos-sandbox-host-phase0-inspector = lib.mkIf phase0ProbeActive {
       description = "AOS fixed privileged shifted-userns phase-0 inspector";
-      requires = ["aos-sandbox-host-phase0-target.service" "dbus.socket"];
+      requires = ["dbus.socket"];
       after = ["aos-sandbox-host-phase0-target.service" "dbus.socket" "local-fs.target"];
       before = ["aos-sandbox-hostd.service"];
+      unitConfig.BindsTo = ["aos-sandbox-host-phase0-target.service"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;

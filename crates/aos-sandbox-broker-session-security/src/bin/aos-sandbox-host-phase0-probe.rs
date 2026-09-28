@@ -14,7 +14,6 @@ use std::os::fd::OwnedFd;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use aos_sandbox_host::phase0_probe::{Phase0ProbeObservationV2, SignedPhase0ProbeRecordV2};
 use aos_sandbox_host::phase0_probe::{
@@ -55,8 +54,11 @@ fn run() -> Result<(), String> {
         arguments.next(),
     ) {
         (Some("target"), None, None, None) => {
-            std::thread::sleep(Duration::from_secs(60));
-            Ok(())
+            // PID 1 owns this fixed target's lifetime. Spurious wakeups must
+            // not retire a still-authoritative inspector report.
+            loop {
+                std::thread::park();
+            }
         }
         (Some("inspect"), Some(nspawn_path), Some(hostd_path), Some(selinux_policy)) => {
             if !rustix::process::getuid().is_root() || !rustix::process::geteuid().is_root() {

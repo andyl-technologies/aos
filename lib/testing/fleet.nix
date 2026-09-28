@@ -644,6 +644,14 @@
     #   nix-build -E '((import ./. {}).checks.fleet.<suite>.driverInteractive) "ssh-..."'
     testDrv
     // {
+      # Qualification can realize the exact effective root without building a
+      # compressed disk, firmware enrollment, or the fleet VM test itself.
+      rootfs = builtins.listToAttrs (map (machine: {
+          inherit (machine) name;
+          value = machine.system.config.system.build.image.raw.rootfs;
+        })
+        (builtins.filter (machine: machine.bootMode == "image") machineBuilds));
+
       driverInteractive = sshAuthorizedKey:
         if guestArchitecture != "x86_64"
         then

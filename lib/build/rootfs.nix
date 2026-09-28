@@ -46,6 +46,8 @@
 ##!   erofsCompressionLevel — zstd level for EROFS images (default 19).
 ##!                           Test variants may select a faster level without
 ##!                           weakening production image compression.
+##!   erofsDeduplication   — opt-in compressed data extent reuse across separate
+##!                          inodes; uses serial compression, never fragments.
 ##!
 ##! Output: `$out/root.img` (the ext4 image) and `$out/rootfs-size-bytes`
 ##! (the final image byte count, so the caller can size the partition).
@@ -67,6 +69,7 @@
   # roughly a third the size — for the immutable production boot image.
   fsType ? "ext4",
   erofsCompressionLevel ? 19,
+  erofsDeduplication ? false,
   # When true, format a deterministic dm-verity Merkle hash tree
   # over the finalized root.img and emit `root.verity` + `root.roothash`
   # (+ `root.roothash.p7s` when an SB db key is supplied) + `root-verity-size-
@@ -86,6 +89,14 @@
   kernelModulePackages ? [],
   firmwarePackages ? [],
 }: let
+  erofsCompressionWorkers =
+    if erofsDeduplication
+    then "0"
+    else "$NIX_BUILD_CORES";
+  erofsExtendedOptions = lib.concatStringsSep "," (
+    ["ztailpacking"] ++ lib.optional erofsDeduplication "dedupe"
+  );
+
   toplevel = system.config.system.build.toplevel;
   kernel = system.config.system.build.kernel;
   immutableSelinuxPolicy = system.config.system.build.immutableSelinuxPolicy;
@@ -196,6 +207,7 @@ in
           pkgs.util-linux
           pkgs.erofs-utils
         ]
+        ++ lib.optionals erofsDeduplication [pkgs.diffutils]
         # Verity sub-step tooling is gated so the non-verity path's
         # build environment (and thus its derivation hash) is unchanged.
         ++ lib.optionals verity [
@@ -498,8 +510,11 @@ in
                 #     erofs-utils 1.8 can occasionally publish one small file at
                 #     another file's fragment offset. `fsck.erofs` validates that
                 #     structurally sound image, but the extracted bytes are corrupt.
-                # Block dedupe was measured at 0 bytes saved — Nix store paths are
-                # content-addressed.
+                # Global data dedupe is opt-in: nested guest templates can copy
+                # the same store bytes beneath separate names and inodes. It
+                # shares only compressed extents, not inode metadata or xattrs.
+                # erofs-utils 1.9.4 disables MT for dedupe; select serial mode
+                # explicitly rather than advertising unused worker parallelism.
                 #
                 # --workers parallelizes the otherwise single-threaded zstd-19
                 # compression (hours on one core for the whole server closure).
@@ -527,12 +542,20 @@ in
                 mkfs.erofs --all-root ${lib.optionalString labelImmutableRoot "--tar=f"} \
                   -T0 \
                   -U bdfb6fc9-0000-4000-8000-000000000001 \
-                  --workers="$NIX_BUILD_CORES" \
+                  --workers="${erofsCompressionWorkers}" \
                   -z zstd,level=${toString erofsCompressionLevel} \
                   -C262144 \
-                  -Eztailpacking \
+                  -E${erofsExtendedOptions} \
                   -L ${label} root.img ${erofsSource}
                 fsck.erofs root.img >/dev/null
+                ${lib.optionalString erofsDeduplication ''
+                  # Structural checks alone do not prove decompressed bytes.
+                  # Compare all names, file contents, and symlink targets;
+                  # the independent native xattr reader below still checks
+                  # every labeled inode against the image-owned context map.
+                  fsck.erofs --extract=rootfs-data-readback root.img
+                  diff --recursive --no-dereference rootfs rootfs-data-readback
+                ''}
                 ${lib.optionalString labelImmutableRoot ''
                   ${nativePython}/bin/python3 -B \
                     ${policySupport}/verify_erofs_contexts.py \
