@@ -53,13 +53,22 @@ quota rejection and private completion identities. All 21 Native storage tests
 passed, including rejection of a paired Worker without manifest staging.
 The Worker handler passed Wasm compilation. All 13 real-TCP Native OCI tests
 also passed. The rebuilt shared application prerequisite passed all 3,980 tests,
-with six skipped. The full signed-container fleet has entered its four-machine
-execution; these prerequisite results do not yet qualify nonempty parity.
+with six skipped. The completed four-machine run successfully staged the real
+signed AOS container and completed publication. Index freshness then failed:
+the fixture attached the `aos` container without including its `aos` package in
+the signed package tree. Read-only SQL from an isolated copy of the retained
+Native disk confirmed this exact rejection. The fixture is being corrected;
+nonempty container parity remains unqualified.
 
 A separate four-VM browser attempt passed the captured transport setup, then
 timed out on Chrome's first navigation through a disposable SOCKS bridge. It
 completed zero browser assertions and does not qualify the Hybrid UI. The
 earlier Native-only Chrome result below remains separate evidence.
+
+The next browser attempt added an independent SOCKS HTTPS probe. That probe
+timed out before Chrome started, with no destination reaching the guest proxy.
+It completed zero browser checks and isolates a bridge transport problem;
+it does not establish a failure in the Hub's browser application.
 
 ## Qualified paths
 
@@ -219,6 +228,12 @@ has 256 bits of entropy; exact stored-byte and CRC32C readback passed in memory.
 No secret values entered source, state, command arguments or logs. Public signer
 trust maps and domain-probe configuration remain unprovisioned. These credentials
 have not yet been mounted in a serving revision.
+
+Native receipt signing seeds now use the same private credential reader as the
+database and other signing keys. Temporary encoded buffers are zeroized after
+initialization. Three focused tests passed for private seed reads, insecure
+permissions, symbolic and hard links, invalid UTF-8 and empty material without
+disclosing contents. This does not qualify a hosted receipt-key mount.
 
 This qualifies the database account, not a Cloud Run bootstrap execution or
 public Hybrid deployment. Signed serving delivery, credential mounts, origin

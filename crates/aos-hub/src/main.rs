@@ -30,6 +30,7 @@ mod database_input;
 mod indexing;
 mod logging;
 mod password_input;
+mod signing_input;
 
 use password_input::read_password;
 
@@ -892,9 +893,9 @@ async fn main() -> Result<()> {
                 qualification_keys_file,
             ) {
                 (Some(deployment_id), Some(key_id), Some(seed_path), Some(channel_key_id), Some(channel_seed_path), Some(publication_keys_path), Some(qualification_keys_path)) => {
-                    let seed = std::fs::read_to_string(&seed_path)
+                    let seed = signing_input::read_signing_seed_file(&seed_path)
                         .with_context(|| format!("reading release receipt key at {}", seed_path.display()))?;
-                    let channel_seed = std::fs::read_to_string(&channel_seed_path)
+                    let channel_seed = signing_input::read_signing_seed_file(&channel_seed_path)
                         .with_context(|| format!("reading channel receipt key at {}", channel_seed_path.display()))?;
                     let publication_keys_source = std::fs::read_to_string(&publication_keys_path)
                         .with_context(|| format!("reading publication keys at {}", publication_keys_path.display()))?;

@@ -71,6 +71,12 @@ files, invalid UTF-8 and empty contents before connecting. Only trailing CR/LF
 terminators are removed. Confirm these properties on the actual platform mount;
 a configured secret mode alone does not prove its observed filesystem metadata.
 
+Release and channel receipt seeds use the same private credential reader. Their
+UTF-8 standard-base64 text is trimmed before Ed25519 validation, and temporary
+encoded buffers are zeroized after authority initialization. Mount separate
+seeds for the two roles with distinct key IDs; public, symbolic or hard-linked
+files are rejected before authority configuration.
+
 ## Native container artifact
 
 The dedicated service image is exposed as `container-aos-hub-oci` and
