@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000..1863f1d
 --- /dev/null
 +++ b/src/core/aos-fuse-worker.c
-@@ -0,0 +1,266 @@
+@@ -0,0 +1,267 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +
 +#include <fcntl.h>
@@ -19,6 +19,7 @@ index 0000000..1863f1d
 +#include "fd-util.h"
 +#include "load-fragment.h"
 +#include "service.h"
++#include "set.h"
 +#include "socket-util.h"
 +#include "string-util.h"
 +

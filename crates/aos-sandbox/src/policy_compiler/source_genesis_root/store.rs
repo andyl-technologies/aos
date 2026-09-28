@@ -52,7 +52,7 @@ pub struct RootSourceGenesisAuthorityV1 {
     nonce: [u8; 16],
     controller_uid: u32,
     source_uid: u32,
-    accepted: Option<VerifiedControllerSourceGenesisReadbackV1>,
+    pub(super) accepted: Option<VerifiedControllerSourceGenesisReadbackV1>,
 }
 
 impl RootSourceGenesisAuthorityV1 {
@@ -517,13 +517,7 @@ impl RootSourceGenesisAuthorityV1 {
             verify_source_tree_genesis_readback_v1(source_packet, &self.pins.source, challenge)
                 .map_err(|_| SourceGenesisErrorV1::Stale)?;
         require_same_source_cut(accepted, &observed)?;
-        if observed.state() != SourceTreeGenesisStateV1::Anchored
-            || observed.receipt() != Some(floor.receipt())
-            || observed.ack_floor_digest() != Some(floor.digest())
-            || observed.ack_record_digest().is_none()
-        {
-            return Err(SourceGenesisErrorV1::Conflict);
-        }
+        super::current::require_anchored_observation(&observed, floor)?;
         self.recheck()
     }
 
@@ -587,7 +581,7 @@ impl RootSourceGenesisAuthorityV1 {
             .transpose()
     }
 
-    fn floor(
+    pub(super) fn floor(
         &self,
         project: ProjectId,
     ) -> Result<Option<SourceHierarchyFloorRecordV1>, SourceGenesisErrorV1> {

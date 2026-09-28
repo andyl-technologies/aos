@@ -69,6 +69,24 @@ that seed. Cold replay must require the same signature, receipt, heads, and
 anti-rollback floor. A signed seed packet or locally valid tree alone does not
 create ancestry authority and cannot open Create.
 
+For the explicit Local protected-Root fresh-install profile in section 09,
+the independent floor owner is the actual protected Root journal, acquired
+last while the original Controller and Source writers remain held. The normal
+Root continuation compares its current generation-one `AOSHGF01` row with a
+fresh independently pinned Source Anchored observation and the dedicated held
+Controller completed readback. It retains that actual owner borrow through the
+original final exchange. Structural `AOSHSF01` recovery or copied signatures
+cannot substitute for this continuation. It is only the Source-floor component
+of a later read barrier, not a ContentRead grant, a client-origin proof, or
+authority to append generation two.
+
+This selected profile trusts protected Root state plus kernel/PID1 and does
+not claim resistance to whole-host disk rollback. It requires neither a new
+Source TPM index nor an off-host principal. The method46 Storage TPM floor has
+its own two-endpoint scope and cannot supply Source ancestry authority. Later
+ancestry mutations require a distinct exact administrative successor and
+semantic predecessor CAS; initial genesis receipts cannot authorize them.
+
 ## Execution admission and observation
 
 `CreateExecution` admission commits the accepted command, holder-proven public
