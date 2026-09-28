@@ -19,11 +19,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
-use aos_sandbox_linux::{PidFd, PidFdProcessIdentity};
+use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
 use aos_systemd::{OwnedValue, SystemdClient, Value};
 use rustix::fs::{Mode, OFlags, open};
 
-use super::super::{FloorEndpointV1, FloorErrorV1};
+use super::super::FloorErrorV1;
+use super::super::format::FloorEndpointV1;
 use super::image::MeasuredFileV1;
 
 const PROPERTY_TIMEOUT: Duration = Duration::from_secs(5);

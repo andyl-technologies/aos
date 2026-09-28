@@ -16,11 +16,9 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
     AuthenticatedBrokerOutcomeDirectionV1,
 };
-use rand::{TryRngCore as _, rngs::OsRng};
 
 use crate::controller_ownership::sample_ownership_clock;
 use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
-use crate::controller_publication::ControllerHostPublication;
 
 use super::{ProductionController, SharedControllerBrokerSessions};
 
@@ -64,8 +62,8 @@ pub(super) fn poll_one(
             return Ok(());
         };
 
-        let mut challenge = [0; 32];
-        OsRng.try_fill_bytes(&mut challenge).map_err(|_| denied())?;
+        let challenge = crate::entropy::nonzero_random::<32, _>(&mut crate::entropy::KernelEntropy)
+            .map_err(|_| denied())?;
         let consume =
             cut.prepare_host_consume_plan_v3(ObjectDigest::from_bytes(binding), challenge)?;
         let authorization = sign_borrowed_plan(&consume, signer)?;
