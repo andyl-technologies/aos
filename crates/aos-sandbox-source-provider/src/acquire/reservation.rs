@@ -145,6 +145,14 @@ pub(crate) fn reserve_acquire(
         .iter()
         .find(|(key, _)| key.acquisition_id == request.acquisition_id())
     {
+        crate::ledger::native_completion::validate_native_export_open_v1(
+            existing,
+            ledger
+                .recovered
+                .native_completions
+                .get(&existing.acquisition_id),
+        )
+        .map_err(crate::transaction::map_pure_ledger_error)?;
         if existing_key != &acquisition_key_value || existing.normalized_intent != normalized_intent
         {
             return Err(ProviderLedgerError::Equivocation);

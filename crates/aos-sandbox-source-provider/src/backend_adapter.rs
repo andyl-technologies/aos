@@ -1627,6 +1627,22 @@ fn execute_disposition(
                 )
                 .map(PreparedFixedProviderBackendOutcomeV1::Reply)
         }
+        ProviderAdmissionDispositionV1::Recover(ProviderRecoveryWorkV1::ObserveReleasing {
+            acquisition_id,
+            effect_id,
+        }) if ledger.recovered.acquisitions.values().any(|row| {
+            row.acquisition_id == acquisition_id
+                && crate::native_completion::is_native_dispatch_acquisition(row)
+        }) =>
+        {
+            ledger
+                .complete_native_release_status_from_original(
+                    acquisition_id,
+                    effect_id,
+                    signed_request,
+                )
+                .map(PreparedFixedProviderBackendOutcomeV1::Reply)
+        }
         ProviderAdmissionDispositionV1::Recover(work) => Ok(
             PreparedFixedProviderBackendOutcomeV1::Recovery(FixedProviderBackendRecoveryV1 {
                 work,
@@ -1705,6 +1721,21 @@ fn execute_disposition(
         ProviderAdmissionDispositionV1::Acquire(permit) => ledger
             .execute_acquire(permit, backend)
             .map(PreparedFixedProviderBackendOutcomeV1::Reply),
+        ProviderAdmissionDispositionV1::Release(permit)
+            if matches!(
+                permit.completion_capacity,
+                crate::transaction::CompletionCapacityV1::NativeReleaseStatus
+            ) =>
+        {
+            // This first prerequisite acknowledges an unresolved export fence,
+            // not Root custody absence or a physical Release completion.
+            ledger
+                .complete_release_disposition(
+                    permit,
+                    aos_sandbox_source_provider_protocol::SourceProviderStatus::Unavailable,
+                )
+                .map(PreparedFixedProviderBackendOutcomeV1::Reply)
+        }
         ProviderAdmissionDispositionV1::Release(permit) => {
             let (reply, tombstone) = ledger.execute_release(permit, backend)?;
             Ok(PreparedFixedProviderBackendOutcomeV1::Released { reply, tombstone })

@@ -111,6 +111,22 @@ fn prepare_finalized_builder(
     authorization: &super::ProviderOutcomeAuthorizationV1,
     finalized: aos_sandbox_source_provider_ledger::FinalizedCompletionV1,
 ) -> Result<ProviderCompletionBuilderV1, SourceProviderSecurityError> {
+    prepare_finalized_builder_with_native_status_capacity(
+        session,
+        journal,
+        authorization,
+        finalized,
+        None,
+    )
+}
+
+fn prepare_finalized_builder_with_native_status_capacity(
+    session: &mut CurrentProviderIngressSessionV1,
+    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    authorization: &super::ProviderOutcomeAuthorizationV1,
+    finalized: aos_sandbox_source_provider_ledger::FinalizedCompletionV1,
+    native_release_status_capacity: Option<aos_sandbox::GlobalCapacityReservationV1>,
+) -> Result<ProviderCompletionBuilderV1, SourceProviderSecurityError> {
     use sha2::{Digest as _, Sha256};
 
     let response = finalized.response().map(ToOwned::to_owned);
@@ -189,11 +205,26 @@ fn prepare_finalized_builder(
             ),
         })
         .collect();
-    let transaction = aos_sandbox::JournalTransaction::new(transaction_id, records)
+    let mut transaction = aos_sandbox::JournalTransaction::new(transaction_id, records)
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
     validate_prospective_completion(journal, &transaction)?;
+    if let Some(reservation) = &native_release_status_capacity {
+        // Only the three finalized status owner rows plus this exact deletion.
+        // The original Acquire floor is not consumed or replaced.
+        if transaction.records().len() != 3 {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        let mut records = transaction.records().to_vec();
+        records.push(reservation.settlement_record());
+        transaction = aos_sandbox::JournalTransaction::new(transaction_id, records)
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+    }
     let transactions = std::slice::from_ref(&transaction);
-    let preflight = match journal.preflight_transactions(transactions) {
+    let preflight_result = match &native_release_status_capacity {
+        Some(reservation) => journal.preflight_reserved_terminal_v1(reservation, &transaction),
+        None => journal.preflight_transactions(transactions),
+    };
+    let preflight = match preflight_result {
         Ok(preflight) => preflight,
         Err(_) => {
             return Err(poison_and_close(
@@ -203,9 +234,10 @@ fn prepare_finalized_builder(
             ));
         }
     };
-    if journal
-        .validate_preflight_for_effect(&preflight, transactions)
-        .is_err()
+    if native_release_status_capacity.is_none()
+        && journal
+            .validate_preflight_for_effect(&preflight, transactions)
+            .is_err()
     {
         return Err(poison_and_close(
             &mut session.custody,
@@ -231,6 +263,7 @@ fn prepare_finalized_builder(
         method,
         session_binding,
         response,
+        native_release_status_capacity,
     })
 }
 
@@ -295,6 +328,39 @@ impl<'session, 'journal, 'authority, 'authorization>
         plan: aos_sandbox_source_provider_ledger::ReleaseStatusCompletionPlanV1,
         status: SourceProviderStatus,
     ) -> Result<ProviderCompletionBuilderV1, SourceProviderSecurityError> {
+        self.prepare_release_status_completion_inner(plan, status, false)
+    }
+
+    /// Seals only the separate native Pending/Unavailable status suffix.
+    ///
+    /// Consumes no original Acquire cleanup capacity and proves no physical
+    /// release, Root absence or Storage retirement. The durable export fence
+    /// remains Releasing/CleanupRequired after the zero-FD response.
+    ///
+    /// # Errors
+    ///
+    /// Rejects all other statuses, a stale owner/request graph, foreign or
+    /// missing suffix capacity, signing failure or exact preflight failure.
+    pub fn prepare_native_release_status_completion(
+        self,
+        plan: aos_sandbox_source_provider_ledger::ReleaseStatusCompletionPlanV1,
+        status: SourceProviderStatus,
+    ) -> Result<ProviderCompletionBuilderV1, SourceProviderSecurityError> {
+        if !matches!(
+            status,
+            SourceProviderStatus::Pending | SourceProviderStatus::Unavailable
+        ) {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        self.prepare_release_status_completion_inner(plan, status, true)
+    }
+
+    fn prepare_release_status_completion_inner(
+        self,
+        plan: aos_sandbox_source_provider_ledger::ReleaseStatusCompletionPlanV1,
+        status: SourceProviderStatus,
+        native_status: bool,
+    ) -> Result<ProviderCompletionBuilderV1, SourceProviderSecurityError> {
         if status == SourceProviderStatus::Complete
             || self.authorization.method != SourceProviderMethod::Release
         {
@@ -318,6 +384,21 @@ impl<'session, 'journal, 'authority, 'authorization>
             plan.attempt_key(),
             &response,
         )?;
+        let capacity = if native_status {
+            Some(super::native_release_status::exact_reservation(
+                self.journal,
+                &current,
+                self.authorization,
+            )?)
+        } else {
+            if super::native_release_status::contains_native_release(
+                &current,
+                self.authorization.attempt_digest,
+            )? {
+                return Err(SourceProviderSecurityError::SessionContinuity);
+            }
+            None
+        };
         let finalized = plan
             .finalize(
                 current
@@ -328,7 +409,13 @@ impl<'session, 'journal, 'authority, 'authorization>
                 completed_at_seconds,
             )
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-        prepare_finalized_builder(self.session, self.journal, self.authorization, finalized)
+        prepare_finalized_builder_with_native_status_capacity(
+            self.session,
+            self.journal,
+            self.authorization,
+            finalized,
+            capacity,
+        )
     }
 
     /// Seals and prepares a status-only Inventory completion through exact preflight.
@@ -620,9 +707,10 @@ impl ProviderCompletionBuilderV1 {
         session: &mut CurrentProviderIngressSessionV1,
     ) -> Result<super::CommittedProviderOutcomeV1, SourceProviderSecurityError> {
         let transactions = std::slice::from_ref(&self.transaction);
-        if journal
-            .validate_preflight_for_effect(&self.preflight, transactions)
-            .is_err()
+        if self.native_release_status_capacity.is_none()
+            && journal
+                .validate_preflight_for_effect(&self.preflight, transactions)
+                .is_err()
         {
             return Err(poison_and_close(
                 &mut session.custody,
@@ -630,7 +718,13 @@ impl ProviderCompletionBuilderV1 {
                 SourceProviderSecurityError::SessionContinuity,
             ));
         }
-        if journal.commit(&self.transaction).is_err() {
+        let result = match self.native_release_status_capacity {
+            Some(reservation) => {
+                journal.commit_reserved_terminal_v1(&self.preflight, reservation, &self.transaction)
+            }
+            None => journal.commit(&self.transaction),
+        };
+        if result.is_err() {
             return Err(poison_and_close(
                 &mut session.custody,
                 &mut session.carrier,

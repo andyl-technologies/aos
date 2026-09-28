@@ -259,6 +259,7 @@ impl<'a> ProviderLedgerV1<'a> {
                 acquisition_id,
                 effect_id,
             } => {
+                crate::native_completion::require_original_native_custody_closed(self, acquisition_id)?;
                 let acquisition = self
                     .recovered
                     .acquisitions
@@ -958,6 +959,7 @@ impl<'a> ProviderLedgerV1<'a> {
                 ));
             }
         };
+        crate::native_completion::require_original_native_custody_closed(self, acquisition_id)?;
         let acquisition = self
             .recovered
             .acquisitions

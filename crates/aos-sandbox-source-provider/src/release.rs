@@ -22,6 +22,9 @@ use crate::format::{
 };
 use crate::inventory::global_inventory_state_digest;
 use crate::ledger::artifact::response_artifact_digest;
+use crate::ledger::native_completion::{
+    NativeAcquireCompletionStateV2, validate_native_complete_export_v1,
+};
 use crate::limits::MAXIMUM_RELEASE_COMPLETION_BYTES;
 use crate::model::{
     AcquisitionKeyV1, AttemptKeyV1, ProviderAcquisitionStateV1, ProviderAttemptStateV1,
@@ -109,13 +112,24 @@ impl ProviderLedgerV1<'_> {
         status: SourceProviderStatus,
     ) -> Result<DurableProviderReplyV1, ProviderLedgerError> {
         self.ensure_open()?;
-        crate::native_completion::require_original_native_custody_closed(
-            self,
-            permit.plan.acquisition_id,
-        )?;
         self.journal
             .validate_source_provider_authority_snapshot(&permit.journal_snapshot)?;
-        permit.completion_capacity.validate(&self.journal)?;
+        if matches!(
+            permit.completion_capacity,
+            crate::transaction::CompletionCapacityV1::NativeReleaseStatus
+        ) {
+            crate::native_release_capacity::exact_reservation(
+                &self.journal,
+                &self.recovered,
+                permit.plan.acquisition_id,
+            )?;
+        } else {
+            crate::native_completion::require_original_native_custody_closed(
+                self,
+                permit.plan.acquisition_id,
+            )?;
+            permit.completion_capacity.validate(&self.journal)?;
+        }
         let holder_id = permit.plan.holder_id;
         self.with_current_completion_session(
             holder_id,
@@ -214,7 +228,11 @@ fn complete_release_disposition(
             "Release effect disposition must remain explicitly unresolved",
         ));
     }
-    let pending_plan = (status == SourceProviderStatus::Pending).then(|| {
+    let native_status = matches!(
+        permit.completion_capacity,
+        crate::transaction::CompletionCapacityV1::NativeReleaseStatus
+    );
+    let pending_plan = (status == SourceProviderStatus::Pending && !native_status).then(|| {
         (
             permit.plan.clone(),
             permit.completion_session_binding,
@@ -348,9 +366,12 @@ fn complete_release_disposition(
         &attempt_key_value,
     ))
     .map_err(crate::transaction::map_pure_ledger_error)?;
-    let builder = custody
-        .provider_outcome_facade(&ledger.journal, &permit.signing_authorization)?
-        .prepare_release_status_completion(plan, status)?;
+    let facade = custody.provider_outcome_facade(&ledger.journal, &permit.signing_authorization)?;
+    let builder = if native_status {
+        facade.prepare_native_release_status_completion(plan, status)?
+    } else {
+        facade.prepare_release_status_completion(plan, status)?
+    };
     let committed_outcome = crate::transaction::commit_sealed_completion(ledger, custody, builder)?;
     if let Some((plan, completion_session_binding, completion_attempt_digest)) = pending_plan {
         ledger.pending_releases.insert(
@@ -649,15 +670,17 @@ pub(crate) fn reserve_release(
                         "nonterminal Release recovery plan",
                     ));
                 }
-                ledger.pending_releases.insert(
-                    release.acquisition_id,
-                    LivePendingReleaseV1 {
-                        plan,
-                        completion_session_binding: retained.session_binding,
-                        completion_attempt_digest: retained.attempt_digest,
-                        reservation_digest: release.backend_lineage_digest,
-                    },
-                );
+                if !crate::native_completion::is_native_dispatch_acquisition(acquisition) {
+                    ledger.pending_releases.insert(
+                        release.acquisition_id,
+                        LivePendingReleaseV1 {
+                            plan,
+                            completion_session_binding: retained.session_binding,
+                            completion_attempt_digest: retained.attempt_digest,
+                            reservation_digest: release.backend_lineage_digest,
+                        },
+                    );
+                }
             }
         }
         return Ok(disposition);
@@ -686,6 +709,34 @@ pub(crate) fn reserve_release(
         .get(&acquisition_key_value)
         .cloned()
         .ok_or(ProviderLedgerError::Equivocation)?;
+    let native_fence = if crate::native_completion::is_native_dispatch_acquisition(&acquisition) {
+        // Historical artifacts remain readable; only a genuinely Active
+        // original native lease enters this fence. Fresh Release continuation
+        // may not discard or rebind an already reserved status suffix.
+        if acquisition.state == ProviderAcquisitionStateV1::Releasing {
+            return Err(ProviderLedgerError::Unavailable);
+        }
+        let native = ledger
+            .recovered
+            .native_completions
+            .get(&acquisition.acquisition_id)
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let original = ledger
+            .recovered
+            .attempts
+            .values()
+            .find(|row| row.attempt_digest == native.attempt_digest)
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        validate_native_complete_export_v1(&acquisition, Some(native), original)
+            .map_err(crate::transaction::map_pure_ledger_error)?;
+        Some(
+            native
+                .advance(NativeAcquireCompletionStateV2::CleanupRequired)
+                .map_err(crate::transaction::map_pure_ledger_error)?,
+        )
+    } else {
+        None
+    };
     let exact_holder = acquisition.holder.authority_id() == request.holder_authority_id()
         && acquisition.holder.authority_generation() == request.holder_generation()
         && acquisition.holder.authority_digest() == request.holder_authority_digest();
@@ -890,7 +941,19 @@ pub(crate) fn reserve_release(
         ),
         encode_session_history(&session),
     ));
-    let reservation_digest = commit_records(ledger, RELEASE_RESERVE_PURPOSE, records)?;
+    let reservation_digest = if let Some(native) = &native_fence {
+        records.push((
+            crate::ledger::native_completion::native_completion_key_v2(acquisition.acquisition_id),
+            crate::format::encode_native_completion_v2(native),
+        ));
+        crate::native_release_capacity::commit_admission(
+            ledger,
+            records,
+            acquisition.acquisition_id,
+        )?
+    } else {
+        commit_records(ledger, RELEASE_RESERVE_PURPOSE, records)?
+    };
     let journal_snapshot = ledger.journal.snapshot()?;
     let authorization_attempt = attempt.clone();
     let authorization_key = attempt_key_value.clone();
@@ -928,12 +991,21 @@ pub(crate) fn reserve_release(
     )?;
     ledger.recovered.authority = authority;
     ledger.refresh_recovery_work();
-    let completion_capacity = preflight_completion_capacity(
-        &ledger.journal,
-        RELEASE_COMPLETE_PURPOSE,
-        reservation_digest,
-        MAXIMUM_RELEASE_COMPLETION_BYTES,
-    )?;
+    let completion_capacity = if native_fence.is_some() {
+        crate::native_release_capacity::exact_reservation(
+            &ledger.journal,
+            &ledger.recovered,
+            acquisition.acquisition_id,
+        )?;
+        crate::transaction::CompletionCapacityV1::NativeReleaseStatus
+    } else {
+        preflight_completion_capacity(
+            &ledger.journal,
+            RELEASE_COMPLETE_PURPOSE,
+            reservation_digest,
+            MAXIMUM_RELEASE_COMPLETION_BYTES,
+        )?
+    };
     Ok(ProviderAdmissionDispositionV1::Release(
         DurableReleaseEffectPermitV1 {
             plan: release_plan,
