@@ -56,12 +56,35 @@ pub(super) struct NativeAcquireCurrentnessGuardV3 {
 }
 
 struct OriginalNativeDeadlineV3 {
-    // The original observation is never refreshed during pending progress.
-    initial: RawPairedClockSample,
+    // The original bracket is never refreshed during pending progress.
+    initial: OriginalNativeClockBracketV3,
     // This exact whole-second bound is written into the signed native request.
     expires_seconds: i64,
     // The finalized signed expiry conservatively bounds this absolute I/O cutoff.
     boottime_deadline: u64,
+}
+
+// The wall observation lies between these BOOTTIME reads under one boot-ID
+// sandwich. The before-read limits local expiry; the after-read conservatively
+// projects the Mount cutoff into wall time and anchors later paired comparisons.
+struct OriginalNativeClockBracketV3 {
+    boottime_before: u64,
+    paired: RawPairedClockSample,
+}
+
+impl OriginalNativeClockBracketV3 {
+    fn new(
+        boottime_before: u64,
+        paired: RawPairedClockSample,
+    ) -> Result<Self, SourceProviderSecurityError> {
+        if boottime_before > paired.boottime_nanoseconds() {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        Ok(Self {
+            boottime_before,
+            paired,
+        })
+    }
 }
 
 impl core::fmt::Debug for PendingNativeMountAcquireV3 {
@@ -78,8 +101,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// independent signature, protected floors, and exact selection are joined.
     /// An empty Mount graph permits a publication-floor challenge, not fresh
     /// authorization. Both the signed expiry and local I/O fence intersect the
-    /// original live Mount cutoff using one paired sample. This method performs
-    /// at most one bounded progress step.
+    /// original live Mount cutoff using one bracketed paired sample. This method
+    /// performs at most one bounded progress step.
     ///
     /// # Errors
     ///
@@ -132,7 +155,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             bound_native_draft_deadline(request, &deadline).map_err(|error| self.poison(error))?;
         let configuration = RevalidatedProviderConfigurationV1::capture_root_mount(
             &mut self.custody,
-            deadline.initial.wall_seconds(),
+            deadline.initial.paired.wall_seconds(),
         )
         .map_err(|error| self.poison(error))?;
         let publication = crate::verify_catalog_publication(&configuration, canonical_publication)
@@ -680,7 +703,7 @@ fn bound_native_draft_deadline(
 ) -> Result<AcquireSourceRequestV1, SourceProviderSecurityError> {
     if request.acquisition_version() != ACQUIRE_SOURCE_REQUEST_VERSION_V2
         || request.kernel_coupled()
-        || request.boot_id() != deadline.initial.host_boot_id()
+        || request.boot_id() != deadline.initial.paired.host_boot_id()
         || deadline.expires_seconds > request.deadline_seconds()
     {
         return Err(SourceProviderSecurityError::SessionContinuity);
@@ -716,28 +739,30 @@ impl OriginalNativeDeadlineV3 {
         boot: [u8; 16],
         mount_deadline: u64,
     ) -> Result<Self, SourceProviderSecurityError> {
-        let initial = kernel_clock()?;
-        if initial.host_boot_id() != boot {
+        let initial = kernel_initial_clock()?;
+        if initial.paired.host_boot_id() != boot {
             return Err(SourceProviderSecurityError::SessionContinuity);
         }
-        Self::from_sample(initial, expires_seconds, mount_deadline)
+        Self::from_bracket(initial, expires_seconds, mount_deadline)
     }
 
-    fn from_sample(
-        initial: RawPairedClockSample,
+    fn from_bracket(
+        initial: OriginalNativeClockBracketV3,
         expires_seconds: i64,
         mount_deadline: u64,
     ) -> Result<Self, SourceProviderSecurityError> {
+        let paired = initial.paired;
+
         // Round the Mount's remaining interval down and use the lower observed
         // wall second. The signed remote expiry cannot outlive its original
         // BOOTTIME cutoff; a subsecond-only interval is not representable.
         let mount_remaining_seconds = mount_deadline
-            .checked_sub(initial.boottime_nanoseconds())
+            .checked_sub(paired.boottime_nanoseconds())
             .map(|nanoseconds| nanoseconds / 1_000_000_000)
             .filter(|seconds| *seconds > 0)
             .and_then(|seconds| i64::try_from(seconds).ok())
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let mount_expires_seconds = initial
+        let mount_expires_seconds = paired
             .wall_seconds()
             .checked_add(mount_remaining_seconds)
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
@@ -746,15 +771,16 @@ impl OriginalNativeDeadlineV3 {
         // Derive BOOTTIME only after finalizing the signed expiry. Removing the
         // omitted wall fraction also rejects a later wall-before-BOOTTIME sample
         // that straddles that expiry within the paired-clock drift tolerance.
+        // Anchor this ceiling to the before-read, not a delayed after-read.
         let remaining = expires_seconds
-            .checked_sub(initial.wall_seconds())
+            .checked_sub(paired.wall_seconds())
             .and_then(|seconds| seconds.checked_sub(1))
             .and_then(|seconds| u64::try_from(seconds).ok())
             .filter(|seconds| *seconds > 0)
             .and_then(|seconds| seconds.checked_mul(1_000_000_000))
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
         let boottime_deadline = initial
-            .boottime_nanoseconds()
+            .boottime_before
             .checked_add(remaining)
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
         let deadline = Self {
@@ -762,8 +788,23 @@ impl OriginalNativeDeadlineV3 {
             expires_seconds,
             boottime_deadline: boottime_deadline.min(mount_deadline),
         };
-        deadline.require_current(initial)?;
+        deadline.require_current(paired)?;
         Ok(deadline)
+    }
+
+    #[cfg(test)]
+    fn from_sample(
+        initial: RawPairedClockSample,
+        expires_seconds: i64,
+        mount_deadline: u64,
+    ) -> Result<Self, SourceProviderSecurityError> {
+        // Equal-edge DATA preserves existing single-point regression vectors;
+        // production capture always observes the actual before/after bracket.
+        Self::from_bracket(
+            OriginalNativeClockBracketV3::new(initial.boottime_nanoseconds(), initial)?,
+            expires_seconds,
+            mount_deadline,
+        )
     }
 
     fn require_current(
@@ -771,6 +812,7 @@ impl OriginalNativeDeadlineV3 {
         later: RawPairedClockSample,
     ) -> Result<(), SourceProviderSecurityError> {
         self.initial
+            .paired
             .validate_later_sample(later)
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
         if later.wall_seconds() >= self.expires_seconds
@@ -786,25 +828,33 @@ fn kernel_clock() -> Result<RawPairedClockSample, SourceProviderSecurityError> {
     let boot = aos_sandbox_linux::boot::KernelBootId::current()
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?
         .into_bytes();
-    // Observe the lower wall second first so scheduling between reads cannot
-    // inflate a Mount BOOTTIME interval projected into signed wall expiry.
+    // Later pairs observe wall first; their BOOTTIME endpoint still enforces
+    // the retained absolute cutoff if scheduling delays the second read.
     let wall = rustix::time::clock_gettime(rustix::time::ClockId::Realtime).tv_sec;
-    let boottime = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    kernel_clock_after_wall(boot, wall)
+}
+
+fn kernel_initial_clock() -> Result<OriginalNativeClockBracketV3, SourceProviderSecurityError> {
+    let boot = aos_sandbox_linux::boot::KernelBootId::current()
+        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?
+        .into_bytes();
+    let boottime_before = kernel_boottime_nanoseconds()?;
+    let wall = rustix::time::clock_gettime(rustix::time::ClockId::Realtime).tv_sec;
+    let paired = kernel_clock_after_wall(boot, wall)?;
+    OriginalNativeClockBracketV3::new(boottime_before, paired)
+}
+
+fn kernel_clock_after_wall(
+    boot: [u8; 16],
+    wall: i64,
+) -> Result<RawPairedClockSample, SourceProviderSecurityError> {
+    let nanoseconds = kernel_boottime_nanoseconds()?;
     let after = aos_sandbox_linux::boot::KernelBootId::current()
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?
         .into_bytes();
     if boot != after {
         return Err(SourceProviderSecurityError::SessionContinuity);
     }
-    let nanoseconds = u64::try_from(boottime.tv_sec)
-        .ok()
-        .and_then(|seconds| seconds.checked_mul(1_000_000_000))
-        .and_then(|seconds| {
-            u64::try_from(boottime.tv_nsec)
-                .ok()
-                .and_then(|fraction| seconds.checked_add(fraction))
-        })
-        .ok_or(SourceProviderSecurityError::SessionContinuity)?;
     RawPairedClockSample::new_untrusted(
         RawClockProvenance::new_untrusted(*b"aos-kernel-clock")
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?,
@@ -813,6 +863,19 @@ fn kernel_clock() -> Result<RawPairedClockSample, SourceProviderSecurityError> {
         nanoseconds,
     )
     .map_err(|_| SourceProviderSecurityError::SessionContinuity)
+}
+
+fn kernel_boottime_nanoseconds() -> Result<u64, SourceProviderSecurityError> {
+    let boottime = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    u64::try_from(boottime.tv_sec)
+        .ok()
+        .and_then(|seconds| seconds.checked_mul(1_000_000_000))
+        .and_then(|seconds| {
+            u64::try_from(boottime.tv_nsec)
+                .ok()
+                .and_then(|fraction| seconds.checked_add(fraction))
+        })
+        .ok_or(SourceProviderSecurityError::SessionContinuity)
 }
 
 #[cfg(test)]
@@ -1158,6 +1221,45 @@ mod tests {
         assert_eq!(deadline.boottime_deadline, 204_000_000_000);
         assert!(deadline.require_current(clock(103, 203, 1)).is_ok());
         assert!(deadline.require_current(straddling).is_err());
+    }
+
+    #[test]
+    fn original_clock_bracket_prevents_initial_latency_from_extending_expiry() {
+        let paired = clock(100, 200, 1);
+        let original = OriginalNativeClockBracketV3::new(198_000_000_000, paired).unwrap();
+        let deadline =
+            OriginalNativeDeadlineV3::from_bracket(original, 700, 205_000_000_000).unwrap();
+        let straddling = RawPairedClockSample::new_untrusted(
+            paired.provenance(),
+            paired.host_boot_id(),
+            104,
+            202_100_000_000,
+        )
+        .unwrap();
+
+        assert_eq!(deadline.initial.boottime_before, 198_000_000_000);
+        assert_eq!(deadline.initial.paired, paired);
+        assert_eq!(deadline.expires_seconds, 105);
+        assert_eq!(deadline.boottime_deadline, 202_000_000_000);
+        assert!(paired.validate_later_sample(straddling).is_ok());
+        assert!(deadline.require_current(clock(101, 201, 1)).is_ok());
+        assert!(deadline.require_current(straddling).is_err());
+    }
+
+    #[test]
+    fn reversed_clock_bracket_or_capture_consuming_its_budget_is_rejected() {
+        assert!(OriginalNativeClockBracketV3::new(201_000_000_000, clock(100, 200, 1)).is_err());
+        for (before, after, expires, mount_cutoff) in [
+            (198_000_000_000, 200, 700, 202_000_000_000),
+            (198_000_000_000, 205, 700, 210_000_000_000),
+            (200_000_000_000, 203, 700, 205_000_000_000),
+            (198_000_000_000, 200, 102, 205_000_000_000),
+        ] {
+            let original = OriginalNativeClockBracketV3::new(before, clock(100, after, 1)).unwrap();
+            assert!(
+                OriginalNativeDeadlineV3::from_bracket(original, expires, mount_cutoff).is_err()
+            );
+        }
     }
 
     fn native_deadline_draft(expires_seconds: i64) -> AcquireSourceRequestV1 {
