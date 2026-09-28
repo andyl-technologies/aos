@@ -1,15 +1,22 @@
-##! Source-built Google common protos 2.41.0 for Bazel's Maven graph.
+##! Source-built Google common protos for Bazel's pinned Maven graphs.
 {
   mkDerivation,
   fetchurl,
   buildPackages,
   bazelProtobufJava,
+  version ? "2.41.0",
 }: let
-  version = "2.41.0";
+  sourceHash =
+    {
+      "2.41.0" = "sha256-qALc8qPzK5OyfjuFmI2wjeg0zdMtKia18aHwTKT6vKs=";
+      "2.51.0" = "sha256-5YA4vSDTfJNYMYUBPrON5Q9tpKa/Cs4fjruRHxS8zqU=";
+    }.${
+      version
+    } or (throw "Unsupported common protos source version: ${version}");
   buildJdk = buildPackages.openjdk-17;
   source = fetchurl {
     urls = ["https://repo.maven.apache.org/maven2/com/google/api/grpc/proto-google-common-protos/${version}/proto-google-common-protos-${version}-sources.jar"];
-    hash = "sha256-qALc8qPzK5OyfjuFmI2wjeg0zdMtKia18aHwTKT6vKs=";
+    hash = sourceHash;
   };
 
   library = mkDerivation {
