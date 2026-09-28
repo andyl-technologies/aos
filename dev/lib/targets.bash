@@ -12,7 +12,7 @@ aos_dev_category() {
 
 _aos_dev_target_entries() {
   local category=$1 scope=${2:-} cross_system=${3:-}
-  aos_dev_require_command nix-instantiate
+  aos_dev_require_command nix
 
   local -a eval_args=(--argstr category "$category")
   if [[ -n $scope ]]; then
@@ -21,8 +21,8 @@ _aos_dev_target_entries() {
   if [[ -n $cross_system ]]; then
     eval_args+=(--argstr crossSystem "$cross_system")
   fi
-  (cd "$aos_dev_root" && nix-instantiate --eval --raw \
-    "${eval_args[@]}" dev/targets.nix)
+  (cd "$aos_dev_root" && nix --extra-experimental-features nix-command \
+    eval --raw --file dev/targets.nix "${eval_args[@]}" entries)
 }
 
 aos_dev_list() {
