@@ -98,7 +98,7 @@ impl GuestOpenSshGate {
 
         // start() authenticates the guest-local private host key, public key,
         // CA, fixed config, and installed gate executable before launching.
-        let mut daemon = RunningOpenSshGateV1::start(request.binding.clone())
+        let mut daemon = RunningOpenSshGateV1::start_with_monitor_v2(request.binding.clone())
             .map_err(|_| GuestProcessEffectErrorV1::Unavailable("OpenSSH gate unavailable"))?;
         let (sshd_pid, sshd_start_ticks) = daemon
             .daemon_identity()
@@ -122,6 +122,17 @@ impl GuestOpenSshGate {
         install_protected_file(CLAIM, &bytes, 0o644)?;
 
         Ok(Self { daemon, claim })
+    }
+
+    pub(super) fn monitor_runtime_v2(
+        &mut self,
+    ) -> Result<
+        aos_sandbox_agent::openssh_gate_linux::OpenSshMonitorRuntimeV2,
+        GuestProcessEffectErrorV1,
+    > {
+        self.daemon
+            .monitor_runtime_v2(&self.claim)
+            .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)
     }
 
     pub(super) fn observe(

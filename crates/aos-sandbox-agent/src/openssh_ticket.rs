@@ -165,6 +165,16 @@ pub fn validate_ticket_profile_v2(
     ticket: &PublicAttachTicketBindingV2,
     now: u64,
 ) -> Result<(), Error> {
+    checked_ticket_certificate_v2(claim, ticket, now).map(|_| ())
+}
+
+// The callback and root-monitor witness need the same checked original profile;
+// returning the parsed certificate avoids reparsing without combining authority.
+pub(crate) fn checked_ticket_certificate_v2(
+    claim: &crate::openssh_gate::OpenSshGateClaimV1,
+    ticket: &PublicAttachTicketBindingV2,
+    now: u64,
+) -> Result<ssh_key::Certificate, Error> {
     let line = std::str::from_utf8(&ticket.certificate).map_err(|_| Error::InvalidEncoding)?;
     let (kind, base64) = line.split_once(' ').ok_or(Error::InvalidEncoding)?;
     let certificate = crate::openssh_attach_certificate::checked_openssh_attach_certificate_v1(
@@ -185,7 +195,7 @@ pub fn validate_ticket_profile_v2(
     {
         return Err(Error::InvalidBinding);
     }
-    Ok(())
+    Ok(certificate)
 }
 
 /// Checks sshd's actual certificate against the exact original stored ticket.

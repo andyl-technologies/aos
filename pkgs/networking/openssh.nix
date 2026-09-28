@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  patch,
   linux-pam,
   libxcrypt,
   openpam,
@@ -24,7 +25,13 @@ in
       hash = "sha256-1E0oqDnqna+WnMaRUP3lmRCys5Nh2tgaO9bL0ZIY2xE=";
     };
 
-    buildDeps = [gnumake];
+    buildDeps =
+      [gnumake]
+      ++ (
+        if stdenv.hostPlatform.isLinux
+        then [patch]
+        else []
+      );
     runtimeDeps =
       [
         (
@@ -50,6 +57,17 @@ in
         script = ''
           tar xf $src
           cd openssh-${version}
+          ${
+            if stdenv.hostPlatform.isLinux
+            then ''
+              # Fixed, default-off custody extension on the existing root monitor.
+              # It cannot transfer execution I/O or accept callback identities.
+              ${patch}/bin/patch -p1 < ${./openssh-patches/0001-fixed-attach-monitor-v2.patch}
+              cp ${./openssh-patches/aos-attach-monitor.c} aos-attach-monitor.c
+              cp ${./openssh-patches/aos-attach-monitor.h} aos-attach-monitor.h
+            ''
+            else ""
+          }
         '';
       }
       {

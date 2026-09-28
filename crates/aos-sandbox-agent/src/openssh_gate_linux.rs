@@ -10,6 +10,7 @@ use std::io::Read as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox_core::public_attach_route::{
@@ -31,6 +32,7 @@ const CA_PATH: &str = "/etc/aos/sandbox-attach/trusted_user_ca.pub";
 const HOST_KEY_PATH: &str = "/etc/aos/sandbox-attach/host_key";
 const HOST_PUBLIC_KEY_PATH: &str = "/etc/aos/sandbox-attach/host_key.pub";
 const GATE_PATH: &str = PUBLIC_ATTACH_GATE_PATH_V1;
+const SSHD_SESSION_PATH: &str = "/usr/libexec/sshd-session";
 const CLAIM_PATH: &str = "/etc/aos/sandbox-attach/gate-record.json";
 const O_CLOEXEC: i32 = 0o2_000_000;
 const O_NOFOLLOW: i32 = 0o400_000;
@@ -45,6 +47,188 @@ pub struct RunningOpenSshGateV1 {
     gate_device: u64,
     gate_inode: u64,
     gate_digest: [u8; 32],
+    monitor_installation: Option<MonitorInstallationV2>,
+}
+
+#[derive(Clone)]
+struct MeasuredExecutable {
+    device: u64,
+    inode: u64,
+    digest: [u8; 32],
+}
+
+impl MeasuredExecutable {
+    fn opened(file: &ProtectedFile) -> Self {
+        Self {
+            device: file.device,
+            inode: file.inode,
+            digest: digest(&file.bytes),
+        }
+    }
+
+    fn require_file(&self, path: &Path) -> Result<(), OpenSshGatePhysicalErrorV1> {
+        let file = read_protected_file(path, MAXIMUM_EXECUTABLE_BYTES, true)?;
+        if file.device != self.device
+            || file.inode != self.inode
+            || digest(&file.bytes) != self.digest
+        {
+            return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct MonitorInstallationV2 {
+    listener: Arc<aos_sandbox_linux::pidfd::PidFd>,
+    session_executable: MeasuredExecutable,
+    listener_executable: MeasuredExecutable,
+    gate_executable: MeasuredExecutable,
+}
+
+/// Retains a live owner-created monitor installation, not persisted SSH proof.
+///
+/// Only the daemon owner creates this anchor from files opened before launch.
+/// It cannot authorize I/O or survive a Guest restart by loading a claim.
+#[derive(Clone)]
+pub struct OpenSshMonitorRuntimeV2 {
+    installation: MonitorInstallationV2,
+    claim: OpenSshGateClaimV1,
+}
+
+impl OpenSshMonitorRuntimeV2 {
+    /// Returns the original protected gate/runtime joined to the live owner.
+    #[must_use]
+    pub const fn claim(&self) -> &OpenSshGateClaimV1 {
+        &self.claim
+    }
+
+    /// Rechecks the retained listener and accepted physical installation.
+    ///
+    /// # Errors
+    /// Rejects a dead/reused listener, changed claim/config/trust/image or
+    /// absent owned listening socket. This observation is not a held I/O cut.
+    pub fn require_current(&self) -> Result<(), OpenSshGatePhysicalErrorV1> {
+        let listener = self
+            .installation
+            .listener
+            .process_identity()
+            .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
+        let credentials = self
+            .installation
+            .listener
+            .info()
+            .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?
+            .credentials()
+            .ok_or(OpenSshGatePhysicalErrorV1::InvalidInstallation)?;
+        if listener.pid() != self.claim.sshd_pid
+            || listener.start_time_ticks() != self.claim.sshd_start_ticks
+            || load_openssh_gate_claim_v1()? != self.claim
+            || !owns_listening_socket(listener.pid(), self.claim.binding.port)?
+            || credentials.real_user_id() != 0
+            || credentials.effective_user_id() != 0
+            || credentials.saved_user_id() != 0
+            || credentials.filesystem_user_id() != 0
+        {
+            return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
+        }
+        self.installation
+            .listener_executable
+            .require_file(&fs::canonicalize(SSHD_PATH)?)?;
+        self.installation
+            .listener_executable
+            .require_file(&fs::canonicalize(format!("/proc/{}/exe", listener.pid()))?)?;
+        self.installation
+            .session_executable
+            .require_file(&fs::canonicalize(SSHD_SESSION_PATH)?)?;
+        self.installation
+            .gate_executable
+            .require_file(&fs::canonicalize(GATE_PATH)?)?;
+        Ok(())
+    }
+
+    /// Checks one pinned root monitor against the accepted helper and listener.
+    ///
+    /// # Errors
+    /// Rejects non-root credentials, foreign runtime ancestry, image mutation,
+    /// dead monitors or PID reuse. No callback-nominated PID is accepted.
+    pub fn require_monitor(
+        &self,
+        monitor: &aos_sandbox_linux::pidfd::PidFd,
+    ) -> Result<(), OpenSshGatePhysicalErrorV1> {
+        self.require_current()?;
+        let identity = monitor
+            .process_identity()
+            .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
+        let credentials = monitor
+            .info()
+            .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?
+            .credentials()
+            .ok_or(OpenSshGatePhysicalErrorV1::InvalidInstallation)?;
+        if identity.parent_pid() != self.claim.sshd_pid
+            || credentials.real_user_id() != 0
+            || credentials.effective_user_id() != 0
+            || credentials.saved_user_id() != 0
+            || credentials.filesystem_user_id() != 0
+        {
+            return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
+        }
+        self.installation
+            .session_executable
+            .require_file(&fs::canonicalize(format!("/proc/{}/exe", identity.pid()))?)?;
+        if !monitor
+            .is_alive()
+            .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?
+        {
+            return Err(OpenSshGatePhysicalErrorV1::DaemonUnavailable);
+        }
+        Ok(())
+    }
+
+    /// Checks the monitor's pinned post-auth child and accepted login credentials.
+    ///
+    /// # Errors
+    /// Rejects foreign/dead/reused children, wrong credentials or helper images.
+    /// This does not establish continuous child memory/descriptor confinement.
+    pub fn require_child(
+        &self,
+        child: &aos_sandbox_linux::pidfd::PidFd,
+        monitor_pid: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), OpenSshGatePhysicalErrorV1> {
+        let identity = child
+            .process_identity()
+            .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
+        let credentials = child
+            .info()
+            .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?
+            .credentials()
+            .ok_or(OpenSshGatePhysicalErrorV1::InvalidInstallation)?;
+        if uid == 0
+            || identity.parent_pid() != monitor_pid
+            || credentials.real_user_id() != uid
+            || credentials.effective_user_id() != uid
+            || credentials.saved_user_id() != uid
+            || credentials.filesystem_user_id() != uid
+            || credentials.real_group_id() != gid
+            || credentials.effective_group_id() != gid
+            || credentials.saved_group_id() != gid
+            || credentials.filesystem_group_id() != gid
+        {
+            return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
+        }
+        self.installation
+            .session_executable
+            .require_file(&fs::canonicalize(format!("/proc/{}/exe", identity.pid()))?)?;
+        if !child
+            .is_alive()
+            .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?
+        {
+            return Err(OpenSshGatePhysicalErrorV1::DaemonUnavailable);
+        }
+        Ok(())
+    }
 }
 
 impl RunningOpenSshGateV1 {
@@ -68,6 +252,26 @@ impl RunningOpenSshGateV1 {
     /// Returns an error if any installed file, CA, host key, gate executable,
     /// or exact configuration is absent or unsafe, or if sshd cannot launch.
     pub fn start(binding: OpenSshGateBindingV1) -> Result<Self, OpenSshGatePhysicalErrorV1> {
+        Self::start_profile(binding, false)
+    }
+
+    /// Starts the fixed binding-only root-monitor prerequisite.
+    ///
+    /// Original configuration and certificate bytes remain unchanged. The
+    /// explicit launch option does not enable ticket-bound descriptor transfer.
+    ///
+    /// # Errors
+    /// Rejects unsafe/missing files, failed pidfd custody or daemon launch.
+    pub fn start_with_monitor_v2(
+        binding: OpenSshGateBindingV1,
+    ) -> Result<Self, OpenSshGatePhysicalErrorV1> {
+        Self::start_profile(binding, true)
+    }
+
+    fn start_profile(
+        binding: OpenSshGateBindingV1,
+        monitor: bool,
+    ) -> Result<Self, OpenSshGatePhysicalErrorV1> {
         binding
             .validate()
             .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidBinding)?;
@@ -94,12 +298,54 @@ impl RunningOpenSshGateV1 {
             return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
         }
 
-        let child = Command::new(SSHD_PATH)
-            .args(["-D", "-e", "-f", CONFIG_PATH])
+        let session_executable = if monitor {
+            Some(read_protected_file(
+                &fs::canonicalize(SSHD_SESSION_PATH)?,
+                MAXIMUM_EXECUTABLE_BYTES,
+                true,
+            )?)
+        } else {
+            None
+        };
+        let mut command = Command::new(SSHD_PATH);
+        command.args(["-D", "-e", "-f", CONFIG_PATH]);
+        if monitor {
+            command.arg("-oAosAttachMonitorV2=yes");
+            command.arg("-oSshdSessionPath=/usr/libexec/sshd-session");
+            MeasuredExecutable::opened(
+                session_executable
+                    .as_ref()
+                    .ok_or(OpenSshGatePhysicalErrorV1::InvalidInstallation)?,
+            )
+            .require_file(&fs::canonicalize(SSHD_SESSION_PATH)?)?;
+        }
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
+        let monitor_installation = match session_executable
+            .map(|session| {
+                let pid = std::num::NonZeroU32::new(child.id())
+                    .ok_or(OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
+                let listener = aos_sandbox_linux::pidfd::PidFd::open(pid)
+                    .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
+                Ok::<_, OpenSshGatePhysicalErrorV1>(MonitorInstallationV2 {
+                    listener: Arc::new(listener),
+                    session_executable: MeasuredExecutable::opened(&session),
+                    listener_executable: MeasuredExecutable::opened(&executable),
+                    gate_executable: MeasuredExecutable::opened(&installed.gate_executable),
+                })
+            })
+            .transpose()
+        {
+            Ok(installation) => installation,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
         Ok(Self {
             child,
             binding,
@@ -108,7 +354,32 @@ impl RunningOpenSshGateV1 {
             gate_device: installed.gate_executable.device,
             gate_inode: installed.gate_executable.inode,
             gate_digest,
+            monitor_installation,
         })
+    }
+
+    /// Retains the accepted start-time installation after a fresh owner readback.
+    ///
+    /// # Errors
+    /// Rejects a legacy launch, changed claim/binding/image, or dead listener.
+    pub fn monitor_runtime_v2(
+        &mut self,
+        claim: &OpenSshGateClaimV1,
+    ) -> Result<OpenSshMonitorRuntimeV2, OpenSshGatePhysicalErrorV1> {
+        if claim.binding != self.binding
+            || self.daemon_identity()? != (claim.sshd_pid, claim.sshd_start_ticks)
+        {
+            return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
+        }
+        let runtime = OpenSshMonitorRuntimeV2 {
+            installation: self
+                .monitor_installation
+                .clone()
+                .ok_or(OpenSshGatePhysicalErrorV1::InvalidInstallation)?,
+            claim: claim.clone(),
+        };
+        runtime.require_current()?;
+        Ok(runtime)
     }
 
     /// Reads the live daemon and protected files, then signs the exact result.
@@ -148,6 +419,11 @@ impl RunningOpenSshGateV1 {
             return Err(OpenSshGatePhysicalErrorV1::DaemonUnavailable);
         }
         let installed = check_installed_files(&self.binding)?;
+        if let Some(monitor) = &self.monitor_installation {
+            monitor
+                .session_executable
+                .require_file(&fs::canonicalize(SSHD_SESSION_PATH)?)?;
+        }
         if installed.configuration.device != self.config_device
             || installed.configuration.inode != self.config_inode
         {
