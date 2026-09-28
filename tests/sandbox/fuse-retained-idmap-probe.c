@@ -506,7 +506,14 @@ cleanup:
 static int configure(int context, unsigned command, const char *key,
                      const char *value, int auxiliary)
 {
-    return (int)syscall(SYS_fsconfig, context, command, key, value, auxiliary);
+    int result = (int)syscall(SYS_fsconfig, context, command, key, value, auxiliary);
+    if (result < 0) {
+        int error = errno;
+        fprintf(stderr, "retained fixture fsconfig command=%u key=%s errno=%d (%s)\n",
+                command, key != NULL ? key : "<none>", error, strerror(error));
+        errno = error;
+    }
+    return result;
 }
 
 int main(void)
@@ -527,6 +534,7 @@ int main(void)
     pid_t child = -1;
     bool mounted = false;
     int result = 1;
+    const char *stage = "namespace/device/context creation and fsconfig";
     userns = mapped_namespace(MAP_BASE);
     remap_ns = mapped_namespace(200000U);
     fuse_fd = open("/dev/fuse", O_RDWR | O_NONBLOCK | O_CLOEXEC);
@@ -546,14 +554,17 @@ int main(void)
         goto cleanup;
     /* Fresh /dev/fuse has asynchronous INIT. Creation queues it without a
      * lookup; fsmount retains the original anonymous mount before negotiation. */
+    stage = "fsmount original detached mount";
     mount_fd = (int)syscall(SYS_fsmount, context, FSMOUNT_CLOEXEC, 0U);
     if (mount_fd < 0)
         goto cleanup;
     close(context);
     context = -1;
+    stage = "fdinfo original detached mount identity";
     unsigned long original_id = mount_id(mount_fd);
     if (original_id == 0)
         goto cleanup;
+    stage = "fork retained-session server";
     child = fork();
     if (child < 0)
         goto cleanup;
@@ -573,41 +584,56 @@ int main(void)
     close(reports[1]);
     reports[1] = -1;
     int prepared;
-    if (transfer(reports[0], &prepared, sizeof(prepared), false) < 0 || prepared != 0)
+    stage = "receive complete original INIT preparation status";
+    if (transfer(reports[0], &prepared, sizeof(prepared), false) < 0)
         goto cleanup;
+    if (prepared != 0) {
+        int error = errno;
+        fprintf(stderr, "retained fixture prepare_v1 status=%d (%s)\n",
+                prepared, strerror(prepared));
+        errno = error;
+        goto cleanup;
+    }
     struct mount_attr secure = {
         .attr_set = MOUNT_ATTR_IDMAP | MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID |
                     MOUNT_ATTR_NODEV | MOUNT_ATTR_NOEXEC,
         .userns_fd = (__u64)(unsigned int)userns};
+    stage = "mount_setattr original IDMAP/secureattrs and fdinfo identity";
     if (syscall(SYS_mount_setattr, mount_fd, "", AT_EMPTY_PATH, &secure, sizeof(secure)) < 0 ||
         mount_id(mount_fd) != original_id)
         goto cleanup;
     /* Exact original-object denials, not a clone or an arbitrary failure. */
     struct mount_attr again = {
         .attr_set = MOUNT_ATTR_IDMAP, .userns_fd = (__u64)(unsigned int)userns};
+    stage = "mount_setattr repeated original userns IDMAP requires EPERM";
     if (syscall(SYS_mount_setattr, mount_fd, "", AT_EMPTY_PATH, &again, sizeof(again)) != -1 ||
         errno != EPERM)
         goto cleanup;
     again.userns_fd = (__u64)(unsigned int)remap_ns;
+    stage = "mount_setattr alternate userns remap requires EPERM and same identity";
     if (syscall(SYS_mount_setattr, mount_fd, "", AT_EMPTY_PATH, &again, sizeof(again)) != -1 ||
         errno != EPERM || mount_id(mount_fd) != original_id)
         goto cleanup;
     char command = 'C';
+    stage = "continue command and move_mount original attachment";
     if (transfer(commands[1], &command, 1, true) < 0 ||
         syscall(SYS_move_mount, mount_fd, "", AT_FDCWD, mountpoint,
                 MOVE_MOUNT_F_EMPTY_PATH) < 0)
         goto cleanup;
     mounted = true;
+    stage = "attached identity/flags, mapped DAC clients and cancellation";
     if (mount_id(mount_fd) != original_id || attached_flags(mountpoint) < 0 ||
         run_client(mountpoint, MAPPED_OWNER, original_id) < 0 ||
         run_client(mountpoint, MAPPED_OWNER + 1U, original_id) < 0 ||
         transfer(cancel[1], &command, 1, true) < 0)
         goto cleanup;
     struct report report;
+    stage = "receive terminal retained-session report and reap server";
     if (transfer(reports[0], &report, sizeof(report), false) < 0 ||
         wait_child(child) < 0)
         goto cleanup;
     child = -1;
+    stage = "terminal report, borrowed descriptors and original mount identity";
     if (report.prepared != 0 || report.continued != ECANCELED ||
         report.second_continue != EINVAL || !report.fuse_retained ||
         !report.cancellation_retained || report.calls.destroyed != 1 ||
@@ -620,8 +646,17 @@ int main(void)
     close(fuse_fd);
     fuse_fd = -1;
     struct stat disconnected;
-    if (stat(mountpoint, &disconnected) == 0 || errno != ENOTCONN ||
-        umount2(mountpoint, 0) < 0)
+    stage = "stat disconnected original attachment requires ENOTCONN";
+    int disconnected_result = stat(mountpoint, &disconnected);
+    int disconnected_error = errno;
+    if (disconnected_result == 0 || disconnected_error != ENOTCONN) {
+        fprintf(stderr, "retained fixture disconnected stat result=%d errno=%d (%s)\n",
+                disconnected_result, disconnected_error, strerror(disconnected_error));
+        errno = disconnected_error;
+        goto cleanup;
+    }
+    stage = "umount2 original attachment flags=0";
+    if (umount2(mountpoint, 0) < 0)
         goto cleanup;
     mounted = false;
     puts("{\"schema_version\":\"aos.sandbox.fuse-retained-idmap-fixture/v1\","
@@ -633,8 +668,12 @@ int main(void)
          "\"borrowed_fds_retained\":true,\"disconnected\":true,\"unmounted\":true}");
     result = 0;
 cleanup:
-    if (result != 0)
-        perror("retained FUSE IDMAP fixture");
+    if (result != 0) {
+        int error = errno;
+        fprintf(stderr, "retained FUSE IDMAP fixture stage=%s errno=%d (%s)\n",
+                stage, error, strerror(error));
+        errno = error;
+    }
     /* Cancellation is requested even on coordinator failure; killing/reaping
      * is the bounded fallback when the child cannot reach its terminal loop. */
     if (child > 0) {
