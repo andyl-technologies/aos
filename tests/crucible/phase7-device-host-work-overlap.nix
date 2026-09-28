@@ -7,6 +7,7 @@
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
+  campaignRustRuntime = import ./_campaign-rust-runtime.nix {inherit pkgs lib;};
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   taskList = builtins.concatStringsSep "," taskIds;
@@ -89,7 +90,8 @@ in
       authoritativeAttr = attrPath;
       executionFamily = "qemu-runtime";
       name = "device-host-work-overlap";
-      runtimeInputs = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed] ++ dependencies;
+      runtimeInputs = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed] ++ campaignRustRuntime.runtimeInputs ++ dependencies;
+      runtimeEnvironment = campaignRustRuntime.runtimeEnvironment;
       runtimeClosures = [source cargoDeps];
       runtimeScript = modeScript;
       timeout = 1800;

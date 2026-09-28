@@ -7,6 +7,7 @@
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
+  campaignRustRuntime = import ./_campaign-rust-runtime.nix {inherit pkgs lib;};
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   scheduler = builtins.readFile ../../crates/crucible/src/scheduler/event_log/backend_loop.rs;
@@ -182,7 +183,8 @@ in
       authoritativeAttr = attrPath;
       executionFamily = "qemu-runtime";
       name = "qemu-host-parallel";
-      runtimeInputs = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed];
+      runtimeInputs = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed] ++ campaignRustRuntime.runtimeInputs;
+      runtimeEnvironment = campaignRustRuntime.runtimeEnvironment;
       runtimeClosures = [source cargoDeps productionPluginFlight];
       runtimeScript = modeScript;
       timeout = 3600;
