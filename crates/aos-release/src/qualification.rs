@@ -587,6 +587,7 @@ impl QualificationContract {
             format!("{QUALIFICATION_SNAPSHOT_RELEASE_PREFIX}{}", plan.version);
         let snapshot_source_tag = format!("{QUALIFICATION_SNAPSHOT_TAG_PREFIX}{}", plan.version);
         match &plan.qualification_predecessor {
+            None if plan.staging_only => {}
             Some(prior)
                 if prior.registry == plan.registry
                     && prior.release_id != plan.release_id
