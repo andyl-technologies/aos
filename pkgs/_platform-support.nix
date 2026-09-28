@@ -279,7 +279,6 @@ let
     "sqlite"
     "swig"
     "tcpdump"
-    "tini"
     "tpm2-tools"
     "tpm2-tss"
     "vim"
@@ -646,6 +645,8 @@ let
     "systemd-measure"
     "tailscale"
     "tmux"
+    # Tini requires Linux prctl and /proc process/subreaper interfaces.
+    "tini"
     "util-linux"
     "valgrind"
     "xfsprogs"
