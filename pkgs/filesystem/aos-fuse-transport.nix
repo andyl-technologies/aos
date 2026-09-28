@@ -77,6 +77,10 @@ in
         path = ../../tests/sandbox/fuse-transport-probe.c;
         name = "aos-fuse-transport-probe.c";
       };
+      retainedProbeSource = builtins.path {
+        path = ../../tests/sandbox/fuse-retained-idmap-probe.c;
+        name = "aos-fuse-retained-idmap-probe.c";
+      };
       rustWorker = pkgs.mkCargoPackage {
         pname = "aos-filesystem-fuse-kernel-worker";
         version = "0.0.0";
@@ -206,6 +210,26 @@ in
             '';
           }
         ];
+      };
+
+      # This metadata fixture proves transport lifetime and actual kernel ID
+      # mapping, never production Root authority or a backing-content read grant.
+      kernel-retained-idmap = testing.mkVMTest {
+        name = "aos-fuse-transport-kernel-retained-idmap";
+        rootfsDeps = [self retainedProbeSource pkgs.linux-headers];
+        memory = 256;
+        testScript = ''
+          test -c /dev/fuse
+          cd /tmp
+          gcc -std=c17 -O2 -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
+            -Wformat=2 -Wshadow -Wstrict-prototypes -Wmissing-prototypes \
+            -I${self}/include -I${pkgs.linux-headers}/include \
+            ${retainedProbeSource} -L${self}/lib \
+            -Wl,-rpath,${self}/lib -laos-fuse-transport \
+            -o fuse-retained-idmap-probe
+          unset LD_LIBRARY_PATH
+          ./fuse-retained-idmap-probe
+        '';
       };
 
       kernel-metadata = testing.mkVMTest {
