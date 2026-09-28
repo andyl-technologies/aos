@@ -76,8 +76,9 @@ use source_project_admission_challenge::SourceProjectAdmissionTransition;
 pub(crate) use source_project_admission_challenge::replay_source_project_admission_challenge_v1;
 pub use source_project_admission_challenge::{
     SOURCE_PROJECT_ADMISSION_CHALLENGE_BYTES_V1, SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1,
-    SourceProjectAdmissionChallengeKindV1, SourceProjectAdmissionChallengeV1,
-    SourceProjectAdmissionReservationV1,
+    SOURCE_PROJECT_ADMISSION_TERMINAL_BYTES_V1, SourceProjectAdmissionChallengeKindV1,
+    SourceProjectAdmissionChallengeV1, SourceProjectAdmissionReservationV1,
+    SourceProjectAdmissionTerminalV1,
 };
 mod mount_source_consumption;
 pub use mount_source_consumption::{

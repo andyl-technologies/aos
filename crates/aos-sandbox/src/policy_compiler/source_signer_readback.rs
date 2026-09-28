@@ -345,7 +345,7 @@ fn with_current_source_signer_view<const N: usize>(
     })
 }
 
-fn with_source_signer_journal_view<const N: usize>(
+pub(super) fn with_source_signer_journal_view<const N: usize>(
     expected_controller_uid: u32,
     sign: impl FnOnce(&mut ReadOnlyProtectedJournal) -> Result<[u8; N], SourceSignerReadbackErrorV1>,
 ) -> Result<[u8; N], SourceSignerReadbackErrorV1> {
