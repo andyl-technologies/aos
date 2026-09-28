@@ -252,17 +252,6 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
                 drop(claim);
                 drop(owner);
                 let mut routes = HostOpenSshAttachRouteOwnerV1::open()?;
-                if let Some(ticket) = request.original_ticket_binding_v2() {
-                    let binding = *agent.session_binding().digest().as_bytes();
-                    let evidence = routes.bind_original_ticket_on_session_v2(
-                        request.pending_grant(),
-                        ticket,
-                        reservation.verified_lease(),
-                        binding,
-                        agent,
-                    )?;
-                    return Ok(evidence.encode_wire());
-                }
                 let evidence = routes.observe_active_on_session(
                     execution_id,
                     incarnation_id,
@@ -393,6 +382,19 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
             drop(owner);
             let result = (|| -> Result<Vec<u8>, HostExecutionHandoffErrorV1> {
                 let mut routes = HostOpenSshAttachRouteOwnerV1::open()?;
+                if let Some(ticket) = request.original_ticket_binding_v2() {
+                    // Binding an original ticket measures an existing route;
+                    // it must not create or renew a pending grant.
+                    let binding = *agent.session_binding().digest().as_bytes();
+                    let evidence = routes.bind_original_ticket_on_session_v2(
+                        request.pending_grant(),
+                        ticket,
+                        reservation.verified_lease(),
+                        binding,
+                        agent,
+                    )?;
+                    return Ok(evidence.encode_wire());
+                }
                 routes.reserve_from_pending_grant(
                     request.pending_grant(),
                     reservation.verified_lease(),
