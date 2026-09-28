@@ -102,8 +102,24 @@ qualified the secret mount and SQL connector but did not enforce Native's
 credential ownership, permission and link checks. The new loader shares the
 bounded private credential reader used by Native signing keys. Three focused
 tests passed for private URLs, insecure or linked files, invalid UTF-8 and empty
-input without rendering credentials in errors. Actual Cloud Run qualification
-of this stricter reader remains pending.
+input without rendering credentials in errors. The shared application gate
+subsequently passed all 3,971 tests, with six skipped.
+
+The stricter image's platform manifest is
+`sha256:cdda6348df55191f3c16d368ee5856ffdca6d773c27304ab8467b4da52053e09`.
+Companion infra commit `bcbbadb3` passed its four required gates and three
+locked-provider fixtures. Its exact plan preserved all 46 foundation resources
+and updated only the diagnostic job's image. Apply
+`20260928T160217Z-b9c53351fa008964` succeeded. Execution
+`aos-hub-credential-probe-sfcwz` then completed with one successful task and
+zero failures, enforcing the shared reader's file checks before SQL access.
+Independent read-only SQL again confirmed schema version 1, 260 tables and
+zero users. This qualifies the actual database credential mount and connector;
+serving credentials, a Native endpoint and Worker pairing remain pending.
+
+Cloud Run reported about four minutes of startup for this one-shot execution.
+The task's reported start and completion were 4.316 seconds apart. Neither
+measurement establishes authenticated-page latency or a cold database migration.
 
 ### Native settings browser qualification
 
@@ -137,11 +153,11 @@ Artifact Registry push compatibility or qualify a hosted Hub deployment.
 
 The dedicated GCP project, PostgreSQL and credential resources are provisioned,
 but no paired Native serving endpoint or public hybrid Worker route is deployed.
-Signed delivery setup, strict credential file metadata, root administrator initialization,
+Signed delivery setup, serving credentials, root administrator initialization,
 origin shielding and real cross-cloud latency/byte measurements remain pending.
 
-Frozen external S3 physical GC, durable delete-receipt expiration/cleanup, and
-whole-Hub snapshot/restore also remain to be implemented. This successful fleet
+Frozen external S3 physical GC, safe retirement of obsolete object coordination
+state, and whole-Hub snapshot/restore also remain to be implemented. This successful fleet
 run is one acceptance checkpoint; it does not complete RFC-0023.
 
 See the [deployment procedure](aos-hub-hybrid-deployment.md) and
