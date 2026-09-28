@@ -35,11 +35,25 @@ normal Root receives only read/open/getattr, its own exe symlink read/getattr,
 and read/getattr on the already-owned init_exec_t PID1 image FD. No Controller
 access to Root task files is added. Existing all-source custody cuts remain.
 
-This local object cannot serialize or become a peer/read proof. A separate
-Controller-side producer must still independently join the genuinely selected
-immutable image and checked nondelegation matrix to the actual original Root
-peer, fixed unit/invocation/cgroup and every live fragment. A Root self-report,
-canonical-policy equality, supplied digest or path cannot replace that join.
+Controller now captures its independently delivered, read-only
+`aos-normal-root-client-profile` in the same complete first descriptor table as
+the existing publisher and optional method46 image roles. It retains the
+selected immutable images, checked matrix and loaded canonical policy before
+credentials or journals open, joins genuine PID1 properties to its own fixed
+unit/invocation/cgroup, and rechecks that same owner in its real worker lifecycle.
+Root may start concurrently: this capture does not open a stream or require
+Root to have a MainPID yet. Configurations without the selected profile retain
+ordinary Controller functionality, but have no normal-Root comparison owner.
+
+The shared comparison substrate has a private original-stream join for the
+actual Root peer, exact PID1 MainPID/invocation/cgroup/fragment, immutable unit
+bytes and executable/argv, and each original live per-fragment pidfd. Controller
+reads only public immutable profile/code objects; no Root task-file or FD-use
+exception is added. This object cannot serialize or become a peer/read proof.
+The genuine packet-pair coordinator and bounded same-stream transport remain
+unwired, so the original-flight constructor is closed and neither Intent nor
+Floor can be constructed. A Root self-report, canonical-policy equality,
+supplied digest or path cannot replace the original peer join.
 FUSE also still needs the genuine Root-last current history/revocation,
 Source floor, Cache, original Publisher, assignment/lease, two current content
 grants and connected Mount/worker read barrier.
@@ -48,7 +62,10 @@ Qualification is pending: Rust compilation and authored regressions, actual
 profile derivation/ELF resolution, final compiled policy queries, original
 OpenFile delivery and physical labels/filesystem association, exact normal
 unit/credential startup, property/invocation/image mutation negatives, and
-installed process/cgroup/stream tests. Runtime dependencies, loader-cache and
+installed Root and Controller process/cgroup/stream tests. The signed seed and
+project-authorization pair, actual current authorization-head route, and real
+held Controller/Source/Root coordinator are still separate closure work.
+Runtime dependencies, loader-cache and
 future dlopen/environment behavior need actual fixed-image qualification;
 DT_NEEDED resolution plus current maps is not an arbitrary future-load proof.
 PID1 property readback is point-in-time, not administrative policy freeze.

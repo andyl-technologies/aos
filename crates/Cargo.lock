@@ -841,6 +841,7 @@ dependencies = [
  "aos-sandbox-ownership-protocol",
  "aos-sandbox-protocol",
  "aos-sandbox-source-provider-protocol",
+ "aos-systemd",
  "axum",
  "buffa",
  "connectrpc",

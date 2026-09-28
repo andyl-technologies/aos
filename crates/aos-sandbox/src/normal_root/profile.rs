@@ -1,4 +1,4 @@
-//! Strict, bounded selected-image comparison inputs for the normal Root unit.
+//! One strict selected-image comparison contract shared by Root and Controller.
 //!
 //! `profile.json` is image-built JSON, not a signed or transferable authority.
 //! Its one self-referencing OpenFile pathname is normalized to the documented

@@ -849,6 +849,39 @@ class EffectivePolicyTest(unittest.TestCase):
                         effective_policy.Access("init_t", root, object_class, permission)
                     )
 
+    def test_controller_selected_images_are_read_only_not_root_task_custody(self) -> None:
+        controller = "aos_sandbox_controller_t"
+        source = Path(__file__).with_name("owner_confinement.te").read_text()
+        for object_type in (
+            "aos_sandbox_policy_authority_profile_t",
+            "aos_sandbox_policy_authority_exec_t",
+            "init_exec_t",
+        ):
+            self.assertIn(
+                f"allow {controller} {object_type}:file {{ getattr open read }};",
+                source,
+            )
+            for permission in ("getattr", "open", "read"):
+                self.assert_missing_allow_rejected(effective_policy.Access(
+                    controller, object_type, "file", permission,
+                ))
+
+        root_image = "aos_sandbox_policy_authority_exec_t"
+        for permission in ("execute", "execute_no_trans", "entrypoint", "map", "write"):
+            policy = FakePolicy()
+            access = effective_policy.Access(controller, root_image, "file", permission)
+            policy.allows[access] = [FakeRule("selected image became executable or mutable")]
+            with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+        root = "aos_sandbox_policy_authority_t"
+        for object_class, permission in effective_policy.owner_policy.ROOT_CUSTODY_CUTS:
+            policy = FakePolicy()
+            access = effective_policy.Access(controller, root, object_class, permission)
+            policy.allows[access] = [FakeRule("selected input became Root process custody")]
+            with self.assertRaisesRegex(ValueError, "foreign normal Root custody"):
+                effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def test_controller_connect_does_not_grant_root_endpoint_ownership(self) -> None:
         for object_class, permission in (
             ("fd", "use"), ("unix_stream_socket", "read"),

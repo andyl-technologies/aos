@@ -1,18 +1,21 @@
-//! Server-local startup prerequisites for the existing normal Root daemon.
+//! Shared selected-image comparisons for the existing normal Root and Controller.
 //!
 //! Actual early PID1 launch descriptors, image-owned profile, immutable file
 //! measurements, loaded policy and genuine fixed-unit/process custody remain
-//! retained. This is NOT a client peer proof, Source floor, FUSE read grant or
-//! method46 capability. No scalar/file/path constructor is exposed.
+//! retained. Controller independently captures the same selected profile and
+//! later joins genuine PID1 launch properties to the original Root stream.
+//! These comparisons are NOT Source floor, FUSE read or method46 authority.
 //!
 //! The profile resolves DT_NEEDED and the current executable mappings; it does
 //! not authenticate arbitrary future dlopen, freeze PID1 administration, prove
-//! continuous manager image identity after reexec, or replace an independent
-//! client selected-image/nondelegation/current-invocation join.
+//! continuous manager image identity after reexec. The original-flight proof
+//! constructor remains absent until the real held-owner coordinator exists.
 
+mod client;
 mod images;
 mod profile;
 mod service;
+mod startup;
 #[cfg(test)]
 mod tests;
 
@@ -32,6 +35,12 @@ use sha2::{Digest as _, Sha256};
 
 use crate::immutable_image::RetainedImmutableFileV1;
 use profile::{CONTEXT, NormalRootProfileV1, UNIT};
+
+pub(crate) use client::OriginalNormalRootPeerV1;
+pub use client::{
+    ProductionControllerNormalRootCaptureV1, ProductionControllerNormalRootProfileV1,
+    ProductionControllerNormalRootStartupPartsV1,
+};
 
 pub(super) const PID1_FD_NAME: &str = "aos-normal-root-pid1-image";
 pub(super) const PROFILE_FD_NAME: &str = "aos-normal-root-profile";
@@ -71,30 +80,11 @@ impl ProductionNormalRootStartupCaptureV1 {
     /// Rejects extra/missing/duplicate roles, foreign activation PID or kernel
     /// failure. A failed or repeated capture is not recoverable in-process.
     pub fn capture() -> Result<Self, NormalRootStartupErrorV1> {
-        let count = match std::env::var("LISTEN_FDS") {
-            Ok(value) => value
-                .parse::<usize>()
-                .map_err(|_| NormalRootStartupErrorV1::Activation)?,
-            Err(std::env::VarError::NotPresent) => 0,
-            Err(_) => return Err(NormalRootStartupErrorV1::Activation),
-        };
+        let names = startup::names(2)?;
+        let count = names.len();
         if !matches!(count, 0 | 2) {
             return Err(NormalRootStartupErrorV1::Activation);
         }
-        let names = if count == 0 {
-            if ["LISTEN_PID", "LISTEN_FDNAMES"]
-                .iter()
-                .any(|name| std::env::var_os(name).is_some())
-            {
-                return Err(NormalRootStartupErrorV1::Activation);
-            }
-            Vec::new()
-        } else {
-            crate::production_activation::validate_activation_process(count)
-                .map_err(|_| NormalRootStartupErrorV1::Activation)?;
-            crate::production_activation::activation_names(count)
-                .map_err(|_| NormalRootStartupErrorV1::Activation)?
-        };
         if !valid_roles(&names) {
             return Err(NormalRootStartupErrorV1::Activation);
         }
@@ -220,18 +210,7 @@ impl ProductionNormalRootStartupCaptureV1 {
         let identity = process
             .process_identity()
             .map_err(|_| NormalRootStartupErrorV1::Service)?;
-        let root = CgroupV2Root::from_owned(
-            open(
-                "/sys/fs/cgroup",
-                OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            )
-            .map_err(|_| NormalRootStartupErrorV1::Service)?,
-        )
-        .map_err(|_| NormalRootStartupErrorV1::Service)?;
-        let cgroup = root
-            .resolve(Path::new(&format!("system.slice/{UNIT}")))
-            .map_err(|_| NormalRootStartupErrorV1::Service)?;
+        let cgroup = retain_fixed_cgroup(Path::new(&format!("system.slice/{UNIT}")))?;
         let retained = ProductionNormalRootStartupV1 {
             profile_file,
             profile,
@@ -254,8 +233,8 @@ impl ProductionNormalRootStartupCaptureV1 {
 /// Retains nonauthorizing normal-Root startup prerequisites in the server only.
 ///
 /// This has no serialization, scalar factory or proof conversion. Independent
-/// client image/peer/invocation joins and genuine Root-last read authority remain
-/// absent; neither Source genesis nor FUSE can consume this as a read grant.
+/// Controller comparisons do not grant genuine Root-last read authority;
+/// neither Source genesis nor FUSE can consume this as a read grant.
 #[must_use = "retain and recheck the server-local startup owner while serving"]
 pub struct ProductionNormalRootStartupV1 {
     profile_file: RetainedImmutableFileV1,
@@ -342,15 +321,6 @@ impl ProductionNormalRootStartupV1 {
     }
 }
 
-pub(crate) fn recheck_optional(
-    owner: Option<&ProductionNormalRootStartupV1>,
-) -> Result<(), NormalRootStartupErrorV1> {
-    if let Some(owner) = owner {
-        owner.recheck()?;
-    }
-    Ok(())
-}
-
 fn require_unit(
     fragment: &RetainedImmutableFileV1,
     profile_file: &RetainedImmutableFileV1,
@@ -384,6 +354,20 @@ fn valid_roles(names: &[String]) -> bool {
                 .filter(|name| name.as_str() == PROFILE_FD_NAME)
                 .count()
                 == 1
+}
+
+fn retain_fixed_cgroup(path: &Path) -> Result<RetainedCgroupAnchor, NormalRootStartupErrorV1> {
+    let root = CgroupV2Root::from_owned(
+        open(
+            "/sys/fs/cgroup",
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|_| NormalRootStartupErrorV1::Service)?,
+    )
+    .map_err(|_| NormalRootStartupErrorV1::Service)?;
+    root.resolve(path)
+        .map_err(|_| NormalRootStartupErrorV1::Service)
 }
 
 fn read_bounded(path: &str, maximum: usize) -> Result<Vec<u8>, NormalRootStartupErrorV1> {
