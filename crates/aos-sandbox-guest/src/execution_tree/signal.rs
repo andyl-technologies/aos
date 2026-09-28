@@ -46,7 +46,23 @@ impl ExecutionTree {
         if code == 9 {
             // cgroup.kill fences concurrent forks and reaches every original
             // descendant, including changed sessions and a dead leader's tree.
-            self.anchor.kill_all().map_err(|_| Error::AmbiguousEffect)?;
+            // Activity observation above may have consumed the narrowed cut.
+            current()?;
+            crate::process::check_deadline(deadline)?;
+            let mut effect_attempted = false;
+            let killed = self.anchor.kill_all_with_current_cut(|| {
+                // This executes after inner cgroup/control FD validation and
+                // again before every interrupted-write retry, not just at entry.
+                current()?;
+                crate::process::check_deadline(deadline)?;
+                effect_attempted = true;
+                Ok::<(), Error>(())
+            });
+            if effect_attempted {
+                killed.map_err(|_| Error::AmbiguousEffect)?;
+            } else {
+                killed?;
+            }
             current().map_err(|_| Error::AmbiguousEffect)?;
             crate::process::check_deadline(deadline).map_err(|_| Error::AmbiguousEffect)?;
             return Ok(());
@@ -76,6 +92,10 @@ impl ExecutionTree {
                 if process.process_identity()? != *identity {
                     return Err(Error::AmbiguousEffect);
                 }
+                // Freeze, membership and identity reads cannot carry a stale
+                // wall/BOOTTIME observation into the actual signal attempt.
+                current()?;
+                crate::process::check_deadline(deadline)?;
                 effect_attempted = true;
                 process
                     .send_thread_group_signal(code)
@@ -369,10 +389,10 @@ mod tests {
             .request_freezer_state(CgroupFreezerState::Thawed)
             .unwrap();
 
-        // Losing the held cut after the first real TGID send is ambiguous,
-        // but cleanup still restores the original own request, not an ancestor.
+        // Losing the cut at the final post-identity boundary must not send
+        // even the first TGID signal, and cleanup still restores the own request.
         let mut current_checks = 0;
-        let partial = tree.signal_with_current_cut(18, deadline, || {
+        let denied = tree.signal_with_current_cut(19, deadline, || {
             current_checks += 1;
             if current_checks < 5 {
                 Ok(())
@@ -380,8 +400,26 @@ mod tests {
                 Err(Error::InvalidRequest)
             }
         });
-        assert!(matches!(partial, Err(Error::AmbiguousEffect)));
+        assert!(matches!(denied, Err(Error::InvalidRequest)));
         assert_eq!(current_checks, 5);
+        assert_eq!(
+            tree.own_freezer_request().unwrap(),
+            CgroupFreezerState::Thawed
+        );
+
+        // Losing the held cut after the first real TGID send is ambiguous,
+        // but cleanup still restores the original own request, not an ancestor.
+        let mut current_checks = 0;
+        let partial = tree.signal_with_current_cut(18, deadline, || {
+            current_checks += 1;
+            if current_checks < 6 {
+                Ok(())
+            } else {
+                Err(Error::InvalidRequest)
+            }
+        });
+        assert!(matches!(partial, Err(Error::AmbiguousEffect)));
+        assert_eq!(current_checks, 6);
         assert_eq!(
             tree.own_freezer_request().unwrap(),
             CgroupFreezerState::Thawed
@@ -405,6 +443,43 @@ mod tests {
             tree.own_freezer_request().unwrap(),
             CgroupFreezerState::Thawed
         );
+
+        let members = tree.member_ids().unwrap();
+        let mut kill_checks = 0;
+        let denied = tree.signal_with_current_cut(9, deadline, || {
+            kill_checks += 1;
+            if kill_checks == 1 {
+                Ok(())
+            } else {
+                Err(Error::InvalidRequest)
+            }
+        });
+        assert!(matches!(denied, Err(Error::InvalidRequest)));
+        assert_eq!(kill_checks, 2);
+        assert_eq!(tree.member_ids().unwrap(), members);
+
+        // Narrow the test cut to immediate expiry as inner FD validation
+        // begins. Only the post-validation check sees that expired deadline;
+        // the earlier sample cannot permit a write, and descendants survive.
+        let mut kill_checks = 0;
+        let mut expired_cut = None;
+        let denied = tree.signal_with_current_cut(9, deadline, || {
+            kill_checks += 1;
+            if kill_checks < 3 {
+                if kill_checks == 2 {
+                    expired_cut = Some(Instant::now());
+                }
+                Ok(())
+            } else {
+                crate::process::check_deadline(expired_cut.ok_or(Error::InvalidRequest)?)
+            }
+        });
+        assert!(matches!(denied, Err(Error::Unavailable(_))));
+        assert_eq!(kill_checks, 3);
+        assert_eq!(tree.member_ids().unwrap(), members);
+        for pid in &members {
+            assert!(PidFd::open(*pid).unwrap().is_alive().unwrap());
+        }
         tree.signal(9, deadline).unwrap();
         tree.kill_and_wait(deadline).unwrap();
         assert!(tree.empty_and_exited().unwrap());

@@ -316,6 +316,55 @@ impl RetainedCgroupAnchor {
     /// an exact regular cgroup-v2 file, permission is denied, or the complete
     /// control record cannot be written.
     pub fn kill_all(&self) -> Result<()> {
+        self.kill_all_with_current_cut(|| Ok(()))
+    }
+
+    /// Rechecks the owner's held cut immediately before each original kill write.
+    ///
+    /// The callback runs after the existing cgroup/control FD identity checks
+    /// and before every write or interrupted-write retry. It can only deny the
+    /// fixed operation; it cannot choose a target, supply a control FD or
+    /// manufacture authorization. Owners retain their original authority and
+    /// classify any attempted write as potentially ambiguous. Fail-stop cleanup
+    /// callers continue to use [`Self::kill_all`] without an authority deadline.
+    ///
+    /// # Errors
+    /// Returns the callback's denial or a converted typed error for stale
+    /// cgroup custody, invalid control identity, permission or incomplete writes.
+    pub fn kill_all_with_current_cut<E>(
+        &self,
+        mut current: impl FnMut() -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E>
+    where
+        E: From<Error>,
+    {
+        let kill = self.open_kill_control().map_err(E::from)?;
+        let mut remaining: &[u8] = b"1\n";
+        while !remaining.is_empty() {
+            current()?;
+            match rustix::io::write(&kill, remaining) {
+                Ok(0) => {
+                    return Err(Error::MalformedKernelResponse {
+                        object: "cgroup.kill",
+                        message: "kernel accepted an incomplete kill record".to_owned(),
+                    }
+                    .into());
+                }
+                Ok(written) => remaining = &remaining[written..],
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(source) => {
+                    return Err(Error::Syscall {
+                        operation: "write cgroup.kill",
+                        source: source.into(),
+                    }
+                    .into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn open_kill_control(&self) -> Result<OwnedFd> {
         self.validate_active()?;
         let kill = rustix::fs::openat(
             self.root.as_fd(),
@@ -337,26 +386,7 @@ impl RetainedCgroupAnchor {
                 expected: "cgroup-v2 kill control",
             });
         }
-        let mut remaining: &[u8] = b"1\n";
-        while !remaining.is_empty() {
-            match rustix::io::write(&kill, remaining) {
-                Ok(0) => {
-                    return Err(Error::MalformedKernelResponse {
-                        object: "cgroup.kill",
-                        message: "kernel accepted an incomplete kill record".to_owned(),
-                    });
-                }
-                Ok(written) => remaining = &remaining[written..],
-                Err(rustix::io::Errno::INTR) => continue,
-                Err(source) => {
-                    return Err(Error::Syscall {
-                        operation: "write cgroup.kill",
-                        source: source.into(),
-                    });
-                }
-            }
-        }
-        Ok(())
+        Ok(kill)
     }
 
     /// Reobserves the retained cgroup's filesystem identity and active kernfs file.

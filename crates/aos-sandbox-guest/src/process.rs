@@ -932,13 +932,14 @@ pub(super) fn apply_owned_original_control_v5(
                 .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
             settings.apply(master.as_fd(), || {
                 recheck()?;
-                current_deadline()?;
-                check_deadline(deadline)?;
                 process.tree.require_original_scope(&record)?;
                 if process.tree.empty_and_exited()? {
                     return Err(GuestProcessEffectErrorV1::InvalidRequest);
                 }
-                Ok(())
+                // Physical and tree reads precede the final time fence; the
+                // retained PTY syscall follows without intervening owner I/O.
+                current_deadline()?;
+                check_deadline(deadline)
             })?;
         }
         _ => return Err(GuestProcessEffectErrorV1::InvalidRequest),
@@ -947,9 +948,9 @@ pub(super) fn apply_owned_original_control_v5(
     // failure is ambiguous rather than permission to try the sequence again.
     (|| {
         recheck()?;
+        process.tree.require_original_scope(&record)?;
         current_deadline()?;
-        check_deadline(deadline)?;
-        process.tree.require_original_scope(&record)
+        check_deadline(deadline)
     })()
     .map_err(|_| GuestProcessEffectErrorV1::AmbiguousEffect)
 }
