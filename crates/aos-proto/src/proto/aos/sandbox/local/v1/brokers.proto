@@ -138,6 +138,7 @@ message ReserveFuseWorkerIntentRequestV1 {
 message InstallHostAttachGateRequestV1 {
   RequestHeader header = 1;
   bytes pending_grant = 2; // Exact 416-byte AOSAPG01 signed packet.
+  bytes original_ticket_binding_v2 = 3; // Optional bounded AOSTKB02 data, not a grant.
 }
 
 // Host emits this only after fresh signed guest-agent physical readback.
@@ -158,6 +159,8 @@ message HostAttachGateEvidenceV1 {
   bytes route_digest = 14;
   bytes gate_observation_commitment = 15;
   bytes signed_gate_readback = 16;
+  bytes original_ticket_digest_v2 = 17; // Present only for binding-only readback.
+  bytes signed_ticket_readback_v2 = 18; // Fresh physical AOSTGR02; not SSH custody.
 }
 
 // Advisory, read-only preflight; method 28 still rechecks after pending CAS.

@@ -44,6 +44,22 @@ pub(crate) struct PinnedSystemdCredential {
 pub(crate) type PinnedOperatorRecoveryKeyV1 = PinnedSystemdCredential;
 
 impl PinnedSystemdCredential {
+    /// Opens only the existing public attach verifier; never the signing seed.
+    ///
+    /// # Errors
+    /// Rejects missing, oversized, unsafe, or changing fixed credential custody.
+    pub(crate) fn load_attach_grant_public() -> Result<Self, PublicApiSessionError> {
+        Self::load_named("openssh-attach-grant-public-key")
+    }
+
+    /// Opens the exact existing deployment trust bytes signed into attach grants.
+    ///
+    /// # Errors
+    /// Rejects missing, oversized, unsafe, or changing fixed credential custody.
+    pub(crate) fn load_attach_trust() -> Result<Self, PublicApiSessionError> {
+        Self::load_named("openssh-attach-trust.json")
+    }
+
     /// Opens the dedicated controller recovery key from systemd credentials.
     pub(crate) fn load() -> Result<Self, PublicApiSessionError> {
         Self::load_named(OPERATOR_RECOVERY_KEY_NAME)
@@ -147,6 +163,12 @@ pub(super) struct Credentials {
 }
 
 impl Credentials {
+    // Only public trust material is retained; the server private key digest is
+    // deliberately excluded from the original decision's historical binding.
+    pub(super) fn public_trust_digests(&self) -> [[u8; 32]; 3] {
+        [self.digests[0], self.digests[2], self.digests[3]]
+    }
+
     pub(super) fn load() -> Result<(Self, [Zeroizing<Vec<u8>>; 4]), PublicApiSessionError> {
         let path = std::env::var_os("CREDENTIALS_DIRECTORY")
             .map(PathBuf::from)

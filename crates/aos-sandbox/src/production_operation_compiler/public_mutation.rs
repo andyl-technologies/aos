@@ -308,6 +308,21 @@ pub(super) fn compile_authorized_attach_route(
                 operation_id,
                 PublicProjectionResourceV1::Execution(current_execution.clone()),
             )?;
+            let decision = crate::attach_decision::retained_decision_record(
+                journal,
+                operation_id,
+                &authorized
+                    .original_attach_decision()
+                    .map_err(|_| OperationCompilationError::Rejected)?,
+            )
+            .map_err(|_| OperationCompilationError::Rejected)?;
+            if crate::attach_decision::original_ticket_coordinates(journal, operation_id)
+                .map_err(|_| OperationCompilationError::Rejected)?
+                .base_route_digest
+                != route.route_digest
+            {
+                return Err(OperationCompilationError::Rejected);
+            }
             let public =
                 crate::reconciler::recovered_public_operation_admission_v1(journal, operation_id)
                     .map_err(|_| OperationCompilationError::Rejected)?
@@ -319,6 +334,7 @@ pub(super) fn compile_authorized_attach_route(
                 desired.0,
                 desired.1,
                 record,
+                decision,
             )
             .map_err(|_| OperationCompilationError::Rejected)?
             .with_public_operation(public)
@@ -368,6 +384,20 @@ pub(super) fn compile_authorized_attach_route(
         &access,
     )
     .map_err(|_| OperationCompilationError::Rejected)?;
+    let original_grant = crate::attach_decision::original_grant(journal, pending.record_digest())
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    let checked_decision = authorized
+        .original_attach_decision()
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    let issued_decision = crate::attach_decision::bind_issued_decision(
+        &checked_decision,
+        &access.client_certificate,
+        route.route_digest,
+        &original_grant,
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
+    let decision_record = crate::attach_decision::decision_record(operation_id, issued_decision)
+        .map_err(|_| OperationCompilationError::Rejected)?;
     let plan = OperationPlan::completed_public_attach(
         operation_id,
         authorized.request().idempotency_key().clone(),
@@ -375,6 +405,7 @@ pub(super) fn compile_authorized_attach_route(
         desired.0,
         desired.1,
         record,
+        decision_record,
     )
     .map_err(|_| OperationCompilationError::Rejected)?;
     super::attach_public_operation(plan, authorized, authorized.project(), operation_id)

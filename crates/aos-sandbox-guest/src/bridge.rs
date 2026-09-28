@@ -52,6 +52,7 @@ type PtyRegistry = Arc<Mutex<BTreeMap<[u8; 16], AttachedIo>>>;
 
 pub(super) struct AttachBridge {
     masters: PtyRegistry,
+    monitors: crate::monitor::MonitorRegistry,
     server: JoinHandle<()>,
 }
 
@@ -68,10 +69,29 @@ impl AttachBridge {
 
         let masters = Arc::new(Mutex::new(BTreeMap::new()));
         let registry = Arc::clone(&masters);
+        let monitors = crate::monitor::MonitorRegistry::default();
+        let monitor_registry = monitors.clone();
         let server = thread::Builder::new()
             .name("aos-guest-attach".into())
-            .spawn(move || serve(listener, ledger, registry))?;
-        Ok(Self { masters, server })
+            .spawn(move || serve(listener, ledger, registry, monitor_registry))?;
+        Ok(Self {
+            masters,
+            monitors,
+            server,
+        })
+    }
+
+    pub(super) fn bind_monitor_v2(
+        &self,
+        runtime: aos_sandbox_agent::openssh_gate_linux::OpenSshMonitorRuntimeV2,
+        ticket: &[u8],
+    ) -> Result<(), GuestProcessEffectErrorV1> {
+        if self.server.is_finished() {
+            return Err(GuestProcessEffectErrorV1::Unavailable(
+                "attach bridge stopped",
+            ));
+        }
+        self.monitors.install(runtime, ticket)
     }
 
     pub(super) fn register_pty(
@@ -127,6 +147,7 @@ impl AttachBridge {
             GuestProcessEffectErrorV1::Unavailable("attach bridge registry poisoned")
         })?;
         masters.remove(&execution);
+        self.monitors.remove(execution)?;
         Ok(())
     }
 }
@@ -173,13 +194,25 @@ fn verify_socket_directory() -> Result<(), GuestProcessEffectErrorV1> {
     Ok(())
 }
 
-fn serve(mut listener: RecordSubjectListener, ledger: Ledger, masters: PtyRegistry) {
+fn serve(
+    mut listener: RecordSubjectListener,
+    ledger: Ledger,
+    masters: PtyRegistry,
+    monitors: crate::monitor::MonitorRegistry,
+) {
     loop {
+        monitors.prune_closed();
         if listener.validate_current().is_err() {
-            return;
+            break;
         }
         match listener.accept() {
             Ok(mut socket) => {
+                if socket.peer().credentials().uid() == 0 {
+                    // Only the measured live monitor can retain a binding.
+                    // Registration exposes no I/O and never reaches reserve.
+                    let _ = monitors.register(socket, &ledger);
+                    continue;
+                }
                 // Every accepted socket carries a pinned peer and a per-record
                 // subject. A denied request closes without an FD or success byte.
                 let _ = serve_one(&mut socket, &ledger, &masters);
@@ -190,6 +223,7 @@ fn serve(mut listener: RecordSubjectListener, ledger: Ledger, masters: PtyRegist
             Err(_) => thread::sleep(Duration::from_millis(5)),
         }
     }
+    monitors.close();
 }
 
 fn serve_one(
@@ -197,6 +231,14 @@ fn serve_one(
     ledger: &Ledger,
     masters: &PtyRegistry,
 ) -> Result<(), GuestProcessEffectErrorV1> {
+    // V2 is custody data only. An unprivileged callback/gate cannot turn it
+    // into authenticated custody. A later trusted monitor and held consume
+    // must supply that evidence before this route can transfer descriptors.
+    match std::fs::symlink_metadata(aos_sandbox_agent::openssh_ticket::OPENSSH_TICKET_CLAIM_PATH_V2)
+    {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        _ => return Err(GuestProcessEffectErrorV1::InvalidRequest),
+    }
     verify_executable(socket.peer().credentials().pid().get(), GATE_EXECUTABLE)?;
     let deadline = Instant::now() + PEER_DEADLINE;
     let received = loop {
@@ -333,7 +375,7 @@ fn read_gate_claim() -> Result<OpenSshGateClaimV1, GuestProcessEffectErrorV1> {
     Ok(claim)
 }
 
-fn request_matches(
+pub(super) fn request_matches(
     request: &OpenSshGateBridgeRequestV1,
     claim: &OpenSshGateClaimV1,
     process: &crate::ledger::ProcessRecord,
