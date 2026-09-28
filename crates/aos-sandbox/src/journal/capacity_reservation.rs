@@ -738,6 +738,17 @@ pub(super) fn decode_capacity_record(
     })
 }
 
+pub(crate) fn decode_capacity_reservation_request_v1(
+    record: &JournalRecord,
+) -> Result<(GlobalCapacityReservationRequestV1, [u8; 16], [u8; 32]), JournalError> {
+    if record.namespace() != RecordNamespace::GlobalCapacityReservation {
+        return Err(JournalError::ForeignAuthorityNamespace);
+    }
+    let value = record.value().ok_or(JournalError::InvalidTransaction)?;
+    decode_capacity_record(record.key(), value)?;
+    decode_reservation(value)
+}
+
 pub(super) fn all_reservations_owned_by(
     state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     namespace: RecordNamespace,

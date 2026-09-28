@@ -11,7 +11,8 @@ use aos_sandbox_core::ObjectDigest;
 use crate::hierarchy::genesis_profile::hash;
 use crate::journal::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1, Journal, JournalError,
-    JournalRecord, JournalTransaction, RecordNamespace, capacity_reservation_identity_is_exact_v1,
+    JournalRecord, JournalTransaction, RecordNamespace, RootSourceGenesisTransitionV1,
+    capacity_reservation_identity_is_exact_v1,
 };
 
 use super::super::protected_owner::{
@@ -35,6 +36,85 @@ pub(crate) fn require_owner(journal: &Journal) -> Result<(), JournalError> {
         0,
         policy_authority_journal_limits(),
     )
+}
+
+pub(crate) fn require_mutation(
+    journal: &Journal,
+    transaction: &JournalTransaction,
+    transition: RootSourceGenesisTransitionV1,
+    allow_capacity_records: bool,
+    settling: Option<[u8; 32]>,
+) -> Result<(), JournalError> {
+    let owns_records = transaction.records().iter().any(|record| {
+        record.namespace() == RecordNamespace::DesiredState
+            && (record.key() == INSTANCE_KEY
+                || record.key() == PINS_KEY
+                || record.key().starts_with(INTENT_PREFIX)
+                || record.key().starts_with(FLOOR_PREFIX))
+    });
+    if transition == RootSourceGenesisTransitionV1::Initialize {
+        return validate_initialization(journal, transaction);
+    }
+    if !owns_records {
+        return Ok(());
+    }
+    if !allow_capacity_records {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    if let Some(identity) = settling {
+        let reservation = journal.recover_global_capacity_reservation_v1(identity)?;
+        return validate_settlement(journal, transaction, &reservation.request(), identity);
+    }
+    let mut capacities = transaction
+        .records()
+        .iter()
+        .filter(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation);
+    let record = capacities.next().ok_or(JournalError::ProtectedBoundary)?;
+    if capacities.next().is_some() {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    let (request, _, _) = crate::journal::decode_capacity_reservation_request_v1(record)?;
+    validate_admission(journal, transaction, &request)
+}
+
+fn validate_initialization(
+    journal: &Journal,
+    transaction: &JournalTransaction,
+) -> Result<(), JournalError> {
+    require_owner(journal)?;
+    if journal
+        .records(RecordNamespace::DesiredState)
+        .any(|(key, _)| {
+            key == INSTANCE_KEY
+                || key == PINS_KEY
+                || key.starts_with(INTENT_PREFIX)
+                || key.starts_with(FLOOR_PREFIX)
+        })
+        || !journal.root_source_genesis_capacity_ids_v1()?.is_empty()
+        || transaction.records().len() != 2
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    let records = transaction.records();
+    if records[0].namespace() != RecordNamespace::DesiredState
+        || records[0].key() != INSTANCE_KEY
+        || records[1].namespace() != RecordNamespace::DesiredState
+        || records[1].key() != PINS_KEY
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    let instance = records[0].value().ok_or(JournalError::ProtectedBoundary)?;
+    decode_instance(instance).map_err(|_| JournalError::ProtectedBoundary)?;
+    let pins = super::pins::RootGenesisRolePinsV1::load(journal)
+        .map_err(|_| JournalError::ProtectedBoundary)?;
+    if records[1].value() != Some(pins.record_bytes().as_slice()) {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    let digest = hash(super::store::INSTANCE_TRANSACTION_DOMAIN, instance);
+    if transaction.id().as_slice() != &digest.as_bytes()[..16] {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
 }
 
 pub(super) fn intent_key(intent: &RootSourceGenesisIntentRecordV1) -> Vec<u8> {
@@ -83,7 +163,9 @@ pub(crate) fn validate_admission(
     reservation: &GlobalCapacityReservationRequestV1,
 ) -> Result<(), JournalError> {
     require_owner(journal)?;
-    if transaction.records().len() != 2 {
+    if reservation.purpose != GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor
+        || transaction.records().len() != 2
+    {
         return Err(JournalError::InvalidTransaction);
     }
     let intent_record = transaction
@@ -238,4 +320,102 @@ fn transaction_id(domain: &[u8], commitment: ObjectDigest) -> [u8; 16] {
     let mut id = [0; 16];
     id.copy_from_slice(&digest.as_bytes()[..16]);
     id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::journal::JournalLimits;
+
+    #[test]
+    fn generic_genesis_key_writes_are_refused_before_append_and_after_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.journal");
+        let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        let before = journal.snapshot_sequence();
+        let length = std::fs::metadata(&path).unwrap().len();
+        let keys = [
+            INSTANCE_KEY.to_vec(),
+            PINS_KEY.to_vec(),
+            [INTENT_PREFIX, &[1; 16]].concat(),
+            [FLOOR_PREFIX, &[1; 16]].concat(),
+        ];
+
+        for (index, key) in keys.iter().enumerate() {
+            for record in [
+                JournalRecord::put(RecordNamespace::DesiredState, key.clone(), vec![1]),
+                JournalRecord::delete(RecordNamespace::DesiredState, key.clone()),
+            ] {
+                let transaction =
+                    JournalTransaction::new([index as u8 + 1; 16], vec![record]).unwrap();
+                assert!(matches!(
+                    journal.commit(&transaction),
+                    Err(JournalError::ProtectedBoundary)
+                ));
+                assert_eq!(journal.snapshot_sequence(), before);
+                assert_eq!(std::fs::metadata(&path).unwrap().len(), length);
+            }
+        }
+        drop(journal);
+
+        let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        assert_eq!(journal.snapshot_sequence(), before);
+        assert!(
+            keys.iter()
+                .all(|key| journal.get(RecordNamespace::DesiredState, key).is_none())
+        );
+    }
+
+    #[test]
+    fn foreign_capacity_cannot_carry_a_genesis_intent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.journal");
+        let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
+        let request = GlobalCapacityReservationRequestV1 {
+            purpose: GlobalCapacityReservationPurposeV1::RuntimeExecution,
+            owner_namespace: RecordNamespace::Effect,
+            owner_id: [1; 32],
+            owner_digest: [2; 32],
+            operation_id: [3; 16],
+            artifact_digest: [4; 32],
+            checkpoint_digest: [5; 32],
+            chain_head_digest: [6; 32],
+            future_transactions: 1,
+            terminal_records: 3,
+            terminal_bytes: 4096,
+            poison_records: 3,
+            poison_bytes: 4096,
+        };
+        let prepared = journal
+            .prepare_global_capacity_reservation_v1(request, [7; 16])
+            .unwrap();
+        let transaction = JournalTransaction::new(
+            [7; 16],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    [INTENT_PREFIX, &[1; 16]].concat(),
+                    vec![1],
+                ),
+                prepared.record().clone(),
+            ],
+        )
+        .unwrap();
+        let before = journal.snapshot_sequence();
+        let length = std::fs::metadata(&path).unwrap().len();
+
+        assert!(
+            journal
+                .commit_global_capacity_reservation_v1(prepared, &transaction)
+                .is_err()
+        );
+        assert_eq!(journal.snapshot_sequence(), before);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), length);
+        assert_eq!(
+            journal
+                .records(RecordNamespace::GlobalCapacityReservation)
+                .count(),
+            0
+        );
+    }
 }

@@ -36,7 +36,7 @@ use super::records::{
     SourceHierarchyFloorRecordV1, decode_instance, instance_bytes, project_key,
 };
 
-const INSTANCE_TRANSACTION_DOMAIN: &[u8] =
+pub(super) const INSTANCE_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.source-genesis.root-instance-transaction.v1\0";
 const MAXIMUM_PROJECTS: usize = 4096;
 
@@ -432,7 +432,8 @@ impl RootSourceGenesisAuthorityV1 {
         self.recheck()?;
         self.journal
             .preflight_transactions(std::slice::from_ref(&transaction))?;
-        self.journal.commit(&transaction)?;
+        self.journal
+            .commit_root_source_genesis_initialization_v1(&transaction)?;
         if self
             .journal
             .get(RecordNamespace::DesiredState, INSTANCE_KEY)

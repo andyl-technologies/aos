@@ -88,7 +88,7 @@ pub use source_genesis_root::{
 };
 #[cfg(target_os = "linux")]
 pub(crate) use source_genesis_root::{
-    require_root_source_genesis_capacity_owner_v1,
+    require_root_source_genesis_capacity_owner_v1, require_root_source_genesis_mutation_v1,
     validate_root_source_genesis_capacity_admission_v1,
     validate_root_source_genesis_capacity_settlement_v1,
 };

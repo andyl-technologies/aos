@@ -54,11 +54,18 @@ mod source_project_admission_challenge;
 pub use cache_policy_hold::CachePolicyHoldV1;
 pub(crate) use cache_policy_hold::NAME as CACHE_POLICY_HOLD_JOURNAL;
 pub(crate) use capacity_reservation::capacity_reservation_identity_is_exact_v1;
+pub(crate) use capacity_reservation::decode_capacity_reservation_request_v1;
 pub use capacity_reservation::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
     GlobalCapacityReservationRequestV1, GlobalCapacityReservationV1,
     PreparedGlobalCapacityReservationV1,
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RootSourceGenesisTransitionV1 {
+    None,
+    Initialize,
+}
 pub use controller_policy_hold::{
     ControllerPolicyEffectAckV1, ControllerPolicyHoldV1, ControllerPolicyV8AttemptV1,
     ControllerPolicyV8EffectAckV1,
@@ -2211,6 +2218,7 @@ impl Journal {
             allow_host_settlement_admission_append,
             SourceProjectAdmissionTransition::None,
             controller_source_genesis::ControllerSourceGenesisTransition::None,
+            RootSourceGenesisTransitionV1::None,
         )
     }
 
@@ -2229,6 +2237,7 @@ impl Journal {
             false,
             transition,
             controller_source_genesis::ControllerSourceGenesisTransition::None,
+            RootSourceGenesisTransitionV1::None,
         )
     }
 
@@ -2247,6 +2256,26 @@ impl Journal {
             false,
             SourceProjectAdmissionTransition::None,
             transition,
+            RootSourceGenesisTransitionV1::None,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn commit_root_source_genesis_initialization_v1(
+        &mut self,
+        transaction: &JournalTransaction,
+    ) -> Result<CommitResult, JournalError> {
+        self.commit_with_capacity_scope_and_project_admission(
+            transaction,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+            RootSourceGenesisTransitionV1::Initialize,
         )
     }
 
@@ -2262,8 +2291,17 @@ impl Journal {
         allow_host_settlement_admission_append: bool,
         project_admission_transition: SourceProjectAdmissionTransition,
         controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
+        root_genesis_transition: RootSourceGenesisTransitionV1,
     ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
+        #[cfg(target_os = "linux")]
+        crate::policy_compiler::require_root_source_genesis_mutation_v1(
+            self,
+            transaction,
+            root_genesis_transition,
+            allow_capacity_records,
+            settling_reservation,
+        )?;
         controller_source_genesis::require_no_mutation(
             &self.state,
             transaction,

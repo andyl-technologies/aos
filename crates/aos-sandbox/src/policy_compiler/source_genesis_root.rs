@@ -16,6 +16,7 @@ mod records;
 mod store;
 
 pub(crate) use capacity::{
+    require_mutation as require_root_source_genesis_mutation_v1,
     require_owner as require_root_source_genesis_capacity_owner_v1,
     validate_admission as validate_root_source_genesis_capacity_admission_v1,
     validate_settlement as validate_root_source_genesis_capacity_settlement_v1,
