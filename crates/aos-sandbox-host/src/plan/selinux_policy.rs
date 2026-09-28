@@ -1,7 +1,8 @@
 //! Host's independently sourced enforcing SELinux policy proof.
 //!
-//! The shared Linux readback compares the deployed immutable policy with
-//! selinuxfs. Host retains its own error type and readiness boundary.
+//! The shared Linux readback compares the image-pinned deployment kernel's
+//! canonical serialization with selinuxfs, not the compiled policy input.
+//! Host retains its own error type and readiness boundary.
 
 use aos_sandbox_linux::selinux_policy::VerifiedLiveSelinuxPolicy;
 
@@ -16,7 +17,7 @@ pub struct VerifiedLiveSelinuxPolicyV1 {
 }
 
 impl VerifiedLiveSelinuxPolicyV1 {
-    /// Compares the active kernel policy with the immutable AOS derivation.
+    /// Compares the active policy with the image-pinned canonical readback.
     ///
     /// # Errors
     ///

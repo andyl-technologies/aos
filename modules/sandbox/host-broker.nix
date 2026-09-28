@@ -7,6 +7,8 @@
 }: let
   cfg = config.aos.sandbox.hostBroker;
   controller = config.aos.sandbox.controller;
+  canonicalReadback = pkgs.aosSelinuxKernelPolicyReadbackForKernel config.system.build.kernel;
+  canonicalReadbackPath = "${canonicalReadback}/policy.33";
   brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
   brokerSessionEndpoints = [
     {
@@ -227,19 +229,23 @@ in {
 
     systemd.services.aos-sandbox-hostd = {
       description = "AOS fixed-function sandbox host broker";
-      requires = [
-        "aos-sandbox-hostd.socket"
-        "aos-sandbox-host-root-mount.socket"
-        "aos-sandbox-host-storage.socket"
-        "dbus.socket"
-      ] ++ lib.optional phase0ProbeActive "aos-sandbox-host-phase0-inspector.service";
-      after = [
-        "aos-sandbox-hostd.socket"
-        "aos-sandbox-host-root-mount.socket"
-        "aos-sandbox-host-storage.socket"
-        "dbus.socket"
-        "local-fs.target"
-      ] ++ lib.optional phase0ProbeActive "aos-sandbox-host-phase0-inspector.service";
+      requires =
+        [
+          "aos-sandbox-hostd.socket"
+          "aos-sandbox-host-root-mount.socket"
+          "aos-sandbox-host-storage.socket"
+          "dbus.socket"
+        ]
+        ++ lib.optional phase0ProbeActive "aos-sandbox-host-phase0-inspector.service";
+      after =
+        [
+          "aos-sandbox-hostd.socket"
+          "aos-sandbox-host-root-mount.socket"
+          "aos-sandbox-host-storage.socket"
+          "dbus.socket"
+          "local-fs.target"
+        ]
+        ++ lib.optional phase0ProbeActive "aos-sandbox-host-phase0-inspector.service";
       unitConfig = {
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
@@ -254,7 +260,7 @@ in {
         ExecStartPre =
           ["${pkgs.coreutils}/bin/test -f ${pkgs.systemd}/share/aos/backend-policy-artifact-v2"]
           ++ brokerSessionConfiguration.installCommands;
-        ExecStart = "${cfg.package}/bin/aos-sandbox-hostd ${toString controller.uid} ${toString controller.gid} ${pkgs.systemd}/bin/systemd-nspawn ${cfg.guardianPackage}/bin/aos-sandbox-guardian ${pkgs.aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
+        ExecStart = "${cfg.package}/bin/aos-sandbox-hostd ${toString controller.uid} ${toString controller.gid} ${pkgs.systemd}/bin/systemd-nspawn ${cfg.guardianPackage}/bin/aos-sandbox-guardian ${canonicalReadbackPath}";
         # This public digest is pinned to the deployed immutable guest package,
         # independent of Storage's assignment-bound physical root proof.
         LoadCredential =
@@ -334,7 +340,7 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = "${cfg.package}/bin/aos-sandbox-host-phase0-probe inspect ${pkgs.systemd}/bin/systemd-nspawn ${cfg.package}/bin/aos-sandbox-hostd ${pkgs.aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
+        ExecStart = "${cfg.package}/bin/aos-sandbox-host-phase0-probe inspect ${pkgs.systemd}/bin/systemd-nspawn ${cfg.package}/bin/aos-sandbox-hostd ${canonicalReadbackPath}";
         LoadCredential = phase0ProbeCredentials;
         TimeoutStartSec = "20s";
         Restart = "no";

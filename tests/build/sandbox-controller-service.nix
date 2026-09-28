@@ -63,6 +63,10 @@
     else true;
 
   systemdOptions = {lib, ...}: {
+    options.system.build.kernel = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.linux;
+    };
     options.assertions = lib.mkOption {
       type = lib.types.listOf lib.types.anything;
       default = [];
@@ -174,6 +178,16 @@
   };
   hostServiceConfig =
     hostEvaluation.config.systemd.services.aos-sandbox-hostd.serviceConfig;
+  hostProbeEvaluation = hostEvaluation.extendModules {
+    modules = [
+      {
+        aos.sandbox.hostBroker.credentials = {
+          phase0ProbeSigningSeed = "test-phase0-seed";
+          phase0ProbePublicKey = "test-phase0-public";
+        };
+      }
+    ];
+  };
 in
   assert lib.all (check: !check.assertion) missingCredentials.assertions;
   assert lib.all (check: !check.assertion) partialCredentials.assertions;
@@ -212,6 +226,9 @@ in
   assert builtins.elem "aos-sandbox-ownershipd.socket" ownershipService.requires;
   assert builtins.elem "aos-sandbox-ownershipd.socket" ownershipService.after;
   assert ! (hostServiceConfig ? Slice);
+  assert lib.hasSuffix " ${pkgs.aosSelinuxKernelPolicyReadbackForKernel hostEvaluation.config.system.build.kernel}/policy.33" hostServiceConfig.ExecStart;
+  assert !(hostEvaluation.config.systemd.services ? aos-sandbox-host-phase0-inspector);
+  assert lib.hasSuffix " ${pkgs.aosSelinuxKernelPolicyReadbackForKernel hostProbeEvaluation.config.system.build.kernel}/policy.33" hostProbeEvaluation.config.systemd.services.aos-sandbox-host-phase0-inspector.serviceConfig.ExecStart;
   assert requires "LoadCredential =\n          nodeCredentials\n          ++ cacheReplayCredentials\n          ++ cacheReadbackCredentials\n          ++ controllerHoldCredentials\n          ++ guestRootTemplateCredentials" moduleSource;
   assert requires ''required = true;'' moduleSource;
   assert requires ''aos-sandbox-hostd.service'' moduleSource;
