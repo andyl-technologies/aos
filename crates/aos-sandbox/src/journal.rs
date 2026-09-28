@@ -874,10 +874,9 @@ impl ReadOnlyJournalNameWitness {
 
 /// Grants scoped access to one closed authority namespace in a protected journal.
 ///
-/// The guard can only be constructed by [`Journal::claim_protected_authority`].
-/// Claiming rejects every materialized record and every committed namespace
-/// since the last compaction outside the selected namespace. Transactions
-/// submitted through the guard cannot name another namespace. Every operation
+/// The guard is constructed by a protected Journal claim method. Ordinary
+/// transactions stay within the claimed owner namespace; purpose-specific
+/// methods may admit a closed cross-namespace transaction. Every operation
 /// checks journal health and retained protected-open provenance. Values and
 /// iterators borrowed through the guard cannot remain live across a commit or
 /// another mutable operation.
@@ -1869,9 +1868,9 @@ impl Journal {
     /// Claims one closed cross-namespace capacity-reserved transaction protocol.
     ///
     /// The returned guard exposes capacity-specific admission, recovery, and
-    /// settlement. `RuntimeExecution` additionally permits ordinary owner-only
-    /// Effect reads and transactions; `PublisherCompletion` remains fully
-    /// composite and exposes no generic domain access. Neither path admits
+    /// settlement. `RuntimeExecution` and `SourceProviderNativeTerminal`
+    /// additionally permit ordinary owner-only reads and transactions;
+    /// `PublisherCompletion` remains fully composite. No purpose admits
     /// namespace 46 through generic transaction methods.
     ///
     /// # Errors
@@ -1890,6 +1889,42 @@ impl Journal {
             namespace: purpose.owner_namespace(),
             scope: ProtectedAuthorityScope::CapacityReservation(purpose),
         })
+    }
+
+    /// Claims the fixed source-provider native terminal capacity protocol.
+    ///
+    /// Ordinary operations remain restricted to namespace 41. Capacity
+    /// admission and settlement alone may also name namespace 46.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unprotected or poisoned journal, malformed
+    /// reservation provenance, or foreign committed history or state.
+    pub fn claim_source_provider_native_terminal_authority_v1(
+        &mut self,
+    ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
+        self.ensure_protected_authority()?;
+        capacity_reservation::validate_all_reservations(&self.state)?;
+        let namespace = RecordNamespace::SourceProviderAuthority;
+        let has_foreign_history = self.committed_namespaces.iter().any(|committed_namespace| {
+            *committed_namespace != namespace
+                && *committed_namespace != RecordNamespace::GlobalCapacityReservation
+        });
+        let has_foreign_state = self.state.keys().any(|(record_namespace, _)| {
+            *record_namespace != namespace
+                && *record_namespace != RecordNamespace::GlobalCapacityReservation
+        });
+        // Deleted foreign rows still taint this generation until compaction.
+        if has_foreign_history
+            || has_foreign_state
+            || !capacity_reservation::all_reservations_owned_by(&self.state, namespace)?
+        {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+
+        self.claim_global_capacity_reservation_authority(
+            GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal,
+        )
     }
 
     /// Requires retained protected storage provenance before resolving authority.
@@ -2694,7 +2729,13 @@ impl ProtectedJournalAuthority<'_> {
     pub fn validate_source_provider_authority(&self) -> Result<(), JournalError> {
         self.journal.ensure_protected_authority()?;
         if self.namespace != RecordNamespace::SourceProviderAuthority
-            || self.scope != ProtectedAuthorityScope::SingleNamespace
+            || !matches!(
+                self.scope,
+                ProtectedAuthorityScope::SingleNamespace
+                    | ProtectedAuthorityScope::CapacityReservation(
+                        GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal
+                    )
+            )
         {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
@@ -3498,6 +3539,7 @@ impl ProtectedJournalAuthority<'_> {
         let mut authority_publication = false;
         let mut effect = false;
         let mut desired_state = false;
+        let mut source_provider_authority = false;
         let mut capacity_record = false;
         for record in transaction.records() {
             if !purpose.permits(record.namespace()) {
@@ -3508,6 +3550,7 @@ impl ProtectedJournalAuthority<'_> {
                 RecordNamespace::AuthorityPublication => authority_publication = true,
                 RecordNamespace::Effect => effect = true,
                 RecordNamespace::DesiredState => desired_state = true,
+                RecordNamespace::SourceProviderAuthority => source_provider_authority = true,
                 RecordNamespace::GlobalCapacityReservation => capacity_record = true,
                 _ => return Err(JournalError::ForeignAuthorityNamespace),
             }
@@ -3518,6 +3561,9 @@ impl ProtectedJournalAuthority<'_> {
             }
             GlobalCapacityReservationPurposeV1::RuntimeExecution => effect,
             GlobalCapacityReservationPurposeV1::RootProjectAdmission => desired_state,
+            GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal => {
+                source_provider_authority
+            }
         };
         if !closed_shape || !capacity_record {
             return Err(JournalError::ForeignAuthorityNamespace);
@@ -3611,6 +3657,7 @@ impl ProtectedJournalAuthority<'_> {
                 | ProtectedAuthorityScope::MountSourceMigration
                 | ProtectedAuthorityScope::CapacityReservation(
                     GlobalCapacityReservationPurposeV1::RuntimeExecution
+                        | GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal
                 )
         ) {
             return Err(JournalError::ForeignAuthorityNamespace);
@@ -4769,8 +4816,10 @@ mod tests {
     use aos_sandbox_core::OperationId;
 
     use super::{
-        FileIdentity, HEADER_BYTES, IdempotencyKey, IdempotencyOutcome, Journal, JournalError,
-        JournalLimits, JournalRecord, JournalTransaction, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
+        FileIdentity, GlobalCapacityReservationPurposeV1,
+        GlobalCapacityReservationRecoveryBindingV1, GlobalCapacityReservationRequestV1,
+        HEADER_BYTES, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
+        JournalRecord, JournalTransaction, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
         ProtectedAncestry, ProtectedJournalLocation, ProtectedOwnerPolicy,
         ReadOnlyJournalNameWitness, RecordNamespace, RecoveryReport, encode_transaction,
         open_protected_file, open_read_only_protected_file, protected_open_error,
@@ -4821,6 +4870,348 @@ mod tests {
 
     fn transaction(id: u8, records: Vec<JournalRecord>) -> JournalTransaction {
         JournalTransaction::new([id; 16], records).unwrap()
+    }
+
+    fn source_provider_capacity_request() -> GlobalCapacityReservationRequestV1 {
+        GlobalCapacityReservationRequestV1 {
+            purpose: GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal,
+            owner_namespace: RecordNamespace::SourceProviderAuthority,
+            owner_id: [1; 32],
+            owner_digest: [2; 32],
+            operation_id: [3; 16],
+            artifact_digest: [4; 32],
+            checkpoint_digest: [5; 32],
+            chain_head_digest: [6; 32],
+            terminal_records: 3,
+            terminal_bytes: 4096,
+            poison_records: 3,
+            poison_bytes: 4096,
+        }
+    }
+
+    #[test]
+    fn source_provider_native_capacity_replays_and_settles_under_fixed_purpose() {
+        let directory = TestDirectory::new("source-provider-native-capacity");
+        let request = source_provider_capacity_request();
+        let (mut journal, _) = protected_open(&directory.0).unwrap();
+        let reservation_id = {
+            let mut authority = journal
+                .claim_source_provider_native_terminal_authority_v1()
+                .unwrap();
+            authority.validate_source_provider_authority().unwrap();
+
+            let prepared = authority
+                .prepare_global_capacity_reservation_v1(request, [7; 16])
+                .unwrap();
+            assert_eq!(prepared.record().value().unwrap()[11], 3);
+            let reservation_id = prepared.reservation_id();
+            let admission = transaction(
+                7,
+                vec![
+                    JournalRecord::put(
+                        RecordNamespace::SourceProviderAuthority,
+                        b"owner".to_vec(),
+                        b"admitted".to_vec(),
+                    ),
+                    prepared.record().clone(),
+                ],
+            );
+            let preflight = authority
+                .preflight_global_capacity_reservation_v1(&prepared, &admission)
+                .unwrap();
+            let (_, committed_reservation) = authority
+                .commit_global_capacity_reservation_v1(&preflight, prepared, &admission)
+                .unwrap();
+            assert_eq!(committed_reservation.reservation_id(), reservation_id);
+            assert_eq!(
+                authority.get(b"owner").unwrap(),
+                Some(b"admitted".as_slice())
+            );
+            assert_eq!(authority.records().unwrap().count(), 1);
+            authority
+                .commit(&transaction(
+                    9,
+                    vec![JournalRecord::put(
+                        RecordNamespace::SourceProviderAuthority,
+                        b"ordinary".to_vec(),
+                        b"retained".to_vec(),
+                    )],
+                ))
+                .unwrap();
+            reservation_id
+        };
+        drop(journal);
+
+        let (mut reopened, _) = protected_open(&directory.0).unwrap();
+        let mut authority = reopened
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+        authority
+            .validate_global_capacity_reservation_set_v1(&[reservation_id].into())
+            .unwrap();
+        let reservation = authority
+            .recover_global_capacity_reservation_by_binding_v1(
+                reservation_id,
+                &GlobalCapacityReservationRecoveryBindingV1 {
+                    purpose: request.purpose,
+                    operation_id: request.operation_id,
+                    artifact_digest: request.artifact_digest,
+                    checkpoint_digest: request.checkpoint_digest,
+                    chain_head_digest: request.chain_head_digest,
+                    terminal_records: request.terminal_records,
+                    terminal_bytes: request.terminal_bytes,
+                    poison_records: request.poison_records,
+                    poison_bytes: request.poison_bytes,
+                },
+            )
+            .unwrap();
+        let terminal = transaction(
+            8,
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::SourceProviderAuthority,
+                    b"owner".to_vec(),
+                    b"settled".to_vec(),
+                ),
+                reservation.settlement_record(),
+            ],
+        );
+        let preflight = authority
+            .preflight_reserved_terminal_v1(&reservation, &terminal)
+            .unwrap();
+        authority
+            .commit_reserved_terminal_v1(&preflight, reservation, &terminal)
+            .unwrap();
+        authority
+            .validate_global_capacity_reservation_set_v1(&Default::default())
+            .unwrap();
+        assert_eq!(
+            authority.get(b"owner").unwrap(),
+            Some(b"settled".as_slice())
+        );
+    }
+
+    #[test]
+    fn source_provider_native_capacity_rejects_foreign_purpose_and_namespace() {
+        let directory = TestDirectory::new("source-provider-native-isolation");
+        let (mut journal, _) = protected_open(&directory.0).unwrap();
+        let mut authority = journal
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+        let mut wrong_purpose = source_provider_capacity_request();
+        wrong_purpose.purpose = GlobalCapacityReservationPurposeV1::RuntimeExecution;
+        assert!(matches!(
+            authority.prepare_global_capacity_reservation_v1(wrong_purpose, [1; 16]),
+            Err(JournalError::ForeignAuthorityNamespace)
+        ));
+
+        let prepared = authority
+            .prepare_global_capacity_reservation_v1(source_provider_capacity_request(), [2; 16])
+            .unwrap();
+        let foreign_admission = transaction(
+            2,
+            vec![
+                JournalRecord::put(RecordNamespace::Effect, b"foreign".to_vec(), vec![1]),
+                prepared.record().clone(),
+            ],
+        );
+        assert!(matches!(
+            authority.preflight_global_capacity_reservation_v1(&prepared, &foreign_admission),
+            Err(JournalError::ForeignAuthorityNamespace)
+        ));
+        let generic_capacity = transaction(3, vec![prepared.record().clone()]);
+        assert!(matches!(
+            authority.commit(&generic_capacity),
+            Err(JournalError::ForeignAuthorityNamespace)
+        ));
+        let foreign_generic = transaction(
+            4,
+            vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                b"foreign".to_vec(),
+                vec![1],
+            )],
+        );
+        assert!(matches!(
+            authority.commit(&foreign_generic),
+            Err(JournalError::ForeignAuthorityNamespace)
+        ));
+        drop(authority);
+
+        let generic = journal
+            .claim_protected_authority(RecordNamespace::SourceProviderAuthority)
+            .unwrap();
+        assert!(matches!(
+            generic.prepare_global_capacity_reservation_v1(
+                source_provider_capacity_request(),
+                [5; 16]
+            ),
+            Err(JournalError::ForeignAuthorityNamespace)
+        ));
+    }
+
+    #[test]
+    fn source_provider_native_claim_rejects_foreign_state_and_deleted_history() {
+        for (label, delete_foreign) in [("retained", false), ("deleted", true)] {
+            let directory = TestDirectory::new(label);
+            let (mut journal, _) = protected_open(&directory.0).unwrap();
+            journal
+                .commit(&transaction(
+                    21,
+                    vec![JournalRecord::put(
+                        RecordNamespace::Effect,
+                        b"foreign".to_vec(),
+                        vec![1],
+                    )],
+                ))
+                .unwrap();
+            if delete_foreign {
+                journal
+                    .commit(&transaction(
+                        22,
+                        vec![JournalRecord::delete(
+                            RecordNamespace::Effect,
+                            b"foreign".to_vec(),
+                        )],
+                    ))
+                    .unwrap();
+                assert!(journal.records(RecordNamespace::Effect).next().is_none());
+            }
+
+            assert!(matches!(
+                journal.claim_source_provider_native_terminal_authority_v1(),
+                Err(JournalError::ForeignAuthorityNamespace)
+            ));
+            drop(journal);
+
+            let (mut reopened, _) = protected_open(&directory.0).unwrap();
+            assert!(matches!(
+                reopened.claim_source_provider_native_terminal_authority_v1(),
+                Err(JournalError::ForeignAuthorityNamespace)
+            ));
+        }
+    }
+
+    #[test]
+    fn source_provider_native_capacity_preserves_near_limit_terminal_space() {
+        let mut request = source_provider_capacity_request();
+        request.terminal_records = 2;
+        request.poison_records = 2;
+        let limits_with_terminal_slots = |slots: usize| JournalLimits {
+            // Admission retains one owner and one reservation row. The held
+            // terminal branch needs two further slots until settlement.
+            maximum_materialized_records: 2 + slots,
+            ..JournalLimits::default()
+        };
+        let admission = |prepared: &super::PreparedGlobalCapacityReservationV1| {
+            transaction(
+                11,
+                vec![
+                    JournalRecord::put(
+                        RecordNamespace::SourceProviderAuthority,
+                        b"owner".to_vec(),
+                        b"admitted".to_vec(),
+                    ),
+                    prepared.record().clone(),
+                ],
+            )
+        };
+
+        let too_small = TestDirectory::new("source-provider-capacity-one-terminal-slot");
+        fs::set_permissions(&too_small.0, fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(&too_small.0).unwrap().uid();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            &too_small.0,
+            "protected.journal",
+            limits_with_terminal_slots(1),
+            uid,
+        )
+        .unwrap();
+        let authority = journal
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+        let prepared = authority
+            .prepare_global_capacity_reservation_v1(request, [11; 16])
+            .unwrap();
+        assert!(matches!(
+            authority.preflight_global_capacity_reservation_v1(&prepared, &admission(&prepared)),
+            Err(JournalError::LimitExceeded(
+                "outstanding global capacity reservations"
+            ))
+        ));
+        assert_eq!(authority.records().unwrap().count(), 0);
+        drop(authority);
+        assert_eq!(journal.snapshot_sequence(), 1);
+        drop(journal);
+
+        let enough = TestDirectory::new("source-provider-capacity-two-terminal-slots");
+        fs::set_permissions(&enough.0, fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(&enough.0).unwrap().uid();
+        let limits = limits_with_terminal_slots(2);
+        let (mut journal, _) =
+            Journal::open_protected_at_uid(&enough.0, "protected.journal", limits, uid).unwrap();
+        let mut authority = journal
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+        let prepared = authority
+            .prepare_global_capacity_reservation_v1(request, [11; 16])
+            .unwrap();
+        let admission = admission(&prepared);
+        let preflight = authority
+            .preflight_global_capacity_reservation_v1(&prepared, &admission)
+            .unwrap();
+        let (_, reservation) = authority
+            .commit_global_capacity_reservation_v1(&preflight, prepared, &admission)
+            .unwrap();
+        let competing = transaction(
+            12,
+            vec![JournalRecord::put(
+                RecordNamespace::SourceProviderAuthority,
+                b"competing".to_vec(),
+                vec![1],
+            )],
+        );
+        assert!(matches!(
+            authority.commit(&competing),
+            Err(JournalError::LimitExceeded(
+                "outstanding global capacity reservations"
+            ))
+        ));
+        assert_eq!(authority.get(b"competing").unwrap(), None);
+
+        let terminal = transaction(
+            13,
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::SourceProviderAuthority,
+                    b"owner".to_vec(),
+                    b"settled".to_vec(),
+                ),
+                reservation.settlement_record(),
+            ],
+        );
+        let preflight = authority
+            .preflight_reserved_terminal_v1(&reservation, &terminal)
+            .unwrap();
+        authority
+            .commit_reserved_terminal_v1(&preflight, reservation, &terminal)
+            .unwrap();
+        drop(authority);
+        drop(journal);
+
+        let (mut reopened, _) =
+            Journal::open_protected_at_uid(&enough.0, "protected.journal", limits, uid).unwrap();
+        let authority = reopened
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+        authority
+            .validate_global_capacity_reservation_set_v1(&Default::default())
+            .unwrap();
+        assert_eq!(
+            authority.get(b"owner").unwrap(),
+            Some(b"settled".as_slice())
+        );
+        assert_eq!(authority.get(b"competing").unwrap(), None);
     }
 
     #[test]

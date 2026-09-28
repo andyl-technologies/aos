@@ -36,8 +36,9 @@ pub use format::{
     acquisition_key, attempt_id, encode_mount_source_state_record_v2, holder_sequence_key,
     intent_digest, inventory_correlation_set_v2, key_kind, manager_custody_evidence_digest_v2,
     manager_custody_loss_evidence_digest_v2, mount_source_consumption_companion_digest_v2,
-    provider_attempt_key, provider_head_key, provider_session_key, record_digest, request_id,
-    seal_record, session_id, transaction_id, validate_inventory_correlation_set_v2,
+    native_recovery_settlement_digest_v2, provider_attempt_key, provider_head_key,
+    provider_session_key, record_digest, request_id, seal_record, session_id, transaction_id,
+    validate_inventory_correlation_set_v2,
 };
 pub use migration::{
     LegacyMountSourceStateV1, MountSourceStateMigrationDispositionV2,

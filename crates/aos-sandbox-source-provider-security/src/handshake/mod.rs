@@ -26,7 +26,8 @@ pub use provider::{
     ProviderSourceProviderOwnerV1, RevalidatedProviderReplayV1,
 };
 pub use root_mount::{
-    AuthenticatedRootMountCatalogCurrentnessV1, AuthenticatedRootMountRecoveryUnavailableV1,
+    AuthenticatedRootMountCatalogCurrentnessV1, AuthenticatedRootMountNativeRecoveryUnavailableV1,
+    AuthenticatedRootMountRecoveryObservationV2, AuthenticatedRootMountRecoveryUnavailableV1,
     CurrentRootMountSourceProviderSessionV1, InventoryReadbackProgressV1,
     RootMountSourceProviderHandshakeStatusV1, RootMountSourceProviderOwnerV1,
 };

@@ -1,0 +1,1501 @@
+//! Canonical whole-graph replay and protected native floor retention.
+//!
+//! Unlike the width-only capacity projections, these fixtures retain signed
+//! HELLO/request/lease/response artifacts and pass the strict Ledger graph
+//! validator before the actual capacity owner is checked. They do not mint a
+//! protected runtime configuration, an FD, or a native terminal capability.
+
+use std::collections::BTreeMap;
+use std::os::unix::fs::PermissionsExt as _;
+
+use aos_sandbox::{Journal, JournalLimits, JournalRecord};
+use aos_sandbox_source_provider_ledger::ledger::format::*;
+use aos_sandbox_source_provider_ledger::ledger::model::*;
+use aos_sandbox_source_provider_ledger::{
+    BackendEvidenceClassV1, BackendEvidenceV1, ReopenIdentityV1,
+};
+use aos_sandbox_source_provider_protocol::*;
+use ed25519_dalek::{Signer as _, SigningKey};
+use sha2::Digest as _;
+
+use super::*;
+use crate::ledger::native_completion::{
+    NativeAcquireCompletionRecordV2, NativeAcquireCompletionStateV2,
+};
+use crate::native_completion::{fixture_prepared, fixture_requested};
+
+fn digest(byte: u8) -> ObjectDigest {
+    ObjectDigest::from_bytes([byte; 32])
+}
+
+fn signer(byte: u8, usage: SourceProviderKeyUsageV1) -> SourceProviderSigningKeyV1 {
+    let (id, generation, state) = match usage {
+        SourceProviderKeyUsageV1::RootMountHello | SourceProviderKeyUsageV1::RootMountRecord => {
+            ([7; 16], 8, digest(9))
+        }
+        SourceProviderKeyUsageV1::ProviderHello | SourceProviderKeyUsageV1::ProviderOutcome => {
+            ([33; 16], 35, digest(36))
+        }
+        _ => ([90; 16], 1, digest(91)),
+    };
+    let (key_id, key_generation) = match usage {
+        SourceProviderKeyUsageV1::RootMountRecord => ([11; 16], 12),
+        SourceProviderKeyUsageV1::ProviderOutcome => ([37; 16], 38),
+        _ => ([byte; 16], 1),
+    };
+    SourceProviderSigningKeyV1::for_signing_key(
+        id,
+        generation,
+        state,
+        key_id,
+        key_generation,
+        usage,
+        &SigningKey::from_bytes(&[byte; 32]),
+    )
+    .unwrap()
+}
+
+fn session(nonce: u8) -> HolderSessionHeadRecordV1 {
+    let signers = [
+        signer(52, SourceProviderKeyUsageV1::RootMountHello),
+        signer(51, SourceProviderKeyUsageV1::RootMountRecord),
+        signer(53, SourceProviderKeyUsageV1::ProviderHello),
+        signer(54, SourceProviderKeyUsageV1::ProviderOutcome),
+    ];
+    let root = sign_hello(
+        SourceProviderHelloV1::new(
+            SourceProviderPeerRole::RootMount,
+            [nonce; 32],
+            [5; 16],
+            [6; 16],
+            signers[1].clone(),
+            signers[3].clone(),
+            [85; 16],
+            86,
+            digest(87),
+            None,
+            1,
+            false,
+            false,
+        )
+        .unwrap(),
+        signers[0].clone(),
+        &SigningKey::from_bytes(&[52; 32]),
+    )
+    .unwrap();
+    let provider = sign_hello(
+        SourceProviderHelloV1::new(
+            SourceProviderPeerRole::Provider,
+            [nonce + 1; 32],
+            [4; 16],
+            [6; 16],
+            signers[3].clone(),
+            signers[1].clone(),
+            [85; 16],
+            86,
+            digest(87),
+            Some(digest_signed_hello(&root)),
+            1,
+            false,
+            false,
+        )
+        .unwrap(),
+        signers[2].clone(),
+        &SigningKey::from_bytes(&[53; 32]),
+    )
+    .unwrap();
+    HolderSessionHeadRecordV1 {
+        revision: 1,
+        session_generation: 1,
+        provider: SourceProviderAuthorityV1::new([33; 16], 35, digest(36)).unwrap(),
+        holder: SourceProviderAuthorityV1::new([7; 16], 8, digest(9)).unwrap(),
+        session_binding: source_provider_session_binding_v1(&root, &provider),
+        predecessor_session_binding: None,
+        supersession_evidence_digest: None,
+        boot_id: [6; 16],
+        root_process_instance: [5; 16],
+        provider_process_instance: [4; 16],
+        provider_process_id: 80,
+        provider_start_time_ticks: 81,
+        provider_execution_commitment: provider_execution_commitment_v1([6; 16], 80, 81, [4; 16]),
+        root_writer: WriterIdentityV1 {
+            uid: 0,
+            gid: 0,
+            tgid: 82,
+            start_time_ticks: 83,
+            cgroup_digest: digest(84),
+        },
+        route_id: [85; 16],
+        route_generation: 86,
+        route_digest: digest(87),
+        resource_namespace_digest: digest(24),
+        trust_generation: 1,
+        trust_digest: digest(88),
+        revocation_generation: 1,
+        revocation_digest: digest(10),
+        signer_set_commitment: source_provider_signer_set_commitment_v1(
+            &signers[0],
+            &signers[1],
+            &signers[2],
+            &signers[3],
+        ),
+        signers,
+        request_sequence_floor: 1,
+        response_sequence_floor: 1,
+        acquisition_sequence_floor: 1,
+        next_acquisition_sequence: 5,
+        next_request_sequence: 3,
+        next_response_sequence: 1,
+        pending_attempt_digest: None,
+        last_completed_attempt_digest: None,
+        root_hello_digest: digest_signed_hello(&root),
+        provider_hello_digest: digest_signed_hello(&provider),
+        root_hello: root.to_canonical_bytes(),
+        provider_hello: provider.to_canonical_bytes(),
+    }
+}
+
+fn catalog(native: &NativeAcquireCompletionRecordV2) -> CatalogHeadRecordV1 {
+    let held = native
+        .canonical_request
+        .as_ref()
+        .unwrap()
+        .request()
+        .claims()
+        .catalog();
+    let publisher = signer(55, SourceProviderKeyUsageV1::CatalogPublisher);
+    let mut publication = b"AOSPCP01".to_vec();
+    publication.extend_from_slice(&2_u16.to_be_bytes());
+    publication.extend_from_slice(&[0; 6]);
+    publication.extend_from_slice(&[33; 16]);
+    publication.extend_from_slice(&35_u64.to_be_bytes());
+    publication.extend_from_slice(digest(36).as_bytes());
+    publication.extend_from_slice(held.namespace_digest().as_bytes());
+    publication.extend_from_slice(&held.generation().to_be_bytes());
+    publication.extend_from_slice(held.digest().as_bytes());
+    publication.extend_from_slice(&publisher.authority_id());
+    publication.extend_from_slice(&1_u64.to_be_bytes());
+    publication.extend_from_slice(&0_u64.to_be_bytes());
+    publication.extend_from_slice(&[0; 32]);
+    publication.extend_from_slice(&held.generation().to_be_bytes());
+    publication.extend_from_slice(held.digest().as_bytes());
+    publication.extend_from_slice(&500_i64.to_be_bytes());
+    publication.extend_from_slice(&1_u64.to_be_bytes());
+    publication.extend_from_slice(digest(88).as_bytes());
+    publication.extend_from_slice(&1_u64.to_be_bytes());
+    publication.extend_from_slice(digest(10).as_bytes());
+    publication.extend_from_slice(&publisher.authority_id());
+    publication.extend_from_slice(&publisher.authority_generation().to_be_bytes());
+    publication.extend_from_slice(publisher.authority_digest().as_bytes());
+    publication.extend_from_slice(&publisher.key_id());
+    publication.extend_from_slice(&publisher.key_generation().to_be_bytes());
+    publication.extend_from_slice(publisher.public_key_digest().as_bytes());
+    publication.push(publisher.usage() as u8);
+    publication.extend_from_slice(&[0; 7]);
+    assert_eq!(publication.len(), 456);
+    let mut message = b"aos.sandbox.source-provider.catalog-publication.v1\0".to_vec();
+    message.extend_from_slice(&publication);
+    publication.extend_from_slice(&SigningKey::from_bytes(&[55; 32]).sign(&message).to_bytes());
+    let mut receipt = Sha256::new();
+    receipt.update(b"aos.sandbox.source-provider.catalog-publication-receipt.v1\0");
+    receipt.update(&publication);
+    CatalogHeadRecordV1 {
+        revision: 1,
+        provider: SourceProviderAuthorityV1::new([33; 16], 35, digest(36)).unwrap(),
+        resource_namespace_digest: held.namespace_digest(),
+        catalog_generation: held.generation(),
+        catalog_digest: held.digest(),
+        publisher_authority_id: publisher.authority_id(),
+        publication_generation: 1,
+        publication_receipt_digest: ObjectDigest::from_bytes(receipt.finalize().into()),
+        predecessor_catalog_generation: 0,
+        predecessor_catalog_digest: digest(0),
+        catalog_floor_generation: held.generation(),
+        catalog_floor_digest: held.digest(),
+        publication_seconds: 500,
+        publication_trust_generation: 1,
+        publication_trust_digest: digest(88),
+        publication_revocation_generation: 1,
+        publication_revocation_digest: digest(10),
+        publisher_signer: publisher,
+        canonical_publication: publication,
+    }
+}
+
+struct Graph {
+    authority: AuthorityHeadRecordV1,
+    catalog: CatalogHeadRecordV1,
+    sessions: Vec<HolderSessionHeadRecordV1>,
+    attempts: Vec<AttemptRecordV1>,
+    acquisition: AcquisitionRecordV1,
+    native: NativeAcquireCompletionRecordV2,
+    release: Option<ReleaseRecordV1>,
+}
+
+impl Graph {
+    fn applying() -> Self {
+        let mut session = session(40);
+        let prototype = fixture_requested([1; 32], 500, session.session_binding);
+        let signed = prototype
+            .canonical_request
+            .as_ref()
+            .unwrap()
+            .request()
+            .signed_root_request();
+        let root = decode_acquire_request(signed.subject()).unwrap();
+        let intent = crate::NormalizedAcquisitionIntentV1::from_acquire_request(
+            &root,
+            session.provider.clone(),
+            session.holder.clone(),
+            session.root_process_instance,
+            session.boot_id,
+            session.route_id,
+            session.route_generation,
+            session.route_digest,
+            session.resource_namespace_digest,
+            session.revocation_generation,
+            session.revocation_digest,
+        )
+        .unwrap();
+        let attempt = AttemptRecordV1 {
+            revision: 1,
+            state: ProviderAttemptStateV1::Reserved,
+            provider: session.provider.clone(),
+            holder: session.holder.clone(),
+            root_record_signer: signed.signer().clone(),
+            method: SourceProviderMethod::Acquire,
+            status: None,
+            request_id: root.request_id(),
+            signed_request_digest: digest_signed_request(signed),
+            typed_request_digest: digest_acquire_request(&root),
+            operation_intent_digest: intent.digest(),
+            acquisition_sequence: root.acquisition_sequence(),
+            attempt_digest: prototype.attempt_digest,
+            session_binding: session.session_binding,
+            request_sequence: root.sequence(),
+            response_sequence: None,
+            deadline_seconds: root.deadline_seconds(),
+            verified_at_seconds: 500,
+            completed_at_seconds: None,
+            current_valid_until_seconds: root.deadline_seconds(),
+            proof_class_capabilities: 1,
+            supports_recursive: false,
+            supports_kernel_coupled: false,
+            root_process_instance: session.root_process_instance,
+            provider_process_instance: session.provider_process_instance,
+            signer_set_commitment: session.signer_set_commitment,
+            recovery_predecessor_attempt_digest: None,
+            recovery_predecessor_session_binding: None,
+            recovery_fence_digest: None,
+            recovery_fence_class: 0,
+            recovery_revocation_generation: 0,
+            recovery_revocation_digest: digest(0),
+            signed_request_digest_again: digest_signed_request(signed),
+            response_digest: None,
+            descriptor_commitment: empty_descriptor_set_commitment_v1(),
+            result_digest: None,
+            response_catalog_generation: 0,
+            response_catalog_digest: digest(0),
+            signed_request: signed.to_canonical_bytes(),
+            completed_response: Vec::new(),
+        };
+        session.pending_attempt_digest = Some(attempt.attempt_digest);
+        let catalog = catalog(&prototype);
+        let held = prototype
+            .canonical_request
+            .as_ref()
+            .unwrap()
+            .request()
+            .claims()
+            .catalog();
+        let (resource, _) = held
+            .select_under_head(
+                held.generation(),
+                held.digest(),
+                held.namespace_digest(),
+                root.binding_digest(),
+            )
+            .unwrap();
+        let backend = aos_sandbox_source_provider_ledger::identity::acquire_native_dispatch_id_v2(
+            intent.digest(),
+            held.generation(),
+            held.digest(),
+            attempt.attempt_digest,
+        );
+        let effect = aos_sandbox_source_provider_ledger::identity::acquire_effect_id_v1(
+            root.acquisition_id(),
+            attempt.attempt_digest,
+        )
+        .unwrap();
+        let plan = crate::AcquirePlanV1 {
+            provider_id: session.provider.authority_id(),
+            holder_id: session.holder.authority_id(),
+            session_binding: session.session_binding,
+            attempt_digest: attempt.attempt_digest,
+            acquisition_id: root.acquisition_id(),
+            effect_id: effect,
+            normalized_intent_digest: intent.digest(),
+            kernel_coupled: false,
+            backend_id: backend,
+        };
+        let acquisition = AcquisitionRecordV1 {
+            revision: 1,
+            state: ProviderAcquisitionStateV1::Applying,
+            provider: session.provider.clone(),
+            holder: session.holder.clone(),
+            acquisition_id: root.acquisition_id(),
+            acquisition_sequence: root.acquisition_sequence(),
+            effect_id: effect,
+            normalized_intent: intent,
+            effect_attempt_digest: attempt.attempt_digest,
+            current_attempt_digest: attempt.attempt_digest,
+            lease_attempt_digest: None,
+            lease_issue_generation: 0,
+            lease_id: None,
+            lease_digest: None,
+            lease_history: Vec::new(),
+            resource_namespace_digest: resource.resource_namespace_digest(),
+            resource_id: resource.resource_id(),
+            resource_generation: resource.resource_generation(),
+            resource_digest: resource.resource_digest(),
+            catalog_generation: resource.catalog_generation(),
+            catalog_digest: resource.catalog_digest(),
+            selection_generation: resource.selection_generation(),
+            selection_digest: resource.selection_digest(),
+            proof_class: 0,
+            proof_digest: digest(0),
+            resource_commitment: digest(0),
+            backend_id: backend,
+            backend_lineage_digest: plan.lineage_digest(),
+            native_no_dispatch_reservation_digest: None,
+            backend_evidence: None,
+            reopen_identity: None,
+            source_root: None,
+            release_effect_id: None,
+            signed_lease: Vec::new(),
+        };
+        let native = NativeAcquireCompletionRecordV2::requested(
+            prototype.canonical_request.clone().unwrap(),
+            record_digest(&encode_acquisition(&acquisition)).unwrap(),
+            prototype.original_clock.unwrap(),
+        )
+        .unwrap();
+        let authority = AuthorityHeadRecordV1 {
+            revision: 1,
+            state: ProviderAuthorityStateV1::Active,
+            provider: session.provider.clone(),
+            trust_generation: 1,
+            trust_digest: digest(88),
+            revocation_generation: 1,
+            revocation_digest: digest(10),
+            valid_from_seconds: 499,
+            valid_until_seconds: 1100,
+            route_id: session.route_id,
+            route_generation: session.route_generation,
+            route_digest: session.route_digest,
+            resource_namespace_digest: session.resource_namespace_digest,
+            proof_class_capabilities: 1,
+            supports_recursive: false,
+            supports_kernel_coupled: false,
+            provider_hello_signer: session.signers[2].clone(),
+            provider_outcome_signer: session.signers[3].clone(),
+            catalog_generation: catalog.catalog_generation,
+            catalog_digest: catalog.catalog_digest,
+            inventory_generation: 1,
+            inventory_state_digest: digest(1),
+            last_lease_issue_generation: 0,
+            last_release_generation: 0,
+            active_lease_count: 0,
+        };
+        let mut graph = Self {
+            authority,
+            catalog,
+            sessions: vec![session],
+            attempts: vec![attempt],
+            acquisition,
+            native,
+            release: None,
+        };
+        graph.refresh_inventory();
+        graph
+    }
+
+    fn rows(&self) -> BTreeMap<Vec<u8>, Vec<u8>> {
+        let mut rows = BTreeMap::from([
+            (
+                authority_key(self.authority.provider.authority_id()),
+                encode_authority(&self.authority),
+            ),
+            (
+                catalog_key(
+                    self.catalog.provider.authority_id(),
+                    self.catalog.catalog_generation,
+                ),
+                encode_catalog(&self.catalog),
+            ),
+            (
+                acquisition_key(&AcquisitionKeyV1 {
+                    provider_id: self.acquisition.provider.authority_id(),
+                    holder_id: self.acquisition.holder.authority_id(),
+                    acquisition_id: self.acquisition.acquisition_id,
+                }),
+                encode_acquisition(&self.acquisition),
+            ),
+            (
+                crate::ledger::native_completion::native_completion_key_v2(
+                    self.native.acquisition_id,
+                ),
+                encode_native_completion_v2(&self.native),
+            ),
+        ]);
+        for session in &self.sessions {
+            rows.insert(
+                session_history_key(
+                    session.provider.authority_id(),
+                    session.holder.authority_id(),
+                    session.session_binding,
+                ),
+                encode_session_history(session),
+            );
+        }
+        let current = self.sessions.last().unwrap();
+        rows.insert(
+            session_key(
+                current.provider.authority_id(),
+                current.holder.authority_id(),
+            ),
+            encode_session(current),
+        );
+        for attempt in &self.attempts {
+            rows.insert(
+                attempt_key(&AttemptKeyV1 {
+                    provider_id: attempt.provider.authority_id(),
+                    holder_id: attempt.holder.authority_id(),
+                    root_record_key_id: attempt.root_record_signer.key_id(),
+                    method: attempt.method as u8,
+                    request_id: attempt.request_id,
+                }),
+                encode_attempt(attempt),
+            );
+        }
+        if let Some(release) = &self.release {
+            rows.insert(
+                release_key(&ReleaseKeyV1 {
+                    provider_id: release.provider.authority_id(),
+                    holder_id: release.holder.authority_id(),
+                    acquisition_id: release.acquisition_id,
+                }),
+                encode_release(release),
+            );
+        }
+        rows
+    }
+
+    fn refresh_inventory(&mut self) {
+        let rows = self.rows();
+        let (digest, count) = crate::ledger::reducer::inventory_state_digest(
+            self.authority.provider.authority_id(),
+            self.catalog.catalog_generation,
+            self.catalog.catalog_digest,
+            rows.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
+            1024,
+        )
+        .unwrap();
+        self.authority.inventory_state_digest = digest;
+        self.authority.active_lease_count = count;
+    }
+
+    fn active(&mut self) {
+        let prepared = if self.native.state == NativeAcquireCompletionStateV2::Requested {
+            fixture_prepared(&self.native)
+        } else {
+            self.native.clone()
+        };
+        let reply = prepared.accepted_reply.as_ref().unwrap();
+        let receipt = reply.receipt().receipt();
+        let resource = receipt.resource().clone();
+        let snapshot = receipt.snapshot().clone();
+        let proof = SourceProviderProofV1::ZfsHeldSnapshot {
+            proof: snapshot.clone(),
+            topology: reply.acceptance().acceptance().topology().clone(),
+        };
+        let attempt = &mut self.attempts[0];
+        let lease_id = aos_sandbox_source_provider_ledger::identity::lease_id_v1(
+            self.acquisition.acquisition_id,
+            1,
+            self.acquisition.backend_id,
+        )
+        .unwrap();
+        let key = SigningKey::from_bytes(&[54; 32]);
+        let lease = sign_export_lease(
+            SourceExportLeaseV1::new(
+                lease_id,
+                attempt.request_id,
+                attempt.typed_request_digest,
+                self.acquisition.holder.authority_id(),
+                self.acquisition.holder.authority_generation(),
+                self.acquisition.holder.authority_digest(),
+                self.acquisition.provider.clone(),
+                resource.clone(),
+                proof.clone(),
+                prepared.binding_digest,
+                501,
+                550,
+                digest(10),
+            )
+            .unwrap(),
+            self.sessions[0].signers[3].clone(),
+            &key,
+        )
+        .unwrap();
+        let root = prepared.original_root;
+        let provider_receipt = sign_provider_receipt(
+            SourceProviderReceiptV1::new(
+                attempt.request_id,
+                attempt.typed_request_digest,
+                self.acquisition.acquisition_id,
+                attempt.provider_process_instance,
+                digest_signed_export_lease(&lease),
+                lease.to_canonical_bytes(),
+                SourceProviderDescriptorRole::SourceRoot,
+                root.kernel_boot_id,
+                root.device,
+                root.inode,
+                root.unique_mount_id,
+                digest_provider_proof(&proof),
+            )
+            .unwrap(),
+            self.sessions[0].signers[3].clone(),
+            &key,
+        )
+        .unwrap();
+        complete_attempt(
+            attempt,
+            SourceProviderStatus::Complete,
+            Some(provider_receipt.to_canonical_bytes()),
+            self.sessions[0].signers[3].clone(),
+            1,
+            501,
+            prepared.descriptor_commitment,
+        );
+        let acquisition = &mut self.acquisition;
+        acquisition.revision += 1;
+        acquisition.state = ProviderAcquisitionStateV1::Active;
+        acquisition.lease_attempt_digest = Some(attempt.attempt_digest);
+        acquisition.lease_issue_generation = 1;
+        acquisition.lease_id = Some(lease_id);
+        acquisition.lease_digest = Some(digest_signed_export_lease(&lease));
+        acquisition.lease_history.push(LeaseLineageV1 {
+            issue_generation: 1,
+            lease_id,
+            lease_digest: digest_signed_export_lease(&lease),
+            attempt_digest: attempt.attempt_digest,
+        });
+        acquisition.proof_class = 1;
+        acquisition.proof_digest = digest_provider_proof(&proof);
+        acquisition.resource_commitment =
+            provider_resource_commitment_v1(&resource, acquisition.proof_digest);
+        acquisition.backend_evidence = Some(
+            BackendEvidenceV1::new_acquired(
+                BackendEvidenceClassV1::ZfsHeldSnapshot,
+                [61; 16],
+                62,
+                digest(63),
+                67,
+                reply.receipt().digest(),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        acquisition.reopen_identity = Some(
+            ReopenIdentityV1::new(
+                BackendEvidenceClassV1::ZfsHeldSnapshot,
+                acquisition.backend_id,
+                62,
+                digest(63),
+                resource.resource_id(),
+                resource.resource_generation(),
+                resource.resource_digest(),
+                snapshot.storage_handle(),
+                snapshot.storage_version(),
+                snapshot.active_hold_digest(),
+            )
+            .unwrap(),
+        );
+        acquisition.source_root = Some(root);
+        acquisition.signed_lease = lease.to_canonical_bytes();
+        self.native = prepared
+            .advance(NativeAcquireCompletionStateV2::Active)
+            .unwrap();
+        self.sessions[0].revision += 1;
+        self.sessions[0].pending_attempt_digest = None;
+        self.sessions[0].last_completed_attempt_digest = Some(attempt.attempt_digest);
+        self.sessions[0].next_response_sequence = 2;
+        self.authority.revision += 1;
+        self.authority.inventory_generation += 1;
+        self.authority.last_lease_issue_generation = 1;
+        self.refresh_inventory();
+    }
+
+    fn supersede_session(&mut self) {
+        let original = self.sessions.last().unwrap();
+        let mut next = session(45);
+        next.session_generation = original.session_generation + 1;
+        next.predecessor_session_binding = Some(original.session_binding);
+        next.supersession_evidence_digest = Some(digest(92));
+        self.sessions.push(next);
+    }
+
+    fn releasing(&mut self) {
+        self.native = self
+            .native
+            .advance(NativeAcquireCompletionStateV2::CleanupRequired)
+            .unwrap();
+        let session = self.sessions.last_mut().unwrap();
+        let lease_id = self.acquisition.lease_id.unwrap();
+        let lease_digest = self.acquisition.lease_digest.unwrap();
+        let root = ReleaseSourceRequestV1::new(
+            session.session_binding,
+            3,
+            [93; 16],
+            self.acquisition.acquisition_id,
+            self.acquisition.holder.authority_id(),
+            self.acquisition.holder.authority_generation(),
+            self.acquisition.holder.authority_digest(),
+            lease_id,
+            lease_digest,
+            1100,
+        )
+        .unwrap();
+        let signed = sign_request(
+            SourceProviderMethod::Release,
+            encode_release_request(&root),
+            session.signers[1].clone(),
+            &SigningKey::from_bytes(&[51; 32]),
+        )
+        .unwrap();
+        let mut attempt = self.attempts[0].clone();
+        attempt.revision = 1;
+        attempt.state = ProviderAttemptStateV1::Reserved;
+        attempt.method = SourceProviderMethod::Release;
+        attempt.status = None;
+        attempt.request_id = root.request_id();
+        attempt.signed_request_digest = digest_signed_request(&signed);
+        attempt.signed_request_digest_again = attempt.signed_request_digest;
+        attempt.typed_request_digest = digest_release_request(&root);
+        attempt.operation_intent_digest = source_provider_release_intent_digest_v1(&root);
+        attempt.attempt_digest = source_provider_request_attempt_digest_v1(
+            signed.signer(),
+            SourceProviderMethod::Release,
+            root.request_id(),
+        );
+        attempt.session_binding = session.session_binding;
+        attempt.request_sequence = 3;
+        attempt.response_sequence = None;
+        attempt.verified_at_seconds = 502;
+        attempt.completed_at_seconds = None;
+        attempt.response_digest = None;
+        attempt.result_digest = None;
+        attempt.descriptor_commitment = empty_descriptor_set_commitment_v1();
+        attempt.signed_request = signed.to_canonical_bytes();
+        attempt.completed_response.clear();
+        session.revision += 1;
+        session.next_request_sequence = 4;
+        session.pending_attempt_digest = Some(attempt.attempt_digest);
+        let effect = aos_sandbox_source_provider_ledger::identity::release_effect_id_v1(
+            self.acquisition.acquisition_id,
+            attempt.attempt_digest,
+            1,
+        )
+        .unwrap();
+        let plan = crate::ReleasePlanV1 {
+            provider_id: attempt.provider.authority_id(),
+            holder_id: attempt.holder.authority_id(),
+            session_binding: attempt.session_binding,
+            attempt_digest: attempt.attempt_digest,
+            acquisition_id: self.acquisition.acquisition_id,
+            effect_id: effect,
+            lease_id,
+            lease_digest,
+            backend_id: self.acquisition.backend_id,
+            acquired_evidence: self.acquisition.backend_evidence.clone().unwrap(),
+        };
+        self.acquisition.revision += 1;
+        self.acquisition.state = ProviderAcquisitionStateV1::Releasing;
+        self.acquisition.current_attempt_digest = attempt.attempt_digest;
+        self.acquisition.release_effect_id = Some(effect);
+        self.release = Some(ReleaseRecordV1 {
+            revision: 1,
+            state: ProviderReleaseStateV1::Intent,
+            provider: attempt.provider.clone(),
+            holder: attempt.holder.clone(),
+            acquisition_id: self.acquisition.acquisition_id,
+            acquisition_sequence: self.acquisition.acquisition_sequence,
+            lease_id,
+            lease_digest,
+            effect_id: effect,
+            release_generation: 1,
+            effect_attempt_digest: attempt.attempt_digest,
+            attempt_digest: attempt.attempt_digest,
+            backend_id: self.acquisition.backend_id,
+            backend_lineage_digest: plan.lineage_digest(),
+            backend_evidence: None,
+            release_observation_digest: None,
+            released_seconds: None,
+            receipt_digest: None,
+            signed_receipt: Vec::new(),
+            acquisition_record_digest: record_digest(&encode_acquisition(&self.acquisition))
+                .unwrap(),
+        });
+        self.attempts.push(attempt);
+        self.authority.revision += 1;
+        self.authority.inventory_generation += 1;
+        self.authority.last_release_generation = 1;
+        self.refresh_inventory();
+    }
+
+    fn released(&mut self) {
+        let release = self.release.as_mut().unwrap();
+        let attempt = self.attempts.last_mut().unwrap();
+        let session = self.sessions.last_mut().unwrap();
+        let receipt = sign_release_receipt(
+            SourceReleaseReceiptV1::new(
+                attempt.request_id,
+                attempt.typed_request_digest,
+                release.lease_id,
+                release.lease_digest,
+                release.provider.clone(),
+                attempt.provider_process_instance,
+                release.release_generation,
+                503,
+            )
+            .unwrap(),
+            session.signers[3].clone(),
+            &SigningKey::from_bytes(&[54; 32]),
+        )
+        .unwrap();
+        complete_attempt(
+            attempt,
+            SourceProviderStatus::Complete,
+            Some(receipt.to_canonical_bytes()),
+            session.signers[3].clone(),
+            session.next_response_sequence,
+            503,
+            empty_descriptor_set_commitment_v1(),
+        );
+        session.revision += 1;
+        session.pending_attempt_digest = None;
+        session.last_completed_attempt_digest = Some(attempt.attempt_digest);
+        session.next_response_sequence += 1;
+        let acquired = self.acquisition.backend_evidence.as_ref().unwrap();
+        let evidence = BackendEvidenceV1::new_released(
+            acquired.class(),
+            acquired.backend_authority_id(),
+            acquired.backend_generation(),
+            acquired.backend_digest(),
+            acquired.observation_generation() + 1,
+            digest(94),
+            acquired.observation_generation(),
+            acquired.observation_digest(),
+            Vec::new(),
+        )
+        .unwrap();
+        self.acquisition.revision += 1;
+        self.acquisition.state = ProviderAcquisitionStateV1::Released;
+        release.revision += 1;
+        release.state = ProviderReleaseStateV1::Tombstone;
+        release.release_observation_digest = Some(evidence.observation_digest());
+        release.backend_evidence = Some(evidence);
+        release.released_seconds = Some(503);
+        release.receipt_digest = Some(digest_signed_release_receipt(&receipt));
+        release.signed_receipt = receipt.to_canonical_bytes();
+        release.acquisition_record_digest =
+            record_digest(&encode_acquisition(&self.acquisition)).unwrap();
+        self.authority.revision += 1;
+        self.authority.inventory_generation += 1;
+        self.refresh_inventory();
+    }
+
+    fn pending(&mut self) {
+        let attempt = &mut self.attempts[0];
+        complete_attempt(
+            attempt,
+            SourceProviderStatus::Pending,
+            None,
+            self.sessions[0].signers[3].clone(),
+            1,
+            501,
+            empty_descriptor_set_commitment_v1(),
+        );
+        self.acquisition.revision += 1;
+        self.acquisition.state = ProviderAcquisitionStateV1::Pending;
+        self.sessions[0].revision += 1;
+        self.sessions[0].pending_attempt_digest = None;
+        self.sessions[0].last_completed_attempt_digest = Some(attempt.attempt_digest);
+        self.sessions[0].next_response_sequence = 2;
+    }
+}
+
+fn complete_attempt(
+    attempt: &mut AttemptRecordV1,
+    status: SourceProviderStatus,
+    result: Option<Vec<u8>>,
+    signer: SourceProviderSigningKeyV1,
+    sequence: u64,
+    completed: i64,
+    descriptor: ObjectDigest,
+) {
+    let result_digest = response_result_digest_v1(attempt.method, status, result.as_deref());
+    let subject = SourceProviderResponseStatusV1::new(
+        attempt.method,
+        attempt.request_id,
+        attempt.signed_request_digest,
+        status,
+        attempt.provider_process_instance,
+        attempt.session_binding,
+        sequence,
+        result_digest,
+        descriptor,
+    )
+    .unwrap();
+    let signed = sign_response_status(subject, signer, &SigningKey::from_bytes(&[54; 32])).unwrap();
+    let bytes = match attempt.method {
+        SourceProviderMethod::Acquire => {
+            encode_acquire_response(&AcquireSourceResponseV1::new(signed, result).unwrap())
+        }
+        SourceProviderMethod::Release => {
+            encode_release_response(&ReleaseSourceResponseV1::new(signed, result).unwrap())
+        }
+        _ => panic!("unexpected fixture method"),
+    };
+    attempt.revision += 1;
+    attempt.state = ProviderAttemptStateV1::Completed;
+    attempt.status = Some(status);
+    attempt.response_sequence = Some(sequence);
+    attempt.completed_at_seconds = Some(completed);
+    attempt.response_digest = Some(provider_response_artifact_digest_v1(attempt.method, &bytes));
+    attempt.result_digest = Some(result_digest);
+    attempt.descriptor_commitment = descriptor;
+    attempt.completed_response = bytes;
+}
+
+fn open(directory: &std::path::Path) -> Journal {
+    Journal::open_protected_at_uid(
+        directory,
+        "native-whole-graph.journal",
+        JournalLimits::default(),
+        rustix::process::geteuid().as_raw(),
+    )
+    .unwrap()
+    .0
+}
+
+fn recover_graph(
+    owner: &ProtectedJournalAuthority<'_>,
+) -> Result<RecoveredProviderLedgerV1, ProviderLedgerError> {
+    let rows: Vec<_> = owner
+        .records()?
+        .map(|(k, v)| (k.to_vec(), v.to_vec()))
+        .collect();
+    aos_sandbox_source_provider_ledger::validate_prospective_records(
+        rows.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
+    )
+    .map_err(crate::transaction::map_pure_ledger_error)?;
+    let mut authority = None;
+    let mut catalog_history = BTreeMap::new();
+    let mut sessions = BTreeMap::new();
+    let mut session_history = BTreeMap::new();
+    let mut attempts = BTreeMap::new();
+    let mut acquisitions = BTreeMap::new();
+    let mut releases = BTreeMap::new();
+    let mut native_completions = BTreeMap::new();
+    for (key, value) in rows {
+        match decode_record(&key, &value).map_err(crate::transaction::map_pure_ledger_error)? {
+            DecodedRecordV1::Authority(row) => authority = Some(row),
+            DecodedRecordV1::Catalog(row) => {
+                catalog_history.insert(row.catalog_generation, row);
+            }
+            DecodedRecordV1::Session(row) => {
+                sessions.insert(
+                    (row.provider.authority_id(), row.holder.authority_id()),
+                    row,
+                );
+            }
+            DecodedRecordV1::SessionHistory(row) => {
+                session_history.insert(
+                    (
+                        row.provider.authority_id(),
+                        row.holder.authority_id(),
+                        row.session_binding,
+                    ),
+                    row,
+                );
+            }
+            DecodedRecordV1::Attempt(row) => {
+                attempts.insert(
+                    AttemptKeyV1 {
+                        provider_id: row.provider.authority_id(),
+                        holder_id: row.holder.authority_id(),
+                        root_record_key_id: row.root_record_signer.key_id(),
+                        method: row.method as u8,
+                        request_id: row.request_id,
+                    },
+                    row,
+                );
+            }
+            DecodedRecordV1::Acquisition(row) => {
+                acquisitions.insert(
+                    AcquisitionKeyV1 {
+                        provider_id: row.provider.authority_id(),
+                        holder_id: row.holder.authority_id(),
+                        acquisition_id: row.acquisition_id,
+                    },
+                    row,
+                );
+            }
+            DecodedRecordV1::Release(row) => {
+                releases.insert(
+                    ReleaseKeyV1 {
+                        provider_id: row.provider.authority_id(),
+                        holder_id: row.holder.authority_id(),
+                        acquisition_id: row.acquisition_id,
+                    },
+                    row,
+                );
+            }
+            DecodedRecordV1::NativeCompletion(row) => {
+                native_completions.insert(row.acquisition_id, row);
+            }
+        }
+    }
+    let authority = authority.unwrap();
+    Ok(RecoveredProviderLedgerV1 {
+        catalog: catalog_history[&authority.catalog_generation].clone(),
+        authority,
+        catalog_history,
+        sessions,
+        session_history,
+        attempts,
+        acquisitions,
+        releases,
+        native_completions,
+        recovery_work: Vec::new(),
+    })
+}
+
+fn transaction(id: u8, rows: BTreeMap<Vec<u8>, Vec<u8>>) -> JournalTransaction {
+    JournalTransaction::new(
+        [id; 16],
+        rows.into_iter()
+            .map(|(key, value)| {
+                JournalRecord::put(RecordNamespace::SourceProviderAuthority, key, value)
+            })
+            .collect(),
+    )
+    .unwrap()
+}
+
+fn admit(
+    owner: &mut ProtectedJournalAuthority<'_>,
+    graph: &Graph,
+) -> aos_sandbox::GlobalCapacityReservationV1 {
+    admit_rows(owner, graph, graph.rows())
+}
+
+fn admit_rows(
+    owner: &mut ProtectedJournalAuthority<'_>,
+    graph: &Graph,
+    rows: BTreeMap<Vec<u8>, Vec<u8>>,
+) -> aos_sandbox::GlobalCapacityReservationV1 {
+    aos_sandbox_source_provider_ledger::validate_prospective_records(
+        rows.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
+    )
+    .unwrap();
+    let prepared = owner
+        .prepare_global_capacity_reservation_v1(
+            request(
+                &graph.acquisition,
+                &graph.attempts[0],
+                &graph.sessions[0],
+                None,
+            )
+            .unwrap(),
+            [100; 16],
+        )
+        .unwrap();
+    let mut records = transaction(100, rows).records().to_vec();
+    records.push(prepared.record().clone());
+    let admission = JournalTransaction::new([100; 16], records).unwrap();
+    let preflight = owner
+        .preflight_global_capacity_reservation_v1(&prepared, &admission)
+        .unwrap();
+    let (_, reservation) = owner
+        .commit_global_capacity_reservation_v1(&preflight, prepared, &admission)
+        .unwrap();
+    validate_set(owner, &recover_graph(owner).unwrap()).unwrap();
+    reservation
+}
+
+fn commit_graph(owner: &mut ProtectedJournalAuthority<'_>, id: u8, graph: &Graph) {
+    let current: Vec<_> = owner
+        .records()
+        .unwrap()
+        .map(|(k, v)| (k.to_vec(), v.to_vec()))
+        .collect();
+    let next = graph.rows();
+    aos_sandbox_source_provider_ledger::validate_prospective_transition(
+        current.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
+        next.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
+    )
+    .unwrap();
+    // Apply only changed rows, as the real owner does; cleanup is marker-only.
+    let previous: BTreeMap<_, _> = current.into_iter().collect();
+    let mutations = next
+        .into_iter()
+        .filter(|(key, value)| previous.get(key) != Some(value))
+        .collect();
+    owner.commit(&transaction(id, mutations)).unwrap();
+}
+
+#[test]
+fn native_graph_missing_marker_rejects_active_but_preserves_applying_reservation() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut graph = Graph::applying();
+    let key =
+        crate::ledger::native_completion::native_completion_key_v2(graph.native.acquisition_id);
+    let mut applying = graph.rows();
+    applying.remove(&key);
+    aos_sandbox_source_provider_ledger::validate_prospective_records(
+        applying.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
+    )
+    .unwrap();
+
+    // Protected admission reserves the distinct dispatch floor before the
+    // Requested row exists. Absence here is legitimate, not Active evidence.
+    let mut journal = open(directory.path());
+    let mut owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let reservation = admit_rows(&mut owner, &graph, applying);
+    let original = reservation.request();
+    assert_eq!(original.terminal_records, 7);
+    assert!(recover_graph(&owner).unwrap().native_completions.is_empty());
+    drop(owner);
+    drop(journal);
+
+    let mut journal = open(directory.path());
+    let mut owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let recovered = recover_graph(&owner).unwrap();
+    assert!(recovered.native_completions.is_empty());
+    assert_eq!(
+        recovered.acquisitions.values().next().unwrap().state,
+        ProviderAcquisitionStateV1::Applying
+    );
+    validate_set(&owner, &recovered).unwrap();
+    assert_eq!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&binding(original))
+            .unwrap()
+            .request(),
+        original
+    );
+
+    commit_graph(&mut owner, 120, &graph);
+    graph.native = fixture_prepared(&graph.native);
+    commit_graph(&mut owner, 121, &graph);
+    graph.active();
+    commit_graph(&mut owner, 122, &graph);
+    validate_set(&owner, &recover_graph(&owner).unwrap()).unwrap();
+    let mut missing = graph.rows();
+    missing.remove(&key);
+    assert!(
+        aos_sandbox_source_provider_ledger::validate_prospective_records(
+            missing.iter().map(|(k, v)| (k.as_slice(), v.as_slice())),
+        )
+        .is_err()
+    );
+
+    // A raw protected delete creates a hostile cut solely to exercise replay;
+    // the production prospective validator would reject this deletion.
+    owner
+        .commit(
+            &JournalTransaction::new(
+                [123; 16],
+                vec![JournalRecord::delete(
+                    RecordNamespace::SourceProviderAuthority,
+                    key,
+                )],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    drop(owner);
+    drop(journal);
+    let mut journal = open(directory.path());
+    let owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    assert!(recover_graph(&owner).is_err());
+    assert_eq!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&binding(original))
+            .unwrap()
+            .request(),
+        original
+    );
+    // This fixture validates the pure whole graph and actual protected floor,
+    // not recover_records with production protected trust/configuration.
+}
+
+#[test]
+fn native_graph_cleanup_retains_applying_and_active_floor_across_protected_reopen() {
+    for active in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut graph = Graph::applying();
+        let mut journal = open(directory.path());
+        let mut owner = journal
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+        let reservation = admit(&mut owner, &graph);
+        let original_request = reservation.request();
+        graph.native = fixture_prepared(&graph.native);
+        commit_graph(&mut owner, 101, &graph);
+        if active {
+            graph.active();
+            commit_graph(&mut owner, 102, &graph);
+        }
+        graph.native = graph
+            .native
+            .advance(NativeAcquireCompletionStateV2::CleanupRequired)
+            .unwrap();
+        commit_graph(&mut owner, 103, &graph);
+        let recovered = recover_graph(&owner).unwrap();
+        validate_set(&owner, &recovered).unwrap();
+        assert_eq!(
+            owner
+                .recover_global_capacity_reservation_v1(reservation.reservation_id())
+                .unwrap()
+                .request(),
+            original_request
+        );
+        assert_eq!(original_request.terminal_records, 7);
+        assert_eq!(
+            recovered.acquisitions.values().next().unwrap().state,
+            if active {
+                ProviderAcquisitionStateV1::Active
+            } else {
+                ProviderAcquisitionStateV1::Applying
+            }
+        );
+        drop(owner);
+        drop(journal);
+
+        let mut journal = open(directory.path());
+        let owner = journal
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+        validate_set(&owner, &recover_graph(&owner).unwrap()).unwrap();
+        assert_eq!(
+            owner
+                .recover_unique_global_capacity_reservation_v1(&binding(original_request))
+                .unwrap()
+                .request(),
+            original_request
+        );
+    }
+}
+
+#[test]
+fn native_graph_rejects_wrong_backend_attempt_session_and_early_floor_deletion() {
+    let graph = Graph::applying();
+    let acquisition_key = acquisition_key(&AcquisitionKeyV1 {
+        provider_id: graph.acquisition.provider.authority_id(),
+        holder_id: graph.acquisition.holder.authority_id(),
+        acquisition_id: graph.acquisition.acquisition_id,
+    });
+    for wrong in [1_u8, 2, 3] {
+        let mut rows = graph.rows();
+        let mut acquisition = graph.acquisition.clone();
+        let mut native = graph.native.clone();
+        match wrong {
+            1 => {
+                acquisition.backend_id = [99; 32];
+                rows.insert(acquisition_key.clone(), encode_acquisition(&acquisition));
+            }
+            2 => {
+                native.attempt_digest = digest(99);
+                rows.insert(
+                    crate::ledger::native_completion::native_completion_key_v2(
+                        native.acquisition_id,
+                    ),
+                    encode_native_completion_v2(&native),
+                );
+            }
+            _ => {
+                native.session_binding = digest(99);
+                rows.insert(
+                    crate::ledger::native_completion::native_completion_key_v2(
+                        native.acquisition_id,
+                    ),
+                    encode_native_completion_v2(&native),
+                );
+            }
+        }
+        assert!(
+            aos_sandbox_source_provider_ledger::validate_prospective_records(
+                rows.iter().map(|(k, v)| (k.as_slice(), v.as_slice()))
+            )
+            .is_err()
+        );
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut journal = open(directory.path());
+        let mut owner = journal
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+        admit(&mut owner, &graph);
+        // Raw protected append deliberately creates a hostile graph, without
+        // pretending the production prospective validator would authorize it.
+        owner.commit(&transaction(106 + wrong, rows)).unwrap();
+        drop(owner);
+        drop(journal);
+        let mut journal = open(directory.path());
+        let owner = journal
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+        assert!(recover_graph(&owner).is_err());
+    }
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut journal = open(directory.path());
+    let mut owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let reservation = admit(&mut owner, &graph);
+    let mut graph = graph;
+    graph.native = fixture_prepared(&graph.native);
+    commit_graph(&mut owner, 103, &graph);
+    graph.native = graph
+        .native
+        .advance(NativeAcquireCompletionStateV2::CleanupRequired)
+        .unwrap();
+    commit_graph(&mut owner, 104, &graph);
+    let terminal = JournalTransaction::new(
+        [105; 16],
+        vec![
+            JournalRecord::put(
+                RecordNamespace::SourceProviderAuthority,
+                crate::ledger::native_completion::native_completion_key_v2(
+                    graph.native.acquisition_id,
+                ),
+                encode_native_completion_v2(&graph.native),
+            ),
+            reservation.settlement_record(),
+        ],
+    )
+    .unwrap();
+    let preflight = owner
+        .preflight_reserved_terminal_v1(&reservation, &terminal)
+        .unwrap();
+    owner
+        .commit_reserved_terminal_v1(&preflight, reservation, &terminal)
+        .unwrap();
+    // This deliberately corrupted protected cut remains a valid ordinary graph:
+    // only the capacity union proves that local cleanup cannot spend its floor.
+    assert!(validate_set(&owner, &recover_graph(&owner).unwrap()).is_err());
+}
+
+#[test]
+fn native_graph_cleanup_pending_or_faulted_still_requires_original_floor() {
+    for pending in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut graph = Graph::applying();
+        let mut journal = open(directory.path());
+        let mut owner = journal
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+        let reservation = admit(&mut owner, &graph);
+        graph.native = fixture_prepared(&graph.native);
+        commit_graph(&mut owner, 110, &graph);
+        graph.native = graph
+            .native
+            .advance(NativeAcquireCompletionStateV2::CleanupRequired)
+            .unwrap();
+        commit_graph(&mut owner, 111, &graph);
+        if pending {
+            graph.pending();
+        } else {
+            graph.acquisition.revision += 1;
+            graph.acquisition.state = ProviderAcquisitionStateV1::Faulted;
+        }
+        commit_graph(&mut owner, 112, &graph);
+        let recovered = recover_graph(&owner).unwrap();
+        validate_set(&owner, &recovered).unwrap();
+        assert_eq!(
+            owner
+                .recover_unique_global_capacity_reservation_v1(&binding(reservation.request()))
+                .unwrap()
+                .request(),
+            reservation.request()
+        );
+    }
+}
+
+#[test]
+fn native_graph_release_retains_original_acquire_session_until_exact_tombstone() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut graph = Graph::applying();
+    let mut journal = open(directory.path());
+    let mut owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    let reservation = admit(&mut owner, &graph);
+    let original = reservation.request();
+    graph.native = fixture_prepared(&graph.native);
+    commit_graph(&mut owner, 113, &graph);
+    graph.active();
+    commit_graph(&mut owner, 114, &graph);
+    graph.native = graph
+        .native
+        .advance(NativeAcquireCompletionStateV2::CleanupRequired)
+        .unwrap();
+    commit_graph(&mut owner, 115, &graph);
+    graph.supersede_session();
+    commit_graph(&mut owner, 116, &graph);
+    graph.releasing();
+    commit_graph(&mut owner, 117, &graph);
+    let recovered = recover_graph(&owner).unwrap();
+    validate_set(&owner, &recovered).unwrap();
+    assert_ne!(
+        graph.acquisition.current_attempt_digest,
+        graph.native.attempt_digest
+    );
+    assert_ne!(
+        graph.sessions.last().unwrap().session_binding,
+        graph.native.session_binding
+    );
+    assert_eq!(
+        owner
+            .recover_unique_global_capacity_reservation_v1(&binding(original))
+            .unwrap()
+            .request(),
+        original
+    );
+    // Even if scalar capacity happens to match, corrupting either original
+    // authority graph link must fail full typed replay before floor validation.
+    let mut missing_original = graph.rows();
+    missing_original.remove(&session_history_key(
+        graph.authority.provider.authority_id(),
+        graph.acquisition.holder.authority_id(),
+        graph.native.session_binding,
+    ));
+    assert!(
+        aos_sandbox_source_provider_ledger::validate_prospective_records(
+            missing_original
+                .iter()
+                .map(|(k, v)| (k.as_slice(), v.as_slice()))
+        )
+        .is_err()
+    );
+    let mut wrong_effect = graph.rows();
+    let mut acquisition = graph.acquisition.clone();
+    acquisition.effect_attempt_digest = acquisition.current_attempt_digest;
+    wrong_effect.insert(
+        acquisition_key(&AcquisitionKeyV1 {
+            provider_id: acquisition.provider.authority_id(),
+            holder_id: acquisition.holder.authority_id(),
+            acquisition_id: acquisition.acquisition_id,
+        }),
+        encode_acquisition(&acquisition),
+    );
+    assert!(
+        aos_sandbox_source_provider_ledger::validate_prospective_records(
+            wrong_effect
+                .iter()
+                .map(|(k, v)| (k.as_slice(), v.as_slice()))
+        )
+        .is_err()
+    );
+    drop(owner);
+    drop(journal);
+
+    let mut journal = open(directory.path());
+    let mut owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    validate_set(&owner, &recover_graph(&owner).unwrap()).unwrap();
+    graph.released();
+    // This is a signed canonical structural terminal fixture, NOT a new live
+    // native terminal producer or proof that Root/Storage custody is absent.
+    commit_graph(&mut owner, 118, &graph);
+    let terminal = recover_graph(&owner).unwrap();
+    assert!(dispatch_terminal_in_validated_graph(&graph.acquisition, &terminal).unwrap());
+    assert!(validate_set(&owner, &terminal).is_err()); // retained floor is orphan
+
+    let mut missing_tombstone = graph.rows();
+    missing_tombstone.remove(&release_key(&ReleaseKeyV1 {
+        provider_id: graph.authority.provider.authority_id(),
+        holder_id: graph.acquisition.holder.authority_id(),
+        acquisition_id: graph.acquisition.acquisition_id,
+    }));
+    assert!(
+        aos_sandbox_source_provider_ledger::validate_prospective_records(
+            missing_tombstone
+                .iter()
+                .map(|(k, v)| (k.as_slice(), v.as_slice()))
+        )
+        .is_err()
+    );
+    let mut contradictory = terminal.clone();
+    contradictory
+        .native_completions
+        .get_mut(&graph.native.acquisition_id)
+        .unwrap()
+        .state = NativeAcquireCompletionStateV2::Active;
+    assert!(dispatch_terminal_in_validated_graph(&graph.acquisition, &contradictory).is_err());
+    let mut wrong_tombstone = terminal.clone();
+    wrong_tombstone
+        .releases
+        .values_mut()
+        .next()
+        .unwrap()
+        .attempt_digest = graph.native.attempt_digest;
+    assert!(dispatch_terminal_in_validated_graph(&graph.acquisition, &wrong_tombstone).is_err());
+    let exact = owner
+        .recover_unique_global_capacity_reservation_v1(&binding(original))
+        .unwrap();
+    let settlement = JournalTransaction::new(
+        [119; 16],
+        vec![
+            JournalRecord::put(
+                RecordNamespace::SourceProviderAuthority,
+                crate::ledger::native_completion::native_completion_key_v2(
+                    graph.native.acquisition_id,
+                ),
+                encode_native_completion_v2(&graph.native),
+            ),
+            exact.settlement_record(),
+        ],
+    )
+    .unwrap();
+    let preflight = owner
+        .preflight_reserved_terminal_v1(&exact, &settlement)
+        .unwrap();
+    owner
+        .commit_reserved_terminal_v1(&preflight, exact, &settlement)
+        .unwrap();
+    validate_set(&owner, &recover_graph(&owner).unwrap()).unwrap();
+    drop(owner);
+    drop(journal);
+    let mut journal = open(directory.path());
+    let owner = journal
+        .claim_source_provider_native_terminal_authority_v1()
+        .unwrap();
+    validate_set(&owner, &recover_graph(&owner).unwrap()).unwrap();
+}

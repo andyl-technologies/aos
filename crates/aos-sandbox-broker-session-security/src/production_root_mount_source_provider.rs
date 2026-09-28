@@ -17,7 +17,7 @@ use aos_sandbox_mount::broker::MountBroker;
 use aos_sandbox_mount::worker::MountWorker;
 use aos_sandbox_source_provider_protocol::SourceProviderMethod;
 use aos_sandbox_source_provider_security::{
-    AuthenticatedRootMountRecoveryUnavailableV1, RootMountSourceProviderHandshakeStatusV1,
+    AuthenticatedRootMountRecoveryObservationV2, RootMountSourceProviderHandshakeStatusV1,
     RootMountSourceProviderOwnerV1, SourceProviderSecurityError,
 };
 
@@ -75,8 +75,8 @@ pub fn connect_authenticated_fixed_source_provider(
 
 /// Advances the original pending Acquire query under Mount's sole journal claim.
 ///
-/// The returned observation is only signed Unavailable. This function does
-/// not update the pending row, create a successor, or grant a source descriptor.
+/// The returned observation is descriptor-free. LocalLive remains pending;
+/// native terminal evidence requires a separate protected Mount settlement.
 /// `Ok(None)` means the handshake or nonblocking exchange is still pending.
 ///
 /// # Errors
@@ -87,7 +87,7 @@ pub fn advance_authenticated_pending_acquire_recovery(
     owner: &mut RootMountSourceProviderOwnerV1,
     journal: &MountSourceConsumptionJournalAuthorityV1<'_>,
     acquisition_id: ObjectDigest,
-) -> Result<Option<AuthenticatedRootMountRecoveryUnavailableV1>, SourceProviderSecurityError> {
+) -> Result<Option<AuthenticatedRootMountRecoveryObservationV2>, SourceProviderSecurityError> {
     match owner.with_current_session(|session| {
         session.advance_pending_acquire_recovery_v1(journal, acquisition_id)
     })? {
@@ -99,8 +99,8 @@ pub fn advance_authenticated_pending_acquire_recovery(
 /// Observes every original pending Acquire after a Mount broker restart.
 ///
 /// The broker lends its sole protected journal for the entire scan and each
-/// AOSSPR01 exchange. No response changes the graph: even authenticated
-/// Unavailable leaves the original attempt pending for later explicit recovery.
+/// AOSSPR01 exchange. Only an exact native no-dispatch terminal proof may
+/// settle the old attempt under a second protected Mount journal claim.
 /// The authenticated session remains owned by `owner` after this function.
 ///
 /// # Errors
@@ -114,26 +114,49 @@ pub fn observe_original_pending_acquires<W: MountWorker>(
     deadline_boottime_nanoseconds: u64,
 ) -> Result<usize, ProductionRootMountSourceProviderErrorV1> {
     let observed = broker.with_fixed_source_acquisition_owner(|source| {
-        source.with_consumption_authority(|table, journal| {
-            let pending = table.original_pending_acquire_ids();
-            for acquisition_id in &pending {
-                loop {
-                    let remaining = remaining_duration(deadline_boottime_nanoseconds)
-                        .map_err(|error| MountError::State(error.to_string()))?;
-                    match advance_authenticated_pending_acquire_recovery(
+        let pending = source
+            .with_consumption_authority(|table, _| Ok(table.original_pending_acquire_ids()))?;
+        for acquisition_id in &pending {
+            loop {
+                let remaining = remaining_duration(deadline_boottime_nanoseconds)
+                    .map_err(|error| MountError::State(error.to_string()))?;
+                let observation = source.with_consumption_authority(|_, journal| {
+                    advance_authenticated_pending_acquire_recovery(
                         owner,
                         journal,
                         ObjectDigest::from_bytes(*acquisition_id),
                     )
-                    .map_err(|error| MountError::State(error.to_string()))?
-                    {
-                        Some(_) => break,
-                        None => std::thread::sleep(Duration::from_nanos(remaining.min(2_000_000))),
+                    .map_err(|error| MountError::State(error.to_string()))
+                })?;
+                match observation {
+                    Some(AuthenticatedRootMountRecoveryObservationV2::NativeNoDispatch(proof)) => {
+                        source.with_source_acquisition_authority(|table, journal| {
+                            journal.with_authority(|protected| {
+                                table.settle_native_no_dispatch_recovery_v2(
+                                    protected,
+                                    ObjectDigest::from_bytes(*acquisition_id),
+                                    proof,
+                                )
+                            })
+                        })?;
+                        break;
                     }
+                    Some(AuthenticatedRootMountRecoveryObservationV2::LocalLive(_)) => {
+                        if source.with_consumption_authority(|table, _| {
+                            Ok(table.original_superseded_acquire_v2(*acquisition_id))
+                        })? {
+                            return Err(MountError::State(
+                                "superseded Acquire requires exact terminal Provider settlement"
+                                    .to_owned(),
+                            ));
+                        }
+                        break;
+                    }
+                    None => std::thread::sleep(Duration::from_nanos(remaining.min(2_000_000))),
                 }
             }
-            Ok(pending.len())
-        })
+        }
+        Ok(pending.len())
     })?;
     Ok(observed)
 }

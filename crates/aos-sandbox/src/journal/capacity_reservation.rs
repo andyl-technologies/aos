@@ -22,9 +22,9 @@ pub enum GlobalCapacityReservationPurposeV1 {
     PublisherCompletion = 1,
     /// Runtime execution admission and terminal effect settlement.
     RuntimeExecution = 2,
+    /// Source-provider native admission and terminal settlement.
+    SourceProviderNativeTerminal = 3,
     /// Root project intent and its exact terminal or cancellation decision.
-    ///
-    /// Value 3 is reserved for the Source Provider's separate terminal owner.
     RootProjectAdmission = 4,
 }
 
@@ -34,6 +34,7 @@ impl GlobalCapacityReservationPurposeV1 {
             Self::PublisherCompletion => RecordNamespace::PublisherAuthority,
             Self::RuntimeExecution => RecordNamespace::Effect,
             Self::RootProjectAdmission => RecordNamespace::DesiredState,
+            Self::SourceProviderNativeTerminal => RecordNamespace::SourceProviderAuthority,
         }
     }
 
@@ -54,6 +55,11 @@ impl GlobalCapacityReservationPurposeV1 {
                 namespace,
                 RecordNamespace::DesiredState | RecordNamespace::GlobalCapacityReservation
             ),
+            Self::SourceProviderNativeTerminal => matches!(
+                namespace,
+                RecordNamespace::SourceProviderAuthority
+                    | RecordNamespace::GlobalCapacityReservation
+            ),
         }
     }
 
@@ -62,6 +68,7 @@ impl GlobalCapacityReservationPurposeV1 {
             1 => Ok(Self::PublisherCompletion),
             2 => Ok(Self::RuntimeExecution),
             4 => Ok(Self::RootProjectAdmission),
+            3 => Ok(Self::SourceProviderNativeTerminal),
             _ => Err(JournalError::MalformedRecord(
                 "unknown global capacity reservation purpose",
             )),
@@ -716,6 +723,51 @@ mod purpose_tests {
                 .purpose
                 .permits(RecordNamespace::SourceProviderAuthority)
         );
+    }
+
+    #[test]
+    fn provider_and_root_capacity_keep_distinct_owner_namespaces() {
+        let root = root_request();
+        let source = GlobalCapacityReservationRequestV1 {
+            purpose: GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal,
+            owner_namespace: RecordNamespace::SourceProviderAuthority,
+            ..root
+        };
+        let admission = [7; 16];
+        let id = reservation_id(&source, admission);
+        let value = encode_reservation(&source, admission, id);
+
+        assert_eq!(value[11], 3);
+        assert_ne!(id, reservation_id(&root, admission));
+        assert_eq!(decode_reservation(&value).unwrap(), (source, admission, id));
+        assert!(decode_capacity_record(&reservation_key(id), &value).is_ok());
+        assert!(
+            source
+                .purpose
+                .permits(RecordNamespace::SourceProviderAuthority)
+        );
+        assert!(!source.purpose.permits(RecordNamespace::DesiredState));
+        assert!(
+            !root
+                .purpose
+                .permits(RecordNamespace::SourceProviderAuthority)
+        );
+
+        // Matching digests do not let either purpose borrow the other owner.
+        for foreign in [
+            GlobalCapacityReservationRequestV1 {
+                owner_namespace: root.owner_namespace,
+                ..source
+            },
+            GlobalCapacityReservationRequestV1 {
+                owner_namespace: source.owner_namespace,
+                ..root
+            },
+        ] {
+            let id = reservation_id(&foreign, admission);
+            let value = encode_reservation(&foreign, admission, id);
+            assert!(decode_capacity_record(&reservation_key(id), &value).is_err());
+        }
     }
 
     #[test]

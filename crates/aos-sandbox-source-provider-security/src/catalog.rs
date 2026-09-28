@@ -688,6 +688,10 @@ impl ProtectedProviderCatalogSelectionV1<'_> {
 }
 
 impl ProtectedProviderHeldSnapshotSelectionV1<'_> {
+    pub(crate) fn publication_head_commitment(&self) -> ObjectDigest {
+        self.current_catalog.projection.head_commitment()
+    }
+
     /// Returns the catalog-asserted resource and held-snapshot identity.
     #[must_use]
     pub const fn selected(&self) -> (&SourceResourceV1, &ZfsHeldSnapshotProofV1) {

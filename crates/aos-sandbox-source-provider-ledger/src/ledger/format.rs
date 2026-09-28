@@ -1,18 +1,21 @@
 //! Canonical AOSSPL01 record envelopes, keys, and bodies.
 //!
 //! ```text
-//! AOSSPL01 | version:u16be=4 | kind:u8 | state:u8 | flags:u16be |
+//! AOSSPL01 | version:u16be=5 | kind:u8 | state:u8 | flags:u16be |
 //! reserved:u16be | body_len:u32be | reserved:u32be | revision:u64be |
 //! record_digest[32] | body[body_len]
 //! ```
 //!
-//! Version 4 is the accepted baseline family member. Older versions are not decoded or
+//! Version 5 is the accepted baseline family member. Older versions are not decoded or
 //! upgraded in place: opening a namespace containing them fails before graph
 //! allocation with an explicit offline-migration error. This prevents an
 //! ambiguous dual interpretation of records without protected completion time.
-//! The native completion kind uses an explicitly separate version-5 envelope
-//! and version-2 body. Mixed graphs retain version-4 baseline records; older
-//! readers reject the native kind and cannot silently activate it.
+//! Digest-only native completion uses a version-5 envelope and version-2 body.
+//! Exact native request retention uses a version-6 envelope and version-3 body.
+//! Original paired-clock retention uses a version-7 envelope and version-4 body;
+//! version-6 rows cannot infer an anchor or supply positive recovery authority.
+//! Mixed graphs retain version-5 baseline records; older readers reject the
+//! new native body and cannot silently activate it.
 //!
 //! The seven baseline closed bodies use these exact semantic orders; `authority` is a
 //! 56-byte authority tuple, `signer` is the protocol's canonical 120-byte
@@ -40,9 +43,10 @@
 //! optional old-attempt/session/fence recovery bridge including fence class
 //! and authenticated current revocation head, frame lengths/digests,
 //! descriptor/result, response catalog, signed-request/completed-response
-//! Acquisition(792+artifacts): provider, holder, acquisition sequence/effect/intent,
+//! Acquisition(824+artifacts): provider, holder, acquisition sequence/effect/intent,
 //! effect/current/lease attempts, lease generation/id/digest, resource/catalog/
-//! selection/proof commitments, backend-id, release-effect, artifact lengths,
+//! selection/proof commitments, backend-id, native terminal reservation digest,
+//! release-effect, artifact lengths,
 //! lease-history, normalized-intent, evidence, reopen-identity, signed-lease
 //! Release(464+artifacts): provider, holder, acquisition sequence/lease/effect,
 //! release-generation, effect/current attempts, backend-id, evidence/observation/time,
@@ -85,10 +89,9 @@ use crate::limits::{
 };
 
 const MAGIC: &[u8; 8] = b"AOSSPL01";
-// Version 4 binds the protected response-completion time into each terminal
-// attempt so historical replay never substitutes request-admission time.
-const VERSION: u16 = 4;
-const NATIVE_COMPLETION_VERSION: u16 = 5;
+// Version 5 also retains the original native no-dispatch reservation digest.
+// The earlier completion-time field still prevents historical time substitution.
+const VERSION: u16 = 5;
 const ENVELOPE_BYTES: usize = 64;
 const HEADER_BYTES: usize = 32;
 
@@ -107,13 +110,13 @@ const CATALOG_FIXED_BYTES: usize = 476;
 const MAXIMUM_CATALOG_PUBLICATION_BYTES: usize = 520;
 const SESSION_FIXED_BYTES: usize = 1_232;
 const ATTEMPT_FIXED_BYTES: usize = 960;
-const ACQUISITION_FIXED_BYTES: usize = 792;
+const ACQUISITION_FIXED_BYTES: usize = 824;
 const LEASE_LINEAGE_BYTES: usize = 88;
 const RELEASE_FIXED_BYTES: usize = 464;
 const AUTHORITY_SEMANTIC_BYTES: usize = 592;
 const SESSION_SEMANTIC_BYTES: usize = 1_232;
 const ATTEMPT_SEMANTIC_BYTES: usize = 864;
-const ACQUISITION_SEMANTIC_BYTES: usize = 788;
+const ACQUISITION_SEMANTIC_BYTES: usize = 820;
 const RELEASE_SEMANTIC_BYTES: usize = 464;
 const ATTEMPT_RESERVED_BYTES: usize = ATTEMPT_FIXED_BYTES - ATTEMPT_SEMANTIC_BYTES;
 const ACQUISITION_RESERVED_BYTES: usize = ACQUISITION_FIXED_BYTES - ACQUISITION_SEMANTIC_BYTES;
@@ -135,6 +138,44 @@ const RELEASE_RECORD_MAXIMUM_BYTES: usize = ENVELOPE_BYTES
     + 120
     + MAXIMUM_SIGNED_RELEASE_RECEIPT_BYTES;
 
+/// Bounds all six owner records in an atomic native Acquire completion.
+///
+/// This adds the format maxima for attempt, acquisition, current and historical
+/// session, authority, and native carrier, including their exact key widths and
+/// nine-byte mutation framing. It does not include the journal frame headers or
+/// a global capacity-reservation deletion; the owner accounts for those too.
+pub const MAXIMUM_NATIVE_ACQUIRE_COMPLETION_OWNER_BYTES_V2: usize =
+    NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2[0]
+        + NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2[1]
+        + NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2[2]
+        + NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2[3]
+        + NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2[4]
+        + NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2[5];
+
+/// Bounds the six atomic native owner mutations in semantic record order.
+///
+/// The order is attempt, acquisition, current session, historical session,
+/// authority, native carrier. Each bound includes its key and mutation framing.
+pub const NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2: [usize; 6] = [
+    ATTEMPT_RECORD_MAXIMUM_BYTES + 96 + 9,
+    ACQUISITION_RECORD_MAXIMUM_BYTES + 99 + 9,
+    SESSION_RECORD_MAXIMUM_BYTES + 63 + 9,
+    SESSION_RECORD_MAXIMUM_BYTES + 103 + 9,
+    ENVELOPE_BYTES + AUTHORITY_BODY_BYTES + 49 + 9,
+    ENVELOPE_BYTES + super::native_completion::MAXIMUM_BODY_BYTES + 40 + 9,
+];
+
+/// Bounds one exact native request or accepted-carrier mutation.
+///
+/// Includes its canonical envelope, fixed key and mutation framing, but not
+/// the journal frame headers.
+pub const MAXIMUM_NATIVE_ACQUIRE_CARRIER_MUTATION_BYTES_V2: usize =
+    ENVELOPE_BYTES + super::native_completion::MAXIMUM_BODY_BYTES + 40 + 9;
+
+const _: () = assert!(
+    MAXIMUM_NATIVE_ACQUIRE_COMPLETION_OWNER_BYTES_V2 < crate::limits::MAXIMUM_TRANSACTION_BYTES
+);
+
 const _: () = assert!(ENVELOPE_BYTES == 64);
 const _: () = assert!(AUTHORITY_BODY_BYTES + ENVELOPE_BYTES == 696);
 const _: () = assert!(AUTHORITY_SEMANTIC_BYTES + 40 == AUTHORITY_BODY_BYTES);
@@ -146,7 +187,7 @@ const _: () =
 const _: () = assert!(RELEASE_SEMANTIC_BYTES == RELEASE_FIXED_BYTES);
 const _: () = assert!(SESSION_RECORD_MAXIMUM_BYTES == 9_488);
 const _: () = assert!(ATTEMPT_RECORD_MAXIMUM_BYTES == 2_098_176);
-const _: () = assert!(ACQUISITION_RECORD_MAXIMUM_BYTES == 487_020);
+const _: () = assert!(ACQUISITION_RECORD_MAXIMUM_BYTES == 487_052);
 const _: () = assert!(8 + 16 + 32 + 32 == LEASE_LINEAGE_BYTES);
 const _: () = assert!(RELEASE_RECORD_MAXIMUM_BYTES == 131_720);
 
@@ -418,6 +459,7 @@ pub fn encode_acquisition(value: &AcquisitionRecordV1) -> Vec<u8> {
     body.digest(value.resource_commitment);
     body.array(&value.backend_id);
     body.digest(value.backend_lineage_digest);
+    body.optional_digest(value.native_no_dispatch_reservation_digest);
     body.digest(optional_bytes_digest(&evidence));
     body.u8(u8::from(value.backend_evidence.is_some()));
     body.u8(u8::from(value.reopen_identity.is_some()));
@@ -580,7 +622,7 @@ fn encode_envelope(kind: RecordKind, state: u8, revision: u64, key: &[u8], body:
     let mut bytes = Vec::with_capacity(ENVELOPE_BYTES + body.len());
     bytes.extend_from_slice(MAGIC);
     let version = if kind == RecordKind::NativeCompletion {
-        NATIVE_COMPLETION_VERSION
+        super::native_completion::envelope_version(body)
     } else {
         VERSION
     };
@@ -613,7 +655,7 @@ fn decode_envelope<'a>(
     }
     let kind = RecordKind::decode(bytes[10])?;
     let expected_version = if kind == RecordKind::NativeCompletion {
-        NATIVE_COMPLETION_VERSION
+        super::native_completion::envelope_version(&bytes[ENVELOPE_BYTES..])
     } else {
         VERSION
     };
@@ -1195,6 +1237,7 @@ fn decode_acquisition_body(
     let resource_commitment = body.digest()?;
     let backend_id = body.array()?;
     let backend_lineage_digest = body.nonzero_digest()?;
+    let native_no_dispatch_reservation_digest = body.optional_digest()?;
     let evidence_digest = body.digest()?;
     let evidence_present = body.boolean()?;
     let reopen_present = body.boolean()?;
@@ -1304,13 +1347,12 @@ fn decode_acquisition_body(
         && lease_history.is_empty()
         && release_effect_id.is_none()
         && signed_lease.is_empty();
-    // A kernel-coupled attempt may durably select a Provider row before any
-    // Storage or kernel effect. It still has no proof, lease, or descriptor.
+    // Either protected catalog family may durably select a Provider row before
+    // any backend effect. Selection is not proof, lease, or descriptor custody.
     let selected_reserved_shape = lease_id.is_none()
         && lease_digest.is_none()
         && lease_attempt_digest.is_none()
         && lease_issue_generation == 0
-        && intent.kernel_coupled()
         && resource_namespace_digest.as_bytes() != &[0; 32]
         && resource_id != [0; 32]
         && resource_generation > 0
@@ -1423,7 +1465,7 @@ fn decode_acquisition_body(
             ));
         }
     }
-    Ok(AcquisitionRecordV1 {
+    let value = AcquisitionRecordV1 {
         revision: envelope.revision,
         state,
         provider,
@@ -1452,12 +1494,280 @@ fn decode_acquisition_body(
         resource_commitment,
         backend_id,
         backend_lineage_digest,
+        native_no_dispatch_reservation_digest,
         backend_evidence,
         reopen_identity,
         source_root,
         release_effect_id,
         signed_lease,
-    })
+    };
+    if let Some(reservation_digest) = value.native_no_dispatch_reservation_digest {
+        let mut original = value.clone();
+        original.revision = original
+            .revision
+            .checked_sub(1)
+            .ok_or(LedgerFormatErrorV1::Corrupt("native settlement revision"))?;
+        original.state = ProviderAcquisitionStateV1::Applying;
+        original.native_no_dispatch_reservation_digest = None;
+        if value.state != ProviderAcquisitionStateV1::Faulted
+            || value.backend_id
+                != crate::identity::acquire_native_no_dispatch_id_v1(
+                    value.normalized_intent.digest(),
+                    value.catalog_generation,
+                    value.catalog_digest,
+                )
+            || value.proof_class != 0
+            || !selected_reserved_shape
+            || record_digest(&encode_acquisition(&original))? != reservation_digest
+        {
+            return Err(LedgerFormatErrorV1::Corrupt(
+                "native settlement reservation provenance",
+            ));
+        }
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+mod native_selected_reservation_tests {
+    use aos_sandbox_source_provider_protocol::{
+        AcquireSourceRequestV1, ProviderHeldSnapshotCatalogV1, ProviderHeldSnapshotRowV1,
+        SourceProviderAuthorityV1, SourceUseV1, ZfsHeldSnapshotProofV1,
+        digest_logical_binding_bytes, prospective_mount_apply_template_digest_v1,
+    };
+
+    use super::*;
+
+    fn digest(byte: u8) -> ObjectDigest {
+        ObjectDigest::from_bytes([byte; 32])
+    }
+
+    #[test]
+    fn native_selected_applying_record_remains_proofless_until_completion() {
+        let provider = SourceProviderAuthorityV1::new([21; 16], 22, digest(23)).unwrap();
+        let holder = SourceProviderAuthorityV1::new([7; 16], 8, digest(9)).unwrap();
+        let mut template = Vec::new();
+        for tag in 1u8..=27 {
+            let value = match tag {
+                1 => b"AOSMSEM1".to_vec(),
+                2 => 1u16.to_be_bytes().to_vec(),
+                _ => vec![tag, tag.wrapping_add(1)],
+            };
+            template.push(tag);
+            template.extend_from_slice(&(value.len() as u32).to_be_bytes());
+            template.extend_from_slice(&value);
+        }
+        let template_digest = prospective_mount_apply_template_digest_v1(&template).unwrap();
+        let binding = b"native-held-snapshot-attachment".to_vec();
+        let binding_digest = digest_logical_binding_bytes(&binding);
+        let request = AcquireSourceRequestV1::new_v2(
+            digest(1),
+            2,
+            [3; 16],
+            4,
+            template,
+            template_digest,
+            SourceUseV1::MountCreate,
+            [5; 16],
+            [6; 16],
+            holder.authority_id(),
+            holder.authority_generation(),
+            holder.authority_digest(),
+            binding,
+            binding_digest,
+            1_000,
+            60,
+            digest(10),
+            false,
+            0,
+            false,
+        )
+        .unwrap();
+        let namespace = digest(27);
+        let intent = NormalizedAcquisitionIntentV1::from_acquire_request(
+            &request,
+            provider.clone(),
+            holder.clone(),
+            [5; 16],
+            [6; 16],
+            [24; 16],
+            25,
+            digest(26),
+            namespace,
+            28,
+            digest(10),
+        )
+        .unwrap();
+        let snapshot = ZfsHeldSnapshotProofV1::new(
+            [11; 32],
+            12,
+            13,
+            14,
+            15,
+            [16; 16],
+            17,
+            digest(18),
+            digest(19),
+            digest(20),
+        )
+        .unwrap();
+        let row = ProviderHeldSnapshotRowV1::new(
+            binding_digest,
+            [30; 32],
+            31,
+            digest(32),
+            33,
+            digest(34),
+            snapshot,
+        )
+        .unwrap();
+        let catalog = ProviderHeldSnapshotCatalogV1::new(29, namespace, vec![row]).unwrap();
+        let (resource, _) = catalog
+            .select_under_head(29, catalog.digest(), namespace, binding_digest)
+            .unwrap();
+        let native_backend_id = crate::identity::acquire_native_no_dispatch_id_v1(
+            intent.digest(),
+            resource.catalog_generation(),
+            resource.catalog_digest(),
+        );
+        assert_ne!(
+            native_backend_id,
+            crate::identity::acquire_backend_plan_id_v1(
+                intent.digest(),
+                resource.catalog_generation(),
+                resource.catalog_digest(),
+            )
+        );
+
+        let acquisition = AcquisitionRecordV1 {
+            revision: 1,
+            state: ProviderAcquisitionStateV1::Applying,
+            provider: provider.clone(),
+            holder: holder.clone(),
+            acquisition_id: request.acquisition_id(),
+            acquisition_sequence: request.acquisition_sequence(),
+            effect_id: [35; 16],
+            normalized_intent: intent,
+            effect_attempt_digest: digest(36),
+            current_attempt_digest: digest(36),
+            lease_attempt_digest: None,
+            lease_issue_generation: 0,
+            lease_id: None,
+            lease_digest: None,
+            lease_history: Vec::new(),
+            resource_namespace_digest: resource.resource_namespace_digest(),
+            resource_id: resource.resource_id(),
+            resource_generation: resource.resource_generation(),
+            resource_digest: resource.resource_digest(),
+            catalog_generation: resource.catalog_generation(),
+            catalog_digest: resource.catalog_digest(),
+            selection_generation: resource.selection_generation(),
+            selection_digest: resource.selection_digest(),
+            proof_class: 0,
+            proof_digest: digest(0),
+            resource_commitment: digest(0),
+            backend_id: native_backend_id,
+            backend_lineage_digest: digest(38),
+            native_no_dispatch_reservation_digest: None,
+            backend_evidence: None,
+            reopen_identity: None,
+            source_root: None,
+            release_effect_id: None,
+            signed_lease: Vec::new(),
+        };
+        let key = acquisition_key(&AcquisitionKeyV1 {
+            provider_id: provider.authority_id(),
+            holder_id: holder.authority_id(),
+            acquisition_id: request.acquisition_id(),
+        });
+        let bytes = encode_acquisition(&acquisition);
+        let DecodedRecordV1::Acquisition(decoded) = decode_record(&key, &bytes).unwrap() else {
+            panic!("fixture decoded as another record kind");
+        };
+        assert_eq!(decoded, acquisition);
+
+        let mut terminal = acquisition.clone();
+        terminal.revision = 2;
+        terminal.state = ProviderAcquisitionStateV1::Faulted;
+        terminal.native_no_dispatch_reservation_digest = Some(record_digest(&bytes).unwrap());
+        let terminal_bytes = encode_acquisition(&terminal);
+        let DecodedRecordV1::Acquisition(decoded_terminal) =
+            decode_record(&key, &terminal_bytes).unwrap()
+        else {
+            panic!("terminal fixture decoded as another record kind");
+        };
+        assert_eq!(decoded_terminal, terminal);
+
+        terminal.native_no_dispatch_reservation_digest = Some(digest(99));
+        assert!(decode_record(&key, &encode_acquisition(&terminal)).is_err());
+
+        let mut premature_proof = acquisition.clone();
+        premature_proof.proof_class = 1;
+        assert!(decode_record(&key, &encode_acquisition(&premature_proof)).is_err());
+
+        let mut missing_selection = acquisition;
+        missing_selection.resource_id = [0; 32];
+        assert!(decode_record(&key, &encode_acquisition(&missing_selection)).is_err());
+
+        #[cfg(target_os = "linux")]
+        protected_native_terminal_replay(&key, &bytes, &terminal_bytes);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn protected_native_terminal_replay(key: &[u8], applying: &[u8], terminal: &[u8]) {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        use aos_sandbox::{
+            Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
+        };
+
+        const FILE: &str = "native-no-dispatch-record.journal";
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = directory.path().metadata().unwrap().uid();
+
+        for (transaction_id, expected) in [([1; 16], applying), ([2; 16], terminal)] {
+            let (mut journal, _) = Journal::open_protected_at_uid(
+                directory.path(),
+                FILE,
+                JournalLimits::default(),
+                uid,
+            )
+            .unwrap();
+            let mut authority = journal
+                .claim_protected_authority(RecordNamespace::SourceProviderAuthority)
+                .unwrap();
+            let transaction = JournalTransaction::new(
+                transaction_id,
+                vec![JournalRecord::put(
+                    RecordNamespace::SourceProviderAuthority,
+                    key.to_vec(),
+                    expected.to_vec(),
+                )],
+            )
+            .unwrap();
+            authority.commit(&transaction).unwrap();
+            drop(authority);
+            drop(journal);
+
+            let (mut reopened, _) = Journal::open_protected_at_uid(
+                directory.path(),
+                FILE,
+                JournalLimits::default(),
+                uid,
+            )
+            .unwrap();
+            let authority = reopened
+                .claim_protected_authority(RecordNamespace::SourceProviderAuthority)
+                .unwrap();
+            let retained = authority.get(key).unwrap().unwrap();
+            assert_eq!(retained, expected);
+            assert!(matches!(
+                decode_record(key, retained).unwrap(),
+                DecodedRecordV1::Acquisition(_)
+            ));
+        }
+    }
 }
 
 fn decode_release_body(envelope: Envelope<'_>) -> Result<ReleaseRecordV1, LedgerFormatErrorV1> {

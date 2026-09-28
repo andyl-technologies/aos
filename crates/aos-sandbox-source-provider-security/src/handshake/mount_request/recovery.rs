@@ -10,8 +10,9 @@ impl CurrentRootMountSourceProviderSessionV1 {
     /// Queries one original pending Acquire on the current authenticated carrier.
     ///
     /// The query identity comes only from the sole protected Mount journal.
-    /// Unavailable is an observation, not a terminal outcome: this method
-    /// writes no row, starts no successor attempt, and grants no source root.
+    /// This method writes no row or successor and grants no source root.
+    /// Native no-dispatch evidence can be consumed only by the exact protected
+    /// Mount settlement; LocalLive Unavailable remains an observation.
     /// `Ok(None)` retains the exact in-flight challenge for nonblocking retry.
     ///
     /// # Errors
@@ -23,7 +24,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         journal: &aos_sandbox::MountSourceConsumptionJournalAuthorityV1<'_>,
         acquisition_id: ObjectDigest,
     ) -> Result<
-        Option<super::super::AuthenticatedRootMountRecoveryUnavailableV1>,
+        Option<super::super::AuthenticatedRootMountRecoveryObservationV2>,
         SourceProviderSecurityError,
     > {
         use aos_sandbox_protocol::mount_source_acquisition_state::{
@@ -44,6 +45,22 @@ impl CurrentRootMountSourceProviderSessionV1 {
                     && row.acquire_lineage.root == row.acquire_lineage.tail
             })
             .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        let head = graph
+            .provider_heads
+            .get(&(
+                row.scope.holder_authority_id,
+                row.scope.provider_authority_id,
+            ))
+            .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        let current_session = graph
+            .provider_sessions
+            .get(&head.current_session_id)
+            .filter(|stored| stored.record_digest == head.current_session_record_digest)
+            .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        let live_binding = self.current_session_id_v2()?;
+        if live_binding.as_bytes() != &current_session.session_binding {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
         let attempt = graph
             .provider_attempts
             .get(&row.acquire_lineage.root.id)
@@ -61,6 +78,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                                 resolution: None,
                                 ..
                             }
+                            | ProviderAttemptStateV2::SupersededIndeterminate { .. }
                     )
             })
             .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;

@@ -6,10 +6,11 @@ use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_protocol::{
     CatalogCurrentnessQueryV1, InventoryReadbackQueryV1, MAXIMUM_INVENTORY_READBACK_PACKET_BYTES,
-    ProviderCatalogFloorV1, RecoveryCurrentnessQueryV1, SignedCatalogCurrentnessV1,
-    SignedInventoryReadbackV1, SignedRecoveryUnavailableV1, SignedSourceProviderHelloV1,
-    SourceProviderHelloV1, SourceProviderKeyTrustStateV1, SourceProviderMessageV1,
-    SourceProviderPeerRole, SourceProviderSessionV1, decode_message, encode_message, sign_hello,
+    NativeRecoveryTerminalDigestsV1, ProviderCatalogFloorV1, RecoveryCurrentnessQueryV1,
+    SignedCatalogCurrentnessV1, SignedInventoryReadbackV1, SignedNativeRecoveryUnavailableV1,
+    SignedRecoveryUnavailableV1, SignedSourceProviderHelloV1, SourceProviderHelloV1,
+    SourceProviderKeyTrustStateV1, SourceProviderMessageV1, SourceProviderPeerRole,
+    SourceProviderSessionV1, decode_message, encode_message, sign_hello,
 };
 
 use super::{HandshakeTransitionV1, current_unix_seconds, process_identity};
@@ -90,6 +91,39 @@ impl AuthenticatedRootMountRecoveryUnavailableV1 {
     pub const fn signed_plan_digest(&self) -> ObjectDigest {
         self.signed_plan_digest
     }
+}
+
+/// Records exact Provider native no-dispatch terminalization, pending Mount settlement.
+#[must_use = "Provider terminalization does not settle the protected Mount attempt"]
+pub struct AuthenticatedRootMountNativeRecoveryUnavailableV1 {
+    terminal_digests: NativeRecoveryTerminalDigestsV1,
+    canonical_query: Vec<u8>,
+    signed_settlement: Vec<u8>,
+}
+
+impl AuthenticatedRootMountNativeRecoveryUnavailableV1 {
+    /// Returns the exact pre/post Provider records named by the signer.
+    #[must_use]
+    pub const fn terminal_digests(&self) -> NativeRecoveryTerminalDigestsV1 {
+        self.terminal_digests
+    }
+
+    /// Consumes the authenticated proof for one protected Mount settlement.
+    #[doc(hidden)]
+    pub fn into_protected_records(self) -> (Vec<u8>, Vec<u8>) {
+        (self.canonical_query, self.signed_settlement)
+    }
+}
+
+/// Separates LocalLive Storage readback from native no-dispatch evidence.
+///
+/// Neither variant mutates Mount's protected graph or authorizes a successor.
+#[must_use = "recovery observations do not settle the protected pending attempt"]
+pub enum AuthenticatedRootMountRecoveryObservationV2 {
+    /// Provider checked the original signed LocalLive Storage plan.
+    LocalLive(AuthenticatedRootMountRecoveryUnavailableV1),
+    /// Provider terminalized one protected native no-dispatch reservation.
+    NativeNoDispatch(AuthenticatedRootMountNativeRecoveryUnavailableV1),
 }
 
 /// Proves a fresh provider-signed head on the current authenticated channel.
@@ -579,7 +613,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         acquisition_id: ObjectDigest,
         signed_request_digest: ObjectDigest,
         mount_attempt_record_digest: ObjectDigest,
-    ) -> Result<Option<AuthenticatedRootMountRecoveryUnavailableV1>, SourceProviderSecurityError>
+    ) -> Result<Option<AuthenticatedRootMountRecoveryObservationV2>, SourceProviderSecurityError>
     {
         self.revalidate()?;
         if self.catalog_exchange.is_some()
@@ -653,8 +687,6 @@ impl CurrentRootMountSourceProviderSessionV1 {
             .recovery_exchange
             .take()
             .ok_or(SourceProviderSecurityError::Poisoned)?;
-        let signed = SignedRecoveryUnavailableV1::from_canonical_bytes(&received.payload)
-            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
         let (signer, trusted_key) = {
             let inner = self.custody.inner();
             let signer = inner.provider_authority().traffic_signer().clone();
@@ -671,13 +703,35 @@ impl CurrentRootMountSourceProviderSessionV1 {
         };
         let trusted_key = trusted_key
             .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        signed
-            .verify_for_query(&exchange.query, &signer, &trusted_key)
-            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        let observation = if let Ok(signed) =
+            SignedRecoveryUnavailableV1::from_canonical_bytes(&received.payload)
+        {
+            signed
+                .verify_for_query(&exchange.query, &signer, &trusted_key)
+                .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+            AuthenticatedRootMountRecoveryObservationV2::LocalLive(
+                AuthenticatedRootMountRecoveryUnavailableV1 {
+                    signed_plan_digest: signed.signed_storage_plan_digest(),
+                },
+            )
+        } else {
+            let signed = SignedNativeRecoveryUnavailableV1::from_canonical_bytes(&received.payload)
+                .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+            signed
+                .verify_for_query(&exchange.query, &signer, &trusted_key)
+                .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+            AuthenticatedRootMountRecoveryObservationV2::NativeNoDispatch(
+                AuthenticatedRootMountNativeRecoveryUnavailableV1 {
+                    terminal_digests: signed
+                        .terminal_digests()
+                        .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?,
+                    canonical_query: exchange.query.to_canonical_bytes().to_vec(),
+                    signed_settlement: received.payload,
+                },
+            )
+        };
         self.recovery_sequence = exchange.query.sequence();
-        Ok(Some(AuthenticatedRootMountRecoveryUnavailableV1 {
-            signed_plan_digest: signed.signed_storage_plan_digest(),
-        }))
+        Ok(Some(observation))
     }
 
     /// Challenges Provider about one old protected Inventory without resending it.

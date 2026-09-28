@@ -39,6 +39,7 @@ pub mod manifest;
 mod migration;
 mod protected_files;
 pub mod route_file;
+mod storage_transport;
 pub mod trust_file;
 
 pub use carrier::ProviderSourceRootHandoffV1;
@@ -72,6 +73,7 @@ pub use execution::{
 };
 pub use handshake::{
     AcquireReceiptFactsV1, AuthenticatedRootMountCatalogCurrentnessV1,
+    AuthenticatedRootMountNativeRecoveryUnavailableV1, AuthenticatedRootMountRecoveryObservationV2,
     AuthenticatedRootMountRecoveryUnavailableV1, AuthorizedMountAcquireVerificationFloorV2,
     AuthorizedMountProviderOutcomeV2, CapturedMountProviderRecoveryOutcomeV2,
     CommittedProviderOutcomeV1, CommittedReopenedMountSourceRootV2,
@@ -95,5 +97,10 @@ pub use migration::{
     AuthorizedMountSourceStateMigrationV2, AuthorizedV2MigrationInstallPartsV1,
     AuthorizedV2MigrationPlanV1, MountSourceStateMigrationInstallOutcomeV2,
     MountSourceStateMigrationRecoveryV2,
+};
+pub use storage_transport::{
+    ProductionSourceProviderStorageErrorV1, ProductionSourceProviderStorageOutcomeV1,
+    ReceivedStorageNativeAcquireV3, exchange_signed_storage_native_acquire_v2,
+    inspect_signed_storage_export_plan,
 };
 pub use trust_file::ProtectedTrustHeadLinkV2;

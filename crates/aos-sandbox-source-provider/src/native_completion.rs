@@ -14,6 +14,47 @@ use crate::model::ProviderAcquisitionStateV1;
 use crate::zfs_hold_challenge::ChallengeRecordV1;
 use crate::{FixedProviderOwnerV1, ProviderLedgerError, ProviderLedgerV1, SourceRootIdentityV1};
 
+#[path = "native_completion/runtime.rs"]
+mod runtime;
+
+pub(crate) use runtime::RetainedNativeChallengeRequestV1;
+
+#[cfg(test)]
+pub(crate) use runtime::tests::{
+    prepared as fixture_prepared, requested_with_session as fixture_requested,
+};
+
+#[path = "native_completion/live.rs"]
+mod live;
+
+pub(crate) use live::NativeAcquireLiveObservationV3;
+
+#[path = "native_completion/clock.rs"]
+mod clock;
+
+pub(crate) use clock::NativeAcquireClockGuardV1;
+
+/// Keeps the hot original anchor and optional same-mount custody together.
+pub(crate) struct NativeAcquireHotCustodyV3 {
+    pub(crate) clock: std::sync::Arc<NativeAcquireClockGuardV1>,
+    pub(crate) source_root: Option<crate::ProviderPhysicalSourceRootV1>,
+}
+
+/// Qualifies the private runtime seam without changing published capabilities.
+///
+/// Production has no constructor. Installed bridge qualification and its
+/// reviewed activation are deliberately separate from compiling this path.
+pub(crate) struct QualifiedNativeBridgeV2 {
+    _private: (),
+}
+
+impl QualifiedNativeBridgeV2 {
+    #[cfg(test)]
+    pub(crate) const fn for_test() -> Self {
+        Self { _private: () }
+    }
+}
+
 /// Retains exact protected cleanup identity without authorizing Storage release.
 ///
 /// Only the fixed Provider owner can mint this projection after joining both
@@ -77,11 +118,13 @@ impl ProtectedProviderNativeCleanupObservationV2 {
 }
 
 impl FixedProviderOwnerV1 {
-    /// Joins retained native custody and durably classifies original FD loss.
+    /// Classifies legacy inert custody without claiming another owner's FD loss.
     ///
-    /// The current owner has no native original-FD custody implementation, so
-    /// this path always closes completion into cleanup observation. It never
-    /// claims a current Storage head or terminal Storage settlement.
+    /// Digest-only legacy rows retain their closed cleanup projection. Exact
+    /// native request rows return unavailable when original custody cannot be
+    /// authenticated: Storage or RootMount may still retain the same FD. This
+    /// method never proves total custody loss, current Storage state or terminal
+    /// Storage settlement.
     ///
     /// # Errors
     ///
@@ -155,11 +198,27 @@ pub(crate) fn require_original_native_custody_closed(
         .recovered
         .native_completions
         .contains_key(&acquisition_id)
+        || ledger.recovered.acquisitions.values().any(|acquisition| {
+            acquisition.acquisition_id == acquisition_id
+                && is_native_dispatch_acquisition(acquisition)
+        })
     {
         return Err(ProviderLedgerError::Unavailable);
     }
 
     Ok(())
+}
+
+pub(crate) fn is_native_dispatch_acquisition(
+    acquisition: &crate::model::AcquisitionRecordV1,
+) -> bool {
+    acquisition.backend_id
+        == aos_sandbox_source_provider_ledger::identity::acquire_native_dispatch_id_v2(
+            acquisition.normalized_intent.digest(),
+            acquisition.catalog_generation,
+            acquisition.catalog_digest,
+            acquisition.effect_attempt_digest,
+        )
 }
 
 fn require_exact_challenge(
@@ -289,6 +348,10 @@ mod tests {
             publication_head: challenge.publication_head,
             original_root: SourceRootIdentityV1::new([15; 16], 16, 17, 18).unwrap(),
             descriptor_commitment: digest(19),
+            canonical_request: None,
+            accepted_reply: None,
+            reservation_acquisition_digest: None,
+            original_clock: None,
         }
     }
 

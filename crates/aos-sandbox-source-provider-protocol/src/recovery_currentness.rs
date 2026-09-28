@@ -15,6 +15,13 @@
 //!        original-signed-request-digest[32] | mount-attempt-record-digest[32] |
 //!        signed-storage-plan-digest[32] | status:u8=1 | reserved[7]=0 |
 //!        provider-outcome-signer[120] | signature[64]
+//! native response: AOSSPR02 | kind=2 | version=1 | reserved[6]=0 |
+//!        new-session[32] | query-digest[32] | acquisition-id[32] |
+//!        original-signed-request-digest[32] | mount-attempt-record-digest[32] |
+//!        selected-native-reservation-digest[32] | faulted-acquisition-digest[32] |
+//!        retired-attempt-digest[32] | cleared-session-digest[32] |
+//!        status:u8=2 | reserved[7]=0 |
+//!        provider-outcome-signer[120] | signature[64]
 //! ```
 
 use aos_sandbox_core::ObjectDigest;
@@ -27,15 +34,90 @@ use crate::crypto::{
 };
 
 const MAGIC: &[u8; 8] = b"AOSSPR01";
+const NATIVE_RESPONSE_MAGIC: &[u8; 8] = b"AOSSPR02";
 const VERSION: u8 = 1;
 const QUERY_KIND: u8 = 1;
 const RESPONSE_KIND: u8 = 2;
 const QUERY_BYTES: usize = 216;
 const RESPONSE_SUBJECT_BYTES: usize = 216;
 const RESPONSE_BYTES: usize = RESPONSE_SUBJECT_BYTES + 120 + 64;
+const NATIVE_RESPONSE_SUBJECT_BYTES: usize = RESPONSE_SUBJECT_BYTES + 96;
+const NATIVE_RESPONSE_BYTES: usize = NATIVE_RESPONSE_SUBJECT_BYTES + 120 + 64;
 const UNAVAILABLE_STATUS: u8 = 1;
+const NATIVE_NO_DISPATCH_STATUS: u8 = 2;
 const QUERY_DIGEST_DOMAIN: &[u8] = b"aos-source-provider-recovery-query-v1\0";
 const RESPONSE_SIGNATURE_DOMAIN: &[u8] = b"aos-source-provider-recovery-unavailable-v1\0";
+const NATIVE_RESPONSE_SIGNATURE_DOMAIN: &[u8] =
+    b"aos-source-provider-native-recovery-no-dispatch-v1\0";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecoveryAnswerFlavorV1 {
+    LocalLive,
+    NativeNoDispatch,
+}
+
+impl RecoveryAnswerFlavorV1 {
+    const fn magic(self) -> &'static [u8; 8] {
+        match self {
+            Self::LocalLive => MAGIC,
+            Self::NativeNoDispatch => NATIVE_RESPONSE_MAGIC,
+        }
+    }
+
+    const fn status(self) -> u8 {
+        match self {
+            Self::LocalLive => UNAVAILABLE_STATUS,
+            Self::NativeNoDispatch => NATIVE_NO_DISPATCH_STATUS,
+        }
+    }
+
+    const fn signature_domain(self) -> &'static [u8] {
+        match self {
+            Self::LocalLive => RESPONSE_SIGNATURE_DOMAIN,
+            Self::NativeNoDispatch => NATIVE_RESPONSE_SIGNATURE_DOMAIN,
+        }
+    }
+
+    const fn subject_bytes(self) -> usize {
+        match self {
+            Self::LocalLive => RESPONSE_SUBJECT_BYTES,
+            Self::NativeNoDispatch => NATIVE_RESPONSE_SUBJECT_BYTES,
+        }
+    }
+
+    const fn response_bytes(self) -> usize {
+        match self {
+            Self::LocalLive => RESPONSE_BYTES,
+            Self::NativeNoDispatch => NATIVE_RESPONSE_BYTES,
+        }
+    }
+}
+
+/// Names the exact Provider records in a terminal native no-dispatch settlement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeRecoveryTerminalDigestsV1 {
+    /// The selected Applying acquisition before terminalization.
+    pub reservation: ObjectDigest,
+    /// The same acquisition after its durable Faulted transition.
+    pub faulted_acquisition: ObjectDigest,
+    /// The original attempt after its durable Retired transition.
+    pub retired_attempt: ObjectDigest,
+    /// The original session after its pending attempt was cleared.
+    pub cleared_session: ObjectDigest,
+}
+
+impl NativeRecoveryTerminalDigestsV1 {
+    fn all_nonzero(self) -> bool {
+        [
+            self.reservation,
+            self.faulted_acquisition,
+            self.retired_attempt,
+            self.cleared_session,
+        ]
+        .iter()
+        .all(|digest| digest.as_bytes() != &[0; 32])
+    }
+}
 
 /// Rejects malformed, stale, or unauthenticated recovery control records.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -187,15 +269,17 @@ impl RecoveryCurrentnessQueryV1 {
     }
 }
 
-/// Signs a descriptor-free Unavailable result for the exact old attempt.
+/// Signs a descriptor-free LocalLive Unavailable result for the exact old attempt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SignedRecoveryUnavailableV1 {
+    flavor: RecoveryAnswerFlavorV1,
     session_binding: ObjectDigest,
     query_digest: ObjectDigest,
     acquisition_id: ObjectDigest,
     original_signed_request_digest: ObjectDigest,
     original_attempt_digest: ObjectDigest,
-    signed_storage_plan_digest: ObjectDigest,
+    subject_digest: ObjectDigest,
+    native_terminal: Option<NativeRecoveryTerminalDigestsV1>,
     signer: SourceProviderSigningKeyV1,
     signature: SourceProviderSignature,
 }
@@ -212,24 +296,48 @@ impl SignedRecoveryUnavailableV1 {
         signer: SourceProviderSigningKeyV1,
         signing_key: &SigningKey,
     ) -> Result<Self, RecoveryCurrentnessErrorV1> {
-        if signed_storage_plan_digest.as_bytes() == &[0; 32]
+        Self::sign_for_flavor(
+            query,
+            signed_storage_plan_digest,
+            signer,
+            signing_key,
+            RecoveryAnswerFlavorV1::LocalLive,
+            None,
+        )
+    }
+
+    fn sign_for_flavor(
+        query: &RecoveryCurrentnessQueryV1,
+        subject_digest: ObjectDigest,
+        signer: SourceProviderSigningKeyV1,
+        signing_key: &SigningKey,
+        flavor: RecoveryAnswerFlavorV1,
+        native_terminal: Option<NativeRecoveryTerminalDigestsV1>,
+    ) -> Result<Self, RecoveryCurrentnessErrorV1> {
+        if subject_digest.as_bytes() == &[0; 32]
+            || native_terminal.is_some() != (flavor == RecoveryAnswerFlavorV1::NativeNoDispatch)
+            || native_terminal.is_some_and(|digests| {
+                !digests.all_nonzero() || digests.reservation != subject_digest
+            })
             || signer.usage() != SourceProviderKeyUsageV1::ProviderOutcome
             || signer.authority_id() != query.authorities().0
         {
             return Err(RecoveryCurrentnessErrorV1::Noncanonical);
         }
         let mut value = Self {
+            flavor,
             session_binding: query.session_binding,
             query_digest: query.digest(),
             acquisition_id: query.acquisition_id,
             original_signed_request_digest: query.original_signed_request_digest,
             original_attempt_digest: query.original_attempt_digest,
-            signed_storage_plan_digest,
+            subject_digest,
+            native_terminal,
             signer,
             signature: SourceProviderSignature::from_bytes([0; 64]),
         };
         value.signature = sign_bytes(
-            RESPONSE_SIGNATURE_DOMAIN,
+            flavor.signature_domain(),
             RESPONSE_KIND,
             &value.subject_bytes(),
             &value.signer,
@@ -249,19 +357,31 @@ impl SignedRecoveryUnavailableV1 {
         expected_signer: &SourceProviderSigningKeyV1,
         public_key: &[u8; 32],
     ) -> Result<(), RecoveryCurrentnessErrorV1> {
+        if self.flavor != RecoveryAnswerFlavorV1::LocalLive {
+            return Err(RecoveryCurrentnessErrorV1::Stale);
+        }
+        self.verify_for_query_inner(query, expected_signer, public_key)
+    }
+
+    fn verify_for_query_inner(
+        &self,
+        query: &RecoveryCurrentnessQueryV1,
+        expected_signer: &SourceProviderSigningKeyV1,
+        public_key: &[u8; 32],
+    ) -> Result<(), RecoveryCurrentnessErrorV1> {
         if self.session_binding != query.session_binding
             || self.query_digest != query.digest()
             || self.acquisition_id != query.acquisition_id
             || self.original_signed_request_digest != query.original_signed_request_digest
             || self.original_attempt_digest != query.original_attempt_digest
-            || self.signed_storage_plan_digest.as_bytes() == &[0; 32]
+            || self.subject_digest.as_bytes() == &[0; 32]
             || &self.signer != expected_signer
             || self.signer.authority_id() != query.authorities().0
         {
             return Err(RecoveryCurrentnessErrorV1::Stale);
         }
         verify_bytes(
-            RESPONSE_SIGNATURE_DOMAIN,
+            self.flavor.signature_domain(),
             RESPONSE_KIND,
             &self.subject_bytes(),
             &self.signer,
@@ -274,10 +394,10 @@ impl SignedRecoveryUnavailableV1 {
     /// Returns the exact signed Storage plan observed before this result.
     #[must_use]
     pub const fn signed_storage_plan_digest(&self) -> ObjectDigest {
-        self.signed_storage_plan_digest
+        self.subject_digest
     }
 
-    /// Encodes the only accepted signed recovery result.
+    /// Encodes the canonical LocalLive signed recovery result.
     #[must_use]
     pub fn to_canonical_bytes(&self) -> Vec<u8> {
         let mut bytes = self.subject_bytes();
@@ -292,30 +412,59 @@ impl SignedRecoveryUnavailableV1 {
     ///
     /// Rejects changed size, version, status, reserved bytes, or signer.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, RecoveryCurrentnessErrorV1> {
-        require_header(bytes, RESPONSE_BYTES, RESPONSE_KIND)?;
-        if bytes[208] != UNAVAILABLE_STATUS || bytes[209..216] != [0; 7] {
+        Self::from_canonical_bytes_for_flavor(bytes, RecoveryAnswerFlavorV1::LocalLive)
+    }
+
+    fn from_canonical_bytes_for_flavor(
+        bytes: &[u8],
+        flavor: RecoveryAnswerFlavorV1,
+    ) -> Result<Self, RecoveryCurrentnessErrorV1> {
+        let subject_end = flavor.subject_bytes();
+        require_header_with_magic(
+            bytes,
+            flavor.response_bytes(),
+            RESPONSE_KIND,
+            flavor.magic(),
+        )?;
+        if bytes[subject_end - 8] != flavor.status()
+            || bytes[subject_end - 7..subject_end] != [0; 7]
+        {
             return Err(RecoveryCurrentnessErrorV1::Noncanonical);
         }
-        let signer = decode_signer(&bytes[216..336])?;
+        let signer = decode_signer(&bytes[subject_end..subject_end + 120])?;
         if signer.usage() != SourceProviderKeyUsageV1::ProviderOutcome {
             return Err(RecoveryCurrentnessErrorV1::Noncanonical);
         }
         let value = Self {
+            flavor,
             session_binding: digest_at(bytes, 16)?,
             query_digest: digest_at(bytes, 48)?,
             acquisition_id: digest_at(bytes, 80)?,
             original_signed_request_digest: digest_at(bytes, 112)?,
             original_attempt_digest: digest_at(bytes, 144)?,
-            signed_storage_plan_digest: digest_at(bytes, 176)?,
+            subject_digest: digest_at(bytes, 176)?,
+            native_terminal: (flavor == RecoveryAnswerFlavorV1::NativeNoDispatch)
+                .then(|| -> Result<_, RecoveryCurrentnessErrorV1> {
+                    Ok(NativeRecoveryTerminalDigestsV1 {
+                        reservation: digest_at(bytes, 176)?,
+                        faulted_acquisition: digest_at(bytes, 208)?,
+                        retired_attempt: digest_at(bytes, 240)?,
+                        cleared_session: digest_at(bytes, 272)?,
+                    })
+                })
+                .transpose()?,
             signer,
-            signature: SourceProviderSignature::from_bytes(array_at(bytes, 336)?),
+            signature: SourceProviderSignature::from_bytes(array_at(bytes, subject_end + 120)?),
         };
         if value.session_binding.as_bytes() == &[0; 32]
             || value.query_digest.as_bytes() == &[0; 32]
             || value.acquisition_id.as_bytes() == &[0; 32]
             || value.original_signed_request_digest.as_bytes() == &[0; 32]
             || value.original_attempt_digest.as_bytes() == &[0; 32]
-            || value.signed_storage_plan_digest.as_bytes() == &[0; 32]
+            || value.subject_digest.as_bytes() == &[0; 32]
+            || value
+                .native_terminal
+                .is_some_and(|digests| !digests.all_nonzero())
             || value.to_canonical_bytes().as_slice() != bytes
         {
             return Err(RecoveryCurrentnessErrorV1::Noncanonical);
@@ -324,8 +473,8 @@ impl SignedRecoveryUnavailableV1 {
     }
 
     fn subject_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(RESPONSE_SUBJECT_BYTES);
-        bytes.extend_from_slice(MAGIC);
+        let mut bytes = Vec::with_capacity(self.flavor.subject_bytes());
+        bytes.extend_from_slice(self.flavor.magic());
         bytes.push(RESPONSE_KIND);
         bytes.push(VERSION);
         bytes.extend_from_slice(&[0; 6]);
@@ -334,16 +483,110 @@ impl SignedRecoveryUnavailableV1 {
         bytes.extend_from_slice(self.acquisition_id.as_bytes());
         bytes.extend_from_slice(self.original_signed_request_digest.as_bytes());
         bytes.extend_from_slice(self.original_attempt_digest.as_bytes());
-        bytes.extend_from_slice(self.signed_storage_plan_digest.as_bytes());
-        bytes.push(UNAVAILABLE_STATUS);
+        bytes.extend_from_slice(self.subject_digest.as_bytes());
+        if let Some(digests) = self.native_terminal {
+            bytes.extend_from_slice(digests.faulted_acquisition.as_bytes());
+            bytes.extend_from_slice(digests.retired_attempt.as_bytes());
+            bytes.extend_from_slice(digests.cleared_session.as_bytes());
+        }
+        bytes.push(self.flavor.status());
         bytes.extend_from_slice(&[0; 7]);
         bytes
     }
 }
 
+/// Signs that one native no-dispatch reservation is durably terminal at Provider.
+///
+/// This distinct response has no Storage plan digest, lease, or descriptor.
+/// It names the exact protected pre/post records; Mount must independently
+/// settle its pending attempt before treating this as terminal there.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignedNativeRecoveryUnavailableV1(SignedRecoveryUnavailableV1);
+
+impl SignedNativeRecoveryUnavailableV1 {
+    /// Signs one exact, protected no-dispatch terminalization.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero record digests, wrong-use signer, or key mismatch.
+    pub fn sign(
+        query: &RecoveryCurrentnessQueryV1,
+        terminal: NativeRecoveryTerminalDigestsV1,
+        signer: SourceProviderSigningKeyV1,
+        signing_key: &SigningKey,
+    ) -> Result<Self, RecoveryCurrentnessErrorV1> {
+        SignedRecoveryUnavailableV1::sign_for_flavor(
+            query,
+            terminal.reservation,
+            signer,
+            signing_key,
+            RecoveryAnswerFlavorV1::NativeNoDispatch,
+            Some(terminal),
+        )
+        .map(Self)
+    }
+
+    /// Verifies the exact new-session query and independently pinned Provider key.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another query, signer, reservation, status, or signature.
+    pub fn verify_for_query(
+        &self,
+        query: &RecoveryCurrentnessQueryV1,
+        expected_signer: &SourceProviderSigningKeyV1,
+        public_key: &[u8; 32],
+    ) -> Result<(), RecoveryCurrentnessErrorV1> {
+        self.0
+            .verify_for_query_inner(query, expected_signer, public_key)
+    }
+
+    /// Returns the exact protected Provider terminalization record digests.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a malformed native response with no terminal digest tuple.
+    #[must_use]
+    pub fn terminal_digests(
+        &self,
+    ) -> Result<NativeRecoveryTerminalDigestsV1, RecoveryCurrentnessErrorV1> {
+        self.0
+            .native_terminal
+            .ok_or(RecoveryCurrentnessErrorV1::Noncanonical)
+    }
+
+    /// Encodes the distinct native no-dispatch response.
+    #[must_use]
+    pub fn to_canonical_bytes(&self) -> Vec<u8> {
+        self.0.to_canonical_bytes()
+    }
+
+    /// Decodes only the canonical native no-dispatch response.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another kind, version, status, signer, or noncanonical field.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, RecoveryCurrentnessErrorV1> {
+        SignedRecoveryUnavailableV1::from_canonical_bytes_for_flavor(
+            bytes,
+            RecoveryAnswerFlavorV1::NativeNoDispatch,
+        )
+        .map(Self)
+    }
+}
+
 fn require_header(bytes: &[u8], length: usize, kind: u8) -> Result<(), RecoveryCurrentnessErrorV1> {
+    require_header_with_magic(bytes, length, kind, MAGIC)
+}
+
+fn require_header_with_magic(
+    bytes: &[u8],
+    length: usize,
+    kind: u8,
+    magic: &[u8; 8],
+) -> Result<(), RecoveryCurrentnessErrorV1> {
     if bytes.len() != length
-        || &bytes[..8] != MAGIC
+        || &bytes[..8] != magic
         || bytes[8] != kind
         || bytes[9] != VERSION
         || bytes[10..16] != [0; 6]
@@ -408,6 +651,32 @@ mod tests {
         )
         .unwrap();
         SignedRecoveryUnavailableV1::sign(query, digest(14), signer, &key).unwrap()
+    }
+
+    fn signed_native(query: &RecoveryCurrentnessQueryV1) -> SignedNativeRecoveryUnavailableV1 {
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let signer = SourceProviderSigningKeyV1::for_signing_key(
+            [4; 16],
+            10,
+            digest(11),
+            [12; 16],
+            13,
+            SourceProviderKeyUsageV1::ProviderOutcome,
+            &key,
+        )
+        .unwrap();
+        SignedNativeRecoveryUnavailableV1::sign(
+            query,
+            NativeRecoveryTerminalDigestsV1 {
+                reservation: digest(15),
+                faulted_acquisition: digest(16),
+                retired_attempt: digest(17),
+                cleared_session: digest(18),
+            },
+            signer,
+            &key,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -507,5 +776,87 @@ mod tests {
         let mut bytes = query.to_canonical_bytes().to_vec();
         bytes.push(0);
         assert!(RecoveryCurrentnessQueryV1::from_canonical_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn native_no_dispatch_is_distinct_and_bound_to_the_exact_query() {
+        let query = query();
+        let native = signed_native(&query);
+        let bytes = native.to_canonical_bytes();
+        let decoded = SignedNativeRecoveryUnavailableV1::from_canonical_bytes(&bytes).unwrap();
+        let key = SigningKey::from_bytes(&[9; 32]);
+        decoded
+            .verify_for_query(&query, &native.0.signer, key.verifying_key().as_bytes())
+            .unwrap();
+        assert_eq!(decoded.terminal_digests().unwrap().reservation, digest(15));
+        assert_eq!(
+            decoded.terminal_digests().unwrap().cleared_session,
+            digest(18)
+        );
+        assert!(SignedRecoveryUnavailableV1::from_canonical_bytes(&bytes).is_err());
+        assert!(
+            SignedNativeRecoveryUnavailableV1::from_canonical_bytes(
+                &signed(&query).to_canonical_bytes()
+            )
+            .is_err()
+        );
+
+        let changed_query = RecoveryCurrentnessQueryV1::new(
+            digest(1),
+            [2; 32],
+            3,
+            [4; 16],
+            [5; 16],
+            digest(6),
+            digest(7),
+            digest(16),
+        )
+        .unwrap();
+        assert!(
+            decoded
+                .verify_for_query(
+                    &changed_query,
+                    &native.0.signer,
+                    key.verifying_key().as_bytes()
+                )
+                .is_err()
+        );
+        let wrong_key = SigningKey::from_bytes(&[19; 32]);
+        let wrong_signer = SourceProviderSigningKeyV1::for_signing_key(
+            [4; 16],
+            10,
+            digest(11),
+            [20; 16],
+            14,
+            SourceProviderKeyUsageV1::ProviderOutcome,
+            &wrong_key,
+        )
+        .unwrap();
+        assert!(
+            decoded
+                .verify_for_query(&query, &wrong_signer, wrong_key.verifying_key().as_bytes())
+                .is_err()
+        );
+
+        let mut tampered = bytes.clone();
+        tampered[304] = UNAVAILABLE_STATUS;
+        assert!(SignedNativeRecoveryUnavailableV1::from_canonical_bytes(&tampered).is_err());
+        let mut tampered = bytes;
+        tampered[176] ^= 1;
+        let forged = SignedNativeRecoveryUnavailableV1::from_canonical_bytes(&tampered).unwrap();
+        assert!(
+            forged
+                .verify_for_query(&query, &native.0.signer, key.verifying_key().as_bytes())
+                .is_err()
+        );
+        let mut tampered_terminal = native.to_canonical_bytes();
+        tampered_terminal[240] ^= 1;
+        let forged =
+            SignedNativeRecoveryUnavailableV1::from_canonical_bytes(&tampered_terminal).unwrap();
+        assert!(
+            forged
+                .verify_for_query(&query, &native.0.signer, key.verifying_key().as_bytes())
+                .is_err()
+        );
     }
 }

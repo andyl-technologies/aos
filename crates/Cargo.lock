@@ -1154,7 +1154,13 @@ name = "aos-sandbox-service-journal-probe"
 version = "0.0.0"
 dependencies = [
  "aos-sandbox",
+ "aos-sandbox-broker-session-security",
  "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "aos-sandbox-source-provider",
+ "aos-sandbox-source-provider-ledger",
+ "aos-sandbox-source-provider-protocol",
+ "aos-sandbox-source-provider-security",
  "ed25519-dalek",
  "rustix 1.1.4",
  "serde_json",
@@ -1182,9 +1188,12 @@ dependencies = [
 name = "aos-sandbox-source-provider-ledger"
 version = "0.1.0"
 dependencies = [
+ "aos-sandbox",
  "aos-sandbox-core",
  "aos-sandbox-source-provider-protocol",
+ "ed25519-dalek",
  "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]

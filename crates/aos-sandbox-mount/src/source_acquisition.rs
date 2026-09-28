@@ -45,6 +45,7 @@ mod history;
 mod inventory;
 mod lifecycle;
 mod model;
+mod native_recovery;
 mod outcome;
 mod projection;
 mod release;
@@ -4241,11 +4242,34 @@ impl SourceAcquisitionTableV2 {
                                             resolution: None,
                                             ..
                                         }
+                                        | ProviderAttemptStateV2::SupersededIndeterminate { .. }
                                 )
                         })
             })
             .map(|row| row.acquisition_id)
             .collect()
+    }
+
+    /// Reports an original Acquire whose old session was superseded alive.
+    #[must_use]
+    #[doc(hidden)]
+    pub fn original_superseded_acquire_v2(&self, acquisition_id: [u8; 32]) -> bool {
+        self.acquisitions.get(&acquisition_id).is_some_and(|row| {
+            row.phase == SourceAcquisitionPhaseV2::PendingQuery
+                && row.acquire_lineage.root == row.acquire_lineage.tail
+                && self
+                    .provider_attempts
+                    .get(&row.acquire_lineage.root.id)
+                    .is_some_and(|attempt| {
+                        attempt.record_digest == row.acquire_lineage.root.record_digest
+                            && attempt.revision == row.acquire_lineage.root.revision
+                            && attempt.scope == row.scope
+                            && matches!(
+                                attempt.state,
+                                ProviderAttemptStateV2::SupersededIndeterminate { .. }
+                            )
+                    })
+        })
     }
 
     /// Returns one recovered acquisition view.

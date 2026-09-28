@@ -92,42 +92,28 @@ impl CurrentRootMountSourceProviderSessionV1 {
         Ok(projection.session_binding)
     }
 
-    /// Proves one exact protected Mount session's provider execution is dead.
+    /// Tests whether one exact protected Mount session's execution is dead.
     ///
     /// The full AOSMSA02 process digest is derived inside security from the
     /// retained process facts and is carried into the move-only death proof.
     /// No pidfd, reusable liveness authority, or caller-supplied digest escapes.
+    /// `Ok(None)` means death is not established; it grants no replacement
+    /// authority and does not poison an otherwise current new session.
     ///
     /// # Errors
     ///
     /// Returns [`SourceProviderSecurityError`] and poisons the session unless
-    /// the exact protected session record is current and kernel observation
-    /// proves exit, PID reuse, or a changed boot identity.
-    #[allow(clippy::too_many_arguments)]
-    pub fn prove_mount_provider_execution_dead_v2(
+    /// the exact protected session record is current and kernel liveness is
+    /// determinate. Exit, PID reuse, or changed boot identity yields `Some`;
+    /// an exact pinned live predecessor yields `None`.
+    pub fn try_prove_mount_provider_execution_dead_v2(
         &mut self,
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         journal_snapshot: &aos_sandbox::ProtectedJournalSnapshot,
         retained_session_key: &[u8],
         retained_session_record: &[u8],
-        old_boot_id: [u8; 16],
-        old_provider_process_id: u32,
-        old_provider_tgid: u32,
-        old_provider_parent_pid: u32,
-        old_provider_start_time_ticks: u64,
-        old_provider_cgroup_id: u64,
-        old_provider_credentials: [u32; 8],
-        old_provider_process_instance: [u8; 16],
-    ) -> Result<crate::DeadProviderExecutionV1, SourceProviderSecurityError> {
+    ) -> Result<Option<crate::DeadProviderExecutionV1>, SourceProviderSecurityError> {
         self.revalidate()?;
-        let execution_digest = mount_provider_execution_digest(
-            old_provider_process_id,
-            old_provider_tgid,
-            old_provider_parent_pid,
-            old_provider_start_time_ticks,
-            old_provider_cgroup_id,
-            old_provider_credentials,
-        );
         let state = validated_mount_state(journal).map_err(|error| self.poison(error))?;
         let retained = match aos_sandbox_protocol::mount_source_acquisition_state::decode_mount_source_state_record_v2(
             retained_session_key,
@@ -136,30 +122,31 @@ impl CurrentRootMountSourceProviderSessionV1 {
             Ok(aos_sandbox_protocol::mount_source_acquisition_state::StoredRecordV2::ProviderSession { value }) => value,
             _ => return Err(self.poison(SourceProviderSecurityError::SessionContinuity)),
         };
+        let execution = retained.provider_execution;
+        let execution_digest = mount_provider_execution_digest(
+            execution.pid,
+            execution.tgid,
+            execution.ppid,
+            execution.start_time_ticks,
+            execution.cgroup_id,
+            [
+                execution.real_uid,
+                execution.effective_uid,
+                execution.saved_uid,
+                execution.filesystem_uid,
+                execution.real_gid,
+                execution.effective_gid,
+                execution.saved_gid,
+                execution.filesystem_gid,
+            ],
+        );
         if retained_session_key.is_empty()
             || retained_session_record.is_empty()
-            || old_boot_id == [0; 16]
-            || old_provider_process_id == 0
-            || old_provider_start_time_ticks == 0
-            || old_provider_process_instance == [0; 16]
-            || retained.kernel_boot_id != old_boot_id
-            || retained.provider_process_instance != old_provider_process_instance
-            || retained.provider_execution.pid != old_provider_process_id
-            || retained.provider_execution.tgid != old_provider_tgid
-            || retained.provider_execution.ppid != old_provider_parent_pid
-            || retained.provider_execution.start_time_ticks != old_provider_start_time_ticks
-            || retained.provider_execution.cgroup_id != old_provider_cgroup_id
-            || [
-                retained.provider_execution.real_uid,
-                retained.provider_execution.effective_uid,
-                retained.provider_execution.saved_uid,
-                retained.provider_execution.filesystem_uid,
-                retained.provider_execution.real_gid,
-                retained.provider_execution.effective_gid,
-                retained.provider_execution.saved_gid,
-                retained.provider_execution.filesystem_gid,
-            ] != old_provider_credentials
-            || retained.provider_execution.process_execution_digest != *execution_digest.as_bytes()
+            || retained.kernel_boot_id == [0; 16]
+            || execution.pid == 0
+            || execution.start_time_ticks == 0
+            || retained.provider_process_instance == [0; 16]
+            || execution.process_execution_digest != *execution_digest.as_bytes()
             || state.provider_sessions.get(&retained.session_id) != Some(&retained)
             || journal
                 .validate_mount_source_acquisition_snapshot(journal_snapshot)
@@ -168,11 +155,11 @@ impl CurrentRootMountSourceProviderSessionV1 {
         {
             return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
-        crate::DeadProviderExecutionV1::establish_from_current_custody(
-            old_boot_id,
-            old_provider_process_id,
-            old_provider_start_time_ticks,
-            old_provider_process_instance,
+        crate::DeadProviderExecutionV1::observe_from_current_custody(
+            retained.kernel_boot_id,
+            execution.pid,
+            execution.start_time_ticks,
+            retained.provider_process_instance,
             execution_digest,
         )
         .map_err(|error| self.poison(error))
@@ -346,6 +333,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             predecessor_session_binding,
             None,
             false,
+            false,
             predecessor_request_sequence,
             predecessor_response_sequence,
         )
@@ -384,6 +372,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             predecessor_session_binding,
             Some(predecessor_death),
             false,
+            false,
             predecessor_request_sequence,
             predecessor_response_sequence,
         )
@@ -416,6 +405,58 @@ impl CurrentRootMountSourceProviderSessionV1 {
             predecessor_session_binding,
             None,
             true,
+            false,
+            predecessor_request_sequence,
+            predecessor_response_sequence,
+        )
+    }
+
+    /// Captures a live- or death-proven successor while preserving an idle barrier.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed protected state, an indeterminate or mismatched Provider
+    /// execution, a non-idle barrier, or a stale authenticated carrier.
+    #[allow(clippy::too_many_arguments)]
+    #[doc(hidden)]
+    pub fn barrier_idle_replacement_mount_provider_session_plan_v2(
+        &mut self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        head_key: Vec<u8>,
+        head_record: Vec<u8>,
+        predecessor_session_key: Vec<u8>,
+        predecessor_session_record: Vec<u8>,
+        predecessor_session_id: ObjectDigest,
+        predecessor_session_binding: ObjectDigest,
+        predecessor_death: Option<crate::DeadProviderExecutionProjectionV2>,
+        predecessor_request_sequence: u64,
+        predecessor_response_sequence: u64,
+    ) -> Result<CurrentMountProviderSessionPlanV2, SourceProviderSecurityError> {
+        if predecessor_death.is_none()
+            && self
+                .try_prove_mount_provider_execution_dead_v2(
+                    journal,
+                    &journal_snapshot,
+                    &predecessor_session_key,
+                    &predecessor_session_record,
+                )?
+                .is_some()
+        {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        self.replacement_mount_provider_session_plan_inner(
+            journal,
+            journal_snapshot,
+            head_key,
+            head_record,
+            predecessor_session_key,
+            predecessor_session_record,
+            predecessor_session_id,
+            predecessor_session_binding,
+            predecessor_death,
+            false,
+            true,
             predecessor_request_sequence,
             predecessor_response_sequence,
         )
@@ -434,6 +475,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         predecessor_session_binding: ObjectDigest,
         predecessor_death: Option<crate::DeadProviderExecutionProjectionV2>,
         recovery_supersession: bool,
+        barrier_idle_replacement: bool,
         predecessor_request_sequence: u64,
         predecessor_response_sequence: u64,
     ) -> Result<CurrentMountProviderSessionPlanV2, SourceProviderSecurityError> {
@@ -462,7 +504,11 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 .is_some_and(|stored| predecessor_death_matches_session(death, stored, now))
         });
         let predecessor_state_matches = retained_head.is_some_and(|head| {
-            if predecessor_death.is_some() || recovery_supersession {
+            if barrier_idle_replacement {
+                head.pending_attempt.is_none()
+                    && head.recovery_barrier.is_some()
+                    && head.next_request_sequence == head.next_response_sequence
+            } else if predecessor_death.is_some() || recovery_supersession {
                 head.pending_attempt.is_some()
             } else {
                 head.pending_attempt.is_none() && head.recovery_barrier.is_none()
@@ -483,6 +529,14 @@ impl CurrentRootMountSourceProviderSessionV1 {
             || retained_session.is_none_or(|stored| {
                 stored.session_binding != *predecessor_session_binding.as_bytes()
                     || stored.session_id != predecessor_id
+                    || (barrier_idle_replacement
+                        && predecessor_death.is_none()
+                        && (stored.node_id != session.node_id
+                            || stored.kernel_boot_id != session.root_boot_id
+                            || stored.provider_process_instance
+                                != session.provider_process_instance
+                            || stored.provider_execution.process_execution_digest
+                                != *session.provider_execution_digest.as_bytes()))
             })
             || journal
                 .validate_mount_source_acquisition_snapshot(&journal_snapshot)

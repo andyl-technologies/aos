@@ -28,10 +28,10 @@ use crate::{FixedProviderOwnerV1, ProviderLedgerError, ProviderLedgerV1};
 /// permit. Its currentness was checked when it was read, not after return.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ProviderHeldSnapshotCatalogClaimV1 {
-    provider: SourceProviderAuthorityV1,
-    holder_authority_id: [u8; 16],
-    session_binding: ObjectDigest,
-    binding_digest: ObjectDigest,
+    pub(crate) provider: SourceProviderAuthorityV1,
+    pub(crate) holder_authority_id: [u8; 16],
+    pub(crate) session_binding: ObjectDigest,
+    pub(crate) binding_digest: ObjectDigest,
     resource: SourceResourceV1,
     snapshot: ZfsHeldSnapshotProofV1,
     publication_head_commitment: ObjectDigest,
@@ -348,7 +348,7 @@ impl FixedProviderOwnerV1 {
     }
 }
 
-fn select_current_held_snapshot_claim(
+pub(crate) fn select_current_held_snapshot_claim(
     ledger: &mut ProviderLedgerV1<'_>,
     canonical_catalog_publication: &[u8],
     canonical_held_snapshot_catalog: &[u8],
@@ -397,7 +397,7 @@ fn select_current_held_snapshot_claim(
     })
 }
 
-fn validate_current_native_attempt(
+pub(crate) fn validate_current_native_attempt(
     ledger: &ProviderLedgerV1<'_>,
     claim: &ProviderHeldSnapshotCatalogClaimV1,
     acquisition_id: ObjectDigest,
@@ -411,7 +411,9 @@ fn validate_current_native_attempt(
     if acquisition.state != ProviderAcquisitionStateV1::Applying
         || acquisition.provider != claim.provider
         || acquisition.holder.authority_id() != claim.holder_authority_id
-        || acquisition.proof_class != 1
+        || acquisition.proof_class != 0
+        || acquisition.normalized_intent.kernel_coupled()
+        || ledger.recovered.authority.proof_class_capabilities & 1 == 0
         || acquisition.normalized_intent.binding_digest() != claim.binding_digest
         || acquisition.current_attempt_digest != attempt_digest
         || acquisition.effect_attempt_digest != attempt_digest
@@ -423,6 +425,7 @@ fn validate_current_native_attempt(
         || acquisition.catalog_digest != claim.resource.catalog_digest()
         || acquisition.selection_generation != claim.resource.selection_generation()
         || acquisition.selection_digest != claim.resource.selection_digest()
+        || !crate::native_completion::is_native_dispatch_acquisition(acquisition)
         || acquisition.lease_id.is_some()
         || acquisition.backend_evidence.is_some()
         || acquisition.source_root.is_some()
@@ -448,6 +451,7 @@ fn validate_current_native_attempt(
         .map_err(|_| ProviderLedgerError::Corrupt("retained Acquire subject"))?;
     if attempt.state != ProviderAttemptStateV1::Reserved
         || attempt.method != SourceProviderMethod::Acquire
+        || attempt.proof_class_capabilities & 1 == 0
         || attempt.status.is_some()
         || attempt.response_sequence.is_some()
         || attempt.provider != acquisition.provider
@@ -473,6 +477,7 @@ fn validate_current_native_attempt(
         || request.acquisition_version() != ACQUIRE_SOURCE_REQUEST_VERSION_V2
         || request.acquisition_sequence() != acquisition.acquisition_sequence
         || request.binding_digest() != claim.binding_digest
+        || request.kernel_coupled()
         || issued_seconds < attempt.verified_at_seconds
         || valid_until_seconds > attempt.current_valid_until_seconds
         || valid_until_seconds > request.deadline_seconds()
@@ -482,7 +487,7 @@ fn validate_current_native_attempt(
     Ok(())
 }
 
-fn current_native_attempt_window(
+pub(crate) fn current_native_attempt_window(
     ledger: &ProviderLedgerV1<'_>,
     acquisition_id: ObjectDigest,
 ) -> Result<(ObjectDigest, i64), ProviderLedgerError> {

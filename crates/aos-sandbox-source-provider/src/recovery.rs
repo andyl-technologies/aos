@@ -100,6 +100,23 @@ pub(crate) fn recover(
     recover_records(journal.records()?, configuration)
 }
 
+/// Replays the protected graph and validates the exact native capacity union.
+///
+/// This pure check does not install state or poison the owner; each caller
+/// retains its existing postcommit failure and installation policy.
+///
+/// # Errors
+///
+/// Rejects protected custody, graph corruption, or any changed capacity union.
+pub(crate) fn recover_capacity_checked(
+    journal: &ProtectedJournalAuthority<'_>,
+    configuration: &ProtectedProviderConfigurationV1,
+) -> Result<RecoveredProviderLedgerV1, ProviderLedgerError> {
+    let recovered = recover(journal, configuration)?;
+    crate::native_no_dispatch_capacity::validate_set(journal, &recovered)?;
+    Ok(recovered)
+}
+
 pub(crate) fn recover_records<'record>(
     records: impl IntoIterator<Item = (&'record [u8], &'record [u8])>,
     configuration: &ProtectedProviderConfigurationV1,
@@ -289,6 +306,15 @@ pub(crate) fn recover_records<'record>(
     }
 
     let recovery_work = recovery_work(&attempts, &acquisitions, &native_completions);
+    if acquisitions.values().any(|acquisition| {
+        crate::native_completion::is_native_dispatch_acquisition(acquisition)
+            && acquisition.state != ProviderAcquisitionStateV1::Applying
+            && !native_completions.contains_key(&acquisition.acquisition_id)
+    }) {
+        return Err(ProviderLedgerError::Corrupt(
+            "native acquisition missing completion",
+        ));
+    }
     for record in native_completions.values() {
         let attempt = attempts
             .values()

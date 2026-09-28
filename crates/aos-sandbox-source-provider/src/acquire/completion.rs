@@ -8,10 +8,16 @@ pub(crate) fn complete_acquire(
     observed: ObservedBackendAcquisitionV1,
     custody: &mut CurrentProviderIngressSessionV1,
 ) -> Result<DurableProviderReplyV1, ProviderLedgerError> {
-    crate::native_completion::require_original_native_custody_closed(
-        ledger,
-        permit.plan.acquisition_id,
-    )?;
+    let native = match &observed.native {
+        Some(native) => Some(native.completion_record(ledger, &permit)?),
+        None => {
+            crate::native_completion::require_original_native_custody_closed(
+                ledger,
+                permit.plan.acquisition_id,
+            )?;
+            None
+        }
+    };
     ledger
         .journal
         .validate_source_provider_authority_snapshot(&permit.journal_snapshot)?;
@@ -188,12 +194,17 @@ pub(crate) fn complete_acquire(
         .configuration
         .limits()
         .maximum_inventory_tombstones_per_holder();
-    let plan = aos_sandbox_source_provider_ledger::AcquireCompletionPlanV1::new(
+    let mut plan = aos_sandbox_source_provider_ledger::AcquireCompletionPlanV1::new(
         attempt_key(&attempt_key_value),
         acquire_patch,
         tombstones,
     )
     .map_err(crate::transaction::map_pure_ledger_error)?;
+    if let Some(native) = native {
+        plan = plan
+            .with_native_completion(native)
+            .map_err(crate::transaction::map_pure_ledger_error)?;
+    }
     let receipt_facts = aos_sandbox_source_provider_security::AcquireReceiptFactsV1::new(
         acquisition.acquisition_id,
         observed.source_root.kernel_boot_id,
@@ -206,6 +217,7 @@ pub(crate) fn complete_acquire(
     let builder = custody
         .provider_outcome_facade(&ledger.journal, &permit.signing_authorization)?
         .prepare_acquire_completion(plan, lease, receipt_facts)?;
+    observed.revalidate_physical()?;
     let committed_outcome = crate::transaction::commit_sealed_completion(ledger, custody, builder)?;
     let committed_snapshot = ledger.journal.snapshot()?;
     observed.revalidate_physical()?;

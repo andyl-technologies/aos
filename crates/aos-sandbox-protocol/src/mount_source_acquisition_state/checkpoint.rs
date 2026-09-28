@@ -173,6 +173,15 @@ pub fn validate_attempt_checkpoint(
         .transpose()
         .map_err(|_| state_error("cannot materialize provider owner predecessor"))?;
     let retained_signed_bytes = match &attempt.state {
+        ProviderAttemptStateV2::NativeNoDispatchSettled {
+            canonical_query,
+            signed_settlement,
+            ..
+        } => attempt
+            .signed_request
+            .len()
+            .checked_add(canonical_query.len())
+            .and_then(|value| value.checked_add(signed_settlement.len())),
         ProviderAttemptStateV2::DispositionConsumed {
             signed_status,
             signed_result,
@@ -218,6 +227,7 @@ pub fn validate_attempt_checkpoint(
 
     match &attempt.state {
         ProviderAttemptStateV2::Reserved => Ok(()),
+        ProviderAttemptStateV2::NativeNoDispatchSettled { .. } => Ok(()),
         ProviderAttemptStateV2::DispositionConsumed {
             response_sequence,
             verification_anchor,

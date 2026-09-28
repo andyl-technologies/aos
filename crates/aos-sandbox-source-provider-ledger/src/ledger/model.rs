@@ -381,6 +381,8 @@ pub struct AcquisitionRecordV1 {
     pub resource_commitment: ObjectDigest,
     pub backend_id: [u8; 32],
     pub backend_lineage_digest: ObjectDigest,
+    /// Original Applying record digest retained by a terminal native no-dispatch settlement.
+    pub native_no_dispatch_reservation_digest: Option<ObjectDigest>,
     pub backend_evidence: Option<BackendEvidenceV1>,
     pub reopen_identity: Option<ReopenIdentityV1>,
     pub source_root: Option<SourceRootIdentityV1>,

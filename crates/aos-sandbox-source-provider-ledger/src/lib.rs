@@ -247,6 +247,7 @@ pub fn validate_prospective_transition<'current, 'prospective>(
                     ));
                 };
                 native.validate_successor(&next)?;
+                require_native_suffix_progress(&native, &next, key, &current, &prospective)?;
             }
             DecodedRecordV1::Catalog(catalog) if prospective.get(key) != Some(current_value) => {
                 let rewritten = prospective.contains_key(key);
@@ -302,7 +303,11 @@ pub fn validate_prospective_transition<'current, 'prospective>(
             ledger::format::decode_record(key, value)?
             && (native.revision != 1
                 || native.state
-                    != ledger::native_completion::NativeAcquireCompletionStateV2::Prepared)
+                    != if native.canonical_request.is_some() {
+                        ledger::native_completion::NativeAcquireCompletionStateV2::Requested
+                    } else {
+                        ledger::native_completion::NativeAcquireCompletionStateV2::Prepared
+                    })
         {
             return Err(LedgerFormatErrorV1::Corrupt(
                 "native completion was not prepared",
@@ -310,6 +315,82 @@ pub fn validate_prospective_transition<'current, 'prospective>(
         }
     }
     Ok(validated)
+}
+
+// Requested/Prepared retain ordered suffix headroom outside the durable
+// cleanup floor. Until that suffix advances, unrelated writes cannot consume
+// the preflighted capacity, including after a crash releases the writer lock.
+// New live completion deliberately leaves Provider Prepared while the separate
+// challenge journal is spent; it adds no unbudgeted Provider Spent checkpoint.
+fn require_native_suffix_progress(
+    native: &ledger::native_completion::NativeAcquireCompletionRecordV2,
+    next: &ledger::native_completion::NativeAcquireCompletionRecordV2,
+    native_key: &[u8],
+    current: &BTreeMap<Vec<u8>, Vec<u8>>,
+    prospective: &BTreeMap<Vec<u8>, Vec<u8>>,
+) -> Result<(), LedgerFormatErrorV1> {
+    use ledger::native_completion::NativeAcquireCompletionStateV2 as Phase;
+
+    if native.canonical_request.is_none()
+        || !matches!(
+            native.state,
+            Phase::Requested | Phase::Prepared | Phase::Spent
+        )
+        || current == prospective
+    {
+        return Ok(());
+    }
+    let changed: BTreeSet<_> = current
+        .keys()
+        .chain(prospective.keys())
+        .filter(|key| current.get(*key) != prospective.get(*key))
+        .cloned()
+        .collect();
+    let mut expected = BTreeSet::from([native_key.to_vec()]);
+    match (native.state, next.state) {
+        (Phase::Requested, Phase::Prepared) | (_, Phase::CleanupRequired) => {}
+        (Phase::Prepared | Phase::Spent, Phase::Active) => {
+            let request = native
+                .canonical_request
+                .as_ref()
+                .ok_or(LedgerFormatErrorV1::Corrupt(
+                    "native original request missing",
+                ))?;
+            expected.extend([
+                ledger::format::acquisition_key(&ledger::model::AcquisitionKeyV1 {
+                    provider_id: native.provider_id,
+                    holder_id: native.holder_id,
+                    acquisition_id: native.acquisition_id,
+                }),
+                ledger::format::attempt_key(&ledger::model::AttemptKeyV1 {
+                    provider_id: native.provider_id,
+                    holder_id: native.holder_id,
+                    root_record_key_id: request.request().signed_root_request().signer().key_id(),
+                    method: aos_sandbox_source_provider_protocol::SourceProviderMethod::Acquire
+                        as u8,
+                    request_id: native.root_request_id,
+                }),
+                ledger::format::session_key(native.provider_id, native.holder_id),
+                ledger::format::session_history_key(
+                    native.provider_id,
+                    native.holder_id,
+                    native.session_binding,
+                ),
+                ledger::format::authority_key(native.provider_id),
+            ]);
+        }
+        _ => {
+            return Err(LedgerFormatErrorV1::Corrupt(
+                "native dispatch suffix freezes unrelated writes",
+            ));
+        }
+    }
+    if changed != expected || expected.iter().any(|key| !prospective.contains_key(key)) {
+        return Err(LedgerFormatErrorV1::Corrupt(
+            "native dispatch suffix omitted or changed another owner",
+        ));
+    }
+    Ok(())
 }
 
 /// Validates and re-encodes a complete prospective AOSSPL record graph.
@@ -760,6 +841,40 @@ pub fn validate_prospective_records<'record>(
                 "duplicate acquisition lineage",
             ));
         }
+        let selected_native =
+            !acquisition.normalized_intent.kernel_coupled() && acquisition.resource_id != [0; 32];
+        let no_dispatch_id_matches = selected_native
+            && acquisition.proof_class == 0
+            && acquisition.backend_id
+                == identity::acquire_native_no_dispatch_id_v1(
+                    acquisition.normalized_intent.digest(),
+                    acquisition.catalog_generation,
+                    acquisition.catalog_digest,
+                );
+        let dispatch_id_matches = selected_native
+            && acquisition.backend_id
+                == identity::acquire_native_dispatch_id_v2(
+                    acquisition.normalized_intent.digest(),
+                    acquisition.catalog_generation,
+                    acquisition.catalog_digest,
+                    acquisition.effect_attempt_digest,
+                );
+        let native = decoded.iter().find_map(|record| match record {
+            DecodedRecordV1::NativeCompletion(value)
+                if value.acquisition_id == acquisition.acquisition_id =>
+            {
+                Some(value)
+            }
+            _ => None,
+        });
+        if dispatch_id_matches
+            && acquisition.state != ProviderAcquisitionStateV1::Applying
+            && native.is_none()
+        {
+            return Err(LedgerFormatErrorV1::Corrupt(
+                "native acquisition missing completion",
+            ));
+        }
         if identity::acquire_effect_id_v1(
             acquisition.acquisition_id,
             acquisition.effect_attempt_digest,
@@ -769,6 +884,8 @@ pub fn validate_prospective_records<'record>(
                 acquisition.catalog_generation,
                 acquisition.catalog_digest,
             ) != acquisition.backend_id
+                && !no_dispatch_id_matches
+                && !dispatch_id_matches
             || acquisition.lease_history.iter().any(|lineage| {
                 identity::lease_id_v1(
                     acquisition.acquisition_id,

@@ -3,7 +3,8 @@
 //! Startup installs a signed catalog locator from a named systemd credential.
 //! The service retains the fixed authenticated owner and answers fresh catalog
 //! challenges. A selected LocalLive Acquire may reach authenticated Storage
-//! readback. Holder Inventory uses the fixed owner's durable admission and
+//! readback; a native selected Acquire remains unavailable. Holder Inventory
+//! uses the fixed owner's durable admission and
 //! reopens every active source before claiming completeness. A cold selected
 //! reservation retries only its original signed plan; production backend
 //! effects and SourceRoot descriptors remain unavailable.
@@ -18,13 +19,19 @@ use aos_sandbox_broker_session_security::{
     install_fixed_source_provider_catalog_credential, production_deadline_after,
 };
 use aos_sandbox_source_provider::{
-    FixedProviderBackendRequestOutcomeV1, FixedProviderIngressProgressV1, ProviderLedgerError,
+    FixedProviderBackendRequestOutcomeV1, FixedProviderIngressProgressV1,
+    NativeNoDispatchSettlementV1, ProviderLedgerError,
 };
 use aos_sandbox_source_provider_security::{
     SourceProviderSecurityError, validate_fixed_provider_authority_v1,
 };
 
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
+
+enum RecoveryAnswerV1 {
+    Native(NativeNoDispatchSettlementV1),
+    LocalLive(aos_sandbox_core::ObjectDigest),
+}
 
 #[derive(Debug, thiserror::Error)]
 enum SourceProviderDaemonErrorV1 {
@@ -93,23 +100,45 @@ fn serve_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
                         }
                         FixedProviderIngressProgressV1::CatalogReplied => {}
                         FixedProviderIngressProgressV1::Recovery(query) => {
-                            let (publication, manifest) =
-                                ingress.read_current_catalog_manifest()?;
                             let mut storage = ProductionSourceProviderStorageReadbackV1;
-                            let mut session = owner.backend_session_with_catalog(
-                                &mut storage,
-                                &publication,
-                                &manifest,
-                            );
-                            let signed_plan_digest =
-                                session.inspect_selected_storage_recovery_for_query(&query)?;
-                            drop(session);
+                            // A retained no-dispatch cut needs no current row manifest.
+                            let native_settlement = owner
+                                .backend_session(&mut storage)
+                                .settle_native_no_dispatch_recovery_for_query(&query);
+                            let answer = match native_settlement {
+                                Ok(settlement) => RecoveryAnswerV1::Native(settlement),
+                                Err(ProviderLedgerError::Unavailable) => {
+                                    let (publication, manifest) =
+                                        ingress.read_current_catalog_manifest()?;
+                                    let mut session = owner.backend_session_with_catalog(
+                                        &mut storage,
+                                        &publication,
+                                        &manifest,
+                                    );
+                                    RecoveryAnswerV1::LocalLive(
+                                        session
+                                            .inspect_selected_storage_recovery_for_query(&query)?,
+                                    )
+                                }
+                                Err(error) => return Err(error.into()),
+                            };
 
-                            // The answer is a fresh-session, descriptor-free
-                            // observation. Applying stays pending for a later
-                            // explicit resolution; no old response is replayed.
-                            while !owner.send_recovery_unavailable(&query, signed_plan_digest)? {
-                                std::thread::sleep(Duration::from_millis(2));
+                            match answer {
+                                RecoveryAnswerV1::Native(settlement) => {
+                                    while !owner
+                                        .send_native_recovery_unavailable(&query, &settlement)?
+                                    {
+                                        std::thread::sleep(Duration::from_millis(2));
+                                    }
+                                }
+                                RecoveryAnswerV1::LocalLive(signed_plan_digest) => {
+                                    // LocalLive readback remains nonterminal pending evidence.
+                                    while !owner
+                                        .send_recovery_unavailable(&query, signed_plan_digest)?
+                                    {
+                                        std::thread::sleep(Duration::from_millis(2));
+                                    }
+                                }
                             }
                         }
                         FixedProviderIngressProgressV1::InventoryReadback(query) => loop {

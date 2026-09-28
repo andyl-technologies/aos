@@ -1,7 +1,11 @@
 //! Typed native acceptance retained across challenge-spend and Active commits.
 //!
 //! This pure model grants no signing, descriptor, effect, or release authority.
-//! The native-only version-5 AOSSPL envelope contains this versioned body:
+//! Digest-only inert records retain their version-5 envelope/body. Live request
+//! retention originally used version 6 with `AOSNCR03`. Version 7 `AOSNCR04`
+//! adds mandatory original paired-clock metadata after the reservation digest,
+//! before the bounded signed request and optional typed reply. Versions 5 and 6
+//! remain historical; neither may infer an anchor or enable positive recovery.
 //!
 //! ```text
 //! AOSNCR02 | provider:16 | holder:16 | session:32 | attempt:32 |
@@ -16,8 +20,10 @@
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    SignedStorageNativeAcquireRequestV2, SourceProviderMethod, VerifiedStorageNativeAcquireV3,
-    decode_acquire_request, digest_acquire_request, digest_signed_request,
+    MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2, STORAGE_NATIVE_ACQUIRE_REPLY_BYTES_V3,
+    SignedStorageNativeAcquireRequestV2, SourceProviderMethod, StorageNativeAcquireReplyV3,
+    VerifiedStorageNativeAcquireV3, decode_acquire_request, digest_acquire_request,
+    digest_signed_request,
 };
 
 use super::LedgerFormatErrorV1;
@@ -26,14 +32,29 @@ use super::model::{
     AcquisitionRecordV1, AttemptRecordV1, ProviderAcquisitionStateV1, SourceRootIdentityV1,
 };
 
+#[path = "native_completion/clock.rs"]
+mod clock;
+
+pub use clock::NativeAcquireClockAnchorV1;
+
 pub(super) const BODY_BYTES: usize = 544;
+pub(super) const MAXIMUM_BODY_BYTES: usize = BODY_BYTES
+    + 32
+    + clock::CLOCK_BYTES
+    + 8
+    + MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2
+    + STORAGE_NATIVE_ACQUIRE_REPLY_BYTES_V3;
 const BODY_MAGIC: &[u8; 8] = b"AOSNCR02";
+const REQUESTED_BODY_MAGIC: &[u8; 8] = b"AOSNCR03";
+const CLOCKED_BODY_MAGIC: &[u8; 8] = b"AOSNCR04";
 const KEY_MAGIC: &[u8; 8] = b"AOSNCK02";
 
 /// Names one irreversible native completion recovery phase.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum NativeAcquireCompletionStateV2 {
+    /// Exact signed native bytes are durable before any possible Storage send.
+    Requested = 0,
     /// Exact Storage acceptance is retained before challenge spend.
     Prepared = 1,
     /// The exact challenge is spent but Provider completion may be pending.
@@ -94,9 +115,217 @@ pub struct NativeAcquireCompletionRecordV2 {
     pub original_root: SourceRootIdentityV1,
     /// Commits the full original SourceRoot descriptor observation.
     pub descriptor_commitment: ObjectDigest,
+    /// Retains exact canonical signed native bytes; absent only for old inert rows.
+    pub canonical_request: Option<SignedStorageNativeAcquireRequestV2>,
+    /// Retains the exact typed signed receipt and acceptance after verification.
+    pub accepted_reply: Option<StorageNativeAcquireReplyV3>,
+    /// Commits the original Applying acquisition for durable capacity recovery.
+    pub reservation_acquisition_digest: Option<ObjectDigest>,
+    /// Retains the original local clock pair; absent only for historical rows.
+    pub original_clock: Option<NativeAcquireClockAnchorV1>,
 }
 
 impl NativeAcquireCompletionRecordV2 {
+    /// Retains the original signed native request before dispatch is possible.
+    ///
+    /// This pure constructor grants no authority to send or complete. A fixed
+    /// owner must commit and read back the row with sufficient durable capacity.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed RootMount bytes, a sentinel reservation, or a clock
+    /// block inconsistent with the exact original signed request.
+    pub fn requested(
+        request: SignedStorageNativeAcquireRequestV2,
+        reservation_acquisition_digest: ObjectDigest,
+        original_clock: NativeAcquireClockAnchorV1,
+    ) -> Result<Self, LedgerFormatErrorV1> {
+        original_clock.validate_request(&request)?;
+        Self::requested_artifacts(
+            request,
+            reservation_acquisition_digest,
+            Some(original_clock),
+        )
+    }
+
+    fn requested_artifacts(
+        request: SignedStorageNativeAcquireRequestV2,
+        reservation_acquisition_digest: ObjectDigest,
+        original_clock: Option<NativeAcquireClockAnchorV1>,
+    ) -> Result<Self, LedgerFormatErrorV1> {
+        if reservation_acquisition_digest.as_bytes() == &[0; 32] {
+            return Err(LedgerFormatErrorV1::Corrupt("native reservation digest"));
+        }
+        let claims = request.request().claims();
+        let root = decode_acquire_request(request.request().signed_root_request().subject())
+            .map_err(|_| LedgerFormatErrorV1::Corrupt("native original request"))?;
+        let zero = ObjectDigest::from_bytes([0; 32]);
+        Ok(Self {
+            revision: 1,
+            state: NativeAcquireCompletionStateV2::Requested,
+            provider_id: claims.provider_acquisition().0,
+            holder_id: claims.holder_session().0,
+            session_binding: claims.holder_session().1,
+            attempt_digest: claims.attempt().1,
+            acquisition_id: claims.provider_acquisition().1,
+            challenge: claims.attempt().0,
+            challenge_issued_seconds: claims.validity().0,
+            challenge_valid_until_seconds: claims.validity().1,
+            root_request_digest: digest_signed_request(request.request().signed_root_request()),
+            root_request_id: root.request_id(),
+            typed_request_digest: digest_acquire_request(&root),
+            native_request_digest: request.digest(),
+            receipt_digest: zero,
+            acceptance_digest: zero,
+            acceptance_payload_digest: zero,
+            issuance_id: [0; 16],
+            binding_digest: claims.selection().0,
+            publication_head: claims.selection().1,
+            original_root: SourceRootIdentityV1 {
+                kernel_boot_id: [0; 16],
+                device: 0,
+                inode: 0,
+                unique_mount_id: 0,
+            },
+            descriptor_commitment: zero,
+            canonical_request: Some(request),
+            accepted_reply: None,
+            reservation_acquisition_digest: Some(reservation_acquisition_digest),
+            original_clock,
+        })
+    }
+
+    /// Adds exact accepted artifacts once without replacing the signed request.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-Requested row, changed signed artifacts, or issuance scope.
+    pub fn prepare_accepted(
+        &self,
+        reply: StorageNativeAcquireReplyV3,
+        verified: &VerifiedStorageNativeAcquireV3,
+    ) -> Result<Self, LedgerFormatErrorV1> {
+        if self.state != NativeAcquireCompletionStateV2::Requested || self.original_clock.is_none()
+        {
+            return Err(LedgerFormatErrorV1::Corrupt(
+                "native acceptance already retained",
+            ));
+        }
+        let next = self.with_accepted_reply(reply)?;
+        let request = next
+            .canonical_request
+            .as_ref()
+            .ok_or(LedgerFormatErrorV1::Corrupt("missing native signed bytes"))?;
+        next.validate_verified_acceptance(request, verified)?;
+        next.validate_canonical_artifacts()?;
+        Ok(next)
+    }
+
+    fn with_accepted_reply(
+        &self,
+        reply: StorageNativeAcquireReplyV3,
+    ) -> Result<Self, LedgerFormatErrorV1> {
+        let request = self
+            .canonical_request
+            .as_ref()
+            .ok_or(LedgerFormatErrorV1::Corrupt(
+                "native request retention missing",
+            ))?;
+        let claims = request.request().claims();
+        let catalog = claims.catalog();
+        let (resource, snapshot) = catalog
+            .select_under_head(
+                catalog.generation(),
+                catalog.digest(),
+                catalog.namespace_digest(),
+                claims.selection().0,
+            )
+            .map_err(|_| LedgerFormatErrorV1::Corrupt("native retained selection"))?;
+        let receipt = reply.receipt().receipt();
+        if receipt.attempt() != claims.attempt()
+            || receipt.binding_digest() != claims.selection().0
+            || receipt.resource() != &resource
+            || receipt.snapshot() != &snapshot
+            || receipt.validity().0 < claims.validity().0
+            || receipt.validity().1 > claims.validity().1
+        {
+            return Err(LedgerFormatErrorV1::Corrupt(
+                "native retained receipt scope",
+            ));
+        }
+        let acceptance = reply.acceptance().acceptance();
+        if acceptance.request_digest() != self.native_request_digest {
+            return Err(LedgerFormatErrorV1::Corrupt(
+                "native acceptance request changed",
+            ));
+        }
+        let descriptor = acceptance.descriptor();
+        let mut next = self.advance(NativeAcquireCompletionStateV2::Prepared)?;
+        next.receipt_digest = reply.receipt().digest();
+        next.acceptance_digest = reply.acceptance().digest();
+        next.acceptance_payload_digest = acceptance.digest();
+        next.issuance_id = acceptance.issuance_id();
+        next.original_root = SourceRootIdentityV1::new(
+            descriptor.kernel_boot_id(),
+            descriptor.device(),
+            descriptor.inode(),
+            descriptor.unique_mount_id(),
+        )?;
+        next.descriptor_commitment = acceptance.descriptor_commitment();
+        next.accepted_reply = Some(reply);
+        Ok(next)
+    }
+
+    /// Checks exact canonical retained artifacts without authenticating signatures.
+    ///
+    /// Old digest-only rows remain decodable but cannot satisfy live completion.
+    ///
+    /// # Errors
+    ///
+    /// Rejects rewritten signed bytes, a mismatched typed bundle, or wrong phase.
+    pub fn validate_canonical_artifacts(&self) -> Result<(), LedgerFormatErrorV1> {
+        let Some(request) = self.canonical_request.as_ref() else {
+            if self.state == NativeAcquireCompletionStateV2::Requested
+                || self.accepted_reply.is_some()
+                || self.reservation_acquisition_digest.is_some()
+                || self.original_clock.is_some()
+            {
+                return Err(LedgerFormatErrorV1::Corrupt(
+                    "missing native request retention",
+                ));
+            }
+            return Ok(());
+        };
+        if let Some(clock) = self.original_clock {
+            clock.validate_request(request)?;
+        }
+        let mut requested = Self::requested_artifacts(
+            request.clone(),
+            self.reservation_acquisition_digest
+                .ok_or(LedgerFormatErrorV1::Corrupt(
+                    "missing native reservation digest",
+                ))?,
+            self.original_clock,
+        )?;
+        if let Some(reply) = self.accepted_reply.clone() {
+            requested = requested.with_accepted_reply(reply)?;
+        } else if !matches!(
+            self.state,
+            NativeAcquireCompletionStateV2::Requested
+                | NativeAcquireCompletionStateV2::CleanupRequired
+        ) {
+            return Err(LedgerFormatErrorV1::Corrupt("native acceptance missing"));
+        }
+        requested.state = self.state;
+        requested.revision = self.revision;
+        if requested != *self {
+            return Err(LedgerFormatErrorV1::Corrupt(
+                "native canonical artifacts changed",
+            ));
+        }
+        Ok(())
+    }
+
     /// Checks an independently verified V3 acceptance against every retained claim.
     ///
     /// This check grants no currentness or FD custody authority. A protected
@@ -162,6 +391,7 @@ impl NativeAcquireCompletionRecordV2 {
         attempt: &AttemptRecordV1,
         acquisition: &AcquisitionRecordV1,
     ) -> Result<(), LedgerFormatErrorV1> {
+        self.validate_canonical_artifacts()?;
         validate_native_provider_phase(
             self.state,
             acquisition.state,
@@ -171,6 +401,9 @@ impl NativeAcquireCompletionRecordV2 {
         )?;
 
         if self.provider_id != acquisition.provider.authority_id()
+            || self
+                .original_clock
+                .is_some_and(|clock| clock.initial().wall_seconds() < attempt.verified_at_seconds)
             || self.holder_id != acquisition.holder.authority_id()
             || attempt.provider != acquisition.provider
             || attempt.holder != acquisition.holder
@@ -191,6 +424,14 @@ impl NativeAcquireCompletionRecordV2 {
             || self.root_request_id != attempt.request_id
             || self.typed_request_digest != attempt.typed_request_digest
             || self.binding_digest != acquisition.normalized_intent.binding_digest()
+            || (self.canonical_request.is_some()
+                && acquisition.backend_id
+                    != crate::identity::acquire_native_dispatch_id_v2(
+                        acquisition.normalized_intent.digest(),
+                        acquisition.catalog_generation,
+                        acquisition.catalog_digest,
+                        self.attempt_digest,
+                    ))
             || acquisition
                 .lease_attempt_digest
                 .is_some_and(|attempt| attempt != self.attempt_digest)
@@ -246,6 +487,24 @@ impl NativeAcquireCompletionRecordV2 {
     /// Rejects rewritten identity, signed evidence, original descriptor, phase
     /// rollback, or a revision that does not match exactly one phase advance.
     pub fn validate_successor(&self, next: &Self) -> Result<(), LedgerFormatErrorV1> {
+        self.validate_canonical_artifacts()?;
+        next.validate_canonical_artifacts()?;
+        if self.state == NativeAcquireCompletionStateV2::Requested
+            && next.state == NativeAcquireCompletionStateV2::Prepared
+        {
+            let expected = self.with_accepted_reply(
+                next.accepted_reply
+                    .clone()
+                    .ok_or(LedgerFormatErrorV1::Corrupt("native acceptance missing"))?,
+            )?;
+            return if expected == *next {
+                Ok(())
+            } else {
+                Err(LedgerFormatErrorV1::Corrupt(
+                    "native accepted request was rewritten",
+                ))
+            };
+        }
         if self.advance(next.state)? != *next {
             return Err(LedgerFormatErrorV1::Corrupt(
                 "native acceptance was rewritten",
@@ -289,6 +548,8 @@ fn validate_native_provider_phase(
 /// Classifies exact cross-journal recovery without granting completion authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeAcquireRecoveryDecisionV2 {
+    /// Only the original signed request may read back the Storage acceptance.
+    AwaitOriginalAcceptance,
     /// The original challenge is still issued; a new nonce is forbidden.
     AwaitOriginalSpend,
     /// The spent receipt may complete only with the retained original live FD.
@@ -297,6 +558,8 @@ pub enum NativeAcquireRecoveryDecisionV2 {
     OriginalActive,
     /// Completion and replay are closed; exact authenticated cleanup is required.
     CleanupRequired,
+    /// Another owner may retain the original FD; recovery is not proven absent.
+    OriginalCustodyUnavailable,
 }
 
 /// Reduces the two durable journals and original descriptor custody.
@@ -317,6 +580,7 @@ pub fn reduce_native_acquire_recovery_v2(
     live_session: Option<ObjectDigest>,
     live_original_root: Option<(SourceRootIdentityV1, ObjectDigest)>,
 ) -> Result<NativeAcquireRecoveryDecisionV2, LedgerFormatErrorV1> {
+    record.validate_canonical_artifacts()?;
     if challenge_receipt.is_some_and(|digest| digest != record.receipt_digest)
         || live_session.is_some_and(|session| session != record.session_binding)
         || live_original_root.is_some_and(|identity| {
@@ -335,6 +599,15 @@ pub fn reduce_native_acquire_recovery_v2(
         return Err(LedgerFormatErrorV1::Corrupt(
             "native completion cross-journal equivocation",
         ));
+    }
+    if record.state == NativeAcquireCompletionStateV2::Requested {
+        return Ok(NativeAcquireRecoveryDecisionV2::AwaitOriginalAcceptance);
+    }
+    if record.canonical_request.is_some()
+        && record.state != NativeAcquireCompletionStateV2::CleanupRequired
+        && (live_session.is_none() || live_original_root.is_none())
+    {
+        return Ok(NativeAcquireRecoveryDecisionV2::OriginalCustodyUnavailable);
     }
     if record.state == NativeAcquireCompletionStateV2::CleanupRequired
         || live_session.is_none()
@@ -360,7 +633,13 @@ pub fn native_completion_key_v2(acquisition_id: ObjectDigest) -> Vec<u8> {
 
 pub(super) fn encode_body(value: &NativeAcquireCompletionRecordV2) -> Vec<u8> {
     let mut body = Encoder::with_capacity(BODY_BYTES);
-    body.array(BODY_MAGIC);
+    body.array(if value.original_clock.is_some() {
+        CLOCKED_BODY_MAGIC
+    } else if value.canonical_request.is_some() {
+        REQUESTED_BODY_MAGIC
+    } else {
+        BODY_MAGIC
+    });
     body.array(&value.provider_id);
     body.array(&value.holder_id);
     for digest in [
@@ -390,7 +669,45 @@ pub(super) fn encode_body(value: &NativeAcquireCompletionRecordV2) -> Vec<u8> {
     body.source_root(Some(value.original_root));
     body.digest(value.descriptor_commitment);
     debug_assert_eq!(body.len(), BODY_BYTES);
+    if let Some(request) = value.canonical_request.as_ref() {
+        body.optional_digest(value.reservation_acquisition_digest);
+        if let Some(clock) = value.original_clock {
+            clock.encode(&mut body);
+        }
+        let request = request.to_canonical_bytes();
+        body.u32(request.len() as u32);
+        body.bytes(&request);
+        let reply = value
+            .accepted_reply
+            .as_ref()
+            .map(StorageNativeAcquireReplyV3::to_canonical_bytes);
+        let expected_bytes = BODY_BYTES
+            + 40
+            + value.original_clock.map_or(0, |_| clock::CLOCK_BYTES)
+            + request.len()
+            + reply.as_ref().map_or(0, Vec::len);
+        body.u32(reply.as_ref().map_or(0, Vec::len) as u32);
+        if let Some(reply) = reply {
+            body.bytes(&reply);
+        }
+        debug_assert_eq!(body.len(), expected_bytes);
+    }
+    debug_assert!(body.len() <= MAXIMUM_BODY_BYTES);
     body.as_slice().to_vec()
+}
+
+#[cfg(test)]
+#[path = "native_completion/request_tests.rs"]
+pub(crate) mod request_tests;
+
+pub(super) fn envelope_version(body: &[u8]) -> u16 {
+    if body.get(..8) == Some(CLOCKED_BODY_MAGIC.as_slice()) {
+        7
+    } else if body.get(..8) == Some(REQUESTED_BODY_MAGIC.as_slice()) {
+        6
+    } else {
+        5
+    }
 }
 
 pub(super) fn decode_body(
@@ -399,12 +716,20 @@ pub(super) fn decode_body(
     revision: u64,
     state: u8,
 ) -> Result<NativeAcquireCompletionRecordV2, LedgerFormatErrorV1> {
-    if bytes.len() != BODY_BYTES || bytes.get(..8) != Some(BODY_MAGIC.as_slice()) {
+    let clocked = bytes.get(..8) == Some(CLOCKED_BODY_MAGIC.as_slice());
+    let retained = clocked || bytes.get(..8) == Some(REQUESTED_BODY_MAGIC.as_slice());
+    let clock_bytes = if clocked { clock::CLOCK_BYTES } else { 0 };
+    if (!retained && (bytes.len() != BODY_BYTES || bytes.get(..8) != Some(BODY_MAGIC.as_slice())))
+        || (retained
+            && (bytes.len() < BODY_BYTES + 40 + clock_bytes
+                || bytes.len() > MAXIMUM_BODY_BYTES - clock::CLOCK_BYTES + clock_bytes))
+    {
         return Err(LedgerFormatErrorV1::Corrupt(
             "native completion version or width",
         ));
     }
     let state = match state {
+        0 => NativeAcquireCompletionStateV2::Requested,
         1 => NativeAcquireCompletionStateV2::Prepared,
         2 => NativeAcquireCompletionStateV2::Spent,
         3 => NativeAcquireCompletionStateV2::Active,
@@ -412,7 +737,7 @@ pub(super) fn decode_body(
         _ => return Err(LedgerFormatErrorV1::Corrupt("native completion phase")),
     };
     let mut body = Decoder::new(&bytes[8..]);
-    let value = NativeAcquireCompletionRecordV2 {
+    let mut value = NativeAcquireCompletionRecordV2 {
         revision,
         state,
         provider_id: body.nonzero_array()?,
@@ -427,21 +752,75 @@ pub(super) fn decode_body(
         root_request_id: body.nonzero_array()?,
         typed_request_digest: body.nonzero_digest()?,
         native_request_digest: body.nonzero_digest()?,
-        receipt_digest: body.nonzero_digest()?,
-        acceptance_digest: body.nonzero_digest()?,
-        acceptance_payload_digest: body.nonzero_digest()?,
-        issuance_id: body.nonzero_array()?,
+        receipt_digest: body.digest()?,
+        acceptance_digest: body.digest()?,
+        acceptance_payload_digest: body.digest()?,
+        issuance_id: body.array()?,
         binding_digest: body.nonzero_digest()?,
         publication_head: body.nonzero_digest()?,
-        original_root: SourceRootIdentityV1::new(
-            body.nonzero_array()?,
-            body.nonzero_u64()?,
-            body.nonzero_u64()?,
-            body.nonzero_u64()?,
-        )?,
-        descriptor_commitment: body.nonzero_digest()?,
+        original_root: SourceRootIdentityV1 {
+            kernel_boot_id: body.array()?,
+            device: body.u64()?,
+            inode: body.u64()?,
+            unique_mount_id: body.u64()?,
+        },
+        descriptor_commitment: body.digest()?,
+        canonical_request: None,
+        accepted_reply: None,
+        reservation_acquisition_digest: None,
+        original_clock: None,
     };
+    if retained {
+        value.reservation_acquisition_digest = Some(body.nonzero_digest()?);
+        if clocked {
+            value.original_clock = Some(NativeAcquireClockAnchorV1::decode(&mut body)?);
+        }
+        let request_length = body.u32()? as usize;
+        if request_length == 0
+            || request_length > MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2
+        {
+            return Err(LedgerFormatErrorV1::Corrupt(
+                "native retained request length",
+            ));
+        }
+        value.canonical_request = Some(
+            SignedStorageNativeAcquireRequestV2::from_canonical_bytes(body.take(request_length)?)
+                .map_err(|_| LedgerFormatErrorV1::Corrupt("native retained signed request"))?,
+        );
+        let reply_length = body.u32()? as usize;
+        if reply_length != 0 {
+            if reply_length != STORAGE_NATIVE_ACQUIRE_REPLY_BYTES_V3 {
+                return Err(LedgerFormatErrorV1::Corrupt("native retained reply length"));
+            }
+            value.accepted_reply = Some(
+                StorageNativeAcquireReplyV3::from_canonical_bytes(body.take(reply_length)?)
+                    .map_err(|_| LedgerFormatErrorV1::Corrupt("native retained accepted reply"))?,
+            );
+        }
+    } else {
+        SourceRootIdentityV1::new(
+            value.original_root.kernel_boot_id,
+            value.original_root.device,
+            value.original_root.inode,
+            value.original_root.unique_mount_id,
+        )?;
+        if [
+            value.receipt_digest,
+            value.acceptance_digest,
+            value.acceptance_payload_digest,
+            value.descriptor_commitment,
+        ]
+        .iter()
+        .any(|digest| digest.as_bytes() == &[0; 32])
+            || value.issuance_id == [0; 16]
+        {
+            return Err(LedgerFormatErrorV1::Corrupt(
+                "native legacy acceptance sentinel",
+            ));
+        }
+    }
     body.finish()?;
+    value.validate_canonical_artifacts()?;
     if native_completion_key_v2(value.acquisition_id) != key
         || revision == 0
         || value.challenge_valid_until_seconds <= value.challenge_issued_seconds
@@ -487,6 +866,10 @@ mod tests {
             publication_head: digest(15),
             original_root: SourceRootIdentityV1::new([16; 16], 17, 18, 19).unwrap(),
             descriptor_commitment: digest(20),
+            canonical_request: None,
+            accepted_reply: None,
+            reservation_acquisition_digest: None,
+            original_clock: None,
         }
     }
 

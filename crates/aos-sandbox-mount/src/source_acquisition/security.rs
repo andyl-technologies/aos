@@ -119,6 +119,7 @@ pub(super) fn session_from_projection(
         session_id: [0; 32],
         revision: 1,
         predecessor_session_id,
+        barrier_idle_replacement: None,
         scope,
         node_id: projected.node_id(),
         kernel_boot_id,
