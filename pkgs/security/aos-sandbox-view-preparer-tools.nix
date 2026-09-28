@@ -36,15 +36,24 @@ mkDerivation {
   passthru = {
     interpreter = "libexec/bash";
     tools = ["stat" "mkdir" "chown" "findmnt" "mount" "umount"];
-    evidenceSources = [
-      (builtins.path {
-        path = ./aos-sandbox-view-preparer-tools.nix;
-        name = "aos-sandbox-view-preparer-tools.nix";
-      })
-      bash.src
-      coreutils.src
-      util-linux.src
-    ];
+    evidenceSources =
+      [
+        (builtins.path {
+          path = ./aos-sandbox-view-preparer-tools.nix;
+          name = "aos-sandbox-view-preparer-tools.nix";
+        })
+      ]
+      ++ bash.passthru.evidenceSources
+      # The unmodified target Coreutils recipe has no separate source bundle.
+      # Native Coreutils supplies its actual GCC16 construction evidence.
+      ++ (coreutils.passthru.evidenceSources or [
+        coreutils.src
+        (builtins.path {
+          path = ../base/coreutils.nix;
+          name = "coreutils.nix";
+        })
+      ])
+      ++ util-linux.passthru.evidenceSources;
   };
 
   meta = {
