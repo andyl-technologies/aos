@@ -20,6 +20,9 @@ in
     cargoRoot = "crates";
     cargoFlags = "-p aos-filesystem-fuse --bin aos-filesystem-fuse-worker";
     cargoTestFlags = "-p aos-filesystem-fuse";
+    # Protected journal fixtures are debug-only; the installed worker remains
+    # a release build without fixture authority.
+    checkType = "debug";
     cargoNextest = true;
     doCheck = true;
     buildDeps = [protobuf pkg-config elfutils];
