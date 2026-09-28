@@ -48,12 +48,14 @@
     ];
   };
   requested = base.extendModules {
-    modules = [{
-      aos.sandbox.kernelExportOwner.reportIngress = {
-        enable = true;
-        handoffCredential = "handoff-test";
-      };
-    }];
+    modules = [
+      {
+        aos.sandbox.kernelExportOwner.reportIngress = {
+          enable = true;
+          handoffCredential = "handoff-test";
+        };
+      }
+    ];
   };
   missingHandoff = base.extendModules {
     modules = [{aos.sandbox.kernelExportOwner.reportIngress.enable = true;}];
@@ -75,7 +77,8 @@ in
   assert reportSocket.socketConfig.SocketMode == "0600";
   assert reportService.serviceConfig.CapabilityBoundingSet == "";
   assert reportService.serviceConfig.ExecStart == "${pkgs.aos-sandbox-kernel-export-ownerd}/bin/aos-sandbox-kernel-export-owner-report-ingressd ${pkgs.aosSelinuxKernelPolicyReadbackForKernel requested.config.system.build.kernel}/policy.33";
-  assert reportService.serviceConfig.LoadCredential == [
+  assert reportService.serviceConfig.LoadCredential
+  == [
     "kernel-export-report-handoff-v1:/run/credentials/@system/handoff-test"
   ];
     pkgs.mkDerivation {

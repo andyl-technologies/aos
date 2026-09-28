@@ -179,12 +179,14 @@
   hostServiceConfig =
     hostEvaluation.config.systemd.services.aos-sandbox-hostd.serviceConfig;
   hostProbeEvaluation = hostEvaluation.extendModules {
-    modules = [{
-      aos.sandbox.hostBroker.credentials = {
-        phase0ProbeSigningSeed = "test-phase0-seed";
-        phase0ProbePublicKey = "test-phase0-public";
-      };
-    }];
+    modules = [
+      {
+        aos.sandbox.hostBroker.credentials = {
+          phase0ProbeSigningSeed = "test-phase0-seed";
+          phase0ProbePublicKey = "test-phase0-public";
+        };
+      }
+    ];
   };
 in
   assert lib.all (check: !check.assertion) missingCredentials.assertions;

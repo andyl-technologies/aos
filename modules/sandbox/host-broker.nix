@@ -229,19 +229,23 @@ in {
 
     systemd.services.aos-sandbox-hostd = {
       description = "AOS fixed-function sandbox host broker";
-      requires = [
-        "aos-sandbox-hostd.socket"
-        "aos-sandbox-host-root-mount.socket"
-        "aos-sandbox-host-storage.socket"
-        "dbus.socket"
-      ] ++ lib.optional phase0ProbeActive "aos-sandbox-host-phase0-inspector.service";
-      after = [
-        "aos-sandbox-hostd.socket"
-        "aos-sandbox-host-root-mount.socket"
-        "aos-sandbox-host-storage.socket"
-        "dbus.socket"
-        "local-fs.target"
-      ] ++ lib.optional phase0ProbeActive "aos-sandbox-host-phase0-inspector.service";
+      requires =
+        [
+          "aos-sandbox-hostd.socket"
+          "aos-sandbox-host-root-mount.socket"
+          "aos-sandbox-host-storage.socket"
+          "dbus.socket"
+        ]
+        ++ lib.optional phase0ProbeActive "aos-sandbox-host-phase0-inspector.service";
+      after =
+        [
+          "aos-sandbox-hostd.socket"
+          "aos-sandbox-host-root-mount.socket"
+          "aos-sandbox-host-storage.socket"
+          "dbus.socket"
+          "local-fs.target"
+        ]
+        ++ lib.optional phase0ProbeActive "aos-sandbox-host-phase0-inspector.service";
       unitConfig = {
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
