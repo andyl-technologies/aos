@@ -12,6 +12,7 @@ pub mod host;
 pub mod host_attach_gate;
 pub mod host_execution;
 pub mod host_execution_argument;
+pub mod host_fuse_worker_session;
 pub mod host_output;
 pub mod mount;
 pub mod mount_scope;
