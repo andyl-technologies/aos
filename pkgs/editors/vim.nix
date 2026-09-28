@@ -2,6 +2,9 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
+  buildPackages,
   gnumake,
   gettext,
   pkg-config,
@@ -12,6 +15,10 @@
   python3,
 }: let
   version = "9.2.1036";
+  nativeTools =
+    if stdenv.isCross
+    then buildPackages
+    else {inherit gnumake gettext pkg-config;};
 in
   mkDerivation {
     pname = "vim";
@@ -22,7 +29,7 @@ in
       hash = "sha256-m9IiOjBWZ9GxniHTcEMsiqIlCpLmrxT+kxPsyYU1PQQ=";
     };
 
-    buildDeps = [gnumake gettext pkg-config];
+    buildDeps = [nativeTools.gnumake nativeTools.gettext nativeTools.pkg-config];
     runtimeDeps = [ncurses bash gawk perl python3];
     propagatedDeps = [];
     # Vim's one-byte flexible-array declarations are not compatible with
@@ -34,9 +41,32 @@ in
       "--with-tlib=ncursesw"
     ];
 
+    # Vim uses a cached uname result to select Darwin APIs even when Autoconf
+    # knows the host triple. Keep those answers tied to the target platform.
+    preConfigure = lib.optionalString stdenv.hostPlatform.isDarwin ''
+      export CPPFLAGS="$CPPFLAGS -I${ncurses}/include -I${ncurses}/include/ncursesw"
+      # Link metadata binds NSSound to the native AppKit implementation.
+      export LIBS="''${LIBS-} -L$PWD/src -laos-vim-appkit -laos-vim-coreservices"
+      export vim_cv_uname_output=Darwin
+      export vim_cv_uname_m_output=${
+        if stdenv.hostPlatform.isAarch64
+        then "arm64"
+        else "x86_64"
+      }
+    '';
+
     postPatch = ''
       sed -i 's|/usr/bin/man |man |' runtime/ftplugin/man.vim
       sed -i "s|^#!/bin/sh|#!$CONFIG_SHELL|" src/which.sh
+      ${lib.optionalString stdenv.hostPlatform.isDarwin ''
+        # Keep the sound and clipboard declarations local to Vim's API surface.
+        cp ${./_vim-darwin/api.h} src/aos-darwin-api.h
+        cp ${./_vim-darwin/appkit.tbd} src/libaos-vim-appkit.tbd
+        cp ${./_vim-darwin/text.h} src/aos-darwin-text.h
+        cp ${./_vim-darwin/coreservices.tbd} src/libaos-vim-coreservices.tbd
+        sed -i '/^#include <CoreServices\/CoreServices.h>$/a #include "aos-darwin-text.h"' src/os_mac_conv.c
+        sed -i '/^#import <AppKit\/AppKit.h>$/a #include "aos-darwin-api.h"' src/os_macosx.m
+      ''}
     '';
 
     postInstall = ''
