@@ -1,0 +1,11 @@
+--- a/bazel/private/toolchains/prebuilt/protoc_authenticity.bzl
++++ b/bazel/private/toolchains/prebuilt/protoc_authenticity.bzl
+@@ -1,7 +1,7 @@
+ "Validate that the protoc binary is authentic and not spoofed by a malicious actor."
+ 
++load("//:protobuf_version.bzl", RELEASE_VERSION = "PROTOC_VERSION")
+ load("//bazel/common:proto_common.bzl", "proto_common")
+-load("//bazel/private:prebuilt_tool_integrity.bzl", "RELEASE_VERSION")
+ load("//bazel/private:toolchain_helpers.bzl", "toolchains")
+ 
+ def _protoc_authenticity_impl(ctx):
