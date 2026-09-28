@@ -19,7 +19,7 @@
 }: let
   toplevel = system.config.system.build.toplevel;
   expectedConfigurationIdentity = system.config.aos.services.crucibleCampaign._runtimeIdentity;
-  runtimeTools = [pkgs.bash pkgs.coreutils pkgs.tar];
+  runtimeTools = [pkgs.bash pkgs.coreutils pkgs.diffutils pkgs.tar];
   runtimePath = lib.makeBinPath (runtimeInputs ++ runtimeTools);
   environmentExports = lib.concatStringsSep "\n" (
     lib.mapAttrsToList (
@@ -69,12 +69,12 @@
           primary.fail("command -v crucible")
 
       command = (
-          "export out=/tmp/campaign-mode-gate-output; "
+          "set -eu; export out=/tmp/campaign-mode-gate-output; "
           "export TMPDIR=/tmp/campaign-mode-gate-work; "
           + "export PATH=" + shlex.quote(${builtins.toJSON runtimePath}) + "; "
-          + "rm -rf \"$out\" \"$TMPDIR\"; mkdir -p \"$out\" \"$TMPDIR\"; "
+          + "rm -rf \"$out\" \"$TMPDIR\"; mkdir -p \"$out\" \"$TMPDIR\"; cd \"$TMPDIR\"; "
           + ${builtins.toJSON environmentExports}
-          + "; ${pkgs.bash}/bin/bash -c "
+          + "\n${pkgs.bash}/bin/bash -c "
           + shlex.quote(${builtins.toJSON runtimeScript})
       )
       transcript = primary.succeed(command, timeout=${toString timeout})
@@ -136,7 +136,7 @@ in
       pname = "crucible-phase9-campaign-mode-${name}-${mode}";
       version = "0";
       src = null;
-      buildDeps = [fleet pkgs.coreutils pkgs.findutils pkgs.gawk pkgs.grep pkgs.tar];
+      buildDeps = [fleet pkgs.coreutils pkgs.diffutils pkgs.findutils pkgs.gawk pkgs.grep pkgs.tar];
       phases = [
         {
           name = "retain-mode-specific-${name}";

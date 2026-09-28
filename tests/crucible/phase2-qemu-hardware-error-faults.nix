@@ -58,21 +58,27 @@
     qemuPackage
     referenceQemu
   ];
-  campaignRuntimeInputs = runtimeInputs ++ [pkgs.gcc];
+  campaignRuntimeInputs = runtimeInputs ++ [pkgs.gcc pkgs.pcre2];
   campaignRuntimeEnvironment = {
     CC = "${pkgs.gcc}/bin/cc";
-    PKG_CONFIG_PATH = "${pkgs.glib.dev}/lib/pkgconfig";
+    PKG_CONFIG_PATH = lib.makeSearchPath "lib/pkgconfig" [pkgs.glib.dev pkgs.pcre2];
   };
-  campaignRuntimeClosures =
-    map (
-      source: builtins.toFile (builtins.baseNameOf source) (builtins.readFile source)
-    ) [
-      ./phase2-qemu-hardware-error-manifest.c
-      ./phase2-qemu-fault-guest.S
-      ./phase2-qemu-fault-guest-aarch64.S
-      ./phase2-qemu-fault-guest.ld
-      ./phase2-qemu-fault-guest-aarch64.ld
-    ];
+  fixtureFiles = [
+    "phase2-qemu-hardware-error-manifest.c"
+    "phase2-qemu-fault-guest.S"
+    "phase2-qemu-fault-guest-aarch64.S"
+    "phase2-qemu-fault-guest.ld"
+    "phase2-qemu-fault-guest-aarch64.ld"
+    "phase2-qemu-fault-event-envelope.h"
+    "phase2-qemu-fault-manifest-bindings.h"
+  ];
+  fixtureSource = builtins.path {
+    path = ./.;
+    name = "crucible-hardware-error-fixtures";
+    filter = path: type:
+      (type == "directory" && path == toString ./.)
+      || builtins.elem (builtins.baseNameOf path) fixtureFiles;
+  };
   executorPhases = [
     {
       name = "build-live-probe";
@@ -81,21 +87,21 @@
         "$CC" -shared -fPIC -Wall -Wextra -Werror \
           -I${qemuPackage}/include/qemu \
           -I${qemuPackage}/include \
-          -I${./.} \
+          -I${fixtureSource} \
           $(pkg-config --cflags glib-2.0) \
-          ${./phase2-qemu-hardware-error-manifest.c} \
+          ${fixtureSource}/phase2-qemu-hardware-error-manifest.c \
           -o crucible-hardware-error-manifest.so \
           $(pkg-config --libs glib-2.0)
         as --32 --defsym CRUCIBLE_ENABLE_MCA=1 \
-          ${./phase2-qemu-fault-guest.S} \
+          ${fixtureSource}/phase2-qemu-fault-guest.S \
           -o hardware-error-guest-x86.o
-        ld -m elf_i386 -T ${./phase2-qemu-fault-guest.ld} \
+        ld -m elf_i386 -T ${fixtureSource}/phase2-qemu-fault-guest.ld \
           hardware-error-guest-x86.o -o hardware-error-guest-x86.elf
         ${pkgs.llvm}/bin/clang --target=aarch64-none-elf \
-          -c ${./phase2-qemu-fault-guest-aarch64.S} \
+          -c ${fixtureSource}/phase2-qemu-fault-guest-aarch64.S \
           -o hardware-error-guest-aarch64.o
         ${pkgs.llvm}/bin/ld.lld \
-          -T ${./phase2-qemu-fault-guest-aarch64.ld} \
+          -T ${fixtureSource}/phase2-qemu-fault-guest-aarch64.ld \
           hardware-error-guest-aarch64.o \
           -o hardware-error-guest-aarch64.elf
       '';
@@ -224,7 +230,7 @@ in
       name = "qemu-hardware-error-faults";
       runtimeInputs = campaignRuntimeInputs;
       runtimeEnvironment = campaignRuntimeEnvironment;
-      runtimeClosures = campaignRuntimeClosures;
+      runtimeClosures = [fixtureSource];
       timeout = 3600;
       memoryMiB = 4096;
       varSizeMiB = 8192;

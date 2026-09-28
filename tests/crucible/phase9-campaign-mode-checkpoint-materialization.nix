@@ -11,6 +11,7 @@ in
         inherit authority;
         gate = "gate:checkpoint-materialization";
         authoritativeAttr = "checks.crucible.phase6.checkpointMaterialization";
+        authoritativeResultIdentity = "check=checks.crucible.phase6.checkpointMaterialization";
         executionFamily = "qemu-runtime";
         name = "checkpoint-materialization";
         sqliteRequired = true;

@@ -97,21 +97,25 @@
     qemuPackage
     referenceQemu
   ];
-  campaignRuntimeInputs = runtimeInputs ++ [pkgs.gcc];
+  campaignRuntimeInputs = runtimeInputs ++ [pkgs.gcc pkgs.pcre2];
   campaignRuntimeEnvironment = {
     CC = "${pkgs.gcc}/bin/cc";
-    PKG_CONFIG_PATH = "${pkgs.glib.dev}/lib/pkgconfig";
+    PKG_CONFIG_PATH = lib.makeSearchPath "lib/pkgconfig" [pkgs.glib.dev pkgs.pcre2];
   };
-  campaignRuntimeClosures =
-    map (
-      source: builtins.toFile (builtins.baseNameOf source) (builtins.readFile source)
-    ) [
-      ./phase2-qemu-register-stock-negative.c
-      ./phase2-qemu-instruction-guest.S
-      ./phase2-qemu-instruction-guest-aarch64.S
-      ./phase2-qemu-fault-guest.ld
-      ./phase2-qemu-fault-guest-aarch64.ld
-    ];
+  fixtureFiles = [
+    "phase2-qemu-register-stock-negative.c"
+    "phase2-qemu-instruction-guest.S"
+    "phase2-qemu-instruction-guest-aarch64.S"
+    "phase2-qemu-fault-guest.ld"
+    "phase2-qemu-fault-guest-aarch64.ld"
+  ];
+  fixtureSource = builtins.path {
+    path = ./.;
+    name = "crucible-instruction-fault-fixtures";
+    filter = path: type:
+      (type == "directory" && path == toString ./.)
+      || builtins.elem (builtins.baseNameOf path) fixtureFiles;
+  };
   executorPhases = [
     {
       name = "build-live-fixtures";
@@ -128,20 +132,20 @@
           -I${qemuPackage}/include/qemu \
           -I${qemuPackage}/include \
           $(pkg-config --cflags glib-2.0) \
-          ${./phase2-qemu-register-stock-negative.c} \
+          ${fixtureSource}/phase2-qemu-register-stock-negative.c \
           -o crucible-instruction-stock-negative.so \
           $(pkg-config --libs glib-2.0)
 
-        as --32 ${./phase2-qemu-instruction-guest.S} \
+        as --32 ${fixtureSource}/phase2-qemu-instruction-guest.S \
           -o instruction-guest-x86.o
-        ld -m elf_i386 -T ${./phase2-qemu-fault-guest.ld} \
+        ld -m elf_i386 -T ${fixtureSource}/phase2-qemu-fault-guest.ld \
           instruction-guest-x86.o -o instruction-guest-x86.elf
         ${pkgs.llvm}/bin/clang --target=aarch64-none-elf \
           -march=armv8.1-a+lse \
-          -c ${./phase2-qemu-instruction-guest-aarch64.S} \
+          -c ${fixtureSource}/phase2-qemu-instruction-guest-aarch64.S \
           -o instruction-guest-aarch64.o
         ${pkgs.llvm}/bin/ld.lld \
-          -T ${./phase2-qemu-fault-guest-aarch64.ld} \
+          -T ${fixtureSource}/phase2-qemu-fault-guest-aarch64.ld \
           instruction-guest-aarch64.o \
           -o instruction-guest-aarch64.elf
 
@@ -592,7 +596,7 @@ in
       name = "qemu-instruction-faults";
       runtimeInputs = campaignRuntimeInputs;
       runtimeEnvironment = campaignRuntimeEnvironment;
-      runtimeClosures = [patchedPluginSource] ++ campaignRuntimeClosures;
+      runtimeClosures = [patchedPluginSource fixtureSource];
       timeout = 3600;
       memoryMiB = 4096;
       varSizeMiB = 8192;
