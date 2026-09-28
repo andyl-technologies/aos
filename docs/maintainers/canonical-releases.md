@@ -197,7 +197,10 @@ report explicitly records `not-checked` for repeat-build status. Assembly emits
 no qualification observations, and the manifest cannot claim qualification
 evidence. The captured build identities, source artifacts, SBOM, signatures,
 and the Hub's verification of uploaded object bytes remain required. Advisory
-approval and public readback are deferred for staging-only publication.
+approval and public readback are deferred for staging-only publication. The
+build also omits the registered-deriver equality check: equivalent derivation
+serializations can reuse the same realized output across Nix versions. The
+report retains the frozen planned derivation and the actual output's NAR facts.
 
 The assembler places logical evidence under
 `releases/<class>/<version>/artifacts/` and includes canonical Git and signed
