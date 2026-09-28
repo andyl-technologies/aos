@@ -387,9 +387,12 @@ impl SigningContext {
             (Self::Payload { artifact_kind }, SigningOperation::SignPayload) => {
                 require_identifier(artifact_kind, "signing artifact kind")?;
                 if matches!(role, SignerRole::Provenance)
-                    && artifact_kind != "package-provenance-dsse"
+                    && !matches!(
+                        artifact_kind.as_str(),
+                        "package-provenance-dsse" | "container-provenance-dsse"
+                    )
                 {
-                    bail!("provenance signing requires package-provenance-dsse payloads");
+                    bail!("provenance signing requires package or container DSSE payloads");
                 }
                 if matches!(role, SignerRole::Cache) && artifact_kind != "narinfo-fingerprint" {
                     bail!("cache signing requires narinfo-fingerprint payloads");

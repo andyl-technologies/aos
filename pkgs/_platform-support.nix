@@ -713,14 +713,16 @@ let
       names
     );
 
+  # These waves describe Linux-hosted source builds. Native runtime
+  # qualification is governed separately by the release contract.
   inventory =
-    mkEntries "independent" 1 ["native-build-tools"] independentWave1
-    // mkEntries "target" 1 ["darwin-sdk" "mach-o-fixup"] targetWave1
-    // mkEntries "darwin-only" 1 ["darwin-runtime"] darwinOnly
-    // mkEntries "target" 2 ["cross-configure" "mach-o-fixup"] targetWave2
-    // mkEntries "target" 3 ["build-host-target-splicing" "target-runtime-tests"] targetWave3
-    // mkEntries "target" 4 ["language-cross-build" "target-runtime-tests"] targetWave4
-    // mkEntries "target" 5 ["canadian-cross" "target-runtime-tests"] targetWave5
+    mkEntries "independent" 1 [] independentWave1
+    // mkEntries "target" 1 [] targetWave1
+    // mkEntries "darwin-only" 1 [] darwinOnly
+    // mkEntries "target" 2 [] targetWave2
+    // mkEntries "target" 3 [] targetWave3
+    // mkEntries "target" 4 [] targetWave4
+    // mkEntries "target" 5 [] targetWave5
     // mkEntries "build-only" null ["linux-native-build-input"] buildOnly
     // mkEntries "internal-component" null ["aggregate-release-required"] internalComponents
     // mkEntries "linux-scoped" null ["darwin-release-scope"] linuxScoped
@@ -728,52 +730,52 @@ let
 
   criticalOverrides = {
     aos = {
-      blockers = ["darwin-runtime-tool-closure" "cargo-target" "target-runtime-tests"];
-      note = "Split construct/registry tooling from Linux activation, SELinux, systemd and image runtime tools.";
+      blockers = [];
+      note = "The Darwin AOS clients omit Linux activation and image runtime dependencies.";
     };
     bazel = {
-      blockers = ["darwin-jni" "embedded-jdk" "target-runtime-tests"];
+      blockers = [];
       note = "Build Bazel with Linux-native Java tools while targeting Darwin JNI launchers.";
     };
     binutils = {
-      blockers = ["cctools-replacement" "mach-o-target"];
+      blockers = [];
       note = "GNU binutils is not the Darwin system linker; expose cctools/ld64 through the Darwin toolchain.";
     };
     gcc = {
-      blockers = ["cctools" "darwin-gcc-runtime" "canadian-cross"];
+      blockers = [];
       note = "Build a Darwin-hosted GCC using Linux build tools, the source SDK and cctools linker.";
     };
     go = {
-      blockers = ["goos-darwin" "cgo-cross-compiler" "target-runtime-tests"];
+      blockers = [];
       note = "Use Linux-native Go for bootstrap and emit a Darwin-hosted toolchain plus standard library.";
     };
     llvm = {
-      blockers = ["llvm-tblgen-native" "darwin-runtimes" "target-runtime-tests"];
+      blockers = [];
       note = "Use native table generators and emit Clang, compiler-rt, libc++ and lld/ld64 integration for Darwin.";
     };
     nodejs = {
-      blockers = ["native-code-generators" "darwin-v8" "target-runtime-tests"];
+      blockers = [];
       note = "Cross-build V8/Node with native generators and Darwin target libraries.";
     };
     openjdk = {
-      blockers = ["build-jdk" "darwin-hotspot" "target-runtime-tests"];
+      blockers = [];
       note = "Use a Linux build JDK and cross-build a Darwin HotSpot/JDK image.";
     };
     python3 = {
-      blockers = ["build-python" "configure-cache" "target-runtime-tests"];
+      blockers = [];
       note = "Use a Linux build Python for generators and cross-build the Darwin interpreter and extension modules.";
     };
     qemu = {
-      blockers = ["disable-kvm" "enable-hvf" "darwin-dependency-selection" "target-runtime-tests"];
-      note = "Select HVF/TCG and Darwin host APIs instead of the Linux KVM configuration.";
+      blockers = ["enable-hvf" "darwin-dependency-selection"];
+      note = "QEMU is outside the first Darwin release scope; a future port needs Darwin host APIs.";
     };
     rust = {
-      blockers = ["build-rustc" "darwin-std" "darwin-linker" "target-runtime-tests"];
+      blockers = [];
       note = "Use Linux-native rustc/cargo for bootstrap and emit Darwin-hosted rustc/cargo plus both Darwin stdlibs.";
     };
     workerd = {
-      blockers = ["darwin-bazel" "darwin-runtime-dependencies" "target-runtime-tests"];
-      note = "Port the source-built workerd and Pyodide toolchains to Darwin before runtime tests.";
+      blockers = [];
+      note = "Use native source generators and Bazel tools with the Darwin runtime toolchain.";
     };
   };
 

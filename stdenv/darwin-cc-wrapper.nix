@@ -162,6 +162,7 @@
         fi
 
         exec ${llvm}/bin/clang \
+          -B"$(${dirname} "$0")" \
           --target=${targetTriple} \
           -isysroot ${sdk} \
           -mmacosx-version-min=${deploymentTarget} \
@@ -319,8 +320,21 @@
           ${ln} -s "${llvm}/bin/llvm-$tool" "$out/bin/$tool"
           ${ln} -s "${llvm}/bin/llvm-$tool" "$out/bin/${targetTriple}-$tool"
         done
-        ${ln} -s "${llvm}/bin/dsymutil" "$out/bin/dsymutil"
-        ${ln} -s "${llvm}/bin/dsymutil" "$out/bin/${targetTriple}-dsymutil"
+        # The linker strips /build from N_OSO paths for reproducibility.
+        # Restore that prefix only while resolving objects for a dSYM; the
+        # compiler's source-path maps still keep debug information normalized.
+        ${cat} > "$out/bin/dsymutil" <<'WRAPPER_EOF'
+        #!${shell}
+        set -eu
+        case "$PWD" in
+          /build|/build/*)
+            exec ${llvm}/bin/dsymutil --oso-prepend-path=/build "$@"
+            ;;
+          *) exec ${llvm}/bin/dsymutil "$@" ;;
+        esac
+        WRAPPER_EOF
+        ${chmod} +x "$out/bin/dsymutil"
+        ${ln} -s dsymutil "$out/bin/${targetTriple}-dsymutil"
 
         ${echo} ${llvm} > "$out/nix-support/orig-cc"
         ${echo} ${sdk} > "$out/nix-support/orig-libc"

@@ -56,6 +56,9 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     if crossSystem != null
     then lib.mkPlatform crossSystem
     else buildPlatform;
+  # An explicit target equal to the builder is still a native build. Release
+  # commands name every platform, including the one executing their tools.
+  isCrossBuild = hostPlatform.system != buildPlatform.system;
 
   # The native stdenv and package set provide tools that execute on the build
   # machine. A cross stdenv uses those tools while producing hostPlatform
@@ -74,13 +77,13 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     stdenv = buildStdenv;
   };
   buildPackages =
-    if crossSystem == null
+    if !isCrossBuild
     then pkgs
     else ordinaryBuildPackages;
   ordinaryToolchainPackages =
     if !anySharedCache
     then null
-    else if crossSystem == null
+    else if !isCrossBuild
     then ordinaryBuildPackages
     else
       (import ./. {
@@ -88,7 +91,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       }).pkgs;
 
   stdenv =
-    if crossSystem == null
+    if !isCrossBuild
     then buildStdenv
     else if hostPlatform.isDarwin
     then
@@ -1270,6 +1273,14 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     // {
       referenceIntegrity = crucibleReferenceIntegrity;
     };
+
+  # Configuration publication runs on the build platform. Darwin releases
+  # contain packages without a system image, so their configuration companions
+  # use the Linux builder's base library and its frozen system artifacts.
+  releaseConfigurationBaseLib =
+    if stdenv.isCross && hostPlatform.isDarwin
+    then (import ./. {inherit system;}).systems.server.config.aos.config.evalAtBoot.baseLib
+    else discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
 in {
   inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions releaseQualificationExecutor allPackages;
   packageQualificationCoverage = qualificationPackageCoverageReport;
@@ -1282,14 +1293,14 @@ in {
     system = hostPlatform.system;
     packages = pkgs;
     names = pkgs.allPackageNames;
-    configurationBaseLib = discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
+    configurationBaseLib = releaseConfigurationBaseLib;
     configurationSources = [./lib ./modules ./systems/server.nix];
   };
   releasePackageDerivationRoots = pkgs.platformSupport.releaseDerivationRoots {
     system = hostPlatform.system;
     packages = pkgs;
     names = pkgs.allPackageNames;
-    configurationBaseLib = discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
+    configurationBaseLib = releaseConfigurationBaseLib;
   };
 
   # Pure package-maintenance content. Git and local-clone identities are added
