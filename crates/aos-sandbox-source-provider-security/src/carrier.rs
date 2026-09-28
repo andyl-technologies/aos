@@ -6,13 +6,14 @@ use aos_sandbox_linux::seqpacket::SeqpacketError;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_protocol::{
     MAXIMUM_FRAME_BYTES, MAXIMUM_INVENTORY_READBACK_PACKET_BYTES, SourceRootObservationV1,
-    source_root_descriptor_commitment_v1,
+    VerifiedStorageNativeAcquireV3, source_root_descriptor_commitment_v1,
 };
-use rustix::fs::{FileType, OFlags};
-use rustix::io::FdFlags;
 
 use crate::SourceProviderSecurityError;
 use crate::execution::ProcessExecutionEvidenceV1;
+use crate::source_root_snapshot::{
+    SourceRootObservationProfileV1, SourceRootSnapshotV1, observe_source_root_snapshot,
+};
 
 /// Owns one provider SourceRoot descriptor observed twice for an exact send handoff.
 ///
@@ -21,21 +22,9 @@ use crate::execution::ProcessExecutionEvidenceV1;
 /// to the committed receipt, and reobserve it immediately around `sendmsg`.
 pub struct ProviderSourceRootHandoffV1 {
     descriptor: OwnedFd,
-    snapshot: ProviderSourceRootSnapshotV1,
+    snapshot: SourceRootSnapshotV1,
     observation: SourceRootObservationV1,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ProviderSourceRootSnapshotV1 {
-    boot_id: [u8; 16],
-    status_flags: OFlags,
-    descriptor_flags: FdFlags,
-    device: u64,
-    inode: u64,
-    mode: u32,
-    mount_id: u64,
-    mount_namespace_id: u64,
-    mount_attributes: u64,
+    native_acceptance: Option<VerifiedStorageNativeAcquireV3>,
 }
 
 impl core::fmt::Debug for ProviderSourceRootHandoffV1 {
@@ -53,25 +42,57 @@ impl ProviderSourceRootHandoffV1 {
     /// observations establish the same `O_PATH`, close-on-exec, directory,
     /// read-only mount, namespace, device, inode, mount ID, and current boot.
     pub fn observe(descriptor: OwnedFd) -> Result<Self, SourceProviderSecurityError> {
-        let first = provider_source_root_snapshot(&descriptor)?;
-        let second = provider_source_root_snapshot(&descriptor)?;
+        Self::observe_with_acceptance(descriptor, None)
+    }
+
+    /// Observes original native custody against an already verified Storage graph.
+    ///
+    /// The graph selects detached physical inspection, not namespace or live
+    /// admission authority. It must match the actual FD identity; the protected
+    /// Provider completion and authenticated send checks remain independent.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed physical facts or an original descriptor identity that
+    /// differs from the verified native acceptance.
+    #[doc(hidden)]
+    pub fn observe_native(
+        descriptor: OwnedFd,
+        native: &VerifiedStorageNativeAcquireV3,
+    ) -> Result<Self, SourceProviderSecurityError> {
+        Self::observe_with_acceptance(descriptor, Some(native.clone()))
+    }
+
+    fn observe_with_acceptance(
+        descriptor: OwnedFd,
+        native_acceptance: Option<VerifiedStorageNativeAcquireV3>,
+    ) -> Result<Self, SourceProviderSecurityError> {
+        let profile = handoff_profile(native_acceptance.as_ref());
+        let first = observe_source_root_snapshot(&descriptor, profile, None)?;
+        let second = observe_source_root_snapshot(&descriptor, profile, None)?;
         if first != second {
             return Err(SourceProviderSecurityError::DescriptorObservation);
         }
         let observation = SourceRootObservationV1::new(
-            first.boot_id,
-            first.device,
-            first.inode,
-            first.mount_id,
+            first.physical.boot_id,
+            first.physical.device,
+            first.physical.inode,
+            first.physical.mount_id.get(),
             true,
             true,
             true,
         )
         .map_err(|_| SourceProviderSecurityError::DescriptorObservation)?;
+        if let Some(native) = &native_acceptance {
+            native
+                .require_original_descriptor(&observation)
+                .map_err(|_| SourceProviderSecurityError::DescriptorObservation)?;
+        }
         Ok(Self {
             descriptor,
             snapshot: first,
             observation,
+            native_acceptance,
         })
     }
 
@@ -80,8 +101,14 @@ impl ProviderSourceRootHandoffV1 {
     }
 
     pub(crate) fn revalidate(&self) -> Result<(), SourceProviderSecurityError> {
-        let first = provider_source_root_snapshot(&self.descriptor)?;
-        let second = provider_source_root_snapshot(&self.descriptor)?;
+        let profile = handoff_profile(self.native_acceptance.as_ref());
+        let first = observe_source_root_snapshot(&self.descriptor, profile, None)?;
+        let second = observe_source_root_snapshot(&self.descriptor, profile, None)?;
+        if let Some(native) = &self.native_acceptance {
+            native
+                .require_original_descriptor(&self.observation)
+                .map_err(|_| SourceProviderSecurityError::DescriptorObservation)?;
+        }
         if first == self.snapshot
             && second == self.snapshot
             && source_root_descriptor_commitment_v1(&self.observation)
@@ -96,51 +123,25 @@ impl ProviderSourceRootHandoffV1 {
     pub(crate) const fn descriptor(&self) -> &OwnedFd {
         &self.descriptor
     }
+
+    pub(crate) const fn native_acceptance(&self) -> Option<&VerifiedStorageNativeAcquireV3> {
+        self.native_acceptance.as_ref()
+    }
+}
+
+const fn handoff_profile(
+    native: Option<&VerifiedStorageNativeAcquireV3>,
+) -> SourceRootObservationProfileV1 {
+    match native {
+        Some(_) => SourceRootObservationProfileV1::NativeDetached,
+        None => SourceRootObservationProfileV1::Attached,
+    }
 }
 
 pub(crate) struct ReceivedSourceProviderRecordV1 {
     pub(crate) payload: Vec<u8>,
     pub(crate) descriptors: Vec<OwnedFd>,
     pub(crate) execution: ProcessExecutionEvidenceV1,
-}
-
-fn provider_source_root_snapshot(
-    descriptor: &OwnedFd,
-) -> Result<ProviderSourceRootSnapshotV1, SourceProviderSecurityError> {
-    let boot_id = crate::CurrentKernelBootV1::capture()?.boot_id();
-    let status_flags = rustix::fs::fcntl_getfl(descriptor)
-        .map_err(|_| SourceProviderSecurityError::DescriptorObservation)?;
-    let descriptor_flags = rustix::io::fcntl_getfd(descriptor)
-        .map_err(|_| SourceProviderSecurityError::DescriptorObservation)?;
-    let stat = rustix::fs::fstat(descriptor)
-        .map_err(|_| SourceProviderSecurityError::DescriptorObservation)?;
-    let mount_id = aos_sandbox_linux::inventory::MountId::from_fd(descriptor.as_fd())
-        .map_err(|_| SourceProviderSecurityError::DescriptorObservation)?;
-    let mount = aos_sandbox_linux::inventory::MountNamespace::current()
-        .observe(mount_id)
-        .map_err(|_| SourceProviderSecurityError::DescriptorObservation)?;
-    if !status_flags.contains(OFlags::PATH)
-        || !descriptor_flags.contains(FdFlags::CLOEXEC)
-        || FileType::from_raw_mode(stat.st_mode) != FileType::Directory
-        || stat.st_dev == 0
-        || stat.st_ino == 0
-        || mount.device_major != rustix::fs::major(stat.st_dev)
-        || mount.device_minor != rustix::fs::minor(stat.st_dev)
-        || !mount.is_read_only()
-    {
-        return Err(SourceProviderSecurityError::DescriptorObservation);
-    }
-    Ok(ProviderSourceRootSnapshotV1 {
-        boot_id,
-        status_flags,
-        descriptor_flags,
-        device: stat.st_dev,
-        inode: stat.st_ino,
-        mode: stat.st_mode,
-        mount_id: mount_id.get(),
-        mount_namespace_id: mount.mount_namespace_id,
-        mount_attributes: mount.mount_attributes,
-    })
 }
 
 pub(crate) struct InertSourceProviderCarrierV1 {

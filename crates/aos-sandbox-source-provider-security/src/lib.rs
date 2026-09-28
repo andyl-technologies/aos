@@ -39,6 +39,7 @@ pub mod manifest;
 mod migration;
 mod protected_files;
 pub mod route_file;
+mod source_root_snapshot;
 mod storage_transport;
 pub mod trust_file;
 

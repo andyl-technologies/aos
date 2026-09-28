@@ -1,6 +1,10 @@
 //! Atomic carrier receive and physical SourceRoot observation.
 
 use super::*;
+use std::os::fd::AsFd as _;
+
+use crate::source_root_snapshot::SourceRootObservationProfileV1;
+use aos_sandbox_linux::inventory::ReadOnlyDirectorySnapshot;
 
 impl CurrentRootMountSourceProviderSessionV1 {
     /// Advances one descriptor-free Inventory reply on the separate provider channel.
@@ -197,10 +201,45 @@ impl CurrentRootMountSourceProviderSessionV1 {
         let descriptor = descriptors
             .pop()
             .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        let socket_cookie = self.carrier.socket().peer().socket_cookie();
+        self.require_complete_acquire_association(
+            authorization.session_binding,
+            socket_cookie,
+            &execution,
+        )?;
+        // This is physical DATA only. No namespace profile is chosen until the
+        // existing verifier authenticates the full outcome against these facts.
+        let expected_snapshot = ReadOnlyDirectorySnapshot::capture(descriptor.as_fd())
+            .map_err(|_| self.poison(SourceProviderSecurityError::DescriptorObservation))?;
+        let physical_observation =
+            aos_sandbox_source_provider_protocol::SourceRootObservationV1::new(
+                expected_snapshot.boot_id,
+                expected_snapshot.device,
+                expected_snapshot.inode,
+                expected_snapshot.mount_id.get(),
+                true,
+                true,
+                true,
+            )
+            .map_err(|_| self.poison(SourceProviderSecurityError::DescriptorObservation))?;
+        self.require_complete_acquire_association(
+            authorization.session_binding,
+            socket_cookie,
+            &execution,
+        )?;
+        let mut verified = self.verify_provider_outcome_bytes_v2(
+            Some(catalog_journal),
+            authorization,
+            payload,
+            Some(physical_observation),
+        )?;
+        let profile =
+            verified_source_root_profile(&verified).map_err(|error| self.poison(error))?;
         let record = crate::descriptor::AuthenticatedCompleteAcquireRecordV1 {
             descriptor,
             provider_execution: execution,
             expected_observation,
+            expected_snapshot,
             descriptor_commitment: response.signed_status().subject().descriptor_commitment(),
             acquisition_id: *receipt.subject().acquisition_id().as_bytes(),
             acquisition_sequence: authorization
@@ -209,21 +248,16 @@ impl CurrentRootMountSourceProviderSessionV1 {
             lease_id: lease.subject().lease_id(),
             lease_digest: digest_signed_export_lease(&lease),
             session_binding: authorization.session_binding,
-            socket_cookie: self.carrier.socket().peer().socket_cookie(),
+            socket_cookie,
             signed_outcome_digest:
                 aos_sandbox_source_provider_protocol::provider_response_artifact_digest_v1(
                     SourceProviderMethod::Acquire,
-                    &payload,
+                    &verified.canonical_response,
                 ),
+            profile,
         };
         let source_root = crate::ObservedSourceRootV1::observe(record, self)?;
         source_root.revalidate(self)?;
-        let verified = self.verify_provider_outcome_bytes_v2(
-            Some(catalog_journal),
-            authorization,
-            payload,
-            Some(source_root.protocol_observation().clone()),
-        )?;
         if verified.descriptor_commitment
             != aos_sandbox_source_provider_protocol::source_root_descriptor_commitment_v1(
                 source_root.protocol_observation(),
@@ -231,10 +265,150 @@ impl CurrentRootMountSourceProviderSessionV1 {
         {
             return Err(self.poison(SourceProviderSecurityError::DescriptorObservation));
         }
+        // Physical/profile checks remain inside the original freshness bound,
+        // and the durable anchor covers their completion, as before this split.
+        finish_source_root_verification(
+            &mut verified,
+            authorization,
+            lease.subject().expires_seconds(),
+        )
+        .map_err(|error| self.poison(error))?;
         Ok(VerifiedReceivedMountProviderOutcomeV2 {
             verified,
             source_root: Some(source_root),
         })
+    }
+}
+
+fn verified_source_root_profile(
+    verified: &VerifiedMountProviderOutcomeV2,
+) -> Result<SourceRootObservationProfileV1, SourceProviderSecurityError> {
+    let response = decode_acquire_response(&verified.canonical_response)
+        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+    let receipt = response
+        .signed_receipt()
+        .and_then(|bytes| SignedSourceProviderReceiptV1::from_canonical_bytes(bytes).ok())
+        .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+    let lease =
+        SignedSourceExportLeaseV1::from_canonical_bytes(receipt.subject().signed_export_lease())
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+    Ok(match lease.subject().proof() {
+        aos_sandbox_source_provider_protocol::SourceProviderProofV1::ZfsHeldSnapshot { .. } => {
+            SourceRootObservationProfileV1::NativeDetached
+        }
+        _ => SourceRootObservationProfileV1::Attached,
+    })
+}
+
+fn finish_source_root_verification(
+    verified: &mut VerifiedMountProviderOutcomeV2,
+    authorization: &AuthorizedMountProviderOutcomeV2,
+    original_lease_expiry: i64,
+) -> Result<(), SourceProviderSecurityError> {
+    let completed = super::super::current_unix_seconds()?;
+    require_source_root_completion_time(
+        verified.verification_anchor.verification_completed_seconds,
+        authorization.deadline_policy,
+        authorization.deadline_seconds,
+        original_lease_expiry,
+        completed,
+    )?;
+    if authorization.deadline_policy == OutcomeDeadlinePolicyV2::Fresh {
+        let session = authorization
+            .mount_session_id
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let attempt = authorization
+            .mount_attempt_id
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let anchor = &mut verified.verification_anchor;
+        anchor.verification_completed_seconds = completed;
+        anchor.anchor_digest = aos_sandbox_protocol::mount_source_acquisition_state::outcome_verification_anchor_digest_v2(
+            anchor, session, attempt, authorization.request_sequence,
+            authorization.expected_response_sequence,
+            *aos_sandbox_source_provider_protocol::provider_response_artifact_digest_v1(
+                verified.method, &verified.canonical_response,
+            ).as_bytes(),
+        );
+    }
+    Ok(())
+}
+
+fn require_source_root_completion_time(
+    prior_completion: i64,
+    policy: OutcomeDeadlinePolicyV2,
+    deadline: i64,
+    original_lease_expiry: i64,
+    completed: i64,
+) -> Result<(), SourceProviderSecurityError> {
+    if completed < prior_completion
+        || (policy == OutcomeDeadlinePolicyV2::Fresh
+            && completed >= deadline.min(original_lease_expiry))
+    {
+        return Err(SourceProviderSecurityError::SessionContinuity);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod physical_completion_tests {
+    use super::*;
+
+    #[test]
+    fn physical_checks_cannot_extend_a_fresh_outcome_deadline() {
+        assert!(
+            require_source_root_completion_time(10, OutcomeDeadlinePolicyV2::Fresh, 20, 20, 19)
+                .is_ok()
+        );
+        assert!(
+            require_source_root_completion_time(10, OutcomeDeadlinePolicyV2::Fresh, 20, 20, 20)
+                .is_err()
+        );
+        assert!(
+            require_source_root_completion_time(10, OutcomeDeadlinePolicyV2::Fresh, 20, 20, 21)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn physical_checks_cannot_hide_wall_clock_rollback() {
+        for policy in [
+            OutcomeDeadlinePolicyV2::Fresh,
+            OutcomeDeadlinePolicyV2::RetainedReplay,
+        ] {
+            assert!(require_source_root_completion_time(10, policy, 20, 20, 9).is_err());
+        }
+    }
+
+    #[test]
+    fn historical_completion_keeps_its_original_anchor_without_new_authority() {
+        // Historical cleanup may run after the old deadline. This unchanged
+        // policy never refreshes the retained signed lease or its old anchor.
+        assert!(
+            require_source_root_completion_time(
+                10,
+                OutcomeDeadlinePolicyV2::RetainedReplay,
+                20,
+                15,
+                30
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn physical_checks_cannot_outlive_the_original_shorter_lease() {
+        assert!(
+            require_source_root_completion_time(10, OutcomeDeadlinePolicyV2::Fresh, 20, 15, 14)
+                .is_ok()
+        );
+        assert!(
+            require_source_root_completion_time(10, OutcomeDeadlinePolicyV2::Fresh, 20, 15, 15)
+                .is_err()
+        );
+        assert!(
+            require_source_root_completion_time(10, OutcomeDeadlinePolicyV2::Fresh, 20, 15, 16)
+                .is_err()
+        );
     }
 }
 

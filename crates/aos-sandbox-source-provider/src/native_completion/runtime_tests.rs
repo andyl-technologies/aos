@@ -28,6 +28,15 @@ pub(crate) fn requested_with_session(
     issued: i64,
     session_binding: ObjectDigest,
 ) -> NativeAcquireCompletionRecordV2 {
+    requested_with_boot(nonce, issued, session_binding, [6; 16])
+}
+
+pub(crate) fn requested_with_boot(
+    nonce: [u8; 32],
+    issued: i64,
+    session_binding: ObjectDigest,
+    boot_id: [u8; 16],
+) -> NativeAcquireCompletionRecordV2 {
     let mut template = Vec::new();
     for tag in 1_u8..=27 {
         let value = match tag {
@@ -51,7 +60,7 @@ pub(crate) fn requested_with_session(
         template_digest,
         SourceUseV1::MountCreate,
         [5; 16],
-        [6; 16],
+        boot_id,
         [7; 16],
         8,
         digest(9),
@@ -177,6 +186,17 @@ fn challenge_proposal(record: &NativeAcquireCompletionRecordV2) -> ChallengeReco
 pub(crate) fn prepared(
     requested: &NativeAcquireCompletionRecordV2,
 ) -> NativeAcquireCompletionRecordV2 {
+    let descriptor = SourceRootObservationV1::new([6; 16], 72, 73, 74, true, true, true).unwrap();
+    prepared_with_descriptor(requested, descriptor).0
+}
+
+pub(crate) fn prepared_with_descriptor(
+    requested: &NativeAcquireCompletionRecordV2,
+    descriptor: SourceRootObservationV1,
+) -> (
+    NativeAcquireCompletionRecordV2,
+    VerifiedStorageNativeAcquireV3,
+) {
     let signed = requested.canonical_request.as_ref().unwrap();
     let catalog = signed.request().claims().catalog();
     let (resource, snapshot) = catalog
@@ -209,7 +229,6 @@ pub(crate) fn prepared(
         signer,
         key.sign(&unsigned.signing_message()).to_bytes(),
     );
-    let descriptor = SourceRootObservationV1::new([6; 16], 72, 73, 74, true, true, true).unwrap();
     let topology =
         storage_native_nonrecursive_topology_v1(signed, &receipt, &descriptor, 2, 75).unwrap();
     let acceptance = StorageNativeAcceptanceV3::new(
@@ -242,7 +261,10 @@ pub(crate) fn prepared(
             now_seconds: requested.challenge_issued_seconds + 1,
         })
         .unwrap();
-    requested.prepare_accepted(reply, &verified).unwrap()
+    (
+        requested.prepare_accepted(reply, &verified).unwrap(),
+        verified,
+    )
 }
 
 fn fixture_directory() -> tempfile::TempDir {

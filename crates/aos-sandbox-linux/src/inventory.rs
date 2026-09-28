@@ -20,6 +20,10 @@ use crate::uapi::{
 };
 use crate::{Error, Result};
 
+mod read_only_directory;
+
+pub use read_only_directory::ReadOnlyDirectorySnapshot;
+
 const REQUEST_SIZE_CURRENT_NAMESPACE: u32 = 24;
 const REQUEST_SIZE_NAMESPACE_FD: u32 = 32;
 const MAX_LIST_PAGE: usize = 4096;
