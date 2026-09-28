@@ -34,6 +34,11 @@ pub use sandbox::{
     SandboxResources, SandboxUnitDiscoverySnapshot, SandboxUnitName, SandboxUnitObservation,
     SandboxUnitSpec,
 };
+#[cfg(target_os = "linux")]
+pub use sandbox::{
+    FuseWorkerDescriptorRoleV1, FuseWorkerUnitNameV1, FuseWorkerUnitObservationV1,
+    FuseWorkerUnitSpecV1,
+};
 
 // `unit_property` returns a `zbus::zvariant::OwnedValue` in its public
 // signature. Re-export it (and `Value`, needed to inspect the variant) so

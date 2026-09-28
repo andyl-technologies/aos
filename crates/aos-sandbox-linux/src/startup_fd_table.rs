@@ -24,6 +24,21 @@ const CAPTURE_POISONED: u8 = 3;
 
 static CAPTURE_STATE: AtomicU8 = AtomicU8::new(CAPTURE_FRESH);
 
+/// Runs a non-yielding kernel-object operation with signal handlers fenced.
+///
+/// Restoration failure terminates the producer instead of returning it to an
+/// async owner with altered signal state. An unwind resumes only after the
+/// exact original mask has been restored.
+pub(crate) fn with_blocked_signals<T, E: From<Error>>(
+    operation: impl FnOnce() -> std::result::Result<T, E>,
+) -> std::result::Result<T, E> {
+    scan::with_blocked_signals(operation)
+}
+
+pub(crate) fn require_fixed_worker_descriptor_numbers() -> Result<()> {
+    scan::require_fixed_worker_descriptor_numbers()
+}
+
 /// Claims and double-observes the complete initial process descriptor table.
 ///
 /// The capture scans every numeric `/proc/self/fd` entry rather than trusting

@@ -1,5 +1,5 @@
 //! Shared, bounded comparison of a live enforcing SELinux policy with AOS's
-//! immutable production-policy package.
+//! immutable, deployment-kernel-bound canonical readback package.
 //!
 //! The proof is point-in-time. Callers keep their own authorization and
 //! subject-label checks; matching policy bytes alone grants neither.
@@ -11,8 +11,11 @@ use std::os::fd::{AsFd as _, BorrowedFd};
 use rustix::fs::{FileType, Mode, OFlags, fstat, fstatfs, open};
 use sha2::{Digest as _, Sha256};
 
-const POLICY_SUFFIX: &str = "/etc/selinux/aos/policy/policy.33";
-const POLICY_PACKAGE: &str = "aos-selinux-production-policy-1";
+// selinuxfs serializes the loaded policydb, not the original compiled input.
+// Only the selected kernel's canonical readback is a valid byte expectation.
+const POLICY_SUFFIX: &str = "/policy.33";
+const POLICY_PACKAGE: &str = "aos-selinux-kernel-policy-readback-1";
+const STORE_HASH_ALPHABET: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
 const MAX_POLICY_BYTES: u64 = 64 * 1024 * 1024;
 const SELINUXFS_MAGIC: u64 = 0xf97c_ff8c;
 
@@ -28,7 +31,11 @@ pub struct VerifiedLiveSelinuxPolicy {
 }
 
 impl VerifiedLiveSelinuxPolicy {
-    /// Compares the active kernel policy to the immutable production package.
+    /// Compares the active policy to an immutable deployment-kernel readback.
+    ///
+    /// The caller supplies its image-pinned canonical readback path. Compiled
+    /// policy inputs are not accepted: the loaded kernel serialization may
+    /// differ even when the input was loaded without modification.
     ///
     /// # Errors
     ///
@@ -119,9 +126,7 @@ fn validate_policy_path(path: &str) -> Result<(), PolicyReadbackError> {
         "production policy derivation is malformed",
     ))?;
     if hash.len() != 32
-        || !hash
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        || !hash.bytes().all(|byte| STORE_HASH_ALPHABET.contains(&byte))
         || package != POLICY_PACKAGE
     {
         return Err(PolicyReadbackError(
@@ -214,12 +219,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn policy_path_is_exact_production_derivation() {
-        let valid = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos-selinux-production-policy-1/etc/selinux/aos/policy/policy.33";
+    fn policy_path_is_exact_kernel_readback_derivation() {
+        let valid = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos-selinux-kernel-policy-readback-1/policy.33";
         assert!(validate_policy_path(valid).is_ok());
-        assert!(validate_policy_path("/tmp/policy.33").is_err());
-        assert!(validate_policy_path(&valid.replace("production-policy", "test-policy")).is_err());
-        assert!(validate_policy_path(&format!("{valid}/extra")).is_err());
+
+        for rejected in [
+            "/tmp/policy.33".to_owned(),
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos-selinux-production-policy-1/etc/selinux/aos/policy/policy.33".to_owned(),
+            valid.replace("kernel-policy-readback", "test-policy-readback"),
+            valid.replace("readback-1/", "readback-10/"),
+            valid.replace("readback-1/", "readback-1-extra/"),
+            valid.replace("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
+            valid.replace("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            valid.replace("/policy.33", "/../policy.33"),
+            format!("{valid}/extra"),
+        ] {
+            assert!(validate_policy_path(&rejected).is_err(), "{rejected}");
+        }
+    }
+
+    #[test]
+    fn canonical_policy_bytes_reject_input_or_changed_serialization() {
+        let mut expected = tempfile::tempfile().unwrap();
+        let mut active = tempfile::tempfile().unwrap();
+        expected.write_all(b"canonical-policy").unwrap();
+        active.write_all(b"compiled-policy!").unwrap();
+        expected.rewind().unwrap();
+        active.rewind().unwrap();
+
+        assert!(compare_policy_bytes(&mut expected, &mut active, 16).is_err());
     }
 
     #[test]

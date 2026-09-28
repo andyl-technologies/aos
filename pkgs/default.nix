@@ -1711,6 +1711,10 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         callPackage ./security/aos-selinux-kernel-policy-readback.nix {
           linux = kernel;
         };
+      aosSelinuxRuntimeRootsForKernel = kernel:
+        callPackage ./security/aos-selinux-runtime-roots.nix {
+          aos-selinux-kernel-policy-readback = self.aosSelinuxKernelPolicyReadbackForKernel kernel;
+        };
       aosMountExecutableCarrierForKernel = kernel:
         callPackage ./security/_aos-mount-executable-carrier.nix {
           linux = kernel;

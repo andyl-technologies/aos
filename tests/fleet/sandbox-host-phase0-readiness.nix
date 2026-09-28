@@ -12,7 +12,7 @@
   inspector = "${hostPackage}/bin/aos-sandbox-host-phase0-probe";
   hostd = "${hostPackage}/bin/aos-sandbox-hostd";
   nspawn = "${pkgs.systemd}/bin/systemd-nspawn";
-  policy = "${pkgs.aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
+  policy = "${pkgs.aosSelinuxKernelPolicyReadbackForKernel system.config.system.build.kernel}/policy.33";
   report = "/var/lib/aos/sandbox-host-phase0/probe-v2";
 
   # RFC 8032's first Ed25519 vector is public test data, never a deployable key.

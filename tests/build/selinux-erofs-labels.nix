@@ -118,18 +118,22 @@ in
           entries = {entry["path"]: entry for entry in document["entries"]}
           systemd = sys.argv[2]
           loader = sys.argv[3]
+          libc = sys.argv[4]
 
           assert document["version"] == 1, document
           assert entries[systemd]["kind"] == "regular", entries[systemd]
           assert entries[systemd]["context"].split(":", 3)[2] == "init_exec_t", entries[systemd]
           assert entries[loader]["kind"] == "regular", entries[loader]
           assert entries[loader]["context"].split(":", 3)[2] == "ld_so_t", entries[loader]
+          assert entries[libc]["kind"] == "regular", entries[libc]
+          assert entries[libc]["context"].split(":", 3)[2] == "lib_t", entries[libc]
           assert entries["/proc"]["context"] is None, entries["/proc"]
           assert entries["/sys"]["context"].split(":", 3)[2] == "sysfs_t", entries["/sys"]
           ' \
             ${labeledRootfs}/rootfs-selinux-contexts.json \
             /nix.lower/store/${builtins.baseNameOf pkgs.systemd}/lib/systemd/systemd \
-            "$loader"
+            "$loader" \
+            /nix.lower/store/${builtins.baseNameOf pkgs.glibc}/lib/libc.so.6
 
           root=$TMPDIR/root
           coreutils_store=/nix/store/$(basename ${pkgs.coreutils})

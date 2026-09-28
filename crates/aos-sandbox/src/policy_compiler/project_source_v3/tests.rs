@@ -279,7 +279,7 @@ fn admit_create(
         requested_policy: Some(policy.clone()).into(),
         idempotency_key: key.clone(),
         operation_timeout: Some(Duration {
-            seconds: 1,
+            nanoseconds: 1_000_000_000,
             ..Default::default()
         })
         .into(),

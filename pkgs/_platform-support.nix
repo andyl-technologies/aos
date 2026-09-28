@@ -529,6 +529,7 @@ let
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"
     "aos-fuse-transport"
+    "aos-filesystem-fuse-worker"
     "aos-landlock"
     "aos-method46-tpm-helper"
     "aos-netd"

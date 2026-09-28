@@ -1436,6 +1436,20 @@ impl DormantBrokerOutcomeVerificationV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    /// Lends live pending-request custody to the sealed effect composition.
+    ///
+    /// The token proves only the exact current authenticated request/head. It
+    /// does not admit its authorization artifacts or confer consumer authority.
+    pub(crate) fn hold_pending_request<'session>(
+        &'session mut self,
+        request: &'session DormantReceivedBrokerRequestV1,
+    ) -> Result<
+        crate::recovery::ProtectedPendingBrokerRequestCutV1<'session>,
+        BrokerSessionSecurityError,
+    > {
+        self.0.hold_pending_request(&request.0)
+    }
+
     pub(crate) fn require_negotiated_client_method(
         &mut self,
         method: BrokerMethod,

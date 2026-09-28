@@ -343,6 +343,15 @@ in
                   "$AOS_SELINUX_STAGE0/bin/aos-selinux-stage0" \
                   rootfs/usr/lib/systemd/aos-selinux-root-handoff
 
+                # A separate inode permits an executable-only domain handoff
+                # without giving the provisioner use of init_t-owned FDs.
+                install -m 0555 \
+                  "rootfs/nix.lower''${AOS_SELINUX_STAGE0#/nix}/bin/aos-selinux-stage0" \
+                  rootfs/usr/lib/systemd/aos-selinux-runtime-roots-handoff
+                cmp \
+                  "$AOS_SELINUX_STAGE0/bin/aos-selinux-stage0" \
+                  rootfs/usr/lib/systemd/aos-selinux-runtime-roots-handoff
+
                 # glibc consults this path before starting PID 1. The guard
                 # pins this authenticated empty inode over the runtime /etc
                 # view before executing the dynamic systemd binary.
