@@ -23,6 +23,7 @@ use crate::openssh_session::{
     OpenSshSessionActionV4, OpenSshSessionReplyV4, OpenSshSessionRequestV4, OpenSshSessionStateV4,
     OriginalExecutionWaitStatusV4,
 };
+use crate::openssh_ticket::validate_original_ticket_certificate_v2;
 
 const SOCKET: &str = "/run/aos-sandbox-agent/exec-gate.sock";
 
@@ -83,15 +84,16 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
     let mut listener = RecordSubjectListener::bind(Path::new(SOCKET), 16).unwrap();
     fs::set_permissions(SOCKET, fs::Permissions::from_mode(0o666)).unwrap();
     let ticket = fixture_ticket(base, original);
+    let original_ticket_bytes = ticket.encode().unwrap();
     protected_file(
         crate::openssh_ticket::OPENSSH_TICKET_CLAIM_PATH_V2,
-        &ticket.encode().unwrap(),
+        &original_ticket_bytes,
         0o444,
     );
 
     let mut daemon = start_qualification_daemon(base.binding.clone(), true, "monitor.stderr");
+    // A new measured daemon does not change the original certificate profile.
     let mut claim = base.clone();
-    claim.pty = false;
     (claim.sshd_pid, claim.sshd_start_ticks) = daemon.daemon_identity().unwrap();
     write_claim(&claim);
     let runtime = daemon.monitor_runtime_v2(&claim).unwrap_or_else(|error| {
@@ -110,6 +112,23 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
             .is_err()
     );
     assert!(PidFd::from_owned(fs::File::open("/dev/null").unwrap().into()).is_err());
+
+    // This exact stored-ticket/profile preflight cannot replace the actual
+    // holder authentication, root-monitor custody or native relay checks.
+    let installed_ticket = crate::openssh_gate_linux::load_original_ticket_claim_v2().unwrap();
+    assert!(
+        installed_ticket == original_ticket_bytes,
+        "stored original monitor fixture ticket was substituted",
+    );
+    let (certificate_type, certificate_base64) = original.split_once(' ').unwrap();
+    validate_original_ticket_certificate_v2(
+        &claim,
+        &installed_ticket,
+        certificate_type,
+        certificate_base64,
+        now(),
+    )
+    .expect("original monitor ticket must retain its exact certificate profile");
 
     let mut client = ssh_command(ssh, original)
         .stdin(Stdio::piped())
@@ -624,6 +643,39 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs()
+}
+
+#[test]
+fn original_monitor_ticket_retains_pty_profile_and_denies_substitution() {
+    let claim = crate::openssh_attach_certificate::tests::claim();
+    let original = certificate(with_command(builder(&claim, 1000, 1200), &claim));
+    let ticket = fixture_ticket(&claim, &original);
+    let original_ticket_bytes = ticket.encode().unwrap();
+    let (certificate_type, certificate_base64) = original.split_once(' ').unwrap();
+
+    validate_original_ticket_certificate_v2(
+        &claim,
+        &original_ticket_bytes,
+        certificate_type,
+        certificate_base64,
+        1100,
+    )
+    .unwrap();
+
+    let mut substituted_profile = claim.clone();
+    substituted_profile.pty = false;
+    assert!(
+        validate_original_ticket_certificate_v2(
+            &substituted_profile,
+            &original_ticket_bytes,
+            certificate_type,
+            certificate_base64,
+            1100,
+        )
+        .is_err()
+    );
+    assert!(ticket.certificate == original.as_bytes());
+    assert!(ticket.encode().unwrap() == original_ticket_bytes);
 }
 
 #[test]
