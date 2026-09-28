@@ -146,7 +146,7 @@ in
             -o "$attribute_negative_module.pp" \
             -m "$attribute_negative_module.mod"
           test -s "$attribute_negative_module.pp"
-          for narrow_negative_module in aos_sandbox_loader_negative aos_sandbox_context_negative aos_sandbox_guest_file_negative; do
+          for narrow_negative_module in aos_sandbox_loader_negative aos_sandbox_context_negative aos_sandbox_guest_file_negative aos_sandbox_guest_ancestor_negative; do
             ${checkpolicy}/bin/checkmodule -m \
               -o "$narrow_negative_module.mod" \
               ${policySupport}/"$narrow_negative_module.te"
@@ -181,9 +181,9 @@ in
           test -s effective-policy.tsv
 
           # Separate mutants restore textrel, translation or Guest host-file
-          # access through attributes. Each passes normal base assertions, then
-          # fail the same effective checker as the production binary above.
-          for narrow_negative_module in aos_sandbox_loader_negative aos_sandbox_context_negative aos_sandbox_guest_file_negative; do
+          # access/relabeling through attributes. Normal base assertions remain
+          # enabled; each must fail the production binary's effective checker.
+          for narrow_negative_module in aos_sandbox_loader_negative aos_sandbox_context_negative aos_sandbox_guest_file_negative aos_sandbox_guest_ancestor_negative; do
             ${semodule-utils}/bin/semodule_link \
               -o "$narrow_negative_module-linked.mod" \
               "$@" "$narrow_negative_module.pp"
@@ -214,6 +214,12 @@ in
                 grep -F "outside Guest file_type cohort" "$narrow_negative_module-diagnostic"
                 grep -F "aos_sandbox_guest_owner_t" "$narrow_negative_module-diagnostic"
                 grep -F "var_t" "$narrow_negative_module-diagnostic"
+                ;;
+              aos_sandbox_guest_ancestor_negative)
+                grep -F "aos_sandbox_guest_owner_t" "$narrow_negative_module-diagnostic"
+                grep -F "var_t" "$narrow_negative_module-diagnostic"
+                grep -F "object_class='dir'" "$narrow_negative_module-diagnostic"
+                grep -F "permission='relabelfrom'" "$narrow_negative_module-diagnostic"
                 ;;
               *)
                 echo "unknown negative module: $narrow_negative_module" >&2
@@ -350,11 +356,13 @@ in
             ${policySupport}/aos_sandbox_attribute_negative.te \
             ${policySupport}/aos_sandbox_loader_negative.te \
             ${policySupport}/aos_sandbox_context_negative.te \
+            ${policySupport}/aos_sandbox_guest_ancestor_negative.te \
             ${policySupport}/view_confinement.te \
             ${policySupport}/view_policy.py \
             attribute-negative-diagnostic \
             aos_sandbox_loader_negative-diagnostic \
             aos_sandbox_context_negative-diagnostic \
+            aos_sandbox_guest_ancestor_negative-diagnostic \
             deficient-source-diagnostic \
             deficient-binary-diagnostic \
             "$evidence_root/"

@@ -372,7 +372,8 @@ type_transition aos_sandbox_guest_owner_t aos_sandbox_guest_config_t:file aos_sa
 # /run and /dev are fresh nspawn mounts, not copied workspace inodes. The fixed
 # bootstrap checks its actual Owner SID before relabeling those exact anchors;
 # it never relabels tenant data or the immutable closure at runtime.
-allow aos_sandbox_guest_owner_t { root_t var_t device_t tmpfs_t }:dir { getattr open read relabelfrom search };
+allow aos_sandbox_guest_owner_t { root_t device_t tmpfs_t }:dir { getattr open read relabelfrom search };
+allow aos_sandbox_guest_owner_t var_t:dir { getattr open read search };
 allow aos_sandbox_guest_owner_t aos_sandbox_guest_anchor_t:dir relabelto;
 # Pinned refpolicy labels /run/systemd as init_runtime_t (init_var_run_t alias).
 allow aos_sandbox_guest_owner_t { tmpfs_t init_runtime_t }:dir { getattr open read relabelfrom search };

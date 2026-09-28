@@ -1104,6 +1104,7 @@ let
     "security/_aos-selinux-production-policy/aos_sandbox.te" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/aos_sandbox_attribute_negative.te" = "linux-only-test-source";
     "security/_aos-selinux-production-policy/aos_sandbox_context_negative.te" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/aos_sandbox_guest_ancestor_negative.te" = "linux-only-test-source";
     "security/_aos-selinux-production-policy/aos_sandbox_guest_file_negative.te" = "linux-only-test-source";
     "security/_aos-selinux-production-policy/aos_sandbox_loader_negative.te" = "linux-only-test-source";
     "security/_aos-selinux-production-policy/coverage.py" = "linux-only-build-source";
