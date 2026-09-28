@@ -146,7 +146,7 @@ impl ProviderLedgerV1<'_> {
         let descriptor = received
             .take_original_descriptor()
             .map_err(|_| ProviderLedgerError::Unavailable)?;
-        let physical = permit.plan().observe_source_root(descriptor)?;
+        let mut physical = permit.plan().observe_source_root(descriptor)?;
         let reply = received.reply().clone();
         clock.revalidate(Some(reply.receipt().receipt().validity().1))?;
         let catalog = signed.request().claims().catalog();
@@ -201,7 +201,7 @@ impl ProviderLedgerV1<'_> {
                 now_seconds: current_seconds()?,
             })
             .map_err(|_| ProviderLedgerError::Unavailable)?;
-        physical.revalidate()?;
+        physical.bind_native_acceptance(&verified)?;
         manifest.revalidate()?;
         received
             .revalidate()

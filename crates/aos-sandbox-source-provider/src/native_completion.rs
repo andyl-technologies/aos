@@ -21,7 +21,9 @@ pub(crate) use runtime::RetainedNativeChallengeRequestV1;
 
 #[cfg(test)]
 pub(crate) use runtime::tests::{
-    prepared as fixture_prepared, requested_with_session as fixture_requested,
+    prepared as fixture_prepared, prepared_with_descriptor as fixture_prepared_with_descriptor,
+    requested_with_boot as fixture_requested_with_boot,
+    requested_with_session as fixture_requested,
 };
 
 #[path = "native_completion/live.rs"]
