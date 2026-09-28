@@ -145,15 +145,10 @@ in
           build = source / "tools/jdk/BUILD.java_tools"
           contents = build.read_text()
           if "${bazelBootstrap.version}" == "7.7.1":
-              # The source-only rules_java module resolves Protobuf directly.
-              # Use its public proto rules instead of an invisible rules_proto.
-              original_load = 'load("@rules_proto//proto:defs.bzl", "proto_library")'
-              if contents.count(original_load) != 1:
-                  raise SystemExit("unexpected Bazel 7 Java tools proto load")
-              contents = contents.replace(
-                  original_load,
-                  'load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")',
-              )
+              original_zlib = '"//java_tools/zlib"'
+              if contents.count(original_zlib) != 5:
+                  raise SystemExit("unexpected Bazel 7 Java tools zlib dependencies")
+              contents = contents.replace(original_zlib, '"@zlib"')
 
               # Share the source-built coverage libraries with newer Bazel
               # stages, retaining the Bazel 7 runner and relocation rules.

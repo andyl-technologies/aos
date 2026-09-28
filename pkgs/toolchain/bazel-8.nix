@@ -92,5 +92,5 @@ in
     inherit (upstream) version update;
     source = bazelBootstrap8.passthru.offlineSource8Prepared;
     srcHash = "sha256-E6hFhkKbYISxO9UEDXje2ljVIwEhUecefUvgxj3YMfk=";
-    vendorDepsHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    vendorDepsHash = "sha256-dQ80bgW+bLADowhNA5IDSxkBnRC2rqbaUhqoFs2LwO0=";
   }

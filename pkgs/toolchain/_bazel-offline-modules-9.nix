@@ -11,6 +11,38 @@
     inherit buildPackages fetchgit;
   };
   prepareModule = import ./_bazel-module-prepared.nix {inherit buildPackages;};
+  protocGenValidateSource = moduleSource {
+    name = "protoc-gen-validate";
+    version = "1.2.1";
+    url = "https://github.com/bufbuild/protoc-gen-validate.git";
+    ref = "v1.2.1";
+    rev = "7b06248484ceeaa947e93ca2747eccf336a88ecc";
+    hash = "sha256-kGnfR8o12bvjJH+grAwlYezF6UzWt7lgjGslq+07p3k=";
+  };
+  caresSource = moduleSource {
+    name = "c-ares";
+    version = "1.34.5";
+    url = "https://github.com/c-ares/c-ares.git";
+    ref = "v1.34.5";
+    rev = "d3a507e920e7af18a5efb7f9f1d8044ed4750013";
+    hash = "sha256-MeQ4eqt7QyRD7YVomXR+fwBzraiYe2s2Eozz0sE8Xgo=";
+  };
+  caresRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/c-ares/1.34.5.bcr.2";
+  googleapisRulesSource = moduleSource {
+    name = "googleapis-rules-registry";
+    version = "1.0.0";
+    url = "https://github.com/fmeum/googleapis-rules-registry.git";
+    ref = "v1.0.0";
+    rev = "c3488f8c74d8611faca2b19b8bcfd85aae9b0677";
+    hash = "sha256-hnT88D4i9OR6dGk3uqH2KDdAVqG6u921n9KnDArMhwY=";
+  };
+  googleapisRulesModule = name:
+    prepareModule {
+      pname = "bazel-${name}-source";
+      version = "1.0.0";
+      source = googleapisRulesSource + "/${name}";
+      patches = [];
+    };
   rulesAppleSource = moduleSource {
     name = "rules_apple";
     version = "4.3.1";
@@ -152,6 +184,41 @@
     }
   ];
 in {
+  protoc-gen-validate = prepareModule {
+    pname = "bazel-protoc-gen-validate-source";
+    version = "1.2.1.bcr.1";
+    source = protocGenValidateSource;
+    moduleFile = buildPackages.fetchurl {
+      urls = ["https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/protoc-gen-validate/1.2.1.bcr.1/overlay/MODULE.bazel"];
+      hash = "sha256-S/CWdrYvpYeuB+BzQgp27Idm3M51ReX4xoz6jkhLUSA=";
+    };
+    patches = [(bazelSource + "/third_party/protoc-gen-validate.patch")];
+  };
+  c-ares = prepareModule {
+    pname = "bazel-c-ares-source";
+    version = "1.34.5.bcr.2";
+    source = caresSource;
+    patches = [];
+    overlays = builtins.mapAttrs (name: hash:
+      buildPackages.fetchurl {
+        urls = ["${caresRegistryRoot}/overlay/${name}"];
+        inherit hash;
+      }) {
+      "REPO.bazel" = "sha256-ATsuuuEy6sq6KDwrG2UUUOpazWHV9alEqqgMgUNzUTs=";
+      "BUILD.bazel" = "sha256-1+l9iZQha2wglZonkBVbl6HEoFk8IHX2UTwUPHfS/K0=";
+      "MODULE.bazel" = "sha256-dAoQthKAad2p9f3crfbfWDPgLodJeo17JAcHYZe/J8g=";
+      "configs/ares_build.h" = "sha256-P4N/yKYYgfpqTsK+UPR1zYM/YPvSf1Joim9zNmnM2o4=";
+      "configs/config_android/ares_config.h" = "sha256-o7Z0jA5pjw24FfOD3cliaIKsJbl9+yaj6SL9/BCEGfk=";
+      "configs/config_darwin/ares_config.h" = "sha256-9uKPfRa8jxEdbKMSm7ABJ9NXqPXIv8c9p0YlMoQVtcY=";
+      "configs/config_freebsd/ares_config.h" = "sha256-8R8Z4GcRbjssa4BdutiaRcNZnxNYkB3uphxqRAXMjkY=";
+      "configs/config_linux/ares_config.h" = "sha256-jTDrf69PC4GRU8R28BZppydUVI4SFlnHOSg3jRLTfqI=";
+      "configs/config_openbsd/ares_config.h" = "sha256-vU7qUaAiscCW9bw4+SjLNnPqbbj8hpKQ7jst0x9xYtU=";
+      "configs/config_windows/ares_config.h" = "sha256-ai/WNOv3agYcaIZNDYPrvASwAAWFJYhthOrrK3r4sRw=";
+    };
+  };
+  googleapis-rules-registry = googleapisRulesModule "googleapis-rules-registry";
+  googleapis-java = googleapisRulesModule "googleapis-java";
+  googleapis-grpc-java = googleapisRulesModule "googleapis-grpc-java";
   rules_apple = prepareModule {
     pname = "bazel-rules-apple-source";
     version = "4.3.1";

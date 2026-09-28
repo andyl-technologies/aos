@@ -41,7 +41,7 @@ in
             else overlayInstall
           )
           + "\n"
-          + builtins.concatStringsSep "\n" (map (patch: "patch --batch --fuzz=0 -p${toString patchStrip} < ${patch}") patches)
+          + builtins.concatStringsSep "\n" (map (patch: "patch --batch --forward --fuzz=0 -p${toString patchStrip} < ${patch}") patches)
           + (
             if overlaysAfterPatches
             then "\n" + overlayInstall

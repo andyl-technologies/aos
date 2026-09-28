@@ -182,6 +182,14 @@
     then buildPackages.bazel-bootstrap
     else bazel-bootstrap;
   buildProguard = buildBazelBootstrap.passthru.offlineProguard;
+  prepareFastutilTools = import ./_bazel-fastutil-source-tools.nix {
+    proguard = buildProguard;
+    jdk8 = buildOpenjdk8;
+    platformClasspath =
+      if builtins.compareVersions version "9.0.0" >= 0
+      then "platformclasspath_nostrip"
+      else "platformclasspath";
+  };
   sourceRemoteJavaTools = import ./_bazel-remote-java-tools.nix {
     inherit buildPackages;
     mkDerivation = buildPackages.mkDerivation;
@@ -213,19 +221,25 @@
         rulesKotlin = buildBazelBootstrap.passthru.offlineModules.rules_kotlin;
         zstdJniBase = buildBazelBootstrap.passthru.offlineModules.zstd-jni;
       }
+    else if builtins.compareVersions version "8.0.0" < 0
+    then
+      import ./_bazel-offline-modules-7.nix {
+        inherit buildPackages;
+        fetchgit = lib.fetchgit;
+        bazelSource = src;
+        sharedModules = buildBazelBootstrap.passthru.offlineModules;
+      }
     else buildBazelBootstrap.passthru.offlineModules;
   sourceModules =
     upstreamSourceModules
-    // lib.optionalAttrs (builtins.compareVersions version "8.0.0" < 0) {
-      # Bazel 7 pins its Google API protos inside its own source checkout.
-      googleapis = src + "/third_party/googleapis";
-    }
     // {
       rules_java = import ./_bazel-rules-java-tools.nix {inherit buildPackages;} {
         source = upstreamSourceModules.rules_java;
         version =
           if builtins.compareVersions version "9.0.0" >= 0
           then "9.1.0"
+          else if builtins.compareVersions version "8.0.0" < 0
+          then "7.6.5"
           else "8.14.0";
       };
     };
@@ -252,15 +266,15 @@
           else "rules_java~~toolchains~remote_java_tools"
         }=${sourceRemoteJavaTools}"
       ]
-      ++ lib.optional (builtins.compareVersions version "9.0.0" < 0) "--override_repository=${sourcePythonRepositoryName}=${sourcePythonRuntime}";
+      ++ ["--override_repository=${sourcePythonRepositoryName}=${sourcePythonRuntime}"];
   sourceModuleFlags =
     if source == null
     then []
     else
       builtins.filter (flag: flag != null) (lib.mapAttrsToList (
           name: path:
-          # Bazel 7 uses in-tree Google APIs without a grpc-java module.
-            if path == null || (builtins.compareVersions version "8.0.0" < 0 && builtins.elem name ["chicory" "grpc-java"])
+          # Bazel 7's older protocol graph does not include these newer modules.
+            if path == null || (builtins.compareVersions version "8.0.0" < 0 && builtins.elem name ["chicory" "grpc-java" "rules_apple" "rules_foreign_cc" "rules_fuzzing" "rules_shell" "rules_swift"])
             then null
             else "--override_module=${name}=${path}"
         )
@@ -1125,6 +1139,7 @@
                 else
                   unzip -q ${src}
                 fi
+                ${lib.optionalString (source != null) prepareFastutilTools}
 
                 # Apply reproducibility patch when the target test file exists.
                 if [ -f src/test/shell/bazel/list_source_repository.bzl ]; then
@@ -1194,7 +1209,7 @@
                   --repo_env=CC=${buildGcc}/bin/gcc
                 )
                 ${lib.optionalString (builtins.compareVersions version "9.0.0" < 0) ''
-          VENDOR_FLAGS+=("--override_repository=rules_java_builtin=${buildBazelBootstrap.passthru.offlineModules.rules_java}")
+          VENDOR_FLAGS+=("--override_repository=rules_java_builtin=${sourceModules.rules_java}")
         ''}
                 ${builtins.concatStringsSep "\n" (map (flag: "VENDOR_FLAGS+=(\"${flag}\")") sourceRepositoryFlags)}
                 ${builtins.concatStringsSep "\n" (map (flag: "VENDOR_FLAGS+=(\"${flag}\")") sourceModuleFlags)}
@@ -1268,20 +1283,24 @@
                 rm -f "$out/rules_go~~go_sdk~go_default_sdk/versions.json" 2>/dev/null || true
                 rm -f "$out/bazel-external" 2>/dev/null || true
 
-                # The generated Maven maintenance helper records HTTP proxy
-                # arguments, including ephemeral relay ports, but is not used by
-                # offline consumers of the vendor tree. Remove it so identical
-                # dependencies produce identical fixed-output contents.
-                rm -f "$out/rules_jvm_external~~maven~maven/outdated.sh"
+                # Maven maintenance helpers record proxy arguments and optional
+                # credentials. They are unused by the offline build and must not
+                # enter a reproducible dependency output.
+                for maven_repository in \
+                  "$out/rules_jvm_external~~maven~maven" \
+                  "$out/rules_jvm_external++maven+maven"; do
+                  if [ ! -d "$maven_repository" ]; then
+                    continue
+                  fi
+                  rm -f "$maven_repository/outdated.sh" "$maven_repository/netrc"
 
-                # Bazel links the imported Maven manifest back into its temporary
-                # source tree. Materialize that metadata so the vendor output is
-                # self-contained and remains valid after the build tree disappears.
-                imported_maven_install="$out/rules_jvm_external~~maven~maven/imported_maven_install.json"
-                if [ -L "$imported_maven_install" ]; then
-                  rm "$imported_maven_install"
-                  install -m 0644 maven_install.json "$imported_maven_install"
-                fi
+                  # Materialize the manifest link into the temporary source tree.
+                  imported_maven_install="$maven_repository/imported_maven_install.json"
+                  if [ -L "$imported_maven_install" ]; then
+                    rm "$imported_maven_install"
+                    install -m 0644 maven_install.json "$imported_maven_install"
+                  fi
+                done
 
                 # Remove files/directories that reference Nix store paths.
                 # FODs must not contain store path references. Marker files from
@@ -1351,7 +1370,7 @@ in
         buildPatchelf
       ]
       ++ lib.optional (source != null) buildQemuImg
-      ++ lib.optionals (source != null && version == "7.7.1") [buildProguard buildOpenjdk8];
+      ++ lib.optionals (source != null) [buildProguard buildOpenjdk8];
     runtimeDeps =
       [
         bash
@@ -1398,33 +1417,7 @@ in
               ${buildZip}/bin/zip -X -q snapshots.img.zip snapshots.img && \
               rm snapshots.img)
           ''}
-                  ${lib.optionalString (source != null && version == "7.7.1") ''
-            # This fastutil trimming action needs only the source-built
-            # ProGuard CLI, so it does not consume Maven's compiled JAR.
-                    cp ${buildProguard}/share/java/proguard-base-${buildProguard.version}.jar \
-                      third_party/aos-proguard.jar
-            if test "$(grep -c 'runtime_deps = \["@maven//:com_guardsquare_proguard_base"\],' third_party/BUILD)" -ne 1; then
-              echo "Bazel ProGuard rule changed" >&2
-              exit 1
-            fi
-                    sed -i \
-                      's|runtime_deps = \["@maven//:com_guardsquare_proguard_base"\],|runtime_deps = [":source_proguard", "@maven//:com_google_code_gson_gson"],|' \
-                      third_party/BUILD
-                    if test "$(grep -Fc '"@rules_java//toolchains:platformclasspath",' third_party/BUILD)" -ne 1; then
-                      echo "Bazel fastutil platform classpath changed" >&2
-                      exit 1
-                    fi
-                    sed -i \
-                      -e '/"@rules_java\/\/toolchains:platformclasspath",/d' \
-                      -e 's|$(execpath @rules_java//toolchains:platformclasspath)|${buildOpenjdk8}/jre/lib/rt.jar|' \
-                      third_party/BUILD
-                    printf '%s\n' \
-              "" \
-              'java_import(' \
-              '    name = "source_proguard",' \
-                      '    jars = [":aos-proguard.jar"],' \
-              ')' >> third_party/BUILD
-          ''}
+                  ${lib.optionalString (source != null) prepareFastutilTools}
                   # Apply patches (|| true — patches may not apply to all versions)
                   patch --batch -p1 < ${./bazel-patches/java_toolchain.patch} || true
                   if [ -f src/test/shell/bazel/list_source_repository.bzl ]; then
@@ -1755,7 +1748,11 @@ in
               chmod -R u+w derived/maven
               printf '%s\n' 'filegroup(name = "srcs", srcs = glob(["**/*.jar"]))' \
                 > derived/maven/BUILD.vendor
-              printf '%s\n' 'rules_jvm_external~maven~maven' \
+              printf '%s\n' '${
+                if builtins.compareVersions version "8.0.0" >= 0
+                then "rules_jvm_external++maven+maven"
+                else "rules_jvm_external~~maven~maven"
+              }' \
                 > derived/maven/MAVEN_CANONICAL_REPO_NAME
               cp src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt \
                 tools/jdk/java_stub_template.txt
