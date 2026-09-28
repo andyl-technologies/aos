@@ -4,17 +4,22 @@
 //! AOSFWX02 | version2/method49/purpose56/Host1.0/RootMount5/zero-rights/phase |
 //! original comparison binding | exact WorkerRendezvousChallengeV2
 //! phase = READY(1), JOINED(2), CONFIRMED(3); SCM_RIGHTS is forbidden
+//! AOSFWX03 | identical binding/zero-rights contract with version3 |
+//! phase = START_INIT(4), IDMAP_APPLIED(5), PREPARATION_CONFIRMED(6)
 //! ```
 //!
 //! Host's READY is sent only inside its actual post-copy-barrier live launch
 //! callback. Mount independently receives and retains the original worker's
 //! record subject, then Host repeats its physical/SID/invocation observations
-//! around JOINED and CONFIRMED. Nothing here mints a current read/Root guard or
+//! around all rendezvous and kernel-only phases. The worker retains one C
+//! session while Mount applies its original namespace's actual kernel idmap.
+//! Nothing here mints a current read/Root guard or
 //! reconstructs ownership from a frame, comparison FD, pidfd or historical row.
 
 use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketError};
 use aos_sandbox_protocol::fuse_worker_preparation::{
-    WORKER_RENDEZVOUS_BYTES_V2, WorkerRendezvousChallengeV2,
+    WORKER_KERNEL_PREPARATION_BYTES_V3, WORKER_RENDEZVOUS_BYTES_V2,
+    WorkerKernelPreparationPhaseV3 as KernelPhase, WorkerRendezvousChallengeV2,
 };
 
 use super::*;
@@ -26,6 +31,9 @@ pub(super) enum RendezvousStage {
     Ready,
     Joined,
     Confirmed,
+    InitRequested,
+    IdmapApplied,
+    KernelConfirmed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,6 +41,9 @@ enum Control {
     Ready = 1,
     Joined = 2,
     Confirmed = 3,
+    StartInit = 4,
+    IdmapApplied = 5,
+    PreparationConfirmed = 6,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,15 +58,15 @@ fn frame(
     challenge: &WorkerRendezvousChallengeV2,
     maximum: u32,
 ) -> Result<Vec<u8>, TransportError> {
-    let mut contract = [0, 2, 0, 49, 0, 0, 0, 56, 0, 1, 0, 0, 0, 5, 0, 0, 0, 0];
+    let (magic, version) = match control {
+        Control::Ready | Control::Joined | Control::Confirmed => (b"AOSFWX02", 2),
+        Control::StartInit | Control::IdmapApplied | Control::PreparationConfirmed => {
+            (b"AOSFWX03", 3)
+        }
+    };
+    let mut contract = [0, version, 0, 49, 0, 0, 0, 56, 0, 1, 0, 0, 0, 5, 0, 0, 0, 0];
     contract[17] = control as u8;
-    encode_profile(
-        b"AOSFWX02",
-        &contract,
-        binding,
-        &challenge.encode(),
-        maximum,
-    )
+    encode_profile(magic, &contract, binding, &challenge.encode(), maximum)
 }
 
 impl HeldOriginalHostWorkerComparisonV1<'_> {
@@ -163,6 +174,27 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         self.host_control(Control::Confirmed, challenge)
     }
 
+    pub(crate) fn send_kernel_init_start(
+        &mut self,
+        challenge: &WorkerRendezvousChallengeV2,
+    ) -> Result<Progress, TransportError> {
+        self.host_control(Control::StartInit, challenge)
+    }
+
+    pub(crate) fn receive_kernel_idmap_applied(
+        &mut self,
+        challenge: &WorkerRendezvousChallengeV2,
+    ) -> Result<Progress, TransportError> {
+        self.host_control(Control::IdmapApplied, challenge)
+    }
+
+    pub(crate) fn send_kernel_preparation_confirmed(
+        &mut self,
+        challenge: &WorkerRendezvousChallengeV2,
+    ) -> Result<Progress, TransportError> {
+        self.host_control(Control::PreparationConfirmed, challenge)
+    }
+
     fn host_control(
         &mut self,
         control: Control,
@@ -172,6 +204,15 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
             Control::Ready => (RendezvousStage::Pending, RendezvousStage::Ready),
             Control::Joined => (RendezvousStage::Ready, RendezvousStage::Joined),
             Control::Confirmed => (RendezvousStage::Joined, RendezvousStage::Confirmed),
+            Control::StartInit => (RendezvousStage::Confirmed, RendezvousStage::InitRequested),
+            Control::IdmapApplied => (
+                RendezvousStage::InitRequested,
+                RendezvousStage::IdmapApplied,
+            ),
+            Control::PreparationConfirmed => (
+                RendezvousStage::IdmapApplied,
+                RendezvousStage::KernelConfirmed,
+            ),
         };
         let result = (|| {
             if self.request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
@@ -179,9 +220,12 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
             {
                 return Err(TransportError::RemoteInvalid);
             }
-            let progress = if control == Control::Joined {
+            let progress = if matches!(control, Control::Joined | Control::IdmapApplied) {
                 match self.receive_control(control, challenge)? {
-                    ControlReceive::Received => Progress::RendezvousJoined,
+                    ControlReceive::Received => match control {
+                        Control::Joined => Progress::RendezvousJoined,
+                        _ => Progress::KernelIdmapApplied,
+                    },
                     ControlReceive::Backpressure => Progress::Backpressure,
                 }
             } else {
@@ -228,7 +272,8 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         }
         let ready = self.receive_ready(handoff, original)?;
         let subject = self.exchange_original_worker(handoff, original, comparison, &ready)?;
-        self.confirm_worker_join(handoff, original, comparison, &ready, &subject)
+        self.confirm_worker_join(handoff, original, comparison, &ready, &subject)?;
+        self.complete_mount_kernel_preparation(handoff, original, comparison, &ready, &subject)
     }
 
     fn receive_ready<W: MountWorker>(
@@ -366,8 +411,185 @@ impl HeldOriginalHostWorkerComparisonV1<'_> {
         }
         comparison.recheck_record_subject(subject)?;
         self.check_mount(handoff, original)?;
-        // No subject/lease/guard escapes. INIT and content remain disabled.
+        // Keep this actual subject for kernel-only preparation, never a grant.
         Ok(())
+    }
+
+    fn complete_mount_kernel_preparation<W: MountWorker>(
+        &mut self,
+        handoff: &mut PreparedMountFuseWorkerHandoffV1<'_, '_, W>,
+        original: &mut super::super::fuse_intent_continuation::HeldFuseIntentTransportV1<'_>,
+        comparison: &OriginalHostWorkerComparisonV1,
+        challenge: &WorkerRendezvousChallengeV2,
+        subject: &KernelAuthorizedRecordSubject,
+    ) -> Result<(), TransportError> {
+        loop {
+            self.check_kernel_preparation(handoff, original, comparison, challenge, subject)?;
+            let received = self.receive_control(Control::StartInit, challenge)?;
+            self.check_kernel_preparation(handoff, original, comparison, challenge, subject)?;
+            if received == ControlReceive::Received {
+                self.rendezvous_stage = RendezvousStage::InitRequested;
+                break;
+            }
+        }
+        self.send_worker_kernel_phase(
+            handoff,
+            original,
+            comparison,
+            challenge,
+            subject,
+            KernelPhase::StartInit,
+        )?;
+        self.receive_worker_kernel_phase(
+            handoff,
+            original,
+            comparison,
+            challenge,
+            subject,
+            KernelPhase::InitComplete,
+        )?;
+
+        // INIT_COMPLETE is not an initialized-connection proof. Only this
+        // actual syscall on the original coowned mount/ns can complete idmap:
+        // the kernel refuses SB_I_NOIDMAP unless real INIT negotiated support.
+        self.check_kernel_preparation(handoff, original, comparison, challenge, subject)?;
+        handoff
+            .apply_original_prepared_idmap()
+            .map_err(|_| TransportError::RemoteInvalid)?;
+        self.rendezvous_stage = RendezvousStage::IdmapApplied;
+        self.check_kernel_preparation(handoff, original, comparison, challenge, subject)?;
+        self.send_worker_kernel_phase(
+            handoff,
+            original,
+            comparison,
+            challenge,
+            subject,
+            KernelPhase::IdmapComplete,
+        )?;
+        self.receive_worker_kernel_phase(
+            handoff,
+            original,
+            comparison,
+            challenge,
+            subject,
+            KernelPhase::SessionRetained,
+        )?;
+
+        // Host is still inside its original live/physical callback, waiting
+        // for this distinct ACK. No backing, names, metadata or Root claim.
+        loop {
+            self.check_kernel_preparation(handoff, original, comparison, challenge, subject)?;
+            let sent = self.send_control(Control::IdmapApplied, challenge)?;
+            self.check_kernel_preparation(handoff, original, comparison, challenge, subject)?;
+            if sent == Progress::Sent {
+                break;
+            }
+        }
+        loop {
+            self.check_kernel_preparation(handoff, original, comparison, challenge, subject)?;
+            let received = self.receive_control(Control::PreparationConfirmed, challenge)?;
+            self.check_kernel_preparation(handoff, original, comparison, challenge, subject)?;
+            if received == ControlReceive::Received {
+                self.rendezvous_stage = RendezvousStage::KernelConfirmed;
+                break;
+            }
+        }
+        self.check_kernel_preparation(handoff, original, comparison, challenge, subject)
+    }
+
+    fn check_kernel_preparation<W: MountWorker>(
+        &mut self,
+        handoff: &mut PreparedMountFuseWorkerHandoffV1<'_, '_, W>,
+        original: &mut super::super::fuse_intent_continuation::HeldFuseIntentTransportV1<'_>,
+        comparison: &OriginalHostWorkerComparisonV1,
+        challenge: &WorkerRendezvousChallengeV2,
+        subject: &KernelAuthorizedRecordSubject,
+    ) -> Result<(), TransportError> {
+        self.check_mount(handoff, original)?;
+        self.check_fresh(challenge)?;
+        comparison.recheck_record_subject(subject)?;
+        if matches!(
+            self.rendezvous_stage,
+            RendezvousStage::IdmapApplied | RendezvousStage::KernelConfirmed
+        ) {
+            handoff
+                .recheck_original_prepared_idmap()
+                .map_err(|_| TransportError::RemoteInvalid)?;
+        }
+        self.check_mount(handoff, original)
+    }
+
+    fn send_worker_kernel_phase<W: MountWorker>(
+        &mut self,
+        handoff: &mut PreparedMountFuseWorkerHandoffV1<'_, '_, W>,
+        original: &mut super::super::fuse_intent_continuation::HeldFuseIntentTransportV1<'_>,
+        comparison: &OriginalHostWorkerComparisonV1,
+        challenge: &WorkerRendezvousChallengeV2,
+        subject: &KernelAuthorizedRecordSubject,
+        phase: KernelPhase,
+    ) -> Result<(), TransportError> {
+        loop {
+            self.check_kernel_preparation(handoff, original, comparison, challenge, subject)?;
+            let sent = handoff
+                .original_worker_channel()
+                .map_err(|_| TransportError::RemoteInvalid)?
+                .send(&phase.encode(challenge));
+            self.check_kernel_preparation(handoff, original, comparison, challenge, subject)?;
+            match sent {
+                Ok(()) => return Ok(()),
+                Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
+                    self.wait_worker(handoff, original, true)?;
+                    self.check_kernel_preparation(
+                        handoff, original, comparison, challenge, subject,
+                    )?;
+                }
+                Err(_) => return Err(TransportError::RemoteInvalid),
+            }
+        }
+    }
+
+    fn receive_worker_kernel_phase<W: MountWorker>(
+        &mut self,
+        handoff: &mut PreparedMountFuseWorkerHandoffV1<'_, '_, W>,
+        original: &mut super::super::fuse_intent_continuation::HeldFuseIntentTransportV1<'_>,
+        comparison: &OriginalHostWorkerComparisonV1,
+        challenge: &WorkerRendezvousChallengeV2,
+        subject: &KernelAuthorizedRecordSubject,
+        phase: KernelPhase,
+    ) -> Result<(), TransportError> {
+        loop {
+            self.check_kernel_preparation(handoff, original, comparison, challenge, subject)?;
+            let channel = handoff
+                .original_worker_channel()
+                .map_err(|_| TransportError::RemoteInvalid)?;
+            let received = channel.receive(WORKER_KERNEL_PREPARATION_BYTES_V3);
+            match received {
+                Ok(record) => {
+                    let bound = channel
+                        .bind_received(record)
+                        .map_err(|_| TransportError::KernelEvidence)?;
+                    phase
+                        .compare(
+                            bound.payload(),
+                            challenge,
+                            super::super::protected_boottime_nanoseconds()?,
+                        )
+                        .map_err(|_| TransportError::RemoteInvalid)?;
+                    comparison.recheck_record_subject(bound.subject())?;
+                    drop(bound);
+                    return self.check_kernel_preparation(
+                        handoff, original, comparison, challenge, subject,
+                    );
+                }
+                Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
+                    self.wait_worker(handoff, original, false)?;
+                    self.check_kernel_preparation(
+                        handoff, original, comparison, challenge, subject,
+                    )?;
+                }
+                Err(_) => return Err(TransportError::RemoteInvalid),
+            }
+        }
     }
 
     fn check_mount<W: MountWorker>(
@@ -551,6 +773,40 @@ mod tests {
         appended.push(0);
         assert_ne!(appended, ready);
         assert_ne!(&ready[..ready.len() - 1], ready.as_slice());
+    }
+
+    #[test]
+    fn kernel_controls_have_a_distinct_version_and_preserve_original_binding() {
+        let challenge = challenge();
+        let binding = super::super::tests::binding();
+        let old = frame(binding, Control::Ready, &challenge, 4096).unwrap();
+        for control in [
+            Control::StartInit,
+            Control::IdmapApplied,
+            Control::PreparationConfirmed,
+        ] {
+            let exact = frame(binding, control, &challenge, 4096).unwrap();
+            assert_eq!(&exact[..8], b"AOSFWX03");
+            assert_eq!(&exact[8..10], &[0, 3]);
+            assert_eq!(&exact[22..25], &[0, 0, 0]);
+            assert_eq!(&exact[26..150], &old[26..150]);
+            assert_ne!(exact, old);
+            assert!(decode(&exact, binding, 4096).is_err());
+            for offset in [0, 9, 11, 15, 17, 21, 23, 25, 33, 50, 82, 114, 149, 190] {
+                let mut changed = exact.clone();
+                changed[offset] ^= 1;
+                assert_ne!(changed, exact, "offset {offset}");
+            }
+            for other in [
+                Control::StartInit,
+                Control::IdmapApplied,
+                Control::PreparationConfirmed,
+            ] {
+                if other != control {
+                    assert_ne!(exact, frame(binding, other, &challenge, 4096).unwrap());
+                }
+            }
+        }
     }
 }
 

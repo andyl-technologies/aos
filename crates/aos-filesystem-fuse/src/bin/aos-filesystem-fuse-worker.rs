@@ -2,10 +2,13 @@
 //!
 //! Startup owns exactly five inherited roles. It admits actual execution and
 //! labelled kernel objects before receiving a fresh preparation challenge.
-//! It never reads FUSE requests, exposes metadata, accepts a backing FD or acknowledges
-//! readiness before a separately genuine held Root/Mount read-grant dispatch.
+//! It consumes only kernel INIT in the original held preparation flight. It
+//! never dispatches metadata, accepts a backing FD or acknowledges readiness
+//! before a separately genuine held Root/Mount read-grant dispatch.
 
 use std::process::ExitCode;
+
+use aos_filesystem_fuse::worker_kernel_init::PreparedFixedWorkerKernelSessionV1;
 
 use aos_filesystem_fuse::worker_session::{
     WORKER_PREPARATION_PLAN_BYTES_V1, WorkerPreparationPlanV1,
@@ -81,10 +84,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             session.recheck()?;
             challenge.check_deadline(boottime()?)?;
             session.send_preparation_record(&challenge.reply(), &subject)?;
-            // Positive metadata/backing dispatch requires the actual joined
-            // Root/Mount consumer producer. Do not convert this HELLO or plan
-            // into a read grant or silently invoke the dormant FUSE runner.
-            session.wait_for_owner_cancellation()?;
+            let prepared = PreparedFixedWorkerKernelSessionV1::prepare_original_flight(
+                session, original, &challenge, &subject,
+            )?;
+            // The same C session is idle after actual INIT and original Mount
+            // idmap. No runner restart or metadata/backing callback is installed.
+            prepared.wait_for_owner_cancellation()?;
             Ok(())
         },
     )??;

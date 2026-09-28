@@ -293,7 +293,9 @@ impl<C: HostCatalog, S: HostStateStore + Sync, W: HostWorker + Sync> HostBroker<
                 match progress {
                     TransportProgress::Sent => break,
                     TransportProgress::Backpressure => continue,
-                    TransportProgress::Checked | TransportProgress::RendezvousJoined => {
+                    TransportProgress::Checked
+                    | TransportProgress::RendezvousJoined
+                    | TransportProgress::KernelIdmapApplied => {
                         return Err(HostError::Fence("original comparison was not sent"));
                     }
                 }
@@ -320,6 +322,9 @@ impl<C: HostCatalog, S: HostStateStore + Sync, W: HostWorker + Sync> HostBroker<
                 RendezvousStep::Ready,
                 RendezvousStep::Joined,
                 RendezvousStep::Confirmed,
+                RendezvousStep::KernelInitStart,
+                RendezvousStep::KernelIdmapApplied,
+                RendezvousStep::KernelPreparationConfirmed,
             ] {
                 loop {
                     retained.launch.recheck(&retained.manager).await?;
@@ -343,6 +348,9 @@ enum RendezvousStep {
     Ready,
     Joined,
     Confirmed,
+    KernelInitStart,
+    KernelIdmapApplied,
+    KernelPreparationConfirmed,
 }
 
 impl RendezvousStep {
@@ -351,14 +359,26 @@ impl RendezvousStep {
             Self::Ready => TransportAction::SendRendezvousReady { challenge },
             Self::Joined => TransportAction::ReceiveRendezvousJoined { challenge },
             Self::Confirmed => TransportAction::SendRendezvousConfirmed { challenge },
+            Self::KernelInitStart => TransportAction::SendKernelInitStart { challenge },
+            Self::KernelIdmapApplied => TransportAction::ReceiveKernelIdmapApplied { challenge },
+            Self::KernelPreparationConfirmed => {
+                TransportAction::SendKernelPreparationConfirmed { challenge }
+            }
         }
     }
 
     fn completed(self, progress: TransportProgress) -> Result<bool> {
         match (self, progress) {
             (_, TransportProgress::Backpressure) => Ok(false),
-            (Self::Ready | Self::Confirmed, TransportProgress::Sent)
-            | (Self::Joined, TransportProgress::RendezvousJoined) => Ok(true),
+            (
+                Self::Ready
+                | Self::Confirmed
+                | Self::KernelInitStart
+                | Self::KernelPreparationConfirmed,
+                TransportProgress::Sent,
+            )
+            | (Self::Joined, TransportProgress::RendezvousJoined)
+            | (Self::KernelIdmapApplied, TransportProgress::KernelIdmapApplied) => Ok(true),
             _ => Err(HostError::Fence("original rendezvous phase changed")),
         }
     }
@@ -374,6 +394,7 @@ mod transport_tests {
             TransportProgress::Sent,
             TransportProgress::Backpressure,
             TransportProgress::RendezvousJoined,
+            TransportProgress::KernelIdmapApplied,
         ] {
             let mut transport = |_action: TransportAction<'_>| Ok(substituted);
 
@@ -422,6 +443,37 @@ mod transport_tests {
         assert!(
             RendezvousStep::Confirmed
                 .completed(TransportProgress::RendezvousJoined)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn kernel_preparation_progress_cannot_replace_rendezvous_or_owner_checks() {
+        let cases = [
+            (RendezvousStep::KernelInitStart, TransportProgress::Sent),
+            (
+                RendezvousStep::KernelIdmapApplied,
+                TransportProgress::KernelIdmapApplied,
+            ),
+            (
+                RendezvousStep::KernelPreparationConfirmed,
+                TransportProgress::Sent,
+            ),
+        ];
+        for (step, exact) in cases {
+            assert!(step.completed(exact).unwrap());
+            assert!(!step.completed(TransportProgress::Backpressure).unwrap());
+            assert!(step.completed(TransportProgress::Checked).is_err());
+            assert!(step.completed(TransportProgress::RendezvousJoined).is_err());
+        }
+        assert!(
+            RendezvousStep::KernelIdmapApplied
+                .completed(TransportProgress::Sent)
+                .is_err()
+        );
+        assert!(
+            RendezvousStep::Joined
+                .completed(TransportProgress::KernelIdmapApplied)
                 .is_err()
         );
     }

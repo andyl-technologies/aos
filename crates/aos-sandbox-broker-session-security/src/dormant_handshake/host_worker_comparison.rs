@@ -112,6 +112,17 @@ impl DormantAuthenticatedBrokerSessionV1 {
             Action::SendRendezvousConfirmed { challenge } => held
                 .send_rendezvous_confirmed(challenge)
                 .map_err(|_| HostError::Fence("original rendezvous confirmation is uncertain")),
+            Action::SendKernelInitStart { challenge } => held
+                .send_kernel_init_start(challenge)
+                .map_err(|_| HostError::Fence("original kernel INIT scheduling is uncertain")),
+            Action::ReceiveKernelIdmapApplied { challenge } => held
+                .receive_kernel_idmap_applied(challenge)
+                .map_err(|_| HostError::Fence("original kernel preparation is uncertain")),
+            Action::SendKernelPreparationConfirmed { challenge } => held
+                .send_kernel_preparation_confirmed(challenge)
+                .map_err(|_| {
+                    HostError::Fence("original kernel preparation confirmation is uncertain")
+                }),
         };
         let sent = host
             .send_original_fuse_worker_comparison(&request, roles, &mut transport)
@@ -135,13 +146,15 @@ impl DormantAuthenticatedBrokerSessionV1 {
         }
     }
 
-    /// Drives the real four-role send into an original comparison receive.
+    /// Drives original role delivery, rendezvous and kernel-only preparation.
     ///
     /// The same outer Controller/Mount flight, actual Mount writer and original
     /// kernel-object bundle remain borrowed throughout. Deferred send returns
     /// real recovery ownership, never an eligible received comparison. A reply
     /// is only lent to the callback: no received data reconstructs Host or
-    /// Mount authority. This entry selects no service/default advertisement.
+    /// Mount authority. Kernel INIT and original idmap remain inside the same
+    /// Host callback; neither completes readiness or a Root read grant. This
+    /// entry selects no service/default advertisement.
     ///
     /// # Errors
     ///
