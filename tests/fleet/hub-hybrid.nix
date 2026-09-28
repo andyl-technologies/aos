@@ -218,6 +218,15 @@
     HUB_HYBRID_INGRESS_KEY=hybrid-fleet-ingress-key-with-at-least-thirty-two-bytes
     HUB_STORAGE_WORK_KEY=hybrid-fleet-storage-key-with-at-least-thirty-two-bytes
   '';
+  parityRouteKeys = writeFixture "hub-runtime-parity-route-keys" (builtins.toJSON {
+    activeVersion = 1;
+    keys = [
+      {
+        version = 1;
+        keyBase64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+      }
+    ];
+  });
   toolClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
     pname = "hub-hybrid-fleet-tool-closure-info";
     rootPaths = [
@@ -237,6 +246,8 @@
       pkgs.nix
       pkgs.postgresql
       pkgs.sed
+      pkgs.sqlite
+      pkgs.tar
       pkgs.util-linux
       fixture.helperV1
       fixture.helperV2
@@ -256,6 +267,7 @@
       s3ProxyConfig
       wranglerConfig
       workerSecrets
+      parityRouteKeys
     ];
   };
 in {
@@ -1687,6 +1699,10 @@ in {
           ${pkgs.coreutils}/bin/head -c {publication_size} /dev/zero \\
             > /tmp/hybrid-publication-surface/{publication_path}
       """), timeout=600)
+      # Signed channel initialization adds 256 objects. Obtain a fresh console
+      # token after authoring so fixture setup does not consume its short TTL.
+      session_token = refresh_session_token()
+      print("hybrid signed two-release and stable-channel publication starting")
       try:
           publication = json.loads(client.succeed(hub_command(
               "registry publish upload fleet/containers "
@@ -2928,5 +2944,35 @@ in {
           "loaded_p95": loaded_first_bytes[23],
           "native_p95": native_first_bytes[23],
       })
+    ''
+    + builtins.readFile ./_hub-index-parity.py
+    + builtins.readFile ./_hub-runtime-parity.py
+    + ''
+      qualify_registry_runtime_parity(
+          client, native, worker,
+          tools={
+              "aos": AOS,
+              "hub": "${pkgs.aos-hub}/bin/aos-hub",
+              "coreutils": "${pkgs.coreutils}/bin",
+              "curl": CURL,
+              "jq": "${pkgs.jq}/bin/jq",
+              "postgres": POSTGRES,
+              "sqlite": "${pkgs.sqlite}/bin/sqlite3",
+              "tar": "${pkgs.tar}/bin/tar",
+              "wrangler": "${pkgs.miniflare}/bin/wrangler",
+              "worker_main": "${pkgs.aos-hub-worker-dist}/shim.mjs",
+          },
+          fixture={
+              "certificate": "${serverCertificate}/value",
+              "private_key": "${serverPrivateKey}/value",
+              "release_seed": "${releaseReceiptKey}/value",
+              "channel_seed": "${channelReceiptKey}/value",
+              "publication_keys": "${releasePublicationKeys}/value",
+              "qualification_keys": "${qualificationKeys}/value",
+              "route_keys": "${parityRouteKeys}/value",
+              "trust_key": trust_key,
+          },
+          snapshot_assert=assert_registry_index_parity,
+      )
     '';
 }
