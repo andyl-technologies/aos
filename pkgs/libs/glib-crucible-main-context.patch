@@ -512,7 +512,7 @@
          {
            while (function (data));
  
-@@ -6592,3 +6826,876 @@
+@@ -6592,3 +6826,945 @@
   * Returns: the value that @fd_ptr previously had
   * Since: 2.70
   */
@@ -746,6 +746,75 @@
 +         hold->process == crucible_process_identity () &&
 +         g_atomic_int_get (&crucible_context_registry_epoch) == hold->generation &&
 +         g_atomic_int_get (&crucible_context_registry_hold_epoch) == hold->generation;
++}
++
++gboolean
++g_crucible_main_contexts_inventory_current (
++    const GCrucibleMainContextRegistryHold *registry,
++    GMainContext *const *contexts, const GCrucibleMainContextHold *holds,
++    const GCrucibleMainContextObservation *captured, guint count)
++{
++  guint locked = 0;
++  gboolean current = FALSE;
++
++  if (!registry || !contexts || !holds || !captured || count > 64 ||
++      !G_TRYLOCK (main_context_list))
++    return FALSE;
++  if (!registry->thread || registry->process != crucible_process_identity () ||
++      registry->generation <= 0 || registry->generation >= G_MAXINT ||
++      crucible_context_registry_holder != registry->thread ||
++      crucible_context_registry_mutators ||
++      g_atomic_int_get (&crucible_context_registry_epoch) != registry->generation ||
++      g_atomic_int_get (&crucible_context_registry_hold_epoch) != registry->generation ||
++      crucible_context_registry_size_unlocked () != count)
++    goto out;
++
++  for (guint index = 0; index < count; index++)
++    {
++      GMainContext *context = contexts[index];
++      const GCrucibleMainContextHold *hold = &holds[index];
++      const GCrucibleMainContextObservation *expected = &captured[index];
++      GHashTableIter iter;
++      gpointer value;
++      guint active;
++
++      if (!context || !g_slist_find (main_context_list, context))
++        goto out;
++      for (guint earlier = 0; earlier < index; earlier++)
++        if (contexts[earlier] == context)
++          goto out;
++      if (!g_mutex_trylock (&context->mutex))
++        goto out;
++      locked++;
++      if (hold->context != context || hold->thread != registry->thread ||
++          hold->process != registry->process || hold->generation <= 0 ||
++          hold->generation >= G_MAXINT ||
++          context->crucible_holder != hold->thread ||
++          g_atomic_int_get (&context->crucible_epoch) != hold->generation ||
++          g_atomic_int_get (&context->crucible_hold_epoch) != hold->generation ||
++          expected->sources > 8192 || expected->active_callbacks ||
++          expected->pending_mutators || expected->foreign_waiters ||
++          g_hash_table_size (context->sources) != expected->sources ||
++          context->pending_dispatches->len != expected->pending_dispatches ||
++          context->crucible_mutators || context->waiters)
++        goto out;
++      active = context->crucible_callbacks + context->in_check_or_prepare;
++      g_hash_table_iter_init (&iter, context->sources);
++      while (g_hash_table_iter_next (&iter, NULL, &value))
++        {
++          GSource *source = G_CONTAINER_OF (value, GSource, source_id);
++          active += (source->flags & G_HOOK_FLAG_IN_CALL) != 0;
++        }
++      if (active)
++        goto out;
++    }
++  current = TRUE;
++
++out:
++  while (locked)
++    UNLOCK_CONTEXT (contexts[--locked]);
++  G_UNLOCK (main_context_list);
++  return current;
 +}
 +
 +gboolean
@@ -1391,7 +1460,7 @@
 +}
 --- /dev/null
 +++ b/glib/gcrucible-main-context.h
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,169 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +/* Native process-private observation API; not a cross-process protocol. */
 +#ifndef G_CRUCIBLE_MAIN_CONTEXT_H
@@ -1476,6 +1545,17 @@
 +    GCrucibleMainContextObservation *observation);
 +GLIB_AVAILABLE_IN_ALL
 +gboolean g_crucible_main_context_release (GCrucibleMainContextHold *hold);
++
++/* Pure foreign-thread freshness of an exact retained all-context census.
++ * The caller retains the token/array storage through the call and serializes
++ * its own changes. This API takes the real registry before any token reads,
++ * then every context mutex; it grants no ownership or dispatch authority.
++ */
++GLIB_AVAILABLE_IN_ALL
++gboolean g_crucible_main_contexts_inventory_current (
++    const GCrucibleMainContextRegistryHold *registry,
++    GMainContext *const *contexts, const GCrucibleMainContextHold *holds,
++    const GCrucibleMainContextObservation *captured, guint count);
 +
 +/* Source implementations classify their own concrete source before attach.
 + * Unknown is the default. Attached reclassification invalidates observations.
