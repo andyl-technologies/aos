@@ -1,4 +1,4 @@
-From e278eb8ad4cbf287c162a584c9c286e902b7e9e4 Mon Sep 17 00:00:00 2001
+From 8efabcf41af3af03e38c27f9452955773417ee31 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -51,6 +51,12 @@ zero, positive, and overflowing identities in a QEMU unit test.
 Report an unrepresentable armed virtual timer deadline as a distinct
 overflow status instead of absence. Keep the full QEMU timer horizon
 and exercise the plugin-facing signed projection with wide timers.
+
+Bound long-TB instruction restoration scans with immutable code-owned
+checkpoints every 16 rows. Retain strict helper end boundaries and all
+target metadata words, reject malformed metadata without exposing partial
+outputs, and return the already authenticated TB from the private identity
+decoder without changing generic restoration or execution permissions.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -2884,16 +2890,25 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..3cb6a6a6a0948539ee3293892d2a7461
  {
      assert(icount_enabled());
 diff --git a/accel/tcg/internal-common.h b/accel/tcg/internal-common.h
-index 9e7be2d78dfd6739e01d81bccd03664b4ae0001a..19bf75413a923683c257f3507943371673b747fc 100644
+index 9e7be2d78dfd6739e01d81bccd03664b4ae0001a..3dd837e173648e4e5f3c8c5f4e49429c123aa3b0 100644
 --- a/accel/tcg/internal-common.h
 +++ b/accel/tcg/internal-common.h
-@@ -54,6 +54,9 @@ void tb_reset_jump(TranslationBlock *tb, int n);
+@@ -54,6 +54,18 @@ void tb_reset_jump(TranslationBlock *tb, int n);
  TranslationBlock *tb_link_page(TranslationBlock *tb);
  void cpu_restore_state_from_tb(CPUState *cpu, TranslationBlock *tb,
                                 uintptr_t host_pc);
 +bool cpu_get_fault_instruction_identity(uintptr_t host_pc,
 +                                        vaddr *instruction_pc,
 +                                        uint32_t *instruction_ordinal);
++
++/*
++ * Return the TB used by the successful metadata decode without another lookup.
++ * Outputs remain unchanged on failure. instruction_tb may be NULL. This does
++ * not acquire a TB reference; the caller must retain its execution protection.
++ */
++bool cpu_get_fault_instruction_identity_with_tb(
++    uintptr_t host_pc, vaddr *instruction_pc, uint32_t *instruction_ordinal,
++    const TranslationBlock **instruction_tb);
  
  /**
   * tlb_init - initialize a CPU's TLB
@@ -6570,7 +6585,7 @@ index 0816cafd3361f1979e72ad72c42cc8cb4ecce586..41fcc70155758c83d97ea0673d3810d8
  exec_tb(void *tb, uintptr_t pc) "tb:%p pc=0x%"PRIxPTR
  exec_tb_nocache(void *tb, uintptr_t pc) "tb:%p pc=0x%"PRIxPTR
 diff --git a/accel/tcg/translate-all.c b/accel/tcg/translate-all.c
-index 328d96aba306a50309ba94f65a8db3527d83b26f..9fe466943b96b4ddc69dab8b7ae9494acedf0662 100644
+index 328d96aba306a50309ba94f65a8db3527d83b26f..b0f6d77c5893ed2f84e3465c262733e9d1006c32 100644
 --- a/accel/tcg/translate-all.c
 +++ b/accel/tcg/translate-all.c
 @@ -18,6 +18,7 @@
@@ -6581,13 +6596,400 @@ index 328d96aba306a50309ba94f65a8db3527d83b26f..9fe466943b96b4ddc69dab8b7ae9494a
  
  #include "trace.h"
  #include "disas/disas.h"
-@@ -167,6 +168,30 @@ static int cpu_unwind_data_from_tb(TranslationBlock *tb, uintptr_t host_pc,
+@@ -40,133 +41,355 @@
+ 
+ TBContext tb_ctx;
+ 
+-/*
+- * Encode VAL as a signed leb128 sequence at P.
+- * Return P incremented past the encoded value.
+- */
+-static uint8_t *encode_sleb128(uint8_t *p, int64_t val)
++/* A checkpoint seeds the state immediately before its instruction row. */
++#define UNWIND_CHECKPOINT_STRIDE 16
++#define UNWIND_INDEX_MIN_INSNS 32
++#define UNWIND_MAX_CHECKPOINTS \
++    DIV_ROUND_UP(TCG_MAX_INSNS, UNWIND_CHECKPOINT_STRIDE)
++#define UNWIND_MAX_ROW_BYTES ((INSN_START_WORDS + 1) * 10)
++
++typedef struct UnwindCheckpoint {
++    uint32_t row;
++    uint32_t stream_offset;
++    uint32_t host_offset;
++    uint32_t reserved;
++    uint64_t checksum;
++    uint64_t data[INSN_START_WORDS];
++} UnwindCheckpoint;
++
++/* Detect damaged native records; this is not an execution authorization. */
++static uint64_t unwind_checkpoint_checksum(const UnwindCheckpoint *checkpoint)
++{
++    uint64_t value = UINT64_C(0xcbf29ce484222325);
++
++    value = (value ^ checkpoint->row) * UINT64_C(0x100000001b3);
++    value = (value ^ checkpoint->stream_offset) * UINT64_C(0x100000001b3);
++    value = (value ^ checkpoint->host_offset) * UINT64_C(0x100000001b3);
++    for (unsigned i = 0; i < INSN_START_WORDS; i++) {
++        value = (value ^ checkpoint->data[i]) * UINT64_C(0x100000001b3);
++    }
++    return value;
++}
++
++static bool encode_unwind_sleb128(uint8_t **pp, const uint8_t *end, int64_t val)
+ {
++    uint8_t *p = *pp;
+     int more, byte;
+ 
+     do {
+         byte = val & 0x7f;
+         val >>= 7;
+-        more = !((val == 0 && (byte & 0x40) == 0)
+-                 || (val == -1 && (byte & 0x40) != 0));
+-        if (more) {
+-            byte |= 0x80;
++        more = !((val == 0 && (byte & 0x40) == 0) ||
++                 (val == -1 && (byte & 0x40) != 0));
++        if (p == end) {
++            return false;
+         }
+-        *p++ = byte;
++        *p++ = byte | (more ? 0x80 : 0);
+     } while (more);
+ 
+-    return p;
++    *pp = p;
++    return true;
+ }
+ 
+-/*
+- * Decode a signed leb128 sequence at *PP; increment *PP past the
+- * decoded value.  Return the decoded value.
+- */
+-static int64_t decode_sleb128(const uint8_t **pp)
++static bool decode_unwind_long_sleb128(const uint8_t **pp, const uint8_t *end,
++                                      int64_t *result)
+ {
+     const uint8_t *p = *pp;
+-    int64_t val = 0;
+-    int byte, shift = 0;
++    uint64_t value = 0;
+ 
+-    do {
++    for (unsigned shift = 0; shift < 64; shift += 7) {
++        unsigned byte;
++
++        if (p == end) {
++            return false;
++        }
+         byte = *p++;
+-        val |= (int64_t)(byte & 0x7f) << shift;
+-        shift += 7;
+-    } while (byte & 0x80);
+-    if (shift < 64 && (byte & 0x40)) {
+-        val |= -(int64_t)1 << shift;
++        /* The tenth byte contributes only the sign bit of a 64-bit value. */
++        if (shift == 63 && byte != 0 && byte != 0x7f) {
++            return false;
++        }
++        value |= (uint64_t)(byte & 0x7f) << shift;
++        if (!(byte & 0x80)) {
++            if (shift < 57 && (byte & 0x40)) {
++                value |= UINT64_MAX << (shift + 7);
++            }
++            *pp = p;
++            *result = value;
++            return true;
++        }
+     }
+-
+-    *pp = p;
+-    return val;
++    return false;
+ }
+ 
+-/* Encode the data collected about the instructions while compiling TB.
+-   Place the data at BLOCK, and return the number of bytes consumed.
++static inline bool decode_unwind_sleb128(const uint8_t **pp, const uint8_t *end,
++                                         int64_t *result)
++{
++    const uint8_t *p = *pp;
+ 
+-   The logical table consists of INSN_START_WORDS uint64_t's,
+-   which come from the target's insn_start data, followed by a uintptr_t
+-   which comes from the host pc of the end of the code implementing the insn.
++    if (p == end) {
++        return false;
++    }
++    if (likely(*p < 0x80)) {
++        int64_t value = *p;
+ 
+-   Each line of the table is encoded as sleb128 deltas from the previous
+-   line.  The seed for the first line is { tb->pc, 0..., tb->tc.ptr }.
+-   That is, the first column is seeded with the guest pc, the last column
+-   with the host pc, and the middle columns with zeros.  */
++        if (value & 0x40) {
++            value -= 0x80;
++        }
++        *pp = p + 1;
++        *result = value;
++        return true;
++    }
++    return decode_unwind_long_sleb128(pp, end, result);
++}
+ 
++/*
++ * Keep the original signed-delta instruction table, then append native seeds
++ * for long TBs. Both the table and index share the translated code's lifetime.
++ * Small TBs avoid index storage and decode their short table directly.
++ */
+ static int encode_search(TranslationBlock *tb, uint8_t *block)
+ {
++    UnwindCheckpoint checkpoints[UNWIND_MAX_CHECKPOINTS];
+     uint8_t *highwater = tcg_ctx->code_gen_highwater;
+     uint64_t *insn_data = tcg_ctx->gen_insn_data;
+     uint16_t *insn_end_off = tcg_ctx->gen_insn_end_off;
++    uint64_t previous[INSN_START_WORDS] = { 0 };
+     uint8_t *p = block;
+-    int i, j, n;
++    unsigned checkpoint_count = 0;
++    uint32_t index_offset = 0;
+ 
+-    for (i = 0, n = tb->icount; i < n; ++i) {
+-        uint64_t prev, curr;
++    tb->search_index_offset = 0;
++    tb->search_metadata_size = 0;
++    if (!tb->icount || tb->icount > TCG_MAX_INSNS || block > highwater) {
++        return -1;
++    }
++    if (!(tb_cflags(tb) & CF_PCREL)) {
++        previous[0] = tb->pc;
++    }
++    for (unsigned i = 0; i < tb->icount; i++) {
++        uint32_t previous_host = i ? insn_end_off[i - 1] : 0;
++
++        if (tb->icount >= UNWIND_INDEX_MIN_INSNS &&
++            i % UNWIND_CHECKPOINT_STRIDE == 0) {
++            UnwindCheckpoint *checkpoint = &checkpoints[checkpoint_count++];
++
++            *checkpoint = (UnwindCheckpoint) {
++                .row = i,
++                .stream_offset = p - block,
++                .host_offset = previous_host,
++            };
++            memcpy(checkpoint->data, previous, sizeof(previous));
++            checkpoint->checksum = unwind_checkpoint_checksum(checkpoint);
++        }
++        for (unsigned j = 0; j < INSN_START_WORDS; j++) {
++            uint64_t current = insn_data[i * INSN_START_WORDS + j];
+ 
+-        for (j = 0; j < INSN_START_WORDS; ++j) {
+-            if (i == 0) {
+-                prev = (!(tb_cflags(tb) & CF_PCREL) && j == 0 ? tb->pc : 0);
+-            } else {
+-                prev = insn_data[(i - 1) * INSN_START_WORDS + j];
++            if (!encode_unwind_sleb128(&p, highwater, current - previous[j])) {
++                return -1;
+             }
+-            curr = insn_data[i * INSN_START_WORDS + j];
+-            p = encode_sleb128(p, curr - prev);
++            previous[j] = current;
+         }
+-        prev = (i == 0 ? 0 : insn_end_off[i - 1]);
+-        curr = insn_end_off[i];
+-        p = encode_sleb128(p, curr - prev);
+-
+-        /* Test for (pending) buffer overflow.  The assumption is that any
+-           one row beginning below the high water mark cannot overrun
+-           the buffer completely.  Thus we can test for overflow after
+-           encoding a row without having to check during encoding.  */
+-        if (unlikely(p > highwater)) {
++        if (insn_end_off[i] < previous_host ||
++            !encode_unwind_sleb128(&p, highwater,
++                                  insn_end_off[i] - previous_host)) {
+             return -1;
+         }
+     }
++    if (checkpoint_count) {
++        size_t bytes = checkpoint_count * sizeof(checkpoints[0]);
+ 
++        index_offset = p - block;
++        if (bytes > highwater - p) {
++            return -1;
++        }
++        memcpy(p, checkpoints, bytes);
++        p += bytes;
++    }
++    tb->search_index_offset = index_offset;
++    tb->search_metadata_size = p - block;
+     return p - block;
+ }
+ 
++static bool read_unwind_checkpoint(const TranslationBlock *tb,
++                                   const uint8_t *index, unsigned position,
++                                   UnwindCheckpoint *checkpoint)
++{
++    memcpy(checkpoint, index + position * sizeof(*checkpoint),
++           sizeof(*checkpoint));
++    if (checkpoint->row != position * UNWIND_CHECKPOINT_STRIDE ||
++        checkpoint->row >= tb->icount || checkpoint->reserved ||
++        checkpoint->stream_offset >= tb->search_index_offset ||
++        checkpoint->stream_offset <
++            checkpoint->row * (INSN_START_WORDS + 1) ||
++        checkpoint->host_offset > tb->tc.size ||
++        checkpoint->checksum != unwind_checkpoint_checksum(checkpoint)) {
++        return false;
++    }
++    if (!position) {
++        uint64_t seed = tb_cflags(tb) & CF_PCREL ? 0 : tb->pc;
++
++        if (checkpoint->stream_offset || checkpoint->host_offset ||
++            checkpoint->data[0] != seed) {
++            return false;
++        }
++        for (unsigned i = 1; i < INSN_START_WORDS; i++) {
++            if (checkpoint->data[i]) {
++                return false;
++            }
++        }
++    }
++    return true;
++}
++
+ static int cpu_unwind_data_from_tb(TranslationBlock *tb, uintptr_t host_pc,
+                                    uint64_t *data)
+ {
+-    uintptr_t iter_pc = (uintptr_t)tb->tc.ptr;
+-    const uint8_t *p = tb->tc.ptr + tb->tc.size;
+-    int i, j, num_insns = tb->icount;
+-
++    uintptr_t code = (uintptr_t)tb->tc.ptr;
++    uint64_t decoded[INSN_START_WORDS] = { 0 };
++    unsigned num_insns = tb->icount;
++    unsigned row = 0, row_end = num_insns;
++    unsigned count = DIV_ROUND_UP(num_insns, UNWIND_CHECKPOINT_STRIDE);
++    size_t max_stream = num_insns * UNWIND_MAX_ROW_BYTES;
++    const uint8_t *p, *end;
++    uintptr_t iter_pc;
++
++    if (!num_insns || num_insns > TCG_MAX_INSNS ||
++        tb->tc.size > UINT32_MAX || tb->tc.size > UINTPTR_MAX - code ||
++        host_pc < GETPC_ADJ || host_pc - GETPC_ADJ < code ||
++        host_pc - GETPC_ADJ >= code + tb->tc.size ||
++        tb->search_metadata_size < num_insns * (INSN_START_WORDS + 1) ||
++        tb->search_metadata_size >
++            max_stream + count * sizeof(UnwindCheckpoint) ||
++        tb->search_metadata_size > UINTPTR_MAX - code - tb->tc.size) {
++        return -1;
++    }
+     host_pc -= GETPC_ADJ;
+-
+-    if (host_pc < iter_pc) {
++    p = tb->tc.ptr + tb->tc.size;
++    end = p + tb->search_metadata_size;
++    if (!in_code_gen_buffer((void *)((uintptr_t)p - tcg_splitwx_diff)) ||
++        !in_code_gen_buffer(
++            (void *)((uintptr_t)(end - 1) - tcg_splitwx_diff))) {
+         return -1;
+     }
+-
+-    memset(data, 0, sizeof(uint64_t) * INSN_START_WORDS);
++    iter_pc = code;
+     if (!(tb_cflags(tb) & CF_PCREL)) {
+-        data[0] = tb->pc;
++        decoded[0] = tb->pc;
+     }
++    if (num_insns >= UNWIND_INDEX_MIN_INSNS) {
++        const uint8_t *index;
++        UnwindCheckpoint checkpoint, neighbor;
++        unsigned low = 0, high = count;
++
++        if (tb->search_index_offset < num_insns * (INSN_START_WORDS + 1) ||
++            tb->search_index_offset > max_stream ||
++            tb->search_index_offset > tb->search_metadata_size ||
++            tb->search_metadata_size - tb->search_index_offset !=
++                count * sizeof(UnwindCheckpoint)) {
++            return -1;
++        }
++        index = p + tb->search_index_offset;
++        end = index;
++        if (!read_unwind_checkpoint(tb, index, 0, &checkpoint)) {
++            return -1;
++        }
++        while (low < high) {
++            unsigned middle = (low + high) / 2;
+ 
+-    /*
+-     * Reconstruct the stored insn data while looking for the point
+-     * at which the end of the insn exceeds host_pc.
+-     */
+-    for (i = 0; i < num_insns; ++i) {
+-        for (j = 0; j < INSN_START_WORDS; ++j) {
+-            data[j] += decode_sleb128(&p);
++            if (!read_unwind_checkpoint(tb, index, middle, &checkpoint)) {
++                return -1;
++            }
++            if (checkpoint.host_offset <= host_pc - code) {
++                low = middle + 1;
++            } else {
++                high = middle;
++            }
++        }
++        if (!low || !read_unwind_checkpoint(tb, index, low - 1, &checkpoint) ||
++            checkpoint.host_offset > host_pc - code) {
++            return -1;
+         }
+-        iter_pc += decode_sleb128(&p);
++        if (low > 1) {
++            if (!read_unwind_checkpoint(tb, index, low - 2, &neighbor) ||
++                neighbor.stream_offset >= checkpoint.stream_offset ||
++                neighbor.host_offset > checkpoint.host_offset) {
++                return -1;
++            }
++        }
++        if (low < count) {
++            if (!read_unwind_checkpoint(tb, index, low, &neighbor) ||
++                neighbor.stream_offset <= checkpoint.stream_offset ||
++                neighbor.host_offset < checkpoint.host_offset ||
++                neighbor.host_offset <= host_pc - code) {
++                return -1;
++            }
++        }
++        row = checkpoint.row;
++        row_end = MIN(row + UNWIND_CHECKPOINT_STRIDE, num_insns);
++        p += checkpoint.stream_offset;
++        iter_pc += checkpoint.host_offset;
++        memcpy(decoded, checkpoint.data, sizeof(decoded));
++    } else if (tb->search_index_offset ||
++               tb->search_metadata_size > max_stream) {
++        return -1;
++    }
++
++    for (; row < row_end; row++) {
++        int64_t delta;
++
++        for (unsigned j = 0; j < INSN_START_WORDS; j++) {
++            if (!decode_unwind_sleb128(&p, end, &delta)) {
++                return -1;
++            }
++            decoded[j] += delta;
++        }
++        if (!decode_unwind_sleb128(&p, end, &delta) || delta < 0 ||
++            (uint64_t)delta > code + tb->tc.size - iter_pc) {
++            return -1;
++        }
++        iter_pc += delta;
+         if (iter_pc > host_pc) {
+-            return num_insns - i;
++            memcpy(data, decoded, sizeof(decoded));
++            return num_insns - row;
+         }
+     }
      return -1;
  }
  
-+bool cpu_get_fault_instruction_identity(uintptr_t host_pc,
-+                                        vaddr *instruction_pc,
-+                                        uint32_t *instruction_ordinal)
++bool cpu_get_fault_instruction_identity_with_tb(
++    uintptr_t host_pc, vaddr *instruction_pc, uint32_t *instruction_ordinal,
++    const TranslationBlock **instruction_tb)
 +{
 +    TranslationBlock *tb;
 +    uint64_t data[INSN_START_WORDS];
@@ -6606,13 +7008,24 @@ index 328d96aba306a50309ba94f65a8db3527d83b26f..9fe466943b96b4ddc69dab8b7ae9494a
 +    }
 +    *instruction_pc = data[0];
 +    *instruction_ordinal = tb->icount - insns_left;
++    if (instruction_tb) {
++        *instruction_tb = tb;
++    }
 +    return true;
++}
++
++bool cpu_get_fault_instruction_identity(uintptr_t host_pc,
++                                        vaddr *instruction_pc,
++                                        uint32_t *instruction_ordinal)
++{
++    return cpu_get_fault_instruction_identity_with_tb(
++        host_pc, instruction_pc, instruction_ordinal, NULL);
 +}
 +
  /*
   * The cpu state corresponding to 'host_pc' is restored in
   * preparation for exiting the TB.
-@@ -285,6 +310,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
+@@ -285,6 +508,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
      QEMU_BUILD_BUG_ON(CF_COUNT_MASK + 1 != TCG_MAX_INSNS);
  
   buffer_overflow:
@@ -6620,7 +7033,7 @@ index 328d96aba306a50309ba94f65a8db3527d83b26f..9fe466943b96b4ddc69dab8b7ae9494a
      assert_no_pages_locked();
      tb = tcg_tb_alloc(tcg_ctx);
      if (unlikely(!tb)) {
-@@ -369,6 +395,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
+@@ -369,6 +593,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
                  tb_unlock_page1(phys_pc, phys_p2);
                  tb_set_page_addr1(tb, -1);
              }
@@ -6628,7 +7041,7 @@ index 328d96aba306a50309ba94f65a8db3527d83b26f..9fe466943b96b4ddc69dab8b7ae9494a
              goto restart_translate;
  
          case -3:
-@@ -380,6 +407,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
+@@ -380,6 +605,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
               */
              qemu_log_mask(CPU_LOG_TB_OP | CPU_LOG_TB_OP_OPT,
                            "Restarting code generation with re-locked pages");
@@ -6636,7 +7049,7 @@ index 328d96aba306a50309ba94f65a8db3527d83b26f..9fe466943b96b4ddc69dab8b7ae9494a
              goto restart_translate;
  
          default:
-@@ -518,6 +546,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
+@@ -518,6 +744,7 @@ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
       */
      if (tb_page_addr0(tb) == -1) {
          assert_no_pages_locked();
@@ -6644,7 +7057,7 @@ index 328d96aba306a50309ba94f65a8db3527d83b26f..9fe466943b96b4ddc69dab8b7ae9494a
          return tb;
      }
  
-@@ -535,8 +564,10 @@ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
+@@ -535,8 +762,10 @@ TranslationBlock *tb_gen_code(CPUState *cpu, TCGTBCPUState s)
          orig_aligned -= ROUND_UP(sizeof(*tb), qemu_icache_linesize);
          qatomic_set(&tcg_ctx->code_gen_ptr, (void *)orig_aligned);
          tcg_tb_remove(tb);
@@ -51601,6 +52014,21 @@ index 7a26b40084dbf8c14560607f3350b89b49fa41bd..161fe76aaabd8bacbf5acecbcd3bfe78
  
  /* if the CPUs are idle, start accounting real time to virtual clock. */
  void icount_start_warp_timer(void);
+diff --git a/include/exec/translation-block.h b/include/exec/translation-block.h
+index 40cc6990318ca41b748b68cb6280f74e66d69705..f9e5a29119b207e0b66b25a18299a254de4e384f 100644
+--- a/include/exec/translation-block.h
++++ b/include/exec/translation-block.h
+@@ -97,6 +97,10 @@ struct TranslationBlock {
+ 
+     struct tb_tc tc;
+ 
++    /* Code-owned unwind metadata; offsets are relative to tc.ptr + tc.size. */
++    uint32_t search_index_offset;
++    uint32_t search_metadata_size;
++
+     /*
+      * Track tb_page_addr_t intervals that intersect this TB.
+      * For user-only, the virtual addresses are always contiguous,
 diff --git a/include/exec/translator.h b/include/exec/translator.h
 index 978dee25add2068f82102882d4dd00188b05b301..c0038fd0a71ed12bd2786d440e7ea417c51d9967 100644
 --- a/include/exec/translator.h
