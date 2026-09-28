@@ -4,8 +4,22 @@
   fetchgit,
   buildPackages,
   stdenv,
+  version ? "2022-12-08",
 }: let
-  revision = "1ccef4908ce04adc6d246262846f3cd8a111fa44";
+  sourcePin =
+    if version == "2024-10-26"
+    then {
+      revision = "b8c97f5b4bc5d4758612a0430e5c2792d0f9ca7f";
+      hash = "sha256-ZhIHuHSyJOGYnXdeD1Zonwg86Tla/GuftRhx+2wGjvg=";
+      files = 1972;
+    }
+    else
+      assert version == "2022-12-08"; {
+        revision = "1ccef4908ce04adc6d246262846f3cd8a111fa44";
+        hash = "sha256-9KuSsEI+sHrqv/76wApGymIAraK6nz1CFR+KYHjjwEU=";
+        files = 1425;
+      };
+  revision = sourcePin.revision;
   installNameToolFlag =
     if stdenv.hostPlatform.isDarwin
     then "-DCMAKE_INSTALL_NAME_TOOL=${buildPackages.llvm}/bin/llvm-install-name-tool"
@@ -13,13 +27,13 @@
 in
   mkDerivation {
     pname = "bazel-netty-boringssl";
-    version = "2022-12-08";
+    inherit version;
 
     src = fetchgit {
       url = "https://github.com/google/boringssl.git";
       rev = revision;
       name = "boringssl-${revision}-source-only";
-      hash = "sha256-9KuSsEI+sHrqv/76wApGymIAraK6nz1CFR+KYHjjwEU=";
+      inherit (sourcePin) hash;
       deepClone = true;
       git = buildPackages.git-minimal;
       caCertificates = buildPackages.ca-certificates;
@@ -32,6 +46,7 @@ in
         "!/crypto/fipsmodule/*.png"
         "!/crypto/fipsmodule/policydocs/"
         "!/crypto/pkcs8/test/*.p12"
+        "!/pki/testdata/"
       ];
     };
 
@@ -63,7 +78,7 @@ in
           from pathlib import Path
 
           files = [path for path in Path("source").rglob("*") if path.is_file()]
-          if len(files) != 1425:
+          if len(files) != ${toString sourcePin.files}:
               raise SystemExit(f"Unexpected BoringSSL source inventory: {len(files)} files")
           for path in files:
               path.read_text(encoding="utf-8")
