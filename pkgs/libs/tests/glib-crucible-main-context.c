@@ -856,6 +856,90 @@ static void test_control_after_fork_membership(void)
     g_mutex_clear(&fixture.mutex);
 }
 
+typedef struct ForeignInventoryFixture {
+    GCrucibleMainContextRegistryHold registry;
+    GMainContext *contexts[64];
+    GCrucibleMainContextHold holds[64];
+    GCrucibleMainContextObservation observations[64];
+    guint count;
+    gboolean current;
+} ForeignInventoryFixture;
+
+static gpointer foreign_inventory_current(gpointer opaque)
+{
+    ForeignInventoryFixture *fixture = opaque;
+
+    g_assert_true(fixture->registry.thread != g_thread_self());
+    fixture->current = g_crucible_main_contexts_inventory_current(
+        &fixture->registry, fixture->contexts, fixture->holds,
+        fixture->observations, fixture->count);
+    return NULL;
+}
+
+static gboolean foreign_inventory_probe(ForeignInventoryFixture *fixture)
+{
+    GThread *reader = g_thread_new("foreign-census", foreign_inventory_current,
+                                   fixture);
+
+    g_thread_join(reader);
+    return fixture->current;
+}
+
+static void test_foreign_inventory_freshness(void)
+{
+    ForeignInventoryFixture fixture = { 0 };
+    GMainContext *context = g_main_context_new();
+    GSource *source = g_timeout_source_new(1000);
+    GSource *attached;
+    GCrucibleSourceObservation sources[8];
+    guint selected = G_MAXUINT;
+
+    g_source_set_callback(source, count_callback, NULL, NULL);
+    g_source_attach(source, context);
+    g_assert_true(g_crucible_main_contexts_try_hold(&fixture.registry,
+        fixture.contexts, fixture.holds, 64, &fixture.count));
+    for (guint index = 0; index < fixture.count; index++) {
+        g_assert_true(g_crucible_main_context_inventory(&fixture.holds[index],
+            sources, 8, &fixture.observations[index]));
+        if (fixture.contexts[index] == context) {
+            selected = index;
+        }
+    }
+    g_assert_cmpuint(selected, !=, G_MAXUINT);
+    g_assert_true(foreign_inventory_probe(&fixture));
+    fixture.observations[selected].sources++;
+    g_assert_false(foreign_inventory_probe(&fixture));
+    fixture.observations[selected].sources--;
+    g_assert_true(foreign_inventory_probe(&fixture));
+    g_source_set_ready_time(source, 0);
+    g_assert_false(foreign_inventory_probe(&fixture));
+    g_assert_true(g_crucible_main_context_registry_refresh(&fixture.registry,
+        fixture.contexts, fixture.holds, fixture.count));
+    for (guint index = 0; index < fixture.count; index++) {
+        g_assert_true(g_crucible_main_context_inventory(&fixture.holds[index],
+            sources, 8, &fixture.observations[index]));
+    }
+    g_assert_true(foreign_inventory_probe(&fixture));
+    attached = g_idle_source_new();
+    g_source_set_callback(attached, count_callback, NULL, NULL);
+    g_source_attach(attached, context);
+    g_assert_false(foreign_inventory_probe(&fixture));
+    g_assert_false(g_main_context_iteration(context, FALSE));
+    for (guint index = 0; index < fixture.count; index++) {
+        release_context(&fixture.holds[index]);
+    }
+    release_registry(&fixture.registry);
+    g_assert_false(foreign_inventory_probe(&fixture));
+    for (guint index = 0; index < fixture.count; index++) {
+        g_main_context_unref(fixture.contexts[index]);
+    }
+    g_source_destroy(attached);
+    g_source_unref(attached);
+    g_source_destroy(source);
+    g_source_unref(source);
+    g_main_context_unref(context);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -877,5 +961,7 @@ int main(int argc, char **argv)
                     test_control_entry_release_race);
     g_test_add_func("/crucible/control-after-fork-membership",
                     test_control_after_fork_membership);
+    g_test_add_func("/crucible/foreign-inventory-freshness",
+                    test_foreign_inventory_freshness);
     return g_test_run();
 }
