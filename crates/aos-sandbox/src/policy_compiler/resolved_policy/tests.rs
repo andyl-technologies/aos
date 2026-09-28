@@ -8,7 +8,9 @@ use sha2::{Digest as _, Sha256};
 
 use super::*;
 use crate::JournalTransaction;
-use crate::policy_compiler::protected_journal::resolved_policy_fixture as fixture;
+use crate::policy_compiler::protected_journal::{
+    candidate_output_bytes, resolved_policy_fixture as fixture, validate_candidate_payload,
+};
 
 fn open(root: &Path) -> PolicyCompilerStateReadbackOwnerV1 {
     PolicyCompilerStateReadbackOwnerV1 {

@@ -2294,7 +2294,12 @@ pub(super) fn candidate_output_bytes(
     validated_candidate_body(bytes).map(|(_, outputs)| outputs)
 }
 
-fn validated_candidate_body(
+/// Borrows structurally checked header/output claims without publication authority.
+///
+/// # Errors
+/// Rejects unsupported versions, malformed/noncanonical outputs, descriptor
+/// mismatches or incomplete/substituted V3 preimage consistency.
+pub(super) fn validated_candidate_body(
     bytes: &[u8],
 ) -> Result<(DecodedCandidateHeaderV1, [&[u8]; 4]), PolicyCompilerJournalErrorV1> {
     let header = decode_candidate_header(bytes)?;

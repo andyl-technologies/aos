@@ -19,8 +19,8 @@ use aos_sandbox_core::{
 };
 
 use super::protected_journal::{
-    candidate_output_bytes, decode_current_payload, policy_current_key, policy_key,
-    validate_candidate_payload, validate_state_candidate_body,
+    decode_current_payload, policy_current_key, policy_key, validate_state_candidate_body,
+    validated_candidate_body,
 };
 use super::protected_owner::{
     POLICY_STATE_JOURNAL, PROTECTED_POLICY_ROOT, policy_state_journal_limits,
@@ -184,7 +184,7 @@ impl<'policy> HeldResolvedRuntimePolicyV1<'policy> {
             .find(|record| record.key() == &candidate_key)
             .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
         let body = candidate.body();
-        let header = validate_candidate_payload(body)?;
+        let (header, [bytes, _, _, _]) = validated_candidate_body(body)?;
         if header.project != project
             || header.sandbox != sandbox
             || current_header.project != project
@@ -201,7 +201,6 @@ impl<'policy> HeldResolvedRuntimePolicyV1<'policy> {
 
         // The shared codec owns V2/V3 offsets, canonical output checks and the
         // V3 preimage join. Neither version independently authenticates Root.
-        let [bytes, _, _, _] = candidate_output_bytes(body)?;
         let policy = decode_policy(bytes, DecodeLimits::default())
             .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
         let descriptor = |index: usize, media: PortableMediaType| {
