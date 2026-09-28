@@ -8738,8 +8738,10 @@ with the original confined reader mount. Initial acceptance and exact live
 retry independently rejoin those counts; a validly signed, self-consistent
 replacement count cannot create an acceptance or transfer a descriptor. The
 issuance journal reserves the full 216-byte acceptance and rejects old
-unreleased acceptance rows without reinterpretation. The complete Storage
-library suite passes 494 tests with five installed fixtures ignored; the
+unreleased acceptance rows without reinterpretation. Its kernel clock sampler
+brackets BOOTTIME then REALTIME with matching boot identities, so sampling
+delays cannot extend the original expiry anchor. The complete Storage
+library suite passes 497 tests with five installed fixtures ignored; the
 production, non-test `aos-storaged` binary also compiles and links. These are
 source and synthetic-runtime results, not installed positive-reader/held-cut
 qualification. Public Acquire and authenticated terminal cleanup remain closed.
