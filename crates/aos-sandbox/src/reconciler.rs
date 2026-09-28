@@ -4641,17 +4641,21 @@ mod tests {
         let project = ProjectId::from_bytes([0x91; 16]);
         let operation_id = OperationId::from_bytes([0xc1; 16]);
         let key = b"live-create-sandbox".to_vec();
-        let descriptor = ObjectDescriptor {
-            media_type: "application/vnd.aos.test".to_owned(),
+        let specification = ObjectDescriptor {
+            media_type: "application/vnd.aos.sandbox.spec.v1+cbor".to_owned(),
             sha256: vec![descriptor_byte; 32],
             encoded_size: 1,
             ..Default::default()
         };
+        let requested_policy = ObjectDescriptor {
+            media_type: "application/vnd.aos.sandbox.policy.v1+cbor".to_owned(),
+            ..specification.clone()
+        };
         let request = CreateSandboxRequest {
             project_id: project.as_bytes().to_vec(),
             expected_project_resource_version: vec![0xa1; 32],
-            specification: Some(descriptor.clone()).into(),
-            requested_policy: Some(descriptor).into(),
+            specification: Some(specification).into(),
+            requested_policy: Some(requested_policy).into(),
             idempotency_key: key.clone(),
             operation_timeout: Some(Duration {
                 nanoseconds: 1,
