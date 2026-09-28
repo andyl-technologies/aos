@@ -42,6 +42,8 @@ const EXACT_RESUME_PROGRESS_PREFIX: &str = "CRUCIBLE-EXACT-RESUME-PROGRESS-V1 ";
 mod lifecycle;
 #[path = "guest_choice/maintenance_transfer.rs"]
 mod maintenance_transfer;
+#[path = "guest_choice/storage_recovery.rs"]
+mod storage_recovery;
 
 #[test]
 #[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]
@@ -1768,6 +1770,25 @@ fn capture_checkpoint_after_progress(
     command_sequence: &mut u64,
     previous_checkpoint: Option<ExactCheckpointId>,
 ) -> Result<ExactCheckpointId, Box<dyn Error>> {
+    let checkpoints = directory_checkpoint_inspection_store(fixture)?;
+    capture_checkpoint_after_progress_with_store(
+        fixture,
+        service,
+        key,
+        command_sequence,
+        previous_checkpoint,
+        &checkpoints,
+    )
+}
+
+fn capture_checkpoint_after_progress_with_store(
+    fixture: &FlightFixture,
+    service: &CampaignServiceChild,
+    key: AttemptExecutionKey,
+    command_sequence: &mut u64,
+    previous_checkpoint: Option<ExactCheckpointId>,
+    checkpoints: &ExactCheckpointStore,
+) -> Result<ExactCheckpointId, Box<dyn Error>> {
     // A two-node promotion can take about 1,000 host seconds at the bounded
     // runnable step. Leave room for one same-root pause/resume retry.
     let started = Instant::now();
@@ -1779,7 +1800,7 @@ fn capture_checkpoint_after_progress(
         // The caller waits for a scheduler-observed marker after each resume.
         // A different promoted root remains the durable proof of advancement.
         pause_for_exact_checkpoint(fixture, &next_command_identity(command_sequence)?)?;
-        let checkpoint = match wait_for_promoted_checkpoint(fixture, key) {
+        let checkpoint = match wait_for_promoted_checkpoint_with_store(fixture, key, checkpoints) {
             Ok(checkpoint) => checkpoint,
             Err(error) => {
                 match service.stderr_lines_with_prefix("CRUCIBLE-PHASE4-CLOCK-TRACE ", 65536, 512) {
@@ -1849,9 +1870,20 @@ fn pause_for_exact_checkpoint(
     Ok(())
 }
 
-fn wait_for_promoted_checkpoint(
+fn directory_checkpoint_inspection_store(
+    fixture: &FlightFixture,
+) -> Result<ExactCheckpointStore, Box<dyn Error>> {
+    let backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
+        "guest-choice-checkpoint-inspection",
+        &fixture.objects,
+    ));
+    Ok(ExactCheckpointStore::new(backend, 1024 * 1024 * 1024)?)
+}
+
+fn wait_for_promoted_checkpoint_with_store(
     fixture: &FlightFixture,
     key: AttemptExecutionKey,
+    checkpoints: &ExactCheckpointStore,
 ) -> Result<ExactCheckpointId, Box<dyn Error>> {
     // The two-node oracle replays about 58,200 runnable 10us steps plus idle
     // jumps. At the measured 17ms median advance, allow comparison and
@@ -1859,11 +1891,6 @@ fn wait_for_promoted_checkpoint(
     let started = Instant::now();
     let deadline = started + Duration::from_secs(1200);
     let mut next_probe = started;
-    let backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
-        "guest-choice-checkpoint-inspection",
-        &fixture.objects,
-    ));
-    let checkpoints = ExactCheckpointStore::new(backend, 1024 * 1024 * 1024)?;
     let checkpoint = wait_for_process_observation(deadline, || {
         if Instant::now() >= next_probe {
             println!(

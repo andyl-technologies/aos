@@ -229,7 +229,7 @@ never campaign truth, and may be discarded at any time.
 | `gate:campaign-store-composition` | Every supported route/tier/layer order preserves logical IDs, durability, errors, crash recovery, GC roots, and packing invariants |
 | `gate:campaign-cold-continuity` | Pause/restart/restore retains graph, frontier, knowledge, pins, and accounting |
 | `gate:campaign-statistics` | `P`/`Q` support and weight rules; biased campaigns cannot emit probability claims |
-| `gate:campaign-operational-continuity` | Coordinator/executor restart, exact pause, directory/compressed archive transfer, offline maintenance, and authenticated finding-to-midpoint debug all retain exact evidence |
+| `gate:campaign-operational-continuity` | Coordinator/executor restart, exact pause, real paused-QEMU S3 outage/credential recovery with observed guest progress, directory/compressed archive transfer, offline maintenance, and authenticated finding-to-midpoint debug all retain exact evidence |
 | `gate:campaign-envoy-network-five-vm` | The packaged five-VM Envoy product completes authenticated failover and recovery through the public campaign surface |
 | `gate:e2e-determinism` | Live packaged QEMU/TCG repeats the same campaign under bounded host scheduling and I/O jitter with one, two, and four available host cores; every profile produces byte-identical artifacts and results with authenticated release evidence |
 | `gate:license-boundary` | Existing process/license closure including all new QEMU patches |

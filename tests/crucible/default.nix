@@ -1541,6 +1541,9 @@ in rec {
       campaignExactMaintenanceTransfer = import ./phase5-campaign-exact-maintenance-transfer-vm.nix {
         inherit pkgs lib;
       };
+      campaignStorageRecovery = import ./phase5-campaign-storage-recovery-vm.nix {
+        inherit pkgs lib;
+      };
       campaignPolicyTimeoutVm = import ./phase5-campaign-policy-timeout-vm.nix {
         inherit pkgs lib;
       };
@@ -3140,6 +3143,7 @@ in rec {
         campaignStoreComposition = phase5.gates.campaignStoreComposition.rawGate;
         campaignColdContinuity = phase5.gates.campaignColdContinuity.rawGate;
         campaignExactMaintenanceTransfer = phase5.gates.campaignExactMaintenanceTransfer;
+        campaignStorageRecovery = phase5.gates.campaignStorageRecovery;
         inherit campaignMidpointDebug campaignServiceModuleContract;
         dependencies = [];
       };

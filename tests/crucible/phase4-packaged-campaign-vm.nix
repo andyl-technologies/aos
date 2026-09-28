@@ -12,6 +12,7 @@
   findingSignalBundle ? false,
   findingForkWrite ? false,
   maintenanceTransfer ? false,
+  storageRecovery ? false,
   policyTimeout ? false,
 }: let
   envoyProduct = envoyNetwork || envoyKnownFinding;
@@ -186,11 +187,18 @@
     campaignFlight = true;
   };
   envoyNetworkRootImage = import ./_envoy-network-guest.nix {inherit pkgs;};
+  storageRecoveryRunner = pkgs.writeTextFile {
+    name = "campaign-storage-recovery-garage";
+    text = builtins.readFile ./_campaign-storage-recovery-garage.sh;
+    destination = "/share/crucible/campaign-storage-recovery-garage.sh";
+  };
   testing = import ../../lib/testing {inherit pkgs lib;};
   vmTest = testing.mkVMTest {
     name =
       if policyTimeout
       then "crucible-packaged-campaign-policy-timeout"
+      else if storageRecovery
+      then "crucible-campaign-storage-recovery"
       else if maintenanceTransfer
       then "crucible-campaign-exact-maintenance-transfer"
       else if hotForkFlight
@@ -215,7 +223,7 @@
     memory =
       if envoyProduct
       then 8192
-      else if findingForkWrite || hotForkFlight
+      else if findingForkWrite || hotForkFlight || storageRecovery
       then 3072
       else 2048;
     headlessVcpuCount =
@@ -223,15 +231,16 @@
       then 6
       else 1;
     # Five 512 MiB RAM and 512 MiB disk snapshots need at least 5 GiB for
-    # baked genesis alone. Leave 16 GiB writable for staged checkpoints,
-    # quota-backed attempts, and copy-on-write overhead on the ext4 rootfs.
+    # baked genesis alone. The storage-recovery flight also retains S3 objects
+    # beside staged checkpoints. Leave writable space on the ext4 rootfs.
     extraWritableMiB =
-      if envoyProduct
+      if envoyProduct || storageRecovery
       then 16384
       else 0;
     rootfsDeps =
       [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
       ++ (lib.optional envoyProduct envoyNetworkRootImage)
+      ++ (lib.optionals storageRecovery [storageRecoveryRunner pkgs.garage pkgs.bash pkgs.gawk])
       ++ (lib.optional (findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) pkgs.crucible)
       ++ (
         if guestChoice || hotForkFlight
@@ -242,9 +251,9 @@
       );
     testScript = ''
       set -eu
-      ${lib.optionalString envoyProduct ''
+      ${lib.optionalString (envoyProduct || storageRecovery) ''
         # The headless harness mounts /tmp as a RAM-sized tmpfs. Put the
-        # five-guest checkpoint workspace on the already-sized ext4 rootfs.
+        # checkpoint and store workspace on the already-sized ext4 rootfs.
         ${pkgs.util-linux}/bin/mount -o remount,rw /
         ${pkgs.util-linux}/bin/mount --bind /var/tmp /tmp
         chmod 1777 /tmp
@@ -312,7 +321,36 @@
       export CRUCIBLE_RUN_STATE_ROOT=/tmp/run-state
       export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64
       ${
-        if policyTimeout
+        if storageRecovery
+        then ''
+          export CRUCIBLE_STORAGE_GARAGE=${pkgs.garage}/bin/garage
+          export CRUCIBLE_STORAGE_KILL=${pkgs.coreutils}/bin/kill
+          export CRUCIBLE_STORAGE_FLIGHT=${flight}/bin/campaign-store-process-flight
+          export CRUCIBLE_STORAGE_FLIGHT_LOG=/tmp/campaign-storage-recovery.log
+          if ! ${pkgs.coreutils}/bin/timeout -k 5 7200 \
+            ${pkgs.bash}/bin/bash \
+            ${storageRecoveryRunner}/share/crucible/campaign-storage-recovery-garage.sh; then
+            cat "$CRUCIBLE_STORAGE_FLIGHT_LOG" 2>/dev/null || true
+            exit 1
+          fi
+          for evidence in \
+            storage_recovery_real_exact_pause=true \
+            storage_recovery_outage_refused_before_guest=true \
+            storage_recovery_expired_credentials_refused_before_guest=true \
+            storage_recovery_exact_origin_preserved=true \
+            storage_recovery_scheduler_observed_guest_progress=true \
+            storage_recovery_selected_outcome_preserved=true \
+            storage_recovery_derived_refs_preserved=2 \
+            storage_recovery_final_guest_cleanup=true
+          do
+            ${pkgs.grep}/bin/grep -Fxq "$evidence" "$CRUCIBLE_STORAGE_FLIGHT_LOG"
+          done
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' "$CRUCIBLE_STORAGE_FLIGHT_LOG"
+          printf '%s\n' 'gate=gate:campaign-storage-recovery' \
+            'tasks=T-CAM-5.8,T-CAM-9.3' 'tier=real-packaged-qemu-and-garage'
+        ''
+        else if policyTimeout
         then ''
           timeout_selector=packaged::public_packaged_executor_retains_policy_timeout_causal_evidence
           timeout_log=/tmp/campaign-policy-timeout.log
