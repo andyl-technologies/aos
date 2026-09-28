@@ -5,6 +5,13 @@
 //! method, path, and body forwarded to Native. The origin verifies it before
 //! any route, authentication, or rate-limit middleware can use those facts.
 
+mod oci_manifest;
+
+pub use oci_manifest::{
+    HybridOciManifestAdmission, HybridOciManifestPreflight, HYBRID_OCI_MANIFEST_UPLOAD_QUERY,
+    MAX_HYBRID_OCI_MANIFEST_BYTES,
+};
+
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 

@@ -30,7 +30,9 @@ pub struct OciUploadRecord {
     pub maximum_size: u64,
     /// Contiguous accepted byte count.
     pub uploaded_size: u64,
-    /// Placement that owns every immutable staging chunk, once bytes exist.
+    /// Placement reserved for every immutable staging chunk.
+    ///
+    /// Hybrid manifest admission freezes this address before the Worker writes.
     pub staging_placement_id: Option<i64>,
     /// Frozen placement revision used to write every staging chunk.
     pub staging_placement_resource_version: Option<i64>,
@@ -93,7 +95,7 @@ pub struct BeginOciUpload {
     pub expires_at: i64,
 }
 
-/// One immutable staged PATCH body.
+/// One immutable PATCH body or reserved Hybrid manifest staging identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OciUploadChunkRecord {
     /// Upload-local zero-based chunk ordinal.

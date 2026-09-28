@@ -5,6 +5,8 @@
 //! every referenced object must already be linked to this repository and have
 //! exact evidence on the selected writer placement.
 
+mod hybrid;
+
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -30,7 +32,7 @@ use crate::db::{
     OciUploadRecord,
 };
 
-const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
+const MAX_MANIFEST_BYTES: usize = crate::hybrid_ingress::MAX_HYBRID_OCI_MANIFEST_BYTES;
 const DIGEST_WAIT_BUDGET: Duration = Duration::from_secs(10);
 const DIGEST_POLL_MAX_DELAY: Duration = Duration::from_millis(100);
 
@@ -40,6 +42,7 @@ enum ParsedDocument {
 }
 
 impl RpcService {
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn put_manifest(
         &self,
         registry: &crate::db::RegistryRecord,
@@ -48,6 +51,7 @@ impl RpcService {
         reference: ManifestReference,
         headers: HeaderMap,
         body: Body,
+        prepared_upload_id: Option<&str>,
     ) -> Response {
         let media_type = match manifest_content_type(&headers) {
             Ok(media_type) => media_type,
@@ -80,27 +84,45 @@ impl RpcService {
                 false,
             );
         }
-        let placement = match self
-            .effective_surface_writer(SurfaceTarget::Registry(registry.id))
-            .await
-        {
-            Ok(placement) => placement,
-            Err(_) => return unavailable_response("registry writer is unavailable", false),
-        };
         let root = document_descriptor(media_type, digest, bytes.len() as u64, &document);
-        let (upload, chunks) = match self
-            .stage_manifest_bytes(
-                registry.id,
-                repository.id,
-                &owner,
-                &placement,
-                digest,
-                &bytes,
-            )
-            .await
-        {
-            Ok(staged) => staged,
-            Err(response) => return response,
+        let (placement, upload, chunks) = match prepared_upload_id {
+            Some(upload_id) => match self
+                .verified_hybrid_manifest_staging(
+                    repository,
+                    &owner,
+                    upload_id,
+                    digest,
+                    bytes.len(),
+                )
+                .await
+            {
+                Ok(staged) => staged,
+                Err(response) => return response,
+            },
+            None => {
+                let placement = match self
+                    .effective_surface_writer(SurfaceTarget::Registry(registry.id))
+                    .await
+                {
+                    Ok(placement) => placement,
+                    Err(_) => return unavailable_response("registry writer is unavailable", false),
+                };
+                let (upload, chunks) = match self
+                    .stage_manifest_bytes(
+                        registry.id,
+                        repository.id,
+                        &owner,
+                        &placement,
+                        digest,
+                        &bytes,
+                    )
+                    .await
+                {
+                    Ok(staged) => staged,
+                    Err(response) => return response,
+                };
+                (placement, upload, chunks)
+            }
         };
         let (root_digest, objects) = match self
             .manifest_graph(repository, &placement, root.clone(), document)

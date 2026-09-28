@@ -227,6 +227,36 @@ impl Database {
             .transpose()
     }
 
+    /// Returns a live manifest reservation only to its exact writer and token.
+    ///
+    /// Ordinary resumable blob sessions cannot be substituted for a manifest
+    /// preflight, even when they contain the same bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted state.
+    pub async fn hybrid_oci_manifest_upload(
+        &self,
+        upload_id: &str,
+        owner: &str,
+        now: i64,
+    ) -> Result<Option<OciUploadRecord>> {
+        self.backend
+            .query_opt(
+                &format!(
+                    "SELECT {OCI_UPLOAD_COLUMNS} FROM oci_upload_sessions
+                     WHERE id = ?1 AND writer_id = ?2 AND token_id = ?2
+                       AND state = 'active' AND expires_at > ?3
+                       AND idempotency_key LIKE 'manifest-hybrid-%'"
+                ),
+                &vals![upload_id, owner, now],
+            )
+            .await?
+            .as_ref()
+            .map(row_to_oci_upload)
+            .transpose()
+    }
+
     async fn oci_upload_by_idempotency(
         &self,
         registry_id: i64,
@@ -250,6 +280,11 @@ impl Database {
 
     /// Atomically appends an immutable staging chunk and advances the portable
     /// hash state. Exact replay returns the already-advanced upload.
+    ///
+    /// Hybrid manifest preflight also uses this transaction to reserve the
+    /// buffered byte identity and its cleanup address before provider IO.
+    /// Such a reservation is not canonical presence evidence: completion must
+    /// independently verify storage before admitting the manifest graph.
     ///
     /// # Errors
     ///

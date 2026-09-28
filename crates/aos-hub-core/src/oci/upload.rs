@@ -169,6 +169,29 @@ impl RpcService {
             Ok(owner) => owner,
             Err(response) => return response,
         };
+        if self.hybrid_delivery && method == Method::PUT {
+            if let OciRequest::Manifest { reference, .. } = &request {
+                let phase = headers
+                    .get(HYBRID_UPLOAD_PHASE_HEADER)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
+                let Some(phase) = phase else {
+                    return unavailable_response("manifest requires Worker-local staging", false);
+                };
+                return self
+                    .serve_hybrid_manifest(
+                        registry,
+                        repository,
+                        owner,
+                        reference.clone(),
+                        headers,
+                        query,
+                        body,
+                        &phase,
+                    )
+                    .await;
+            }
+        }
         if let Some(phase) = headers
             .get(HYBRID_UPLOAD_PHASE_HEADER)
             .and_then(|value| value.to_str().ok())
@@ -252,7 +275,7 @@ impl RpcService {
                     .await
             }
             (OciRequest::Manifest { reference, .. }, Method::PUT) => {
-                self.put_manifest(registry, repository, owner, reference, headers, body)
+                self.put_manifest(registry, repository, owner, reference, headers, body, None)
                     .await
             }
             (OciRequest::Manifest { reference, .. }, Method::DELETE) => {

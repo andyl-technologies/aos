@@ -161,6 +161,19 @@ must check the repository link and token scope. OCI manifests are bounded and
 may be served from Native or a revisioned Worker cache, but immutable blob
 bytes stay on the storage path.
 
+Manifest and index PUTs retain the same 4 MiB limit in every runtime. In Hybrid,
+the Worker buffers the exact client bytes and sends their bounded hash identity
+to Native through the authenticated manifest PUT action. Native reserves quota
+and persists an attempt-unique staging key, placement and immutable binding
+write revision before admitting the Worker write. The Worker stores the body
+beside R2 and forwards the original document once inbound to Native with the
+reservation identity bound into the signed request URI. Native verifies that
+the owner, repository, body and storage evidence match, validates the closed
+descriptor graph, and commits materialization and catalog state. It returns
+only control receipts; the manifest body is never echoed from Native to the
+Worker for staging. Expiry retains the frozen address for cleanup of an
+interrupted attempt, including an attempt whose provider write never occurred.
+
 ## Inventory, reconciliation, and GC
 
 Native owns the durable inventory generation, leases, root graph, policy,

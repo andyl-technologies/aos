@@ -817,6 +817,7 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
                 "hash_oci_range",
                 "copy_object",
                 "compose_oci_blob",
+                "stage_oci_manifest",
                 "delete_oci_staging",
                 "delete_if_matches",
                 "put_metadata",
@@ -2731,6 +2732,7 @@ mod tests {
                 "hash_oci_range".into(),
                 "copy_object".into(),
                 "compose_oci_blob".into(),
+                "stage_oci_manifest".into(),
                 "delete_oci_staging".into(),
                 "delete_if_matches".into(),
                 "put_metadata".into(),
@@ -2751,6 +2753,11 @@ mod tests {
             .operations
             .retain(|operation| operation != "inspect_metadata_objects");
         assert!(validate_capabilities("deployment-1", &older).is_err());
+        let mut without_manifest_staging = capabilities.clone();
+        without_manifest_staging
+            .operations
+            .retain(|operation| operation != "stage_oci_manifest");
+        assert!(validate_capabilities("deployment-1", &without_manifest_staging).is_err());
         capabilities.operations.pop();
         assert!(validate_capabilities("deployment-1", &capabilities).is_err());
     }

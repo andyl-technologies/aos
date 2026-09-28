@@ -42,6 +42,18 @@ the Hybrid frozen OCI staging writer accepts probe objects only, while manifest
 admission writes a new staged control document before validating its graph.
 That bounded write must be implemented before nonempty parity can pass.
 
+The implementation now stages Hybrid manifests at Worker ingress. Native
+reserves quota and the exact frozen cleanup address before the Worker writes
+R2; completion sends the original bounded document inbound once, verifies
+storage evidence and then uses the existing graph and catalog admission path.
+No manifest body is echoed outbound from Native. Twelve focused shared OCI
+upload/recovery tests passed, including four new manifest cases for the 4 MiB
+boundary, interrupted-write cleanup, exact ownership/body/storage evidence,
+quota rejection and private completion identities. All 21 Native storage tests
+passed, including rejection of a paired Worker without manifest staging.
+The Worker handler passed Wasm compilation. The full signed-container fleet
+gate is rebuilding; these focused results do not yet qualify nonempty parity.
+
 A separate four-VM browser attempt passed the captured transport setup, then
 timed out on Chrome's first navigation through a disposable SOCKS bridge. It
 completed zero browser assertions and does not qualify the Hybrid UI. The

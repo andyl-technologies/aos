@@ -13,12 +13,13 @@ use aos_hub_core::hybrid_ingress::{
     HybridCachePartCompletionRequest, HybridCachePartPreflight, HybridCacheUploadAdmission,
     HybridCacheUploadAdmissionRequest, HybridCacheUploadCompletionRequest,
     HybridCacheUploadPreflight, HybridDeliveryTarget, HybridIngressAssertion, HybridIngressKey,
-    HybridOciChunkAdmission, HybridOciChunkCompletionRequest, HybridPublicationPartAdmission,
+    HybridOciChunkAdmission, HybridOciChunkCompletionRequest, HybridOciManifestAdmission,
+    HybridOciManifestPreflight, HybridPublicationPartAdmission,
     HybridPublicationPartAdmissionRequest, HybridPublicationPartCompletionRequest,
     HybridPublicationPartPreflight, HybridPublicationPartTag, HybridPublicationUploadAdmission,
     HybridPublicationUploadCompletionRequest, HYBRID_DELIVERY_HEADER, HYBRID_INGRESS_HEADER,
-    HYBRID_NATIVE_DURATION_HEADER, HYBRID_UPLOAD_PHASE_HEADER, MAX_HYBRID_OCI_CHUNK_BYTES,
-    MAX_HYBRID_PUBLICATION_PLACEMENTS,
+    HYBRID_NATIVE_DURATION_HEADER, HYBRID_OCI_MANIFEST_UPLOAD_QUERY, HYBRID_UPLOAD_PHASE_HEADER,
+    MAX_HYBRID_OCI_CHUNK_BYTES, MAX_HYBRID_OCI_MANIFEST_BYTES, MAX_HYBRID_PUBLICATION_PLACEMENTS,
 };
 use aos_hub_core::storage_work::{
     StorageBindingControl, StorageCapabilities, StorageCredentialProbeRequest, StorageWorkKey,
@@ -115,6 +116,9 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if request.method() == worker::Method::Put && is_oci_upload_session(&path) {
         return finalize_oci_upload(request, env).await;
     }
+    if request.method() == worker::Method::Put && is_oci_manifest(&path) {
+        return put_oci_manifest(request, env).await;
+    }
     if is_unrouted_oci_upload(&request.method(), &path) {
         return Response::error("hybrid storage upload is unavailable", 503);
     }
@@ -167,6 +171,110 @@ fn is_oci_upload_session(path: &str) -> bool {
         .is_some_and(|(repository, upload_id)| {
             !repository.is_empty() && !upload_id.is_empty() && !upload_id.contains('/')
         })
+}
+
+fn is_oci_manifest(path: &str) -> bool {
+    path.split_once("/v2/")
+        .and_then(|(_, route)| route.rsplit_once("/manifests/"))
+        .is_some_and(|(repository, reference)| {
+            !repository.is_empty() && !reference.is_empty() && !reference.contains('/')
+        })
+}
+
+async fn put_oci_manifest(mut request: Request, env: &Env) -> Result<Response> {
+    let _permit = acquire_upload_permit().await;
+    let mut completion_url = request.url()?;
+    if completion_url
+        .query_pairs()
+        .any(|(key, _)| key == HYBRID_OCI_MANIFEST_UPLOAD_QUERY)
+    {
+        return Response::error("private manifest upload query is unavailable", 400);
+    }
+    let Some(bytes) = read_bounded_body(&mut request, MAX_HYBRID_OCI_MANIFEST_BYTES).await? else {
+        return Response::error("manifest body exceeds the 4 MiB limit", 413);
+    };
+    if bytes.is_empty() {
+        return Response::error("manifest body must not be empty", 400);
+    }
+    let mut sha256_state = aos_hub_core::db::OciSha256State::initial();
+    sha256_state
+        .update(&bytes)
+        .map_err(|error| worker::Error::RustError(format!("manifest digest state: {error}")))?;
+    let sha256 = hex::encode(Sha256::digest(&bytes));
+    let preflight = serde_json::to_vec(&HybridOciManifestPreflight { sha256_state })
+        .map_err(|error| worker::Error::RustError(format!("manifest preflight JSON: {error}")))?;
+    let preflight_request = upload_phase_request(&request, &preflight)?;
+    let response = match proxy_with_upload_phase(preflight_request, env, Some("preflight")).await {
+        Ok(response) => response,
+        Err(error) => {
+            worker::console_error!("hybrid_manifest_preflight_failed: {error:#}");
+            return Response::error("manifest upload origin is unavailable", 503);
+        }
+    };
+    if response.status_code() != 200 {
+        return Ok(response);
+    }
+    let Some(admission_body) = read_bounded_response(response, 4096).await? else {
+        return Response::error("manifest admission is too large", 502);
+    };
+    let admission: HybridOciManifestAdmission = match serde_json::from_slice(&admission_body) {
+        Ok(admission) => admission,
+        Err(_) => return Response::error("manifest admission is invalid", 502),
+    };
+    let staging_prefix = format!("oci/uploads/{}/chunks/0-", admission.upload_id);
+    let valid_key = admission
+        .staging_object_key
+        .strip_prefix(&staging_prefix)
+        .and_then(|suffix| suffix.strip_suffix(&format!("-{sha256}")))
+        .is_some_and(|attempt| {
+            attempt.len() == 32
+                && attempt
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        });
+    if admission.upload_id.len() != 32
+        || !admission
+            .upload_id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        || admission.byte_size != bytes.len() as u64
+        || admission.sha256 != sha256
+        || !valid_key
+    {
+        return Response::error("manifest admission identity is invalid", 502);
+    }
+    let object_key =
+        aos_hub_core::keymap::r2_key(&admission.placement_prefix, &admission.staging_object_key);
+    if !valid_r2_key(&object_key) {
+        return Response::error("manifest placement key is invalid", 502);
+    }
+    if let Err(error) = crate::hybrid_object::put(env, &object_key, &bytes).await {
+        worker::console_error!("hybrid_manifest_put_failed: {error:#}");
+        return Response::error("manifest storage write failed", 503);
+    }
+
+    completion_url
+        .query_pairs_mut()
+        .append_pair(HYBRID_OCI_MANIFEST_UPLOAD_QUERY, &admission.upload_id);
+    let completion = upload_phase_request_with_url(
+        &request,
+        &bytes,
+        worker::Method::Put,
+        completion_url.as_str(),
+    )?;
+    // Native parses the exact original OCI document, never the preflight JSON.
+    if let Some(content_type) = request.headers().get("content-type")? {
+        completion.headers().set("content-type", &content_type)?;
+    } else {
+        completion.headers().delete("content-type")?;
+    }
+    match proxy_with_upload_phase(completion, env, Some("complete")).await {
+        Ok(response) => Ok(response),
+        Err(error) => {
+            worker::console_error!("hybrid_manifest_completion_failed: {error:#}");
+            Response::error("manifest upload completion is unavailable", 503)
+        }
+    }
 }
 
 async fn append_oci_upload_chunk(mut request: Request, env: &Env) -> Result<Response> {
@@ -787,6 +895,15 @@ fn upload_phase_request_with_method(
     body: &[u8],
     method: worker::Method,
 ) -> Result<Request> {
+    upload_phase_request_with_url(original, body, method, original.url()?.as_str())
+}
+
+fn upload_phase_request_with_url(
+    original: &Request,
+    body: &[u8],
+    method: worker::Method,
+    target_url: &str,
+) -> Result<Request> {
     let headers = Headers::new();
     for (name, value) in original.headers().entries() {
         if is_forwarded_header(&name) && name != "cf-connecting-ip" {
@@ -802,7 +919,7 @@ fn upload_phase_request_with_method(
         .with_redirect(RequestRedirect::Manual);
     let js_body: JsValue = js_sys::Uint8Array::from(body).into();
     init.with_body(Some(js_body));
-    Request::new_with_init(original.url()?.as_str(), &init)
+    Request::new_with_init(target_url, &init)
 }
 
 async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Response> {
@@ -840,6 +957,7 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
             "hash_oci_range".into(),
             "copy_object".into(),
             "compose_oci_blob".into(),
+            "stage_oci_manifest".into(),
             "delete_oci_staging".into(),
             "delete_if_matches".into(),
             "put_metadata".into(),
