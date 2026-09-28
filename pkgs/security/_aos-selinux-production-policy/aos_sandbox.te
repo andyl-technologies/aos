@@ -46,7 +46,6 @@ require {
     class memfd_file { getattr ioctl map open read };
     class sock_file { create getattr open read rename setattr unlink write };
     class unix_stream_socket { accept bind connect connectto create getattr getopt ioctl listen read setopt shutdown write };
-    class unix_seqpacket_socket { accept bind connect connectto create getattr getopt ioctl listen read setopt shutdown write };
 }
 
 # The fixed image worker has no pathname-opened FUSE, Cache, Root or channel
@@ -399,12 +398,12 @@ type_transition aos_sandbox_guest_owner_t devpts_t:chr_file aos_sandbox_guest_pt
 allow { aos_sandbox_guest_owner_t aos_sandbox_payload_t } aos_sandbox_guest_pty_t:chr_file { getattr ioctl open read write };
 allow aos_sandbox_guest_owner_t self:fifo_file { create getattr ioctl open read write };
 allow aos_sandbox_guest_owner_t self:unix_stream_socket { accept bind connect connectto create getattr getopt ioctl listen read setopt shutdown write };
-allow aos_sandbox_guest_owner_t self:unix_seqpacket_socket { accept bind connect connectto create getattr getopt ioctl listen read setopt shutdown write };
 allow aos_sandbox_guest_owner_t aos_sandbox_host_t:fd use;
 allow aos_sandbox_guest_owner_t aos_nspawn_t:fd use;
 allow aos_sandbox_guest_owner_t { aos_sandbox_host_t aos_nspawn_t }:file { getattr ioctl map open read };
 allow aos_sandbox_guest_owner_t { aos_sandbox_host_t aos_nspawn_t }:memfd_file { getattr ioctl map open read };
-allow aos_sandbox_guest_owner_t aos_sandbox_host_t:unix_seqpacket_socket { connectto getattr getopt ioctl read setopt shutdown write };
+# Linux maps both AF_UNIX stream and seqpacket transports to this class.
+allow aos_sandbox_guest_owner_t aos_sandbox_host_t:unix_stream_socket { connectto getattr getopt ioctl read setopt shutdown write };
 allow aos_sandbox_guest_owner_t { aos_sandbox_guest_anchor_t aos_sandbox_guest_tenant_data_t }:dir { getattr search };
 allow aos_sandbox_guest_owner_t { file_type aos_sandbox_guest_tenant_data_t }:file { execute getattr };
 allow aos_sandbox_guest_owner_t file_type:dir { getattr search };

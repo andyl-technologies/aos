@@ -531,6 +531,12 @@ POSITIVE_ACCESS = (
     Access("aos_sandbox_host_t", "aos_sandbox_payload_t", "file", "read"),
     Access("aos_sandbox_host_t", "aos_sandbox_payload_t", "file", "ioctl"),
     *accesses("aos_sandbox_host_t", GUEST_OWNER, "file", ("ioctl", "read")),
+    *accesses(
+        GUEST_OWNER,
+        "aos_sandbox_host_t",
+        "unix_stream_socket",
+        ("connectto", "getattr", "getopt", "ioctl", "read", "setopt", "shutdown", "write"),
+    ),
     Access(GUEST_TENANT, GUEST_OWNER, "fd", "use"),
     *accesses(GUEST_TENANT, GUEST_OWNER, "fifo_file", ("getattr", "ioctl", "open", "read", "write")),
     *(
@@ -987,8 +993,8 @@ def negative_access() -> tuple[Access, ...]:
         )
     checks.extend(accesses(GUEST_TENANT, "aos_sandbox_guest_anchor_t", "dir", DIRECTORY_INODE_MUTATIONS))
     checks.extend(accesses(GUEST_TENANT, "aos_sandbox_guest_private_t", "sock_file", ("open", "read", "write")))
-    for object_class in ("unix_stream_socket", "unix_seqpacket_socket"):
-        checks.extend(accesses(GUEST_TENANT, GUEST_OWNER, object_class, ("connectto", "read", "write")))
+    # Linux also checks AF_UNIX SOCK_SEQPACKET against unix_stream_socket.
+    checks.extend(accesses(GUEST_TENANT, GUEST_OWNER, "unix_stream_socket", ("connectto", "read", "write")))
     checks.extend(accesses(GUEST_TENANT, "cgroup_t", "file", ("write", "append", "setattr")))
     checks.extend(accesses(GUEST_TENANT, "cgroup_t", "dir", ("add_name", "remove_name", "create", "write", "setattr")))
     checks.extend(accesses(GUEST_OWNER, "aos_sandbox_guest_tenant_data_t", "file", ("read", "map", "execute_no_trans")))

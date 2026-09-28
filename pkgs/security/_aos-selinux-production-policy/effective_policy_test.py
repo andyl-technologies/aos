@@ -515,6 +515,19 @@ class EffectivePolicyTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "missing effective allow"):
                     effective_policy.check_policy(FAKE_SETOOLS, policy)
 
+    def test_missing_original_guest_host_channel_permission_fails(self) -> None:
+        policy = FakePolicy()
+        access = effective_policy.Access(
+            effective_policy.GUEST_OWNER,
+            "aos_sandbox_host_t",
+            "unix_stream_socket",
+            "read",
+        )
+        policy.allows[access] = []
+
+        with self.assertRaisesRegex(ValueError, "missing effective allow"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def test_uid_zero_cannot_bypass_guest_owner_objects(self) -> None:
         for access in (
             effective_policy.Access(effective_policy.GUEST_TENANT, effective_policy.GUEST_OWNER, "file", "read"),
