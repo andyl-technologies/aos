@@ -76,6 +76,21 @@ pub(super) fn validate_graph(
             .values()
             .find(|candidate| candidate.attempt_digest == acquisition.effect_attempt_digest)
             .ok_or(ProviderLedgerError::Corrupt("acquisition effect attempt"))?;
+        let ordinary_backend_id = crate::acquire::derive_backend_plan_id(
+            acquisition.normalized_intent.digest(),
+            acquisition.catalog_generation,
+            acquisition.catalog_digest,
+        );
+        let native_closed_backend_id = crate::acquire::derive_native_no_dispatch_id(
+            acquisition.normalized_intent.digest(),
+            acquisition.catalog_generation,
+            acquisition.catalog_digest,
+        );
+        let backend_id_matches = acquisition.backend_id == ordinary_backend_id
+            || (!acquisition.normalized_intent.kernel_coupled()
+                && acquisition.resource_id != [0; 32]
+                && acquisition.proof_class == 0
+                && acquisition.backend_id == native_closed_backend_id);
         if effect_attempt.method != SourceProviderMethod::Acquire
             || effect_attempt.provider != acquisition.provider
             || effect_attempt.holder != acquisition.holder
@@ -90,11 +105,7 @@ pub(super) fn validate_graph(
                 acquisition.acquisition_id,
                 effect_attempt.attempt_digest,
             )? != acquisition.effect_id
-            || crate::acquire::derive_backend_plan_id(
-                acquisition.normalized_intent.digest(),
-                acquisition.catalog_generation,
-                acquisition.catalog_digest,
-            ) != acquisition.backend_id
+            || !backend_id_matches
         {
             return Err(ProviderLedgerError::Corrupt(
                 "acquisition effect-attempt lineage",

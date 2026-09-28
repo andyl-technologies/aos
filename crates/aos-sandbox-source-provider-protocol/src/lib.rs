@@ -114,7 +114,8 @@ pub use proof::{
     RecursiveTopologyProofV1, SourceProviderProofV1, ZfsHeldSnapshotProofV1,
 };
 pub use recovery_currentness::{
-    RecoveryCurrentnessErrorV1, RecoveryCurrentnessQueryV1, SignedRecoveryUnavailableV1,
+    NativeRecoveryTerminalDigestsV1, RecoveryCurrentnessErrorV1, RecoveryCurrentnessQueryV1,
+    SignedNativeRecoveryUnavailableV1, SignedRecoveryUnavailableV1,
 };
 pub use storage_live_export_lease::{
     SignedStorageLiveExportLeaseV1, StorageLiveExportConsumerV1, StorageLiveExportLeaseErrorV1,

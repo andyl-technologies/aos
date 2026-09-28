@@ -74,6 +74,7 @@ impl<'journal> ProviderLedgerV1<'journal> {
         authorization: aos_sandbox_source_provider_security::AuthorizedV2MigrationPlanV1,
     ) -> Result<ProtectedAossplMigrationOutcomeV1<'journal>, ProviderLedgerError> {
         journal.validate_source_provider_authority()?;
+        journal.validate_global_capacity_reservation_set_v1(&Default::default())?;
         let (
             plan,
             protected_configuration,
@@ -194,6 +195,7 @@ impl<'journal> ProviderLedgerV1<'journal> {
         recovery: &AossplMigrationRecoveryV1,
     ) -> Result<ProtectedAossplMigrationOutcomeV1<'journal>, ProviderLedgerError> {
         journal.validate_source_provider_authority()?;
+        journal.validate_global_capacity_reservation_set_v1(&Default::default())?;
         let protected = session.revalidated_provider_configuration()?;
         if protected.migration_configuration_commitment_v1()
             != recovery.protected_configuration_commitment
@@ -269,7 +271,9 @@ fn recover_exact_migration(
             "installed migration graph commitment differs",
         ));
     }
-    crate::recovery::recover(journal, configuration)
+    let recovered = crate::recovery::recover(journal, configuration)?;
+    crate::native_no_dispatch_capacity::validate_set(journal, &recovered)?;
+    Ok(recovered)
 }
 
 fn exact_legacy_snapshot(

@@ -9,21 +9,24 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use aos_sandbox::{Journal, JournalLimits, RecordNamespace, RecoveryReport};
+use aos_sandbox::{Journal, JournalLimits, RecoveryReport};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_ledger::ledger::model::AttemptRecordV1;
 use aos_sandbox_source_provider_protocol::{
-    CatalogCurrentnessQueryV1, InventoryReadbackQueryV1, RecoveryCurrentnessQueryV1,
-    SignedCatalogCurrentnessV1, SignedSourceProviderRequestV1, SourceProviderMethod,
-    decode_acquire_request, decode_inventory_request,
+    CatalogCurrentnessQueryV1, InventoryReadbackQueryV1, NativeRecoveryTerminalDigestsV1,
+    RecoveryCurrentnessQueryV1, SignedCatalogCurrentnessV1, SignedSourceProviderRequestV1,
+    SourceProviderMethod, decode_acquire_request, decode_inventory_request,
 };
 use aos_sandbox_source_provider_security::{
     ProviderSourceProviderHandshakeStatusV1, ProviderSourceProviderOwnerV1,
 };
 
 use crate::state::{DetachedProviderLedgerV1, ProtectedProviderConfigurationV1};
-use crate::{DurableProviderReplyV1, ProviderLedgerError, ProviderLedgerLimits, ProviderLedgerV1};
+use crate::{
+    DurableProviderReplyV1, NativeNoDispatchSettlementV1, ProviderLedgerError,
+    ProviderLedgerLimits, ProviderLedgerV1,
+};
 use sha2::{Digest as _, Sha256};
 
 const FIXED_PROVIDER_STATE_ROOT: &str = "/var/lib/aos/source-provider";
@@ -270,6 +273,7 @@ pub struct FixedProviderOwnerV1 {
     last_recovery_sequence: u64,
     pending_recovery_query_digest: Option<ObjectDigest>,
     pending_recovery_plan_digest: Option<ObjectDigest>,
+    pending_recovery_terminal_digests: Option<NativeRecoveryTerminalDigestsV1>,
     pending_inventory_readback_digest: Option<ObjectDigest>,
 }
 
@@ -331,6 +335,7 @@ impl FixedProviderOwnerV1 {
                 last_recovery_sequence: 0,
                 pending_recovery_query_digest: None,
                 pending_recovery_plan_digest: None,
+                pending_recovery_terminal_digests: None,
                 pending_inventory_readback_digest: None,
             },
             FixedProviderOpenReportV1 { journal: recovery },
@@ -397,7 +402,7 @@ impl FixedProviderOwnerV1 {
             .journal
             .as_mut()
             .ok_or(ProviderLedgerError::RuntimePoisoned)?
-            .claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
+            .claim_source_provider_native_terminal_authority_v1()?;
         initial_authority.validate_fixed_source_provider_storage()?;
         let handoff = initial_authority.fixed_source_provider_session_handoff()?;
         let mut session = security.into_fixed_ledger_session(handoff)?;
@@ -523,7 +528,7 @@ impl FixedProviderOwnerV1 {
             }
         };
         let authority = match journal
-            .claim_protected_authority(RecordNamespace::SourceProviderAuthority)
+            .claim_source_provider_native_terminal_authority_v1()
             .and_then(|authority| {
                 authority.validate_fixed_source_provider_storage()?;
                 Ok(authority)
@@ -692,7 +697,7 @@ impl FixedProviderOwnerV1 {
             .journal
             .as_mut()
             .ok_or(ProviderLedgerError::RuntimePoisoned)?
-            .claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
+            .claim_source_provider_native_terminal_authority_v1()?;
         authority.validate_fixed_source_provider_storage()?;
         let handoff = authority.fixed_source_provider_session_handoff()?;
         let (session, supersession) = security.into_fixed_recovery_ledger_session(handoff)?;
@@ -707,6 +712,7 @@ impl FixedProviderOwnerV1 {
         self.last_recovery_sequence = 0;
         self.pending_recovery_query_digest = None;
         self.pending_recovery_plan_digest = None;
+        self.pending_recovery_terminal_digests = None;
         self.pending_inventory_readback_digest = None;
         if let Some(recovery) = self.pending_backend_recovery.first_mut() {
             recovery.mark_successor_session_ready();
@@ -1422,17 +1428,19 @@ impl FixedProviderOwnerV1 {
         self.prepare_catalog_currentness_query(canonical_catalog_publication, query)
     }
 
-    /// Advances one catalog query, kernel-coupled Acquire, or holder Inventory.
+    /// Advances one catalog query, selected Acquire, or holder Inventory.
     ///
     /// The exact source packet is received from live carrier custody and is
     /// branded before leaving this owner. Its signature and durable sequence
     /// are still verified by the reservation reducer. Release and
-    /// non-kernel-coupled Acquire remain closed in the production service.
+    /// non-catalog Acquire remain closed in the production service. A native
+    /// selected Acquire remains pending until its separate signed no-dispatch
+    /// recovery settlement; it cannot return a SourceRoot or complete a lease.
     ///
     /// # Errors
     ///
-    /// Rejects malformed frames, source methods other than kernel-coupled
-    /// Acquire or Inventory, stale currentness, or changed peer/journal custody.
+    /// Rejects malformed frames, methods other than Acquire or Inventory,
+    /// stale currentness, or changed peer/journal custody.
     pub fn advance_authenticated_ingress(
         &mut self,
         canonical_catalog_publication: &[u8],
@@ -1505,6 +1513,7 @@ impl FixedProviderOwnerV1 {
             self.last_recovery_sequence = query.sequence();
             self.pending_recovery_query_digest = Some(query.digest());
             self.pending_recovery_plan_digest = None;
+            self.pending_recovery_terminal_digests = None;
             return Ok(FixedProviderIngressProgressV1::Recovery(query));
         }
         if packet.starts_with(b"AOSSPI01") {
@@ -1546,6 +1555,7 @@ impl FixedProviderOwnerV1 {
     ) -> Result<bool, ProviderLedgerError> {
         if self.pending_recovery_query_digest != Some(query.digest())
             || self.last_recovery_sequence != query.sequence()
+            || self.pending_recovery_terminal_digests.is_some()
             || self
                 .pending_recovery_plan_digest
                 .is_some_and(|digest| digest != signed_plan_digest)
@@ -1570,6 +1580,55 @@ impl FixedProviderOwnerV1 {
         if sent {
             self.pending_recovery_query_digest = None;
             self.pending_recovery_plan_digest = None;
+        }
+        Ok(sent)
+    }
+
+    /// Sends a native no-dispatch recovery settlement under its exact journal cut.
+    ///
+    /// The move-only settlement was minted only after the protected Provider
+    /// terminal transition. The journal snapshot is revalidated immediately
+    /// before the current session signs or sends its descriptor-free answer.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale query, changed settlement, journal, signer, peer, or send.
+    pub fn send_native_recovery_unavailable(
+        &mut self,
+        query: &RecoveryCurrentnessQueryV1,
+        settlement: &NativeNoDispatchSettlementV1,
+    ) -> Result<bool, ProviderLedgerError> {
+        if self.pending_recovery_query_digest != Some(query.digest())
+            || self.last_recovery_sequence != query.sequence()
+            || settlement.query_digest != query.digest()
+            || self.pending_recovery_plan_digest.is_some()
+            || self
+                .pending_recovery_terminal_digests
+                .is_some_and(|digests| digests != settlement.digests)
+        {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        self.pending_recovery_terminal_digests = Some(settlement.digests);
+        let sent = self.with_ledger(|ledger| {
+            ledger
+                .journal
+                .validate_source_provider_authority_snapshot(&settlement.snapshot)?;
+            let installed = ledger
+                .current_sessions
+                .values_mut()
+                .next()
+                .ok_or(ProviderLedgerError::Unavailable)?;
+            let response = installed
+                .session
+                .sign_native_recovery_unavailable(query, settlement.digests)?;
+            installed
+                .session
+                .send_native_recovery_unavailable(query, &response)
+                .map_err(Into::into)
+        })?;
+        if sent {
+            self.pending_recovery_query_digest = None;
+            self.pending_recovery_terminal_digests = None;
         }
         Ok(sent)
     }
@@ -1957,8 +2016,7 @@ impl FixedProviderOwnerV1 {
             .as_mut()
             .ok_or(ProviderLedgerError::RuntimePoisoned)
             .and_then(|journal| {
-                let authority =
-                    journal.claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
+                let authority = journal.claim_source_provider_native_terminal_authority_v1()?;
                 authority.validate_fixed_source_provider_storage()?;
                 Ok(authority)
             }) {
@@ -2023,7 +2081,7 @@ fn claim_fixed_provider_authority(
 ) -> Result<aos_sandbox::ProtectedJournalAuthority<'_>, ProviderLedgerError> {
     let authority = journal
         .ok_or(ProviderLedgerError::RuntimePoisoned)?
-        .claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
+        .claim_source_provider_native_terminal_authority_v1()?;
     authority.validate_fixed_source_provider_storage()?;
     Ok(authority)
 }
@@ -2081,7 +2139,7 @@ fn claim_configured_ledger<'journal>(
     ),
     ProviderLedgerError,
 > {
-    let authority = journal.claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
+    let authority = journal.claim_source_provider_native_terminal_authority_v1()?;
     authority.validate_fixed_source_provider_storage()?;
     let configuration = configured_ledger(session, canonical_catalog_publication)?;
     Ok((authority, configuration))
@@ -2186,9 +2244,6 @@ fn validate_production_source_request(
         SourceProviderMethod::Acquire => {
             let request = decode_acquire_request(signed.subject())
                 .map_err(|_| ProviderLedgerError::Unavailable)?;
-            if !request.kernel_coupled() {
-                return Err(ProviderLedgerError::Unavailable);
-            }
         }
         SourceProviderMethod::Inventory => {
             decode_inventory_request(signed.subject())

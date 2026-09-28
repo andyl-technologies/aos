@@ -22,6 +22,8 @@ pub enum GlobalCapacityReservationPurposeV1 {
     PublisherCompletion = 1,
     /// Runtime execution admission and terminal effect settlement.
     RuntimeExecution = 2,
+    /// Source-provider native admission and terminal settlement.
+    SourceProviderNativeTerminal = 3,
 }
 
 impl GlobalCapacityReservationPurposeV1 {
@@ -29,6 +31,7 @@ impl GlobalCapacityReservationPurposeV1 {
         match self {
             Self::PublisherCompletion => RecordNamespace::PublisherAuthority,
             Self::RuntimeExecution => RecordNamespace::Effect,
+            Self::SourceProviderNativeTerminal => RecordNamespace::SourceProviderAuthority,
         }
     }
 
@@ -45,6 +48,11 @@ impl GlobalCapacityReservationPurposeV1 {
                 namespace,
                 RecordNamespace::Effect | RecordNamespace::GlobalCapacityReservation
             ),
+            Self::SourceProviderNativeTerminal => matches!(
+                namespace,
+                RecordNamespace::SourceProviderAuthority
+                    | RecordNamespace::GlobalCapacityReservation
+            ),
         }
     }
 
@@ -52,6 +60,7 @@ impl GlobalCapacityReservationPurposeV1 {
         match value {
             1 => Ok(Self::PublisherCompletion),
             2 => Ok(Self::RuntimeExecution),
+            3 => Ok(Self::SourceProviderNativeTerminal),
             _ => Err(JournalError::MalformedRecord(
                 "unknown global capacity reservation purpose",
             )),

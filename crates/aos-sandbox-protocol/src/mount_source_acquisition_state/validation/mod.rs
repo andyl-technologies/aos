@@ -16,12 +16,13 @@ use crate::{
 use aos_proto::aos::sandbox::local::v1::ReleaseMountSourceAcquisitionRequest;
 use aos_sandbox_core::{BrokerArgumentCommitment, ObjectDigest};
 use aos_sandbox_source_provider_protocol::{
-    InventoryLeaseStateV1, NormalizedAcquisitionIntentV2, SignedSourceExportLeaseV1,
-    SignedSourceProviderInventoryV1, SignedSourceProviderReceiptV1, SignedSourceProviderRequestV1,
-    SignedSourceReleaseReceiptV1, SourceProviderAuthorityV1, SourceProviderDescriptorRole,
-    SourceProviderKeyUsageV1, SourceProviderSigningKeyV1, SourceRootObservationV1,
-    SourceSelectionFloorV1, SourceUseV1, decode_acquire_request, decode_inventory_request,
-    decode_release_request, digest_acquire_request, digest_inventory, digest_inventory_request,
+    InventoryLeaseStateV1, NormalizedAcquisitionIntentV2, RecoveryCurrentnessQueryV1,
+    SignedNativeRecoveryUnavailableV1, SignedSourceExportLeaseV1, SignedSourceProviderInventoryV1,
+    SignedSourceProviderReceiptV1, SignedSourceProviderRequestV1, SignedSourceReleaseReceiptV1,
+    SourceProviderAuthorityV1, SourceProviderDescriptorRole, SourceProviderKeyUsageV1,
+    SourceProviderSigningKeyV1, SourceRootObservationV1, SourceSelectionFloorV1, SourceUseV1,
+    decode_acquire_request, decode_inventory_request, decode_release_request,
+    digest_acquire_request, digest_inventory, digest_inventory_request,
     digest_logical_binding_bytes, digest_provider_proof, digest_release_request,
     digest_signed_export_lease, prospective_mount_apply_template_digest_v1,
     provider_resource_commitment_v1, source_acquisition_id_v2,
@@ -37,8 +38,8 @@ use super::format::{
     MAXIMUM_SOURCE_PROVIDER_ATTEMPTS, MAXIMUM_SOURCE_PROVIDER_HEADS,
     MAXIMUM_SOURCE_PROVIDER_SESSIONS, MutationTagV2, attempt_id, death_digest, execution_digest,
     intent_digest, inventory_correlation_set_v2, manager_custody_evidence_digest_v2,
-    manager_custody_loss_evidence_digest_v2, record_digest, request_id, session_id, state_error,
-    transaction_id, validate_inventory_correlation_set_v2,
+    manager_custody_loss_evidence_digest_v2, native_recovery_settlement_digest_v2, record_digest,
+    request_id, session_id, state_error, transaction_id, validate_inventory_correlation_set_v2,
 };
 use super::history::{attempt_is_terminal, validate_global_history};
 use super::model::*;

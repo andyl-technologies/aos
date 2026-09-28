@@ -3,8 +3,9 @@
 //! `AOSPCM01` rows name only LocalLive exports. This separate format reserves
 //! an exact native snapshot selector without making it a Storage hold
 //! observation or SourceRoot acquisition. The fixed Provider owner can inspect
-//! a row under its protected current publication, but no physical Storage
-//! receipt or production acquisition consumes this claim yet.
+//! a row under its protected current publication. Production can retain that
+//! selection in an Applying attempt, but it grants no physical Storage receipt
+//! or SourceRoot.
 //!
 //! ```text
 //! AOSPCZ01 | version:u16be=1 | reserved:u16be=0 |

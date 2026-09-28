@@ -1888,6 +1888,9 @@ in {
         sandbox-mount-journal-cold-replay = import ./tests/vm/sandbox-mount-journal-cold-replay.nix {
           inherit testing pkgs lib;
         };
+        sandbox-source-provider-native-recovery = import ./tests/vm/sandbox-source-provider-native-recovery.nix {
+          inherit testing pkgs lib;
+        };
         sandbox-local-identity = import ./tests/vm/sandbox-local-identity.nix {
           inherit testing pkgs lib;
         };

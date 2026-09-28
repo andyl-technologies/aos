@@ -3,18 +3,10 @@
 use super::*;
 
 impl CurrentProviderIngressSessionV1 {
-    /// Signs an Unavailable observation on this new carrier after caller-owned
-    /// protected attempt verification and authenticated Storage readback.
-    ///
-    /// # Errors
-    ///
-    /// Closes the session for stale custody, peer, or query binding.
-    #[doc(hidden)]
-    pub fn sign_recovery_unavailable(
+    fn require_recovery_query(
         &mut self,
         query: &RecoveryCurrentnessQueryV1,
-        signed_plan_digest: aos_sandbox_core::ObjectDigest,
-    ) -> Result<SignedRecoveryUnavailableV1, SourceProviderSecurityError> {
+    ) -> Result<(), SourceProviderSecurityError> {
         self.revalidate()?;
         if query.session_binding() != self.session.binding()
             || query.authorities().0
@@ -31,6 +23,40 @@ impl CurrentProviderIngressSessionV1 {
                 SourceProviderSecurityError::SessionContinuity,
             ));
         }
+        Ok(())
+    }
+
+    fn send_recovery_response_bytes(
+        &mut self,
+        canonical_response: &[u8],
+    ) -> Result<bool, SourceProviderSecurityError> {
+        match self.carrier.send(canonical_response) {
+            Ok(()) => {
+                self.revalidate()?;
+                Ok(true)
+            }
+            Err(CarrierFailureV1::Retryable) => Ok(false),
+            Err(CarrierFailureV1::Fatal(error)) => Err(poison_and_close(
+                &mut self.custody,
+                &mut self.carrier,
+                error,
+            )),
+        }
+    }
+
+    /// Signs an Unavailable observation on this new carrier after caller-owned
+    /// protected attempt verification and authenticated Storage readback.
+    ///
+    /// # Errors
+    ///
+    /// Closes the session for stale custody, peer, or query binding.
+    #[doc(hidden)]
+    pub fn sign_recovery_unavailable(
+        &mut self,
+        query: &RecoveryCurrentnessQueryV1,
+        signed_plan_digest: aos_sandbox_core::ObjectDigest,
+    ) -> Result<SignedRecoveryUnavailableV1, SourceProviderSecurityError> {
+        self.require_recovery_query(query)?;
         let response = {
             let inner = self.custody.inner();
             SignedRecoveryUnavailableV1::sign(
@@ -56,14 +82,13 @@ impl CurrentProviderIngressSessionV1 {
         query: &RecoveryCurrentnessQueryV1,
         response: &SignedRecoveryUnavailableV1,
     ) -> Result<bool, SourceProviderSecurityError> {
-        self.revalidate()?;
+        self.require_recovery_query(query)?;
         let inner = self.custody.inner();
         let signer = inner.provider_authority().traffic_signer();
         let public_key = inner.outcome_key().signing_key().verifying_key();
-        if query.session_binding() != self.session.binding()
-            || response
-                .verify_for_query(query, signer, public_key.as_bytes())
-                .is_err()
+        if response
+            .verify_for_query(query, signer, public_key.as_bytes())
+            .is_err()
         {
             return Err(poison_and_close(
                 &mut self.custody,
@@ -71,18 +96,64 @@ impl CurrentProviderIngressSessionV1 {
                 SourceProviderSecurityError::SessionContinuity,
             ));
         }
-        match self.carrier.send(&response.to_canonical_bytes()) {
-            Ok(()) => {
-                self.revalidate()?;
-                Ok(true)
-            }
-            Err(CarrierFailureV1::Retryable) => Ok(false),
-            Err(CarrierFailureV1::Fatal(error)) => Err(poison_and_close(
+        self.send_recovery_response_bytes(&response.to_canonical_bytes())
+    }
+
+    /// Signs native no-dispatch Unavailable after exact protected terminalization.
+    ///
+    /// This method does not establish the no-dispatch fact. The Provider
+    /// ledger must first commit and recheck all exact terminal records.
+    ///
+    /// # Errors
+    ///
+    /// Closes the session for stale custody, peer, or query binding.
+    #[doc(hidden)]
+    pub fn sign_native_recovery_unavailable(
+        &mut self,
+        query: &RecoveryCurrentnessQueryV1,
+        terminal_digests: NativeRecoveryTerminalDigestsV1,
+    ) -> Result<SignedNativeRecoveryUnavailableV1, SourceProviderSecurityError> {
+        self.require_recovery_query(query)?;
+        let response = {
+            let inner = self.custody.inner();
+            SignedNativeRecoveryUnavailableV1::sign(
+                query,
+                terminal_digests,
+                inner.provider_authority().traffic_signer().clone(),
+                inner.outcome_key().signing_key(),
+            )
+        }
+        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+        self.revalidate()?;
+        Ok(response)
+    }
+
+    /// Sends the distinct native no-dispatch Provider terminal settlement.
+    ///
+    /// # Errors
+    ///
+    /// Closes the session if the signed result or current peer is stale.
+    #[doc(hidden)]
+    pub fn send_native_recovery_unavailable(
+        &mut self,
+        query: &RecoveryCurrentnessQueryV1,
+        response: &SignedNativeRecoveryUnavailableV1,
+    ) -> Result<bool, SourceProviderSecurityError> {
+        self.require_recovery_query(query)?;
+        let inner = self.custody.inner();
+        let signer = inner.provider_authority().traffic_signer();
+        let public_key = inner.outcome_key().signing_key().verifying_key();
+        if response
+            .verify_for_query(query, signer, public_key.as_bytes())
+            .is_err()
+        {
+            return Err(poison_and_close(
                 &mut self.custody,
                 &mut self.carrier,
-                error,
-            )),
+                SourceProviderSecurityError::SessionContinuity,
+            ));
         }
+        self.send_recovery_response_bytes(&response.to_canonical_bytes())
     }
 
     /// Signs one exact protected historical Inventory readback on this carrier.

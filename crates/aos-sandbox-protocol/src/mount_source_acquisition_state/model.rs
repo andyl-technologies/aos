@@ -517,6 +517,19 @@ pub struct OutcomeVerificationAnchorV2 {
 #[serde(deny_unknown_fields, tag = "state", rename_all = "snake_case")]
 pub enum ProviderAttemptStateV2 {
     Reserved,
+    /// Provider durably retired a native no-dispatch Acquire under a new session.
+    NativeNoDispatchSettled {
+        /// Exact prior state reconstructed for protected replay of the old cut.
+        prior_state: Box<ProviderAttemptStateV2>,
+        /// Canonical challenge from the authenticated current session.
+        #[serde(with = "super::format::canonical_bytes")]
+        canonical_query: Vec<u8>,
+        /// Canonical current-session Provider terminal settlement.
+        #[serde(with = "super::format::canonical_bytes")]
+        signed_settlement: Vec<u8>,
+        /// Historical Mount session that authenticated the terminal signer.
+        settlement_session_id: [u8; 32],
+    },
     DispositionConsumed {
         response_sequence: u64,
         verification_anchor: OutcomeVerificationAnchorV2,
@@ -686,6 +699,9 @@ pub struct SourceProviderSessionV2 {
     pub session_id: [u8; 32],
     pub revision: u64,
     pub predecessor_session_id: Option<[u8; 32]>,
+    /// Retains the exact predecessor observation while an idle barrier persists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub barrier_idle_replacement: Option<BarrierIdleReplacementWitnessV2>,
     pub scope: ProviderScopeV2,
     pub node_id: [u8; 16],
     pub kernel_boot_id: [u8; 16],
@@ -718,6 +734,33 @@ pub struct SourceProviderSessionV2 {
     pub provider_process_instance: [u8; 16],
     pub provider_execution: ProviderExecutionSnapshotV2,
     pub record_digest: [u8; 32],
+}
+
+/// Witnesses a successor that preserves an unresolved recovery barrier.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BarrierIdleReplacementWitnessV2 {
+    /// The original abandoned attempt; its record may later be terminalized.
+    pub root_attempt: RecordRefV2,
+    /// Exact protected head read before the replacement.
+    pub predecessor_head: Box<SourceProviderHeadV2>,
+    /// Successor distance from the original attempt's session.
+    pub replacement_count: u64,
+    /// Observation authorizing replacement of the immediate predecessor.
+    pub predecessor_observation: BarrierIdlePredecessorObservationV2,
+}
+
+/// Separates a dead Provider from a still-live Provider after Mount restart.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub enum BarrierIdlePredecessorObservationV2 {
+    /// Kernel-backed death evidence for the predecessor Provider execution.
+    Dead {
+        /// Exact death projection bound to the protected predecessor session.
+        execution: DeadProviderExecutionProjectionV2,
+    },
+    /// The exact predecessor Provider execution was pinned alive at transition.
+    Live,
 }
 
 /// Retains the exact historical outcome signer and its selection-floor trust.

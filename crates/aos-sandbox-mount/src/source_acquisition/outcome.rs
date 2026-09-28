@@ -1249,7 +1249,8 @@ fn consumed_status(attempt: &SourceProviderQueryAttemptV2) -> Result<ProviderSta
         ProviderAttemptStateV2::DispositionConsumed { status, .. } => Ok(*status),
         ProviderAttemptStateV2::Reserved
         | ProviderAttemptStateV2::AbandonedIndeterminate { .. }
-        | ProviderAttemptStateV2::SupersededIndeterminate { .. } => {
+        | ProviderAttemptStateV2::SupersededIndeterminate { .. }
+        | ProviderAttemptStateV2::NativeNoDispatchSettled { .. } => {
             Err(state_error("provider attempt is not disposition-consumed"))
         }
     }
@@ -1263,7 +1264,8 @@ fn consumed_result_digest(attempt: &SourceProviderQueryAttemptV2) -> [u8; 32] {
         } => *signed_result_digest,
         ProviderAttemptStateV2::Reserved
         | ProviderAttemptStateV2::AbandonedIndeterminate { .. }
-        | ProviderAttemptStateV2::SupersededIndeterminate { .. } => [0; 32],
+        | ProviderAttemptStateV2::SupersededIndeterminate { .. }
+        | ProviderAttemptStateV2::NativeNoDispatchSettled { .. } => [0; 32],
     }
 }
 

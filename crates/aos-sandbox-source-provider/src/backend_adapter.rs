@@ -24,11 +24,11 @@ use crate::{
     AcquireObservationV1, AcquirePlanV1, ActiveAcquisitionSnapshotV1, BackendEvidenceClassV1,
     BackendEvidenceStateV1, BackendEvidenceV1, DurableAcquireEffectPermitV1,
     DurableProviderReplyV1, DurableReleaseEffectPermitV1, DurableReleaseTombstoneV1,
-    FixedProviderOwnerV1, ObservedBackendAcquisitionV1, ObservedBackendReleaseV1,
-    ProviderAdmissionDispositionV1, ProviderLedgerError, ProviderRecoveryContinuationV1,
-    ProviderRecoveryObservationV1, ProviderRecoveryWorkV1, RecoveryAcquireNotAppliedV1,
-    RecoveryReleaseStillPresentV1, ReleaseObservationV1, ReleasePlanV1, ReopenIdentityV1,
-    ReopenObservationV1, SourceProviderBackendV1,
+    FixedProviderOwnerV1, NativeNoDispatchSettlementV1, ObservedBackendAcquisitionV1,
+    ObservedBackendReleaseV1, ProviderAdmissionDispositionV1, ProviderLedgerError,
+    ProviderRecoveryContinuationV1, ProviderRecoveryObservationV1, ProviderRecoveryWorkV1,
+    RecoveryAcquireNotAppliedV1, RecoveryReleaseStillPresentV1, ReleaseObservationV1,
+    ReleasePlanV1, ReopenIdentityV1, ReopenObservationV1, SourceProviderBackendV1,
 };
 
 /// Reports an operational result from an authority-free backend transport.
@@ -816,7 +816,7 @@ impl FixedProviderOwnerV1 {
         }
     }
 
-    /// Borrows a current publication and manifest for pre-effect LocalLive inspection.
+    /// Borrows a current publication and selected row set for pre-effect inspection.
     ///
     /// The bytes are not authority until each reservation independently
     /// verifies them against live custody and the protected Provider journal.
@@ -953,6 +953,46 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
             .inspect_storage_live_export_request(&signed)
             .map_err(map_transport_error)?;
         Ok(signed.digest())
+    }
+
+    /// Settles an original native attempt whose durable plan forbids dispatch.
+    ///
+    /// The returned protected record digests identify the original reservation
+    /// and its terminal acquisition, attempt, and holder session. None is a
+    /// signed Storage plan or SourceRoot.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed native row or any attempt that could have reached a
+    /// backend effect. Exact terminal replay works even after the owner has
+    /// rebuilt or reordered its recovery index.
+    pub fn settle_native_no_dispatch_recovery_for_query(
+        &mut self,
+        query: &RecoveryCurrentnessQueryV1,
+    ) -> Result<NativeNoDispatchSettlementV1, ProviderLedgerError> {
+        let (provider_id, holder_id) = query.authorities();
+        let settlement = self.owner.settle_native_no_dispatch_recovery(
+            query.acquisition_id(),
+            provider_id,
+            holder_id,
+            query.original_signed_request_digest(),
+            query.digest(),
+        )?;
+        self.owner.pending_backend_recovery.retain(|recovery| {
+            !matches!(
+                &recovery.work,
+                ProviderRecoveryWorkV1::ObserveApplying { acquisition_id, .. }
+                    if *acquisition_id == query.acquisition_id()
+            )
+        });
+        let original = query.original_signed_request_digest();
+        if self.owner.priority_mount_retry_digest == Some(*original.as_bytes()) {
+            self.owner.priority_mount_retry_digest = None;
+        }
+        if self.owner.priority_mount_retry_rearm_digest == Some(*original.as_bytes()) {
+            self.owner.priority_mount_retry_rearm_digest = None;
+        }
+        Ok(settlement)
     }
 
     fn retain_backend_recovery(
@@ -1543,6 +1583,38 @@ fn execute_disposition(
                     aos_sandbox_source_provider_protocol::SourceProviderStatus::Unavailable,
                 )
                 .map(PreparedFixedProviderBackendOutcomeV1::Reply)
+        }
+        ProviderAdmissionDispositionV1::Acquire(permit)
+            if current_catalog.is_some_and(|(_, rows)| rows.starts_with(b"AOSPCZ01")) =>
+        {
+            // The native row forbids dispatch. Keep its exact reservation
+            // Applying until a successor can durably settle it; completing an
+            // ordinary response here would strand a crash-before-send retry.
+            ledger
+                .journal
+                .validate_source_provider_authority_snapshot(&permit.journal_snapshot)?;
+            let plan = permit.plan();
+            let mut matching = ledger.recovered.recovery_work.iter().filter(|work| {
+                matches!(work, ProviderRecoveryWorkV1::ObserveApplying {
+                    acquisition_id,
+                    effect_id,
+                } if *acquisition_id == plan.acquisition_id && *effect_id == plan.effect_id)
+            });
+            let work = matching.next().ok_or(ProviderLedgerError::Equivocation)?;
+            if matching.next().is_some() {
+                return Err(ProviderLedgerError::Equivocation);
+            }
+            Ok(PreparedFixedProviderBackendOutcomeV1::Recovery(
+                FixedProviderBackendRecoveryV1 {
+                    work: work.clone(),
+                    original_request: signed_request.clone(),
+                    descriptor_roles: descriptor_roles.to_vec(),
+                    fresh_request: None,
+                    fresh_request_in_flight: false,
+                    successor_session_ready: false,
+                    quarantined: false,
+                },
+            ))
         }
         ProviderAdmissionDispositionV1::Acquire(permit) => ledger
             .execute_acquire(permit, backend)

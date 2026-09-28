@@ -4,6 +4,10 @@
 //! Mount first commits the corresponding Attempt, owner, and Head records;
 //! only an opaque post-commit confirmation can then reach the carrier.
 
+#[cfg(test)]
+#[path = "tests/native_recovery_fixture.rs"]
+mod native_recovery_fixture;
+
 use aos_sandbox::journal::{ProtectedJournalAuthority, ProtectedJournalSnapshot};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::{

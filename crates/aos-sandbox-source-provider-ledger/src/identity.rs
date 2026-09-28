@@ -46,6 +46,24 @@ pub fn acquire_backend_plan_id_v1(
     hasher.finalize().into()
 }
 
+/// Derives a native reservation identity that forbids backend dispatch.
+///
+/// This identity is reserved for the proofless, unavailable-only native
+/// production path. A future descriptor-bearing path must use another domain.
+#[must_use]
+pub fn acquire_native_no_dispatch_id_v1(
+    intent_digest: ObjectDigest,
+    catalog_generation: u64,
+    catalog_digest: ObjectDigest,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"aos.sandbox.source-provider.native-no-dispatch.v1\0");
+    hasher.update(intent_digest.as_bytes());
+    hasher.update(catalog_generation.to_be_bytes());
+    hasher.update(catalog_digest.as_bytes());
+    hasher.finalize().into()
+}
+
 /// Derives one release backend-effect identity.
 #[must_use]
 pub fn release_effect_id_v1(

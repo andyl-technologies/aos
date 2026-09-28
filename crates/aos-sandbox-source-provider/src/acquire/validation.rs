@@ -2,6 +2,15 @@
 
 use super::*;
 
+pub(crate) fn is_native_no_dispatch_acquisition(acquisition: &AcquisitionRecordV1) -> bool {
+    acquisition.backend_id
+        == derive_native_no_dispatch_id(
+            acquisition.normalized_intent.digest(),
+            acquisition.catalog_generation,
+            acquisition.catalog_digest,
+        )
+}
+
 pub(super) fn normalized_intent(
     verified: &VerifiedProviderAcquireRequestV1,
 ) -> Result<NormalizedAcquisitionIntentV1, ProviderLedgerError> {
@@ -47,10 +56,19 @@ pub(crate) fn validate_backend_selection(
         )
     );
     if !proof_class_matches
+        || is_native_no_dispatch_acquisition(acquisition)
         || resource.resource_namespace_digest()
             != acquisition.normalized_intent.resource_namespace_digest()
         || resource.catalog_generation() != ledger.recovered.catalog.catalog_generation
         || resource.catalog_digest() != ledger.recovered.catalog.catalog_digest
+        || (acquisition.resource_id != [0; 32]
+            && (resource.resource_id() != acquisition.resource_id
+                || resource.resource_generation() != acquisition.resource_generation
+                || resource.resource_digest() != acquisition.resource_digest
+                || resource.catalog_generation() != acquisition.catalog_generation
+                || resource.catalog_digest() != acquisition.catalog_digest
+                || resource.selection_generation() != acquisition.selection_generation
+                || resource.selection_digest() != acquisition.selection_digest))
         || observed.evidence.class() as u8 == 0
         || observed.evidence.backend_digest().as_bytes() == &[0; 32]
         || observed.reopen_identity.class() != observed.evidence.class()
@@ -156,6 +174,18 @@ pub(crate) fn derive_backend_plan_id(
     catalog_digest: ObjectDigest,
 ) -> [u8; 32] {
     aos_sandbox_source_provider_ledger::identity::acquire_backend_plan_id_v1(
+        intent_digest,
+        catalog_generation,
+        catalog_digest,
+    )
+}
+
+pub(crate) fn derive_native_no_dispatch_id(
+    intent_digest: ObjectDigest,
+    catalog_generation: u64,
+    catalog_digest: ObjectDigest,
+) -> [u8; 32] {
+    aos_sandbox_source_provider_ledger::identity::acquire_native_no_dispatch_id_v1(
         intent_digest,
         catalog_generation,
         catalog_digest,
