@@ -2121,7 +2121,7 @@ pub(super) fn mutation_intent(
     (key, value)
 }
 
-pub(super) fn resource_version(
+pub(crate) fn resource_version(
     operation: OperationId,
     method: PublicOperationMethodV1,
     generation: u64,

@@ -16,24 +16,30 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox::cache_residency::{
     CLOSED_CACHE_OWNER_READBACK_BYTES_V2, CacheOwnerReadbackChallengeV1,
-    CacheResidencyProtectedOwnerV1, CacheResidencyWriterReadbackV2, DormantCacheOwnerV1,
-    PinnedCacheOwnerReadbackSignerV1, verify_closed_cache_owner_readback_v2,
+    CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedOwnerV1,
+    CacheResidencyWriterReadbackV2, DormantCacheOwnerV1, PinnedCacheOwnerReadbackSignerV1,
+    verify_closed_cache_owner_readback_v2,
 };
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2, ClosedPolicyRootCasObservationV2,
-    PolicyCompilerInputV1, RootEffectAckV1, RootV8EffectAckV1, StagedClosedPolicyRootBaseV2,
-    StagedClosedPolicySignerChallengeV2, closed_policy_binding_digest_v2,
+    PolicyCompilerInputV1, RootEffectAckV1, RootV8EffectAckV1, RootV8ReleasedProofV1,
+    StagedClosedPolicyRootBaseV2, StagedClosedPolicySignerChallengeV2,
+    clear_current_create_v8_successor_fences_v1, closed_policy_binding_digest_v2,
     closed_policy_effect_handoff_v2, compare_closed_policy_binding_hold_claims_v2,
+    compare_closed_policy_binding_released_cache_claims_v2,
     current_parentless_create_project_source_v1,
-    propose_closed_current_create_explicit_policy_binding_v2,
+    propose_closed_current_create_explicit_policy_binding_v2, query_fixed_root_v8_settled_grant_v1,
     record_current_source_signer_challenge_v1, require_current_source_signer_challenge_v1,
     with_current_create_cache_signer_barrier_v5,
+    with_current_create_cache_signer_release_barrier_v7,
+    with_current_create_cache_signer_released_barrier_v8,
     with_current_create_cache_signer_terminal_barrier_v6,
     with_current_create_policy_source_barrier_v4,
+    with_current_create_v8_owner_settlement_barrier_v9,
 };
 use aos_sandbox::{
-    ControllerPolicyEffectAckV1, ControllerPolicyHoldV1, Journal,
+    ControllerPolicyEffectAckV1, ControllerPolicyHoldV1, Journal, JournalError,
     journal::{
         CachePolicyHoldV1, ControllerPolicyV8AttemptV1, ControllerPolicyV8EffectAckV1,
         SourceDomainPolicyHoldV1,
@@ -57,7 +63,11 @@ use crate::policy_authority_client::{
     recover_committed_source_held_binding_v8,
 };
 use crate::policy_root_ack_client::acknowledge_held_root_effect_v1;
-use crate::policy_root_ack_v8_client::acknowledge_held_root_v8_effect;
+use crate::policy_root_ack_v8_client::{
+    acknowledge_held_root_v8_effect, begin_held_root_v8_terminal_release,
+    complete_held_root_v8_terminal, recover_root_v8_terminal_custody,
+    require_exact_released_root_v8_replay, verify_exact_released_root_v8_custody,
+};
 
 /// Commits one held Q04 cut without opening public Create or effect handoff.
 ///
@@ -719,11 +729,13 @@ pub fn acknowledge_fixed_parentless_create_v8_effect_v1(
     .map_err(io::Error::other)?
 }
 
-/// Obtains Root's protected V8 ACK under the retained all-owner held barrier.
+/// Retains Root's protected V8 ACK under the earlier-owner held barrier.
 ///
 /// The Controller-signed AOSQ8K01 digest is compared to exact historical
 /// AOSPCP02 replay while Controller, Source, protected Cache, and physical
-/// Cache writers remain held. This does not release any owner or open Create.
+/// Cache writers remain held. The exact Root reply is then durably retained in
+/// Controller custody. Root has released its writer before sending that reply;
+/// this historical receipt does not release any owner or open Create.
 ///
 /// # Errors
 ///
@@ -737,6 +749,487 @@ pub fn acknowledge_fixed_parentless_create_root_v8_effect_v1(
     operation: OperationId,
     sandbox: SandboxId,
 ) -> io::Result<RootV8EffectAckV1> {
+    with_exact_root_v8_ack_barrier(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |controller, ack| {
+            with_process_controller_hold_signer_v1(|generation, key| {
+                let receipt = acknowledge_held_root_v8_effect(controller, ack, generation, key)?;
+                controller
+                    .record_controller_policy_v8_root_receipt_v1(receipt)
+                    .map_err(io::Error::other)?;
+                Ok(receipt)
+            })
+        },
+    )
+}
+
+/// Completes the V8 Root terminal while every owner writer remains held.
+///
+/// Root keeps its protected writer across its ACK, Controller's durable
+/// AOSQ8R01 record, and the signed AOSCTR08 readback. This terminal grants no
+/// release or Apply authority.
+///
+/// # Errors
+///
+/// Rejects changed owner custody, mismatched Root CAS or Cache quota, stale
+/// signer, or an ambiguous terminal without exact protected cold replay.
+pub fn verify_fixed_parentless_create_root_v8_terminal_v1(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<RootV8EffectAckV1> {
+    with_exact_root_v8_ack_barrier(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |controller, ack| {
+            with_process_controller_hold_signer_v1(|generation, key| {
+                complete_held_root_v8_terminal(controller, ack, generation, key)
+            })
+        },
+    )
+}
+
+/// Releases Root, then the exact Cache hold, under the still-held owner cut.
+///
+/// The Root-last Q8V socket opens in Cache's inspection phase. Its writer and
+/// socket survive Cache's final postflight, after which Controller rechecks
+/// its exact ACK and Root receipt before signing AOSCTF08. Only a typed Root
+/// Released reply (or exact released replay after an ambiguous submission)
+/// permits Cache's already-open hold journal to retire its own hold. Source
+/// and Controller remain held; public Create and Apply remain closed. The
+/// result is `(Root proof, actual held Cache row, exact released Cache row)`.
+///
+/// # Errors
+///
+/// Rejects any changed owner claim, failed final postflight, Root transport
+/// loss without exact released replay, or failed durable Cache retirement.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn release_fixed_parentless_create_root_cache_v8_v1(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<(RootV8ReleasedProofV1, CachePolicyHoldV1, CachePolicyHoldV1)> {
+    let (controller_hold, source_hold) = held_policy_claims(controller, source_domains)?;
+    with_current_create_cache_signer_release_barrier_v7(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |controller, _, source, _, held| {
+            let ack = exact_root_v8_ack_at_held_cut(
+                controller,
+                source,
+                held,
+                controller_hold,
+                source_hold,
+                operation,
+                sandbox,
+            )
+            .map_err(cache_bridge_error)?;
+            let pending = with_process_controller_hold_signer_v1(|generation, key| {
+                begin_held_root_v8_terminal_release(controller, ack, generation, key)
+            })
+            .map_err(cache_bridge_error)?;
+            Ok((pending, ack, held.clone()))
+        },
+        |controller, _, (pending, ack, held)| {
+            with_process_controller_hold_signer_v1(|generation, key| {
+                pending.finish(controller, &held, generation, key, |controller, row| {
+                    if controller
+                        .controller_policy_v8_effect_ack_v1()
+                        .map_err(io::Error::other)?
+                        != Some(ack)
+                        || controller
+                            .controller_policy_v8_root_receipt_v1()
+                            .map_err(io::Error::other)?
+                            != Some(row)
+                    {
+                        return Err(invalid_cut());
+                    }
+                    Ok(())
+                })
+            })
+            .map_err(cache_bridge_error)
+        },
+    )
+    .map_err(io::Error::other)
+}
+
+/// Completes Cache retirement after a crash following exact Root release.
+///
+/// This path starts only from Root's protected Released replay and repeats
+/// that exact replay after Cache postflight. It never signs a new final
+/// command, and a held/absent Root phase cannot release Cache. Controller
+/// and Source remain held afterward. The returned value omits the historical
+/// held Cache row; the separate V8 settlement barrier recovers it only through
+/// Cache's validated pending marker under its retained writer.
+///
+/// # Errors
+///
+/// Rejects changed Root release evidence, owner claims, Cache quota, or
+/// Controller's durable ACK/receipt before retiring Cache's exact hold.
+pub(crate) fn recover_fixed_parentless_create_root_cache_v8_release_v1(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<(RootV8ReleasedProofV1, CachePolicyHoldV1)> {
+    let (controller_hold, source_hold) = held_policy_claims(controller, source_domains)?;
+    let held_result = with_current_create_cache_signer_release_barrier_v7(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |controller, _, source, _, held| {
+            recover_root_released_at_cut(
+                controller,
+                source,
+                held,
+                controller_hold,
+                source_hold,
+                operation,
+                sandbox,
+            )
+        },
+        |controller, _, prepared| {
+            require_same_root_release_after_postflight(controller, prepared, controller_hold)
+        },
+    );
+    if let Ok((proof, _, released)) = held_result {
+        return Ok((proof, released));
+    }
+
+    // A lost post-commit readback can leave Cache released despite an error.
+    // Only an exact released-row replay under the same owners can settle it.
+    with_current_create_cache_signer_released_barrier_v8(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |controller, _, source, _, held| {
+            recover_root_released_at_cut(
+                controller,
+                source,
+                held,
+                controller_hold,
+                source_hold,
+                operation,
+                sandbox,
+            )
+        },
+        |controller, _, prepared| {
+            require_same_root_release_after_postflight(controller, prepared, controller_hold)
+        },
+    )
+    .map_err(io::Error::other)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum V8OwnerReleaseStep {
+    ReleaseRootCache,
+    RecoverRootCache,
+    SettleSourceController,
+}
+
+// The Cache row is only a routing hint. Every effect rechecks fixed names and
+// authority itself; an ambiguous release may advance only by Root replay.
+fn run_v8_owner_release_steps(
+    cache_hold: CachePolicyHoldV1,
+    mut run: impl FnMut(V8OwnerReleaseStep) -> io::Result<()>,
+) -> io::Result<()> {
+    if cache_hold.is_held() && run(V8OwnerReleaseStep::ReleaseRootCache).is_err() {
+        run(V8OwnerReleaseStep::RecoverRootCache)?;
+    }
+    run(V8OwnerReleaseStep::SettleSourceController)
+}
+
+/// Releases the held Root/Cache cut and settles Source, then Controller.
+///
+/// Cache's current row selects the entry point only; the selected path checks
+/// its fixed named writer, pending marker, Root peer, and exact owner claims.
+/// After an ambiguous held release, recovery accepts only an authenticated
+/// Root Released replay. A cold retry after Cache release enters the same
+/// Source/Controller settlement barrier, including after Source is retired.
+/// No Root successor, public Create, or Apply authority is issued here.
+///
+/// # Errors
+///
+/// Rejects an absent or changed Cache row, failed Root release/replay, or any
+/// failed owner postflight or durable settlement.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn release_and_settle_fixed_parentless_create_v8_owners_v1(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<()> {
+    let cache_hold = cache
+        .closed_policy_hold_v1()
+        .map_err(io::Error::other)?
+        .ok_or_else(invalid_cut)?;
+    run_v8_owner_release_steps(cache_hold, |step| match step {
+        V8OwnerReleaseStep::ReleaseRootCache => release_fixed_parentless_create_root_cache_v8_v1(
+            controller,
+            source_domains,
+            cache,
+            physical,
+            operation,
+            sandbox,
+        )
+        .map(|_| ()),
+        V8OwnerReleaseStep::RecoverRootCache => {
+            recover_fixed_parentless_create_root_cache_v8_release_v1(
+                controller,
+                source_domains,
+                cache,
+                physical,
+                operation,
+                sandbox,
+            )
+            .map(|_| ())
+        }
+        V8OwnerReleaseStep::SettleSourceController => settle_fixed_parentless_create_v8_owners_v1(
+            controller,
+            source_domains,
+            cache,
+            physical,
+            operation,
+            sandbox,
+        ),
+    })
+}
+
+/// Retires Source, then Controller, after exact Root and Cache V8 release.
+///
+/// The fixed Root socket supplies typed Released custody. The sandbox barrier
+/// verifies the Controller floor and both owner-local pending markers before
+/// Source or Controller changes phase. A lost Source or Controller reply is
+/// retried from their durable rows, without rejoining live Source ancestry.
+/// This private path does not grant Root successor, Create, or Apply.
+///
+/// # Errors
+///
+/// Rejects changed owner evidence, an absent Root release, or failed durable
+/// Source or Controller retirement.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn settle_fixed_parentless_create_v8_owners_v1(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<()> {
+    with_current_create_v8_owner_settlement_barrier_v9(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        |_, hold| {
+            recover_root_v8_terminal_custody(hold.binding(), hold.epoch())
+                .map_err(cache_bridge_error)?
+                .ok_or_else(|| cache_bridge_error(invalid_cut()))
+        },
+    )
+    .map_err(io::Error::other)
+}
+
+/// Couriers Root's settled V8 grant through the ordered owner marker clear.
+///
+/// The fixed Root socket authenticates the Controller peer and returns an
+/// opaque immutable AOSPC88S grant. The local barrier compares Controller's
+/// AOSQ8S01 and both released owner rows before Cache clears AOSCPP08, then
+/// Source clears AOSSDP08. Exact retries replay the owner readbacks after an
+/// ambiguous commit. This private path grants no public Create or Apply.
+///
+/// # Errors
+///
+/// Rejects a missing or changed V8 settlement, Root peer or transport failure,
+/// a changed owner row, or failed marker deletion and readback.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn clear_fixed_parentless_create_v8_successor_fences_v1(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<()> {
+    let released = controller
+        .controller_policy_hold_v1()
+        .map_err(io::Error::other)?
+        .filter(|hold| {
+            !hold.is_held() && hold.operation() == operation && hold.sandbox() == sandbox
+        })
+        .ok_or_else(invalid_cut)?;
+
+    let grant = query_fixed_root_v8_settled_grant_v1(released.binding(), released.epoch())?
+        .ok_or_else(invalid_cut)?;
+    clear_current_create_v8_successor_fences_v1(
+        controller,
+        source_domains,
+        cache,
+        physical,
+        operation,
+        sandbox,
+        grant,
+    )
+    .map_err(io::Error::other)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn recover_root_released_at_cut(
+    controller: &mut Journal,
+    source: &aos_sandbox::policy_compiler::CurrentCreateProjectPolicySourceV1,
+    held: &CacheResidencyWriterReadbackV2,
+    controller_hold: ControllerPolicyHoldV1,
+    source_hold: SourceDomainPolicyHoldV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> Result<
+    (ControllerPolicyV8EffectAckV1, RootV8ReleasedProofV1),
+    CacheResidencyProtectedJournalErrorV1,
+> {
+    let ack = exact_root_v8_ack_at_released_cut(
+        controller,
+        source,
+        held,
+        controller_hold,
+        source_hold,
+        operation,
+        sandbox,
+    )
+    .map_err(cache_bridge_error)?;
+    let proof =
+        recover_root_v8_terminal_custody(controller_hold.binding(), controller_hold.epoch())
+            .map_err(cache_bridge_error)?
+            .ok_or_else(|| cache_bridge_error(invalid_cut()))?;
+    with_process_controller_hold_signer_v1(|generation, _| {
+        verify_exact_released_root_v8_custody(controller, ack, generation, proof)
+    })
+    .map_err(cache_bridge_error)?;
+    Ok((ack, proof))
+}
+
+fn require_same_root_release_after_postflight(
+    controller: &mut Journal,
+    (ack, prior): (ControllerPolicyV8EffectAckV1, RootV8ReleasedProofV1),
+    hold: ControllerPolicyHoldV1,
+) -> Result<RootV8ReleasedProofV1, CacheResidencyProtectedJournalErrorV1> {
+    let current = recover_root_v8_terminal_custody(hold.binding(), hold.epoch())
+        .map_err(cache_bridge_error)?
+        .ok_or_else(|| cache_bridge_error(invalid_cut()))?;
+    require_exact_released_root_v8_replay(prior, current).map_err(cache_bridge_error)?;
+    with_process_controller_hold_signer_v1(|generation, _| {
+        verify_exact_released_root_v8_custody(controller, ack, generation, current)
+    })
+    .map_err(cache_bridge_error)?;
+    Ok(current)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exact_root_v8_ack_at_released_cut(
+    controller: &mut Journal,
+    source: &aos_sandbox::policy_compiler::CurrentCreateProjectPolicySourceV1,
+    held: &CacheResidencyWriterReadbackV2,
+    controller_hold: ControllerPolicyHoldV1,
+    source_hold: SourceDomainPolicyHoldV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<ControllerPolicyV8EffectAckV1> {
+    let ack = controller
+        .controller_policy_v8_effect_ack_v1()
+        .map_err(io::Error::other)?
+        .ok_or_else(invalid_cut)?;
+    if ack.attempt().hold() != controller_hold
+        || controller
+            .controller_policy_v8_attempt_v1()
+            .map_err(io::Error::other)?
+            != Some(ack.attempt())
+        || ack.accepted_generation() != source.accepted_generation()
+        || ack.cache_quota() != held.quota_digest()
+    {
+        return Err(invalid_cut());
+    }
+    let (decision, proposed, _) = recover_closed_policy_binding_decision_v5(
+        controller_hold.binding(),
+        controller_hold.epoch(),
+    )?;
+    if !matches!(
+        decision,
+        ClosedPolicyBindingDecisionV2::CommittedReleased(_)
+    ) {
+        return Err(invalid_cut());
+    }
+    let proposed = proposed.ok_or_else(invalid_cut)?;
+    if held.hold().is_held() {
+        compare_closed_policy_binding_hold_claims_v2(
+            &proposed,
+            controller_hold,
+            source_hold,
+            held.hold(),
+        )
+    } else {
+        compare_closed_policy_binding_released_cache_claims_v2(
+            &proposed,
+            controller_hold,
+            source_hold,
+            held.hold(),
+        )
+    }
+    .map_err(io::Error::other)?;
+    let handoff = closed_policy_effect_handoff_v2(&proposed).map_err(io::Error::other)?;
+    if handoff.operation != operation
+        || handoff.sandbox != sandbox
+        || handoff.epoch != controller_hold.epoch()
+        || handoff.accepted_generation != ack.accepted_generation()
+        || handoff.effect_transaction != ack.effect_transaction()
+    {
+        return Err(invalid_cut());
+    }
+    Ok(ack)
+}
+
+fn cache_bridge_error(error: io::Error) -> CacheResidencyProtectedJournalErrorV1 {
+    JournalError::Io(error).into()
+}
+
+fn with_exact_root_v8_ack_barrier<T>(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    cache: &mut CacheResidencyProtectedOwnerV1,
+    physical: &DormantCacheOwnerV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+    action: impl FnOnce(&mut Journal, ControllerPolicyV8EffectAckV1) -> io::Result<T>,
+) -> io::Result<T> {
     let (controller_hold, source_hold) = held_policy_claims(controller, source_domains)?;
     with_current_create_cache_signer_terminal_barrier_v6(
         controller,
@@ -746,43 +1239,61 @@ pub fn acknowledge_fixed_parentless_create_root_v8_effect_v1(
         operation,
         sandbox,
         |controller, _, source, _, held| -> io::Result<_> {
-            let ack = controller
-                .controller_policy_v8_effect_ack_v1()
-                .map_err(io::Error::other)?
-                .ok_or_else(invalid_cut)?;
-            let attempt = ack.attempt();
-            if attempt.hold() != controller_hold
-                || controller
-                    .controller_policy_v8_attempt_v1()
-                    .map_err(io::Error::other)?
-                    != Some(attempt)
-                || ack.accepted_generation() != source.accepted_generation()
-            {
-                return Err(invalid_cut());
-            }
-            let (proposed, replay) =
-                replay_exact_held_v8_cut(controller_hold, source_hold, held, attempt)?;
-            let handoff = closed_policy_effect_handoff_v2(&proposed).map_err(io::Error::other)?;
-            if handoff.operation != operation
-                || handoff.sandbox != sandbox
-                || handoff.epoch != controller_hold.epoch()
-                || handoff.accepted_generation != ack.accepted_generation()
-                || handoff.effect_transaction != ack.effect_transaction()
-                || replay.proof() != ack.root_proof()
-                || replay.quota() != ack.cache_quota()
-            {
-                return Err(invalid_cut());
-            }
-            Ok(ack)
+            exact_root_v8_ack_at_held_cut(
+                controller,
+                source,
+                held,
+                controller_hold,
+                source_hold,
+                operation,
+                sandbox,
+            )
         },
         |controller, _, prepared| -> io::Result<_> {
             let ack = prepared?;
-            with_process_controller_hold_signer_v1(|generation, key| {
-                acknowledge_held_root_v8_effect(controller, ack, generation, key)
-            })
+            action(controller, ack)
         },
     )
     .map_err(io::Error::other)?
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exact_root_v8_ack_at_held_cut(
+    controller: &mut Journal,
+    source: &aos_sandbox::policy_compiler::CurrentCreateProjectPolicySourceV1,
+    held: &CacheResidencyWriterReadbackV2,
+    controller_hold: ControllerPolicyHoldV1,
+    source_hold: SourceDomainPolicyHoldV1,
+    operation: OperationId,
+    sandbox: SandboxId,
+) -> io::Result<ControllerPolicyV8EffectAckV1> {
+    let ack = controller
+        .controller_policy_v8_effect_ack_v1()
+        .map_err(io::Error::other)?
+        .ok_or_else(invalid_cut)?;
+    let attempt = ack.attempt();
+    if attempt.hold() != controller_hold
+        || controller
+            .controller_policy_v8_attempt_v1()
+            .map_err(io::Error::other)?
+            != Some(attempt)
+        || ack.accepted_generation() != source.accepted_generation()
+    {
+        return Err(invalid_cut());
+    }
+    let (proposed, replay) = replay_exact_held_v8_cut(controller_hold, source_hold, held, attempt)?;
+    let handoff = closed_policy_effect_handoff_v2(&proposed).map_err(io::Error::other)?;
+    if handoff.operation != operation
+        || handoff.sandbox != sandbox
+        || handoff.epoch != controller_hold.epoch()
+        || handoff.accepted_generation != ack.accepted_generation()
+        || handoff.effect_transaction != ack.effect_transaction()
+        || replay.proof() != ack.root_proof()
+        || replay.quota() != ack.cache_quota()
+    {
+        return Err(invalid_cut());
+    }
+    Ok(ack)
 }
 
 fn replay_exact_held_v8_cut(
@@ -1352,12 +1863,96 @@ fn invalid_cut() -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+
+    use aos_sandbox::journal::CachePolicyHoldV1;
     use aos_sandbox::policy_compiler::{
         ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasObservationV2,
     };
-    use aos_sandbox_core::ObjectDigest;
+    use aos_sandbox_core::{ObjectDigest, ProjectId};
 
-    use super::verify_exact_held_replay;
+    use super::{V8OwnerReleaseStep, run_v8_owner_release_steps, verify_exact_held_replay};
+
+    fn held_cache_row() -> CachePolicyHoldV1 {
+        CachePolicyHoldV1::new(
+            ProjectId::from_bytes([1; 16]),
+            ObjectDigest::from_bytes([2; 32]),
+            ObjectDigest::from_bytes([3; 32]),
+            ObjectDigest::from_bytes([4; 32]),
+            5,
+        )
+        .expect("typed held Cache row")
+    }
+
+    #[test]
+    fn v8_owner_release_schedules_replay_before_later_settlement() {
+        let mut visited = Vec::new();
+        run_v8_owner_release_steps(held_cache_row(), |step| {
+            visited.push(step);
+            if step == V8OwnerReleaseStep::ReleaseRootCache {
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "ambiguous Root reply",
+                ))
+            } else {
+                Ok(())
+            }
+        })
+        .expect("recovery step permits later settlement");
+        assert_eq!(
+            visited.as_slice(),
+            &[
+                V8OwnerReleaseStep::ReleaseRootCache,
+                V8OwnerReleaseStep::RecoverRootCache,
+                V8OwnerReleaseStep::SettleSourceController,
+            ]
+        );
+
+        visited.clear();
+        assert!(
+            run_v8_owner_release_steps(held_cache_row(), |step| {
+                visited.push(step);
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Root not released",
+                ))
+            })
+            .is_err()
+        );
+        assert_eq!(
+            visited.as_slice(),
+            &[
+                V8OwnerReleaseStep::ReleaseRootCache,
+                V8OwnerReleaseStep::RecoverRootCache,
+            ]
+        );
+    }
+
+    #[test]
+    fn v8_owner_release_does_not_hide_source_or_controller_failure() {
+        let mut visited = Vec::new();
+        assert!(
+            run_v8_owner_release_steps(held_cache_row(), |step| {
+                visited.push(step);
+                if step == V8OwnerReleaseStep::SettleSourceController {
+                    Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "owner postflight",
+                    ))
+                } else {
+                    Ok(())
+                }
+            })
+            .is_err()
+        );
+        assert_eq!(
+            visited.as_slice(),
+            &[
+                V8OwnerReleaseStep::ReleaseRootCache,
+                V8OwnerReleaseStep::SettleSourceController,
+            ]
+        );
+    }
 
     #[test]
     fn ambiguous_held_cas_replay_rejects_absent_released_and_substituted_record() {

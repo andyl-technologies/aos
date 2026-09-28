@@ -58,6 +58,11 @@ pub enum StorageZfsHoldReceiptErrorV1 {
 }
 
 /// Pins Storage's catalog, authority, journal, and physical readback heads.
+///
+/// The journal digest commits materialized records and sequence at observation
+/// time, not append history. The physical digest commits both bracketing hold
+/// observations and the confined reader measurement under a separate domain.
+/// A saved head alone does not prove that the hold or journal remains current.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageZfsHoldHeadV1 {
     catalog_generation: u64,
@@ -402,7 +407,7 @@ impl StorageZfsHoldSignerV1 {
         (self.key_id, self.key_generation)
     }
 
-    fn encode(self) -> [u8; SIGNER_BYTES] {
+    pub(crate) fn encode(self) -> [u8; SIGNER_BYTES] {
         let mut bytes = [0; SIGNER_BYTES];
         bytes[..8].copy_from_slice(ROLE);
         bytes[8..24].copy_from_slice(&self.authority_id);
@@ -413,7 +418,7 @@ impl StorageZfsHoldSignerV1 {
         bytes
     }
 
-    fn decode(bytes: &[u8]) -> Result<Self, StorageZfsHoldReceiptErrorV1> {
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, StorageZfsHoldReceiptErrorV1> {
         if bytes.len() != SIGNER_BYTES || bytes.get(..8) != Some(ROLE.as_slice()) {
             return Err(StorageZfsHoldReceiptErrorV1::Noncanonical);
         }

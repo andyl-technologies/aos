@@ -115,6 +115,11 @@ mod live_export_request_trust;
 )]
 mod live_export_three_fd;
 pub mod live_export_transport;
+#[allow(
+    dead_code,
+    reason = "native issuance admission and retirement await the authenticated live carrier"
+)]
+mod native_issuance;
 mod observation;
 #[allow(
     dead_code,
@@ -161,6 +166,7 @@ mod workspace_repair_admission;
 mod workspace_repair_observer;
 mod workspace_repair_worker;
 pub mod zfs;
+pub mod zfs_hold_transport;
 
 pub use authorization::{
     AuthorizedStorageResolutionV1, StorageAdmissionError, StorageAuthorityConfigError,

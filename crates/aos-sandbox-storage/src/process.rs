@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::Read as _;
-use std::os::fd::{AsFd as _, OwnedFd};
+use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -65,7 +65,7 @@ mod wire;
 pub(crate) use held_snapshot::{HeldSnapshotPhysicalObservationV1, HeldSnapshotWorkerBindingV1};
 pub use held_snapshot_reader::run_inherited_held_snapshot_reader;
 pub(crate) use held_snapshot_reader::{
-    HeldSnapshotReaderObservationV1, SystemdHeldSnapshotReaderV1,
+    HeldSnapshotReaderObservationV1, SystemdHeldSnapshotReaderV1, verify_received_mount_fd,
 };
 
 use wire::{
@@ -1366,6 +1366,24 @@ fn send_before(
     }
 }
 
+fn send_with_descriptor_before(
+    socket: &mut SeqpacketSocket,
+    bytes: &[u8],
+    descriptor: BorrowedFd<'_>,
+    deadline: Deadline,
+) -> Result<(), ZfsWorkerError> {
+    loop {
+        deadline.ensure_pending()?;
+        match socket.send_with_descriptors(bytes, &[descriptor]) {
+            Ok(()) => return deadline.ensure_pending(),
+            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
+                wait_socket(socket, rustix::event::PollFlags::OUT, deadline)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
 fn receive_before(
     socket: &mut SeqpacketSocket,
     maximum: usize,
@@ -1379,6 +1397,29 @@ fn receive_before(
                 return Ok(record);
             }
             Err(SeqpacketError::WouldBlock) | Err(SeqpacketError::Interrupted) => {
+                wait_socket(socket, rustix::event::PollFlags::IN, deadline)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn receive_one_descriptor_before(
+    socket: &mut SeqpacketSocket,
+    maximum: usize,
+    deadline: Deadline,
+) -> Result<
+    aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord,
+    ZfsWorkerError,
+> {
+    loop {
+        deadline.ensure_pending()?;
+        match socket.receive_with_descriptors(maximum, 1) {
+            Ok(record) => {
+                deadline.ensure_pending()?;
+                return Ok(record);
+            }
+            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
                 wait_socket(socket, rustix::event::PollFlags::IN, deadline)?;
             }
             Err(error) => return Err(error.into()),

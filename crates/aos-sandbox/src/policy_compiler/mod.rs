@@ -20,6 +20,9 @@ mod controller_effect_ack_readback_v8;
 mod controller_hold_pin;
 mod controller_hold_readback;
 mod controller_readback_session;
+mod controller_root_receipt_readback_v8;
+mod controller_v8_readback_envelope;
+mod controller_v8_settlement_readback;
 mod deployment_head;
 mod model;
 mod namespace;
@@ -30,11 +33,15 @@ mod protected_owner;
 mod public_create_source;
 mod resources;
 mod root_challenge_record;
+mod root_v8_released_proof;
+mod root_v8_settled_grant;
 mod source_hold_pin;
 mod source_hold_readback;
 mod source_hold_readback_v2;
 #[cfg(target_os = "linux")]
 mod source_signer_readback;
+#[cfg(target_os = "linux")]
+mod v8_successor_clear;
 
 pub use advisory::{
     AdvisoryActionV1, AdvisoryDecisionV1, AdvisoryDegradationV1, AdvisoryKindV1, AdvisoryPlanV1,
@@ -51,24 +58,35 @@ pub use authority::{
 };
 pub use binding_v2::{
     CLOSED_POLICY_BINDING_BYTES_V2, CLOSED_SOURCE_TERMINAL_RECORD_BYTES_V1,
-    ClosedPolicyBindingDecisionV2, ClosedPolicyEffectHandoffV2, ClosedPolicyRootCacheCutV2,
-    ClosedPolicyRootCasBaseV2, ClosedPolicyRootCasObservationV2, ClosedPolicyRootSessionV2,
-    ClosedPolicyRootSignerJoinV2, ClosedSourceTerminalClaimV1, ClosedSourceTerminalRecordV1,
-    ROOT_EFFECT_ACK_RECORD_BYTES_V1, ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1, RootEffectAckErrorV1,
-    RootEffectAckV1, RootV8EffectAckErrorV1, RootV8EffectAckV1, StagedClosedPolicyRootBaseV2,
-    StagedClosedPolicySignerChallengeV2, acknowledge_fixed_closed_root_effect_v1,
-    acknowledge_fixed_closed_root_v8_effect_v1, closed_policy_binding_digest_v2,
-    closed_policy_effect_handoff_v2, compare_closed_policy_binding_hold_claims_v2,
+    CONTROLLER_V8_FINAL_RELEASE_BYTES_V1, ClosedPolicyBindingDecisionV2,
+    ClosedPolicyEffectHandoffV2, ClosedPolicyRootCacheCutV2, ClosedPolicyRootCasBaseV2,
+    ClosedPolicyRootCasObservationV2, ClosedPolicyRootSessionV2, ClosedPolicyRootSignerJoinV2,
+    ClosedSourceTerminalClaimV1, ClosedSourceTerminalRecordV1, ROOT_EFFECT_ACK_RECORD_BYTES_V1,
+    ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1, RootEffectAckErrorV1, RootEffectAckV1,
+    RootV8EffectAckErrorV1, RootV8EffectAckV1, RootV8HeldTerminalStepV1,
+    RootV8SuccessorSettlementV1, RootV8TerminalCustodyV1, RootV8VerifiedTerminalV1,
+    StagedClosedPolicyRootBaseV2, StagedClosedPolicySignerChallengeV2,
+    acknowledge_and_verify_fixed_closed_root_v8_terminal_v1,
+    acknowledge_fixed_closed_root_effect_v1, acknowledge_fixed_closed_root_v8_effect_v1,
+    acknowledge_verify_and_release_fixed_closed_root_v8_terminal_v1,
+    closed_policy_binding_digest_v2, closed_policy_effect_handoff_v2,
+    compare_closed_policy_binding_hold_claims_v2,
+    compare_closed_policy_binding_released_cache_claims_v2,
     propose_closed_current_create_explicit_policy_binding_v2,
     propose_closed_current_create_policy_binding_v2,
     read_fixed_inert_closed_policy_binding_hold_v1,
     recover_fixed_closed_policy_binding_decision_v2, recover_fixed_closed_root_effect_ack_v1,
-    recover_fixed_closed_root_v8_effect_ack_v1, recover_fixed_committed_source_held_binding_v2,
-    release_fixed_closed_policy_cache_hold_v1, release_fixed_closed_policy_controller_hold_v1,
+    recover_fixed_closed_root_v8_effect_ack_v1,
+    recover_fixed_closed_root_v8_predecessor_settlement_v1,
+    recover_fixed_closed_root_v8_terminal_custody_v1,
+    recover_fixed_closed_root_v8_verified_terminal_v1,
+    recover_fixed_committed_source_held_binding_v2, release_fixed_closed_policy_cache_hold_v1,
+    release_fixed_closed_policy_controller_hold_v1,
     release_fixed_closed_policy_source_domain_hold_v1,
     release_fixed_inert_closed_policy_binding_hold_v1,
-    require_no_fixed_closed_policy_binding_hold_v1, staged_closed_policy_signer_challenge_v2,
-    with_fixed_closed_policy_binding_session_v2,
+    require_no_fixed_closed_policy_binding_hold_v1, settle_fixed_closed_root_v8_predecessor_v1,
+    sign_fixed_controller_v8_final_release_v1, staged_closed_policy_signer_challenge_v2,
+    verify_fixed_closed_root_v8_terminal_v1, with_fixed_closed_policy_binding_session_v2,
     with_fixed_explicit_closed_policy_binding_session_v2,
 };
 pub use cache_journal_readback::{
@@ -110,6 +128,14 @@ pub use controller_hold_readback::{
 pub use controller_readback_session::{
     ClosedControllerReadbackSessionErrorV1, ClosedControllerRootChallengeV1,
     ClosedControllerRootObservationV1, with_fixed_closed_controller_readback_session_v1,
+};
+pub use controller_root_receipt_readback_v8::{
+    CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1,
+    sign_fixed_controller_v8_root_receipt_readback_v1,
+    verify_controller_v8_root_receipt_readback_v1,
+};
+pub use controller_v8_settlement_readback::{
+    CONTROLLER_V8_SETTLEMENT_READBACK_BYTES_V1, sign_fixed_controller_v8_settlement_readback_v1,
 };
 pub use deployment_head::{
     PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1, PolicyDeploymentInputsV1,
@@ -170,11 +196,18 @@ pub use protected_owner::{
 #[cfg(target_os = "linux")]
 pub use public_create_source::with_current_create_cache_signer_barrier_v5;
 #[cfg(target_os = "linux")]
+pub use public_create_source::with_current_create_cache_signer_release_barrier_v7;
+#[cfg(target_os = "linux")]
+pub use public_create_source::with_current_create_cache_signer_released_barrier_v8;
+#[cfg(target_os = "linux")]
 pub use public_create_source::with_current_create_cache_signer_terminal_barrier_v6;
+#[cfg(target_os = "linux")]
+pub use public_create_source::with_current_create_v8_owner_settlement_barrier_v9;
 pub use public_create_source::{
     CurrentCreatePolicyBarrierHeadsV2, CurrentCreatePolicySourceErrorV1,
     CurrentCreateProjectPolicySourceV1, checked_parentless_create_policy_draft_v1,
     checked_parentless_create_policy_draft_v2, checked_parentless_create_verified_policy_draft_v2,
+    current_parentless_create_project_source_for_operation_v1,
     current_parentless_create_project_source_v1, with_current_create_policy_source_barrier_v2,
     with_current_create_policy_source_barrier_v3, with_current_create_policy_source_barrier_v4,
     with_current_parentless_create_ancestry_v1,
@@ -184,6 +217,14 @@ pub use resources::{
     HardLimitValueV1, HardResourceKeyV1, HardResourceModelError, HardResourcePlanV1,
     HardResourceProfileV1, HardResourceScopeV1, PORTABLE_LIMIT_DIMENSIONS, ResolvedHardLimitV1,
     ResolvedHardLimitValueV1, UnlimitedProvenanceV1,
+};
+pub use root_v8_released_proof::{
+    POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2, RootV8ReleasedProofV1, read_root_v8_released_proof_v1,
+    validate_untrusted_root_v8_release_reply_frame_v1,
+};
+pub use root_v8_settled_grant::{
+    ROOT_V8_SETTLED_QUERY_MAGIC, RootV8SettledGrantV1, encode_root_v8_settled_reply_v1,
+    query_fixed_root_v8_settled_grant_v1,
 };
 pub use source_hold_pin::{SourceHoldPinErrorV1, admit_fixed_source_hold_pin_v1};
 pub use source_hold_readback::{
@@ -200,3 +241,5 @@ pub use source_signer_readback::{
     SourceSignerReadbackErrorV1, sign_fixed_source_signer_readback_v1,
     sign_fixed_source_signer_readback_v2,
 };
+#[cfg(target_os = "linux")]
+pub use v8_successor_clear::clear_current_create_v8_successor_fences_v1;

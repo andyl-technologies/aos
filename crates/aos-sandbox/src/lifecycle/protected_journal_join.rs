@@ -11,6 +11,8 @@ use std::sync::Arc;
 use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceId};
 use sha2::{Digest as _, Sha256};
 
+#[cfg(target_os = "linux")]
+use crate::cache_residency::CacheV8SettledClearV1;
 use crate::environment::protected_journal::{
     EnvironmentProtectedJournalEnvelopeV1, EnvironmentProtectedJournalSchemaV1,
 };
@@ -29,6 +31,8 @@ use crate::journal::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
     RecoveryReport, SourceDomainPolicyHoldV1,
 };
+#[cfg(target_os = "linux")]
+use crate::policy_compiler::RootV8SettledGrantV1;
 
 use super::LifecycleJournalVerifierV1;
 use super::protected_journal::{
@@ -131,6 +135,34 @@ impl ProtectedSourceDomainJournalOwnerV1 {
         self.journal.source_domain_policy_hold_v1()
     }
 
+    /// Reads the exact pending V8 Source settlement marker under this writer.
+    ///
+    /// The marker is nonauthorizing and remains until a future verified Root
+    /// successor grant retires it; this readback never clears custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed or mismatched protected Source state.
+    pub fn pending_closed_policy_source_v8_settlement_v1(
+        &self,
+    ) -> Result<Option<crate::journal::SourceDomainPolicyV8PendingSettlementV1>, JournalError> {
+        self.journal.source_domain_policy_v8_pending_settlement_v1()
+    }
+
+    /// Reads the exact V8 predecessor and release under retained Source custody.
+    ///
+    /// The historical held row is derived only from the canonical pending
+    /// marker and released row, never from current ancestry after retirement.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent or mismatched V8 release evidence.
+    pub(crate) fn closed_policy_source_v8_release_pair_v1(
+        &self,
+    ) -> Result<(SourceDomainPolicyHoldV1, SourceDomainPolicyHoldV1), JournalError> {
+        self.journal.source_domain_policy_v8_release_pair_v1()
+    }
+
     /// Rechecks the fixed journal and lock names against this retained writer.
     pub(crate) fn require_fixed_named_writer_v1(&self) -> Result<(), JournalError> {
         self.require_named_writer_at(
@@ -180,6 +212,57 @@ impl ProtectedSourceDomainJournalOwnerV1 {
     ) -> Result<(), JournalError> {
         self.journal
             .release_source_domain_policy_hold_after_root_readback_v1(expected)
+    }
+
+    /// Records only the Source journal's exact V8 retirement transition.
+    ///
+    /// A future held cross-owner caller must verify Root and Cache release
+    /// before invoking this private method. This wrapper grants no release
+    /// authority by itself and is not connected to public Create or Apply.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale or mismatched Source custody and failed durability.
+    #[allow(dead_code)]
+    pub(crate) fn retire_closed_policy_source_hold_v8(
+        &mut self,
+        expected: SourceDomainPolicyHoldV1,
+    ) -> Result<(), JournalError> {
+        self.journal.retire_source_domain_policy_hold_v8(expected)
+    }
+
+    /// Clears the Source V8 pending marker after the exact Cache settlement.
+    ///
+    /// The Cache proof establishes the required final-owner ordering. Root's
+    /// authenticated grant and the local released row must name the same
+    /// predecessor and canonical Source digest on initial clear and replay.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign grant, missing Cache clearance, changed Source row,
+    /// unsafe fixed writer names, or failed durable marker removal.
+    #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
+    pub(crate) fn clear_closed_policy_source_v8_settlement_v1(
+        &mut self,
+        expected_released: SourceDomainPolicyHoldV1,
+        grant: RootV8SettledGrantV1,
+        cache_clear: CacheV8SettledClearV1,
+    ) -> Result<(), JournalError> {
+        if expected_released.is_held()
+            || expected_released.binding() != grant.predecessor()
+            || expected_released.epoch() != grant.epoch()
+            || expected_released.record_digest()? != grant.source_released()
+            || !cache_clear.matches_grant(grant)
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+
+        self.require_fixed_named_writer_v1()?;
+        self.journal
+            .clear_source_domain_policy_v8_pending_settlement_v1(expected_released)?;
+        self.require_fixed_named_writer_v1()?;
+        Ok(())
     }
 }
 
@@ -1195,7 +1278,8 @@ pub(crate) fn source_domain_journal_limits() -> JournalLimits {
         maximum_transaction_bytes: 1024 * 1024 * 1024,
         maximum_transactions: 1_000_000,
         maximum_materialized_bytes: 2 * 1024 * 1024 * 1024,
-        maximum_materialized_records: MAXIMUM_CROSS_DOMAIN_REPLAY_MEMBERS,
+        // The V8 pending marker must not reduce the existing replay-member bound.
+        maximum_materialized_records: MAXIMUM_CROSS_DOMAIN_REPLAY_MEMBERS + 1,
     }
 }
 

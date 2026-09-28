@@ -1,4 +1,4 @@
-//! Normal signed Host method-35 custody through the protected output owner.
+//! Signed Host output reserve and cold query through the protected owner.
 
 use std::fs;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -8,8 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use aos_proto::aos::sandbox::local::v1::{
     ApplyRuntimeRequest, AssignmentFence, Audience, BrokerAuthorizationArtifactsV1,
     BrokerClientHello, BrokerMethod, BrokerRequestEnvelope, BrokerResponseEnvelope,
-    BrokerServerHello, Feature, ObserveHostStorageOutputRequestV1, RequestHeader,
-    ReserveHostExecutionOutputRequestV1, ReserveStorageExecutionOutputRequestV1, RuntimeAction,
+    BrokerServerHello, Feature, ObserveHostStorageOutputRequestV1,
+    QueryHostExecutionOutputRequestV1, RequestHeader, ReserveHostExecutionOutputRequestV1,
+    ReserveStorageExecutionOutputRequestV1, RuntimeAction,
 };
 use aos_sandbox::controller_execution_preissue::ControllerExecutionReserveSourceV1;
 use aos_sandbox::runtime_execution::{
@@ -36,7 +37,7 @@ use aos_sandbox_core::{
 };
 use aos_sandbox_host::authorization::HostAuthorityV1;
 use aos_sandbox_host::authorization::semantics_v1::canonical_host_semantics_v1;
-use aos_sandbox_host::broker::HostBroker;
+use aos_sandbox_host::broker::{HostBroker, HostExecutionGrantRequestV1};
 use aos_sandbox_host::plan::{HostCatalog, ResolvedLaunchResources};
 use aos_sandbox_host::state::FileHostStateStore;
 use aos_sandbox_host::worker::{
@@ -54,11 +55,14 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
     authenticated_semantic_bindings_from_envelope_v1,
     prepare_server_sent_authenticated_broker_method_outcome_v1,
 };
+use aos_sandbox_protocol::host_output::{
+    HostOutputReservationStatusV1, decode_host_output_reservation_response_v1,
+};
 use aos_sandbox_protocol::host_storage_output_readback::{
     decode_host_storage_output_readback_request_v1,
     decode_host_storage_output_readback_response_v1, host_storage_output_readback_grant_v1,
 };
-use aos_sandbox_protocol::semantics::host_output_reserve_grant_v1;
+use aos_sandbox_protocol::semantics::{host_output_query_grant_v1, host_output_reserve_grant_v1};
 use aos_sandbox_protocol::session::decode_request_envelope;
 use aos_sandbox_protocol::storage_output_reserve::{
     StorageOutputReserveRecordsV1, storage_output_reserve_grant_v1,
@@ -74,7 +78,9 @@ use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 
 use crate::endpoint::{ProtectedBrokerSessionBrokerV1, ProtectedBrokerSessionClientV1};
-use crate::host_execution_handoff::dispatch_host_storage_output_with_claim_for_test_v1;
+use crate::host_execution_handoff::{
+    dispatch_host_storage_output_with_claim_for_test_v1, output_reservation_response,
+};
 use crate::test_signed_endpoint::{
     TestEndpointRole, install_endpoint, manifest_and_secrets, manifest_and_secrets_for_audience,
 };
@@ -83,6 +89,7 @@ const ASSIGNMENT_DIGEST: [u8; 32] = [5; 32];
 const NODE: NodeId = NodeId::from_bytes([3; 16]);
 const BASE_REQUEST_ID: [u8; 16] = [33; 16];
 const RESERVE_REQUEST_ID: [u8; 16] = [35; 16];
+const QUERY_REQUEST_ID: [u8; 16] = [36; 16];
 const STORAGE_RESERVE_REQUEST_ID: [u8; 16] = [46; 16];
 const HOST_READBACK_REQUEST_ID: [u8; 16] = [48; 16];
 
@@ -686,7 +693,7 @@ fn storage_readback_body(
 }
 
 #[tokio::test]
-async fn signed_method35_custody_supports_protected_method48_readback() {
+async fn signed_method35_and_cold_query36_support_protected_method48_readback() {
     let temporary = TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
     let client_path = temporary.path().join("client");
     let broker_path = temporary.path().join("broker");
@@ -868,6 +875,66 @@ async fn signed_method35_custody_supports_protected_method48_readback() {
             )
             .is_err()
     );
+    let query_body = QueryHostExecutionOutputRequestV1 {
+        header: Some(header(QUERY_REQUEST_ID, deadline)).into(),
+        execution_id: source.preissue().execution().as_bytes().to_vec(),
+        create_operation_id: source.preissue().create_operation().as_bytes().to_vec(),
+        original_reserve_request_id: RESERVE_REQUEST_ID.to_vec(),
+        preissue_record_digest: source.preissue().record_digest().as_bytes().to_vec(),
+        output_claim_digest: source.output_claim_digest().as_bytes().to_vec(),
+        reserve_source_digest: source.carrier_digest().as_bytes().to_vec(),
+        assignment_digest: assignment().digest().as_bytes().to_vec(),
+        host_boot_id: boot.to_vec(),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let query_semantics =
+        host_output_query_grant_v1(assignment(), QUERY_REQUEST_ID, &query_body).unwrap();
+    let query_grant = BrokerGrant::new(
+        query_semantics.verb(),
+        query_semantics.target(),
+        query_semantics.commitment(),
+        u32::try_from(query_body.len()).unwrap(),
+        0,
+    )
+    .unwrap();
+    let query_packet = signed_method_request(
+        &client_path,
+        &broker_path,
+        BrokerMethod::BROKER_METHOD_HOST_QUERY_EXECUTION_OUTPUT,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        QUERY_REQUEST_ID,
+        query_body,
+        signed.artifacts(query_grant, 2),
+        boottime,
+    );
+    let mut cold_host = HostBroker::open(
+        NoCatalog,
+        FileHostStateStore::open_exclusive(&state_path).unwrap(),
+        FreezeWorker,
+        None,
+        signed.authority(),
+    )
+    .unwrap();
+    let query_reservation = cold_host
+        .reserve_host_execution(&cold_claim, &query_packet, None, boot, || Ok(clock.clone()))
+        .unwrap();
+    let HostExecutionGrantRequestV1::QueryOutput(query) = query_reservation.request() else {
+        panic!("authenticated Host output query changed method");
+    };
+    assert_eq!(query.locator().original_request_id(), RESERVE_REQUEST_ID);
+    let response = output_reservation_response(query.locator(), Some(cold)).unwrap();
+    cold_host
+        .complete_host_execution_reservation(&query_reservation, &cold_claim, &response)
+        .unwrap();
+    let observed =
+        decode_host_output_reservation_response_v1(&response, query.locator(), false).unwrap();
+    assert_eq!(observed.status(), HostOutputReservationStatusV1::Committed);
+    assert_eq!(
+        observed.correlation_digest(),
+        Some(protected.correlation_digest())
+    );
+
     let storage_client_path = temporary.path().join("storage-client");
     let storage_broker_path = temporary.path().join("storage-broker");
     for path in [&storage_client_path, &storage_broker_path] {
@@ -919,14 +986,6 @@ async fn signed_method35_custody_supports_protected_method48_readback() {
         signed.artifacts(readback_grant, 2),
         boottime,
     );
-    let mut cold_host = HostBroker::open(
-        NoCatalog,
-        FileHostStateStore::open_exclusive(&state_path).unwrap(),
-        FreezeWorker,
-        None,
-        signed.authority(),
-    )
-    .unwrap();
     let mut callsite = DormantHostBrokerCompositionV1::new(&mut cold_host);
     let response = dispatch_host_storage_output_with_claim_for_test_v1(
         &cold_claim,

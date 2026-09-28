@@ -43,7 +43,7 @@ use aos_sandbox_protocol::{
     MAXIMUM_RESPONSE_BYTES, PeerCredentials, PeerPolicy, ValidatedStorageWorkspace,
     decode_storage_resource_inventory_response,
 };
-use aos_sandbox_source_provider_protocol::StorageLiveExportSourceV1;
+use aos_sandbox_source_provider_protocol::{StorageLiveExportSourceV1, ZfsHeldSnapshotProofV1};
 use buffa::Message as _;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use sha2::{Digest as _, Sha256};
@@ -64,6 +64,7 @@ use crate::helper::{
     StorageMutationHelper, SystemdZfsProcessBackend, ZfsHelperOutcome, ZfsProcessBackend,
 };
 use crate::live_export_origin::StorageLiveExportOriginV1;
+use crate::native_issuance::StorageNativeIssuanceLedgerV1;
 use crate::observation_protocol::{
     WorkspaceCatalogObservationBindingsV1, WorkspaceCatalogObservationExpectationV1,
     WorkspaceCatalogObservationRequestV1, encode_request,
@@ -272,6 +273,24 @@ pub(crate) struct StorageHeldSnapshotReadbackV1 {
     pub(crate) post_measurement_observation_digest: ObjectDigest,
 }
 
+/// Pins a measured detached mount only for the current Storage readback call.
+pub(crate) struct StorageHeldSnapshotReadbackWithMountV1 {
+    pub(crate) readback: StorageHeldSnapshotReadbackV1,
+    mount: OwnedFd,
+}
+
+impl StorageHeldSnapshotReadbackWithMountV1 {
+    /// Rechecks that the retained mount is the exact read-only measured root.
+    pub(crate) fn verify_mount(&self) -> Result<(), StorageRuntimeError> {
+        crate::process::verify_received_mount_fd(
+            self.mount.as_fd(),
+            &self.readback.measured_tree,
+            self.readback.pool_guid,
+        )
+        .map_err(|_| StorageRuntimeError::Recovery)
+    }
+}
+
 fn identity_observation_matches_snapshot_metadata(
     observed: crate::held_snapshot_tree::HeldSnapshotIdentityObservationV1,
     metadata: CheckedSnapshotMetadataRecordV1,
@@ -355,6 +374,7 @@ pub struct StorageBrokerRuntime {
     configuration_binding: ObjectDigest,
     broker_instance_id: [u8; 16],
     held_reader_state_directory: Option<PathBuf>,
+    native_issuance: Option<StorageNativeIssuanceLedgerV1>,
     pin_contract: ZfsHelperContract,
     pin_io: Box<dyn WorkspacePinRuntimeIo + Send>,
     helper: StorageMutationHelper<Box<dyn ZfsProcessBackend + Send>>,
@@ -382,6 +402,18 @@ impl StorageBrokerRuntime {
         &mut self,
         selector: StorageHeldSnapshotSelectorV1,
     ) -> Result<StorageHeldSnapshotReadbackV1, StorageRuntimeError> {
+        let (readback, mount) = self.observe_held_snapshot_readback_inner(selector, false)?;
+        if mount.is_some() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        Ok(readback)
+    }
+
+    fn observe_held_snapshot_readback_inner(
+        &mut self,
+        selector: StorageHeldSnapshotSelectorV1,
+        retain_mount: bool,
+    ) -> Result<(StorageHeldSnapshotReadbackV1, Option<OwnedFd>), StorageRuntimeError> {
         let _dispatch = self
             .worker_dispatch
             .enter()
@@ -421,8 +453,9 @@ impl StorageBrokerRuntime {
             return Err(StorageRuntimeError::Recovery);
         }
 
-        // The reader exits with its detached mount before Storage accepts a
-        // second physical hold observation and the final protected journal cut.
+        // The reader must exit before Storage accepts the second hold and
+        // final protected cut. The versioned path keeps only its verified
+        // read-only mount FD alive across those checks.
         let mut reader = crate::process::SystemdHeldSnapshotReaderV1::new(
             crate::process::open_cgroup_root().map_err(|_| StorageRuntimeError::Recovery)?,
             self.held_reader_state_directory
@@ -430,12 +463,27 @@ impl StorageBrokerRuntime {
                 .ok_or(StorageRuntimeError::Recovery)?,
         )
         .map_err(|_| StorageRuntimeError::Recovery)?;
-        let measured_tree = match reader.measure(
-            &initial.snapshot,
-            expected_pool_guid,
-            initial.materialized_state_digest,
-            random_challenge()?,
-        ) {
+        let nonce = random_challenge()?;
+        let measurement = if retain_mount {
+            reader
+                .measure_with_mount(
+                    &initial.snapshot,
+                    expected_pool_guid,
+                    initial.materialized_state_digest,
+                    nonce,
+                )
+                .map(|(measured, mount)| (measured, Some(mount)))
+        } else {
+            reader
+                .measure(
+                    &initial.snapshot,
+                    expected_pool_guid,
+                    initial.materialized_state_digest,
+                    nonce,
+                )
+                .map(|measured| (measured, None))
+        };
+        let (measured_tree, mount) = match measurement {
             Ok(measured) => measured,
             Err(ZfsWorkerError::Quiescence(_)) => {
                 self.readiness = StorageRuntimeReadiness::ReopenRequired;
@@ -485,13 +533,71 @@ impl StorageBrokerRuntime {
         ) {
             return Err(StorageRuntimeError::Recovery);
         }
-        Ok(StorageHeldSnapshotReadbackV1 {
-            cut: final_cut,
-            pool_guid,
-            physical_observation_digest: digest,
-            measured_tree,
-            post_measurement_observation_digest,
-        })
+        if let Some(descriptor) = mount.as_ref() {
+            crate::process::verify_received_mount_fd(
+                descriptor.as_fd(),
+                &measured_tree,
+                expected_pool_guid,
+            )
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        }
+        Ok((
+            StorageHeldSnapshotReadbackV1 {
+                cut: final_cut,
+                pool_guid,
+                physical_observation_digest: digest,
+                measured_tree,
+                post_measurement_observation_digest,
+            },
+            mount,
+        ))
+    }
+
+    /// Checks a native Provider row against Storage's unchanged protected cut and measured bytes.
+    ///
+    /// This private result carries no root descriptor or signing authority. A
+    /// future authenticated Storage carrier may use it only as input to a
+    /// separate receipt and descriptor-custody protocol; it cannot open Acquire.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale or mismatched claim, or any held-snapshot readback failure.
+    pub(crate) fn observe_native_held_snapshot_claim(
+        &mut self,
+        claim: &ZfsHeldSnapshotProofV1,
+    ) -> Result<StorageHeldSnapshotReadbackV1, StorageRuntimeError> {
+        let selector = StorageHeldSnapshotSelectorV1::from_native_claim(claim)?;
+        let readback = self.observe_held_snapshot_readback(selector)?;
+        if !readback.cut.matches_native_claim(
+            claim,
+            readback.pool_guid,
+            readback.measured_tree.content_digest,
+            readback.measured_tree.mounted_snapshot_guid,
+        ) {
+            return Err(StorageRuntimeError::Admission(StorageBrokerError::Request));
+        }
+        Ok(readback)
+    }
+
+    /// Retains one read-only mount while joining a native claim to Storage's final cut.
+    pub(crate) fn observe_native_held_snapshot_claim_with_mount(
+        &mut self,
+        claim: &ZfsHeldSnapshotProofV1,
+    ) -> Result<StorageHeldSnapshotReadbackWithMountV1, StorageRuntimeError> {
+        let selector = StorageHeldSnapshotSelectorV1::from_native_claim(claim)?;
+        let (readback, mount) = self.observe_held_snapshot_readback_inner(selector, true)?;
+        if !readback.cut.matches_native_claim(
+            claim,
+            readback.pool_guid,
+            readback.measured_tree.content_digest,
+            readback.measured_tree.mounted_snapshot_guid,
+        ) {
+            return Err(StorageRuntimeError::Admission(StorageBrokerError::Request));
+        }
+        let mount = mount.ok_or(StorageRuntimeError::Recovery)?;
+        let held = StorageHeldSnapshotReadbackWithMountV1 { readback, mount };
+        held.verify_mount()?;
+        Ok(held)
     }
 
     /// Observes one authenticated, read-only method-41 candidate.
@@ -1023,6 +1129,14 @@ impl StorageBrokerRuntime {
                     .map_err(Into::into)
             },
         )?;
+        // Preserve one lifetime writer order: primary transaction, workspace,
+        // then separate native issuance. Neither acceptance nor ReleaseHold
+        // may observe a separately reopened/unheld consumer-interest snapshot.
+        let mut native_issuance = StorageNativeIssuanceLedgerV1::open_root_owned(state_directory)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        native_issuance
+            .validate_active_holds(&coordinator)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         let broker_instance_id = random_challenge()?;
 
         let (backend, apply_readiness) = match apply_construction {
@@ -1042,6 +1156,7 @@ impl StorageBrokerRuntime {
             configuration_binding,
             broker_instance_id,
             held_reader_state_directory: Some(state_directory.to_path_buf()),
+            native_issuance: Some(native_issuance),
             pin_contract: contract.clone(),
             pin_io: Box::new(pin_io),
             helper: StorageMutationHelper::new(
@@ -1097,6 +1212,7 @@ impl StorageBrokerRuntime {
             configuration_binding,
             broker_instance_id: random_challenge()?,
             held_reader_state_directory: None,
+            native_issuance: None,
             pin_contract,
             pin_io: Box::new(pin_io),
             helper: helper.into_boxed(),
@@ -1142,6 +1258,7 @@ impl StorageBrokerRuntime {
             configuration_binding,
             broker_instance_id: random_challenge()?,
             held_reader_state_directory: None,
+            native_issuance: None,
             pin_contract,
             pin_io,
             helper,
@@ -1236,14 +1353,23 @@ impl StorageBrokerRuntime {
             && self.worker_dispatch.is_open()
     }
 
-    fn operation_permits_apply(&self, operation_id: [u8; 16]) -> Result<bool, StorageRuntimeError> {
+    fn operation_permits_apply(
+        &mut self,
+        operation_id: [u8; 16],
+    ) -> Result<bool, StorageRuntimeError> {
         if self.apply_readiness != StorageApplyReadiness::ProtectedWorkerReady
             || !self.readiness.permits_catalog_methods()
             || !self.worker_dispatch.is_open()
         {
             return Ok(false);
         }
-        let _ = self.coordinator.prepared_catalog_for_apply(operation_id)?;
+        let catalog = self.coordinator.prepared_catalog_for_apply(operation_id)?;
+        if let Some(issuance) = &mut self.native_issuance {
+            issuance
+                .validate_active_holds(&self.coordinator)
+                .and_then(|()| issuance.check_release(catalog.plan()))
+                .map_err(|_| StorageRuntimeError::Recovery)?;
+        }
         Ok(true)
     }
 
@@ -2614,6 +2740,33 @@ impl StorageBrokerRuntime {
             .worker_dispatch
             .enter()
             .map_err(|_| StorageRuntimeError::Recovery)?;
+        if let Some(issuance) = &mut self.native_issuance {
+            issuance
+                .validate_active_holds(&self.coordinator)
+                .map_err(|_| StorageRuntimeError::Recovery)?;
+            // Recovery must not publish a pending ReleaseHold around an active
+            // interest, even when observation reports that the effect already
+            // happened. Cleanup/recovery remains closed until both owners can
+            // settle the exact original acceptance; journal replay is no bypass.
+            for entry in self
+                .coordinator
+                .recovery_entries()
+                .map_err(|_| StorageRuntimeError::Recovery)?
+            {
+                if !matches!(
+                    entry.phase(),
+                    DurableStoragePhase::Committed | DurableStoragePhase::Aborted
+                ) {
+                    let catalog = self
+                        .coordinator
+                        .recovery_catalog_for_native_interest(entry)
+                        .map_err(|_| StorageRuntimeError::Recovery)?;
+                    issuance
+                        .check_release(catalog.plan())
+                        .map_err(|_| StorageRuntimeError::Recovery)?;
+                }
+            }
+        }
         let mut pending = reconcile_transaction_recovery(&mut self.coordinator, &mut self.helper)?;
         for dispatch in self
             .coordinator

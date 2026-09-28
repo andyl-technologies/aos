@@ -129,6 +129,17 @@ impl ControllerHostOutputExchangeV1 {
         self.exchange.requires_reconnect()
     }
 
+    fn preflight_failure(
+        &mut self,
+        error: BrokerSessionSecurityError,
+        message: &'static str,
+    ) -> EffectFailure {
+        if error != BrokerSessionSecurityError::UnnegotiatedMethod {
+            self.exchange.mark_failed();
+        }
+        retryable(message)
+    }
+
     /// Prepares and sends the sole original method-35 attempt.
     ///
     /// `issue` must be the protected Controller signer: it receives the
@@ -147,6 +158,11 @@ impl ControllerHostOutputExchangeV1 {
                 "another Host output request retains session custody",
             ));
         }
+        session
+            .require_negotiated_client_method(OutputMethodV1::Reserve.broker_method())
+            .map_err(|error| {
+                self.preflight_failure(error, "Host output reserve preflight failed")
+            })?;
         let mut issued = None;
         let preparation = session
             .prepare_authenticated_request_checked_fallible(
@@ -206,6 +222,9 @@ impl ControllerHostOutputExchangeV1 {
                 "another Host output request retains session custody",
             ));
         }
+        session
+            .require_negotiated_client_method(OutputMethodV1::Query.broker_method())
+            .map_err(|error| self.preflight_failure(error, "Host output query preflight failed"))?;
         let mut issued = None;
         let preparation = session
             .prepare_authenticated_request_checked_fallible(
@@ -360,7 +379,28 @@ mod tests {
     };
     use buffa::Message as _;
 
-    use super::committed_digests_match_original;
+    use super::{ControllerHostOutputExchangeV1, committed_digests_match_original};
+    use crate::BrokerSessionSecurityError;
+
+    #[test]
+    fn unnegotiated_output_method_does_not_poison_retained_exchange() {
+        let mut exchange = ControllerHostOutputExchangeV1::default();
+
+        let failure = exchange.preflight_failure(
+            BrokerSessionSecurityError::UnnegotiatedMethod,
+            "Host output reserve preflight failed",
+        );
+
+        assert!(matches!(failure, aos_sandbox::EffectFailure::Retryable(_)));
+        assert!(!exchange.has_pending());
+        assert!(!exchange.requires_reconnect());
+
+        exchange.preflight_failure(
+            BrokerSessionSecurityError::Currentness,
+            "Host output reserve preflight failed",
+        );
+        assert!(exchange.requires_reconnect());
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

@@ -301,6 +301,26 @@ impl DormantStorageApplyCompositionV1 {
         )
     }
 
+    /// Inspects one authenticated native hold without returning an FD or receipt.
+    ///
+    /// # Errors
+    ///
+    /// Rejects retired activation, Provider identity, or protected state requiring reopen.
+    pub fn serve_zfs_hold_request_once(
+        &mut self,
+        listener: &mut RecordSubjectListener,
+        verifier: &crate::peer::ProviderLiveExportPeerVerifier,
+    ) -> Result<
+        crate::zfs_hold_transport::StorageZfsHoldTransportOutcomeV1,
+        crate::service::StorageServiceError,
+    > {
+        crate::zfs_hold_transport::serve_zfs_hold_request_once(
+            listener,
+            &mut self.runtime,
+            verifier,
+        )
+    }
+
     /// Returns the retained runtime for explicit recovery coordination.
     #[must_use]
     pub const fn runtime(&self) -> &StorageBrokerRuntime {

@@ -41,7 +41,11 @@ use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceDimension, RevocationScopeId};
+use aos_sandbox_core::format::descriptor_for_bytes;
+use aos_sandbox_core::{
+    MediaType, ObjectDescriptor, ObjectDigest, PortableMediaType, ProjectId, ResourceDimension,
+    RevocationScopeId,
+};
 
 use crate::hierarchy::protected_journal::{
     HierarchyProtectedJournalErrorV1, HierarchyProtectedJournalOwnerV1,
@@ -52,13 +56,16 @@ use crate::publisher_policy::{
     PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore, project_revocation_digest,
 };
 
+use super::model::canonical_bytes;
 use super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
 use super::{
-    BackendCapabilitiesV1, BackendEnforcementSetV1, HardEnforcementV1, HardLimitRequestV1,
-    HardLimitValueV1, HardResourceKeyV1, HardResourceProfileV1, NodePolicyInputV1,
+    AuthenticatedEndpointCatalogV1, AuthenticatedNamespaceCatalogV1, BackendCapabilitiesV1,
+    BackendEnforcementSetV1, EndpointCatalogEntryV1, EndpointCatalogVerifierV1, HardEnforcementV1,
+    HardLimitRequestV1, HardLimitValueV1, HardResourceKeyV1, HardResourceProfileV1,
+    NamespaceCatalogVerifierV1, NamespaceDestinationV1, NodePolicyInputV1,
     PORTABLE_LIMIT_DIMENSIONS, PolicyLayerV1, SitePolicyInputV1,
 };
 
@@ -231,7 +238,7 @@ pub struct PolicyDeploymentHeadV1 {
     input_digests: [[u8; 32]; 4],
 }
 
-/// Retains constructor-validated node, site, and backend policy sources.
+/// Retains constructor-validated node, site, backend, and empty catalogs.
 ///
 /// V1 deliberately supports only finite or inherited hard limits. Grants,
 /// namespace rules, advisory actions, nonempty catalogs, and unlimited limits
@@ -240,6 +247,8 @@ pub struct PolicyDeploymentSourcesV1 {
     node: NodePolicyInputV1,
     site: SitePolicyInputV1,
     backend: BackendCapabilitiesV1,
+    endpoints: AuthenticatedEndpointCatalogV1,
+    destinations: AuthenticatedNamespaceCatalogV1,
 }
 
 /// Identifies one externally signed, parentless project-layer source.
@@ -349,6 +358,45 @@ impl PolicyDeploymentSourcesV1 {
     #[must_use]
     pub const fn backend(&self) -> &BackendCapabilitiesV1 {
         &self.backend
+    }
+
+    /// Returns the exact signed empty endpoint catalog.
+    #[must_use]
+    pub const fn endpoints(&self) -> &AuthenticatedEndpointCatalogV1 {
+        &self.endpoints
+    }
+
+    /// Returns the exact signed empty namespace-destination catalog.
+    #[must_use]
+    pub const fn destinations(&self) -> &AuthenticatedNamespaceCatalogV1 {
+        &self.destinations
+    }
+}
+
+struct SignedEmptyCatalogVerifier {
+    endpoint_bytes: Vec<u8>,
+    destination_bytes: Vec<u8>,
+}
+
+impl SignedEmptyCatalogVerifier {
+    fn matches(descriptor: &ObjectDescriptor, bytes: &[u8], expected: &[u8]) -> bool {
+        let Ok(media) = MediaType::new(PortableMediaType::Content.as_str()) else {
+            return false;
+        };
+
+        bytes == expected && descriptor == &descriptor_for_bytes(media, expected)
+    }
+}
+
+impl EndpointCatalogVerifierV1 for SignedEmptyCatalogVerifier {
+    fn verify(&self, descriptor: &ObjectDescriptor, canonical_bytes: &[u8]) -> bool {
+        Self::matches(descriptor, canonical_bytes, &self.endpoint_bytes)
+    }
+}
+
+impl NamespaceCatalogVerifierV1 for SignedEmptyCatalogVerifier {
+    fn verify(&self, descriptor: &ObjectDescriptor, canonical_bytes: &[u8]) -> bool {
+        Self::matches(descriptor, canonical_bytes, &self.destination_bytes)
     }
 }
 
@@ -507,6 +555,15 @@ pub fn decode_policy_deployment_sources_v1(
     inputs: &PolicyDeploymentInputsV1<'_>,
     head: PolicyDeploymentHeadV1,
 ) -> Result<PolicyDeploymentSourcesV1, PolicyDeploymentHeadErrorV1> {
+    let provided = [inputs.node, inputs.site, inputs.backend, inputs.catalogs];
+    if provided
+        .into_iter()
+        .zip(head.input_digests())
+        .any(|(bytes, digest)| Sha256::digest(bytes).as_slice() != digest)
+    {
+        return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
+    }
+
     let node: DeploymentEnvelopeV1<DeploymentLayerV1> =
         decode_envelope(inputs.node, INPUT_MAGICS[0], head.generation)?;
     let site: DeploymentEnvelopeV1<DeploymentLayerV1> =
@@ -518,6 +575,26 @@ pub fn decode_policy_deployment_sources_v1(
     if !catalogs.input.endpoints.is_empty() || !catalogs.input.destinations.is_empty() {
         return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
     }
+
+    // The verified deployment packet commits the exact generation and canonical
+    // empty catalog input. V1 cannot issue nonempty endpoint or destination
+    // authority; the branded compiler catalogs must remain empty too.
+    let verifier = SignedEmptyCatalogVerifier {
+        endpoint_bytes: canonical_bytes(
+            b"aos.sandbox.endpoint-catalog.v2",
+            &Vec::<EndpointCatalogEntryV1>::new(),
+        )
+        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?,
+        destination_bytes: canonical_bytes(
+            b"aos.sandbox.namespace-destination-catalog.v2",
+            &Vec::<NamespaceDestinationV1>::new(),
+        )
+        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?,
+    };
+    let endpoints = AuthenticatedEndpointCatalogV1::authenticate(Vec::new(), &verifier)
+        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
+    let destinations = AuthenticatedNamespaceCatalogV1::authenticate(Vec::new(), &verifier)
+        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
 
     let node = NodePolicyInputV1::new(decode_layer(node.input)?)
         .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
@@ -538,6 +615,8 @@ pub fn decode_policy_deployment_sources_v1(
         node,
         site,
         backend,
+        endpoints,
+        destinations,
     })
 }
 
@@ -1612,6 +1691,66 @@ mod tests {
         signed.extend_from_slice(&packet);
         packet.extend_from_slice(&key.sign(&signed).to_bytes());
         (packet, inputs)
+    }
+
+    #[test]
+    fn signed_deployment_issues_only_its_exact_empty_catalogs() {
+        let signer = SigningKey::from_bytes(&[42; 32]);
+        let (packet, inputs) = signed_deployment_fixture(&signer);
+        let exact = PolicyDeploymentInputsV1 {
+            node: &inputs[0],
+            site: &inputs[1],
+            backend: &inputs[2],
+            catalogs: &inputs[3],
+        };
+        let head = verify_policy_deployment_head_v1(&packet, &exact, &signer.verifying_key(), 20)
+            .expect("signed deployment head");
+        let sources =
+            decode_policy_deployment_sources_v1(&exact, head).expect("signed empty catalogs");
+        assert!(sources.endpoints().entries().is_empty());
+        assert!(sources.destinations().entries().is_empty());
+
+        let changed_catalog = deployment_input(
+            "AOSPCI01",
+            serde_json::json!({"destinations": [], "endpoints": [1]}),
+        );
+        let changed = PolicyDeploymentInputsV1 {
+            catalogs: &changed_catalog,
+            ..exact
+        };
+        assert!(decode_policy_deployment_sources_v1(&changed, head).is_err());
+
+        let changed_node = deployment_input(
+            "AOSPNI01",
+            serde_json::json!({"accounting": [], "portable": []}),
+        );
+        let changed = PolicyDeploymentInputsV1 {
+            node: &changed_node,
+            ..exact
+        };
+        assert!(decode_policy_deployment_sources_v1(&changed, head).is_err());
+    }
+
+    #[test]
+    fn signed_empty_catalog_verifier_rejects_descriptor_substitution() {
+        let expected = canonical_bytes(
+            b"aos.sandbox.endpoint-catalog.v2",
+            &Vec::<EndpointCatalogEntryV1>::new(),
+        )
+        .expect("empty catalog bytes");
+        let media = MediaType::new(PortableMediaType::Content.as_str()).expect("content media");
+        let exact = descriptor_for_bytes(media.clone(), &expected);
+        let changed = descriptor_for_bytes(media, b"changed");
+
+        assert!(SignedEmptyCatalogVerifier::matches(
+            &exact, &expected, &expected
+        ));
+        assert!(!SignedEmptyCatalogVerifier::matches(
+            &changed, &expected, &expected
+        ));
+        assert!(!SignedEmptyCatalogVerifier::matches(
+            &exact, b"changed", &expected
+        ));
     }
 
     fn explicit_project_input(project: ProjectId) -> Vec<u8> {

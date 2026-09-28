@@ -69,6 +69,8 @@ pub use root_read_only::{
 };
 #[cfg(target_os = "linux")]
 pub use writer_readback::CacheResidencyWriterReadbackV2;
+#[cfg(target_os = "linux")]
+pub(crate) use writer_readback::CacheV8SettledClearV1;
 
 // A sibling of the object root keeps the live journal directory beneath a
 // root-owned parent. An idmapped directory view then follows compaction renames

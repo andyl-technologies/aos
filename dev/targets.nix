@@ -1,8 +1,9 @@
 {
   category,
   scope ? "",
+  crossSystem ? null,
 }: let
-  aos = import ../. {};
+  aos = import ../. {inherit crossSystem;};
   names = builtins.attrNames;
   join = builtins.concatStringsSep "\n";
   isDerivation = value: builtins.isAttrs value && (value.type or null) == "derivation";

@@ -59,11 +59,18 @@ pub use controller_policy_hold::{
     ControllerPolicyEffectAckV1, ControllerPolicyHoldV1, ControllerPolicyV8AttemptV1,
     ControllerPolicyV8EffectAckV1,
 };
+pub(crate) use controller_policy_hold::{
+    ControllerPolicyV8PreReleaseFloorV1, ControllerPolicyV8ReleaseEvidenceV1,
+    ControllerPolicyV8SettlementV1, controller_v8_root_receipt_record_digest_v1,
+    v8_root_receipt_matches_ack,
+};
 pub(crate) use host_currentness_fence::HostCurrentnessFenceV1;
 pub(crate) use host_execution_fence::HostExecutionFenceV1;
 pub use source_domain_challenge::SourceDomainChallengeV1;
 pub(crate) use source_domain_challenge::replay_source_domain_challenge_v1;
-pub use source_domain_policy_hold::SourceDomainPolicyHoldV1;
+pub use source_domain_policy_hold::{
+    SourceDomainPolicyHoldV1, SourceDomainPolicyV8PendingSettlementV1,
+};
 mod mount_source_consumption;
 pub use mount_source_consumption::{
     MountSourceConsumptionCommitReceipt, MountSourceConsumptionCompanionProjectionV2,
@@ -2258,6 +2265,7 @@ impl Journal {
     /// Effect fence is held.
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        cache_policy_hold::require_valid_compaction(self)?;
         host_settlement_admission_gate::require_no_compaction(&self.state)?;
         host_currentness_fence::require_no_compaction(&self.state)?;
         host_execution_fence::require_no_compaction(&self.state)?;

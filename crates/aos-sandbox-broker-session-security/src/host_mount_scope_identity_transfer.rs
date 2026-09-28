@@ -555,15 +555,15 @@ mod tests {
             .collect();
         assert!(verify_received_descriptors(ordinary, &response).is_err());
 
-        let cgroup = open(
-            "/sys/fs/cgroup",
+        let ordinary_directory = open(
+            "/proc",
             OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
             Mode::empty(),
         )
         .unwrap();
         let descriptors = vec![
             File::open("/dev/null").unwrap().into(),
-            cgroup,
+            ordinary_directory,
             File::open("/dev/null").unwrap().into(),
             File::open("/proc/self/ns/mnt").unwrap().into(),
             File::open("/proc/self/ns/user").unwrap().into(),

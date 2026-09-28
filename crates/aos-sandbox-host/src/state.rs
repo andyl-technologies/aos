@@ -721,84 +721,17 @@ impl HostState {
         sealed_effect: Vec<u8>,
         authority: &HostAuthorityV1,
     ) -> Result<Admission> {
-        if self.requests.contains_key(&request_id) {
-            return self.admit(
-                fence,
-                request_id,
-                request_digest,
-                HostAction::Launch.code(),
-                sealed_fence,
-                admitted,
-                sealed_effect,
-                authority,
-            );
-        }
-        if sealed_fence.is_empty()
-            || sealed_effect.is_empty()
-            || sealed_fence.len() > MAXIMUM_STATE_BYTES
-            || sealed_effect.len() > MAXIMUM_STATE_BYTES
-        {
-            return Err(HostError::State(
-                "sealed host authorization record is empty or oversized".to_owned(),
-            ));
-        }
-        self.ensure_incarnation_available(fence.sandbox_id(), fence.incarnation_id())?;
-        if self.requests.len() >= MAXIMUM_REQUESTS {
-            return Err(HostError::State(
-                "durable host request table reached its fixed bound".to_owned(),
-            ));
-        }
-        if self.requests.values().any(|request| {
-            request.receipt.is_none() && request.fence.sandbox_id == *fence.sandbox_id()
-        }) {
-            return Err(HostError::Fence(
-                "sandbox already has a different pending host transition",
-            ));
-        }
-
-        let context = execution_context_from_parts(
+        self.admit_specialized_execution(
             HostAction::Launch,
+            fence,
             request_id,
             request_digest,
-            *fence.sandbox_id(),
-            *fence.incarnation_id(),
-            fence.assignment_epoch(),
-            fence.desired_generation(),
-            *fence.assignment_digest(),
-            false,
-        );
-        if !execution.validate(context) {
-            return Err(HostError::State(
-                "Guardian execution contradicts its request".to_owned(),
-            ));
-        }
-        let stable = stable_authority_digest(&admitted.effect, &admitted.fence)?;
-        let digest = execution
-            .authentication_digest(context, stable)
-            .ok_or_else(|| {
-                HostError::State("Guardian authentication input is too large".to_owned())
-            })?;
-        let execution_authentication = authority.seal_execution_record(&request_id, &digest)?;
-
-        let proposed = DurableFence::from_validated(fence, request_id, sealed_fence);
-        if let Some(current) = self.fences.get(fence.sandbox_id()) {
-            current.validate_successor(&proposed)?;
-        }
-        self.fences.insert(*fence.sandbox_id(), proposed.clone());
-        self.requests.insert(
-            request_id,
-            RequestRecord {
-                request_id,
-                request_digest,
-                fence: proposed,
-                action: HostAction::Launch.code(),
-                execution,
-                execution_authentication,
-                effect: sealed_effect,
-                receipt: None,
-            },
-        );
-        Ok(Admission::New)
+            execution,
+            sealed_fence,
+            admitted,
+            sealed_effect,
+            authority,
+        )
     }
 
     pub(crate) fn guardian_attempt(
@@ -969,12 +902,50 @@ impl HostState {
         sealed_effect: Vec<u8>,
         authority: &HostAuthorityV1,
     ) -> Result<Admission> {
+        self.admit_specialized_execution(
+            HostAction::Stop,
+            fence,
+            request_id,
+            request_digest,
+            execution,
+            sealed_fence,
+            admitted,
+            sealed_effect,
+            authority,
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "specialized admission authenticates and retains one complete signed request"
+    )]
+    fn admit_specialized_execution(
+        &mut self,
+        action: HostAction,
+        fence: &ValidatedAssignmentFence,
+        request_id: [u8; 16],
+        request_digest: [u8; 32],
+        execution: DurableExecution,
+        sealed_fence: Vec<u8>,
+        admitted: &VerifiedBrokerAdmission,
+        sealed_effect: Vec<u8>,
+        authority: &HostAuthorityV1,
+    ) -> Result<Admission> {
+        let kind = match action {
+            HostAction::Launch => "Guardian",
+            HostAction::Stop => "composite Stop",
+            _ => {
+                return Err(HostError::State(
+                    "invalid specialized Host action".to_owned(),
+                ));
+            }
+        };
         if self.requests.contains_key(&request_id) {
             return self.admit(
                 fence,
                 request_id,
                 request_digest,
-                HostAction::Stop.code(),
+                action.code(),
                 sealed_fence,
                 admitted,
                 sealed_effect,
@@ -1005,7 +976,7 @@ impl HostState {
         }
 
         let context = execution_context_from_parts(
-            HostAction::Stop,
+            action,
             request_id,
             request_digest,
             *fence.sandbox_id(),
@@ -1016,16 +987,14 @@ impl HostState {
             false,
         );
         if !execution.validate(context) {
-            return Err(HostError::State(
-                "composite Stop execution contradicts its request".to_owned(),
-            ));
+            return Err(HostError::State(format!(
+                "{kind} execution contradicts its request"
+            )));
         }
         let stable = stable_authority_digest(&admitted.effect, &admitted.fence)?;
         let digest = execution
             .authentication_digest(context, stable)
-            .ok_or_else(|| {
-                HostError::State("composite Stop authentication input is too large".to_owned())
-            })?;
+            .ok_or_else(|| HostError::State(format!("{kind} authentication input is too large")))?;
         let execution_authentication = authority.seal_execution_record(&request_id, &digest)?;
 
         let proposed = DurableFence::from_validated(fence, request_id, sealed_fence);
@@ -1039,7 +1008,7 @@ impl HostState {
                 request_id,
                 request_digest,
                 fence: proposed,
-                action: HostAction::Stop.code(),
+                action: action.code(),
                 execution,
                 execution_authentication,
                 effect: sealed_effect,

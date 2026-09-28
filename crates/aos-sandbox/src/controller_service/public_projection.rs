@@ -16,7 +16,7 @@
 use aos_proto::aos::sandbox::v1::{
     Attachment, CacheStatus, Capability, Execution, FilesystemView, Sandbox, Snapshot,
 };
-use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId};
+use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
@@ -588,6 +588,48 @@ impl<'journal> PublicProjectionStoreV1<'journal> {
         });
         Ok(records)
     }
+
+    /// Selects the sole parentless Sandbox projection accepted with a Create.
+    ///
+    /// This is only a durable identity selector. The policy source, publisher,
+    /// ancestry, and physical Cache still require independent currentness joins.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed retained projections or a zero operation identity.
+    pub fn one_parentless_create_sandbox(
+        &self,
+        operation: OperationId,
+        project: ProjectId,
+    ) -> Result<Option<(SandboxId, ObjectDigest)>, PublicProjectionError> {
+        let records = self.list_operation(operation)?;
+        Ok(select_parentless_create_sandbox(
+            &records, operation, project,
+        ))
+    }
+}
+
+fn select_parentless_create_sandbox(
+    records: &[PublicProjectionRecordV1],
+    operation: OperationId,
+    project: ProjectId,
+) -> Option<(SandboxId, ObjectDigest)> {
+    let [record] = records else {
+        return None;
+    };
+    let PublicProjectionResourceV1::Sandbox(sandbox) = record.resource() else {
+        return None;
+    };
+    let identity: [u8; 16] = sandbox.sandbox_id.as_slice().try_into().ok()?;
+    if identity == [0; 16]
+        || record.operation() != operation
+        || record.project() != project
+        || sandbox.project_id.as_slice() != project.as_bytes()
+        || !sandbox.parent_sandbox_id.is_empty()
+    {
+        return None;
+    }
+    Some((SandboxId::from_bytes(identity), record.revision()))
 }
 
 /// Reports a rejected public projection or corrupt retained record.
@@ -689,4 +731,85 @@ fn exact<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], PublicP
         .get(offset..offset + N)
         .and_then(|value| value.try_into().ok())
         .ok_or(PublicProjectionError::CorruptRecord)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sandbox_record(
+        operation: OperationId,
+        project: ProjectId,
+        sandbox_id: [u8; 16],
+        parent_sandbox_id: Vec<u8>,
+    ) -> PublicProjectionRecordV1 {
+        PublicProjectionRecordV1 {
+            project,
+            operation,
+            resource: PublicProjectionResourceV1::Sandbox(Sandbox {
+                sandbox_id: sandbox_id.to_vec(),
+                project_id: project.as_bytes().to_vec(),
+                parent_sandbox_id,
+                ..Default::default()
+            }),
+            revision: ObjectDigest::from_bytes([9; 32]),
+            encoded_bytes: 1,
+        }
+    }
+
+    #[test]
+    fn parentless_create_selector_requires_one_exact_admitted_sandbox() {
+        let operation = OperationId::from_bytes([1; 16]);
+        let project = ProjectId::from_bytes([2; 16]);
+        let sandbox = sandbox_record(operation, project, [3; 16], Vec::new());
+        let selected = Some((SandboxId::from_bytes([3; 16]), sandbox.revision()));
+
+        assert_eq!(
+            select_parentless_create_sandbox(&[sandbox.clone()], operation, project),
+            selected
+        );
+        assert_eq!(
+            select_parentless_create_sandbox(&[], operation, project),
+            None
+        );
+        assert_eq!(
+            select_parentless_create_sandbox(
+                &[sandbox.clone(), sandbox.clone()],
+                operation,
+                project
+            ),
+            None
+        );
+        assert_eq!(
+            select_parentless_create_sandbox(
+                &[sandbox_record(operation, project, [3; 16], vec![4; 16])],
+                operation,
+                project,
+            ),
+            None
+        );
+        assert_eq!(
+            select_parentless_create_sandbox(
+                &[sandbox.clone()],
+                operation,
+                ProjectId::from_bytes([5; 16])
+            ),
+            None
+        );
+        assert_eq!(
+            select_parentless_create_sandbox(
+                &[sandbox.clone()],
+                OperationId::from_bytes([6; 16]),
+                project
+            ),
+            None
+        );
+
+        let mut wrong_resource = sandbox;
+        wrong_resource.resource = PublicProjectionResourceV1::Execution(Execution::default());
+        assert_eq!(
+            select_parentless_create_sandbox(&[wrong_resource], operation, project),
+            None
+        );
+    }
 }

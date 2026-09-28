@@ -42,6 +42,7 @@ pub mod recovery_currentness;
 pub mod storage_live_export_lease;
 pub mod storage_live_export_request;
 pub mod storage_live_export_transport;
+pub mod storage_native_acquire;
 pub mod storage_zfs_hold_receipt;
 pub mod storage_zfs_hold_transport;
 pub mod trust;
@@ -127,6 +128,15 @@ pub use storage_live_export_request::{
 pub use storage_live_export_transport::{
     MAXIMUM_STORAGE_EXPORT_REQUEST_PACKET_BYTES_V1, StorageLiveExportTransportErrorV1,
     StorageLiveExportTransportRequestV1, StorageLiveExportUnavailableV1,
+};
+pub use storage_native_acquire::{
+    MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2, SignedStorageNativeAcceptanceV2,
+    SignedStorageNativeAcquireRequestV2, SignedStorageNativeCleanupReceiptV2,
+    SignedStorageNativeCleanupRequestV2, StorageNativeAcceptanceV2, StorageNativeAcquireErrorV2,
+    StorageNativeAcquireReplyV2, StorageNativeAcquireRequestV2, StorageNativeAcquireVerificationV2,
+    StorageNativeCleanupDispositionV2, StorageNativeCleanupReasonV2, StorageNativeCleanupReceiptV2,
+    StorageNativeCleanupRequestV2, StorageNativeDescriptorCustodyV2,
+    VerifiedStorageNativeAcquireV2,
 };
 pub use storage_zfs_hold_receipt::{
     SIGNED_STORAGE_ZFS_HOLD_RECEIPT_BYTES_V1, SignedStorageZfsHoldReceiptV1, StorageZfsHoldHeadV1,

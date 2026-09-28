@@ -1488,13 +1488,7 @@ where
                 continue;
             }
             let operation = decode_operation(value)?;
-            if !matches!(
-                operation.state,
-                OperationState::Succeeded
-                    | OperationState::CanceledBeforeCommit
-                    | OperationState::FailedBeforeCommit
-                    | OperationState::PermanentlyBlocked
-            ) {
+            if !operation.state.is_terminal() {
                 pending = pending
                     .checked_add(1)
                     .ok_or(ReconcilerError::CorruptLedger(
@@ -1819,14 +1813,8 @@ where
         for (key, value) in self.journal.records(RecordNamespace::Operation) {
             let operation_id = decode_operation_key(key)?;
             let operation = decode_operation(value)?;
-            if matches!(
-                operation.state,
-                OperationState::Succeeded
-                    | OperationState::CanceledBeforeCommit
-                    | OperationState::FailedBeforeCommit
-                    | OperationState::PermanentlyBlocked
-                    | OperationState::OwnershipPending
-            ) {
+            if operation.state.is_terminal() || operation.state == OperationState::OwnershipPending
+            {
                 continue;
             }
             first.get_or_insert(operation_id);
@@ -3118,6 +3106,177 @@ pub fn public_operation_resource_from_journal_v1(
     recovered_public_operation_resource_v1(journal, operation_id)
 }
 
+/// Recovers the immutable admission revision of a live public Create effect.
+///
+/// The current public resource version advances with reconciliation. Rebuilding
+/// the admitted records from the retained plan keeps the Source commitment
+/// stable from Accepted through Applying and every retry. This is a readback,
+/// not permission to execute Create or to release any owner hold.
+///
+/// # Errors
+///
+/// Returns an error for corrupt protected ledger records or an inconsistent
+/// idempotency decision.
+pub(crate) fn live_create_sandbox_admission_revision_v1(
+    journal: &Journal,
+    operation_id: OperationId,
+) -> Result<Option<(ObjectDigest, u64, [u8; 32])>, ReconcilerError> {
+    journal.ensure_protected_authority()?;
+    let Some(operation_bytes) = journal.get(RecordNamespace::Operation, operation_id.as_bytes())
+    else {
+        return Ok(None);
+    };
+    let operation = decode_operation(operation_bytes)?;
+    let Some(public) = operation.public_operation else {
+        return Ok(None);
+    };
+    // Production Create admission installs its immutable first generation.
+    if operation.effect_count != 1
+        || operation.ownership_gated
+        || operation.runtime_intent_digest.is_some()
+        || public.method() != crate::controller_query::PublicOperationMethodV1::CreateSandbox
+        || public.accepted_generation() != 1
+        || !matches!(
+            operation.state,
+            OperationState::Accepted | OperationState::Applying
+        )
+    {
+        return Ok(None);
+    }
+
+    let effect_bytes = journal
+        .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
+        .ok_or(ReconcilerError::CorruptLedger(
+            "live Create effect is absent",
+        ))?;
+    let effect = decode_effect(effect_bytes)?;
+    if !matches!(
+        (&operation.state, &effect.state),
+        (OperationState::Accepted, EffectState::Planned)
+            | (OperationState::Applying, EffectState::Applying { .. })
+    ) || effect.plan.public_mutation_method()
+        != Some(crate::controller_query::PublicOperationMethodV1::CreateSandbox)
+    {
+        return Ok(None);
+    }
+    let Some(context) = effect.plan.public_mutation_context()? else {
+        return Ok(None);
+    };
+    let admission = recovered_public_operation_admission_v1(journal, operation_id)?.ok_or(
+        ReconcilerError::CorruptLedger("live Create admission is absent"),
+    )?;
+    let request = crate::public_mutation_compiler::ResolvedPublicMutationRequestV1::decode(
+        context.canonical_request(),
+    )
+    .map_err(|_| ReconcilerError::CorruptLedger("live Create request is invalid"))?;
+    if !matches!(
+        request.request(),
+        crate::cli_model::DormantSandboxRequestKindV1::Create(_)
+    ) || request.operation_method()
+        != crate::controller_query::PublicOperationMethodV1::CreateSandbox
+        || admission.project() != context.project()
+        || admission.accepted_wall_seconds() != context.accepted_wall_seconds()
+        || admission.authorization().resource_kind()
+            != aos_sandbox_core::ResourceKind::ChildDelegation
+        || request.selector() != Some(admission.authorization().selector())
+        || request.target_project() != Some(admission.project())
+    {
+        return Ok(None);
+    }
+    let decision = journal
+        .get(
+            RecordNamespace::Idempotency,
+            request.idempotency_key().as_bytes(),
+        )
+        .ok_or(ReconcilerError::CorruptLedger(
+            "live Create idempotency decision is absent",
+        ))?;
+    if decision.len() != 48 || decision[32..] != *operation_id.as_bytes() {
+        return Err(ReconcilerError::CorruptLedger(
+            "live Create idempotency decision disagrees",
+        ));
+    }
+    let request_digest: [u8; 32] = decision[..32]
+        .try_into()
+        .map_err(|_| ReconcilerError::CorruptLedger("live Create request digest is invalid"))?;
+    if request_digest == [0; 32]
+        || journal.check_idempotency(request.idempotency_key(), request_digest)
+            != IdempotencyOutcome::Replay(operation_id)
+    {
+        return Err(ReconcilerError::CorruptLedger(
+            "live Create request digest disagrees",
+        ));
+    }
+
+    let admitted_operation = encode_operation_record(OperationRecord {
+        state: OperationState::Accepted,
+        effect_count: 1,
+        ownership_gated: false,
+        runtime_intent_digest: None,
+        public_operation: Some(admission.durable()),
+    });
+    let admitted_effect = encode_effect(&EffectLedgerRecord {
+        plan: effect.plan,
+        state: EffectState::Planned,
+        dispatch: None,
+    })?;
+    let revision =
+        public_operation::resource_version(operation_id, &admitted_operation, &[&admitted_effect]);
+
+    Ok(Some((
+        ObjectDigest::from_bytes(revision),
+        public.accepted_generation(),
+        request_digest,
+    )))
+}
+
+/// Checks a live Create effect against its original scoped request digest.
+///
+/// This readback also requires the executor's plan to match the retained
+/// effect exactly. The scope must come from the controller's configured
+/// admission service, not from a public request.
+///
+/// # Errors
+///
+/// Returns an error for corrupt or inconsistent protected ledger records.
+pub fn checked_live_create_sandbox_admission_revision_v1(
+    journal: &Journal,
+    operation_id: OperationId,
+    scope: crate::controller::ControllerRequestScopeV1,
+    expected_plan: &EffectPlan,
+) -> Result<Option<(ObjectDigest, u64)>, ReconcilerError> {
+    let Some((revision, generation, request_digest)) =
+        live_create_sandbox_admission_revision_v1(journal, operation_id)?
+    else {
+        return Ok(None);
+    };
+    let effect_bytes = journal
+        .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
+        .ok_or(ReconcilerError::CorruptLedger(
+            "live Create effect is absent",
+        ))?;
+    let effect = decode_effect(effect_bytes)?;
+    if &effect.plan != expected_plan {
+        return Ok(None);
+    }
+    let context = effect
+        .plan
+        .public_mutation_context()?
+        .ok_or(ReconcilerError::CorruptLedger(
+            "live Create context is absent",
+        ))?;
+    if scope.public_request_digest(
+        context.caller(),
+        context.project(),
+        context.canonical_request(),
+    ) != request_digest
+    {
+        return Ok(None);
+    }
+
+    Ok(Some((revision, generation)))
+}
+
 /// Carries one retained public Repair admission into a separately proved terminal CAS.
 #[allow(dead_code, reason = "public operator Repair route remains closed")]
 pub(crate) struct PendingOperatorRepairLedgerV1 {
@@ -4398,6 +4557,309 @@ mod tests {
         )
         .unwrap()
         .0
+    }
+
+    fn live_create_sandbox_plan(descriptor_byte: u8) -> OperationPlan {
+        use crate::cli_model::{PublicApiAuditMethodV1, PublicMutationRequestV1};
+        use crate::controller::ControllerRequestScopeV1;
+        use crate::controller_query::PublicOperationMethodV1;
+        use aos_proto::aos::sandbox::v1::{CreateSandboxRequest, Duration, ObjectDescriptor};
+
+        let project = ProjectId::from_bytes([0x91; 16]);
+        let operation_id = OperationId::from_bytes([0xc1; 16]);
+        let key = b"live-create-sandbox".to_vec();
+        let descriptor = ObjectDescriptor {
+            media_type: "application/vnd.aos.test".to_owned(),
+            sha256: vec![descriptor_byte; 32],
+            encoded_size: 1,
+            ..Default::default()
+        };
+        let request = CreateSandboxRequest {
+            project_id: project.as_bytes().to_vec(),
+            expected_project_resource_version: vec![0xa1; 32],
+            specification: Some(descriptor.clone()).into(),
+            requested_policy: Some(descriptor).into(),
+            idempotency_key: key.clone(),
+            operation_timeout: Some(Duration {
+                nanoseconds: 1,
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        };
+        let envelope = PublicMutationRequestV1::new(
+            PublicApiAuditMethodV1::CreateSandbox,
+            &request.encode_to_vec(),
+        )
+        .unwrap()
+        .encode();
+        let scope = ControllerRequestScopeV1::new(ObjectDigest::from_bytes([0xe1; 32])).unwrap();
+        let request_digest =
+            scope.public_request_digest(PrincipalId::from_bytes([0x93; 16]), project, &envelope);
+        let effect = EffectPlan::authorized_public_mutation(
+            PublicOperationMethodV1::CreateSandbox,
+            PublicMutationEffectV1::new(
+                PrincipalId::from_bytes([0x93; 16]),
+                project,
+                100,
+                envelope,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let authorization = PublicOperationAuthorizationV1::new(
+            project,
+            ResourceKind::ChildDelegation,
+            Selector::Resource {
+                resource: ResourceId::from_bytes(*project.as_bytes()),
+            },
+        )
+        .unwrap();
+
+        OperationPlan::new(
+            operation_id,
+            IdempotencyKey::new(key).unwrap(),
+            request_digest,
+            b"live-create-sandbox".to_vec(),
+            b"accepted".to_vec(),
+            vec![effect],
+        )
+        .unwrap()
+        .with_public_operation(
+            PublicOperationAdmissionV1::new(
+                PublicOperationMethodV1::CreateSandbox,
+                1,
+                [0xc3; 16],
+                100,
+                authorization,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn live_create_admission_revision_survives_preparing_retry_and_cold_replay() {
+        let directory = TestDirectory::new();
+        let plan = live_create_sandbox_plan(0xd1);
+        let operation_id = plan.operation_id();
+        let scope =
+            crate::controller::ControllerRequestScopeV1::new(ObjectDigest::from_bytes([0xe1; 32]))
+                .unwrap();
+        let admitted;
+        {
+            let mut reconciler =
+                Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+            reconciler.accept(&plan).unwrap();
+            let current = recovered_public_operation_resource_v1(&reconciler.journal, operation_id)
+                .unwrap()
+                .unwrap();
+            admitted = live_create_sandbox_admission_revision_v1(&reconciler.journal, operation_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(current.resource_version, admitted.0.as_bytes());
+            assert_eq!(admitted.1, 1);
+            assert_eq!(admitted.2, plan.request_digest());
+            assert_eq!(
+                checked_live_create_sandbox_admission_revision_v1(
+                    &reconciler.journal,
+                    operation_id,
+                    scope,
+                    &plan.effects[0],
+                )
+                .unwrap(),
+                Some((admitted.0, admitted.1)),
+            );
+
+            assert_eq!(
+                reconciler.reconcile_once_at(operation_id, 101).unwrap(),
+                ReconcileOutcome::Progressed,
+            );
+            let preparing =
+                recovered_public_operation_resource_v1(&reconciler.journal, operation_id)
+                    .unwrap()
+                    .unwrap();
+            assert_ne!(preparing.resource_version, current.resource_version);
+            assert_eq!(
+                live_create_sandbox_admission_revision_v1(&reconciler.journal, operation_id)
+                    .unwrap(),
+                Some(admitted),
+            );
+            assert_eq!(
+                checked_live_create_sandbox_admission_revision_v1(
+                    &reconciler.journal,
+                    operation_id,
+                    scope,
+                    &plan.effects[0],
+                )
+                .unwrap(),
+                Some((admitted.0, admitted.1)),
+            );
+
+            let effect = decode_effect(
+                reconciler
+                    .journal
+                    .get(RecordNamespace::Effect, &effect_key(operation_id, 0))
+                    .unwrap(),
+            )
+            .unwrap();
+            reconciler
+                .store_effect(
+                    operation_id,
+                    0,
+                    &EffectLedgerRecord {
+                        plan: effect.plan,
+                        state: EffectState::Applying {
+                            attempt: 2,
+                            diagnostic: "retry".to_owned(),
+                        },
+                        dispatch: None,
+                    },
+                    None,
+                    Some(102),
+                )
+                .unwrap();
+            assert_eq!(
+                live_create_sandbox_admission_revision_v1(&reconciler.journal, operation_id)
+                    .unwrap(),
+                Some(admitted),
+            );
+        }
+
+        let journal = protected_runtime_journal(&directory);
+        assert_eq!(
+            live_create_sandbox_admission_revision_v1(&journal, operation_id).unwrap(),
+            Some(admitted),
+        );
+        assert_eq!(
+            checked_live_create_sandbox_admission_revision_v1(
+                &journal,
+                operation_id,
+                scope,
+                &plan.effects[0],
+            )
+            .unwrap(),
+            Some((admitted.0, admitted.1)),
+        );
+    }
+
+    #[test]
+    fn live_create_selector_rejects_changed_request_with_same_idempotency_key() {
+        let directory = TestDirectory::new();
+        let plan = live_create_sandbox_plan(0xd1);
+        let changed = live_create_sandbox_plan(0xd2);
+        let operation_id = plan.operation_id();
+        let scope =
+            crate::controller::ControllerRequestScopeV1::new(ObjectDigest::from_bytes([0xe1; 32]))
+                .unwrap();
+        let mut reconciler =
+            Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        reconciler.accept(&plan).unwrap();
+        assert_eq!(
+            reconciler.reconcile_once_at(operation_id, 101).unwrap(),
+            ReconcileOutcome::Progressed,
+        );
+
+        reconciler
+            .commit_records(vec![JournalRecord::put(
+                RecordNamespace::Effect,
+                effect_key(operation_id, 0).to_vec(),
+                encode_effect(&EffectLedgerRecord {
+                    plan: changed.effects[0].clone(),
+                    state: EffectState::Applying {
+                        attempt: 1,
+                        diagnostic: String::new(),
+                    },
+                    dispatch: None,
+                })
+                .unwrap(),
+            )])
+            .unwrap();
+        assert_eq!(
+            checked_live_create_sandbox_admission_revision_v1(
+                &reconciler.journal,
+                operation_id,
+                scope,
+                &plan.effects[0],
+            )
+            .unwrap(),
+            None,
+        );
+        assert_eq!(
+            checked_live_create_sandbox_admission_revision_v1(
+                &reconciler.journal,
+                operation_id,
+                scope,
+                &changed.effects[0],
+            )
+            .unwrap(),
+            None,
+        );
+    }
+
+    #[test]
+    fn live_create_selector_rejects_non_create_and_terminal_effects() {
+        let directory = TestDirectory::new();
+        let plan = live_create_sandbox_plan(0xd1);
+        let mut other = cancelable_controller_operation();
+        other.operation_id = OperationId::from_bytes([0xc4; 16]);
+        let operation_id = plan.operation_id();
+        let scope =
+            crate::controller::ControllerRequestScopeV1::new(ObjectDigest::from_bytes([0xe1; 32]))
+                .unwrap();
+        let mut reconciler =
+            Reconciler::new(protected_runtime_journal(&directory), Executor::default());
+        reconciler.accept(&plan).unwrap();
+        reconciler.accept(&other).unwrap();
+
+        assert_eq!(
+            checked_live_create_sandbox_admission_revision_v1(
+                &reconciler.journal,
+                other.operation_id(),
+                scope,
+                &other.effects[0],
+            )
+            .unwrap(),
+            None,
+        );
+        let terminal = transition_operation(
+            reconciler.load_operation(operation_id).unwrap(),
+            OperationState::Succeeded,
+            Some(101),
+        )
+        .unwrap();
+        reconciler
+            .commit_records(vec![
+                JournalRecord::put(
+                    RecordNamespace::Effect,
+                    effect_key(operation_id, 0).to_vec(),
+                    encode_effect(&EffectLedgerRecord {
+                        plan: plan.effects[0].clone(),
+                        state: EffectState::Applied {
+                            attempt: 1,
+                            receipt: EffectReceipt::new(vec![1]).unwrap(),
+                        },
+                        dispatch: None,
+                    })
+                    .unwrap(),
+                ),
+                JournalRecord::put(
+                    RecordNamespace::Operation,
+                    operation_id.into_bytes().to_vec(),
+                    encode_operation_record(terminal),
+                ),
+            ])
+            .unwrap();
+        assert_eq!(
+            checked_live_create_sandbox_admission_revision_v1(
+                &reconciler.journal,
+                operation_id,
+                scope,
+                &plan.effects[0],
+            )
+            .unwrap(),
+            None,
+        );
     }
 
     fn applying_failed_create_reconciler(

@@ -1436,6 +1436,13 @@ impl DormantBrokerOutcomeVerificationV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(crate) fn require_negotiated_client_method(
+        &mut self,
+        method: BrokerMethod,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.require_negotiated_client_method(method)
+    }
+
     pub(crate) fn historical_host_terminal_no_apply_archive(
         &mut self,
         source: &aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1,
@@ -5177,6 +5184,9 @@ impl DormantAuthenticatedBrokerSessionV1 {
         ) -> Result<BrokerRequestEnvelope, BrokerSessionSecurityError>,
         validate: impl FnOnce(&AuthenticatedBrokerMethodRequestV1) -> bool,
     ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
+        // One-shot issuers may durably record authority inside `build`.
+        // Reject an unnegotiated method before invoking that callback.
+        self.0.require_negotiated_client_method(method)?;
         let (request_id, deadline, maximum_response_bytes, protocol_version, audience) =
             self.0.client_request_coordinates()?;
         let coordinates = DormantBrokerRequestCoordinatesV1 {
@@ -5739,6 +5749,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
+        self.0.require_negotiated_client_method(method)?;
         let (request_id, deadline, maximum_response_bytes, protocol_version, audience) =
             self.0.client_request_coordinates()?;
         let coordinates = DormantBrokerRequestCoordinatesV1 {

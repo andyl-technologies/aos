@@ -1,6 +1,7 @@
 ##! perl-parallel-forkmanager — Simple parallel processing for Perl
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
   perl-class-method-modifiers,
@@ -11,7 +12,7 @@
 }: let
   version = "2.02";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-parallel-forkmanager";
     inherit version;
     src = fetchurl {

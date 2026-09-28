@@ -1,0 +1,14 @@
+--- a/src/traceroute.c
++++ b/src/traceroute.c
+@@ -28,6 +28,11 @@
+ #include <netinet/in_systm.h>
+ #include <netinet/in.h>
+ #include <netinet/ip.h>
++/* RFC 791 limits an IPv4 header to 60 bytes, leaving 40 option bytes.  */
++#ifndef MAX_IPOPTLEN
++# define MAX_IPOPTLEN 40
++#endif
++
+ /* #include <netinet/ip_icmp.h> -- Deliberately not including this
+    since the definitions in use are being pulled in by libicmp. */
+ #ifdef HAVE_NETINET_IP_VAR_H

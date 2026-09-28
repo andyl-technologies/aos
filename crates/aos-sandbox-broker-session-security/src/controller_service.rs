@@ -47,7 +47,7 @@ use aos_proto::aos::sandbox::v1::{
 };
 use aos_sandbox_core::{
     AttachmentId, CapabilityId, NodeId, ObjectDigest, Operation as CapabilityOperation,
-    OperationId, RawClockProvenance, RawPairedClockSample, ResourceId,
+    OperationId, ProjectId, RawClockProvenance, RawPairedClockSample, ResourceId,
 };
 use aos_sandbox_core::{ResourceKind, Selector};
 use aos_sandbox_linux::Error as LinuxError;
@@ -162,6 +162,8 @@ const REQUEST_SCOPE: [u8; 32] = [0x43; 32];
 const UNAVAILABLE_REASON: &str = "production mutation authority is not installed";
 const CONTROLLER_ORCHESTRATION_PENDING: &str =
     "controller mutation is awaiting production orchestration lowering";
+const CREATE_Q04_AUTHORITY_PENDING: &str =
+    "Create awaits authenticated Q04 compiler input and held owner custody";
 
 type ProductionController = NodeController<ProductionOperationCompilerV1, ProductionEffectExecutor>;
 type SharedControllerBrokerSessions = Arc<Mutex<ControllerBrokerSessions>>;
@@ -1923,6 +1925,7 @@ fn controller_from_journal(
             journal,
             ProductionEffectExecutor::open(
                 sessions,
+                scope,
                 controller_uid,
                 NodeId::from_bytes(node_id),
                 attachment_host,
@@ -2071,6 +2074,7 @@ fn parse_identity(
 
 struct ProductionEffectExecutor {
     sessions: SharedControllerBrokerSessions,
+    request_scope: ControllerRequestScopeV1,
     broker_plan_signer: Option<ControllerBrokerPlanSignerV1>,
     attachment_host: Option<aos_sandbox::runtime_scope::HostServiceIdentity>,
     attachment_mount: Option<aos_sandbox::mount_preparation::MountServiceIdentity>,
@@ -2118,6 +2122,7 @@ struct ProductionCancellationRequest {
 impl ProductionEffectExecutor {
     fn open(
         sessions: SharedControllerBrokerSessions,
+        request_scope: ControllerRequestScopeV1,
         controller_uid: u32,
         node: NodeId,
         attachment_host: Option<aos_sandbox::runtime_scope::HostServiceIdentity>,
@@ -2144,6 +2149,7 @@ impl ProductionEffectExecutor {
 
         Ok(Self {
             sessions,
+            request_scope,
             broker_plan_signer,
             attachment_host,
             attachment_mount,
@@ -2183,6 +2189,38 @@ impl ProductionEffectExecutor {
                     "controller effect lacks authenticated admission context".to_owned(),
                 )
             })
+    }
+
+    fn require_current_create_effect(
+        &mut self,
+        operation_id: OperationId,
+        plan: &EffectPlan,
+        journal: &mut Journal,
+    ) -> Result<(), EffectFailure> {
+        // A generic lifecycle recovery must never become a Create receipt.
+        if self.pending_source_commit.is_some() {
+            return Err(EffectFailure::Retryable(
+                "protected source commit recovery is pending".to_owned(),
+            ));
+        }
+        let context = self.public_mutation_context(plan)?;
+        if !matches!(
+            context
+                .validated_request()
+                .map_err(|error| EffectFailure::Permanent(error.to_string()))?,
+            DormantSandboxRequestKindV1::Create(_)
+        ) {
+            return Err(EffectFailure::Permanent(
+                "Create effect has the wrong admitted request".to_owned(),
+            ));
+        }
+        require_current_parentless_create_source(
+            operation_id,
+            context.project(),
+            self.request_scope,
+            plan,
+            journal,
+        )
     }
 
     fn cancellation_request(
@@ -3862,6 +3900,26 @@ fn nonzero_lifecycle_id_from_digest(digest: [u8; 32]) -> [u8; 16] {
     identity
 }
 
+fn require_current_parentless_create_source(
+    operation: OperationId,
+    project: ProjectId,
+    scope: ControllerRequestScopeV1,
+    effect_plan: &EffectPlan,
+    journal: &mut Journal,
+) -> Result<(), EffectFailure> {
+    aos_sandbox::policy_compiler::current_parentless_create_project_source_for_operation_v1(
+        journal,
+        operation,
+        project,
+        scope,
+        effect_plan,
+    )
+    .map_err(|error| {
+        EffectFailure::Retryable(format!("admitted Create source is not current: {error}"))
+    })?;
+    Ok(())
+}
+
 const fn is_lifecycle_mutation(request: &DormantSandboxRequestKindV1) -> bool {
     use DormantSandboxRequestKindV1 as Request;
 
@@ -3958,6 +4016,13 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         journal: &mut Journal,
     ) -> Result<EffectObservation, EffectFailure> {
         reject_unqualified_delete_effect(plan)?;
+
+        if plan.public_mutation_method()
+            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CreateSandbox)
+        {
+            self.require_current_create_effect(operation_id, plan, journal)?;
+            return Ok(EffectObservation::Absent);
+        }
 
         if let Some(observation) = self.recover_pending_source_commit(operation_id)? {
             return Ok(observation);
@@ -4102,6 +4167,17 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         journal: &mut Journal,
     ) -> Result<EffectReceipt, EffectFailure> {
         reject_unqualified_delete_effect(plan)?;
+
+        if plan.public_mutation_method()
+            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CreateSandbox)
+        {
+            // The public effect reaches this exact admitted Source selector but
+            // cannot yet construct the held four-owner V8 compiler input.
+            self.require_current_create_effect(operation_id, plan, journal)?;
+            return Err(EffectFailure::Retryable(
+                CREATE_Q04_AUTHORITY_PENDING.to_owned(),
+            ));
+        }
 
         if let Some(observation) = self.recover_pending_source_commit(operation_id)? {
             return match observation {

@@ -11,6 +11,7 @@
   perl,
   which,
   file,
+  buildPackages,
   gc,
   gmp,
   guile,
@@ -23,6 +24,15 @@
 }: let
   version = "5.18.16";
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  buildAutomake =
+    if isDarwinCross
+    then buildPackages.automake
+    else automake;
+  buildFile =
+    if isDarwinCross
+    then buildPackages.file
+    else file;
   guile3Patch = fetchurl {
     urls = [
       "https://gitweb.gentoo.org/repo/gentoo.git/plain/sys-devel/autogen/files/autogen-5.18.16-guile-3.patch?id=43bcc61c56a5a7de0eaf806efec7d8c0e4c01ae7"
@@ -41,7 +51,21 @@ in
       hash = "sha256-+KE0ZrSPqjupn+F6Bp5xyasAbZsc+r5pn4xgpH1btJo=";
     };
 
-    buildDeps = [gnumake autoconf automake pkg-config perl which file];
+    buildDeps =
+      if isDarwinCross
+      then [
+        buildPackages.gnumake
+        buildPackages.autoconf
+        buildAutomake
+        buildPackages.pkg-config
+        buildPackages.perl
+        buildPackages.which
+        buildFile
+        buildPackages.sed
+        buildPackages.guile
+        buildPackages.autogen
+      ]
+      else [gnumake autoconf buildAutomake pkg-config perl which buildFile];
     # AutoGen's libtool link includes Guile's public libraries directly in the
     # executable's DT_NEEDED set. Declare them here so the scrub phase retains
     # the corresponding RPATH entries instead of treating them as build-only
@@ -78,7 +102,7 @@ in
           patch -p1 < ${./autogen-patches/0002-fix-sprintf-buffer-sizes.patch}
           patch -p1 < ${./autogen-patches/0003-fix-definition-buffer-growth.patch}
           patch -p1 < ${./autogen-patches/0004-remove-unused-enum-counter.patch}
-          sed -i 's|/usr/bin/file|${file}/bin/file|g' configure config/libtool.m4
+          sed -i 's|/usr/bin/file|${buildFile}/bin/file|g' configure config/libtool.m4
           ${lib.optionalString isLinuxCross ''
             # The error test already removes native abort notices. Normalize
             # the execution wrapper's notice while retaining error assertions.
@@ -97,12 +121,29 @@ in
             # must identify the target make rather than the native build tool.
             sed -i 's|mk=`set -- $(MAKE) ; command -v $$1`|mk=${gnumake}/bin/make|' \
               agen5/Makefile.am agen5/Makefile.in
+          ''}
+          ${lib.optionalString isDarwinCross ''
+            patch -p1 < ${./autogen-patches/0005-darwin-stat-timespec.patch}
+            # Documentation generators must execute on the Linux build host.
+            sed -i \
+              -e '/^  AGexe=`which /c\  AGexe=${buildPackages.autogen}/bin/autogen' \
+              -e '/^  GDexe=`which /c\  GDexe=${buildPackages.autogen}/bin/getdefs' \
+              -e '/^  CLexe=`which /c\  CLexe=${buildPackages.autogen}/bin/columns' \
+              configure configure.ac
+            # Upstream's run-ag.sh searches the just-built target binaries
+            # unless its generator paths are set before the build starts.
+            grep -Fqx 'AGexe=/u/bkorb/tools/ag/autogen-bld/agen5/.libs/autogen' \
+              build-aux/run-ag.sh
+            sed -i \
+              -e 's|^AGexe=/u/bkorb/tools/ag/autogen-bld/agen5/.libs/autogen$|AGexe=${buildPackages.autogen}/bin/autogen\nCLexe=${buildPackages.autogen}/bin/columns|' \
+              -e 's#^test -x "CLexe"  || find_exe CLexe columns$#test -x "$CLexe" || find_exe CLexe columns#' \
+              build-aux/run-ag.sh
           ''}'';
       }
       {
         name = "configure";
         script =
-          lib.optionalString isLinuxCross ''
+          lib.optionalString stdenv.isCross ''
             # Upstream either aborts or disables these libc features when it
             # cannot execute target programs during cross configuration.
             export ag_cv_run_strcspn=yes
@@ -125,22 +166,23 @@ in
               --with-libxml2=${libxml2} \
               --with-libxml2-cflags=-I${libxml2}/include/libxml2 \
               --enable-timeout=78 \
-              CFLAGS=-D_FILE_OFFSET_BITS=64
+              CFLAGS="-D_FILE_OFFSET_BITS=64${lib.optionalString isDarwinCross " -Wno-error=format -Wno-error=unknown-warning-option -Wno-error=missing-field-initializers -Werror=format-security"}"
           '';
       }
       {
         name = "build";
         script = ''
           mkdir -p .aos-autotools
-          ln -s ${automake}/bin/aclocal .aos-autotools/aclocal-1.16
-          ln -s ${automake}/bin/automake .aos-autotools/automake-1.16
+          ln -s ${buildAutomake}/bin/aclocal .aos-autotools/aclocal-1.16
+          ln -s ${buildAutomake}/bin/automake .aos-autotools/automake-1.16
           export PATH="$PWD/.aos-autotools:$PATH"
           make -j"$NIX_BUILD_CORES"
         '';
       }
       {
         name = "check";
-        script = ''
+        # The Darwin binaries cannot run on the Linux cross builder.
+        script = lib.optionalString (!isDarwinCross) ''
           if ! make -j"$NIX_BUILD_CORES" check; then
             find . -name test-suite.log -exec cat {} \;
             exit 1
@@ -151,7 +193,7 @@ in
         name = "install";
         script = ''
           make install
-          "$out/bin/autogen" --version
+          ${lib.optionalString (!isDarwinCross) ''"$out/bin/autogen" --version''}
 
           # AutoGen's timeout watcher can briefly retain the installed
           # executable after the generator exits. Wait until it releases the
