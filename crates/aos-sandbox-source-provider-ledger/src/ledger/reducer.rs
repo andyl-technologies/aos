@@ -105,6 +105,63 @@ pub fn validate_retained_lease(
     acquisition: &AcquisitionRecordV1,
     attempt: &AttemptRecordV1,
 ) -> Result<(), LedgerFormatErrorV1> {
+    validate_retained_lease_artifacts(acquisition, attempt)?;
+    if acquisition.release_effect_id.is_some() {
+        return Err(LedgerFormatErrorV1::Corrupt(
+            "active acquisition artifact lineage",
+        ));
+    }
+    Ok(())
+}
+
+/// Validates original lease custody after a fault, without completing Release.
+///
+/// A retained Release effect is permitted only with its exact current Intent
+/// and bidirectional attempt join. This structural check neither settles the
+/// effect nor grants negative-custody, status completion or terminal authority.
+///
+/// # Errors
+///
+/// Rejects another acquisition phase, an absent or foreign Release join, and
+/// any changed original signed lease, resource, proof or backend artifact.
+pub(crate) fn validate_faulted_retained_lease(
+    acquisition: &AcquisitionRecordV1,
+    lease_attempt: &AttemptRecordV1,
+    release: Option<(&ReleaseRecordV1, &AttemptRecordV1)>,
+) -> Result<(), LedgerFormatErrorV1> {
+    if acquisition.state != ProviderAcquisitionStateV1::Faulted {
+        return Err(LedgerFormatErrorV1::Corrupt("Faulted retained lease state"));
+    }
+    match (acquisition.release_effect_id, release) {
+        (None, None) => validate_retained_lease(acquisition, lease_attempt),
+        (Some(_), Some((release, release_attempt))) => {
+            validate_release_join(acquisition, release, release_attempt)?;
+            if release.state != ProviderReleaseStateV1::Intent
+                || Some(release.lease_id) != acquisition.lease_id
+                || Some(release.lease_digest) != acquisition.lease_digest
+                || release.backend_id != acquisition.backend_id
+                || release.acquisition_record_digest
+                    != super::format::record_digest(&super::format::encode_acquisition(
+                        acquisition,
+                    ))?
+            {
+                return Err(LedgerFormatErrorV1::Corrupt(
+                    "Faulted retained Release lineage",
+                ));
+            }
+            validate_retained_lease_artifacts(acquisition, lease_attempt)
+        }
+        _ => Err(LedgerFormatErrorV1::Corrupt(
+            "Faulted retained Release join",
+        )),
+    }
+}
+
+/// Checks the unchanged signed Acquire artifacts, independently of owner phase.
+fn validate_retained_lease_artifacts(
+    acquisition: &AcquisitionRecordV1,
+    attempt: &AttemptRecordV1,
+) -> Result<(), LedgerFormatErrorV1> {
     let signed_lease = SignedSourceExportLeaseV1::from_canonical_bytes(&acquisition.signed_lease)
         .map_err(|_| LedgerFormatErrorV1::Corrupt("active signed lease"))?;
     let lease = signed_lease.subject();
@@ -172,7 +229,6 @@ pub fn validate_retained_lease(
         || reopen.resource_digest() != acquisition.resource_digest
         || !reopen.matches_proof(lease.proof())
         || evidence.state() != super::evidence::BackendEvidenceStateV1::Acquired
-        || acquisition.release_effect_id.is_some()
     {
         return Err(LedgerFormatErrorV1::Corrupt(
             "active acquisition artifact lineage",

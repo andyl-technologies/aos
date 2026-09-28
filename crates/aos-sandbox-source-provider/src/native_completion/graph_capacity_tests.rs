@@ -755,6 +755,21 @@ impl Graph {
         self.refresh_inventory();
     }
 
+    fn faulted(&mut self) {
+        // Preserve the exact three-row record_backend_conflict projection.
+        self.acquisition.revision += 1;
+        self.acquisition.state = ProviderAcquisitionStateV1::Faulted;
+        if let Some(release) = &mut self.release {
+            release.revision += 1;
+            release.acquisition_record_digest =
+                record_digest(&encode_acquisition(&self.acquisition)).unwrap();
+        }
+        self.authority.revision += 1;
+        self.authority.state = ProviderAuthorityStateV1::AcquireClosed;
+        self.authority.inventory_generation += 1;
+        self.refresh_inventory();
+    }
+
     fn released(&mut self) {
         let release = self.release.as_mut().unwrap();
         let attempt = self.attempts.last_mut().unwrap();
@@ -2134,16 +2149,7 @@ fn native_release_fence_faulted_observation_retains_exact_original_and_status_fl
     // Mirror record_backend_conflict's actual three-row canonical update.
     // Neither a local contradiction nor AcquireClosed settles the Reserved
     // Release request, proves absence, or consumes either capacity floor.
-    graph.acquisition.revision += 1;
-    graph.acquisition.state = ProviderAcquisitionStateV1::Faulted;
-    let release = graph.release.as_mut().unwrap();
-    release.revision += 1;
-    release.acquisition_record_digest =
-        record_digest(&encode_acquisition(&graph.acquisition)).unwrap();
-    graph.authority.revision += 1;
-    graph.authority.state = ProviderAuthorityStateV1::AcquireClosed;
-    graph.authority.inventory_generation += 1;
-    graph.refresh_inventory();
+    graph.faulted();
     commit_graph(&mut owner, 153, &graph);
     let recovered = recover_graph(&owner).unwrap();
     validate_set(&owner, &recovered).unwrap();
@@ -2245,6 +2251,84 @@ fn native_release_fence_faulted_observation_retains_exact_original_and_status_fl
 }
 
 #[test]
+fn native_faulted_replay_requires_original_artifacts_and_exact_current_release_intent() {
+    let mut graph = Graph::applying();
+    graph.native = fixture_prepared(&graph.native);
+    graph.active();
+
+    let mut before_release = graph.clone();
+    before_release.native = before_release
+        .native
+        .advance(NativeAcquireCompletionStateV2::CleanupRequired)
+        .unwrap();
+    before_release.faulted();
+    let rows = before_release.rows();
+    aos_sandbox_source_provider_ledger::validate_prospective_records(
+        rows.iter()
+            .map(|(key, value)| (key.as_slice(), value.as_slice())),
+    )
+    .unwrap();
+    crate::ledger::reducer::validate_retained_lease(
+        &before_release.acquisition,
+        &before_release.attempts[0],
+    )
+    .unwrap();
+
+    graph.releasing();
+    graph.faulted();
+    let rows = graph.rows();
+    aos_sandbox_source_provider_ledger::validate_prospective_records(
+        rows.iter()
+            .map(|(key, value)| (key.as_slice(), value.as_slice())),
+    )
+    .unwrap();
+    // The old active-only entry point stays closed once an effect is retained.
+    assert!(
+        crate::ledger::reducer::validate_retained_lease(&graph.acquisition, &graph.attempts[0])
+            .is_err()
+    );
+
+    for mutation in 0..15 {
+        let mut foreign = graph.clone();
+        match mutation {
+            0 => foreign.release = None,
+            1 => foreign.release.as_mut().unwrap().effect_id = [99; 16],
+            2 => foreign.acquisition.release_effect_id = Some([99; 16]),
+            3 => foreign.release.as_mut().unwrap().lease_id = [99; 16],
+            4 => foreign.release.as_mut().unwrap().lease_digest = digest(99),
+            5 => foreign.release.as_mut().unwrap().backend_id = [99; 32],
+            6 => foreign.release.as_mut().unwrap().attempt_digest = digest(99),
+            7 => foreign.acquisition.lease_attempt_digest = Some(digest(99)),
+            8 => foreign.acquisition.signed_lease[0] ^= 1,
+            9 => foreign.acquisition.proof_digest = digest(99),
+            10 => foreign.acquisition.backend_evidence = None,
+            11 => foreign.acquisition.reopen_identity = None,
+            12 => foreign.acquisition.state = ProviderAcquisitionStateV1::Active,
+            13 => foreign.release.as_mut().unwrap().state = ProviderReleaseStateV1::Tombstone,
+            _ => foreign.release.as_mut().unwrap().acquisition_record_digest = digest(99),
+        }
+        // Keep unrelated inventory and the current row digest truthful so the
+        // negative cases cannot rely only on a stale aggregate projection.
+        if mutation != 14
+            && let Some(release) = &mut foreign.release
+        {
+            release.acquisition_record_digest =
+                record_digest(&encode_acquisition(&foreign.acquisition)).unwrap();
+        }
+        foreign.refresh_inventory();
+        let rows = foreign.rows();
+        assert!(
+            aos_sandbox_source_provider_ledger::validate_prospective_records(
+                rows.iter()
+                    .map(|(key, value)| (key.as_slice(), value.as_slice())),
+            )
+            .is_err(),
+            "substituted Faulted lineage {mutation}",
+        );
+    }
+}
+
+#[test]
 fn native_export_fence_result_crash_reopen_consumes_only_status4_and_never_terminalizes() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -2289,6 +2373,8 @@ fn native_export_fence_result_crash_reopen_consumes_only_status4_and_never_termi
         status_floor.reservation_id(),
     )
     .unwrap();
+    assert_eq!(subject.release().request_sequence, 3);
+    assert_eq!(subject.release().response_sequence, 2);
     let signed = SignedSourceProviderNativeExportFenceV1::sign(
         subject,
         graph.sessions.last().unwrap().signers[3].clone(),
@@ -2403,7 +2489,7 @@ fn native_export_fence_result_rejects_resigned_original_artifact_or_release_subs
         [97; 32],
     )
     .unwrap();
-    for mutation in 0..8 {
+    for mutation in 0..10 {
         let mut release = original.release().clone();
         let mut acquire = original.acquire().clone();
         let mut signed_acceptance_digest = original.signed_acceptance_digest();
@@ -2426,7 +2512,7 @@ fn native_export_fence_result_rejects_resigned_original_artifact_or_release_subs
                 )
                 .unwrap()
             }
-            _ => {
+            7 => {
                 acceptance = StorageNativeAcceptanceV3::new(
                     acceptance.issuance_id(),
                     acceptance.request_digest(),
@@ -2436,6 +2522,8 @@ fn native_export_fence_result_rejects_resigned_original_artifact_or_release_subs
                 )
                 .unwrap()
             }
+            8 => release.request_sequence += 1,
+            _ => release.response_sequence += 1,
         }
         let subject = SourceProviderNativeExportFenceV1::new(
             release,
@@ -2452,13 +2540,16 @@ fn native_export_fence_result_rejects_resigned_original_artifact_or_release_subs
             &SigningKey::from_bytes(&[54; 32]),
         )
         .unwrap();
+        signed
+            .verify(SigningKey::from_bytes(&[54; 32]).verifying_key().as_bytes())
+            .unwrap();
         let mut completed = attempt.clone();
         complete_attempt(
             &mut completed,
             SourceProviderStatus::Pending,
             Some(signed.to_canonical_bytes()),
             graph.sessions.last().unwrap().signers[3].clone(),
-            graph.sessions.last().unwrap().next_response_sequence,
+            signed.subject().release().response_sequence,
             503,
             empty_descriptor_set_commitment_v1(),
         );

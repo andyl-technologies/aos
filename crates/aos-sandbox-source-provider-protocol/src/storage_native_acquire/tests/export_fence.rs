@@ -127,6 +127,76 @@ fn native_export_fence_exact_width_roundtrip_and_signatures() {
 }
 
 #[test]
+fn native_export_fence_binds_independent_nonzero_directional_sequences() {
+    let fixture = Fixture::new();
+    let original = subject(&fixture);
+    let with_release = |release| {
+        SourceProviderNativeExportFenceV1::new(
+            release,
+            original.acquire().clone(),
+            original.native_request_digest(),
+            original.signed_acceptance_digest(),
+            original.acceptance().clone(),
+            original.cut().clone(),
+        )
+    };
+    let mut release = original.release().clone();
+    release.request_sequence = 3;
+    release.response_sequence = 2;
+    let fence = SignedSourceProviderNativeExportFenceV1::sign(
+        with_release(release.clone()).unwrap(),
+        fixture.request.signer().clone(),
+        &fixture.provider_key,
+    )
+    .unwrap();
+    let signed_status = status(
+        &fixture,
+        &fence,
+        SourceProviderStatus::Pending,
+        empty_descriptor_set_commitment_v1(),
+    );
+    let response = ReleaseSourceResponseV2::new(signed_status.clone(), fence.clone()).unwrap();
+    let reopened =
+        ReleaseSourceResponseV2::from_canonical_bytes(&response.to_canonical_bytes()).unwrap();
+
+    assert_eq!(reopened, response);
+    assert_eq!(reopened.fence().subject().release().request_sequence, 3);
+    assert_eq!(reopened.fence().subject().release().response_sequence, 2);
+    fence
+        .verify(fixture.provider_key.verifying_key().as_bytes())
+        .unwrap();
+
+    for direction in 0..2 {
+        let mut zero = release.clone();
+        if direction == 0 {
+            zero.request_sequence = 0;
+        } else {
+            zero.response_sequence = 0;
+        }
+        assert!(with_release(zero).is_err());
+
+        // Even a valid Provider re-signature cannot substitute either head
+        // beneath the original exact signed status/result commitment.
+        let mut changed = release.clone();
+        if direction == 0 {
+            changed.request_sequence += 1;
+        } else {
+            changed.response_sequence += 1;
+        }
+        let changed = SignedSourceProviderNativeExportFenceV1::sign(
+            with_release(changed).unwrap(),
+            fixture.request.signer().clone(),
+            &fixture.provider_key,
+        )
+        .unwrap();
+        changed
+            .verify(fixture.provider_key.verifying_key().as_bytes())
+            .unwrap();
+        assert!(ReleaseSourceResponseV2::new(signed_status.clone(), changed).is_err());
+    }
+}
+
+#[test]
 fn native_export_fence_never_widens_legacy_pending_or_complete() {
     let fixture = Fixture::new();
     let fence = signed(&fixture);
