@@ -61,8 +61,6 @@ pub(crate) use runtime_authority::{
 };
 
 use create_failure::CreateFailureReceiptV1;
-#[cfg(target_os = "linux")]
-pub(crate) use fuse_admission::accepted_fuse_admission_v1;
 pub use effect::{
     AuthorityBoundEffectPlanV1, AuthorityEffectAttemptTimingV1, AuthorityEffectObservationV1,
     EffectDomain, EffectPlan, PreparedAuthorityBrokerRequestV1, PreparedAuthorityEffectV1,
@@ -71,6 +69,8 @@ pub use effect::{
 use effect::{
     EffectLedgerRecord, EffectState, MAXIMUM_DIAGNOSTIC_BYTES, decode_effect, encode_effect,
 };
+#[cfg(target_os = "linux")]
+pub(crate) use fuse_admission::accepted_fuse_admission_v1;
 pub use observe_reservation::{
     adopt_execution_observe_child_v1, observe_child_adoption_state_v1, observe_child_identity_v1,
 };
@@ -735,6 +735,31 @@ impl EffectFailure {
 
 /// Executes idempotent single-node effects through fixed local boundaries.
 pub trait SingleNodeEffectExecutor {
+    /// Completes provisioned Source genesis using the executor's real owner.
+    ///
+    /// This internal startup hook is closed by default. The production override
+    /// retains its actual Source writer and existing Controller-role signer
+    /// across the original Root flight; it cannot expose a raw floor or open
+    /// public mutations. The completion digest is historical data only.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unavailable genuine owner custody or any incomplete, conflicting
+    /// or ambiguous genesis phase. Implementations must preserve exact restart
+    /// recovery instead of admitting a replacement attempt.
+    #[cfg(target_os = "linux")]
+    fn coordinate_provisioned_source_genesis_v1(
+        &mut self,
+        _journal: &mut Journal,
+        _input: &crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+        _profile: &crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<
+        ObjectDigest,
+        crate::hierarchy::controller_genesis_input::ControllerSourceGenesisInputErrorV1,
+    > {
+        Err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::AdmissionClosed.into())
+    }
+
     /// Supplies advisory timing for one authority-bound attempt preparation.
     ///
     /// Returning `None` explicitly leaves authority-bound execution disabled.
@@ -1114,6 +1139,20 @@ where
     pub(crate) fn journal_mut(&mut self) -> &mut Journal {
         self.ledger_validated = false;
         &mut self.journal
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn coordinate_provisioned_source_genesis_v1(
+        &mut self,
+        input: &crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+        profile: &crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<
+        ObjectDigest,
+        crate::hierarchy::controller_genesis_input::ControllerSourceGenesisInputErrorV1,
+    > {
+        self.ledger_validated = false;
+        self.executor
+            .coordinate_provisioned_source_genesis_v1(&mut self.journal, input, profile)
     }
 
     /// Loads and validates an operation's durable ownership gate, when present.
