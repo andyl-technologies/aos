@@ -251,6 +251,24 @@ separate signed metadata-only registry and also requires repeated container
 revalidation. Its Nix evaluation, rendered Python and formatting checks passed;
 the corrected full fleet remains pending.
 
+The subsequent full fleet attempt passed all 4,004 shared application tests
+(six skipped), the signed Hybrid container publication and indexing, the
+26-object inventory and physical cache GC, external S3 operations and
+outage/recovery checks. Its separate metadata-only registry passed cold and
+unchanged warm indexing. Authenticated-page p95 was 20.8 ms before eight parallel
+uploads and 13.483 ms during them; direct Native p95 was 11.837 ms. Across 5,932
+completed storage calls, offered outbound plans totaled 3,000,304 bytes,
+validated inbound results totaled 5,804,773 bytes, and the Worker processed
+8,432,475,320 source bytes. These remain local application payload measurements.
+
+That attempt stopped before the three-runtime comparison: the Native-only
+fixture passed signing seeds directly from the world-readable Nix store, and
+Native correctly rejected their permissions before opening its listener.
+The fixture now installs owner-private copies. Reproducing both launches with
+the exact failed-fleet Native binary confirmed the original rejection and
+successful TLS-verified health after the repair. This startup reproduction
+does not establish full nonempty parity; the corrected full rerun is pending.
+
 ## Qualified paths
 
 The run passed signed publication of two releases and a stable channel,
