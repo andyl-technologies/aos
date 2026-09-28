@@ -13,7 +13,7 @@
     inherit src;
     name = "aos-sandbox-kernel-export-ownerd-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-IjhIRhrq8OTOA6/5rfT53fjt4Iy4/hbpnHR1M9CIvAk=";
+    hash = import ./crucible/_cargo-deps-hash.nix;
   };
   cargoArtifactContract = {
     family = "aos-sandbox-kernel-export-ownerd-native";
