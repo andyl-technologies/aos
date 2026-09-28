@@ -35,8 +35,9 @@
 //! `sqlite::memory:` databases are private to a single connection: a pool with
 //! more than one connection would hand out *separate* empty databases. The
 //! sqlite constructor therefore pins an in-memory pool to `max_connections(1)`
-//! (file-backed pools keep the default size). Every sqlite pool enables WAL and
-//! `foreign_keys = ON` to match the rusqlite backend the hub grew from.
+//! and disables acquisition health checks that can discard that connection
+//! when a request is cancelled. File-backed pools retain the default acquisition
+//! checks and enable WAL. Every pool enforces foreign keys.
 
 use std::time::Duration;
 
@@ -114,7 +115,10 @@ impl SqlxBackend {
             // A `:memory:` database lives in one connection; a larger pool would
             // hand out separate empty databases and break every query that
             // reads back what a prior one wrote.
-            pool_options = pool_options.max_connections(1);
+            // SQLx can discard a connection when acquisition is cancelled
+            // during its health probe. Losing this connection erases the DB.
+            // Keep acquisition free of probes and async connection callbacks.
+            pool_options = pool_options.max_connections(1).test_before_acquire(false);
         }
         let retry_deadline = tokio::time::Instant::now() + SQLITE_OPEN_LOCK_RETRY_LIMIT;
         let pool = loop {
@@ -1000,6 +1004,59 @@ mod mysql {
             assert!(decode_decimal_i64("1.0").is_err());
             assert!(decode_decimal_i64("9223372036854775808").is_err());
             assert!(decode_decimal_i64("not-a-number").is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::{Row, SqlxBackend, Value};
+    use crate::backend::Backend as _;
+
+    #[tokio::test]
+    async fn cancelled_acquisition_preserves_in_memory_sqlite_rows() {
+        for path in ["", ":memory:"] {
+            let backend = SqlxBackend::connect_sqlite(path).await.unwrap();
+            backend
+                .execute(
+                    "CREATE TABLE cancellation_probe (value INTEGER NOT NULL)",
+                    &[],
+                )
+                .await
+                .unwrap();
+            backend
+                .execute("INSERT INTO cancellation_probe VALUES (73)", &[])
+                .await
+                .unwrap();
+            let pool = match &backend {
+                SqlxBackend::Sqlite(pool) => pool,
+                #[cfg(any(feature = "postgres", feature = "mysql"))]
+                _ => panic!("expected SQLite"),
+            };
+
+            for _ in 0..32 {
+                // Poll an idle acquisition once, then cancel it at any async
+                // boundary. SQLx's default health probe can drop the sole
+                // connection here, leaving the next query with an empty DB.
+                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    while pool.num_idle() == 0 {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                let mut acquisition = Box::pin(pool.acquire());
+                if let std::task::Poll::Ready(connection) = futures_util::poll!(&mut acquisition) {
+                    drop(connection.unwrap());
+                }
+                drop(acquisition);
+
+                let rows = backend
+                    .query("SELECT value FROM cancellation_probe", &[])
+                    .await
+                    .unwrap();
+                assert_eq!(rows, vec![Row::new(vec![Value::Int(73)])]);
+            }
         }
     }
 }
