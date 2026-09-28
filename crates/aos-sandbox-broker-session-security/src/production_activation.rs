@@ -282,6 +282,7 @@ impl ProductionBrokerSessionActivationV1 {
         listener.require_local_filesystem_path(Path::new(endpoint.production_socket_path()))?;
         Ok(Self {
             listeners: vec![FixedListenerV1 { endpoint, listener }],
+            launch_image: None,
         })
     }
 

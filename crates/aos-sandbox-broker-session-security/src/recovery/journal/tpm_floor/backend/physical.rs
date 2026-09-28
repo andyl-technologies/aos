@@ -12,8 +12,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use aos_sandbox::ProtectedJournalLockCustodyV1;
+use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
 use aos_sandbox_linux::seqpacket::{ReceivedRecord, SeqpacketError, SeqpacketSocket};
-use aos_sandbox_linux::{PidFd, PidFdProcessIdentity};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use sha2::{Digest as _, Sha256};
 
