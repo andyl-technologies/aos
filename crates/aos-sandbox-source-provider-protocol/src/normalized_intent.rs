@@ -109,10 +109,15 @@ impl NormalizedAcquisitionIntentV1 {
     /// resolved by the caller from its protected historical/current state.
     /// Construction itself grants no such provenance or effect authority.
     ///
+    /// Native Acquire V3 is rejected: its production integration requires a
+    /// typed normalized selection retaining every catalog claim, rather than
+    /// dropping those claims into the legacy version-2 durable format.
+    ///
     /// # Errors
     ///
     /// Returns [`NormalizedAcquisitionIntentError`] if an input is sentinel,
-    /// exceeds a format ceiling, or disagrees with a request commitment.
+    /// exceeds a format ceiling, disagrees with a request commitment, or is a
+    /// native version-3 request unsupported by this version-2 format.
     #[allow(clippy::too_many_arguments)]
     pub fn from_acquire_request(
         request: &AcquireSourceRequestV1,
@@ -127,7 +132,8 @@ impl NormalizedAcquisitionIntentV1 {
         holder_revocation_generation: u64,
         holder_revocation_digest: ObjectDigest,
     ) -> Result<Self, NormalizedAcquisitionIntentError> {
-        if node_id != request.node_id()
+        if request.acquisition_version() == crate::ACQUIRE_SOURCE_REQUEST_VERSION_V3
+            || node_id != request.node_id()
             || boot_id != request.boot_id()
             || holder.authority_id() != request.holder_authority_id()
             || holder.authority_generation() != request.holder_generation()

@@ -38,6 +38,7 @@ use crate::trust::{
 
 const REQUEST_ATTEMPT_DOMAIN: &[u8] = b"aos-source-provider-request-attempt-v1\0";
 const ACQUIRE_INTENT_DOMAIN: &[u8] = b"aos-source-provider-acquire-intent-v1\0";
+const NATIVE_ACQUIRE_INTENT_V3_DOMAIN: &[u8] = b"aos-source-provider-native-acquire-intent-v3\0";
 const RELEASE_INTENT_DOMAIN: &[u8] = b"aos-source-provider-release-intent-v1\0";
 const INVENTORY_INTENT_DOMAIN: &[u8] = b"aos-source-provider-inventory-intent-v1\0";
 
@@ -1415,10 +1416,26 @@ fn append_holder_authority(
 /// This pure projection omits session binding, sequence, request ID,
 /// acquisition ID, and deadline. It authenticates nothing and grants no
 /// reservation, replay, descriptor, or backend authority.
+///
+/// Native V3 commits every exact-catalog claim under a distinct version/profile
+/// domain; V1/V2 retain their original projection byte-for-byte.
 #[must_use]
 pub fn source_provider_acquire_intent_digest_v1(request: &AcquireSourceRequestV1) -> ObjectDigest {
     let mut hasher = Sha256::new();
-    hasher.update(ACQUIRE_INTENT_DOMAIN);
+    if let Some(catalog) = request.native_catalog() {
+        hasher.update(NATIVE_ACQUIRE_INTENT_V3_DOMAIN);
+        hasher.update(crate::ACQUIRE_SOURCE_REQUEST_VERSION_V3.to_be_bytes());
+        hasher.update([1, 0, 0, 0, 0, 0]);
+        hasher.update(catalog.resource_namespace_digest().as_bytes());
+        hasher.update(catalog.head().0.to_be_bytes());
+        hasher.update(catalog.head().1.as_bytes());
+        hasher.update(catalog.floor().0.to_be_bytes());
+        hasher.update(catalog.floor().1.as_bytes());
+        hasher.update(catalog.current_head_commitment().as_bytes());
+        hasher.update(catalog.canonical_publication_digest().as_bytes());
+    } else {
+        hasher.update(ACQUIRE_INTENT_DOMAIN);
+    }
     hasher.update((request.prospective_apply_template().len() as u32).to_be_bytes());
     hasher.update(request.prospective_apply_template());
     hasher.update(request.prospective_apply_template_digest().as_bytes());

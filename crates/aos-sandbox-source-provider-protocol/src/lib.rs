@@ -96,11 +96,12 @@ pub use inventory_readback::{
 };
 pub use model::{
     ACQUIRE_SOURCE_REQUEST_VERSION_V1, ACQUIRE_SOURCE_REQUEST_VERSION_V2,
-    ALL_PROOF_CLASS_CAPABILITIES, AcquireSourceRequestV1, AcquireSourceResponseV1,
-    InventoryLeaseStateV1, InventorySourceRequestV1, InventorySourceResponseV1,
-    MAXIMUM_BINDING_BYTES, MAXIMUM_INVENTORY_ENTRIES, MAXIMUM_RECURSIVE_BYTE_COUNT,
-    MAXIMUM_RECURSIVE_DEPTH, MAXIMUM_RECURSIVE_ENTRY_COUNT, MAXIMUM_SOURCE_LEASE_SECONDS,
-    MAXIMUM_SOURCE_SUBMOUNTS, ReleaseSourceRequestV1, ReleaseSourceResponseV1, SourceExportLeaseV1,
+    ACQUIRE_SOURCE_REQUEST_VERSION_V3, ALL_PROOF_CLASS_CAPABILITIES, AcquireSourceRequestV1,
+    AcquireSourceResponseV1, InventoryLeaseStateV1, InventorySourceRequestV1,
+    InventorySourceResponseV1, MAXIMUM_BINDING_BYTES, MAXIMUM_INVENTORY_ENTRIES,
+    MAXIMUM_RECURSIVE_BYTE_COUNT, MAXIMUM_RECURSIVE_DEPTH, MAXIMUM_RECURSIVE_ENTRY_COUNT,
+    MAXIMUM_SOURCE_LEASE_SECONDS, MAXIMUM_SOURCE_SUBMOUNTS, NativeAcquireCatalogBindingV3,
+    ReleaseSourceRequestV1, ReleaseSourceResponseV1, SourceExportLeaseV1,
     SourceProviderAuthorityV1, SourceProviderDescriptorRole, SourceProviderFeature,
     SourceProviderHelloV1, SourceProviderInventoryEntryV1, SourceProviderInventoryV1,
     SourceProviderMethod, SourceProviderPeerRole, SourceProviderReceiptV1,
