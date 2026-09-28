@@ -18,14 +18,6 @@ pub(super) const MAX_REPORT_BYTES: u64 = 65_536;
 pub(super) const TOUCHED: usize = 128;
 pub(super) const OPENS: usize = 32;
 
-pub(super) fn validation_reservation(index_bytes: u64) -> Result<u64> {
-    // Mirrors the validator's admission formula; the actual validator still runs.
-    index_bytes
-        .checked_mul(64)
-        .and_then(|value| value.checked_add(4096))
-        .ok_or_else(|| "validation reservation overflow".into())
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Profile {
@@ -251,6 +243,9 @@ pub(super) struct MeasurementReport {
     pub mapped_bytes: u64,
     pub normal_validation_ceiling_bytes: u64,
     pub normal_validation_refused: bool,
+    /// Actual cap-minus-one validator refusal, not an inferred estimate comparison.
+    pub underbudget_validation_refused: bool,
+    pub underbudget_validation_allocation: AllocationPhase,
     pub computed_validation_reservation_bytes: u64,
     pub selected_validation_cap_bytes: u64,
     pub validated: bool,
@@ -298,8 +293,6 @@ pub(super) fn check_helpers() {
     assert!(Config::child("small", 1).is_err());
     assert!(Config::child("million", 0).is_err());
     assert_eq!(Profile::Million.children() + 1, 1_000_001);
-    assert_eq!(validation_reservation(1024).unwrap(), 69_632);
-    assert!(validation_reservation(u64::MAX).is_err());
 
     // Accounting must handle freeing a pre-phase allocation, not just new ones.
     let old = std::hint::black_box(vec![0_u8; 64]);

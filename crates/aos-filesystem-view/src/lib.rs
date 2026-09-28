@@ -34,7 +34,7 @@ pub use aos_filesystem_view_core::{
     ProjectedNode, ProjectedNodeKind, ProjectionError, ProjectionLimits, ProjectionProfile,
     RemoteFetchError, SourceError, StagedIndex, SyntheticDirectoryMetadata, TreeCompileLimits,
     TreeCompiler, ValidatedIndex, ValidatedViewProjection, ValidatedViewSourceObject,
-    compile_view_projection, load_exact, validate_index,
+    compile_view_projection, index_validation_working_bytes, load_exact, validate_index,
 };
 pub use inode::{
     DirectoryCookie, DirectoryHandleId, DirectoryHandleLimits, DirectoryReadEntries,

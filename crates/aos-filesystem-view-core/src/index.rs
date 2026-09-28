@@ -57,7 +57,9 @@ pub use semantic::{
     IndexExtents, IndexFileView, IndexNodeBodyView, IndexNodeSemantics, IndexObjectDescriptorView,
     IndexSparseContentView, IndexXattrRange, IndexXattrView, IndexXattrs,
 };
-pub use validate::{IndexCrosslinks, IndexError, IndexExpectation, validate_index};
+pub use validate::{
+    IndexCrosslinks, IndexError, IndexExpectation, index_validation_working_bytes, validate_index,
+};
 pub use view::{
     DirectoryEntries, DirectoryEntryView, DirectoryRange, IndexNodeKind, IndexNodeView,
     IndexRecords, IndexSummary, ValidatedIndex,
