@@ -8659,7 +8659,8 @@ accepts a caller-selected catalog head: Storage reloads its own protected
 catalog and compares the catalog, journal sequence, and a domain-separated
 digest of the current materialized journal records before and after worker
 quiescence. This digest does not commit append history. The dedicated signing
-key still exposes no receipt issuance. Storage now derives the expected pool
+key's native issuance path is restricted to authenticated signed intent and
+the original measured root under retained writer custody. Storage derives the expected pool
 GUID from an exact root-owned `AOSSRPC2` managed-root assignment rather than
 the caller, compares it with the physical worker readback, and rechecks the
 protected policy head after worker quiescence. Hold generation, active-hold
@@ -8671,7 +8672,7 @@ request-record subject, and refuses to run outside a private mount namespace.
 It applies read-only, nodev, nosuid, and noexec attributes before reading, and
 returns a request-bound digest and mount identity on its original measurement
 wire. A distinct versioned reply can transfer exactly one GUID-verified,
-read-only detached mount FD to Storage, without exposing it to Provider.
+read-only detached mount FD to Storage.
 Storage's dormant held readback keeps its sole journal cut while it observes
 the GUID and hold and measures the bytes. A successful path observes the GUID
 and hold again after reader quiescence and rechecks the protected catalog and
@@ -8680,18 +8681,20 @@ The private native-claim bridge now derives the opaque snapshot version handle
 from Storage's authenticated Snapshot result, not the Provider row, and checks
 the row's handle, format version, GUIDs, hold lineage, root policy, and portable
 content digest against that unchanged cut and the confined reader. It returns
-only a nonauthorizing Storage sample. A separate Provider-only Storage socket
-now consumes one exact native claim but can return only `Unavailable`.
+only a nonauthorizing Storage sample. The Provider-only Storage socket keeps
+the V1 native-claim path descriptor-free and `Unavailable`.
 The separately provisioned `AOSZHK01` Storage role key can derive an unsigned
 `AOSZHR01` head only after exact credential recheck. That head binds the
 unchanged catalog and materialized-journal cut to both ZFS hold observations
 and the confined reader's complete measured tree, identity fields, and mount
 identity at observation time. A retained head does not prove currentness after
 a hold release or journal change. Any later receipt issuance must rejoin the
-live held cut, current protected journal, and policy. No receipt is signed:
-the socket authenticates the Provider process, but Storage cannot independently
-prove the durable Provider attempt or retain a SourceRoot delivery across a
-crash. The transferred mount is dropped after the final Storage readback.
+live held cut, current protected journal, and policy. Its separate signed V2
+carrier authenticates the original Root Acquire and Provider attempt under
+existing Storage-owned signer pins. Storage rejoins the physical hold,
+complete policy, primary journal cut, and original mount before signing a
+dedicated-role receipt and acceptance. This does not prove Provider completion
+or authorize a new holder session.
 
 Storage also retains a separate protected native-issuance journal after its
 primary and workspace writers. Its closed admission model binds the exact
@@ -8699,11 +8702,19 @@ signed Provider request, original Root Acquire, consumer session, acquisition,
 attempt/challenge, native hold lineage, receipt commitment, and original
 descriptor identity. Active interests exclude physical `ReleaseHold` across
 handle/name aliases; exact retirement keeps the original acceptance tombstone.
-Admission reserves capacity for every outstanding retirement. No production
-admission or retirement token can yet be constructed: the authenticated live
-request/descriptor bridge and exact Provider terminal/cleanup authority remain
-required. This journal neither signs a receipt nor delivers a SourceRoot, and
-positive Acquire remains closed.
+Admission reserves capacity for every outstanding retirement. V2 durably
+accepts and reads back the exact interest before transferring one SourceRoot
+FD. In-process escrow retains the original mount and stable signed reply even
+after an ambiguous send; exact live retry rechecks that original and never
+remounts or restamps. An accepted row without Storage-local escrow returns
+descriptor-free `Unavailable` and retains the interest: a Provider-held FD may
+still survive, so this is not proof of total custody loss. Retirement remains
+closed pending exact Provider terminal/cleanup authority. Focused synthetic
+runtime tests exercise signing, durable acceptance-before-send, same-FD retry,
+stale-cut rejection, and non-releasing cold-local recovery; they do not qualify
+the installed positive reader/held-journal vertical. Public Acquire remains
+closed until that installed proof and the Provider challenge/completion bridge
+are qualified.
 
 The shared native positive contract now reserves explicit acceptance/reply V3
 (`AOSZNA03`/`AOSZNP03`) with the existing 80-byte topology layout signed by the

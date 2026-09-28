@@ -16,8 +16,8 @@
 //! cannot change the receipt head that it commits. Its writer is acquired after
 //! the primary Storage and workspace writers and retained by the same runtime.
 //!
-//! The durable model and ReleaseHold exclusion are installed, but production
-//! admission and cleanup token constructors remain absent. A shaped request or
+//! Production admission requires authenticated intent and a live original
+//! descriptor under the held final cut; cleanup remains closed. A shaped request or
 //! acceptance is not proof of authorization, currentness, or descriptor custody.
 //! No method here signs a receipt, transfers an FD, or opens Acquire.
 
@@ -35,7 +35,10 @@ use aos_sandbox_source_provider_protocol::{
 use sha2::{Digest as _, Sha256};
 
 use crate::broker::{StorageHeldSnapshotCatalogCutV1, StorageHeldSnapshotSelectorV1};
+use crate::live_export_request_trust::AuthenticatedStorageNativeRequestV2;
+use crate::runtime::StorageHeldSnapshotReadbackWithMountV1;
 use crate::{CatalogPlanV1, StorageAdmissionCoordinator};
+use aos_sandbox_source_provider_protocol::StorageNativeAcquireReplyV2;
 
 const JOURNAL_FILE: &str = "storage-native-issuance.journal";
 const MAGIC: &[u8; 8] = b"AOSNSI01";
@@ -74,9 +77,9 @@ enum IssuanceCommitOutcomeV1 {
 
 /// Seals an owner-verified live request, acceptance, and current catalog cut.
 ///
-/// No production constructor exists until the authenticated native carrier
-/// retains its original descriptor through the final Storage cut. Private
-/// fields prevent a caller from promoting protocol-shaped bytes to this token.
+/// Only owner admission seals authenticated intent and a measured original
+/// descriptor under the runtime's final Storage cut. Private fields prevent
+/// callers from promoting protocol-shaped bytes to this token.
 struct PreparedStorageNativeIssuanceV1 {
     row: NativeIssuanceRowV1,
     cut: StorageHeldSnapshotCatalogCutV1,
@@ -275,6 +278,68 @@ enum NativeIssuanceCustodyV1 {
 }
 
 impl StorageNativeIssuanceLedgerV1 {
+    /// Checks retained identity before any physical measurement or remount.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsafe custody or a conflicting/retired original acquisition.
+    pub(crate) fn retained_acceptance(
+        &mut self,
+        request: &SignedStorageNativeAcquireRequestV2,
+    ) -> Result<Option<StorageNativeAcceptanceV2>, StorageNativeIssuanceErrorV1> {
+        self.validate_boundary()?;
+        let (provider, acquisition) = request.request().claims().provider_acquisition();
+        for row in self.rows()? {
+            if row.request.request().claims().provider_acquisition() == (provider, acquisition) {
+                if row.request != *request || row.retirement.is_some() {
+                    return Err(StorageNativeIssuanceErrorV1::Conflict);
+                }
+                return Ok(Some(row.acceptance));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Mints admission only from authenticated claims and the measured original FD.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed signed intent, descriptor, held cut, capacity, or durable readback.
+    pub(crate) fn accept_live(
+        &mut self,
+        authenticated: &AuthenticatedStorageNativeRequestV2<'_>,
+        held: &StorageHeldSnapshotReadbackWithMountV1,
+        reply: &StorageNativeAcquireReplyV2,
+        current: &StorageHeldSnapshotCatalogCutV1,
+    ) -> Result<(), StorageNativeIssuanceErrorV1> {
+        authenticated
+            .recheck()
+            .map_err(|_| StorageNativeIssuanceErrorV1::Noncanonical)?;
+        let descriptor = held
+            .observe_root()
+            .map_err(|_| StorageNativeIssuanceErrorV1::StaleHold)?;
+        let acceptance = reply.acceptance().acceptance();
+        if acceptance.request_digest() != authenticated.request().digest()
+            || acceptance.receipt_digest() != reply.receipt().digest()
+            || acceptance.descriptor() != &descriptor
+        {
+            return Err(StorageNativeIssuanceErrorV1::Conflict);
+        }
+        let prepared = PreparedStorageNativeIssuanceV1 {
+            row: NativeIssuanceRowV1 {
+                request: authenticated.request().clone(),
+                acceptance: acceptance.clone(),
+                retirement: None,
+            },
+            cut: held.readback.cut.clone(),
+        };
+        self.accept(&prepared, current)?;
+        if self.retained_acceptance(authenticated.request())?.as_ref() != Some(acceptance) {
+            return Err(StorageNativeIssuanceErrorV1::Conflict);
+        }
+        Ok(())
+    }
+
     /// Opens and validates retained exact interests without issuing authority.
     ///
     /// # Errors
@@ -555,3 +620,29 @@ fn journal_limits() -> JournalLimits {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) fn native_request_fixture_for_test() -> (
+    SignedStorageNativeAcquireRequestV2,
+    StorageHeldSnapshotCatalogCutV1,
+) {
+    let prepared = tests::fixture(1, 2);
+    (prepared.row.request, prepared.cut)
+}
+
+#[cfg(test)]
+pub(crate) fn native_issuance_fixture_for_test(directory: &Path) -> StorageNativeIssuanceLedgerV1 {
+    tests::open(directory, journal_limits()).unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn try_native_issuance_fixture_for_test(
+    directory: &Path,
+) -> Result<StorageNativeIssuanceLedgerV1, StorageNativeIssuanceErrorV1> {
+    tests::open(directory, journal_limits())
+}
+
+#[cfg(test)]
+pub(crate) fn conflicting_native_request_fixture_for_test() -> SignedStorageNativeAcquireRequestV2 {
+    tests::fixture(1, 3).row.request
+}

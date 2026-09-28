@@ -1,4 +1,4 @@
-//! Protected signer pins for Provider-to-Storage LocalLive requests.
+//! Protected signer pins for Provider-to-Storage LocalLive and native requests.
 //!
 //! ```text
 //! AOSSLT01 | version:u16be=1 | reserved[6]=0 | generation:u64be |
@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    SignedStorageLiveExportRequestV1, SourceProviderKeyUsageV1, SourceProviderSigningKeyV1,
+    SignedStorageLiveExportRequestV1, SignedStorageNativeAcquireRequestV2,
+    SourceProviderKeyUsageV1, SourceProviderSigningKeyV1,
 };
 use ed25519_dalek::VerifyingKey;
 use rustix::fs::{FileType, Mode, OFlags};
@@ -37,6 +38,10 @@ const SIGNER_BYTES: usize = 112;
 const KEY_BYTES: usize = 32;
 const RECORD_BYTES: usize = 24 + 2 * (SIGNER_BYTES + KEY_BYTES);
 const JOURNAL_DOMAIN: &[u8] = b"aos.sandbox.storage.live-export-request-trust.v1\0";
+// Journal record encoding: operation:u8, key-length:u16, value-length:u32.
+const JOURNAL_RECORD_FRAMING_BYTES: usize = 1 + 2 + 4;
+const JOURNAL_HEAD_RECORD_BYTES: usize =
+    JOURNAL_RECORD_FRAMING_BYTES + JOURNAL_HEAD_KEY.len() + RECORD_BYTES;
 
 /// Reports absent, changed, or invalid protected request trust.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -72,6 +77,62 @@ pub(crate) struct StorageLiveExportRequestTrustV1 {
     file_inode: u64,
     bytes: [u8; RECORD_BYTES],
     record: TrustRecordV1,
+    expected_owner: u32,
+    #[cfg(test)]
+    synthetic_directory: bool,
+}
+
+/// Carries native claims authenticated under both current Storage-owned pins.
+///
+/// This proves signed intent, not Provider completion, a current physical hold,
+/// or descriptor custody. Only the trust owner can construct this projection.
+pub(crate) struct AuthenticatedStorageNativeRequestV2<'a> {
+    request: &'a SignedStorageNativeAcquireRequestV2,
+    trust: &'a StorageLiveExportRequestTrustV1,
+}
+
+impl AuthenticatedStorageNativeRequestV2<'_> {
+    pub(crate) fn request(&self) -> &SignedStorageNativeAcquireRequestV2 {
+        self.request
+    }
+
+    /// Rejoins both signed inputs to the same current protected pins.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed trust custody or either signed owner binding.
+    pub(crate) fn recheck(&self) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+        self.trust.verify_native_signatures(self.request)
+    }
+
+    /// Verifies the shared native graph against independently rejoined evidence.
+    ///
+    /// This is signature/crosslink validation, not descriptor-send authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed pins, any signed graph mismatch, stale time, or root identity.
+    pub(crate) fn verify_reply(
+        &self,
+        reply: &aos_sandbox_source_provider_protocol::StorageNativeAcquireReplyV2,
+        verifier: aos_sandbox_source_provider_protocol::StorageZfsHoldVerifierV1,
+        expected: &aos_sandbox_source_provider_protocol::StorageZfsHoldReceiptV1,
+        descriptor: &aos_sandbox_source_provider_protocol::SourceRootObservationV1,
+        now_seconds: i64,
+    ) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+        self.trust.validate_current()?;
+        reply.verify_for(aos_sandbox_source_provider_protocol::StorageNativeAcquireVerificationV2 {
+            request: self.request,
+            provider_signer: &self.trust.record.provider_signer,
+            provider_key: &self.trust.record.provider_public_key,
+            root_signer: &self.trust.record.root_signer,
+            root_key: &self.trust.record.root_public_key,
+            storage_verifier: verifier, expected_receipt: expected, observed_descriptor: descriptor,
+            descriptor_roles: &[aos_sandbox_source_provider_protocol::SourceProviderDescriptorRole::SourceRoot],
+            now_seconds,
+        }).map_err(|_| StorageLiveExportRequestTrustErrorV1::Signature)?;
+        self.trust.validate_current()
+    }
 }
 
 impl StorageLiveExportRequestTrustV1 {
@@ -84,16 +145,47 @@ impl StorageLiveExportRequestTrustV1 {
     pub(crate) fn open_root_owned(
         directory_path: &Path,
     ) -> Result<Self, StorageLiveExportRequestTrustErrorV1> {
-        let directory = open_protected_directory(directory_path, 0)
+        Self::open_for_owner(directory_path, 0)
+    }
+
+    fn open_for_owner(
+        directory_path: &Path,
+        expected_owner: u32,
+    ) -> Result<Self, StorageLiveExportRequestTrustErrorV1> {
+        let directory = open_protected_directory(directory_path, expected_owner)
             .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
+        Self::open_with_directory(directory_path, expected_owner, directory)
+    }
+
+    fn open_with_directory(
+        directory_path: &Path,
+        expected_owner: u32,
+        directory: OwnedFd,
+    ) -> Result<Self, StorageLiveExportRequestTrustErrorV1> {
         let directory_identity = rustix::fs::fstat(&directory)
             .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
-        let (bytes, file_device, file_inode) = read_trust(&directory, 0)?;
+        let (bytes, file_device, file_inode) = read_trust(&directory, expected_owner)?;
         let record = parse_trust(&bytes)?;
-        let mut journal =
+        let opened = if expected_owner == 0 {
             Journal::open_protected_at(directory_path, JOURNAL_FILE, journal_limits())
-                .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?
-                .0;
+        } else {
+            #[cfg(test)]
+            {
+                Journal::open_protected_at_uid(
+                    directory_path,
+                    JOURNAL_FILE,
+                    journal_limits(),
+                    expected_owner,
+                )
+            }
+            #[cfg(not(test))]
+            {
+                return Err(StorageLiveExportRequestTrustErrorV1::Custody);
+            }
+        };
+        let mut journal = opened
+            .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?
+            .0;
         reconcile_head(&mut journal, &bytes, record.generation)?;
 
         Ok(Self {
@@ -106,6 +198,9 @@ impl StorageLiveExportRequestTrustV1 {
             file_inode,
             bytes,
             record,
+            expected_owner,
+            #[cfg(test)]
+            synthetic_directory: false,
         })
     }
 
@@ -131,15 +226,49 @@ impl StorageLiveExportRequestTrustV1 {
         self.validate_current()
     }
 
+    /// Authenticates a native request without borrowing LocalLive grant semantics.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed protected trust or either unauthenticated request signer.
+    pub(crate) fn verify_native<'a>(
+        &'a self,
+        request: &'a SignedStorageNativeAcquireRequestV2,
+    ) -> Result<AuthenticatedStorageNativeRequestV2<'a>, StorageLiveExportRequestTrustErrorV1> {
+        self.verify_native_signatures(request)?;
+        Ok(AuthenticatedStorageNativeRequestV2 {
+            request,
+            trust: self,
+        })
+    }
+
+    fn verify_native_signatures(
+        &self,
+        request: &SignedStorageNativeAcquireRequestV2,
+    ) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+        self.validate_current()?;
+        request
+            .verify(
+                &self.record.provider_signer,
+                &self.record.provider_public_key,
+                &self.record.root_signer,
+                &self.record.root_public_key,
+            )
+            .map_err(|_| StorageLiveExportRequestTrustErrorV1::Signature)?;
+        self.validate_current()
+    }
+
     pub(crate) fn validate_current(&self) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
-        let current_directory = open_protected_directory(&self.directory_path, 0)
-            .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
+        let current_directory = self.reopen_directory()?;
         let identity = rustix::fs::fstat(&current_directory)
             .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
         if (identity.st_dev, identity.st_ino) != (self.directory_device, self.directory_inode) {
             return Err(StorageLiveExportRequestTrustErrorV1::Custody);
         }
-        let (bytes, device, inode) = read_trust(&self.directory, 0)?;
+        self.journal
+            .validate_held_protected_names()
+            .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
+        let (bytes, device, inode) = read_trust(&self.directory, self.expected_owner)?;
         if (device, inode) != (self.file_device, self.file_inode)
             || bytes != self.bytes
             || parse_trust(&bytes)? != self.record
@@ -152,6 +281,70 @@ impl StorageLiveExportRequestTrustV1 {
         }
         Ok(())
     }
+
+    fn reopen_directory(&self) -> Result<OwnedFd, StorageLiveExportRequestTrustErrorV1> {
+        #[cfg(test)]
+        if self.synthetic_directory {
+            return open_fixture_directory(&self.directory_path, self.expected_owner);
+        }
+        open_protected_directory(&self.directory_path, self.expected_owner)
+            .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn native_fixture_for_test(directory: &Path) -> Self {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut bytes = tests::fixture();
+        for (offset, authority, authority_digest, key_id, seed) in
+            [(24, 30, 33, 34, 32), (168, 22, 23, 29, 28)]
+        {
+            let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+            bytes[offset..offset + 16].fill(authority);
+            bytes[offset + 24..offset + 56].fill(authority_digest);
+            bytes[offset + 56..offset + 72].fill(key_id);
+            bytes[offset + 80..offset + 112]
+                .copy_from_slice(&Sha256::digest(key.verifying_key().as_bytes()));
+            bytes[offset + 112..offset + 144].copy_from_slice(key.verifying_key().as_bytes());
+        }
+        std::fs::write(directory.join(TRUST_FILE), bytes).unwrap();
+        std::fs::set_permissions(
+            directory.join(TRUST_FILE),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let owner = std::fs::metadata(directory).unwrap().uid();
+        let descriptor = open_fixture_directory(directory, owner).unwrap();
+        let mut trust = Self::open_with_directory(directory, owner, descriptor).unwrap();
+        trust.synthetic_directory = true;
+        trust.validate_current().unwrap();
+        trust
+    }
+}
+
+// A temporary test directory cannot provide production root-owned ancestry.
+// The fixture still retains the exact private UID/mode leaf and protected
+// journal names; only cfg(test) can select this synthetic ancestry boundary.
+#[cfg(test)]
+fn open_fixture_directory(
+    directory: &Path,
+    owner: u32,
+) -> Result<OwnedFd, StorageLiveExportRequestTrustErrorV1> {
+    let descriptor = rustix::fs::open(
+        directory,
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
+    let identity = rustix::fs::fstat(&descriptor)
+        .map_err(|_| StorageLiveExportRequestTrustErrorV1::Custody)?;
+    if FileType::from_raw_mode(identity.st_mode) != FileType::Directory
+        || identity.st_uid != owner
+        || identity.st_mode & 0o777 != 0o700
+    {
+        return Err(StorageLiveExportRequestTrustErrorV1::Custody);
+    }
+    Ok(descriptor)
 }
 
 fn read_trust(
@@ -348,7 +541,9 @@ fn validate_transition(
 const fn journal_limits() -> JournalLimits {
     JournalLimits {
         maximum_journal_bytes: 1024 * 1024,
-        maximum_record_bytes: RECORD_BYTES,
+        // Journal's record bound includes its seven-byte framing and the
+        // fixed head key, not only the canonical trust value.
+        maximum_record_bytes: JOURNAL_HEAD_RECORD_BYTES,
         maximum_key_bytes: 64,
         maximum_records_per_transaction: 1,
         maximum_transaction_bytes: 1024,
@@ -361,13 +556,13 @@ const fn journal_limits() -> JournalLimits {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     use ed25519_dalek::SigningKey;
 
     use super::*;
 
-    fn fixture() -> [u8; RECORD_BYTES] {
+    pub(super) fn fixture() -> [u8; RECORD_BYTES] {
         let provider_key = SigningKey::from_bytes(&[17; 32]);
         let root_key = SigningKey::from_bytes(&[18; 32]);
         let mut bytes = [0; RECORD_BYTES];
@@ -460,5 +655,55 @@ mod tests {
         fs::rename(&replacement, &trust_path).unwrap();
         let (_, replaced_device, replaced_inode) = read_trust(&descriptor, owner).unwrap();
         assert_ne!((device, inode), (replaced_device, replaced_inode));
+    }
+
+    #[test]
+    fn native_trust_journal_admits_exact_head_record_and_replays() {
+        let directory = tempfile::tempdir().unwrap();
+        let trust = StorageLiveExportRequestTrustV1::native_fixture_for_test(directory.path());
+        trust.validate_current().unwrap();
+        assert_eq!(
+            journal_limits().maximum_record_bytes,
+            JOURNAL_RECORD_FRAMING_BYTES + JOURNAL_HEAD_KEY.len() + trust.bytes.len()
+        );
+        let original = trust.bytes;
+        drop(trust);
+
+        let recovered = StorageLiveExportRequestTrustV1::native_fixture_for_test(directory.path());
+        recovered.validate_current().unwrap();
+        assert_eq!(recovered.bytes, original);
+    }
+
+    #[test]
+    fn native_trust_one_byte_short_record_budget_refuses_first_head() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let owner = fs::metadata(directory.path()).unwrap().uid();
+        let mut too_short = journal_limits();
+        too_short.maximum_record_bytes -= 1;
+        let (mut journal, _) =
+            Journal::open_protected_at_uid(directory.path(), JOURNAL_FILE, too_short, owner)
+                .unwrap();
+        let bytes = fixture();
+
+        assert_eq!(
+            reconcile_head(&mut journal, &bytes, 1),
+            Err(StorageLiveExportRequestTrustErrorV1::Custody)
+        );
+        assert!(
+            journal
+                .get(RecordNamespace::AuthorityPublication, JOURNAL_HEAD_KEY)
+                .is_none()
+        );
+        drop(journal);
+
+        let (mut reopened, _) =
+            Journal::open_protected_at_uid(directory.path(), JOURNAL_FILE, journal_limits(), owner)
+                .unwrap();
+        reconcile_head(&mut reopened, &bytes, 1).unwrap();
+        assert_eq!(
+            reopened.get(RecordNamespace::AuthorityPublication, JOURNAL_HEAD_KEY),
+            Some(bytes.as_slice())
+        );
     }
 }
