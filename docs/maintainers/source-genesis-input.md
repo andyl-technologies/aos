@@ -63,11 +63,24 @@ added before Controller readiness. Early profile capture still does not
 require Root to be live. Packet delivery alone cannot create either live Root
 proof or public Create/read authority.
 
+Source replay is followed by a recheck of the original Root peer, custody and
+deadline immediately before effectful Controller input admission. The Source
+signer request is explicitly versioned as `AOSSSR08`, carrying data derived
+from Root's retained intent or floor. The independent reader checks its actual
+pending nonce by reconstructing the canonical intent and comparing the receipt
+digest; fresh observation nonces remain separate. After ACK, the exact floor
+commitment preserves receipt/role binding. Legacy `AOSSSR07` is rejected, and
+global Empty requires the entire Source journal to contain no records.
+
 The authored regressions cover the existing canonical signature leaf and real
 bounded file reads/inode substitution. They do not fabricate a fixed production
 Controller writer, install privileged credential ancestors, or qualify the
 installed PID1 delivery/coordinator. Additional pure deadline, phase, nonce,
 completion-digest and disconnected-queue regressions do not fabricate Root
-owner custody. Rust compilation and execution remain pending.
+owner custody. Protected Source journal regressions cover cold append/replay,
+fresh correlation with an unchanged original nonce, altered UID/roles/accepted
+input, post-ACK role binding and unrelated-row Empty refusal. They are not
+installed Root flight or crash-injection qualification. Rust compilation and
+execution remain pending.
 No Storage initialization, method46 TPM scope, new service/key/capability or
 whole-host disk rollback claim is involved.

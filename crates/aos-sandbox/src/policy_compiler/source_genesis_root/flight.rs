@@ -178,7 +178,7 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         self.nonce
     }
 
-    fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+    pub(super) fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
         if self.poisoned.get() || self.started.elapsed() >= MAXIMUM_FLIGHT {
             return Err(SourceGenesisErrorV1::Stale);
         }

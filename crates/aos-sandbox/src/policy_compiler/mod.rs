@@ -347,6 +347,10 @@ pub use root_v8_settled_grant::{
     ROOT_V8_SETTLED_QUERY_MAGIC, RootV8SettledGrantV1, encode_root_v8_settled_reply_v1,
     query_fixed_root_v8_settled_grant_v1,
 };
+#[cfg(target_os = "linux")]
+pub use source_genesis_readback::{
+    SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V1, SourceTreeGenesisIntentContextV1,
+};
 pub use source_genesis_readback::{
     SOURCE_TREE_GENESIS_READBACK_BYTES_V1, SourceTreeGenesisChallengeV1,
     VerifiedSourceTreeGenesisReadbackV1, verify_source_tree_genesis_readback_v1,
@@ -383,7 +387,7 @@ pub use source_signer_readback::{
     SourceSignerReadbackErrorV1, sign_fixed_source_project_admission_readback_v1,
     sign_fixed_source_project_reservation_readback_v1,
     sign_fixed_source_project_retirement_readback_v1, sign_fixed_source_signer_readback_v1,
-    sign_fixed_source_signer_readback_v2, sign_fixed_source_tree_genesis_readback_v1,
+    sign_fixed_source_signer_readback_v2, sign_fixed_source_tree_genesis_readback_v2,
 };
 #[cfg(target_os = "linux")]
 pub use v8_successor_clear::clear_current_create_v8_successor_fences_v1;

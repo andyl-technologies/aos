@@ -21,7 +21,7 @@ use aos_sandbox::policy_compiler::{
     decode_root_source_genesis_frame_v1, encode_root_source_genesis_frame_v1,
 };
 
-use crate::source_signer_exchange::request_root_source_tree_genesis_readback_v1;
+use crate::source_signer_exchange::request_root_source_tree_genesis_readback_v2;
 
 // The client's original 60-second deadline starts before connection. Root's
 // phase deadline begins later and is 65 seconds; it never expires before the
@@ -297,13 +297,18 @@ impl RootHeldStreamFlight<'_, '_> {
         };
         let observed = probe
             .map(|(project, challenge)| {
-                request_root_source_tree_genesis_readback_v1(
+                let context = project
+                    .map(|_| self.owner.source_genesis_intent_context_v1())
+                    .transpose()?;
+                request_root_source_tree_genesis_readback_v2(
                     challenge,
                     project,
+                    context.as_ref(),
                     self.owner.source_readback_pin(),
                     self.source_signer_uid,
                     self.controller_gid,
                 )
+                .map_err(SourceGenesisErrorV1::from)
             })
             .transpose()?;
         self.recheck()?;

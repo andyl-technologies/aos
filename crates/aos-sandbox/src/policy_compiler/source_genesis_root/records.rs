@@ -67,7 +67,9 @@ pub struct RootSourceGenesisIntentRecordV1 {
 }
 
 impl RootSourceGenesisIntentRecordV1 {
-    pub(super) fn new(
+    // Canonical DATA construction is shared with independent Source replay;
+    // it cannot construct the live borrowed intent consumed by an append.
+    pub(crate) fn new(
         instance: [u8; 32],
         source_uid: u32,
         nonce: [u8; 16],
@@ -176,7 +178,8 @@ pub struct SourceHierarchyFloorRecordV1 {
 }
 
 impl SourceHierarchyFloorRecordV1 {
-    pub(super) fn new(
+    // Rebuilding this DATA commitment validates a Source ACK, not Root custody.
+    pub(crate) fn new(
         receipt: SourceTreeGenesisReceiptV1,
         roles: ObjectDigest,
     ) -> Result<Self, SourceGenesisErrorV1> {

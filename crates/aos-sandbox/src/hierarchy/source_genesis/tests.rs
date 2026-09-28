@@ -119,6 +119,17 @@ fn prepared_project(
     SourceGenesisPendingV1,
 ) {
     let acceptance = acceptance(project);
+    #[cfg(target_os = "linux")]
+    let intent = crate::policy_compiler::RootSourceGenesisIntentRecordV1::new(
+        instance,
+        journal.protected_owner_uid().unwrap(),
+        [11; 16],
+        acceptance.clone(),
+        ObjectDigest::from_bytes([15; 32]),
+    )
+    .unwrap()
+    .digest();
+    #[cfg(not(target_os = "linux"))]
     let intent = ObjectDigest::from_bytes(
         Sha256::new()
             .chain_update(b"source-genesis-test-intent\0")
@@ -164,6 +175,20 @@ fn prepared_project(
         receipt,
         pending,
     )
+}
+
+/// Supplies comparison data for canonical fixture intents, never a live owner.
+#[cfg(target_os = "linux")]
+pub(crate) fn intent_context(
+    journal: &Journal,
+    project: ProjectId,
+) -> crate::policy_compiler::SourceTreeGenesisIntentContextV1 {
+    crate::policy_compiler::SourceTreeGenesisIntentContextV1::new(
+        journal.protected_owner_uid().unwrap(),
+        ObjectDigest::from_bytes([15; 32]),
+        acceptance(project),
+    )
+    .unwrap()
 }
 
 pub(crate) fn ack(receipt: &SourceTreeGenesisReceiptV1) -> SourceGenesisAckV1 {
@@ -539,6 +564,38 @@ fn source_genesis_foreign_ack_and_generic_protected_key_writes_leave_fence_intac
         assert!(journal.commit(&forged).is_err());
     }
     assert!(journal.compact().is_ok());
+}
+
+#[test]
+fn source_genesis_borrowed_global_empty_rejects_unrelated_records() {
+    for namespace in [RecordNamespace::DesiredState, RecordNamespace::Effect] {
+        let directory = directory();
+        let mut journal = open(directory.path(), JournalLimits::default());
+        let uid = journal.protected_owner_uid().unwrap();
+        journal
+            .commit(
+                &JournalTransaction::new(
+                    [70; 16],
+                    vec![JournalRecord::put(
+                        namespace,
+                        b"unrelated-source-row".to_vec(),
+                        vec![1],
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        assert!(
+            observation_at(
+                &mut journal,
+                uid,
+                None,
+                SourceGenesisLocationV1::Test(directory.path().to_path_buf())
+            )
+            .is_err()
+        );
+    }
 }
 
 #[test]

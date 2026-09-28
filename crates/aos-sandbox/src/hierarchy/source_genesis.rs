@@ -44,7 +44,7 @@ pub use receipt::{SOURCE_TREE_GENESIS_RECEIPT_BYTES_V1, SourceTreeGenesisReceipt
 /// Distinguishes global absence, a vacant target and actual prepared/ACK data.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SourceTreeGenesisStateV1 {
-    /// No Tree, lineage, receipt, pending or ACK exists anywhere in this writer.
+    /// No row exists anywhere in this Source writer.
     Empty,
     /// An absent target under actual existing-instance data, never signed Empty.
     VacantProject,
@@ -541,7 +541,10 @@ fn capture_validated_observation(
     location.recheck(journal, uid)?;
     let valid_selection = match selection {
         SourceGenesisSelectionV1::GlobalEmpty => {
-            rows.receipts.is_empty() && rows.pending.is_none() && rows.acks.is_empty()
+            rows.receipts.is_empty()
+                && rows.pending.is_none()
+                && rows.acks.is_empty()
+                && journal.all_records().next().is_none()
         }
         SourceGenesisSelectionV1::Present(project) => rows.receipts.contains_key(&project),
         SourceGenesisSelectionV1::Vacant(project) => {

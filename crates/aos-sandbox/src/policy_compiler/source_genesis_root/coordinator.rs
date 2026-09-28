@@ -67,6 +67,9 @@ pub fn coordinate_provisioned_source_genesis_v1(
     // admission. The flight's deadline starts before connecting, not at ACK.
     let flight = OriginalRootGenesisFlightV1::connect(profile)?;
     let original = observe_source_genesis_attempt_v1(source, uid, input.project())?;
+    // Source replay may outlive the admitted peer or original deadline. Check
+    // that same flight again before authorization retention or acceptance.
+    flight.recheck()?;
     let mut controller = input.hold(journal)?;
     let prepare = sign_controller_source_genesis_readback_v1(
         &controller,

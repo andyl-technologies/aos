@@ -23,6 +23,7 @@ struct Fixture {
     directory: tempfile::TempDir,
     journal: Journal,
     floor: SourceHierarchyFloorRecordV1,
+    context: crate::policy_compiler::SourceTreeGenesisIntentContextV1,
     key: SigningKey,
     pin: PinnedSourceHoldReadbackSignerV1,
 }
@@ -32,8 +33,9 @@ impl Fixture {
         let directory = source_fixture::directory();
         let mut journal = source_fixture::open(directory.path(), JournalLimits::default());
         let receipt = source_fixture::append(&mut journal);
+        let context = source_fixture::intent_context(&journal, receipt.project());
         let floor =
-            SourceHierarchyFloorRecordV1::new(receipt, ObjectDigest::from_bytes([30; 32])).unwrap();
+            SourceHierarchyFloorRecordV1::new(receipt, ObjectDigest::from_bytes([15; 32])).unwrap();
         let key = SigningKey::from_bytes(&[31; 32]);
         let pin = PinnedSourceHoldReadbackSignerV1::decode(
             &encode_source_hold_readback_signer_credential_v1(3, &key.verifying_key()).unwrap(),
@@ -43,6 +45,7 @@ impl Fixture {
             directory,
             journal,
             floor,
+            context,
             key,
             pin,
         }
@@ -71,6 +74,7 @@ impl Fixture {
             &mut reader,
             Some(self.floor.project()),
             challenge,
+            Some(&self.context),
             3,
             &self.key,
         )
@@ -109,6 +113,7 @@ fn root_source_current_floor_rejoins_semantic_ack_after_compaction_and_cold_reop
         directory,
         journal,
         floor,
+        context,
         key,
         pin,
     } = fixture;
@@ -118,6 +123,7 @@ fn root_source_current_floor_rejoins_semantic_ack_after_compaction_and_cold_reop
         directory,
         journal,
         floor,
+        context,
         key,
         pin,
     };
