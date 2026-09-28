@@ -4,46 +4,71 @@
   fetchurl,
   buildPackages,
   bazelMavenBootstrap,
+  bazelCaffeine,
+  includeBazel9 ? false,
 }: let
   buildJdk = buildPackages.openjdk-17;
-  archives = [
-    {
-      group = "com/google/errorprone";
-      name = "error_prone_type_annotations";
-      version = "2.32.0";
-      hash = "sha256-vri5GTMvfsR+CQVrl2FL+eATBQ912r2IvL9l9f9kitQ=";
-    }
-    {
-      group = "com/google/guava";
-      name = "failureaccess";
-      version = "1.0.3";
-      hash = "sha256-b+9N/S65+WFlXyo8Tqh8AjYY2fy/trEEwXhi5a/ma5c=";
-    }
-    {
-      group = "com/google/j2objc";
-      name = "j2objc-annotations";
-      version = "3.0.0";
-      hash = "sha256-vWABmgQjw6Al72qyT+B2H19F/7SKjMp0oBtnjeEQXTg=";
-    }
-    {
-      group = "org/checkerframework";
-      name = "checker-qual";
-      version = "3.42.0";
-      hash = "sha256-77ZetHn2H1PG3K+9Qu1Z2tCbCg1af0S3vGjfJcLc+P0=";
-    }
-    {
-      group = "org/codehaus/mojo";
-      name = "animal-sniffer-annotations";
-      version = "1.24";
-      hash = "sha256-QnDOVTHtDxLkI04I8kDvO0XuPO6xbijUSrxhwSz1Iso=";
-    }
-    {
-      group = "io/perfmark";
-      name = "perfmark-api";
-      version = "0.27.0";
-      hash = "sha256-MRVRqynPUeWoq+5qAZ6I3uR9Hqcd65/NNknbnFGyN7w=";
-    }
-  ];
+  archives =
+    (
+      if includeBazel9
+      then [
+        {
+          group = "com/google/errorprone";
+          name = "error_prone_annotations";
+          version = "2.41.0";
+          hash = "sha256-iIW8y0J31N54XajlzZuGEMwS+zdAd2dBVVY5r7kuyEk=";
+        }
+        {
+          group = "com/google/j2objc";
+          name = "j2objc-annotations";
+          version = "3.1";
+          hash = "sha256-KVk4MH9AFrPxKPc0cQGyNq2hOUgIEEUZyek81htkYCs=";
+        }
+      ]
+      else []
+    )
+    ++ [
+      {
+        group = "com/google/errorprone";
+        name = "error_prone_type_annotations";
+        version = "2.32.0";
+        hash = "sha256-vri5GTMvfsR+CQVrl2FL+eATBQ912r2IvL9l9f9kitQ=";
+      }
+      {
+        group = "com/google/guava";
+        name = "failureaccess";
+        version = "1.0.3";
+        hash = "sha256-b+9N/S65+WFlXyo8Tqh8AjYY2fy/trEEwXhi5a/ma5c=";
+      }
+      {
+        group = "com/google/j2objc";
+        name = "j2objc-annotations";
+        version = "3.0.0";
+        hash = "sha256-vWABmgQjw6Al72qyT+B2H19F/7SKjMp0oBtnjeEQXTg=";
+      }
+      {
+        group = "org/checkerframework";
+        name = "checker-qual";
+        version = "3.42.0";
+        hash = "sha256-77ZetHn2H1PG3K+9Qu1Z2tCbCg1af0S3vGjfJcLc+P0=";
+      }
+      {
+        group = "org/codehaus/mojo";
+        name = "animal-sniffer-annotations";
+        version = "1.24";
+        hash = "sha256-QnDOVTHtDxLkI04I8kDvO0XuPO6xbijUSrxhwSz1Iso=";
+      }
+      {
+        group = "io/perfmark";
+        name = "perfmark-api";
+        version = "0.27.0";
+        hash = "sha256-MRVRqynPUeWoq+5qAZ6I3uR9Hqcd65/NNknbnFGyN7w=";
+      }
+    ];
+  caffeineTargets =
+    if includeBazel9
+    then ["com/github/ben-manes/caffeine/caffeine/3.1.8/caffeine-3.1.8.jar"]
+    else [];
   sources = builtins.map (archive:
     archive
     // {
@@ -56,27 +81,27 @@
   archives;
   sourcePaths = builtins.concatStringsSep " " (builtins.map (source: toString source.src) sources);
   buildSources = builtins.concatStringsSep "\n" (builtins.map (source: ''
-      mkdir -p source-${source.name} classes-${source.name}
-      unzip -q ${source.src} -d source-${source.name}
-      find source-${source.name} -name '*.java' ! -name module-info.java \
-        -print > sources-${source.name}
-      javac --release 8 -proc:none -encoding UTF-8 \
-        -cp ${bazelMavenBootstrap}/maven/com/google/errorprone/error_prone_annotations/2.36.0/error_prone_annotations-2.36.0.jar \
-        -d classes-${source.name} @sources-${source.name}
+      mkdir -p source-${source.name}-${source.version} classes-${source.name}-${source.version}
+      unzip -q ${source.src} -d source-${source.name}-${source.version}
+      find source-${source.name}-${source.version} -name '*.java' ! -name module-info.java \
+        -print > sources-${source.name}-${source.version}
+      javac --release ${toString (source.javaRelease or 8)} -proc:none -encoding UTF-8 \
+        -cp "classes-checker-qual-3.42.0:${bazelMavenBootstrap}/maven/com/google/errorprone/error_prone_annotations/2.36.0/error_prone_annotations-2.36.0.jar" \
+        -d classes-${source.name}-${source.version} @sources-${source.name}-${source.version}
 
-      find source-${source.name} -type f ! -name '*.java' \
+      find source-${source.name}-${source.version} -type f ! -name '*.java' \
         ! -path '*/META-INF/MANIFEST.MF' -print | while IFS= read -r resource; do
-          destination="classes-${source.name}/''${resource#source-${source.name}/}"
+          destination="classes-${source.name}-${source.version}/''${resource#source-${source.name}-${source.version}/}"
           mkdir -p "$(dirname "$destination")"
           cp "$resource" "$destination"
         done
 
-      jar --create --file ${source.name}.jar --no-manifest \
-        --date=1980-01-01T00:00:02Z -C classes-${source.name} .
+      jar --create --file ${source.name}-${source.version}.jar --no-manifest \
+        --date=1980-01-01T00:00:02Z -C classes-${source.name}-${source.version} .
     '')
     sources);
   installSources = builtins.concatStringsSep "\n" (builtins.map (source: ''
-      install -Dm644 ${source.name}.jar "$out/maven/${source.target}"
+      install -Dm644 ${source.name}-${source.version}.jar "$out/maven/${source.target}"
     '')
     sources);
 in
@@ -85,15 +110,21 @@ in
     version = "1";
     src = (builtins.head sources).src;
 
-    passthru.sourceTargets = builtins.map (source: source.target) sources;
+    passthru.sourceTargets = (builtins.map (source: source.target) sources) ++ caffeineTargets;
 
-    buildDeps = [
-      buildJdk
-      bazelMavenBootstrap
-      buildPackages.findutils
-      buildPackages.python3
-      buildPackages.unzip
-    ];
+    buildDeps =
+      [
+        buildJdk
+        bazelMavenBootstrap
+        buildPackages.findutils
+        buildPackages.python3
+        buildPackages.unzip
+      ]
+      ++ (
+        if includeBazel9
+        then [bazelCaffeine]
+        else []
+      );
     runtimeDeps = [];
 
     phases = [
@@ -160,7 +191,12 @@ in
       }
       {
         name = "install";
-        script = installSources;
+        script =
+          installSources
+          + builtins.concatStringsSep "\n" (map (target: ''
+              install -Dm644 ${bazelCaffeine}/maven/${target} "$out/maven/${target}"
+            '')
+            caffeineTargets);
       }
     ];
   }
