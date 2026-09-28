@@ -26,6 +26,7 @@ use clap::{Args, Parser, Subcommand};
 use aos_hub::db::Database;
 use aos_hub::server::{router, AppState};
 
+mod database_input;
 mod indexing;
 mod logging;
 mod password_input;
@@ -43,7 +44,7 @@ struct Cli {
     #[arg(long, global = true, env = "HUB_DATABASE_URL")]
     database_url: Option<String>,
 
-    /// File containing the native database URL, for service credentials.
+    /// Owner-private file containing the native database URL.
     #[arg(long, global = true, env = "HUB_DATABASE_URL_FILE")]
     database_url_file: Option<PathBuf>,
 
@@ -604,9 +605,7 @@ async fn main() -> Result<()> {
             cli.database_url.is_none(),
             "configure either HUB_DATABASE_URL or HUB_DATABASE_URL_FILE"
         );
-        let database_url = std::fs::read_to_string(path)
-            .with_context(|| format!("reading database URL from {}", path.display()))?;
-        cli.database_url = Some(database_url.trim_end_matches(['\r', '\n']).to_owned());
+        cli.database_url = Some(database_input::read_database_url_file(path)?);
     }
 
     match cli.command {

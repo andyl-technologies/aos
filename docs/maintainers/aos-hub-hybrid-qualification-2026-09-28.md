@@ -89,6 +89,22 @@ passed without resetting the database. Companion infra commit `63f1a360`
 records that evidence. Root administrator creation awaits explicit approval;
 this database migration does not qualify Cloud Run mounts or a hosted paired API.
 
+The one-shot diagnostic subsequently ran the actual Native OCI image on Cloud
+Run through the bootstrap identity and immutable database secret version 1.
+Execution `aos-hub-credential-probe-kc95r` completed with one successful task and
+no failed tasks. Independent database readback again confirmed schema version 1,
+260 tables and zero users. The image upload used an operator monolithic upload
+with exact platform manifest and index readback; it was not a signed serving
+release.
+
+That image's database URL loader used ordinary file reads, so the execution
+qualified the secret mount and SQL connector but did not enforce Native's
+credential ownership, permission and link checks. The new loader shares the
+bounded private credential reader used by Native signing keys. Three focused
+tests passed for private URLs, insecure or linked files, invalid UTF-8 and empty
+input without rendering credentials in errors. Actual Cloud Run qualification
+of this stricter reader remains pending.
+
 ### Native settings browser qualification
 
 The Native build containing the empty-registry console correction passed all
@@ -121,7 +137,7 @@ Artifact Registry push compatibility or qualify a hosted Hub deployment.
 
 The dedicated GCP project, PostgreSQL and credential resources are provisioned,
 but no paired Native serving endpoint or public hybrid Worker route is deployed.
-Signed delivery setup, private credential mounts, root administrator initialization,
+Signed delivery setup, strict credential file metadata, root administrator initialization,
 origin shielding and real cross-cloud latency/byte measurements remain pending.
 
 Frozen external S3 physical GC, durable delete-receipt expiration/cleanup, and

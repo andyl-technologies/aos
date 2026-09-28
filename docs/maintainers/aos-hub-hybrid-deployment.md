@@ -63,6 +63,14 @@ once before opening traffic. The Native service retries startup while its
 paired Worker is unavailable; it must become healthy without a manual restart
 after the Worker starts. Keep public routing closed during this step.
 
+The database URL file uses the same bounded private credential reader as Native
+signing keys. Supply a regular, singly linked file owned by root or the service
+user, with private permissions and a parent directory that other users cannot
+write. The reader rejects symlinks, insecure metadata, oversized or changing
+files, invalid UTF-8 and empty contents before connecting. Only trailing CR/LF
+terminators are removed. Confirm these properties on the actual platform mount;
+a configured secret mode alone does not prove its observed filesystem metadata.
+
 ## Native container artifact
 
 The dedicated service image is exposed as `container-aos-hub-oci` and
