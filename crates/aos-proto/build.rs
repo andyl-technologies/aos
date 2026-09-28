@@ -475,6 +475,48 @@ fn verify_sandbox_compatibility() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     verify_scoped_declarations(
         &source_declarations,
+        "message ExecutionResult {",
+        &[
+            "int32 exit_code = 1;",
+            "string termination_reason = 2;",
+            "Timestamp exited_at = 3;",
+            "ExecutionTerminationKind termination_kind = 4;",
+            "ExecutionSignal signal = 5;",
+            "ExecutionTerminalSignalV2 terminal_signal_v2 = 6;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message ExecutionTerminalSignalV2 {",
+        &["uint32 linux_signal_number = 1;", "bool core_dumped = 2;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "enum ExecutionTerminationKind {",
+        &[
+            "EXECUTION_TERMINATION_KIND_UNSPECIFIED = 0;",
+            "EXECUTION_TERMINATION_KIND_EXIT_CODE = 1;",
+            "EXECUTION_TERMINATION_KIND_SIGNAL = 2;",
+            "EXECUTION_TERMINATION_KIND_LOST = 3;",
+            "EXECUTION_TERMINATION_KIND_CANCELED = 4;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "enum ExecutionSignal {",
+        &[
+            "EXECUTION_SIGNAL_UNSPECIFIED = 0;",
+            "EXECUTION_SIGNAL_HANGUP = 1;",
+            "EXECUTION_SIGNAL_INTERRUPT = 2;",
+            "EXECUTION_SIGNAL_QUIT = 3;",
+            "EXECUTION_SIGNAL_TERMINATE = 4;",
+            "EXECUTION_SIGNAL_KILL = 5;",
+            "EXECUTION_SIGNAL_USER_1 = 6;",
+            "EXECUTION_SIGNAL_USER_2 = 7;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
         "message ForkSnapshotRequest {",
         &[
             "repeated Feature required_features = 7;",

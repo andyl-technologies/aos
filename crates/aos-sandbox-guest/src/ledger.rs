@@ -73,6 +73,8 @@ pub(super) struct ProcessRecord {
     pub(super) canceled: bool,
     #[serde(default)]
     pub(super) terminal: Option<StoredOutcome>,
+    #[serde(default)]
+    pub(super) terminal_waitstatus: Option<u32>,
 }
 
 /// Records only the live topology admitted by the original ExecutionSpec.
@@ -402,6 +404,25 @@ fn validate_process(record: &ProcessRecord) -> Result<(), GuestProcessEffectErro
     {
         return Err(GuestProcessEffectErrorV1::LedgerConflict);
     }
+    if let Some(raw) = record.terminal_waitstatus {
+        if record.version != 2 {
+            return Err(GuestProcessEffectErrorV1::LedgerConflict);
+        }
+        let status = aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4::new(raw)
+            .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+        let expected = crate::process::terminal_outcome(status, record.canceled);
+        if !record.terminal.as_ref().is_some_and(|terminal| {
+            terminal.phase == expected.phase && terminal.result == expected.result
+        }) {
+            return Err(GuestProcessEffectErrorV1::LedgerConflict);
+        }
+    } else if record
+        .terminal
+        .as_ref()
+        .is_some_and(|terminal| terminal.result.starts_with(b"AOSGER02"))
+    {
+        return Err(GuestProcessEffectErrorV1::LedgerConflict);
+    }
     Ok(())
 }
 
@@ -502,9 +523,33 @@ mod tests {
             cancel_on_disconnect: Some(true),
             canceled: false,
             terminal: None,
+            terminal_waitstatus: None,
         };
         validate_process(&historical).unwrap();
         assert!(!ledger.require_live_process(&historical).unwrap());
+
+        let signaled =
+            aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4::new(11 | 0x80)
+                .unwrap();
+        historical.terminal_waitstatus = Some(signaled.raw());
+        historical.terminal = Some(crate::process::terminal_outcome(signaled, false));
+        validate_process(&historical).unwrap();
+        assert!(!ledger.require_live_process(&historical).unwrap());
+
+        let original = historical.clone();
+        for substitution in 0..4 {
+            historical = original.clone();
+            match substitution {
+                0 => historical.terminal_waitstatus = None,
+                1 => historical.terminal_waitstatus = Some(9),
+                2 => historical.canceled = true,
+                _ => historical.terminal.as_mut().unwrap().phase = 5,
+            }
+            assert!(validate_process(&historical).is_err());
+        }
+        historical = original;
+        historical.terminal_waitstatus = None;
+        historical.terminal = None;
 
         // Legacy metadata can remain readable, but neither version can adopt
         // a same-PID or same-cgroup-number process after the handles are gone.
@@ -549,6 +594,7 @@ mod tests {
             cancel_on_disconnect: Some(true),
             canceled: false,
             terminal: None,
+            terminal_waitstatus: None,
         };
         let barrier = ledger.effect_barrier();
         let held = barrier.lock().unwrap();

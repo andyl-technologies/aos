@@ -976,6 +976,15 @@ fn terminal_guest_result(
         ) | (
             AgentExecutionPhaseV1::Canceled,
             HostExecutionTerminalResultV1::Canceled
+        ) | (
+            AgentExecutionPhaseV1::Exited,
+            HostExecutionTerminalResultV1::Original {
+                canceled: false,
+                ..
+            }
+        ) | (
+            AgentExecutionPhaseV1::Canceled,
+            HostExecutionTerminalResultV1::Original { canceled: true, .. }
         )
     ) {
         return Err(HostExecutionHandoffErrorV1::Conflict);

@@ -81,6 +81,23 @@ impl PidFd {
         decode_pidfd_info(uapi::pidfd_info(self.fd.as_fd())?)
     }
 
+    /// Delivers a Linux signal to the thread group pinned by this descriptor.
+    ///
+    /// Explicit thread-group scope prevents an inherited thread pidfd from
+    /// silently selecting one thread or a mutable process group. The descriptor
+    /// and signal are not authorization: the owner must retain its current
+    /// policy, execution membership and effect reservation through the call.
+    ///
+    /// # Errors
+    /// Rejects a signal outside `1..=64`, stale custody, missing permission, or
+    /// a kernel failure. An error does not authorize automatic redispatch.
+    pub fn send_thread_group_signal(&self, signal: u8) -> Result<()> {
+        if !(1..=64).contains(&signal) {
+            return Err(Error::invalid("signal", "must be in 1..=64"));
+        }
+        uapi::pidfd_send_thread_group_signal(self.fd.as_fd(), signal)
+    }
+
     /// Tests whether the pinned process has not exited without sending a signal.
     ///
     /// Pidfd exit readiness is independent of signal permissions. An exited

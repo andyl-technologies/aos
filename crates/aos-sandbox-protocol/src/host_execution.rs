@@ -37,6 +37,13 @@ pub enum HostExecutionTerminalResultV1 {
     Exited(i32),
     /// The guest observed cancellation of the child.
     Canceled,
+    /// The v2 Guest producer retained the exact original Linux waitstatus.
+    Original {
+        /// Original leader status, never a relay exit or synthetic sentinel.
+        status: aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4,
+        /// Recursive execution-tree cancellation completed under the Owner cut.
+        canceled: bool,
+    },
 }
 
 /// Decodes the exact bounded terminal payload emitted by the packaged guest.
@@ -50,6 +57,27 @@ pub enum HostExecutionTerminalResultV1 {
 pub fn decode_host_execution_terminal_result_v1(
     bytes: &[u8],
 ) -> Result<HostExecutionTerminalResultV1, ProtocolValidationError> {
+    if bytes.get(..8) == Some(b"AOSGER02".as_slice()) {
+        if bytes.len() != GUEST_RESULT_HEADER_BYTES + 4
+            || bytes[9..13] != 4_u32.to_be_bytes()
+            || !matches!(bytes[8], 6 | 7)
+        {
+            return Err(ProtocolValidationError::InvalidField(
+                "terminal guest result v2",
+            ));
+        }
+        let raw = u32::from_be_bytes(
+            bytes[13..17]
+                .try_into()
+                .map_err(|_| ProtocolValidationError::InvalidField("terminal guest result v2"))?,
+        );
+        let status = aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4::new(raw)
+            .map_err(|_| ProtocolValidationError::InvalidField("terminal guest result v2"))?;
+        return Ok(HostExecutionTerminalResultV1::Original {
+            status,
+            canceled: bytes[8] == 7,
+        });
+    }
     if bytes.len() < GUEST_RESULT_HEADER_BYTES
         || bytes.get(..8) != Some(GUEST_RESULT_MAGIC.as_slice())
     {
@@ -712,6 +740,13 @@ pub fn decode_host_execution_outcome_v1(
         let expected_phase = match terminal {
             HostExecutionTerminalResultV1::Exited(_) => 4,
             HostExecutionTerminalResultV1::Canceled => 5,
+            HostExecutionTerminalResultV1::Original { canceled, .. } => {
+                if canceled {
+                    5
+                } else {
+                    4
+                }
+            }
         };
         if outcome.phase.as_known() != Some(HostExecutionPhaseV1::HOST_EXECUTION_PHASE_COMPLETE)
             || outcome.completion_status.as_known()
@@ -738,6 +773,8 @@ fn execution_result_digest(bytes: &[u8]) -> [u8; 32] {
 
 #[cfg(test)]
 mod content_tests {
+    //! Exact signed terminal versions and immutable source/spec correlations.
+
     use super::*;
     use aos_proto::aos::sandbox::local::v1::{Audience, RequestHeader};
 
@@ -855,6 +892,46 @@ mod content_tests {
             source,
         )
         .is_err());
+    }
+
+    #[test]
+    fn original_terminal_v2_preserves_status_and_rejects_ambiguous_shapes() {
+        for (kind, raw, canceled) in [(6, 17 << 8, false), (6, 11 | 0x80, false), (7, 9, true)] {
+            let bytes = [
+                b"AOSGER02".as_slice(),
+                &[kind],
+                &4_u32.to_be_bytes(),
+                &u32::to_be_bytes(raw),
+            ]
+            .concat();
+            assert_eq!(
+                decode_host_execution_terminal_result_v1(&bytes).unwrap(),
+                HostExecutionTerminalResultV1::Original {
+                    status: aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4::new(
+                        raw
+                    )
+                    .unwrap(),
+                    canceled,
+                }
+            );
+            for partial in 0..bytes.len() {
+                assert!(decode_host_execution_terminal_result_v1(&bytes[..partial]).is_err());
+            }
+            assert!(
+                decode_host_execution_terminal_result_v1(&[bytes.as_slice(), &[0]].concat())
+                    .is_err()
+            );
+        }
+        for raw in [u32::MAX, 0x7f, 0xffff, 65, 128, 0x0109] {
+            let bytes = [
+                b"AOSGER02".as_slice(),
+                &[6],
+                &4_u32.to_be_bytes(),
+                &u32::to_be_bytes(raw),
+            ]
+            .concat();
+            assert!(decode_host_execution_terminal_result_v1(&bytes).is_err());
+        }
     }
 
     fn fields(request_id: [u8; 16], content: &[u8]) -> HostExecutionSpecContentFieldsV1 {

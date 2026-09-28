@@ -1054,6 +1054,23 @@ pub(crate) fn pidfd_open(pid: u32) -> Result<OwnedFd> {
     fd_result(result, "pidfd_open")
 }
 
+pub(crate) fn pidfd_send_thread_group_signal(pidfd: BorrowedFd<'_>, signal: u8) -> Result<()> {
+    const PIDFD_SIGNAL_THREAD_GROUP: u32 = 1 << 1;
+    // SAFETY: the descriptor stays borrowed, all other arguments are scalar,
+    // and the null siginfo asks the kernel to construct the sender identity.
+    // Explicit scope never interprets this pidfd as a process-group selector.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            pidfd.as_raw_fd(),
+            u32::from(signal),
+            std::ptr::null::<libc::siginfo_t>(),
+            PIDFD_SIGNAL_THREAD_GROUP,
+        )
+    };
+    unit_result(result, "pidfd_send_signal thread group")
+}
+
 #[cfg(all(test, feature = "kernel-tests"))]
 pub(crate) fn pidfd_send_signal_zero_for_test(pidfd: BorrowedFd<'_>) -> Result<()> {
     // SAFETY: the borrowed fd remains live for the call; signal 0 has no
