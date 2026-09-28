@@ -1212,6 +1212,23 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
     checkpoint: HistoricalSessionCheckpointV1,
 }
 
+/// Opens the sole cgroup root used by both fixed Mount worker-peer boundaries.
+pub(super) fn fixed_mount_peer_verifier()
+-> Result<aos_sandbox_host::peer::ControllerPeerVerifier, DormantBrokerSessionHandshakeErrorV1> {
+    let descriptor = rustix::fs::open(
+        "/sys/fs/cgroup",
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+    let root = aos_sandbox_linux::cgroup::CgroupV2Root::from_owned(descriptor)
+        .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+    Ok(aos_sandbox_host::peer::ControllerPeerVerifier::new(root))
+}
+
 impl DormantAuthenticatedBrokerSessionV1 {
     /// Checks the actual original peer against the fixed Mount service only.
     pub(super) fn require_original_mount_worker_peer(

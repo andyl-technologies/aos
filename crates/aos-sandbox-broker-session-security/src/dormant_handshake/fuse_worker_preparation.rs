@@ -12,6 +12,8 @@ use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_mount::broker::{MountBroker, PreparedMountFuseWorkerHandoffV1};
 use aos_sandbox_mount::worker::MountWorker;
 
+use crate::handshake::fixed_mount_peer_verifier;
+
 use super::{
     DormantAuthenticatedBrokerSessionV1, DormantBrokerDescriptorRequestReceiveProgressV1,
     DormantBrokerSessionHandshakeErrorV1, DormantReceivedBrokerDescriptorRequestV1,
@@ -19,6 +21,158 @@ use super::{
 };
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    /// Chooses exact closed Host coordinates beneath the actual owner deadline.
+    pub(crate) fn original_worker_request_coordinates(
+        &mut self,
+        original_deadline: u64,
+    ) -> Result<super::DormantBrokerRequestCoordinatesV1, DormantBrokerSessionHandshakeErrorV1>
+    {
+        let method = aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1;
+        self.0.require_negotiated_client_method(method)?;
+        let (request_id, deadline, maximum_response_bytes, protocol_version, audience) =
+            self.0.client_request_coordinates()?;
+        if audience != aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_ROOT_MOUNT
+            || protocol_version != aos_sandbox_core::ProtocolVersion::new(1, 0)
+        {
+            return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
+        }
+        let deadline_boottime_nanoseconds = deadline.min(original_deadline);
+        super::check_production_deadline(deadline_boottime_nanoseconds)?;
+        Ok(super::DormantBrokerRequestCoordinatesV1 {
+            request_id,
+            deadline_boottime_nanoseconds,
+            maximum_response_bytes,
+            protocol_version,
+            audience,
+        })
+    }
+
+    /// Prepares and sends four roles only from the actual original Mount owner.
+    pub(crate) fn prepare_and_send_original_worker<W: MountWorker>(
+        &mut self,
+        handoff: &mut PreparedMountFuseWorkerHandoffV1<'_, '_, W>,
+        envelope: aos_proto::aos::sandbox::local::v1::BrokerRequestEnvelope,
+        coordinates: super::DormantBrokerRequestCoordinatesV1,
+    ) -> Result<
+        crate::handshake::fuse_intent_continuation::OriginalMountHostWorkerDispatchV1,
+        DormantBrokerSessionHandshakeErrorV1,
+    > {
+        use super::{
+            DormantBrokerDescriptorRequestPreparationV1 as Preparation,
+            DormantPreparedBrokerDescriptorRequestV1 as Prepared,
+        };
+        use crate::handshake::fuse_intent_continuation::OriginalMountHostWorkerDispatchV1;
+        let method = aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1;
+        self.0.require_negotiated_client_method(method)?;
+        handoff
+            .recheck()
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+        let roles = handoff
+            .take_launch_roles()
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+        let (request, initialize) = self.0.prepare_client_request(
+            envelope,
+            method,
+            4,
+            coordinates.request_id(),
+            coordinates.deadline_boottime_nanoseconds(),
+            coordinates.maximum_response_bytes(),
+        )?;
+        let prepared = if initialize {
+            match self.0.initialize_authenticated_request(&request)? {
+                crate::ProtectedBrokerSessionInitializationResultV1::Initialized => Prepared {
+                    request,
+                    descriptors: Vec::from(roles),
+                },
+                crate::ProtectedBrokerSessionInitializationResultV1::RecoveryRequired {
+                    error,
+                    recovery,
+                } => {
+                    return Ok(OriginalMountHostWorkerDispatchV1::Durability(
+                        Preparation::InitializationRecoveryRequired {
+                            error,
+                            recovery,
+                            request: DormantUnconfirmedBrokerDescriptorRequestV1 {
+                                request,
+                                descriptors: Vec::from(roles),
+                            },
+                        },
+                    ));
+                }
+            }
+        } else {
+            match self.0.append_authenticated_request(&request)? {
+                crate::ProtectedBrokerRequestCommitResultV1::Committed => Prepared {
+                    request,
+                    descriptors: Vec::from(roles),
+                },
+                crate::ProtectedBrokerRequestCommitResultV1::RecoveryRequired {
+                    error,
+                    recovery,
+                } => {
+                    return Ok(OriginalMountHostWorkerDispatchV1::Durability(
+                        Preparation::SuccessorRecoveryRequired {
+                            error,
+                            recovery,
+                            request: DormantUnconfirmedBrokerDescriptorRequestV1 {
+                                request,
+                                descriptors: Vec::from(roles),
+                            },
+                        },
+                    ));
+                }
+            }
+        };
+        handoff
+            .recheck()
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+        // Sent drops the local outgoing table. It does not prove receiver,
+        // queued transport or PID1 copies have closed before a fresh HELLO.
+        let progress = self.send_authenticated_descriptor_request(prepared);
+        handoff
+            .recheck()
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+        Ok(OriginalMountHostWorkerDispatchV1::Transport(progress))
+    }
+
+    /// Drives original Mount object production and its actual four-role Host send.
+    ///
+    /// This closed entry keeps the same pending Controller/Mount flight, real
+    /// Mount writer and original kernel objects held throughout the distinct
+    /// sealed-plan exchange and durable Host-session preparation/send. It does
+    /// not register a service, widen any ordinary one-FD sender or complete an
+    /// outcome. The callback retains durability/transport uncertainty under
+    /// the actual Mount owner; returning still leaves all escrows occupied.
+    ///
+    /// Complete reply/queued-copy closure and a fresh worker challenge remain
+    /// mandatory before HELLO/INIT/idmap. No metadata/backing dispatch or Root
+    /// read guard is created by this preparation-only transport result.
+    pub(crate) fn with_original_mount_worker_host_dispatch<W, F, R>(
+        &mut self,
+        request: &DormantReceivedBrokerRequestV1,
+        mount: &mut MountBroker<W>,
+        host_cgroup_root: &CgroupV2Root,
+        host: &mut DormantAuthenticatedBrokerSessionV1,
+        action: F,
+    ) -> Result<R, DormantBrokerSessionHandshakeErrorV1>
+    where
+        W: MountWorker,
+        F: FnOnce(
+            &mut PreparedMountFuseWorkerHandoffV1<'_, '_, W>,
+            crate::handshake::fuse_intent_continuation::OriginalMountHostWorkerDispatchV1,
+        ) -> Result<R, DormantBrokerSessionHandshakeErrorV1>,
+    {
+        let mut transport = self.0.hold_fuse_intent_transport(&request.0)?;
+        transport.with_original_worker_handoff_transport(
+            mount,
+            host_cgroup_root,
+            |transport, handoff| {
+                let progress = transport.dispatch_original_host_worker(handoff, host)?;
+                action(handoff, progress)
+            },
+        )
+    }
+
     /// Receives only the exact four-role original worker preparation profile.
     ///
     /// This separate receiver does not widen the ordinary Host zero/one-FD
@@ -218,20 +372,4 @@ impl DormantAuthenticatedBrokerSessionV1 {
         let mut transport = self.0.hold_fuse_intent_transport(&request.0)?;
         transport.with_original_worker_handoff(mount, host_cgroup_root, action)
     }
-}
-
-fn fixed_mount_peer_verifier()
--> Result<aos_sandbox_host::peer::ControllerPeerVerifier, DormantBrokerSessionHandshakeErrorV1> {
-    let descriptor = rustix::fs::open(
-        "/sys/fs/cgroup",
-        rustix::fs::OFlags::RDONLY
-            | rustix::fs::OFlags::DIRECTORY
-            | rustix::fs::OFlags::CLOEXEC
-            | rustix::fs::OFlags::NOFOLLOW,
-        rustix::fs::Mode::empty(),
-    )
-    .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
-    let root = CgroupV2Root::from_owned(descriptor)
-        .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
-    Ok(aos_sandbox_host::peer::ControllerPeerVerifier::new(root))
 }
