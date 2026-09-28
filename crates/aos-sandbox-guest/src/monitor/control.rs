@@ -154,15 +154,18 @@ fn apply_or_observe(
     authority_expires_at: i64,
     effect_deadline_boottime_nanoseconds: u64,
 ) -> Result<OriginalControlObservationV5, Error> {
-    require_control_custody(
-        installed,
-        connection,
-        subject,
-        child,
-        witness,
-        original_expiry,
-        ledger,
-    )?;
+    let recheck_root = || {
+        require_control_custody(
+            installed,
+            connection,
+            subject,
+            child,
+            witness,
+            original_expiry,
+            ledger,
+        )
+    };
+    recheck_root()?;
     let process = ledger.read_process_bytes(installed.runtime.claim().binding.execution_id)?;
     ledger.require_active_original_tree_v5(&process)?;
     let binding = control_binding(installed, connection, subject, child, witness)?;
@@ -224,28 +227,11 @@ fn apply_or_observe(
             crate::process::check_deadline(deadline)?;
             // This deliberately does not reacquire ledger.live: the actual
             // tree/PTY owner holds that lock through every kernel effect.
-            require_control_custody(
-                installed,
-                connection,
-                subject,
-                child,
-                witness,
-                original_expiry,
-                ledger,
-            )
+            recheck_root()
         },
     )?;
     current_deadline().map_err(|_| Error::AmbiguousEffect)?;
-    require_control_custody(
-        installed,
-        connection,
-        subject,
-        child,
-        witness,
-        original_expiry,
-        ledger,
-    )
-    .map_err(|_| Error::AmbiguousEffect)?;
+    recheck_root().map_err(|_| Error::AmbiguousEffect)?;
     if matches!(request.action, OpenSshControlActionV5::Pty { .. }) {
         controls.pty_configured = true;
     }
@@ -254,16 +240,7 @@ fn apply_or_observe(
     ack[8..16].copy_from_slice(&request.sequence.to_be_bytes());
     connection.send(&ack).map_err(|_| Error::AmbiguousEffect)?;
     current_deadline().map_err(|_| Error::AmbiguousEffect)?;
-    require_control_custody(
-        installed,
-        connection,
-        subject,
-        child,
-        witness,
-        original_expiry,
-        ledger,
-    )
-    .map_err(|_| Error::AmbiguousEffect)?;
+    recheck_root().map_err(|_| Error::AmbiguousEffect)?;
     Ok(OriginalControlObservationV5 {
         binding,
         phase: OriginalControlPhaseV5::Applied,
