@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "fa6515d307c554ba83bbbd7c4dec6bf37b9430445c561e0477e1f90aef30048e";
+  sha256 = "c8e2d35781bb1a53f8a90e9fd9648f9e6f82f2c5d520d61ecd519f3b83be124d";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -57,9 +57,15 @@
     "Report an unrepresentable armed virtual timer deadline as a distinct"
     "overflow status instead of absence. Keep the full QEMU timer horizon"
     "and exercise the plugin-facing signed projection with wide timers."
+    ""
+    "Bound long-TB instruction restoration scans with immutable code-owned"
+    "checkpoints every 16 rows. Retain strict helper end boundaries and all"
+    "target metadata words, reject malformed metadata without exposing partial"
+    "outputs, and return the already authenticated TB from the private identity"
+    "decoder without changing generic restoration or execution permissions."
   ];
-  commit = "e278eb8ad4cbf287c162a584c9c286e902b7e9e4";
-  tree = "0d64e29a5b2fa353fe05102a30104aff1c99ed94";
+  commit = "8efabcf41af3af03e38c27f9452955773417ee31";
+  tree = "f512f3a58e5cd7791e322abb85c4a98b0a084673";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -68,7 +74,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "b50592449e518bd75cb85aa0f55205e81dbcd566d8d311db2a436dd0b71bf72b";
+  bundleSha256 = "f3fbbc0995a2e774303da49284258a23a15bf5ede82cc14577948f0ac332d0b5";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
