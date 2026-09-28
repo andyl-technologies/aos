@@ -185,7 +185,7 @@ in
                   # Fully qualify this repository's headers so the bootstrap
                   # bazel_tools include directory cannot shadow them.
                   contents = destination.read_text()
-                  for prefix in ["src/tools/singlejar/", "third_party/ijar/"]:
+                  for prefix in ["src/tools/singlejar/", "src/main/cpp/util/", "third_party/ijar/"]:
                       contents = contents.replace('"' + prefix, '"java_tools/' + prefix)
                   destination.write_text(contents)
           PY
