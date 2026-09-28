@@ -7,6 +7,12 @@
 
 mod consumer_cgroup_terminal;
 mod fuse_worker_preparation;
+mod host_worker_comparison;
+
+pub(crate) use host_worker_comparison::{
+    DormantOriginalHostWorkerComparisonV1, OriginalHostWorkerComparisonSendProgressV1,
+    OriginalMountHostWorkerComparisonProgressV1,
+};
 
 use std::os::fd::{BorrowedFd, OwnedFd};
 use std::path::Path;
