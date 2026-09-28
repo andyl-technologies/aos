@@ -288,7 +288,7 @@ index 0000000..7d9bf29
 +bool aos_fuse_worker_protected_unit(const Unit *u);
 +int aos_fuse_worker_instance_name(const char *instance, char **ret);
 +int aos_fuse_worker_verify_loaded_fragment(const Unit *u);
-+int aos_fuse_worker_verify_executable(const Unit *u, int fd);
++int aos_fuse_worker_verify_executable(Unit *u, int fd);
 +int aos_fuse_worker_require_host(sd_bus_message *message);
 +int aos_fuse_worker_arm(Unit *u, sd_bus_message *message, sd_bus_error *error);
 +int aos_fuse_worker_take_launch(Service *s, ExecCommand *command);
@@ -462,7 +462,7 @@ index 9203e11..e68ea10 100644
 +                         strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))) ? 0 : -EPERM;
 +}
 +
-+int aos_fuse_worker_verify_executable(const Unit *u, int descriptor) {
++int aos_fuse_worker_verify_executable(Unit *u, int descriptor) {
 +        _cleanup_free_ char *physical = NULL;
 +        _cleanup_close_ int image = -EBADF;
 +        const ExecCommand *command;
