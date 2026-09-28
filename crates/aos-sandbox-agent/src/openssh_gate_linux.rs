@@ -147,8 +147,10 @@ impl RunningOpenSshGateV1 {
         if self.child.try_wait()?.is_some() {
             return Err(OpenSshGatePhysicalErrorV1::DaemonUnavailable);
         }
-        let config = check_installed_files(&self.binding)?;
-        if config.device != self.config_device || config.inode != self.config_inode {
+        let installed = check_installed_files(&self.binding)?;
+        if installed.configuration.device != self.config_device
+            || installed.configuration.inode != self.config_inode
+        {
             return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
         }
         let pid = self.child.id();
@@ -170,6 +172,8 @@ impl RunningOpenSshGateV1 {
             MAXIMUM_EXECUTABLE_BYTES,
             true,
         )?;
+        // Sample the callback again after claim and process observation. The
+        // measured bytes must still be the original installation-opened file.
         let gate = read_protected_file(
             &fs::canonicalize(GATE_PATH)?,
             MAXIMUM_EXECUTABLE_BYTES,
