@@ -140,7 +140,7 @@ impl<W: MountWorker> MountBroker<W> {
             original.request_id(),
             original.exact_body(),
         )?;
-        scope.recheck()?;
+        scope.recheck().map_err(host_scope_error)?;
         require_scope(&decoded, &scope)?;
 
         let slots = self
@@ -275,7 +275,7 @@ impl<W: MountWorker> MountBroker<W> {
         )?;
         self.journal
             .preflight_transactions(std::slice::from_ref(&transaction))?;
-        scope.recheck()?;
+        scope.recheck().map_err(host_scope_error)?;
         slots.resolve(&slot)?;
         self.authority
             .validate_effect_clock(
@@ -359,7 +359,7 @@ impl<W: MountWorker> HeldMountFuseIntentPreparationV1<'_, W> {
         {
             return Err(MountError::Fence("FUSE original request index changed"));
         }
-        self.scope.recheck()?;
+        self.scope.recheck().map_err(host_scope_error)?;
         require_scope(&self.decoded, &self.scope)?;
         let value = self
             .broker
@@ -431,12 +431,18 @@ impl<W: MountWorker> HeldMountFuseIntentPreparationV1<'_, W> {
         {
             return Err(MountError::Fence("FUSE destination slot changed"));
         }
-        self.scope.recheck()?;
+        self.scope.recheck().map_err(host_scope_error)?;
         self.broker
             .journal
             .validate_held_root_owned_at(STATE_DIRECTORY, "mount.journal")?;
         Ok(())
     }
+}
+
+fn host_scope_error(error: crate::host_scope::HostScopeError) -> MountError {
+    // Match native catalog scope rechecks: physical failures remain backend
+    // failures with private diagnostic detail, while metadata mismatches fence.
+    MountError::Worker(error.to_string())
 }
 
 fn require_scope(
@@ -574,6 +580,33 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn host_scope_failures_keep_native_backend_class_and_diagnostic_detail() {
+        use crate::host_scope::HostScopeError;
+
+        let failures = [
+            HostScopeError::HostIdentity,
+            HostScopeError::PayloadIdentity,
+            HostScopeError::Deadline,
+            HostScopeError::Descriptor,
+            HostScopeError::Io(rustix::io::Errno::BADF),
+            HostScopeError::Transport(aos_sandbox_linux::seqpacket::SeqpacketError::Closed),
+            HostScopeError::Kernel(aos_sandbox_linux::Error::WrongDescriptorType {
+                expected: "cgroup",
+            }),
+            HostScopeError::Protocol(
+                aos_sandbox_protocol::ProtocolValidationError::DeadlineExpired,
+            ),
+        ];
+
+        for error in failures {
+            let detail = error.to_string();
+            let mapped = host_scope_error(error);
+
+            assert!(matches!(mapped, MountError::Worker(ref message) if message == &detail));
+        }
+    }
 
     fn request() -> ValidatedFuseReserveIntentRequestV1 {
         let intent = AttachmentIntent::new_with_presentation(
