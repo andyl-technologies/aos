@@ -60,11 +60,16 @@ in
           ${
             if stdenv.hostPlatform.isLinux
             then ''
-              # Fixed, default-off custody extension on the existing root monitor.
-              # It cannot transfer execution I/O or accept callback identities.
+              # Fixed, default-off original-ticket monitor/relay extension.
+              # Only the existing Guest owner can join a held consume cut.
               ${patch}/bin/patch -p1 < ${./openssh-patches/0001-fixed-attach-monitor-v2.patch}
+              ${patch}/bin/patch -p1 < ${./openssh-patches/0002-fixed-confined-relay-v3.patch}
               cp ${./openssh-patches/aos-attach-monitor.c} aos-attach-monitor.c
               cp ${./openssh-patches/aos-attach-monitor.h} aos-attach-monitor.h
+              cp ${./openssh-patches/aos-attach-confinement.c} aos-attach-confinement.c
+              cp ${./openssh-patches/aos-attach-confinement.h} aos-attach-confinement.h
+              cp ${./openssh-patches/aos-attach-relay.c} aos-attach-relay.c
+              cp ${./openssh-patches/aos-attach-relay.h} aos-attach-relay.h
             ''
             else ""
           }

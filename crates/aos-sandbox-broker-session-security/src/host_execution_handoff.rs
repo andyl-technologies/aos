@@ -242,6 +242,17 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
             HostAttachReadOnlyRequestV1::Route(request) => {
                 let execution_id = request.execution_id();
                 let operation_id = request.operation_id();
+                let mut routes = HostOpenSshAttachRouteOwnerV1::open()?;
+                if routes.has_original_ticket_binding_v2(execution_id)? {
+                    let evidence = proof.poll_original_attach_v3(&mut routes, &claim, agent)?;
+                    agent.validate_claim(&claim)?;
+                    if !proof.matches_claim(&claim) {
+                        return Err(HostExecutionHandoffErrorV1::Conflict);
+                    }
+                    check_kernel_boot(protected_boot_id)?;
+                    return Ok(evidence.encode_wire());
+                }
+                drop(routes);
                 let runtime = claim.currentness().runtime().currentness();
                 let incarnation_id = *runtime.incarnation().as_bytes();
                 let assignment_epoch = runtime.assignment_epoch().get();
@@ -375,6 +386,21 @@ pub(crate) fn dispatch_host_execution_handoff_v1(
         }
         HostExecutionGrantRequestV1::AttachGate(request) => {
             let agent = agent.ok_or(HostExecutionHandoffErrorV1::RecoveryRequired)?;
+            if request.original_ticket_consume_v3().is_some() {
+                agent.validate_claim(&claim)?;
+                let mut routes = HostOpenSshAttachRouteOwnerV1::open()?;
+                let evidence =
+                    reservation.consume_original_attach_v3(&mut routes, &claim, agent)?;
+                agent.validate_claim(&claim)?;
+                if !reservation.matches(method, request_id, body, &claim) {
+                    return Err(HostExecutionHandoffErrorV1::Conflict);
+                }
+                claim.revalidate()?;
+                check_kernel_boot(protected_boot_id)?;
+                let encoded = evidence.encode_wire();
+                host.complete_authenticated_execution(&reservation, &claim, &encoded)?;
+                return Ok(encoded);
+            }
             // The route owner independently opens the protected runtime
             // journal for grant and guest-peer verification. Its lock cannot
             // be reacquired while this handoff still holds a claim.

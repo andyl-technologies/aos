@@ -135,6 +135,7 @@ pub(crate) mod execution_output_reserve;
 )]
 mod execution_output_storage_reserve;
 mod guest_root;
+mod original_attach;
 mod public_api;
 mod public_attach;
 mod public_hierarchy;
@@ -154,6 +155,7 @@ const CACHE_REPLAY_BUNDLE_CREDENTIAL: &str = "cache-replay-bundle";
 const MAXIMUM_CACHE_REPLAY_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
 const CACHE_OWNER_MEMORY_BYTES: u64 = 64 * 1024 * 1024;
 const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5);
+const ORIGINAL_ATTACH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const CONTROLLER_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROLLER_COMMAND_CAPACITY: usize = 64;
 const PUBLIC_CAPABILITY_HEADER: &str = "aos-capability-id";
@@ -590,6 +592,8 @@ fn controller_worker(
 ) {
     let mut ready = false;
     let mut next_cycle = Instant::now();
+    let mut next_attach_poll = Instant::now();
+    let mut attach_poll_cursor = 0;
     loop {
         if Instant::now() >= next_cycle {
             match run_controller_cycle(
@@ -635,6 +639,17 @@ fn controller_worker(
             next_cycle = Instant::now() + RECONCILIATION_INTERVAL;
         }
 
+        if Instant::now() >= next_attach_poll {
+            original_attach::poll_one(
+                &mut controller,
+                NodeId::from_bytes(node_id),
+                &sessions,
+                attach_plan_signer.as_ref(),
+                &mut attach_poll_cursor,
+            );
+            next_attach_poll = Instant::now() + ORIGINAL_ATTACH_POLL_INTERVAL;
+        }
+
         if let Some(owner) = publisher_registration.as_mut() {
             if let Err(message) = owner.try_register(&mut controller) {
                 let _ = events.send(WorkerEvent::Fatal(message));
@@ -642,7 +657,9 @@ fn controller_worker(
             }
         }
 
-        let mut wait = next_cycle.saturating_duration_since(Instant::now());
+        let mut wait = next_cycle
+            .min(next_attach_poll)
+            .saturating_duration_since(Instant::now());
         if publisher_registration
             .as_ref()
             .is_some_and(|owner| owner.needs_registration())

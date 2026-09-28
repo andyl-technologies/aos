@@ -68,7 +68,7 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     // This covers the complete comment-free V1 schema rather than a sample of
     // declarations: every method tag, enum value, message field/type/
     // cardinality/oneof, reserved tag, and RPC signature are compatibility-owned.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x8fcf_d5d7_be57_ca50;
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0xaa04_f048_6954_1cc9;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(
@@ -321,6 +321,7 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
             "RequestHeader header = 1;",
             "bytes pending_grant = 2;",
             "bytes original_ticket_binding_v2 = 3;",
+            "bytes original_ticket_consume_v3 = 4;",
         ],
     )?;
     verify_scoped_declarations(
@@ -334,6 +335,7 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
             "bytes signed_gate_readback = 16;",
             "bytes original_ticket_digest_v2 = 17;",
             "bytes signed_ticket_readback_v2 = 18;",
+            "bytes original_attach_observation_v3 = 19;",
         ],
     )?;
     verify_scoped_declarations(

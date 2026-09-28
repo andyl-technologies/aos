@@ -15,8 +15,8 @@ use aos_sandbox_agent::{
     AgentRuntimeBindingV1,
 };
 use aos_sandbox_core::{
-    DecodeLimits, ExecutionId, ExecutionTerminalModeV1, ObjectDigest, decode_execution_spec_v1,
-    execution_spec_digest_v1,
+    DecodeLimits, ExecutionId, ExecutionOutputModeV1, ExecutionTerminalModeV1, ObjectDigest,
+    decode_execution_spec_v1, execution_spec_digest_v1,
 };
 use rustix::fs::{Mode, OFlags, fchown, open};
 use rustix::io;
@@ -26,7 +26,9 @@ use rustix::termios::{Winsize, tcsetwinsize};
 
 use crate::bridge::AttachBridge;
 use crate::gate::GuestOpenSshGate;
-use crate::ledger::{Ledger, ProcessRecord, Reservation, StoredOutcome, runtime_identity};
+use crate::ledger::{
+    AttachIoShapeV3, Ledger, ProcessRecord, Reservation, StoredOutcome, runtime_identity,
+};
 
 const MAX_SPECIFICATION_BYTES: usize = 15 * 1_048_576;
 
@@ -155,6 +157,22 @@ impl GuestProcessEffectsV1 {
                     credentials.user_id(),
                     credentials.primary_group_id(),
                     specification.io().terminal_mode() == ExecutionTerminalModeV1::Pty,
+                    match (
+                        specification.io().output_mode(),
+                        specification.io().access_route(),
+                    ) {
+                        (
+                            ExecutionOutputModeV1::Stream,
+                            aos_sandbox_core::ExecutionAccessRouteV1::OpenSsh(_),
+                        ) => Some(
+                            if specification.io().terminal_mode() == ExecutionTerminalModeV1::Pty {
+                                AttachIoShapeV3::Pty
+                            } else {
+                                AttachIoShapeV3::Stream
+                            },
+                        ),
+                        _ => None,
+                    },
                     runtime,
                     *request.operation_id().as_bytes(),
                     *principal.as_bytes(),
@@ -202,6 +220,7 @@ impl GuestProcessEffectsV1 {
         uid: u32,
         gid: u32,
         pty: bool,
+        attach_io: Option<AttachIoShapeV3>,
         runtime: &AgentRuntimeBindingV1,
         operation: [u8; 16],
         principal: [u8; 16],
@@ -264,6 +283,7 @@ impl GuestProcessEffectsV1 {
                 pid,
                 start_ticks,
                 pty: slave_path.is_some(),
+                attach_io,
                 canceled: false,
                 terminal: None,
             },
@@ -470,6 +490,10 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
         channel: ObjectDigest,
         deadline: Instant,
     ) -> Result<(AgentExecutionPhaseV1, Vec<u8>), ProtectedGuestAgentErrorV1> {
+        let barrier = self.ledger.effect_barrier();
+        let _current = barrier
+            .lock()
+            .map_err(|_| effect_error(GuestProcessEffectErrorV1::LedgerConflict))?;
         check_deadline(deadline).map_err(effect_error)?;
         let reservation = self
             .ledger
@@ -512,6 +536,10 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
         channel: ObjectDigest,
         deadline: Instant,
     ) -> Result<OpenSshGateReadbackV1, ProtectedGuestAgentErrorV1> {
+        let barrier = self.ledger.effect_barrier();
+        let _current = barrier
+            .lock()
+            .map_err(|_| effect_error(GuestProcessEffectErrorV1::LedgerConflict))?;
         check_deadline(deadline).map_err(effect_error)?;
         request
             .validate()
@@ -547,6 +575,10 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
         channel: ObjectDigest,
         deadline: Instant,
     ) -> Result<(OpenSshGateReadbackV1, [u8; 32]), ProtectedGuestAgentErrorV1> {
+        let barrier = self.ledger.effect_barrier();
+        let _current = barrier
+            .lock()
+            .map_err(|_| effect_error(GuestProcessEffectErrorV1::LedgerConflict))?;
         if self.quiesced || !self.live.contains_key(&request.binding.execution_id) {
             return Err(effect_error(GuestProcessEffectErrorV1::InvalidRequest));
         }
@@ -563,6 +595,57 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
             .map_err(effect_error)?;
         check_deadline(deadline).map_err(effect_error)?;
         Ok(result)
+    }
+
+    fn original_attach_v3(
+        &mut self,
+        action: aos_sandbox_agent::openssh_consume::OriginalAttachActionV3,
+        binding: [u8; 32],
+        authority_expires_at: i64,
+        effect_deadline_boottime_nanoseconds: u64,
+        request: &OpenSshGateObserveRequestV1,
+        ticket: &[u8],
+        runtime: &AgentRuntimeBindingV1,
+        channel: ObjectDigest,
+        deadline: Instant,
+    ) -> Result<
+        (
+            OpenSshGateReadbackV1,
+            aos_sandbox_agent::openssh_consume::OriginalAttachObservationV3,
+        ),
+        ProtectedGuestAgentErrorV1,
+    > {
+        let barrier = self.ledger.effect_barrier();
+        let _current = barrier
+            .lock()
+            .map_err(|_| effect_error(GuestProcessEffectErrorV1::LedgerConflict))?;
+        check_deadline(deadline).map_err(effect_error)?;
+        if self.quiesced || !self.live.contains_key(&request.binding.execution_id) {
+            return Err(effect_error(GuestProcessEffectErrorV1::InvalidRequest));
+        }
+        // Installation and binding are earlier effects. Consume cannot rebuild
+        // either, nor infer attach eligibility from historical Observe evidence.
+        let gate = self
+            .gate
+            .as_mut()
+            .ok_or_else(|| effect_error(GuestProcessEffectErrorV1::InvalidRequest))?;
+        let readback = gate
+            .observe(request, runtime, channel, &self.ledger, deadline)
+            .map_err(effect_error)?;
+        let observation = self
+            .bridge
+            .original_attach_v3(
+                action,
+                binding,
+                authority_expires_at,
+                effect_deadline_boottime_nanoseconds,
+                ticket,
+                &self.ledger,
+                deadline,
+            )
+            .map_err(effect_error)?;
+        check_deadline(deadline).map_err(effect_error)?;
+        Ok((readback, observation))
     }
 }
 

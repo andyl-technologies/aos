@@ -33,7 +33,7 @@ pub fn canonical_host_attach_consume_semantics_v3(
     monitor_binding: ObjectDigest,
     observation_challenge: [u8; 32],
 ) -> Result<CanonicalHostAttachGateSemanticsV1, HostAttachGateSemanticErrorV1> {
-    canonical_host_attach_ticket_semantics_v2(assignment, packet, ticket)?;
+    validate_original_ticket_packet(packet, ticket)?;
     if monitor_binding.as_bytes() == &[0; 32] || observation_challenge == [0; 32] {
         return Err(HostAttachGateSemanticErrorV1::InvalidGrant);
     }
@@ -65,12 +65,7 @@ pub fn canonical_host_attach_ticket_semantics_v2(
     packet: &[u8],
     ticket: &[u8],
 ) -> Result<CanonicalHostAttachGateSemanticsV1, HostAttachGateSemanticErrorV1> {
-    let decoded =
-        aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2::decode(ticket)
-            .map_err(|_| HostAttachGateSemanticErrorV1::InvalidGrant)?;
-    if decoded.pending_grant.as_slice() != packet {
-        return Err(HostAttachGateSemanticErrorV1::InvalidGrant);
-    }
+    validate_original_ticket_packet(packet, ticket)?;
     let mut bytes = assignment_bytes(TICKET_DOMAIN_V2, assignment);
     bytes.extend_from_slice(packet);
     bytes.extend_from_slice(
@@ -84,6 +79,19 @@ pub fn canonical_host_attach_ticket_semantics_v2(
         target: BrokerGrantTarget::Assignment,
         commitment: BrokerArgumentCommitment::for_canonical_bytes(&bytes),
     })
+}
+
+fn validate_original_ticket_packet(
+    packet: &[u8],
+    ticket: &[u8],
+) -> Result<(), HostAttachGateSemanticErrorV1> {
+    let decoded =
+        aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2::decode(ticket)
+            .map_err(|_| HostAttachGateSemanticErrorV1::InvalidGrant)?;
+    if decoded.pending_grant.as_slice() != packet {
+        return Err(HostAttachGateSemanticErrorV1::InvalidGrant);
+    }
+    Ok(())
 }
 
 /// Carries the distinct Host ATTACH verb, assignment target, and exact intent.

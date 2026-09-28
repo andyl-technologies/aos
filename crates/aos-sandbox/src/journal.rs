@@ -2515,6 +2515,26 @@ impl Journal {
 }
 
 impl ProtectedJournalAuthority<'_> {
+    /// Checks this held root-owned writer against its fixed physical names.
+    ///
+    /// The existing exclusive claim stays borrowed while the journal opener
+    /// re-resolves its directory and compares the journal and lock inodes.
+    /// This observation grants no authority and changes neither namespace nor
+    /// claim scope. It does not fence a privileged rename after the check.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a claim that cannot perform generic authority reads, changed
+    /// root/directory/journal/lock names, or an unhealthy protected writer.
+    pub fn validate_held_root_owned_at(
+        &self,
+        directory: impl AsRef<Path>,
+        name: &str,
+    ) -> Result<(), JournalError> {
+        self.validate_generic_authority_read()?;
+        self.journal.validate_held_root_owned_at(directory, name)
+    }
+
     /// Validates the fixed provider namespace-41 storage boundary.
     ///
     /// This purpose check compares the retained protected directory descriptor

@@ -7,9 +7,10 @@
 //!
 //! The existing Guest signing key attests physical installation, not SSH
 //! authentication. Callback output, process ancestry, and this measurement
-//! remain insufficient for I/O until trusted monitor custody and held consume.
+//! remain insufficient for I/O without the distinct trusted monitor and held
+//! original-ticket consume owners.
 //!
-//! The later trusted interface must carry the root sshd monitor's exact
+//! The trusted interface must carry the root sshd monitor's exact
 //! successfully authenticated certificate/holder, SSH session commitment, and
 //! monitor-owned post-auth child/private-connection identity. It must compare
 //! that custody with this original ticket, not accept a tenant reflection of
@@ -18,8 +19,9 @@
 //! Final consume additionally requires continuously held current Controller
 //! policy/revocation/trust/expiry, Host assignment/lease, and Guest process and
 //! cancellation fences through one-use reservation and descriptor send. The
-//! relay still needs shell-free dispatch and qualified memory/procfd/descriptor
-//! confinement. A fresh physical measurement is only a point-in-time sample.
+//! relay additionally requires shell-free dispatch and qualified continuous
+//! memory/procfd/descriptor confinement. A fresh physical measurement alone
+//! is only a point-in-time sample.
 
 use aos_sandbox_core::public_attach_ticket::{
     PUBLIC_ATTACH_TICKET_MAXIMUM_BYTES_V2, PublicAttachTicketBindingV2,

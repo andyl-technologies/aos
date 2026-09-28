@@ -60,7 +60,8 @@ in
       export AOS_ATTACH_PROFILE_SSHD_SESSION=${pkgs.openssh}/libexec/sshd-session
       export AOS_ATTACH_PROFILE_PAM_DENY=${pkgs.linux-pam}/lib/security/pam_deny.so
       export AOS_ATTACH_PROFILE_PAM_PERMIT=${pkgs.linux-pam}/lib/security/pam_permit.so
-      test_name=openssh_attach_certificate::qualification::packaged_sshd_enforces_actual_certificate_profile_without_bridge_io
+      export AOS_ATTACH_PROFILE_BASH=${pkgs.bash}/bin/bash
+      test_name=openssh_attach_certificate::qualification::packaged_sshd_enforces_profile_and_confined_original_ticket_relay
       ${fixtures}/bin/attach-profile-tests --ignored --exact --list "$test_name" \
         | ${pkgs.grep}/bin/grep -Fxq "$test_name: test"
       ${fixtures}/bin/attach-profile-tests --ignored --exact "$test_name" \
