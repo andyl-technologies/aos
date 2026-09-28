@@ -1856,9 +1856,9 @@ fn held_hot_fork_ring_image_for(
     let mut allocation = RegionAllocation::new_model(config)?;
     let retained = CoverageEntry::new(17, 0, 0x4000, 4, 9)?;
     allocation.enqueue_coverage_entry(0, retained)?;
-    let mut shmem = tempfile::tempfile()?;
-    shmem.write_all(&allocation.setup_region_bytes()?)?;
     let region_len = allocation.layout().region_size;
+    let mut shmem = std::fs::File::from(crate::spawn::memfd_region(region_len)?);
+    shmem.write_all(&allocation.setup_region_bytes()?)?;
     let mapped = mmap_setup_region(shmem.as_fd(), region_len)?;
     let identity = mapped.backing_identity();
     let host_barrier = mapped.hold_hot_fork_ring_io()?;

@@ -811,8 +811,7 @@ mod tests {
         allocation.enqueue_directed_frame(0, SLOT_BLK_IO as u32, &frame)?;
         let layout = allocation.layout();
         let bytes = allocation.setup_region_bytes()?;
-        let mut region = tempfile::tempfile()?;
-        region.set_len(layout.region_size)?;
+        let mut region = File::from(crate::spawn::memfd_region(layout.region_size)?);
         region.write_all(&bytes)?;
 
         Ok((region, layout.region_size))
