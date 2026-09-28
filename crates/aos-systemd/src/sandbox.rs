@@ -1308,6 +1308,7 @@ mod tests {
         assert_eq!(package_digest, format!("{policy_digest}\n"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn guest_agent_handoff_has_fixed_argument_roles_and_prebinding_order() {
         use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;

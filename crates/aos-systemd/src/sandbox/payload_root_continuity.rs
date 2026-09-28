@@ -263,8 +263,10 @@ const NSPAWN_ARGUMENT_POLICY_V1: &[NspawnArgumentPolicyV1<'_>] = &[
     },
     NspawnArgumentPolicyV1::Literal("--private-users-ownership=map"),
     NspawnArgumentPolicyV1::Literal("--notify-ready=yes"),
+    // Launch bytes belong to this portable canonical program. Linux
+    // conformance checks join the context to the actual Guest Owner subject.
     NspawnArgumentPolicyV1::Literal(
-        aos_sandbox_linux::guest_confinement::GUEST_OWNER_NSPAWN_ARGUMENT,
+        "--selinux-context=system_u:system_r:aos_sandbox_guest_owner_t:s0",
     ),
     NspawnArgumentPolicyV1::Literal("--no-new-privileges=yes"),
     NspawnArgumentPolicyV1::Literal(concat!(

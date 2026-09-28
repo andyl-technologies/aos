@@ -27,6 +27,23 @@ fn assert_property_policy_mutation(index: usize, replacement: UnitPropertyPolicy
     assert_ne!(projection.digest(), baseline, "property {index}");
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn guest_owner_launch_context_matches_linux_confinement() {
+    use aos_sandbox_linux::guest_confinement::{GUEST_OWNER_CONTEXT, GUEST_TENANT_CONTEXT};
+
+    let contexts = NSPAWN_ARGUMENT_POLICY_V1
+        .iter()
+        .filter_map(|argument| match argument {
+            NspawnArgumentPolicyV1::Literal(value) => value.strip_prefix("--selinux-context="),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(contexts, [GUEST_OWNER_CONTEXT]);
+    assert_ne!(contexts, [GUEST_TENANT_CONTEXT]);
+}
+
 #[test]
 fn root_continuity_policy_digest_is_sensitive_to_every_projected_choice() {
     let baseline = PAYLOAD_ROOT_CONTINUITY_PROJECTION_V1.digest();

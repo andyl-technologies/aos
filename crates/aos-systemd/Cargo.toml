@@ -16,12 +16,12 @@ tracing = { workspace = true }
 futures-util = { workspace = true }
 libc.workspace = true
 serde = { workspace = true }
+sha2.workspace = true
 zbus = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aos-sandbox-linux.workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }
-sha2.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
 rustix = { workspace = true, features = ["event"] }
