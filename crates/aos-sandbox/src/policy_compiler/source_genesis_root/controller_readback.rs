@@ -11,8 +11,10 @@
 //! Current kind=0 is emitted only before genuine new Source mutation; historical
 //! kind=1 requires an actual existing immutable Source receipt. Vacant kind=2
 //! retains an actual empty target under an already anchored existing instance.
-//! All three rejoin real held writers. These signatures are provenance, not a
-//! detached Root proof.
+//! Final kind=3 additionally rejoins the actual durable Controller Complete
+//! row with the exact anchored Source ACK. Historical kind=1 remains available
+//! before that Controller append for crash recovery. All four rejoin real held
+//! writers. These signatures are provenance, not a detached Root proof.
 
 use aos_sandbox_core::ObjectDigest;
 use ed25519_dalek::{Signature, Signer as _, SigningKey};
@@ -76,6 +78,41 @@ pub fn sign_controller_source_genesis_readback_v1(
         controller.recheck_current_admission()?;
         0
     };
+    sign_readback(controller, source, nonce, generation, key, kind)
+}
+
+/// Signs actual durable Controller completion joined to the exact Source ACK.
+///
+/// This final-only readback cannot be produced merely from an acceptance or
+/// anchored Source receipt. Ordinary historical readback remains separate so
+/// a crash after Source ACK can recover before Controller completion exists.
+/// It creates no detached Root proof or new administrative authority.
+///
+/// # Errors
+/// Rejects missing or mismatched durable completion, changed held owner cuts,
+/// foreign receipt/ACK, or zero generation/nonce.
+pub fn sign_controller_source_genesis_completion_readback_v1(
+    controller: &HeldControllerSourceGenesisV1<'_>,
+    source: &HeldSourceTreeGenesisObservationV1<'_>,
+    nonce: [u8; 16],
+    generation: u64,
+    key: &SigningKey,
+) -> Result<[u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1], SourceGenesisErrorV1> {
+    controller.recheck_completed_source_ack(source)?;
+    sign_readback(controller, source, nonce, generation, key, 3)
+}
+
+fn sign_readback(
+    controller: &HeldControllerSourceGenesisV1<'_>,
+    source: &HeldSourceTreeGenesisObservationV1<'_>,
+    nonce: [u8; 16],
+    generation: u64,
+    key: &SigningKey,
+    kind: u8,
+) -> Result<[u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1], SourceGenesisErrorV1> {
+    if nonce == [0; 16] || generation == 0 || source.source_uid() == 0 {
+        return Err(SourceGenesisErrorV1::NonCanonical);
+    }
     let mut packet = [0; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1];
     packet[..8].copy_from_slice(MAGIC);
     packet[8..10].copy_from_slice(&1_u16.to_be_bytes());
@@ -94,7 +131,9 @@ pub fn sign_controller_source_genesis_readback_v1(
     packet[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
     controller.recheck()?;
     source.recheck()?;
-    if kind != 1 {
+    if kind == 3 {
+        controller.recheck_completed_source_ack(source)?;
+    } else if kind != 1 {
         controller.recheck_current_admission()?;
     }
     Ok(packet)
@@ -103,6 +142,7 @@ pub fn sign_controller_source_genesis_readback_v1(
 pub(super) struct VerifiedControllerSourceGenesisReadbackV1 {
     pub(super) acceptance: ControllerSourceGenesisAcceptanceRecordV1,
     pub(super) historical: bool,
+    pub(super) completed: bool,
     pub(super) vacant: bool,
     pub(super) source_instance: Option<[u8; 32]>,
     pub(super) source_names: ProtectedJournalNamesV1,
@@ -119,7 +159,7 @@ pub(super) fn verify(
     if packet.len() != CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1
         || packet.get(..8) != Some(MAGIC.as_slice())
         || packet[8..10] != 1_u16.to_be_bytes()
-        || packet[10] > 2
+        || packet[10] > 3
         || packet[11..16] != [0; 5]
         || nonce == [0; 16]
         || controller_uid == 0
@@ -149,7 +189,8 @@ pub(super) fn verify(
         .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
     Ok(VerifiedControllerSourceGenesisReadbackV1 {
         acceptance,
-        historical: packet[10] == 1,
+        historical: matches!(packet[10], 1 | 3),
+        completed: packet[10] == 3,
         vacant: packet[10] == 2,
         source_instance: (source_instance != [0; 32]).then_some(source_instance),
         source_names,
@@ -160,3 +201,6 @@ pub(super) fn verify(
 pub(super) fn packet_digest(packet: &[u8]) -> ObjectDigest {
     hash(DOMAIN, packet)
 }
+
+#[cfg(test)]
+mod tests;

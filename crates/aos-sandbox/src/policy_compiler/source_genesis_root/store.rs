@@ -220,6 +220,7 @@ impl RootSourceGenesisAuthorityV1 {
             prior.acceptance != accepted.acceptance
                 || prior.source_names != accepted.source_names
                 || prior.historical && !accepted.historical
+                || prior.completed && !accepted.completed
         }) {
             return Err(SourceGenesisErrorV1::Conflict);
         }
@@ -482,15 +483,17 @@ impl RootSourceGenesisAuthorityV1 {
         Ok(floor)
     }
 
-    /// Rejoins the actual final Source ACK with the already durable exact floor.
+    /// Rejoins durable Controller completion and Source ACK with the exact floor.
     ///
     /// This is the Root server's final observation, not a factory for Source
-    /// or Controller proofs. The Controller must independently complete its
-    /// retained acceptance under its own writer before requesting this cut.
+    /// or Controller proofs. Only the dedicated owner-derived final readback
+    /// attests the actual Controller Complete row joined to this Source ACK;
+    /// ordinary historical acceptance readback cannot authorize final release.
     ///
     /// # Errors
     /// Rejects absent or changed floors, an unanchored Source observation,
-    /// mismatched original receipt/cuts, or a different durable Source ACK.
+    /// missing Controller completion, mismatched original receipt/cuts, or a
+    /// different durable Source ACK.
     pub fn confirm_source_ack(
         &self,
         source_packet: &[u8],
@@ -498,8 +501,7 @@ impl RootSourceGenesisAuthorityV1 {
     ) -> Result<(), SourceGenesisErrorV1> {
         self.recheck()?;
         let accepted = self.accepted.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
-        if !accepted.historical
-            || self.floor(accepted.acceptance.project())?.as_ref() != Some(floor)
+        if !accepted.completed || self.floor(accepted.acceptance.project())?.as_ref() != Some(floor)
         {
             return Err(SourceGenesisErrorV1::Conflict);
         }

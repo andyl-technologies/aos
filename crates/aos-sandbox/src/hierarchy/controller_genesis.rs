@@ -14,7 +14,9 @@ use aos_sandbox_core::{ObjectDigest, ProjectId};
 use super::genesis_profile::{
     ControllerSourceGenesisAcceptanceRecordV1, SourceGenesisErrorV1, digest_at,
 };
-use super::source_genesis::{HeldSourceTreeGenesisObservationV1, SourceTreeGenesisReceiptV1};
+use super::source_genesis::{
+    HeldSourceTreeGenesisObservationV1, SourceTreeGenesisReceiptV1, SourceTreeGenesisStateV1,
+};
 use crate::controller_service::journal::production_journal_limits;
 use crate::journal::controller_source_genesis::{
     self as records, ControllerSourceGenesisTransition as Transition,
@@ -329,6 +331,38 @@ impl HeldControllerSourceGenesisV1<'_> {
         self.recheck()
     }
 
+    // Final readback alone requires Complete; historical readback deliberately
+    // stays usable after Source ACK but before this Controller append.
+    pub(crate) fn recheck_completed_source_ack(
+        &self,
+        source: &HeldSourceTreeGenesisObservationV1<'_>,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        self.recheck()?;
+        source.recheck()?;
+        if source.state() != SourceTreeGenesisStateV1::Anchored {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        {
+            let journal = self
+                .journal
+                .try_borrow()
+                .map_err(|_| SourceGenesisErrorV1::Stale)?;
+            require_completed_source_ack(
+                &journal,
+                &self.acceptance,
+                source.receipt().ok_or(SourceGenesisErrorV1::Stale)?,
+                source
+                    .ack_floor_digest()
+                    .ok_or(SourceGenesisErrorV1::Stale)?,
+                source
+                    .ack_record_digest()
+                    .ok_or(SourceGenesisErrorV1::Stale)?,
+            )?;
+        }
+        source.recheck()?;
+        self.recheck()
+    }
+
     pub(crate) fn snapshot_sequence(&self) -> Result<u64, SourceGenesisErrorV1> {
         self.recheck()?;
         Ok(self
@@ -370,3 +404,31 @@ fn require_floor(
     }
     Ok(())
 }
+
+// This reads actual durable Controller rows. The caller separately retains and
+// authenticates both owner cuts; the comparison itself creates no live proof.
+fn require_completed_source_ack(
+    journal: &Journal,
+    acceptance: &ControllerSourceGenesisAcceptanceRecordV1,
+    receipt: &SourceTreeGenesisReceiptV1,
+    floor: ObjectDigest,
+    source_ack: ObjectDigest,
+) -> Result<(), SourceGenesisErrorV1> {
+    let row = records::rows(journal, acceptance.project())?.ok_or(SourceGenesisErrorV1::Stale)?;
+    let ack = row.ack.ok_or(SourceGenesisErrorV1::Stale)?;
+    if row.acceptance != *acceptance
+        || receipt.project() != acceptance.project()
+        || receipt.acceptance_digest() != acceptance.digest()
+        || &receipt.seed_packet() != acceptance.seed_packet()
+        || &receipt.auth_packet() != acceptance.auth_packet()
+        || digest_at(&ack, 48) != floor
+        || digest_at(&ack, 80) != receipt.digest()
+        || row.complete != Some(records::complete_bytes(&ack, source_ack, floor)?)
+    {
+        return Err(SourceGenesisErrorV1::Stale);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

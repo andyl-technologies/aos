@@ -23,7 +23,9 @@ pub(crate) use capacity::{
     validate_settlement as validate_root_source_genesis_capacity_settlement_v1,
 };
 pub use controller_readback::{
-    CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1, sign_controller_source_genesis_readback_v1,
+    CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1,
+    sign_controller_source_genesis_completion_readback_v1,
+    sign_controller_source_genesis_readback_v1,
 };
 pub use flight::{HeldRootSourceGenesisIntentV1, RootSourceGenesisFloorProofV1};
 pub use records::{

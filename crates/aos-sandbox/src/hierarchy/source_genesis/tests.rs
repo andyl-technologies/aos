@@ -46,7 +46,7 @@ pub(crate) fn reader(directory: &Path, limits: JournalLimits) -> ReadOnlyProtect
     .0
 }
 
-fn acceptance(project: ProjectId) -> ControllerSourceGenesisAcceptanceRecordV1 {
+pub(crate) fn acceptance(project: ProjectId) -> ControllerSourceGenesisAcceptanceRecordV1 {
     let limits = TreeLimitsV1::new(1, 8, 7, 6, 5, 4, 3).unwrap();
     let publisher_pointer = ObjectDigest::from_bytes([2; 32]);
     let authorization_head = ObjectDigest::from_bytes([3; 32]);
@@ -197,9 +197,19 @@ pub(crate) fn append(journal: &mut Journal) -> SourceTreeGenesisReceiptV1 {
 }
 
 pub(crate) fn anchor(journal: &mut Journal, receipt: &SourceTreeGenesisReceiptV1) {
+    anchor_with_controller_floor(journal, receipt, ack(receipt).controller_floor);
+}
+
+pub(crate) fn anchor_with_controller_floor(
+    journal: &mut Journal,
+    receipt: &SourceTreeGenesisReceiptV1,
+    controller_floor: ObjectDigest,
+) {
+    let mut actual_ack = ack(receipt);
+    actual_ack.controller_floor = controller_floor;
     journal
         .commit_source_tree_genesis_v1(
-            &ack_transaction(&ack(receipt)).unwrap(),
+            &ack_transaction(&actual_ack).unwrap(),
             SourceGenesisTransitionV1::Anchor,
         )
         .unwrap();

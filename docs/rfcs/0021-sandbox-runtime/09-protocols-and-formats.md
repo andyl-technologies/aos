@@ -2624,7 +2624,15 @@ even when an old durable deployment HEAD has not yet expired.
 
 Ordering is Controller floor acceptance/readback, Source ACK/readback, Controller
 completion/readback, then Root's final actual signed Anchored observation. Root
-keeps its writer through the client's final consumption ACK. Every exit shuts
+requires the dedicated Controller readback kind 3, issued only after its actual
+durable Complete row rejoins the exact anchored Source ACK. Ordinary historical
+kind 1 cannot finalize Root release; it remains available for exact recovery
+after Source ACK but before Controller completion, avoiding a circular prerequisite.
+Kinds 0 and 2 remain current Empty and vacant-project admission respectively.
+These closed kinds share the existing Controller-purpose signature profile and
+864-byte packet; no caller flag or decoded ACK can select final authority.
+
+Root keeps its writer through the client's final consumption ACK. Every exit shuts
 down the original accepted stream before releasing Root; the client checks
 original receive-queue shutdown as well as creator pidfd liveness. Lost replies
 retain exact durable records for replay and do not grant a replacement

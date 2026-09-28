@@ -88,7 +88,9 @@ pub use source_genesis_root::{
     RootSourceGenesisIntentRecordV1, SOURCE_GENESIS_DEPLOYMENT_INSTANCE_BYTES_V1,
     SOURCE_HIERARCHY_FLOOR_BYTES_V1, SourceHierarchyFloorRecordV1,
     decode_root_source_genesis_frame_v1, encode_root_source_genesis_frame_v1,
-    fixed_root_source_genesis_recovery_available_v1, sign_controller_source_genesis_readback_v1,
+    fixed_root_source_genesis_recovery_available_v1,
+    sign_controller_source_genesis_completion_readback_v1,
+    sign_controller_source_genesis_readback_v1,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use source_genesis_root::{
