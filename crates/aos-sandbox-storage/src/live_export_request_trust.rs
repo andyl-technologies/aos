@@ -114,14 +114,14 @@ impl AuthenticatedStorageNativeRequestV2<'_> {
     /// Rejects changed pins, any signed graph mismatch, stale time, or root identity.
     pub(crate) fn verify_reply(
         &self,
-        reply: &aos_sandbox_source_provider_protocol::StorageNativeAcquireReplyV2,
+        reply: &aos_sandbox_source_provider_protocol::StorageNativeAcquireReplyV3,
         verifier: aos_sandbox_source_provider_protocol::StorageZfsHoldVerifierV1,
         expected: &aos_sandbox_source_provider_protocol::StorageZfsHoldReceiptV1,
         descriptor: &aos_sandbox_source_provider_protocol::SourceRootObservationV1,
         now_seconds: i64,
     ) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
         self.trust.validate_current()?;
-        reply.verify_for(aos_sandbox_source_provider_protocol::StorageNativeAcquireVerificationV2 {
+        reply.verify_for(aos_sandbox_source_provider_protocol::StorageNativeAcquireVerificationV3 {
             request: self.request,
             provider_signer: &self.trust.record.provider_signer,
             provider_key: &self.trust.record.provider_public_key,

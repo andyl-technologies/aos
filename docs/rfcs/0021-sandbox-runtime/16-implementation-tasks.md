@@ -8733,6 +8733,17 @@ one-FD positive reply is exactly 1,192 bytes. Consumer migration, live authority
 ordering, custody recovery, and positive qualification remain separate gates;
 this format amendment enables no production Acquire or cleanup effect.
 
+Storage's V3 producer now derives topology only from the actual counts retained
+with the original confined reader mount. Initial acceptance and exact live
+retry independently rejoin those counts; a validly signed, self-consistent
+replacement count cannot create an acceptance or transfer a descriptor. The
+issuance journal reserves the full 216-byte acceptance and rejects old
+unreleased acceptance rows without reinterpretation. The complete Storage
+library suite passes 494 tests with five installed fixtures ignored; the
+production, non-test `aos-storaged` binary also compiles and links. These are
+source and synthetic-runtime results, not installed positive-reader/held-cut
+qualification. Public Acquire and authenticated terminal cleanup remain closed.
+
 Storage writes and fsyncs a single exclusive launch marker in its root-owned,
 mode-0700 StateDirectory before connecting to the reader socket. A restart
 that finds the marker refuses another reader launch even if systemd has not

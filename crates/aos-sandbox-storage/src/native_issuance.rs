@@ -6,7 +6,7 @@
 //! value = AOSNSI01 | version:u16be=1 | reserved[6]=0 |
 //!         provider-terminal-digest[32] | cleanup-digest[32] |
 //!         request-length:u32be | acceptance-length:u32be |
-//!         canonical-signed-native-request | canonical-native-acceptance
+//!         canonical-signed-native-request-v2 | canonical-native-acceptance-v3
 //! ```
 //!
 //! Both terminal digests are zero for an active interest and nonzero for its
@@ -15,6 +15,8 @@
 //! This journal is separate from the primary Storage catalog so acceptance
 //! cannot change the receipt head that it commits. Its writer is acquired after
 //! the primary Storage and workspace writers and retained by the same runtime.
+//! The framed value accepts only AOSZNA03 acceptance bytes. Unreleased V2
+//! acceptance rows fail closed on replay and are never silently rewritten.
 //!
 //! Production admission requires authenticated intent and a live original
 //! descriptor under the held final cut; cleanup remains closed. A shaped request or
@@ -29,8 +31,8 @@ use aos_sandbox::{
 };
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2, SignedStorageNativeAcquireRequestV2,
-    StorageNativeAcceptanceV2, ZfsHeldSnapshotProofV1,
+    MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2, STORAGE_NATIVE_ACCEPTANCE_BYTES_V3,
+    SignedStorageNativeAcquireRequestV2, StorageNativeAcceptanceV3, ZfsHeldSnapshotProofV1,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -38,13 +40,14 @@ use crate::broker::{StorageHeldSnapshotCatalogCutV1, StorageHeldSnapshotSelector
 use crate::live_export_request_trust::AuthenticatedStorageNativeRequestV2;
 use crate::runtime::StorageHeldSnapshotReadbackWithMountV1;
 use crate::{CatalogPlanV1, StorageAdmissionCoordinator};
-use aos_sandbox_source_provider_protocol::StorageNativeAcquireReplyV2;
+use aos_sandbox_source_provider_protocol::StorageNativeAcquireReplyV3;
 
 const JOURNAL_FILE: &str = "storage-native-issuance.journal";
 const MAGIC: &[u8; 8] = b"AOSNSI01";
 const HEADER_BYTES: usize = 88;
-const MAXIMUM_VALUE_BYTES: usize =
-    HEADER_BYTES + MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2 + 136;
+const MAXIMUM_VALUE_BYTES: usize = HEADER_BYTES
+    + MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2
+    + STORAGE_NATIVE_ACCEPTANCE_BYTES_V3;
 const MAXIMUM_ISSUANCES: usize = 1024;
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.storage.native-issuance.transaction.v1\0";
 
@@ -100,7 +103,7 @@ struct PreparedStorageNativeRetirementV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct NativeIssuanceRowV1 {
     request: SignedStorageNativeAcquireRequestV2,
-    acceptance: StorageNativeAcceptanceV2,
+    acceptance: StorageNativeAcceptanceV3,
     retirement: Option<(ObjectDigest, ObjectDigest)>,
 }
 
@@ -219,7 +222,7 @@ impl NativeIssuanceRowV1 {
                     .ok_or(StorageNativeIssuanceErrorV1::Noncanonical)?,
             )
             .map_err(|_| StorageNativeIssuanceErrorV1::Noncanonical)?,
-            acceptance: StorageNativeAcceptanceV2::from_canonical_bytes(
+            acceptance: StorageNativeAcceptanceV3::from_canonical_bytes(
                 bytes
                     .get(request_end..)
                     .ok_or(StorageNativeIssuanceErrorV1::Noncanonical)?,
@@ -286,7 +289,7 @@ impl StorageNativeIssuanceLedgerV1 {
     pub(crate) fn retained_acceptance(
         &mut self,
         request: &SignedStorageNativeAcquireRequestV2,
-    ) -> Result<Option<StorageNativeAcceptanceV2>, StorageNativeIssuanceErrorV1> {
+    ) -> Result<Option<StorageNativeAcceptanceV3>, StorageNativeIssuanceErrorV1> {
         self.validate_boundary()?;
         let (provider, acquisition) = request.request().claims().provider_acquisition();
         for row in self.rows()? {
@@ -309,7 +312,7 @@ impl StorageNativeIssuanceLedgerV1 {
         &mut self,
         authenticated: &AuthenticatedStorageNativeRequestV2<'_>,
         held: &StorageHeldSnapshotReadbackWithMountV1,
-        reply: &StorageNativeAcquireReplyV2,
+        reply: &StorageNativeAcquireReplyV3,
         current: &StorageHeldSnapshotCatalogCutV1,
     ) -> Result<(), StorageNativeIssuanceErrorV1> {
         authenticated
