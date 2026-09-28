@@ -1534,7 +1534,8 @@ private process protocol is distinct from the planner loopback component
 adapter: loopback proves direct/RPC message equivalence, while the process
 supervisor supplies killability and parent-owned metering for this built-in
 engine. The packaged runtime attaches this supervisor to its long-lived
-campaign coordinator; complete operator and recovery flights remain required.
+campaign coordinator; automated public lifecycle and recovery qualification
+remains required.
 
 Direct and Unix-loopback paths use the same checked client. The loopback transport uses nonzero absolute
 read/write deadlines capped at one hour, checks the body bound before
