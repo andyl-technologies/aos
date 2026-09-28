@@ -1,12 +1,12 @@
 //! Derives complete namespace-47 HEADs through the existing protected writer.
 //!
 //! All traffic and archive keys participate, with no hidden exclusion. The
-//! future floor sidecar is a separate protected Journal. These digests are
+//! floor sidecar is a separate protected Journal. These digests are
 //! observational until matched to authenticated NV under retained custody.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use aos_sandbox::{JournalTransaction, RecordNamespace};
+use aos_sandbox::{Journal, JournalTransaction, RecordNamespace};
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionDurableEndpointV1, BrokerSessionProtocolV1,
 };
@@ -31,6 +31,12 @@ impl super::super::ProtectedBrokerSessionJournalV1 {
     ) -> Result<(FloorCutV1, Option<FloorCutV1>), BrokerSessionSecurityError> {
         self.validate_all()?;
         self.endpoint.revalidate()?;
+        let owner = self.owner;
+        let directory = self.directory.clone();
+        let name = self.name.clone();
+        owner
+            .validate_held(self.journal_mut()?, &directory, &name)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         let expected_role = match profile.endpoint() {
             FloorEndpointV1::ControllerStorageClient => BrokerSessionDurableEndpointV1::Client,
             FloorEndpointV1::StorageBroker => BrokerSessionDurableEndpointV1::Broker,
@@ -60,69 +66,76 @@ impl super::super::ProtectedBrokerSessionJournalV1 {
             return Err(BrokerSessionSecurityError::Currentness);
         }
 
-        let cuts = {
-            let authority = self
-                .journal_mut()?
-                .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-            let snapshot = authority
-                .snapshot()
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-            let mut records = BTreeMap::new();
-            for (key, value) in authority
-                .records()
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?
-            {
-                records.insert(key, value);
-            }
-            let current = cut_from_records_v1(
-                snapshot.sequence(),
-                records.iter().map(|(key, value)| (*key, *value)),
-            )
+        let cuts = journal_floor_cuts_v1(self.journal_mut()?, transaction)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-            let target = if let Some(transaction) = transaction {
-                let preflight = authority
-                    .preflight_transactions(core::slice::from_ref(transaction))
-                    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-                transaction_digest_v1(transaction)
-                    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-                for record in transaction.records() {
-                    match record.value() {
-                        Some(value) => {
-                            records.insert(record.key(), value);
-                        }
-                        None => {
-                            records.remove(record.key());
-                        }
-                    }
-                }
-                let sequence = successor_sequence(snapshot.sequence(), transaction)
-                    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-                let target = cut_from_records_v1(
-                    sequence,
-                    records.iter().map(|(key, value)| (*key, *value)),
-                )
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-                authority
-                    .validate_preflight_for_effect(&preflight, core::slice::from_ref(transaction))
-                    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-                Some(target)
-            } else {
-                None
-            };
-            authority
-                .validate_snapshot_for_effect(&snapshot)
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-            (current, target)
-        };
         if self.stable_endpoint_identity(BrokerSessionProtocolV1::Storage)?
             != profile.stable_endpoint()
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
         self.endpoint.revalidate()?;
+        owner
+            .validate_held(self.journal_mut()?, &directory, &name)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         Ok(cuts)
     }
+}
+
+/// Shares protected snapshot/preflight logic, not the production endpoint admission.
+pub(super) fn journal_floor_cuts_v1(
+    journal: &mut Journal,
+    transaction: Option<&JournalTransaction>,
+) -> Result<(FloorCutV1, Option<FloorCutV1>), FloorErrorV1> {
+    journal
+        .validate_held_protected_names()
+        .map_err(|_| FloorErrorV1::Unavailable)?;
+    let authority = journal
+        .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
+        .map_err(|_| FloorErrorV1::Unavailable)?;
+    let snapshot = authority
+        .snapshot()
+        .map_err(|_| FloorErrorV1::Unavailable)?;
+    let mut records = BTreeMap::new();
+    for (key, value) in authority.records().map_err(|_| FloorErrorV1::Unavailable)? {
+        records.insert(key, value);
+    }
+    let current = cut_from_records_v1(
+        snapshot.sequence(),
+        records.iter().map(|(key, value)| (*key, *value)),
+    )?;
+    let target = if let Some(transaction) = transaction {
+        let preflight = authority
+            .preflight_transactions(core::slice::from_ref(transaction))
+            .map_err(|_| FloorErrorV1::Unavailable)?;
+        transaction_digest_v1(transaction)?;
+        for record in transaction.records() {
+            match record.value() {
+                Some(value) => {
+                    records.insert(record.key(), value);
+                }
+                None => {
+                    records.remove(record.key());
+                }
+            }
+        }
+        let sequence = successor_sequence(snapshot.sequence(), transaction)?;
+        let target =
+            cut_from_records_v1(sequence, records.iter().map(|(key, value)| (*key, *value)))?;
+        authority
+            .validate_preflight_for_effect(&preflight, core::slice::from_ref(transaction))
+            .map_err(|_| FloorErrorV1::Unavailable)?;
+        Some(target)
+    } else {
+        None
+    };
+    authority
+        .validate_snapshot_for_effect(&snapshot)
+        .map_err(|_| FloorErrorV1::Unavailable)?;
+    drop(authority);
+    journal
+        .validate_held_protected_names()
+        .map_err(|_| FloorErrorV1::Unavailable)?;
+    Ok((current, target))
 }
 
 /// Hashes exact sorted keys and values without copying their packet payloads.

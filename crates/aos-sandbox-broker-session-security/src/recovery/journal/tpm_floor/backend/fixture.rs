@@ -7,7 +7,7 @@ use super::*;
 use crate::recovery::journal::tpm_floor::tests::floor_fixture;
 
 #[derive(Clone, Copy)]
-enum ExtendBehavior {
+pub(in crate::recovery::journal::tpm_floor) enum ExtendBehavior {
     Success,
     LostReply,
     NotWritten,
@@ -15,13 +15,30 @@ enum ExtendBehavior {
     CompetingExtension,
 }
 
-struct FakeTpm {
+pub(in crate::recovery::journal::tpm_floor) struct FakeTpm {
     profile: FloorProfileV1,
     value: Option<[u8; 32]>,
     attributes: u32,
     salt_key_name_digest: [u8; 32],
     behavior: ExtendBehavior,
     extensions: usize,
+}
+
+impl FakeTpm {
+    pub(in crate::recovery::journal::tpm_floor) fn extensions(&self) -> usize {
+        self.extensions
+    }
+
+    pub(in crate::recovery::journal::tpm_floor) fn set_behavior(
+        &mut self,
+        behavior: ExtendBehavior,
+    ) {
+        self.behavior = behavior;
+    }
+
+    pub(in crate::recovery::journal::tpm_floor) fn set_value(&mut self, value: Option<[u8; 32]>) {
+        self.value = value;
+    }
 }
 
 impl sealed::Sealed for FakeTpm {}
@@ -67,7 +84,11 @@ impl AuthenticatedTpmNvIoV1 for FakeTpm {
     }
 }
 
-fn fake(profile: FloorProfileV1, value: [u8; 32], behavior: ExtendBehavior) -> FakeTpm {
+pub(in crate::recovery::journal::tpm_floor) fn fake(
+    profile: FloorProfileV1,
+    value: [u8; 32],
+    behavior: ExtendBehavior,
+) -> FakeTpm {
     FakeTpm {
         profile,
         value: Some(value),

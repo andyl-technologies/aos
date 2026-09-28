@@ -1,12 +1,13 @@
 # RFC-0021 method-46 TPM floor
 
-This source-only checkpoint is a private codec, protected HEAD derivation,
-checked NV-extension backend boundary, and crash reducer. No production TPM
-transport implements that sealed boundary yet. No prepared transaction is
-persisted, no live journal owner attaches it, and no readiness or method
-advertisement changes. Unit tests, authenticated TPM execution, power-cut
-behavior, restart/rollover, and installed sender/recipient gates remain unrun
-and unqualified. This checkpoint is not completion of the rollback workstream.
+This source-only checkpoint adds protected exact-transaction preparation and
+reconciliation to the private codec, protected HEAD derivation, checked
+NV-extension boundary, and crash reducer. Its private composition borrows the
+actual fixed journal owner. No production authenticated TPM transport exists
+yet, and no readiness or method advertisement changes. Unit tests,
+authenticated TPM execution, power-cut behavior, restart/rollover, and installed
+sender/recipient gates remain unrun and unqualified. This checkpoint is not
+completion of the rollback workstream.
 
 ## Exact scope
 
@@ -23,8 +24,8 @@ The independent floors belong to the existing fixed endpoints:
 
 Each HEAD commits the exact next-frame sequence and **all** sorted namespace-47
 key/value bytes, including current histories and retained archives. No key is
-excluded. A foreign namespace is rejected. Separate floor protocol state will
-use a separate protected Journal, not disappear from the traffic HEAD under an
+excluded. A foreign namespace is rejected. Separate floor protocol state uses
+a separate protected Journal rather than disappearing from the traffic HEAD under an
 informal exclusion rule. Existing endpoint revalidation, fixed directory/name,
 role/stable manifest identity, protected authority claim, snapshot, and
 transaction preflight remain prerequisites; a digest alone is not authority.
@@ -86,7 +87,9 @@ from clearing/reprovisioning the TPM with retained hierarchy credentials.
 
 ## Canonical claims and hash contract
 
-All integers are big endian; header version is one; reserved bytes are zero.
+All floor claim and prepared-wrapper integers are big endian; header version
+is one; reserved bytes are zero. Embedded native journal record payloads retain
+the existing little-endian journal format rather than a new record codec.
 Decode accepts only the exact width. Profile/checkpoint/intent constructors are
 shape-only private APIs and produce no readiness, replay, or effect token.
 
@@ -149,9 +152,61 @@ preparation before NV extension. The intent's transaction digest alone does
 not persist those bytes or prove preparation. Do not dispatch/send from a
 prepared claim.
 
+The same endpoint owner opens the fixed `session-floor.journal` beside
+`session.journal`, without creating or repairing missing state. Lock order is
+traffic writer, floor writer, then retained TPM transport. Both names and the
+full production root-to-owner ancestry are revalidated through the existing
+Journal owner. A missing checkpoint, torn tail, stale compaction, occupied
+writer lock, or changed path closes the operation. Runtime has no initializer.
+
+The sidecar owns namespace 47 and only three keys: `checkpoint` (156 bytes),
+`intent` (324 bytes), and `transaction` (bounded `AOSJPT01`). The last two are
+present together or absent together. Preparation appends exactly two puts;
+finalization atomically replaces the checkpoint and deletes both preparation
+keys in one three-record transaction. Before the first preparation append,
+native preflight validates the actual prospective traffic transaction and
+both sidecar transactions, including frame/byte/count/materialized bounds.
+The sidecar exposes no unrelated writer or compactor, so its exact final suffix
+cannot be spent by another operation while preparation is pending.
+
+```text
+prepared = AOSJPT01 | u16(1) | reserved2 | original-transaction-ID16 |
+           record-count:u32 | ordered(record-length:u32 | native-record-payload)
+```
+
+This nonauthorizing wrapper reuses the existing native record encoder, decoder,
+and transaction validator. It preserves ID, order, namespace, put/delete tag,
+and every key/value byte. Byte/count/offset and aggregate payload bounds are
+checked before corresponding allocations; an ordinary decoded transaction
+does not prove durable preparation. Only the retained protected sidecar plus
+current native journal cut and authenticated NV can supply that ordering.
+
+Let `E = 32 + 4 * main.maximum_records_per_transaction +
+main.maximum_transaction_bytes`. The separate journal keeps the main journal's
+existing 4 GiB file ceiling; this is an independent ceiling, not another 4 GiB
+traffic allowance. Its bounded configuration permits three materialized keys,
+three records per transaction, keys up to 11 bytes, and at most
+`2 * main.maximum_transactions + 1` transactions. Record/payload/materialized
+limits are checked sums of `E`, the fixed 156-/324-byte claims, key widths, and
+existing seven-byte native record headers; no production main budget changes.
+If either journal cannot fit the complete transition, preparation is refused
+before NV or traffic changes.
+
+The trusted ordinal fixes sidecar next-frame geometry: the provisioned
+one-record checkpoint ends at sequence 4; each two-record preparation adds
+four frames and each three-record finalization adds five. Current ordinal `n`
+requires `4 + 9 * (n - 1)`; pending requires four more. Unexpected rewrites,
+compaction, or extra history therefore cannot be silently adopted on restart.
+Compacting the initial single checkpoint is physically equivalent to that
+same initial snapshot and creates no earlier accepted state; runtime exposes
+no such operation. After any transition, or while pending, compaction changes
+geometry and closes recovery.
+
 Read authenticated NV and extend only from the exact predecessor. NV_Extend
 is not a hardware CAS; competing credential holders can cause denial. Always
-read back after success or error before deciding whether it advanced. Retain
+read back after success or error before deciding whether it advanced. A retained
+ESYS producer must finish or fence the prior command before readback; an old
+read that could overtake a still-queued extension cannot authorize retry. Retain
 the exact preparation and close dependent effects while a read is uncertain.
 Once NV equals the target, commit only the retained exact traffic transaction,
 re-read the protected target, and finalize the matching floor checkpoint.
@@ -176,12 +231,16 @@ guaranteed to yield only old/target; recovery treats that as unavailable.
 
 ## Remaining implementation and qualification
 
-Implement durable protected prepare/finalization by reusing the existing
-Journal and retained role owner, then attach the floor to **every** mutation
+The durable prepare/finalization source and real protected append/reopen
+fixtures are present but uncompiled and unrun. Complete the authenticated
+producer and attach the floor to **every** mutation
 of these two fixed session journals, including archive retention/retirement
 and terminal process rollover. No traffic-journal compaction/reset is allowed
 without an explicit independently anchored transition. Keep proof formats
-private and avoid a parallel request replay allocator.
+private and avoid a parallel request replay allocator. The main opener must
+also enter floor reconciliation before a repaired/new journal can be used as
+authority; the test fixture deliberately uses noncreating, nonrepairing replay
+for both journals and does not qualify existing installed startup behavior.
 
 Implement the sealed ESYS producer against existing AOS tpm2-tss (no FAPI,
 abrmd, generic signer, new daemon, or off-host dependency). Qualify key/device/

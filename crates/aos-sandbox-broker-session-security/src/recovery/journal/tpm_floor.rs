@@ -1,14 +1,18 @@
-//! Closed TPM NV floor foundation for the two method-46 Storage endpoints.
+//! Closed TPM NV floor and durable recovery for the two method-46 Storage endpoints.
 //!
 //! A non-ORDERLY SHA-256 NV extend index authenticates a scoped journal HEAD,
 //! not merely an integer. This module owns canonical claims, protected HEAD
-//! derivation, checked NV extension, and a crash reducer. It does not attach a
-//! floor to a live owner, persist a prepared transaction, provision a TPM,
-//! advertise method 46, or produce a readiness/effect capability.
+//! derivation, checked NV extension, a protected exact-transaction sidecar, and
+//! crash reconciliation. Its private composition borrows the real fixed owner,
+//! but no authenticated production TPM transport exists yet. It does not
+//! provision a TPM, activate an endpoint, advertise method 46, or produce a
+//! readiness/effect capability.
 //!
-//! The live integration must retain both protected writers and durably save
-//! the exact existing `JournalTransaction` before extending NV. None of the
-//! scalar inputs or reducer classifications below proves that preparation.
+//! The durable composition retains both protected writers and durably saves
+//! the exact existing `JournalTransaction` before extending NV. The remaining
+//! live integration must supply authenticated ESYS custody and attach this
+//! ordering to every relevant writer/use boundary. None of the scalar inputs
+//! or pure reducer classifications below proves protected preparation.
 //!
 //! ```text
 //! AOSBTP01 | version:u16be | reserved:u16be | role:u8 | reserved:3 |
@@ -20,6 +24,7 @@
 //! ```
 
 mod backend;
+mod durable;
 mod format;
 mod head;
 
