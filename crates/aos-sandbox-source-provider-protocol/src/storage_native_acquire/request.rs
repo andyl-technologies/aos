@@ -34,10 +34,12 @@ impl StorageNativeAcquireRequestV2 {
     /// The claim sequence orders Provider-to-Storage traffic. The embedded
     /// RootMount request sequence orders RootMount-to-Provider traffic. These
     /// independent spaces are retained exactly, not compared for equality.
+    /// Immutable ZFS snapshots require a non-kernel-coupled RootMount request;
+    /// LocalLive export requests cannot be carried by this native contract.
     ///
     /// # Errors
     ///
-    /// Rejects legacy, non-kernel-coupled, mismatched, or overlong requests.
+    /// Rejects legacy, kernel-coupled, mismatched, or overlong requests.
     pub fn new(
         claims: StorageZfsHoldTransportRequestV1,
         signed_root_request: SignedSourceProviderRequestV1,
@@ -50,7 +52,7 @@ impl StorageNativeAcquireRequestV2 {
         let (issued, expires) = claims.validity();
         if signed_root_request.method() != SourceProviderMethod::Acquire
             || root.acquisition_version() != ACQUIRE_SOURCE_REQUEST_VERSION_V2
-            || !root.kernel_coupled()
+            || root.kernel_coupled()
             || holder != root.holder_authority_id()
             || session != root.session_binding()
             || acquisition != root.acquisition_id()

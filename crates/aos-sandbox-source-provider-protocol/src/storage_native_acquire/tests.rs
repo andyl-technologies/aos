@@ -60,7 +60,7 @@ impl Fixture {
             d(10),
             false,
             0,
-            true,
+            false,
         )
         .unwrap();
         let root_signer = SourceProviderSigningKeyV1::for_signing_key(
@@ -223,6 +223,71 @@ fn sign_receipt(
         signer,
         key.sign(&unsigned.signing_message()).to_bytes(),
     )
+}
+
+#[test]
+fn native_request_requires_immutable_zfs_not_local_live_kernel_coupling() {
+    let fixture = Fixture::new();
+    let original = fixture.request.request();
+    let mut root = decode_acquire_request(original.signed_root_request().subject()).unwrap();
+    let topology = RecursiveTopologyProofV1::new([61; 16], 62, d(63), 1, 0, 1, 0).unwrap();
+    let zfs_proof = SourceProviderProofV1::ZfsHeldSnapshot {
+        proof: fixture.receipt.receipt().snapshot().clone(),
+        topology: topology.clone(),
+    };
+    assert_eq!(zfs_proof.class_code(), 1);
+    assert!(!zfs_proof.requires_kernel_coupled());
+    assert_eq!(root.kernel_coupled(), zfs_proof.requires_kernel_coupled());
+    fixture
+        .verify(
+            &fixture.reply(),
+            &fixture.descriptor,
+            &[SourceProviderDescriptorRole::SourceRoot],
+        )
+        .unwrap();
+
+    let local_live_proof = SourceProviderProofV1::LocalLiveExport {
+        proof: LocalLiveExportProofV1::new(
+            d(64),
+            [65; 16],
+            [66; 16],
+            [67; 16],
+            68,
+            d(69),
+            d(70),
+            [71; 16],
+            72,
+            d(73),
+            [74; 32],
+            d(75),
+        )
+        .unwrap(),
+        topology,
+    };
+    assert!(local_live_proof.requires_kernel_coupled());
+    root.kernel_coupled = local_live_proof.requires_kernel_coupled();
+    let signed_root = sign_request(
+        SourceProviderMethod::Acquire,
+        encode_acquire_request(&root),
+        original.signed_root_request().signer().clone(),
+        &fixture.root_key,
+    )
+    .unwrap();
+    assert_eq!(
+        StorageNativeAcquireRequestV2::new(original.claims().clone(), signed_root.clone()),
+        Err(StorageNativeAcquireErrorV2::Noncanonical)
+    );
+
+    // Canonical decode must reject the former unreleased true-flag vector too;
+    // constructor-only validation cannot leave an alternate wire admission path.
+    let mut wire = fixture.request.to_canonical_bytes();
+    let root_offset = 24 + original.claims().to_canonical_bytes().len();
+    let root_bytes = signed_root.to_canonical_bytes();
+    wire[root_offset..root_offset + root_bytes.len()].copy_from_slice(&root_bytes);
+    assert_eq!(
+        SignedStorageNativeAcquireRequestV2::from_canonical_bytes(&wire),
+        Err(StorageNativeAcquireErrorV2::Noncanonical)
+    );
 }
 
 #[test]

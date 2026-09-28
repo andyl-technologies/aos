@@ -7,10 +7,11 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use aos_sandbox_protocol::semantics::CatalogBindingV1;
 use aos_sandbox_source_provider_protocol::{
     AcquireSourceRequestV1, ProviderHeldSnapshotCatalogV1, ProviderHeldSnapshotRowV1,
-    SourceProviderKeyUsageV1, SourceProviderMethod, SourceProviderSigningKeyV1,
-    SourceRootObservationV1, SourceUseV1, StorageNativeAcquireRequestV2,
-    StorageZfsHoldTransportRequestV1, digest_logical_binding_bytes, encode_acquire_request,
-    prospective_mount_apply_template_digest_v1, sign_request, source_acquisition_id_v2,
+    RecursiveTopologyProofV1, SourceProviderKeyUsageV1, SourceProviderMethod,
+    SourceProviderProofV1, SourceProviderSigningKeyV1, SourceRootObservationV1, SourceUseV1,
+    StorageNativeAcquireRequestV2, StorageZfsHoldTransportRequestV1, digest_logical_binding_bytes,
+    encode_acquire_request, prospective_mount_apply_template_digest_v1, sign_request,
+    source_acquisition_id_v2,
 };
 use ed25519_dalek::SigningKey;
 
@@ -75,6 +76,10 @@ fn fixture(sequence: u8, challenge: u8) -> PreparedStorageNativeIssuanceV1 {
         digest(17),
     )
     .unwrap();
+    let canonical_proof = SourceProviderProofV1::ZfsHeldSnapshot {
+        proof: proof.clone(),
+        topology: RecursiveTopologyProofV1::new([45; 16], 1, digest(46), 1, 0, 1, 0).unwrap(),
+    };
     let native_row = ProviderHeldSnapshotRowV1::new(
         binding_digest,
         [18; 32],
@@ -126,9 +131,13 @@ fn fixture(sequence: u8, challenge: u8) -> PreparedStorageNativeIssuanceV1 {
         digest(27),
         false,
         0,
-        true,
+        false,
     )
     .unwrap();
+    assert_eq!(
+        root_request.kernel_coupled(),
+        canonical_proof.requires_kernel_coupled()
+    );
     let root_key = SigningKey::from_bytes(&[28; 32]);
     let root_signer = SourceProviderSigningKeyV1::for_signing_key(
         holder,

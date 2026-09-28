@@ -155,8 +155,8 @@ impl NativeAcquireCompletionRecordV2 {
     ///
     /// # Errors
     ///
-    /// Rejects renewal, rebind, changed request/session, foreign acquisition,
-    /// or a claimed Active state without the exact original root.
+    /// Rejects kernel coupling, renewal, rebind, changed request/session,
+    /// foreign acquisition, or Active without the exact original root.
     pub fn validate_provider_graph(
         &self,
         attempt: &AttemptRecordV1,
@@ -167,6 +167,7 @@ impl NativeAcquireCompletionRecordV2 {
             acquisition.state,
             acquisition.lease_id.is_some(),
             acquisition.proof_class,
+            acquisition.normalized_intent.kernel_coupled(),
         )?;
 
         if self.provider_id != acquisition.provider.authority_id()
@@ -190,7 +191,6 @@ impl NativeAcquireCompletionRecordV2 {
             || self.root_request_id != attempt.request_id
             || self.typed_request_digest != attempt.typed_request_digest
             || self.binding_digest != acquisition.normalized_intent.binding_digest()
-            || !acquisition.normalized_intent.kernel_coupled()
             || acquisition
                 .lease_attempt_digest
                 .is_some_and(|attempt| attempt != self.attempt_digest)
@@ -258,15 +258,18 @@ impl NativeAcquireCompletionRecordV2 {
 
 // A selected reservation deliberately has no proof until the exact lease and
 // native Active marker share one Provider commit. Acceptance alone is not proof.
+// Immutable ZFS is never the LocalLive kernel-coupled proof class.
 fn validate_native_provider_phase(
     native: NativeAcquireCompletionStateV2,
     acquisition: ProviderAcquisitionStateV1,
     lease_present: bool,
     proof_class: u8,
+    kernel_coupled: bool,
 ) -> Result<(), LedgerFormatErrorV1> {
     let active = acquisition == ProviderAcquisitionStateV1::Active;
     let expected_proof_class = if lease_present { 1 } else { 0 };
-    if proof_class != expected_proof_class
+    if kernel_coupled
+        || proof_class != expected_proof_class
         || (native == NativeAcquireCompletionStateV2::Active && !active)
         || (active
             && !matches!(
@@ -682,28 +685,76 @@ mod tests {
     fn native_provider_phase_join_requires_unproved_reservation_and_atomic_active() {
         use NativeAcquireCompletionStateV2 as Native;
         use ProviderAcquisitionStateV1 as Acquisition;
+        use aos_sandbox_source_provider_protocol::{
+            RecursiveTopologyProofV1, SourceProviderProofV1, ZfsHeldSnapshotProofV1,
+        };
+
+        let proof = SourceProviderProofV1::ZfsHeldSnapshot {
+            proof: ZfsHeldSnapshotProofV1::new(
+                [26; 32],
+                27,
+                28,
+                29,
+                30,
+                [31; 16],
+                32,
+                digest(33),
+                digest(34),
+                digest(35),
+            )
+            .unwrap(),
+            topology: RecursiveTopologyProofV1::new([36; 16], 37, digest(38), 1, 0, 1, 0).unwrap(),
+        };
+        let kernel_coupled = proof.requires_kernel_coupled();
+        assert!(!kernel_coupled);
+        let zfs_class = proof.class_code();
+        assert_eq!(zfs_class, 1);
 
         // These are strict graph-join projections, not signed lease artifacts
         // or a fixed-owner positive completion qualification.
-        for native in [Native::Prepared, Native::Spent, Native::CleanupRequired] {
-            assert!(
-                validate_native_provider_phase(native, Acquisition::Applying, false, 0).is_ok()
+        let applying = Acquisition::Applying;
+        let active = Acquisition::Active;
+        let cases = [
+            (Native::Prepared, applying, false, 0, true),
+            (Native::Prepared, applying, false, zfs_class, false),
+            (Native::Spent, applying, false, 0, true),
+            (Native::Spent, applying, false, zfs_class, false),
+            (Native::CleanupRequired, applying, false, 0, true),
+            (Native::CleanupRequired, applying, false, zfs_class, false),
+            (Native::Active, applying, false, 0, false),
+            (Native::Prepared, active, true, zfs_class, false),
+            (Native::Spent, active, true, zfs_class, false),
+            (Native::Active, active, true, zfs_class, true),
+            (Native::Active, active, true, 0, false),
+            (Native::Active, active, true, 2, false),
+            (Native::CleanupRequired, active, true, zfs_class, true),
+            (Native::CleanupRequired, active, true, 0, false),
+            (Native::CleanupRequired, active, true, 2, false),
+        ];
+        for (native, acquisition, lease_present, proof_class, valid) in cases {
+            assert_eq!(
+                validate_native_provider_phase(
+                    native,
+                    acquisition,
+                    lease_present,
+                    proof_class,
+                    kernel_coupled,
+                )
+                .is_ok(),
+                valid,
+                "{native:?}/{acquisition:?}/lease={lease_present}/proof={proof_class}"
             );
             assert!(
-                validate_native_provider_phase(native, Acquisition::Applying, false, 1).is_err()
+                validate_native_provider_phase(
+                    native,
+                    acquisition,
+                    lease_present,
+                    proof_class,
+                    true
+                )
+                .is_err(),
+                "kernel-coupled {native:?}/{acquisition:?}"
             );
-        }
-        assert!(
-            validate_native_provider_phase(Native::Active, Acquisition::Applying, false, 0)
-                .is_err()
-        );
-        for native in [Native::Prepared, Native::Spent] {
-            assert!(validate_native_provider_phase(native, Acquisition::Active, true, 1).is_err());
-        }
-        for native in [Native::Active, Native::CleanupRequired] {
-            assert!(validate_native_provider_phase(native, Acquisition::Active, true, 1).is_ok());
-            assert!(validate_native_provider_phase(native, Acquisition::Active, true, 0).is_err());
-            assert!(validate_native_provider_phase(native, Acquisition::Active, true, 2).is_err());
         }
     }
 }
