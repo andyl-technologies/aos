@@ -66,8 +66,8 @@ The current implementation provides these fail-closed operations:
 - `aos release status` reconciles a captured journal without Nix or network;
 - `aos release stage` accepts only an already finalized signed bundle, pins the
   canonical staging deployment identity before and after upload, reuses the
-  bounded Hub publication protocol, omits public readback for staging-only plans, and
-  writes a staging receipt plus successor journal;
+  bounded Hub publication protocol, omits public readback for staging-only
+  plans, and writes a staging receipt plus successor journal;
 - `aos release qualify-run` dispatches each planned gate for every
   artifact-bearing platform to a bounded native adapter, validates exact
   request/response and public-object binding, and obtains a separate external
@@ -196,7 +196,8 @@ cache, manifest, TUF, surface composition, and staging upload commands. The buil
 report explicitly records `not-checked` for repeat-build status. Assembly emits
 no qualification observations, and the manifest cannot claim qualification
 evidence. The captured build identities, source artifacts, SBOM, signatures,
-and exact-byte public upload verification remain required.
+and the Hub's verification of uploaded object bytes remain required. Advisory
+approval and public readback are deferred for staging-only publication.
 
 The assembler places logical evidence under
 `releases/<class>/<version>/artifacts/` and includes canonical Git and signed
