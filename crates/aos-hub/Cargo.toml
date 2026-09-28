@@ -19,6 +19,7 @@ hex = { workspace = true }
 zeroize = { workspace = true }
 semver = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 flate2 = { workspace = true }
 futures-util = { workspace = true }
 zstd = { workspace = true }

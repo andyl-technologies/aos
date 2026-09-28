@@ -644,6 +644,7 @@ impl RemoteStorageWorkClient {
                         plan_id = %plan.plan_id,
                         operation = plan.operation.kind(),
                         request_bytes,
+                        attempts = attempt,
                         elapsed_ms = started.elapsed().as_millis() as u64,
                         error = %error,
                         "hybrid storage boundary transport failed"
@@ -670,6 +671,7 @@ impl RemoteStorageWorkClient {
                 plan_id = %plan.plan_id,
                 operation = plan.operation.kind(),
                 request_bytes,
+                attempts = attempt,
                 http_status = status.as_u16(),
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "hybrid storage boundary rejected"
@@ -690,6 +692,7 @@ impl RemoteStorageWorkClient {
             plan_id = %plan.plan_id,
             operation = plan.operation.kind(),
             request_bytes,
+            attempts = attempt,
             response_bytes,
             source_bytes = result.source_bytes,
             elapsed_ms = started.elapsed().as_millis() as u64,

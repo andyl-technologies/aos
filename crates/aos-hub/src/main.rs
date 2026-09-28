@@ -27,6 +27,8 @@ use clap::{Args, Parser, Subcommand};
 use aos_hub::db::Database;
 use aos_hub::server::{router, AppState};
 
+mod logging;
+
 #[derive(Parser)]
 #[command(name = "aos-hub", version, about = "AOS registry hub server")]
 struct Cli {
@@ -585,7 +587,7 @@ impl WorkerArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber_init();
+    logging::init();
     let mut cli = Cli::parse();
     if let Some(path) = cli.database_url_file.as_ref() {
         anyhow::ensure!(
@@ -2131,41 +2133,6 @@ async fn open_db(
         "unknown --target '{target}' (expected: local). Use `aos-hub worker …` \
          (bootstrap-root / deploy) or the Worker API for a Cloudflare deployment."
     )
-}
-
-fn tracing_subscriber_init() {
-    // tracing is a workspace-wide dependency but the subscriber is not;
-    // a minimal logger keeps the binary self-contained.
-    struct StderrLogger;
-    impl tracing::Subscriber for StderrLogger {
-        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-            metadata.level() <= &tracing::Level::INFO
-        }
-        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            struct Visitor(String);
-            impl tracing::field::Visit for Visitor {
-                fn record_debug(
-                    &mut self,
-                    field: &tracing::field::Field,
-                    value: &dyn std::fmt::Debug,
-                ) {
-                    use std::fmt::Write as _;
-                    let _ = write!(self.0, " {}={value:?}", field.name());
-                }
-            }
-            let mut visitor = Visitor(String::new());
-            event.record(&mut visitor);
-            eprintln!("[{}]{}", event.metadata().level(), visitor.0);
-        }
-        fn enter(&self, _: &tracing::span::Id) {}
-        fn exit(&self, _: &tracing::span::Id) {}
-    }
-    let _ = tracing::subscriber::set_global_default(StderrLogger);
 }
 
 #[cfg(test)]

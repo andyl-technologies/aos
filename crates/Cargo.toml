@@ -82,6 +82,7 @@ console = "0.15"
 humantime = "2"
 humantime-serde = "1"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "registry"] }
 alejandra = "3.1.0"
 
 # HTTP / networking

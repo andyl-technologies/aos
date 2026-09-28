@@ -68,35 +68,44 @@
       }
     }
   '';
-  databaseUrl = writeFixture
+  databaseUrl =
+    writeFixture
     "hub-hybrid-fleet-database-url"
     "postgresql://postgres@127.0.0.1:5432/postgres\n";
-  ingressKey = writeFixture
+  ingressKey =
+    writeFixture
     "hub-hybrid-fleet-ingress-key"
     "hybrid-fleet-ingress-key-with-at-least-thirty-two-bytes";
-  storageKey = writeFixture
+  storageKey =
+    writeFixture
     "hub-hybrid-fleet-storage-key"
     "hybrid-fleet-storage-key-with-at-least-thirty-two-bytes";
-  instanceSecretKey = writeFixture
+  instanceSecretKey =
+    writeFixture
     "hub-hybrid-fleet-instance-secret-key"
     "1111111111111111111111111111111111111111111111111111111111111111";
-  releaseReceiptKey = writeFixture
+  releaseReceiptKey =
+    writeFixture
     "hub-hybrid-fleet-release-receipt-key"
     "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
-  channelReceiptKey = writeFixture
+  channelReceiptKey =
+    writeFixture
     "hub-hybrid-fleet-channel-receipt-key"
     "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo=";
-  releasePublicationKeys = writeFixture
+  releasePublicationKeys =
+    writeFixture
     "hub-hybrid-fleet-release-publication-keys"
     (builtins.toJSON {
       "staging-publication-v1" = "/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hg=";
     });
-  qualificationKeys = writeFixture
+  qualificationKeys =
+    writeFixture
     "hub-hybrid-fleet-qualification-keys"
     (builtins.toJSON {
       "qualification-v1" = "E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o=";
     });
-  secretVersionManifest = writeFixture
+  secretVersionManifest =
+    writeFixture
     "hub-hybrid-fleet-secret-version-manifest"
     (builtins.toJSON {
       "native://fleet/external/storage/v1" = "/var/lib/aos-hub/fleet-s3-secret";
@@ -229,6 +238,8 @@
       pkgs.postgresql
       pkgs.sed
       pkgs.util-linux
+      fixture.helperV1
+      fixture.helperV2
       databaseUrl
       ingressKey
       storageKey
@@ -1586,7 +1597,12 @@ in {
       client.succeed(textwrap.dedent(f"""
           set -eu
           export HOME=/tmp/hybrid-apr-home USER=fleet-publisher
-          export PATH=${pkgs.git}/bin:$PATH
+          export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
+          export NIX_REMOTE=""
+          export NIX_CONF_DIR="$HOME/.config/nix"
+          mkdir -p "$NIX_CONF_DIR"
+          printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' \\
+            > "$NIX_CONF_DIR/nix.conf"
           git config --global user.name 'Hybrid Fleet Publisher'
           git config --global user.email 'fleet-publisher@example.test'
           key="$HOME/.config/apm/keys/containers-initial.key"
@@ -1596,12 +1612,23 @@ in {
           mkdir -p "$HOME/.config/apm/registries.d"
           printf '[registry]\\nname = "containers"\\nurl = "file://%s"\\n\\n[registry.signing_keys]\\ninitial = "%s"\\n' \\
             "$registry" "$key" > "$HOME/.config/apm/registries.d/containers.toml"
-          {APR} origin upload --registry containers \\
+          {APR} release 1.0.0 --registry containers \\
+            --store-path ${fixture.helperV1} --name hub-helper \\
+            --description 'Hybrid release indexing fixture' --license MIT \\
+            --maintainer fleet-publisher@example.test --key-id initial \\
+            --cache-url https://aos.andyl.org/fleet/containers \\
             --upload-url file:///tmp/hybrid-publication-surface
+          {APR} release 2.0.0 --registry containers \\
+            --store-path ${fixture.helperV2} --name hub-helper --previous 1.0.0 \\
+            --description 'Hybrid release indexing fixture' --license MIT \\
+            --maintainer fleet-publisher@example.test --key-id initial \\
+            --cache-url https://aos.andyl.org/fleet/containers \\
+            --upload-url file:///tmp/hybrid-publication-surface
+          {APR} verify --registry containers
           mkdir -p /tmp/hybrid-publication-surface/web
           ${pkgs.coreutils}/bin/head -c {publication_size} /dev/zero \\
             > /tmp/hybrid-publication-surface/{publication_path}
-      """), timeout=180)
+      """), timeout=600)
       try:
           publication = json.loads(client.succeed(hub_command(
               "registry publish upload fleet/containers "
@@ -1635,6 +1662,32 @@ in {
           "> /dev/null",
           timeout=180,
       )
+
+      # The same signed tags produced by APR must reach the authoritative DB.
+      # Comparing exact object identities catches successful but partial walks.
+      release_query = (
+          "SELECT release.semver, release.tag_oid, release.signer "
+          "FROM releases release JOIN registries registry "
+          "ON registry.id = release.registry_id "
+          "WHERE registry.slug = 'fleet/containers' ORDER BY release.semver"
+      )
+      indexed_releases = native.succeed(
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At -F '|' "
+          f"-c {shlex.quote(release_query)}"
+      ).strip().splitlines()
+      assert len(indexed_releases) == 2, indexed_releases
+      for version, row in zip(("1.0.0", "2.0.0"), indexed_releases):
+          expected_tag = client.succeed(
+              f"${pkgs.git}/bin/git -C /tmp/hybrid-apr-home/.local/share/apm/registries/containers "
+              f"rev-parse refs/tags/{version}"
+          ).strip()
+          semver, tag_oid, signer = row.split("|")
+          assert (semver, tag_oid) == (version, expected_tag), row
+          assert signer, row
+      indexed_package = json.loads(client.succeed(hub_command(
+          "registry package show fleet/containers hub-helper"
+      )))["data"]
+      assert all(version in json.dumps(indexed_package) for version in ("1.0.0", "2.0.0")), indexed_package
 
       parallel_size = 4 * 1024 * 1024
       client.succeed(
@@ -2072,7 +2125,7 @@ in {
 
       boundary_log = native.succeed(
           f"journalctl -u aos-hub.service -o cat --no-pager | "
-          f"{GREP} 'hybrid storage boundary'"
+          f"{GREP} -E 'hybrid storage boundary|registry release index phase completed|registry index run completed'"
       )
       assert "inspect_git_object" in boundary_log, boundary_log
       assert "hash_oci_range" in boundary_log, boundary_log
@@ -2083,16 +2136,81 @@ in {
               r"response_bytes=(\d+) source_bytes=(\d+)", boundary_log
           )
       ]
+      boundary_events = [
+          dict(token.split("=", 1) for token in shlex.split(line) if "=" in token)
+          for line in boundary_log.splitlines()
+      ]
       outbound_plan_bytes = [
-          int(size) for size in re.findall(r"request_bytes=(\d+)", boundary_log)
+          int(event["request_bytes"]) * int(event["attempts"])
+          for event in boundary_events if "request_bytes" in event
       ]
       assert len(outbound_plan_bytes) >= len(transferred), boundary_log
       print("hybrid Native-to-Worker storage boundary:", {
           "completed_calls": len(transferred),
-          "outbound_plan_bytes": sum(outbound_plan_bytes),
+          "offered_plan_bytes_including_retries": sum(outbound_plan_bytes),
           "inbound_result_bytes": sum(response for response, _ in transferred),
           "object_bytes_processed_at_worker": sum(source for _, source in transferred),
       })
+
+      # Task-scoped spans prevent concurrent releases and retries from mixing
+      # their counters. Registry preload/channel work remains a shared bucket.
+      def empty_work_totals():
+          return {
+              "terminal_calls": 0,
+              "attempts": 0,
+              "completed_calls": 0,
+              "offered_plan_bytes_including_retries": 0,
+              "inbound_result_bytes": 0,
+              "object_bytes_processed_at_worker": 0,
+          }
+
+      index_runs = {}
+      for event in boundary_events:
+          if "index_run" not in event:
+              continue
+          run_id = event["index_run"]
+          assert re.fullmatch(r"[0-9a-f]{32}", run_id), event
+          run = index_runs.setdefault(run_id, {
+              "index_run": run_id,
+              "registry_id": int(event["registry_id"]),
+              "completed": False,
+              "shared": empty_work_totals(),
+              "releases": {},
+          })
+          assert run["registry_id"] == int(event["registry_id"]), event
+          if "success" in event:
+              run["completed"] = True
+              run["success"] = event["success"] == "true"
+          release = event.get("release")
+          if release is None:
+              totals = run["shared"]
+          else:
+              totals = run["releases"].setdefault(release, empty_work_totals())
+              if "reused" in event:
+                  totals["phase_completed"] = True
+                  totals["reused"] = event["reused"] == "true"
+          if "request_bytes" in event:
+              attempts = int(event["attempts"])
+              totals["terminal_calls"] += 1
+              totals["attempts"] += attempts
+              totals["offered_plan_bytes_including_retries"] += int(event["request_bytes"]) * attempts
+          if "response_bytes" in event:
+              totals["completed_calls"] += 1
+              totals["inbound_result_bytes"] += int(event["response_bytes"])
+              totals["object_bytes_processed_at_worker"] += int(event["source_bytes"])
+      assert index_runs, boundary_log
+      for release in ("1.0.0", "2.0.0"):
+          cold_release_walks = [
+              run["releases"][release]
+              for run in index_runs.values()
+              if release in run["releases"]
+              and run.get("success", False)
+              and run["releases"][release]["completed_calls"] > 0
+          ]
+          assert cold_release_walks, (release, index_runs)
+      print("hybrid indexing work by run and release:", json.dumps(
+          list(index_runs.values()), sort_keys=True
+      ))
       compact_verifications = [
           response for response, source in transferred
           if source == cache_size and response < 2048

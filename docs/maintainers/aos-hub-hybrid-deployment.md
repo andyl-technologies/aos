@@ -156,6 +156,22 @@ counts, SQL pool use, and cross-cloud bytes. The
 [RFC acceptance gates](../rfcs/0023-hub-hybrid-topology/06-implementation-and-validation.md)
 apply before promoting the environment.
 
+Native logs each storage-work terminal result with its operation, attempts,
+serialized plan bytes, validated result bytes, and Worker source-byte count.
+Indexing events also carry a task-scoped `index_run` and `registry_id`; release
+walks add `release` and `tag_oid`. Group by run and release before summing.
+Keep registry preload and channel work, which lacks a release field, in a
+separate shared total. Completion events record the run outcome and release
+snapshot reuse, including warm walks with no remote calls.
+
+Multiply `request_bytes` by `attempts` to measure offered plan bytes including
+retries. This is serialized application payload, not a provider network bill:
+transport failures may prevent delivery, canceled calls have no terminal
+result, and TLS/HTTP framing is excluded. `response_bytes` counts only validated
+terminal results; rejected and retry response bodies are excluded. The fleet
+report retains these distinctions and verifies exact signed release tags in
+PostgreSQL, alongside the object-body exclusion checks.
+
 Only after those probes and recovery checks pass, render the same profile with
 both `--domain "$probe_hostname"` and `--domain "$public_hostname"`, then
 deploy it. This is the public cutover. Immediately verify public `/healthz`,

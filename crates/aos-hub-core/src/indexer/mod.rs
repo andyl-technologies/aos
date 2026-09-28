@@ -64,6 +64,7 @@ use ed25519_dalek::VerifyingKey;
 use futures_util::{future::try_join_all, TryStreamExt as _};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use tracing::Instrument as _;
 
 use crate::db::{
     ChannelSummary, ContainerReleaseClosureMemberSnapshot, ContainerReleaseDescriptorRole,
@@ -337,6 +338,28 @@ pub async fn index_registry(
     registry: &RegistryRecord,
     indexed_placement_id: Option<i64>,
 ) -> Result<IndexOutcome> {
+    let span = tracing::info_span!(
+        "registry_index",
+        index_run = %uuid::Uuid::new_v4().simple(),
+        registry_id = registry.id,
+        placement_id = ?indexed_placement_id,
+    );
+    async {
+        let outcome = index_registry_with_leases(db, fetch, registry, indexed_placement_id).await;
+        tracing::info!(success = outcome.is_ok(), "registry index run completed");
+        outcome
+    }
+    .instrument(span)
+    .await
+}
+
+// Temporary image verification leases must be released on every terminal walk.
+async fn index_registry_with_leases(
+    db: &Database,
+    fetch: &dyn SurfaceFetch,
+    registry: &RegistryRecord,
+    indexed_placement_id: Option<i64>,
+) -> Result<IndexOutcome> {
     let mut snapshot_leases = Vec::new();
     let outcome = index_registry_inner(
         db,
@@ -571,6 +594,11 @@ async fn index_registry_inner(
             let advertised_commit = advertised_commit.as_str();
             let refs_digest = refs_digest.as_str();
             let browse_projection_gate = &browse_projection_gate;
+            let span = tracing::info_span!(
+                "registry_release",
+                release = %tag_name,
+                tag_oid = %tag_oid,
+            );
             async move {
                 if let Some(reusable) = reusable.filter(|reusable| {
                     reusable.release.tag_oid == tag_oid.to_hex()
@@ -596,6 +624,7 @@ async fn index_registry_inner(
                     let mut release = reusable.release;
                     release.pack_present = probe_pack_presence(fetch, tag_name).await?;
                     tracing::debug!(release = %tag_name, "reused verified release snapshot");
+                    tracing::info!(reused = true, "registry release index phase completed");
                     return Ok::<_, anyhow::Error>((
                         release,
                         reusable.artifacts,
@@ -781,6 +810,7 @@ async fn index_registry_inner(
                     tagged_at: signed.tag.tagger_when,
                     pack_present: probe_pack_presence(fetch, &tag_name).await?,
                 };
+                tracing::info!(reused = false, "registry release index phase completed");
                 Ok::<_, anyhow::Error>((
                     release,
                     artifact_snapshot,
@@ -790,6 +820,7 @@ async fn index_registry_inner(
                     image_tag_oid,
                 ))
             }
+            .instrument(span)
         }))
         .await?;
         for (release, artifacts, image, presence, leases, image_tag_oid) in verified {
