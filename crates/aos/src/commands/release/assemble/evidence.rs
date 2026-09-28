@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use aos_release::build::BuildReportV1;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
@@ -49,6 +49,9 @@ pub(super) fn build(
     let finish = super::require_utc(completed_at, "assembly completion time")?;
     if start > finish {
         bail!("assembly completed before its build report");
+    }
+    if plan.staging_only {
+        return Ok(Vec::new());
     }
     let cases =
         aos_release::qualification_evidence::cases(plan, manifest, QualificationPhase::Build)?;

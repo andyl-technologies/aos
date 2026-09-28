@@ -1,23 +1,36 @@
-##! Google Auth 1.23.0 Maven libraries compiled from audited Java sources.
+##! Pinned Google Auth Maven libraries compiled from audited Java sources.
 {
   mkDerivation,
   fetchurl,
   buildPackages,
   bazelMavenBootstrap,
   bazelGoogleHttp,
+  version ? "1.23.0",
 }: let
-  version = "1.23.0";
   buildJdk = buildPackages.openjdk-17;
-  archives = [
-    {
-      name = "google-auth-library-credentials";
-      hash = "sha256-YVHHag2e976+YhNwu9gS6ScwC7/lsRQXwJvSmhxUUJs=";
-    }
-    {
-      name = "google-auth-library-oauth2-http";
-      hash = "sha256-9MAMrExyzTnQlX3/rV0ZxK1jGF5PvsPWIR+wzz9f228=";
-    }
-  ];
+  archives =
+    if version == "1.24.1"
+    then [
+      {
+        name = "google-auth-library-credentials";
+        hash = "sha256-7cJJn2FPAQULBEsEZ4nSgHkwLo+a8UG8oAunEYi3xeQ=";
+      }
+      {
+        name = "google-auth-library-oauth2-http";
+        hash = "sha256-DJH0Uym7msxdt6ynCK5X9FAeHOaxjBx6pZZ7GbflcpQ=";
+      }
+    ]
+    else
+      assert version == "1.23.0"; [
+        {
+          name = "google-auth-library-credentials";
+          hash = "sha256-YVHHag2e976+YhNwu9gS6ScwC7/lsRQXwJvSmhxUUJs=";
+        }
+        {
+          name = "google-auth-library-oauth2-http";
+          hash = "sha256-9MAMrExyzTnQlX3/rV0ZxK1jGF5PvsPWIR+wzz9f228=";
+        }
+      ];
   sources =
     builtins.map (
       archive:

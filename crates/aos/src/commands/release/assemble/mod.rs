@@ -16,7 +16,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
 use aos_release::artifact::{
@@ -208,10 +208,11 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
     if require_utc(&report.completed_at, "build completion time")? > completed {
         bail!("assembly completed before its build report");
     }
-    if report
-        .outputs
-        .iter()
-        .any(|output| output.reproducibility != ReproducibilityResult::Reproduced)
+    if !plan.staging_only
+        && report
+            .outputs
+            .iter()
+            .any(|output| output.reproducibility != ReproducibilityResult::Reproduced)
     {
         bail!("build report contains an output without a successful repeat build");
     }

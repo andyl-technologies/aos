@@ -439,6 +439,7 @@ fn release_plan(
     ];
     let mut plan = ReleasePlanV1 {
         schema_version: aos_release::RELEASE_PLAN_V1.into(),
+        staging_only: false,
         qualification: None,
         qualification_predecessor: None,
         release_id: RELEASE_ID.into(),
