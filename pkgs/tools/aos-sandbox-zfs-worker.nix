@@ -19,7 +19,7 @@
     inherit src;
     name = "aos-sandbox-zfs-worker-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-r3jzI/1SdhuuLOtide3L/cwdFBQFmFj0JPOmqDvBMVY=";
+    hash = import ./crucible/_cargo-deps-hash.nix;
   };
   cargoEnv = {
     PROTOC = "${buildProtobuf}/bin/protoc";

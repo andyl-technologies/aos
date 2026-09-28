@@ -198,7 +198,7 @@
     inherit src;
     name = "aos-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-tBzJ1rnxTBaKlE/KcWwb/cmrXCBOyoJfF+wc3mI1U/Y=";
+    hash = import ../crucible/_cargo-deps-hash.nix;
   };
   cargoArtifactContract = {
     family = "aos-native-release-and-test";
