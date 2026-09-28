@@ -53,7 +53,7 @@ impl<'owner> ProtectedPendingBrokerRequestCutV1<'owner> {
         peer: &'owner ConnectionPeerIdentity,
     ) -> Result<Self, BrokerSessionSecurityError> {
         if transcript.protocol() != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::MountFuse
-            || request.method() != aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_MOUNT_RESERVE_FUSE_INTENT
+            || request.method() != aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
             || !transcript.negotiated_methods().contains(&request.method())
         {
             return Err(BrokerSessionSecurityError::Currentness);
