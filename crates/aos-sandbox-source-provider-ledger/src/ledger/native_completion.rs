@@ -293,7 +293,8 @@ impl NativeAcquireCompletionRecordV2 {
         }
         Ok(())
     }
-    /// Checks an independently verified acceptance against every retained claim.
+
+    /// Checks an independently verified V3 acceptance against every retained claim.
     ///
     /// This check grants no currentness or FD custody authority. A protected
     /// owner still needs the original live descriptor and an independent
