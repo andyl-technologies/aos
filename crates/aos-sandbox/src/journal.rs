@@ -34,6 +34,7 @@ use sha2::{Digest, Sha256};
 
 pub mod canonical_map;
 pub(crate) mod mount_manager_startup;
+mod prepared_transaction;
 pub use mount_manager_startup::MountManagerStartupPolicyReceiptV1;
 pub(crate) use mount_manager_startup::{
     MountManagerStartupCapturePreflightV1, MountManagerStartupCaptureReceiptV1,
@@ -1386,6 +1387,32 @@ impl Journal {
         )
     }
 
+    /// Replays a provisioned service-owned journal without creating or repairing it.
+    ///
+    /// Resolution and ownership are identical to [`Self::open_protected_at_for_uid`].
+    /// Both journal and lock must exist; an interrupted tail or stale compaction
+    /// remains an error rather than becoming an empty or repaired authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing or unsafe names, a held lock, corrupt or incomplete replay,
+    /// and every protected-open failure of [`Self::open_protected_at_for_uid`].
+    pub fn open_existing_protected_at_for_uid(
+        directory: impl AsRef<Path>,
+        name: &str,
+        limits: JournalLimits,
+        expected_uid: u32,
+    ) -> Result<(Self, RecoveryReport), JournalError> {
+        let directory = resolve_protected_directory_from_root(directory.as_ref(), expected_uid)?;
+        Self::open_protected_directory(
+            directory,
+            name,
+            limits,
+            ProtectedOwnerPolicy::Exact(expected_uid),
+            false,
+        )
+    }
+
     /// Checks that this live lock still belongs to one fixed protected path.
     ///
     /// The directory is resolved afresh and compared by device and inode with
@@ -1966,6 +1993,24 @@ impl Journal {
         name: &str,
     ) -> Result<(), JournalError> {
         self.require_protected_named_location(directory.as_ref(), name, 0, self.limits)
+    }
+
+    /// Rechecks a service-owned writer's original protected path and both names.
+    ///
+    /// This validates retained ownership; it neither chooses a new owner nor
+    /// constructs authority. The full root-to-service ancestry policy of the
+    /// production opener is re-applied.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed directory, journal, lock, owner, or unhealthy writer.
+    pub fn validate_held_owned_at_for_uid(
+        &self,
+        directory: impl AsRef<Path>,
+        name: &str,
+        expected_uid: u32,
+    ) -> Result<(), JournalError> {
+        self.require_protected_named_location(directory.as_ref(), name, expected_uid, self.limits)
     }
 
     /// Rechecks exact UID-owned fixture custody without relaxing release openers.

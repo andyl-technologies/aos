@@ -42,6 +42,36 @@ impl JournalOwnerV1 {
             }
         }
     }
+
+    /// Reopens only already provisioned sidecar names under the captured owner.
+    pub(super) fn open_existing(
+        self,
+        directory: &Path,
+        name: &str,
+        limits: JournalLimits,
+    ) -> Result<(Journal, RecoveryReport), JournalError> {
+        match self {
+            Self::RootBroker => Journal::open_existing_protected_at(directory, name, limits),
+            Self::ServiceClient(uid) => {
+                Journal::open_existing_protected_at_for_uid(directory, name, limits, uid)
+            }
+        }
+    }
+
+    /// Rechecks both fixed names and the full original root-to-service directory path.
+    pub(super) fn validate_held(
+        self,
+        journal: &Journal,
+        directory: &Path,
+        name: &str,
+    ) -> Result<(), JournalError> {
+        match self {
+            Self::RootBroker => journal.validate_held_root_owned_at(directory, name),
+            Self::ServiceClient(uid) => {
+                journal.validate_held_owned_at_for_uid(directory, name, uid)
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -192,6 +192,10 @@ impl FloorCheckpointV1 {
         self.cut
     }
 
+    pub(super) const fn ordinal(self) -> u64 {
+        self.ordinal
+    }
+
     pub(super) fn require_profile(self, profile: FloorProfileV1) -> Result<(), FloorErrorV1> {
         if self.scope == profile.scope() {
             Ok(())

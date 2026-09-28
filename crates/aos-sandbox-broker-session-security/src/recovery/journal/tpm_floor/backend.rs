@@ -14,14 +14,19 @@ mod sealed {
 }
 
 /// Returns fresh authenticated TPM state, not cached subprocess output.
-trait AuthenticatedTpmNvIoV1: sealed::Sealed {
+pub(super) trait AuthenticatedTpmNvIoV1: sealed::Sealed {
     fn read(&mut self, index: u32) -> Result<AuthenticatedNvObservationV1, FloorErrorV1>;
 
     /// Ambiguity includes a lost successful reply; callers always read back.
+    ///
+    /// A retained ESYS producer must finish or fence an outstanding command
+    /// before returning: the subsequent authenticated read cannot overtake an
+    /// earlier queued extension. A transport unable to establish that ordering
+    /// must fail its read, not expose an old value as retry authority.
     fn extend(&mut self, index: u32, input: &[u8; 32]) -> Result<(), FloorErrorV1>;
 }
 
-struct AuthenticatedNvObservationV1 {
+pub(super) struct AuthenticatedNvObservationV1 {
     salt_key_name_digest: [u8; 32],
     index: u32,
     name: [u8; 34],
@@ -33,26 +38,36 @@ struct AuthenticatedNvObservationV1 {
 }
 
 /// Retains the fixed provisioning pin but grants no journal/readiness authority.
-struct TpmNvExtendFloorBackendV1<Io> {
+pub(super) struct TpmNvExtendFloorBackendV1<Io> {
     profile: FloorProfileV1,
     io: Io,
 }
 
 /// Resolves an ambiguous extension only through a fresh matching readback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FloorAdvanceV1 {
+pub(super) enum FloorAdvanceV1 {
     NotAdvanced,
     Advanced,
 }
 
 impl<Io: AuthenticatedTpmNvIoV1> TpmNvExtendFloorBackendV1<Io> {
-    fn open(profile: FloorProfileV1, io: Io) -> Result<Self, FloorErrorV1> {
+    #[cfg(test)]
+    pub(super) fn into_test_io(self) -> Io {
+        self.io
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_io(&mut self) -> &mut Io {
+        &mut self.io
+    }
+
+    pub(super) fn open(profile: FloorProfileV1, io: Io) -> Result<Self, FloorErrorV1> {
         let mut backend = Self { profile, io };
         backend.read()?;
         Ok(backend)
     }
 
-    fn read(&mut self) -> Result<[u8; 32], FloorErrorV1> {
+    pub(super) fn read(&mut self) -> Result<[u8; 32], FloorErrorV1> {
         let observed = self.io.read(self.profile.endpoint().nv_index())?;
         if observed.salt_key_name_digest != self.profile.salt_key_name_digest()
             || observed.index != self.profile.endpoint().nv_index()
@@ -74,7 +89,10 @@ impl<Io: AuthenticatedTpmNvIoV1> TpmNvExtendFloorBackendV1<Io> {
     /// the index credential exclusive, both journal flocks held, and recheck
     /// exact NV at every dependent send/effect. A competing authorized writer
     /// can cause denial, but cannot silently reset or replace this HEAD.
-    fn advance(&mut self, prepared: FloorIntentV1) -> Result<FloorAdvanceV1, FloorErrorV1> {
+    pub(super) fn advance(
+        &mut self,
+        prepared: FloorIntentV1,
+    ) -> Result<FloorAdvanceV1, FloorErrorV1> {
         prepared.require_predecessor(self.profile, prepared.predecessor())?;
         let old = prepared.predecessor().nv_value();
         let target = prepared.target();
