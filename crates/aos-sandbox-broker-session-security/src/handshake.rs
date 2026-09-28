@@ -9,6 +9,8 @@
 
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
+pub(crate) mod fuse_intent_continuation;
+
 use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
 use aos_sandbox_broker_session_protocol::{
     BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES, BrokerSessionProtocolV1, CLIENT_HELLO_MAXIMUM_BYTES,
@@ -1211,6 +1213,16 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(super) fn hold_fuse_intent_transport<'session>(
+        &'session mut self,
+        request: &'session aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<
+        fuse_intent_continuation::HeldFuseIntentTransportV1<'session>,
+        BrokerSessionSecurityError,
+    > {
+        fuse_intent_continuation::HeldFuseIntentTransportV1::capture(self, request)
+    }
+
     /// Lends the actual writer and retained transport for one pending request.
     pub(super) fn hold_pending_request<'session>(
         &'session mut self,

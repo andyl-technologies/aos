@@ -1436,6 +1436,15 @@ impl DormantBrokerOutcomeVerificationV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(crate) fn hold_fuse_intent_transport<'session>(
+        &'session mut self,
+        request: &'session AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<
+        crate::handshake::fuse_intent_continuation::HeldFuseIntentTransportV1<'session>,
+        BrokerSessionSecurityError,
+    > {
+        self.0.hold_fuse_intent_transport(request)
+    }
     /// Lends live pending-request custody to the sealed effect composition.
     ///
     /// The token proves only the exact current authenticated request/head. It

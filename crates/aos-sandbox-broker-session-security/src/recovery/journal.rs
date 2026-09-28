@@ -699,6 +699,10 @@ pub enum ProtectedBrokerSessionFixedEndpointV1 {
     ControllerNetworkClient,
     /// Uses the Network-service broker custody root.
     NetworkBroker,
+    /// Uses separate FUSE-3 client history with the existing Mount role keys.
+    ControllerMountFuseClient,
+    /// Uses separate FUSE-3 broker history on the existing Mount socket.
+    MountFuseBroker,
 }
 
 impl ProtectedBrokerSessionFixedEndpointV1 {
@@ -743,7 +747,7 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         endpoint: ProtectedBrokerSessionFixedEndpointV1,
     ) -> Result<Self, BrokerSessionSecurityError> {
         let configuration = fixed_endpoint(endpoint);
-        let custody = match configuration.role {
+        let mut custody = match configuration.role {
             FixedEndpointRole::Client => FixedEndpointCustodyV1::Client(
                 ProtectedBrokerSessionClientV1::load(Path::new(configuration.custody_root))?,
             ),
@@ -751,6 +755,14 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
                 ProtectedBrokerSessionBrokerV1::load(Path::new(configuration.custody_root))?,
             ),
         };
+        if configuration.protocol == BrokerSessionProtocolV1::MountFuse {
+            // A native-2 manifest must never be reinterpreted as FUSE-3, even
+            // when both contexts intentionally reuse the same role keys.
+            match &mut custody {
+                FixedEndpointCustodyV1::Client(endpoint) => endpoint.require_fuse_context()?,
+                FixedEndpointCustodyV1::Broker(endpoint) => endpoint.require_fuse_context()?,
+            }
+        }
         Ok(Self {
             journal_root: configuration.journal_root,
             protocol: configuration.protocol,
@@ -794,6 +806,20 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
 }
 
 impl ProtectedBrokerSessionOwnerV1 {
+    pub(crate) fn hold_fuse_intent_request<'owner>(
+        &'owner mut self,
+        request: &'owner AuthenticatedBrokerMethodRequestV1,
+        transcript: &'owner VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &'owner ConnectionPeerIdentity,
+    ) -> Result<ProtectedPendingBrokerRequestCutV1<'owner>, BrokerSessionSecurityError> {
+        ProtectedPendingBrokerRequestCutV1::capture_fuse_intent(
+            &mut self.journal,
+            request,
+            transcript,
+            connection_peer,
+        )
+    }
+
     /// Borrows the actual broker writer while an exact admitted request is pending.
     ///
     /// This is transport/history custody, not signed-plan or consumer authority.
@@ -1825,6 +1851,22 @@ fn fixed_endpoint(endpoint: ProtectedBrokerSessionFixedEndpointV1) -> FixedEndpo
             protocol: Protocol::Network,
             audience: Audience::AUDIENCE_NODE_CONTROLLER,
             socket_path: "/run/aos/sandbox-network/control.sock",
+        },
+        Endpoint::ControllerMountFuseClient => FixedEndpointConfiguration {
+            journal_root: "/var/lib/aos/sandboxd/broker-session/mount-fuse",
+            custody_root: "/var/lib/aos/sandboxd/broker-session/mount-fuse/custody",
+            role: FixedEndpointRole::Client,
+            protocol: Protocol::MountFuse,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+            socket_path: "/run/aos/sandbox-mount/control.sock",
+        },
+        Endpoint::MountFuseBroker => FixedEndpointConfiguration {
+            journal_root: "/var/lib/aos/sandbox-mount/broker-session/fuse",
+            custody_root: "/var/lib/aos/sandbox-mount/broker-session/fuse/custody",
+            role: FixedEndpointRole::Broker,
+            protocol: Protocol::MountFuse,
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+            socket_path: "/run/aos/sandbox-mount/control.sock",
         },
     }
 }
@@ -4010,6 +4052,7 @@ impl ProtectedBrokerSessionJournalV1 {
             BrokerSessionProtocolV1::Storage,
             BrokerSessionProtocolV1::Mount,
             BrokerSessionProtocolV1::Network,
+            BrokerSessionProtocolV1::MountFuse,
         ] {
             let _ = self.read_optional(protocol)?;
         }
@@ -4716,6 +4759,42 @@ mod storage_host_endpoint_tests {
         assert_ne!(broker.journal_root, controller.journal_root);
         assert_ne!(broker.journal_root, mount.journal_root);
         assert_ne!(broker.custody_root, controller.custody_root);
+    }
+}
+
+#[cfg(test)]
+mod fuse_endpoint_tests {
+    use super::*;
+
+    #[test]
+    fn fuse_contexts_share_only_the_existing_mount_transport_and_role() {
+        for (native, fuse) in [
+            (
+                ProtectedBrokerSessionFixedEndpointV1::ControllerMountClient,
+                ProtectedBrokerSessionFixedEndpointV1::ControllerMountFuseClient,
+            ),
+            (
+                ProtectedBrokerSessionFixedEndpointV1::MountBroker,
+                ProtectedBrokerSessionFixedEndpointV1::MountFuseBroker,
+            ),
+        ] {
+            let native = fixed_endpoint(native);
+            let fuse = fixed_endpoint(fuse);
+            assert_eq!(native.protocol, BrokerSessionProtocolV1::Mount);
+            assert_eq!(fuse.protocol, BrokerSessionProtocolV1::MountFuse);
+            assert_eq!(native.socket_path, fuse.socket_path);
+            assert_eq!(native.audience, fuse.audience);
+            assert_ne!(native.journal_root, fuse.journal_root);
+            assert_ne!(native.custody_root, fuse.custody_root);
+        }
+        assert!(
+            aos_sandbox_broker_session_protocol::production_broker_client_hello_v1(
+                BrokerSessionProtocolV1::MountFuse,
+                aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_NODE_CONTROLLER,
+                4096,
+            )
+            .is_err()
+        );
     }
 }
 

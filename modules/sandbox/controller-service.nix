@@ -21,12 +21,12 @@
     endpoint
     // {
       role = "client";
-      required = true;
+      required = !(endpoint.optionalManifest or false);
       description = "controller-to-${endpoint.name}";
       options = {
         manifest = "brokerSession${endpoint.optionName}Manifest";
-        hello = "brokerSession${endpoint.optionName}HelloKey";
-        record = "brokerSession${endpoint.optionName}RecordKey";
+        hello = "brokerSession${endpoint.keyOptionName or endpoint.optionName}HelloKey";
+        record = "brokerSession${endpoint.keyOptionName or endpoint.optionName}RecordKey";
       };
     }) [
     {
@@ -48,6 +48,13 @@
       name = "network";
       optionName = "Network";
       journalRoot = "/var/lib/aos/sandboxd/broker-session/network";
+    }
+    {
+      name = "mount-fuse";
+      optionName = "MountFuse";
+      keyOptionName = "Mount";
+      optionalManifest = true;
+      journalRoot = "/var/lib/aos/sandboxd/broker-session/mount-fuse";
     }
   ];
   brokerSessionConfiguration = brokerSession.configure cfg.credentials brokerSessionEndpoints;

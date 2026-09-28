@@ -38,6 +38,62 @@ enum FlightState {
 }
 
 impl<'controller, 'session> ControllerFuseIntentPendingFlightV1<'controller, 'session> {
+    /// Keeps local issuance inside the already-held Controller/session cut.
+    ///
+    /// The callback receives real borrows, not reconstructed wire facts. It
+    /// must additionally join genuine Mount custody before Host-purpose-56
+    /// issuance; Host must not call back into this held Controller writer.
+    pub(crate) fn with_preparation_custody<T, F, R>(
+        &mut self,
+        clock: &mut T,
+        action: F,
+    ) -> Result<R, BrokerSessionSecurityError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+        F: FnOnce(
+            &mut CurrentControllerFuseIntentDispatchV1<'controller>,
+            &mut crate::handshake::fuse_intent_continuation::HeldFuseIntentTransportV1<'_>,
+        ) -> Result<R, BrokerSessionSecurityError>,
+    {
+        self.controller
+            .recheck(clock)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if !matches!(
+            self.state,
+            FlightState::Transport(DormantBrokerRequestSendProgressV1::Sent(_))
+        ) {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let mut transport = self.session.hold_fuse_intent_transport(&self.original)?;
+        let result = action(&mut self.controller, &mut transport);
+        transport.recheck()?;
+        drop(transport);
+        self.controller
+            .recheck(clock)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        result
+    }
+
+    /// Borrows the same sent flight while the Controller owner stays held.
+    ///
+    /// Only nonterminal transport custody is returned. Local Host-purpose-56
+    /// issuance must still join the real Mount reservation and original owners;
+    /// received coordinates alone cannot authorize it.
+    pub(crate) fn hold_preparation_transport(
+        &mut self,
+    ) -> Result<
+        crate::handshake::fuse_intent_continuation::HeldFuseIntentTransportV1<'_>,
+        BrokerSessionSecurityError,
+    > {
+        if !matches!(
+            self.state,
+            FlightState::Transport(DormantBrokerRequestSendProgressV1::Sent(_))
+        ) {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.session.hold_fuse_intent_transport(&self.original)
+    }
+
     /// Signs and durably prepares while retaining both original owners.
     pub(crate) fn prepare<T>(
         mut controller: CurrentControllerFuseIntentDispatchV1<'controller>,

@@ -37,6 +37,36 @@ impl<'owner> ProtectedPendingBrokerRequestCutV1<'owner> {
         transcript: &'owner VerifiedBrokerSessionTranscriptV1,
         peer: &'owner ConnectionPeerIdentity,
     ) -> Result<Self, BrokerSessionSecurityError> {
+        if journal.endpoint.role() != BrokerSessionDurableEndpointV1::Broker
+            || request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Self::capture_pending(journal, request, transcript, peer)
+    }
+
+    /// Borrows either original endpoint of the exact closed FUSE-3 intent.
+    pub(super) fn capture_fuse_intent(
+        journal: &'owner mut ProtectedBrokerSessionJournalV1,
+        request: &'owner AuthenticatedBrokerMethodRequestV1,
+        transcript: &'owner VerifiedBrokerSessionTranscriptV1,
+        peer: &'owner ConnectionPeerIdentity,
+    ) -> Result<Self, BrokerSessionSecurityError> {
+        if transcript.protocol() != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::MountFuse
+            || request.method() != aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_MOUNT_RESERVE_FUSE_INTENT
+            || !transcript.negotiated_methods().contains(&request.method())
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Self::capture_pending(journal, request, transcript, peer)
+    }
+
+    fn capture_pending(
+        journal: &'owner mut ProtectedBrokerSessionJournalV1,
+        request: &'owner AuthenticatedBrokerMethodRequestV1,
+        transcript: &'owner VerifiedBrokerSessionTranscriptV1,
+        peer: &'owner ConnectionPeerIdentity,
+    ) -> Result<Self, BrokerSessionSecurityError> {
         let original = current_pending_snapshot(journal, request, transcript, peer)?;
         Ok(Self {
             journal,
@@ -79,9 +109,14 @@ fn current_pending_snapshot(
 ) -> Result<ProtectedBrokerSessionJournalSnapshotV1, BrokerSessionSecurityError> {
     crate::dormant_handshake::check_production_deadline(request.deadline_boottime_nanoseconds())
         .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-    if journal.endpoint.role() != BrokerSessionDurableEndpointV1::Broker
-        || request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
-    {
+    let endpoint = journal.endpoint.role();
+    let direction = match endpoint {
+        BrokerSessionDurableEndpointV1::Client => AuthenticatedBrokerRequestDirectionV1::ClientSend,
+        BrokerSessionDurableEndpointV1::Broker => {
+            AuthenticatedBrokerRequestDirectionV1::ServerReceive
+        }
+    };
+    if request.direction() != direction {
         return Err(BrokerSessionSecurityError::Currentness);
     }
 
@@ -92,16 +127,8 @@ fn current_pending_snapshot(
         .head()
         .map_err(|_| BrokerSessionSecurityError::Currentness)?;
     if head.phase() != BrokerSessionDurablePhaseV1::RequestPrepared
-        || !request_matches_head(
-            request,
-            head,
-            AuthenticatedBrokerRequestDirectionV1::ServerReceive,
-        )
-        || !peer.matches_request_for_endpoint(
-            BrokerSessionDurableEndpointV1::Broker,
-            request,
-            &context,
-        )
+        || !request_matches_head(request, head, direction)
+        || !peer.matches_request_for_endpoint(endpoint, request, &context)
     {
         return Err(BrokerSessionSecurityError::Currentness);
     }
@@ -109,9 +136,7 @@ fn current_pending_snapshot(
     // Full signed replay and the protected-state sandwich are not substitutes
     // for re-observing the actual peer execution after the filesystem reads.
     let after_peer = journal.observe_peer(transcript, connection_peer)?;
-    if after_peer.binding(BrokerSessionDurableEndpointV1::Broker, transcript, &context)?
-        != head.peer_binding()
-    {
+    if after_peer.binding(endpoint, transcript, &context)? != head.peer_binding() {
         return Err(BrokerSessionSecurityError::Currentness);
     }
     journal.endpoint.revalidate()?;
