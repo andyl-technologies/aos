@@ -101,6 +101,7 @@ mod production_service;
 mod production_source_provider;
 mod production_source_provider_catalog;
 mod production_source_provider_storage;
+mod production_startup;
 mod project_admission_coordinator;
 #[allow(
     dead_code,
@@ -247,6 +248,7 @@ pub use production_source_provider_storage::{
     ProductionSourceProviderStorageErrorV1, ProductionSourceProviderStorageOutcomeV1,
     ProductionSourceProviderStorageReadbackV1, inspect_signed_storage_export_plan,
 };
+pub use production_startup::{ProductionStorageStartupPartsV1, ProductionStorageStartupV1};
 pub use recovery::{
     ProtectedBrokerOutcomeAdmissionGateV1, ProtectedBrokerOutcomeAdmissionV1,
     ProtectedBrokerOutcomeCommitReadbackV1, ProtectedBrokerOutcomeCommitRecoveryV1,

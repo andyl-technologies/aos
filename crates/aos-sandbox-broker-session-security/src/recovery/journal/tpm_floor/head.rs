@@ -29,7 +29,10 @@ impl super::super::ProtectedBrokerSessionJournalV1 {
         profile: FloorProfileV1,
         transaction: Option<&JournalTransaction>,
     ) -> Result<(FloorCutV1, Option<FloorCutV1>), BrokerSessionSecurityError> {
-        self.validate_all()?;
+        // This borrow is already under the floor coordinator's held traffic
+        // owner; startup takes its first cut before acquiring the sidecar.
+        // Re-entering the public floor-gated reader would be circular.
+        self.validate_schema_only()?;
         self.endpoint.revalidate()?;
         let owner = self.owner;
         let directory = self.directory.clone();

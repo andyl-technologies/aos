@@ -21,6 +21,8 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 use crate::error::{Error, Result, is_no_such_unit};
 use crate::manager_proxy::{ListUnitsEntry, ManagerProxy, ServiceProxy, UnitProxy};
 
+mod service_properties;
+
 /// Classification of a systemd job's terminal `result`, per the `job_result`
 /// table in systemd's `src/core/job.h`. We name only the four cases
 /// switch-to-configuration-ng classifies explicitly; everything else
@@ -523,88 +525,46 @@ impl SystemdClient {
         expected_main_pid: u32,
         properties: &[&str],
     ) -> Result<Vec<OwnedValue>> {
-        if !name.ends_with(".service") || name.contains('/') || name.contains('\0') {
-            return Err(Error::InvalidSandboxUnit(
-                "service name is not an exact unit name".to_owned(),
-            ));
-        }
-        if expected_main_pid == 0 {
-            return Err(Error::InvalidSandboxUnit(
-                "service main PID is absent".to_owned(),
-            ));
-        }
-
-        let bus = zbus::fdo::DBusProxy::new(&self.conn).await?;
-        let manager_name = zbus::names::BusName::try_from("org.freedesktop.systemd1")
-            .map_err(|error| Error::InvalidSandboxUnit(error.to_string()))?;
-        let owner = bus.get_name_owner(manager_name.clone()).await?;
-        if bus
-            .get_connection_unix_process_id(owner.as_str().try_into().map_err(
-                |error: zbus::names::Error| Error::InvalidSandboxUnit(error.to_string()),
-            )?)
-            .await?
-            != 1
-        {
-            return Err(Error::InvalidSandboxUnit(
-                "systemd bus owner is not PID 1".to_owned(),
-            ));
-        }
-
-        let manager = ManagerProxy::builder(&self.conn)
-            .destination(owner.clone())?
-            .build()
-            .await?;
-        let path = manager.get_unit(name).await?;
-        let unit = UnitProxy::builder(&self.conn)
-            .destination(owner.clone())?
-            .path(path.clone())?
-            .cache_properties(CacheProperties::No)
-            .build()
-            .await?;
-        let service = ServiceProxy::builder(&self.conn)
-            .destination(owner.clone())?
-            .path(path.clone())?
-            .cache_properties(CacheProperties::No)
-            .build()
-            .await?;
-        let before = (
-            unit.id().await?,
-            unit.active_state().await?,
-            service.main_pid().await?,
-            unit.invocation_id().await?,
-        );
-
-        let property_proxy = zbus::fdo::PropertiesProxy::builder(&self.conn)
-            .destination(owner.clone())?
-            .path(path)?
-            .build()
-            .await?;
-        let interface = zbus::names::InterfaceName::try_from("org.freedesktop.systemd1.Service")
-            .map_err(|error| Error::InvalidSandboxUnit(error.to_string()))?;
-        let mut values = Vec::with_capacity(properties.len());
-        for property in properties {
-            values.push(property_proxy.get(interface.clone(), property).await?);
-        }
-
-        let after = (
-            unit.id().await?,
-            unit.active_state().await?,
-            service.main_pid().await?,
-            unit.invocation_id().await?,
-        );
-        if before != after
-            || before.0 != name
-            || before.1 != "active"
-            || before.2 != expected_main_pid
-            || before.3.len() != 16
-            || before.3.iter().all(|byte| *byte == 0)
-            || bus.get_name_owner(manager_name).await? != owner
-        {
-            return Err(Error::InvalidSandboxUnit(
-                "PID 1 service changed during property readback".to_owned(),
-            ));
-        }
+        let (values, _) = service_properties::observe(
+            self,
+            name,
+            expected_main_pid,
+            properties,
+            &[],
+            service_properties::ObservationPhase::Active,
+        )
+        .await?;
         Ok(values)
+    }
+
+    /// Reads PID 1's exact starting or running service and unit properties.
+    ///
+    /// Startup accepts only `activating/start`; running accepts only
+    /// `active/running`. The unique PID 1 bus owner, unit ID, invocation,
+    /// main PID, and state must remain equal around the reads. This permits
+    /// checks before a notify service reports ready, without granting readiness
+    /// or freezing properties against a later administrative reload.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a missing or substituted service, another startup substate,
+    /// changing invocation or state, a missing property, or any bus failure.
+    pub async fn observe_pid1_service_startup_properties(
+        &self,
+        name: &str,
+        expected_main_pid: u32,
+        service_properties: &[&str],
+        unit_properties: &[&str],
+    ) -> Result<(Vec<OwnedValue>, Vec<OwnedValue>)> {
+        service_properties::observe(
+            self,
+            name,
+            expected_main_pid,
+            service_properties,
+            unit_properties,
+            service_properties::ObservationPhase::StartingOrRunning,
+        )
+        .await
     }
 
     /// Observes an active service's exact unit, invocation, main PID, and cgroup.

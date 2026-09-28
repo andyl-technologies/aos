@@ -116,6 +116,14 @@ const MAXIMUM_STORAGE_INVENTORY_ARCHIVES: usize = 16;
 const MAXIMUM_STORAGE_INVENTORY_ABANDONMENTS: usize = 16;
 const PROTECTED_SESSION_JOURNAL: &str = "session.journal";
 
+pub(crate) fn require_launch_image_presence(
+    endpoint: ProtectedBrokerSessionFixedEndpointV1,
+    supplied: bool,
+) -> Result<(), BrokerSessionSecurityError> {
+    tpm_floor::runtime::require_launch_image_presence(endpoint, supplied)
+        .map_err(|_| BrokerSessionSecurityError::Currentness)
+}
+
 fn request_id_unused(request_id: [u8; 16], prior: impl IntoIterator<Item = [u8; 16]>) -> bool {
     request_id != [0; 16] && prior.into_iter().all(|previous| previous != request_id)
 }
@@ -521,6 +529,13 @@ enum ProtectedEndpointV1 {
 }
 
 impl ProtectedEndpointV1 {
+    fn launch_image(&self) -> Option<crate::production_startup::Pid1LaunchImageV1> {
+        match self {
+            Self::Client(endpoint) => endpoint.launch_image(),
+            Self::Broker(endpoint) => endpoint.launch_image(),
+        }
+    }
+
     fn broker_outcome_verifier(
         &mut self,
     ) -> Result<aos_sandbox_protocol::BrokerTerminalCommitVerifierV1, BrokerSessionSecurityError>
@@ -617,6 +632,13 @@ impl ProtectedEndpointV1 {
         }
     }
 
+    fn protected_protocol_and_node(&self) -> (BrokerSessionProtocolV1, [u8; 16]) {
+        match self {
+            Self::Client(endpoint) => endpoint.protected_protocol_and_node(),
+            Self::Broker(endpoint) => endpoint.protected_protocol_and_node(),
+        }
+    }
+
     fn process_execution_id(&self) -> [u8; 16] {
         match self {
             Self::Client(endpoint) => endpoint.process_execution_id_bytes(),
@@ -658,6 +680,9 @@ impl ProtectedEndpointV1 {
 /// no listener, route, dispatcher, or background task.
 #[must_use = "dropping the owner releases the sole protected journal lock"]
 pub(crate) struct ProtectedBrokerSessionJournalV1 {
+    // Child/sidecar custody drops before the main writer. An unavailable
+    // replacement during reconciliation grants no reentrant public read.
+    floor: tpm_floor::runtime::BrokerFloorV1,
     journal: Option<Journal>,
     directory: PathBuf,
     name: String,
@@ -736,6 +761,30 @@ impl core::fmt::Debug for ProtectedBrokerSessionFixedCustodyV1 {
 }
 
 impl ProtectedBrokerSessionFixedCustodyV1 {
+    /// Carries only the actual startup observation into its exact Storage role.
+    pub(crate) fn retain_launch_image(
+        mut self,
+        image: Option<crate::production_startup::Pid1LaunchImageV1>,
+    ) -> Result<Self, BrokerSessionSecurityError> {
+        if let Some(image) = image {
+            let endpoint = match (&self.custody, self.protocol) {
+                (FixedEndpointCustodyV1::Client(_), BrokerSessionProtocolV1::Storage) => {
+                    ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient
+                }
+                (FixedEndpointCustodyV1::Broker(_), BrokerSessionProtocolV1::Storage) => {
+                    ProtectedBrokerSessionFixedEndpointV1::StorageBroker
+                }
+                _ => return Err(BrokerSessionSecurityError::Currentness),
+            };
+            image.require_endpoint(endpoint)?;
+            match &mut self.custody {
+                FixedEndpointCustodyV1::Client(custody) => custody.retain_launch_image(image),
+                FixedEndpointCustodyV1::Broker(custody) => custody.retain_launch_image(image),
+            }
+        }
+        Ok(self)
+    }
+
     /// Loads one compile-time endpoint root for dormant protected handshaking.
     ///
     /// # Errors
@@ -1363,7 +1412,8 @@ impl ProtectedBrokerSessionOwnerV1 {
         let context = self.journal.current_context(transcript)?;
         let peer = self.journal.observe_peer(transcript, connection_peer)?;
         peer.binding(self.journal.endpoint.role(), transcript, &context)?;
-        self.journal.endpoint.revalidate()
+        self.journal.endpoint.revalidate()?;
+        self.journal.require_floor_current()
     }
 
     pub(crate) fn client_request_coordinates(
@@ -1651,6 +1701,8 @@ impl ProtectedBrokerSessionOwnerV1 {
         owner: ProtectedBrokerOutcomeCurrentnessOwnerV1,
         connection_peer: &'authority ConnectionPeerIdentity,
     ) -> Result<ProtectedBrokerEffectHandoffV1<'authority>, BrokerSessionSecurityError> {
+        self.journal.require_floor_method(owner.request.method())?;
+
         let request_packet = owner.request.canonical_packet().to_vec();
         let request_body = owner.request.exact_body().to_vec();
         let signed_request_digest = owner.request.signed_request_digest();
@@ -2237,16 +2289,8 @@ impl ProtectedBrokerSessionJournalV1 {
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
-        let preflight = authority
-            .preflight_transactions(core::slice::from_ref(&transaction))
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        authority
-            .validate_preflight_for_effect(&preflight, core::slice::from_ref(&transaction))
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        authority
-            .commit(&transaction)
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        Ok(())
+        drop(authority);
+        self.commit_floor_checked_transaction(&transaction)
     }
 
     fn retire_atomic_storage_archive(
@@ -2311,15 +2355,8 @@ impl ProtectedBrokerSessionJournalV1 {
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
-        let preflight = authority
-            .preflight_transactions(core::slice::from_ref(&transaction))
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        authority
-            .validate_preflight_for_effect(&preflight, core::slice::from_ref(&transaction))
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        authority
-            .commit(&transaction)
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        drop(authority);
+        self.commit_floor_checked_transaction(&transaction)?;
         if self.read_atomic_storage_archive(request_id)?.is_some() {
             return Err(BrokerSessionSecurityError::Currentness);
         }
@@ -2362,14 +2399,11 @@ impl ProtectedBrokerSessionJournalV1 {
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
-        let preflight = authority
-            .preflight_transactions(core::slice::from_ref(&transaction))
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        authority
-            .validate_preflight_for_effect(&preflight, core::slice::from_ref(&transaction))
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        authority
-            .commit(&transaction)
+        drop(authority);
+        self.commit_floor_checked_transaction(&transaction)?;
+        let authority = self
+            .journal_mut()?
+            .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         if authority
             .get(&key)
@@ -2676,6 +2710,7 @@ impl ProtectedBrokerSessionJournalV1 {
         message: aos_proto::aos::sandbox::local::v1::BrokerResponseEnvelope,
         transcript: &VerifiedBrokerSessionTranscriptV1,
     ) -> Result<Vec<u8>, BrokerSessionSecurityError> {
+        self.require_floor_method(request.method())?;
         let context = self.current_context(transcript)?;
         let current = self
             .read_optional(transcript.protocol())?
@@ -2780,6 +2815,7 @@ impl ProtectedBrokerSessionJournalV1 {
         connection_peer: &ConnectionPeerIdentity,
         now_boottime_nanoseconds: u64,
     ) -> Result<(AuthenticatedBrokerMethodRequestV1, bool), BrokerSessionSecurityError> {
+        self.require_floor_method(method)?;
         let context = self.current_context(transcript)?;
         let first_peer = self.observe_peer(transcript, connection_peer)?;
         let current = self.read_optional(transcript.protocol())?;
@@ -2873,6 +2909,7 @@ impl ProtectedBrokerSessionJournalV1 {
         let canonical = decode_canonical_request_v1(packet)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         let method = canonical.signed_artifact().method();
+        self.require_floor_method(method)?;
         let semantic_bindings =
             authenticated_semantic_bindings_from_envelope_v1(canonical.message(), method)
                 .map_err(|_| BrokerSessionSecurityError::Currentness)?;
@@ -3017,12 +3054,34 @@ impl ProtectedBrokerSessionJournalV1 {
     ) -> Result<Self, BrokerSessionSecurityError> {
         let directory = directory.as_ref().to_path_buf();
         endpoint.revalidate()?;
+        let protocol = endpoint.protected_protocol_and_node().0;
+        if protocol == BrokerSessionProtocolV1::Storage && name != PROTECTED_SESSION_JOURNAL {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let floor = tpm_floor::runtime::BrokerFloorV1::configure(
+            &directory,
+            protocol,
+            endpoint.role(),
+            endpoint.launch_image(),
+        )
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         let owner = JournalOwnerV1::capture(endpoint.role());
-        let (journal, _) = owner
-            .open(&directory, name, limits)
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let existing = match std::fs::symlink_metadata(directory.join(name)) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => return Err(BrokerSessionSecurityError::Currentness),
+        };
+        let (journal, _) = if floor.requires_existing()
+            || protocol == BrokerSessionProtocolV1::Storage && existing
+        {
+            owner.open_existing(&directory, name, limits)
+        } else {
+            owner.open(&directory, name, limits)
+        }
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         endpoint.revalidate()?;
         let mut authority = Self {
+            floor: tpm_floor::runtime::BrokerFloorV1::unavailable(),
             journal: Some(journal),
             directory,
             name: name.to_owned(),
@@ -3030,21 +3089,93 @@ impl ProtectedBrokerSessionJournalV1 {
             owner,
             endpoint,
         };
+        authority.validate_schema_only()?;
+        authority.floor = floor;
+        authority.attach_floor()?;
         authority.validate_all()?;
         Ok(authority)
     }
 
     fn reopen_storage(&mut self) -> Result<(), BrokerSessionSecurityError> {
         self.endpoint.revalidate()?;
+        let mut floor = std::mem::replace(
+            &mut self.floor,
+            tpm_floor::runtime::BrokerFloorV1::unavailable(),
+        );
+        floor.suspend_for_reopen();
         drop(self.journal.take());
-        let (journal, _) = self
-            .owner
-            .open(&self.directory, &self.name, self.limits)
+        let result = (|| {
+            // Only the scoped Storage owner changes replay policy. Unrelated
+            // Host/Mount/Network recovery keeps its existing native opener.
+            let (journal, _) = if floor.requires_existing()
+                || self.endpoint.protected_protocol_and_node().0 == BrokerSessionProtocolV1::Storage
+            {
+                self.owner
+                    .open_existing(&self.directory, &self.name, self.limits)
+            } else {
+                self.owner.open(&self.directory, &self.name, self.limits)
+            }
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        self.journal = Some(journal);
-        self.validate_all()?;
-        self.endpoint.revalidate()?;
-        Ok(())
+            self.journal = Some(journal);
+            self.validate_schema_only()?;
+            floor
+                .attach(self)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            self.endpoint.revalidate()
+        })();
+        self.floor = floor;
+        result?;
+        self.validate_all()
+    }
+
+    fn attach_floor(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        let mut floor = std::mem::replace(
+            &mut self.floor,
+            tpm_floor::runtime::BrokerFloorV1::unavailable(),
+        );
+        let result = floor
+            .attach(self)
+            .map_err(|_| BrokerSessionSecurityError::Currentness);
+        self.floor = floor;
+        result
+    }
+
+    fn require_floor_current(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        let mut floor = std::mem::replace(
+            &mut self.floor,
+            tpm_floor::runtime::BrokerFloorV1::unavailable(),
+        );
+        let result = floor
+            .check(self)
+            .map_err(|_| BrokerSessionSecurityError::Currentness);
+        self.floor = floor;
+        result
+    }
+
+    fn require_floor_method(
+        &mut self,
+        method: BrokerMethod,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.require_floor_current()?;
+        self.floor
+            .require_method(method)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)
+    }
+
+    /// Routes every actual namespace-47 mutation through the retained floor.
+    fn commit_floor_checked_transaction(
+        &mut self,
+        transaction: &JournalTransaction,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        let mut floor = std::mem::replace(
+            &mut self.floor,
+            tpm_floor::runtime::BrokerFloorV1::unavailable(),
+        );
+        let result = floor
+            .commit(self, transaction)
+            .map_err(|_| BrokerSessionSecurityError::Currentness);
+        self.floor = floor;
+        result
     }
 
     fn journal_mut(&mut self) -> Result<&mut Journal, BrokerSessionSecurityError> {
@@ -3074,6 +3205,7 @@ impl ProtectedBrokerSessionJournalV1 {
         connection_peer: &ConnectionPeerIdentity,
         checkpoint: &HistoricalSessionCheckpointV1,
     ) -> Result<ProtectedBrokerSessionInitializationResultV1, BrokerSessionSecurityError> {
+        self.require_floor_method(request.method())?;
         let context = self.current_context(transcript)?;
         let peer = self.observe_peer(transcript, connection_peer)?;
         if super::endpoint_for_request(request) != self.endpoint.role() {
@@ -3272,6 +3404,8 @@ impl ProtectedBrokerSessionJournalV1 {
         transcript: &VerifiedBrokerSessionTranscriptV1,
         connection_peer: &ConnectionPeerIdentity,
     ) -> Result<super::ProtectedBrokerOutcomeAdmissionGateV1, BrokerSessionSecurityError> {
+        self.require_floor_method(request.method())?;
+
         let context = self.current_context(transcript)?;
         let peer = self.observe_peer(transcript, connection_peer)?;
         let recovery = ProtectedBrokerOutcomeGateRecoveryV1::reopen_broker_outcome(
@@ -3346,6 +3480,8 @@ impl ProtectedBrokerSessionJournalV1 {
         owner: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
         connection_peer: &ConnectionPeerIdentity,
     ) -> Result<(), BrokerSessionSecurityError> {
+        self.require_floor_method(owner.request.method())?;
+
         let context = self.current_context(&owner.transcript)?;
         if context.protected_context_digest() != owner.context.protected_context_digest() {
             return Err(BrokerSessionSecurityError::Currentness);
@@ -3540,6 +3676,8 @@ impl ProtectedBrokerSessionJournalV1 {
         transcript: &VerifiedBrokerSessionTranscriptV1,
         connection_peer: &ConnectionPeerIdentity,
     ) -> Result<ProtectedBrokerRequestCommitResultV1, BrokerSessionSecurityError> {
+        self.require_floor_method(request.method())?;
+
         let context = self.current_context(transcript)?;
         let peer = self.observe_peer(transcript, connection_peer)?;
         let write = ProtectedBrokerRequestWriteV1::prepare_successor(
@@ -3646,6 +3784,13 @@ impl ProtectedBrokerSessionJournalV1 {
     ) -> ProtectedBrokerSessionInitializationResultV1 {
         let target = &recovery.target;
         let result = (|| {
+            let history = target.history_model()?;
+            let method = history
+                .head()
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?
+                .method();
+            self.require_floor_method(method)?;
+
             self.validate_recovery_peer(target, &recovery.transcript, connection_peer)?;
             match self.read_optional(target.protocol)? {
                 Some(current) if current == *target => return Ok(()),
@@ -3682,6 +3827,13 @@ impl ProtectedBrokerSessionJournalV1 {
     ) -> ProtectedBrokerRequestCommitResultV1 {
         let target = &recovery.target;
         let result = (|| {
+            let history = target.history_model()?;
+            let method = history
+                .head()
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?
+                .method();
+            self.require_floor_method(method)?;
+
             self.validate_recovery_peer(target, &recovery.transcript, connection_peer)?;
             let current = self
                 .read_optional(target.protocol)?
@@ -3721,6 +3873,8 @@ impl ProtectedBrokerSessionJournalV1 {
         pending: &ProtectedBrokerOutcomePendingAdvancementV1,
         connection_peer: &ConnectionPeerIdentity,
     ) -> Result<ProtectedBrokerOutcomeCommitReadbackV1, BrokerSessionSecurityError> {
+        self.require_floor_method(pending.outcome.request().method())?;
+
         let context = self.current_context(&pending.transcript)?;
         let before_peer = self.observe_peer(&pending.transcript, connection_peer)?;
         if before_peer.binding(self.endpoint.role(), &pending.transcript, &context)?
@@ -3777,6 +3931,7 @@ impl ProtectedBrokerSessionJournalV1 {
         &mut self,
         transcript: &VerifiedBrokerSessionTranscriptV1,
     ) -> Result<ProtectedBrokerSessionVerificationContextV1, BrokerSessionSecurityError> {
+        self.require_floor_current()?;
         self.endpoint.revalidate()?;
         let context = self.endpoint.context(transcript)?;
         self.endpoint.revalidate()?;
@@ -3787,6 +3942,7 @@ impl ProtectedBrokerSessionJournalV1 {
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
+        self.require_floor_current()?;
         Ok(context)
     }
 
@@ -3892,6 +4048,19 @@ impl ProtectedBrokerSessionJournalV1 {
         &mut self,
         protocol: BrokerSessionProtocolV1,
     ) -> Result<Option<StoredProtocolHistoryV1>, BrokerSessionSecurityError> {
+        self.require_floor_current()?;
+        let current = self.read_optional_schema(protocol)?;
+        self.require_floor_current()?;
+        Ok(current)
+    }
+
+    /// Parses protected schema only; it never grants currentness or replay.
+    ///
+    /// Used only inside held reconciliation and pre-authority owner opening.
+    fn read_optional_schema(
+        &mut self,
+        protocol: BrokerSessionProtocolV1,
+    ) -> Result<Option<StoredProtocolHistoryV1>, BrokerSessionSecurityError> {
         let before_identity = self.stable_endpoint_identity(protocol)?;
         let records = {
             let authority = self
@@ -3990,13 +4159,20 @@ impl ProtectedBrokerSessionJournalV1 {
     }
 
     fn validate_all(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        self.require_floor_current()?;
+        self.validate_schema_only()?;
+        self.require_floor_current()
+    }
+
+    /// Checks schema/role under the actual held writer, without a floor token.
+    fn validate_schema_only(&mut self) -> Result<(), BrokerSessionSecurityError> {
         for protocol in [
             BrokerSessionProtocolV1::Host,
             BrokerSessionProtocolV1::Storage,
             BrokerSessionProtocolV1::Mount,
             BrokerSessionProtocolV1::Network,
         ] {
-            let _ = self.read_optional(protocol)?;
+            let _ = self.read_optional_schema(protocol)?;
         }
         self.validate_host_argument_archives()?;
         self.validate_host_terminal_archives()?;
@@ -4054,20 +4230,7 @@ impl ProtectedBrokerSessionJournalV1 {
         // likewise share one transaction after the Host response.
         let transaction = JournalTransaction::new(transaction_id(stored)?, records)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        let mut authority = self
-            .journal_mut()?
-            .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        let preflight = authority
-            .preflight_transactions(core::slice::from_ref(&transaction))
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        authority
-            .validate_preflight_for_effect(&preflight, core::slice::from_ref(&transaction))
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        authority
-            .commit(&transaction)
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        Ok(())
+        self.commit_floor_checked_transaction(&transaction)
     }
 }
 

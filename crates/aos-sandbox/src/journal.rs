@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::fd::{AsFd as _, BorrowedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -647,6 +648,37 @@ pub struct Journal {
     protected: Option<ProtectedJournalLocation>,
     cache_policy_gate: Option<(PathBuf, u32)>,
     authority_instance: Arc<JournalAuthorityInstance>,
+}
+
+/// Retains only an existing protected writer's lock open-file description.
+///
+/// This custody loan exposes no journal data or writer API. Duplicating or
+/// transferring it preserves the original `flock`, but a recipient could
+/// explicitly unlock that shared description. It must therefore be delivered
+/// only to an independently trusted, confined child. It establishes neither
+/// a journal cut nor currentness, rollback protection, or effect authority.
+pub struct ProtectedJournalLockCustodyV1 {
+    lock: File,
+}
+
+impl ProtectedJournalLockCustodyV1 {
+    /// Borrows the exact duplicated lock description for a confined handoff.
+    #[must_use]
+    pub fn as_fd(&self) -> BorrowedFd<'_> {
+        self.lock.as_fd()
+    }
+
+    /// Returns the held lock's device, inode, and owner for recipient checks.
+    ///
+    /// These metadata are not proof of the original flock or any authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the retained lock cannot be inspected.
+    pub fn identity(&self) -> Result<(u64, u64, u32), JournalError> {
+        let metadata = self.lock.metadata()?;
+        Ok((metadata.dev(), metadata.ino(), metadata.uid()))
+    }
 }
 
 /// Retains byte-level metadata for a protected writer readback.
@@ -1977,6 +2009,25 @@ impl Journal {
     pub fn validate_held_protected_names(&self) -> Result<(), JournalError> {
         self.ensure_protected_authority()?;
         self.require_protected_names_current()
+    }
+
+    /// Duplicates only a healthy protected writer's exact lock description.
+    ///
+    /// The original named journal and lock are checked before and after the
+    /// duplication. This retains custody across a trusted child lifetime; it
+    /// is not another writer and cannot authorize reads, commits, or effects.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unprotected, poisoned, or replaced writer, or a failed
+    /// descriptor duplication. No journal data descriptor is returned.
+    pub fn loan_protected_lock_custody(
+        &self,
+    ) -> Result<ProtectedJournalLockCustodyV1, JournalError> {
+        self.validate_held_protected_names()?;
+        let lock = self._lock.try_clone()?;
+        self.validate_held_protected_names()?;
+        Ok(ProtectedJournalLockCustodyV1 { lock })
     }
 
     /// Checks a live root-owned writer against its original protected path.
@@ -6254,6 +6305,44 @@ mod tests {
             protected_open_error(rustix::io::Errno::NOENT),
             JournalError::Io(_)
         ));
+    }
+
+    #[test]
+    fn protected_lock_custody_loan_outlives_writer_without_becoming_a_writer() {
+        let directory = TestDirectory::new("protected-lock-loan");
+        let (journal, _) = protected_open(&directory.0).unwrap();
+        let loan = journal.loan_protected_lock_custody().unwrap();
+        let metadata = fs::metadata(directory.0.join("protected.journal.lock")).unwrap();
+        assert_eq!(
+            loan.identity().unwrap(),
+            (metadata.dev(), metadata.ino(), metadata.uid())
+        );
+        drop(journal);
+
+        assert!(matches!(
+            protected_open(&directory.0),
+            Err(JournalError::AlreadyLocked)
+        ));
+        drop(loan);
+        let (journal, report) = protected_open(&directory.0).unwrap();
+        assert_eq!(report.committed_transactions, 0);
+        assert_eq!(journal.get(RecordNamespace::DesiredState, b"key"), None);
+    }
+
+    #[test]
+    fn protected_lock_custody_loan_rejects_replaced_names_and_unprotected_writer() {
+        let directory = TestDirectory::new("protected-lock-loan-replaced");
+        let (journal, _) = protected_open(&directory.0).unwrap();
+        fs::rename(
+            directory.0.join("protected.journal.lock"),
+            directory.0.join("old.lock"),
+        )
+        .unwrap();
+        assert!(journal.loan_protected_lock_custody().is_err());
+
+        let (unprotected, _) =
+            Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        assert!(unprotected.loan_protected_lock_custody().is_err());
     }
 
     #[test]
