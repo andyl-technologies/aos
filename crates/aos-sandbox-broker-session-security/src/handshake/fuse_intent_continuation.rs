@@ -47,6 +47,9 @@ const HOST_QUERY_PREFIX_BYTES: usize = HEADER_BYTES + 4;
 const MAXIMUM_HOST_QUERY_PACKET_BYTES: usize = 1024 * 1024;
 const MAXIMUM_HOST_QUERY_BYTES: usize = HOST_QUERY_PREFIX_BYTES + MAXIMUM_HOST_QUERY_PACKET_BYTES;
 
+mod worker_handoff;
+pub(crate) use worker_handoff::OriginalMountHostWorkerDispatchV1;
+
 /// Carries only broker-assigned comparison coordinates for local Host issuance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FuseIntentReservationCoordinatesV1 {
@@ -88,6 +91,8 @@ enum Stage {
     ClientReservationAck(FuseIntentReservationCoordinatesV1),
     BrokerReservationAck(FuseIntentReservationCoordinatesV1),
     Prepared(FuseIntentReservationCoordinatesV1),
+    WorkerIssuance(FuseIntentReservationCoordinatesV1),
+    WorkerDispatched(FuseIntentReservationCoordinatesV1),
     ReconciliationRequired,
 }
 
@@ -206,6 +211,25 @@ impl<'session> HeldFuseIntentTransportV1<'session> {
             &mut aos_sandbox_mount::broker::PreparedMountFuseWorkerHandoffV1<'_, '_, W>,
         ) -> Result<R, DormantBrokerSessionHandshakeErrorV1>,
     {
+        self.with_original_worker_handoff_transport(mount, host_cgroup_root, |_, handoff| {
+            action(handoff)
+        })
+    }
+
+    /// Lends both genuine original owners to the fixed four-role sender.
+    pub(crate) fn with_original_worker_handoff_transport<W, F, R>(
+        &mut self,
+        mount: &mut aos_sandbox_mount::broker::MountBroker<W>,
+        host_cgroup_root: &CgroupV2Root,
+        action: F,
+    ) -> Result<R, DormantBrokerSessionHandshakeErrorV1>
+    where
+        W: aos_sandbox_mount::worker::MountWorker,
+        F: FnOnce(
+            &mut Self,
+            &mut aos_sandbox_mount::broker::PreparedMountFuseWorkerHandoffV1<'_, '_, W>,
+        ) -> Result<R, DormantBrokerSessionHandshakeErrorV1>,
+    {
         let result = self.with_original_mount_preparation(
             mount,
             host_cgroup_root,
@@ -261,7 +285,7 @@ impl<'session> HeldFuseIntentTransportV1<'session> {
                 handoff
                     .recheck()
                     .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
-                let result = action(&mut handoff);
+                let result = action(transport, &mut handoff);
                 handoff
                     .recheck()
                     .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
@@ -774,10 +798,18 @@ fn decode_binding_header(
     bytes: &[u8],
     magic: &[u8; 8],
 ) -> Result<Binding, DormantBrokerSessionHandshakeErrorV1> {
+    decode_binding_header_version(bytes, magic, 1)
+}
+
+fn decode_binding_header_version(
+    bytes: &[u8],
+    magic: &[u8; 8],
+    version: u16,
+) -> Result<Binding, DormantBrokerSessionHandshakeErrorV1> {
     let invalid = || DormantBrokerSessionHandshakeErrorV1::RemoteInvalid;
     if bytes.len() < HEADER_BYTES
         || bytes.get(..8) != Some(magic.as_slice())
-        || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
+        || bytes.get(8..10) != Some(version.to_be_bytes().as_slice())
         || bytes[11] != 0
         || bytes.get(12..22) != Some([0, 44, 0, 0, 0, 57, 0, 3, 0, 0].as_slice())
     {

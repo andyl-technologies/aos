@@ -238,6 +238,41 @@ impl ControllerBrokerPlanSignerV1 {
         Ok(signed)
     }
 
+    /// Signs purpose 56 only inside the real retained Mount/Controller flight.
+    pub(crate) fn sign_original_host_worker<T>(
+        &self,
+        held: &mut aos_sandbox::attachment_effect_owner::CurrentControllerFuseIntentDispatchV1<'_>,
+        flight: &mut crate::handshake::fuse_intent_continuation::HeldFuseIntentTransportV1<'_>,
+        body: &[u8],
+        worker: &aos_sandbox_protocol::fuse_worker_preparation::WorkerPreparationPlanV1,
+        clock: &mut T,
+    ) -> Result<
+        aos_proto::aos::sandbox::local::v1::BrokerRequestEnvelope,
+        ControllerBrokerPlanSignerError,
+    >
+    where
+        T: FnMut() -> Result<
+            aos_sandbox_core::RawPairedClockSample,
+            aos_sandbox::ownership_authority::ProtectedOwnershipClockError,
+        >,
+    {
+        flight
+            .recheck_worker_issuance(worker)
+            .map_err(|_| ControllerBrokerPlanSignerError::Completion)?;
+        let plan = held
+            .host_worker_plan_at(body, worker, clock)
+            .map_err(|_| ControllerBrokerPlanSignerError::Completion)?;
+        let issued = plan.issued_seconds();
+        let signed = self.sign_with_authority(plan, issued, &self.authority)?;
+        let envelope = held
+            .host_worker_envelope_at(body, worker, &signed, clock)
+            .map_err(|_| ControllerBrokerPlanSignerError::Completion)?;
+        flight
+            .recheck_worker_issuance(worker)
+            .map_err(|_| ControllerBrokerPlanSignerError::Completion)?;
+        Ok(envelope)
+    }
+
     /// Verifies the exact original Mount plan retained in a durable attempt.
     ///
     /// Recovery never signs a replacement under the same operation identity.

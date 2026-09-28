@@ -28,6 +28,10 @@ use crate::{Journal, JournalError, JournalLimits, SignedBrokerPlan};
 const CONTROLLER_DIRECTORY: &str = "/var/lib/aos/sandboxd";
 const CONTROLLER_JOURNAL: &str = "controller.journal";
 
+mod host_worker;
+#[cfg(test)]
+mod host_worker_tests;
+
 /// Reports refusal of a changed owner, request, original source or live scope.
 #[derive(Debug, thiserror::Error)]
 pub enum ControllerFuseIntentDispatchErrorV1 {

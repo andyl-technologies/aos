@@ -48,7 +48,7 @@ pub struct PreparedMountFuseWorkerObjectsV1<'cut, 'mount, W: MountWorker> {
 #[must_use = "retain original handoff and durable escrow through reconciliation"]
 pub struct PreparedMountFuseWorkerHandoffV1<'cut, 'mount, W: MountWorker> {
     // Close local role owners before the objects/cancellation writer on Drop.
-    roles: [OwnedFd; 4],
+    roles: Option<[OwnedFd; 4]>,
     preparation: PreparedMountFuseWorkerObjectsV1<'cut, 'mount, W>,
 }
 
@@ -314,7 +314,7 @@ impl<'cut, 'mount, W: MountWorker> PreparedMountFuseWorkerObjectsV1<'cut, 'mount
         })();
         match result {
             Ok(roles) => Ok(PreparedMountFuseWorkerHandoffV1 {
-                roles,
+                roles: Some(roles),
                 preparation: self,
             }),
             Err(error) => {
@@ -338,9 +338,34 @@ impl<W: MountWorker> PreparedMountFuseWorkerHandoffV1<'_, '_, W> {
     /// challenge. A sender can duplicate these descriptors, so the subsequent
     /// actual session must account for packet/transport/PID1 copies rather
     /// than derive their absence from this type or from a scalar response.
-    #[must_use]
-    pub fn launch_roles(&self) -> [BorrowedFd<'_>; 4] {
-        self.roles.each_ref().map(|role| role.as_fd())
+    ///
+    /// # Errors
+    ///
+    /// Rejects a table already moved into its original authenticated transport.
+    pub fn launch_roles(&self) -> Result<[BorrowedFd<'_>; 4]> {
+        let roles = self
+            .roles
+            .as_ref()
+            .ok_or(MountError::Fence("original worker roles already moved"))?;
+        Ok(roles.each_ref().map(|role| role.as_fd()))
+    }
+
+    /// Moves the original four owners once while retaining actual Mount custody.
+    ///
+    /// Taking happens before fallible rechecks. Failure closes these outgoing
+    /// copies and cannot recreate the worker endpoint or clear durable escrow.
+    /// Returned owners remain transport custody, never connected/read authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects already-moved roles or changed actual owner/object currentness.
+    pub fn take_launch_roles(&mut self) -> Result<[OwnedFd; 4]> {
+        let roles = self
+            .roles
+            .take()
+            .ok_or(MountError::Fence("original worker roles already moved"))?;
+        self.recheck()?;
+        Ok(roles)
     }
 
     /// Rechecks the original actual Mount owner throughout descriptor custody.

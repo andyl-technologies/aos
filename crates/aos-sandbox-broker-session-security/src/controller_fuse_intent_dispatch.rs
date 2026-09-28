@@ -41,6 +41,25 @@ enum FlightState {
 }
 
 impl<'controller, 'session> ControllerFuseIntentPendingFlightV1<'controller, 'session> {
+    /// Issues the exact Host grant only on this already-held original Mount flight.
+    ///
+    /// The real per-record Mount control and complete sealed plan remain joined
+    /// to the original reservation ACK. No Host callback reacquires Controller.
+    pub(crate) fn issue_original_host_worker<T>(
+        &mut self,
+        signer: &ControllerBrokerPlanSignerV1,
+        clock: &mut T,
+    ) -> Result<(), BrokerSessionSecurityError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.with_preparation_custody(clock, |controller, transport, clock| {
+            transport
+                .issue_original_host_worker(controller, signer, clock)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)
+        })
+    }
+
     /// Keeps local issuance inside the already-held Controller/session cut.
     ///
     /// The callback receives real borrows, not reconstructed wire facts. It
@@ -59,6 +78,7 @@ impl<'controller, 'session> ControllerFuseIntentPendingFlightV1<'controller, 'se
         F: FnOnce(
             &mut CurrentControllerFuseIntentDispatchV1<'controller>,
             &mut crate::handshake::fuse_intent_continuation::HeldFuseIntentTransportV1<'_>,
+            &mut T,
         ) -> Result<R, BrokerSessionSecurityError>,
     {
         self.controller
@@ -78,7 +98,7 @@ impl<'controller, 'session> ControllerFuseIntentPendingFlightV1<'controller, 'se
         transport
             .complete_original_host_query(&mut self.controller, clock)
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        let result = action(&mut self.controller, &mut transport);
+        let result = action(&mut self.controller, &mut transport, clock);
         transport.recheck()?;
         drop(transport);
         self.controller
