@@ -51,6 +51,8 @@
     }
   ];
   brokerSessionConfiguration = brokerSession.configure cfg.credentials brokerSessionEndpoints;
+  method46Floor = import ./_method46-tpm-floor.nix {inherit lib;};
+  method46FloorConfiguration = method46Floor.configure cfg.method46TpmFloor;
   nodeCredentials =
     lib.optional (cfg.credentials.nodeId != null)
     "node-id:/run/credentials/@system/${cfg.credentials.nodeId}";
@@ -164,6 +166,8 @@ in {
       description = "The independently packaged unprivileged controller executable.";
     };
 
+    method46TpmFloor = method46Floor.options;
+
     credentials =
       {
         nodeId = lib.mkOption {
@@ -273,6 +277,8 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    environment.etc."aos/method46-tpm-floor/controller-mode".text = method46FloorConfiguration.modeText;
+
     assertions =
       [
         {
@@ -404,6 +410,17 @@ in {
         }
       ]
       ++ brokerSessionConfiguration.assertions
+      ++ method46FloorConfiguration.assertions
+      ++ [
+        {
+          assertion =
+            !(cfg.method46TpmFloor.required && brokers.storageBroker.method46TpmFloor.required)
+            || (cfg.method46TpmFloor.indexAuthCredential
+              != brokers.storageBroker.method46TpmFloor.indexAuthCredential
+              && cfg.method46TpmFloor.provisionCredential != brokers.storageBroker.method46TpmFloor.provisionCredential);
+          message = "Controller and Storage TPM floors require separate owner-specific public and NV-auth credential sources";
+        }
+      ]
       ++ lib.mapAttrsToList (option: _: {
         assertion = !cfg.publicApi.enable || cfg.credentials.${option} != null;
         message = "aos.sandbox.controllerService.credentials.${option} is required when publicApi.enable is true";
@@ -508,6 +525,7 @@ in {
           ++ opensshAttachCredentials
           ++ ownershipCredentials
           ++ brokerSessionConfiguration.loadCredentials
+          ++ method46FloorConfiguration.loadCredentials
           ++ publicCredentials
           ++ bootstrapCredentials
           ++ operatorRecoveryCredentials
@@ -517,6 +535,11 @@ in {
           ++ controllerSourceTreeSeedIssuerCredential;
         Restart = "on-failure";
         RestartSec = "2s";
+        # Population, not cgroup.procs, retains exiting TPM helper tasks until
+        # kernel file-release work drains. Never time out that restart barrier.
+        ExitType = lib.mkIf cfg.method46TpmFloor.required "cgroup";
+        KillMode = lib.mkIf cfg.method46TpmFloor.required "control-group";
+        TimeoutStopSec = lib.mkIf cfg.method46TpmFloor.required "infinity";
         TimeoutStartSec = "90s";
         User = "aos-sandboxd";
         Group = "aos-sandboxd";
@@ -540,13 +563,14 @@ in {
 
         CapabilityBoundingSet = "";
         DevicePolicy = "closed";
+        DeviceAllow = lib.optional cfg.method46TpmFloor.required "/dev/tpmrm0 rw";
         LimitCORE = 0;
         LimitNOFILE = 128;
         LockPersonality = true;
         MemoryMax = "512M";
         MemoryDenyWriteExecute = true;
         NoNewPrivileges = true;
-        PrivateDevices = true;
+        PrivateDevices = !cfg.method46TpmFloor.required;
         PrivateNetwork = true;
         PrivateTmp = true;
         ProcSubset = "pid";

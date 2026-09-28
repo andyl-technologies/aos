@@ -55,9 +55,11 @@ const PAGE_TOKEN_BYTES: usize = 8 + QUERY_BINDING_TRANSPORT_BYTES + 32 + 16 + 32
 fn require_execution_create_admission_ready() -> Result<(), ConnectError> {
     // The accepted request would otherwise create a durable REQUESTED resource
     // with no cross-owner path to physical output backing or a Host effect.
+    // Any eventual positive path must also retain an authenticated method-46
+    // journal floor on both Storage endpoints; configured mode is not readiness.
     Err(ConnectError::new(
         ErrorCode::Unavailable,
-        "execution creation awaits protected cross-owner handoff",
+        "execution creation awaits protected TPM floor and cross-owner handoff",
     ))
 }
 

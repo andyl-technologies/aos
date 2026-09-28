@@ -85,6 +85,15 @@ impl Fixture {
     }
 
     fn open(&self, io: FakeTpm) -> Result<Owner, FloorErrorV1> {
+        self.open_with_factory(|_| Ok(io))
+    }
+
+    fn open_with_factory(
+        &self,
+        make_io: impl FnOnce(
+            [aos_sandbox::ProtectedJournalLockCustodyV1; 2],
+        ) -> Result<FakeTpm, FloorErrorV1>,
+    ) -> Result<Owner, FloorErrorV1> {
         let (journal, _) = Journal::open_existing_protected_at_uid(
             self.directory.path(),
             "session.journal",
@@ -98,7 +107,7 @@ impl Fixture {
             limits: self.limits,
             uid: self.uid,
         };
-        DurableTpmFloorV1::open(traffic, self.profile, io)
+        DurableTpmFloorV1::open_with_factory(traffic, self.profile, make_io)
     }
 
     fn open_floor(&self) -> Journal {
@@ -189,6 +198,107 @@ fn assert_current(owner: &mut Owner, expected: FloorCheckpointV1) {
         expected.cut()
     );
     assert_eq!(owner.backend.read().unwrap(), expected.nv_value());
+}
+
+#[test]
+fn tpm_floor_durable_opens_physical_factory_after_both_named_writers() {
+    let (fixture, owner) = Fixture::new(limits());
+    let io = stop(owner);
+    let called = std::cell::Cell::new(false);
+    let mut reopened = fixture
+        .open_with_factory(|locks| {
+            // These are actual protected Journal flocks, not a scalar promise
+            // that the traffic/sidecar owners have been retained.
+            assert!(
+                Journal::open_existing_protected_at_uid(
+                    fixture.directory.path(),
+                    "session.journal",
+                    fixture.limits,
+                    fixture.uid,
+                )
+                .is_err()
+            );
+            assert!(
+                Journal::open_existing_protected_at_uid(
+                    fixture.directory.path(),
+                    NAME,
+                    FloorStoreV1::fixture_limits(fixture.limits).unwrap(),
+                    fixture.uid,
+                )
+                .is_err()
+            );
+            assert_ne!(locks[0].identity().unwrap(), locks[1].identity().unwrap());
+            called.set(true);
+            Ok(io)
+        })
+        .unwrap();
+
+    assert!(called.get());
+    reopened.require_current().unwrap();
+    assert_eq!(reopened.backend.test_io().extensions(), 0);
+}
+
+#[test]
+fn tpm_floor_durable_missing_sidecar_never_starts_physical_factory() {
+    let (fixture, owner) = Fixture::new(limits());
+    let io = stop(owner);
+    let before = fixture.read_main();
+    let retained = fixture.directory.path().join("retained-floor.journal");
+    fs::rename(fixture.directory.path().join(NAME), &retained).unwrap();
+    let called = std::cell::Cell::new(false);
+
+    let result = fixture.open_with_factory(|_| {
+        called.set(true);
+        Ok(io)
+    });
+
+    assert!(result.is_err());
+    assert!(!called.get());
+    assert_eq!(fixture.read_main(), before);
+    assert!(retained.exists());
+    assert!(!fixture.directory.path().join(NAME).exists());
+}
+
+#[test]
+fn tpm_floor_durable_final_suffix_token_is_exact_and_expires_after_finalize() {
+    let (_fixture, mut owner) = Fixture::new(limits());
+    owner.prepare(&update()).unwrap();
+    let (stored, _, _) = prepared(&mut owner);
+    let suffix = owner.store.preflight_final(&stored, owner.profile).unwrap();
+    owner
+        .store
+        .validate_final_preflight(&suffix, &stored, owner.profile)
+        .unwrap();
+
+    owner.recover().unwrap();
+
+    assert!(
+        owner
+            .store
+            .validate_final_preflight(&suffix, &stored, owner.profile)
+            .is_err()
+    );
+    assert_eq!(owner.backend.test_io().extensions(), 1);
+    owner.require_current().unwrap();
+}
+
+#[test]
+fn tpm_floor_durable_held_cut_failure_cannot_extend_even_after_fresh_nv_read() {
+    let (_fixture, mut owner) = Fixture::new(limits());
+    owner.prepare(&update()).unwrap();
+    let (_, intent, _) = prepared(&mut owner);
+
+    let result = owner
+        .backend
+        .advance_with_held_cut(intent, || Err(FloorErrorV1::Unavailable));
+
+    assert_eq!(result, Err(FloorErrorV1::Unavailable));
+    assert_eq!(owner.backend.test_io().extensions(), 0);
+    assert_eq!(
+        owner.backend.read().unwrap(),
+        intent.predecessor().nv_value()
+    );
+    assert_eq!(owner.classify().unwrap().1, FloorRecoveryV1::ExtendPrepared);
 }
 
 #[test]

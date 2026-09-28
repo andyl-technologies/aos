@@ -522,6 +522,7 @@ let
     "aos-ebpf-net-policy"
     "aos-fuse-transport"
     "aos-landlock"
+    "aos-method46-tpm-helper"
     "aos-netd"
     "aos-namespace-inspector-manager-query"
     "aos-recovery"

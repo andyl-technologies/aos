@@ -6,7 +6,10 @@
 
 use std::path::{Path, PathBuf};
 
-use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
+use aos_sandbox::{
+    Journal, JournalLimits, JournalRecord, JournalTransaction, ProtectedJournalLockCustodyV1,
+    ProtectedJournalPreflight, RecordNamespace,
+};
 
 use super::super::format::{CHECKPOINT_BYTES, INTENT_BYTES};
 use super::super::{FloorCheckpointV1, FloorErrorV1, FloorIntentV1, FloorProfileV1, hash_parts};
@@ -41,7 +44,20 @@ pub(super) struct StoredFloorV1 {
     sequence: u64,
 }
 
+/// Retains the exact remaining suffix at one actual sidecar instance/sequence.
+pub(super) struct FinalSuffixPreflightV1 {
+    token: ProtectedJournalPreflight,
+    transaction: JournalTransaction,
+}
+
 impl FloorStoreV1 {
+    pub(super) fn loan_lock_custody(&self) -> Result<ProtectedJournalLockCustodyV1, FloorErrorV1> {
+        self.validate_held()?;
+        self.journal
+            .loan_protected_lock_custody()
+            .map_err(|_| FloorErrorV1::Unavailable)
+    }
+
     pub(super) fn open(
         owner: JournalOwnerV1,
         directory: &Path,
@@ -113,12 +129,16 @@ impl FloorStoreV1 {
         &mut self,
         transactions: &[JournalTransaction],
     ) -> Result<(), FloorErrorV1> {
-        self.journal
+        let authority = self
+            .journal
             .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
-            .map_err(|_| FloorErrorV1::Unavailable)?
+            .map_err(|_| FloorErrorV1::Unavailable)?;
+        let token = authority
             .preflight_transactions(transactions)
             .map_err(|_| FloorErrorV1::Unavailable)?;
-        Ok(())
+        authority
+            .validate_preflight_for_effect(&token, transactions)
+            .map_err(|_| FloorErrorV1::Unavailable)
     }
 
     pub(super) fn validate_held(&self) -> Result<(), FloorErrorV1> {
@@ -250,7 +270,7 @@ impl FloorStoreV1 {
         &mut self,
         stored: &StoredFloorV1,
         profile: FloorProfileV1,
-    ) -> Result<(), FloorErrorV1> {
+    ) -> Result<FinalSuffixPreflightV1, FloorErrorV1> {
         self.require_same(stored, profile)?;
         let (intent, _) = stored.prepared.as_ref().ok_or(FloorErrorV1::Diverged)?;
         let transaction = finalize_transaction(*intent)?;
@@ -258,10 +278,36 @@ impl FloorStoreV1 {
             .journal
             .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
             .map_err(|_| FloorErrorV1::Unavailable)?;
-        authority
+        let token = authority
             .preflight_transactions(core::slice::from_ref(&transaction))
             .map_err(|_| FloorErrorV1::Unavailable)?;
-        Ok(())
+        Ok(FinalSuffixPreflightV1 { token, transaction })
+    }
+
+    /// Checks the retained suffix immediately before its dependent NV/main effect.
+    pub(super) fn validate_final_preflight(
+        &mut self,
+        suffix: &FinalSuffixPreflightV1,
+        stored: &StoredFloorV1,
+        profile: FloorProfileV1,
+    ) -> Result<(), FloorErrorV1> {
+        self.require_same(stored, profile)?;
+        let (intent, _) = stored.prepared.as_ref().ok_or(FloorErrorV1::Diverged)?;
+        if suffix.transaction != finalize_transaction(*intent)? {
+            return Err(FloorErrorV1::Diverged);
+        }
+        let authority = self
+            .journal
+            .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
+            .map_err(|_| FloorErrorV1::Unavailable)?;
+        authority
+            .validate_preflight_for_effect(
+                &suffix.token,
+                core::slice::from_ref(&suffix.transaction),
+            )
+            .map_err(|_| FloorErrorV1::Unavailable)?;
+        drop(authority);
+        self.validate_held()
     }
 
     pub(super) fn finalize(

@@ -232,8 +232,8 @@ pub use journal::{
     MountSourceAcquisitionJournalAuthorityV2, MountSourceConsumptionCommitReceipt,
     MountSourceConsumptionCompanionProjectionV2, MountSourceConsumptionJournalAuthorityV1,
     MountSourceConsumptionPreflight, MountSourceMigrationJournalAuthorityV2,
-    PreparedGlobalCapacityReservationV1, ProtectedJournalAuthority, ProtectedJournalPreflight,
-    ProtectedJournalSnapshot, RecordNamespace, RecoveryReport,
+    PreparedGlobalCapacityReservationV1, ProtectedJournalAuthority, ProtectedJournalLockCustodyV1,
+    ProtectedJournalPreflight, ProtectedJournalSnapshot, RecordNamespace, RecoveryReport,
 };
 pub use lifecycle_authority::{
     AtomicStorageLifecyclePublicationErrorV1, compile_atomic_storage_lifecycle_template_v1,

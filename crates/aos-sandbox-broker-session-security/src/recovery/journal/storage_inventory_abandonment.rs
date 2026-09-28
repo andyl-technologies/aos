@@ -442,15 +442,8 @@ impl ProtectedBrokerSessionJournalV1 {
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
-        let preflight = authority
-            .preflight_transactions(core::slice::from_ref(&transaction))
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        authority
-            .validate_preflight_for_effect(&preflight, core::slice::from_ref(&transaction))
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        authority
-            .commit(&transaction)
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        drop(authority);
+        self.commit_floor_checked_transaction(&transaction)?;
         let retained = self
             .read_storage_inventory_abandonment(record.inventory_request_id)?
             .ok_or(BrokerSessionSecurityError::Currentness)?;

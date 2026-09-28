@@ -1,14 +1,21 @@
 //! Checked extension over a sealed, independently authenticated TPM transport.
 //!
-//! No production transport implements this trait yet. A future AOS tpm2-tss
-//! ESYS producer must authenticate fresh responses under a salted HMAC session
-//! pinned to the provisioned salt-key Name and retained device. Plain tool
-//! stdout, caller scalars, PCR sealing, or an emulator cannot fill this seam.
+//! The private fixed-image ESYS child authenticates fresh responses under a
+//! salted HMAC session pinned to the provisioned salt-key Name and retained
+//! device. Plain tool stdout, caller scalars, PCR sealing, or an emulator cannot
+//! fill this seam.
 
 use super::format::NV_ATTRIBUTES_WRITTEN;
 use super::{FloorErrorV1, FloorIntentV1, FloorProfileV1};
 
-/// Seals the transport boundary to this module's qualified producer.
+mod helper_protocol;
+mod image;
+mod physical;
+mod service_policy;
+
+pub(super) use physical::PhysicalTpmNvIoV1;
+
+/// Seals the transport boundary to this module's sole physical producer.
 mod sealed {
     pub(super) trait Sealed {}
 }
@@ -89,9 +96,19 @@ impl<Io: AuthenticatedTpmNvIoV1> TpmNvExtendFloorBackendV1<Io> {
     /// the index credential exclusive, both journal flocks held, and recheck
     /// exact NV at every dependent send/effect. A competing authorized writer
     /// can cause denial, but cannot silently reset or replace this HEAD.
+    #[cfg(test)]
     pub(super) fn advance(
         &mut self,
         prepared: FloorIntentV1,
+    ) -> Result<FloorAdvanceV1, FloorErrorV1> {
+        self.advance_with_held_cut(prepared, || Ok(()))
+    }
+
+    /// Rechecks the actual retained writers after fresh NV and before extending.
+    pub(super) fn advance_with_held_cut(
+        &mut self,
+        prepared: FloorIntentV1,
+        require_held_cut: impl FnOnce() -> Result<(), FloorErrorV1>,
     ) -> Result<FloorAdvanceV1, FloorErrorV1> {
         prepared.require_predecessor(self.profile, prepared.predecessor())?;
         let old = prepared.predecessor().nv_value();
@@ -101,6 +118,8 @@ impl<Io: AuthenticatedTpmNvIoV1> TpmNvExtendFloorBackendV1<Io> {
             value if value == old => {}
             _ => return Err(FloorErrorV1::Diverged),
         }
+
+        require_held_cut()?;
 
         // Never blindly repeat an error: the command may already have extended.
         let _ambiguous_result = self

@@ -3,15 +3,16 @@
 //! A non-ORDERLY SHA-256 NV extend index authenticates a scoped journal HEAD,
 //! not merely an integer. This module owns canonical claims, protected HEAD
 //! derivation, checked NV extension, a protected exact-transaction sidecar, and
-//! crash reconciliation. Its private composition borrows the real fixed owner,
-//! but no authenticated production TPM transport exists yet. It does not
+//! crash reconciliation. Its private composition borrows the real fixed owner
+//! and retains a fixed-image ESYS child over a private carrier. It does not
 //! provision a TPM, activate an endpoint, advertise method 46, or produce a
 //! readiness/effect capability.
 //!
 //! The durable composition retains both protected writers and durably saves
-//! the exact existing `JournalTransaction` before extending NV. The remaining
-//! live integration must supply authenticated ESYS custody and attach this
-//! ordering to every relevant writer/use boundary. None of the scalar inputs
+//! the exact existing `JournalTransaction` before extending NV. Required mode
+//! funnels every scoped writer/read/use boundary through that composition;
+//! physical and installed qualification remains outstanding, so method 46 is
+//! deliberately closed. None of the scalar inputs
 //! or pure reducer classifications below proves protected preparation.
 //!
 //! ```text
@@ -27,6 +28,8 @@ mod backend;
 mod durable;
 mod format;
 mod head;
+mod provisioning;
+pub(super) mod runtime;
 
 use sha2::{Digest as _, Sha256};
 
@@ -47,7 +50,7 @@ enum FloorRecoveryV1 {
 
 /// Reports redacted failures without exposing index auth or configured identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-enum FloorErrorV1 {
+pub(in crate::recovery::journal) enum FloorErrorV1 {
     #[error("TPM floor encoding is noncanonical")]
     Encoding,
     #[error("TPM floor provisioning does not match")]

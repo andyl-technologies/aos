@@ -4,7 +4,7 @@
 //! production. A test-only adapter uses the real protected Journal but does
 //! not manufacture endpoint manifests, signatures, process custody, or readiness.
 
-use aos_sandbox::{Journal, JournalTransaction, RecordNamespace};
+use aos_sandbox::{Journal, JournalTransaction, ProtectedJournalLockCustodyV1, RecordNamespace};
 
 #[cfg(test)]
 use aos_sandbox::JournalLimits;
@@ -25,6 +25,8 @@ pub(super) trait HeldTrafficWriterV1: sealed::Sealed {
     ) -> Result<(FloorCutV1, Option<FloorCutV1>), FloorErrorV1>;
 
     fn open_floor_store(&mut self) -> Result<FloorStoreV1, FloorErrorV1>;
+
+    fn loan_lock_custody(&mut self) -> Result<ProtectedJournalLockCustodyV1, FloorErrorV1>;
 
     fn commit_exact(
         &mut self,
@@ -70,6 +72,18 @@ impl HeldTrafficWriterV1 for BrokerTrafficWriterV1<'_> {
         Ok(store)
     }
 
+    fn loan_lock_custody(&mut self) -> Result<ProtectedJournalLockCustodyV1, FloorErrorV1> {
+        self.owner
+            .endpoint
+            .revalidate()
+            .map_err(|_| FloorErrorV1::Unavailable)?;
+        self.owner
+            .journal_mut()
+            .map_err(|_| FloorErrorV1::Unavailable)?
+            .loan_protected_lock_custody()
+            .map_err(|_| FloorErrorV1::Unavailable)
+    }
+
     fn commit_exact(
         &mut self,
         profile: FloorProfileV1,
@@ -84,7 +98,7 @@ impl HeldTrafficWriterV1 for BrokerTrafficWriterV1<'_> {
             transaction,
         )?;
         self.owner
-            .validate_all()
+            .validate_schema_only()
             .map_err(|_| FloorErrorV1::Unavailable)?;
         require_target(self.cuts(profile, None)?.0, intent)
     }
@@ -110,7 +124,7 @@ fn require_target(cut: FloorCutV1, intent: FloorIntentV1) -> Result<(), FloorErr
     }
 }
 
-fn commit_traffic_transaction(
+pub(super) fn commit_traffic_transaction(
     journal: &mut Journal,
     transaction: &JournalTransaction,
 ) -> Result<(), FloorErrorV1> {
@@ -161,6 +175,12 @@ impl HeldTrafficWriterV1 for FixtureTrafficWriterV1 {
 
     fn open_floor_store(&mut self) -> Result<FloorStoreV1, FloorErrorV1> {
         FloorStoreV1::open_fixture(&self.directory, self.limits, self.uid)
+    }
+
+    fn loan_lock_custody(&mut self) -> Result<ProtectedJournalLockCustodyV1, FloorErrorV1> {
+        self.journal
+            .loan_protected_lock_custody()
+            .map_err(|_| FloorErrorV1::Unavailable)
     }
 
     fn commit_exact(

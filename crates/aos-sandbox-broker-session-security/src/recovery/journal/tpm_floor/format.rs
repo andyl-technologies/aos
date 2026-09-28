@@ -75,6 +75,10 @@ impl FloorProfileV1 {
         self.stable_endpoint
     }
 
+    pub(super) const fn node(self) -> [u8; 16] {
+        self.node
+    }
+
     pub(super) const fn salt_key_name_digest(self) -> [u8; 32] {
         self.salt_key_name_digest
     }

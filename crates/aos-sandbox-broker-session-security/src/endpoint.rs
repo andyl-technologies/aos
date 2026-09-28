@@ -320,6 +320,18 @@ impl core::fmt::Debug for ProtectedBrokerSessionClientV1 {
 }
 
 impl ProtectedBrokerSessionClientV1 {
+    pub(crate) const fn protected_protocol_and_node(
+        &self,
+    ) -> (
+        aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1,
+        [u8; 16],
+    ) {
+        (
+            self.inner.files.manifest().protocol(),
+            self.inner.files.manifest().node_id(),
+        )
+    }
+
     pub(crate) fn sign_lifecycle_bootstrap_attestation(
         &mut self,
         message: &[u8; 32],
@@ -596,6 +608,18 @@ impl core::fmt::Debug for ProtectedBrokerSessionBrokerV1 {
 }
 
 impl ProtectedBrokerSessionBrokerV1 {
+    pub(crate) const fn protected_protocol_and_node(
+        &self,
+    ) -> (
+        aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1,
+        [u8; 16],
+    ) {
+        (
+            self.inner.files.manifest().protocol(),
+            self.inner.files.manifest().node_id(),
+        )
+    }
+
     pub(crate) fn broker_outcome_verifier(
         &mut self,
     ) -> Result<aos_sandbox_protocol::BrokerTerminalCommitVerifierV1, BrokerSessionSecurityError>

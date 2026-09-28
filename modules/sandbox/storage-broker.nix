@@ -34,6 +34,8 @@
     }
   ];
   brokerSessionConfiguration = brokerSession.configure cfg.credentials brokerSessionEndpoints;
+  method46Floor = import ./_method46-tpm-floor.nix {inherit lib;};
+  method46FloorConfiguration = method46Floor.configure cfg.method46TpmFloor;
   minimumIdentityRange = 65536;
   operatorRecoveryConfigured =
     cfg.operatorRecoveryControllerPublicKey
@@ -85,6 +87,8 @@ in {
 
     credentials = brokerSession.mkOptions brokerSessionEndpoints;
 
+    method46TpmFloor = method46Floor.options;
+
     kernelExportStageSignerCredential = lib.mkOption {
       type = lib.types.nullOr lib.serviceTypes.credentialName;
       default = null;
@@ -129,6 +133,8 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    environment.etc."aos/method46-tpm-floor/storage-mode".text = method46FloorConfiguration.modeText;
+
     assertions =
       [
         {
@@ -188,7 +194,8 @@ in {
           message = "aos.sandbox.storageBroker identity pool must fit within u32";
         }
       ]
-      ++ brokerSessionConfiguration.assertions;
+      ++ brokerSessionConfiguration.assertions
+      ++ method46FloorConfiguration.assertions;
 
     # The controller receives traverse-only access to the socket directory. It
     # cannot unlink or replace the root-owned endpoint path.
@@ -399,6 +406,7 @@ in {
         '';
         LoadCredential =
           brokerSessionConfiguration.loadCredentials
+          ++ method46FloorConfiguration.loadCredentials
           ++ lib.optionals operatorRecoveryConfigured [
             "operator-recovery-controller-public-key-v1:${cfg.operatorRecoveryControllerPublicKey}"
             "operator-recovery-storage-owner-key-v1:${cfg.operatorRecoveryStorageOwnerKey}"
@@ -409,6 +417,11 @@ in {
           "storage-execution-output-key-v1:${cfg.executionOutputKey}";
         Restart = "on-failure";
         RestartSec = "2s";
+        # Required mode waits for exact service population quiescence; descriptor
+        # numbers and an empty cgroup.procs list do not prove TPM close ordering.
+        ExitType = lib.mkIf cfg.method46TpmFloor.required "cgroup";
+        KillMode = lib.mkIf cfg.method46TpmFloor.required "control-group";
+        TimeoutStopSec = lib.mkIf cfg.method46TpmFloor.required "infinity";
         StateDirectory = "aos/sandbox-storage";
         StateDirectoryMode = "0700";
         RuntimeDirectory = "aos/sandbox-pins/workspaces";
@@ -424,13 +437,14 @@ in {
         # fixed one-shot workers. It receives no ZFS or mount capability.
         CapabilityBoundingSet = "";
         DevicePolicy = "closed";
+        DeviceAllow = lib.optional cfg.method46TpmFloor.required "/dev/tpmrm0 rw";
         LimitNOFILE = 256;
         LimitCORE = 0;
         LockPersonality = true;
         MemoryMax = "512M";
         MemoryDenyWriteExecute = true;
         NoNewPrivileges = true;
-        PrivateDevices = true;
+        PrivateDevices = !cfg.method46TpmFloor.required;
         PrivateNetwork = true;
         PrivateTmp = true;
         # Workspace pin proofs bind mount identities to the kernel boot ID at

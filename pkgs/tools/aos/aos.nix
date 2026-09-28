@@ -12,6 +12,7 @@
   perl,
   openssl,
   aos-landlock,
+  aos-method46-tpm-helper,
   aos-fuse-transport,
   aos-service-root,
   aos-selinux-run,
@@ -118,6 +119,7 @@
     );
   linuxRuntimeDeps = [
     aos-landlock
+    aos-method46-tpm-helper
     aos-service-root
     aos-selinux-run
     aos-verity-root-guard
@@ -204,17 +206,23 @@
     nativeInputs = map toString (
       [openssl sqlite buildProtobuf buildCmake libssh2]
       ++ lib.optionals (!isDarwinCross) [aos-fuse-transport]
+      ++ lib.optionals stdenv.hostPlatform.isLinux [aos-method46-tpm-helper]
     );
   };
-  cargoEnv = {
-    OPENSSL_DIR = "${openssl}";
-    OPENSSL_LIB_DIR = "${openssl}/lib";
-    OPENSSL_INCLUDE_DIR = "${openssl}/include";
-    OPENSSL_NO_VENDOR = "1";
-    OPENSSL_STATIC = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    PROTOC = "${buildProtobuf}/bin/protoc";
-  };
+  cargoEnv =
+    {
+      OPENSSL_DIR = "${openssl}";
+      OPENSSL_LIB_DIR = "${openssl}/lib";
+      OPENSSL_INCLUDE_DIR = "${openssl}/include";
+      OPENSSL_NO_VENDOR = "1";
+      OPENSSL_STATIC = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      PROTOC = "${buildProtobuf}/bin/protoc";
+    }
+    // lib.optionalAttrs stdenv.hostPlatform.isLinux {
+      AOS_METHOD46_TPM_HELPER = "${aos-method46-tpm-helper}/libexec/aos-method46-tpm-helper";
+      AOS_METHOD46_TPM_PID1 = "${systemd}/lib/systemd/systemd";
+    };
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-native-release-and-test-artifacts";
     inherit version cargoDeps cargoArtifactContract;

@@ -307,6 +307,7 @@
           pkgs.perl
           pkgs.pkg-config
           pkgs.aos-fuse-transport
+          pkgs.aos-method46-tpm-helper
           pkgs.openssl
           pkgs.sqlite
           pkgs.protobuf
@@ -354,6 +355,8 @@
               export RUST_SRC_PATH="${pkgs.rust.dev}/lib/rustlib/src/rust/library"
               export OPENSSL_DIR="${pkgs.openssl}"
               export OPENSSL_NO_VENDOR=1
+              export AOS_METHOD46_TPM_HELPER="${pkgs.aos-method46-tpm-helper}/libexec/aos-method46-tpm-helper"
+              export AOS_METHOD46_TPM_PID1="${pkgs.systemd}/lib/systemd/systemd"
               export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
               export PKG_CONFIG_PATH="${pkgs.aos-fuse-transport}/lib/pkgconfig:${pkgs.sqlite}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
               # OPENSSL_DIR above only lets `openssl-sys` *link* against the AOS
