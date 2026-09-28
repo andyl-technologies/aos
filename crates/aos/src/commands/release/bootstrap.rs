@@ -132,8 +132,12 @@ pub(super) async fn run(args: &ReleaseBootstrapArgs, printer: &Printer) -> Resul
         bail!("first Hub publication does not match the approved empty base");
     }
     hub_transition::verify_deployment(&public_client, hub_url, deployment_id).await?;
-    hub_transition::read_back_publication(&public_client, hub_url, &plan.registry, &publication)
-        .await?;
+    // Staging uploads are available for operator testing as soon as the Hub
+    // commits their verified objects. Public readback belongs to qualification.
+    if !plan.staging_only {
+        hub_transition::read_back_publication(&public_client, hub_url, &plan.registry, &publication)
+            .await?;
+    }
     persist(args, &envelopes, &publication)?;
 
     if printer.json_if_active(&serde_json::json!({

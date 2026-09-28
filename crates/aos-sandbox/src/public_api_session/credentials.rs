@@ -590,14 +590,19 @@ mod tests {
         assert!(read(SOURCE_GENESIS_PACKET_NAMES[0]).unwrap().is_some());
         assert!(read(SOURCE_GENESIS_PACKET_NAMES[1]).unwrap().is_none());
 
+        // Replace each read-only case only after its final private mode is set.
+        let replace_authorization = |bytes: &[u8]| {
+            let replacement = directory.path().join("authorization-replacement");
+            std::fs::write(&replacement, bytes).unwrap();
+            std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o400)).unwrap();
+            std::fs::rename(&replacement, &authorization).unwrap();
+        };
+
         for width in [223, 225, 272] {
-            std::fs::write(&authorization, vec![2; width]).unwrap();
-            std::fs::set_permissions(&authorization, std::fs::Permissions::from_mode(0o400))
-                .unwrap();
+            replace_authorization(&vec![2; width]);
             assert!(read(SOURCE_GENESIS_PACKET_NAMES[1]).is_err());
         }
-        std::fs::write(&authorization, [2; 224]).unwrap();
-        std::fs::set_permissions(&authorization, std::fs::Permissions::from_mode(0o400)).unwrap();
+        replace_authorization(&[2; 224]);
         assert_eq!(
             &**read(SOURCE_GENESIS_PACKET_NAMES[0]).unwrap().unwrap().0,
             &[1; 224]

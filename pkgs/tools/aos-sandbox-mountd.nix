@@ -60,6 +60,7 @@ in
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --bin aos-sandbox-mountd"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-mount --bin aos-sandbox-mount-helper"
     ];
+    checkType = "debug";
     cargoTestFlags = "-p aos-sandbox-mount";
     cargoNextest = true;
     doCheck = true;
