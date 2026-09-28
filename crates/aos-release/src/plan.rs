@@ -220,8 +220,23 @@ pub struct PackagePlan {
     pub name: String,
     /// Nix-derived distribution metadata, absent only for a blocked package.
     pub publication: Option<PackagePublicationMetadata>,
+    /// Exact versions for targets whose source port differs from the default.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub platform_versions: BTreeMap<Platform, String>,
     /// One explicit decision for each of the four platforms.
     pub platforms: Vec<PlatformCell<PlannedArtifactSet>>,
+}
+
+impl PackagePlan {
+    /// Returns the published source version for the selected target.
+    #[must_use]
+    pub fn version_for(&self, platform: Platform) -> Option<&str> {
+        self.publication.as_ref().map(|publication| {
+            self.platform_versions
+                .get(&platform)
+                .map_or(publication.version.as_str(), String::as_str)
+        })
+    }
 }
 
 /// Complete Linux target decisions for one public system variant.
@@ -564,6 +579,22 @@ impl ReleasePlanV1 {
             require_identifier(&package.name, "package name")?;
             if let Some(publication) = &package.publication {
                 publication.validate()?;
+            }
+            for (platform, version) in &package.platform_versions {
+                aos_registry_surface::package_version::validate_package_version(version)
+                    .context("validating target package publication version")?;
+                let publication = package
+                    .publication
+                    .as_ref()
+                    .context("target version lacks package publication metadata")?;
+                if version == &publication.version
+                    || !package.platforms.iter().any(|cell| {
+                        cell.platform == *platform
+                            && matches!(cell.decision, MatrixCell::Artifact { .. })
+                    })
+                {
+                    bail!("target version must override a publishable package cell");
+                }
             }
             if package.publication.is_none()
                 && package
