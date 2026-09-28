@@ -104,11 +104,17 @@ in
           require_result_line \
             ${campaignStoreEquivalence}/result \
             packed_worked_network_imported_campaign_retained=true
+          require_result_line \
+            ${campaignStoreEquivalence}/result \
+            composed_s3_packed_pause_outage_repack_archive_gc=true
+          composed_evidence=${campaignStoreEquivalence}/evidence/live-s3-composed.log
           s3_evidence=${campaignStoreEquivalence}/evidence/live-s3-product.log
           packed_evidence=${campaignStoreEquivalence}/evidence/packed-worked-network.log
           test -f "$s3_evidence"
+          test -f "$composed_evidence"
           test -f "$packed_evidence"
           s3_sha256=$(sha256sum "$s3_evidence" | cut -d ' ' -f 1)
+          composed_sha256=$(sha256sum "$composed_evidence" | cut -d ' ' -f 1)
           packed_sha256=$(sha256sum "$packed_evidence" | cut -d ' ' -f 1)
           require_result_line \
             ${campaignStoreEquivalence}/result \
@@ -116,6 +122,9 @@ in
           require_result_line \
             ${campaignStoreEquivalence}/result \
             "packed_worked_network_evidence_sha256=$packed_sha256"
+          require_result_line \
+            ${campaignStoreEquivalence}/result \
+            "composed_s3_packed_evidence_sha256=$composed_sha256"
 
           require_result_line ${campaignStoreComposition}/result PASS
           require_result_line \
@@ -289,6 +298,7 @@ in
             "$out/evidence/campaign-store-equivalence.result"
           cp ${campaignStoreEquivalence}/evidence/live-s3-product.log \
             "$out/evidence/live-s3-product.log"
+          cp "$composed_evidence" "$out/evidence/live-s3-composed.log"
           cp ${campaignStoreEquivalence}/evidence/packed-worked-network.log \
             "$out/evidence/packed-worked-network.log"
           cp ${campaignStoreComposition}/result \
@@ -313,7 +323,7 @@ in
               evidence_sha256=$(sha256sum "$evidence_file" | cut -d ' ' -f 1)
               printf '%s  %s\n' "$evidence_sha256" "$evidence_name"
             done > "$out/evidence.sha256"
-          test "$(wc -l < "$out/evidence.sha256" | tr -d ' ')" -eq 18
+          test "$(wc -l < "$out/evidence.sha256" | tr -d ' ')" -eq 19
           evidence_digest=$(sha256sum "$out/evidence.sha256" | cut -d ' ' -f 1)
 
           cat > "$out/result" <<RESULT
@@ -335,6 +345,7 @@ in
           exact_maintenance_transfer_and_import=true
           incompatible_provenance_rejected_before_guest=true
           s3_live_worked_network_outage_credential_recovery=true
+          composed_s3_packed_pause_outage_repack_archive_gc=true
           packed_worked_network_archive_repack_outage_corruption_gc=true
           packed_worked_network_imported_campaign_retained=true
           tier_promotion_cache_eviction=true
