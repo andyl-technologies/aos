@@ -4,6 +4,7 @@
   fetchurl,
   buildPackages,
   bazelMavenBootstrap,
+  bazelCaffeine,
   includeBazel9 ? false,
 }: let
   buildJdk = buildPackages.openjdk-17;
@@ -63,20 +64,11 @@
         version = "0.27.0";
         hash = "sha256-MRVRqynPUeWoq+5qAZ6I3uR9Hqcd65/NNknbnFGyN7w=";
       }
-    ]
-    ++ (
-      if includeBazel9
-      then [
-        {
-          group = "com/github/ben-manes/caffeine";
-          name = "caffeine";
-          version = "3.1.8";
-          hash = "sha256-fII39djyNlTnCRBWMWo3MGNreg8ub85FDivVIgkNa38=";
-          javaRelease = 17;
-        }
-      ]
-      else []
-    );
+    ];
+  caffeineTargets =
+    if includeBazel9
+    then ["com/github/ben-manes/caffeine/caffeine/3.1.8/caffeine-3.1.8.jar"]
+    else [];
   sources = builtins.map (archive:
     archive
     // {
@@ -118,15 +110,21 @@ in
     version = "1";
     src = (builtins.head sources).src;
 
-    passthru.sourceTargets = builtins.map (source: source.target) sources;
+    passthru.sourceTargets = (builtins.map (source: source.target) sources) ++ caffeineTargets;
 
-    buildDeps = [
-      buildJdk
-      bazelMavenBootstrap
-      buildPackages.findutils
-      buildPackages.python3
-      buildPackages.unzip
-    ];
+    buildDeps =
+      [
+        buildJdk
+        bazelMavenBootstrap
+        buildPackages.findutils
+        buildPackages.python3
+        buildPackages.unzip
+      ]
+      ++ (
+        if includeBazel9
+        then [bazelCaffeine]
+        else []
+      );
     runtimeDeps = [];
 
     phases = [
@@ -193,7 +191,12 @@ in
       }
       {
         name = "install";
-        script = installSources;
+        script =
+          installSources
+          + builtins.concatStringsSep "\n" (map (target: ''
+              install -Dm644 ${bazelCaffeine}/maven/${target} "$out/maven/${target}"
+            '')
+            caffeineTargets);
       }
     ];
   }
