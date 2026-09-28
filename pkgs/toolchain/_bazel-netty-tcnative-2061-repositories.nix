@@ -7,8 +7,9 @@
   stdenv,
   apr,
   bazelNettyTcnativeClasses2061,
+  version ? "2.0.61.Final",
 }: let
-  version = "2.0.61.Final";
+  repositoryVersion = builtins.replaceStrings ["."] ["_"] version;
   linuxArmPackages = import ../../default.nix {crossSystem = "aarch64-linux";};
   darwinX64Packages = import ../../default.nix {crossSystem = "x86_64-darwin";};
   darwinArmPackages = import ../../default.nix {crossSystem = "aarch64-darwin";};
@@ -18,6 +19,10 @@
       mkDerivation = targetMkDerivation;
       stdenv = targetStdenv;
       inherit fetchgit buildPackages;
+      version =
+        if version == "2.0.70.Final"
+        then "2024-10-26"
+        else "2022-12-08";
     };
 
   nativeFor = targetMkDerivation: targetStdenv: targetApr:
@@ -25,7 +30,7 @@
       mkDerivation = targetMkDerivation;
       stdenv = targetStdenv;
       apr = targetApr;
-      inherit fetchgit fetchurl buildPackages bazelNettyTcnativeClasses2061;
+      inherit fetchgit fetchurl buildPackages bazelNettyTcnativeClasses2061 version;
       bazelNettyBoringssl2061 = boringsslFor targetMkDerivation targetStdenv;
     };
 
@@ -62,13 +67,13 @@
 in {
   inherit nativeLinuxX64 nativeLinuxArm nativeDarwinX64 nativeDarwinArm;
   repositories = {
-    "rules_jvm_external++maven+io_netty_netty_tcnative_boringssl_static_jar_linux_x86_64_2_0_61_Final" =
+    "rules_jvm_external++maven+io_netty_netty_tcnative_boringssl_static_jar_linux_x86_64_${repositoryVersion}" =
       mavenRepository "linux-x86_64" nativeLinuxX64;
-    "rules_jvm_external++maven+io_netty_netty_tcnative_boringssl_static_jar_linux_aarch_64_2_0_61_Final" =
+    "rules_jvm_external++maven+io_netty_netty_tcnative_boringssl_static_jar_linux_aarch_64_${repositoryVersion}" =
       mavenRepository "linux-aarch_64" nativeLinuxArm;
-    "rules_jvm_external++maven+io_netty_netty_tcnative_boringssl_static_jar_osx_x86_64_2_0_61_Final" =
+    "rules_jvm_external++maven+io_netty_netty_tcnative_boringssl_static_jar_osx_x86_64_${repositoryVersion}" =
       mavenRepository "osx-x86_64" nativeDarwinX64;
-    "rules_jvm_external++maven+io_netty_netty_tcnative_boringssl_static_jar_osx_aarch_64_2_0_61_Final" =
+    "rules_jvm_external++maven+io_netty_netty_tcnative_boringssl_static_jar_osx_aarch_64_${repositoryVersion}" =
       mavenRepository "osx-aarch_64" nativeDarwinArm;
   };
 }
