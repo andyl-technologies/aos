@@ -15,7 +15,7 @@ pub enum ReleaseCommand {
     Contract(ReleaseContractArgs),
     /// Derive and freeze a release plan from Git and the Nix inventory
     Plan(ReleasePlanArgs),
-    /// Realize and repeat-check every planned Nix output
+    /// Realize every planned Nix output and record its build identity
     Build(ReleaseBuildArgs),
     /// Assemble finalized release inputs into a closed unsigned payload
     Assemble(ReleaseAssembleArgs),

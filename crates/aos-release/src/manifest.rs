@@ -162,6 +162,7 @@ impl ReleaseManifestV1 {
         let required_gates: BTreeSet<_> = plan
             .gates
             .iter()
+            .filter(|_| !plan.staging_only)
             .filter(|gate| {
                 if let Some(contract) = &plan.qualification {
                     contract.requirements.iter().any(|requirement| {
@@ -199,7 +200,13 @@ impl ReleaseManifestV1 {
         if !required_gates.is_subset(&passed_gates) {
             bail!("manifest lacks passing evidence for every selected required gate");
         }
-        if plan.qualification.is_some() {
+        if plan.staging_only && !self.evidence.is_empty() {
+            bail!("staging-only publication cannot claim qualification evidence");
+        }
+        if plan.staging_only {
+            require_staging_container_inventory(plan, self)?;
+        }
+        if plan.qualification.is_some() && !plan.staging_only {
             let admitted_at = self
                 .evidence
                 .iter()
@@ -335,6 +342,33 @@ pub struct ManifestEnvelopeV1 {
     pub payload_digest: Sha256Digest,
     /// Threshold signatures over role-bound requests for the payload.
     pub signatures: Vec<ManifestSignature>,
+}
+
+fn require_staging_container_inventory(
+    plan: &ReleasePlanV1,
+    manifest: &ReleaseManifestV1,
+) -> Result<()> {
+    let Some(contract) = &plan.qualification else {
+        bail!("staging-only publication requires the current inventory contract");
+    };
+    for target in contract.targets.iter().filter(|target| {
+        target.required && target.kind == crate::qualification::TargetKind::Container
+    }) {
+        let has_index = manifest
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.kind == ArtifactKind::OciIndex);
+        let has_platform = manifest.artifacts.iter().any(|artifact| {
+            artifact.kind == ArtifactKind::OciManifest && artifact.platform == Some(target.platform)
+        });
+        if !has_index || !has_platform {
+            bail!(
+                "staging publication lacks required OCI index/platform manifest for {}",
+                target.id
+            );
+        }
+    }
+    Ok(())
 }
 
 fn validate_artifacts(artifacts: &[ArtifactRecord]) -> Result<BTreeMap<&str, &ArtifactRecord>> {
