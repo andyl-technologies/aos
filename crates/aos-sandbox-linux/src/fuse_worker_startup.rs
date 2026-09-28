@@ -155,6 +155,15 @@ impl FixedFuseWorkerSessionV1 {
         self.cancellation.as_fd()
     }
 
+    /// Borrows the originally captured FUSE role for trusted transport setup.
+    ///
+    /// This borrow does not establish a fresh connection, completed INIT,
+    /// idmapped mount, or content authority. The fixed entry's sole transport
+    /// owner must retain this session and prevent any second request reader.
+    pub fn connection(&self) -> BorrowedFd<'_> {
+        self.connection.as_fd()
+    }
+
     /// Retains the prepared connection until actual owner cancellation or loss.
     ///
     /// No FUSE or content record is consumed while the genuine Root/Mount
