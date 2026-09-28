@@ -87,6 +87,17 @@ its own two-endpoint scope and cannot supply Source ancestry authority. Later
 ancestry mutations require a distinct exact administrative successor and
 semantic predecessor CAS; initial genesis receipts cannot authorize them.
 
+The configured normal Controller now enters the genuine generation-one
+coordinator through its sole journal and retained production Source owner. It
+joins its independently selected profile to the original Root endpoint before
+administrative admission, uses the existing protected Controller-purpose
+signer, and retains all writers through Controller floor ACK, Source ACK,
+Controller Complete and original Root Completed/Finish. Ambiguous phase loss
+requires exact retained-attempt replay; no newly decoded packet, scalar floor
+or Root self-report creates a live proof. Source generation two, installed
+service/fault qualification and the complete read barrier remain separate
+closed obligations; this path does not open Create.
+
 ## Execution admission and observation
 
 `CreateExecution` admission commits the accepted command, holder-proven public

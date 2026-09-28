@@ -4,8 +4,9 @@
 //! This producer opens Root last, verifies actual role-pinned observations,
 //! and retains Root through floor, Controller/Source ACKs and a final stream
 //! acknowledgement. It never reads Controller's private DAC-owned journal.
-//! Replies are data: only the separately qualified original-stream client may
-//! mint a non-detachable Root proof. This module does not enable that factory.
+//! Replies are data: the shared Controller coordinator must independently join
+//! its selected immutable profile and original per-fragment Root peer before
+//! constructing a non-detachable proof. Installed qualification stays separate.
 
 use std::io::{self, Read as _, Write as _};
 use std::net::Shutdown;
@@ -20,7 +21,7 @@ use aos_sandbox::policy_compiler::{
     decode_root_source_genesis_frame_v1, encode_root_source_genesis_frame_v1,
 };
 
-use crate::source_signer_exchange::request_root_source_tree_genesis_readback_v1;
+use crate::source_signer_exchange::request_root_source_tree_genesis_readback_v2;
 
 // The client's original 60-second deadline starts before connection. Root's
 // phase deadline begins later and is 65 seconds; it never expires before the
@@ -171,7 +172,8 @@ fn serve(
         .ok_or(SourceGenesisErrorV1::Conflict)?;
     flight.recheck()?;
     // Borrow the actual settled Root row through the original final exchange.
-    // This stays local: it is not the still-closed client floor/read factory.
+    // This stays local; the client independently verifies original-stream
+    // custody. Neither this record nor its signature grants a later read.
     let current = flight.owner.current_anchored_floor(&source)?;
     if current.floor() != &floor {
         return Err(SourceGenesisErrorV1::Conflict);
@@ -295,13 +297,18 @@ impl RootHeldStreamFlight<'_, '_> {
         };
         let observed = probe
             .map(|(project, challenge)| {
-                request_root_source_tree_genesis_readback_v1(
+                let context = project
+                    .map(|_| self.owner.source_genesis_intent_context_v1())
+                    .transpose()?;
+                request_root_source_tree_genesis_readback_v2(
                     challenge,
                     project,
+                    context.as_ref(),
                     self.owner.source_readback_pin(),
                     self.source_signer_uid,
                     self.controller_gid,
                 )
+                .map_err(SourceGenesisErrorV1::from)
             })
             .transpose()?;
         self.recheck()?;

@@ -2986,9 +2986,29 @@ where
         input.inspect_current(self.reconciler.journal_mut())
     }
 
+    /// Reports only whether the exact provisioned attempt has retained records.
+    ///
+    /// This read-only startup selector permits historical recovery before an
+    /// unrelated publisher bootstrap credential is reinstalled. It grants no
+    /// admission, readiness, Root floor or read authority; the coordinator must
+    /// still join the actual original Root peer and retained owner records.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed credentials, unsafe writer custody, malformed records
+    /// or an original attempt different from the provisioned packet pair.
+    #[cfg(target_os = "linux")]
+    pub fn has_retained_provisioned_source_genesis_v1(
+        &mut self,
+        input: &crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+    ) -> Result<bool, crate::hierarchy::controller_genesis_input::ControllerSourceGenesisInputErrorV1>
+    {
+        input.has_retained_attempt(self.reconciler.journal_mut())
+    }
+
     /// Borrows genuine provisioned genesis admission under the sole writer.
     ///
-    /// Only the forthcoming exact coordinator may use this trusted owner seam,
+    /// Only an exact original-flight coordinator may use this trusted owner seam,
     /// after it can consume the original pair through the genuine Root flight.
     /// Startup deliberately does not call it: admission fences every unrelated
     /// mutation until Source ACK completion and cannot be accepted then dropped
@@ -3007,6 +3027,32 @@ where
         crate::hierarchy::controller_genesis_input::ControllerSourceGenesisInputErrorV1,
     > {
         input.hold(self.reconciler.journal_mut())
+    }
+
+    /// Completes a fixed provisioned genesis pair through the actual executor.
+    ///
+    /// The production owner joins its existing Source writer and protected
+    /// signer to the independently selected Root profile. Completion includes
+    /// Source ACK, Controller Complete and final Root Finish; a Root ACK alone
+    /// cannot return success. This trusted startup path adds no public API and
+    /// returns historical completion data, never read or ancestry authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent genuine owner support, changed protected inputs, stale
+    /// current admission, conflicting original records or a lost/late phase.
+    /// Durable partial progress remains fenced for exact restart recovery.
+    #[cfg(target_os = "linux")]
+    pub fn coordinate_provisioned_source_genesis_v1(
+        &mut self,
+        input: &crate::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1,
+        profile: &crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<
+        ObjectDigest,
+        crate::hierarchy::controller_genesis_input::ControllerSourceGenesisInputErrorV1,
+    > {
+        self.reconciler
+            .coordinate_provisioned_source_genesis_v1(input, profile)
     }
 
     /// Issues or replays a first public capability from signed deployment entitlement.

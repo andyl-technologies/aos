@@ -9,6 +9,8 @@
 //! ```text
 //! AOSSSR01 | nonce[16] | root-cut[32] | project[16]
 //! AOSSSP01 | AOSSRB01 packet[288]
+//! AOSSSR08 | fresh-nonce[16] | intent[32] | project[16] | AOSSGX01[664]
+//! AOSSSP08 | unchanged AOSSGO01 observation[928]
 //! ```
 
 use std::error::Error;
@@ -28,13 +30,14 @@ use aos_sandbox::policy_compiler::{
     PinnedSourceHoldReadbackSignerV1, SOURCE_HOLD_READBACK_BYTES_V1, SOURCE_HOLD_READBACK_BYTES_V2,
     SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1,
     SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1,
-    SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1, SOURCE_TREE_GENESIS_READBACK_BYTES_V1,
-    SourceHoldReadbackChallengeV1, SourceTreeGenesisChallengeV1,
+    SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1, SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V1,
+    SOURCE_TREE_GENESIS_READBACK_BYTES_V1, SourceHoldReadbackChallengeV1,
+    SourceTreeGenesisChallengeV1, SourceTreeGenesisIntentContextV1,
     StagedClosedPolicySignerChallengeV2, sign_fixed_source_project_admission_readback_v1,
     sign_fixed_source_project_completed_terminal_readback_v1,
     sign_fixed_source_project_reservation_readback_v1,
     sign_fixed_source_project_retirement_readback_v1, sign_fixed_source_signer_readback_v1,
-    sign_fixed_source_signer_readback_v2, sign_fixed_source_tree_genesis_readback_v1,
+    sign_fixed_source_signer_readback_v2, sign_fixed_source_tree_genesis_readback_v2,
     verify_current_source_hold_readback_v1, verify_source_hold_readback_with_names_v2,
     verify_source_project_admission_readback_v1,
     verify_source_project_completed_terminal_readback_v1,
@@ -62,11 +65,12 @@ const REQUEST_RESERVATION_MAGIC: &[u8; 8] = b"AOSSSR05";
 const REPLY_RESERVATION_MAGIC: &[u8; 8] = b"AOSSSP05";
 const REQUEST_COMPLETED_MAGIC: &[u8; 8] = b"AOSSSR06";
 const REPLY_COMPLETED_MAGIC: &[u8; 8] = b"AOSSSP06";
-const REQUEST_GENESIS_MAGIC: &[u8; 8] = b"AOSSSR07";
-const REPLY_GENESIS_MAGIC: &[u8; 8] = b"AOSSSP07";
+const REQUEST_GENESIS_MAGIC: &[u8; 8] = b"AOSSSR08";
+const REPLY_GENESIS_MAGIC: &[u8; 8] = b"AOSSSP08";
 const REPLY_GENESIS_BYTES: usize = 8 + SOURCE_TREE_GENESIS_READBACK_BYTES_V1;
 const REPLY_COMPLETED_BYTES: usize = 8 + SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1;
 const REQUEST_BYTES: usize = 72;
+const REQUEST_GENESIS_BYTES: usize = REQUEST_BYTES + SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V1;
 const REPLY_BYTES: usize = 8 + SOURCE_HOLD_READBACK_BYTES_V1;
 const REPLY_NAMES_BYTES: usize = 8 + SOURCE_HOLD_READBACK_BYTES_V2;
 const REPLY_PROJECT_BYTES: usize = 8 + SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1;
@@ -79,14 +83,17 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
 /// A missing project/intent requests global Empty, not per-project NotFound.
 /// The caller must independently retain genuine Controller/Source and Root
 /// flight custody; these authenticated observation bytes cannot reconstruct it.
+/// Populated observations require untrusted original-intent comparison data;
+/// global Empty requires zero context padding. Legacy AOSSSR07 is unsupported.
 ///
 /// # Errors
 ///
 /// Rejects mixed Empty/populated scope, unsafe signer custody, changed Source
 /// role/key/correlation, malformed reply or transport loss.
-pub fn request_root_source_tree_genesis_readback_v1(
+pub fn request_root_source_tree_genesis_readback_v2(
     challenge: SourceTreeGenesisChallengeV1,
     project: Option<ProjectId>,
+    intent_context: Option<&SourceTreeGenesisIntentContextV1>,
     signer: &PinnedSourceHoldReadbackSignerV1,
     signer_uid: u32,
     socket_gid: u32,
@@ -94,7 +101,7 @@ pub fn request_root_source_tree_genesis_readback_v1(
     if signer_uid == 0 || socket_gid == 0 {
         return Err(invalid_data("invalid Source genesis signer identity"));
     }
-    let request = encode_genesis_request(challenge, project)?;
+    let request = encode_genesis_request(challenge, project, intent_context)?;
     let mut stream = connect_source_signer(signer_uid, socket_gid)?;
     stream.write_all(&request)?;
     stream.shutdown(std::net::Shutdown::Write)?;
@@ -113,13 +120,16 @@ pub fn request_root_source_tree_genesis_readback_v1(
 fn encode_genesis_request(
     challenge: SourceTreeGenesisChallengeV1,
     project: Option<ProjectId>,
-) -> io::Result<[u8; REQUEST_BYTES]> {
+    intent_context: Option<&SourceTreeGenesisIntentContextV1>,
+) -> io::Result<[u8; REQUEST_GENESIS_BYTES]> {
     if project.is_some() != challenge.intent().is_some()
         || project.is_some_and(|project| project.as_bytes() == &[0; 16])
+        || project.is_some() != intent_context.is_some()
+        || intent_context.is_some_and(|context| Some(context.project()) != project)
     {
         return Err(invalid_data("mixed Source genesis scope"));
     }
-    let mut request = [0; REQUEST_BYTES];
+    let mut request = [0; REQUEST_GENESIS_BYTES];
     request[..8].copy_from_slice(REQUEST_GENESIS_MAGIC);
     request[8..24].copy_from_slice(&challenge.nonce());
     if let Some(intent) = challenge.intent() {
@@ -128,12 +138,19 @@ fn encode_genesis_request(
     if let Some(project) = project {
         request[56..72].copy_from_slice(project.as_bytes());
     }
+    if let Some(context) = intent_context {
+        request[REQUEST_BYTES..].copy_from_slice(&context.encode());
+    }
     Ok(request)
 }
 
 fn decode_genesis_request(
-    request: &[u8; REQUEST_BYTES],
-) -> io::Result<(SourceTreeGenesisChallengeV1, Option<ProjectId>)> {
+    request: &[u8; REQUEST_GENESIS_BYTES],
+) -> io::Result<(
+    SourceTreeGenesisChallengeV1,
+    Option<ProjectId>,
+    Option<SourceTreeGenesisIntentContextV1>,
+)> {
     if request[..8] != *REQUEST_GENESIS_MAGIC {
         return Err(invalid_data("foreign Source genesis request"));
     }
@@ -149,10 +166,14 @@ fn decode_genesis_request(
     let intent = (intent_bytes != [0; 32]).then_some(ObjectDigest::from_bytes(intent_bytes));
     let project = (project_bytes != [0; 16]).then_some(ProjectId::from_bytes(project_bytes));
     let challenge = SourceTreeGenesisChallengeV1::new(nonce, intent).map_err(io::Error::other)?;
-    if encode_genesis_request(challenge, project)? != *request {
+    let context = project
+        .map(|_| SourceTreeGenesisIntentContextV1::decode(&request[REQUEST_BYTES..]))
+        .transpose()
+        .map_err(io::Error::other)?;
+    if encode_genesis_request(challenge, project, context.as_ref())? != *request {
         return Err(invalid_data("noncanonical Source genesis request"));
     }
-    Ok((challenge, project))
+    Ok((challenge, project, context))
 }
 
 /// Requests only the exact completed Source terminal from its existing reader.
@@ -597,17 +618,18 @@ fn serve_request(
     stream.set_write_timeout(Some(FLIGHT_TIMEOUT))?;
     let mut request = [0; REQUEST_BYTES];
     stream.read_exact(&mut request)?;
-    let mut trailing = [0];
-    if stream.read(&mut trailing)? != 0 {
-        return Err(invalid_data("trailing Source signer request bytes").into());
-    }
     if request[..8] == *REQUEST_GENESIS_MAGIC {
-        let (challenge, project) = decode_genesis_request(&request)?;
+        let mut expanded = [0; REQUEST_GENESIS_BYTES];
+        expanded[..REQUEST_BYTES].copy_from_slice(&request);
+        stream.read_exact(&mut expanded[REQUEST_BYTES..])?;
+        require_request_eof(stream)?;
+        let (challenge, project, context) = decode_genesis_request(&expanded)?;
         let signing_key = credentials.signing_key()?;
-        let packet = sign_fixed_source_tree_genesis_readback_v1(
+        let packet = sign_fixed_source_tree_genesis_readback_v2(
             controller_uid,
             project,
             challenge,
+            context.as_ref(),
             credentials.generation(),
             &signing_key,
         )?;
@@ -615,6 +637,7 @@ fn serve_request(
         stream.shutdown(std::net::Shutdown::Write)?;
         return Ok(());
     }
+    require_request_eof(stream)?;
     let (challenge, project, mode) = decode_request_mode(&request)?;
     let signing_key = credentials.signing_key()?;
     if mode == SourceSignerRequestModeV1::ProjectCompletedTerminal {
@@ -673,6 +696,14 @@ fn serve_request(
         write_framed_reply::<REPLY_BYTES>(stream, REPLY_MAGIC, &packet)?;
     }
     stream.shutdown(std::net::Shutdown::Write)?;
+    Ok(())
+}
+
+fn require_request_eof(stream: &mut UnixStream) -> io::Result<()> {
+    let mut trailing = [0];
+    if stream.read(&mut trailing)? != 0 {
+        return Err(invalid_data("trailing Source signer request bytes"));
+    }
     Ok(())
 }
 
@@ -735,25 +766,76 @@ enum SourceSignerRequestModeV1 {
 mod tests {
     use super::*;
 
+    // Independent canonical DATA bytes for framing, not issuer or owner trust.
+    fn genesis_context(project: ProjectId) -> SourceTreeGenesisIntentContextV1 {
+        let mut context = [0; SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V1];
+        context[..8].copy_from_slice(b"AOSSGX01");
+        context[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        context[16..20].copy_from_slice(&1000_u32.to_be_bytes());
+        context[24..56].fill(9);
+        let acceptance = &mut context[56..];
+        acceptance[..8].copy_from_slice(b"AOSSGC01");
+        acceptance[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        acceptance[16..32].copy_from_slice(project.as_bytes());
+        acceptance[480..512].fill(4);
+        acceptance[512..544].fill(5);
+        acceptance[544..576].fill(6);
+        acceptance[576..608].fill(7);
+
+        for (offset, magic, version) in [(32, b"AOSCSE01", 1_u16), (256, b"AOSPSC02", 2_u16)] {
+            let packet = &mut acceptance[offset..offset + 224];
+            packet[..8].copy_from_slice(magic);
+            packet[8..10].copy_from_slice(&version.to_be_bytes());
+            packet[12..20].copy_from_slice(&1_u64.to_be_bytes());
+            packet[20..36].copy_from_slice(project.as_bytes());
+            packet[36..44].copy_from_slice(&2_u64.to_be_bytes());
+            packet[44..76].fill(4);
+            packet[76..108].fill(if version == 1 { 6 } else { 5 });
+            packet[108..124].fill(8);
+            packet[124..132].copy_from_slice(&1_u64.to_be_bytes());
+            for (limit, value) in packet[132..160]
+                .chunks_exact_mut(4)
+                .zip([1_u32, 2, 1, 1, 1, 1, 1])
+            {
+                limit.copy_from_slice(&value.to_be_bytes());
+            }
+        }
+        SourceTreeGenesisIntentContextV1::decode(&context).unwrap()
+    }
+
     #[test]
     fn genesis_requests_keep_global_empty_distinct_from_populated_and_legacy_modes() {
         let empty = SourceTreeGenesisChallengeV1::new([1; 16], None).unwrap();
-        let bytes = encode_genesis_request(empty, None).unwrap();
-        assert_eq!(decode_genesis_request(&bytes).unwrap(), (empty, None));
-        assert!(decode_request_mode(&bytes).is_err());
+        let bytes = encode_genesis_request(empty, None, None).unwrap();
+        assert_eq!(decode_genesis_request(&bytes).unwrap(), (empty, None, None));
+        assert!(decode_request_mode(bytes[..REQUEST_BYTES].try_into().unwrap()).is_err());
+        assert_eq!(bytes.len(), 736);
+        assert_eq!(&bytes[..8], b"AOSSSR08");
+        assert!(bytes[REQUEST_BYTES..].iter().all(|byte| *byte == 0));
 
         let project = ProjectId::from_bytes([2; 16]);
         let populated =
             SourceTreeGenesisChallengeV1::new([3; 16], Some(ObjectDigest::from_bytes([4; 32])))
                 .unwrap();
-        let bytes = encode_genesis_request(populated, Some(project)).unwrap();
+        let context = genesis_context(project);
+        let bytes = encode_genesis_request(populated, Some(project), Some(&context)).unwrap();
         assert_eq!(
             decode_genesis_request(&bytes).unwrap(),
-            (populated, Some(project))
+            (populated, Some(project), Some(context.clone()))
         );
-        assert!(encode_genesis_request(populated, None).is_err());
-        assert!(encode_genesis_request(empty, Some(project)).is_err());
-        for range in [8..24, 24..56, 56..72] {
+        assert!(encode_genesis_request(populated, None, Some(&context)).is_err());
+        assert!(encode_genesis_request(empty, Some(project), Some(&context)).is_err());
+        assert!(encode_genesis_request(populated, Some(project), None).is_err());
+        assert!(encode_genesis_request(empty, None, Some(&context)).is_err());
+        assert!(
+            encode_genesis_request(
+                populated,
+                Some(project),
+                Some(&genesis_context(ProjectId::from_bytes([5; 16])))
+            )
+            .is_err()
+        );
+        for range in [8..24, 24..56, 56..72, REQUEST_BYTES..REQUEST_GENESIS_BYTES] {
             let mut malformed = bytes;
             malformed[range].fill(0);
             assert!(decode_genesis_request(&malformed).is_err());
@@ -761,6 +843,13 @@ mod tests {
         let mut foreign = bytes;
         foreign[..8].copy_from_slice(REQUEST_NAMES_MAGIC);
         assert!(decode_genesis_request(&foreign).is_err());
+        foreign[..8].copy_from_slice(b"AOSSSR07");
+        assert!(decode_genesis_request(&foreign).is_err());
+        assert!(decode_request_mode(foreign[..REQUEST_BYTES].try_into().unwrap()).is_err());
+
+        let mut empty = encode_genesis_request(empty, None, None).unwrap();
+        empty[REQUEST_BYTES] = 1;
+        assert!(decode_genesis_request(&empty).is_err());
     }
 
     #[test]

@@ -23,6 +23,13 @@ const MAGIC: &[u8; 8] = b"AOSSGO01";
 const SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.source-tree-genesis.observation.signature.v1\0";
 const BODY_BYTES: usize = 864;
 
+#[cfg(target_os = "linux")]
+mod intent_context;
+#[cfg(target_os = "linux")]
+pub use intent_context::{
+    SOURCE_TREE_GENESIS_INTENT_CONTEXT_BYTES_V1, SourceTreeGenesisIntentContextV1,
+};
+
 /// Bounds a Source-only genesis observation including its dedicated signature.
 pub const SOURCE_TREE_GENESIS_READBACK_BYTES_V1: usize = BODY_BYTES + 64;
 
@@ -30,6 +37,7 @@ pub const SOURCE_TREE_GENESIS_READBACK_BYTES_V1: usize = BODY_BYTES + 64;
 ///
 /// An absent intent is valid only for the global Empty probe. Constructing a
 /// challenge authenticates no Root sender, intent or mutation authority.
+/// Its fresh transport nonce is not the immutable nonce in a durable intent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SourceTreeGenesisChallengeV1 {
     nonce: [u8; 16],
