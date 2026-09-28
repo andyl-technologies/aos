@@ -1661,7 +1661,7 @@
     }) {
       kind = "cargo-deps";
       hashMode = "recursive";
-      sourceInputs = [builtins.toString src];
+      sourceInputs = [(builtins.toString src)];
       builderParameters = {
         sourceRoot =
           if sourceRoot == null
@@ -1790,7 +1790,7 @@
     }) {
       kind = "cargo-vendor";
       hashMode = "recursive";
-      sourceInputs = [builtins.toString src];
+      sourceInputs = [(builtins.toString src)];
       outputDerivation = vendorStaging.drvPath;
       builderParameters = {
         sourceRoot =
@@ -1865,7 +1865,7 @@
     }) {
       kind = "go-modules";
       hashMode = "recursive";
-      sourceInputs = [builtins.toString src];
+      sourceInputs = [(builtins.toString src)];
       builderParameters = {
         sourceRoot =
           if sourceRoot == null
@@ -2020,7 +2020,7 @@
       kind = "npm-deps";
       hashMode = "recursive";
       sourceInputs =
-        [builtins.toString src]
+        [(builtins.toString src)]
         ++ builtins.map (tarball: builtins.toString tarball.path) localTarballs;
       builderParameters = {
         sourceRoot =
@@ -2320,7 +2320,7 @@
     }) {
       kind = "bazel-deps";
       hashMode = "recursive";
-      sourceInputs = [builtins.toString src];
+      sourceInputs = [(builtins.toString src)];
       builderParameters = {
         inherit bazelTarget bazelFlags bazelFetchFlags postPatch fetchPostPatch postFetch removeRepos populateBCR captureModuleLock system;
         environment = builtins.mapAttrs (_: value: builtins.toString value) env;
