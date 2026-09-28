@@ -1080,14 +1080,15 @@ mod tests {
             .expect("install deferred commit failure");
         drop(fault);
 
-        let first_bytes = b"first staged object";
-        let second_bytes = b"second staged object";
-        let first = ContentId::for_bytes(ObjectKind::Trace, 1, first_bytes);
-        let second = ContentId::for_bytes(ObjectKind::Trace, 1, second_bytes);
-        let objects = [
-            (first, BlobHandle::from_bytes(first_bytes)),
-            (second, BlobHandle::from_bytes(second_bytes)),
-        ];
+        let objects = (0..MAX_BATCH_OBJECTS)
+            .map(|index| {
+                let bytes = format!("staged object {index}").into_bytes();
+                (
+                    ContentId::for_bytes(ObjectKind::Trace, 1, &bytes),
+                    BlobHandle::from_bytes(bytes),
+                )
+            })
+            .collect::<Vec<_>>();
         assert!(backend.put_many_if_absent(&objects).is_err());
         assert!(
             backend
@@ -1095,14 +1096,14 @@ mod tests {
                 .expect("writer lock")
                 .is_autocommit()
         );
-        for id in [first, second] {
-            assert!(!backend.contains(id).expect("failed commit is invisible"));
+        for (id, _) in &objects {
+            assert!(!backend.contains(*id).expect("failed commit is invisible"));
         }
         drop(backend);
 
         let reopened = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("cold reopen");
-        for id in [first, second] {
-            assert!(!reopened.contains(id).expect("failed commit stayed absent"));
+        for (id, _) in &objects {
+            assert!(!reopened.contains(*id).expect("failed commit stayed absent"));
         }
     }
 

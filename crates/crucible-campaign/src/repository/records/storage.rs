@@ -289,8 +289,9 @@ impl CampaignRepository {
         envelopes: Vec<ObjectEnvelope>,
     ) -> Result<(), CampaignRepositoryError> {
         // The SQLite leaf accepts at most 64 objects or 4 MiB per transaction.
-        // Keep a smaller bound so this path also works for large branch records.
-        const MAX_OBJECTS: usize = 32;
+        // Keep the byte bound smaller for large branch records, while allowing
+        // one transaction for a complete fixed-choice planner publication.
+        const MAX_OBJECTS: usize = 64;
         const MAX_BYTES: usize = 1024 * 1024;
 
         let mut pending = Vec::new();

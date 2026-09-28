@@ -5,10 +5,18 @@ use crucible_cas::content_store::{BackendCapabilities, ByteRange, PutReceipt};
 
 const CAMPAIGN: &str = "issue-basis-vector";
 
+#[derive(Clone, Copy)]
+enum PublicationFault {
+    PartialWrite,
+    ReceiptMismatch,
+}
+
 struct BasisBackend {
     inner: Arc<MemoryBlobBackend>,
     reads: Mutex<BTreeMap<ContentId, usize>>,
     fault: Mutex<Option<ContentId>>,
+    publication_fault: Mutex<Option<PublicationFault>>,
+    failed_publication: Mutex<Vec<ContentId>>,
 }
 
 impl ImmutableBlobBackend for BasisBackend {
@@ -40,6 +48,41 @@ impl ImmutableBlobBackend for BasisBackend {
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
         self.inner.put_if_absent(id, source)
     }
+
+    fn put_many_if_absent(
+        &self,
+        objects: &[(ContentId, BlobHandle)],
+    ) -> Result<Vec<PutReceipt>, StoreError> {
+        // Exercise the enlarged publication beyond its former 32-object boundary.
+        let fault = if objects.len() > 32 {
+            self.publication_fault
+                .lock()
+                .expect("publication fault")
+                .take()
+        } else {
+            None
+        };
+        if matches!(fault, Some(PublicationFault::PartialWrite)) {
+            for (id, source) in &objects[..33] {
+                self.inner.put_if_absent(*id, source)?;
+                self.failed_publication
+                    .lock()
+                    .expect("published prefix")
+                    .push(*id);
+            }
+            return Err(StoreError::InvalidComposition {
+                reason: "injected-partial-batch-publication",
+            });
+        }
+
+        let mut receipts = self.inner.put_many_if_absent(objects)?;
+        if matches!(fault, Some(PublicationFault::ReceiptMismatch)) {
+            *self.failed_publication.lock().expect("published batch") =
+                objects.iter().map(|(id, _)| *id).collect();
+            receipts[0].id = receipts[1].id;
+        }
+        Ok(receipts)
+    }
 }
 
 struct IssueFixture {
@@ -58,6 +101,8 @@ fn issue_fixture() -> IssueFixture {
         inner,
         reads: Mutex::new(BTreeMap::new()),
         fault: Mutex::new(None),
+        publication_fault: Mutex::new(None),
+        failed_publication: Mutex::new(Vec::new()),
     });
     let repository = CampaignRepository::new(backend.clone(), original.refs.clone());
     let campaign = CAMPAIGN;
@@ -369,5 +414,93 @@ fn next_issue_operation_reauthenticates_missing_and_corrupt_basis() {
             assert_eq!(replay.new_snapshot, accepted.new_snapshot);
             assert_eq!(replay.step, accepted.step);
         }
+    }
+}
+
+#[test]
+fn enlarged_issue_publication_preserves_head_after_partial_write_or_bad_receipt() {
+    for fault in [
+        PublicationFault::PartialWrite,
+        PublicationFault::ReceiptMismatch,
+    ] {
+        let fixture = issue_fixture();
+        let control = issue_fixture();
+        let before = journal_bytes(&fixture.repository, fixture.snapshot);
+        *fixture
+            .backend
+            .publication_fault
+            .lock()
+            .expect("publication fault") = Some(fault);
+
+        let rejected = fixture.repository.accept_planner_step(
+            CAMPAIGN,
+            fixture.snapshot,
+            &fixture.step,
+            fixture.usage,
+        );
+        assert!(
+            rejected.is_err(),
+            "accepted invalid publication: {rejected:?}"
+        );
+        assert!(
+            fixture
+                .backend
+                .publication_fault
+                .lock()
+                .expect("consumed fault")
+                .is_none()
+        );
+        let published = fixture
+            .backend
+            .failed_publication
+            .lock()
+            .expect("published prefix");
+        assert_eq!(
+            published.len(),
+            match fault {
+                PublicationFault::PartialWrite => 33,
+                PublicationFault::ReceiptMismatch => 64,
+            }
+        );
+        for id in published.iter().copied() {
+            assert!(
+                fixture
+                    .backend
+                    .inner
+                    .contains(id)
+                    .expect("published object exists")
+            );
+        }
+        drop(published);
+        assert_eq!(
+            fixture
+                .repository
+                .head(CAMPAIGN)
+                .expect("unchanged head")
+                .snapshot_id(),
+            fixture.snapshot
+        );
+        assert_eq!(journal_bytes(&fixture.repository, fixture.snapshot), before);
+
+        let cold =
+            CampaignRepository::new(fixture.backend.clone(), fixture.repository.refs.clone());
+        assert_eq!(
+            cold.head(CAMPAIGN)
+                .expect("cold unchanged head")
+                .snapshot_id(),
+            fixture.snapshot
+        );
+        let retried = cold
+            .accept_planner_step(CAMPAIGN, fixture.snapshot, &fixture.step, fixture.usage)
+            .expect("retry authentic partial publication");
+        let expected = control
+            .repository
+            .accept_planner_step(CAMPAIGN, control.snapshot, &control.step, control.usage)
+            .expect("independent complete publication");
+        assert_eq!(retried, expected);
+        assert_eq!(
+            journal_bytes(&cold, retried.new_snapshot),
+            journal_bytes(&control.repository, expected.new_snapshot)
+        );
     }
 }
