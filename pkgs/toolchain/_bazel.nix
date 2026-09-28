@@ -197,6 +197,15 @@
     if isCross
     then buildPackages.qemu-img
     else qemu-img;
+  sourcePythonRuntime = import ./_bazel-python-runtime.nix {inherit buildPackages;};
+  sourceModules =
+    if builtins.compareVersions version "9.0.0" >= 0
+    then
+      import ./_bazel-offline-modules-9.nix {
+        inherit buildPackages;
+        fetchgit = lib.fetchgit;
+      }
+    else buildBazelBootstrap.passthru.offlineModules;
   sourceRepositoryFlags =
     if source == null
     then []
@@ -213,9 +222,10 @@
             else "--override_repository=${canonicalName}=${path}"
         )
         buildBazelBootstrap.passthru.offlineRepositories)
-      ++ lib.optional (builtins.compareVersions version "8.0.0" >= 0) "--override_repository=rules_java++toolchains+remote_java_tools=${sourceRemoteJavaTools}";
+      ++ lib.optional (builtins.compareVersions version "8.0.0" >= 0) "--override_repository=rules_java++toolchains+remote_java_tools=${sourceRemoteJavaTools}"
+      ++ lib.optional (builtins.compareVersions version "8.0.0" >= 0 && builtins.compareVersions version "9.0.0" < 0) "--override_repository=rules_python++python+python_3_11_x86_64-unknown-linux-gnu=${sourcePythonRuntime}";
   sourceModuleFlags =
-    if source == null || builtins.compareVersions version "9.0.0" >= 0
+    if source == null
     then []
     else
       builtins.filter (flag: flag != null) (lib.mapAttrsToList (
@@ -224,7 +234,7 @@
             then null
             else "--override_module=${name}=${path}"
         )
-        buildBazelBootstrap.passthru.offlineModules);
+        sourceModules);
   buildBootstrapTools =
     if isCross
     then buildPackages.bootstrapTools
@@ -1149,11 +1159,13 @@
                   --check_direct_dependencies=off
                   --check_bazel_compatibility=off
                   --repository_disable_download
-                  --override_repository=rules_java_builtin=${buildBazelBootstrap.passthru.offlineModules.rules_java}
                   --repo_env=JAVA_HOME=${buildOpenjdk}
                   --repo_env=PATH="$PATH"
                   --repo_env=CC=${buildGcc}/bin/gcc
                 )
+                ${lib.optionalString (builtins.compareVersions version "9.0.0" < 0) ''
+          VENDOR_FLAGS+=("--override_repository=rules_java_builtin=${buildBazelBootstrap.passthru.offlineModules.rules_java}")
+        ''}
                 ${builtins.concatStringsSep "\n" (map (flag: "VENDOR_FLAGS+=(\"${flag}\")") sourceRepositoryFlags)}
                 ${builtins.concatStringsSep "\n" (map (flag: "VENDOR_FLAGS+=(\"${flag}\")") sourceModuleFlags)}
 
@@ -1266,6 +1278,8 @@ in
   mkDerivation {
     passthru.sourceBootstrap = buildBazelBootstrap;
     passthru.sourceJavaTools = sourceRemoteJavaTools;
+    passthru.sourcePythonRuntime = sourcePythonRuntime;
+    passthru.sourceModules = sourceModules;
     pname = "bazel";
     inherit version;
     inherit update;
