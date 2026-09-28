@@ -385,24 +385,7 @@ impl AuthenticatedNamespaceCatalogV1 {
         destinations: Vec<NamespaceDestinationV1>,
         verifier: &impl NamespaceCatalogVerifierV1,
     ) -> Result<Self, NamespaceCatalogError> {
-        if destinations.len() > 4_096
-            || !destinations
-                .windows(2)
-                .all(|pair| pair[0].slot < pair[1].slot)
-            || destinations.iter().any(|item| {
-                item.slot.as_bytes() == &[0; 16] || item.resource.as_bytes() == &[0; 16]
-            })
-        {
-            return Err(NamespaceCatalogError::InvalidCatalog);
-        }
-        let bytes = canonical_bytes(
-            b"aos.sandbox.namespace-destination-catalog.v2",
-            &destinations,
-        )
-        .map_err(|_| NamespaceCatalogError::InvalidCatalog)?;
-        let media = MediaType::new(PortableMediaType::Content.as_str())
-            .map_err(|_| NamespaceCatalogError::InvalidCatalog)?;
-        let descriptor = descriptor_for_bytes(media, &bytes);
+        let (descriptor, bytes) = canonical_namespace_catalog_v1(&destinations)?;
         if !verifier.verify(&descriptor, &bytes) {
             return Err(NamespaceCatalogError::AuthenticationFailed);
         }
@@ -427,6 +410,35 @@ impl AuthenticatedNamespaceCatalogV1 {
             .ok()
             .map(|index| self.destinations[index].resource)
     }
+}
+
+/// Validates and encodes destination declarations without authenticating an owner.
+///
+/// # Errors
+///
+/// Rejects unordered, sentinel, oversized, or unencodable declarations.
+pub(super) fn canonical_namespace_catalog_v1(
+    destinations: &[NamespaceDestinationV1],
+) -> Result<(ObjectDescriptor, Vec<u8>), NamespaceCatalogError> {
+    if destinations.len() > 4_096
+        || !destinations
+            .windows(2)
+            .all(|pair| pair[0].slot < pair[1].slot)
+        || destinations
+            .iter()
+            .any(|item| item.slot.as_bytes() == &[0; 16] || item.resource.as_bytes() == &[0; 16])
+    {
+        return Err(NamespaceCatalogError::InvalidCatalog);
+    }
+    let bytes = canonical_bytes(
+        b"aos.sandbox.namespace-destination-catalog.v2",
+        &destinations,
+    )
+    .map_err(|_| NamespaceCatalogError::InvalidCatalog)?;
+    let media = MediaType::new(PortableMediaType::Content.as_str())
+        .map_err(|_| NamespaceCatalogError::InvalidCatalog)?;
+    let descriptor = descriptor_for_bytes(media, &bytes);
+    Ok((descriptor, bytes))
 }
 
 /// Reports invalid or unauthenticated destination catalogs.

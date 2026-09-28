@@ -69,6 +69,13 @@ use super::{
     PORTABLE_LIMIT_DIMENSIONS, PolicyLayerV1, SitePolicyInputV1,
 };
 
+mod profile_v2;
+
+pub use profile_v2::{
+    PolicyDeploymentCatalogDeclarationsV2, PolicyDeploymentInputProfileV2,
+    admit_fixed_policy_deployment_profile_v2, verify_current_policy_deployment_profile_v2,
+};
+
 const MAGIC: &[u8; 8] = b"AOSPDH01";
 const SIGNING_DOMAIN: &[u8] = b"aos.sandbox.policy-deployment-head.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-deployment-head-transaction.v1\0";
@@ -645,6 +652,15 @@ pub fn admit_fixed_policy_deployment_head_v1(
         POLICY_AUTHORITY_JOURNAL,
         policy_authority_journal_limits(),
     )?;
+    admit_deployment_head_in_journal(&mut journal, packet, verified, verifying_key)
+}
+
+fn admit_deployment_head_in_journal(
+    journal: &mut Journal,
+    packet: &[u8],
+    verified: PolicyDeploymentHeadV1,
+    verifying_key: &VerifyingKey,
+) -> Result<PolicyDeploymentHeadV1, PolicyDeploymentHeadErrorV1> {
     let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     super::binding_v2::ensure_root_binding_unheld(&authority)
         .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
@@ -1630,7 +1646,7 @@ mod tests {
         .expect("canonical deployment input")
     }
 
-    fn signed_deployment_fixture(key: &SigningKey) -> (Vec<u8>, [Vec<u8>; 4]) {
+    pub(super) fn signed_deployment_fixture(key: &SigningKey) -> (Vec<u8>, [Vec<u8>; 4]) {
         let portable = PORTABLE_LIMIT_DIMENSIONS
             .map(|dimension| {
                 let enforcement = match dimension {

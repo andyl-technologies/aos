@@ -152,12 +152,13 @@ pub use controller_v8_settlement_readback::{
     CONTROLLER_V8_SETTLEMENT_READBACK_BYTES_V1, sign_fixed_controller_v8_settlement_readback_v1,
 };
 pub use deployment_head::{
-    PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1, PolicyDeploymentInputsV1,
-    PolicyDeploymentSourcesV1, SignedProjectPolicyHeadV1, SignedProjectPolicySourceV1,
-    admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
+    PolicyDeploymentCatalogDeclarationsV2, PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1,
+    PolicyDeploymentInputProfileV2, PolicyDeploymentInputsV1, PolicyDeploymentSourcesV1,
+    SignedProjectPolicyHeadV1, SignedProjectPolicySourceV1, admit_fixed_policy_deployment_head_v1,
+    admit_fixed_policy_deployment_profile_v2, admit_fixed_policy_signer_pins_v1,
     admit_fixed_signed_project_policy_source_v1, decode_policy_deployment_sources_v1,
-    verify_policy_deployment_head_v1, verify_signed_project_policy_source_v1,
-    with_fixed_current_policy_head_lease_v1,
+    verify_current_policy_deployment_profile_v2, verify_policy_deployment_head_v1,
+    verify_signed_project_policy_source_v1, with_fixed_current_policy_head_lease_v1,
 };
 pub use model::{
     AdvisoryPlanCommitmentV1, AncestorPolicyCommitmentV1, AncestorPolicyInputV1,
