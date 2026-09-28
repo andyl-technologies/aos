@@ -317,6 +317,34 @@ mod tests {
         }
         assert!(child.try_wait().unwrap().is_some());
         tree.require_original_scope(&record).unwrap();
+        assert!(!tree.matches(&record).unwrap());
+        tree.require_active_original_scope(&record).unwrap();
+
+        // Active original ownership survives a reaped UID0 leader, but a cold
+        // ledger row still cannot recover the tree or authorize initial IO.
+        assert!(
+            ledger
+                .with_active_original_tree_v5(&record, |_| Ok(()))
+                .is_err()
+        );
+        let mut foreign = record.clone();
+        foreign.cgroup = Some(tree.kernel_id().checked_add(1).unwrap());
+        assert!(tree.require_active_original_scope(&foreign).is_err());
+        foreign = record.clone();
+        foreign.start_ticks = foreign.start_ticks.checked_add(1).unwrap();
+        assert!(tree.require_active_original_scope(&foreign).is_err());
+        foreign = record.clone();
+        foreign.version = 1;
+        assert!(tree.require_active_original_scope(&foreign).is_err());
+        foreign = record.clone();
+        foreign.canceled = true;
+        assert!(tree.require_active_original_scope(&foreign).is_err());
+        foreign = record.clone();
+        foreign.terminal = Some(crate::ledger::StoredOutcome {
+            phase: 3,
+            result: Vec::new(),
+        });
+        assert!(tree.require_active_original_scope(&foreign).is_err());
 
         tree.signal(19, deadline).unwrap();
         assert_eq!(
@@ -380,5 +408,6 @@ mod tests {
         tree.signal(9, deadline).unwrap();
         tree.kill_and_wait(deadline).unwrap();
         assert!(tree.empty_and_exited().unwrap());
+        assert!(tree.require_active_original_scope(&record).is_err());
     }
 }

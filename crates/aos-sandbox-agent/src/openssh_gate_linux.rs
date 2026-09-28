@@ -514,8 +514,7 @@ impl RunningOpenSshGateV1 {
         route_digest: [u8; 32],
         channel_binding: [u8; 32],
     ) -> Result<OpenSshGateReadbackV1, OpenSshGatePhysicalErrorV1> {
-        let claim = load_installed_gate_claim()?;
-        require_original_control_expiry_v5(&claim)?;
+        let claim = load_unexpired_openssh_attach_profile_v5()?;
         self.physical_readback_from_installed_claim(challenge, route_digest, channel_binding, claim)
     }
 
@@ -644,16 +643,31 @@ pub fn expected_openssh_gate_config_v1(
 /// Returns an error if the claim or public CA/config files are changed,
 /// noncanonical, stale, or not protected by root-owned directories.
 pub fn load_openssh_gate_claim_v1() -> Result<OpenSshGateClaimV1, OpenSshGatePhysicalErrorV1> {
-    let claim = load_installed_gate_claim()?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidInstallation)?
-        .as_secs();
-    if i64::try_from(now).map_or(true, |now| claim.binding.expires_at <= now)
-        || process_start_ticks(claim.process_pid)? != claim.process_start_ticks
-    {
+    let claim = load_unexpired_openssh_attach_profile_v5()?;
+    if process_start_ticks(claim.process_pid)? != claim.process_start_ticks {
         return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
     }
+    Ok(claim)
+}
+
+/// Reads the protected original unexpired certificate profile without execution authority.
+///
+/// The original leader coordinates are historical data here, not a current
+/// process witness. The certificate-profile callback uses this reader without
+/// a leader check; strict provisioning separately verifies that leader. The
+/// existing trusted root monitor must independently join the actual holder
+/// signature and private child to the Guest's active original
+/// execution subtree, while Controller and Host retain their current cuts.
+/// This metadata check is not a live monitor witness and cannot issue a
+/// ticket, bind custody, reserve or release I/O.
+///
+/// # Errors
+/// Rejects malformed or substituted protected claim/config/trust, an expired
+/// original route or a changed recorded listener identity. No expiry is renewed.
+pub fn load_unexpired_openssh_attach_profile_v5()
+-> Result<OpenSshGateClaimV1, OpenSshGatePhysicalErrorV1> {
+    let claim = load_installed_gate_claim()?;
+    require_original_control_expiry_v5(&claim)?;
     Ok(claim)
 }
 

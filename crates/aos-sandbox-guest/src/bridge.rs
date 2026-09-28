@@ -308,93 +308,107 @@ fn transfer_original_io_v3(
 ) -> Result<(), GuestProcessEffectErrorV1> {
     crate::process::check_deadline(deadline)?;
     let process = ledger.read_process_bytes(claim.binding.execution_id)?;
-    if read_gate_claim()? != *claim
-        || process.canceled
-        || process.terminal.is_some()
-        || !ledger.require_live_process(&process)?
-    {
+    if read_gate_claim()? != *claim || process.canceled || process.terminal.is_some() {
         return Err(GuestProcessEffectErrorV1::InvalidRequest);
     }
-    let mut masters = masters
-        .lock()
-        .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
-    let io = masters
-        .get(&process.execution)
-        .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
-    let shape = process
-        .attach_io
-        .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
-    match (shape, io, claim.pty) {
-        (crate::ledger::AttachIoShapeV3::Pty, AttachedIo::Pty(_), true)
-        | (crate::ledger::AttachIoShapeV3::Stream, AttachedIo::Stream { .. }, false) => {}
-        _ => return Err(GuestProcessEffectErrorV1::LedgerConflict),
-    }
+    // The barrier and monitor registry are already held by the caller. Keep
+    // this actual original tree borrowed through SCM and its final receipt;
+    // the root/relay callback below must never recursively lock ledger.live.
+    let result = ledger.with_active_original_tree_v5(&process, |tree| {
+        let mut masters = masters
+            .lock()
+            .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+        let io = masters
+            .get(&process.execution)
+            .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
+        let shape = process
+            .attach_io
+            .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
+        match (shape, io, claim.pty) {
+            (crate::ledger::AttachIoShapeV3::Pty, AttachedIo::Pty(_), true)
+            | (crate::ledger::AttachIoShapeV3::Stream, AttachedIo::Stream { .. }, false) => {}
+            _ => return Err(GuestProcessEffectErrorV1::LedgerConflict),
+        }
 
-    // Every rejection above is effect-free. Even an ambiguous SCM send after
-    // this exact durable reservation permanently consumes the logical slot.
-    ledger.reserve_original_attach_v3(
-        &process,
-        aos_sandbox_agent::openssh_ticket::ticket_digest_v2(ticket),
-        expected_binding,
-    )?;
-    crate::process::check_deadline(deadline)?;
-    original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
-    recheck_custody(pending)?;
-    if read_gate_claim()? != *claim || !ledger.require_live_process(&process)? {
-        return Err(GuestProcessEffectErrorV1::InvalidRequest);
-    }
-    crate::process::check_deadline(deadline)?;
-    original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
-    pending.io_attempted = true;
-    match io {
-        AttachedIo::Pty(master) => pending
-            .socket
-            .send_with_descriptors(b"AOSGOK03", &[master.as_fd()])?,
-        AttachedIo::Stream {
-            input,
-            output,
-            error,
-        } => pending
-            .socket
-            .send_with_descriptors(b"AOSGOS03", &[input.as_fd(), output.as_fd(), error.as_fd()])?,
-    }
-
-    // Keep the same barrier and registry custody through kernel-identified
-    // receipt. Neither reflected bytes nor an ACK can nominate another child.
-    let reply = loop {
+        // Every rejection above is effect-free. Even an ambiguous SCM send after
+        // this exact durable reservation permanently consumes the logical slot.
+        ledger.reserve_original_attach_v3(
+            &process,
+            aos_sandbox_agent::openssh_ticket::ticket_digest_v2(ticket),
+            expected_binding,
+        )?;
         crate::process::check_deadline(deadline)?;
         original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
-        match pending.socket.receive(8) {
-            Ok(record) => break record,
-            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
-                thread::sleep(Duration::from_millis(2));
-            }
-            Err(error) => return Err(error.into()),
+        recheck_custody(pending)?;
+        if read_gate_claim()? != *claim {
+            return Err(GuestProcessEffectErrorV1::InvalidRequest);
         }
-    };
-    let reply = pending
-        .socket
-        .bind_received(reply)
-        .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
-    let sender = reply.subject().credentials();
-    let connector = reply.peer().credentials();
-    if reply.payload() != b"AOSRID03"
-        || sender.pid() != connector.pid()
-        || sender.uid() != connector.uid()
-        || sender.gid() != connector.gid()
-        || !reply
-            .subject()
-            .is_alive()
-            .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?
-    {
-        return Err(GuestProcessEffectErrorV1::InvalidRequest);
+        tree.require_active_original_scope(&process)?;
+        crate::process::check_deadline(deadline)?;
+        original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
+        pending.io_attempted = true;
+        match io {
+            AttachedIo::Pty(master) => pending
+                .socket
+                .send_with_descriptors(b"AOSGOK03", &[master.as_fd()])?,
+            AttachedIo::Stream {
+                input,
+                output,
+                error,
+            } => pending.socket.send_with_descriptors(
+                b"AOSGOS03",
+                &[input.as_fd(), output.as_fd(), error.as_fd()],
+            )?,
+        }
+
+        // Keep the same barrier and registry custody through kernel-identified
+        // receipt. Neither reflected bytes nor an ACK can nominate another child.
+        let reply = loop {
+            crate::process::check_deadline(deadline)?;
+            original_authority_deadline(
+                authority_expires_at,
+                effect_deadline_boottime_nanoseconds,
+            )?;
+            match pending.socket.receive(8) {
+                Ok(record) => break record,
+                Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
+                    thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
+        let reply = pending
+            .socket
+            .bind_received(reply)
+            .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
+        let sender = reply.subject().credentials();
+        let connector = reply.peer().credentials();
+        if reply.payload() != b"AOSRID03"
+            || sender.pid() != connector.pid()
+            || sender.uid() != connector.uid()
+            || sender.gid() != connector.gid()
+            || !reply
+                .subject()
+                .is_alive()
+                .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?
+        {
+            return Err(GuestProcessEffectErrorV1::InvalidRequest);
+        }
+        drop(reply);
+        crate::process::check_deadline(deadline)?;
+        original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
+        recheck_custody(pending)?;
+        tree.require_active_original_scope(&process)?;
+        masters.remove(&process.execution);
+        Ok(())
+    });
+    if pending.io_attempted {
+        // SCM may already have exposed the original descriptors. Expiry,
+        // tree exit, changed custody or lost receipt cannot become a retry.
+        result.map_err(|_| GuestProcessEffectErrorV1::AmbiguousEffect)
+    } else {
+        result
     }
-    drop(reply);
-    crate::process::check_deadline(deadline)?;
-    original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
-    recheck_custody(pending)?;
-    masters.remove(&process.execution);
-    Ok(())
 }
 
 fn bind_listener(path: &Path) -> Result<RecordSubjectListener, GuestProcessEffectErrorV1> {

@@ -234,7 +234,7 @@ fn packaged_sshd_enforces_profile_and_confined_original_ticket_relay() {
         0o600,
     );
 
-    let process = OwnedProcess(
+    let mut process = OwnedProcess(
         Command::new(&chroot)
             .args(["--userspec=+1001:+1001", "--groups=", "/", &sleep, "300"])
             .stdin(Stdio::null())
@@ -367,6 +367,44 @@ fn packaged_sshd_enforces_profile_and_confined_original_ticket_relay() {
     protected_file(format!("{DIRECTORY}/sshd_config"), &config, 0o644);
     drop(daemon);
     monitor_qualification::qualify_root_monitor_binding(&ssh, &claim, &accepted);
+
+    // This is profile/authentication-only evidence. Preserve the original
+    // certificate and historical leader bytes after the real leader exits;
+    // strict provisioning and the absent actual IO owner still deny custody.
+    let mut daemon = RunningOpenSshGateV1::start(claim.binding.clone()).unwrap();
+    let mut historical = claim.clone();
+    (historical.sshd_pid, historical.sshd_start_ticks) = daemon.daemon_identity().unwrap();
+    write_claim(&historical);
+    process.0.kill().unwrap();
+    process.0.wait().unwrap();
+    assert!(crate::openssh_gate_linux::load_openssh_gate_claim_v1().is_err());
+    assert!(
+        daemon
+            .physical_readback([12; 32], historical.route_digest, [13; 32])
+            .is_err()
+    );
+    assert_eq!(
+        crate::openssh_gate_linux::load_unexpired_openssh_attach_profile_v5().unwrap(),
+        historical,
+    );
+    let output = callback(&chroot, &accepted, 1001, None);
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"aos_exec\n");
+    assert!(output.stderr.is_empty());
+    ssh_authentication(&ssh, &accepted, true);
+
+    let mut expired = historical.clone();
+    expired.binding.expires_at = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+    write_claim(&expired);
+    assert!(crate::openssh_gate_linux::load_unexpired_openssh_attach_profile_v5().is_err());
+    assert_callback_denial(callback(&chroot, &accepted, 1001, None));
+    write_claim(&historical);
 }
 
 mod monitor_qualification;

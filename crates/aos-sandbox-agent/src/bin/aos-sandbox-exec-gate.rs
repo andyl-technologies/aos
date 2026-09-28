@@ -18,7 +18,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use aos_sandbox_agent::openssh_attach_certificate::validate_openssh_attach_certificate_v1;
 use aos_sandbox_agent::openssh_gate::OpenSshGateClaimV1;
 #[cfg(target_os = "linux")]
-use aos_sandbox_agent::openssh_gate_linux::load_openssh_gate_claim_v1;
+use aos_sandbox_agent::openssh_gate_linux::{
+    load_openssh_gate_claim_v1, load_unexpired_openssh_attach_profile_v5,
+};
 use aos_sandbox_core::public_attach_route::public_attach_force_command_v1;
 #[cfg(target_os = "linux")]
 use aos_sandbox_linux::seqpacket::{SeqpacketError, SeqpacketSocket};
@@ -86,7 +88,9 @@ fn emit_authorized_principal(arguments: &[OsString]) {
             return None;
         }
         let (certificate_type, certificate_base64) = certificate_arguments(arguments)?;
-        let claim = load_openssh_gate_claim_v1().ok()?;
+        // Profile acceptance grants no process access. The real root monitor
+        // and held Guest tree, not callback output or leader liveness, join IO.
+        let claim = load_unexpired_openssh_attach_profile_v5().ok()?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
         match std::fs::symlink_metadata(
             aos_sandbox_agent::openssh_ticket::OPENSSH_TICKET_CLAIM_PATH_V2,

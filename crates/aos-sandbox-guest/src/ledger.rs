@@ -177,6 +177,26 @@ impl Ledger {
         &self,
         record: &ProcessRecord,
     ) -> Result<(), GuestProcessEffectErrorV1> {
+        self.with_active_original_tree_v5(record, |_| Ok(()))
+    }
+
+    /// Retains the exact in-memory original tree through the owner's effect.
+    ///
+    /// The caller already holds the shared barrier and authentic original
+    /// monitor/ticket cut. The live-map borrow cannot escape this closure or
+    /// reconstruct a cold tree. Nested currentness callbacks must not reacquire
+    /// the live map; they check physical/root custody while this borrow stays held.
+    ///
+    /// # Errors
+    /// Rejects absent/foreign/closed original ownership, invalid confinement,
+    /// an exited subtree or the effect's currentness/ambiguity failure.
+    pub(super) fn with_active_original_tree_v5<R>(
+        &self,
+        record: &ProcessRecord,
+        effect: impl FnOnce(
+            &crate::execution_tree::ExecutionTree,
+        ) -> Result<R, GuestProcessEffectErrorV1>,
+    ) -> Result<R, GuestProcessEffectErrorV1> {
         let live = self
             .live
             .lock()
@@ -184,11 +204,8 @@ impl Ledger {
         let process = live
             .get(&record.execution)
             .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
-        process.tree.require_original_scope(record)?;
-        if process.tree.empty_and_exited()? {
-            return Err(GuestProcessEffectErrorV1::InvalidRequest);
-        }
-        Ok(())
+        process.tree.require_active_original_scope(record)?;
+        effect(&process.tree)
     }
 
     pub(super) fn processes(&self) -> Result<Vec<ProcessRecord>, GuestProcessEffectErrorV1> {

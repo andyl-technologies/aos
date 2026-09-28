@@ -455,8 +455,12 @@ impl MonitorRegistry {
                 // checks. No callback-supplied PID or cached row can replace it.
                 let mut pending = current.pending_io.take().ok_or(Error::LedgerConflict)?;
                 validate_relay(installed, current, &pending, ledger)?;
-                let mut recheck =
-                    |pending: &RelayConnection| validate_relay(installed, current, pending, ledger);
+                // The effect producer keeps ledger.live borrowed through SCM.
+                // This callback rechecks actual root/relay custody but does not
+                // reacquire that same tree lock; the producer rechecks its tree.
+                let mut recheck = |pending: &RelayConnection| {
+                    validate_relay_custody(installed, current, pending, ledger)
+                };
                 let transferred = (|| {
                     transfer(&mut pending, installed.runtime.claim(), &mut recheck)?;
                     validate_custody(
@@ -568,7 +572,7 @@ fn require_root_monitor(
         return Err(Error::InvalidRequest);
     }
     runtime
-        .require_monitor(connection.peer().pidfd())
+        .require_original_control_monitor_v5(connection.peer().pidfd())
         .map_err(|_| Error::InvalidRequest)
 }
 
@@ -580,48 +584,19 @@ fn validate_custody(
     payload: &[u8],
     ledger: &Ledger,
 ) -> Result<(), Error> {
-    require_root_monitor(connection, &installed.runtime)?;
-    installed
-        .runtime
-        .require_monitor(subject.pidfd())
-        .map_err(|_| Error::InvalidRequest)?;
-    let witness =
-        OpenSshMonitorWitnessV2::decode_confined_v3(payload).map_err(|_| Error::InvalidRequest)?;
     let ticket = PublicAttachTicketBindingV2::decode(&installed.original_ticket)
         .map_err(|_| Error::InvalidRequest)?;
-    let claim = installed.runtime.claim();
-    if read_ticket()? != installed.original_ticket {
-        return Err(Error::LedgerConflict);
-    }
-    witness
-        .validate_original_holder(claim, &ticket, now()?)
-        .map_err(|_| Error::InvalidRequest)?;
-    installed
-        .runtime
-        .require_confined_child_v3(
-            child,
-            connection.peer().credentials().pid().get(),
-            witness.uid,
-            witness.gid,
-        )
-        .map_err(|_| Error::InvalidRequest)?;
-
-    let process = ledger.read_process_bytes(claim.binding.execution_id)?;
-    let request = aos_sandbox_agent::openssh_gate::decode_openssh_gate_bridge_request_v1(
-        &claim
-            .encode_bridge_request()
-            .map_err(|_| Error::InvalidRequest)?,
-    )
-    .map_err(|_| Error::InvalidRequest)?;
-    if !crate::bridge::request_matches(&request, claim, &process)
-        || crate::gate::static_login_identity(&claim.binding.user)? != (witness.uid, witness.gid)
-        || process.canceled
-        || process.terminal.is_some()
-        || !ledger.require_live_process(&process)?
-    {
-        return Err(Error::InvalidRequest);
-    }
-    Ok(())
+    control::require_control_custody(
+        installed,
+        connection,
+        subject,
+        child,
+        payload,
+        ticket.expires_at,
+        ledger,
+    )?;
+    let process = ledger.read_process_bytes(installed.runtime.claim().binding.execution_id)?;
+    ledger.require_active_original_tree_v5(&process)
 }
 
 fn refresh_relay(
@@ -671,7 +646,7 @@ fn refresh_relay(
     }
     installed
         .runtime
-        .require_monitor(subject.pidfd())
+        .require_original_control_monitor_v5(subject.pidfd())
         .map_err(|_| Error::InvalidRequest)?;
     let relay = PidFd::from_owned(descriptors.pop().ok_or(Error::InvalidRequest)?)
         .map_err(|_| Error::InvalidRequest)?;
@@ -718,12 +693,26 @@ fn validate_relay(
     pending: &RelayConnection,
     ledger: &Ledger,
 ) -> Result<(), Error> {
-    validate_custody(
+    validate_relay_custody(installed, custody, pending, ledger)?;
+    let process = ledger.read_process_bytes(installed.runtime.claim().binding.execution_id)?;
+    ledger.require_active_original_tree_v5(&process)
+}
+
+// The SCM producer already holds the actual tree's live-map borrow. This
+// current root/relay check deliberately does not reacquire that same mutex.
+fn validate_relay_custody(
+    installed: &InstalledScope,
+    custody: &MonitorCustody,
+    pending: &RelayConnection,
+    ledger: &Ledger,
+) -> Result<(), Error> {
+    control::require_control_custody(
         installed,
         &custody.connection,
         &custody.subject,
         &custody.child,
         &custody.original_witness,
+        custody.original_expiry,
         ledger,
     )?;
     let relay = custody.relay.as_ref().ok_or(Error::InvalidRequest)?;

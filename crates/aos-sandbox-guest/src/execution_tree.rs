@@ -195,6 +195,26 @@ impl ExecutionTree {
         Ok(())
     }
 
+    /// Checks original owned scope and current subtree activity, not a live leader UID.
+    ///
+    /// The owning caller retains its shared barrier and this actual tree through
+    /// dependent effects. This predicate does not reconstruct cold ownership or
+    /// confer Controller/Host or SSH holder authority.
+    ///
+    /// # Errors
+    /// Rejects legacy/foreign/canceled/terminal scope, lost cgroup confinement
+    /// or an original subtree that is both recursively empty and leader-exited.
+    pub(crate) fn require_active_original_scope(
+        &self,
+        record: &crate::ledger::ProcessRecord,
+    ) -> Result<(), Error> {
+        self.require_original_scope(record)?;
+        if self.empty_and_exited()? {
+            return Err(Error::InvalidRequest);
+        }
+        Ok(())
+    }
+
     /// Joins historical terminal data to this originally retained tree only.
     /// This permits no mutation, attach reservation or descriptor transfer.
     pub(crate) fn require_original_identity(

@@ -685,7 +685,7 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
             .as_mut()
             .ok_or_else(|| effect_error(GuestProcessEffectErrorV1::InvalidRequest))?;
         let readback = gate
-            .observe_original_control_v5(request, runtime, channel, &self.ledger, deadline)
+            .observe_active_original_tree_v5(request, runtime, channel, &self.ledger, deadline)
             .map_err(effect_error)?;
         let observation = self
             .bridge
@@ -730,17 +730,7 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
             .lock()
             .map_err(|_| effect_error(GuestProcessEffectErrorV1::LedgerConflict))?;
         check_deadline(deadline).map_err(effect_error)?;
-        if self.quiesced
-            || !self
-                .ledger
-                .require_live_process(
-                    &self
-                        .ledger
-                        .read_process_bytes(request.binding.execution_id)
-                        .map_err(effect_error)?,
-                )
-                .map_err(effect_error)?
-        {
+        if self.quiesced {
             return Err(effect_error(GuestProcessEffectErrorV1::InvalidRequest));
         }
         // Installation and binding are earlier effects. Consume cannot rebuild
@@ -750,7 +740,7 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
             .as_mut()
             .ok_or_else(|| effect_error(GuestProcessEffectErrorV1::InvalidRequest))?;
         let readback = gate
-            .observe(request, runtime, channel, &self.ledger, deadline)
+            .observe_active_original_tree_v5(request, runtime, channel, &self.ledger, deadline)
             .map_err(effect_error)?;
         let observation = self
             .bridge

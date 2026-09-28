@@ -186,7 +186,7 @@ impl GuestOpenSshGate {
     /// # Errors
     /// Rejects changed original scope/runtime/installation, absent active tree,
     /// expiry, invalid fixed login identity or a missed deadline.
-    pub(super) fn observe_original_control_v5(
+    pub(super) fn observe_active_original_tree_v5(
         &mut self,
         request: &OpenSshGateObserveRequestV1,
         runtime: &AgentRuntimeBindingV1,

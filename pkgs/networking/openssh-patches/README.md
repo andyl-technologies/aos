@@ -161,13 +161,16 @@ and is never re-created from a cold row. Any partial effect/readback/ACK is
 ambiguous and drops custody without automatic redispatch. This full source
 producer is still unqualified, not an installed readiness assertion.
 
-V5 preserves an already retained original session after its execution leader
-exits or descendants change credentials. It does not relax the earlier profile
-callback, initial monitor registration or V3 consume checks, which still tie
-initial admission to that leader's live/current identity. A valid original
-subtree can therefore remain unavailable for a first attach after those changes.
-Completing that availability path needs a separate actual active-original-tree
-and full root/holder custody cut, not reuse of V4 historical terminal evidence.
+Initial registration, relay and consume now also require the original unexpired
+root/holder/ticket custody and active original execution subtree, not a live
+leader with unchanged effective UID. The Guest retains that actual in-memory
+tree borrow, the shared barrier and monitor custody through SCM and receipt.
+The callback's separately named protected profile reader checks the original
+expiry and installation without treating historical leader fields as authority.
+Its output still cannot bind custody or authorize IO. Issuance, provisioning,
+original route installation and immutable ticket binding retain their stricter
+leader checks; this path cannot recover or recreate those earlier mutations.
+V4 historical terminal evidence remains separately nonauthorizing.
 
 Compatibility follows the pinned upstream private monitor layout. The patch
 adds a default-off global option. V3 uses private readiness opcodes 118/119 and
