@@ -14,7 +14,9 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aos_sandbox_core::{MediaType, ObjectDescriptor, ObjectDigest};
+use aos_sandbox_core::{
+    MediaType, ObjectDescriptor, ObjectDigest, format::ObjectDescriptorVerifier,
+};
 use aos_sandbox_linux::immutable_file::{
     FsVerityDigest, FsVerityMapping, FsVerityPublicationRoot, MaterializationCallbacks,
     PublicationName,
@@ -41,6 +43,8 @@ const MANIFEST_MAGIC: &[u8; 8] = b"AOSCOO01";
 const MANIFEST_VERSION: u32 = 3;
 const MAXIMUM_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 
+#[cfg(test)]
+mod descriptor_tests;
 mod signer_view;
 
 pub(crate) use signer_view::SIGNER_OBJECT_VIEW;
@@ -3231,12 +3235,13 @@ where
 }
 
 fn verify_bytes(descriptor: &ObjectDescriptor, bytes: &[u8]) -> Result<(), CacheOwnerErrorV1> {
-    if bytes.len() as u64 != descriptor.encoded_size()
-        || Sha256::digest(bytes).as_slice() != descriptor.digest().as_bytes()
-    {
-        return Err(CacheOwnerErrorV1::IntegrityFailure);
-    }
-    Ok(())
+    let mut verifier = ObjectDescriptorVerifier::new(descriptor.clone());
+    verifier
+        .update(bytes)
+        .map_err(|_| CacheOwnerErrorV1::IntegrityFailure)?;
+    verifier
+        .finish()
+        .map_err(|_| CacheOwnerErrorV1::IntegrityFailure)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -3244,23 +3249,19 @@ fn verify_bytes(descriptor: &ObjectDescriptor, bytes: &[u8]) -> Result<(), Cache
 /// Reports a streaming mismatch against the protected admission descriptor.
 struct DescriptorVerificationError;
 
-struct DescriptorVerifier<'descriptor> {
-    descriptor: &'descriptor ObjectDescriptor,
-    bytes: u64,
-    hasher: Sha256,
+struct DescriptorVerifier {
+    verifier: Option<ObjectDescriptorVerifier>,
 }
 
-impl<'descriptor> DescriptorVerifier<'descriptor> {
-    fn new(descriptor: &'descriptor ObjectDescriptor) -> Self {
+impl DescriptorVerifier {
+    fn new(descriptor: &ObjectDescriptor) -> Self {
         Self {
-            descriptor,
-            bytes: 0,
-            hasher: Sha256::new(),
+            verifier: Some(ObjectDescriptorVerifier::new(descriptor.clone())),
         }
     }
 }
 
-impl MaterializationCallbacks for DescriptorVerifier<'_> {
+impl MaterializationCallbacks for DescriptorVerifier {
     type Error = DescriptorVerificationError;
 
     fn checkpoint(&mut self) -> Result<(), Self::Error> {
@@ -3268,24 +3269,21 @@ impl MaterializationCallbacks for DescriptorVerifier<'_> {
     }
 
     fn verify_chunk(&mut self, bytes: &[u8]) -> Result<(), Self::Error> {
-        self.bytes = self
-            .bytes
-            .checked_add(bytes.len() as u64)
-            .ok_or(DescriptorVerificationError)?;
-        if self.bytes > self.descriptor.encoded_size() {
-            return Err(DescriptorVerificationError);
-        }
-        self.hasher.update(bytes);
-        Ok(())
+        self.verifier
+            .as_mut()
+            .ok_or(DescriptorVerificationError)?
+            .update(bytes)
+            .map_err(|_| DescriptorVerificationError)
     }
 
     fn finish_verification(&mut self) -> Result<(), Self::Error> {
-        if self.bytes != self.descriptor.encoded_size()
-            || self.hasher.clone().finalize().as_slice() != self.descriptor.digest().as_bytes()
-        {
-            return Err(DescriptorVerificationError);
-        }
-        Ok(())
+        // Successful sealing consumes the one exact framed verifier. A caller
+        // cannot reuse it after either finalization or a poisoned update.
+        self.verifier
+            .take()
+            .ok_or(DescriptorVerificationError)?
+            .finish()
+            .map_err(|_| DescriptorVerificationError)
     }
 }
 
