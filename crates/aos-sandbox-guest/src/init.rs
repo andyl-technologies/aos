@@ -1,9 +1,11 @@
 //! Fixed guest PID 1 bootstrap for inherited agent and attach-trust descriptors.
 //!
 //! Nspawn delivers one connected channel at FD 3 and fully sealed launch
-//! records at FD 4 and FD 5. This bootstrap checks the carrier and exact
-//! runtime binding, installs the OpenSSH trust material at fixed root-owned
-//! paths, starts the only guest agent, and replaces PID 1 with AOS systemd.
+//! records at FD 4 and FD 5. FD 6 pins the existing mounted payload cgroup;
+//! sealed FD 7 joins its inode to the original provisioning inode without
+//! copying a key or creating a grant. This bootstrap adopts the whole table
+//! before duplicates, checks runtime binding, installs the OpenSSH trust at
+//! fixed protected paths, starts the only agent, and execs AOS systemd.
 //! No request or environment variable can select a path or executable.
 
 use std::fs::{self, File, OpenOptions};
@@ -45,9 +47,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args_os().len() != 1 {
         return Err("guest bootstrap accepts no arguments".into());
     }
+    aos_sandbox_linux::guest_confinement::prepare_guest_runtime_anchors()?;
+    aos_sandbox_agent::guest_root_label::label_fresh_guest_manager_before_v1()?;
 
+    // Adopt original slots 6/7 before any startup duplicate can reuse them.
+    // Their fixed originals remain live only through the one Agent spawn.
+    let cgroup = aos_sandbox_linux::guest_cgroup::GuestPayloadCgroupCustodyV1::from_inherited()?;
+    let execution_root = cgroup.execution_root()?;
     let channel = duplicate_inherited_descriptor(CHANNEL_FD)?;
-    let provisioning = duplicate_inherited_descriptor(PROVISIONING_FD)?;
+    let provisioning = cgroup.original_provisioning()?;
     let trust = duplicate_inherited_descriptor(ATTACH_TRUST_FD)?;
     let socket = SeqpacketSocket::from_owned(channel)?;
     if !socket.peer().pidfd().is_alive()?
@@ -92,6 +100,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     agent.stdout(Stdio::null());
     agent.stderr(Stdio::null());
     agent.spawn()?;
+
+    for descriptor in [6, 7] {
+        mark_inherited_descriptor_close_on_exec(descriptor)?;
+        // SAFETY: fixed nspawn startup retains these numeric originals solely
+        // for this Agent spawn. Rust owns only separate CLOEXEC duplicates.
+        drop(unsafe { OwnedFd::from_raw_fd(descriptor) });
+    }
+    drop(cgroup);
+    drop(execution_root);
+    drop(socket);
 
     mark_inherited_descriptor_close_on_exec(CHANNEL_FD)?;
     mark_inherited_descriptor_close_on_exec(PROVISIONING_FD)?;

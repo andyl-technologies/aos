@@ -31,6 +31,8 @@
 pub mod boot;
 pub mod cgroup;
 pub mod fixed_spawn;
+pub mod guest_cgroup;
+pub mod guest_confinement;
 pub mod immutable_file;
 pub mod inherited_fd;
 pub mod inventory;

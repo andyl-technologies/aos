@@ -751,7 +751,7 @@ fn root_continuity_policy_v1_has_stable_independent_preimage() {
     for value in [
         "--private-users-ownership=map",
         "--notify-ready=yes",
-        "--selinux-context=system_u:system_r:aos_sandbox_payload_t:s0",
+        "--selinux-context=system_u:system_r:aos_sandbox_guest_owner_t:s0",
         "--no-new-privileges=yes",
         concat!(
             "--drop-capability=",

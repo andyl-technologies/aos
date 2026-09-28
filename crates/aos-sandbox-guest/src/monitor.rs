@@ -37,6 +37,7 @@ pub(super) struct MonitorRegistry(Arc<Mutex<Registry>>);
 struct Registry {
     installed: Option<InstalledScope>,
     custody: Option<MonitorCustody>,
+    session: Option<SessionLiveness>,
 }
 
 struct InstalledScope {
@@ -54,8 +55,20 @@ struct MonitorCustody {
     pending_io: Option<RelayConnection>,
 }
 
+/// Holds only original consumed-channel liveness, never attach authority.
+/// Certificate expiry or policy reads do not create or renew this record.
+struct SessionLiveness {
+    execution: [u8; 16],
+    connection: SeqpacketSocket,
+    subject: KernelAuthorizedRecordSubject,
+    child: PidFd,
+    relay: PidFd,
+    io: RelayConnection,
+}
+
 pub(super) struct RelayConnection {
     pub(super) socket: SeqpacketSocket,
+    pub(super) io_attempted: bool,
     subject: KernelAuthorizedRecordSubject,
     deadline: Instant,
 }
@@ -69,19 +82,35 @@ impl MonitorRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         registry.custody.take();
+        registry.session.take();
         registry.installed.take();
     }
 
-    pub(super) fn prune_closed(&self, ledger: &Ledger) {
-        let barrier = ledger.effect_barrier();
-        let Ok(_current) = barrier.lock() else {
-            self.close();
-            return;
-        };
-        let Ok(mut registry) = self.0.lock() else {
-            return;
-        };
-        let Registry { installed, custody } = &mut *registry;
+    /// Samples the original session while the caller retains the effect
+    /// barrier. A closed channel triggers the existing Owner cancellation, not
+    /// an authorization decision, reconnect adoption, or a new monitor grant.
+    pub(super) fn prune_closed(&self, ledger: &Ledger) -> Result<Option<[u8; 16]>, Error> {
+        let mut registry = self.0.lock().map_err(|_| Error::LedgerConflict)?;
+        if let Some(session) = registry.session.as_ref() {
+            if !session.is_live() {
+                let execution = session.execution;
+                let process = ledger.read_process_bytes(execution)?;
+                if process.cancel_on_disconnect == Some(true) && process.terminal.is_none() {
+                    crate::process::cancel_owned_execution(
+                        ledger,
+                        aos_sandbox_core::ExecutionId::from_bytes(execution),
+                        Instant::now() + DEADLINE,
+                    )?;
+                }
+                registry.session.take();
+                registry.custody.take();
+                registry.installed.take();
+                return Ok(Some(execution));
+            }
+        }
+        let Registry {
+            installed, custody, ..
+        } = &mut *registry;
         let valid = match (installed.as_ref(), custody.as_mut()) {
             (Some(installed), Some(custody)) => {
                 custody.is_live() && refresh_relay(installed, custody, ledger).is_ok()
@@ -92,6 +121,7 @@ impl MonitorRegistry {
         if !valid {
             registry.custody.take();
         }
+        Ok(None)
     }
 
     pub(super) fn remove(&self, execution: [u8; 16]) -> Result<(), Error> {
@@ -102,6 +132,7 @@ impl MonitorRegistry {
             .is_some_and(|scope| scope.runtime.claim().binding.execution_id == execution)
         {
             registry.custody.take();
+            registry.session.take();
             registry.installed.take();
         }
         Ok(())
@@ -155,6 +186,9 @@ impl MonitorRegistry {
     ) -> Result<(), Error> {
         let deadline = Instant::now() + DEADLINE;
         let mut registry = self.0.lock().map_err(|_| Error::LedgerConflict)?;
+        if registry.session.is_some() {
+            return Err(Error::LedgerConflict);
+        }
         let installed = registry.installed.as_ref().ok_or(Error::InvalidRequest)?;
         let original_expiry = PublicAttachTicketBindingV2::decode(&installed.original_ticket)
             .map_err(|_| Error::InvalidRequest)?
@@ -221,7 +255,9 @@ impl MonitorRegistry {
         });
         // Retention itself must not turn an earlier valid sample into an
         // unexpired/current record. This remains only a point-in-time check.
-        let Registry { installed, custody } = &mut *registry;
+        let Registry {
+            installed, custody, ..
+        } = &mut *registry;
         let installed = installed.as_ref().ok_or(Error::LedgerConflict)?;
         let custody = custody.as_mut().ok_or(Error::LedgerConflict)?;
         if !custody.is_live()
@@ -268,7 +304,9 @@ impl MonitorRegistry {
         let barrier = ledger.effect_barrier();
         let _current = barrier.lock().map_err(|_| Error::LedgerConflict)?;
         let mut registry = self.0.lock().map_err(|_| Error::LedgerConflict)?;
-        let Registry { installed, custody } = &mut *registry;
+        let Registry {
+            installed, custody, ..
+        } = &mut *registry;
         let installed = installed.as_ref().ok_or(Error::InvalidRequest)?;
         let custody = custody.as_mut().ok_or(Error::InvalidRequest)?;
         refresh_relay(installed, custody, ledger)?;
@@ -298,6 +336,7 @@ impl MonitorRegistry {
             socket,
             subject,
             deadline,
+            io_attempted: false,
         };
         validate_relay(installed, custody, &pending, ledger)?;
         custody.pending_io = Some(pending);
@@ -318,7 +357,9 @@ impl MonitorRegistry {
         ) -> Result<(), Error>,
     ) -> Result<OriginalAttachObservationV3, Error> {
         let mut registry = self.0.lock().map_err(|_| Error::LedgerConflict)?;
-        let Registry { installed, custody } = &mut *registry;
+        let Registry {
+            installed, custody, ..
+        } = &mut *registry;
         let installed = installed.as_ref().ok_or(Error::InvalidRequest)?;
         if installed.original_ticket != ticket || read_ticket()? != ticket {
             return Err(Error::LedgerConflict);
@@ -334,6 +375,7 @@ impl MonitorRegistry {
                 Err(Error::InvalidRequest)
             };
         };
+        let mut transferred_io = None;
         let result = (|| {
             validate_custody(
                 installed,
@@ -372,23 +414,66 @@ impl MonitorRegistry {
                 validate_relay(installed, current, &pending, ledger)?;
                 let mut recheck =
                     |pending: &RelayConnection| validate_relay(installed, current, pending, ledger);
-                transfer(&mut pending, installed.runtime.claim(), &mut recheck)?;
-                validate_custody(
-                    installed,
-                    &current.connection,
-                    &current.subject,
-                    &current.child,
-                    &current.original_witness,
-                    ledger,
-                )?;
+                let transferred = (|| {
+                    transfer(&mut pending, installed.runtime.claim(), &mut recheck)?;
+                    validate_custody(
+                        installed,
+                        &current.connection,
+                        &current.subject,
+                        &current.child,
+                        &current.original_witness,
+                        ledger,
+                    )
+                })();
+                // An ambiguous SCM attempt may expose IO. Retain only its
+                // original liveness handles, never retryable attach custody.
+                if pending.io_attempted {
+                    transferred_io = Some(pending);
+                }
+                transferred?;
                 observation.phase = OriginalAttachPhaseV3::Transferred;
             }
             Ok(observation)
         })();
-        if action == OriginalAttachActionV3::Consume || result.is_err() {
+        if let Some(io) = transferred_io {
+            let original = registry.custody.take().ok_or(Error::LedgerConflict)?;
+            let execution = registry
+                .installed
+                .as_ref()
+                .ok_or(Error::LedgerConflict)?
+                .runtime
+                .claim()
+                .binding
+                .execution_id;
+            let relay = original.relay.ok_or(Error::LedgerConflict)?;
+            registry.session = Some(SessionLiveness {
+                execution,
+                connection: original.connection,
+                subject: original.subject,
+                child: original.child,
+                relay,
+                io,
+            });
+        } else if action == OriginalAttachActionV3::Consume || result.is_err() {
             registry.custody.take();
         }
         result
+    }
+}
+
+impl SessionLiveness {
+    fn is_live(&self) -> bool {
+        // These original handles were retained after the one-use SCM attempt.
+        // No callback bytes, expiry refresh, scalar PID or session identifier
+        // can recreate them. This method cannot release any descriptor.
+        self.subject.is_alive().unwrap_or(false)
+            && self.connection.peer().is_alive().unwrap_or(false)
+            && self.child.is_alive().unwrap_or(false)
+            && self.relay.is_alive().unwrap_or(false)
+            && self.io.subject.is_alive().unwrap_or(false)
+            && self.io.socket.peer().is_alive().unwrap_or(false)
+            && connected(&self.connection)
+            && connected(&self.io.socket)
     }
 }
 
@@ -478,10 +563,10 @@ fn validate_custody(
     )
     .map_err(|_| Error::InvalidRequest)?;
     if !crate::bridge::request_matches(&request, claim, &process)
-        || process.uid != witness.uid
+        || crate::gate::static_login_identity(&claim.binding.user)? != (witness.uid, witness.gid)
         || process.canceled
         || process.terminal.is_some()
-        || !crate::process::process_matches(&process)?
+        || !ledger.require_live_process(&process)?
     {
         return Err(Error::InvalidRequest);
     }

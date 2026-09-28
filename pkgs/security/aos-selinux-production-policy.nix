@@ -111,6 +111,7 @@ in
 
           ${checkpolicy}/bin/checkpolicy -b -C \
             -o final-policy.cil final-policy.${policyVersion}
+          grep -Fx '(policycap nnp_nosuid_transition)' final-policy.cil
           ${python3}/bin/python3 ${policySupport}/effective_policy.py \
             final-policy.${policyVersion} > effective-policy.tsv
           test -s effective-policy.tsv

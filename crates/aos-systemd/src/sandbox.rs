@@ -1251,7 +1251,7 @@ mod tests {
                 "--private-users=65536:65536",
                 "--private-users-ownership=map",
                 "--notify-ready=yes",
-                "--selinux-context=system_u:system_r:aos_sandbox_payload_t:s0",
+                "--selinux-context=system_u:system_r:aos_sandbox_guest_owner_t:s0",
                 "--no-new-privileges=yes",
                 concat!(
                     "--drop-capability=",

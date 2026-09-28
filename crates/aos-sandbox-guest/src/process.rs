@@ -1,9 +1,6 @@
-//! Concrete, guest-local process, PTY, and process-group effects.
+//! Concrete Guest-owned execution trees, PTYs, and durable terminal effects.
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::io::Write as _;
-use std::os::fd::OwnedFd;
+use std::os::fd::{FromRawFd as _, OwnedFd};
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::time::Instant;
@@ -20,7 +17,6 @@ use aos_sandbox_core::{
 };
 use rustix::fs::{Mode, OFlags, fchown, open};
 use rustix::io;
-use rustix::process::{Pid, Signal, kill_process_group};
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use rustix::termios::{Winsize, tcsetwinsize};
 
@@ -44,6 +40,9 @@ pub enum GuestProcessEffectErrorV1 {
     /// A protected Unix sequenced-packet operation failed.
     #[error("guest attach bridge failed: {0}")]
     Bridge(#[from] aos_sandbox_linux::seqpacket::SeqpacketError),
+    /// Enforcing Guest ownership or retained kernel custody failed.
+    #[error("guest execution confinement failed: {0}")]
+    Confinement(#[from] aos_sandbox_linux::Error),
     /// The protected state directory or one of its records is unsafe.
     #[error("guest effect ledger is not root-protected")]
     UnprotectedLedger,
@@ -61,16 +60,18 @@ pub enum GuestProcessEffectErrorV1 {
     Unavailable(&'static str),
 }
 
-struct LiveProcess {
+pub(crate) struct LiveProcess {
     child: Child,
     pty_master: Option<OwnedFd>,
+    pub(crate) tree: crate::execution_tree::ExecutionTree,
 }
 
 /// Owns durable guest execution records and the currently attached children.
 pub struct GuestProcessEffectsV1 {
     ledger: Ledger,
     bridge: AttachBridge,
-    live: BTreeMap<[u8; 16], LiveProcess>,
+    execution_root: aos_sandbox_linux::cgroup::RetainedCgroupAnchor,
+    _payload_cgroup: aos_sandbox_linux::guest_cgroup::GuestPayloadCgroupCustodyV1,
     gate: Option<GuestOpenSshGate>,
     quiesced: bool,
 }
@@ -83,13 +84,24 @@ impl GuestProcessEffectsV1 {
     /// Returns [`GuestProcessEffectErrorV1`] when the fixed ledger cannot be
     /// created or authenticated as root-owned private state.
     pub fn open() -> Result<Self, GuestProcessEffectErrorV1> {
+        aos_sandbox_linux::guest_confinement::require_guest_owner()?;
+        let payload_cgroup =
+            aos_sandbox_linux::guest_cgroup::GuestPayloadCgroupCustodyV1::from_inherited()?;
+        let execution_root = payload_cgroup.execution_root()?;
+        for descriptor in [6, 7] {
+            aos_sandbox_linux::inherited_fd::mark_inherited_descriptor_close_on_exec(descriptor)?;
+            // SAFETY: fixed bootstrap startup gives this Agent sole numeric
+            // custody of the originals. Typed owners represent only clones.
+            drop(unsafe { std::os::fd::OwnedFd::from_raw_fd(descriptor) });
+        }
         let ledger = Ledger::open()?;
         let quiesced = ledger.read_quiesced()?;
         let bridge = AttachBridge::start(ledger.clone())?;
         Ok(Self {
             ledger,
             bridge,
-            live: BTreeMap::new(),
+            execution_root,
+            _payload_cgroup: payload_cgroup,
             gate: None,
             quiesced,
         })
@@ -143,13 +155,6 @@ impl GuestProcessEffectsV1 {
                 }
 
                 let credentials = specification.command().credentials();
-                // CommandExt::uid clears supplementary groups in the child.
-                // Nonempty groups need a separate audited credential launcher.
-                if !credentials.supplementary_group_ids().is_empty() {
-                    return Err(GuestProcessEffectErrorV1::Unavailable(
-                        "supplementary groups are not supported by this launcher",
-                    ));
-                }
                 check_deadline(deadline)?;
                 self.start_process(
                     *execution,
@@ -177,6 +182,9 @@ impl GuestProcessEffectsV1 {
                     *request.operation_id().as_bytes(),
                     *principal.as_bytes(),
                     *audit.as_bytes(),
+                    specification.io().disconnect_policy()
+                        == aos_sandbox_core::ExecutionDisconnectPolicyV1::Cancel,
+                    deadline,
                 )
             }
             AgentExecutionOperationV1::ResizeTerminal {
@@ -188,17 +196,29 @@ impl GuestProcessEffectsV1 {
                 execution,
                 signal_code,
             } => self.signal(*execution, *signal_code, runtime),
-            AgentExecutionOperationV1::Cancel { execution } => self.cancel(*execution, runtime),
+            AgentExecutionOperationV1::Cancel { execution } => {
+                self.cancel(*execution, runtime, deadline)
+            }
             AgentExecutionOperationV1::Observe { execution } => self.observe(*execution, runtime),
             AgentExecutionOperationV1::BeginQuiesce => {
                 if self.ledger.has_ambiguous_operation(request)? {
                     return Err(GuestProcessEffectErrorV1::AmbiguousEffect);
                 }
                 for record in self.ledger.processes()? {
-                    if record.terminal.is_none() && process_matches(&record)? {
-                        return Err(GuestProcessEffectErrorV1::Unavailable(
-                            "active children prevent the local quiesce barrier",
-                        ));
+                    if record.terminal.is_none() {
+                        let live = self
+                            .ledger
+                            .live()
+                            .lock()
+                            .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+                        let process = live
+                            .get(&record.execution)
+                            .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+                        if !process.tree.empty_and_exited()? {
+                            return Err(GuestProcessEffectErrorV1::Unavailable(
+                                "active execution trees prevent the local quiesce barrier",
+                            ));
+                        }
                     }
                 }
                 self.ledger.write_quiesced(true)?;
@@ -225,10 +245,14 @@ impl GuestProcessEffectsV1 {
         operation: [u8; 16],
         principal: [u8; 16],
         audit: [u8; 16],
+        cancel_on_disconnect: bool,
+        deadline: Instant,
     ) -> Result<StoredOutcome, GuestProcessEffectErrorV1> {
         let helper = std::env::current_exe()?.with_file_name("aos-sandbox-guest-exec");
         let mut command = Command::new(helper);
-        command.uid(uid).gid(gid);
+        // This exact measured Owner helper remains root and cannot consume the
+        // spec until its proper-descendant membership and durable row exist.
+        command.env_clear();
         command.stdin(Stdio::piped());
         if pty {
             command.stdout(Stdio::null()).stderr(Stdio::null());
@@ -263,57 +287,90 @@ impl GuestProcessEffectsV1 {
             .stdin
             .take()
             .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
-        write_specification(&mut input, specification)?;
         let pid = child.id();
-        let start_ticks = process_identity(pid)?
-            .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?
-            .start_ticks;
-        self.ledger.write_process(
-            execution,
-            &ProcessRecord {
-                version: 1,
-                runtime: runtime_identity(runtime),
-                operation,
-                execution: *execution.as_bytes(),
-                incarnation: *runtime.incarnation().as_bytes(),
-                assignment_epoch: runtime.assignment_epoch().get(),
-                principal,
-                audit,
-                uid,
-                pid,
-                start_ticks,
-                pty: slave_path.is_some(),
-                attach_io,
-                canceled: false,
-                terminal: None,
-            },
+        let tree = crate::execution_tree::ExecutionTree::create(
+            &self.execution_root,
+            execution.as_bytes(),
+            pid,
         )?;
-        if let Some(master) = master.as_ref() {
+        let start_ticks = tree.leader_start_ticks()?;
+        let record = ProcessRecord {
+            version: 2,
+            runtime: runtime_identity(runtime),
+            operation,
+            execution: *execution.as_bytes(),
+            incarnation: *runtime.incarnation().as_bytes(),
+            assignment_epoch: runtime.assignment_epoch().get(),
+            principal,
+            audit,
+            uid,
+            pid,
+            start_ticks,
+            pty: slave_path.is_some(),
+            attach_io,
+            cgroup: Some(tree.kernel_id()),
+            cancel_on_disconnect: Some(cancel_on_disconnect),
+            canceled: false,
+            terminal: None,
+        };
+        self.ledger.write_process(execution, &record)?;
+        tree.require_leader()?;
+        self.ledger
+            .live()
+            .lock()
+            .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?
+            .insert(
+                *execution.as_bytes(),
+                LiveProcess {
+                    child,
+                    pty_master: master,
+                    tree,
+                },
+            );
+        write_specification(&mut input, specification, deadline)?;
+        let mut live = self
+            .ledger
+            .live()
+            .lock()
+            .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+        let process = live
+            .get_mut(execution.as_bytes())
+            .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+        if let Some(master) = process.pty_master.as_ref() {
             self.bridge.register_pty(*execution.as_bytes(), master)?;
         } else {
-            let stdout = child
+            let stdout = process
+                .child
                 .stdout
                 .take()
                 .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
-            let stderr = child
+            let stderr = process
+                .child
                 .stderr
                 .take()
                 .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
             self.bridge
                 .register_stream(*execution.as_bytes(), input, stdout, stderr)?;
         }
-        self.live.insert(
-            *execution.as_bytes(),
-            LiveProcess {
-                child,
-                pty_master: master,
-            },
-        );
-        Ok(outcome(
-            AgentExecutionPhaseV1::Running,
-            1,
-            &pid.to_be_bytes(),
-        ))
+        drop(live);
+        loop {
+            check_deadline(deadline)?;
+            let mut live = self
+                .ledger
+                .live()
+                .lock()
+                .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+            let process = live
+                .get_mut(execution.as_bytes())
+                .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+            let initialized = process.tree.matches(&record)? || process.child.try_wait()?.is_some();
+            drop(live);
+            if initialized {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        self.observe(execution, runtime)
     }
 
     fn bound_process(
@@ -336,11 +393,15 @@ impl GuestProcessEffectsV1 {
         runtime: &AgentRuntimeBindingV1,
     ) -> Result<StoredOutcome, GuestProcessEffectErrorV1> {
         let record = self.bound_process(execution, runtime)?;
-        if !record.pty || !process_matches(&record)? {
+        if !record.pty || !self.ledger.require_live_process(&record)? {
             return Err(GuestProcessEffectErrorV1::Unavailable("PTY is not live"));
         }
-        let master = self
-            .live
+        let live = self
+            .ledger
+            .live()
+            .lock()
+            .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+        let master = live
             .get(execution.as_bytes())
             .and_then(|process| process.pty_master.as_ref())
             .ok_or(GuestProcessEffectErrorV1::Unavailable(
@@ -364,37 +425,26 @@ impl GuestProcessEffectsV1 {
     fn signal(
         &mut self,
         execution: ExecutionId,
-        code: u8,
+        _code: u8,
         runtime: &AgentRuntimeBindingV1,
     ) -> Result<StoredOutcome, GuestProcessEffectErrorV1> {
-        let record = self.bound_process(execution, runtime)?;
-        if !process_matches(&record)? {
-            return Err(GuestProcessEffectErrorV1::Unavailable(
-                "process is not live",
-            ));
-        }
-        let signal = portable_signal(code).ok_or(GuestProcessEffectErrorV1::Unavailable(
-            "unsupported signal code",
-        ))?;
-        let pid =
-            Pid::from_raw(record.pid as i32).ok_or(GuestProcessEffectErrorV1::LedgerConflict)?;
-        kill_process_group(pid, signal)?;
-        Ok(outcome(AgentExecutionPhaseV1::Running, 3, &[code]))
+        self.bound_process(execution, runtime)?;
+        // A retained leader proves neither the complete job-control group nor
+        // atomic delivery to all original descendants. Do not advertise a
+        // leader-only downgrade while the full session signal cut is absent.
+        Err(GuestProcessEffectErrorV1::Unavailable(
+            "whole-execution signal delivery is not qualified",
+        ))
     }
 
     fn cancel(
         &mut self,
         execution: ExecutionId,
         runtime: &AgentRuntimeBindingV1,
+        deadline: Instant,
     ) -> Result<StoredOutcome, GuestProcessEffectErrorV1> {
-        let mut record = self.bound_process(execution, runtime)?;
-        if !process_matches(&record)? {
-            return Err(GuestProcessEffectErrorV1::Unavailable(
-                "process is not live",
-            ));
-        }
-        let pid =
-            Pid::from_raw(record.pid as i32).ok_or(GuestProcessEffectErrorV1::LedgerConflict)?;
+        self.bound_process(execution, runtime)?;
+        let result = cancel_owned_execution(&self.ledger, execution, deadline)?;
         self.bridge.remove(*execution.as_bytes())?;
         if self
             .gate
@@ -403,14 +453,7 @@ impl GuestProcessEffectsV1 {
         {
             self.gate = None;
         }
-        kill_process_group(pid, Signal::KILL)?;
-        record.canceled = true;
-        self.ledger.replace_process(execution, &record)?;
-        Ok(outcome(
-            AgentExecutionPhaseV1::Canceled,
-            4,
-            execution.as_bytes(),
-        ))
+        Ok(result)
     }
 
     fn observe(
@@ -422,7 +465,17 @@ impl GuestProcessEffectsV1 {
         if let Some(terminal) = &record.terminal {
             return Ok(terminal.clone());
         }
-        if let Some(process) = self.live.get_mut(execution.as_bytes()) {
+        let mut live = self
+            .ledger
+            .live()
+            .lock()
+            .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+        // A cold ledger cannot reconstruct a process tree or prove recursive
+        // exit from a PID, PGID, cgroup number, or a missing /proc entry.
+        let process = live
+            .get_mut(execution.as_bytes())
+            .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+        if process.tree.empty_and_exited()? {
             if let Some(status) = process.child.try_wait()? {
                 let result = if record.canceled {
                     outcome(AgentExecutionPhaseV1::Canceled, 7, b"canceled")
@@ -435,6 +488,8 @@ impl GuestProcessEffectsV1 {
                 };
                 record.terminal = Some(result.clone());
                 self.ledger.replace_process(execution, &record)?;
+                live.remove(execution.as_bytes());
+                drop(live);
                 self.bridge.remove(*execution.as_bytes())?;
                 if self
                     .gate
@@ -443,30 +498,16 @@ impl GuestProcessEffectsV1 {
                 {
                     self.gate = None;
                 }
-                self.live.remove(execution.as_bytes());
                 return Ok(result);
             }
+            return Err(GuestProcessEffectErrorV1::AmbiguousEffect);
         }
-        if process_matches(&record)? {
-            Ok(outcome(
-                AgentExecutionPhaseV1::Running,
-                5,
-                &record.pid.to_be_bytes(),
-            ))
-        } else {
-            let result = outcome(AgentExecutionPhaseV1::Lost, 8, b"lost");
-            record.terminal = Some(result.clone());
-            self.ledger.replace_process(execution, &record)?;
-            self.bridge.remove(*execution.as_bytes())?;
-            if self
-                .gate
-                .as_ref()
-                .is_some_and(|gate| gate.execution() == *execution.as_bytes())
-            {
-                self.gate = None;
-            }
-            Ok(result)
-        }
+        // A dead leader with live descendants is not a terminal execution.
+        Ok(outcome(
+            AgentExecutionPhaseV1::Running,
+            5,
+            &record.pid.to_be_bytes(),
+        ))
     }
 }
 
@@ -478,7 +519,6 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
                 | AgentFeatureV1::ExecutionHandoff
                 | AgentFeatureV1::ExecutionObservation
                 | AgentFeatureV1::TerminalResize
-                | AgentFeatureV1::ExecutionSignal
                 | AgentFeatureV1::Quiesce
         )
     }
@@ -550,7 +590,16 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
             )));
         }
         if self.gate.is_none() {
-            if !self.live.contains_key(&request.binding.execution_id) {
+            if !self
+                .ledger
+                .require_live_process(
+                    &self
+                        .ledger
+                        .read_process_bytes(request.binding.execution_id)
+                        .map_err(effect_error)?,
+                )
+                .map_err(effect_error)?
+            {
                 return Err(effect_error(GuestProcessEffectErrorV1::Unavailable(
                     "admitted process is not held by this agent",
                 )));
@@ -579,7 +628,17 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
         let _current = barrier
             .lock()
             .map_err(|_| effect_error(GuestProcessEffectErrorV1::LedgerConflict))?;
-        if self.quiesced || !self.live.contains_key(&request.binding.execution_id) {
+        if self.quiesced
+            || !self
+                .ledger
+                .require_live_process(
+                    &self
+                        .ledger
+                        .read_process_bytes(request.binding.execution_id)
+                        .map_err(effect_error)?,
+                )
+                .map_err(effect_error)?
+        {
             return Err(effect_error(GuestProcessEffectErrorV1::InvalidRequest));
         }
         // Binding never installs/reconstructs a process or base route.
@@ -620,7 +679,17 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
             .lock()
             .map_err(|_| effect_error(GuestProcessEffectErrorV1::LedgerConflict))?;
         check_deadline(deadline).map_err(effect_error)?;
-        if self.quiesced || !self.live.contains_key(&request.binding.execution_id) {
+        if self.quiesced
+            || !self
+                .ledger
+                .require_live_process(
+                    &self
+                        .ledger
+                        .read_process_bytes(request.binding.execution_id)
+                        .map_err(effect_error)?,
+                )
+                .map_err(effect_error)?
+        {
             return Err(effect_error(GuestProcessEffectErrorV1::InvalidRequest));
         }
         // Installation and binding are earlier effects. Consume cannot rebuild
@@ -677,84 +746,61 @@ fn outcome(phase: AgentExecutionPhaseV1, kind: u8, payload: &[u8]) -> StoredOutc
 fn write_specification(
     input: &mut ChildStdin,
     specification: &[u8],
+    deadline: Instant,
 ) -> Result<(), GuestProcessEffectErrorV1> {
     let length = u32::try_from(specification.len())
         .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
-    input.write_all(&length.to_be_bytes())?;
-    input.write_all(specification)?;
+    let flags = rustix::fs::fcntl_getfl(&*input)?;
+    rustix::fs::fcntl_setfl(&*input, flags | OFlags::NONBLOCK)?;
+    let header = length.to_be_bytes();
+    for mut bytes in [&header[..], specification] {
+        while !bytes.is_empty() {
+            check_deadline(deadline)?;
+            match rustix::io::write(&*input, bytes) {
+                Ok(0) => return Err(GuestProcessEffectErrorV1::AmbiguousEffect),
+                Ok(written) => bytes = &bytes[written..],
+                Err(io::Errno::INTR) => {}
+                Err(io::Errno::AGAIN) => std::thread::sleep(std::time::Duration::from_millis(2)),
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
     Ok(())
 }
 
-pub(crate) struct ProcIdentity {
-    pub(crate) start_ticks: u64,
-    pub(crate) process_group: u32,
-    pub(crate) parent: u32,
-}
-
-pub(crate) fn process_identity(
-    pid: u32,
-) -> Result<Option<ProcIdentity>, GuestProcessEffectErrorV1> {
-    let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(stat) => stat,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    let fields = stat
-        .rsplit_once(") ")
-        .ok_or(GuestProcessEffectErrorV1::LedgerConflict)?
-        .1
-        .split_ascii_whitespace()
-        .collect::<Vec<_>>();
-    let parent = fields
-        .get(1)
-        .ok_or(GuestProcessEffectErrorV1::LedgerConflict)?
-        .parse()
-        .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
-    let process_group = fields
-        .get(2)
-        .ok_or(GuestProcessEffectErrorV1::LedgerConflict)?
-        .parse()
-        .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
-    let start = fields
-        .get(19)
-        .ok_or(GuestProcessEffectErrorV1::LedgerConflict)?
-        .parse()
-        .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
-    Ok(Some(ProcIdentity {
-        start_ticks: start,
-        process_group,
-        parent,
-    }))
-}
-
-pub(crate) fn process_matches(record: &ProcessRecord) -> Result<bool, GuestProcessEffectErrorV1> {
-    Ok(matches!(
-        process_identity(record.pid)?,
-        Some(identity)
-            if identity.start_ticks == record.start_ticks
-                && identity.process_group == record.pid
-    ))
-}
-
-fn portable_signal(code: u8) -> Option<Signal> {
-    match code {
-        1 => Some(Signal::HUP),
-        2 => Some(Signal::INT),
-        3 => Some(Signal::QUIT),
-        6 => Some(Signal::ABORT),
-        9 => Some(Signal::KILL),
-        10 => Some(Signal::USR1),
-        12 => Some(Signal::USR2),
-        13 => Some(Signal::PIPE),
-        14 => Some(Signal::ALARM),
-        15 => Some(Signal::TERM),
-        17 => Some(Signal::CHILD),
-        18 => Some(Signal::CONT),
-        19 => Some(Signal::STOP),
-        20 => Some(Signal::TSTP),
-        21 => Some(Signal::TTIN),
-        22 => Some(Signal::TTOU),
-        28 => Some(Signal::WINCH),
-        _ => None,
+/// Cancels the actual original execution tree while its caller retains the
+/// shared terminal/reservation/SCM barrier. No cold scalar state is adopted.
+pub(super) fn cancel_owned_execution(
+    ledger: &Ledger,
+    execution: ExecutionId,
+    deadline: Instant,
+) -> Result<StoredOutcome, GuestProcessEffectErrorV1> {
+    let mut record = ledger.read_process(execution)?;
+    if let Some(terminal) = &record.terminal {
+        return Ok(terminal.clone());
     }
+    let mut live = ledger
+        .live()
+        .lock()
+        .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+    let process = live
+        .get_mut(execution.as_bytes())
+        .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+    if record.version != 2 || record.cgroup != Some(process.tree.kernel_id()) {
+        return Err(GuestProcessEffectErrorV1::LedgerConflict);
+    }
+
+    // Foreclose attach before kill. A failed/ambiguous wait leaves the durable
+    // row canceled but nonterminal, never a false success or another IO slot.
+    record.canceled = true;
+    ledger.replace_process(execution, &record)?;
+    process.tree.kill_and_wait(deadline)?;
+    if process.child.try_wait()?.is_none() {
+        return Err(GuestProcessEffectErrorV1::AmbiguousEffect);
+    }
+    let result = outcome(AgentExecutionPhaseV1::Canceled, 7, b"canceled");
+    record.terminal = Some(result.clone());
+    ledger.replace_process(execution, &record)?;
+    live.remove(execution.as_bytes());
+    Ok(result)
 }

@@ -130,6 +130,8 @@ in
     #          RestrictSUIDSGID=, allowing safe descriptor-relative openat2.
     #   0016 — Reject truncated sd-bus ancillary data even when the message
     #          body does not reference the discarded descriptor.
+    #   0017 — Retain the already-mounted payload cgroup and sealed original
+    #          credential/inode join for the fixed Guest owner bootstrap.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -146,6 +148,7 @@ in
       ./patches/0014-nspawn-guest-agent-descriptors.patch
       ./patches/0015-restrict-suid-sgid-kernel-guard.patch
       ./patches/0016-reject-truncated-bus-ancillary-data.patch
+      ./patches/0017-nspawn-guest-cgroup-custody.patch
     ];
 
     buildDeps = [

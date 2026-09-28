@@ -22,6 +22,16 @@ pub(crate) const SO_COOKIE: libc::c_int = 57;
 const SEQPACKET_CONTROL_BYTES: usize = 512;
 const PR_GET_AOS_NO_SETID: libc::c_int = 83;
 
+pub(crate) fn close_guest_descriptor_tail() -> Result<()> {
+    // SAFETY: scalar bounds close only the helper's private table. The public
+    // caller requires exclusive single-threaded custody and no live Rust owner
+    // for these entries. No descriptor is returned or adopted by this syscall.
+    unit_result(
+        unsafe { libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, 0_u32) },
+        "close Guest private descriptor tail",
+    )
+}
+
 pub(crate) fn get_aos_no_setid() -> Result<i32> {
     // SAFETY: the fixed query has no pointer arguments and does not mutate the
     // calling thread. Unknown kernels return EINVAL and fail closed.

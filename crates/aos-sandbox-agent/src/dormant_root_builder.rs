@@ -88,10 +88,62 @@ pub fn build_concrete_guest_root_v1(
         write_new_file(&plan.staging_root.join(relative_path), 0o500, &bytes)?;
     }
 
+    prepare_owner_configuration(&plan.staging_root)?;
+
     write_credential(
         &plan.staging_root,
         plan.agent.digest,
         plan.credential_binding,
+    )
+}
+
+fn prepare_owner_configuration(root: &Path) -> Result<(), DormantGuestRootBuildErrorV1> {
+    for path in [
+        "etc/systemd",
+        "etc/pam.d",
+        "etc/ld.so.conf.d",
+        "etc/aos",
+        "etc/aos/sandbox-guest-root",
+        "etc/aos/sandbox-attach",
+        "var/lib/aos-sandbox-agent/guest-effects-v1",
+        "run/systemd",
+    ] {
+        fs::create_dir_all(root.join(path))?;
+        // The measured nonroot Owner callback reads protected public ticket
+        // data. MAC denies Tenant traversal, including UID zero; private host
+        // keys retain their independently checked root-only file modes.
+        let mode = if matches!(path, "etc/aos" | "etc/aos/sandbox-attach") {
+            0o755
+        } else {
+            0o700
+        };
+        fs::set_permissions(root.join(path), fs::Permissions::from_mode(mode))?;
+    }
+    // This installs no login principal. Empty static databases remain closed
+    // to Attach until their genuine owner-provisioned account is available.
+    // Reserving the configuration names prevents a UID-zero tenant from
+    // supplying loader/PAM/NSS input to the trusted Guest systemd or sshd.
+    for path in [
+        "etc/passwd",
+        "etc/group",
+        "etc/shadow",
+        "etc/ld.so.preload",
+        "etc/ld.so.cache",
+        "etc/ld.so.conf",
+        "etc/machine-id",
+        "etc/hostname",
+        "etc/resolv.conf",
+    ] {
+        write_new_file(
+            &root.join(path),
+            if path == "etc/shadow" { 0o600 } else { 0o644 },
+            b"",
+        )?;
+    }
+    write_new_file(
+        &root.join("etc/nsswitch.conf"),
+        0o644,
+        b"passwd: files\ngroup: files\nshadow: files\n",
     )
 }
 

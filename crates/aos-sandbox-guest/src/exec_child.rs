@@ -1,8 +1,10 @@
 //! Fixed child launcher for a previously authenticated guest execution spec.
 //!
-//! The parent agent drops UID and GID before launching this helper. The helper
-//! reads the canonical spec from an inherited pipe and uses safe kernel wrappers
-//! to establish a controlling PTY before replacing itself with the command.
+//! The helper remains in the enforcing Owner subject and UID zero while its
+//! parent pins its cgroup and accepts the durable original process record. Only
+//! then is the canonical spec released on its private pipe. It installs the
+//! exact admitted groups/GID/UID, closes private descriptors, and explicitly
+//! selects the Tenant exec SID without changing the inherited NNP profile.
 
 use std::ffi::{OsStr, OsString};
 use std::io::Read as _;
@@ -12,10 +14,21 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use aos_sandbox_core::{DecodeLimits, ExecutionSpecV1, RelativePath, decode_execution_spec_v1};
+use aos_sandbox_linux::guest_confinement::{
+    close_guest_private_descriptors, require_guest_owner, require_guest_stdio,
+    select_guest_tenant_exec,
+};
+use aos_sandbox_linux::pidfd::SingleThreadedProcess;
 
 const MAX_SPECIFICATION_BYTES: usize = 15 * 1_048_576;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let worker = SingleThreadedProcess::verify()?;
+    require_guest_owner()?;
+    worker.disable_core_dumps()?;
+    if rustix::process::geteuid().as_raw() != 0 || std::env::args_os().len() > 2 {
+        return Err("guest helper requires fixed trusted startup".into());
+    }
     let pty_path = std::env::args_os().nth(1);
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
@@ -38,10 +51,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             maximum_depth: 128,
         },
     )?;
-    run_command(&specification, pty_path.as_deref())
+    drop(input);
+    run_command(&worker, &specification, pty_path.as_deref())
 }
 
 fn run_command(
+    worker: &SingleThreadedProcess,
     specification: &ExecutionSpecV1,
     pty_path: Option<&OsStr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -75,13 +90,42 @@ fn run_command(
             .write(true)
             .open(path)?;
         rustix::process::ioctl_tiocsctty(&slave)?;
-        command.stdin(Stdio::from(slave.try_clone()?));
-        command.stdout(Stdio::from(slave.try_clone()?));
-        command.stderr(Stdio::from(slave));
-    } else {
-        command.stdin(Stdio::inherit());
-        command.stdout(Stdio::inherit());
-        command.stderr(Stdio::inherit());
+        rustix::stdio::dup2_stdin(&slave)?;
+        rustix::stdio::dup2_stdout(&slave)?;
+        rustix::stdio::dup2_stderr(&slave)?;
+        drop(slave);
+    }
+    command.stdin(Stdio::inherit());
+    command.stdout(Stdio::inherit());
+    command.stderr(Stdio::inherit());
+    require_guest_stdio(pty_path.is_some())?;
+
+    let credentials = command_spec.credentials();
+    let groups = credentials
+        .supplementary_group_ids()
+        .iter()
+        .map(|group| rustix::process::Gid::from_raw(*group))
+        .collect::<Vec<_>>();
+    rustix::thread::set_thread_groups(&groups)?;
+    let gid = rustix::process::Gid::from_raw(credentials.primary_group_id());
+    rustix::thread::set_thread_res_gid(gid, gid, gid)?;
+    let uid = rustix::process::Uid::from_raw(credentials.user_id());
+    rustix::thread::set_thread_res_uid(uid, uid, uid)?;
+    if rustix::process::getuid() != uid
+        || rustix::process::geteuid() != uid
+        || rustix::process::getgid() != gid
+        || rustix::process::getegid() != gid
+        || rustix::process::getgroups()? != groups
+    {
+        return Err("guest original credentials differ after installation".into());
+    }
+
+    select_guest_tenant_exec(worker)?;
+    // SAFETY: this fixed single-threaded helper has dropped every nonstdio
+    // descriptor owner, uses only inherited stdio in Command, and immediately
+    // execs or exits on failure. No private FD can survive the Tenant transition.
+    unsafe {
+        close_guest_private_descriptors(worker)?;
     }
 
     Err(command.exec().into())

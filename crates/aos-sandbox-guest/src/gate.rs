@@ -22,7 +22,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::GuestProcessEffectErrorV1;
 use crate::ledger::{Ledger, ProcessRecord, runtime_identity};
-use crate::process::{check_deadline, process_matches};
+use crate::process::check_deadline;
 
 const DIRECTORY: &str = "/etc/aos/sandbox-attach";
 const CONFIG: &str = "/etc/aos/sandbox-attach/sshd_config";
@@ -86,7 +86,7 @@ impl GuestOpenSshGate {
     ) -> Result<Self, GuestProcessEffectErrorV1> {
         check_deadline(deadline)?;
         let process = ledger.read_process_bytes(request.binding.execution_id)?;
-        verify_admitted_process(&process, request, runtime)?;
+        verify_admitted_process(&process, request, runtime, ledger)?;
 
         let config = expected_openssh_gate_config_v1(&request.binding)
             .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
@@ -149,7 +149,7 @@ impl GuestOpenSshGate {
             return Err(GuestProcessEffectErrorV1::InvalidRequest);
         }
         let process = ledger.read_process_bytes(request.binding.execution_id)?;
-        verify_admitted_process(&process, request, runtime)?;
+        verify_admitted_process(&process, request, runtime, ledger)?;
         if self.claim.runtime_identity != process.runtime
             || self.claim.process_pid != process.pid
             || self.claim.process_start_ticks != process.start_ticks
@@ -185,6 +185,7 @@ fn verify_admitted_process(
     process: &ProcessRecord,
     request: &OpenSshGateObserveRequestV1,
     runtime: &AgentRuntimeBindingV1,
+    ledger: &Ledger,
 ) -> Result<(), GuestProcessEffectErrorV1> {
     let binding = &request.binding;
     if process.execution != binding.execution_id
@@ -195,31 +196,29 @@ fn verify_admitted_process(
         || process.runtime != runtime_identity(runtime)
         || process.canceled
         || process.terminal.is_some()
-        || !process_matches(process)?
+        || !ledger.require_live_process(process)?
     {
         return Err(GuestProcessEffectErrorV1::InvalidRequest);
     }
-    verify_static_login_uid(&binding.user, process.uid)?;
+    static_login_identity(&binding.user)?;
     Ok(())
 }
 
-fn verify_static_login_uid(user: &str, expected_uid: u32) -> Result<(), GuestProcessEffectErrorV1> {
+pub(super) fn static_login_identity(user: &str) -> Result<(u32, u32), GuestProcessEffectErrorV1> {
     let nss_policy = read_protected_static_file(NSS_POLICY)?;
     let database = read_protected_static_file(LOGIN_DATABASE)?;
-    verify_static_login_uid_contents(user, expected_uid, &nss_policy, &database)
+    static_login_identity_contents(user, &nss_policy, &database)
 }
 
-fn verify_static_login_uid_contents(
+fn static_login_identity_contents(
     user: &str,
-    expected_uid: u32,
     nss_policy: &str,
     database: &str,
-) -> Result<(), GuestProcessEffectErrorV1> {
-    // The certificate callback runs as the existing execution login, never
-    // root. A differently named UID-zero alias must not bypass this boundary.
-    if expected_uid == 0 {
-        return Err(GuestProcessEffectErrorV1::InvalidRequest);
-    }
+) -> Result<(u32, u32), GuestProcessEffectErrorV1> {
+    // The fixed SSH account is a transport identity, never the admitted
+    // execution credentials. Its actual nonzero UID/GID must agree with the
+    // privileged authenticated monitor witness; original process identity is
+    // independently joined through the original Authorize row and held tree.
 
     let mut found_policy = false;
     for line in nss_policy.lines() {
@@ -241,7 +240,7 @@ fn verify_static_login_uid_contents(
         return Err(GuestProcessEffectErrorV1::InvalidRequest);
     }
 
-    let mut found_user = false;
+    let mut found_user = None;
     for line in database.lines() {
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -254,16 +253,16 @@ fn verify_static_login_uid_contents(
             let uid = fields[2]
                 .parse::<u32>()
                 .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
-            if found_user || uid != expected_uid {
+            let gid = fields[3]
+                .parse::<u32>()
+                .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
+            if found_user.is_some() || uid == 0 {
                 return Err(GuestProcessEffectErrorV1::InvalidRequest);
             }
-            found_user = true;
+            found_user = Some((uid, gid));
         }
     }
-    if !found_user {
-        return Err(GuestProcessEffectErrorV1::InvalidRequest);
-    }
-    Ok(())
+    found_user.ok_or(GuestProcessEffectErrorV1::InvalidRequest)
 }
 
 fn read_protected_static_file(path: &str) -> Result<String, GuestProcessEffectErrorV1> {
@@ -302,26 +301,30 @@ fn read_protected_static_file(path: &str) -> Result<String, GuestProcessEffectEr
 
 #[cfg(test)]
 mod tests {
-    use super::verify_static_login_uid_contents;
+    //! Static transport accounts stay distinct from original execution credentials.
+    use super::static_login_identity_contents;
 
     #[test]
     fn static_files_policy_requires_exact_account_uid() {
         let passwd =
             "root:x:0:0:root:/root:/bin/sh\naos_exec:x:1001:1001::/home/aos_exec:/bin/sh\n";
         assert!(
-            verify_static_login_uid_contents("aos_exec", 1001, "passwd: files\n", passwd).is_ok()
+            static_login_identity_contents("aos_exec", "passwd: files\n", passwd).unwrap()
+                == (1001, 1001)
         );
         assert!(
-            verify_static_login_uid_contents("aos_exec", 1002, "passwd: files\n", passwd).is_err()
-        );
-        assert!(
-            verify_static_login_uid_contents("missing", 1001, "passwd: files\n", passwd).is_err()
-        );
-        assert!(verify_static_login_uid_contents("root", 0, "passwd: files\n", passwd).is_err());
-        assert!(
-            verify_static_login_uid_contents(
+            static_login_identity_contents(
                 "aos_exec",
-                0,
+                "passwd: files\n",
+                "aos_exec:x:0:1001::/:/bin/false\n"
+            )
+            .is_err()
+        );
+        assert!(static_login_identity_contents("missing", "passwd: files\n", passwd).is_err());
+        assert!(static_login_identity_contents("root", "passwd: files\n", passwd).is_err());
+        assert!(
+            static_login_identity_contents(
+                "aos_exec",
                 "passwd: files\n",
                 "aos_exec:x:0:0::/:/bin/false\n"
             )
@@ -338,14 +341,35 @@ mod tests {
             "passwd: files\npasswd: files\n",
             "group: files\n",
         ] {
-            assert!(verify_static_login_uid_contents("aos_exec", 1001, policy, passwd).is_err());
+            assert!(static_login_identity_contents("aos_exec", policy, passwd).is_err());
         }
         assert!(
-            verify_static_login_uid_contents(
+            static_login_identity_contents(
                 "aos_exec",
-                1001,
                 "passwd: files\n",
                 &format!("{passwd}{passwd}")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn nonroot_transport_login_does_not_replace_root_execution_identity() {
+        let identity = static_login_identity_contents(
+            "aos_exec",
+            "passwd: files\n",
+            "aos_exec:x:1001:1002::/:/bin/false\n",
+        )
+        .unwrap();
+        let original_execution_uid = 0;
+
+        assert_eq!(identity, (1001, 1002));
+        assert_ne!(identity.0, original_execution_uid);
+        assert!(
+            static_login_identity_contents(
+                "aos_exec",
+                "passwd: files\n",
+                "aos_exec:x:0:1002::/:/bin/false\n",
             )
             .is_err()
         );

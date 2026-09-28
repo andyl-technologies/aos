@@ -65,36 +65,41 @@ in
               # from the pinned kernel source.
               patch -p1 < ${./_aos-selinux-production-policy/refpolicy-linux-6.18.33.patch}
               sed -i 's/^UNK_PERMS.*/UNK_PERMS = reject/' build.conf
+              # Both fixed AOS transitions retain NNP/nosuid. They use explicit
+              # process2 permissions rather than weakening the inherited guard.
+              if ! grep -q '^policycap nnp_nosuid_transition;' policy/policy_capabilities; then
+                printf '\npolicycap nnp_nosuid_transition;\n' >> policy/policy_capabilities
+              fi
 
             ''
             else ""
           )
           + ''
-          # Set policy build options
-          sed -i \
-            -e 's/^#\?DISTRO.*/DISTRO = redhat/' \
-            -e 's/^#\?UBAC.*/UBAC = y/' \
-            -e 's/^#\?DIRECT_INITRC.*/DIRECT_INITRC = n/' \
-            -e 's/^#\?MONOLITHIC.*/MONOLITHIC = n/' \
-            -e 's|^#\?PREFIX.*|PREFIX = '"$out"'|' \
-            build.conf
+            # Set policy build options
+            sed -i \
+              -e 's/^#\?DISTRO.*/DISTRO = redhat/' \
+              -e 's/^#\?UBAC.*/UBAC = y/' \
+              -e 's/^#\?DIRECT_INITRC.*/DIRECT_INITRC = n/' \
+              -e 's/^#\?MONOLITHIC.*/MONOLITHIC = n/' \
+              -e 's|^#\?PREFIX.*|PREFIX = '"$out"'|' \
+              build.conf
 
-          # Override individual tool paths in the Makefile.
-          # checkmodule/checkpolicy come from the checkpolicy package,
-          # semodule_package/semodule_link/semodule_expand from semodule-utils,
-          # and semodule/load_policy/setfiles/sefcontext_compile from policycoreutils.
-          sed -i \
-            -e 's|^CHECKPOLICY ?=.*|CHECKPOLICY := ${checkpolicy}/bin/checkpolicy|' \
-            -e 's|^CHECKMODULE ?=.*|CHECKMODULE := ${checkpolicy}/bin/checkmodule|' \
-            -e 's|^SEMOD_PKG ?=.*|SEMOD_PKG := ${semodule-utils}/bin/semodule_package|' \
-            -e 's|^SEMOD_LNK ?=.*|SEMOD_LNK := ${semodule-utils}/bin/semodule_link|' \
-            -e 's|^SEMOD_EXP ?=.*|SEMOD_EXP := ${semodule-utils}/bin/semodule_expand|' \
-            -e 's|^SEMODULE ?=.*|SEMODULE := ${policycoreutils}/sbin/semodule|' \
-            -e 's|^LOADPOLICY ?=.*|LOADPOLICY := ${policycoreutils}/sbin/load_policy|' \
-            -e 's|^SETFILES ?=.*|SETFILES := ${policycoreutils}/sbin/setfiles|' \
-            -e 's|^SEFCONTEXT_COMPILE ?=.*|SEFCONTEXT_COMPILE := ${policycoreutils}/sbin/sefcontext_compile|' \
-            Makefile
-        '';
+            # Override individual tool paths in the Makefile.
+            # checkmodule/checkpolicy come from the checkpolicy package,
+            # semodule_package/semodule_link/semodule_expand from semodule-utils,
+            # and semodule/load_policy/setfiles/sefcontext_compile from policycoreutils.
+            sed -i \
+              -e 's|^CHECKPOLICY ?=.*|CHECKPOLICY := ${checkpolicy}/bin/checkpolicy|' \
+              -e 's|^CHECKMODULE ?=.*|CHECKMODULE := ${checkpolicy}/bin/checkmodule|' \
+              -e 's|^SEMOD_PKG ?=.*|SEMOD_PKG := ${semodule-utils}/bin/semodule_package|' \
+              -e 's|^SEMOD_LNK ?=.*|SEMOD_LNK := ${semodule-utils}/bin/semodule_link|' \
+              -e 's|^SEMOD_EXP ?=.*|SEMOD_EXP := ${semodule-utils}/bin/semodule_expand|' \
+              -e 's|^SEMODULE ?=.*|SEMODULE := ${policycoreutils}/sbin/semodule|' \
+              -e 's|^LOADPOLICY ?=.*|LOADPOLICY := ${policycoreutils}/sbin/load_policy|' \
+              -e 's|^SETFILES ?=.*|SETFILES := ${policycoreutils}/sbin/setfiles|' \
+              -e 's|^SEFCONTEXT_COMPILE ?=.*|SEFCONTEXT_COMPILE := ${policycoreutils}/sbin/sefcontext_compile|' \
+              Makefile
+          '';
       }
       {
         name = "build";

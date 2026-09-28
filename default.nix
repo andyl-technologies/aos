@@ -1894,6 +1894,9 @@ in {
         sandbox-openssh-attach-profile = import ./tests/vm/sandbox-openssh-attach-profile.nix {
           inherit testing pkgs lib;
         };
+        sandbox-guest-owner-confinement = import ./tests/vm/sandbox-guest-owner-confinement.nix {
+          inherit testing pkgs;
+        };
         sandbox-policy-negative = import ./tests/vm/sandbox-policy-negative.nix {
           inherit testing pkgs lib;
         };
