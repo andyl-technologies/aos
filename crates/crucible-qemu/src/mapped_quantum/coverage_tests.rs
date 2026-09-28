@@ -32,8 +32,7 @@ fn acknowledged_restore_resets_host_novelty_and_coordinate_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
-    let mut shmem = tempfile::tempfile()?;
-    shmem.set_len(layout.region_size)?;
+    let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
     shmem.write_all(&allocation.setup_region_bytes()?)?;
     let map_index = u64::try_from(basic_block_coverage_map_index(
         0x4010,
@@ -103,8 +102,7 @@ fn host_rejects_acknowledgement_before_the_plugin_empties_coverage()
 -> Result<(), Box<dyn std::error::Error>> {
     let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
-    let mut shmem = tempfile::tempfile()?;
-    shmem.set_len(layout.region_size)?;
+    let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
     shmem.write_all(&allocation.setup_region_bytes()?)?;
     let generation = {
         let mut producer = mmap_setup_region(shmem.as_fd(), layout.region_size)?;

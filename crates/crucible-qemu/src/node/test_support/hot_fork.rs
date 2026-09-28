@@ -352,9 +352,11 @@ fn held_hot_fork_ring_image() -> Result<
         .map_err(|source| {
             QemuTestHotForkSourceError::new("enqueue scripted coverage entry", source)
         })?;
-    let mut shmem = tempfile::tempfile().map_err(|source| {
-        QemuTestHotForkSourceError::new("create scripted shared-memory file", source)
-    })?;
+    let mut shmem = std::fs::File::from(
+        crate::spawn::memfd_region(allocation.layout().region_size).map_err(|source| {
+            QemuTestHotForkSourceError::new("create scripted shared-memory memfd", source)
+        })?,
+    );
     let bytes = allocation.setup_region_bytes().map_err(|source| {
         QemuTestHotForkSourceError::new("encode scripted shared-memory region", source)
     })?;

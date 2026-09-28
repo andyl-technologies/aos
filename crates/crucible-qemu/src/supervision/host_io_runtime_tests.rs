@@ -18,8 +18,7 @@ fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()
         crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2))?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
-    let mut shmem = tempfile::tempfile()?;
-    shmem.set_len(layout.region_size)?;
+    let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
     shmem.write_all(&bytes)?;
     let (mut wake_notifications, wake) = UnixStream::pair()?;
     let plugin = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
@@ -81,8 +80,7 @@ pub(crate) fn staged_fault_event_runtime(
         crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
-    let mut shmem = tempfile::tempfile()?;
-    shmem.set_len(layout.region_size)?;
+    let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
     shmem.write_all(&bytes)?;
     {
         let mut producer = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
@@ -177,8 +175,7 @@ fn advance_completion_poll_respects_elapsed_host_deadline() -> Result<(), Box<dy
         crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2))?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
-    let mut shmem = tempfile::tempfile()?;
-    shmem.set_len(layout.region_size)?;
+    let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
     shmem.write_all(&bytes)?;
     let plugin = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
     let ceiling = authorize_advance_ceiling(0, 100, None)?;
@@ -223,8 +220,7 @@ fn expired_fault_event_deadline_distinguishes_empty_and_pending_rings()
         crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2))?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
-    let mut shmem = tempfile::tempfile()?;
-    shmem.set_len(layout.region_size)?;
+    let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
     shmem.write_all(&bytes)?;
     let wake = tempfile::tempfile()?;
     let mut runtime = QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
@@ -533,8 +529,7 @@ fn priming_handoff_waits_for_an_acknowledged_post_device_boundary()
         crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 2))?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
-    let mut shmem = tempfile::tempfile()?;
-    shmem.set_len(layout.region_size)?;
+    let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
     shmem.write_all(&bytes)?;
     let (mut wake_notifications, wake) = UnixStream::pair()?;
     let plugin = crucible_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
@@ -770,11 +765,9 @@ fn private_region_pair() -> Result<(std::fs::File, std::fs::File, u64), Box<dyn 
         crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
-    let mut source = tempfile::tempfile()?;
-    source.set_len(layout.region_size)?;
+    let mut source = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
     source.write_all(&bytes)?;
-    let mut child = tempfile::tempfile()?;
-    child.set_len(layout.region_size)?;
+    let mut child = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
     child.write_all(&bytes)?;
     Ok((source, child, layout.region_size))
 }

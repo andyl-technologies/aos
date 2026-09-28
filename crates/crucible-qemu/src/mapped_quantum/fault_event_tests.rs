@@ -34,8 +34,7 @@ fn mapped_event_hot_path(
 ) -> Result<QemuMappedQuantumShmemHotPath, Box<dyn std::error::Error>> {
     let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
-    let mut shmem = tempfile::tempfile()?;
-    shmem.set_len(layout.region_size)?;
+    let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
     shmem.write_all(&allocation.setup_region_bytes()?)?;
     {
         let mut producer = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
