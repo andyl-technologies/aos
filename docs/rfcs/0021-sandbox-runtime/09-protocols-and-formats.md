@@ -2277,6 +2277,82 @@ Worker-read admission therefore remains closed pending that genuine owner-held
 producer and final Root-last consumer. Existing bootstrap verification and
 the public Create gate are not widened by this record version.
 
+### Explicit deployment input profile V2 (source-only)
+
+The unchanged 224-byte `AOSPDH01` deployment head signs the exact SHA-256
+digests of four explicitly versioned input declarations. Its generation,
+issued/expires interval, Ed25519 signing domain, independently provisioned
+deployment role, and protected next-generation CAS are unchanged. This profile
+does not change the bounded V1 `AOSPNI01`/`AOSPSI01`/`AOSPBI01`/`AOSPCI01`
+decoders or their empty-grant/catalog semantics. Neither installer interprets
+the other profile's bytes as its own.
+
+Each V2 input uses the existing constructor-normalized model serializer, not a
+new policy algorithm or the portable Policy codec:
+
+```text
+u64be(domain-length) || domain || u64be(json-length) ||
+canonical-json([[2, head-generation, deployment-signer-generation], typed-data])
+```
+
+The domains and complete typed data are:
+
+- `aos.sandbox.policy-deployment-input.node.v2`: `PolicyLayerV1`;
+- `aos.sandbox.policy-deployment-input.site.v2`: `PolicyLayerV1`;
+- `aos.sandbox.policy-deployment-input.backend.v2`: `BackendCapabilitiesV1`;
+- `aos.sandbox.policy-deployment-input.catalogs.v2`: the ordered tuple of
+  endpoint-catalog descriptor, endpoint entries, destination-catalog descriptor,
+  and destination entries.
+
+Each Node/Site layer supplies all six existing fields: grants, hard resources,
+namespace rules, advisory actions, cache-domain input, and revocation input.
+Each backend declaration supplies hard-enforcement, namespace, and advisory
+sets plus its existing constructor-derived descriptor. Catalog descriptors use
+the existing endpoint/destination canonical codecs, with their existing strict
+order, nonzero identities, and 4,096-entry bounds. All four input fields retain
+the existing 64-KiB per-input ceiling. There are no default grants, selector
+registrations, or missing-field repairs. `ContentRead` and
+`LiveKernelCoupledRead` remain distinct operations in the existing authority
+intersection; declaring an immutable source does not imply live-kernel access
+or executable package classification.
+
+The V2 API requires constructor-validated typed declarations and compares their
+exact canonical reserialization with all four signed input byte strings. It
+does not deserialize proof-shaped JSON into authenticated cache domains,
+executable sources, or catalogs. Unknown fields and unregistered Profile
+selectors cannot acquire semantics by a valid signature. Backend declarations
+are signed availability data, not evidence of installed enforcement. Nonempty
+catalog declarations are not authenticated current-owner catalogs: a later
+compiler producer must independently authenticate their exact descriptors and
+entries while the actual owners remain held.
+
+The explicit V2 fixed-Root installer validates exact signed inputs before
+opening the journal, then reads the actual protected `AOSPKP01` deployment key
+and signer generation before the shared head CAS. A caller-supplied key is
+only a pre-open verification aid, not a trust nomination. Read-only current
+verification requires the retained fixed Root writer, exact current head, and
+independently read deployment pin. Pin changes, equal-generation different
+heads, skipped generations, expiry, or input substitution fail closed. The
+existing immutable role-pin format has no independent deployment-role
+revocation head; project revocation is not such a proof, and this profile does
+not invent one or claim dynamic role revocation support.
+
+These results remain signed provenance. They do not replace authentic Source
+genesis/floors, Root signed history and rollback-floor validation, installed
+backend proofs, current catalog owners, or the Controller→Policy state→Source→
+Cache→Root/Mount held compiler/effect barrier. No daemon provisioning path,
+service, key, capability, worker-read admission, or public Create gate is opened
+by this source contract.
+
+Project V3 and request-layer provenance remain unimplemented. Their versioned
+contract must bind the exact accepted public policy descriptor and protected
+publisher project bytes to a reviewed, explicit typed request/project-layer
+mapping. A resolved Policy is not silently converted into `PolicyLayerV1`, and
+publisher ownership, absence, or inherited fields do not imply grants. The
+existing typed serializer versus lexical `serde_json::Value` output-validation
+ordering mismatch is a separate follow-up; this profile neither relaxes that
+validator nor rewrites the existing serializer.
+
 ## Portable tree format
 
 The tree format is a Merkle graph of bounded directory and node objects. Each

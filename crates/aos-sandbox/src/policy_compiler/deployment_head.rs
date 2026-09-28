@@ -69,6 +69,13 @@ use super::{
     PORTABLE_LIMIT_DIMENSIONS, PolicyLayerV1, SitePolicyInputV1,
 };
 
+mod profile_v2;
+
+pub use profile_v2::{
+    PolicyDeploymentCatalogDeclarationsV2, PolicyDeploymentInputProfileV2,
+    admit_fixed_policy_deployment_profile_v2, verify_current_policy_deployment_profile_v2,
+};
+
 const MAGIC: &[u8; 8] = b"AOSPDH01";
 const SIGNING_DOMAIN: &[u8] = b"aos.sandbox.policy-deployment-head.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-deployment-head-transaction.v1\0";
@@ -215,6 +222,47 @@ pub(super) fn encode_policy_signer_pins_v1(
         .finalize();
     encoded.extend_from_slice(&checksum);
     Ok(encoded)
+}
+
+/// Decodes canonical role-pin data without establishing journal authority.
+///
+/// # Errors
+///
+/// Rejects malformed keys, zero generations, or a different canonical record.
+pub(super) fn decode_policy_signer_pins_v1(
+    pins: &[u8],
+) -> Result<(u64, VerifyingKey, u64, VerifyingKey), PolicyDeploymentHeadErrorV1> {
+    if pins.len() != 120 || &pins[..8] != SIGNER_PINS_MAGIC {
+        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
+    }
+    let deployment_generation = read_u64(pins, 8)?;
+    let project_generation = read_u64(pins, 48)?;
+    let key_at = |offset: usize| {
+        let bytes = pins
+            .get(offset..offset + 32)
+            .and_then(|field| field.try_into().ok())
+            .ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
+        VerifyingKey::from_bytes(bytes).map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)
+    };
+    let deployment = key_at(16)?;
+    let project = key_at(56)?;
+    if encode_policy_signer_pins_v1(
+        deployment_generation,
+        &deployment,
+        project_generation,
+        &project,
+    )?
+    .as_slice()
+        != pins
+    {
+        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
+    }
+    Ok((
+        deployment_generation,
+        deployment,
+        project_generation,
+        project,
+    ))
 }
 
 /// Retains the four exact canonical deployment inputs bound by one signed head.
@@ -645,6 +693,15 @@ pub fn admit_fixed_policy_deployment_head_v1(
         POLICY_AUTHORITY_JOURNAL,
         policy_authority_journal_limits(),
     )?;
+    admit_deployment_head_in_journal(&mut journal, packet, verified, verifying_key)
+}
+
+fn admit_deployment_head_in_journal(
+    journal: &mut Journal,
+    packet: &[u8],
+    verified: PolicyDeploymentHeadV1,
+    verifying_key: &VerifyingKey,
+) -> Result<PolicyDeploymentHeadV1, PolicyDeploymentHeadErrorV1> {
     let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     super::binding_v2::ensure_root_binding_unheld(&authority)
         .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
@@ -1630,7 +1687,7 @@ mod tests {
         .expect("canonical deployment input")
     }
 
-    fn signed_deployment_fixture(key: &SigningKey) -> (Vec<u8>, [Vec<u8>; 4]) {
+    pub(super) fn signed_deployment_fixture(key: &SigningKey) -> (Vec<u8>, [Vec<u8>; 4]) {
         let portable = PORTABLE_LIMIT_DIMENSIONS
             .map(|dimension| {
                 let enforcement = match dimension {
