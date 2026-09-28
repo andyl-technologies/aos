@@ -97,6 +97,7 @@ The atomic integration patch creates these QEMU source files:
 | `tests/qtest/crucible-icount-migration.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-vfio-timer.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-vga-blink.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-rtc-phase.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated

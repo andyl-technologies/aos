@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "4825f3843ba139f438a052cec28b287bb21c491ecc97757b433dcb29b4c04baf";
+  sha256 = "3414cf787557d4a20b06ee4e313ab9cfc8ab95649e9ce498b9669bcf9154a1fd";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -78,9 +78,14 @@
     "cache deadlines. Preserve the existing periods, mode-change resets and"
     "non-TCG millisecond policy, and exercise actual glyph rendering at exact"
     "fractional boundaries without changing serialized device state."
+    ""
+    "Preserve fractional CMOS RTC calendar origins and update/alarm deadlines."
+    "Keep guest nanosecond interfaces and non-TCG policy, reusing the existing"
+    "optional exact-clock migration fields with legacy zero-phase defaults."
+    "Exercise actual RTC callbacks and serialized origin-phase round trips."
   ];
-  commit = "2185645d9792464aaf4755b4bff53b12989d615e";
-  tree = "b07ff710692f154669835644858b9c5ea6c5fc50";
+  commit = "d05a0ff204cc6e35f7bff08858f5456fbad95181";
+  tree = "09cb4d522f221835ac82ecd2c2cf60416c187fc2";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -89,7 +94,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "0c4324982166ff88f5689df28da76cd5bffb81779b9063ab8ad8b8583da714c8";
+  bundleSha256 = "b8cb52d482bb6e081f4bb5f26b6ecb393c9b32b83eaa4e1a2346864465af1e8a";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
