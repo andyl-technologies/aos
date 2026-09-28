@@ -148,6 +148,13 @@ fn native_metadata_found_and_tombstone_hold_all_three_writers_through_zero_fd_se
             StorageLiveExportRequestTrustV1::native_fixture_for_test(trust_directory.path());
         let query = signed_query(&original, [32; 32], 1);
         let authenticated = trust.verify_native_readback(&query).unwrap();
+        let expected_sequence = runtime
+            .native_issuance
+            .as_mut()
+            .unwrap()
+            .readback_acceptance(&authenticated)
+            .unwrap()
+            .sequence();
         let key = StorageZfsHoldKeyV1::synthetic_key_for_test();
         let before = journal_bytes(&directory);
         let (left, right) = rustix::net::socketpair(
@@ -186,10 +193,9 @@ fn native_metadata_found_and_tombstone_hold_all_three_writers_through_zero_fd_se
             .unwrap();
         reply.verify_for(&query, key.verifier()).unwrap();
         assert_eq!(reply.acceptance(), acceptance.as_ref());
-        assert_eq!(
-            reply.observed_issuance_sequence(),
-            if retired { 2 } else { 1 }
-        );
+        // Each transition writes Begin/Put/Commit; a new journal starts at 1.
+        assert_eq!(expected_sequence, if retired { 7 } else { 4 });
+        assert_eq!(reply.observed_issuance_sequence(), expected_sequence);
         assert_eq!(journal_bytes(&directory), before);
         assert_eq!(runtime.native_escrow.count_for_test(), 0);
         assert!(runtime.native_fixture.is_none());
