@@ -20,6 +20,7 @@ require {
     class filesystem getattr;
     class lnk_file { getattr read };
     class process { ptrace setexec setfscreate transition };
+    class process2 nnp_transition;
 }
 
 # AOS privileged processes use distinct domains. The Network publisher is the
@@ -44,6 +45,18 @@ role system_r types aos_sandbox_network_lifecycle_worker_t;
 type aos_sandbox_runtime_roots_t;
 typeattribute aos_sandbox_runtime_roots_t domain;
 role system_r types aos_sandbox_runtime_roots_t;
+
+# The existing cap-empty Guest publisher is not the long-lived Storage broker.
+# It has a dedicated binary; its exact normal template selects this context.
+type aos_sandbox_guest_root_publisher_t;
+typeattribute aos_sandbox_guest_root_publisher_t domain;
+role system_r types aos_sandbox_guest_root_publisher_t;
+type aos_sandbox_guest_root_publisher_exec_t;
+allow init_t aos_sandbox_guest_root_publisher_exec_t:file { execute getattr map open read };
+allow init_t aos_sandbox_guest_root_publisher_t:process transition;
+allow init_t aos_sandbox_guest_root_publisher_t:process2 nnp_transition;
+allow aos_sandbox_guest_root_publisher_t aos_sandbox_guest_root_publisher_exec_t:file entrypoint;
+type_transition init_t aos_sandbox_guest_root_publisher_exec_t:process aos_sandbox_guest_root_publisher_t;
 
 # The outer nspawn supervisor and shifted guest payload are separate enforcing
 # subjects. Only the supervisor is granted mount/chroot capability by this
@@ -112,13 +125,13 @@ allow aos_nspawn_t aos_sandbox_payload_bootstrap_exec_t:file { execute getattr m
 allow aos_sandbox_payload_t aos_sandbox_payload_bootstrap_exec_t:file entrypoint;
 allow aos_sandbox_payload_t aos_sandbox_payload_systemd_exec_t:file { execute execute_no_trans getattr map open read };
 
-# The existing zero-cap Storage publisher runs under init_t. Linux delegates
+# The existing zero-cap Guest publisher runs in its own domain. Linux delegates
 # valid security.selinux xattr changes to relabel policy without CAP_MAC_ADMIN.
 # The kernel still checks ownership and relabelfrom on the copied source type;
 # only these two exact destination types are granted here. Storage and Host
 # subsequently read the physical xattrs before trusting a publication.
-allow init_t aos_sandbox_payload_bootstrap_exec_t:file { getattr open read relabelto };
-allow init_t aos_sandbox_payload_systemd_exec_t:file { getattr open read relabelto };
+allow aos_sandbox_guest_root_publisher_t aos_sandbox_payload_bootstrap_exec_t:file { getattr open read relabelto };
+allow aos_sandbox_guest_root_publisher_t aos_sandbox_payload_systemd_exec_t:file { getattr open read relabelto };
 allow aos_sandbox_host_t aos_sandbox_payload_bootstrap_exec_t:file { getattr open read };
 allow aos_sandbox_host_t aos_sandbox_payload_systemd_exec_t:file { getattr open read };
 
