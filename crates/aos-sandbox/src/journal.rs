@@ -5106,10 +5106,10 @@ mod tests {
         GlobalCapacityReservationRecoveryBindingV1, GlobalCapacityReservationRequestV1,
         HEADER_BYTES, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
         JournalRecord, JournalTransaction, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
-        ProtectedAncestry, ProtectedJournalLocation, ProtectedOwnerPolicy,
-        ReadOnlyJournalNameWitness, RecordNamespace, RecoveryReport, encode_transaction,
-        open_protected_file, open_read_only_protected_file, protected_open_error,
-        require_opened_directory_identity, traverse_protected_directory,
+        ProtectedAncestry, ProtectedJournalLocation, ProtectedJournalLockCustodyV1,
+        ProtectedOwnerPolicy, ReadOnlyJournalNameWitness, RecordNamespace, RecoveryReport,
+        encode_transaction, open_protected_file, open_read_only_protected_file,
+        protected_open_error, require_opened_directory_identity, traverse_protected_directory,
     };
 
     struct TestDirectory(PathBuf);
