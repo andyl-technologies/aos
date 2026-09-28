@@ -1475,7 +1475,7 @@ impl Journal {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, all(feature = "test-fixtures", debug_assertions)))]
     pub(crate) fn require_protected_named_location_at_uid_for_test(
         &self,
         directory_path: &Path,
@@ -1923,6 +1923,32 @@ impl Journal {
         name: &str,
     ) -> Result<(), JournalError> {
         self.require_protected_named_location(directory.as_ref(), name, 0, self.limits)
+    }
+
+    /// Rechecks exact UID-owned fixture custody without relaxing release openers.
+    ///
+    /// This test-only adapter uses the retained limits and the existing fixture
+    /// path, UID, directory identity, journal, and lock-name checker. Production
+    /// owners must use their fixed protected-path adapter instead.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a poisoned journal or changed path, owner, directory, or names.
+    #[doc(hidden)]
+    #[cfg(any(test, all(feature = "test-fixtures", debug_assertions)))]
+    pub fn validate_held_protected_at_uid_for_test(
+        &self,
+        directory: impl AsRef<Path>,
+        name: &str,
+        expected_uid: u32,
+    ) -> Result<(), JournalError> {
+        self.ensure_healthy()?;
+        self.require_protected_named_location_at_uid_for_test(
+            directory.as_ref(),
+            name,
+            expected_uid,
+            self.limits,
+        )
     }
 
     /// Returns the currently materialized value for a logical key.
@@ -5324,6 +5350,61 @@ mod tests {
             fs::rename(&retained, &current).unwrap();
             assert!(journal.require_protected_names_current().is_ok());
         }
+    }
+
+    #[test]
+    fn fixture_named_writer_cut_rejects_replacements_wrong_owner_and_poison() {
+        let directory = TestDirectory::new("fixture-named-writer-cut");
+        fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = fs::metadata(&directory.0).unwrap().uid();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            &directory.0,
+            "state.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .unwrap();
+        journal
+            .validate_held_protected_at_uid_for_test(&directory.0, "state.journal", uid)
+            .unwrap();
+        assert!(
+            journal
+                .validate_held_protected_at_uid_for_test(&directory.0, "state.journal", uid + 1)
+                .is_err()
+        );
+
+        for name in ["state.journal", "state.journal.lock"] {
+            let current = directory.0.join(name);
+            let retained = directory.0.join(format!("{name}.retained"));
+            fs::rename(&current, &retained).unwrap();
+            fs::write(&current, []).unwrap();
+            fs::set_permissions(&current, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(
+                journal
+                    .validate_held_protected_at_uid_for_test(&directory.0, "state.journal", uid)
+                    .is_err()
+            );
+            fs::remove_file(&current).unwrap();
+            fs::rename(&retained, &current).unwrap();
+        }
+
+        let retained = directory.0.with_extension("retained");
+        fs::rename(&directory.0, &retained).unwrap();
+        fs::create_dir(&directory.0).unwrap();
+        fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            journal
+                .validate_held_protected_at_uid_for_test(&directory.0, "state.journal", uid)
+                .is_err()
+        );
+        fs::remove_dir(&directory.0).unwrap();
+        fs::rename(&retained, &directory.0).unwrap();
+
+        journal.poisoned = true;
+        assert!(matches!(
+            journal.validate_held_protected_at_uid_for_test(&directory.0, "state.journal", uid),
+            Err(JournalError::Poisoned)
+        ));
     }
 
     #[test]
