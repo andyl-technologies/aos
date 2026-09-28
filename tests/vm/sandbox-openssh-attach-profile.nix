@@ -34,10 +34,13 @@
 in
   testing.mkVMTest {
     name = "sandbox-openssh-attach-profile";
-    rootfsDeps = [fixtures pkgs.aos-sandbox-agent pkgs.openssh pkgs.coreutils pkgs.grep];
+    rootfsDeps = [fixtures pkgs.aos-sandbox-agent pkgs.openssh pkgs.coreutils pkgs.grep pkgs.iproute2];
     memory = 256;
     testScript = ''
       unset LD_LIBRARY_PATH
+      # The headless init has no network manager. Both readiness and the real
+      # SSH client need the kernel's initially-down loopback interface.
+      ${pkgs.iproute2}/sbin/ip link set lo up
       chmod 0755 /run
       mkdir -p /usr/sbin /var/empty /run/sshd /home/aos_exec
       chmod 0755 /var/empty /run/sshd /home/aos_exec
