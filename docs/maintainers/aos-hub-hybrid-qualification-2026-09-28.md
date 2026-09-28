@@ -70,6 +70,27 @@ timed out before Chrome started, with no destination reaching the guest proxy.
 It completed zero browser checks and isolates a bridge transport problem;
 it does not establish a failure in the Hub's browser application.
 
+The fifth browser attempt admitted only QEMU's debug gateway on the disposable
+client NIC. Its independent SOCKS HTTPS probe returned HTTP 200. Chrome rendered
+the password form and authenticated, but the management UI could not mount:
+Native's HTML requested console assets with hash `bd7cd34f`, while the Worker's
+bundle used `8775c40f`. Both asset requests returned HTTP 404. Only one browser
+assertion completed; this run does not qualify the Hybrid UI.
+
+Both runtimes consumed the same console package. Native's ELF reference cleanup
+changed diagnostic store paths inside its embedded browser Wasm; standalone
+Worker assets retained the original bytes. Repeating that exact fixed-width
+transformation reproduced Native's hash. The console package now normalizes
+these references before either runtime hashes or embeds it. A rebuilt runtime
+pair and a successful browser rerun are required to qualify the correction.
+
+The normalized console package built successfully as
+`/nix/store/45la5qn84262x0k8x8z36gs1s7rg9ks3-aos-hub-console-dist-0.1.0`.
+Its JavaScript, Wasm and CSS match the previous package with only diagnostic
+store hashes normalized; repeating cleanup leaves every byte unchanged. The
+resulting asset hash is `bd7cd34f`, matching the Native page. Actual rebuilt
+Native and Worker packages, followed by Chrome execution, remain pending.
+
 ## Qualified paths
 
 The run passed signed publication of two releases and a stable channel,
@@ -144,8 +165,9 @@ The production PostgreSQL-enabled Native binary from the OCI artifact also
 migrated the actual new staging Cloud SQL database. Corrected direct readback
 confirmed schema version 1, 260 tables, and zero users. Repeat initialization
 passed without resetting the database. Companion infra commit `63f1a360`
-records that evidence. Root administrator creation awaits explicit approval;
-this database migration does not qualify Cloud Run mounts or a hosted paired API.
+records that evidence. At that checkpoint, root creation awaited approval; its
+subsequent approved initialization is recorded below. This database migration
+does not qualify Cloud Run mounts or a hosted paired API.
 
 The one-shot diagnostic subsequently ran the actual Native OCI image on Cloud
 Run through the bootstrap identity and immutable database secret version 1.
@@ -194,6 +216,17 @@ This manual run used isolated Native SQLite, not the hosted Hybrid deployment.
 Its report and screenshots are retained at
 `/tmp/hub-native-empty-registry-browser-qualified`. Hybrid browser qualification
 remains pending.
+
+### ARM Native artifact qualification
+
+The PostgreSQL-enabled Native package cross-build passed for `aarch64-linux`.
+The result is
+`/nix/store/xa8fdjn5xpa23m6h2067j0kkgy0k1bdx-aos-hub-0.1.0`.
+Executing its binary through the AOS-built `qemu-aarch64` returned
+`aos-hub 0.1.0` successfully. This capture predates the private receipt-file
+reader and console reference normalization. It qualifies compilation and
+startup of that artifact; ARM server, database and browser workflows remain
+unqualified.
 
 ### OCI upload request framing
 

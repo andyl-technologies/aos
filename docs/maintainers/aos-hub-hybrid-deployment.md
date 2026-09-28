@@ -83,6 +83,11 @@ The dedicated service image is exposed as `container-aos-hub-oci` and
 `container-aos-hub-docker` in the flake. `container-aos-hub-index` coordinates
 the amd64 and arm64 images; use the platform artifact supported by the selected
 GCP runtime. Build the image and Worker from the same reviewed source commit.
+The shared console package normalizes diagnostic store references before either
+runtime hashes or embeds its assets. Verify that every immutable console URL in
+Native's authenticated page is served by the Worker's local bundle; Native ELF
+scrubbing must not change the bundle identity. Console asset bodies remain at
+the edge and must not fall back to downloads from the Native origin.
 The image execs `/usr/bin/aos-hub serve` directly and has no initialized database,
 credentials, or package-manager initialization step.
 

@@ -303,6 +303,12 @@ class ChromePipe:
 
     @staticmethod
     def _tracks_request(url):
+        # Navigation failures can happen before any console asset or RPC runs.
+        # Record only the path and timing, never login bodies or query values.
+        path = urllib.parse.urlsplit(url).path
+        if path in {"/", "/login", "/login/password", "/logout"} or path.startswith("/-/"):
+            return True
+
         return any(marker in url for marker in (
             "/_assets/hub-console",
             "/aos.hub.v1.",
@@ -316,7 +322,7 @@ class ChromePipe:
         return round((end - start) * 1000, 3)
 
     def request_timing_report(self):
-        """Returns nonsecret asset and RPC timing records in request order."""
+        """Returns nonsecret navigation, asset and RPC timings in request order."""
         fields = (
             "path",
             "method",
