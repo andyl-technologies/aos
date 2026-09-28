@@ -724,6 +724,7 @@ name = "aos-release-signer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-oci-types",
  "aos-release",
  "base64 0.22.1",
  "clap",
