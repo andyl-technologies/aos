@@ -1555,8 +1555,11 @@ mod tests {
         );
 
         let changed = ControllerExecutionCompletionV1 {
+            receipt: completion.receipt.clone(),
+            phase: completion.phase,
+            observation_sequence: completion.observation_sequence,
             terminal: Some(HostExecutionTerminalResultV1::Exited(18)),
-            ..completion
+            authorization_binding: completion.authorization_binding.clone(),
         };
         assert!(matches!(
             intent.commit_control_projection(project, &mut journal, &changed),
@@ -1568,7 +1571,7 @@ mod tests {
             ..intent
         };
         assert!(matches!(
-            control_intent.commit_control_projection(project, &mut journal, &changed),
+            control_intent.commit_control_projection(project, &mut journal, &completion),
             Err(EffectFailure::Permanent(_))
         ));
     }
