@@ -42,6 +42,7 @@
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
+  campaignRustRuntime = import ./_campaign-rust-runtime.nix {inherit pkgs lib;};
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
@@ -587,6 +588,7 @@ in
       name = "perf-bench";
       runtimeInputs =
         [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed]
+        ++ campaignRustRuntime.runtimeInputs
         ++ dependencies
         ++ [
           deviceWorkOverlap
@@ -595,6 +597,7 @@ in
           restoreLatency
           segmentReplay
         ];
+      runtimeEnvironment = campaignRustRuntime.runtimeEnvironment;
       runtimeClosures = [crucibleSrc cargoDeps];
       runtimeScript = ''
         cp -R ${crucibleSrc} source

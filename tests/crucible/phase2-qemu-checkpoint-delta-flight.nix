@@ -47,6 +47,7 @@
       pkgs.grep
       pkgs.jq
       pkgs.pkg-config
+      pkgs.pcre2
       pkgs.rust
       pkgs.sed
       pkgs.socat
@@ -58,7 +59,7 @@
   campaignRuntimeEnvironment = {
     CC = "${pkgs.gcc}/bin/cc";
     LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    PKG_CONFIG_PATH = "${pkgs.glib.dev}/lib/pkgconfig:${pkgs.sqlite}/lib/pkgconfig";
+    PKG_CONFIG_PATH = lib.makePkgConfigPath [pkgs.glib.dev pkgs.pcre2 pkgs.sqlite];
   };
   configureScript = ''
     set -eu

@@ -7,6 +7,7 @@
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
+  campaignRustRuntime = import ./_campaign-rust-runtime.nix {inherit pkgs lib;};
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
@@ -124,10 +125,10 @@ in
         pkgs
         lib
         testing
-        runtimeInputs
-        runtimeEnvironment
         runtimeScript
         ;
+      runtimeInputs = runtimeInputs ++ campaignRustRuntime.runtimeInputs;
+      runtimeEnvironment = runtimeEnvironment // campaignRustRuntime.runtimeEnvironment;
       inherit (campaignComposition) mode system;
       gateName = "gate:block-realization";
       authoritativeAttr = attrPath;

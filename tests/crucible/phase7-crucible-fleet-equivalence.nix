@@ -8,6 +8,7 @@
   e2eDeterminism ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
+  campaignRustRuntime = import ./_campaign-rust-runtime.nix {inherit pkgs lib;};
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
@@ -355,9 +356,9 @@ in
         timeout = 10800;
         memoryMiB = 8192;
         varSizeMiB = 16384;
-        runtimeInputs = [pkgs.coreutils pkgs.gcc pkgs.grep pkgs.rust pkgs.sed];
+        runtimeInputs = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed] ++ campaignRustRuntime.runtimeInputs;
         runtimeClosures = [crucibleSrc cargoDeps e2eDeterminism] ++ dependencies;
-        runtimeEnvironment.CC = "${pkgs.gcc}/bin/cc";
+        runtimeEnvironment = campaignRustRuntime.runtimeEnvironment;
         runtimeScript = ''
           set -eu
 
