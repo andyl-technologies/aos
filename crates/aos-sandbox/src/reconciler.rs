@@ -70,6 +70,11 @@ use effect::{
 pub use observe_reservation::{
     adopt_execution_observe_child_v1, observe_child_adoption_state_v1, observe_child_identity_v1,
 };
+#[cfg(feature = "project-negative-recovery-vm-fixture")]
+pub use project_admission::vm_fixture::{
+    fail_retired_project_history_vm_operation_v1, prepare_project_history_vm_flight_v1,
+    preview_project_history_vm_reservation_v1, require_project_history_vm_flight_v1,
+};
 pub use project_admission::{
     ControllerProjectAdmissionJournalErrorV1, ControllerProjectHistoryAcceptanceV1,
     RetainedControllerProjectAdmissionV1, accept_controller_project_admission_outcome_v1,

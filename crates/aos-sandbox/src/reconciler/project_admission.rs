@@ -13,6 +13,9 @@ mod metadata;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "project-negative-recovery-vm-fixture")]
+pub(super) mod vm_fixture;
+
 pub(super) use metadata::{
     MAXIMUM_RECORD_BYTES, ProjectAdmissionMetadata, ProjectAdmissionPhase,
     RetainedRootProjectTerminal,
@@ -507,16 +510,7 @@ pub fn prepare_current_create_project_admission_v1(
             .map_err(CurrentCreatePolicySourceErrorV1::from)?,
     };
     effect.project_admission = Some(metadata.clone());
-    // Each remaining append rewrites this bounded Effect. Additional headroom
-    // covers the maximum diagnostic plus canonical capacity and frame envelopes.
-    // Transfers subtract actual canonical append bytes, never a caller estimate.
-    let append_bound = u64::try_from(encode_effect(&effect)?.len())
-        .map_err(|_| JournalError::JournalTooLarge)?
-        .checked_add((super::effect::MAXIMUM_DIAGNOSTIC_BYTES + 2048) as u64)
-        .ok_or(JournalError::JournalTooLarge)?;
-    let budget = append_bound
-        .checked_mul(3)
-        .ok_or(JournalError::JournalTooLarge)?;
+    let budget = controller_project_suffix_budget(&effect)?;
     let transaction_id = aos_sandbox_core::OperationId::new().into_bytes();
     let request = capacity_request(source.operation(), &metadata, plan, 3, 8, budget);
     let prepared = journal.prepare_global_capacity_reservation_v1(request, transaction_id)?;
@@ -536,6 +530,21 @@ pub fn prepare_current_create_project_admission_v1(
         .map_err(SourceProjectAdmissionChallengeErrorV1::from)?;
     validate_all(journal)?;
     Ok(reservation)
+}
+
+// Each remaining append rewrites this bounded Effect. Additional headroom
+// covers the maximum diagnostic plus canonical capacity and frame envelopes.
+// Transfers subtract actual canonical append bytes, never a caller estimate.
+fn controller_project_suffix_budget(
+    effect: &EffectLedgerRecord,
+) -> Result<u64, ControllerProjectAdmissionJournalErrorV1> {
+    let append_bound = u64::try_from(encode_effect(effect)?.len())
+        .map_err(|_| JournalError::JournalTooLarge)?
+        .checked_add((super::effect::MAXIMUM_DIAGNOSTIC_BYTES + 2048) as u64)
+        .ok_or(JournalError::JournalTooLarge)?;
+    Ok(append_bound
+        .checked_mul(3)
+        .ok_or(JournalError::JournalTooLarge)?)
 }
 
 /// Durably authorizes Root dispatch for one exact retained original Create.

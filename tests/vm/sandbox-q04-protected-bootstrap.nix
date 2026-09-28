@@ -1,4 +1,4 @@
-# Real protected-owner bootstrap prerequisite; no accepted Create or V8 authority.
+# Real protected-owner recovery fixture; no positive Create or V8 authority.
 {
   lib,
   testing,
@@ -219,6 +219,59 @@ in
       kill -0 "$root_pid"
 
       cp "$root_credentials/deployment-head.packet" /tmp/q04-deployment-head.valid
+
+      # Retain a real original Effect but no Root/Source artifact, then exit
+      # the Controller process. Synthetic historical heads only permit denial.
+      controller_probe project-negative-dispatch
+      controller_probe project-negative-operation-denied
+      stop_root
+      ${probe}/bin/aos-sandbox-q04-bootstrap-vm-probe project-expire-deployment
+      cp "$root_credentials/source-hold-public-key" /tmp/q04-root-source-pin.valid
+      ${probe}/bin/aos-sandbox-q04-bootstrap-vm-probe project-rotate-root-source-credential
+      start_root
+      ${probe}/bin/aos-sandbox-q04-bootstrap-vm-probe project-historical-source-pin
+      controller_credentials=/run/credentials/aos-sandboxd.service
+      cp "$controller_credentials/controller-hold-signing-key" /tmp/q04-controller-seed.valid
+      cp "$controller_credentials/controller-hold-public-key" /tmp/q04-controller-pin.valid
+      ${probe}/bin/aos-sandbox-q04-bootstrap-vm-probe project-rotate-controller-credential
+      negative_root_bytes=$(stat -c '%s' /var/lib/aos/sandbox/policy-compiler/state.journal)
+      controller_probe project-negative-pin-denied
+      test "$(stat -c '%s' /var/lib/aos/sandbox/policy-compiler/state.journal)" = "$negative_root_bytes"
+      cp /tmp/q04-controller-seed.valid "$controller_credentials/controller-hold-signing-key"
+      cp /tmp/q04-controller-pin.valid "$controller_credentials/controller-hold-public-key"
+
+      # The first request really closes its stream before reading the ACK.
+      # Exact replay preserves the original nonce/metadata and performs no cut.
+      controller_probe project-negative-intent-lost-reply
+      negative_root_bytes=$(stat -c '%s' /var/lib/aos/sandbox/policy-compiler/state.journal)
+      controller_probe project-negative-intent-retry
+      test "$(stat -c '%s' /var/lib/aos/sandbox/policy-compiler/state.journal)" = "$negative_root_bytes"
+      stop_root
+      start_root
+
+      # Each process exit separates real durable append/reply crash cuts.
+      # Source reserves only after Root has persisted cancellation capacity.
+      controller_probe project-negative-reserve
+      controller_probe project-negative-terminal
+      controller_probe project-negative-floor-lost-reply
+      stop_root
+      start_root
+      controller_probe project-negative-controller-accept
+      controller_probe project-negative-operation-denied
+      controller_probe project-negative-ack
+      negative_root_bytes=$(stat -c '%s' /var/lib/aos/sandbox/policy-compiler/state.journal)
+      controller_probe project-negative-replay
+      test "$(stat -c '%s' /var/lib/aos/sandbox/policy-compiler/state.journal)" = "$negative_root_bytes"
+
+      stop_root
+      cp /tmp/q04-deployment-head.valid "$root_credentials/deployment-head.packet"
+      cp /tmp/q04-root-source-pin.valid "$root_credentials/source-hold-public-key"
+      start_root
+      negative_root_bytes=$(stat -c '%s' /var/lib/aos/sandbox/policy-compiler/state.journal)
+      controller_probe project-negative-late-positive-denied
+      test "$(stat -c '%s' /var/lib/aos/sandbox/policy-compiler/state.journal)" = "$negative_root_bytes"
+      controller_probe project-negative-operation-terminal
+      controller_probe project-negative-operation-replay
       controller_probe project-cancel-pending
       stop_root
       ${probe}/bin/aos-sandbox-q04-bootstrap-vm-probe project-expire-deployment
@@ -235,6 +288,7 @@ in
       stop_root
       ${probe}/bin/aos-sandbox-q04-bootstrap-vm-probe project-expire-deployment
       start_root
+      controller_probe project-negative-stage-denied
       controller_probe project-recovery-history
       controller_probe project-stage-recover
       controller_probe project-recovery-deny-fresh
