@@ -119,7 +119,7 @@ mod tests {
             rustix::io::Errno::TIMEDOUT,
             rustix::io::Errno::INTR,
             rustix::io::Errno::CONNRESET,
-            rustix::io::Errno::ACCES,
+            rustix::io::Errno::ACCESS,
         ] {
             let error = SourceGenesisErrorV1::Transport(std::io::Error::from(errno));
             assert!(!connection_not_admitted(&error));
