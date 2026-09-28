@@ -281,8 +281,8 @@ static int getattr(void *context, uint64_t node, struct aos_fuse_attributes *out
     return attributes(node, output);
 }
 
-static int readlink(void *context, uint64_t node, uint8_t *target,
-                    uint64_t capacity, uint64_t *length)
+static int fixture_readlink(void *context, uint64_t node, uint8_t *target,
+                            uint64_t capacity, uint64_t *length)
 {
     (void)context;
     (void)node;
@@ -339,7 +339,7 @@ static const struct aos_fuse_core_operations operations = {
     .attributes_size = sizeof(struct aos_fuse_attributes),
     .directory_entry_size = sizeof(struct aos_fuse_directory_entry),
     .limits_size = sizeof(struct aos_fuse_limits),
-    .lookup = lookup, .forget = forget, .getattr = getattr, .readlink = readlink,
+    .lookup = lookup, .forget = forget, .getattr = getattr, .readlink = fixture_readlink,
     .opendir = opendir, .readdir = readdir, .releasedir = releasedir, .destroy = destroy};
 
 static _Noreturn void server(int fuse_fd, int cancel_fd, int command_fd, int report_fd)
