@@ -215,3 +215,147 @@ fn mandatory_revision_cannot_be_omitted_or_zero_in_a_current_snapshot() {
         assert!(BlockFaultState::from_canonical_bytes(&forged, 32).is_err());
     }
 }
+
+fn cached_fragment() -> (BlockFaultState, BaseImage, CowOverlay) {
+    let base = BaseImage::new(vec![0; 32]);
+    let mut durable = CowOverlay::new();
+    let mut config = BlockDurabilityConfig::write_through(32);
+    config.atomic_write_bytes = 4;
+    config.volatile_cache_bytes = 32;
+    config.cache_entries = 8;
+    config.completion_durability = BlockCompletionDurability::VolatileCacheAccepted;
+    let mut state = BlockFaultState::new(config)
+        .unwrap_or_else(|error| panic!("bounded cache configuration: {error}"));
+    state
+        .apply_external_write(&base, &mut durable, 7, 10, 20, 0, vec![0x5a; 4])
+        .unwrap_or_else(|error| panic!("actual retained cache fragment: {error}"));
+    assert_eq!(state.volatile_entries().len(), 1);
+    assert_eq!(durable, CowOverlay::new());
+    (state, base, durable)
+}
+
+#[test]
+fn absent_graph_commit_refuses_before_any_durable_payload_write() {
+    let (mut state, base, mut durable) = cached_fragment();
+    state
+        .persistence
+        .commit_lost(0)
+        .unwrap_or_else(|error| panic!("remove graph node: {error}"));
+    let before = state.clone();
+
+    let result =
+        state.with_observation_mutation(|state| state.persist_sequence(&base, &mut durable, 0, 30));
+
+    assert!(result.is_err());
+    assert_eq!(state, before);
+    assert_eq!(durable, CowOverlay::new());
+}
+
+#[test]
+fn layer_accounting_refuses_before_any_durable_payload_write() {
+    let (mut state, base, mut durable) = cached_fragment();
+    state.volatile_bytes = 0;
+    let before = state.clone();
+
+    let result =
+        state.with_observation_mutation(|state| state.persist_sequence(&base, &mut durable, 0, 30));
+
+    assert!(result.is_err());
+    assert_eq!(state, before);
+    assert_eq!(durable, CowOverlay::new());
+}
+
+#[test]
+fn physical_destination_refuses_before_any_durable_payload_write() {
+    let (mut state, _, mut durable) = cached_fragment();
+    let short_base = BaseImage::new(vec![0; 2]);
+    let before = state.clone();
+
+    let result = state.with_observation_mutation(|state| {
+        state.persist_sequence(&short_base, &mut durable, 0, 30)
+    });
+
+    assert!(result.is_err());
+    assert_eq!(state, before);
+    assert_eq!(durable, CowOverlay::new());
+}
+
+#[test]
+fn actual_payload_effect_followed_by_refusal_retains_reserved_revision() {
+    let base = BaseImage::new(vec![0; 32]);
+    let mut durable = CowOverlay::new();
+    let mut state = BlockFaultState::write_through(32);
+    let before = revision(&state);
+
+    let result: Result<(), DeviceError> = state.with_observation_mutation(|state| {
+        // Exercise the defensive external-effect marker with the actual
+        // overlay operation and a later refusal, without retained field edits.
+        state.observation_external_effect = true;
+        durable.write(&base, 0, &[0x5a; 4])?;
+        Err(DeviceError::InvalidBlockFaultDirective {
+            reason: "test refusal after durable payload effect",
+        })
+    });
+
+    assert!(result.is_err());
+    assert_eq!(
+        durable
+            .read(&base, 0, 4)
+            .unwrap_or_else(|error| panic!("read actual effect: {error}")),
+        vec![0x5a; 4]
+    );
+    assert_eq!(revision(&state), before + 1);
+}
+
+#[test]
+fn rebuild_poll_changes_only_when_the_actual_deadline_changes() {
+    let mut state = BlockFaultState::write_through(32);
+    state
+        .record_array_dirty_range(0, 0, vec![0x5a; 4], 10)
+        .unwrap_or_else(|error| panic!("dirty range: {error}"));
+    let before = revision(&state);
+
+    assert!(
+        state
+            .next_array_rebuild_opportunity(10, 4, 1_000_000_000, None)
+            .unwrap_or_else(|error| panic!("schedule actual rebuild: {error}"))
+            .is_none()
+    );
+    assert_eq!(revision(&state), before + 1);
+    let scheduled = state.clone();
+    assert!(
+        state
+            .next_array_rebuild_opportunity(10, 4, 1_000_000_000, None)
+            .unwrap_or_else(|error| panic!("unchanged probe: {error}"))
+            .is_none()
+    );
+    assert_eq!(state, scheduled);
+
+    let deadline = state
+        .next_array_rebuild_deadline_ticks()
+        .unwrap_or_else(|| panic!("retained deadline"));
+    assert!(
+        state
+            .next_array_rebuild_opportunity(deadline, 4, 1_000_000_000, None)
+            .unwrap_or_else(|error| panic!("ready probe: {error}"))
+            .is_some()
+    );
+    assert_eq!(state, scheduled);
+}
+
+#[test]
+fn dependency_blocked_graph_commit_refuses_before_any_durable_payload_write() {
+    let (mut state, base, mut durable) = cached_fragment();
+    state
+        .apply_external_write(&base, &mut durable, 8, 11, 21, 0, vec![0x6b; 4])
+        .unwrap_or_else(|error| panic!("dependent cache fragment: {error}"));
+    assert!(!state.persistence.is_ready(1));
+    let before = state.clone();
+
+    let result =
+        state.with_observation_mutation(|state| state.persist_sequence(&base, &mut durable, 1, 30));
+
+    assert!(result.is_err());
+    assert_eq!(state, before);
+    assert_eq!(durable, CowOverlay::new());
+}

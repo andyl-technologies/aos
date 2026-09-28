@@ -2,7 +2,7 @@
 //!
 //! Revision advancement precedes payload and phase effects. Nested internal
 //! transitions share their outer entry. The reserved revision remains only
-//! when the complete retained state changes; unchanged probes do not make
+//! when explicit retained mutations or payload effects occur; probes do not make
 //! checkpoint identity depend on how often the host polls a pipeline.
 //! The counter never authenticates a native Source, receipt or consumer.
 
@@ -35,6 +35,11 @@ impl BlockFaultState {
         self.with_observation_mutation(|state| {
             replacement.observation_revision = state.observation_revision;
             replacement.observation_mutation_active = true;
+            replacement.observation_external_effect = state.observation_external_effect;
+            replacement.observation_changed = state.observation_changed;
+            // Replacement touches the whole owner; comparing its supplied
+            // state is proportional to that explicit replacement operation.
+            replacement.observation_changed |= replacement != *state;
             *state = replacement;
             Ok(())
         })
@@ -46,6 +51,8 @@ impl BlockFaultState {
     pub(in crate::block) fn restore_compute_transaction(&mut self, mut checkpoint: Self) {
         checkpoint.observation_revision = self.observation_revision;
         checkpoint.observation_mutation_active = self.observation_mutation_active;
+        checkpoint.observation_external_effect = self.observation_external_effect;
+        checkpoint.observation_changed = self.observation_changed;
         *self = checkpoint;
     }
 
@@ -64,19 +71,19 @@ impl BlockFaultState {
             .ok_or(DeviceError::InvalidBlockFaultDirective {
                 reason: "storage observation revision exhausted",
             })?;
-        let mut before = self.clone();
         let previous_revision = self.observation_revision;
         self.observation_revision = revision;
         self.observation_mutation_active = true;
         let result = mutate(self);
+        let changed = self.observation_changed || self.observation_external_effect;
+        self.observation_changed = false;
+        self.observation_external_effect = false;
         self.observation_mutation_active = false;
 
-        // The revision is reserved before effects and readers refuse the
-        // entire mutable lifetime. Keep it for any actual state change,
-        // including a partial error; undo only the reservation for an exact
-        // no-op after comparing every retained field.
-        before.observation_revision = revision;
-        if *self == before {
+        // Actual field/effect sites record the entry's changes. A probe that
+        // changes nothing returns its unexposed reservation without cloning
+        // or comparing the rest of the retained owner.
+        if !changed {
             self.observation_revision = previous_revision;
         }
         result
