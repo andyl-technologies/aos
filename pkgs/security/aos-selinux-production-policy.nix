@@ -132,6 +132,15 @@ in
           export PYTHONPATH=${setools}/lib/python3/site-packages
 
           ${python3}/bin/python3 ${policySupport}/effective_policy_test.py
+          # Compare the real indexed and stock matchers on bounded native data,
+          # not mock policy rules or another full production-policy scan.
+          ${checkpolicy}/bin/checkpolicy -c ${policyVersion} -U reject \
+            -o query-fixture.policy.${policyVersion} \
+            ${policySupport}/rule_query_fixture.conf
+          ${python3}/bin/python3 ${policySupport}/rule_query_test.py \
+            query-fixture.policy.${policyVersion} \
+            > query-index-differential-report 2>&1
+          cat query-index-differential-report
           ${checkpolicy}/bin/checkmodule -m \
             -o "$aos_module.mod" ${ownerModule}
           ${semodule-utils}/bin/semodule_package \
@@ -358,6 +367,7 @@ in
             observed-policy-classmap.tsv \
             final-policy.cil \
             effective-policy.tsv \
+            query-index-differential-report \
             "$aos_module.mod" \
             "$aos_module.pp" \
             ${policySupport}/aos_sandbox.te \
