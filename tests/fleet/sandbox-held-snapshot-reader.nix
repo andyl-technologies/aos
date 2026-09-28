@@ -7,6 +7,7 @@
 }: let
   clientTest = "process::held_snapshot_reader::tests::systemd_reader_vm_client";
   decoyTest = "process::held_snapshot_reader::tests::systemd_reader_vm_decoy";
+  crossingTest = "process::held_snapshot_reader::tests::systemd_reader_vm_mount_crossings";
 
   fixture = pkgs.mkCargoPackage {
     pname = "aos-sandbox-held-snapshot-reader-tests";
@@ -103,6 +104,9 @@ in {
     ZPOOL = "${zfs}/sbin/zpool"
     TRUNCATE = "${pkgs.coreutils}/bin/truncate"
     FINDMNT = "${pkgs.util-linux}/bin/findmnt"
+    MOUNT = "${pkgs.util-linux}/bin/mount"
+    UMOUNT = "${pkgs.util-linux}/bin/umount"
+    UNSHARE = "${pkgs.util-linux}/bin/unshare"
     SNAPSHOT = "aosproof/aos/project/workspace@held"
     SOCKET = "aos-sandbox-held-snapshot-reader.socket"
 
@@ -168,6 +172,10 @@ in {
     vm.succeed("${pkgs.coreutils}/bin/chown 42:43 /var/tmp/aos-held-reader-root/payload")
     vm.succeed("${pkgs.coreutils}/bin/chmod 755 /var/tmp/aos-held-reader-root")
     vm.succeed("${pkgs.coreutils}/bin/chmod 644 /var/tmp/aos-held-reader-root/payload")
+    vm.succeed("mkdir -p /var/tmp/aos-held-reader-root/nested/deeper")
+    vm.succeed("printf abc > /var/tmp/aos-held-reader-root/nested/deeper/data")
+    vm.succeed("${pkgs.coreutils}/bin/chmod 755 /var/tmp/aos-held-reader-root/nested /var/tmp/aos-held-reader-root/nested/deeper")
+    vm.succeed("${pkgs.coreutils}/bin/chmod 644 /var/tmp/aos-held-reader-root/nested/deeper/data")
     vm.succeed(f"{ZFS} snapshot {SNAPSHOT}")
     vm.succeed(f"{ZFS} hold aos-sbx-reader-vm {SNAPSHOT}")
 
@@ -182,6 +190,27 @@ in {
     run_case("matched-mount", pool_guid, root_guid, dataset_guid, snapshot_guid)
     run_case("wrong-pool-mount", pool_guid, root_guid, dataset_guid, snapshot_guid)
     run_case("wrong-snapshot-mount", pool_guid, root_guid, dataset_guid, snapshot_guid)
+
+    # A live same-filesystem bind changes the pathname view, not the held
+    # snapshot. The reader must create a fresh fscontext, never clone that view.
+    vm.succeed("mkdir /var/tmp/aos-held-reader-root/overlay-source")
+    vm.succeed("printf decoy > /var/tmp/aos-held-reader-root/overlay-source/data")
+    vm.succeed(f"{MOUNT} --bind /var/tmp/aos-held-reader-root/overlay-source /var/tmp/aos-held-reader-root/nested/deeper")
+    try:
+        assert vm.succeed("cat /var/tmp/aos-held-reader-root/nested/deeper/data") == "decoy"
+        run_case("matched-mount", pool_guid, root_guid, dataset_guid, snapshot_guid)
+    finally:
+        vm.succeed(f"{UMOUNT} /var/tmp/aos-held-reader-root/nested/deeper")
+
+    # This deliberately modified walk is separate from genuine reader custody.
+    # Attachments exist only in this VM-only private namespace; no receipt,
+    # journal cut, signing, or native Acquire authority is constructed here.
+    vm.succeed(
+        f"{UNSHARE} --mount --propagation private "
+        "${fixture}/bin/aos-sandbox-held-snapshot-reader-tests "
+        "--ignored --exact ${crossingTest} --test-threads=1 --nocapture",
+        timeout=85,
+    )
 
     # Keep the exact Storage cgroup alive while the decoy connects. Otherwise
     # the reader correctly fails at a missing owner anchor before peer matching.
@@ -204,7 +233,7 @@ in {
 
     client_output = vm.succeed("cat /run/aos-held-client-output")
     decoy_output = vm.succeed("cat /run/aos-held-decoy-output")
-    assert client_output.count("test result: ok") >= 7, client_output
+    assert client_output.count("test result: ok") >= 8, client_output
     assert "test result: ok" in decoy_output, decoy_output
     assert "aos-sbx-reader-vm" in vm.succeed(f"{ZFS} holds -H {SNAPSHOT}")
     assert vm.succeed(
