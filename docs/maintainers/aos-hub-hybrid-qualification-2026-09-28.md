@@ -152,9 +152,44 @@ Both hops now preserve this application input while sharing the reserved
 transport-header filter. Three Native ingress tests passed, including actual
 middleware preservation of the route/CSRF/Origin inputs and replacement or
 removal of spoofed transport evidence. Worker Wasm compilation passed. The
-updated production pair is building for another Chrome check. The browser
+updated production pair built successfully as Native
+`/nix/store/v98kdfn549m05f2sfjgzblps2bpbhgv0-aos-hub-0.1.0` and Worker
+`/nix/store/jydik3cphgzjv5k98hng2c9sp2f405vk-aos-hub-worker-dist-0.1.0`.
+Independent byte checks confirmed the normalized JavaScript, Wasm and CSS in
+both binaries and Worker static files, with asset identity `bd7cd34f`.
+The browser
 helper now records failed-page headings and structural state without form
 values, session metadata or response bodies.
+
+The ninth Chrome attempt used that exact runtime pair on four previously built
+fleet OS images. It passed 41 assertions, including login, management scope,
+appearance, all six branding fields, SPA titles/back navigation and public
+branding, with zero skips and no JavaScript, console or recorded network errors.
+It stopped after the test navigated to public browse while a settings read was
+still outstanding. The public navigation now uses the same request-completion
+wait as other ordinary document navigations. A full browser pass remains
+pending; the deliberate intercepted-response cancellation test is unchanged.
+
+The tenth attempt passed 77 checks, including branding restoration and the
+deliberate response-interruption test. It skipped saved delivery progress because
+the fixture had no persisted workflow, then failed to select a delivery endpoint.
+Endpoint, gateway and network-policy list requests returned HTTP 500 on Native
+PostgreSQL. Their shared SQL predicates treat a bound integer as a boolean;
+PostgreSQL rejects this form while SQLite permits it. The dialect correction
+and remaining browser checks are being qualified. This run is not a full pass.
+
+The next full nonempty fleet capture passed the 26-object inventory continuation
+check and again indexed two packages, two releases and one signed channel.
+Authenticated-page p95 was 15.486 ms at baseline and 12.524 ms during eight
+parallel uploads. Across 3,361 completed storage calls, Native received
+2,201,629 bytes of results while the Worker processed 5,183,383,183 source bytes.
+These are local application payload measurements, not hosted provider billing.
+The run stopped at its warm-refresh fixture before the three-runtime comparison:
+container catalogs deliberately disable release reuse to revalidate placement
+evidence. The fixture now exercises cold and unchanged warm indexing on a
+separate signed metadata-only registry and also requires repeated container
+revalidation. Its Nix evaluation, rendered Python and formatting checks passed;
+the corrected full fleet remains pending.
 
 ## Qualified paths
 

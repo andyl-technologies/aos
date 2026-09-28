@@ -512,7 +512,8 @@ class HubSettingsSmoke:
             time.sleep(0.05)
         raise AssertionError(f"timed out waiting for {description}")
 
-    def navigate(self, path):
+    def wait_for_page_requests(self, destination):
+        """Waits for ordinary page reads before leaving the current document."""
         # Finish the current page's reads before ordinary full navigation. The
         # explicit cancellation test uses a held response and an SPA link.
         deadline = time.monotonic() + self.timeout
@@ -526,7 +527,10 @@ class HubSettingsSmoke:
             if not pending:
                 break
             if time.monotonic() >= deadline:
-                raise AssertionError(f"page requests did not finish before navigating to {path}")
+                raise AssertionError(f"page requests did not finish before navigating to {destination}")
+
+    def navigate(self, path):
+        self.wait_for_page_requests(path)
 
         url = urllib.parse.urljoin(self.base_url + "/", path.lstrip("/"))
         self.chrome.call("Page.navigate", {"url": url})
@@ -1099,6 +1103,7 @@ class HubSettingsSmoke:
             self.check(self.chrome.evaluate("performance.timeOrigin") == origin, "branding titles update without reloading SPA navigation")
             self.check(self.chrome.evaluate("document.title") == f"Branding — {trial['Site title']}", "back navigation restores the branded page title")
 
+            self.wait_for_page_requests("/")
             self.chrome.call("Page.navigate", {"url": self.base_url + "/"})
             self.wait_for("location.pathname === '/' && document.readyState === 'complete' && document.querySelector('.brand') !== null", "public browse page")
             self.check(self.chrome.evaluate("document.title").endswith(" — " + trial["Site title"]), "public browse uses the configured tab title")
