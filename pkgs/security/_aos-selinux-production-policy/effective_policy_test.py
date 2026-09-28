@@ -149,7 +149,7 @@ class EffectivePolicyTest(unittest.TestCase):
             + len(effective_policy.TRANSITIONS)
             + 1
             + len(effective_policy.FORBIDDEN_PROVISIONER_TRANSITION_SOURCES)
-            + len(effective_policy.PROTECTED_OBJECT_TYPES)
+            + len(effective_policy.GUARDED_OBJECT_TYPES)
             + len(effective_policy.POSITIVE_ACCESS)
             + len(effective_policy.NEGATIVE_ACCESS),
         )
@@ -160,6 +160,59 @@ class EffectivePolicyTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "inherited broad file_type"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_worker_objects_cannot_inherit_generic_file_grants(self) -> None:
+        for object_type in effective_policy.fuse_worker_policy.WORKER_OBJECT_TYPES:
+            with self.subTest(object_type=object_type):
+                policy = FakePolicy()
+                policy.file_types.add(object_type)
+                with self.assertRaisesRegex(ValueError, "inherited broad file_type"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_worker_requires_real_host_sid_read_and_original_object_labels(self) -> None:
+        worker = effective_policy.fuse_worker_policy.WORKER_DOMAIN
+        for access in (
+            effective_policy.Access("aos_sandbox_host_t", worker, "process", "getattr"),
+            effective_policy.Access(worker, "aos_filesystem_fuse_worker_plan_t", "file", "map"),
+            effective_policy.Access(worker, "aos_filesystem_fuse_worker_channel_t", "unix_stream_socket", "write"),
+            effective_policy.Access(worker, "aos_filesystem_fuse_worker_cancel_t", "fifo_file", "read"),
+        ):
+            with self.subTest(access=access):
+                self.assert_missing_allow_rejected(access)
+
+    def test_worker_requires_boot_id_read_without_sysctl_mutation(self) -> None:
+        worker = effective_policy.fuse_worker_policy.WORKER_DOMAIN
+        for access in (
+            effective_policy.Access(worker, "sysctl_t", "dir", "search"),
+            effective_policy.Access(worker, "sysctl_kernel_t", "dir", "search"),
+            effective_policy.Access(worker, "sysctl_kernel_t", "file", "open"),
+            effective_policy.Access(worker, "sysctl_kernel_t", "file", "read"),
+        ):
+            with self.subTest(access=access):
+                self.assert_missing_allow_rejected(access)
+
+        for access in (
+            effective_policy.Access(worker, "sysctl_t", "dir", "write"),
+            effective_policy.Access(worker, "sysctl_kernel_t", "dir", "add_name"),
+            effective_policy.Access(worker, "sysctl_kernel_t", "file", "write"),
+            effective_policy.Access(worker, "sysctl_kernel_t", "file", "setattr"),
+        ):
+            with self.subTest(access=access):
+                self.assert_forbidden_allow_rejected(access)
+
+    def test_worker_cannot_import_owner_authority_or_create_transport(self) -> None:
+        worker = effective_policy.fuse_worker_policy.WORKER_DOMAIN
+        for access in (
+            effective_policy.Access(worker, "init_t", "file", "read"),
+            effective_policy.Access(worker, "init_t", "unix_stream_socket", "read"),
+            effective_policy.Access(worker, "init_t", "unix_stream_socket", "connectto"),
+            effective_policy.Access(worker, worker, "unix_stream_socket", "create"),
+            effective_policy.Access(worker, "fuse_device_t", "chr_file", "open"),
+            effective_policy.Access(worker, "fuse_device_t", "chr_file", "ioctl"),
+            effective_policy.Access(worker, "bin_t", "file", "execute"),
+        ):
+            with self.subTest(access=access):
+                self.assert_forbidden_allow_rejected(access)
 
     def test_protected_network_type_requires_exact_fs_association(self) -> None:
         policy = FakePolicy()

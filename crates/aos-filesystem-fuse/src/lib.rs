@@ -38,6 +38,7 @@ mod control;
 pub mod dormant_libfuse;
 mod file_callbacks;
 mod operations;
+pub mod worker_session;
 
 /// Configures the independently bounded C transport buffers and reply policy.
 #[derive(Clone, Copy, Debug)]

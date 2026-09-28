@@ -21,6 +21,36 @@ const DUPLICATE_FD_MINIMUM: RawFd = 64;
 
 static CLAIMED_DESCRIPTOR_NUMBERS: Mutex<BTreeSet<RawFd>> = Mutex::new(BTreeSet::new());
 
+/// Claims only the closed five-role FUSE worker launch table.
+///
+/// This transfers descriptor ownership, not Mount provenance, a fresh FUSE
+/// connection, a current lease, or read authority. The original table must be
+/// exactly stdio and FDs 3 through 7; no environment selects an extra role.
+///
+/// # Safety
+///
+/// The caller must be the single-threaded fixed worker startup owner, before
+/// constructing any I/O owner for FDs 3 through 7 or installing signal handlers.
+/// No other code may mutate that descriptor table until this call returns.
+///
+/// # Errors
+///
+/// Returns an error for extra or missing descriptors, multiple threads, a
+/// repeated claim, or a kernel capture failure. The caller must exit on failure.
+pub unsafe fn claim_fuse_worker_descriptor_table() -> Result<[OwnedFd; 5]> {
+    crate::startup_fd_table::with_blocked_signals(|| {
+        let _single_thread = crate::pidfd::SingleThreadedProcess::verify()?;
+        crate::startup_fd_table::require_fixed_worker_descriptor_numbers()?;
+        // SAFETY: the fixed startup owner's contract covers the entire exact
+        // role range; the signal fence and thread check preserve table stability.
+        let descriptors =
+            unsafe { claim_systemd_activation_descriptor_range(0, 5) }?.into_descriptors();
+        descriptors
+            .try_into()
+            .map_err(|_| Error::invalid("fixed FUSE worker startup", "role capture length changed"))
+    })
+}
+
 /// Owns a bounded contiguous portion of systemd's activation descriptor table.
 #[derive(Debug)]
 pub struct SystemdActivationDescriptorsV1 {

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+import fuse_worker_policy
+
 
 DOMAINS = (
     "aos_sandbox_host_t",
@@ -15,6 +17,7 @@ DOMAINS = (
     "aos_sandbox_network_lifecycle_worker_t",
     "aos_nspawn_t",
     "aos_sandbox_payload_t",
+    fuse_worker_policy.WORKER_DOMAIN,
 )
 PAYLOAD_EXECUTABLE_TYPES = (
     "aos_sandbox_payload_bootstrap_exec_t",
@@ -35,12 +38,14 @@ DOMAIN_EXECUTABLES = (
         "aos_sandbox_network_lifecycle_worker_exec_t",
     ),
     (HANDOFF_DOMAIN, HANDOFF_EXECUTABLE),
+    (fuse_worker_policy.WORKER_DOMAIN, fuse_worker_policy.WORKER_EXECUTABLE),
 )
 NETWORK_SERVICE_DOMAINS = (
     "aos_sandbox_network_publisher_t",
     "aos_sandbox_namespace_inspector_t",
     "aos_sandbox_network_lifecycle_worker_t",
 )
+NNP_FIXED_SERVICE_DOMAINS = (*NETWORK_SERVICE_DOMAINS, fuse_worker_policy.WORKER_DOMAIN)
 INSPECTOR_DOMAIN = "aos_sandbox_namespace_inspector_t"
 INSPECTOR_EXECUTABLE = "aos_sandbox_namespace_inspector_exec_t"
 PROVISIONER_EXECUTABLE = "aos_sandbox_runtime_roots_exec_t"
@@ -60,6 +65,7 @@ PROTECTED_DIRECTORIES = (
     "aos_sandbox_network_spent_final_t",
 )
 PROTECTED_OBJECT_TYPES = (*PROTECTED_DIRECTORIES, *PROTECTED_RECORDS)
+GUARDED_OBJECT_TYPES = (*PROTECTED_OBJECT_TYPES, *fuse_worker_policy.WORKER_OBJECT_TYPES)
 
 
 @dataclass(frozen=True, order=True)
@@ -83,6 +89,7 @@ class Transition:
 
 
 TRANSITIONS = (
+    Transition("init_t", fuse_worker_policy.WORKER_EXECUTABLE, "process", fuse_worker_policy.WORKER_DOMAIN),
     Transition("kernel_t", "init_exec_t", "process", "init_t"),
     Transition("init_t", "aos_sandbox_host_exec_t", "process", "aos_sandbox_host_t"),
     Transition("init_t", "aos_nspawn_exec_t", "process", "aos_nspawn_t"),
@@ -168,7 +175,12 @@ POSITIVE_ACCESS = (
     *execution_access(),
     *(
         Access("init_t", domain, "process2", "nnp_transition")
-        for domain in NETWORK_SERVICE_DOMAINS
+        for domain in NNP_FIXED_SERVICE_DOMAINS
+    ),
+    *(
+        access
+        for source, target, object_class, permissions in fuse_worker_policy.POSITIVE_GROUPS
+        for access in accesses(source, target, object_class, permissions)
     ),
     *accesses(
         INSPECTOR_DOMAIN,
@@ -497,6 +509,9 @@ def negative_access() -> tuple[Access, ...]:
 
     checks: list[Access] = []
 
+    for source, target, object_class, permissions in fuse_worker_policy.negative_groups(DOMAINS):
+        checks.extend(accesses(source, target, object_class, permissions))
+
     # The first PID 1 exec must enter init_t; attribute-expanded file access
     # may not let kernel_t execute the guard while retaining its old domain.
     checks.append(Access("kernel_t", "init_exec_t", "file", "execute_no_trans"))
@@ -558,14 +573,14 @@ def negative_access() -> tuple[Access, ...]:
         checks.append(Access(domain, HANDOFF_EXECUTABLE, "file", "execute"))
         checks.append(Access(domain, HANDOFF_DOMAIN, "process", "transition"))
 
-    # The NNP exception names only PID 1 and the three fixed Network services.
+    # NNP exceptions name only PID 1 and the separately sealed fixed services.
     # A nosuid exception remains forbidden until the logical overlay launch
     # route is qualified separately from the physical EROFS diagnostic route.
     for domain in (HANDOFF_DOMAIN, PROVISIONER_DOMAIN, *DOMAINS):
         checks.append(Access("init_t", domain, "process2", "nosuid_transition"))
-        if domain not in NETWORK_SERVICE_DOMAINS:
+        if domain not in NNP_FIXED_SERVICE_DOMAINS:
             checks.append(Access("init_t", domain, "process2", "nnp_transition"))
-        for network_domain in NETWORK_SERVICE_DOMAINS:
+        for network_domain in NNP_FIXED_SERVICE_DOMAINS:
             checks.extend(
                 accesses(
                     domain,
@@ -644,7 +659,7 @@ def negative_access() -> tuple[Access, ...]:
     for record in PROTECTED_RECORDS:
         checks.extend(accesses(HANDOFF_DOMAIN, record, "file", RECORD_MUTATIONS))
     for domain in DOMAINS:
-        if domain != INSPECTOR_DOMAIN:
+        if domain not in (INSPECTOR_DOMAIN, fuse_worker_policy.WORKER_DOMAIN):
             checks.append(Access(domain, "init_t", "fd", "use"))
         checks.append(Access(domain, HANDOFF_DOMAIN, "fd", "use"))
 
@@ -967,7 +982,7 @@ def check_policy(setools: Any, policy: Any) -> list[str]:
     if len(file_type_attributes) != 1:
         raise ValueError("effective policy must contain exactly one file_type attribute")
     file_types = {str(object_type) for object_type in file_type_attributes[0].expand()}
-    for object_type in PROTECTED_OBJECT_TYPES:
+    for object_type in GUARDED_OBJECT_TYPES:
         if object_type in file_types:
             raise ValueError(f"protected object inherited broad file_type: {object_type}")
         evidence.append(f"deny-attribute\t{object_type}\tfile_type")

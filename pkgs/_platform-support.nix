@@ -529,6 +529,7 @@ let
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"
     "aos-fuse-transport"
+    "aos-filesystem-fuse-worker"
     "aos-landlock"
     "aos-netd"
     "aos-namespace-inspector-manager-query"

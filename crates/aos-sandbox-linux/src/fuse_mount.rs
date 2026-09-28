@@ -48,6 +48,21 @@ impl FreshDetachedFuseMountV1 {
     /// fixed device, rejected filesystem parameters, mount creation, or mount
     /// attributes. No descriptor escapes if an intermediate operation fails.
     pub fn open_fixed_read_only(no_exec: bool, idmap: Option<&NamespaceFd>) -> Result<Self> {
+        Self::open_fixed_read_only_inner(no_exec, idmap, false)
+    }
+
+    // The fixed worker producer retains its user namespace separately. FUSE
+    // rejects idmapping until INIT negotiates FUSE_ALLOW_IDMAP, so this mount
+    // cannot be published before genuine initialization and idmap completion.
+    pub(crate) fn open_fixed_worker_read_only() -> Result<Self> {
+        Self::open_fixed_read_only_inner(true, None, true)
+    }
+
+    fn open_fixed_read_only_inner(
+        no_exec: bool,
+        idmap: Option<&NamespaceFd>,
+        verify_worker_label: bool,
+    ) -> Result<Self> {
         if idmap.is_some_and(|namespace| namespace.kind() != NamespaceKind::User) {
             return Err(Error::invalid(
                 "FUSE mount idmap",
@@ -62,6 +77,14 @@ impl FreshDetachedFuseMountV1 {
         )
         .map_err(|source| kernel_error("open fixed FUSE device", source))?;
         verify_device(device.as_fd())?;
+        if verify_worker_label {
+            // Inspect the original freshly opened OFD before any fscontext
+            // consumes it. A later label check cannot establish fresh custody.
+            crate::fuse_worker_objects::require_object_context(
+                device.as_fd(),
+                crate::fuse_worker_objects::FUSE_WORKER_DEVICE_CONTEXT_V1,
+            )?;
+        }
 
         let mut context = FileSystemContext::open("fuse")?;
         // Linux 7.2.3 accepts either an FD-valued parameter or numeric fget.

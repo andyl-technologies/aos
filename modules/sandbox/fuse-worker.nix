@@ -2,6 +2,7 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }: let
   cfg = config.aos.sandbox.fuseWorker;
@@ -11,8 +12,9 @@ in {
     enable = lib.mkEnableOption "the fixed Mount-owned filesystem worker template";
 
     package = lib.mkOption {
-      type = lib.types.nullOr lib.types.package;
-      default = null;
+      type = lib.types.package;
+      default = pkgs.aos-filesystem-fuse-worker;
+      defaultText = "pkgs.aos-filesystem-fuse-worker";
       description = "Image-owned package containing the fixed aos-filesystem-fuse-worker entry point.";
     };
   };
@@ -24,8 +26,12 @@ in {
         message = "The FUSE worker role requires the existing authenticated Host owner";
       }
       {
-        assertion = cfg.package != null;
-        message = "The FUSE worker role requires its image-owned executable package";
+        assertion = cfg.package == pkgs.aos-filesystem-fuse-worker;
+        message = "The FUSE worker role requires the exact image-labeled executable package";
+      }
+      {
+        assertion = config.aos.security.selinux.enable && config.aos.security.selinux.mode == "enforcing" && config.aos.security.selinux.bootMode == "immutable-stage0";
+        message = "The FUSE worker role requires enforcing SELinux";
       }
     ];
 
@@ -66,6 +72,7 @@ in {
         CapabilityBoundingSet = "";
         AmbientCapabilities = "";
         NoNewPrivileges = true;
+        SELinuxContext = "system_u:system_r:aos_filesystem_fuse_worker_t";
         ProtectSystem = "strict";
         ProtectHome = true;
         PrivateNetwork = true;
