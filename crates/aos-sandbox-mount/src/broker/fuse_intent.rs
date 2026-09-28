@@ -29,7 +29,7 @@ use crate::state::fuse_worker_reservation_v1::FuseWorkerReservationStateV1;
 
 mod worker_preparation;
 
-pub use worker_preparation::PreparedMountFuseWorkerObjectsV1;
+pub use worker_preparation::{PreparedMountFuseWorkerHandoffV1, PreparedMountFuseWorkerObjectsV1};
 
 const ORIGIN_PREFIX: &[u8] = b"aos.mount.fuse.origin.v1\0";
 const PHASE_FENCE_PREFIX: &[u8] = b"aos.mount.fuse.phase-fence.v1\0";

@@ -6,6 +6,7 @@
 //! service registration, background task, or broker effect.
 
 mod consumer_cgroup_terminal;
+mod fuse_worker_preparation;
 
 use std::os::fd::{BorrowedFd, OwnedFd};
 use std::path::Path;
