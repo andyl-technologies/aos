@@ -64,6 +64,54 @@ in
       # The upstream archive repository supplies its root marker separately.
       overlays."WORKSPACE" = builtins.toFile "grpc-envoy-api-WORKSPACE" "";
     };
+    grpc-skylib = moduleSource {
+      name = "grpc-skylib";
+      version = "1.0.2";
+      url = "https://github.com/bazelbuild/bazel-skylib.git";
+      ref = "1.0.2";
+      rev = "e59b620b392a8ebbcf25879fc3fde52b4dc77535";
+      hash = "sha256-DcNTHbjqsqDP9rZPJEMih6ixqOkfZssgAFvOjnGvs9c=";
+    };
+    re2 = moduleSource {
+      name = "re2";
+      version = "2024-07-02";
+      url = "https://github.com/google/re2.git";
+      ref = "2024-07-02";
+      rev = "6dcd83d60f7944926bfd308cc13979fc53dd69ca";
+      hash = "sha256-IeANwJlJl45yf8iu/AZNDoiyIvTCZIeK1b74sdCfAIc=";
+    };
+    googletest = moduleSource {
+      name = "googletest";
+      version = "1.15.2";
+      url = "https://github.com/google/googletest.git";
+      ref = "v1.15.2";
+      rev = "b514bdc898e2951020cbdca1304b75f5950d1f59";
+      hash = "sha256-1OJ2SeSscRBNr7zZ/a8bJGIqAnhkg45re0j3DtPfcXM=";
+    };
+    gazelle = moduleSource {
+      name = "gazelle";
+      version = "0.36.0";
+      url = "https://github.com/bazelbuild/bazel-gazelle.git";
+      ref = "v0.36.0";
+      rev = "1b331b6d9cb2d981580a8d3e2dfc551185790737";
+      hash = "sha256-jT+h3ehaqA6LLg2Q5JdWeHPwUomRDIapNALwa7nFDJ4=";
+    };
+    grpc-gazelle = moduleSource {
+      name = "grpc-gazelle";
+      version = "0.24.0";
+      url = "https://github.com/bazelbuild/bazel-gazelle.git";
+      ref = "v0.24.0";
+      rev = "3ea1d64d6fe943dac06c341f9a265472bb99acd7";
+      hash = "sha256-WWAOhV1H/OnARjhoWQYNmd9/y8pD3bRkhncmzt/36mA=";
+    };
+    grpc-rules-cc = moduleSource {
+      name = "grpc-rules-cc";
+      version = "624b5d59";
+      url = "https://github.com/bazelbuild/rules_cc.git";
+      rev = "624b5d59dfb45672d4239422fa1e3de1822ee110";
+      fetchCommit = true;
+      hash = "sha256-SYL1HNqjs2YqUn5Sm3daAk3KWZsQe1Gl+49bCW5CcnY=";
+    };
     grpc-udpa = prepareModule {
       pname = "bazel-grpc-udpa-source";
       version = "cb28da34";

@@ -258,7 +258,7 @@
               then name
               else builtins.replaceStrings ["+"] ["~"] name;
           in
-            if path == null || (lib.strings.hasPrefix "+" name && builtins.compareVersions version "8.0.0" < 0)
+            if path == null || (builtins.compareVersions version "8.0.0" < 0 && (lib.strings.hasPrefix "+" name || name == "grpc++grpc_repo_deps_ext+com_envoyproxy_protoc_gen_validate"))
             then null
             else "--override_repository=${canonicalName}=${path}"
         )
@@ -275,6 +275,16 @@
         "--override_repository=grpc~~grpc_repo_deps_ext~com_google_googleapis=${sourceModules.grpc-googleapis}"
         "--override_repository=grpc~~grpc_repo_deps_ext~envoy_api=${sourceModules.grpc-envoy-api}"
         "--override_repository=grpc~~grpc_repo_deps_ext~com_github_cncf_udpa=${sourceModules.grpc-udpa}"
+        "--override_repository=grpc~~grpc_repo_deps_ext~rules_cc=${sourceModules.grpc-rules-cc}"
+        "--override_repository=grpc~~grpc_repo_deps_ext~bazel_gazelle=${sourceModules.grpc-gazelle}"
+        "--override_repository=grpc~~grpc_repo_deps_ext~bazel_skylib=${sourceModules.grpc-skylib}"
+        "--override_repository=grpc~~grpc_repo_deps_ext~com_envoyproxy_protoc_gen_validate=${import ./_bazel-protoc-gen-validate-source.nix {
+          inherit buildPackages;
+          mkDerivation = buildPackages.mkDerivation;
+          fetchgit = lib.fetchgit;
+          bazelOfflineModules = buildBazelBootstrap.passthru.offlineModules;
+          pythonRuntimeProvidedByDeps = true;
+        }}"
       ];
   sourceModuleFlags =
     if source == null
@@ -283,11 +293,27 @@
       builtins.filter (flag: flag != null) (lib.mapAttrsToList (
           name: path:
           # Bazel 7's older protocol graph does not include these newer modules.
-            if path == null || (builtins.compareVersions version "8.0.0" < 0 && builtins.elem name ["chicory" "grpc-java" "grpc-googleapis" "grpc-envoy-api" "grpc-udpa" "rules_apple" "rules_foreign_cc" "rules_fuzzing" "rules_shell" "rules_swift"])
+            if path == null || (builtins.compareVersions version "8.0.0" < 0 && (lib.strings.hasPrefix "grpc-" name || builtins.elem name ["chicory" "rules_apple" "rules_foreign_cc" "rules_fuzzing" "rules_shell" "rules_swift"]))
             then null
             else "--override_module=${name}=${path}"
         )
         sourceModules);
+  buildSourceModuleFlags =
+    if source != null && isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64
+    then
+      map (flag:
+        builtins.replaceStrings
+        [
+          "--override_module=blake3=${sourceModules.blake3}"
+          "--override_module=abseil-cpp=${sourceModules.abseil-cpp}"
+        ]
+        [
+          "--override_module=blake3=$BLAKE3_SOURCE"
+          "--override_module=abseil-cpp=$ABSEIL_SOURCE"
+        ]
+        flag)
+      sourceModuleFlags
+    else sourceModuleFlags;
   buildBootstrapTools =
     if isCross
     then buildPackages.bootstrapTools
@@ -601,7 +627,11 @@
       # archive. Copy the pinned rules_cc implementation so this package-local
       # toolchain can adjust its Darwin archiver without modifying the vendor
       # fixed-output derivation.
-      unix_cc_toolchain_config=${vendorDeps}/rules_cc~/cc/private/toolchain/unix_cc_toolchain_config.bzl
+      unix_cc_toolchain_config=${
+      if source != null
+      then sourceModules.rules_cc + "/cc/private/toolchain/unix_cc_toolchain_config.bzl"
+      else vendorDeps + "/rules_cc~/cc/private/toolchain/unix_cc_toolchain_config.bzl"
+    }
       if [ ! -f "$unix_cc_toolchain_config" ]; then
         echo "Bazel ${version}: vendored Unix C++ toolchain config is missing" >&2
         exit 1
@@ -970,7 +1000,7 @@
     )
     config_setting(
         name = "darwin-java-runtime-setting",
-        values = {"java_runtime_version": "local_jdk_21"},
+        values = {"java_runtime_version": "${bootstrapJavaRuntime}"},
     )
     toolchain(
         name = "darwin-java-runtime-toolchain",
@@ -1415,7 +1445,7 @@ in
       {
         name = "patch";
         script = ''
-                  ${lib.optionalString (source != null) ''
+                  ${lib.optionalString (source != null && builtins.compareVersions version "9.0.0" < 0) ''
             # The dist archive bundles an empty Android emulator
             # snapshot. Recreate it with AOS-built qemu-img and zip.
             test ! -e tools/android/emulator/snapshots.img.zip
@@ -1636,8 +1666,21 @@ in
               # compile.sh must retain its native platform for the bootstrap JDK
               # toolchains. Select BLAKE3's ARM implementation explicitly while
               # the output configuration uses the cross compiler.
-              BLAKE3_BUILD=$(find ../vendor_dir -maxdepth 2 \
-                -path '*/blake3*/BUILD.bazel' -print -quit)
+              ${lib.optionalString (source != null) ''
+                # Source overrides bypass the vendor tree. Patch local copies
+                # and pass those same copies to the compilation module resolver.
+                BLAKE3_SOURCE="$PWD/aos-source-modules/blake3"
+                ABSEIL_SOURCE="$PWD/aos-source-modules/abseil-cpp"
+                mkdir -p aos-source-modules
+                cp -R ${sourceModules.blake3} "$BLAKE3_SOURCE"
+                cp -R ${sourceModules.abseil-cpp} "$ABSEIL_SOURCE"
+                chmod -R u+w aos-source-modules
+              ''}
+              BLAKE3_BUILD=${
+                if source != null
+                then ''"$BLAKE3_SOURCE/BUILD.bazel"''
+                else ''$(find ../vendor_dir -maxdepth 2 -path '*/blake3*/BUILD.bazel' -print -quit)''
+              }
               test -n "$BLAKE3_BUILD"
               if grep -q '@bazel_tools//src/conditions:linux_x86_64' "$BLAKE3_BUILD"; then
                 test "$(grep -Fc '@bazel_tools//src/conditions:linux_x86_64' "$BLAKE3_BUILD")" = 2
@@ -1655,8 +1698,11 @@ in
                   -e 's|@platforms//cpu:aarch64|@platforms//cpu:x86_64|g' \
                   "$BLAKE3_BUILD"
 
-                ABSEIL_RANDOM_BUILD=$(find ../vendor_dir -path \
-                  '*/abseil-cpp*/absl/random/internal/BUILD.bazel' -print -quit)
+                ABSEIL_RANDOM_BUILD=${
+                if source != null
+                then ''"$ABSEIL_SOURCE/absl/random/internal/BUILD.bazel"''
+                else ''$(find ../vendor_dir -path '*/abseil-cpp*/absl/random/internal/BUILD.bazel' -print -quit)''
+              }
                 test "$(grep -Fc '@platforms//cpu:x86_64' "$ABSEIL_RANDOM_BUILD")" = 1
                 test "$(grep -Fc '@platforms//cpu:aarch64' "$ABSEIL_RANDOM_BUILD")" = 1
                 sed -i \
@@ -1708,12 +1754,16 @@ in
             # --vendor_dir provides all vendored deps from the FOD.
             # --repository_disable_download prevents any network access.
             VENDOR_ABS="$(cd ../vendor_dir && pwd)"
+            ${lib.optionalString (source != null) ''
+              ${buildPython3}/bin/python3 ${./_bazel-registry-lock.py} "$VENDOR_ABS"
+            ''}
 
             # Bazel exec actions clear the environment before running C++ tools
             # such as protoc, so their runtime library must be linked. Bazel 8
             # and 9 select gold, which emits zero-filled executables with this
             # toolchain; use BFD for both target and execution-tool links.
             export EXTRA_BAZEL_ARGS="
+              --jobs=''${NIX_BUILD_CORES:-1}
               --verbose_failures
               --curses=no
               ${lib.optionalString (version == "7.7.1") ''
@@ -1734,6 +1784,8 @@ in
               --host_linkopt=-Wl,-rpath,${bazelExecGccLibs}/lib
             ''}
               ${lib.optionalString (isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64) ''
+              --repo_env=CC=${stdenv.cc}/bin/cc
+              --repo_env=CXX=${stdenv.cc}/bin/c++
               --cpu=aarch64
               --host_cpu=aarch64
               --noenable_platform_specific_config
@@ -1746,8 +1798,21 @@ in
               --vendor_dir=$VENDOR_ABS
               --repository_disable_download
               ${builtins.concatStringsSep "\n" sourceRepositoryFlags}
-              ${builtins.concatStringsSep "\n" sourceModuleFlags}
+              ${builtins.concatStringsSep "\n" buildSourceModuleFlags}
               --repo_env=JAVA_HOME=${buildOpenjdk}
+              ${lib.optionalString (builtins.compareVersions version "9.0.0" >= 0) ''
+              --repo_env=PATH=${buildToolsPath}
+              --repo_env=CC=${
+                if isDarwinCross
+                then buildPackages.cc
+                else stdenv.cc
+              }/bin/cc
+              --repo_env=CXX=${
+                if isDarwinCross
+                then buildPackages.cc
+                else stdenv.cc
+              }/bin/c++
+            ''}
               --nobuild_python_zip
               --incompatible_strict_action_env
               --action_env=PATH=${buildToolsPath}
@@ -1798,8 +1863,11 @@ in
                 else "rules_jvm_external~~maven~maven"
               }' \
                   > derived/maven/MAVEN_CANONICAL_REPO_NAME
-                cp src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt \
-                  tools/jdk/java_stub_template.txt
+                # Bazel 9 obtains this launcher from the source Java rules.
+                if test -f src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt; then
+                  cp src/main/java/com/google/devtools/build/lib/bazel/rules/java/java_stub_template.txt \
+                    tools/jdk/java_stub_template.txt
+                fi
                 export BAZEL=${buildBazelBootstrap}/bin/bazel
             ''}
 

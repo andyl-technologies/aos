@@ -11,6 +11,15 @@
     inherit buildPackages fetchgit;
   };
   prepareModule = import ./_bazel-module-prepared.nix {inherit buildPackages;};
+  ciRulesSource = moduleSource {
+    name = "bazel-ci-rules";
+    version = "2.0.0";
+    url = "https://github.com/bazelbuild/continuous-integration.git";
+    ref = "rules-2.0.0";
+    rev = "426a2e8906b6a61100428bb33530aa44f62fab91";
+    sparseDirectories = ["rules"];
+    hash = "sha256-SpOUApI0MtIUsTsuE+0KhMJ0Lnz66THa1ZKC4lxKpZM=";
+  };
   xdsSource = moduleSource {
     name = "xds";
     version = "0.0.0-20240423-555b57e";
@@ -192,6 +201,138 @@
     }
   ];
 in {
+  buildozer = prepareModule {
+    pname = "bazel-buildozer-source";
+    version = "8.5.1";
+    source = moduleSource {
+      name = "buildozer";
+      version = "8.5.1";
+      url = "https://github.com/fmeum/buildozer.git";
+      ref = "v8.5.1";
+      rev = "e0d9bca2fcd7a233136ec206b85004c5f178f62b";
+      hash = "sha256-2MwTsjNM4Mdi2VCjJWDx6py1nDB+3oJIgyrBIi1CV38=";
+    };
+    patches = [
+      (buildPackages.fetchurl {
+        urls = ["https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/buildozer/8.5.1/patches/module_dot_bazel_version.patch"];
+        hash = "sha256-MmTYJnlP+HcNSelJzhZhSADHPFRH04muufK2v1aa+h0=";
+      })
+    ];
+  };
+  google_benchmark = moduleSource {
+    name = "google-benchmark";
+    version = "1.9.4";
+    url = "https://github.com/google/benchmark.git";
+    ref = "v1.9.4";
+    rev = "eddb0241389718a23a42db6af5f0164b6e0139af";
+    hash = "sha256-P7wJcKkIBoWtN9FCRticpBzYbEZPq71a0iW/2oDTZRU=";
+  };
+  onetbb = prepareModule {
+    pname = "bazel-onetbb-source";
+    version = "2022.2.0";
+    source = moduleSource {
+      name = "onetbb";
+      version = "2022.2.0";
+      url = "https://github.com/uxlfoundation/oneTBB.git";
+      ref = "v2022.2.0";
+      rev = "06ce6212da6710f4bb2d20a1904b018aa44069bf";
+      extraExcludes = ["!/doc"];
+      hash = "sha256-HlGk8MqpdogVX88NWakbIFBaf4hLuu3NK8h9DQ18eCE=";
+    };
+    overlays = builtins.mapAttrs (name: hash:
+      buildPackages.fetchurl {
+        urls = ["https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/onetbb/2022.2.0/overlay/${name}"];
+        inherit hash;
+      }) {
+      "BUILD.bazel" = "sha256-H0/685f789c6XLGbwcIyM1wEpXjOM9JCoCSj+NKf7D4=";
+      "MODULE.bazel" = "sha256-WNOp+UFC30zSzJQcykgIr9sNcVYb5eWQMDXMnwBvOHo=";
+    };
+    patches = [];
+  };
+  googletest = prepareModule {
+    pname = "bazel-googletest-source";
+    version = "1.17.0.bcr.2";
+    source = moduleSource {
+      name = "googletest";
+      version = "1.17.0";
+      url = "https://github.com/google/googletest.git";
+      ref = "v1.17.0";
+      rev = "52eb8108c5bdec04579160ae17225d66034bd723";
+      hash = "sha256-HIHMxAUR4bjmFLoltJeIAVSulVQ6kVuIT2Ku+lwAx/4=";
+    };
+    patchStrip = 0;
+    patches = map (patch:
+      buildPackages.fetchurl {
+        urls = ["https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/googletest/1.17.0.bcr.2/patches/${patch.name}"];
+        inherit (patch) hash;
+      }) [
+      {
+        name = "build_bazel.patch";
+        hash = "sha256-tMYspfSBszCA4xVp42vVtO8g5849WEI/04pQCChQl7g=";
+      }
+      {
+        name = "module_bazel.patch";
+        hash = "sha256-t2dRUpBMah/K9CX63jyJtEwo7rLSxwjQA4zoFg0pEfU=";
+      }
+      {
+        name = "50b8600c.patch";
+        hash = "sha256-DfY+cJQfUwVsahNZUftiU3Noc4z1O1dPu8ckCseO7qg=";
+      }
+    ];
+  };
+  wabt = prepareModule {
+    pname = "bazel-wabt-source";
+    version = "1.0.37";
+    source = moduleSource {
+      name = "wabt";
+      version = "1.0.37";
+      url = "https://github.com/WebAssembly/wabt.git";
+      ref = "1.0.37";
+      rev = "5e81f6aeddf94fd7743c8c2049f5084c74ff6ab1";
+      hash = "sha256-1Yn9lavn5rtdm1R5xNRkbkUwspGTe7V09LTcKSdCUqg=";
+      extraExcludes = ["!/test" "!/docs"];
+    };
+    overlays = builtins.mapAttrs (name: hash:
+      buildPackages.fetchurl {
+        urls = ["https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/wabt/1.0.37/overlay/${name}"];
+        inherit hash;
+      }) {
+      "BUILD.bazel" = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
+      "MODULE.bazel" = "sha256-w5B+rW+YNI3wmPOABhxcnY9KyaYK79z4ORninDB3faA=";
+      "build/BUILD.bazel" = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
+      "build/wabt_build.bzl" = "sha256-t6gvWTSYW0jdwM2fTy7Afor07fPEg3cCuPwLGLp75uk=";
+      "include/wabt/BUILD.bazel" = "sha256-Ee2jCK8Yi73cfaVkmhQEVdOLA47Cn9r6UD/w+Z9m+hE=";
+      "src/BUILD.bazel" = "sha256-gmn6MOmrOkI6DkybedMq3uR5xJ4385Mu3Tb7AU2G+b4=";
+      "src/tools/BUILD.bazel" = "sha256-hW7TDmzsvtYO69A79n2nVSp/m3KuhBdwrIaMz56gBrE=";
+      "third_party/picosha2/BUILD.bazel" = "sha256-OMR47fn/GTIk4IQizwgHJPxEySq1qkBBuZGlzW3G3Qg=";
+      "third_party/wasm-c-api/BUILD.bazel" = "sha256-Gacj2iQv+/54ih5TnVwq4zCIyaBGWrGqj1UbshSr2GI=";
+    };
+    patches = [];
+  };
+  rules_fuzzing = prepareModule {
+    pname = "bazel-rules-fuzzing-source";
+    version = "0.6.0";
+    source = moduleSource {
+      name = "rules-fuzzing";
+      version = "0.6.0";
+      url = "https://github.com/bazel-contrib/rules_fuzzing.git";
+      ref = "v0.6.0";
+      rev = "e6a9720d7bfa8d7c01df1151722fd9377d306bab";
+      hash = "sha256-a/TjhjYDv/HYaZyH5svvNAbq2oxnFdKtudYudgwAR8o=";
+    };
+    patches = [
+      (buildPackages.fetchurl {
+        urls = ["https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/rules_fuzzing/0.6.0/patches/module_dot_bazel_version.patch"];
+        hash = "sha256-bwykr2MuQBRkcjo3eGjonIpeGKFiv1DbosSZXJ07tt8=";
+      })
+    ];
+  };
+  bazel_ci_rules = prepareModule {
+    pname = "bazel-ci-rules-source";
+    version = "2.0.0";
+    source = ciRulesSource + "/rules";
+    patches = [];
+  };
   xds = prepareModule {
     pname = "bazel-xds-source";
     version = "0.0.0-20240423-555b57e";

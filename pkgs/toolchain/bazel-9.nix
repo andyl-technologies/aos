@@ -98,5 +98,5 @@ in
     inherit (upstream) version update;
     source = preparedSource;
     srcHash = "sha256-ga8CszEo7BkixrYCEt8/thULqpa7M9Mv+gIOX+1H/vw=";
-    vendorDepsHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    vendorDepsHash = "sha256-T8v/c1qFiVTTSnlhUW30TPZZ0bk6VQ9gO6IUnFoMS8s=";
   }
