@@ -14,6 +14,17 @@ Garage S3 ran on separate VMs. All measurements below are from this local fleet.
 
 ## Current OCI requalification
 
+### Ambiguous R2 deletion recovery fence
+
+The object guard now rejects a second physical delete when its persistent
+pending claim has no terminal receipt. It does so before another provider HEAD
+or DELETE; visible writes remain blocked. Terminal receipts still replay after
+restart or a later mutation, and changed claim identities are rejected.
+Two focused Worker state tests passed, including serialized crash recovery,
+and the Worker `wasm32-unknown-unknown` check passed. These are state-contract
+and compilation checks, not an injected provider failure or hosted R2 test.
+Automatic provider settlement and safe receipt retirement remain incomplete.
+
 The expanded container corpus uses the real signed AOS base image and its
 complete source evidence. Its latest completed fleet attempt failed with HTTP
 503 during manifest admission; it does not qualify nonempty container parity.

@@ -129,9 +129,13 @@ delete operation, so the guard serializes HEAD, identity comparison, and
 DELETE with writes to the same key. A deletion plan carries the SQL claim ID,
 strong ETag, size, and reviewed hash. The guard persists the claim before
 deleting and retains its outcome indefinitely; a retried claim cannot delete
-a replacement at the same key. A crash after R2 deletion but before outcome
-persistence is resolved by the next guarded HEAD, while writes stay blocked
-by the pending claim. This guard is a correctness dependency for hybrid R2,
+a replacement at the same key. A crash or lost provider response before outcome
+persistence leaves the key fenced by the pending claim. Neither a subsequent
+HEAD reporting absence nor lease expiry proves that the original request has
+settled. The guard refuses a second physical deletion and keeps writes blocked
+until provider settlement is established and its terminal receipt is persisted.
+The initial implementation retains this ambiguous state for operator recovery;
+it does not automatically clear it on a timer. This guard is a correctness dependency for hybrid R2,
 distinct from the optional parsed-result cache above. Other backends need
 their own positively observed atomic condition or an equivalent serialized
 mutation boundary before physical GC can run.

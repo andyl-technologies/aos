@@ -21,35 +21,14 @@ use worker::{
 const BINDING: &str = "HYBRID_OBJECT_GUARD";
 const KEY_HEADER: &str = "x-aos-hybrid-object-key";
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DeleteClaim {
-    pub claim_id: String,
-    pub expected_etag: String,
-    pub expected_size: u64,
-    pub expected_hash: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum DeleteOutcome {
-    Deleted { etag: String },
-    NotFound,
-    PreconditionFailed,
-}
+use crate::hybrid_object_state::{recover_delete, DeleteReceipt};
+pub(crate) use crate::hybrid_object_state::{DeleteClaim, DeleteOutcome};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CompleteRequest {
     upload_id: String,
     parts: Vec<PartTag>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DeleteReceipt {
-    claim: DeleteClaim,
-    outcome: DeleteOutcome,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -165,27 +144,22 @@ impl HybridObjectGuard {
         // Keep receipts per claim so a frequently reused object key never
         // grows one storage value past Durable Object limits.
         let receipt_key = format!("delete-receipt:{}", claim.claim_id);
-        if let Some(receipt) = self
+        let receipt = self
             .state
             .storage()
             .get::<DeleteReceipt>(&receipt_key)
-            .await?
+            .await?;
+        let pending = self.pending_delete().await?;
+
+        // Recovery runs before any provider call. A pending claim without a
+        // terminal receipt may still have an outstanding R2 request.
+        if let Some(outcome) =
+            recover_delete(&claim, receipt.as_ref(), pending.as_ref()).map_err(storage_error)?
         {
-            if receipt.claim != claim {
-                return Err(worker::Error::RustError(
-                    "delete claim changed identity".into(),
-                ));
-            }
-            if self.pending_delete().await?.as_ref() == Some(&claim) {
+            if pending.as_ref() == Some(&claim) {
                 self.state.storage().delete("pending-delete").await?;
             }
-            return Ok(receipt.outcome);
-        }
-        let pending = self.pending_delete().await?;
-        if pending.as_ref().is_some_and(|previous| previous != &claim) {
-            return Err(worker::Error::RustError(
-                "another object deletion is pending".into(),
-            ));
+            return Ok(outcome);
         }
 
         let head = crate::surface::hybrid_r2_head(bucket.clone(), key)
@@ -197,9 +171,7 @@ impl HybridObjectGuard {
                 DeleteOutcome::PreconditionFailed
             }
             Some(_) => {
-                if pending.is_none() {
-                    self.state.storage().put("pending-delete", &claim).await?;
-                }
+                self.state.storage().put("pending-delete", &claim).await?;
                 crate::surface::hybrid_r2_delete(bucket, key)
                     .await
                     .map_err(storage_error)?;
@@ -219,7 +191,7 @@ impl HybridObjectGuard {
                 },
             )
             .await?;
-        if pending.is_some() || matches!(outcome, DeleteOutcome::Deleted { .. }) {
+        if matches!(outcome, DeleteOutcome::Deleted { .. }) {
             self.state.storage().delete("pending-delete").await?;
         }
         Ok(outcome)

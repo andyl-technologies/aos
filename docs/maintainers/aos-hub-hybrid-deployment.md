@@ -19,6 +19,30 @@ admission; physical object presence alone never authorizes completion. An upload
 that does not converge within the bounded window returns a retryable error and
 cleans up its own staging objects.
 
+## Recover an ambiguous physical deletion
+
+The R2 object guard persists a pending deletion before dispatching it and a
+terminal receipt before allowing another visible write. A lost response or
+restart between these steps leaves that object key fenced. The guard rejects
+both retrying the original physical deletion and a different deletion claim;
+visible puts and multipart completion remain blocked. Other object keys can
+continue working.
+
+Do not clear the pending claim based on an absent HEAD result, elapsed time,
+lease expiry, or a restarted Worker. Those observations do not establish that
+the dispatched provider operation has settled. Preserve the claim and provider
+diagnostics, establish its terminal outcome with the provider, and persist its
+matching terminal receipt before releasing the fence. Automatic provider
+settlement and an authenticated repair command remain required before this
+failure can recover without operator intervention. Terminal receipts must be
+retained while Native can replay their action identities.
+
+R2's documented Worker deletion API accepts keys without a conditional
+argument; its consistency guarantee applies after the delete promise resolves.
+See the [R2 Worker API reference](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/#bucket-method-definitions).
+The pending fence is a conservative response to an unknown outcome, rather
+than evidence that R2 has delayed a deletion in the hosted qualification.
+
 ## Prepare the paired deployment
 
 1. Build `pkgs.aos-hub`, `pkgs.aos-hub-cloudflare`, and

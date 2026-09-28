@@ -150,6 +150,8 @@ mod hybrid;
 pub mod hybrid_binding;
 #[cfg(target_arch = "wasm32")]
 pub mod hybrid_object;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod hybrid_object_state;
 #[cfg(target_arch = "wasm32")]
 pub mod indexer;
 // Pure (no `worker`/wasm dependency) DO-SQLite placeholder translation, so it
