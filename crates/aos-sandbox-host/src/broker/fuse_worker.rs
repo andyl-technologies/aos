@@ -6,7 +6,7 @@
 //! escrow before PID1, then co-owns the actual private manager and worker pins.
 //! Neither the response nor cold escrow reconstructs connected/read authority.
 
-use std::os::fd::{AsFd as _, OwnedFd};
+use std::os::fd::{AsFd, OwnedFd};
 
 use aos_proto::aos::sandbox::local::v1::{BrokerMethod, PrepareHostFuseWorkerSessionResponseV1};
 use aos_sandbox_linux::cgroup::CgroupV2Root;
