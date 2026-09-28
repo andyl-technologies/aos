@@ -9,6 +9,7 @@
 use std::fs;
 use std::io::Read as _;
 use std::net::{Ipv4Addr, TcpStream};
+use std::os::fd::{AsFd as _, BorrowedFd};
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -169,6 +170,46 @@ fn owned_daemon_diagnostics(
          at {}:\n{stderr}",
         diagnostic_path.display()
     )
+}
+
+fn owned_client_diagnostics(
+    status: &std::io::Result<Option<std::process::ExitStatus>>,
+    stdout: Option<BorrowedFd<'_>>,
+    stderr: Option<BorrowedFd<'_>>,
+) -> String {
+    format!(
+        "original client status: {status:?}; \
+         stdout (up to {MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES} available bytes):\n{}\n\
+         stderr (up to {MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES} available bytes):\n{}",
+        available_pipe_diagnostic(stdout),
+        available_pipe_diagnostic(stderr),
+    )
+}
+
+// Only the already-failed fixture reads these original client pipes. A single
+// nonblocking read never waits for a live writer, EOF or a second observation.
+fn available_pipe_diagnostic(pipe: Option<BorrowedFd<'_>>) -> String {
+    let Some(pipe) = pipe else {
+        return "original client pipe unavailable".to_owned();
+    };
+    let bytes = (|| -> rustix::io::Result<Vec<u8>> {
+        let flags = rustix::fs::fcntl_getfl(pipe)?;
+        rustix::fs::fcntl_setfl(pipe, flags | rustix::fs::OFlags::NONBLOCK)?;
+
+        let mut bytes = vec![0; MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES as usize];
+        let length = match rustix::io::read(pipe, bytes.as_mut_slice()) {
+            Ok(length) => length,
+            Err(rustix::io::Errno::AGAIN) => 0,
+            Err(error) => return Err(error),
+        };
+        bytes.truncate(length);
+        Ok(bytes)
+    })();
+
+    match bytes {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).replace("\r\n", "\n"),
+        Err(error) => format!("original client pipe observation failed: {error}"),
+    }
 }
 
 fn builder(claim: &OpenSshGateClaimV1, after: u64, before: u64) -> Builder {
@@ -588,6 +629,98 @@ fn listener_failure_bounds_ephemeral_stderr() {
     assert!(failure.contains("original child status: Ok(None)"));
     assert!(failure.contains("first 16384 bytes"));
     assert!(!failure.contains("excluded tail"));
+}
+
+#[test]
+fn client_failure_observes_available_output_without_waiting_for_live_writers() {
+    let (stdout, stdout_writer) =
+        rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+    let (stderr, stderr_writer) =
+        rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+    let stdout_flags = rustix::fs::fcntl_getfl(&stdout).unwrap();
+    let stderr_flags = rustix::fs::fcntl_getfl(&stderr).unwrap();
+    assert_eq!(
+        rustix::io::write(&stdout_writer, b"fixture client stdout\r\n").unwrap(),
+        23,
+    );
+    assert_eq!(
+        rustix::io::write(&stderr_writer, b"fixture client stderr\r\n").unwrap(),
+        23,
+    );
+
+    let failure = owned_client_diagnostics(&Ok(None), Some(stdout.as_fd()), Some(stderr.as_fd()));
+
+    assert!(failure.contains("original client status: Ok(None)"));
+    assert!(failure.contains("stdout (up to 16384 available bytes):\nfixture client stdout\n"));
+    assert!(failure.contains("stderr (up to 16384 available bytes):\nfixture client stderr\n"));
+    assert!(!failure.contains('\r'));
+    assert_eq!(
+        rustix::fs::fcntl_getfl(&stdout).unwrap(),
+        stdout_flags | rustix::fs::OFlags::NONBLOCK,
+    );
+    assert_eq!(
+        rustix::fs::fcntl_getfl(&stderr).unwrap(),
+        stderr_flags | rustix::fs::OFlags::NONBLOCK,
+    );
+
+    // Both original writers remain open. Empty pipes must report the current
+    // absence of bytes rather than wait for EOF or future client output.
+    assert_eq!(available_pipe_diagnostic(Some(stdout.as_fd())), "");
+    assert_eq!(available_pipe_diagnostic(Some(stderr.as_fd())), "");
+    drop((stdout_writer, stderr_writer));
+}
+
+#[test]
+fn client_failure_bounds_both_original_output_samples_and_retains_exit_status() {
+    use std::os::unix::process::ExitStatusExt as _;
+
+    // Regular fixture files avoid making setup depend on the kernel's pipe
+    // capacity; the same bounded FD read is exercised with more than 16 KiB.
+    let stdout = tempfile::NamedTempFile::new().unwrap();
+    let stderr = tempfile::NamedTempFile::new().unwrap();
+    let maximum = MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES as usize;
+    let mut stdout_bytes = vec![b'x'; maximum];
+    stdout_bytes.extend_from_slice(b"excluded stdout tail");
+    let mut stderr_bytes = vec![b'y'; maximum];
+    stderr_bytes.extend_from_slice(b"excluded stderr tail");
+    fs::write(stdout.path(), &stdout_bytes).unwrap();
+    fs::write(stderr.path(), &stderr_bytes).unwrap();
+    let mut original_stdout = fs::File::open(stdout.path()).unwrap();
+    let mut original_stderr = fs::File::open(stderr.path()).unwrap();
+    let status = Ok(Some(std::process::ExitStatus::from_raw(256)));
+
+    let failure = owned_client_diagnostics(
+        &status,
+        Some(original_stdout.as_fd()),
+        Some(original_stderr.as_fd()),
+    );
+
+    assert!(failure.contains(&format!("original client status: {status:?}")));
+    assert!(failure.contains(&"x".repeat(maximum)));
+    assert!(failure.contains(&"y".repeat(maximum)));
+    assert!(!failure.contains("excluded stdout tail"));
+    assert!(!failure.contains("excluded stderr tail"));
+    let mut stdout_tail = String::new();
+    let mut stderr_tail = String::new();
+    original_stdout.read_to_string(&mut stdout_tail).unwrap();
+    original_stderr.read_to_string(&mut stderr_tail).unwrap();
+    assert_eq!(stdout_tail, "excluded stdout tail");
+    assert_eq!(stderr_tail, "excluded stderr tail");
+}
+
+#[test]
+fn client_failure_keeps_status_and_pipe_observation_errors_neutral() {
+    let (_reader, writer) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+    let status = Err(std::io::Error::from_raw_os_error(10));
+
+    let failure = owned_client_diagnostics(&status, None, Some(writer.as_fd()));
+
+    assert!(failure.contains(&format!("original client status: {status:?}")));
+    assert!(failure.contains("original client pipe unavailable"));
+    assert!(failure.contains("original client pipe observation failed:"));
+    assert!(!failure.contains("TCP"));
+    assert!(!failure.contains("listener unavailable"));
+    assert!(!failure.contains("authentication failed"));
 }
 
 #[test]
