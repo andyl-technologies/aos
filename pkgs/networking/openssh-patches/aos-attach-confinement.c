@@ -31,6 +31,7 @@
 #include <sched.h>
 #include <stddef.h>
 #include <signal.h>
+#include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
 
