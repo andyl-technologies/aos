@@ -52,10 +52,15 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
             "reviewed request must select the complete shared qualification policy; inspect aos release contract"
         );
     }
+    let build_platform: String =
+        serde_json::from_value(nix.eval_json("stdenv.buildPlatform.system")?)
+            .context("decoding the native Nix build platform")?;
     let mut derivations = Vec::with_capacity(Platform::ALL.len());
     for platform in Platform::ALL {
-        let value =
-            nix.eval_json_for_target("releasePackageDerivations", Some(platform.as_str()))?;
+        // Passing the native platform as crossSystem selects a cross stdenv.
+        // Native cells must retain the repository's ordinary build toolchain.
+        let target = (platform.as_str() != build_platform).then_some(platform.as_str());
+        let value = nix.eval_json_for_target("releasePackageDerivations", target)?;
         let evaluated: DerivationInventoryV1 = serde_json::from_value(value)
             .with_context(|| format!("decoding {platform} derivation inventory"))?;
         if evaluated.platform != platform {
