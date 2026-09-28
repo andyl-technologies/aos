@@ -7,15 +7,17 @@
 //! and reply publication; Rust owns metadata decisions and handle state. File
 //! data and extended attributes remain disabled in the installed profile.
 //! The private ABI and callback modules contain the audited pointer boundary.
-//! Internal callback reducers define the dormant typed OPEN/READ/RELEASE
-//! sequencing contract for a later ABI revision; they are not installed in the
-//! C operations table. [`dormant_libfuse`] joins those reducers with
+//! A separate dormant V2 fallback-only ABI joins the existing typed
+//! OPEN/READ/RELEASE reducers with bounded data reads. Its only Rust entry point
+//! is a repository fixture feature; it grants no production backing disclosure
+//! or connected-FD/Mount authority. The V1 metadata ABI is unchanged.
+//! [`dormant_libfuse`] also joins those reducers with
 //! GETXATTR/LISTXATTR sizing and errno semantics. The private session context
 //! can construct a dormant adapter for
 //! OPEN, READ, RELEASE, GETXATTR, and LISTXATTR, including protected broker
 //! receipt and durable registration handoffs. Its clock, cancellation, and
-//! publication authority remain bound to that session. No installer is registered and
-//! [`run_metadata`] remains unchanged.
+//! publication authority remain bound to that session. No production fallback
+//! installer is registered and [`run_metadata`] remains unchanged.
 //!
 //! Each connection has exactly one runner. Its descriptors must refer to a
 //! broker-prepared mount with independently qualified permission policy. A
@@ -35,6 +37,9 @@ use aos_filesystem_view::{
 mod abi;
 mod callbacks;
 mod control;
+mod fallback;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use fallback::run_fallback_test_fixture;
 pub mod dormant_libfuse;
 mod file_callbacks;
 mod operations;
@@ -308,6 +313,36 @@ fn run_with(
             MetadataTransportError::Unrepresentable("extended operation profile"),
         ));
     }
+    initialize_metadata(&mut connection, cancellation, limits, budget)?;
+    let mut context = callbacks::Context::new(
+        connection,
+        scratch,
+        cancellation.as_raw_fd(),
+        limits,
+        budget,
+    );
+    // SAFETY: The installed AOS transport invokes only these callbacks, serially
+    // and synchronously. Context and its borrowed owners remain live and unmoved
+    // through the call. Neither side retains any pointer after return. Both FDs
+    // are borrowed and the C side duplicates only the connected descriptor.
+    let result = unsafe {
+        run(
+            connected.as_raw_fd(),
+            cancellation.as_raw_fd(),
+            &callbacks::OPERATIONS,
+            (&mut context as *mut callbacks::Context<'_, '_, '_, '_, '_>).cast(),
+            &encoded,
+        )
+    };
+    finish_context(context, result)
+}
+
+fn initialize_metadata(
+    connection: &mut MetadataConnection<'_, '_, '_, '_>,
+    cancellation: BorrowedFd<'_>,
+    limits: TransportLimits,
+    budget: RequestBudget,
+) -> Result<(), RunError> {
     if budget.forget_entries == 0 || budget.directory_entries == 0 {
         return Err(RunError::InvalidLimits);
     }
@@ -334,26 +369,13 @@ fn run_with(
     {
         return Err(RunError::InvalidLimits);
     }
-    let mut context = callbacks::Context::new(
-        connection,
-        scratch,
-        cancellation.as_raw_fd(),
-        limits,
-        budget,
-    );
-    // SAFETY: The installed AOS transport invokes only these callbacks, serially
-    // and synchronously. Context and its borrowed owners remain live and unmoved
-    // through the call. Neither side retains any pointer after return. Both FDs
-    // are borrowed and the C side duplicates only the connected descriptor.
-    let result = unsafe {
-        run(
-            connected.as_raw_fd(),
-            cancellation.as_raw_fd(),
-            &callbacks::OPERATIONS,
-            (&mut context as *mut callbacks::Context<'_, '_, '_, '_, '_>).cast(),
-            &encoded,
-        )
-    };
+    Ok(())
+}
+
+fn finish_context(
+    mut context: callbacks::Context<'_, '_, '_, '_, '_>,
+    result: i32,
+) -> Result<TeardownSummary, RunError> {
     let failed = context.failed() || (result == 0 && !context.destroyed);
     context.dispose_panic();
     let summary = context.connection.teardown();

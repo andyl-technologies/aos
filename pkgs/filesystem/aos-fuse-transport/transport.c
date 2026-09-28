@@ -32,6 +32,7 @@
 
 struct aos_fuse_transport {
   const struct aos_fuse_core_operations *operations;
+  const struct aos_fuse_fallback_operations_v2 *fallback;
   void *core_context;
   struct aos_fuse_limits limits;
   struct fuse_session *session;
@@ -42,6 +43,9 @@ struct aos_fuse_transport {
   char *name;
   char *directory_output;
   struct aos_fuse_directory_entry *entries;
+  uint8_t *read_output;
+  struct timespec file_deadline;
+  bool file_deadline_active;
   bool initialized;
   bool destroyed;
 };
@@ -51,7 +55,12 @@ struct aos_fuse_open_responder {
   fuse_req_t request;
   struct fuse_file_info *file;
   bool attempted;
+  bool regular_file;
 };
+
+static int begin_deadline(struct aos_fuse_transport *, struct timespec *);
+static int remaining_milliseconds(struct aos_fuse_transport *,
+                                  const struct timespec *);
 
 static int normalize_error(int error) {
   switch (error) {
@@ -63,6 +72,8 @@ static int normalize_error(int error) {
   case EINVAL:
   case EINTR:
   case EIO:
+  case EISDIR:
+  case EMFILE:
   case ENAMETOOLONG:
   case ENOENT:
   case ENOMEM:
@@ -128,6 +139,24 @@ static int validate_contract(const struct aos_fuse_core_operations *ops,
       !power_of_ten(limits->time_granularity_ns))
     return EINVAL;
   return 0;
+}
+
+static int validate_fallback_contract(
+    const struct aos_fuse_fallback_operations_v2 *ops,
+    const struct aos_fuse_fallback_limits_v2 *limits) {
+  if (ops == NULL || limits == NULL ||
+      ops->abi_major != AOS_FUSE_FALLBACK_ABI_MAJOR ||
+      ops->abi_minor != AOS_FUSE_FALLBACK_ABI_MINOR ||
+      ops->struct_size != sizeof(*ops) ||
+      ops->profile != AOS_FUSE_PROFILE_BOUNDED_FALLBACK || ops->reserved != 0 ||
+      limits->abi_major != AOS_FUSE_FALLBACK_ABI_MAJOR ||
+      limits->abi_minor != AOS_FUSE_FALLBACK_ABI_MINOR ||
+      limits->struct_size != sizeof(*limits) ||
+      limits->profile != AOS_FUSE_PROFILE_BOUNDED_FALLBACK ||
+      limits->reserved != 0 || ops->open == NULL || ops->read == NULL ||
+      ops->release == NULL)
+    return EINVAL;
+  return validate_contract(&ops->metadata, &limits->metadata);
 }
 
 static mode_t kind_mode(uint8_t kind) {
@@ -268,7 +297,13 @@ static int reply_open_once(struct aos_fuse_open_responder *responder,
     return EINVAL;
   responder->attempted = true;
   responder->file->fh = handle;
-  responder->file->cache_readdir = 1;
+  if (responder->regular_file) {
+    /* Every byte must cross the bounded verified READ path, not page cache. */
+    responder->file->direct_io = 1;
+    responder->file->keep_cache = 0;
+  } else {
+    responder->file->cache_readdir = 1;
+  }
   int result = fuse_reply_open(responder->request, responder->file);
   return checked_reply(responder->transport, result);
 }
@@ -587,16 +622,103 @@ static void aos_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t new_parent,
   (void)ino; (void)new_parent; (void)new_name;
   reply_error(req, EROFS);
 }
-static void aos_open(fuse_req_t req, fuse_ino_t ino,
-                     struct fuse_file_info *fi) {
-  (void)ino; (void)fi;
-  reply_error(req, ENOTSUP);
+static int begin_file_request(struct aos_fuse_transport *transport,
+                              uint64_t *deadline_ns) {
+  int error = begin_deadline(transport, &transport->file_deadline);
+  if (error != 0)
+    return error;
+  if (transport->file_deadline.tv_sec < 0 ||
+      transport->file_deadline.tv_nsec < 0 ||
+      transport->file_deadline.tv_nsec >= 1000000000L ||
+      (uint64_t)transport->file_deadline.tv_sec >
+          (UINT64_MAX - (uint64_t)transport->file_deadline.tv_nsec) /
+              UINT64_C(1000000000)) {
+    poison(transport, EOVERFLOW);
+    return EOVERFLOW;
+  }
+  *deadline_ns = (uint64_t)transport->file_deadline.tv_sec * UINT64_C(1000000000)
+                + (uint64_t)transport->file_deadline.tv_nsec;
+  transport->file_deadline_active = true;
+  return 0;
 }
-static void aos_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
-                     struct fuse_file_info *fi) {
-  (void)ino; (void)size; (void)off; (void)fi;
-  reply_error(req, ENOTSUP);
+
+static void aos_open(fuse_req_t request, fuse_ino_t node,
+                     struct fuse_file_info *file) {
+  struct aos_fuse_transport *transport = transport_for(request);
+  if (transport->fallback == NULL) {
+    reply_error(request, ENOTSUP);
+    return;
+  }
+  uint64_t deadline_ns = 0;
+  int error = begin_file_request(transport, &deadline_ns);
+  if (error == 0)
+    error = interrupted(request);
+  struct fuse_file_info reply_file;
+  memset(&reply_file, 0, sizeof(reply_file));
+  reply_file.flags = file->flags;
+  struct aos_fuse_open_responder responder = {
+      .transport = transport, .request = request, .file = &reply_file,
+      .attempted = false, .regular_file = true};
+  bool fatal = false;
+  if (error == 0)
+    error = core_result(transport->fallback->open(
+                            transport->core_context, node, file->flags,
+                            deadline_ns, &responder, reply_open_once), &fatal);
+  if (!responder.attempted) {
+    if (error == 0)
+      reply_integrity_failure(request);
+    else
+      reply_error(request, error);
+  } else if (error != 0) {
+    poison(transport, error);
+  }
+  if (fatal)
+    poison(transport, EIO);
+  transport->file_deadline_active = false;
 }
+
+static void aos_read(fuse_req_t request, fuse_ino_t node, size_t size, off_t offset,
+                     struct fuse_file_info *file) {
+  struct aos_fuse_transport *transport = transport_for(request);
+  if (transport->fallback == NULL) {
+    reply_error(request, ENOTSUP);
+    return;
+  }
+  uint64_t deadline_ns = 0;
+  uint64_t length = 0;
+  int error = begin_file_request(transport, &deadline_ns);
+  if (error == 0 && (offset < 0 || size > transport->limits.maximum_write_bytes))
+    error = size > transport->limits.maximum_write_bytes ? ENOMEM : EINVAL;
+  if (error == 0)
+    error = interrupted(request);
+  bool fatal = false;
+  if (error == 0)
+    error = core_result(transport->fallback->read(
+                            transport->core_context, node, file->fh,
+                            (int64_t)offset, (uint32_t)size, deadline_ns,
+                            transport->read_output,
+                            transport->limits.maximum_write_bytes, &length),
+                        &fatal);
+  if (error == 0 && length > size) {
+    error = EIO;
+    fatal = true;
+  }
+  if (error == 0)
+    error = interrupted(request);
+  if (error != 0) {
+    /* Callback prefixes remain private and never become an error reply body. */
+    memset(transport->read_output, 0, transport->limits.maximum_write_bytes);
+    reply_error(request, error);
+  } else {
+    (void)checked_reply(transport, fuse_reply_buf(
+        request, (const char *)transport->read_output, (size_t)length));
+    memset(transport->read_output, 0, transport->limits.maximum_write_bytes);
+  }
+  if (fatal)
+    poison(transport, EIO);
+  transport->file_deadline_active = false;
+}
+
 static void aos_write(fuse_req_t req, fuse_ino_t ino, const char *buffer,
                       size_t size, off_t off, struct fuse_file_info *fi) {
   (void)ino; (void)buffer; (void)size; (void)off; (void)fi;
@@ -607,11 +729,28 @@ static void aos_flush(fuse_req_t req, fuse_ino_t ino,
   (void)ino; (void)fi;
   reply_error(req, ENOTSUP);
 }
-static void aos_release(fuse_req_t req, fuse_ino_t ino,
-                        struct fuse_file_info *fi) {
-  (void)ino; (void)fi;
-  reply_error(req, ENOTSUP);
+static void aos_release(fuse_req_t request, fuse_ino_t node,
+                        struct fuse_file_info *file) {
+  struct aos_fuse_transport *transport = transport_for(request);
+  if (transport->fallback == NULL) {
+    reply_error(request, ENOTSUP);
+    return;
+  }
+  uint64_t deadline_ns = 0;
+  int error = begin_file_request(transport, &deadline_ns);
+  bool fatal = false;
+  uint32_t release_flags = (file->flush ? 1U : 0U) |
+                           (file->flock_release ? 2U : 0U);
+  if (error == 0)
+    error = core_result(transport->fallback->release(
+                            transport->core_context, node, file->fh, file->flags,
+                            release_flags, file->lock_owner, deadline_ns), &fatal);
+  reply_error(request, error);
+  if (fatal)
+    poison(transport, EIO);
+  transport->file_deadline_active = false;
 }
+
 static void aos_fsync(fuse_req_t req, fuse_ino_t ino, int datasync,
                       struct fuse_file_info *fi) {
   (void)ino; (void)datasync; (void)fi;
@@ -815,12 +954,23 @@ static ssize_t custom_writev(int fd, struct iovec *iov, int count,
     total += iov[index].iov_len;
   }
   struct timespec deadline;
-  if (begin_deadline(transport, &deadline) != 0)
+  if (transport->file_deadline_active)
+    deadline = transport->file_deadline;
+  else if (begin_deadline(transport, &deadline) != 0)
     return -1;
 
   for (;;) {
     if (wait_for_io(transport, fd, POLLOUT, &deadline) != 0)
       return -1;
+    /* A poll wakeup can be delayed after readiness. V2 must not treat it as
+     * a renewed publication budget after the original file callback bound. */
+    if (transport->file_deadline_active) {
+      int remaining = remaining_milliseconds(transport, &deadline);
+      if (remaining < 0) {
+        errno = -remaining;
+        return -1;
+      }
+    }
     ssize_t result = writev(fd, iov, count);
     if (result < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK))
       continue;
@@ -843,6 +993,7 @@ static int run_transport(int fd, int cancellation_fd,
                          const struct aos_fuse_core_operations *operations,
                          void *core_context,
                          const struct aos_fuse_limits *limits,
+                         const struct aos_fuse_fallback_operations_v2 *fallback,
                          bool validate_device) {
   int error = validate_contract(operations, limits);
   if (error != 0 || fd < 0 || cancellation_fd < 0)
@@ -885,6 +1036,7 @@ static int run_transport(int fd, int cancellation_fd,
   struct aos_fuse_transport transport;
   memset(&transport, 0, sizeof(transport));
   transport.operations = operations;
+  transport.fallback = fallback;
   transport.core_context = core_context;
   transport.limits = *limits;
   transport.cancellation_fd = cancellation_fd;
@@ -894,9 +1046,11 @@ static int run_transport(int fd, int cancellation_fd,
   transport.directory_output = calloc(limits->maximum_readdir_bytes, 1);
   transport.entries = calloc(limits->maximum_readdir_entries,
                              sizeof(*transport.entries));
+  if (fallback != NULL)
+    transport.read_output = calloc(limits->maximum_write_bytes, 1);
   if (transport.target == NULL || transport.names == NULL ||
       transport.name == NULL || transport.directory_output == NULL ||
-      transport.entries == NULL) {
+      transport.entries == NULL || (fallback != NULL && transport.read_output == NULL)) {
     error = ENOMEM;
     goto cleanup;
   }
@@ -979,6 +1133,7 @@ cleanup:
   if (session_fd >= 0)
     close(session_fd);
   free(transport.entries);
+  free(transport.read_output);
   free(transport.directory_output);
   free(transport.name);
   free(transport.names);
@@ -991,7 +1146,18 @@ int aos_fuse_transport_run(int connected_fd, int cancellation_fd,
                            void *core_context,
                            const struct aos_fuse_limits *limits) {
   return run_transport(connected_fd, cancellation_fd, operations, core_context,
-                       limits, true);
+                       limits, NULL, true);
+}
+
+int aos_fuse_transport_run_fallback_v2(
+    int connected_fd, int cancellation_fd,
+    const struct aos_fuse_fallback_operations_v2 *operations,
+    void *core_context, const struct aos_fuse_fallback_limits_v2 *limits) {
+  int error = validate_fallback_contract(operations, limits);
+  if (error != 0)
+    return error;
+  return run_transport(connected_fd, cancellation_fd, &operations->metadata,
+                       core_context, &limits->metadata, operations, true);
 }
 
 #ifdef AOS_FUSE_TRANSPORT_TESTING
@@ -1000,7 +1166,18 @@ int aos_fuse_transport_run_test_fd(
     const struct aos_fuse_core_operations *operations,
     void *core_context, const struct aos_fuse_limits *limits) {
   return run_transport(connected_fd, cancellation_fd, operations, core_context,
-                       limits, false);
+                       limits, NULL, false);
+}
+
+int aos_fuse_transport_run_fallback_v2_test_fd(
+    int connected_fd, int cancellation_fd,
+    const struct aos_fuse_fallback_operations_v2 *operations,
+    void *core_context, const struct aos_fuse_fallback_limits_v2 *limits) {
+  int error = validate_fallback_contract(operations, limits);
+  if (error != 0)
+    return error;
+  return run_transport(connected_fd, cancellation_fd, &operations->metadata,
+                       core_context, &limits->metadata, operations, false);
 }
 
 int aos_fuse_transport_test_writev(int connected_fd, int cancellation_fd,

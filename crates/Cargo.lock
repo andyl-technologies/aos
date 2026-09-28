@@ -323,6 +323,7 @@ dependencies = [
  "libc",
  "pkg-config",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -333,6 +334,7 @@ dependencies = [
  "aos-filesystem-fuse",
  "aos-filesystem-view",
  "aos-sandbox-core",
+ "aos-sandbox-linux",
  "libc",
 ]
 

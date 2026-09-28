@@ -8,7 +8,7 @@
     pname = "aos-fuse-transport-probe";
     version = "1";
     src = null;
-    runtimeDeps = [pkgs.aos-fuse-transport];
+    runtimeDeps = [pkgs.aos-fuse-transport pkgs.linux-headers];
     phases = [
       {
         name = "build";
