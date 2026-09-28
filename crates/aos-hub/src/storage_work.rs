@@ -47,6 +47,8 @@ use sha2::Digest as _;
 use tokio::sync::{Mutex, Semaphore};
 use zeroize::Zeroizing;
 
+mod telemetry;
+
 // Limit each index walk's simultaneous cross-cloud inspection requests.
 const MAX_PARALLEL_GIT_INSPECTION_BATCHES: usize = 8;
 // Indexing, inventory, and replication can run together while uploads use the
@@ -602,6 +604,7 @@ impl RemoteStorageWorkClient {
         let signature = self.key.sign_body(&body)?;
         let request_bytes = body.len();
         let started = Instant::now();
+        let mut exchange = telemetry::ExchangeTelemetry::new(plan);
 
         // A lost response may follow a committed mutation; retry only reads.
         let max_attempts = if retryable_read_operation(&plan.operation) {
@@ -612,7 +615,8 @@ impl RemoteStorageWorkClient {
         let mut attempt = 0;
         let response = loop {
             attempt += 1;
-            plan.validate(&self.deployment_id, aos_hub_core::clock::now_unix_secs())?;
+            plan.validate(&self.deployment_id, aos_hub_core::clock::now_unix_secs())
+                .inspect_err(|_| exchange.finish("invalid_plan"))?;
             let mut request = self
                 .http
                 .post(&self.endpoint)
@@ -628,6 +632,7 @@ impl RemoteStorageWorkClient {
             {
                 request = request.timeout(Duration::from_secs(10 * 60));
             }
+            exchange.offer_plan(request_bytes);
             let response = match request.send().await {
                 Ok(response) => response,
                 Err(error) if attempt < max_attempts => {
@@ -642,6 +647,7 @@ impl RemoteStorageWorkClient {
                     continue;
                 }
                 Err(error) => {
+                    exchange.finish("transport_failed");
                     tracing::warn!(
                         plan_id = %plan.plan_id,
                         operation = plan.operation.kind(),
@@ -655,6 +661,7 @@ impl RemoteStorageWorkClient {
                 }
             };
             if attempt < max_attempts && retryable_worker_status(response.status()) {
+                exchange.discard_status_response();
                 tracing::warn!(
                     plan_id = %plan.plan_id,
                     operation = plan.operation.kind(),
@@ -680,16 +687,26 @@ impl RemoteStorageWorkClient {
             );
         }
         if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
+            exchange.discard_status_response();
+            exchange.finish("response_too_large");
             return Err(StorageWorkResultTooLarge.into());
         }
         if status != reqwest::StatusCode::OK {
+            exchange.discard_status_response();
+            exchange.finish("http_rejected");
             bail!("storage Worker returned HTTP {status}");
         }
-        let body = read_bounded_response(response, MAX_RESULT_BYTES).await?;
+        let body = read_observed_response(response, MAX_RESULT_BYTES, |length| {
+            exchange.observe_body(length);
+        })
+        .await
+        .inspect_err(|_| exchange.finish("response_read_failed"))?;
         let response_bytes = body.len();
-        let result: StorageWorkResult =
-            serde_json::from_slice(&body).context("decoding storage work result")?;
-        validate_result(plan, &result)?;
+        let result: StorageWorkResult = serde_json::from_slice(&body)
+            .context("decoding storage work result")
+            .inspect_err(|_| exchange.finish("malformed_result"))?;
+        validate_result(plan, &result).inspect_err(|_| exchange.finish("invalid_result"))?;
+        exchange.finish("success");
         tracing::info!(
             plan_id = %plan.plan_id,
             operation = plan.operation.kind(),
@@ -746,6 +763,14 @@ impl StorageCredentialProbeProvider for HybridStorageCredentialProbeProvider {
 struct StorageWorkResultTooLarge;
 
 async fn read_bounded_response(response: reqwest::Response, maximum: usize) -> Result<Vec<u8>> {
+    read_observed_response(response, maximum, |_| {}).await
+}
+
+async fn read_observed_response(
+    response: reqwest::Response,
+    maximum: usize,
+    mut observe_chunk: impl FnMut(usize),
+) -> Result<Vec<u8>> {
     anyhow::ensure!(
         response
             .content_length()
@@ -756,6 +781,7 @@ async fn read_bounded_response(response: reqwest::Response, maximum: usize) -> R
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("reading storage Worker response")?;
+        observe_chunk(chunk.len());
         let length = body
             .len()
             .checked_add(chunk.len())

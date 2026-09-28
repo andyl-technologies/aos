@@ -104,6 +104,12 @@ Native-only baselines under the same data and client region.
 The byte budget is a launch gate, not a promise that another provider's egress
 is free. R2 and S3 have different transfer and request economics; the measured
 report must attribute each provider and each cloud boundary separately.
+Application accounting must retain offered plans and observed response-body
+bytes when an exchange is cancelled or its result is rejected. Keep this
+accounting separate from validated-result and storage-source counters, mark
+HTTP error bodies that were discarded unread, and use provider telemetry for
+framing, internal prefetch, and actual billed wire usage. Offered request bytes
+are not proof that the destination received them.
 
 ## Failure and recovery tests
 

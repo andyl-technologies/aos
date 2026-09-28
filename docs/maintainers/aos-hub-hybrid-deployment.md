@@ -173,6 +173,21 @@ terminal results; rejected and retry response bodies are excluded. The fleet
 report retains these distinctions and verifies exact signed release tags in
 PostgreSQL, alongside the object-body exclusion checks.
 
+The separate `hybrid storage exchange accounting` event records each plan's
+`exchange_attempts`, total `offered_plan_bytes`, `observed_body_bytes`,
+`discarded_status_responses`, elapsed time, and final outcome. It is emitted on
+success, error, or cancellation after plan encoding, including malformed
+responses and response chunks observed before a limit or read failure. Sum
+these events independently of the terminal-result counters; adding both would
+double-count successful traffic. They inherit the index run and release context.
+
+`discarded_status_responses` counts HTTP error replies dropped without consuming
+their bodies. `observed_body_bytes` excludes those bodies, internal client
+prefetch, and framing; it is an application observation, not total inbound wire
+usage. Offered plans include attempts whose transport may never deliver them.
+Use provider network telemetry for billed bytes. Plans, credentials, and object
+contents are not included in the accounting event.
+
 Channel refresh batches up to 32 partitions per storage-work call. A warm
 registry with two branches needs sixteen channel batches plus its HEAD and
 refs checks when documents fit in one page per batch. Larger metadata pages
