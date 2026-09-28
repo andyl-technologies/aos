@@ -480,6 +480,7 @@
   # role-bound external providers, and constructs the final disk bytes there.
   # Private material is intentionally neither an argument nor an environment
   # value of this derivation.
+  # The recipe pins native executables for the external Linux finalizer.
   unsignedAssembly = buildPackages.mkDerivation {
     pname = "aos-image-${name}-unsigned-assembly";
     inherit version;
@@ -571,22 +572,22 @@
             --arg secureBootRole ${lib.escapeShellArg sb.externalFinalization.secureBootRole} \
             --arg moduleRole ${lib.escapeShellArg sb.externalFinalization.moduleRole} \
             --arg pcrRole ${lib.escapeShellArg sb.externalFinalization.pcrRole} \
-            --arg ukify ${lib.escapeShellArg "${pkgs.systemd.tools}/bin/ukify"} \
-            --arg measure ${lib.escapeShellArg "${pkgs.systemd}/lib/systemd/systemd-measure"} \
-            --arg objcopy ${lib.escapeShellArg "${pkgs.binutils}/bin/objcopy"} \
-            --arg mkfsErofs ${lib.escapeShellArg "${pkgs.erofs-utils}/bin/mkfs.erofs"} \
-            --arg gccLib ${lib.escapeShellArg "${pkgs.gcc-libs}/lib"} \
-            --arg fsckErofs ${lib.escapeShellArg "${pkgs.erofs-utils}/bin/fsck.erofs"} \
-            --arg veritysetup ${lib.escapeShellArg "${pkgs.cryptsetup}/sbin/veritysetup"} \
-            --arg qemuImg ${lib.escapeShellArg "${pkgs.qemu}/bin/qemu-img"} \
-            --arg sfdisk ${lib.escapeShellArg "${pkgs.util-linux}/sbin/sfdisk"} \
-            --arg mkfsVfat ${lib.escapeShellArg "${pkgs.dosfstools}/sbin/mkfs.vfat"} \
-            --arg mcopy ${lib.escapeShellArg "${pkgs.mtools}/bin/mcopy"} \
-            --arg zstd ${lib.escapeShellArg "${pkgs.zstd}/bin/zstd"} \
-            --arg cpio ${lib.escapeShellArg "${pkgs.cpio}/bin/cpio"} \
-            --arg tar ${lib.escapeShellArg "${pkgs.tar}/bin/tar"} \
-            --arg openssl ${lib.escapeShellArg "${pkgs.openssl}/bin/openssl"} \
-            --arg sbverify ${lib.escapeShellArg "${pkgs.sbsigntools}/bin/sbverify"} \
+            --arg ukify ${lib.escapeShellArg "${buildPackages.systemd.tools}/bin/ukify"} \
+            --arg measure ${lib.escapeShellArg "${buildPackages.systemd}/lib/systemd/systemd-measure"} \
+            --arg objcopy ${lib.escapeShellArg "${buildPackages.binutils}/bin/objcopy"} \
+            --arg mkfsErofs ${lib.escapeShellArg "${buildPackages.erofs-utils}/bin/mkfs.erofs"} \
+            --arg gccLib ${lib.escapeShellArg "${buildPackages.gcc-libs}/lib"} \
+            --arg fsckErofs ${lib.escapeShellArg "${buildPackages.erofs-utils}/bin/fsck.erofs"} \
+            --arg veritysetup ${lib.escapeShellArg "${buildPackages.cryptsetup}/sbin/veritysetup"} \
+            --arg qemuImg ${lib.escapeShellArg "${buildPackages.qemu}/bin/qemu-img"} \
+            --arg sfdisk ${lib.escapeShellArg "${buildPackages.util-linux}/sbin/sfdisk"} \
+            --arg mkfsVfat ${lib.escapeShellArg "${buildPackages.dosfstools}/sbin/mkfs.vfat"} \
+            --arg mcopy ${lib.escapeShellArg "${buildPackages.mtools}/bin/mcopy"} \
+            --arg zstd ${lib.escapeShellArg "${buildPackages.zstd}/bin/zstd"} \
+            --arg cpio ${lib.escapeShellArg "${buildPackages.cpio}/bin/cpio"} \
+            --arg tar ${lib.escapeShellArg "${buildPackages.tar}/bin/tar"} \
+            --arg openssl ${lib.escapeShellArg "${buildPackages.openssl}/bin/openssl"} \
+            --arg sbverify ${lib.escapeShellArg "${buildPackages.sbsigntools}/bin/sbverify"} \
             --arg diskGuid ${lib.escapeShellArg diskGuid} \
             --arg espGuid ${lib.escapeShellArg espGuid} \
             --arg rootGuid ${lib.escapeShellArg rootGuid} \

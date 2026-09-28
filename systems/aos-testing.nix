@@ -12,9 +12,10 @@
     else 384;
 
   # The converted disk formats exceed the compressed raw image budget.
+  # Arm VHD exports exceed 1 GiB once the full recovery ESP is included.
   aos.image.budgets.maxConvertedDownloadMiB =
     if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
-    then 1024
+    then 1152
     else 896;
 
   # Recovery archives include the root and both normal and recovery UKIs.
