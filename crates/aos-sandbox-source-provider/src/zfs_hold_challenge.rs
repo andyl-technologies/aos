@@ -416,11 +416,14 @@ impl ProtectedZfsHoldChallengesV1 {
         ChallengeRecordV1::decode(&key, value)
     }
 
-    /// Finds the original one-shot record after a crash before request retention.
+    /// Looks up a historical one-shot record without granting issuance authority.
     ///
-    /// Expired and spent records remain discoverable. The caller must validate
-    /// the full stored subject and original validity before using its nonce;
-    /// absence here is the only condition under which fresh issuance is safe.
+    /// Expired and spent records remain discoverable. Neither presence nor
+    /// absence permits dispatch or a new nonce. The caller must join the exact
+    /// stored subject and original validity to current protected authority;
+    /// native recovery also requires durable Requested and its original clock.
+    /// A challenge without Requested remains closed, while new issuance needs
+    /// the staged proposal and the owner's exact request/graph/clock checks.
     ///
     /// # Errors
     ///
