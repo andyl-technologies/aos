@@ -17,6 +17,7 @@ use crate::fuse_worker_objects::{
     FUSE_WORKER_DEVICE_CONTEXT_V1, FUSE_WORKER_EXECUTABLE_CONTEXT_V1, FUSE_WORKER_PLAN_CONTEXT_V1,
     context_matches, require_object_context,
 };
+use crate::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketError, SeqpacketSocket};
 use crate::{Error, Result, uapi};
 
 const EROFS_SUPER_MAGIC: i64 = 0xe0f5_e1e2;
@@ -31,7 +32,7 @@ pub struct FixedFuseWorkerStartupV1 {
     executable: OwnedFd,
     plan: OwnedFd,
     connection: OwnedFd,
-    records: OwnedFd,
+    records: SeqpacketSocket,
     cancellation: OwnedFd,
 }
 
@@ -67,6 +68,10 @@ impl FixedFuseWorkerStartupV1 {
             cancellation.as_fd(),
         )?;
         require_subject()?;
+        // Adopt the same original endpoint, without making a transport copy.
+        // Pidfs observations do not open another owner's /proc task files.
+        let records = SeqpacketSocket::from_owned(records)
+            .map_err(|_| Error::invalid("worker record channel", "original peer unavailable"))?;
         Ok(Self {
             executable,
             plan,
@@ -97,7 +102,7 @@ impl FixedFuseWorkerStartupV1 {
 pub struct FixedFuseWorkerSessionV1 {
     executable: OwnedFd,
     connection: OwnedFd,
-    records: OwnedFd,
+    records: SeqpacketSocket,
     cancellation: OwnedFd,
 }
 
@@ -111,43 +116,150 @@ impl FixedFuseWorkerSessionV1 {
         require_subject()?;
         require_executable(self.executable.as_fd())?;
         require_object_context(self.connection.as_fd(), FUSE_WORKER_DEVICE_CONTEXT_V1)?;
-        require_object_context(self.records.as_fd(), FUSE_WORKER_CHANNEL_CONTEXT_V1)?;
+        let records = self.records_fd()?;
+        require_object_context(records, FUSE_WORKER_CHANNEL_CONTEXT_V1)?;
+        uapi::validate_connected_seqpacket(records)?;
+        uapi::require_seqpacket_identity(records)?;
+        if uapi::socket_cookie(records)? != self.records.peer().socket_cookie().get() {
+            return Err(Error::invalid(
+                "worker record channel",
+                "original endpoint changed",
+            ));
+        }
         require_object_context(self.cancellation.as_fd(), FUSE_WORKER_CANCEL_CONTEXT_V1)
     }
 
     /// Sends a bounded preparation record on the actual inherited endpoint.
     ///
-    /// No peer pidfd is inspected by the worker: doing so against current
-    /// init_t Mount would require forbidden Root task-file read permissions.
-    /// The retained Mount receiver instead correlates the generated record
-    /// pidfd with Host's original worker and actual post-exec SID readback.
+    /// Original peer and per-record pidfds are inspected through pidfs, not
+    /// another owner's task files. Mount independently correlates the reply's
+    /// kernel subject with Host's original worker and actual post-exec SID.
     /// This operation cannot acknowledge backing, readiness or a Root claim.
     ///
     /// # Errors
     ///
     /// Returns an error for changed startup state, an oversized/empty record,
     /// backpressure, or an incomplete atomic send.
-    pub fn send_preparation_record(&self, record: &[u8]) -> Result<()> {
+    pub fn send_preparation_record(
+        &mut self,
+        record: &[u8],
+        original_subject: &KernelAuthorizedRecordSubject,
+    ) -> Result<()> {
         self.recheck()?;
+        self.recheck_original_subject(original_subject)?;
         if record.is_empty() || record.len() > 512 {
             return Err(Error::invalid(
                 "worker preparation record",
                 "exceeds closed bounds",
             ));
         }
-        uapi::validate_connected_seqpacket(self.records.as_fd())?;
-        uapi::require_seqpacket_identity(self.records.as_fd())?;
-        let cookie = uapi::socket_cookie(self.records.as_fd())?;
-        if cookie == 0 || uapi::send_seqpacket(self.records.as_fd(), record)? != record.len() {
+        self.records
+            .send(record)
+            .map_err(|_| Error::invalid("worker preparation send", "atomic send failed"))?;
+        self.recheck_original_subject(original_subject)?;
+        self.recheck()
+    }
+
+    /// Consumes a zero-rights preparation record from the original Mount peer.
+    ///
+    /// This checks the actual record subject against the retained original
+    /// channel creator, not a supplied peer tuple or socket creation SID. The
+    /// record is comparison data only; it cannot authorize FUSE or content.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed startup/peer custody, extra rights, malformed records or
+    /// transport failure. Backpressure remains retryable under the same owner.
+    pub fn receive_preparation_record(
+        &mut self,
+        maximum: usize,
+    ) -> std::result::Result<(Vec<u8>, KernelAuthorizedRecordSubject), SeqpacketError> {
+        self.recheck().map_err(SeqpacketError::Kernel)?;
+        if maximum == 0 || maximum > 512 {
+            return Err(SeqpacketError::Kernel(Error::invalid(
+                "worker preparation record",
+                "exceeds closed bounds",
+            )));
+        }
+        let record = self.records.receive(maximum)?;
+        let bound = self.records.bind_received(record).map_err(|_| {
+            SeqpacketError::Kernel(Error::invalid("worker record", "foreign channel"))
+        })?;
+        self.recheck_original_subject(bound.subject())
+            .map_err(SeqpacketError::Kernel)?;
+        let (payload, subject, _) = bound.into_parts();
+        self.recheck().map_err(SeqpacketError::Kernel)?;
+        self.recheck_original_subject(&subject)
+            .map_err(SeqpacketError::Kernel)?;
+        Ok((payload, subject))
+    }
+
+    fn recheck_original_subject(&self, subject: &KernelAuthorizedRecordSubject) -> Result<()> {
+        let peer = self.records.peer();
+        let credentials = subject.credentials();
+        if credentials.pid() != peer.credentials().pid()
+            || credentials.uid() != peer.credentials().uid()
+            || credentials.gid() != peer.credentials().gid()
+            || subject.initial_info() != peer.initial_info()
+            || subject.pidfd().info()? != peer.initial_info()
+            || peer.pidfd().info()? != peer.initial_info()
+            || !subject.is_alive()?
+            || !peer.is_alive()?
+        {
+            return Err(Error::invalid("worker record", "original Mount changed"));
+        }
+        Ok(())
+    }
+
+    /// Waits on the original record and cancellation endpoints until a deadline.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an expired deadline, owner loss/cancellation, changed startup
+    /// custody, or a failed poll. Waiting never enables FUSE or content reads.
+    pub fn wait_preparation_readiness(&self, deadline: u64) -> Result<()> {
+        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+
+        self.recheck()?;
+        let remaining = deadline
+            .checked_sub(uapi::boottime_nanoseconds()?)
+            .filter(|remaining| *remaining > 0)
+            .ok_or_else(|| Error::invalid("worker rendezvous", "deadline elapsed"))?;
+        let timeout = Timespec {
+            tv_sec: (remaining.min(1_000_000_000) / 1_000_000_000) as i64,
+            tv_nsec: (remaining.min(1_000_000_000) % 1_000_000_000) as i64,
+        };
+        let mut descriptors = [
+            PollFd::from_borrowed_fd(self.records_fd()?, PollFlags::IN),
+            PollFd::new(&self.cancellation, PollFlags::IN),
+        ];
+        match poll(&mut descriptors, Some(&timeout)) {
+            Ok(_) | Err(rustix::io::Errno::INTR) => {}
+            Err(source) => return Err(kernel_error("poll original worker rendezvous", source)),
+        }
+        if descriptors[1]
+            .revents()
+            .intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR | PollFlags::NVAL)
+            || descriptors[0]
+                .revents()
+                .intersects(PollFlags::HUP | PollFlags::ERR | PollFlags::NVAL)
+        {
             return Err(Error::invalid(
-                "worker preparation send",
-                "missing carrier or partial send",
+                "worker rendezvous",
+                "original owner channel failed",
             ));
         }
-        if uapi::socket_cookie(self.records.as_fd())? != cookie {
-            return Err(Error::invalid("worker preparation send", "carrier changed"));
+        self.recheck()?;
+        if uapi::boottime_nanoseconds()? >= deadline {
+            return Err(Error::invalid("worker rendezvous", "deadline elapsed"));
         }
-        self.recheck()
+        Ok(())
+    }
+
+    fn records_fd(&self) -> Result<BorrowedFd<'_>> {
+        self.records
+            .as_fd()
+            .map_err(|_| Error::invalid("worker record channel", "closed"))
     }
 
     /// Borrows only the original cancellation reader for bounded polling.

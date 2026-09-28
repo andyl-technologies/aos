@@ -12,6 +12,9 @@
 
 use sha2::{Digest as _, Sha256};
 
+mod rendezvous;
+pub use rendezvous::{WORKER_RENDEZVOUS_BYTES_V2, WorkerRendezvousChallengeV2};
+
 /// Exact canonical byte count for the closed preparation plan.
 pub const WORKER_PREPARATION_PLAN_BYTES_V1: usize = 328;
 /// Exact canonical byte count for the nonauthorizing worker HELLO.
@@ -190,7 +193,7 @@ fn array<const N: usize>(
 mod tests {
     use super::*;
 
-    fn plan() -> WorkerPreparationPlanV1 {
+    pub(super) fn plan() -> WorkerPreparationPlanV1 {
         WorkerPreparationPlanV1 {
             worker_instance: [1; 16],
             kernel_boot: [2; 16],

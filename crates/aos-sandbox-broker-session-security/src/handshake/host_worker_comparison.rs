@@ -10,7 +10,9 @@
 //!
 //! Both directions retain their actual locked session owner, original socket
 //! and nonterminal head. Neither the frame nor returned descriptors creates a
-//! live worker lease, copy-close barrier, fresh HELLO or Root resource grant.
+//! live worker lease, copy-close barrier or Root resource grant. The private
+//! rendezvous child composes the real owners for a subsequent fresh exchange;
+//! it never treats the comparison objects themselves as that authority.
 
 use std::os::fd::{BorrowedFd, OwnedFd};
 use std::path::Path;
@@ -36,11 +38,14 @@ use crate::BrokerSessionSecurityError;
 use crate::dormant_handshake::DormantBrokerSessionHandshakeErrorV1;
 
 const MAGIC: &[u8; 8] = b"AOSFWR01";
-const CONTRACT: &[u8] = &[0, 1, 0, 49, 0, 0, 0, 56, 0, 1, 0, 0, 0, 5, 0, 17, 0, 18];
+const CONTRACT: &[u8; 18] = &[0, 1, 0, 49, 0, 0, 0, 56, 0, 1, 0, 0, 0, 5, 0, 17, 0, 18];
 const HEADER_BYTES: usize = 150;
 // This is the same fixed service used by Mount's actual Host-scope client.
 // A future installed unit change must qualify this exact role, not a reply hint.
 const HOST_CGROUP: &str = "system.slice/aos-sandbox-hostd.service";
+
+mod rendezvous;
+use rendezvous::RendezvousStage;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Binding {
@@ -77,6 +82,9 @@ pub(crate) struct HeldOriginalHostWorkerComparisonV1<'owner> {
     binding: Binding,
     peer: FixedPeer,
     stage: ReplyStage,
+    rendezvous_stage: RendezvousStage,
+    fresh_challenge:
+        Option<aos_sandbox_protocol::fuse_worker_preparation::WorkerRendezvousChallengeV2>,
 }
 
 /// Co-owns received comparison data without adopting it as a live worker.
@@ -135,6 +143,8 @@ impl<'owner> HeldOriginalHostWorkerComparisonV1<'owner> {
             },
             peer,
             stage: ReplyStage::Pending,
+            rendezvous_stage: RendezvousStage::Pending,
+            fresh_challenge: None,
         };
         held.recheck()?;
         Ok(held)
@@ -369,6 +379,18 @@ fn encode(
     body: &[u8],
     maximum: u32,
 ) -> Result<Vec<u8>, DormantBrokerSessionHandshakeErrorV1> {
+    encode_profile(MAGIC, CONTRACT, binding, body, maximum)
+}
+
+// Mechanical fixed-header reuse for these two privately enumerated profiles.
+// No caller-selected contract is exposed through an owner or public transport.
+fn encode_profile(
+    magic: &[u8; 8],
+    contract: &[u8; 18],
+    binding: Binding,
+    body: &[u8],
+    maximum: u32,
+) -> Result<Vec<u8>, DormantBrokerSessionHandshakeErrorV1> {
     let size = body
         .len()
         .checked_add(HEADER_BYTES)
@@ -380,8 +402,8 @@ fn encode(
         return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
     }
     let mut frame = Vec::with_capacity(size);
-    frame.extend_from_slice(MAGIC);
-    frame.extend_from_slice(CONTRACT);
+    frame.extend_from_slice(magic);
+    frame.extend_from_slice(contract);
     frame.extend_from_slice(&binding.deadline.to_be_bytes());
     frame.extend_from_slice(&binding.request);
     frame.extend_from_slice(&binding.session);
@@ -414,7 +436,7 @@ fn decode(
 mod tests {
     use super::*;
 
-    fn binding() -> Binding {
+    pub(super) fn binding() -> Binding {
         Binding {
             deadline: 100,
             request: [1; 16],

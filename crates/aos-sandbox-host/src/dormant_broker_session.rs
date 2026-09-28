@@ -81,6 +81,24 @@ pub enum OriginalHostFuseWorkerTransportActionV1<'record> {
         /// Borrows the worker pidfd and cgroup comparison copies in that order.
         descriptors: [BorrowedFd<'record>; 2],
     },
+    /// Sends a distinct zero-rights challenge after actual PID1 copy cleanup.
+    SendRendezvousReady {
+        /// Carries comparison bytes generated inside this same Host call.
+        challenge:
+            &'record aos_sandbox_protocol::fuse_worker_preparation::WorkerRendezvousChallengeV2,
+    },
+    /// Receives Mount's exact same-flight, nonauthorizing record-join ACK.
+    ReceiveRendezvousJoined {
+        /// Names the original fresh challenge, not another preparation.
+        challenge:
+            &'record aos_sandbox_protocol::fuse_worker_preparation::WorkerRendezvousChallengeV2,
+    },
+    /// Confirms only after Host repeats its physical/live-worker observations.
+    SendRendezvousConfirmed {
+        /// Names that same original fresh challenge.
+        challenge:
+            &'record aos_sandbox_protocol::fuse_worker_preparation::WorkerRendezvousChallengeV2,
+    },
 }
 
 /// Reports one original transport operation without claiming copy closure.
@@ -89,10 +107,12 @@ pub enum OriginalHostFuseWorkerTransportActionV1<'record> {
 pub enum OriginalHostFuseWorkerTransportProgressV1 {
     /// The original owner completed its currentness check.
     Checked,
-    /// The kernel accepted the complete comparison record on the same socket.
+    /// The kernel accepted the complete original comparison/control record.
     Sent,
-    /// No complete record was sent; the same flight waited for retry readiness.
+    /// The operation did not complete; the same flight waited for readiness.
     Backpressure,
+    /// The same fixed Mount peer sent its exact preparation ACK, not a grant.
+    RendezvousJoined,
 }
 
 /// Borrows the fixed original comparison transport throughout Host dispatch.

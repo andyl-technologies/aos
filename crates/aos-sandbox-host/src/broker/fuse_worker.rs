@@ -6,17 +6,18 @@
 //! escrow before PID1, then co-owns the actual private manager and worker pins.
 //! Neither the response nor cold escrow reconstructs connected/read authority.
 
-use std::os::fd::{AsFd as _, OwnedFd};
+use std::os::fd::{AsFd, OwnedFd};
 
 use aos_proto::aos::sandbox::local::v1::{BrokerMethod, PrepareHostFuseWorkerSessionResponseV1};
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::fuse_worker_startup::validate_fixed_fuse_worker_launch_roles;
 use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
 use aos_sandbox_protocol::fuse_worker_preparation::{
-    WORKER_PREPARATION_PLAN_BYTES_V1, WorkerPreparationPlanV1,
+    WORKER_PREPARATION_PLAN_BYTES_V1, WorkerPreparationPlanV1, WorkerRendezvousChallengeV2,
 };
 use aos_sandbox_protocol::host_fuse_worker_session::decode_host_fuse_worker_session_request_v1;
 use aos_systemd::{FixedFuseWorkerPid1ClientV1, FuseWorkerUnitNameV1};
+use rand::{TryRngCore as _, rngs::OsRng};
 
 use super::*;
 use crate::dormant_broker_session::{
@@ -67,9 +68,7 @@ impl<C: HostCatalog, S: HostStateStore + Sync, W: HostWorker + Sync> HostBroker<
                 pending_guard()?;
                 Ok(TransportProgress::Checked)
             }
-            TransportAction::SendComparison { .. } => {
-                Err(HostError::Fence("comparison transport was not supplied"))
-            }
+            _ => Err(HostError::Fence("comparison transport was not supplied")),
         };
         self.prepare_original_worker_on_transport(
             original,
@@ -294,13 +293,74 @@ impl<C: HostCatalog, S: HostStateStore + Sync, W: HostWorker + Sync> HostBroker<
                 match progress {
                     TransportProgress::Sent => break,
                     TransportProgress::Backpressure => continue,
-                    TransportProgress::Checked => {
+                    TransportProgress::Checked | TransportProgress::RendezvousJoined => {
                         return Err(HostError::Fence("original comparison was not sent"));
+                    }
+                }
+            }
+
+            // launch_guarded dropped the received roles and spec; zbus's
+            // exact call dropped its outgoing message/table. The uncached
+            // observations above ran on that same pinned private PID1 bus
+            // after synchronous sd-bus request and fixed extra-fd cleanup.
+            // Generate freshness here, never from the prelaunch plan/row.
+            retained.launch.recheck(&retained.manager).await?;
+            check(transport)?;
+            let mut nonce = [0; 32];
+            OsRng.try_fill_bytes(&mut nonce).map_err(|error| {
+                HostError::Worker(format!("worker rendezvous entropy failed: {error}"))
+            })?;
+            let challenge = WorkerRendezvousChallengeV2::new(&plan, nonce)
+                .map_err(|_| HostError::Fence("fresh worker challenge is invalid"))?;
+
+            // Every send/receive/readiness wait executes inside this same
+            // serialized Host borrow and physical-state/live-launch bracket.
+            // Mount's ACK is preparation data, never a Root/read assertion.
+            for step in [
+                RendezvousStep::Ready,
+                RendezvousStep::Joined,
+                RendezvousStep::Confirmed,
+            ] {
+                loop {
+                    retained.launch.recheck(&retained.manager).await?;
+                    check(transport)?;
+                    let progress = transport(step.action(&challenge))?;
+                    check(transport)?;
+                    retained.launch.recheck(&retained.manager).await?;
+                    check(transport)?;
+                    if step.completed(progress)? {
+                        break;
                     }
                 }
             }
         }
         Ok(OriginalHostFuseWorkerReplyV1 { body, descriptors })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RendezvousStep {
+    Ready,
+    Joined,
+    Confirmed,
+}
+
+impl RendezvousStep {
+    fn action(self, challenge: &WorkerRendezvousChallengeV2) -> TransportAction<'_> {
+        match self {
+            Self::Ready => TransportAction::SendRendezvousReady { challenge },
+            Self::Joined => TransportAction::ReceiveRendezvousJoined { challenge },
+            Self::Confirmed => TransportAction::SendRendezvousConfirmed { challenge },
+        }
+    }
+
+    fn completed(self, progress: TransportProgress) -> Result<bool> {
+        match (self, progress) {
+            (_, TransportProgress::Backpressure) => Ok(false),
+            (Self::Ready | Self::Confirmed, TransportProgress::Sent)
+            | (Self::Joined, TransportProgress::RendezvousJoined) => Ok(true),
+            _ => Err(HostError::Fence("original rendezvous phase changed")),
+        }
     }
 }
 
@@ -310,7 +370,11 @@ mod transport_tests {
 
     #[test]
     fn a_send_result_never_substitutes_for_current_owner_readback() {
-        for substituted in [TransportProgress::Sent, TransportProgress::Backpressure] {
+        for substituted in [
+            TransportProgress::Sent,
+            TransportProgress::Backpressure,
+            TransportProgress::RendezvousJoined,
+        ] {
             let mut transport = |_action: TransportAction<'_>| Ok(substituted);
 
             assert!(check_original_transport(&mut transport).is_err());
@@ -318,5 +382,47 @@ mod transport_tests {
         let mut checked = |_action: TransportAction<'_>| Ok(TransportProgress::Checked);
 
         assert!(check_original_transport(&mut checked).is_ok());
+    }
+
+    #[test]
+    fn rendezvous_acknowledgment_cannot_substitute_another_phase_or_owner_check() {
+        for step in [
+            RendezvousStep::Ready,
+            RendezvousStep::Joined,
+            RendezvousStep::Confirmed,
+        ] {
+            assert!(!step.completed(TransportProgress::Backpressure).unwrap());
+            assert!(step.completed(TransportProgress::Checked).is_err());
+        }
+        assert!(
+            RendezvousStep::Ready
+                .completed(TransportProgress::Sent)
+                .unwrap()
+        );
+        assert!(
+            RendezvousStep::Confirmed
+                .completed(TransportProgress::Sent)
+                .unwrap()
+        );
+        assert!(
+            RendezvousStep::Joined
+                .completed(TransportProgress::RendezvousJoined)
+                .unwrap()
+        );
+        assert!(
+            RendezvousStep::Joined
+                .completed(TransportProgress::Sent)
+                .is_err()
+        );
+        assert!(
+            RendezvousStep::Ready
+                .completed(TransportProgress::RendezvousJoined)
+                .is_err()
+        );
+        assert!(
+            RendezvousStep::Confirmed
+                .completed(TransportProgress::RendezvousJoined)
+                .is_err()
+        );
     }
 }

@@ -368,6 +368,29 @@ impl<W: MountWorker> PreparedMountFuseWorkerHandoffV1<'_, '_, W> {
         Ok(roles)
     }
 
+    /// Borrows the original preparation endpoint after the table has moved.
+    ///
+    /// This checks the actual held writer and consumed one-shot handoff, not
+    /// absence of arbitrary copies made by trusted callers. The closed
+    /// security continuation must account for its concrete table/packet/PID1
+    /// copies and retain Host's live physical guard before challenging it.
+    /// No supplied descriptor, decoded receipt or Boolean can create this
+    /// original endpoint or its owning writer.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unmoved table or stale original Mount/object custody.
+    #[doc(hidden)]
+    pub fn original_worker_channel(
+        &mut self,
+    ) -> Result<&mut aos_sandbox_linux::seqpacket::SeqpacketSocket> {
+        if self.roles.is_some() {
+            return Err(MountError::Fence("original worker table has not moved"));
+        }
+        self.recheck()?;
+        Ok(self.preparation.objects.channel_mut())
+    }
+
     /// Rechecks the original actual Mount owner throughout descriptor custody.
     ///
     /// # Errors

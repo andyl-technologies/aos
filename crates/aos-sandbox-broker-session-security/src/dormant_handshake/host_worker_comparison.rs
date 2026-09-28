@@ -4,7 +4,10 @@
 //! the sealed Host's physical-state/live-launch sandwich. Mount enters this
 //! continuation only after its genuine held producer and actual four-role
 //! sender, retaining that same Mount writer and original objects throughout
-//! receive. No terminal outcome, copy-close, HELLO, INIT or read gate is opened.
+//! receive and the fresh original-channel rendezvous. The Host stays inside
+//! that same sealed callback throughout the fresh preparation exchange; no
+//! scalar acknowledgment establishes copy absence. No terminal outcome, INIT
+//! or read gate is opened.
 
 use std::os::fd::{BorrowedFd, OwnedFd};
 
@@ -100,6 +103,15 @@ impl DormantAuthenticatedBrokerSessionV1 {
             Action::SendComparison { body, descriptors } => held
                 .send(body, descriptors)
                 .map_err(|_| HostError::Fence("original comparison send is uncertain")),
+            Action::SendRendezvousReady { challenge } => held
+                .send_rendezvous_ready(challenge)
+                .map_err(|_| HostError::Fence("original rendezvous ready is uncertain")),
+            Action::ReceiveRendezvousJoined { challenge } => held
+                .receive_rendezvous_joined(challenge)
+                .map_err(|_| HostError::Fence("original rendezvous join is uncertain")),
+            Action::SendRendezvousConfirmed { challenge } => held
+                .send_rendezvous_confirmed(challenge)
+                .map_err(|_| HostError::Fence("original rendezvous confirmation is uncertain")),
         };
         let sent = host
             .send_original_fuse_worker_comparison(&request, roles, &mut transport)
@@ -170,6 +182,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 let mut held =
                     HeldOriginalHostWorkerComparisonV1::capture(&mut host.0, &outstanding.0)?;
                 let reply = DormantOriginalHostWorkerComparisonV1(held.receive(handoff, original)?);
+                // Consume the actual fresh record while both processes remain
+                // in this same original nonterminal continuation. Returning
+                // comparison bytes or pidfd copies alone never enters it.
+                held.complete_mount_rendezvous(handoff, original, &reply.0)?;
                 handoff
                     .recheck()
                     .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
