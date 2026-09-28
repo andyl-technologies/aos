@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::fd::{AsFd as _, BorrowedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -34,6 +35,7 @@ use sha2::{Digest, Sha256};
 
 pub mod canonical_map;
 pub(crate) mod mount_manager_startup;
+mod prepared_transaction;
 pub use mount_manager_startup::MountManagerStartupPolicyReceiptV1;
 pub(crate) use mount_manager_startup::{
     MountManagerStartupCapturePreflightV1, MountManagerStartupCaptureReceiptV1,
@@ -76,8 +78,9 @@ use source_project_admission_challenge::SourceProjectAdmissionTransition;
 pub(crate) use source_project_admission_challenge::replay_source_project_admission_challenge_v1;
 pub use source_project_admission_challenge::{
     SOURCE_PROJECT_ADMISSION_CHALLENGE_BYTES_V1, SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1,
-    SourceProjectAdmissionChallengeKindV1, SourceProjectAdmissionChallengeV1,
-    SourceProjectAdmissionReservationV1,
+    SOURCE_PROJECT_ADMISSION_TERMINAL_BYTES_V1, SourceProjectAdmissionChallengeKindV1,
+    SourceProjectAdmissionChallengeV1, SourceProjectAdmissionReservationV1,
+    SourceProjectAdmissionTerminalV1,
 };
 mod mount_source_consumption;
 pub use mount_source_consumption::{
@@ -645,6 +648,37 @@ pub struct Journal {
     protected: Option<ProtectedJournalLocation>,
     cache_policy_gate: Option<(PathBuf, u32)>,
     authority_instance: Arc<JournalAuthorityInstance>,
+}
+
+/// Retains only an existing protected writer's lock open-file description.
+///
+/// This custody loan exposes no journal data or writer API. Duplicating or
+/// transferring it preserves the original `flock`, but a recipient could
+/// explicitly unlock that shared description. It must therefore be delivered
+/// only to an independently trusted, confined child. It establishes neither
+/// a journal cut nor currentness, rollback protection, or effect authority.
+pub struct ProtectedJournalLockCustodyV1 {
+    lock: File,
+}
+
+impl ProtectedJournalLockCustodyV1 {
+    /// Borrows the exact duplicated lock description for a confined handoff.
+    #[must_use]
+    pub fn as_fd(&self) -> BorrowedFd<'_> {
+        self.lock.as_fd()
+    }
+
+    /// Returns the held lock's device, inode, and owner for recipient checks.
+    ///
+    /// These metadata are not proof of the original flock or any authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the retained lock cannot be inspected.
+    pub fn identity(&self) -> Result<(u64, u64, u32), JournalError> {
+        let metadata = self.lock.metadata()?;
+        Ok((metadata.dev(), metadata.ino(), metadata.uid()))
+    }
 }
 
 /// Retains byte-level metadata for a protected writer readback.
@@ -1386,6 +1420,32 @@ impl Journal {
         )
     }
 
+    /// Replays a provisioned service-owned journal without creating or repairing it.
+    ///
+    /// Resolution and ownership are identical to [`Self::open_protected_at_for_uid`].
+    /// Both journal and lock must exist; an interrupted tail or stale compaction
+    /// remains an error rather than becoming an empty or repaired authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing or unsafe names, a held lock, corrupt or incomplete replay,
+    /// and every protected-open failure of [`Self::open_protected_at_for_uid`].
+    pub fn open_existing_protected_at_for_uid(
+        directory: impl AsRef<Path>,
+        name: &str,
+        limits: JournalLimits,
+        expected_uid: u32,
+    ) -> Result<(Self, RecoveryReport), JournalError> {
+        let directory = resolve_protected_directory_from_root(directory.as_ref(), expected_uid)?;
+        Self::open_protected_directory(
+            directory,
+            name,
+            limits,
+            ProtectedOwnerPolicy::Exact(expected_uid),
+            false,
+        )
+    }
+
     /// Checks that this live lock still belongs to one fixed protected path.
     ///
     /// The directory is resolved afresh and compared by device and inode with
@@ -1951,6 +2011,25 @@ impl Journal {
         self.require_protected_names_current()
     }
 
+    /// Duplicates only a healthy protected writer's exact lock description.
+    ///
+    /// The original named journal and lock are checked before and after the
+    /// duplication. This retains custody across a trusted child lifetime; it
+    /// is not another writer and cannot authorize reads, commits, or effects.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unprotected, poisoned, or replaced writer, or a failed
+    /// descriptor duplication. No journal data descriptor is returned.
+    pub fn loan_protected_lock_custody(
+        &self,
+    ) -> Result<ProtectedJournalLockCustodyV1, JournalError> {
+        self.validate_held_protected_names()?;
+        let lock = self._lock.try_clone()?;
+        self.validate_held_protected_names()?;
+        Ok(ProtectedJournalLockCustodyV1 { lock })
+    }
+
     /// Checks a live root-owned writer against its original protected path.
     ///
     /// The directory is resolved again, then its identity and both named files
@@ -1966,6 +2045,24 @@ impl Journal {
         name: &str,
     ) -> Result<(), JournalError> {
         self.require_protected_named_location(directory.as_ref(), name, 0, self.limits)
+    }
+
+    /// Rechecks a service-owned writer's original protected path and both names.
+    ///
+    /// This validates retained ownership; it neither chooses a new owner nor
+    /// constructs authority. The full root-to-service ancestry policy of the
+    /// production opener is re-applied.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed directory, journal, lock, owner, or unhealthy writer.
+    pub fn validate_held_owned_at_for_uid(
+        &self,
+        directory: impl AsRef<Path>,
+        name: &str,
+        expected_uid: u32,
+    ) -> Result<(), JournalError> {
+        self.require_protected_named_location(directory.as_ref(), name, expected_uid, self.limits)
     }
 
     /// Rechecks exact UID-owned fixture custody without relaxing release openers.
@@ -2296,39 +2393,6 @@ impl Journal {
         )
     }
 
-    fn preflight_source_project_admission_transactions(
-        &self,
-        transactions: &[JournalTransaction; 3],
-    ) -> Result<(), JournalError> {
-        self.preflight_transactions_with_capacity_scope_and_project_admission(
-            transactions,
-            None,
-            false,
-            false,
-            Some(&[
-                SourceProjectAdmissionTransition::Reserve,
-                SourceProjectAdmissionTransition::Acquire,
-                SourceProjectAdmissionTransition::Settle,
-            ]),
-        )
-    }
-
-    fn preflight_source_project_reservation_cancellation_transactions(
-        &self,
-        transactions: &[JournalTransaction; 2],
-    ) -> Result<(), JournalError> {
-        self.preflight_transactions_with_capacity_scope_and_project_admission(
-            transactions,
-            None,
-            false,
-            false,
-            Some(&[
-                SourceProjectAdmissionTransition::Reserve,
-                SourceProjectAdmissionTransition::CancelReservation,
-            ]),
-        )
-    }
-
     fn preflight_transactions_with_capacity_scope_and_project_admission(
         &self,
         transactions: &[JournalTransaction],
@@ -2502,6 +2566,26 @@ impl Journal {
 }
 
 impl ProtectedJournalAuthority<'_> {
+    /// Checks this held root-owned writer against its fixed physical names.
+    ///
+    /// The existing exclusive claim stays borrowed while the journal opener
+    /// re-resolves its directory and compares the journal and lock inodes.
+    /// This observation grants no authority and changes neither namespace nor
+    /// claim scope. It does not fence a privileged rename after the check.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a claim that cannot perform generic authority reads, changed
+    /// root/directory/journal/lock names, or an unhealthy protected writer.
+    pub fn validate_held_root_owned_at(
+        &self,
+        directory: impl AsRef<Path>,
+        name: &str,
+    ) -> Result<(), JournalError> {
+        self.validate_generic_authority_read()?;
+        self.journal.validate_held_root_owned_at(directory, name)
+    }
+
     /// Validates the fixed provider namespace-41 storage boundary.
     ///
     /// This purpose check compares the retained protected directory descriptor
@@ -3564,6 +3648,7 @@ impl ProtectedJournalAuthority<'_> {
             GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal => {
                 source_provider_authority
             }
+            GlobalCapacityReservationPurposeV1::ControllerProjectAdmission => effect,
         };
         if !closed_shape || !capacity_record {
             return Err(JournalError::ForeignAuthorityNamespace);
@@ -3641,6 +3726,10 @@ impl ProtectedJournalAuthority<'_> {
             || self.scope
                 == ProtectedAuthorityScope::CapacityReservation(
                     GlobalCapacityReservationPurposeV1::RootProjectAdmission,
+                )
+            || self.scope
+                == ProtectedAuthorityScope::CapacityReservation(
+                    GlobalCapacityReservationPurposeV1::ControllerProjectAdmission,
                 )
         {
             return Err(JournalError::ForeignAuthorityNamespace);
@@ -3968,6 +4057,16 @@ pub(super) fn encoded_transaction_record_bytes(
         })
 }
 
+/// Measures canonical append framing without granting admission or capacity.
+pub(crate) fn encoded_transaction_append_bytes(
+    transaction: &JournalTransaction,
+) -> Result<u64, JournalError> {
+    encode_transaction(transaction, 0)?
+        .iter()
+        .try_fold(0_u64, |total, frame| total.checked_add(frame.len() as u64))
+        .ok_or(JournalError::JournalTooLarge)
+}
+
 fn validate_reserved_capacity(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     prospective_materialized_bytes: usize,
@@ -4018,10 +4117,10 @@ fn validate_reserved_capacity(
             }
         }
     }
-    let (reserved_records, reserved_bytes) =
-        reservations
-            .values()
-            .try_fold((0_usize, 0_u64), |(records, bytes), reservation| {
+    let (reserved_records, reserved_bytes, reserved_transactions) =
+        reservations.values().try_fold(
+            (0_usize, 0_u64, 0_usize),
+            |(records, bytes, transactions), reservation| {
                 Ok::<_, JournalError>((
                     records
                         .checked_add(reservation.maximum_records)
@@ -4029,8 +4128,12 @@ fn validate_reserved_capacity(
                     bytes
                         .checked_add(reservation.maximum_bytes)
                         .ok_or(JournalError::JournalTooLarge)?,
+                    transactions
+                        .checked_add(reservation.maximum_transactions)
+                        .ok_or(JournalError::LimitExceeded("reserved transaction count"))?,
                 ))
-            })?;
+            },
+        )?;
     let projected_entries = projected_materialized_record_count(state, records)?;
     if prospective_materialized_bytes
         .checked_add(
@@ -4045,7 +4148,7 @@ fn validate_reserved_capacity(
             .checked_add(reserved_bytes)
             .is_none_or(|bytes| bytes > limits.maximum_journal_bytes)
         || prospective_transactions
-            .checked_add(reservations.len())
+            .checked_add(reserved_transactions)
             .is_none_or(|count| count > limits.maximum_transactions)
     {
         return Err(JournalError::LimitExceeded(
@@ -4882,6 +4985,7 @@ mod tests {
             artifact_digest: [4; 32],
             checkpoint_digest: [5; 32],
             chain_head_digest: [6; 32],
+            future_transactions: 1,
             terminal_records: 3,
             terminal_bytes: 4096,
             poison_records: 3,
@@ -4958,6 +5062,7 @@ mod tests {
                     artifact_digest: request.artifact_digest,
                     checkpoint_digest: request.checkpoint_digest,
                     chain_head_digest: request.chain_head_digest,
+                    future_transactions: request.future_transactions,
                     terminal_records: request.terminal_records,
                     terminal_bytes: request.terminal_bytes,
                     poison_records: request.poison_records,
@@ -6200,6 +6305,44 @@ mod tests {
             protected_open_error(rustix::io::Errno::NOENT),
             JournalError::Io(_)
         ));
+    }
+
+    #[test]
+    fn protected_lock_custody_loan_outlives_writer_without_becoming_a_writer() {
+        let directory = TestDirectory::new("protected-lock-loan");
+        let (journal, _) = protected_open(&directory.0).unwrap();
+        let loan = journal.loan_protected_lock_custody().unwrap();
+        let metadata = fs::metadata(directory.0.join("protected.journal.lock")).unwrap();
+        assert_eq!(
+            loan.identity().unwrap(),
+            (metadata.dev(), metadata.ino(), metadata.uid())
+        );
+        drop(journal);
+
+        assert!(matches!(
+            protected_open(&directory.0),
+            Err(JournalError::AlreadyLocked)
+        ));
+        drop(loan);
+        let (journal, report) = protected_open(&directory.0).unwrap();
+        assert_eq!(report.committed_transactions, 0);
+        assert_eq!(journal.get(RecordNamespace::DesiredState, b"key"), None);
+    }
+
+    #[test]
+    fn protected_lock_custody_loan_rejects_replaced_names_and_unprotected_writer() {
+        let directory = TestDirectory::new("protected-lock-loan-replaced");
+        let (journal, _) = protected_open(&directory.0).unwrap();
+        fs::rename(
+            directory.0.join("protected.journal.lock"),
+            directory.0.join("old.lock"),
+        )
+        .unwrap();
+        assert!(journal.loan_protected_lock_custody().is_err());
+
+        let (unprotected, _) =
+            Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        assert!(unprotected.loan_protected_lock_custody().is_err());
     }
 
     #[test]

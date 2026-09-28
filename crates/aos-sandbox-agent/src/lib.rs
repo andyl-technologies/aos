@@ -42,9 +42,13 @@ pub mod guest_root_publication;
 #[cfg(unix)]
 pub mod guest_root_tree;
 pub mod model;
+pub mod openssh_attach_certificate;
+pub mod openssh_consume;
 pub mod openssh_gate;
 #[cfg(target_os = "linux")]
 pub mod openssh_gate_linux;
+pub mod openssh_monitor;
+pub mod openssh_ticket;
 #[cfg(target_os = "linux")]
 pub mod protected_entry;
 pub mod protocol;

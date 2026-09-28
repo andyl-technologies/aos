@@ -75,13 +75,12 @@ pub fn acquire_native_dispatch_id_v2(
     catalog_digest: ObjectDigest,
     attempt_digest: ObjectDigest,
 ) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"aos.sandbox.source-provider.native-dispatch.v2\0");
-    hasher.update(intent_digest.as_bytes());
-    hasher.update(catalog_generation.to_be_bytes());
-    hasher.update(catalog_digest.as_bytes());
-    hasher.update(attempt_digest.as_bytes());
-    hasher.finalize().into()
+    aos_sandbox_source_provider_protocol::native_export_fence::native_dispatch_backend_identity_v2(
+        intent_digest,
+        catalog_generation,
+        catalog_digest,
+        attempt_digest,
+    )
 }
 
 /// Derives one release backend-effect identity.

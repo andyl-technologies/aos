@@ -135,6 +135,7 @@ pub(crate) mod execution_output_reserve;
 )]
 mod execution_output_storage_reserve;
 mod guest_root;
+mod original_attach;
 mod public_api;
 mod public_attach;
 mod public_hierarchy;
@@ -154,6 +155,7 @@ const CACHE_REPLAY_BUNDLE_CREDENTIAL: &str = "cache-replay-bundle";
 const MAXIMUM_CACHE_REPLAY_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
 const CACHE_OWNER_MEMORY_BYTES: u64 = 64 * 1024 * 1024;
 const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5);
+const ORIGINAL_ATTACH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const CONTROLLER_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROLLER_COMMAND_CAPACITY: usize = 64;
 const PUBLIC_CAPABILITY_HEADER: &str = "aos-capability-id";
@@ -171,6 +173,7 @@ type SharedControllerBrokerSessions = Arc<Mutex<ControllerBrokerSessions>>;
 /// Retains authenticated transports and their durable sequence owners across cycles.
 #[derive(Default)]
 struct ControllerBrokerSessions {
+    launch_image: Option<crate::production_startup::Pid1LaunchImageV1>,
     host: Option<ControllerHostPublication>,
     mount: Option<crate::DormantMountLifecycleInventoryOwnerV1>,
     storage: Option<crate::DormantStorageLifecycleInventoryOwnerV1>,
@@ -338,14 +341,13 @@ where
 pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     let configuration = RuntimeConfiguration::from_process()?;
     configuration.validate_process_identity()?;
-    let publisher_listener = if configuration.publisher_ingress {
-        Some(
-            publisher_ingress::adopt_listener()
-                .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?,
-        )
-    } else {
-        None
-    };
+    let (publisher_descriptor, launch_image) =
+        crate::production_startup::capture_controller(configuration.publisher_ingress)
+            .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
+    let publisher_listener = publisher_descriptor
+        .map(publisher_ingress::adopt_observed_listener)
+        .transpose()
+        .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
     let node_id = read_node_id()?;
     let publisher_registration = if let Some(listener) = publisher_listener {
         let scope = publisher_ingress::PublisherServiceScopeV1::from_process_credential(
@@ -375,7 +377,10 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     let guest_root_pins = load_guest_root_template_pins_optional()
         .map_err(|_| ControllerRuntimeError::InvalidGuestRootCredential)?;
     let listener = bind_diagnostic_socket(&configuration)?;
-    let sessions = Arc::new(Mutex::new(ControllerBrokerSessions::default()));
+    let sessions = Arc::new(Mutex::new(ControllerBrokerSessions {
+        launch_image,
+        ..ControllerBrokerSessions::default()
+    }));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -590,6 +595,8 @@ fn controller_worker(
 ) {
     let mut ready = false;
     let mut next_cycle = Instant::now();
+    let mut next_attach_poll = Instant::now();
+    let mut attach_poll_cursor = 0;
     loop {
         if Instant::now() >= next_cycle {
             match run_controller_cycle(
@@ -635,6 +642,17 @@ fn controller_worker(
             next_cycle = Instant::now() + RECONCILIATION_INTERVAL;
         }
 
+        if Instant::now() >= next_attach_poll {
+            original_attach::poll_one(
+                &mut controller,
+                NodeId::from_bytes(node_id),
+                &sessions,
+                attach_plan_signer.as_ref(),
+                &mut attach_poll_cursor,
+            );
+            next_attach_poll = Instant::now() + ORIGINAL_ATTACH_POLL_INTERVAL;
+        }
+
         if let Some(owner) = publisher_registration.as_mut() {
             if let Err(message) = owner.try_register(&mut controller) {
                 let _ = events.send(WorkerEvent::Fatal(message));
@@ -642,7 +660,9 @@ fn controller_worker(
             }
         }
 
-        let mut wait = next_cycle.saturating_duration_since(Instant::now());
+        let mut wait = next_cycle
+            .min(next_attach_poll)
+            .saturating_duration_since(Instant::now());
         if publisher_registration
             .as_ref()
             .is_some_and(|owner| owner.needs_registration())
@@ -1429,9 +1449,10 @@ fn ensure_controller_broker_sessions(
     if sessions.storage.is_none() {
         sessions.storage = Some(
             crate::DormantStorageLifecycleInventoryOwnerV1::from_protected_session(
-                connect_controller_session(
+                connect_controller_storage_session(
                     crate::ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
                     node_id,
+                    sessions.launch_image.as_ref(),
                 )?,
             ),
         );
@@ -1453,7 +1474,18 @@ fn connect_controller_session(
     endpoint: crate::ProtectedBrokerSessionFixedEndpointV1,
     node_id: [u8; 16],
 ) -> Result<crate::DormantAuthenticatedBrokerSessionV1, CycleFailure> {
+    connect_controller_storage_session(endpoint, node_id, None)
+}
+
+fn connect_controller_storage_session(
+    endpoint: crate::ProtectedBrokerSessionFixedEndpointV1,
+    node_id: [u8; 16],
+    launch_image: Option<&crate::production_startup::Pid1LaunchImageV1>,
+) -> Result<crate::DormantAuthenticatedBrokerSessionV1, CycleFailure> {
     let custody = crate::ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(endpoint)
+        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+    let custody = custody
+        .retain_launch_image(launch_image.cloned())
         .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
     let deadline = crate::production_deadline_after(Duration::from_secs(10))
         .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
@@ -1917,21 +1949,20 @@ fn controller_from_journal(
     validate_controller_journal(&mut journal, node_id)?;
     let scope = ControllerRequestScopeV1::new(ObjectDigest::from_bytes(REQUEST_SCOPE))?;
     let limits = NodeControllerLimits::new(1024 * 1024, 65_536, 1)?;
+    let executor = ProductionEffectExecutor::open(
+        &mut journal,
+        sessions,
+        scope,
+        controller_uid,
+        NodeId::from_bytes(node_id),
+        attachment_host,
+        attachment_mount,
+    )?;
     Ok(NodeController::new(
         scope,
         limits,
         ProductionOperationCompilerV1,
-        Reconciler::new(
-            journal,
-            ProductionEffectExecutor::open(
-                sessions,
-                scope,
-                controller_uid,
-                NodeId::from_bytes(node_id),
-                attachment_host,
-                attachment_mount,
-            )?,
-        ),
+        Reconciler::new(journal, executor),
     ))
 }
 
@@ -2033,11 +2064,6 @@ impl RuntimeConfiguration {
                 }
             }
         }
-        if !publisher_ingress && std::env::var_os("LISTEN_FDS").is_some() {
-            return Err(ControllerRuntimeError::InvalidArguments(
-                "unexpected controller socket activation",
-            ));
-        }
         Ok(Self {
             uid,
             gid,
@@ -2121,6 +2147,7 @@ struct ProductionCancellationRequest {
 
 impl ProductionEffectExecutor {
     fn open(
+        journal: &mut Journal,
         sessions: SharedControllerBrokerSessions,
         request_scope: ControllerRequestScopeV1,
         controller_uid: u32,
@@ -2147,7 +2174,9 @@ impl ProductionEffectExecutor {
         aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(&mut source_domains)?
             .replay()?;
         crate::project_admission_coordinator::recover_source_project_admission_v1(
+            journal,
             &mut source_domains,
+            request_scope,
         )
         .map_err(ControllerRuntimeError::ProjectAdmissionRecovery)?;
 

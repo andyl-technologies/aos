@@ -25,14 +25,29 @@ const ERRORS: RetainedExchangeErrorsV1 = RetainedExchangeErrorsV1 {
     unusable: SESSION_UNUSABLE,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 enum HostAttachIntentV1 {
     Install([u8; PUBLIC_ATTACH_GRANT_BYTES]),
+    BindOriginalTicketV2 {
+        grant: [u8; PUBLIC_ATTACH_GRANT_BYTES],
+        ticket: Vec<u8>,
+    },
+    ConsumeOriginalTicketV3 {
+        grant: [u8; PUBLIC_ATTACH_GRANT_BYTES],
+        ticket: Vec<u8>,
+        correlation: [u8; 64],
+    },
     Readiness,
     Route {
         operation_id: [u8; 16],
         execution_id: [u8; 16],
     },
+}
+
+impl std::fmt::Debug for HostAttachIntentV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("HostAttachIntentV1(<redacted>)")
+    }
 }
 
 impl HostAttachIntentV1 {
@@ -50,7 +65,11 @@ impl HostAttachIntentV1 {
 
     fn method(&self) -> BrokerMethod {
         match self {
-            Self::Install(_) => BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE,
+            Self::Install(_)
+            | Self::BindOriginalTicketV2 { .. }
+            | Self::ConsumeOriginalTicketV3 { .. } => {
+                BrokerMethod::BROKER_METHOD_HOST_INSTALL_ATTACH_GATE
+            }
             Self::Readiness => BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_READINESS,
             Self::Route { .. } => BrokerMethod::BROKER_METHOD_HOST_QUERY_ATTACH_GATE_ROUTE,
         }
@@ -71,6 +90,25 @@ impl HostAttachIntentV1 {
             ..Default::default()
         };
         let body = match self {
+            Self::ConsumeOriginalTicketV3 {
+                grant,
+                ticket,
+                correlation,
+            } => InstallHostAttachGateRequestV1 {
+                header: Some(header).into(),
+                pending_grant: grant.to_vec(),
+                original_ticket_binding_v2: ticket.clone(),
+                original_ticket_consume_v3: correlation.to_vec(),
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            Self::BindOriginalTicketV2 { grant, ticket } => InstallHostAttachGateRequestV1 {
+                header: Some(header).into(),
+                pending_grant: grant.to_vec(),
+                original_ticket_binding_v2: ticket.clone(),
+                ..Default::default()
+            }
+            .encode_to_vec(),
             Self::Install(grant) => InstallHostAttachGateRequestV1 {
                 header: Some(header).into(),
                 pending_grant: grant.to_vec(),
@@ -109,6 +147,69 @@ pub(crate) struct ControllerHostAttachGateExchangeV1 {
 }
 
 impl ControllerHostAttachGateExchangeV1 {
+    pub(crate) fn consume_original_ticket_v3(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        grant: &[u8],
+        ticket: &[u8],
+        monitor_binding: [u8; 32],
+        challenge: [u8; 32],
+        authorization: &BrokerAuthorizationArtifactsV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
+        let original =
+            aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2::decode(ticket)
+                .map_err(|_| {
+                    EffectFailure::Permanent("invalid original attach ticket".to_owned())
+                })?;
+        if original.pending_grant.as_slice() != grant
+            || monitor_binding == [0; 32]
+            || challenge == [0; 32]
+        {
+            return Err(EffectFailure::Permanent(
+                "original attach consume substitution".to_owned(),
+            ));
+        }
+        let mut correlation = [0; 64];
+        correlation[..32].copy_from_slice(&monitor_binding);
+        correlation[32..].copy_from_slice(&challenge);
+        self.exchange(
+            session,
+            HostAttachIntentV1::ConsumeOriginalTicketV3 {
+                grant: original.pending_grant,
+                ticket: ticket.to_vec(),
+                correlation,
+            },
+            Some(authorization),
+        )
+    }
+
+    pub(crate) fn bind_original_ticket_v2(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        grant: &[u8],
+        ticket: &[u8],
+        authorization: &BrokerAuthorizationArtifactsV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
+        let original =
+            aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2::decode(ticket)
+                .map_err(|_| {
+                    EffectFailure::Permanent("original attach ticket binding is invalid".to_owned())
+                })?;
+        if original.pending_grant.as_slice() != grant {
+            return Err(EffectFailure::Permanent(
+                "original attach receipt substitution".to_owned(),
+            ));
+        }
+        self.exchange(
+            session,
+            HostAttachIntentV1::BindOriginalTicketV2 {
+                grant: original.pending_grant,
+                ticket: ticket.to_vec(),
+            },
+            Some(authorization),
+        )
+    }
+
     /// Reports whether this exchange currently owns protected Host custody.
     pub(crate) const fn has_pending(&self) -> bool {
         self.exchange.has_pending()

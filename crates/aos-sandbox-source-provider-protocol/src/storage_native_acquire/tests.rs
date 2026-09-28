@@ -6,6 +6,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use super::*;
 use crate::*;
 
+mod export_fence;
 mod readback;
 mod topology;
 

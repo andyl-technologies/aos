@@ -60,7 +60,7 @@ struct aos_fuse_limits {
 
 struct aos_fuse_open_responder;
 
-/* Valid only during one opendir callback and callable exactly once. */
+/* Valid only during one scoped OPEN/OPENDIR callback, callable exactly once. */
 typedef int (*aos_fuse_reply_open_fn)(struct aos_fuse_open_responder *responder,
                                       uint64_t handle);
 
@@ -135,12 +135,64 @@ int aos_fuse_transport_run(int connected_fd, int cancellation_fd,
                            void *core_context,
                            const struct aos_fuse_limits *limits);
 
+#define AOS_FUSE_FALLBACK_ABI_MAJOR 2U
+#define AOS_FUSE_FALLBACK_ABI_MINOR 0U
+#define AOS_FUSE_PROFILE_BOUNDED_FALLBACK 1U
+
+/*
+ * V2 deliberately embeds the unchanged V1 metadata contract. Both outer
+ * headers must name exactly the bounded-fallback profile. No passthrough,
+ * xattrs, ACL or sparse-allocation/SEEK_HOLE profile is negotiated here.
+ * deadline_ns is captured from CLOCK_BOOTTIME before core work and remains
+ * the same absolute bound through publication. Read output is private C
+ * staging; only a successful callback's exact length may become a reply.
+ * A failed OPEN publication is ambiguous, not definite rollback: the core
+ * must retain the pending pin until terminal teardown. Regular-file replies
+ * use direct I/O and never export an immutable backing descriptor to libfuse.
+ */
+struct aos_fuse_fallback_operations_v2 {
+  uint16_t abi_major;
+  uint16_t abi_minor;
+  uint32_t struct_size;
+  uint32_t profile;
+  uint32_t reserved;
+  struct aos_fuse_core_operations metadata;
+  int (*open)(void *context, uint64_t node_id, int32_t flags,
+              uint64_t deadline_ns, struct aos_fuse_open_responder *responder,
+              aos_fuse_reply_open_fn reply_open);
+  int (*read)(void *context, uint64_t node_id, uint64_t handle, int64_t offset,
+              uint32_t size, uint64_t deadline_ns, uint8_t *output,
+              uint64_t output_capacity, uint64_t *output_length);
+  int (*release)(void *context, uint64_t node_id, uint64_t handle,
+                 int32_t flags, uint32_t release_flags, uint64_t lock_owner,
+                 uint64_t deadline_ns);
+};
+
+struct aos_fuse_fallback_limits_v2 {
+  uint16_t abi_major;
+  uint16_t abi_minor;
+  uint32_t struct_size;
+  uint32_t profile;
+  uint32_t reserved;
+  struct aos_fuse_limits metadata;
+};
+
+/* Dormant transport candidate, not mount or backing-disclosure authority. */
+int aos_fuse_transport_run_fallback_v2(
+    int connected_fd, int cancellation_fd,
+    const struct aos_fuse_fallback_operations_v2 *operations,
+    void *core_context, const struct aos_fuse_fallback_limits_v2 *limits);
+
 #ifdef AOS_FUSE_TRANSPORT_TESTING
 /* Test-only socket/pipe entry; never exported by the installed library. */
 int aos_fuse_transport_run_test_fd(
     int connected_fd, int cancellation_fd,
     const struct aos_fuse_core_operations *operations,
     void *core_context, const struct aos_fuse_limits *limits);
+int aos_fuse_transport_run_fallback_v2_test_fd(
+    int connected_fd, int cancellation_fd,
+    const struct aos_fuse_fallback_operations_v2 *operations,
+    void *core_context, const struct aos_fuse_fallback_limits_v2 *limits);
 /* Directly verifies record-write behavior; never exported by the library. */
 int aos_fuse_transport_test_writev(int connected_fd, int cancellation_fd,
                                    const uint8_t *first, uint64_t first_length,

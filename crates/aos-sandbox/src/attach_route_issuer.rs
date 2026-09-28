@@ -8,6 +8,11 @@ use aos_proto::aos::sandbox::v1::{
     Execution, ExecutionControlRequest, ExecutionIoMode, ExecutionPhase, OpenSshAccessEndpoint,
     Timestamp,
 };
+use aos_sandbox_core::public_attach_route::{
+    PUBLIC_ATTACH_CERTIFICATE_MAXIMUM_SECONDS_V1,
+    public_attach_certificate_key_id_v1 as certificate_key_id,
+    public_attach_force_command_v1 as forced_command,
+};
 use aos_sandbox_core::{OperationId, PrincipalId};
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -17,7 +22,6 @@ use ssh_key::{Algorithm, PrivateKey, PublicKey};
 use crate::attach_holder_proof::verify_attach_holder_proof_v1;
 use crate::{Journal, JournalRecord, RecordNamespace};
 
-const MAXIMUM_CERTIFICATE_SECONDS: i64 = 300;
 const NONCE_DOMAIN: &[u8] = b"aos.sandbox.execution.attach-certificate-nonce.v1\0";
 const RECORD_MAGIC: &[u8; 8] = b"AOSATR01";
 const RECORD_HEADER_BYTES: usize = 8 + 16 + 32 + 4;
@@ -290,7 +294,7 @@ impl OpenSshAttachRouteIssuerV1 {
             return Err(AttachRouteIssuanceErrorV1::StaleExecution);
         }
         let expires_at = now_seconds
-            .checked_add(MAXIMUM_CERTIFICATE_SECONDS)
+            .checked_add(i64::from(PUBLIC_ATTACH_CERTIFICATE_MAXIMUM_SECONDS_V1))
             .map(|limit| limit.min(route.expires_at))
             .filter(|expiry| now_seconds > 0 && *expiry > now_seconds)
             .ok_or(AttachRouteIssuanceErrorV1::InvalidRoute)?;
@@ -309,7 +313,7 @@ impl OpenSshAttachRouteIssuerV1 {
         );
 
         let forced_command = forced_command(
-            operation,
+            operation.as_bytes(),
             &route.execution_id,
             &route.sandbox_incarnation_id,
             route.assignment_epoch,
@@ -317,7 +321,7 @@ impl OpenSshAttachRouteIssuerV1 {
             &execution.audit_id,
         );
         let key_id = certificate_key_id(
-            operation,
+            operation.as_bytes(),
             &route.execution_id,
             &route.sandbox_incarnation_id,
             principal.as_bytes(),
@@ -440,9 +444,7 @@ impl OpenSshAttachRouteIssuerV1 {
             || certificate.cert_type() != CertType::User
             || certificate.valid_before() != expiry_seconds
             || certificate.valid_after() > now
-            || lifetime
-                > u64::try_from(MAXIMUM_CERTIFICATE_SECONDS)
-                    .map_err(|_| AttachRouteIssuanceErrorV1::Certificate)?
+            || lifetime > u64::from(PUBLIC_ATTACH_CERTIFICATE_MAXIMUM_SECONDS_V1)
             || certificate.public_key()
                 != canonical_ed25519_key(&request.client_public_key)
                     .map_err(|_| AttachRouteIssuanceErrorV1::InvalidHolderProof)?
@@ -461,7 +463,7 @@ impl OpenSshAttachRouteIssuerV1 {
             || certificate.serial() != serial
             || certificate.key_id()
                 != certificate_key_id(
-                    operation,
+                    operation.as_bytes(),
                     &route.execution_id,
                     &route.sandbox_incarnation_id,
                     principal.as_bytes(),
@@ -470,7 +472,7 @@ impl OpenSshAttachRouteIssuerV1 {
             || certificate.critical_options().len() != 1
             || certificate.critical_options().get("force-command")
                 != Some(&forced_command(
-                    operation,
+                    operation.as_bytes(),
                     &route.execution_id,
                     &route.sandbox_incarnation_id,
                     route.assignment_epoch,
@@ -522,42 +524,6 @@ fn certificate_nonce(
     nonce_hash.finalize().into()
 }
 
-fn certificate_key_id(
-    operation: OperationId,
-    execution: &[u8],
-    incarnation: &[u8],
-    principal: &[u8],
-    audit: &[u8],
-) -> String {
-    format!(
-        "aos-exec:{}:{}:{}:{}:{}",
-        hex_id(operation.as_bytes()),
-        hex_id(execution),
-        hex_id(incarnation),
-        hex_id(principal),
-        hex_id(audit)
-    )
-}
-
-fn forced_command(
-    operation: OperationId,
-    execution: &[u8],
-    incarnation: &[u8],
-    assignment_epoch: u64,
-    principal: &[u8],
-    audit: &[u8],
-) -> String {
-    format!(
-        "/usr/libexec/aos-sandbox-exec-gate --operation-id {} --execution-id {} --incarnation-id {} --assignment-epoch {} --principal-id {} --audit-id {}",
-        hex_id(operation.as_bytes()),
-        hex_id(execution),
-        hex_id(incarnation),
-        assignment_epoch,
-        hex_id(principal),
-        hex_id(audit)
-    )
-}
-
 fn canonical_ed25519_key(bytes: &[u8]) -> Result<PublicKey, AttachRouteIssuanceErrorV1> {
     if bytes.is_empty() || bytes.len() > 4096 {
         return Err(AttachRouteIssuanceErrorV1::InvalidRoute);
@@ -575,14 +541,4 @@ fn canonical_ed25519_key(bytes: &[u8]) -> Result<PublicKey, AttachRouteIssuanceE
         return Err(AttachRouteIssuanceErrorV1::InvalidRoute);
     }
     Ok(key)
-}
-
-fn hex_id(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut result = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        result.push(char::from(HEX[usize::from(byte >> 4)]));
-        result.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    result
 }

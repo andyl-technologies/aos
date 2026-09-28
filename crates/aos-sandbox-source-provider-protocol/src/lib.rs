@@ -36,6 +36,7 @@ pub mod held_snapshot_catalog;
 pub mod held_snapshot_content;
 pub mod inventory_readback;
 pub mod model;
+pub mod native_export_fence;
 pub mod normalized_intent;
 pub mod proof;
 pub mod recovery_currentness;
@@ -107,6 +108,13 @@ pub use model::{
     SourceReleaseReceiptV1, SourceResourceV1, SourceUseV1, digest_logical_binding_bytes,
     prospective_mount_apply_template_digest_v1, source_acquisition_id_v2,
 };
+pub use native_export_fence::{
+    MAXIMUM_NATIVE_RELEASE_RESPONSE_BYTES_V2, NativeExportFenceAcquireV1, NativeExportFenceCutV1,
+    NativeExportFenceReleaseV1, ReleaseSourceResponseProfileV2, ReleaseSourceResponseV2,
+    SIGNED_SOURCE_PROVIDER_NATIVE_EXPORT_FENCE_BYTES_V1,
+    SOURCE_PROVIDER_NATIVE_EXPORT_FENCE_BYTES_V1, SignedSourceProviderNativeExportFenceV1,
+    SourceProviderNativeExportFenceV1,
+};
 pub use normalized_intent::{
     MAXIMUM_NORMALIZED_ACQUISITION_INTENT_BYTES, NormalizedAcquisitionIntentError,
     NormalizedAcquisitionIntentV1, NormalizedAcquisitionIntentV2,
@@ -146,6 +154,7 @@ pub use storage_native_acquire::{
     StorageNativeCleanupDispositionV2, StorageNativeCleanupReasonV2, StorageNativeCleanupReceiptV2,
     StorageNativeCleanupRequestV2, StorageNativeDescriptorCustodyV2,
     VerifiedStorageNativeAcquireV3, storage_native_nonrecursive_topology_v1,
+    validate_storage_native_topology_commitments_v1,
 };
 pub use storage_zfs_hold_receipt::{
     SIGNED_STORAGE_ZFS_HOLD_RECEIPT_BYTES_V1, SignedStorageZfsHoldReceiptV1, StorageZfsHoldHeadV1,

@@ -15,7 +15,7 @@ use aos_sandbox_core::{
     MediaType, ObjectDescriptor, Operation, OperationSet, PortableMediaType, ResourceId,
     ResourceKind, Selector,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::authority::AuthorityPlanV1;
 use super::model::{
@@ -26,7 +26,7 @@ use super::model::{
 use super::namespace::NamespacePlanV1;
 
 /// Names all eight portable optimization kinds.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum AdvisoryKindV1 {
     /// Prefetch structural metadata.
     PrefetchMetadata,
@@ -73,7 +73,7 @@ impl AdvisoryKindV1 {
 }
 
 /// Selects explicit behavior when advice cannot be selected.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum AdvisoryDegradationV1 {
     /// Omit the action without changing hard semantics.
     Omit,
@@ -150,7 +150,7 @@ impl AdvisoryActionV1 {
 }
 
 /// Selects an advisory decision outcome.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum AdvisoryStatusV1 {
     /// Selected and lowered.
     Active,

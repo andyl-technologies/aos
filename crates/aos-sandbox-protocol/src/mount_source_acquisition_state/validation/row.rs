@@ -73,6 +73,13 @@ pub(super) fn validate_row(
         ));
     }
     validate_release_row(row, table)?;
+    if let Some(lineage) = row.release_lineage.as_ref() {
+        super::super::native_export_fence::validate_native_export_fence_v1(
+            row,
+            exact_attempt(table, lineage.tail)?,
+            table,
+        )?;
+    }
     validate_scalar_evidence(row)?;
     validate_manager_custody(row, table)?;
     validate_manager_custody_loss(row, table)?;
@@ -327,6 +334,15 @@ pub(super) fn validate_release_row(
         .release_inventory_fence
         .as_ref()
         .ok_or_else(|| state_error("Release Inventory fence is missing"))?;
+    // The first Release may precede every Complete Inventory. Reproduce its
+    // exact historical floor rather than treating ordinal zero as malformed.
+    if inventory_fence.inventory_observation_floor
+        != preceding_inventory_observation_ordinal(table, row.scope, root)?
+    {
+        return Err(state_error(
+            "Release Inventory fence observation floor does not reproduce",
+        ));
+    }
     let release_from = row
         .release_from_phase
         .ok_or_else(|| state_error("Release predecessor phase is missing"))?;

@@ -25,15 +25,22 @@ use super::project_admission_root::{
     RootProjectAdmissionStageV1, RootProjectReservationCancellationV1,
 };
 use super::root_v8_released_proof::POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2;
+use super::{
+    CONTROLLER_PROJECT_DISPATCH_READBACK_BYTES_V1, ROOT_PROJECT_ADMISSION_INTENT_BYTES_V2,
+    ROOT_PROJECT_HISTORY_FLOOR_BYTES_V1, ROOT_PROJECT_NEGATIVE_INTENT_BYTES_V1,
+    RootProjectHistoryFloorV1,
+};
 
 /// Selects the distinct Root outcome query without touching a staged attempt.
 pub const ROOT_PROJECT_ADMISSION_OUTCOME_QUERY_MAGIC: &[u8; 8] = b"AOSPHQPA";
 /// Selects an exact, effect-owned project admission stage.
 pub const ROOT_PROJECT_ADMISSION_STAGE_QUERY_MAGIC: &[u8; 8] = b"AOSPHSP1";
 /// Reserves Root cancellation capacity before Source appends its row.
-pub const ROOT_PROJECT_ADMISSION_INTENT_QUERY_MAGIC: &[u8; 8] = b"AOSPHI01";
-/// Replays an exact active Root intent after an ambiguous prepare reply.
-pub const ROOT_PROJECT_ADMISSION_INTENT_REPLAY_MAGIC: &[u8; 8] = b"AOSPHIQ1";
+pub const ROOT_PROJECT_ADMISSION_INTENT_QUERY_MAGIC: &[u8; 8] = b"AOSPHI02";
+/// Reserves retirement-only headroom from actual historical dispatch custody.
+pub const ROOT_PROJECT_NEGATIVE_INTENT_QUERY_MAGIC: &[u8; 8] = b"AOSPHNI1";
+/// Replays a tagged positive-V2 or retirement-only-V3 intent after reply loss.
+pub const ROOT_PROJECT_ADMISSION_INTENT_REPLAY_MAGIC: &[u8; 8] = b"AOSPHIQ3";
 /// Submits the two signed owner proofs under a Root-last CAS.
 pub const ROOT_PROJECT_ADMISSION_COMMIT_QUERY_MAGIC: &[u8; 8] = b"AOSPHCM1";
 /// Durably aborts a stage only after a Source challenge exists.
@@ -46,8 +53,9 @@ pub const ROOT_PROJECT_RESERVATION_CANCEL_MAGIC: &[u8; 8] = b"AOSPHCX1";
 pub const ROOT_PROJECT_RESERVATION_CANCEL_QUERY_MAGIC: &[u8; 8] = b"AOSPHQX1";
 const RESERVATION_CANCEL_REPLY_MAGIC: &[u8; 8] = b"AOSPHRX1";
 const STAGE_REPLY_MAGIC: &[u8; 8] = b"AOSPHSA1";
-const INTENT_REPLY_MAGIC: &[u8; 8] = b"AOSPHIR1";
-const INTENT_REPLAY_REPLY_MAGIC: &[u8; 8] = b"AOSPHIR3";
+const INTENT_REPLY_MAGIC: &[u8; 8] = b"AOSPHIR2";
+const INTENT_REPLAY_REPLY_MAGIC: &[u8; 8] = b"AOSPHIR5";
+const NEGATIVE_INTENT_REPLY_MAGIC: &[u8; 8] = b"AOSPHNR1";
 const CURRENT_REPLY_MAGIC: &[u8; 8] = b"AOSPHCR1";
 const TERMINAL_REPLY_MAGIC: &[u8; 8] = b"AOSPHOR1";
 const REPLY_MAGIC: &[u8; 8] = b"AOSPHRPA";
@@ -56,12 +64,147 @@ const REPLY_BYTES: usize = 376;
 const OUTCOME_BYTES: usize = 312;
 const ROOT_WAIT: Duration = Duration::from_secs(35);
 const STAGE_REPLY_BYTES: usize = 8 + 16 + 336;
-const INTENT_REPLY_BYTES: usize = 8 + 16 + 304;
-const INTENT_REPLAY_REPLY_BYTES: usize = 8 + 16 + 8 + 304;
+const INTENT_REPLY_BYTES: usize = 8 + 16 + ROOT_PROJECT_ADMISSION_INTENT_BYTES_V2;
+const INTENT_REPLAY_REPLY_BYTES: usize = 8 + 16 + 8 + ROOT_PROJECT_NEGATIVE_INTENT_BYTES_V1;
+const NEGATIVE_INTENT_REPLY_BYTES: usize = 8 + 16 + ROOT_PROJECT_NEGATIVE_INTENT_BYTES_V1;
 const CURRENT_REPLY_BYTES: usize = 8 + 16 + 8 + 336;
 const TERMINAL_REPLY_BYTES: usize = 8 + 16 + OUTCOME_BYTES;
 const CONTROLLER_PACKET_BYTES: usize = 364;
 const RESERVATION_CANCEL_REPLY_BYTES: usize = 8 + 16 + 32 + 8 + 112;
+
+/// Selects exact historical floor replay without granting current policy.
+pub const ROOT_PROJECT_HISTORY_FLOOR_QUERY_MAGIC: &[u8; 8] = b"AOSPHQF1";
+/// Submits exact Controller acceptance to the existing Root history owner.
+pub const ROOT_PROJECT_HISTORY_RETIRE_MAGIC: &[u8; 8] = b"AOSPHHF1";
+const FLOOR_REPLY_MAGIC: &[u8; 8] = b"AOSPHRF1";
+const FLOOR_REPLY_BYTES: usize = 32 + ROOT_PROJECT_HISTORY_FLOOR_BYTES_V1;
+
+/// Proves Root's exact historical floor only through its checked fixed socket.
+#[derive(Clone, Copy, Debug)]
+pub struct RootProjectHistoryFloorProofV1 {
+    floor: RootProjectHistoryFloorV1,
+}
+
+impl RootProjectHistoryFloorProofV1 {
+    /// Returns the decoded historical join, not Create completion authority.
+    pub const fn floor(self) -> RootProjectHistoryFloorV1 {
+        self.floor
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn from_test_floor(floor: RootProjectHistoryFloorV1) -> Self {
+        Self { floor }
+    }
+}
+
+/// Queries an exact Source issue's retained Root history floor.
+///
+/// Absence grants no retirement authority. The result never establishes
+/// current deployment credentials, policy currentness, or Create success.
+///
+/// # Errors
+///
+/// Rejects a foreign fixed Root peer, changed issue or reservation, malformed
+/// row, truncated reply, trailing bytes, or transport failure.
+pub fn query_fixed_root_project_history_floor_v1(
+    reservation: SourceProjectAdmissionReservationV1,
+) -> io::Result<Option<RootProjectHistoryFloorProofV1>> {
+    let mut stream = connect_root()?;
+    stream.write_all(&request_header(
+        ROOT_PROJECT_HISTORY_FLOOR_QUERY_MAGIC,
+        reservation.client_nonce(),
+    )?)?;
+    stream.write_all(&reservation.record_bytes())?;
+    stream.shutdown(Shutdown::Write)?;
+    let reply = read_exact_reply::<FLOOR_REPLY_BYTES>(&mut stream)?;
+    decode_floor_reply(&reply, reservation)
+}
+
+/// Requests history retirement with the original protected Controller receipt.
+///
+/// Root independently obtains the Source-only completed-terminal proof. An
+/// ambiguous reply must be resolved by exact floor replay; failure is never
+/// Source ACK or Create authority.
+///
+/// # Errors
+///
+/// Rejects foreign Root custody, changed owner identities, framing, or lost
+/// transport. A descriptor or caller-supplied Source proof is not accepted.
+pub fn retire_fixed_root_project_history_over_socket_v1(
+    reservation: SourceProjectAdmissionReservationV1,
+    controller_packet: &[u8; super::CONTROLLER_PROJECT_TERMINAL_READBACK_BYTES_V1],
+) -> io::Result<RootProjectHistoryFloorProofV1> {
+    let mut stream = connect_root()?;
+    stream.write_all(&request_header(
+        ROOT_PROJECT_HISTORY_RETIRE_MAGIC,
+        reservation.client_nonce(),
+    )?)?;
+    stream.write_all(&reservation.record_bytes())?;
+    stream.write_all(controller_packet)?;
+    stream.shutdown(Shutdown::Write)?;
+    let reply = read_exact_reply::<FLOOR_REPLY_BYTES>(&mut stream)?;
+    decode_floor_reply(&reply, reservation)?.ok_or_else(invalid_reply)
+}
+
+fn decode_floor_reply(
+    reply: &[u8; FLOOR_REPLY_BYTES],
+    reservation: SourceProjectAdmissionReservationV1,
+) -> io::Result<Option<RootProjectHistoryFloorProofV1>> {
+    if reply[..8] != FLOOR_REPLY_MAGIC[..]
+        || reply[8..24] != reservation.client_nonce()
+        || reply[25..32] != [0; 7]
+    {
+        return Err(invalid_reply());
+    }
+    match reply[24] {
+        0 if reply[32..].iter().all(|byte| *byte == 0) => Ok(None),
+        1 => {
+            let floor = RootProjectHistoryFloorV1::from_record_bytes(&reply[32..])
+                .map_err(io::Error::other)?;
+            require_floor_reservation(floor, reservation)?;
+            Ok(Some(RootProjectHistoryFloorProofV1 { floor }))
+        }
+        _ => Err(invalid_reply()),
+    }
+}
+
+/// Encodes only an exact historical floor recovered under the Root writer.
+///
+/// # Errors
+///
+/// Rejects a mismatched issue, reservation, project, nonce, or physical names.
+pub fn encode_root_project_history_floor_reply_v1(
+    reservation: SourceProjectAdmissionReservationV1,
+    floor: Option<RootProjectHistoryFloorV1>,
+) -> io::Result<[u8; FLOOR_REPLY_BYTES]> {
+    if reservation.client_nonce() == [0; 16] {
+        return Err(invalid_reply());
+    }
+    let mut reply = [0; FLOOR_REPLY_BYTES];
+    reply[..8].copy_from_slice(FLOOR_REPLY_MAGIC);
+    reply[8..24].copy_from_slice(&reservation.client_nonce());
+    if let Some(floor) = floor {
+        require_floor_reservation(floor, reservation)?;
+        reply[24] = 1;
+        reply[32..].copy_from_slice(&floor.record_bytes());
+    }
+    Ok(reply)
+}
+
+fn require_floor_reservation(
+    floor: RootProjectHistoryFloorV1,
+    reservation: SourceProjectAdmissionReservationV1,
+) -> io::Result<()> {
+    if floor.issue() != reservation.issue()
+        || floor.reservation_digest() != reservation.record_digest()
+        || floor.client_nonce() != reservation.client_nonce()
+        || floor.project() != reservation.project()
+        || floor.names() != reservation.names()
+    {
+        return Err(invalid_reply());
+    }
+    Ok(())
+}
 
 /// Proves an exact Root cancellation only after peer-checked fixed-socket replay.
 #[derive(Clone, Copy, Debug)]
@@ -253,10 +396,103 @@ pub fn prepare_fixed_root_project_intent_over_socket_v1(
     if intent.client_nonce() != reservation.client_nonce()
         || intent.project() != reservation.project()
         || intent.source_reservation() != reservation.record_digest()
+        || intent.is_retirement_only()
     {
         return Err(invalid_reply());
     }
     Ok(intent)
+}
+
+/// Rejoins exact historical dispatch custody after an ambiguous negative call.
+///
+/// This reuses the authenticated active-intent query but additionally requires
+/// the same immutable DispatchAuthorized metadata as the dedicated preparation
+/// reply. An absent response is observation only, never cancellation authority.
+///
+/// # Errors
+///
+/// Rejects foreign Root custody, a positive or differently bound intent, or an
+/// incomplete reply. It cannot repair or reinterpret a historical row.
+pub fn query_fixed_root_project_negative_intent_v1(
+    reservation: SourceProjectAdmissionReservationV1,
+    dispatch: &[u8; CONTROLLER_PROJECT_DISPATCH_READBACK_BYTES_V1],
+) -> io::Result<Option<RootProjectAdmissionIntentV1>> {
+    query_fixed_root_project_intent_v1(reservation)?
+        .map(|intent| require_negative_intent_binding(intent, reservation, dispatch))
+        .transpose()
+}
+
+/// Obtains a durable retirement-only intent from Root's independently held pins.
+///
+/// The caller retains Controller then Source custody through signing, exact
+/// preview recheck, this exchange, and the real Source reservation append.
+/// An ambiguous reply must be resolved through the exact intent/cancel query.
+///
+/// # Errors
+///
+/// Rejects foreign Root custody, noncanonical claims, a mismatched intent kind
+/// or binding, or any incomplete/ambiguous transport reply.
+pub fn prepare_fixed_root_project_negative_intent_over_socket_v1(
+    reservation: SourceProjectAdmissionReservationV1,
+    dispatch: &[u8; CONTROLLER_PROJECT_DISPATCH_READBACK_BYTES_V1],
+) -> io::Result<RootProjectAdmissionIntentV1> {
+    let mut stream = connect_root()?;
+    stream.write_all(&request_header(
+        ROOT_PROJECT_NEGATIVE_INTENT_QUERY_MAGIC,
+        reservation.client_nonce(),
+    )?)?;
+    stream.write_all(dispatch)?;
+    stream.shutdown(Shutdown::Write)?;
+    let reply = read_exact_reply::<NEGATIVE_INTENT_REPLY_BYTES>(&mut stream)?;
+    if reply[..8] != NEGATIVE_INTENT_REPLY_MAGIC[..] || reply[8..24] != reservation.client_nonce() {
+        return Err(invalid_reply());
+    }
+    let intent =
+        RootProjectAdmissionIntentV1::from_record_bytes(&reply[24..]).map_err(io::Error::other)?;
+    require_negative_intent_binding(intent, reservation, dispatch)
+}
+
+pub(super) fn require_negative_intent_binding(
+    intent: RootProjectAdmissionIntentV1,
+    reservation: SourceProjectAdmissionReservationV1,
+    dispatch: &[u8; CONTROLLER_PROJECT_DISPATCH_READBACK_BYTES_V1],
+) -> io::Result<RootProjectAdmissionIntentV1> {
+    if !intent.is_retirement_only()
+        || intent.client_nonce() != reservation.client_nonce()
+        || intent.project() != reservation.project()
+        || intent.source_reservation() != reservation.record_digest()
+        || intent.record_bytes().len() != ROOT_PROJECT_NEGATIVE_INTENT_BYTES_V1
+        || intent
+            .negative_dispatch_metadata()
+            .map(|value| *value.as_bytes())
+            != Some(dispatch[156..188].try_into().map_err(|_| invalid_reply())?)
+    {
+        return Err(invalid_reply());
+    }
+    Ok(intent)
+}
+
+/// Encodes an exact Root retirement-only capacity readback.
+///
+/// # Errors
+///
+/// Rejects positive intents, changed nonce, or noncanonical negative framing.
+pub fn encode_root_project_negative_intent_reply_v1(
+    nonce: [u8; 16],
+    intent: RootProjectAdmissionIntentV1,
+) -> io::Result<[u8; NEGATIVE_INTENT_REPLY_BYTES]> {
+    if nonce == [0; 16]
+        || intent.client_nonce() != nonce
+        || !intent.is_retirement_only()
+        || intent.record_bytes().len() != ROOT_PROJECT_NEGATIVE_INTENT_BYTES_V1
+    {
+        return Err(invalid_reply());
+    }
+    let mut reply = [0; NEGATIVE_INTENT_REPLY_BYTES];
+    reply[..8].copy_from_slice(NEGATIVE_INTENT_REPLY_MAGIC);
+    reply[8..24].copy_from_slice(&nonce);
+    reply[24..].copy_from_slice(&intent.record_bytes());
+    Ok(reply)
 }
 
 /// Encodes Root's exact durable capacity intent for a fixed-socket reply.
@@ -268,7 +504,10 @@ pub fn encode_root_project_intent_reply_v1(
     nonce: [u8; 16],
     intent: RootProjectAdmissionIntentV1,
 ) -> io::Result<[u8; INTENT_REPLY_BYTES]> {
-    if nonce == [0; 16] || intent.client_nonce() != nonce {
+    if nonce == [0; 16]
+        || intent.client_nonce() != nonce
+        || intent.record_bytes().len() != ROOT_PROJECT_ADMISSION_INTENT_BYTES_V2
+    {
         return Err(invalid_reply());
     }
     let mut reply = [0; INTENT_REPLY_BYTES];
@@ -308,13 +547,22 @@ pub(super) fn decode_root_project_intent_replay_reply_v1(
         return Err(invalid_reply());
     }
     match reply[24] {
-        0 if reply[32..] == [0; 304] => Ok(None),
-        1 => {
-            let intent = RootProjectAdmissionIntentV1::from_record_bytes(&reply[32..])
+        0 if reply[32..].iter().all(|byte| *byte == 0) => Ok(None),
+        kind @ (1 | 2) => {
+            let end = if kind == 1 {
+                32 + ROOT_PROJECT_ADMISSION_INTENT_BYTES_V2
+            } else {
+                INTENT_REPLAY_REPLY_BYTES
+            };
+            if reply[end..].iter().any(|byte| *byte != 0) {
+                return Err(invalid_reply());
+            }
+            let intent = RootProjectAdmissionIntentV1::from_record_bytes(&reply[32..end])
                 .map_err(io::Error::other)?;
             if intent.client_nonce() != reservation.client_nonce()
                 || intent.project() != reservation.project()
                 || intent.source_reservation() != reservation.record_digest()
+                || intent.is_retirement_only() != (kind == 2)
             {
                 return Err(invalid_reply());
             }
@@ -338,6 +586,12 @@ pub fn encode_root_project_intent_replay_reply_v1(
             intent.client_nonce() != reservation.client_nonce()
                 || intent.project() != reservation.project()
                 || intent.source_reservation() != reservation.record_digest()
+                || intent.record_bytes().len()
+                    != if intent.is_retirement_only() {
+                        ROOT_PROJECT_NEGATIVE_INTENT_BYTES_V1
+                    } else {
+                        ROOT_PROJECT_ADMISSION_INTENT_BYTES_V2
+                    }
         })
     {
         return Err(invalid_reply());
@@ -346,8 +600,9 @@ pub fn encode_root_project_intent_replay_reply_v1(
     reply[..8].copy_from_slice(INTENT_REPLAY_REPLY_MAGIC);
     reply[8..24].copy_from_slice(&reservation.client_nonce());
     if let Some(intent) = intent {
-        reply[24] = 1;
-        reply[32..].copy_from_slice(&intent.record_bytes());
+        reply[24] = if intent.is_retirement_only() { 2 } else { 1 };
+        let bytes = intent.record_bytes();
+        reply[32..32 + bytes.len()].copy_from_slice(&bytes);
     }
     Ok(reply)
 }

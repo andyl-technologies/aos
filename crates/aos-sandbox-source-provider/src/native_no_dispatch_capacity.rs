@@ -5,6 +5,8 @@
 //! one matching reservation for each such row and no orphan reservations.
 //! The distinct dispatch owner retains a larger reservation across Requested,
 //! Prepared and Active; it is not the no-dispatch owner's five-record budget.
+//! A lease-bearing native Release adds its own four-record status-only suffix;
+//! all three owners contribute to one exact complete reservation union.
 
 use std::collections::BTreeSet;
 
@@ -110,6 +112,7 @@ fn request(
         artifact_digest: *attempt.attempt_digest.as_bytes(),
         checkpoint_digest: *attempt.signed_request_digest.as_bytes(),
         chain_head_digest: *session.session_binding.as_bytes(),
+        future_transactions: 1,
         terminal_records,
         terminal_bytes,
         poison_records: terminal_records,
@@ -126,6 +129,7 @@ fn binding(
         artifact_digest: request.artifact_digest,
         checkpoint_digest: request.checkpoint_digest,
         chain_head_digest: request.chain_head_digest,
+        future_transactions: request.future_transactions,
         terminal_records: request.terminal_records,
         terminal_bytes: request.terminal_bytes,
         poison_records: request.poison_records,
@@ -165,7 +169,7 @@ mod native_capacity_tests;
 #[path = "native_completion/graph_capacity_tests.rs"]
 mod native_graph_capacity_tests;
 
-/// Validates the exact union of both native owners and rejects orphan capacity.
+/// Validates all exact native owner reservations and rejects orphan capacity.
 pub(crate) fn validate_set(
     journal: &ProtectedJournalAuthority<'_>,
     recovered: &RecoveredProviderLedgerV1,
@@ -215,6 +219,7 @@ pub(crate) fn validate_set(
             return Err(ProviderLedgerError::Equivocation);
         }
     }
+    crate::native_release_capacity::add_expected(journal, recovered, &mut expected)?;
     journal.validate_global_capacity_reservation_set_v1(&expected)?;
     Ok(())
 }

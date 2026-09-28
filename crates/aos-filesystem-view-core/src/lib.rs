@@ -21,7 +21,8 @@ pub use index::{
     IndexExpectation, IndexExtentRange, IndexExtentView, IndexExtents, IndexFileView,
     IndexNodeBodyView, IndexNodeKind, IndexNodeSemantics, IndexNodeView, IndexObjectDescriptorView,
     IndexRecords, IndexSparseContentView, IndexStaging, IndexSummary, IndexXattrRange,
-    IndexXattrView, IndexXattrs, StagedIndex, ValidatedIndex, validate_index,
+    IndexXattrView, IndexXattrs, StagedIndex, ValidatedIndex, index_validation_working_bytes,
+    validate_index,
 };
 pub use limits::TreeCompileLimits;
 pub use presentation::{
@@ -38,8 +39,8 @@ pub use remote_source::{
 pub use source::{ExactObject, ObjectSource, SourceError, load_exact};
 pub use view_projection::{
     ProjectedNode, ProjectedNodeKind, ProjectionError, ProjectionLimits, ProjectionProfile,
-    SyntheticDirectoryMetadata, ValidatedViewProjection, ValidatedViewSourceObject,
-    compile_view_projection,
+    SyntheticDirectoryMetadata, ValidatedViewProjectedFileObject, ValidatedViewProjection,
+    ValidatedViewSourceObject, compile_view_projection,
 };
 
 #[cfg(feature = "test-fixtures")]

@@ -1,15 +1,16 @@
 //! One-shot ownership transfer for fixed descriptors inherited at process start.
 //!
 //! Systemd activation and the mount namespace helper identify descriptors by
-//! fixed process-table numbers. This module is the sole boundary that observes
-//! those numbers. It first reserves an exact bounded set against repeated or
-//! overlapping claims, duplicates every required live entry with
-//! `F_DUPFD_CLOEXEC`, and closes every original entry together. Only the fresh
-//! duplicates become [`OwnedFd`] values.
+//! fixed process-table numbers. Ownership-transfer functions reserve an exact
+//! bounded set, duplicate live entries with `F_DUPFD_CLOEXEC`, and close the
+//! originals together. The safe observational startup copier instead leaves
+//! originals open but close-on-exec and admits no launcher or descriptor role.
+//! Only fresh duplicates become [`OwnedFd`] values.
 
 use std::collections::BTreeSet;
 use std::os::fd::{BorrowedFd, FromRawFd as _, OwnedFd, RawFd};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{Error, Result};
 
@@ -20,6 +21,113 @@ const MOUNT_HELPER_DETACHED_MOUNT_FD: RawFd = 4;
 const DUPLICATE_FD_MINIMUM: RawFd = 64;
 
 static CLAIMED_DESCRIPTOR_NUMBERS: Mutex<BTreeSet<RawFd>> = Mutex::new(BTreeSet::new());
+static INITIAL_ACTIVATION_DUPLICATED: AtomicBool = AtomicBool::new(false);
+
+/// Copies the complete initial activation table without taking numeric ownership.
+///
+/// This observational startup boundary uses the existing safe duplication seam,
+/// marks originals close-on-exec, and rejects every other inherited descriptor
+/// except standard I/O. It must run in the fixed service's single-threaded
+/// startup interval, before opening credentials, journals, or other retained
+/// files. Neither the supplied count nor successful observation authenticates
+/// a launcher, a descriptor role, or an authorization.
+///
+/// # Errors
+///
+/// Rejects repeated attempts, over-limit counts, missing entries, kernel errors,
+/// or a complete procfs table that differs from originals, duplicates, standard
+/// I/O, and the temporary scanner. A failed attempt cannot be repeated.
+pub fn duplicate_initial_activation_table(descriptor_count: usize) -> Result<Vec<OwnedFd>> {
+    INITIAL_ACTIVATION_DUPLICATED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| Error::invalid("initial activation table", "already observed"))?;
+    if descriptor_count > MAXIMUM_SYSTEMD_ACTIVATION_DESCRIPTORS {
+        return Err(Error::invalid(
+            "initial activation table",
+            "count exceeds ceiling",
+        ));
+    }
+
+    let numbers = contiguous_numbers(SYSTEMD_ACTIVATION_FD_BASE, descriptor_count)?;
+    let descriptors = numbers
+        .iter()
+        .map(|number| duplicate_inherited_descriptor(*number))
+        .collect::<Result<Vec<_>>>()?;
+    for number in &numbers {
+        mark_inherited_descriptor_close_on_exec(*number)?;
+    }
+
+    use std::os::fd::AsRawFd as _;
+    let expected = [0, 1, 2]
+        .into_iter()
+        .chain(numbers)
+        .chain(descriptors.iter().map(|descriptor| descriptor.as_raw_fd()))
+        .collect::<BTreeSet<_>>();
+    require_complete_startup_table(&expected)?;
+    require_complete_startup_table(&expected)?;
+    Ok(descriptors)
+}
+
+// This is only a closed-set observation, not Mount's ownership-transfer,
+// kcmp, executable, or launcher proof from startup_fd_table.
+fn require_complete_startup_table(expected: &BTreeSet<RawFd>) -> Result<()> {
+    let directory = std::fs::read_dir("/proc/self/fd").map_err(|source| Error::Syscall {
+        operation: "enumerate complete initial activation table",
+        source,
+    })?;
+    let scanner_target = std::path::PathBuf::from(format!("/proc/{}/fd", std::process::id()));
+    let mut observed = BTreeSet::new();
+    let mut scanner_seen = false;
+    for entry in directory.take(expected.len() + 2) {
+        let entry = entry.map_err(|source| Error::Syscall {
+            operation: "read initial activation table entry",
+            source,
+        })?;
+        let number = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<RawFd>().ok())
+            .filter(|number| *number >= 0)
+            .ok_or_else(|| {
+                Error::invalid("initial activation table", "invalid descriptor number")
+            })?;
+        if expected.contains(&number) {
+            if !observed.insert(number) {
+                return Err(Error::invalid(
+                    "initial activation table",
+                    "duplicate entry",
+                ));
+            }
+        } else if !scanner_seen
+            && std::fs::read_link(entry.path()).map_err(|source| Error::Syscall {
+                operation: "identify initial activation scanner",
+                source,
+            })? == scanner_target
+        {
+            scanner_seen = true;
+        } else {
+            return Err(Error::invalid(
+                "initial activation table",
+                "unexpected inherited descriptor",
+            ));
+        }
+    }
+    require_complete_observation(expected, &observed, scanner_seen)
+}
+
+fn require_complete_observation(
+    expected: &BTreeSet<RawFd>,
+    observed: &BTreeSet<RawFd>,
+    scanner_seen: bool,
+) -> Result<()> {
+    if !scanner_seen || observed != expected {
+        return Err(Error::invalid(
+            "initial activation table",
+            "incomplete descriptor set",
+        ));
+    }
+    Ok(())
+}
 
 /// Owns a bounded contiguous portion of systemd's activation descriptor table.
 #[derive(Debug)]
@@ -535,5 +643,19 @@ mod tests {
     #[test]
     fn invalid_descriptor_is_rejected_without_assuming_ownership() {
         assert!(duplicate_inherited_descriptor(i32::MAX).is_err());
+    }
+
+    #[test]
+    fn complete_initial_activation_observation_rejects_missing_and_extra_entries() {
+        let expected = BTreeSet::from([0, 1, 2, 3, 4]);
+        assert!(require_complete_observation(&expected, &expected, true).is_ok());
+        assert!(require_complete_observation(&expected, &expected, false).is_err());
+        assert!(
+            require_complete_observation(&expected, &BTreeSet::from([0, 1, 2, 3]), true).is_err()
+        );
+        assert!(
+            require_complete_observation(&expected, &BTreeSet::from([0, 1, 2, 3, 4, 9]), true)
+                .is_err()
+        );
     }
 }

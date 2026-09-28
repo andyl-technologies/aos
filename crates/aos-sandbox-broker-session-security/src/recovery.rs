@@ -39,6 +39,7 @@ use sha2::{Digest as _, Sha256};
 use crate::BrokerSessionSecurityError;
 
 mod journal;
+pub(crate) use journal::require_launch_image_presence;
 mod role_direction;
 
 use role_direction::request_direction_for_endpoint;

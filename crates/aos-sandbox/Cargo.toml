@@ -11,6 +11,8 @@ kernel-tests = ["aos-sandbox-linux/kernel-tests"]
 test-fixtures = []
 # Only the isolated KVM fixture can prepare an inert Cache hold and empty manifest.
 cache-physical-join-vm-fixture = []
+# Only a debug VM probe can seed nonauthorizing original-Effect history.
+project-negative-recovery-vm-fixture = []
 
 [dependencies]
 aos-filesystem-view-core.workspace = true

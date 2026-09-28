@@ -61,7 +61,13 @@ mod destination_slot;
 mod operator_recovery_issuance;
 
 #[cfg(target_os = "linux")]
+mod original_attach_grant;
+#[cfg(target_os = "linux")]
 mod public_api_authorization;
+#[cfg(target_os = "linux")]
+pub use original_attach_grant::{
+    CurrentOriginalAttachConsumeCutV3, CurrentOriginalAttachHostConsumeDraftV3,
+};
 #[cfg(target_os = "linux")]
 pub(crate) use public_api_authorization::{
     authorize_public_operator_recovery_v1, authorize_resolved_public_mutation_v1,
@@ -5699,6 +5705,116 @@ where
             now_seconds,
         )
         .map_err(|_| OperationCompilationError::Rejected.into())
+    }
+
+    /// Prepares immutable original ticket binding after durable issuance.
+    ///
+    /// # Errors
+    /// Rejects changed original policy/revocation/TLS coordinates, missing
+    /// retained receipt/decision/certificate, stale assignment, or substitution.
+    /// This only installs custody data; trusted SSH monitor and held consume
+    /// remain mandatory before public readiness or I/O can be enabled.
+    #[cfg(target_os = "linux")]
+    pub fn prepare_public_attach_ticket_binding_v2(
+        &mut self,
+        peer: &crate::public_api_session::PublicApiPeer,
+        capability_id: aos_sandbox_core::CapabilityId,
+        canonical_request: &[u8],
+        pending: &crate::public_attach_pending::PublicAttachPendingV1,
+        route: &crate::attach_route_issuer::AuthenticatedOpenSshRouteV1,
+        node: aos_sandbox_core::NodeId,
+        now_seconds: i64,
+    ) -> Result<
+        (
+            Vec<u8>,
+            crate::public_attach_pending::PublicAttachHostInstallDraftV1,
+        ),
+        ControllerServiceError,
+    > {
+        let request_digest = self.checked_public_request_digest(peer, canonical_request)?;
+        let authorized =
+            crate::public_mutation_compiler::AuthorizedPublicMutationRequestV1::authorize(
+                self.reconciler.journal_mut(),
+                peer,
+                capability_id,
+                canonical_request,
+            )
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        let journal = self.reconciler.journal_mut();
+        crate::attach_decision::retained_decision_record(
+            journal,
+            pending.operation_id(),
+            &authorized
+                .original_attach_decision()
+                .map_err(|_| OperationCompilationError::Rejected)?,
+        )
+        .map_err(|_| OperationCompilationError::Rejected)?;
+        let access = crate::attach_route_issuer::load_public_attach_route_v1(
+            journal,
+            pending.operation_id(),
+            request_digest,
+        )
+        .map_err(|_| OperationCompilationError::Rejected)?;
+        let line = std::str::from_utf8(&access.client_certificate)
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        let certificate = ssh_key::Certificate::from_openssh(line)
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        let holder = certificate
+            .public_key()
+            .ed25519()
+            .ok_or(OperationCompilationError::Rejected)?
+            .0;
+        let original =
+            crate::attach_decision::original_ticket_coordinates(journal, pending.operation_id())
+                .map_err(|_| OperationCompilationError::Rejected)?;
+        let original_grant =
+            crate::attach_decision::original_grant(journal, pending.record_digest())
+                .map_err(|_| OperationCompilationError::Rejected)?;
+        if original.certificate_digest
+            != <[u8; 32]>::from(sha2::Sha256::digest(&access.client_certificate))
+            || original.holder_public_key != holder
+            || original.valid_after != certificate.valid_after()
+            || original.expires_at != certificate.valid_before()
+            || original.base_route_digest != route.route_digest
+            || original.pending_grant_digest
+                != <[u8; 32]>::from(sha2::Sha256::digest(original_grant))
+        {
+            return Err(OperationCompilationError::Rejected.into());
+        }
+        let ticket = aos_sandbox_core::public_attach_ticket::PublicAttachTicketBindingV2 {
+            operation_id: *pending.operation_id().as_bytes(),
+            execution_id: pending.execution_id(),
+            incarnation_id: pending.sandbox_incarnation_id(),
+            principal_id: pending.principal_id(),
+            audit_id: pending.audit_id(),
+            assignment_epoch: pending.assignment_epoch(),
+            valid_after: certificate.valid_after(),
+            expires_at: certificate.valid_before(),
+            holder_public_key: holder,
+            request_digest,
+            decision_digest: crate::attach_decision::decision_digest(
+                journal,
+                pending.operation_id(),
+            )
+            .map_err(|_| OperationCompilationError::Rejected)?,
+            pending_grant: original_grant,
+            base_route_digest: original.base_route_digest,
+            certificate: access.client_certificate,
+        }
+        .encode()
+        .map_err(|_| OperationCompilationError::Rejected)?;
+        let draft = crate::public_attach_pending::prepare_original_ticket_binding_v2(
+            journal,
+            pending,
+            authorized.project(),
+            node,
+            &ticket,
+            now_seconds,
+        )
+        .map_err(|_| OperationCompilationError::Rejected)?;
+        peer.recheck()
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        Ok((ticket, draft))
     }
 
     /// Admits a public attach using current authenticated Host OpenSSH evidence.

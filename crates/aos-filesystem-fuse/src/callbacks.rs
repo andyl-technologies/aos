@@ -27,6 +27,9 @@ use crate::{
     operations::{ImmutableOperationLimits, OperationError},
 };
 
+mod files;
+pub(crate) use files::FALLBACK_OPERATIONS_V2;
+
 const FATAL: c_int = -1;
 
 pub(crate) struct Context<'scratch, 'prepared, 'index, 'bytes, 'plan> {
@@ -38,6 +41,7 @@ pub(crate) struct Context<'scratch, 'prepared, 'index, 'bytes, 'plan> {
     poisoned: bool,
     pub destroyed: bool,
     panic: Option<Box<dyn Any + Send>>,
+    pub(crate) fallback: Option<crate::fallback::FallbackState<'scratch>>,
 }
 
 impl<'scratch, 'prepared, 'index, 'bytes, 'plan>
@@ -59,6 +63,7 @@ impl<'scratch, 'prepared, 'index, 'bytes, 'plan>
             poisoned: false,
             destroyed: false,
             panic: None,
+            fallback: None,
         }
     }
 

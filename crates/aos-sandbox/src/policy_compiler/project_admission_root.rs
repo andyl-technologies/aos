@@ -16,10 +16,32 @@
 //! SHA-256(Root-project-stage-domain || preceding 304 bytes):32
 //! ```
 
+mod history;
 mod intent;
+
+pub(crate) use history::{
+    ROOT_PROJECT_HISTORY_FLOOR_BYTES_V1,
+    validate_capacity_settlement as validate_root_project_capacity_settlement_v1,
+};
+pub use history::{
+    RootProjectHistoryFloorV1, RootProjectHistoryTerminalKindV1,
+    fixed_root_project_history_readback_available_v1, recover_fixed_root_project_history_floor_v1,
+    retire_fixed_root_project_history_v1,
+};
+
+pub(crate) use intent::{
+    ROOT_PROJECT_ADMISSION_INTENT_BYTES_V2, ROOT_PROJECT_NEGATIVE_INTENT_BYTES_V1,
+    validate_capacity_transfer as validate_root_project_capacity_transfer_v1,
+};
 #[cfg(test)]
 mod positive_commit_fixture;
-pub use intent::{RootProjectAdmissionIntentV1, prepare_fixed_root_project_admission_intent_v1};
+
+pub use intent::{
+    RootProjectAdmissionIntentV1, fixed_root_project_negative_recovery_available_v1,
+    prepare_fixed_root_project_admission_intent_v1, prepare_fixed_root_project_negative_intent_v1,
+};
+#[cfg(test)]
+pub(crate) use positive_commit_fixture::signed_heads_for_project as test_signed_project_heads_for_history_v1;
 
 use std::io;
 use std::path::Path;
@@ -1620,31 +1642,14 @@ mod tests {
             Some(intent),
             "lost prepare ACK replays the exact active Root intent"
         );
-        let reply =
+        assert!(
             super::super::root_project_admission_proof::encode_root_project_intent_replay_reply_v1(
                 reservation,
-                Some(intent),
+                Some(intent)
             )
-            .unwrap();
-        assert_eq!(
-            super::super::root_project_admission_proof::decode_root_project_intent_replay_reply_v1(
-                &reply,
-                reservation,
-            )
-            .unwrap(),
-            Some(intent)
+            .is_err(),
+            "V2 transport cannot repair legacy one-slot intent"
         );
-        for offset in [0, 8, 24, 25, 32, 48, 64, 272] {
-            let mut changed = reply;
-            changed[offset] ^= 1;
-            assert!(
-                super::super::root_project_admission_proof::decode_root_project_intent_replay_reply_v1(
-                    &changed,
-                    reservation,
-                )
-                .is_err()
-            );
-        }
         assert_eq!(
             root.claim_protected_authority(RecordNamespace::DesiredState)
                 .unwrap()
@@ -1660,7 +1665,7 @@ mod tests {
             intent
         );
         for offset in [0, 8, 16, 32, 48, 80, 112, 144, 176, 208, 240, 272] {
-            let mut changed = canonical;
+            let mut changed = canonical.clone();
             changed[offset] ^= 1;
             assert!(RootProjectAdmissionIntentV1::from_record_bytes(&changed).is_err());
         }
@@ -1693,15 +1698,16 @@ mod tests {
         source
             .settle_source_project_admission_reservation_v1(committed, proof)
             .expect("Controller can retire the late Source row from Root's exact marker");
-        let retry = source
-            .preview_source_project_admission_reservation_v1(
-                committed.client_nonce(),
-                committed.project(),
-                names,
-            )
-            .expect("same accepted Create receives a new Source issue");
-        assert_eq!(retry.issue(), committed.issue() + 1);
-        assert_ne!(retry.record_digest(), committed.record_digest());
+        assert!(
+            source
+                .preview_source_project_admission_reservation_v1(
+                    committed.client_nonce(),
+                    committed.project(),
+                    names,
+                )
+                .is_err(),
+            "legacy one-slot Root history cannot supply the required retirement ACK"
+        );
         drop(root);
 
         let (mut cold, _) = Journal::open_protected_at_uid(

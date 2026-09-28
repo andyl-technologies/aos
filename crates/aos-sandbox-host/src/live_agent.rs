@@ -840,8 +840,17 @@ impl HostAgentLiveSessionV1 {
             None,
         )?;
         if !matches!(
-            decode_frame_v1(&response),
-            Ok(AgentFrameV1::OpenSshGateReadback(_))
+            (decode_frame_v1(request), decode_frame_v1(&response)),
+            (
+                Ok(AgentFrameV1::OpenSshGateObserveRequest(_)),
+                Ok(AgentFrameV1::OpenSshGateReadback(_))
+            ) | (
+                Ok(AgentFrameV1::OpenSshTicketBindRequestV2(_)),
+                Ok(AgentFrameV1::OpenSshTicketReadbackV2(_))
+            ) | (
+                Ok(AgentFrameV1::OriginalAttachRequestV3(_)),
+                Ok(AgentFrameV1::OriginalAttachResponseV3(_))
+            )
         ) {
             return Err(HostAgentLiveErrorV1::Unauthenticated);
         }
@@ -855,11 +864,13 @@ impl OpenSshGateAgentExchangeV1 for HostAgentLiveSessionV1 {
         if self.poisoned
             || !matches!(
                 decode_frame_v1(request),
-                Ok(AgentFrameV1::OpenSshGateObserveRequest(_))
+                Ok(AgentFrameV1::OpenSshGateObserveRequest(_)
+                    | AgentFrameV1::OpenSshTicketBindRequestV2(_)
+                    | AgentFrameV1::OriginalAttachRequestV3(_))
             )
         {
             return Err(std::io::Error::other(
-                "only gate observations use this exchange",
+                "only exact gate observations or original ticket actions use this exchange",
             ));
         }
         let deadline = Instant::now() + GATE_TIMEOUT;

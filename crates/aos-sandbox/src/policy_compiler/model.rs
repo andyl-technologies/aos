@@ -20,7 +20,7 @@ use aos_sandbox_core::model::{
 use aos_sandbox_core::{
     Grant, MediaType, ObjectDescriptor, ObjectDigest, PortableMediaType, ProjectId, SandboxId,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use super::advisory::{
@@ -945,7 +945,7 @@ pub enum CandidateAuthorityV1 {
 }
 
 /// Identifies one fixed compiler stage.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum ExplanationStageV1 {
     /// Freezes and validates all inputs.
     Normalize,
@@ -963,7 +963,7 @@ pub enum ExplanationStageV1 {
     Lowering,
 }
 /// Classifies a compiler decision.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ExplanationDecisionV1 {
     /// Accepts a request without narrowing.
     Admitted,
@@ -979,7 +979,7 @@ pub enum ExplanationDecisionV1 {
     Frozen,
 }
 /// Gives a stable machine-readable reason.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ExplanationReasonV1 {
     /// Records one canonical input object.
     InputFrozen,
@@ -1023,7 +1023,8 @@ pub enum ExplanationReasonV1 {
     PortableLowering,
 }
 /// Identifies a source without disclosing its contents.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub enum InputSourceV1 {
     /// Node safety policy.
     Node,
@@ -1293,6 +1294,70 @@ pub struct CompiledPolicyCandidateV1 {
     portable: PortablePolicyOutputV1,
     explanation: PlanExplanationV1,
 }
+
+/// Retains the five plan commitments in the existing candidate hash preimage.
+///
+/// These digests describe a compiled candidate; they do not authenticate its
+/// inputs, the plans' semantics, publication currentness, or runtime authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CompiledPolicyCandidatePreimageV1 {
+    authority: AuthorityPlanCommitmentV1,
+    namespace: NamespacePlanCommitmentV1,
+    hard: HardResourcePlanCommitmentV1,
+    advisory: AdvisoryPlanCommitmentV1,
+    explanation: ExplanationCommitmentV1,
+}
+
+impl CompiledPolicyCandidatePreimageV1 {
+    /// Reconstitutes purpose-specific commitment values without authority.
+    pub(super) fn from_digests(digests: [ObjectDigest; 5]) -> Self {
+        Self {
+            authority: AuthorityPlanCommitmentV1::new(digests[0]),
+            namespace: NamespacePlanCommitmentV1::new(digests[1]),
+            hard: HardResourcePlanCommitmentV1::new(digests[2]),
+            advisory: AdvisoryPlanCommitmentV1::new(digests[3]),
+            explanation: ExplanationCommitmentV1::new(digests[4]),
+        }
+    }
+
+    /// Returns the five digests in the Candidate V3 wire order.
+    pub(super) fn digests(self) -> [ObjectDigest; 5] {
+        [
+            self.authority.digest(),
+            self.namespace.digest(),
+            self.hard.digest(),
+            self.advisory.digest(),
+            self.explanation.digest(),
+        ]
+    }
+
+    /// Computes the unchanged candidate identity over all nine tuple members.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolicyModelError`] if canonical serialization exceeds its
+    /// bound or fails. Matching this digest establishes byte consistency only.
+    pub(super) fn commitment(
+        self,
+        outputs: [&ObjectDescriptor; 4],
+    ) -> Result<CompiledPolicyCommitmentV1, PolicyModelError> {
+        Ok(CompiledPolicyCommitmentV1::new(digest(
+            b"aos.sandbox.compiled-policy-candidate.v2",
+            &(
+                self.authority,
+                self.namespace,
+                self.hard,
+                self.advisory,
+                outputs[0],
+                outputs[1],
+                outputs[2],
+                outputs[3],
+                self.explanation,
+            ),
+        )?))
+    }
+}
+
 impl CompiledPolicyCandidateV1 {
     pub(crate) fn new(
         authority: AuthorityPlanV1,
@@ -1302,20 +1367,19 @@ impl CompiledPolicyCandidateV1 {
         portable: PortablePolicyOutputV1,
         explanation: PlanExplanationV1,
     ) -> Result<Self, PolicyModelError> {
-        let commitment = CompiledPolicyCommitmentV1::new(digest(
-            b"aos.sandbox.compiled-policy-candidate.v2",
-            &(
-                authority.commitment(),
-                namespace.commitment(),
-                hard.commitment(),
-                advisory.commitment(),
-                portable.policy_descriptor(),
-                portable.optimization_descriptor(),
-                portable.namespace_graph_descriptor(),
-                portable.advisory_program_descriptor(),
-                explanation.commitment(),
-            ),
-        )?);
+        let preimage = CompiledPolicyCandidatePreimageV1 {
+            authority: authority.commitment(),
+            namespace: namespace.commitment(),
+            hard: hard.commitment(),
+            advisory: advisory.commitment(),
+            explanation: explanation.commitment(),
+        };
+        let commitment = preimage.commitment([
+            portable.policy_descriptor(),
+            portable.optimization_descriptor(),
+            portable.namespace_graph_descriptor(),
+            portable.advisory_program_descriptor(),
+        ])?;
         Ok(Self {
             status: CandidateAuthorityV1::NonAuthoritativeAncestry,
             commitment,
@@ -1327,6 +1391,17 @@ impl CompiledPolicyCandidateV1 {
             explanation,
         })
     }
+
+    pub(super) fn commitment_preimage(&self) -> CompiledPolicyCandidatePreimageV1 {
+        CompiledPolicyCandidatePreimageV1 {
+            authority: self.authority.commitment(),
+            namespace: self.namespace.commitment(),
+            hard: self.hard.commitment(),
+            advisory: self.advisory.commitment(),
+            explanation: self.explanation.commitment(),
+        }
+    }
+
     /// Returns the nonauthoritative status.
     #[must_use]
     pub const fn authority_status(&self) -> CandidateAuthorityV1 {

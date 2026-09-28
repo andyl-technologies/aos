@@ -6,9 +6,10 @@ license.workspace = true
 publish = false
 
 [dependencies]
-aos-filesystem-fuse.workspace = true
+aos-filesystem-fuse = { workspace = true, features = ["test-fixtures"] }
 aos-filesystem-view = { workspace = true, features = ["test-fixtures"] }
 aos-sandbox-core.workspace = true
+aos-sandbox-linux.workspace = true
 libc.workspace = true
 
 [lints]

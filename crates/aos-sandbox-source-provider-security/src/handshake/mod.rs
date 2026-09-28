@@ -16,7 +16,7 @@ pub use mount_request::{
     PreparedMountProviderRequestV2, ReceivedMountProviderOutcomePartsV2,
     RecoveredMountProviderOutcomePartsV2, RecoveredMountProviderOutcomeV2,
     ReopenedMountSourceRootV2, ReservedMountProviderRequestV2, RetainedRootRecoveryAuthorizationV2,
-    SentMountProviderRequestV2, VerifiedMountProviderOutcomeV2,
+    RootAcceptedNativeExportFenceV1, SentMountProviderRequestV2, VerifiedMountProviderOutcomeV2,
     VerifiedReceivedMountProviderOutcomeV2,
 };
 pub use provider::{

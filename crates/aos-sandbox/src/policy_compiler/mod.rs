@@ -20,6 +20,22 @@ mod controller_effect_ack_readback_v8;
 mod controller_hold_pin;
 mod controller_hold_readback;
 mod controller_project_admission_readback;
+mod controller_project_dispatch_readback;
+mod controller_project_terminal_readback;
+
+pub use controller_project_dispatch_readback::{
+    CONTROLLER_PROJECT_DISPATCH_READBACK_BYTES_V1,
+    sign_fixed_controller_project_dispatch_readback_v1,
+};
+#[cfg(test)]
+pub(crate) use controller_project_dispatch_readback::{
+    sign_synthetic_controller_project_dispatch_v1, verify_controller_project_dispatch_readback_v1,
+};
+
+pub use controller_project_terminal_readback::{
+    CONTROLLER_PROJECT_TERMINAL_READBACK_BYTES_V1,
+    sign_fixed_controller_project_terminal_readback_v1,
+};
 mod controller_readback_session;
 mod controller_root_receipt_readback_v8;
 mod controller_v8_readback_envelope;
@@ -29,14 +45,29 @@ mod model;
 mod namespace;
 mod owner_pin_transaction;
 mod project_admission_root;
+
 #[cfg(test)]
 pub(crate) use project_admission_root::test_root_project_reservation_cancellation_v1;
 #[cfg(test)]
+pub(crate) use project_admission_root::test_signed_project_heads_for_history_v1;
+#[cfg(test)]
 pub(crate) use project_admission_root::test_source_project_admission_outcome_v1;
+pub(crate) use project_admission_root::{
+    ROOT_PROJECT_ADMISSION_INTENT_BYTES_V2, ROOT_PROJECT_HISTORY_FLOOR_BYTES_V1,
+    ROOT_PROJECT_NEGATIVE_INTENT_BYTES_V1, validate_root_project_capacity_settlement_v1,
+    validate_root_project_capacity_transfer_v1,
+};
 mod project_source_v2;
+mod project_source_v3;
 mod protected_journal;
 mod protected_owner;
 mod public_create_source;
+pub(crate) use public_create_source::{
+    HistoricalCreateProjectSourceHeadsV1, create_project_source_commitment_v1,
+};
+mod publisher_origin;
+mod resolved_policy;
+mod resource_read;
 mod resources;
 mod root_challenge_record;
 mod root_project_admission_proof;
@@ -152,12 +183,13 @@ pub use controller_v8_settlement_readback::{
     CONTROLLER_V8_SETTLEMENT_READBACK_BYTES_V1, sign_fixed_controller_v8_settlement_readback_v1,
 };
 pub use deployment_head::{
-    PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1, PolicyDeploymentInputsV1,
-    PolicyDeploymentSourcesV1, SignedProjectPolicyHeadV1, SignedProjectPolicySourceV1,
-    admit_fixed_policy_deployment_head_v1, admit_fixed_policy_signer_pins_v1,
+    PolicyDeploymentCatalogDeclarationsV2, PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1,
+    PolicyDeploymentInputProfileV2, PolicyDeploymentInputsV1, PolicyDeploymentSourcesV1,
+    SignedProjectPolicyHeadV1, SignedProjectPolicySourceV1, admit_fixed_policy_deployment_head_v1,
+    admit_fixed_policy_deployment_profile_v2, admit_fixed_policy_signer_pins_v1,
     admit_fixed_signed_project_policy_source_v1, decode_policy_deployment_sources_v1,
-    verify_policy_deployment_head_v1, verify_signed_project_policy_source_v1,
-    with_fixed_current_policy_head_lease_v1,
+    verify_current_policy_deployment_profile_v2, verify_policy_deployment_head_v1,
+    verify_signed_project_policy_source_v1, with_fixed_current_policy_head_lease_v1,
 };
 pub use model::{
     AdvisoryPlanCommitmentV1, AncestorPolicyCommitmentV1, AncestorPolicyInputV1,
@@ -185,21 +217,30 @@ pub use namespace::{
 };
 pub use project_admission_root::{
     RootProjectAdmissionIntentV1, RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionOutcomeV1,
-    RootProjectAdmissionStageV1, RootProjectReservationCancellationV1,
-    abort_fixed_root_project_admission_v1, admit_fixed_root_project_source_from_owner_proofs_v1,
-    cancel_fixed_root_project_reservation_v1, fixed_root_project_admission_recovery_required_v1,
-    prepare_fixed_root_project_admission_intent_v1, project_admission_client_nonce_v1,
-    recover_fixed_root_current_project_admission_stage_v1,
+    RootProjectAdmissionStageV1, RootProjectHistoryFloorV1, RootProjectHistoryTerminalKindV1,
+    RootProjectReservationCancellationV1, abort_fixed_root_project_admission_v1,
+    admit_fixed_root_project_source_from_owner_proofs_v1, cancel_fixed_root_project_reservation_v1,
+    fixed_root_project_admission_recovery_required_v1,
+    fixed_root_project_history_readback_available_v1,
+    fixed_root_project_negative_recovery_available_v1,
+    prepare_fixed_root_project_admission_intent_v1, prepare_fixed_root_project_negative_intent_v1,
+    project_admission_client_nonce_v1, recover_fixed_root_current_project_admission_stage_v1,
     recover_fixed_root_project_admission_intent_v1,
     recover_fixed_root_project_admission_outcome_v1, recover_fixed_root_project_admission_stage_v1,
+    recover_fixed_root_project_history_floor_v1,
     recover_fixed_root_project_reservation_cancellation_v1,
     recover_fixed_root_project_source_pin_v1, recover_fixed_root_unstaged_project_intent_v1,
-    stage_fixed_root_project_admission_v1,
+    retire_fixed_root_project_history_v1, stage_fixed_root_project_admission_v1,
 };
 pub use project_source_v2::{
     AdmittedSignedProjectPolicySourceV2, SignedProjectPolicyHeadV2,
     VerifiedSignedProjectPolicySourceV2, admit_fixed_signed_project_policy_source_v2,
     verify_signed_project_policy_source_v2,
+};
+pub use project_source_v3::{
+    HeldCurrentCreatePolicyInputsV3, PROJECT_POLICY_ASSOCIATION_PACKET_BYTES_V3,
+    ProjectPolicyAssociationV3, verify_held_project_policy_association_v3,
+    with_current_parentless_create_policy_inputs_v3,
 };
 pub use protected_journal::{
     AppliedPolicyPublicationV1, PolicyCheckpointCommitOutcomeV1, PolicyCheckpointOutcomeUnknownV1,
@@ -239,6 +280,11 @@ pub use public_create_source::{
     with_current_create_policy_source_barrier_v3, with_current_create_policy_source_barrier_v4,
     with_current_parentless_create_ancestry_v1,
 };
+pub use publisher_origin::{
+    CompiledPublisherPolicyRevisionV2, RetainedPublisherCompilerOriginV3,
+    compile_publisher_policy_revision_v2,
+};
+pub use resolved_policy::{HeldResolvedRuntimePolicyV1, PolicyCompilerStateReadbackOwnerV1};
 pub use resources::{
     BackendEnforcementSetV1, HardEnforcementV1, HardLimitProvenanceV1, HardLimitRequestV1,
     HardLimitValueV1, HardResourceKeyV1, HardResourceModelError, HardResourcePlanV1,
@@ -249,18 +295,24 @@ pub use root_project_admission_proof::{
     ROOT_PROJECT_ADMISSION_ABORT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_COMMIT_QUERY_MAGIC,
     ROOT_PROJECT_ADMISSION_CURRENT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_INTENT_QUERY_MAGIC,
     ROOT_PROJECT_ADMISSION_INTENT_REPLAY_MAGIC, ROOT_PROJECT_ADMISSION_OUTCOME_QUERY_MAGIC,
-    ROOT_PROJECT_ADMISSION_STAGE_QUERY_MAGIC, ROOT_PROJECT_RESERVATION_CANCEL_MAGIC,
-    ROOT_PROJECT_RESERVATION_CANCEL_QUERY_MAGIC, RootProjectAdmissionOutcomeProofV1,
+    ROOT_PROJECT_ADMISSION_STAGE_QUERY_MAGIC, ROOT_PROJECT_HISTORY_FLOOR_QUERY_MAGIC,
+    ROOT_PROJECT_HISTORY_RETIRE_MAGIC, ROOT_PROJECT_NEGATIVE_INTENT_QUERY_MAGIC,
+    ROOT_PROJECT_RESERVATION_CANCEL_MAGIC, ROOT_PROJECT_RESERVATION_CANCEL_QUERY_MAGIC,
+    RootProjectAdmissionOutcomeProofV1, RootProjectHistoryFloorProofV1,
     RootProjectReservationCancellationProofV1, abort_fixed_root_project_admission_over_socket_v1,
     cancel_fixed_root_project_reservation_over_socket_v1,
     encode_root_current_project_admission_stage_reply_v1,
     encode_root_project_admission_outcome_reply_v1, encode_root_project_admission_stage_reply_v1,
-    encode_root_project_admission_terminal_reply_v1, encode_root_project_intent_replay_reply_v1,
-    encode_root_project_intent_reply_v1, encode_root_project_reservation_cancel_reply_v1,
+    encode_root_project_admission_terminal_reply_v1, encode_root_project_history_floor_reply_v1,
+    encode_root_project_intent_replay_reply_v1, encode_root_project_intent_reply_v1,
+    encode_root_project_negative_intent_reply_v1, encode_root_project_reservation_cancel_reply_v1,
     prepare_fixed_root_project_intent_over_socket_v1,
+    prepare_fixed_root_project_negative_intent_over_socket_v1,
     query_fixed_root_current_project_admission_stage_v1,
-    query_fixed_root_project_admission_outcome_v1, query_fixed_root_project_intent_v1,
+    query_fixed_root_project_admission_outcome_v1, query_fixed_root_project_history_floor_v1,
+    query_fixed_root_project_intent_v1, query_fixed_root_project_negative_intent_v1,
     query_fixed_root_project_reservation_cancellation_v1,
+    retire_fixed_root_project_history_over_socket_v1,
     stage_fixed_root_project_admission_over_socket_v1,
     submit_fixed_root_project_admission_over_socket_v1,
 };
@@ -282,16 +334,22 @@ pub use source_hold_readback::{
 pub use source_hold_readback_v2::{
     SOURCE_HOLD_READBACK_BYTES_V2, verify_source_hold_readback_with_names_v2,
 };
+#[cfg(target_os = "linux")]
+pub use source_project_admission_readback::sign_fixed_source_project_completed_terminal_readback_v1;
 pub use source_project_admission_readback::{
-    SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1, SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1,
-    SourceProjectAdmissionChallengeErrorV1, preflight_source_project_admission_v1,
+    SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1,
+    SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1,
+    SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1, SourceProjectAdmissionChallengeErrorV1,
+    VerifiedSourceProjectTerminalReadbackV1, acknowledge_source_project_terminal_retirement_v1,
+    preflight_source_project_admission_v1, preflight_source_project_negative_recovery_v1,
     read_source_project_admission_status_v1, read_source_project_reservation_status_v1,
     record_current_source_project_admission_challenge_v1,
     record_source_project_abort_only_challenge_v1,
     require_current_source_project_admission_challenge_v1, reserve_source_project_admission_v1,
     settle_current_source_project_admission_challenge_v1, settle_source_project_reservation_v1,
-    verify_source_project_admission_readback_v1, verify_source_project_reservation_readback_v1,
-    verify_source_project_retirement_readback_v1,
+    verify_source_project_admission_readback_v1,
+    verify_source_project_completed_terminal_readback_v1,
+    verify_source_project_reservation_readback_v1, verify_source_project_retirement_readback_v1,
 };
 #[cfg(target_os = "linux")]
 pub use source_signer_readback::{

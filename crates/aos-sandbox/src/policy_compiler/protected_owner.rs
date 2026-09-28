@@ -36,7 +36,7 @@ use super::{
 };
 
 pub(super) const PROTECTED_POLICY_ROOT: &str = "/var/lib/aos/sandbox/policy-compiler";
-const POLICY_STATE_JOURNAL: &str = "state.journal";
+pub(super) const POLICY_STATE_JOURNAL: &str = "state.journal";
 pub(super) const POLICY_AUTHORITY_JOURNAL: &str = "authority.journal";
 pub(super) const POLICY_BINDING_KEY_PREFIX: &[u8] = b"\0aos-policy-compiler-binding-v1\0";
 const POLICY_BINDING_MAGIC: &[u8; 8] = b"AOSPCB01";
@@ -699,7 +699,7 @@ fn binding_digest(binding: &ProtectedPolicyBindingV1) -> ObjectDigest {
     )
 }
 
-fn policy_state_journal_limits() -> JournalLimits {
+pub(super) fn policy_state_journal_limits() -> JournalLimits {
     JournalLimits::default()
 }
 

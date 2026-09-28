@@ -11,10 +11,9 @@ use std::time::Duration;
 
 use aos_sandbox_broker_session_security::{
     DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1,
-    ProductionBrokerSessionActivationV1, production_deadline_after,
+    production_deadline_after,
 };
 use aos_sandbox_linux::cgroup::CgroupV2Root;
-use aos_sandbox_storage::activation::take_systemd_listeners;
 use aos_sandbox_storage::execution_output_credential::{
     StorageExecutionOutputCustodyV1, provision_execution_output_ledger,
 };
@@ -74,13 +73,13 @@ fn run() -> Result<(), StorageServiceError> {
     // Claim the complete systemd table before any inherited slot can be
     // reused. The broker session owns only its fixed control listener.
     let (
-        control_listener,
+        mut activation,
         mut export_listener,
         mut live_export_listener,
         mut zfs_hold_listener,
         mut operator_listener,
         mut existing_output_listener,
-    ) = take_systemd_listeners()?;
+    ) = aos_sandbox_broker_session_security::ProductionStorageStartupV1::capture()?.into_parts();
     let output_custody = if let Some(source) = &arguments.output_key_source {
         Some(StorageExecutionOutputCustodyV1::open(state_root, source)?)
     } else {
@@ -97,9 +96,6 @@ fn run() -> Result<(), StorageServiceError> {
     } else {
         None
     };
-    let mut activation =
-        ProductionBrokerSessionActivationV1::adopt_storage_listener(control_listener)
-            .map_err(production_error)?;
     let identity_pool =
         StorageIdentityPoolV1::new(arguments.identity_pool_start, arguments.identity_pool_size)
             .map_err(StorageRuntimeError::WorkspaceCatalog)?;

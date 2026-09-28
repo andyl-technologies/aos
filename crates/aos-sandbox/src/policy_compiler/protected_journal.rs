@@ -4,6 +4,10 @@
 //! normalized input and ancestry/currentness joins. This adapter then commits
 //! the complete portable output, complete diagnostics, immediate-successor
 //! publication head, and effect handoff in one exact CAS transaction.
+//!
+//! Candidate V3 retains the complete existing compiler-commitment preimage.
+//! Its byte consistency is not an authenticated input or runtime-read proof;
+//! V2 remains structurally replayable without supplying that preimage.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -11,8 +15,12 @@ use std::{
 };
 
 use aos_sandbox_core::{
-    DecodeLimits, ObjectDescriptor, ObjectDigest, PortableMediaType, ProjectId, SandboxId,
-    format::{decode_optimization, decode_policy, encode_optimization, encode_policy},
+    DecodeLimits, MediaType, ObjectDescriptor, ObjectDigest, PortableMediaType, ProjectId,
+    SandboxId,
+    format::{
+        decode_optimization, decode_policy, descriptor_for_bytes, encode_optimization,
+        encode_policy,
+    },
 };
 use sha2::{Digest as _, Sha256};
 
@@ -27,16 +35,24 @@ use crate::lifecycle::protected_journal_adapter::{
     encode_reducer_payload_with_validator,
 };
 
+use super::model::CompiledPolicyCandidatePreimageV1;
 use super::{
     CandidateAuthorityV1, CompiledPolicyCandidateV1, PolicyCompilerInputV1, PolicyModelError,
 };
 
+mod canonical_output;
+
 const CURRENT_MAGIC: &[u8; 8] = b"AOSPCU01";
 const CANDIDATE_MAGIC: &[u8; 8] = b"AOSPCC01";
+const CANDIDATE_V2_FIXED_BYTES: usize = 478;
+const CANDIDATE_V3_FIXED_BYTES: usize = CANDIDATE_V2_FIXED_BYTES + 5 * 32;
 const MAXIMUM_AUTHENTICATED_REPLAY_PREREQUISITES: usize = 4_096;
 const DIAGNOSTICS_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.diagnostics.v1";
 const INPUT_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.normalized-input.v1\0";
 const PREREQUISITE_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.prerequisites.v1\0";
+
+#[cfg(test)]
+pub(super) mod resolved_policy_fixture;
 
 /// Selects one closed policy-publication record family.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -1542,13 +1558,9 @@ fn validate_policy_projection(
             || candidate.predecessor().is_some()
             || diagnostics.revision() != 1
             || diagnostics.predecessor().is_some()
-            || candidate_header.generation != head.generation
+            || !candidate_header.matches_current(&head)
             || digest_bytes(DIAGNOSTICS_DOMAIN, policy_body(diagnostics, validator)?)
                 != head.diagnostics
-            || candidate_header.candidate != head.candidate
-            || candidate_header.normalized_input != head.normalized_input
-            || candidate_header.diagnostics != head.diagnostics
-            || candidate_header.prerequisites != head.prerequisites
         {
             return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
         }
@@ -1706,23 +1718,47 @@ fn validate_policy_key(
     Ok(())
 }
 
-struct DecodedCurrentPolicyHeadV1 {
-    generation: u64,
-    candidate: ObjectDigest,
-    normalized_input: ObjectDigest,
-    diagnostics: ObjectDigest,
-    prerequisites: ObjectDigest,
-    prerequisite_tuple: PolicyPublicationPrerequisitesV1,
+pub(super) struct DecodedCurrentPolicyHeadV1 {
+    pub(super) project: ProjectId,
+    pub(super) sandbox: SandboxId,
+    pub(super) generation: u64,
+    pub(super) candidate: ObjectDigest,
+    pub(super) normalized_input: ObjectDigest,
+    pub(super) diagnostics: ObjectDigest,
+    pub(super) prerequisites: ObjectDigest,
+    pub(super) prerequisite_tuple: PolicyPublicationPrerequisitesV1,
 }
 
-struct DecodedCandidateHeaderV1 {
-    generation: u64,
-    candidate: ObjectDigest,
-    normalized_input: ObjectDigest,
-    diagnostics: ObjectDigest,
-    prerequisites: ObjectDigest,
-    prerequisite_tuple: PolicyPublicationPrerequisitesV1,
-    outputs: [(ObjectDigest, u64); 4],
+pub(super) struct DecodedCandidateHeaderV1 {
+    pub(super) project: ProjectId,
+    pub(super) sandbox: SandboxId,
+    pub(super) generation: u64,
+    pub(super) candidate: ObjectDigest,
+    pub(super) normalized_input: ObjectDigest,
+    pub(super) diagnostics: ObjectDigest,
+    pub(super) prerequisites: ObjectDigest,
+    pub(super) prerequisite_tuple: PolicyPublicationPrerequisitesV1,
+    pub(super) outputs: [(ObjectDigest, u64); 4],
+    preimage: Option<CompiledPolicyCandidatePreimageV1>,
+    output_offset: usize,
+}
+
+impl DecodedCandidateHeaderV1 {
+    fn matches_current(&self, current: &DecodedCurrentPolicyHeadV1) -> bool {
+        self.project == current.project
+            && self.sandbox == current.sandbox
+            && self.generation == current.generation
+            && self.candidate == current.candidate
+            && self.normalized_input == current.normalized_input
+            && self.diagnostics == current.diagnostics
+            && self.prerequisites == current.prerequisites
+            && self.prerequisite_tuple == current.prerequisite_tuple
+    }
+
+    /// Reports complete preimage retention, not authenticated publication.
+    pub(super) fn has_complete_preimage(&self) -> bool {
+        self.preimage.is_some()
+    }
 }
 
 struct DecodedEffectHeaderV1 {
@@ -1762,7 +1798,7 @@ fn current_policy_head(
         .transpose()
 }
 
-fn policy_key(
+pub(super) fn policy_key(
     kind: PolicyCompilerJournalRecordKindV1,
     project: ProjectId,
     sandbox: SandboxId,
@@ -1795,7 +1831,7 @@ fn policy_key_from_identity(
     Ok(PolicyCompilerJournalKeyV1::new(kind, identity)?)
 }
 
-fn policy_current_key(
+pub(super) fn policy_current_key(
     project: ProjectId,
     sandbox: SandboxId,
 ) -> Result<PolicyCompilerJournalKeyV1, PolicyCompilerJournalErrorV1> {
@@ -1905,14 +1941,14 @@ fn encode_candidate_payload(
             .and_then(|value| value.checked_add(field.len()))
     });
     let capacity = aggregate
-        .and_then(|value| value.checked_add(8 + 2 + 32 + 32 * 4 + 136 + 8 + 41 * 4))
+        .and_then(|value| value.checked_add(CANDIDATE_V3_FIXED_BYTES))
         .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(capacity)
         .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
     bytes.extend_from_slice(CANDIDATE_MAGIC);
-    bytes.extend_from_slice(&2_u16.to_be_bytes());
+    bytes.extend_from_slice(&3_u16.to_be_bytes());
     bytes.extend_from_slice(verified.project.as_bytes());
     bytes.extend_from_slice(verified.sandbox.as_bytes());
     bytes.extend_from_slice(verified.candidate.commitment().digest().as_bytes());
@@ -1928,6 +1964,9 @@ fn encode_candidate_payload(
         bytes.push(media_code);
         bytes.extend_from_slice(descriptor.digest().as_bytes());
         bytes.extend_from_slice(&descriptor.encoded_size().to_be_bytes());
+    }
+    for commitment in verified.candidate.commitment_preimage().digests() {
+        bytes.extend_from_slice(commitment.as_bytes());
     }
     for field in fields {
         let length = u32::try_from(field.len())
@@ -1984,7 +2023,7 @@ fn decode_diagnostics_payload(bytes: &[u8]) -> Result<&[u8], PolicyCompilerJourn
 }
 
 fn validate_canonical_diagnostics(bytes: &[u8]) -> Result<(), PolicyCompilerJournalErrorV1> {
-    validate_canonical_json_domain(bytes, DIAGNOSTICS_DOMAIN)
+    canonical_output::validate_diagnostics(bytes)
 }
 
 fn encode_effect_payload(
@@ -2071,7 +2110,7 @@ fn append_prerequisite_tuple(
     bytes.extend_from_slice(&prerequisites.generation().to_be_bytes());
 }
 
-fn decode_current_payload(
+pub(super) fn decode_current_payload(
     bytes: &[u8],
 ) -> Result<DecodedCurrentPolicyHeadV1, PolicyCompilerJournalErrorV1> {
     if bytes.len() != 314 || &bytes[..8] != CURRENT_MAGIC || bytes[8..10] != 1_u16.to_be_bytes() {
@@ -2099,6 +2138,16 @@ fn decode_current_payload(
     let prerequisites = digest_at(146)?;
     let prerequisite_tuple = decode_prerequisite_tuple(bytes, 178, prerequisites)?;
     Ok(DecodedCurrentPolicyHeadV1 {
+        project: ProjectId::from_bytes(
+            bytes[10..26]
+                .try_into()
+                .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?,
+        ),
+        sandbox: SandboxId::from_bytes(
+            bytes[26..42]
+                .try_into()
+                .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?,
+        ),
         generation,
         candidate: digest_at(50)?,
         normalized_input: digest_at(82)?,
@@ -2111,9 +2160,14 @@ fn decode_current_payload(
 fn decode_candidate_header(
     bytes: &[u8],
 ) -> Result<DecodedCandidateHeaderV1, PolicyCompilerJournalErrorV1> {
-    if bytes.len() < 478 || &bytes[..8] != CANDIDATE_MAGIC || bytes[8..10] != 2_u16.to_be_bytes() {
+    if bytes.len() < CANDIDATE_V2_FIXED_BYTES || &bytes[..8] != CANDIDATE_MAGIC {
         return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
     }
+    let output_offset = match &bytes[8..10] {
+        [0, 2] => CANDIDATE_V2_FIXED_BYTES,
+        [0, 3] if bytes.len() >= CANDIDATE_V3_FIXED_BYTES => CANDIDATE_V3_FIXED_BYTES,
+        _ => return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication),
+    };
     let digest_at = |offset: usize| -> Result<ObjectDigest, PolicyCompilerJournalErrorV1> {
         let digest = ObjectDigest::from_bytes(
             bytes[offset..offset + 32]
@@ -2152,39 +2206,30 @@ fn decode_candidate_header(
     if generation == 0 {
         return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
     }
-    let mut cursor = 478_usize;
-    for output in outputs {
-        let length_end = cursor
-            .checked_add(4)
-            .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-        if length_end > bytes.len() {
-            return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
-        }
-        let length = usize::try_from(u32::from_be_bytes(
-            bytes[cursor..length_end]
-                .try_into()
-                .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?,
-        ))
-        .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-        let payload_end = length_end
-            .checked_add(length)
-            .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-        if length == 0 || payload_end > bytes.len() {
-            return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
-        }
-        let encoded_length = u64::try_from(length)
-            .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-        if output.1 != encoded_length {
-            return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
-        }
-        cursor = payload_end;
-    }
-    if cursor != bytes.len() {
-        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
-    }
+    let preimage = if output_offset == CANDIDATE_V3_FIXED_BYTES {
+        Some(CompiledPolicyCandidatePreimageV1::from_digests([
+            digest_at(CANDIDATE_V2_FIXED_BYTES)?,
+            digest_at(CANDIDATE_V2_FIXED_BYTES + 32)?,
+            digest_at(CANDIDATE_V2_FIXED_BYTES + 64)?,
+            digest_at(CANDIDATE_V2_FIXED_BYTES + 96)?,
+            digest_at(CANDIDATE_V2_FIXED_BYTES + 128)?,
+        ]))
+    } else {
+        None
+    };
     let prerequisites = digest_at(138)?;
     let prerequisite_tuple = decode_prerequisite_tuple(bytes, 170, prerequisites)?;
     Ok(DecodedCandidateHeaderV1 {
+        project: ProjectId::from_bytes(
+            bytes[10..26]
+                .try_into()
+                .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?,
+        ),
+        sandbox: SandboxId::from_bytes(
+            bytes[26..42]
+                .try_into()
+                .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?,
+        ),
         generation,
         candidate: digest_at(42)?,
         normalized_input: digest_at(74)?,
@@ -2192,20 +2237,87 @@ fn decode_candidate_header(
         prerequisites,
         prerequisite_tuple,
         outputs,
+        preimage,
+        output_offset,
     })
 }
 
-fn validate_candidate_payload(
+/// Checks domain bodies for a nonauthorizing protected-state readback.
+pub(super) fn validate_state_candidate_body(
+    record: &crate::lifecycle::protected_journal_adapter::ProtectedCurrentRecordCandidateV1<
+        PolicyCompilerJournalSchemaV1,
+    >,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    validate_policy_key(record.key())?;
+    let identity = record.key().identity();
+    let body = record.body();
+    let matches_identity = match record.key().kind() {
+        PolicyCompilerJournalRecordKindV1::Candidate => {
+            let header = validate_candidate_payload(body)?;
+            body.get(10..42) == identity.get(..32)
+                && identity.get(32..) == Some(header.candidate.as_bytes().as_slice())
+        }
+        PolicyCompilerJournalRecordKindV1::Current => {
+            decode_current_payload(body)?;
+            body.get(10..42) == Some(identity)
+        }
+        PolicyCompilerJournalRecordKindV1::Diagnostics => {
+            decode_diagnostics_payload(body)?;
+            body.get(10..74) == Some(identity)
+        }
+        PolicyCompilerJournalRecordKindV1::Effect => {
+            decode_effect_header(body)?;
+            body.get(10..58) == Some(identity)
+        }
+        // The existing structural decoder already validated checkpoint bytes.
+        PolicyCompilerJournalRecordKindV1::Checkpoint => body.is_empty(),
+    };
+    if !matches_identity {
+        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+    }
+    Ok(())
+}
+
+pub(super) fn validate_candidate_payload(
     bytes: &[u8],
 ) -> Result<DecodedCandidateHeaderV1, PolicyCompilerJournalErrorV1> {
+    validated_candidate_body(bytes).map(|(header, _)| header)
+}
+
+/// Borrows every canonical output with the version's exact field boundaries.
+///
+/// This validates byte consistency only. In particular, V2 output bytes do not
+/// supply a complete candidate preimage or authenticate current publication.
+///
+/// # Errors
+///
+/// Returns [`PolicyCompilerJournalErrorV1`] for unknown versions, malformed
+/// framing, noncanonical output bytes, or a descriptor/commitment mismatch.
+pub(super) fn candidate_output_bytes(
+    bytes: &[u8],
+) -> Result<[&[u8]; 4], PolicyCompilerJournalErrorV1> {
+    validated_candidate_body(bytes).map(|(_, outputs)| outputs)
+}
+
+/// Borrows structurally checked header/output claims without publication authority.
+///
+/// # Errors
+/// Rejects unsupported versions, malformed/noncanonical outputs, descriptor
+/// mismatches or incomplete/substituted V3 preimage consistency.
+pub(super) fn validated_candidate_body(
+    bytes: &[u8],
+) -> Result<(DecodedCandidateHeaderV1, [&[u8]; 4]), PolicyCompilerJournalErrorV1> {
     let header = decode_candidate_header(bytes)?;
-    let mut cursor = 478_usize;
+    let mut cursor = header.output_offset;
+    let mut outputs = [&[][..]; 4];
     for (index, (digest, expected_size)) in header.outputs.iter().enumerate() {
         let length_end = cursor
             .checked_add(4)
             .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
         let length = usize::try_from(u32::from_be_bytes(
-            bytes[cursor..length_end]
+            bytes
+                .get(cursor..length_end)
+                .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?
                 .try_into()
                 .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?,
         ))
@@ -2218,8 +2330,18 @@ fn validate_candidate_payload(
             .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
         let actual_size = u64::try_from(payload.len())
             .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-        let actual_digest = ObjectDigest::from_bytes(Sha256::digest(payload).into());
-        if actual_size != *expected_size || actual_digest != *digest {
+        let media_kind = match index {
+            0 => PortableMediaType::Policy,
+            1 => PortableMediaType::Optimization,
+            2 | 3 => PortableMediaType::Content,
+            _ => return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication),
+        };
+        let media = MediaType::new(media_kind.as_str())
+            .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
+        // Core descriptors bind the registered media type and exact length,
+        // not just the payload. Reuse the compiler's descriptor profile.
+        let actual_digest = descriptor_for_bytes(media, payload).digest();
+        if actual_size == 0 || actual_size != *expected_size || actual_digest != *digest {
             return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
         }
         match index {
@@ -2237,62 +2359,98 @@ fn validate_candidate_payload(
                     return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
                 }
             }
-            2 => {
-                validate_canonical_json_domain(payload, b"aos.sandbox.portable-namespace-graph.v1")?
-            }
-            3 => validate_canonical_json_domain(
-                payload,
-                b"aos.sandbox.portable-advisory-program.v1",
-            )?,
+            2 => canonical_output::validate_namespace(payload)?,
+            3 => canonical_output::validate_advisory(payload)?,
             _ => return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication),
         }
+        outputs[index] = payload;
         cursor = payload_end;
     }
     if cursor != bytes.len() {
         return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
     }
-    Ok(header)
+
+    if let Some(preimage) = header.preimage {
+        let media = |kind: PortableMediaType| {
+            MediaType::new(kind.as_str())
+                .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)
+        };
+        let descriptors = [
+            ObjectDescriptor::new(
+                media(PortableMediaType::Policy)?,
+                header.outputs[0].0,
+                header.outputs[0].1,
+            ),
+            ObjectDescriptor::new(
+                media(PortableMediaType::Optimization)?,
+                header.outputs[1].0,
+                header.outputs[1].1,
+            ),
+            ObjectDescriptor::new(
+                media(PortableMediaType::Content)?,
+                header.outputs[2].0,
+                header.outputs[2].1,
+            ),
+            ObjectDescriptor::new(
+                media(PortableMediaType::Content)?,
+                header.outputs[3].0,
+                header.outputs[3].1,
+            ),
+        ];
+        if preimage.commitment(descriptors.each_ref())?.digest() != header.candidate {
+            return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+        }
+    }
+
+    Ok((header, outputs))
 }
 
-fn validate_canonical_json_domain(
+/// Compares retained V3 claims with one complete typed compiler derivation.
+///
+/// This is shared byte consistency, not publication or read authority. The
+/// eventual Root-last owner must independently authenticate input provenance,
+/// the complete prerequisite tuple and current owner cuts. In particular,
+/// neither a normalized-input digest nor these bytes reconstruct typed input.
+///
+/// # Errors
+///
+/// Rejects legacy evidence, changed target/generation/prerequisites, any
+/// substituted plan, diagnostic or portable output, or noncanonical framing.
+pub(super) fn compare_recompiled_candidate_derivation_v1(
     bytes: &[u8],
-    expected_domain: &[u8],
+    input: &PolicyCompilerInputV1,
+    candidate: &CompiledPolicyCandidateV1,
+    generation: u64,
+    prerequisites: &PolicyPublicationPrerequisitesV1,
 ) -> Result<(), PolicyCompilerJournalErrorV1> {
-    if bytes.len() < 16 {
-        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
-    }
-    let domain_length = usize::try_from(u64::from_be_bytes(
-        bytes[..8]
-            .try_into()
-            .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?,
-    ))
-    .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    let domain_end = 8_usize
-        .checked_add(domain_length)
-        .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    let length_end = domain_end
-        .checked_add(8)
-        .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    if bytes.get(8..domain_end) != Some(expected_domain) || length_end > bytes.len() {
-        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
-    }
-    let length = usize::try_from(u64::from_be_bytes(
-        bytes[domain_end..length_end]
-            .try_into()
-            .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?,
-    ))
-    .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    if length == 0 || length_end.checked_add(length) != Some(bytes.len()) {
-        return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
-    }
-    let payload = &bytes[length_end..];
-    let value: serde_json::Value = serde_json::from_slice(payload)
-        .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-    if serde_json::to_vec(&value)
-        .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?
-        != payload
+    let (header, outputs) = validated_candidate_body(bytes)?;
+    let diagnostics = super::model::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
+    if header.project != input.project().project()
+        || header.sandbox != input.sandbox()
+        || header.generation != generation
+        || header.prerequisite_tuple != *prerequisites
+        || header.prerequisites != prerequisites.digest()
+        || header.normalized_input != normalized_policy_input_digest_v1(input)?
+        || header.candidate != candidate.commitment().digest()
+        || header.preimage != Some(candidate.commitment_preimage())
+        || header.diagnostics != digest_bytes(DIAGNOSTICS_DOMAIN, &diagnostics)
     {
         return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+    }
+
+    let portable = candidate.portable();
+    let expected_bytes = [
+        portable.policy_bytes(),
+        portable.optimization_bytes(),
+        portable.namespace_graph_bytes(),
+        portable.advisory_program_bytes(),
+    ];
+    for (index, (_, _, descriptor)) in output_descriptors(portable).into_iter().enumerate() {
+        if outputs[index] != expected_bytes[index]
+            || header.outputs[index] != (descriptor.digest(), descriptor.encoded_size())
+        {
+            return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+        }
     }
     Ok(())
 }
@@ -2493,6 +2651,10 @@ fn digest_bytes(domain: &[u8], bytes: &[u8]) -> ObjectDigest {
 }
 
 #[cfg(test)]
+#[path = "protected_journal/candidate_tests.rs"]
+mod candidate_tests;
+
+#[cfg(test)]
 mod canonical_diagnostics_tests {
     use super::{DIAGNOSTICS_DOMAIN, PolicyCompilerJournalErrorV1, validate_canonical_diagnostics};
 
@@ -2507,7 +2669,7 @@ mod canonical_diagnostics_tests {
 
     #[test]
     fn diagnostics_require_the_exact_domain_and_canonical_json() {
-        let valid = frame(DIAGNOSTICS_DOMAIN, b"{}");
+        let valid = super::candidate_tests::fixture(4096).diagnostics;
         assert!(validate_canonical_diagnostics(&valid).is_ok());
 
         for invalid in [

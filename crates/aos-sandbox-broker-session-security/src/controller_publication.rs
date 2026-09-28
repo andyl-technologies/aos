@@ -135,6 +135,37 @@ impl ControllerHostPublication {
         })
     }
 
+    pub(crate) fn bind_original_attach_ticket_v2(
+        &mut self,
+        grant: &[u8],
+        ticket: &[u8],
+        authorization: &BrokerAuthorizationArtifactsV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
+        self.with_attach_gate(|exchange, session| {
+            exchange.bind_original_ticket_v2(session, grant, ticket, authorization)
+        })
+    }
+
+    pub(crate) fn consume_original_attach_ticket_v3(
+        &mut self,
+        grant: &[u8],
+        ticket: &[u8],
+        monitor_binding: [u8; 32],
+        challenge: [u8; 32],
+        authorization: &BrokerAuthorizationArtifactsV1,
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
+        self.with_attach_gate(|exchange, session| {
+            exchange.consume_original_ticket_v3(
+                session,
+                grant,
+                ticket,
+                monitor_binding,
+                challenge,
+                authorization,
+            )
+        })
+    }
+
     /// Queries authenticated live Host gate readiness before a public CAS.
     pub(crate) fn query_attach_gate_readiness(
         &mut self,

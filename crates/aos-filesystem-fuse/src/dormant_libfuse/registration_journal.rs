@@ -58,10 +58,13 @@ pub enum ProtectedFuseRegistrationErrorV2 {
 
 /// Owns the fixed protected filesystem-worker registration journal.
 ///
-/// The constructor accepts no path, basename, namespace, or resource limits.
+/// The production constructor accepts no path, basename, namespace or resource
+/// limits. A separate fixture feature permits a repository-owned test root.
 #[must_use = "retain the fixed owner while callback registration authority is live"]
 pub struct ProtectedFuseRegistrationOwnerV2 {
     journal: Journal,
+    #[cfg(any(test, feature = "test-fixtures"))]
+    fixture_location: Option<(std::path::PathBuf, u32)>,
 }
 
 impl core::fmt::Debug for ProtectedFuseRegistrationOwnerV2 {
@@ -71,6 +74,50 @@ impl core::fmt::Debug for ProtectedFuseRegistrationOwnerV2 {
 }
 
 impl ProtectedFuseRegistrationOwnerV2 {
+    /// Opens a repository fixture's genuinely protected registration journal.
+    ///
+    /// This path-selecting constructor is absent from default builds. It
+    /// authenticates no worker, mount or backing grant. Debug unit tests use
+    /// the existing Journal fixture opener that permits temporary ancestors;
+    /// exact leaf UID/mode, names, limits and real writer-lock checks remain.
+    /// Installed fixtures retain the normal ancestor checks as well.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsafe fixture paths, names or replay state.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn open_test_fixture(directory: &Path) -> Result<Self, ProtectedFuseRegistrationErrorV2> {
+        // SAFETY: geteuid returns a scalar process identity without pointers.
+        let uid = unsafe { libc::geteuid() };
+        #[cfg(not(all(test, debug_assertions)))]
+        let (journal, _) =
+            Journal::open_protected_at_for_uid(directory, PROTECTED_JOURNAL, limits(), uid)
+                .map_err(|_| ProtectedFuseRegistrationErrorV2::Storage)?;
+        #[cfg(all(test, debug_assertions))]
+        let (journal, _) =
+            Journal::open_protected_at_uid(directory, PROTECTED_JOURNAL, limits(), uid)
+                .map_err(|_| ProtectedFuseRegistrationErrorV2::Storage)?;
+        let mut owner = Self {
+            journal,
+            fixture_location: Some((directory.to_path_buf(), uid)),
+        };
+        owner.read_current()?;
+        Ok(owner)
+    }
+
+    pub(super) fn confirm_current_head<'owner>(
+        &'owner mut self,
+        expected_head: [u8; 32],
+    ) -> Result<ProtectedFuseRegistrationReadbackV2<'owner>, ProtectedFuseRegistrationErrorV2> {
+        let current = self
+            .read_current()?
+            .ok_or(ProtectedFuseRegistrationErrorV2::Currentness)?;
+        if current.head() != expected_head {
+            return Err(ProtectedFuseRegistrationErrorV2::Currentness);
+        }
+        self.confirm(&current)
+    }
+
     /// Opens and completely validates the fixed protected registration journal.
     ///
     /// This source-only constructor creates no directory and performs no
@@ -84,7 +131,11 @@ impl ProtectedFuseRegistrationOwnerV2 {
         let (journal, _) =
             Journal::open_protected_at(Path::new(PROTECTED_ROOT), PROTECTED_JOURNAL, limits())
                 .map_err(|_| ProtectedFuseRegistrationErrorV2::Storage)?;
-        let mut owner = Self { journal };
+        let mut owner = Self {
+            journal,
+            #[cfg(any(test, feature = "test-fixtures"))]
+            fixture_location: None,
+        };
         let _ = owner.read_current()?;
         Ok(owner)
     }
@@ -226,6 +277,7 @@ impl ProtectedFuseRegistrationOwnerV2 {
     fn read_current(
         &mut self,
     ) -> Result<Option<RegistrationRecordV2>, ProtectedFuseRegistrationErrorV2> {
+        self.validate_location()?;
         let authority = self
             .journal
             .claim_protected_authority(RecordNamespace::FilesystemWorkerRegistration)
@@ -242,6 +294,29 @@ impl ProtectedFuseRegistrationOwnerV2 {
             return Err(ProtectedFuseRegistrationErrorV2::Currentness);
         }
         Ok(current)
+    }
+
+    fn validate_location(&self) -> Result<(), ProtectedFuseRegistrationErrorV2> {
+        // A current in-memory snapshot cannot establish that the original
+        // directory, journal and lock names still denote the retained writer.
+        #[cfg(any(test, feature = "test-fixtures"))]
+        if let Some((directory, uid)) = &self.fixture_location {
+            #[cfg(all(test, debug_assertions))]
+            let result = self.journal.validate_held_protected_at_uid_for_test(
+                directory,
+                PROTECTED_JOURNAL,
+                *uid,
+            );
+            #[cfg(not(all(test, debug_assertions)))]
+            let result =
+                self.journal
+                    .validate_held_owned_at_for_uid(directory, PROTECTED_JOURNAL, *uid);
+            return result.map_err(|_| ProtectedFuseRegistrationErrorV2::Storage);
+        }
+
+        self.journal
+            .validate_held_root_owned_at(PROTECTED_ROOT, PROTECTED_JOURNAL)
+            .map_err(|_| ProtectedFuseRegistrationErrorV2::Storage)
     }
 
     fn commit(
@@ -362,6 +437,7 @@ impl ProtectedFuseRegistrationReadbackV2<'_> {
         reducer_commitment: [u8; 32],
         canonical: &[u8],
     ) -> Result<Self, ProtectedFuseRegistrationErrorV2> {
+        self.owner.validate_location()?;
         let authority = self
             .owner
             .journal
@@ -611,4 +687,53 @@ fn read_array<const N: usize>(
         .ok_or(ProtectedFuseRegistrationErrorV2::Currentness)?
         .try_into()
         .map_err(|_| ProtectedFuseRegistrationErrorV2::Currentness)
+}
+
+#[cfg(all(test, debug_assertions))]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    fn private_directory() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap()
+    }
+
+    #[test]
+    fn current_state_rejects_renamed_journal_and_lock() {
+        for name in [PROTECTED_JOURNAL, "registrations.journal.lock"] {
+            let directory = private_directory();
+            let mut owner =
+                ProtectedFuseRegistrationOwnerV2::open_test_fixture(directory.path()).unwrap();
+            assert_eq!(owner.read_current().unwrap(), None);
+
+            fs::rename(directory.path().join(name), directory.path().join("orphan")).unwrap();
+
+            assert!(matches!(
+                owner.read_current(),
+                Err(ProtectedFuseRegistrationErrorV2::Storage)
+            ));
+        }
+    }
+
+    #[test]
+    fn current_state_rejects_renamed_original_directory() {
+        let root = private_directory();
+        let directory = root.path().join("worker");
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut owner = ProtectedFuseRegistrationOwnerV2::open_test_fixture(&directory).unwrap();
+        assert_eq!(owner.read_current().unwrap(), None);
+
+        fs::rename(&directory, root.path().join("orphan")).unwrap();
+
+        assert!(matches!(
+            owner.read_current(),
+            Err(ProtectedFuseRegistrationErrorV2::Storage)
+        ));
+    }
 }

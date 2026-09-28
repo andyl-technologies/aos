@@ -6,6 +6,8 @@
 //! dispatches retain the Host boot identity paired with their BOOTTIME value.
 //! V4 is the private, planned-only Controller Observe child; it has no dispatch
 //! method and must match the retained AOSCOB01 reservation exactly.
+//! V5 retains nonauthorizing project-admission history in the existing Create
+//! Effect; V3 without that metadata remains valid but cannot retire Root history.
 
 use aos_proto::aos::sandbox::local::v1::{
     ApplyAtomicStorageSnapshotRequest, ApplyMountRequest, ApplyNetworkRequest, ApplyRuntimeRequest,
@@ -22,6 +24,7 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
+use super::project_admission::{MAXIMUM_RECORD_BYTES, ProjectAdmissionMetadata};
 use super::{EffectReceipt, ReconcilerError};
 use crate::controller_execution_observe_reservation::ControllerExecutionObserveReservationV1;
 use crate::{BrokerDispatchAttemptV1, BrokerDispatchSemanticIdentityV1};
@@ -33,6 +36,7 @@ const LEGACY_EFFECT_VERSION: u8 = 1;
 const EFFECT_VERSION: u8 = 2;
 const CONTROLLER_EFFECT_VERSION: u8 = 3;
 pub(super) const RESERVED_OBSERVE_EFFECT_VERSION: u8 = 4;
+pub(super) const CONTROLLER_PROJECT_EFFECT_VERSION: u8 = 5;
 const AUTHORITY_BOUND_FLAG: u8 = 1;
 const MAXIMUM_DISPATCH_PACKET_BYTES: usize = MAXIMUM_REQUEST_BYTES;
 const BODY_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.effect-body.v1\0";
@@ -56,6 +60,8 @@ pub struct PublicMutationEffectV1 {
     project: ProjectId,
     accepted_wall_seconds: i64,
     canonical_request: Vec<u8>,
+    #[cfg(target_os = "linux")]
+    fuse_admission: Option<crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1>,
 }
 
 impl PublicMutationEffectV1 {
@@ -90,6 +96,8 @@ impl PublicMutationEffectV1 {
             project,
             accepted_wall_seconds,
             canonical_request,
+            #[cfg(target_os = "linux")]
+            fuse_admission: None,
         })
     }
 
@@ -138,6 +146,14 @@ impl PublicMutationEffectV1 {
     }
 
     fn encode(&self) -> Result<Vec<u8>, ReconcilerError> {
+        #[cfg(target_os = "linux")]
+        if let Some(carrier) = &self.fuse_admission {
+            return Ok(carrier.canonical_bytes().to_vec());
+        }
+        self.encode_plain()
+    }
+
+    pub(crate) fn encode_plain(&self) -> Result<Vec<u8>, ReconcilerError> {
         let request_length = u32::try_from(self.canonical_request.len()).map_err(|_| {
             ReconcilerError::InvalidPlan("public mutation effect request exceeds its bound")
         })?;
@@ -166,6 +182,42 @@ impl PublicMutationEffectV1 {
     }
 
     fn decode(bytes: &[u8]) -> Result<Option<Self>, ReconcilerError> {
+        #[cfg(target_os = "linux")]
+        if let Some(carrier) =
+            crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1::decode(bytes)
+                .map_err(|_| ReconcilerError::InvalidPlan("invalid FUSE admission carrier"))?
+        {
+            let mut context = Self::decode_plain(carrier.ordinary_effect())?.ok_or(
+                ReconcilerError::InvalidPlan("missing FUSE admission context"),
+            )?;
+            context.fuse_admission = Some(carrier);
+            return Ok(Some(context));
+        }
+        Self::decode_plain(bytes)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_fuse_admission(
+        mut self,
+        carrier: crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1,
+    ) -> Result<Self, ReconcilerError> {
+        if self.encode_plain()? != carrier.ordinary_effect() {
+            return Err(ReconcilerError::InvalidPlan(
+                "FUSE admission context mismatch",
+            ));
+        }
+        self.fuse_admission = Some(carrier);
+        Ok(self)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn fuse_admission(
+        &self,
+    ) -> Option<&crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1> {
+        self.fuse_admission.as_ref()
+    }
+
+    pub(crate) fn decode_plain(bytes: &[u8]) -> Result<Option<Self>, ReconcilerError> {
         if !bytes.starts_with(PUBLIC_MUTATION_EFFECT_MAGIC) {
             return Ok(None);
         }
@@ -1232,11 +1284,15 @@ pub(super) struct EffectLedgerRecord {
     pub(super) plan: EffectPlan,
     pub(super) state: EffectState,
     pub(super) dispatch: Option<PreparedAuthorityEffectV1>,
+    pub(super) project_admission: Option<ProjectAdmissionMetadata>,
 }
 
 pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, ReconcilerError> {
     let (state, attempt, receipt, diagnostic) = state_parts(&record.state);
     validate_lengths(&record.plan, receipt, diagnostic)?;
+    if let Some(metadata) = &record.project_admission {
+        validate_project_metadata_shape(&record.plan, &record.state, metadata)?;
+    }
     if record.plan.is_reserved_observe() && !matches!(record.state, EffectState::Planned) {
         return Err(ReconcilerError::InvalidPlan(
             "reserved Observe effect cannot advance",
@@ -1286,6 +1342,8 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
     };
     let version = if record.plan.is_reserved_observe() {
         RESERVED_OBSERVE_EFFECT_VERSION
+    } else if record.project_admission.is_some() {
+        CONTROLLER_PROJECT_EFFECT_VERSION
     } else if record.plan.controller_method.is_some() {
         CONTROLLER_EFFECT_VERSION
     } else if record.plan.method.is_some() {
@@ -1293,11 +1351,18 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
     } else {
         LEGACY_EFFECT_VERSION
     };
+    let metadata_bytes = record
+        .project_admission
+        .as_ref()
+        .map(ProjectAdmissionMetadata::encode)
+        .transpose()?;
     let header_length = if matches!(
         version,
         LEGACY_EFFECT_VERSION | RESERVED_OBSERVE_EFFECT_VERSION
     ) {
         18
+    } else if version == CONTROLLER_PROJECT_EFFECT_VERSION {
+        26
     } else {
         22
     };
@@ -1306,7 +1371,8 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
             + authority_length
             + record.plan.request.len()
             + receipt.len()
-            + diagnostic.len(),
+            + diagnostic.len()
+            + metadata_bytes.as_ref().map_or(0, Vec::len),
     );
     bytes.push(version);
     bytes.push(record.plan.domain as u8);
@@ -1326,7 +1392,10 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
             .method
             .ok_or(ReconcilerError::InvalidPlan("broker effect has no method"))?;
         bytes.extend_from_slice(&(method as i32).to_be_bytes());
-    } else if version == CONTROLLER_EFFECT_VERSION {
+    } else if matches!(
+        version,
+        CONTROLLER_EFFECT_VERSION | CONTROLLER_PROJECT_EFFECT_VERSION
+    ) {
         let method = record
             .plan
             .controller_method
@@ -1334,6 +1403,13 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
                 "controller effect has no method",
             ))?;
         bytes.extend_from_slice(&i32::from(method.record_code()).to_be_bytes());
+    }
+    if let Some(metadata) = &metadata_bytes {
+        bytes.extend_from_slice(
+            &u32::try_from(metadata.len())
+                .map_err(|_| ReconcilerError::InvalidPlan("project metadata exceeds bounds"))?
+                .to_be_bytes(),
+        );
     }
     if let Some(binding) = &record.plan.authority {
         bytes.extend_from_slice(binding.operation_id.as_bytes());
@@ -1389,6 +1465,9 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
     bytes.extend_from_slice(&record.plan.request);
     bytes.extend_from_slice(receipt);
     bytes.extend_from_slice(diagnostic.as_bytes());
+    if let Some(metadata) = metadata_bytes {
+        bytes.extend_from_slice(&metadata);
+    }
     Ok(bytes)
 }
 
@@ -1400,6 +1479,7 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
                 | EFFECT_VERSION
                 | CONTROLLER_EFFECT_VERSION
                 | RESERVED_OBSERVE_EFFECT_VERSION
+                | CONTROLLER_PROJECT_EFFECT_VERSION
         )
         || !matches!(bytes[3], 0 | AUTHORITY_BOUND_FLAG)
     {
@@ -1441,7 +1521,10 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
     } else {
         None
     };
-    let controller_method = if bytes[0] == CONTROLLER_EFFECT_VERSION {
+    let controller_method = if matches!(
+        bytes[0],
+        CONTROLLER_EFFECT_VERSION | CONTROLLER_PROJECT_EFFECT_VERSION
+    ) {
         let method_code = i32::from_be_bytes(take_array(bytes, &mut cursor)?);
         let method_code = u8::try_from(method_code)
             .map_err(|_| ReconcilerError::CorruptLedger("unknown controller effect method"))?;
@@ -1453,6 +1536,18 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
     } else {
         None
     };
+    let metadata_length = if bytes[0] == CONTROLLER_PROJECT_EFFECT_VERSION {
+        u32::from_be_bytes(take_array(bytes, &mut cursor)?) as usize
+    } else {
+        0
+    };
+    if metadata_length > MAXIMUM_RECORD_BYTES
+        || (bytes[0] == CONTROLLER_PROJECT_EFFECT_VERSION && metadata_length == 0)
+    {
+        return Err(ReconcilerError::CorruptLedger(
+            "invalid project metadata length",
+        ));
+    }
     let (authority, dispatch) = if authority_bound {
         let operation_bytes = take_array(bytes, &mut cursor)?;
         if operation_bytes == [0; 16] {
@@ -1600,6 +1695,7 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
         .checked_add(request_length)
         .and_then(|n| n.checked_add(receipt_length))
         .and_then(|n| n.checked_add(diagnostic_length))
+        .and_then(|n| n.checked_add(metadata_length))
         .ok_or(ReconcilerError::CorruptLedger("effect length overflow"))?;
     if expected != bytes.len()
         || request_length == 0
@@ -1613,7 +1709,8 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
     let receipt_end = request_end + receipt_length;
     let request = bytes[cursor..request_end].to_vec();
     let receipt = bytes[request_end..receipt_end].to_vec();
-    let diagnostic = std::str::from_utf8(&bytes[receipt_end..])
+    let diagnostic_end = receipt_end + diagnostic_length;
+    let diagnostic = std::str::from_utf8(&bytes[receipt_end..diagnostic_end])
         .map_err(|_| ReconcilerError::CorruptLedger("diagnostic is not UTF-8"))?
         .to_owned();
     if let Some(binding) = &authority
@@ -1645,6 +1742,23 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
         })?;
     }
     let state = decode_state(state_code, attempt, receipt, diagnostic)?;
+    let project_admission = if bytes[0] == CONTROLLER_PROJECT_EFFECT_VERSION {
+        let metadata = ProjectAdmissionMetadata::decode(&bytes[diagnostic_end..])?;
+        validate_project_metadata_shape(
+            &EffectPlan {
+                domain,
+                method,
+                controller_method,
+                request: request.clone(),
+                authority: authority.clone(),
+            },
+            &state,
+            &metadata,
+        )?;
+        Some(metadata)
+    } else {
+        None
+    };
     if bytes[0] == RESERVED_OBSERVE_EFFECT_VERSION
         && (domain != EffectDomain::Controller
             || method.is_some()
@@ -1690,7 +1804,28 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
         },
         state,
         dispatch,
+        project_admission,
     })
+}
+
+fn validate_project_metadata_shape(
+    plan: &EffectPlan,
+    state: &EffectState,
+    _metadata: &ProjectAdmissionMetadata,
+) -> Result<(), ReconcilerError> {
+    if plan.public_mutation_method()
+        != Some(crate::controller_query::PublicOperationMethodV1::CreateSandbox)
+        || plan.authority.is_some()
+        || matches!(
+            state,
+            EffectState::Applied { .. } | EffectState::PermanentlyBlocked { .. }
+        )
+    {
+        return Err(ReconcilerError::CorruptLedger(
+            "project admission metadata has invalid Effect shape",
+        ));
+    }
+    Ok(())
 }
 
 fn state_parts(state: &EffectState) -> (u8, u32, &[u8], &str) {
@@ -1959,6 +2094,7 @@ mod tests {
             },
             state: EffectState::Planned,
             dispatch: None,
+            project_admission: None,
         };
         assert!(matches!(
             encode_effect(&invalid_record),
@@ -1983,6 +2119,7 @@ mod tests {
             plan: legacy_effect_plan(b"abc"),
             state: EffectState::Planned,
             dispatch: None,
+            project_admission: None,
         };
         let expected = vec![
             1, 1, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, b'a', b'b', b'c',
@@ -2026,6 +2163,7 @@ mod tests {
                 plan: legacy_effect_plan(b"abc"),
                 state,
                 dispatch: None,
+                project_admission: None,
             };
             assert_eq!(encode_effect(&record).unwrap(), expected);
             assert_eq!(decode_effect(&expected).unwrap(), record);
@@ -2043,6 +2181,7 @@ mod tests {
             .unwrap(),
             state: EffectState::Planned,
             dispatch: None,
+            project_admission: None,
         };
         let expected = vec![
             2, 2, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, b'a', b'b', b'c',
@@ -2099,6 +2238,7 @@ mod tests {
             plan: authority_bound_plan(),
             state: EffectState::Planned,
             dispatch: None,
+            project_admission: None,
         };
         let binding = record.plan.authority().unwrap();
         assert_eq!(
@@ -2132,6 +2272,7 @@ mod tests {
             plan: authority_bound_plan(),
             state: EffectState::Planned,
             dispatch: None,
+            project_admission: None,
         };
         let mut legacy = encode_effect(&record).unwrap();
         legacy[0] = LEGACY_EFFECT_VERSION;
@@ -2155,16 +2296,18 @@ mod tests {
             .unwrap(),
             state: EffectState::Planned,
             dispatch: None,
+            project_admission: None,
         })
         .unwrap();
         let authority = encode_effect(&EffectLedgerRecord {
             plan: authority_bound_plan(),
             state: EffectState::Planned,
             dispatch: None,
+            project_admission: None,
         })
         .unwrap();
 
-        for version in [0, RESERVED_OBSERVE_EFFECT_VERSION + 1, u8::MAX] {
+        for version in [0, CONTROLLER_PROJECT_EFFECT_VERSION + 1, u8::MAX] {
             for canonical in [&generic, &authority] {
                 let mut unknown_version = canonical.clone();
                 unknown_version[0] = version;
@@ -2219,6 +2362,7 @@ mod tests {
                 diagnostic: String::new(),
             },
             dispatch: Some(dispatch),
+            project_admission: None,
         };
 
         let bytes = encode_effect(&record).unwrap();

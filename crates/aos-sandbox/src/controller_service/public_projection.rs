@@ -33,6 +33,8 @@ const PROJECTION_VERSION: u16 = 1;
 const PROJECTION_FLAGS: u8 = 0;
 const PROJECTION_KEY_PREFIX: &[u8] = b"aos.public.resource.v1\0";
 const PROJECTION_HEADER_BYTES: usize = 8 + 2 + 1 + 1 + 16 + 16 + 16 + 4 + 32;
+pub(crate) const MAXIMUM_RETAINED_PUBLIC_PROJECTION_BYTES: usize =
+    PROJECTION_HEADER_BYTES + MAXIMUM_PUBLIC_RESOURCE_BYTES;
 
 /// Identifies one durable public projection schema.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -364,6 +366,18 @@ impl PublicProjectionPlanV1 {
     }
 }
 
+/// Reuses canonical projection decoding without claiming owner currentness.
+///
+/// # Errors
+///
+/// Rejects malformed identities, framing, hashes or noncanonical public resources.
+pub(crate) fn decode_checked_public_projection_v1(
+    key: &[u8],
+    value: &[u8],
+) -> Result<PublicProjectionRecordV1, PublicProjectionError> {
+    decode_record(key, value)
+}
+
 /// Prepares removal of one superseded public projection in an atomic local mutation.
 ///
 /// # Errors
@@ -463,6 +477,25 @@ impl AuthorizedPublicProjectionReadV1 {
 }
 
 impl PublicProjectionRecordV1 {
+    /// Reuses the canonical projection codec for a nonauthorizing retained copy.
+    pub(crate) fn retained_record_bytes(&self) -> Result<Vec<u8>, PublicProjectionError> {
+        let plan =
+            PublicProjectionPlanV1::new(self.project, self.operation, self.resource.clone())?;
+        if plan.checked_record()?.revision != self.revision {
+            return Err(PublicProjectionError::CorruptRecord);
+        }
+        Ok(plan.into_desired_state().1)
+    }
+
+    /// Decodes historical bytes without claiming current journal provenance.
+    pub(crate) fn from_retained_record_bytes(
+        kind: PublicProjectionKindV1,
+        resource: [u8; 16],
+        bytes: &[u8],
+    ) -> Result<Self, PublicProjectionError> {
+        decode_record(&projection_key(kind, resource), bytes)
+    }
+
     /// Returns the authenticated project partition retained at admission.
     #[must_use]
     pub const fn project(&self) -> ProjectId {

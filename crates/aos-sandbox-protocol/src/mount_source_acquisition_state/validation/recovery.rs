@@ -687,14 +687,34 @@ pub(super) fn inventory_observation_ordinal(
             "Inventory observation ordinal target is not Complete",
         ));
     }
+    preceding_inventory_observation_ordinal(table, scope, target)?
+        .checked_add(1)
+        .ok_or_else(|| state_error("Inventory observation ordinal overflow"))
+}
+
+/// Reproduces the durable Complete-Inventory count before an exact query.
+///
+/// Zero is the valid floor before the first Complete Inventory. Release keeps
+/// that historical floor; it never substitutes the current head's ordinal.
+pub(super) fn preceding_inventory_observation_ordinal(
+    table: &SourceAcquisitionTableV2,
+    scope: ProviderScopeV2,
+    target: &SourceProviderQueryAttemptV2,
+) -> Result<u64> {
+    if target.scope != scope {
+        return Err(state_error("Inventory observation floor scope differs"));
+    }
+
     let mut ordinal = 0_u64;
     for attempt in table.provider_attempts.values().filter(|attempt| {
         attempt.scope == scope
             && attempt.method == ProviderMethodV2::Inventory
             && is_complete(attempt)
     }) {
-        if attempt.attempt_id == target.attempt_id || attempt_happens_after(table, attempt, target)?
-        {
+        if attempt.attempt_id == target.attempt_id {
+            continue;
+        }
+        if attempt_happens_after(table, attempt, target)? {
             ordinal = ordinal
                 .checked_add(1)
                 .ok_or_else(|| state_error("Inventory observation ordinal overflow"))?;

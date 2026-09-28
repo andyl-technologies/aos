@@ -8,7 +8,9 @@
 //!       / 4 operation-outcome
 //!       / 5 OpenSSH gate install/readback request
 //!       / 6 signed OpenSSH gate readback
+//!       / 7 immutable original ticket binding-only request (v2 carrier)
 //!       / 8 sealed Authorize reference with one SCM_RIGHTS descriptor
+//!       / 9 signed physical original ticket readback (v2 carrier)
 //! ```
 //!
 //! Integers are big-endian. Variable bytes use a `u32be` length and every
@@ -158,6 +160,14 @@ pub enum AgentFrameV1 {
     OpenSshGateObserveRequest(Vec<u8>),
     /// Returns a bounded signed physical readback packet.
     OpenSshGateReadback(Vec<u8>),
+    /// Carries original immutable ticket bytes for binding-only installation.
+    OpenSshTicketBindRequestV2(Vec<u8>),
+    /// Returns a fresh physical measurement, never authenticated SSH custody.
+    OpenSshTicketReadbackV2(Vec<u8>),
+    /// Polls or consumes one original ticket on the provisioned root channel.
+    OriginalAttachRequestV3(Vec<u8>),
+    /// Returns non-authorizing custody or the exact transfer completion.
+    OriginalAttachResponseV3(Vec<u8>),
     /// Carries one bounded Authorize reference with exactly one sealed memfd.
     SealedAuthorizeRequest(AgentSealedAuthorizeReferenceV1),
 }
@@ -196,6 +206,22 @@ pub fn encode_frame_v1(frame: &AgentFrameV1) -> Vec<u8> {
             bytes.push(8);
             encode_sealed_authorize_reference(&mut bytes, reference);
         }
+        AgentFrameV1::OpenSshTicketBindRequestV2(request) => {
+            bytes.push(7);
+            put_bytes(&mut bytes, request);
+        }
+        AgentFrameV1::OpenSshTicketReadbackV2(packet) => {
+            bytes.push(9);
+            put_bytes(&mut bytes, packet);
+        }
+        AgentFrameV1::OriginalAttachRequestV3(packet) => {
+            bytes.push(10);
+            put_bytes(&mut bytes, packet);
+        }
+        AgentFrameV1::OriginalAttachResponseV3(packet) => {
+            bytes.push(11);
+            put_bytes(&mut bytes, packet);
+        }
     }
     bytes
 }
@@ -219,7 +245,27 @@ pub fn decode_frame_v1(bytes: &[u8]) -> Result<AgentFrameV1, AgentProtocolError>
         4 => AgentFrameV1::OperationOutcome(decode_operation_outcome(&mut cursor)?),
         5 => AgentFrameV1::OpenSshGateObserveRequest(cursor.length_prefixed(4096)?.to_vec()),
         6 => AgentFrameV1::OpenSshGateReadback(cursor.length_prefixed(8192)?.to_vec()),
+        7 => AgentFrameV1::OpenSshTicketBindRequestV2(
+            cursor
+                .length_prefixed(crate::openssh_ticket::MAXIMUM_TICKET_GATE_BYTES_V2)?
+                .to_vec(),
+        ),
+        9 => AgentFrameV1::OpenSshTicketReadbackV2(
+            cursor
+                .length_prefixed(crate::openssh_ticket::MAXIMUM_TICKET_GATE_BYTES_V2)?
+                .to_vec(),
+        ),
         8 => AgentFrameV1::SealedAuthorizeRequest(decode_sealed_authorize_reference(&mut cursor)?),
+        10 => AgentFrameV1::OriginalAttachRequestV3(
+            cursor
+                .length_prefixed(crate::openssh_consume::MAXIMUM_CONSUME_BYTES_V3)?
+                .to_vec(),
+        ),
+        11 => AgentFrameV1::OriginalAttachResponseV3(
+            cursor
+                .length_prefixed(crate::openssh_consume::MAXIMUM_CONSUME_BYTES_V3)?
+                .to_vec(),
+        ),
         _ => return Err(AgentProtocolError::UnknownValue),
     };
     cursor.finish()?;

@@ -286,6 +286,67 @@ impl PublicAttachHostQueryDraftV1 {
     }
 }
 
+/// Prepares binding-only installation from accepted, retained original custody.
+///
+/// # Errors
+/// Rejects stale accepted execution/publication or exact ticket substitution.
+/// The returned plan uses the existing Host ATTACH purpose, never AOSAPG01
+/// re-signing, ticket renewal, or descriptor-transfer authorization.
+pub(crate) fn prepare_original_ticket_binding_v2(
+    journal: &mut Journal,
+    pending: &PublicAttachPendingV1,
+    project: ProjectId,
+    node: NodeId,
+    ticket: &[u8],
+    now_seconds: i64,
+) -> Result<PublicAttachHostInstallDraftV1, PublicAttachPendingErrorV1> {
+    let original = crate::attach_decision::original_grant(journal, pending.record_digest())
+        .map_err(|_| PublicAttachPendingErrorV1::Unavailable)?;
+    let query = prepare_public_attach_host_query_v1(
+        journal,
+        project,
+        node,
+        pending.execution,
+        Some(pending),
+        now_seconds,
+    )?;
+    let (parent, ownership_lease, ownership_lease_signature) = query.into_parts();
+    let semantics = aos_sandbox_protocol::semantics::host_attach_gate::canonical_host_attach_ticket_semantics_v2(
+        parent.assignment(), &original, ticket).map_err(|_| PublicAttachPendingErrorV1::Conflict)?;
+    let grant = BrokerGrant::new(
+        semantics.verb(),
+        semantics.target(),
+        semantics.commitment(),
+        u32::try_from(HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES)
+            .map_err(|_| PublicAttachPendingErrorV1::Conflict)?,
+        0,
+    )
+    .map_err(|_| PublicAttachPendingErrorV1::Conflict)?;
+    let plan = BrokerAuthorizationPlan::new(
+        BrokerAudience::Host,
+        ProtocolId::HostBroker,
+        ProtocolVersion::new(1, 0),
+        parent.assignment(),
+        node,
+        parent.ownership_authority().clone(),
+        vec![grant],
+        parent.policy_commitment(),
+        parent.revocation_scope(),
+        parent.issued_seconds(),
+        parent.expires_seconds(),
+        Vec::new(),
+    )
+    .map_err(|_| PublicAttachPendingErrorV1::Conflict)?;
+    crate::attach_decision::retain_original_ticket(journal, pending.operation, ticket)
+        .map_err(|_| PublicAttachPendingErrorV1::Unavailable)?;
+    Ok(PublicAttachHostInstallDraftV1 {
+        grant: original,
+        plan,
+        ownership_lease,
+        ownership_lease_signature,
+    })
+}
+
 /// Derives one exact Host-install plan from the protected current publication.
 ///
 /// The caller must first produce `grant` using the same protected pending
@@ -428,6 +489,8 @@ pub(crate) fn prepare_public_attach_host_install_v1(
     )
     .map_err(|_| PublicAttachPendingErrorV1::Conflict)?;
 
+    crate::attach_decision::retain_original_grant(journal, pending.record_digest(), &grant)
+        .map_err(|_| PublicAttachPendingErrorV1::Unavailable)?;
     Ok(PublicAttachHostInstallDraftV1 {
         grant,
         plan,
@@ -816,4 +879,44 @@ pub(crate) fn reserve_public_attach_pending_v1(
         .commit(&transaction)
         .map_err(|_| PublicAttachPendingErrorV1::Unavailable)?;
     Ok(pending)
+}
+
+#[cfg(test)]
+mod expiry_tests {
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use super::*;
+    use crate::JournalLimits;
+
+    #[test]
+    fn pending_expiry_inherits_original_authority_and_exact_replay_never_extends_it() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let owner = fs::metadata(directory.path()).unwrap().uid();
+        let (mut journal, _) = Journal::open_protected_at_uid(
+            directory.path(),
+            "original-attach-expiry.journal",
+            JournalLimits::default(),
+            owner,
+        )
+        .unwrap();
+        let key = IdempotencyKey::new(vec![1; 16]).unwrap();
+        let reserve = |journal: &mut Journal, expiry| {
+            reserve_public_attach_pending_v1(
+                journal, &key, [2; 32], [3; 16], [4; 16], 1, [5; 16], [6; 16], 10, expiry,
+            )
+        };
+
+        let original = reserve(&mut journal, 40).unwrap();
+        let original_bytes = original.encode();
+        let sequence = journal.snapshot_sequence();
+        let replay = reserve(&mut journal, 1_000).unwrap();
+
+        assert_eq!(original.expires_at(), 40);
+        assert_eq!(replay.encode(), original_bytes);
+        assert_eq!(journal.snapshot_sequence(), sequence);
+        assert!(reserve(&mut journal, 10).is_err());
+        assert_eq!(journal.snapshot_sequence(), sequence);
+    }
 }

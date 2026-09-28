@@ -249,6 +249,7 @@ struct DormantFuseRequestOwnerV2 {
     monotonic_floor_ns: u64,
     connection_binding: [u8; 32],
     reducer_commitment: [u8; 32],
+    transport_deadline_ns: Option<u64>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -299,6 +300,7 @@ impl DormantFuseRequestOwnerV2 {
             monotonic_floor_ns,
             connection_binding,
             reducer_commitment,
+            transport_deadline_ns: None,
         })
     }
 
@@ -325,6 +327,14 @@ impl DormantFuseRequestOwnerV2 {
         let absolute_deadline_ns = now
             .checked_add(timeout_ns)
             .ok_or(OperationError::Integrity)?;
+        let absolute_deadline_ns = self
+            .transport_deadline_ns
+            .map_or(absolute_deadline_ns, |transport| {
+                absolute_deadline_ns.min(transport)
+            });
+        if now >= absolute_deadline_ns {
+            return Err(OperationError::Integrity);
+        }
         Ok(DormantFuseRequestDeadlineV2 {
             absolute_deadline_ns,
             connection_binding: self.connection_binding,
@@ -381,6 +391,52 @@ impl DormantFuseRequestOwnerV2 {
 }
 
 impl DormantLibfuseOperationsAdapterV2 {
+    /// Restricts dispatch to the private C session's already captured deadline.
+    ///
+    /// This is not a caller-supplied clock or lease authority. The C adapter
+    /// passes its original BOOTTIME bound before any file callback work.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale session, cancellation or a bound outside this session's
+    /// configured timeout; it never extends a retained callback deadline.
+    pub(crate) fn bind_transport_deadline(
+        &mut self,
+        connection: &MetadataConnection<'_, '_, '_, '_>,
+        deadline_ns: u64,
+    ) -> Result<(), OperationError> {
+        let now = self
+            .request_owner
+            .revalidate_session(connection, self.operations.reducer_commitment())?;
+        let maximum = now
+            .checked_add(u64::from(self.request_owner.timeout_seconds) * 1_000_000_000)
+            .ok_or(OperationError::Integrity)?;
+        if deadline_ns <= now || deadline_ns > maximum {
+            return Err(OperationError::Integrity);
+        }
+        self.request_owner.transport_deadline_ns = Some(deadline_ns);
+        Ok(())
+    }
+
+    /// Reads the existing exact registration state without appending a record.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale protected names, a foreign head or reducer snapshot, or
+    /// expiry/cancellation across the retained readback cut.
+    pub(crate) fn current_registration_readback<'owner>(
+        &mut self,
+        connection: &MetadataConnection<'_, '_, '_, '_>,
+        limits: DurableStateLimits,
+        owner: &'owner mut ProtectedFuseRegistrationOwnerV2,
+    ) -> Result<ProtectedFuseRegistrationReadbackV2<'owner>, DormantLibfuseCallbackErrorV2> {
+        let request = self
+            .request_owner
+            .admit_request(connection, self.operations.reducer_commitment())?;
+        let readback = owner.confirm_current_head(self.registration_head)?;
+        self.require_registration_readback(request, connection, limits, readback)
+    }
+
     pub(crate) fn from_session_transport(
         connection: &mut MetadataConnection<'_, '_, '_, '_>,
         registrations: PassthroughRegistrations,

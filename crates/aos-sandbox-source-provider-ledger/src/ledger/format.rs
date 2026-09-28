@@ -165,6 +165,27 @@ pub const NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2: [usize; 6] = [
     ENVELOPE_BYTES + super::native_completion::MAXIMUM_BODY_BYTES + 40 + 9,
 ];
 
+/// Bounds seven owner mutations in the native lease-bearing Release admission.
+///
+/// This is a distinct admission geometry, not the six-row Acquire completion
+/// or its persistent seven-record cleanup floor. The Release intent is added
+/// alongside the original native marker, not substituted for it.
+pub const MAXIMUM_NATIVE_RELEASE_ADMISSION_OWNER_BYTES_V1: usize =
+    MAXIMUM_NATIVE_ACQUIRE_COMPLETION_OWNER_BYTES_V2 + RELEASE_RECORD_MAXIMUM_BYTES + 99 + 9;
+
+/// Bounds the three status-only Release completion owner mutations.
+///
+/// Includes Attempt, current Session and SessionHistory keys and mutation
+/// framing. No acquisition, native marker or Release intent changes here.
+pub const MAXIMUM_NATIVE_RELEASE_STATUS_OWNER_BYTES_V1: usize =
+    NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2[0]
+        + NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2[2]
+        + NATIVE_ACQUIRE_COMPLETION_OWNER_RECORD_BOUNDS_V2[3];
+
+const _: () = assert!(
+    MAXIMUM_NATIVE_RELEASE_ADMISSION_OWNER_BYTES_V1 < crate::limits::MAXIMUM_TRANSACTION_BYTES
+);
+
 /// Bounds one exact native request or accepted-carrier mutation.
 ///
 /// Includes its canonical envelope, fixed key and mutation framing, but not

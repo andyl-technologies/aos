@@ -5,6 +5,9 @@
 //! post-commit validation.
 
 use super::*;
+use aos_sandbox_source_provider_protocol::{
+    ReleaseSourceResponseProfileV2, SignedSourceProviderNativeExportFenceV1,
+};
 
 #[path = "outcome/helpers.rs"]
 pub(in crate::handshake::mount_request) mod helpers;
@@ -1478,14 +1481,15 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 )
             }
             SourceProviderMethod::Release => {
-                let response = decode_release_response(&canonical_response)
-                    .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-                if encode_release_response(&response) != canonical_response {
+                let response =
+                    ReleaseSourceResponseProfileV2::from_canonical_bytes(&canonical_response)
+                        .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+                if response.to_canonical_bytes() != canonical_response {
                     return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
                 }
                 (
                     response.signed_status().clone(),
-                    response.signed_receipt().map(ToOwned::to_owned),
+                    response.signed_result().map(ToOwned::to_owned),
                 )
             }
             SourceProviderMethod::Inventory => {
@@ -1731,40 +1735,70 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 }
             }
             (SourceProviderMethod::Release, Some(receipt_bytes)) => {
-                let receipt = SignedSourceReleaseReceiptV1::from_canonical_bytes(receipt_bytes)
-                    .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-                verify_release_receipt(&receipt, &authorization.provider_outcome_public_key)
-                    .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-                if receipt.subject().request_id() != authorization.request_id
-                    || receipt.subject().request_digest() != authorization.typed_request_digest
-                    || Some(receipt.subject().lease_id()) != authorization.lease_id
-                    || Some(receipt.subject().lease_digest()) != authorization.lease_digest
-                    || receipt.subject().provider() != &authorization.provider
-                    || receipt.subject().provider_process_instance()
-                        != authorization.provider_process_instance
+                if let Ok(fence) =
+                    SignedSourceProviderNativeExportFenceV1::from_canonical_bytes(receipt_bytes)
                 {
-                    return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+                    fence
+                        .verify(&authorization.provider_outcome_public_key)
+                        .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+                    let release = fence.subject().release();
+                    let acquire = fence.subject().acquire();
+                    if status.status() != SourceProviderStatus::Pending
+                        || fence.signer() != &authorization.provider_outcome_signer
+                        || release.provider != authorization.provider
+                        || release.holder != authorization.holder
+                        || release.request_id != authorization.request_id
+                        || release.signed_request_digest != authorization.signed_request_digest
+                        || release.typed_request_digest != authorization.typed_request_digest
+                        || release.session_binding != authorization.session_binding
+                        || release.request_sequence != authorization.request_sequence
+                        || release.response_sequence != authorization.expected_response_sequence
+                        || release.provider_process_instance
+                            != authorization.provider_process_instance
+                        || Some(acquire.acquisition_id) != authorization.acquisition_id
+                        || Some(acquire.acquisition_sequence) != authorization.acquisition_sequence
+                        || Some(acquire.lease_id) != authorization.lease_id
+                        || Some(acquire.lease_digest) != authorization.lease_digest
+                    {
+                        return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+                    }
+                    // This is deliberately not added to terminal_lineages.
+                } else {
+                    let receipt = SignedSourceReleaseReceiptV1::from_canonical_bytes(receipt_bytes)
+                        .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+                    verify_release_receipt(&receipt, &authorization.provider_outcome_public_key)
+                        .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+                    if receipt.subject().request_id() != authorization.request_id
+                        || receipt.subject().request_digest() != authorization.typed_request_digest
+                        || Some(receipt.subject().lease_id()) != authorization.lease_id
+                        || Some(receipt.subject().lease_digest()) != authorization.lease_digest
+                        || receipt.subject().provider() != &authorization.provider
+                        || receipt.subject().provider_process_instance()
+                            != authorization.provider_process_instance
+                    {
+                        return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+                    }
+                    let (
+                        Some(acquisition_id),
+                        Some(acquisition_sequence),
+                        Some(lease_id),
+                        Some(lease_digest),
+                    ) = (
+                        authorization.acquisition_id,
+                        authorization.acquisition_sequence,
+                        authorization.lease_id,
+                        authorization.lease_digest,
+                    )
+                    else {
+                        return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+                    };
+                    terminal_lineages.push(VerifiedTerminalLineageV2 {
+                        acquisition_id,
+                        acquisition_sequence,
+                        lease_id,
+                        lease_digest,
+                    });
                 }
-                let (
-                    Some(acquisition_id),
-                    Some(acquisition_sequence),
-                    Some(lease_id),
-                    Some(lease_digest),
-                ) = (
-                    authorization.acquisition_id,
-                    authorization.acquisition_sequence,
-                    authorization.lease_id,
-                    authorization.lease_digest,
-                )
-                else {
-                    return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-                };
-                terminal_lineages.push(VerifiedTerminalLineageV2 {
-                    acquisition_id,
-                    acquisition_sequence,
-                    lease_id,
-                    lease_digest,
-                });
             }
             (SourceProviderMethod::Inventory, Some(inventory_bytes)) => {
                 let inventory =
@@ -1930,6 +1964,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             verification_anchor,
             cleanup_only_current_policy,
             terminal_lineages,
+            native_export_fence_acceptance: None,
         })
     }
 }

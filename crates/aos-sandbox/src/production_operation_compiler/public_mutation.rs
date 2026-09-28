@@ -204,6 +204,14 @@ pub(super) fn reserve_authorized_attach(
     {
         return Err(OperationCompilationError::Rejected);
     }
+    // A lease cannot extend the original authenticated capability or policy.
+    // The pending route and subsequently issued certificate inherit this
+    // immutable limit; exact accepted replay keeps the retained original bytes.
+    let authority_expires_at = authorized
+        .original_attach_authority_expires_at()
+        .ok_or(OperationCompilationError::Rejected)?
+        .min(publication.lease().lease().authority_expires_seconds());
+
     reserve_public_attach_pending_v1(
         journal,
         authorized.request().idempotency_key(),
@@ -214,7 +222,7 @@ pub(super) fn reserve_authorized_attach(
         *authorized.caller().as_bytes(),
         exact_id(&execution.audit_id)?,
         authorized.accepted_wall_seconds(),
-        publication.lease().lease().authority_expires_seconds(),
+        authority_expires_at,
     )
     .map_err(|_| OperationCompilationError::Rejected)
 }
@@ -308,6 +316,21 @@ pub(super) fn compile_authorized_attach_route(
                 operation_id,
                 PublicProjectionResourceV1::Execution(current_execution.clone()),
             )?;
+            let decision = crate::attach_decision::retained_decision_record(
+                journal,
+                operation_id,
+                &authorized
+                    .original_attach_decision()
+                    .map_err(|_| OperationCompilationError::Rejected)?,
+            )
+            .map_err(|_| OperationCompilationError::Rejected)?;
+            if crate::attach_decision::original_ticket_coordinates(journal, operation_id)
+                .map_err(|_| OperationCompilationError::Rejected)?
+                .base_route_digest
+                != route.route_digest
+            {
+                return Err(OperationCompilationError::Rejected);
+            }
             let public =
                 crate::reconciler::recovered_public_operation_admission_v1(journal, operation_id)
                     .map_err(|_| OperationCompilationError::Rejected)?
@@ -319,6 +342,7 @@ pub(super) fn compile_authorized_attach_route(
                 desired.0,
                 desired.1,
                 record,
+                decision,
             )
             .map_err(|_| OperationCompilationError::Rejected)?
             .with_public_operation(public)
@@ -368,6 +392,20 @@ pub(super) fn compile_authorized_attach_route(
         &access,
     )
     .map_err(|_| OperationCompilationError::Rejected)?;
+    let original_grant = crate::attach_decision::original_grant(journal, pending.record_digest())
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    let checked_decision = authorized
+        .original_attach_decision()
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    let issued_decision = crate::attach_decision::bind_issued_decision(
+        &checked_decision,
+        &access.client_certificate,
+        route.route_digest,
+        &original_grant,
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
+    let decision_record = crate::attach_decision::decision_record(operation_id, issued_decision)
+        .map_err(|_| OperationCompilationError::Rejected)?;
     let plan = OperationPlan::completed_public_attach(
         operation_id,
         authorized.request().idempotency_key().clone(),
@@ -375,6 +413,7 @@ pub(super) fn compile_authorized_attach_route(
         desired.0,
         desired.1,
         record,
+        decision_record,
     )
     .map_err(|_| OperationCompilationError::Rejected)?;
     super::attach_public_operation(plan, authorized, authorized.project(), operation_id)
@@ -638,6 +677,7 @@ pub(super) fn compile_public_mutation(
         | Request::Completions(_) => return Err(OperationCompilationError::Rejected),
     };
     operation_plan(
+        journal,
         authorized,
         authorized.project(),
         operation_id,
@@ -675,17 +715,34 @@ fn replay_public_mutation(
     let public = crate::reconciler::recovered_public_operation_admission_v1(journal, operation_id)
         .map_err(|_| OperationCompilationError::Rejected)?
         .ok_or(OperationCompilationError::Rejected)?;
-    let effect = EffectPlan::authorized_public_mutation(
-        authorized.request().operation_method(),
+    let context = if let Some(carrier) =
+        crate::reconciler::accepted_fuse_admission_v1(journal, operation_id)
+            .map_err(|_| OperationCompilationError::Rejected)?
+    {
+        let original = PublicMutationEffectV1::decode_plain(carrier.ordinary_effect())
+            .map_err(|_| OperationCompilationError::Rejected)?
+            .ok_or(OperationCompilationError::Rejected)?;
+        if original.caller() != authorized.caller()
+            || original.project() != authorized.project()
+            || original.canonical_request() != canonical_request
+        {
+            return Err(OperationCompilationError::Rejected);
+        }
+        original
+            .with_fuse_admission(carrier)
+            .map_err(|_| OperationCompilationError::Rejected)?
+    } else {
         PublicMutationEffectV1::new(
             authorized.caller(),
             authorized.project(),
             authorized.accepted_wall_seconds(),
             canonical_request.to_vec(),
         )
-        .map_err(|_| OperationCompilationError::Rejected)?,
-    )
-    .map_err(|_| OperationCompilationError::Rejected)?;
+        .map_err(|_| OperationCompilationError::Rejected)?
+    };
+    let effect =
+        EffectPlan::authorized_public_mutation(authorized.request().operation_method(), context)
+            .map_err(|_| OperationCompilationError::Rejected)?;
 
     OperationPlan::new(
         operation_id,
@@ -701,6 +758,7 @@ fn replay_public_mutation(
 }
 
 fn operation_plan(
+    journal: &Journal,
     authorized: &AuthorizedPublicMutationRequestV1,
     project: ProjectId,
     operation_id: OperationId,
@@ -708,17 +766,36 @@ fn operation_plan(
     canonical_request: &[u8],
     desired: (Vec<u8>, Vec<u8>),
 ) -> Result<OperationPlan, OperationCompilationError> {
-    let effect = EffectPlan::authorized_public_mutation(
-        authorized.request().operation_method(),
-        PublicMutationEffectV1::new(
-            authorized.caller(),
-            project,
-            authorized.accepted_wall_seconds(),
-            canonical_request.to_vec(),
-        )
-        .map_err(|_| OperationCompilationError::Rejected)?,
+    let context = PublicMutationEffectV1::new(
+        authorized.caller(),
+        project,
+        authorized.accepted_wall_seconds(),
+        canonical_request.to_vec(),
     )
     .map_err(|_| OperationCompilationError::Rejected)?;
+    let context = if matches!(
+        authorized.request().request(),
+        Request::ViewAttach(_) | Request::ViewReplace(_)
+    ) {
+        let carrier =
+            crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1::from_authorized(
+                journal,
+                authorized,
+                operation_id,
+                request_digest,
+                &context,
+                &desired,
+            )
+            .map_err(|_| OperationCompilationError::Rejected)?;
+        context
+            .with_fuse_admission(carrier)
+            .map_err(|_| OperationCompilationError::Rejected)?
+    } else {
+        context
+    };
+    let effect =
+        EffectPlan::authorized_public_mutation(authorized.request().operation_method(), context)
+            .map_err(|_| OperationCompilationError::Rejected)?;
     let plan = OperationPlan::new(
         operation_id,
         authorized.request().idempotency_key().clone(),

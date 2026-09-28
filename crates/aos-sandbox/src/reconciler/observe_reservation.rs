@@ -239,6 +239,7 @@ pub fn adopt_execution_observe_child_v1(
         plan: EffectPlan::reserved_observe(reservation),
         state: EffectState::Planned,
         dispatch: None,
+        project_admission: None,
     };
     let transaction_digest: [u8; 32] = Sha256::new()
         .chain_update(CHILD_TRANSACTION_DOMAIN)

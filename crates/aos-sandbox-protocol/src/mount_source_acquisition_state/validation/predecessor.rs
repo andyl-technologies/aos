@@ -807,9 +807,10 @@ pub(super) fn validate_predecessor_evidence(value: &AcquisitionPredecessorWitnes
             ));
         }
     }
+    // The full Release row reproduces the historical observation floor and
+    // the retry joins this witness exactly. Zero precedes the first Inventory.
     if value.release_inventory_fence.as_ref().is_some_and(|fence| {
-        fence.inventory_observation_floor == 0
-            || fence.projection_epoch == 0
+        fence.projection_epoch == 0
             || fence.projection_digest == [0; 32]
             || fence.projection_entry_count == 0
             || usize::try_from(fence.projection_entry_count).ok()

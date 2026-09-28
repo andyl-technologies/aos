@@ -233,6 +233,8 @@ returns (PopulateStorageGuestRootResponseV1);
 message InstallHostAttachGateRequestV1 {
 RequestHeader header = 1;
 bytes pending_grant = 2;
+bytes original_ticket_binding_v2 = 3;
+bytes original_ticket_consume_v3 = 4;
 message HostAttachGateEvidenceV1 {
 bytes operation_id = 1;
 bytes execution_id = 2;
@@ -250,6 +252,9 @@ uint64 route_generation = 13;
 bytes route_digest = 14;
 bytes gate_observation_commitment = 15;
 bytes signed_gate_readback = 16;
+bytes original_ticket_digest_v2 = 17;
+bytes signed_ticket_readback_v2 = 18;
+bytes original_attach_observation_v3 = 19;
 message QueryHostAttachGateReadinessRequestV1 {
 RequestHeader header = 1;
 message HostAttachGateReadinessV1 {

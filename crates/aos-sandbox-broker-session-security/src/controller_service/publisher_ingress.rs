@@ -24,7 +24,6 @@ use aos_sandbox::publisher_sessions::{
 };
 use aos_sandbox_core::{NodeId, PrincipalId, ProjectId, PublisherInstanceId, ResourceId};
 use aos_sandbox_linux::cgroup::CgroupV2Root;
-use aos_sandbox_linux::inherited_fd::claim_systemd_activation_descriptor_range;
 use aos_sandbox_linux::pidfd::PidFd;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
 use aos_systemd::SystemdClient;
@@ -34,12 +33,10 @@ use rustix::fs::{Mode, OFlags, open};
 use super::ProductionController;
 use super::publisher_credential::read_required_credential;
 use crate::controller_ownership::{CLOCK_PROVENANCE, sample_ownership_clock};
-use crate::production_activation::{activation_names, validate_activation_process};
 
 const CREDENTIAL: &str = "publisher-service-scope-v1";
 const MAGIC: &[u8; 8] = b"AOSPMS01";
 const CREDENTIAL_BYTES: usize = 64;
-const FD_NAME: &str = "aos-sandboxd-publisher";
 const SOCKET: &str = "/run/aos/sandbox-publisher/control.sock";
 const UNIT: &str = "aos-view-publisher.service";
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
@@ -190,20 +187,9 @@ impl PublisherServiceScopeV1 {
 }
 
 /// Adopts only the fixed preconfigured record-subject listener from PID 1.
-pub(super) fn adopt_listener() -> Result<RecordSubjectListener, PublisherIngressError> {
-    validate_activation_process(1).map_err(|_| PublisherIngressError::Listener)?;
-    let names = activation_names(1).map_err(|_| PublisherIngressError::Listener)?;
-    if names.as_slice() != [FD_NAME] {
-        return Err(PublisherIngressError::Listener);
-    }
-    // SAFETY: process startup owns descriptor 3 before any thread or other
-    // activation consumer exists; PID 1 supplied the exact checked table.
-    let descriptors = unsafe { claim_systemd_activation_descriptor_range(0, 1) }
-        .map_err(|_| PublisherIngressError::Listener)?
-        .into_descriptors();
-    let [descriptor]: [OwnedFd; 1] = descriptors
-        .try_into()
-        .map_err(|_| PublisherIngressError::Listener)?;
+pub(super) fn adopt_observed_listener(
+    descriptor: OwnedFd,
+) -> Result<RecordSubjectListener, PublisherIngressError> {
     let listener = RecordSubjectListener::from_owned(descriptor)
         .map_err(|_| PublisherIngressError::Listener)?;
     listener

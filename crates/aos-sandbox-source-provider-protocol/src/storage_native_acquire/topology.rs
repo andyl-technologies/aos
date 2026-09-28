@@ -70,7 +70,83 @@ pub(super) fn native_nonrecursive_topology(
     let receipt_digest = receipt.digest();
     let descriptor_digest = source_root_descriptor_commitment_v1(descriptor);
     let content_digest = receipt.receipt().snapshot().read_only_content_digest();
-    let topology_digest = ObjectDigest::from_bytes(
+    let topology_digest = topology_commitment(
+        authority_id,
+        cut_sequence,
+        request_digest,
+        receipt_digest,
+        descriptor_digest,
+        content_digest,
+        actual_nodes,
+        actual_logical_bytes,
+    );
+
+    RecursiveTopologyProofV1::new(
+        authority_id,
+        cut_sequence,
+        topology_digest,
+        actual_nodes,
+        actual_logical_bytes,
+        1,
+        0,
+    )
+    .map_err(|_| StorageNativeAcquireErrorV2::Noncanonical)
+}
+
+/// Checks canonical native topology commitments without authenticating Storage.
+///
+/// This permits a retained original lease to crosslink a Provider's later fence
+/// claims. It measures nothing, verifies no Storage signature and grants no
+/// descriptor, currentness or retirement authority.
+///
+/// # Errors
+///
+/// Rejects sentinel commitments, unsupported counts/mount shape or a digest
+/// that does not bind the exact supplied request/receipt/root/content tuple.
+pub fn validate_storage_native_topology_commitments_v1(
+    topology: &RecursiveTopologyProofV1,
+    request_digest: ObjectDigest,
+    receipt_digest: ObjectDigest,
+    descriptor_digest: ObjectDigest,
+    content_digest: ObjectDigest,
+) -> Result<(), StorageNativeAcquireErrorV2> {
+    require_profile_shape(topology)?;
+    if [
+        request_digest,
+        receipt_digest,
+        descriptor_digest,
+        content_digest,
+    ]
+    .iter()
+    .any(|digest| digest.as_bytes() == &[0; 32])
+        || topology.topology_digest()
+            != topology_commitment(
+                topology.authority_id(),
+                topology.generation(),
+                request_digest,
+                receipt_digest,
+                descriptor_digest,
+                content_digest,
+                topology.entry_count(),
+                topology.byte_count(),
+            )
+    {
+        return Err(StorageNativeAcquireErrorV2::Noncanonical);
+    }
+    Ok(())
+}
+
+fn topology_commitment(
+    authority_id: [u8; 16],
+    cut_sequence: u64,
+    request_digest: ObjectDigest,
+    receipt_digest: ObjectDigest,
+    descriptor_digest: ObjectDigest,
+    content_digest: ObjectDigest,
+    actual_nodes: u64,
+    actual_logical_bytes: u64,
+) -> ObjectDigest {
+    ObjectDigest::from_bytes(
         Sha256::new()
             .chain_update(DIGEST_DOMAIN)
             .chain_update(authority_id)
@@ -85,18 +161,7 @@ pub(super) fn native_nonrecursive_topology(
             .chain_update(0_u32.to_be_bytes())
             .finalize()
             .into(),
-    );
-
-    RecursiveTopologyProofV1::new(
-        authority_id,
-        cut_sequence,
-        topology_digest,
-        actual_nodes,
-        actual_logical_bytes,
-        1,
-        0,
     )
-    .map_err(|_| StorageNativeAcquireErrorV2::Noncanonical)
 }
 
 pub(super) fn require_profile_shape(

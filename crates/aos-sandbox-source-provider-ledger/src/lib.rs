@@ -720,6 +720,17 @@ pub fn validate_prospective_records<'record>(
         native.validate_provider_graph(attempt, acquisition)?;
     }
     for attempt in &attempts {
+        if attempt.method == aos_sandbox_source_provider_protocol::SourceProviderMethod::Release
+            && attempt.state == ProviderAttemptStateV1::Completed
+        {
+            ledger::native_completion::export_result::validate_native_export_fence_result_decoded(
+                &decoded,
+                attempt.attempt_digest,
+                &attempt.completed_response,
+            )?;
+        }
+    }
+    for attempt in &attempts {
         let Some(predecessor_digest) = attempt.recovery_predecessor_attempt_digest else {
             continue;
         };
@@ -1010,7 +1021,26 @@ pub fn validate_prospective_records<'record>(
                         .ok_or(LedgerFormatErrorV1::Corrupt(
                             "Faulted acquisition lease attempt",
                         ))?;
-                    ledger::reducer::validate_retained_lease(acquisition, lease_attempt)?;
+                    let release = releases
+                        .iter()
+                        .copied()
+                        .find(|release| release.acquisition_id == acquisition.acquisition_id)
+                        .map(|release| -> Result<_, LedgerFormatErrorV1> {
+                            let release_attempt = attempts
+                                .iter()
+                                .copied()
+                                .find(|attempt| attempt.attempt_digest == release.attempt_digest)
+                                .ok_or(LedgerFormatErrorV1::Corrupt(
+                                    "Faulted retained Release attempt",
+                                ))?;
+                            Ok((release, release_attempt))
+                        })
+                        .transpose()?;
+                    ledger::reducer::validate_faulted_retained_lease(
+                        acquisition,
+                        lease_attempt,
+                        release,
+                    )?;
                 }
             }
             DecodedRecordV1::Release(release) => {

@@ -551,7 +551,7 @@ pub(super) fn completed_status(
         SourceProviderMethod::Acquire => decode_acquire_response(&attempt.completed_response)
             .map(|response| response.signed_status().clone())
             .map_err(|_| ProviderLedgerError::Corrupt("retained Acquire response")),
-        SourceProviderMethod::Release => decode_release_response(&attempt.completed_response)
+        SourceProviderMethod::Release => aos_sandbox_source_provider_protocol::ReleaseSourceResponseProfileV2::from_canonical_bytes(&attempt.completed_response)
             .map(|response| response.signed_status().clone())
             .map_err(|_| ProviderLedgerError::Corrupt("retained Release response")),
         SourceProviderMethod::Inventory => decode_inventory_response(&attempt.completed_response)

@@ -100,7 +100,7 @@ in
       symbols = testing.mkSymbolCheck {
         pkg = self;
         libName = "libaos-fuse-transport.so";
-        symbols = ["aos_fuse_transport_run"];
+        symbols = ["aos_fuse_transport_run" "aos_fuse_transport_run_fallback_v2"];
       };
 
       link = testing.mkLinkCheck {
@@ -128,6 +128,12 @@ in
                          "operation-table ABI changed");
           _Static_assert(offsetof(struct aos_fuse_core_operations, lookup) == 32,
                          "operation-table field offset changed");
+          _Static_assert(sizeof(struct aos_fuse_fallback_operations_v2) == 136,
+                         "fallback operation-table ABI changed");
+          _Static_assert(offsetof(struct aos_fuse_fallback_operations_v2, open) == 112,
+                         "fallback operation-table embedding changed");
+          _Static_assert(sizeof(struct aos_fuse_fallback_limits_v2) == 80,
+                         "fallback limit-table ABI changed");
 
           int main(void) {
             int (*volatile run)(
@@ -160,8 +166,10 @@ in
           {
             name = "check";
             script = ''
+              # Inlining must not move packet-sized fixture scratch onto the stack.
               $CC -std=c17 -O2 \
                 -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
+                -Wframe-larger-than=65536 \
                 -DAOS_FUSE_TRANSPORT_TESTING \
                 -I. -I${pkgs.aos-fuse3}/include/fuse3 \
                 transport.c test.c -L${pkgs.aos-fuse3}/lib -lfuse3 \
@@ -179,13 +187,13 @@ in
 
       kernel-metadata = testing.mkVMTest {
         name = "aos-fuse-transport-kernel-metadata";
-        rootfsDeps = [self probeSource];
+        rootfsDeps = [self probeSource pkgs.linux-headers];
         memory = 256;
         testScript = ''
           test -c /dev/fuse
           cd /tmp
           gcc -std=c17 -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
-            -I${self}/include ${probeSource} \
+            -I${self}/include -I${pkgs.linux-headers}/include ${probeSource} \
             -L${self}/lib -Wl,-rpath,${self}/lib -laos-fuse-transport \
             -o aos-fuse-transport-probe
 
@@ -199,18 +207,34 @@ in
 
       kernel-rust-metadata = testing.mkVMTest {
         name = "aos-fuse-transport-kernel-rust-metadata";
-        rootfsDeps = [self probeSource rustWorker];
+        rootfsDeps = [self probeSource rustWorker pkgs.e2fsprogs pkgs.util-linux pkgs.coreutils pkgs.linux-headers];
         memory = 256;
         testScript = ''
           test -c /dev/fuse
           cd /tmp
           gcc -std=c17 -Wall -Wextra -Werror -Wconversion -Wsign-conversion \
-            -I${self}/include ${probeSource} \
+            -I${self}/include -I${pkgs.linux-headers}/include ${probeSource} \
             -L${self}/lib -Wl,-rpath,${self}/lib -laos-fuse-transport \
             -o aos-fuse-transport-probe
           unset LD_LIBRARY_PATH
           ./aos-fuse-transport-probe \
             --rust-worker ${rustWorker}/bin/aos-filesystem-fuse-kernel-worker
+
+          # Fixture-owned fs-verity data is not a production consumer grant.
+          # Reuse the same kernel mount/teardown coordinator and six-record
+          # worker; the added mode exercises only bounded file callbacks.
+          mkdir -p /var/lib/aos/fuse-fallback-proof
+          ${pkgs.coreutils}/bin/truncate -s 64M /tmp/fuse-fallback.img
+          ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -q -b 4096 -O verity /tmp/fuse-fallback.img
+          ${pkgs.util-linux}/bin/mount -o loop,nosuid,nodev \
+            /tmp/fuse-fallback.img /var/lib/aos/fuse-fallback-proof
+          chmod 0700 /var/lib/aos/fuse-fallback-proof
+          mkdir -m 0700 /var/lib/aos/fuse-fallback-proof/objects \
+            /var/lib/aos/fuse-fallback-proof/journal
+          ./aos-fuse-transport-probe --rust-fallback \
+            ${rustWorker}/bin/aos-filesystem-fuse-kernel-worker \
+            /var/lib/aos/fuse-fallback-proof
+          ${pkgs.util-linux}/bin/umount /var/lib/aos/fuse-fallback-proof
         '';
       };
 

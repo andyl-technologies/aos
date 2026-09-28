@@ -52,10 +52,56 @@ type PtyRegistry = Arc<Mutex<BTreeMap<[u8; 16], AttachedIo>>>;
 
 pub(super) struct AttachBridge {
     masters: PtyRegistry,
+    monitors: crate::monitor::MonitorRegistry,
     server: JoinHandle<()>,
 }
 
 impl AttachBridge {
+    pub(super) fn original_attach_v3(
+        &self,
+        action: aos_sandbox_agent::openssh_consume::OriginalAttachActionV3,
+        expected_binding: [u8; 32],
+        authority_expires_at: i64,
+        effect_deadline_boottime_nanoseconds: u64,
+        ticket: &[u8],
+        ledger: &Ledger,
+        deadline: Instant,
+    ) -> Result<
+        aos_sandbox_agent::openssh_consume::OriginalAttachObservationV3,
+        GuestProcessEffectErrorV1,
+    > {
+        if self.server.is_finished() {
+            return Err(GuestProcessEffectErrorV1::Unavailable(
+                "attach bridge stopped",
+            ));
+        }
+        let deadline = original_authority_deadline(
+            authority_expires_at,
+            effect_deadline_boottime_nanoseconds,
+        )?
+        .min(deadline);
+        self.monitors.with_original_attach_v3(
+            action,
+            expected_binding,
+            ticket,
+            ledger,
+            |pending, claim, recheck| {
+                transfer_original_io_v3(
+                    &self.masters,
+                    ledger,
+                    pending,
+                    claim,
+                    recheck,
+                    ticket,
+                    expected_binding,
+                    authority_expires_at,
+                    effect_deadline_boottime_nanoseconds,
+                    deadline,
+                )
+            },
+        )
+    }
+
     pub(super) fn start(ledger: Ledger) -> Result<Self, GuestProcessEffectErrorV1> {
         verify_socket_directory()?;
         let path = Path::new(SOCKET_PATH);
@@ -68,10 +114,29 @@ impl AttachBridge {
 
         let masters = Arc::new(Mutex::new(BTreeMap::new()));
         let registry = Arc::clone(&masters);
+        let monitors = crate::monitor::MonitorRegistry::default();
+        let monitor_registry = monitors.clone();
         let server = thread::Builder::new()
             .name("aos-guest-attach".into())
-            .spawn(move || serve(listener, ledger, registry))?;
-        Ok(Self { masters, server })
+            .spawn(move || serve(listener, ledger, registry, monitor_registry))?;
+        Ok(Self {
+            masters,
+            monitors,
+            server,
+        })
+    }
+
+    pub(super) fn bind_monitor_v2(
+        &self,
+        runtime: aos_sandbox_agent::openssh_gate_linux::OpenSshMonitorRuntimeV2,
+        ticket: &[u8],
+    ) -> Result<(), GuestProcessEffectErrorV1> {
+        if self.server.is_finished() {
+            return Err(GuestProcessEffectErrorV1::Unavailable(
+                "attach bridge stopped",
+            ));
+        }
+        self.monitors.install(runtime, ticket)
     }
 
     pub(super) fn register_pty(
@@ -123,12 +188,153 @@ impl AttachBridge {
     }
 
     pub(super) fn remove(&self, execution: [u8; 16]) -> Result<(), GuestProcessEffectErrorV1> {
+        // Owner effects already retain the shared barrier. Preserve lock order
+        // for the later held consume: barrier, monitor custody, I/O registry.
+        self.monitors.remove(execution)?;
         let mut masters = self.masters.lock().map_err(|_| {
             GuestProcessEffectErrorV1::Unavailable("attach bridge registry poisoned")
         })?;
         masters.remove(&execution);
         Ok(())
     }
+}
+
+fn original_authority_deadline(
+    expires_at: i64,
+    effect_deadline_boottime_nanoseconds: u64,
+) -> Result<Instant, GuestProcessEffectErrorV1> {
+    let expiry = u64::try_from(expires_at)
+        .map(Duration::from_secs)
+        .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
+    let remaining = expiry
+        .checked_sub(now)
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
+    let boot = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    let seconds =
+        u64::try_from(boot.tv_sec).map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
+    let nanoseconds =
+        u64::try_from(boot.tv_nsec).map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
+    let boot = seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanoseconds))
+        .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
+    let remaining_boot = effect_deadline_boottime_nanoseconds
+        .checked_sub(boot)
+        .filter(|value| *value > 0)
+        .map(Duration::from_nanos)
+        .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
+    Instant::now()
+        .checked_add(remaining.min(remaining_boot))
+        .ok_or(GuestProcessEffectErrorV1::InvalidRequest)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transfer_original_io_v3(
+    masters: &PtyRegistry,
+    ledger: &Ledger,
+    pending: &mut crate::monitor::RelayConnection,
+    claim: &OpenSshGateClaimV1,
+    recheck_custody: &mut dyn FnMut(
+        &crate::monitor::RelayConnection,
+    ) -> Result<(), GuestProcessEffectErrorV1>,
+    ticket: &[u8],
+    expected_binding: [u8; 32],
+    authority_expires_at: i64,
+    effect_deadline_boottime_nanoseconds: u64,
+    deadline: Instant,
+) -> Result<(), GuestProcessEffectErrorV1> {
+    crate::process::check_deadline(deadline)?;
+    let process = ledger.read_process_bytes(claim.binding.execution_id)?;
+    if read_gate_claim()? != *claim
+        || process.canceled
+        || process.terminal.is_some()
+        || !process_matches(&process)?
+    {
+        return Err(GuestProcessEffectErrorV1::InvalidRequest);
+    }
+    let mut masters = masters
+        .lock()
+        .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+    let io = masters
+        .get(&process.execution)
+        .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
+    let shape = process
+        .attach_io
+        .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
+    match (shape, io, claim.pty) {
+        (crate::ledger::AttachIoShapeV3::Pty, AttachedIo::Pty(_), true)
+        | (crate::ledger::AttachIoShapeV3::Stream, AttachedIo::Stream { .. }, false) => {}
+        _ => return Err(GuestProcessEffectErrorV1::LedgerConflict),
+    }
+
+    // Every rejection above is effect-free. Even an ambiguous SCM send after
+    // this exact durable reservation permanently consumes the logical slot.
+    ledger.reserve_original_attach_v3(
+        &process,
+        aos_sandbox_agent::openssh_ticket::ticket_digest_v2(ticket),
+        expected_binding,
+    )?;
+    crate::process::check_deadline(deadline)?;
+    original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
+    recheck_custody(pending)?;
+    if read_gate_claim()? != *claim || !process_matches(&process)? {
+        return Err(GuestProcessEffectErrorV1::InvalidRequest);
+    }
+    crate::process::check_deadline(deadline)?;
+    original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
+    match io {
+        AttachedIo::Pty(master) => pending
+            .socket
+            .send_with_descriptors(b"AOSGOK03", &[master.as_fd()])?,
+        AttachedIo::Stream {
+            input,
+            output,
+            error,
+        } => pending
+            .socket
+            .send_with_descriptors(b"AOSGOS03", &[input.as_fd(), output.as_fd(), error.as_fd()])?,
+    }
+
+    // Keep the same barrier and registry custody through kernel-identified
+    // receipt. Neither reflected bytes nor an ACK can nominate another child.
+    let reply = loop {
+        crate::process::check_deadline(deadline)?;
+        original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
+        match pending.socket.receive(8) {
+            Ok(record) => break record,
+            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
+                thread::sleep(Duration::from_millis(2));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+    let reply = pending
+        .socket
+        .bind_received(reply)
+        .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
+    let sender = reply.subject().credentials();
+    let connector = reply.peer().credentials();
+    if reply.payload() != b"AOSRID03"
+        || sender.pid() != connector.pid()
+        || sender.uid() != connector.uid()
+        || sender.gid() != connector.gid()
+        || !reply
+            .subject()
+            .is_alive()
+            .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?
+    {
+        return Err(GuestProcessEffectErrorV1::InvalidRequest);
+    }
+    drop(reply);
+    crate::process::check_deadline(deadline)?;
+    original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
+    recheck_custody(pending)?;
+    masters.remove(&process.execution);
+    Ok(())
 }
 
 fn bind_listener(path: &Path) -> Result<RecordSubjectListener, GuestProcessEffectErrorV1> {
@@ -173,13 +379,39 @@ fn verify_socket_directory() -> Result<(), GuestProcessEffectErrorV1> {
     Ok(())
 }
 
-fn serve(mut listener: RecordSubjectListener, ledger: Ledger, masters: PtyRegistry) {
+fn serve(
+    mut listener: RecordSubjectListener,
+    ledger: Ledger,
+    masters: PtyRegistry,
+    monitors: crate::monitor::MonitorRegistry,
+) {
     loop {
+        monitors.prune_closed(&ledger);
         if listener.validate_current().is_err() {
-            return;
+            break;
         }
         match listener.accept() {
             Ok(mut socket) => {
+                if socket.peer().credentials().uid() == 0 {
+                    // Only the measured live monitor can retain a binding.
+                    // Registration exposes no I/O and never reaches reserve.
+                    let barrier = ledger.effect_barrier();
+                    if let Ok(_current) = barrier.lock() {
+                        let _ = monitors.register(socket, &ledger);
+                    }
+                    continue;
+                }
+                if std::fs::symlink_metadata(
+                    aos_sandbox_agent::openssh_ticket::OPENSSH_TICKET_CLAIM_PATH_V2,
+                )
+                .is_ok()
+                {
+                    // The empty internal-relay request can only join the exact
+                    // pidfd received from the measured root monitor. It never
+                    // transfers descriptors or accepts reflected claim bytes.
+                    let _ = monitors.queue_relay(socket, &ledger);
+                    continue;
+                }
                 // Every accepted socket carries a pinned peer and a per-record
                 // subject. A denied request closes without an FD or success byte.
                 let _ = serve_one(&mut socket, &ledger, &masters);
@@ -190,6 +422,7 @@ fn serve(mut listener: RecordSubjectListener, ledger: Ledger, masters: PtyRegist
             Err(_) => thread::sleep(Duration::from_millis(5)),
         }
     }
+    monitors.close();
 }
 
 fn serve_one(
@@ -197,6 +430,18 @@ fn serve_one(
     ledger: &Ledger,
     masters: &PtyRegistry,
 ) -> Result<(), GuestProcessEffectErrorV1> {
+    let barrier = ledger.effect_barrier();
+    let _current = barrier
+        .lock()
+        .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+    // V2 is custody data only. An unprivileged callback/gate cannot turn it
+    // into authenticated custody. A later trusted monitor and held consume
+    // must supply that evidence before this route can transfer descriptors.
+    match std::fs::symlink_metadata(aos_sandbox_agent::openssh_ticket::OPENSSH_TICKET_CLAIM_PATH_V2)
+    {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        _ => return Err(GuestProcessEffectErrorV1::InvalidRequest),
+    }
     verify_executable(socket.peer().credentials().pid().get(), GATE_EXECUTABLE)?;
     let deadline = Instant::now() + PEER_DEADLINE;
     let received = loop {
@@ -333,7 +578,7 @@ fn read_gate_claim() -> Result<OpenSshGateClaimV1, GuestProcessEffectErrorV1> {
     Ok(claim)
 }
 
-fn request_matches(
+pub(super) fn request_matches(
     request: &OpenSshGateBridgeRequestV1,
     claim: &OpenSshGateClaimV1,
     process: &crate::ledger::ProcessRecord,

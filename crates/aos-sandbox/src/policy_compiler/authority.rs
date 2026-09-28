@@ -104,23 +104,7 @@ impl AuthenticatedEndpointCatalogV1 {
         entries: Vec<EndpointCatalogEntryV1>,
         verifier: &impl EndpointCatalogVerifierV1,
     ) -> Result<Self, EndpointCatalogError> {
-        if entries.len() > 4_096
-            || !entries
-                .windows(2)
-                .all(|pair| pair[0].endpoint < pair[1].endpoint)
-            || entries.iter().any(|entry| {
-                entry.endpoint.as_bytes() == &[0; 16]
-                    || entry.resource.as_bytes() == &[0; 16]
-                    || entry.policy_digest.as_bytes() == &[0; 32]
-            })
-        {
-            return Err(EndpointCatalogError::InvalidCatalog);
-        }
-        let bytes = canonical_bytes(b"aos.sandbox.endpoint-catalog.v2", &entries)
-            .map_err(|_| EndpointCatalogError::InvalidCatalog)?;
-        let media = MediaType::new(PortableMediaType::Content.as_str())
-            .map_err(|_| EndpointCatalogError::InvalidCatalog)?;
-        let descriptor = descriptor_for_bytes(media, &bytes);
+        let (descriptor, bytes) = canonical_endpoint_catalog_v1(&entries)?;
         if !verifier.verify(&descriptor, &bytes) {
             return Err(EndpointCatalogError::AuthenticationFailed);
         }
@@ -139,6 +123,34 @@ impl AuthenticatedEndpointCatalogV1 {
     pub fn entries(&self) -> &[EndpointCatalogEntryV1] {
         &self.entries
     }
+}
+
+/// Validates and encodes a catalog declaration without authenticating its owner.
+///
+/// # Errors
+///
+/// Rejects unordered, sentinel, oversized, or unencodable declarations.
+pub(super) fn canonical_endpoint_catalog_v1(
+    entries: &[EndpointCatalogEntryV1],
+) -> Result<(ObjectDescriptor, Vec<u8>), EndpointCatalogError> {
+    if entries.len() > 4_096
+        || !entries
+            .windows(2)
+            .all(|pair| pair[0].endpoint < pair[1].endpoint)
+        || entries.iter().any(|entry| {
+            entry.endpoint.as_bytes() == &[0; 16]
+                || entry.resource.as_bytes() == &[0; 16]
+                || entry.policy_digest.as_bytes() == &[0; 32]
+        })
+    {
+        return Err(EndpointCatalogError::InvalidCatalog);
+    }
+    let bytes = canonical_bytes(b"aos.sandbox.endpoint-catalog.v2", &entries)
+        .map_err(|_| EndpointCatalogError::InvalidCatalog)?;
+    let media = MediaType::new(PortableMediaType::Content.as_str())
+        .map_err(|_| EndpointCatalogError::InvalidCatalog)?;
+    let descriptor = descriptor_for_bytes(media, &bytes);
+    Ok((descriptor, bytes))
 }
 
 /// Reports invalid or unauthenticated endpoint catalog input.

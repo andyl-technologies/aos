@@ -31,6 +31,7 @@ compile_error!("the protected-journal test fixture is unavailable in release bui
 #[cfg(all(feature = "cache-physical-join-vm-fixture", not(debug_assertions)))]
 compile_error!("the Cache physical-join VM fixture is unavailable in release builds");
 
+mod attach_decision;
 pub mod attach_holder_proof;
 pub mod attach_route_issuer;
 #[cfg(target_os = "linux")]
@@ -61,6 +62,8 @@ pub mod controller_execution_output_settlement;
 pub mod controller_execution_preissue;
 #[cfg(target_os = "linux")]
 pub mod controller_execution_spec_attempt;
+#[cfg(target_os = "linux")]
+pub mod controller_fuse_admission;
 pub mod controller_no_apply_settlement_cursor;
 pub mod controller_query;
 #[cfg(target_os = "linux")]
@@ -196,6 +199,8 @@ pub use controller::{
     OperationCompilationError,
 };
 #[cfg(target_os = "linux")]
+pub use controller::{CurrentOriginalAttachConsumeCutV3, CurrentOriginalAttachHostConsumeDraftV3};
+#[cfg(target_os = "linux")]
 pub use destination_slot_effect::{
     CompletedCurrentDestinationSlotAttemptV1, DestinationSlotAttemptAdmissionOutcomeV1,
     DestinationSlotCompletionOutcomeV1, DestinationSlotDispatchClient, DestinationSlotEffectError,
@@ -232,8 +237,8 @@ pub use journal::{
     MountSourceAcquisitionJournalAuthorityV2, MountSourceConsumptionCommitReceipt,
     MountSourceConsumptionCompanionProjectionV2, MountSourceConsumptionJournalAuthorityV1,
     MountSourceConsumptionPreflight, MountSourceMigrationJournalAuthorityV2,
-    PreparedGlobalCapacityReservationV1, ProtectedJournalAuthority, ProtectedJournalPreflight,
-    ProtectedJournalSnapshot, RecordNamespace, RecoveryReport,
+    PreparedGlobalCapacityReservationV1, ProtectedJournalAuthority, ProtectedJournalLockCustodyV1,
+    ProtectedJournalPreflight, ProtectedJournalSnapshot, RecordNamespace, RecoveryReport,
 };
 pub use lifecycle_authority::{
     AtomicStorageLifecyclePublicationErrorV1, compile_atomic_storage_lifecycle_template_v1,

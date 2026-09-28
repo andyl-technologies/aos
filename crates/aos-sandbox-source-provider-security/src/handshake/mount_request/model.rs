@@ -226,6 +226,44 @@ pub struct VerifiedMountProviderOutcomeV2 {
         aos_sandbox_protocol::mount_source_acquisition_state::OutcomeVerificationAnchorV2,
     pub(super) cleanup_only_current_policy: bool,
     pub(super) terminal_lineages: Vec<VerifiedTerminalLineageV2>,
+    pub(super) native_export_fence_acceptance: Option<RootAcceptedNativeExportFenceV1>,
+}
+
+/// Retains Root's exact durable acceptance of a Provider-local export fence.
+///
+/// Only protected consumed-attempt readback constructs this receipt. It proves
+/// neither descriptor absence nor Storage retirement and is not a release
+/// proof or negative-custody authorization.
+/// Original Storage issuance identities are Provider-asserted historical
+/// lineage; this receipt does not independently verify Storage issuance.
+pub struct RootAcceptedNativeExportFenceV1 {
+    pub(super) acquisition_id: ObjectDigest,
+    pub(super) attempt: aos_sandbox_protocol::mount_source_acquisition_state::RecordRefV2,
+    pub(super) fence: aos_sandbox_source_provider_protocol::SignedSourceProviderNativeExportFenceV1,
+}
+
+impl RootAcceptedNativeExportFenceV1 {
+    /// Returns the Root acquisition whose consumed Release retains the fence.
+    #[must_use]
+    pub const fn acquisition_id(&self) -> ObjectDigest {
+        self.acquisition_id
+    }
+
+    /// Returns the exact immutable consumed Release attempt reference.
+    #[must_use]
+    pub const fn attempt(
+        &self,
+    ) -> aos_sandbox_protocol::mount_source_acquisition_state::RecordRefV2 {
+        self.attempt
+    }
+
+    /// Borrows the signed nonauthorizing claims retained by the consumed attempt.
+    #[must_use]
+    pub const fn fence(
+        &self,
+    ) -> &aos_sandbox_source_provider_protocol::SignedSourceProviderNativeExportFenceV1 {
+        &self.fence
+    }
 }
 
 pub(super) struct VerifiedTerminalLineageV2 {
@@ -1071,6 +1109,15 @@ impl MountProviderSignerProjectionV2 {
 }
 
 impl VerifiedMountProviderOutcomeV2 {
+    /// Borrows a native export fence accepted by exact protected Root readback.
+    ///
+    /// Mere receive/signature verification returns `None`. This receipt never
+    /// authorizes negative custody or dropping any retained SourceRoot.
+    #[must_use]
+    pub const fn native_export_fence_acceptance(&self) -> Option<&RootAcceptedNativeExportFenceV1> {
+        self.native_export_fence_acceptance.as_ref()
+    }
+
     /// Borrows the exact canonical provider response for tentative disposition construction.
     ///
     /// The bytes are nonauthorizing. A Complete Acquire remains unusable

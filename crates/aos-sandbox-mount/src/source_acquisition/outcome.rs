@@ -21,8 +21,8 @@ use aos_sandbox_source_provider_protocol::{
     InventoryLeaseStateV1, SignedSourceExportLeaseV1, SignedSourceProviderInventoryV1,
     SignedSourceProviderReceiptV1, SignedSourceReleaseReceiptV1, SourceProviderMethod,
     SourceProviderStatus, SourceRootObservationV1, SourceSelectionFloorV1, decode_acquire_response,
-    decode_inventory_response, decode_release_response, digest_inventory, digest_provider_proof,
-    digest_signed_export_lease, provider_resource_commitment_v1, response_result_digest_v1,
+    decode_inventory_response, digest_inventory, digest_provider_proof, digest_signed_export_lease,
+    provider_resource_commitment_v1, response_result_digest_v1,
     source_root_descriptor_commitment_v1,
 };
 use aos_sandbox_source_provider_security::{
@@ -305,7 +305,7 @@ impl SourceAcquisitionTableV2 {
         let observation = recovered.source_root_observation().cloned();
 
         match recovered.into_parts() {
-            RecoveredMountProviderOutcomePartsV2::WithoutSourceRoot(outcome) => {
+            RecoveredMountProviderOutcomePartsV2::WithoutSourceRoot(mut outcome) => {
                 if !already_consumed {
                     if self
                         .consume_verified_provider_outcome_v2(journal, attempt_id, &outcome, None)?
@@ -316,6 +316,9 @@ impl SourceAcquisitionTableV2 {
                         ));
                     }
                 }
+                session
+                    .seal_committed_native_export_fence_v1(journal, attempt_id, &mut outcome)
+                    .map_err(|_| state_error("native fence protected readback failed"))?;
                 Ok(RecoveredProviderOutcomeConsumptionV2::WithoutSourceRoot { outcome })
             }
             RecoveredMountProviderOutcomePartsV2::CompleteAcquire {
@@ -451,7 +454,7 @@ impl SourceAcquisitionTableV2 {
         let observation = received.source_root_observation().cloned();
 
         match received.into_parts() {
-            ReceivedMountProviderOutcomePartsV2::WithoutSourceRoot(outcome) => {
+            ReceivedMountProviderOutcomePartsV2::WithoutSourceRoot(mut outcome) => {
                 if self
                     .consume_verified_provider_outcome_v2(journal, attempt_id, &outcome, None)?
                     .is_some()
@@ -460,6 +463,9 @@ impl SourceAcquisitionTableV2 {
                         "provider outcome without a SourceRoot deferred an Acquire commit",
                     ));
                 }
+                session
+                    .seal_committed_native_export_fence_v1(journal, attempt_id, &mut outcome)
+                    .map_err(|_| state_error("native fence protected readback failed"))?;
                 Ok(ConsumedProviderOutcomeV2::WithoutSourceRoot { outcome })
             }
             ReceivedMountProviderOutcomePartsV2::CompleteAcquire {
@@ -588,6 +594,22 @@ impl SourceAcquisitionTableV2 {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn prepare_disposition_fixture(
+        &self,
+        head: SourceProviderHeadV2,
+        session: SourceProviderSessionV2,
+        attempt: SourceProviderQueryAttemptV2,
+        observation: Option<&SourceRootObservationV1>,
+    ) -> Result<(JournalTransaction, Self)> {
+        let reference = record_ref(&StoredRecordV2::ProviderQueryAttempt {
+            value: attempt.clone(),
+        })?;
+        let prepared =
+            self.prepare_acquisition_disposition(head, session, attempt, reference, observation)?;
+        Ok((prepared.transaction, prepared.tentative))
+    }
+
     fn prepare_acquisition_disposition(
         &self,
         current_head: SourceProviderHeadV2,
@@ -604,9 +626,18 @@ impl SourceAcquisitionTableV2 {
             .ok_or_else(|| state_error("provider disposition acquisition owner is absent"))?;
         let mut next_row = current_row.clone();
         next_row.revision = next_revision(current_row.revision)?;
+        let predecessor = self
+            .provider_attempts
+            .get(&next_attempt.attempt_id)
+            .ok_or_else(|| state_error("consumed disposition predecessor is absent"))?;
         match next_attempt.method {
             ProviderMethodV2::Acquire => {
-                next_row.acquire_lineage.tail = terminal_ref;
+                super::disposition_lineage::advance_consumed_lineage(
+                    &mut next_row.acquire_lineage,
+                    predecessor,
+                    &next_attempt,
+                    terminal_ref,
+                )?;
                 if consumed_status(&next_attempt)? == ProviderStatusV2::Complete {
                     next_row.acquire_terminal_attempt = Some(terminal_ref);
                     let evidence = acquire_evidence(&next_row, &next_attempt, &session)?;
@@ -633,7 +664,12 @@ impl SourceAcquisitionTableV2 {
                     .release_lineage
                     .as_mut()
                     .ok_or_else(|| state_error("provider Release owner lacks a lineage"))?;
-                lineage.tail = terminal_ref;
+                super::disposition_lineage::advance_consumed_lineage(
+                    lineage,
+                    predecessor,
+                    &next_attempt,
+                    terminal_ref,
+                )?;
                 if consumed_status(&next_attempt)? == ProviderStatusV2::Complete {
                     let release_generation = release_generation(&next_attempt)?;
                     next_row.release_terminal_attempt = Some(terminal_ref);
@@ -1187,13 +1223,13 @@ fn decode_disposition(method: ProviderMethodV2, response: &[u8]) -> Result<Decod
             )
         }
         ProviderMethodV2::Release => {
-            let decoded = decode_release_response(response)
+            let decoded = aos_sandbox_source_provider_protocol::ReleaseSourceResponseProfileV2::from_canonical_bytes(response)
                 .map_err(|_| state_error("verified Release response is invalid"))?;
             (
                 decoded.status(),
                 decoded.signed_status().to_canonical_bytes(),
                 decoded
-                    .signed_receipt()
+                    .signed_result()
                     .map_or_else(Vec::new, ToOwned::to_owned),
             )
         }

@@ -143,7 +143,11 @@ pub(super) fn encode_policy_revision(
     let length = u32::try_from(value.canonical_policy.len())
         .map_err(|_| PublisherPolicyError::LimitExceeded("policy bytes"))?;
     let mut bytes = Vec::with_capacity(84 + value.canonical_policy.len());
-    bytes.extend_from_slice(POLICY_REVISION_MAGIC);
+    bytes.extend_from_slice(if value.compiler_origin.is_some() {
+        b"AOSPOLR2"
+    } else {
+        POLICY_REVISION_MAGIC
+    });
     bytes.extend_from_slice(value.project.as_bytes());
     bytes.extend_from_slice(&value.generation.to_be_bytes());
     bytes.extend_from_slice(&value.not_before.to_be_bytes());
@@ -151,12 +155,22 @@ pub(super) fn encode_policy_revision(
     bytes.extend_from_slice(value.descriptor.digest().as_bytes());
     bytes.extend_from_slice(&length.to_be_bytes());
     bytes.extend_from_slice(&value.canonical_policy);
+    if let Some(origin) = &value.compiler_origin {
+        let origin_bytes = origin.to_record_bytes()?;
+        let length = u32::try_from(origin_bytes.len())
+            .map_err(|_| PublisherPolicyError::LimitExceeded("compiler origin bytes"))?;
+        bytes.extend_from_slice(&length.to_be_bytes());
+        bytes.extend_from_slice(&origin_bytes);
+    }
     Ok(bytes)
 }
 pub(super) fn decode_policy_revision(
     bytes: &[u8],
 ) -> Result<PreparedPublisherPolicyRevisionV1, PublisherPolicyError> {
-    if bytes.len() < 84 || &bytes[..8] != POLICY_REVISION_MAGIC {
+    if bytes.len() < 84
+        || bytes.len() > MAXIMUM_RECORD_BYTES
+        || (&bytes[..8] != POLICY_REVISION_MAGIC && &bytes[..8] != b"AOSPOLR2")
+    {
         return Err(PublisherPolicyError::CorruptState);
     }
     let project = ProjectId::from_bytes(array(bytes, 8)?);
@@ -165,24 +179,39 @@ pub(super) fn decode_policy_revision(
     let expires_at = i64::from_be_bytes(array(bytes, 40)?);
     let digest = ObjectDigest::from_bytes(array(bytes, 48)?);
     let length = u32::from_be_bytes(array(bytes, 80)?) as usize;
-    if bytes.len()
-        != 84usize
-            .checked_add(length)
-            .ok_or(PublisherPolicyError::CorruptState)?
-    {
+    let policy_end = 84usize
+        .checked_add(length)
+        .filter(|end| *end <= bytes.len())
+        .ok_or(PublisherPolicyError::CorruptState)?;
+    if &bytes[..8] == POLICY_REVISION_MAGIC && bytes.len() != policy_end {
         return Err(PublisherPolicyError::CorruptState);
     }
-    let value = PreparedPublisherPolicyRevisionV1::from_canonical_bytes(
+    let mut value = PreparedPublisherPolicyRevisionV1::from_canonical_bytes(
         project,
         generation,
         not_before,
         expires_at,
-        &bytes[84..],
+        &bytes[84..policy_end],
         DecodeLimits::default(),
     )
     .map_err(|_| PublisherPolicyError::CorruptState)?;
     if value.descriptor.digest() != digest {
         return Err(PublisherPolicyError::CorruptState);
+    }
+    if &bytes[..8] == b"AOSPOLR2" {
+        let origin_length = u32::from_be_bytes(array(bytes, policy_end)?) as usize;
+        let origin_start = policy_end
+            .checked_add(4)
+            .ok_or(PublisherPolicyError::CorruptState)?;
+        if origin_start.checked_add(origin_length) != Some(bytes.len()) {
+            return Err(PublisherPolicyError::CorruptState);
+        }
+        let origin = crate::policy_compiler::RetainedPublisherCompilerOriginV3::from_record_bytes(
+            &bytes[origin_start..],
+        )?;
+        value
+            .retain_compiler_origin(origin)
+            .map_err(|_| PublisherPolicyError::CorruptState)?;
     }
     Ok(value)
 }

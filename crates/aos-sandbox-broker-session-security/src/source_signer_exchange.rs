@@ -26,13 +26,16 @@ use aos_sandbox::journal::{
 };
 use aos_sandbox::policy_compiler::{
     PinnedSourceHoldReadbackSignerV1, SOURCE_HOLD_READBACK_BYTES_V1, SOURCE_HOLD_READBACK_BYTES_V2,
-    SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1, SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1,
-    SourceHoldReadbackChallengeV1, StagedClosedPolicySignerChallengeV2,
-    sign_fixed_source_project_admission_readback_v1,
+    SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V1,
+    SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1,
+    SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1, SourceHoldReadbackChallengeV1,
+    StagedClosedPolicySignerChallengeV2, sign_fixed_source_project_admission_readback_v1,
+    sign_fixed_source_project_completed_terminal_readback_v1,
     sign_fixed_source_project_reservation_readback_v1,
     sign_fixed_source_project_retirement_readback_v1, sign_fixed_source_signer_readback_v1,
     sign_fixed_source_signer_readback_v2, verify_current_source_hold_readback_v1,
     verify_source_hold_readback_with_names_v2, verify_source_project_admission_readback_v1,
+    verify_source_project_completed_terminal_readback_v1,
     verify_source_project_reservation_readback_v1, verify_source_project_retirement_readback_v1,
 };
 use aos_sandbox_core::{ObjectDigest, ProjectId};
@@ -54,6 +57,9 @@ const REQUEST_RETIREMENT_MAGIC: &[u8; 8] = b"AOSSSR04";
 const REPLY_RETIREMENT_MAGIC: &[u8; 8] = b"AOSSSP04";
 const REQUEST_RESERVATION_MAGIC: &[u8; 8] = b"AOSSSR05";
 const REPLY_RESERVATION_MAGIC: &[u8; 8] = b"AOSSSP05";
+const REQUEST_COMPLETED_MAGIC: &[u8; 8] = b"AOSSSR06";
+const REPLY_COMPLETED_MAGIC: &[u8; 8] = b"AOSSSP06";
+const REPLY_COMPLETED_BYTES: usize = 8 + SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1;
 const REQUEST_BYTES: usize = 72;
 const REPLY_BYTES: usize = 8 + SOURCE_HOLD_READBACK_BYTES_V1;
 const REPLY_NAMES_BYTES: usize = 8 + SOURCE_HOLD_READBACK_BYTES_V2;
@@ -61,6 +67,42 @@ const REPLY_PROJECT_BYTES: usize = 8 + SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V
 const REPLY_RESERVATION_BYTES: usize = 8 + SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1;
 const FLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Requests only the exact completed Source terminal from its existing reader.
+///
+/// # Errors
+///
+/// Rejects foreign fixed peer/custody, pin or completed issue substitution,
+/// changed physical names, framing, and transport loss. This packet never
+/// establishes positive ancestry or latest deployment authority.
+pub fn request_root_source_project_completed_terminal_readback_v1(
+    expected: SourceProjectAdmissionReservationV1,
+    root_terminal: ObjectDigest,
+    signer: &PinnedSourceHoldReadbackSignerV1,
+    signer_uid: u32,
+    socket_gid: u32,
+) -> io::Result<[u8; SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1]> {
+    if signer_uid == 0 || socket_gid == 0 {
+        return Err(invalid_data("invalid Source signer identity"));
+    }
+    let challenge = SourceHoldReadbackChallengeV1::new(expected.client_nonce(), root_terminal)
+        .map_err(io::Error::other)?;
+    let mut stream = connect_source_signer(signer_uid, socket_gid)?;
+    let mut request = encode_request(challenge, expected.project());
+    request[..8].copy_from_slice(REQUEST_COMPLETED_MAGIC);
+    stream.write_all(&request)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let packet = read_framed_reply::<
+        REPLY_COMPLETED_BYTES,
+        SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1,
+    >(&mut stream, REPLY_COMPLETED_MAGIC)?;
+    let verified = verify_source_project_completed_terminal_readback_v1(&packet, signer, challenge)
+        .map_err(io::Error::other)?;
+    if verified.reservation() != expected || verified.names() != expected.names() {
+        return Err(invalid_data("changed Source completed issue"));
+    }
+    Ok(packet)
+}
 
 /// Requests a Source-only signature as the root policy peer and checks its expected hold.
 ///
@@ -474,7 +516,15 @@ fn serve_request(
     }
     let (challenge, project, mode) = decode_request_mode(&request)?;
     let signing_key = credentials.signing_key()?;
-    if mode == SourceSignerRequestModeV1::ProjectAdmission {
+    if mode == SourceSignerRequestModeV1::ProjectCompletedTerminal {
+        let packet = sign_fixed_source_project_completed_terminal_readback_v1(
+            controller_uid,
+            challenge,
+            credentials.generation(),
+            &signing_key,
+        )?;
+        write_framed_reply::<REPLY_COMPLETED_BYTES>(stream, REPLY_COMPLETED_MAGIC, &packet)?;
+    } else if mode == SourceSignerRequestModeV1::ProjectAdmission {
         let packet = sign_fixed_source_project_admission_readback_v1(
             controller_uid,
             project,
@@ -559,6 +609,9 @@ fn decode_request_mode(
         Some(magic) if magic == REQUEST_RESERVATION_MAGIC => {
             SourceSignerRequestModeV1::ProjectReservation
         }
+        Some(magic) if magic == REQUEST_COMPLETED_MAGIC => {
+            SourceSignerRequestModeV1::ProjectCompletedTerminal
+        }
         _ => return Err(invalid_data("foreign Source signer request")),
     };
     let mut canonical = *request;
@@ -574,6 +627,7 @@ enum SourceSignerRequestModeV1 {
     ProjectAdmission,
     ProjectRetirement,
     ProjectReservation,
+    ProjectCompletedTerminal,
 }
 
 #[cfg(test)]
@@ -686,6 +740,18 @@ mod tests {
                 SourceSignerRequestModeV1::ProjectReservation
             )
         );
+        let mut completed = bytes;
+        completed[..8].copy_from_slice(REQUEST_COMPLETED_MAGIC);
+        assert_eq!(
+            decode_request_mode(&completed).unwrap(),
+            (
+                challenge,
+                project,
+                SourceSignerRequestModeV1::ProjectCompletedTerminal
+            )
+        );
+        completed[8..24].fill(0);
+        assert!(decode_request_mode(&completed).is_err());
 
         let mut foreign = bytes;
         foreign[..8].copy_from_slice(b"AOSCSC02");
@@ -715,5 +781,30 @@ mod tests {
         assert!(read(REPLY_NAMES_MAGIC, &[]).is_ok());
         assert!(read(REPLY_MAGIC, &[]).is_err());
         assert!(read(REPLY_NAMES_MAGIC, &[1]).is_err());
+    }
+
+    #[test]
+    fn completed_terminal_reply_rejects_pending_domain_width_and_trailing_bytes() {
+        let read = |bytes: &[u8]| {
+            let (mut root, mut signer) = UnixStream::pair().unwrap();
+            signer.write_all(bytes).unwrap();
+            signer.shutdown(std::net::Shutdown::Write).unwrap();
+            read_framed_reply::<
+                REPLY_COMPLETED_BYTES,
+                SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1,
+            >(&mut root, REPLY_COMPLETED_MAGIC)
+        };
+        let mut completed = [0; REPLY_COMPLETED_BYTES];
+        completed[..8].copy_from_slice(REPLY_COMPLETED_MAGIC);
+        completed[8..].fill(7);
+        assert_eq!(
+            read(&completed).unwrap(),
+            [7; SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1]
+        );
+        let mut pending_domain = completed;
+        pending_domain[..8].copy_from_slice(REPLY_PROJECT_MAGIC);
+        assert!(read(&pending_domain).is_err());
+        assert!(read(&completed[..completed.len() - 1]).is_err());
+        assert!(read(&[completed.as_slice(), &[1]].concat()).is_err());
     }
 }

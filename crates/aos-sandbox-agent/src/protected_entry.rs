@@ -238,6 +238,47 @@ pub trait GuestOperationEffectsV1 {
     ) -> Result<OpenSshGateReadbackV1, ProtectedGuestAgentErrorV1> {
         Err(ProtectedGuestAgentErrorV1::EffectUnavailable)
     }
+
+    /// Binds original ticket data and freshly measures its protected installation.
+    ///
+    /// # Errors
+    /// Rejects unsupported effects, substitution, stale runtime, or failed readback.
+    /// The result is physical evidence only, never authenticated SSH custody.
+    fn bind_openssh_ticket_v2(
+        &mut self,
+        _request: &OpenSshGateObserveRequestV1,
+        _ticket: &[u8],
+        _runtime: &AgentRuntimeBindingV1,
+        _channel: ObjectDigest,
+        _deadline: Instant,
+    ) -> Result<(OpenSshGateReadbackV1, [u8; 32]), ProtectedGuestAgentErrorV1> {
+        Err(ProtectedGuestAgentErrorV1::EffectUnavailable)
+    }
+
+    /// Polls or consumes an immutable ticket under the Guest's shared owner cut.
+    ///
+    /// # Errors
+    /// Rejects unsupported effects or missing exact live custody/current process.
+    fn original_attach_v3(
+        &mut self,
+        _action: crate::openssh_consume::OriginalAttachActionV3,
+        _binding: [u8; 32],
+        _authority_expires_at: i64,
+        _effect_deadline_boottime_nanoseconds: u64,
+        _request: &OpenSshGateObserveRequestV1,
+        _ticket: &[u8],
+        _runtime: &AgentRuntimeBindingV1,
+        _channel: ObjectDigest,
+        _deadline: Instant,
+    ) -> Result<
+        (
+            OpenSshGateReadbackV1,
+            crate::openssh_consume::OriginalAttachObservationV3,
+        ),
+        ProtectedGuestAgentErrorV1,
+    > {
+        Err(ProtectedGuestAgentErrorV1::EffectUnavailable)
+    }
 }
 
 /// Conservatively handles the source-only guest without launching a process.
@@ -411,6 +452,112 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
                         MAX_AGENT_SEALED_SPEC_BYTES_V1 as u64,
                         |bytes, _| reference.reconstruct(bytes),
                     )??
+                }
+                AgentFrameV1::OriginalAttachRequestV3(bytes) => {
+                    if !descriptors.is_empty() {
+                        return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame);
+                    }
+                    let (
+                        action,
+                        custody,
+                        authority_expires_at,
+                        effect_deadline_boottime_nanoseconds,
+                        observe,
+                        ticket,
+                    ) = crate::openssh_consume::decode_original_attach_request_v3(&bytes)
+                        .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
+                    if observe.session_binding != *binding.digest().as_bytes()
+                        || observe.binding.incarnation_id
+                            != *provisioning.runtime.incarnation().as_bytes()
+                        || observe.binding.assignment_epoch
+                            != provisioning.runtime.assignment_epoch().get()
+                    {
+                        return Err(ProtectedGuestAgentErrorV1::SessionMismatch);
+                    }
+                    let (readback, observation) = self.effects.original_attach_v3(
+                        action,
+                        custody,
+                        authority_expires_at,
+                        effect_deadline_boottime_nanoseconds,
+                        &observe,
+                        ticket,
+                        &provisioning.runtime,
+                        provisioning.channel,
+                        deadline,
+                    )?;
+                    check_deadline(deadline)?;
+                    if readback.challenge != observe.challenge
+                        || readback.route_digest != observe.route_digest
+                        || readback.channel_binding != *provisioning.channel.as_bytes()
+                        || readback.binding != observe.binding
+                        || (action == crate::openssh_consume::OriginalAttachActionV3::Consume
+                            && (observation.binding != custody
+                                || observation.phase
+                                    != crate::openssh_consume::OriginalAttachPhaseV3::Transferred))
+                    {
+                        return Err(ProtectedGuestAgentErrorV1::InvalidGateRequest);
+                    }
+                    let physical = crate::openssh_ticket::sign_ticket_gate_readback_v2(
+                        &readback,
+                        crate::openssh_ticket::ticket_digest_v2(ticket),
+                        &provisioning.signing_key,
+                    )
+                    .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
+                    let response = crate::openssh_consume::encode_original_attach_response_v3(
+                        &observation,
+                        &physical,
+                    )
+                    .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
+                    send(
+                        &mut socket,
+                        &encode_frame_v1(&AgentFrameV1::OriginalAttachResponseV3(response)),
+                        deadline,
+                    )?;
+                    continue;
+                }
+                AgentFrameV1::OpenSshTicketBindRequestV2(bytes) => {
+                    if !descriptors.is_empty() {
+                        return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame);
+                    }
+                    let (observe, ticket) =
+                        crate::openssh_ticket::decode_ticket_gate_request_v2(&bytes)
+                            .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
+                    if observe.session_binding != *binding.digest().as_bytes()
+                        || observe.binding.incarnation_id
+                            != *provisioning.runtime.incarnation().as_bytes()
+                        || observe.binding.assignment_epoch
+                            != provisioning.runtime.assignment_epoch().get()
+                    {
+                        return Err(ProtectedGuestAgentErrorV1::SessionMismatch);
+                    }
+                    let (readback, digest) = self.effects.bind_openssh_ticket_v2(
+                        &observe,
+                        ticket,
+                        &provisioning.runtime,
+                        provisioning.channel,
+                        deadline,
+                    )?;
+                    check_deadline(deadline)?;
+                    if readback.challenge != observe.challenge
+                        || readback.route_digest != observe.route_digest
+                        || readback.channel_binding != *provisioning.channel.as_bytes()
+                        || readback.binding != observe.binding
+                        || digest != crate::openssh_ticket::ticket_digest_v2(ticket)
+                    {
+                        return Err(ProtectedGuestAgentErrorV1::InvalidGateRequest);
+                    }
+                    let packet = crate::openssh_ticket::sign_ticket_gate_readback_v2(
+                        &readback,
+                        digest,
+                        &provisioning.signing_key,
+                    )
+                    .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
+                    send(
+                        &mut socket,
+                        &encode_frame_v1(&AgentFrameV1::OpenSshTicketReadbackV2(packet)),
+                        deadline,
+                    )?;
+                    continue;
                 }
                 AgentFrameV1::OpenSshGateObserveRequest(bytes) => {
                     if !descriptors.is_empty() {

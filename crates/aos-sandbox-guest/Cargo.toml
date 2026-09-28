@@ -20,11 +20,14 @@ path = "src/init.rs"
 aos-sandbox-agent.workspace = true
 aos-sandbox-core.workspace = true
 aos-sandbox-linux.workspace = true
-rustix = { workspace = true, features = ["fs", "process", "pty", "termios"] }
+rustix = { workspace = true, features = ["fs", "process", "pty", "termios", "time"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

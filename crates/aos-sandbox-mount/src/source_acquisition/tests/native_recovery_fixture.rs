@@ -8,6 +8,9 @@
 #[path = "native_recovery_fixture/installed_vm.rs"]
 mod installed_vm;
 
+#[path = "native_recovery_fixture/disposition.rs"]
+mod disposition;
+
 use aos_proto::aos::sandbox::local::v1::{
     AcquireMountSourceRequest, ApplyMountRequest, Audience, MountAction, MountSourceConsistency,
 };

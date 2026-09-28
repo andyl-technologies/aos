@@ -21,6 +21,7 @@ mod migration;
 mod migration_v1;
 #[doc(hidden)]
 pub mod model;
+pub mod native_export_fence;
 #[doc(hidden)]
 pub mod projection;
 mod validation;

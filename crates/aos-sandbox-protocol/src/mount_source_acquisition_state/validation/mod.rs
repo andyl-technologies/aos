@@ -60,6 +60,8 @@ mod session;
 
 use artifact::*;
 use common::*;
+
+pub(super) use common::{exact_attempt, exact_session};
 use inventory::*;
 use lineage::*;
 use predecessor::*;

@@ -23,12 +23,21 @@ use crate::{IdempotencyKey, Journal, JournalError};
 ///
 /// The authorization proof remains private so downstream planning can consume
 /// this value but cannot construct one from request bytes alone.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct AuthorizedPublicMutationRequestV1 {
     request: ResolvedPublicMutationRequestV1,
     authorization: crate::cli_model::PublicMutationAuthorizationV1,
     caller: PrincipalId,
     project: ProjectId,
+    fuse_authority: Option<crate::controller_fuse_admission::AdmissionAuthorityV1>,
+    original_request: Vec<u8>,
+    original_trust: [[u8; 32]; 4],
+}
+
+impl std::fmt::Debug for AuthorizedPublicMutationRequestV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AuthorizedPublicMutationRequestV1(<redacted>)")
+    }
 }
 
 impl AuthorizedPublicMutationRequestV1 {
@@ -74,19 +83,50 @@ impl AuthorizedPublicMutationRequestV1 {
                 return Err(PublicMutationAuthorizationErrorV1::Rejected);
             }
         }
-        let authorization = crate::controller::authorize_resolved_public_mutation_v1(
-            journal,
-            peer,
-            capability_id,
-            &request,
-        )
-        .map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?;
+        let (authorization, checked_admission) =
+            crate::controller::authorize_resolved_public_mutation_v1(
+                journal,
+                peer,
+                capability_id,
+                &request,
+            )
+            .map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?;
+
+        let fuse_authority = if matches!(
+            request.request(),
+            DormantSandboxRequestKindV1::ViewAttach(_)
+                | DormantSandboxRequestKindV1::ViewReplace(_)
+        ) {
+            Some(
+                crate::controller_fuse_admission::AdmissionAuthorityV1::capture(
+                    journal,
+                    peer,
+                    &checked_admission,
+                    authorization,
+                )?,
+            )
+        } else {
+            None
+        };
+
+        let attach = matches!(request.request(), DormantSandboxRequestKindV1::ExecutionControl(control)
+            if control.action.as_known() == Some(aos_proto::aos::sandbox::v1::ExecutionControlAction::EXECUTION_CONTROL_ACTION_ATTACH));
+        let original_request = if attach { encoded.to_vec() } else { Vec::new() };
+        let original_trust = if attach {
+            peer.original_trust_coordinates()
+                .map_err(|_| PublicMutationAuthorizationErrorV1::Rejected)?
+        } else {
+            [[0; 32]; 4]
+        };
 
         Ok(Self {
             request,
             authorization,
             caller: peer.principal(),
             project: peer.project(),
+            fuse_authority,
+            original_request,
+            original_trust,
         })
     }
 
@@ -123,6 +163,9 @@ impl AuthorizedPublicMutationRequestV1 {
             ),
             caller: PrincipalId::from_bytes([1; 16]),
             project: ProjectId::from_bytes([2; 16]),
+            fuse_authority: None,
+            original_request: Vec::new(),
+            original_trust: [[0; 32]; 4],
         }
     }
 
@@ -136,6 +179,41 @@ impl AuthorizedPublicMutationRequestV1 {
     #[must_use]
     pub(crate) const fn accepted_wall_seconds(&self) -> i64 {
         self.authorization.accepted_wall_seconds()
+    }
+
+    /// Returns the immutable capability and policy limit accepted for attachment.
+    ///
+    /// The checked capability registry already requires every child expiry to
+    /// remain within all retained ancestors. This projection does not reissue
+    /// authority or replace the current authorization checks.
+    #[must_use]
+    pub(crate) fn original_attach_authority_expires_at(&self) -> Option<i64> {
+        self.authorization
+            .original_coordinates()
+            .map(|coordinates| {
+                coordinates
+                    .capability_expires_at
+                    .min(coordinates.policy_expires_at)
+            })
+    }
+
+    /// Encodes historical custody from this already checked attach decision.
+    ///
+    /// # Errors
+    /// Rejects absent attach-only original request/trust or protected coordinates.
+    pub(crate) fn original_attach_decision(
+        &self,
+    ) -> Result<Vec<u8>, crate::attach_route_issuer::AttachRouteIssuanceErrorV1> {
+        crate::attach_decision::encode_original_decision(
+            &self.original_request,
+            self.authorization
+                .original_coordinates()
+                .ok_or(crate::attach_route_issuer::AttachRouteIssuanceErrorV1::DurableRecord)?,
+            self.original_trust,
+            self.caller,
+            self.project,
+            self.accepted_wall_seconds(),
+        )
     }
 
     /// Returns the exact protected policy generation used by authorization.
@@ -154,6 +232,12 @@ impl AuthorizedPublicMutationRequestV1 {
     #[must_use]
     pub(crate) const fn project(&self) -> ProjectId {
         self.project
+    }
+
+    pub(crate) const fn fuse_authority(
+        &self,
+    ) -> Option<&crate::controller_fuse_admission::AdmissionAuthorityV1> {
+        self.fuse_authority.as_ref()
     }
 }
 
@@ -629,6 +713,68 @@ mod handle_decode_tests {
     use buffa::Message as _;
 
     use super::*;
+
+    #[test]
+    fn accepted_attach_lifetime_projects_original_capability_and_policy_minimum() {
+        use crate::cli_model::provenance::OriginalPublicMutationCoordinatesV2;
+
+        let request = aos_proto::aos::sandbox::v1::DeleteSandboxRequest {
+            sandbox_id: vec![1; 16],
+            mutation: Some(aos_proto::aos::sandbox::v1::MutationContext {
+                idempotency_key: vec![2; 16],
+                expected_resource_version: vec![3; 32],
+                operation_timeout: Some(aos_proto::aos::sandbox::v1::Duration {
+                    nanoseconds: 1,
+                    ..Default::default()
+                })
+                .into(),
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        };
+        let encoded = PublicMutationRequestV1::new(
+            PublicApiAuditMethodV1::DeleteSandbox,
+            &request.encode_to_vec(),
+        )
+        .unwrap()
+        .encode();
+        let mut accepted = AuthorizedPublicMutationRequestV1::test_authorized_delete(&encoded);
+        assert_eq!(accepted.original_attach_authority_expires_at(), None);
+
+        for (capability_expires_at, policy_expires_at, expected) in
+            [(40, 70, 40), (70, 40, 40), (40, 40, 40)]
+        {
+            let coordinates = OriginalPublicMutationCoordinatesV2 {
+                capability: [4; 16],
+                revocation_scope: [5; 16],
+                revocation_generation: 1,
+                policy_digest: [6; 32],
+                policy_generation: 1,
+                controller: [7; 16],
+                controller_generation: 1,
+                capability_not_before: 1,
+                capability_expires_at,
+                policy_not_before: 1,
+                policy_expires_at,
+                channel_binding: [8; 32],
+                session_commitment: [9; 32],
+                authorization_revision: [10; 32],
+            };
+            accepted.authorization = accepted
+                .authorization
+                .with_original_coordinates(coordinates);
+
+            assert_eq!(
+                accepted.original_attach_authority_expires_at(),
+                Some(expected)
+            );
+            assert_eq!(
+                accepted.authorization.original_coordinates(),
+                Some(coordinates)
+            );
+        }
+    }
 
     #[test]
     fn structural_replay_decode_defers_capability_selector_until_protected_lookup() {

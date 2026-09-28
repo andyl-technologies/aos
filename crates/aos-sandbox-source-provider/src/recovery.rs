@@ -332,6 +332,51 @@ pub(crate) fn recover_records<'record>(
             .validate_provider_graph(attempt, acquisition)
             .map_err(crate::transaction::map_pure_ledger_error)?;
     }
+    for attempt in attempts.values().filter(|attempt| {
+        attempt.method == SourceProviderMethod::Release
+            && attempt.state == ProviderAttemptStateV1::Completed
+    }) {
+        let response = aos_sandbox_source_provider_protocol::ReleaseSourceResponseProfileV2::from_canonical_bytes(&attempt.completed_response)
+            .map_err(|_| ProviderLedgerError::Corrupt("native fence retained response"))?;
+        let Some(fence) = response.native_fence() else {
+            continue;
+        };
+        let acquisition = acquisitions
+            .values()
+            .find(|row| row.current_attempt_digest == attempt.attempt_digest)
+            .ok_or(ProviderLedgerError::Corrupt(
+                "native fence current acquisition",
+            ))?;
+        let native = native_completions.get(&acquisition.acquisition_id).ok_or(
+            ProviderLedgerError::Corrupt("native fence retained carrier"),
+        )?;
+        let original = attempts
+            .values()
+            .find(|row| row.attempt_digest == native.attempt_digest)
+            .ok_or(ProviderLedgerError::Corrupt(
+                "native fence original Acquire",
+            ))?;
+        let release = releases
+            .values()
+            .find(|row| row.attempt_digest == attempt.attempt_digest)
+            .ok_or(ProviderLedgerError::Corrupt("native fence Release intent"))?;
+        let session = session_history
+            .get(&(
+                attempt.provider.authority_id(),
+                attempt.holder.authority_id(),
+                attempt.session_binding,
+            ))
+            .ok_or(ProviderLedgerError::Corrupt("native fence Release history"))?;
+        let cut = fence.subject().cut();
+        let expected = crate::ledger::native_completion::export_result::native_export_fence_subject_from_join_v1(
+            acquisition, native, original, release, attempt, session, cut.sequence, cut.admission_transaction_id, cut.reservation_id,
+        ).map_err(crate::transaction::map_pure_ledger_error)?;
+        if fence.subject() != &expected || fence.signer() != &session.signers[3] {
+            return Err(ProviderLedgerError::Corrupt(
+                "native fence retained graph mismatch",
+            ));
+        }
+    }
     Ok(RecoveredProviderLedgerV1 {
         authority,
         catalog,

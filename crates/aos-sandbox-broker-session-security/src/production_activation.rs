@@ -73,6 +73,7 @@ struct FixedListenerV1 {
 #[must_use = "retain the activation owner while accepting broker sessions"]
 pub struct ProductionBrokerSessionActivationV1 {
     listeners: Vec<FixedListenerV1>,
+    launch_image: Option<crate::production_startup::Pid1LaunchImageV1>,
 }
 
 impl core::fmt::Debug for ProductionBrokerSessionActivationV1 {
@@ -85,6 +86,13 @@ impl core::fmt::Debug for ProductionBrokerSessionActivationV1 {
 }
 
 impl ProductionBrokerSessionActivationV1 {
+    pub(crate) fn retain_launch_image(
+        &mut self,
+        image: Option<crate::production_startup::Pid1LaunchImageV1>,
+    ) {
+        self.launch_image = image;
+    }
+
     /// Adopts the controller-, RootMount-, and Storage-facing Host listeners.
     ///
     /// # Safety
@@ -151,7 +159,10 @@ impl ProductionBrokerSessionActivationV1 {
             listener.require_local_filesystem_path(Path::new(endpoint.production_socket_path()))?;
             fixed.push(FixedListenerV1 { endpoint, listener });
         }
-        Ok(Self { listeners: fixed })
+        Ok(Self {
+            listeners: fixed,
+            launch_image: None,
+        })
     }
 
     /// Adopts the sole fixed Storage listener.
@@ -190,6 +201,7 @@ impl ProductionBrokerSessionActivationV1 {
         listener.require_local_filesystem_path(Path::new(endpoint.production_socket_path()))?;
         Ok(Self {
             listeners: vec![FixedListenerV1 { endpoint, listener }],
+            launch_image: None,
         })
     }
 
@@ -320,6 +332,9 @@ impl ProductionBrokerSessionActivationV1 {
                 let custody =
                     ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(fixed.endpoint)
                         .map_err(DormantBrokerSessionHandshakeErrorV1::Protected)?;
+                let custody = custody
+                    .retain_launch_image(self.launch_image.clone())
+                    .map_err(DormantBrokerSessionHandshakeErrorV1::Protected)?;
                 return custody
                     .complete_production_broker_handshake(socket, deadline_boottime_nanoseconds)
                     .map_err(Into::into);
@@ -368,7 +383,10 @@ impl ProductionBrokerSessionActivationV1 {
             ));
         }
 
-        Ok(Self { listeners })
+        Ok(Self {
+            listeners,
+            launch_image: None,
+        })
     }
 
     fn from_owned_listener(
@@ -379,6 +397,7 @@ impl ProductionBrokerSessionActivationV1 {
         listener.require_local_filesystem_path(Path::new(endpoint.production_socket_path()))?;
         Ok(Self {
             listeners: vec![FixedListenerV1 { endpoint, listener }],
+            launch_image: None,
         })
     }
 
@@ -435,6 +454,17 @@ pub(crate) fn activation_names(
     let names = std::env::var("LISTEN_FDNAMES").map_err(|_| {
         ProductionBrokerSessionActivationErrorV1::Activation("LISTEN_FDNAMES is absent")
     })?;
+    let maximum_bytes = expected_descriptors.checked_mul(256).ok_or(
+        ProductionBrokerSessionActivationErrorV1::Activation("activation name bound overflows"),
+    )?;
+    if names.len() > maximum_bytes
+        || !names.is_ascii()
+        || names.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err(ProductionBrokerSessionActivationErrorV1::Activation(
+            "activation names exceed fixed bounds",
+        ));
+    }
     let names = names.split(':').map(str::to_owned).collect::<Vec<_>>();
     if names.len() != expected_descriptors || names.iter().any(String::is_empty) {
         return Err(ProductionBrokerSessionActivationErrorV1::Activation(

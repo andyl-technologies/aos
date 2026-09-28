@@ -689,7 +689,7 @@ impl CurrentProviderIngressSessionV1 {
                 committed.method,
                 &response,
             )
-            || !journal_retains_exact_artifact(journal, &response)?
+            || !journal_retains_exportable_artifact(journal, &response)?
         {
             return Err(SourceProviderSecurityError::SessionContinuity);
         }
@@ -781,7 +781,7 @@ impl CurrentProviderIngressSessionV1 {
                         &response,
                     ),
                 )
-            || !journal_retains_exact_artifact(journal, &response)?
+            || !journal_retains_exportable_artifact(journal, &response)?
         {
             return Err(SourceProviderSecurityError::SessionContinuity);
         }
@@ -896,7 +896,7 @@ impl CurrentProviderIngressSessionV1 {
                 &replay.response,
                 source_root.as_ref(),
             )? != (replay.session_binding, replay.response_sequence)
-            || !journal_retains_exact_artifact(journal, &replay.response)?
+            || !journal_retains_exportable_artifact(journal, &replay.response)?
         {
             return Err(SourceProviderSecurityError::SessionContinuity);
         }
