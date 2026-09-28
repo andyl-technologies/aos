@@ -130,6 +130,24 @@ in
             else ""
           }
           ${
+            if builtins.compareVersions version "1.91.0" >= 0 && builtins.compareVersions version "1.93.0" < 0
+            then ''
+              # Cargo's curl 8.15 still reads ASN.1 structure fields that are
+              # opaque in OpenSSL 4. Preserve certificate reporting through
+              # the public accessors and retain Cargo's source integrity check.
+              curl_vendor=vendor/curl-sys-0.4.83+curl-8.15.0
+              patch --fuzz=0 -d "$curl_vendor" -p1 < ${./rust-curl-openssl4-asn1.patch}
+              curl_openssl_checksum=$(sha256sum "$curl_vendor/curl/lib/vtls/openssl.c" | cut -d ' ' -f 1)
+              checksum_file="$curl_vendor/.cargo-checksum.json"
+              test "$(grep -o '"curl/lib/vtls/openssl.c":"[0-9a-f]*"' "$checksum_file" | wc -l)" -eq 1
+              sed -i \
+                "s|\"curl/lib/vtls/openssl.c\":\"[0-9a-f]*\"|\"curl/lib/vtls/openssl.c\":\"$curl_openssl_checksum\"|" \
+                "$checksum_file"
+              grep -q "\"curl/lib/vtls/openssl.c\":\"$curl_openssl_checksum\"" "$checksum_file"
+            ''
+            else ""
+          }
+          ${
             if
               builtins.compareVersions version "1.75.0"
               >= 0
