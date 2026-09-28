@@ -168,6 +168,9 @@ pub fn cases(
     phase: QualificationPhase,
 ) -> Result<Vec<QualificationCase>> {
     plan.validate()?;
+    if plan.staging_only {
+        bail!("staging-only publication does not authorize qualification execution");
+    }
     let contract = plan
         .qualification
         .as_ref()
