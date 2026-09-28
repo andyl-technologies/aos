@@ -330,6 +330,56 @@
     urls = ["${cAresRegistryRoot}/patches/module_dot_bazel.patch"];
     hash = "sha256-SVQeSrnvd7IishMhmg8S3PK6/6bbt1IqwVEqKDfdYgk=";
   };
+
+  rulesKotlinRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/rules_kotlin/1.9.6";
+  rulesKotlinSource = moduleSource {
+    name = "rules_kotlin";
+    version = "1.9.6";
+    url = "https://github.com/bazelbuild/rules_kotlin.git";
+    ref = "v1.9.6";
+    rev = "fe0d4604479990e56b075ad6ea99671af46dc172";
+    hash = "sha256-58b7fUHWdrG+LYuYaMAvLC8SOFSo5CpNK+jzGGOItX0=";
+  };
+  rulesKotlinModule = fetchurl {
+    urls = ["${rulesKotlinRegistryRoot}/MODULE.bazel"];
+    hash = "sha256-0mmgGhjudNAzVFCxD2LJ7YHyMh15WKKTTkQnL+gtzvM=";
+  };
+  rulesKotlinPatch = fetchurl {
+    urls = ["${rulesKotlinRegistryRoot}/patches/module_dot_bazel_version.patch"];
+    hash = "sha256-DzcJ53CqDqD+AiboAl8Tq2/fKJRXn0g5O2g4UQfLrbE=";
+  };
+
+  rulesGraalvmRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/rules_graalvm/0.11.1";
+  rulesGraalvmSource = moduleSource {
+    name = "rules_graalvm";
+    version = "0.11.1";
+    url = "https://github.com/sgammon/rules_graalvm.git";
+    ref = "v0.11.1";
+    rev = "55e93ca8f2277254d7ee10be716447390feefcf7";
+    hash = "sha256-ua6MgJcvBGMjZ4K0aS9oK5gHP0sGOg+GZQQfUYHUzpQ=";
+  };
+  rulesGraalvmModule = fetchurl {
+    urls = ["${rulesGraalvmRegistryRoot}/MODULE.bazel"];
+    hash = "sha256-DKrqLf9gtwuPm5zrblroFbha5hCgOSQzoix1Wy8sJFY=";
+  };
+
+  rulesForeignCcRegistryRoot = "https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/${registryRevision}/modules/rules_foreign_cc/0.10.1";
+  rulesForeignCcSource = moduleSource {
+    name = "rules_foreign_cc";
+    version = "0.10.1";
+    url = "https://github.com/bazelbuild/rules_foreign_cc.git";
+    ref = "0.10.1";
+    rev = "3a85c822bf8bd44ca427c27407e838fdecd6bc86";
+    hash = "sha256-1U1Usg206SsDmLDGlLFdAHSNpBkzT4345nHSp/IY44c=";
+  };
+  rulesForeignCcModule = fetchurl {
+    urls = ["${rulesForeignCcRegistryRoot}/MODULE.bazel"];
+    hash = "sha256-uVJwEOX+8GCvkrZyTts2kZcKWx9290sh0599QzZBvmA=";
+  };
+  rulesForeignCcPatch = fetchurl {
+    urls = ["${rulesForeignCcRegistryRoot}/patches/module_dot_bazel.patch"];
+    hash = "sha256-hDvLi+Nx91lvhEd2qRrPfPu0RjiG5w3a/c4N4AiJb3U=";
+  };
 in {
   rules_cc = moduleSource {
     name = "rules_cc";
@@ -950,6 +1000,120 @@ in {
         script = ''
           patch --batch -p0 < ${cAresBuildPatch}
           patch --batch -p0 < ${cAresModulePatch}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  rules_kotlin = mkDerivation {
+    pname = "bazel-rules-kotlin-bcr-source";
+    version = "1.9.6";
+    src = rulesKotlinSource;
+
+    buildDeps = [buildPackages.patch buildPackages.diffutils buildPackages.findutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir rules-kotlin-source
+          cp -a "$src"/. rules-kotlin-source/
+          chmod -R u+w rules-kotlin-source
+          cd rules-kotlin-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          # Upstream's release archive selects its checked-in release BUILD
+          # files. Reproduce that selection from the sparse source checkout.
+          find . -name BUILD.release.bazel -type f -print | while IFS= read -r releaseBuild; do
+            cp "$releaseBuild" "''${releaseBuild%.release.bazel}"
+          done
+          cp MODULE.release.bazel MODULE.bazel
+          cp WORKSPACE.release.bazel WORKSPACE.bazel
+          patch --batch --fuzz=0 -p1 < ${rulesKotlinPatch}
+          cmp MODULE.bazel ${rulesKotlinModule}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  rules_graalvm = mkDerivation {
+    pname = "bazel-rules-graalvm-bcr-source";
+    version = "0.11.1";
+    src = rulesGraalvmSource;
+
+    buildDeps = [buildPackages.patch buildPackages.diffutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir rules-graalvm-source
+          cp -a "$src"/. rules-graalvm-source/
+          chmod -R u+w rules-graalvm-source
+          cd rules-graalvm-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          install -m 0644 ${rulesGraalvmModule} MODULE.bazel
+          patch --batch --fuzz=0 -p1 < ${bazelSource8}/third_party/rules_graalvm_fix.patch
+          patch --batch --fuzz=0 -p1 < ${bazelSource8}/third_party/rules_graalvm_unicode.patch
+          cmp MODULE.bazel ${rulesGraalvmModule}
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          cp -a . "$out"/
+        '';
+      }
+    ];
+  };
+
+  rules_foreign_cc = mkDerivation {
+    pname = "bazel-rules-foreign-cc-bcr-source";
+    version = "0.10.1";
+    src = rulesForeignCcSource;
+
+    buildDeps = [buildPackages.patch buildPackages.diffutils];
+    runtimeDeps = [];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          mkdir rules-foreign-cc-source
+          cp -a "$src"/. rules-foreign-cc-source/
+          chmod -R u+w rules-foreign-cc-source
+          cd rules-foreign-cc-source
+        '';
+      }
+      {
+        name = "build";
+        script = ''
+          patch --batch --fuzz=0 -p0 < ${rulesForeignCcPatch}
+          cmp MODULE.bazel ${rulesForeignCcModule}
         '';
       }
       {
