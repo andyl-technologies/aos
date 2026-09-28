@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "f73324c4545f3739de2451aadd926ff652945de0ade43b043f292c20d1b9e342";
+  sha256 = "e9fe4113bc9c1316d48d865f488bf1e3006d5e96cf54d12e9f3d258bf46f7e37";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -68,9 +68,14 @@
     "coroutine sleeps. Keep nonpositive sleeps immediately eligible, diagnose"
     "unrepresentable deadlines before parking, and exercise actual coroutine"
     "wakeup and timer dispatch with coherent fractional clock samples."
+    ""
+    "Preserve the exact virtual clock origin for VFIO INTx mmap timeout"
+    "arming and pending rearming. Convert configured milliseconds with checked"
+    "arithmetic and exercise the actual callbacks, notifier and timer dispatch"
+    "with fractional clock samples and explicit IRQ/mmap hardware doubles."
   ];
-  commit = "d9369ef170a1073e0058d5c93e57d9380c249613";
-  tree = "01d2f0fd9231c50710e28d75eee152fb265b133b";
+  commit = "553445cb303b12e9228d1da70d9cdd8ccf6f3a55";
+  tree = "66db7c0014d408a9aeed9171ca0b2771327a0761";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -79,7 +84,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "fbb4760fc84583c8c54dcf527f6a921e94db15830405ad19e0d105f75c565d21";
+  bundleSha256 = "d0f15b74cc9751564786674ce49c81e7ad994d8413b376c72312153ca36ef5d5";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

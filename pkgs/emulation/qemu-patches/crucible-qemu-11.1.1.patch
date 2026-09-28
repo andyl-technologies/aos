@@ -1,4 +1,4 @@
-From d9369ef170a1073e0058d5c93e57d9380c249613 Mon Sep 17 00:00:00 2001
+From 553445cb303b12e9228d1da70d9cdd8ccf6f3a55 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -62,6 +62,11 @@ Preserve the fractional TCG virtual clock origin when arming relative
 coroutine sleeps. Keep nonpositive sleeps immediately eligible, diagnose
 unrepresentable deadlines before parking, and exercise actual coroutine
 wakeup and timer dispatch with coherent fractional clock samples.
+
+Preserve the exact virtual clock origin for VFIO INTx mmap timeout
+arming and pending rearming. Convert configured milliseconds with checked
+arithmetic and exercise the actual callbacks, notifier and timer dispatch
+with fractional clock samples and explicit IRQ/mmap hardware doubles.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -48902,6 +48907,46 @@ index 59b5f9829d43571094a5a706cad465bdc57c8ddd..a4e49dd0aa10e99ce8806b91dbce9b2b
      }
  
      host_packet[0] = 0;
+diff --git a/hw/vfio/pci.c b/hw/vfio/pci.c
+index 428ab2f06983ba9ecb306975a4aca7f6efe1b855..a8fac1b1bc6c90cc7ea1faaea2e52ae761bb9740 100644
+--- a/hw/vfio/pci.c
++++ b/hw/vfio/pci.c
+@@ -102,13 +102,23 @@ static void vfio_notifier_cleanup(VFIOPCIDevice *vdev, EventNotifier *e,
+  * other options with the x-intx-mmap-timeout-ms parameter (a value of
+  * zero disables the timer).
+  */
++static void vfio_intx_mmap_timer_arm(VFIOPCIDevice *vdev)
++{
++    int64_t delay_ns;
++
++    if (__builtin_mul_overflow((int64_t)vdev->intx.mmap_timeout,
++                               (int64_t)SCALE_MS, &delay_ns) ||
++        !timer_mod_after_ns(vdev->intx.mmap_timer, delay_ns)) {
++        g_error("VFIO INTx mmap timeout exceeds virtual clock range");
++    }
++}
++
+ static void vfio_intx_mmap_enable(void *opaque)
+ {
+     VFIOPCIDevice *vdev = opaque;
+ 
+     if (vdev->intx.pending) {
+-        timer_mod(vdev->intx.mmap_timer,
+-                       qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + vdev->intx.mmap_timeout);
++        vfio_intx_mmap_timer_arm(vdev);
+         return;
+     }
+ 
+@@ -130,8 +140,7 @@ static void vfio_intx_interrupt(void *opaque)
+     pci_irq_assert(pdev);
+     vfio_mmap_set_enabled(vdev, false);
+     if (vdev->intx.mmap_timeout) {
+-        timer_mod(vdev->intx.mmap_timer,
+-                       qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + vdev->intx.mmap_timeout);
++        vfio_intx_mmap_timer_arm(vdev);
+     }
+ }
+ 
 diff --git a/hw/virtio/Kconfig b/hw/virtio/Kconfig
 index 91cf833407ce539d6335de113d87dc9dcbbbe7e5..3c1e258dc8f16036de728f444678072d1533d584 100644
 --- a/hw/virtio/Kconfig
@@ -140762,7 +140807,7 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
      return g_test_run();
  }
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..ccfa06a0d12aaccf08f0b8363c07329b3960e162 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..c6764ddc985372d09297059fa6a79f0c823f4dd5 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -147,6 +147,37 @@ if have_system
@@ -140803,7 +140848,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..ccfa06a0d12aaccf08f0b8363c07329b
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +238,51 @@ foreach test_name, extra: tests
+@@ -207,3 +238,72 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -140852,6 +140897,27 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..ccfa06a0d12aaccf08f0b8363c07329b
 +    protocol: 'tap',
 +    timeout: 30,
 +    priority: 30,
++    suite: ['unit'],
++  )
++endif
++
++if have_system and host_os == 'linux' and \
++   config_all_devices.has_key('CONFIG_VFIO_PCI')
++  vfio_timer_test = executable(
++    'test-crucible-vfio-timer',
++    'test-crucible-vfio-timer.c',
++    genh,
++    dependencies: [qemuutil, qom, pixman],
++    c_args: ['-ffunction-sections', '-fdata-sections'],
++    link_args: ['-Wl,--gc-sections'],
++  )
++  test(
++    'test-crucible-vfio-timer',
++    vfio_timer_test,
++    env: test_env,
++    args: ['--tap', '-k'],
++    protocol: 'tap',
++    timeout: 30,
 +    suite: ['unit'],
 +  )
 +endif
@@ -150447,6 +150513,250 @@ index 0000000000000000000000000000000000000000..22e321204c3443ea7d63c9329ea1208d
 +{
 +    g_test_init(&argc, &argv, NULL);
 +    g_test_add_func("/crucible/slirp/ns-projection", test_ns_projection);
++    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-vfio-timer.c b/tests/unit/test-crucible-vfio-timer.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..5a7447bcaf67f68882479417aeeb384a56639472
+--- /dev/null
++++ b/tests/unit/test-crucible-vfio-timer.c
+@@ -0,0 +1,238 @@
++/*
++ * VFIO INTx relative timer tests.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/main-loop.h"
++#include "qemu/module.h"
++#include "qemu/timer.h"
++#include "system/cpu-timers.h"
++
++/* Retain literal affected bodies without registering a passthrough backend. */
++#undef type_init
++#define type_init(function) \
++    static void (*const vfio_fixture_registration)(void) \
++        G_GNUC_UNUSED = function;
++#include "../../hw/vfio/pci.c"
++
++static __int128 observed_ps;
++static VFIOPCIDevice *hardware_device;
++static unsigned int irq_calls;
++static unsigned int mmap_calls;
++static bool mmap_enabled;
++
++/* Controlled samples supply clock inputs; they confer no vCPU permission. */
++int64_t cpu_get_clock(void)
++{
++    return observed_ps / PICOSECONDS_PER_NANOSECOND;
++}
++
++static __int128 observed_clock_ps(void)
++{
++    return observed_ps;
++}
++
++/* Hardware doubles check identity, ordering and requested disposition. */
++void pci_set_irq(PCIDevice *device, int level)
++{
++    g_assert_true(device == &hardware_device->parent_obj);
++    g_assert_cmpint(level, ==, 1);
++    irq_calls++;
++}
++
++void vfio_region_mmaps_set_enabled(VFIORegion *region, bool enabled)
++{
++    unsigned int index = mmap_calls % PCI_ROM_SLOT;
++
++    g_assert_true(region == &hardware_device->bars[index].region);
++    mmap_calls++;
++    mmap_enabled = enabled;
++}
++
++static VFIOPCIDevice *fixture_create(bool tcg_ps, uint32_t timeout_ms)
++{
++    const TypeInfo pci_fixture = {
++        .name = TYPE_PCI_DEVICE,
++        .parent = TYPE_OBJECT,
++        .instance_size = sizeof(PCIDevice),
++    };
++    const TypeInfo vfio_fixture = {
++        .name = "vfio-timer-fixture",
++        .parent = TYPE_PCI_DEVICE,
++        .instance_size = sizeof(VFIOPCIDevice),
++    };
++    VFIOPCIDevice *device;
++
++    module_call_init(MODULE_INIT_QOM);
++    type_register_static(&pci_fixture);
++    type_register_static(&vfio_fixture);
++    qemu_init_main_loop(&error_fatal);
++    if (tcg_ps) {
++        qemu_timer_enable_tcg_ps_clock(NULL, observed_clock_ps);
++    }
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++
++    device = (VFIOPCIDevice *)object_new("vfio-timer-fixture");
++    device->intx.mmap_timeout = timeout_ms;
++    device->intx.mmap_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
++                                         vfio_intx_mmap_enable, device);
++    hardware_device = device;
++    g_assert_cmpint(event_notifier_init(&device->intx.interrupt, 0), ==, 0);
++    return device;
++}
++
++static void fixture_destroy(VFIOPCIDevice *device)
++{
++    timer_free(device->intx.mmap_timer);
++    event_notifier_cleanup(&device->intx.interrupt);
++    object_unref(OBJECT(device));
++    hardware_device = NULL;
++}
++
++static void test_pending_rearm(void)
++{
++    VFIOPCIDevice *device;
++    __int128 deadline_ps;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = 123456789;
++    device = fixture_create(true, 1);
++    device->intx.pending = true;
++    deadline_ps = observed_ps + SCALE_MS * PICOSECONDS_PER_NANOSECOND;
++    vfio_intx_mmap_enable(device);
++
++    g_assert_true(timer_expire_time_ps_wide(device->intx.mmap_timer) ==
++                  deadline_ps);
++    g_assert_cmpuint(irq_calls, ==, 0);
++    g_assert_cmpuint(mmap_calls, ==, 0);
++    observed_ps = deadline_ps - 1;
++    g_assert_false(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
++
++    observed_ps = deadline_ps;
++    g_assert_true(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
++    g_assert_cmpuint(mmap_calls, ==, 0);
++    deadline_ps += SCALE_MS * PICOSECONDS_PER_NANOSECOND;
++    g_assert_true(timer_expire_time_ps_wide(device->intx.mmap_timer) ==
++                  deadline_ps);
++
++    device->intx.pending = false;
++    observed_ps = deadline_ps;
++    g_assert_true(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
++    g_assert_cmpuint(mmap_calls, ==, PCI_ROM_SLOT);
++    g_assert_true(mmap_enabled);
++    g_assert_false(timer_pending(device->intx.mmap_timer));
++    fixture_destroy(device);
++}
++
++static void test_interrupt_origin(gconstpointer opaque)
++{
++    uint32_t timeout_ms = GPOINTER_TO_UINT(opaque);
++    VFIOPCIDevice *device;
++    __int128 deadline_ps;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = 123456789;
++    device = fixture_create(true, timeout_ms);
++    vfio_intx_interrupt(device);
++    g_assert_false(device->intx.pending);
++    g_assert_cmpuint(irq_calls, ==, 0);
++    g_assert_cmpuint(mmap_calls, ==, 0);
++    g_assert_false(timer_pending(device->intx.mmap_timer));
++
++    event_notifier_set(&device->intx.interrupt);
++    vfio_intx_interrupt(device);
++    g_assert_true(device->intx.pending);
++    g_assert_cmpuint(irq_calls, ==, 1);
++    g_assert_cmpuint(mmap_calls, ==, PCI_ROM_SLOT);
++    g_assert_false(mmap_enabled);
++
++    if (timeout_ms) {
++        deadline_ps = observed_ps + (__int128)timeout_ms * SCALE_MS *
++                      PICOSECONDS_PER_NANOSECOND;
++        g_assert_true(timer_expire_time_ps_wide(device->intx.mmap_timer) ==
++                      deadline_ps);
++    } else {
++        g_assert_false(timer_pending(device->intx.mmap_timer));
++    }
++
++    /* A drained notifier must not repeat IRQ/mmap effects or rebase a timer. */
++    observed_ps++;
++    vfio_intx_interrupt(device);
++    g_assert_cmpuint(irq_calls, ==, 1);
++    g_assert_cmpuint(mmap_calls, ==, PCI_ROM_SLOT);
++    if (timeout_ms) {
++        g_assert_true(timer_expire_time_ps_wide(device->intx.mmap_timer) ==
++                      deadline_ps);
++    }
++    fixture_destroy(device);
++}
++
++static void test_nanosecond_origin(void)
++{
++    VFIOPCIDevice *device;
++    uint64_t deadline_ns;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = 123456789;
++    device = fixture_create(false, 1);
++    device->intx.pending = true;
++    deadline_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + SCALE_MS;
++    vfio_intx_mmap_enable(device);
++
++    g_assert_cmpuint(timer_expire_time_ns(device->intx.mmap_timer), ==,
++                     deadline_ns);
++    g_assert_cmpuint(irq_calls, ==, 0);
++    g_assert_cmpuint(mmap_calls, ==, 0);
++    fixture_destroy(device);
++}
++
++static void test_deadline_overflow(void)
++{
++    VFIOPCIDevice *device;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_failed();
++        g_test_trap_assert_stderr(
++            "*VFIO INTx mmap timeout exceeds virtual clock range*");
++        return;
++    }
++
++    observed_ps = (((__int128)INT64_MAX << 64) | UINT64_MAX) - 500;
++    device = fixture_create(true, 1);
++    device->intx.pending = true;
++    vfio_intx_mmap_enable(device);
++    g_assert_not_reached();
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/vfio/timer/pending-rearm", test_pending_rearm);
++    g_test_add_data_func("/vfio/timer/interrupt", GUINT_TO_POINTER(1),
++                         test_interrupt_origin);
++    g_test_add_data_func("/vfio/timer/interrupt-disabled", GUINT_TO_POINTER(0),
++                         test_interrupt_origin);
++    g_test_add_data_func("/vfio/timer/interrupt-maximum",
++                         GUINT_TO_POINTER(UINT32_MAX), test_interrupt_origin);
++    g_test_add_func("/vfio/timer/nanosecond-origin", test_nanosecond_origin);
++    g_test_add_func("/vfio/timer/deadline-overflow", test_deadline_overflow);
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-vga-fingerprint.c b/tests/unit/test-crucible-vga-fingerprint.c
