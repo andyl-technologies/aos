@@ -95,6 +95,7 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-parallel-fingerprint.c` | MIT | Explicit SPDX identifier |
 | `target/riscv/tcg/itrigger-timer.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/qtest/crucible-icount-migration.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-vfio-timer.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated
