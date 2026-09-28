@@ -71,50 +71,28 @@ impl QuantumLoop for BackendCrashLoop {
     }
 }
 
-#[derive(Default)]
-pub(in crate::tests) struct CoverageAppendingLoop {
-    event_log: crucible::EventLog,
-}
-
-impl QuantumLoop for CoverageAppendingLoop {
-    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
-        Ok(QuantumOutcome {
-            configuration: request.configuration,
-            frontier: VirtualTime { ticks: 19 },
-            advanced_node: Some(SchedulerNodeId {
+pub(in crate::tests) fn coverage_scheduler(scenario: &ScenarioDef) -> crucible::SingleScheduler {
+    let runtime = crucible::SchedulerLivenessScenario::from_canonical_material(
+        "session canonical coverage",
+        1,
+        crucible::SimInstant {
+            ticks: 19 * crucible::SIM_TICKS_PER_INSTRUCTION,
+        },
+        vec![crucible::SchedulerScenarioNode {
+            id: SchedulerNodeId {
                 node: node_id("vm-a"),
                 kind: SchedulingNodeKind::Vm,
-            }),
-            resolved_events: Vec::new(),
-            decisions: Vec::new(),
-            discovered_choices: Vec::new(),
-            event_log_entries: Vec::new(),
-            event_log_segment_bytes: Vec::new(),
-            event_log_segment_text: String::new(),
-            event_log_segment_hash: None,
-            event_log_offset: self.event_log.offset(),
-            scheduler_quiescence: None,
-        })
-    }
+            },
+            counter: crucible::NodeCounter { ticks: 0 },
+            activity: crucible::SchedulerNodeActivity::Runnable,
+            network_lookahead: crucible::NetworkLookahead::Infinite,
+            exact_local_event: crucible::ExactLocalEvent::NoArmedTimer,
+        }],
+        Vec::new(),
+    )
+    .with_scenario_def(scenario.clone());
 
-    fn append_backend_observable_events(
-        &mut self,
-        events: Vec<crucible::ObservableEvent>,
-    ) -> Result<crucible::SchedulerEventLogAppend, SchedulerError> {
-        self.event_log.append_observable_events(events)
-    }
-
-    fn append_backend_observations_at_boundary(
-        &mut self,
-        events: Vec<crucible::ObservableEvent>,
-        at: VirtualTime,
-    ) -> Result<crucible::SchedulerEventLogAppend, SchedulerError> {
-        self.event_log.append_observations_at_boundary(
-            events,
-            at,
-            crucible::SchedulerEvaluationBoundaryKind::Quantum,
-        )
-    }
+    crucible::SingleScheduler::new(runtime).expect("coverage scheduler should instantiate")
 }
 
 pub(in crate::tests) struct CoverageBackend {
@@ -176,6 +154,34 @@ impl crucible::SimulationBackend for CoverageBackend {
 
     fn shutdown(&mut self) -> Result<(), BackendError> {
         Ok(())
+    }
+}
+
+impl crucible::ConcurrentSimulationBackend for CoverageBackend {
+    fn execute_concurrent_runs(
+        &mut self,
+        runs: Vec<crucible::ConcurrentBackendRun>,
+        max_host_workers: usize,
+    ) -> Result<Vec<crucible::ConcurrentBackendRunOutcome>, BackendError> {
+        if max_host_workers == 0 || runs.len() != 1 || !runs[0].preemptions.is_empty() {
+            return Err(BackendError::Rejected {
+                message: String::from("coverage fixture requires one unpreempted RUN"),
+            });
+        }
+
+        runs.into_iter()
+            .map(|run| {
+                let step = crucible::SimulationBackend::step_to(self, run.ceiling)?;
+                let observations = crucible::SimulationBackend::drain_observable_events(self)?;
+                Ok(crucible::ConcurrentBackendRunOutcome {
+                    node: run.node,
+                    step,
+                    rng_evidence: Vec::new(),
+                    network_outputs: Vec::new(),
+                    observations,
+                })
+            })
+            .collect()
     }
 }
 
