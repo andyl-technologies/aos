@@ -152,9 +152,10 @@ impl ProvisionedControllerSourceGenesisInputV1 {
             let store = PublisherPolicyStore::load(journal, PublisherPolicyLimits::default())
                 .map_err(SourceGenesisErrorV1::from)?;
             store
-                .preflight_current_source_tree_seed_from_fixed_issuers_v1(
+                .inspect_current_source_genesis_pair_from_fixed_issuers_v1(
                     self.project,
-                    self.packets[0].bytes(),
+                    self.seed_packet()?,
+                    self.authorization_packet()?,
                 )
                 .map_err(|error| match error {
                     CurrentSourceTreeSeedPreflightErrorV1::MissingAuthorization => {
@@ -162,12 +163,8 @@ impl ProvisionedControllerSourceGenesisInputV1 {
                     }
                     CurrentSourceTreeSeedPreflightErrorV1::Authorization(error) => error.into(),
                     CurrentSourceTreeSeedPreflightErrorV1::Seed(error) => error.into(),
+                    CurrentSourceTreeSeedPreflightErrorV1::Acceptance(error) => error.into(),
                 })?;
-            store.current_source_genesis_acceptance_from_fixed_issuers_v1(
-                self.project,
-                self.seed_packet()?,
-                self.authorization_packet()?,
-            )?;
         }
         self.recheck()?;
         require_controller(journal, uid)?;
