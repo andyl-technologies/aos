@@ -160,6 +160,10 @@ counts, SQL pool use, and cross-cloud bytes. The
 [RFC acceptance gates](../rfcs/0023-hub-hybrid-topology/06-implementation-and-validation.md)
 apply before promoting the environment.
 
+The [2026-09-28 fleet qualification](aos-hub-hybrid-qualification-2026-09-28.md)
+records a complete passing four-VM run, its latency and byte counters, and the
+remaining hosted and RFC qualification work.
+
 Native logs each storage-work terminal result with its operation, attempts,
 serialized plan bytes, validated result bytes, and Worker source-byte count.
 Indexing events also carry a task-scoped `index_run` and `registry_id`; release
