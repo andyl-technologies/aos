@@ -247,9 +247,16 @@ def setup_and_publish_same_registry(machine, origin, token, trust_key, source_ro
     reviewed("parity-promote", "placement promote registry:fleet/containers primary --if-version " + shlex.quote(placement["resource_version"]))
 
     token = refresh_token()
-    publication = json.loads(machine.succeed(command(
-        "registry publish upload fleet/containers --root " + source_root,
-    ), timeout=600))["data"]
+    publication, token = publish_signed_surface(
+        machine,
+        lambda authorization: (
+            f"{tools['aos']} --json hub registry publish upload fleet/containers "
+            f"--root {shlex.quote(source_root)} --hub {origin} "
+            f"--token {shlex.quote(authorization)}"
+        ),
+        token,
+        refresh_token,
+    )
     assert publication["state"] == "ready", publication
     machine.wait_until_succeeds(
         command("registry show fleet/containers") + f" | {tools['jq']} -e '.data.registry.index_state == \"fresh\"' > /dev/null",

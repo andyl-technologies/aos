@@ -315,8 +315,9 @@ in {
   };
 
   testScript =
+    builtins.readFile ./_hub-publication.py
     # python
-    ''
+    + ''
       import base64
       import hashlib
       import hmac
@@ -1699,15 +1700,21 @@ in {
           ${pkgs.coreutils}/bin/head -c {publication_size} /dev/zero \\
             > /tmp/hybrid-publication-surface/{publication_path}
       """), timeout=600)
-      # Signed channel initialization adds 256 objects. Obtain a fresh console
-      # token after authoring so fixture setup does not consume its short TTL.
+      # Authoring and uploading the signed channel can each exceed a browser
+      # token lifetime. Resume only the exact publication after JWT expiry.
       session_token = refresh_session_token()
       print("hybrid signed two-release and stable-channel publication starting")
       try:
-          publication = json.loads(client.succeed(hub_command(
-              "registry publish upload fleet/containers "
-              "--root /tmp/hybrid-publication-surface"
-          ), timeout=600))["data"]
+          publication, session_token = publish_signed_surface(
+              client,
+              lambda token: (
+                  f"{AOS} --json hub registry publish upload fleet/containers "
+                  "--root /tmp/hybrid-publication-surface --hub https://aos.andyl.org "
+                  f"--token {shlex.quote(token)}"
+              ),
+              session_token,
+              refresh_session_token,
+          )
       except Exception:
           print("hybrid Worker runtime log after publication upload failure:", worker.succeed(
               "tail -n 100 /var/lib/hybrid-worker/wrangler.log"
