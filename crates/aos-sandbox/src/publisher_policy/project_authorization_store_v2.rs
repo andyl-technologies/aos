@@ -977,62 +977,6 @@ fn assemble_current_source_genesis_pair_v1(
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn administrative_roles_digest_v1(
-    seed_credential: &[u8],
-    authorization_credential: &[u8],
-) -> ObjectDigest {
-    ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(b"aos.sandbox.source-genesis.administrative-roles.v1\0")
-            .chain_update(seed_credential)
-            .chain_update(authorization_credential)
-            .finalize()
-            .into(),
-    )
-}
-
-// These arguments are DATA derived in one current read, not an authority
-// constructor. The production caller retains both fixed credentials and the
-// Controller writer; no joined result survives to replace a later recheck.
-#[cfg(any(target_os = "linux", test))]
-fn assemble_current_source_genesis_pair_v1(
-    seed: [u8; 224],
-    authorization: [u8; 224],
-    current: VerifiedPublisherProjectAuthorizationSourceV2,
-    authorization_head: ObjectDigest,
-    seed_issuer: &PinnedControllerSourceTreeSeedIssuerV1,
-    authorization_issuer: &PinnedPublisherProjectAuthorizationIssuerV2,
-    administrative_roles: ObjectDigest,
-) -> Result<
-    crate::hierarchy::genesis_profile::ControllerSourceGenesisAcceptanceRecordV1,
-    CurrentSourceTreeSeedPreflightErrorV1,
-> {
-    use crate::hierarchy::genesis_profile::{
-        ControllerSourceGenesisAcceptanceRecordV1, SourceGenesisErrorV1,
-    };
-
-    verify_seed_for_current_authorization_v1(
-        &seed,
-        current,
-        authorization_head,
-        |packet, expected| verify_controller_source_tree_seed_v1(packet, seed_issuer, expected),
-    )?;
-    if current.packet_digest() != commitment(PACKET_DOMAIN, &authorization)
-        || seed_issuer.verifying_key() == authorization_issuer.verifying_key()
-    {
-        return Err(SourceGenesisErrorV1::Stale.into());
-    }
-    Ok(ControllerSourceGenesisAcceptanceRecordV1::new(
-        seed,
-        authorization,
-        current.publisher_head_digest(),
-        current.publisher_revision_digest(),
-        authorization_head,
-        administrative_roles,
-    )?)
-}
-
-#[cfg(any(target_os = "linux", test))]
 fn verify_seed_for_current_authorization_v1(
     packet: &[u8],
     authorization: VerifiedPublisherProjectAuthorizationSourceV2,
