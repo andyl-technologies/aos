@@ -29,8 +29,21 @@ The separate external cleanup wire contract now admits an exact OCI-key HEAD
 or conditional DELETE with one retained delete credential. Seven core tests
 passed for scope, credential fingerprint, lifetime/lease, replay identity,
 signature domain separation, unknown operations and bounded envelopes. Native
-claim issuance and Worker execution are still unwired; this does not qualify
-external physical GC or allow it to bypass current binding revocation.
+claim issuance and Worker execution were initially unwired.
+
+The exact-claim external HEAD path is now implemented. Native revalidates the
+applying run, mutation epoch, frozen address, lease, token, retained credential
+and hold before issuance and after accepting a bounded correlated reply. Worker
+uses only the retained delete credential for one exact-key HEAD, never publishes
+it as current binding authority, and disables redirects. Only exact HTTP 404
+establishes absence; HTTP 403, redirects and provider errors fail closed.
+Eight wire/reply tests, four Native request tests, one real reviewed GC lifecycle
+test, six controller regressions and two deployment-R2 compatibility tests pass.
+Five Worker authorization/result tests, Native compilation and Worker Wasm
+compilation also pass. Tests include credential-head rotation, invalid retained
+credentials and response-time claim changes. These focused tests establish no
+live provider permission or physical deletion; conditional external GC and
+provider qualification remain pending.
 
 The expanded container corpus uses the real signed AOS base image and its
 complete source evidence. Its latest completed fleet attempt failed with HTTP
@@ -48,7 +61,8 @@ regressions. All 13 Native OCI Distribution integration tests also passed.
 Frozen R2 GC now retains the claim's original prefix and placement version,
 even after the current placement and capability observation advance. It
 reopens only the matching binding and immutable write revision. Frozen absence
-checks use Worker HEAD requests. External S3 cleanup remains unimplemented.
+checks use Worker HEAD requests. Exact-claim external S3 metadata observations
+are implemented as described above; external conditional deletion remains pending.
 
 The full four-VM rerun using these corrections is pending. It must compare
 nonempty container projections across Hybrid, Native-only and Workers-only;

@@ -172,6 +172,58 @@ pub struct StorageFrozenCleanupRequest {
     pub operation: StorageFrozenCleanupOperation,
 }
 
+/// Bounded metadata reply bound to one exact frozen cleanup claim and request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageFrozenCleanupHeadResult {
+    /// Reply schema version; only version 1 is accepted.
+    pub version: u8,
+    /// Exact request identity issued by Native.
+    pub request_id: String,
+    /// Stable SQL placement-action identity.
+    pub action_id: String,
+    /// Current SQL claim token from the request.
+    pub claim_token: String,
+    /// Nonsecret fingerprint of the complete frozen claim scope.
+    pub claim_fingerprint: String,
+    /// Observed metadata for the exact key, or `None` for provider-confirmed absence.
+    pub object: Option<super::StorageObjectIdentity>,
+}
+
+impl StorageFrozenCleanupHeadResult {
+    /// Checks reply correlation and exact provider metadata before Native accepts it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for another request, claim, scope, or object key, an
+    /// unsupported reply version, or malformed provider metadata. Native must
+    /// also reload the live SQL claim before committing absence evidence.
+    pub fn validate_for(
+        &self,
+        request: &StorageFrozenCleanupRequest,
+    ) -> Result<(), StorageWorkError> {
+        if self.version != 1
+            || request.operation != StorageFrozenCleanupOperation::Head
+            || self.request_id != request.request_id
+            || self.action_id != request.action_id
+            || self.claim_token != request.claim_token
+            || self.claim_fingerprint
+                != request
+                    .claim_fingerprint()
+                    .map_err(|_| StorageWorkError::InvalidPlan)?
+            || self.object.as_ref().is_some_and(|object| {
+                request.object_key().ok().as_deref() != Some(object.key.as_str())
+                    || object.size > MAX_VERIFY_SOURCE_BYTES
+                    || object.etag.len() > 1024
+                    || crate::surface_write::strong_if_match_etag(&object.etag).is_err()
+            })
+        {
+            return Err(StorageWorkError::InvalidPlan);
+        }
+        Ok(())
+    }
+}
+
 impl StorageFrozenCleanupRequest {
     /// Validates exact scope, credential material, and the bounded claim lifetime.
     ///

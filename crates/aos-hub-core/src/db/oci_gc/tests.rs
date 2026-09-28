@@ -3636,6 +3636,85 @@ async fn reviewed_plan_apply_claim_evidence_and_atomic_accounting_complete() {
         ),
         (digest, true, placement.id)
     );
+    // Re-admission uses the retained generation after head and capability rotation.
+    assert_eq!(
+        database
+            .active_oci_gc_placement_action_claim(
+                &primary_claim.action_id,
+                &primary_claim.claim_token,
+                999_997,
+            )
+            .await
+            .unwrap(),
+        Some(primary_claim.clone()),
+    );
+    assert!(database
+        .active_oci_gc_placement_action_claim(&primary_claim.action_id, "wrong-token", 999_997,)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(database
+        .active_oci_gc_placement_action_claim(
+            &primary_claim.action_id,
+            &primary_claim.claim_token,
+            primary_claim.lease_expires_at,
+        )
+        .await
+        .unwrap()
+        .is_none());
+
+    database
+        .backend
+        .execute(
+            "UPDATE binding_credential_revisions SET validation_state = 'invalid'
+         WHERE binding_id = ?1 AND purpose = 'delete' AND generation = ?2",
+            &vals![
+                primary_claim.binding_id,
+                primary_claim.delete_credential_generation
+            ],
+        )
+        .await
+        .unwrap();
+    assert!(database
+        .active_oci_gc_placement_action_claim(
+            &primary_claim.action_id,
+            &primary_claim.claim_token,
+            999_997,
+        )
+        .await
+        .unwrap()
+        .is_none());
+    database
+        .backend
+        .execute(
+            "UPDATE binding_credential_revisions SET validation_state = 'valid'
+         WHERE binding_id = ?1 AND purpose = 'delete' AND generation = ?2",
+            &vals![
+                primary_claim.binding_id,
+                primary_claim.delete_credential_generation
+            ],
+        )
+        .await
+        .unwrap();
+
+    database.backend.execute(
+        "UPDATE oci_registry_state SET mutation_epoch = mutation_epoch + 1 WHERE registry_id = ?1",
+        &vals![registry_id],
+    ).await.unwrap();
+    assert!(database
+        .active_oci_gc_placement_action_claim(
+            &primary_claim.action_id,
+            &primary_claim.claim_token,
+            999_997,
+        )
+        .await
+        .unwrap()
+        .is_none());
+    database.backend.execute(
+        "UPDATE oci_registry_state SET mutation_epoch = mutation_epoch - 1 WHERE registry_id = ?1",
+        &vals![registry_id],
+    ).await.unwrap();
+
     for (ordinal, (claim, claim_token)) in [
         (replica_claim, "degraded-claim"),
         (primary_claim, "gc-claim"),

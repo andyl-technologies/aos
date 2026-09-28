@@ -49,6 +49,7 @@ use zeroize::Zeroizing;
 
 mod control;
 mod frozen;
+mod frozen_head;
 mod telemetry;
 
 // Limit each index walk's simultaneous cross-cloud inspection requests.
@@ -91,6 +92,7 @@ pub struct RemoteStorageWorkClient {
     capabilities_endpoint: String,
     binding_control_endpoint: String,
     credential_probe_endpoint: String,
+    frozen_cleanup_endpoint: String,
     deployment_id: String,
     key: StorageWorkKey,
     http: reqwest::Client,
@@ -137,6 +139,11 @@ impl RemoteStorageWorkClient {
             origin.origin().ascii_serialization(),
             STORAGE_CREDENTIAL_PROBE_PATH
         );
+        let frozen_cleanup_endpoint = format!(
+            "{}{}",
+            origin.origin().ascii_serialization(),
+            aos_hub_core::storage_work::STORAGE_FROZEN_CLEANUP_PATH
+        );
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(30))
@@ -147,6 +154,7 @@ impl RemoteStorageWorkClient {
             capabilities_endpoint,
             binding_control_endpoint,
             credential_probe_endpoint,
+            frozen_cleanup_endpoint,
             deployment_id,
             key: StorageWorkKey::new(key)?,
             http,
@@ -1325,6 +1333,32 @@ impl SurfaceProvider for HybridSurfaceProvider {
         Ok(Box::new(
             frozen::FrozenR2Surface::open(Arc::clone(&self.db), Arc::clone(&self.work), access)
                 .await?,
+        ))
+    }
+
+    async fn claimed_placement_fetcher(
+        &self,
+        access: &FrozenSurfaceAccess,
+        claim: &aos_hub_core::db::OciGcPlacementActionClaim,
+    ) -> Result<Box<dyn SurfaceFetch>> {
+        let binding = self
+            .db
+            .binding(access.binding_id)
+            .await?
+            .context("frozen hybrid binding disappeared")?;
+        if binding.kind == "deployment_r2" {
+            return self.frozen_placement_fetcher(access).await;
+        }
+
+        Ok(Box::new(
+            frozen_head::FrozenClaimSurface::open(
+                Arc::clone(&self.db),
+                Arc::clone(&self.work),
+                Arc::clone(&self.secrets),
+                access,
+                claim,
+            )
+            .await?,
         ))
     }
 }

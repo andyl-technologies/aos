@@ -229,3 +229,47 @@ fn signed_unknown_operations_fields_and_oversized_bodies_are_rejected() {
         .verify_frozen_cleanup(&signature, &oversized, "deployment-1", 101)
         .is_err());
 }
+
+#[test]
+fn head_reply_binds_request_stable_scope_and_exact_object_metadata() {
+    let mut request = request();
+    request.operation = StorageFrozenCleanupOperation::Head;
+    let result = StorageFrozenCleanupHeadResult {
+        version: 1,
+        request_id: request.request_id.clone(),
+        action_id: request.action_id.clone(),
+        claim_token: request.claim_token.clone(),
+        claim_fingerprint: request.claim_fingerprint().unwrap(),
+        object: Some(super::super::StorageObjectIdentity {
+            key: request.object_key().unwrap(),
+            // A replacement still counts as present for an absence check.
+            etag: "\"replacement\"".into(),
+            size: 2048,
+        }),
+    };
+    assert_eq!(result.validate_for(&request), Ok(()));
+
+    let mutations: &[fn(&mut StorageFrozenCleanupHeadResult)] = &[
+        |result| result.version += 1,
+        |result| result.request_id = "c".repeat(32),
+        |result| result.action_id = "another-action".into(),
+        |result| result.claim_token = "another-lease".into(),
+        |result| result.claim_fingerprint = "d".repeat(64),
+        |result| result.object.as_mut().unwrap().key = "another/key".into(),
+        |result| result.object.as_mut().unwrap().etag = "W/\"weak\"".into(),
+        |result| result.object.as_mut().unwrap().size = MAX_VERIFY_SOURCE_BYTES + 1,
+    ];
+    for (index, mutate) in mutations.iter().enumerate() {
+        let mut changed = result.clone();
+        mutate(&mut changed);
+        assert!(changed.validate_for(&request).is_err(), "mutation {index}");
+    }
+
+    let absent = StorageFrozenCleanupHeadResult {
+        object: None,
+        ..result
+    };
+    assert_eq!(absent.validate_for(&request), Ok(()));
+    request.expected_size += 1;
+    assert!(absent.validate_for(&request).is_err());
+}

@@ -23,10 +23,11 @@ use aos_hub_core::hybrid_ingress::{
 };
 use aos_hub_core::storage_work::{
     StorageBindingControl, StorageCapabilities, StorageCredentialProbeRequest, StorageWorkKey,
-    MAX_BINDING_CONTROL_BYTES, MAX_CREDENTIAL_PROBE_BYTES, MAX_PLAN_BYTES, MAX_RESULT_BYTES,
-    MAX_VERIFY_SOURCE_BYTES, STORAGE_BINDING_CONTROL_PATH, STORAGE_CAPABILITIES_CHALLENGE,
-    STORAGE_CAPABILITIES_PATH, STORAGE_CREDENTIAL_PROBE_FAILURE_STAGES,
-    STORAGE_CREDENTIAL_PROBE_PATH, STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
+    MAX_BINDING_CONTROL_BYTES, MAX_CREDENTIAL_PROBE_BYTES, MAX_FROZEN_CLEANUP_BYTES,
+    MAX_PLAN_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES, STORAGE_BINDING_CONTROL_PATH,
+    STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
+    STORAGE_CREDENTIAL_PROBE_FAILURE_STAGES, STORAGE_CREDENTIAL_PROBE_PATH,
+    STORAGE_FROZEN_CLEANUP_PATH, STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
 };
 use base64::Engine as _;
 use futures_util::lock::{Mutex, OwnedMutexGuard};
@@ -91,6 +92,9 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     }
     if path == STORAGE_CREDENTIAL_PROBE_PATH {
         return probe_storage_credential(request, env).await;
+    }
+    if path == STORAGE_FROZEN_CLEANUP_PATH {
+        return frozen_cleanup_head(request, env).await;
     }
     if path.starts_with("/_internal/storage/") {
         return Response::error("not found", 404);
@@ -1093,6 +1097,56 @@ async fn control_storage_binding(mut request: Request, env: &Env) -> Result<Resp
     let headers = Headers::new();
     headers.set("cache-control", "private, no-store")?;
     Ok(Response::from_json(&acknowledgement)?.with_headers(headers))
+}
+
+async fn frozen_cleanup_head(mut request: Request, env: &Env) -> Result<Response> {
+    if request.method() != worker::Method::Post {
+        return Response::error("method not allowed", 405);
+    }
+    let Some(signature) = request.headers().get(STORAGE_WORK_SIGNATURE_HEADER)? else {
+        return Response::error("frozen cleanup signature is required", 401);
+    };
+    let Some(body) = read_bounded_body(&mut request, MAX_FROZEN_CLEANUP_BYTES).await? else {
+        return Response::error("frozen cleanup body is too large", 413);
+    };
+    let key = StorageWorkKey::new(env.secret("HUB_STORAGE_WORK_KEY")?.to_string())
+        .map_err(|error| worker::Error::RustError(error.to_string()))?;
+    let deployment_id = env.var("HUB_DEPLOYMENT_ID")?.to_string();
+    let grant = match crate::hybrid_frozen_cleanup::FrozenCleanupHead::authorize(
+        &key,
+        &signature,
+        &body,
+        &deployment_id,
+        aos_hub_core::clock::now_unix_secs(),
+    ) {
+        Ok(grant) => grant,
+        Err(_) => return Response::error("frozen cleanup HEAD is not authorized", 401),
+    };
+
+    // This retained credential must never enter monotonic binding publication.
+    // HEAD cannot alter provider state or leave an ambiguous mutation receipt.
+    // Redirects cannot establish absence for the exact claimed key.
+    if aos_hub_core::url_guard::is_safe_remote_url(grant.signed_url()).is_err() {
+        return Response::error("frozen cleanup provider is unavailable", 503);
+    }
+    let mut init = RequestInit::new();
+    init.with_method(worker::Method::Head)
+        .with_redirect(RequestRedirect::Manual);
+    let provider_request = Request::new_with_init(grant.signed_url(), &init)?;
+    let response = match Fetch::Request(provider_request).send().await {
+        Ok(response) => response,
+        Err(_) => return Response::error("frozen cleanup HEAD is unavailable", 503),
+    };
+    let length = response.headers().get("content-length")?;
+    let etag = response.headers().get("etag")?;
+    let bytes = match grant.result(response.status_code(), length.as_deref(), etag.as_deref()) {
+        Ok(bytes) => bytes,
+        Err(_) => return Response::error("frozen cleanup HEAD metadata is unavailable", 503),
+    };
+    let headers = Headers::new();
+    headers.set("content-type", "application/json")?;
+    headers.set("cache-control", "private, no-store")?;
+    Ok(Response::from_bytes(bytes)?.with_headers(headers))
 }
 
 async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Response> {

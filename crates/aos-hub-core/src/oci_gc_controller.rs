@@ -3,8 +3,9 @@
 //! The database claim is the deletion fence: it rechecks the active run,
 //! candidate tombstone, hard roots, topology, credential, inventory, and
 //! conditional-delete capability immediately before this controller performs
-//! provider I/O. Provider adapters receive only [`FrozenSurfaceAccess`]; this
-//! module never selects a current writer or reconstructs an address from live
+//! provider I/O. Provider adapters receive the frozen access fence; an exact
+//! absence opener can also use the live claim to issue a bounded remote grant.
+//! This module never selects a current writer or reconstructs an address from live
 //! topology. Actions that were absent from the reviewed inventory still get a
 //! live exact-address probe before absence evidence is persisted.
 
@@ -20,8 +21,7 @@ use crate::db::{
 use crate::fetch::{SurfaceFetch, SurfaceProvider};
 use crate::jobs::redacted_job_failure;
 use crate::surface_write::{
-    FrozenSurfaceAccess, SurfaceDeleteOutcome, SurfaceDeletePrecondition, SurfaceWrite,
-    SurfaceWriteProvider,
+    SurfaceDeleteOutcome, SurfaceDeletePrecondition, SurfaceWrite, SurfaceWriteProvider,
 };
 
 // LocalFS may hash, quarantine, unlink, and fsync one inventory-bounded 1 GiB
@@ -159,13 +159,13 @@ impl OciGcDeletionController {
         &self,
         claim: &OciGcPlacementActionClaim,
     ) -> std::result::Result<ProviderSuccess, ProviderFailure> {
-        let access = frozen_access(claim);
+        let access = claim.frozen_access();
         access.validate().map_err(ProviderFailure::repair)?;
 
         if !claim.inventory_entry_present {
             let fetch = self
                 .surfaces
-                .frozen_placement_fetcher(&access)
+                .claimed_placement_fetcher(&access, claim)
                 .await
                 .map_err(ProviderFailure::repair)?;
             return live_absence(fetch.as_ref(), &claim.object_key).await;
@@ -226,25 +226,6 @@ impl ProviderFailure {
             retryable: false,
             error,
         }
-    }
-}
-
-fn frozen_access(claim: &OciGcPlacementActionClaim) -> FrozenSurfaceAccess {
-    FrozenSurfaceAccess {
-        registry_id: claim.registry_id,
-        placement_id: claim.placement_id,
-        placement_name: claim.placement_name.clone(),
-        placement_prefix: claim.placement_prefix.clone(),
-        placement_resource_version: claim.placement_resource_version,
-        placement_write_spec_version: claim.placement_write_spec_version,
-        placement_observation_version: claim.placement_observation_version,
-        binding_id: claim.binding_id,
-        binding_resource_version: claim.binding_resource_version,
-        binding_write_revision: claim.binding_write_revision,
-        delete_credential_purpose: claim.delete_credential_purpose.clone(),
-        delete_credential_generation: claim.delete_credential_generation,
-        delete_capability_fingerprint: claim.delete_capability_fingerprint.clone(),
-        delete_capability_resource_version: claim.delete_capability_resource_version,
     }
 }
 

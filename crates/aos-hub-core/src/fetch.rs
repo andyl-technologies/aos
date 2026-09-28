@@ -909,6 +909,24 @@ pub trait SurfaceProvider: BackendBounds {
         let _ = access;
         anyhow::bail!("this provider does not support frozen placement reads")
     }
+
+    /// Opens a frozen reader for one exact live OCI cleanup claim.
+    ///
+    /// The default preserves in-process frozen access. Hybrid external readers
+    /// use the claim's key, token, and lease to issue a narrowly scoped metadata
+    /// grant; they must not fall back to ordinary current binding reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when frozen access is unavailable, the claim is stale,
+    /// or the runtime cannot perform claim-scoped metadata observations.
+    async fn claimed_placement_fetcher(
+        &self,
+        access: &crate::surface_write::FrozenSurfaceAccess,
+        _claim: &crate::db::OciGcPlacementActionClaim,
+    ) -> Result<Box<dyn SurfaceFetch>> {
+        self.frozen_placement_fetcher(access).await
+    }
 }
 
 #[cfg(test)]

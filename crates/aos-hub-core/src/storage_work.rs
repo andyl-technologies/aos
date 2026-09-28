@@ -75,8 +75,8 @@ mod frozen_cleanup;
 mod metadata_batch;
 
 pub use frozen_cleanup::{
-    StorageFrozenCleanupAccess, StorageFrozenCleanupOperation, StorageFrozenCleanupRequest,
-    MAX_FROZEN_CLEANUP_BYTES, STORAGE_FROZEN_CLEANUP_PATH,
+    StorageFrozenCleanupAccess, StorageFrozenCleanupHeadResult, StorageFrozenCleanupOperation,
+    StorageFrozenCleanupRequest, MAX_FROZEN_CLEANUP_BYTES, STORAGE_FROZEN_CLEANUP_PATH,
 };
 
 pub use metadata_batch::{
