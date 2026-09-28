@@ -49,6 +49,7 @@
           admissionUnit = "";
           expectedPolicy = "${pkgs.aosSelinuxKernelPolicyReadbackForKernel config.system.build.kernel}/policy.33";
           expectedPolicyKernel = config.system.build.kernel;
+          aos-selinux-runtime-roots = pkgs.aosSelinuxRuntimeRootsForKernel config.system.build.kernel;
         });
         aos.services.dbus.enable = true;
         aos.sandbox.hostBroker = {
