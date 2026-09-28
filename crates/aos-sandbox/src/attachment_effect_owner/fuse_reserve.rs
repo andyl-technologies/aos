@@ -43,6 +43,9 @@ pub enum ControllerFuseIntentDispatchErrorV1 {
     /// Signed assignment, ownership or physical Host custody is stale.
     #[error(transparent)]
     Runtime(#[from] CurrentRuntimeScopeError),
+    /// The exact existing Host-scope query is not granted or cannot be encoded.
+    #[error(transparent)]
+    HostScope(#[from] crate::mount_preparation::MountCatalogPreparationError),
     /// Complete canonical intent semantics cannot be represented.
     #[error(transparent)]
     Semantics(#[from] MountFuseReserveIntentSemanticErrorV1),
@@ -114,6 +117,37 @@ impl ProtectedAttachmentEffectOwnerV1<'_> {
 }
 
 impl CurrentControllerFuseIntentDispatchV1<'_> {
+    /// Prepares the original Host query while retaining this Controller writer.
+    ///
+    /// This reuses only an already-authorized exact ObserveMountScope grant.
+    /// No signer, RPC callback, successor deadline or replacement assignment
+    /// is introduced. Mount must independently authenticate the actual Host
+    /// reply and retain its descriptors before its lower preparation producer.
+    /// The returned bytes are an artifact carrier, not a live Mount/Root guard.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale original desired/runtime custody, a missing exact existing
+    /// Host grant, malformed query coordinates or an expired original deadline.
+    pub fn original_host_scope_packet_at<T>(
+        &mut self,
+        clock: &mut T,
+    ) -> Result<Vec<u8>, ControllerFuseIntentDispatchErrorV1>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.recheck(clock)?;
+        let packet = crate::mount_preparation::prepare_current_host_scope_packet(
+            self.journal,
+            &self.prepared.target,
+            *self.request.header().request_id(),
+            self.request.header().deadline_boottime_nanoseconds(),
+            clock,
+        )?;
+        self.recheck(clock)?;
+        Ok(packet)
+    }
+
     /// Borrows the exact original body; it conveys no remote effect authority.
     #[must_use]
     pub fn request_body(&self) -> &[u8] {
