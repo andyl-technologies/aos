@@ -545,6 +545,8 @@ impl Database {
 
     /// Claims final digest materialization after all declared bytes arrived.
     /// Exact retries are idempotent; only one upload can own a registry digest.
+    /// Waiting on another upload's digest claim uses read-only queries until
+    /// that claim disappears or an active blob is admitted.
     ///
     /// # Errors
     ///
@@ -582,6 +584,31 @@ impl Database {
                         != Some(input.materialization_binding_write_revision))
             {
                 bail!("OCI upload materialization placement is already frozen");
+            }
+
+            if current.state == "active"
+                && current.resource_version == input.expected_resource_version
+            {
+                // Waiters must not repeatedly acquire the writer lock needed
+                // by the digest owner to commit. This observation grants no
+                // authority; admission still uses the checked batch below.
+                let held = self
+                    .backend
+                    .query_opt(
+                        "SELECT 1 FROM oci_blob_claims claim
+                         WHERE claim.registry_id = ?1 AND claim.digest = ?2
+                           AND claim.upload_id <> ?3
+                           AND NOT EXISTS (SELECT 1 FROM oci_blobs stored_blob
+                             WHERE stored_blob.registry_id = claim.registry_id
+                               AND stored_blob.digest = claim.digest
+                               AND stored_blob.lifecycle_state = 'active')",
+                        &vals![current.registry_id, input.digest.to_string(), current.id],
+                    )
+                    .await?
+                    .is_some();
+                if held {
+                    return Ok(OciBlobClaimOutcome::InProgress);
+                }
             }
         }
         let statements = vec![

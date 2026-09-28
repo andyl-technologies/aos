@@ -2852,10 +2852,54 @@ fn parse_annotations(value: &str) -> Result<Annotations> {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
     use super::*;
     use crate::db::{
         ApplyOciAdminMutation, OciManualTagMutationOperation, PlanOciManualTagMutation,
     };
+
+    struct CountedClaimBackend {
+        inner: Box<dyn crate::backend::Backend>,
+        transactions: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::backend::Backend for CountedClaimBackend {
+        fn dialect(&self) -> crate::dialect::Dialect {
+            self.inner.dialect()
+        }
+
+        async fn execute(&self, sql: &str, params: &[crate::value::Value]) -> Result<u64> {
+            self.transactions.fetch_add(1, Ordering::Relaxed);
+            self.inner.execute(sql, params).await
+        }
+
+        async fn execute_insert(&self, sql: &str, params: &[crate::value::Value]) -> Result<i64> {
+            self.transactions.fetch_add(1, Ordering::Relaxed);
+            self.inner.execute_insert(sql, params).await
+        }
+
+        async fn query(&self, sql: &str, params: &[crate::value::Value]) -> Result<Vec<Row>> {
+            self.inner.query(sql, params).await
+        }
+
+        async fn execute_batch(&self, sql: &str) -> Result<()> {
+            self.transactions.fetch_add(1, Ordering::Relaxed);
+            self.inner.execute_batch(sql).await
+        }
+
+        async fn batch(&self, statements: &[Statement]) -> Result<()> {
+            self.transactions.fetch_add(1, Ordering::Relaxed);
+            self.inner.batch(statements).await
+        }
+
+        async fn checked_batch(&self, statements: &[CheckedStatement]) -> Result<()> {
+            self.transactions.fetch_add(1, Ordering::Relaxed);
+            self.inner.checked_batch(statements).await
+        }
+    }
 
     fn descriptor(media_type: MediaType, bytes: &[u8]) -> Descriptor {
         Descriptor {
@@ -4207,7 +4251,12 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_uploads_charge_one_shared_digest_once() {
-        let (db, registry_id, placement_id) = catalog_database().await;
+        let (mut db, registry_id, placement_id) = catalog_database().await;
+        let transactions = Arc::new(AtomicUsize::new(0));
+        db.backend = Box::new(CountedClaimBackend {
+            inner: db.backend,
+            transactions: Arc::clone(&transactions),
+        });
         let catalog = catalog_fixture(registry_id, placement_id);
         record_catalog_bytes(&db, &catalog).await;
         let repository = db.index_oci_repository_catalog(&catalog).await.unwrap();
@@ -4337,9 +4386,17 @@ mod tests {
             db.claim_oci_upload(&claim(&uploads[0])).await.unwrap(),
             OciBlobClaimOutcome::Claimed
         );
+        let transactions_before_wait = transactions.load(Ordering::Relaxed);
+        for _ in 0..32 {
+            assert_eq!(
+                db.claim_oci_upload(&claim(&uploads[1])).await.unwrap(),
+                OciBlobClaimOutcome::InProgress
+            );
+        }
         assert_eq!(
-            db.claim_oci_upload(&claim(&uploads[1])).await.unwrap(),
-            OciBlobClaimOutcome::InProgress
+            transactions.load(Ordering::Relaxed),
+            transactions_before_wait,
+            "digest waiters must leave the SQL writer available to the finalizer"
         );
 
         let first = db

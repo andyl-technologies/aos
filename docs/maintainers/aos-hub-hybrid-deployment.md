@@ -11,6 +11,14 @@ Native origin, PostgreSQL instance, R2 bucket, deployment ID, and credentials
 distinct for each environment. See [RFC-0023](../rfcs/0023-hub-hybrid-topology/README.md)
 for the routing and storage contracts.
 
+Concurrent OCI manifest uploads share one finalization claim per registry and
+digest. Waiting uploads poll that claim without opening write transactions,
+with increasing delays capped at 100 milliseconds and a ten-second wait budget.
+An active SQL blob permits the waiting upload to attempt its own guarded
+admission; physical object presence alone never authorizes completion. An upload
+that does not converge within the bounded window returns a retryable error and
+cleans up its own staging objects.
+
 ## Prepare the paired deployment
 
 1. Build `pkgs.aos-hub`, `pkgs.aos-hub-cloudflare`, and

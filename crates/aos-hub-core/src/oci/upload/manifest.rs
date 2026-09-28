@@ -6,6 +6,7 @@
 //! exact evidence on the selected writer placement.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use aos_oci_types::{
     Annotations, Descriptor, ImageConfig, ImageIndex, ImageManifest, ManifestReference, MediaType,
@@ -30,6 +31,8 @@ use crate::db::{
 };
 
 const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
+const DIGEST_WAIT_BUDGET: Duration = Duration::from_secs(10);
+const DIGEST_POLL_MAX_DELAY: Duration = Duration::from_millis(100);
 
 enum ParsedDocument {
     Manifest(ImageManifest),
@@ -346,11 +349,25 @@ impl RpcService {
             .claim_oci_upload(&claim)
             .await
             .map_err(|_| unavailable_response("manifest digest could not be claimed", false))?;
+        let wait_started = crate::clock::Instant::now();
+        let mut poll_delay = Duration::from_millis(5);
+
+        // Remote materialization can outlast one second. Back off read-only
+        // waiters within a request budget; the attempt ceiling also bounds
+        // retries if a Worker host's wall clock moves backwards.
         for _ in 0..200 {
             if outcome != OciBlobClaimOutcome::InProgress {
                 break;
             }
-            crate::clock::sleep(std::time::Duration::from_millis(5)).await;
+            let Some(remaining) = DIGEST_WAIT_BUDGET.checked_sub(wait_started.elapsed()) else {
+                break;
+            };
+            if remaining.is_zero() {
+                break;
+            }
+
+            crate::clock::sleep(poll_delay.min(remaining)).await;
+            poll_delay = (poll_delay * 2).min(DIGEST_POLL_MAX_DELAY);
             claim.now = now();
             claim.lease_expires_at = claim.now + COMPLETION_LEASE_SECONDS;
             // Preserve the prior InProgress outcome across an ambiguous
