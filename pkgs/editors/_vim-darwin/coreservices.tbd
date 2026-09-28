@@ -1,0 +1,16 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ x86_64-macos, arm64-macos ]
+install-name: '/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices'
+current-version: 1228.0.0
+compatibility-version: 1.0.0
+exports:
+  - targets: [ x86_64-macos, arm64-macos ]
+    symbols:
+      - _CreateTextEncoding
+      - _TECCreateConverter
+      - _TECDisposeConverter
+      - _TECConvertText
+      - _TECFlushText
+      - _LocaleRefGetPartString
+...
