@@ -963,6 +963,10 @@ pub(crate) fn verify_received_mount_fd(
 }
 
 #[cfg(test)]
+#[path = "held_snapshot_reader_vm_tests.rs"]
+mod vm_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Read as _;
