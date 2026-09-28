@@ -359,7 +359,31 @@ impl ProviderLedgerV1<'_> {
         descriptor_roles: &[SourceProviderDescriptorRole],
         current_catalog: Option<(&[u8], &[u8])>,
     ) -> Result<ProviderAdmissionDispositionV1, ProviderLedgerError> {
+        self.verify_and_admit_with_origin(signed_request, descriptor_roles, current_catalog, None)
+    }
+
+    pub(crate) fn verify_and_admit_original_packet(
+        &mut self,
+        packet: &crate::FixedProviderAuthenticatedSourceRequestV1,
+        current_catalog: Option<(&[u8], &[u8])>,
+    ) -> Result<ProviderAdmissionDispositionV1, ProviderLedgerError> {
+        self.verify_and_admit_with_origin(packet.signed(), &[], current_catalog, Some(packet))
+    }
+
+    fn verify_and_admit_with_origin(
+        &mut self,
+        signed_request: &SignedSourceProviderRequestV1,
+        descriptor_roles: &[SourceProviderDescriptorRole],
+        current_catalog: Option<(&[u8], &[u8])>,
+        original_packet: Option<&crate::FixedProviderAuthenticatedSourceRequestV1>,
+    ) -> Result<ProviderAdmissionDispositionV1, ProviderLedgerError> {
         self.ensure_open()?;
+        let original_native_packet = original_packet.is_some()
+            && signed_request.method() == SourceProviderMethod::Acquire
+            && decode_acquire_request(signed_request.subject()).is_ok_and(|request| {
+                request.acquisition_version()
+                    == aos_sandbox_source_provider_protocol::ACQUIRE_SOURCE_REQUEST_VERSION_V3
+            });
         let expectation = request_sequence_expectation(self, signed_request)?;
         let holder_id = signed_request.signer().authority_id();
         let mut installed = self.current_sessions.remove(&holder_id).ok_or(
@@ -383,6 +407,7 @@ impl ProviderLedgerV1<'_> {
                         &mut installed.session,
                         current,
                         current_catalog,
+                        original_packet,
                     ),
                     SourceProviderMethod::Release => {
                         crate::release::reserve_release(self, &mut installed.session, current)
@@ -393,6 +418,7 @@ impl ProviderLedgerV1<'_> {
                     SourceProviderMethod::Hello => Err(ProviderLedgerError::Equivocation),
                 }
             });
+        let admitted_original_native = result.is_ok() && original_native_packet;
         let result = match result {
             Ok(disposition) => match installed.session.current_projection() {
                 Ok(projection)
@@ -412,7 +438,14 @@ impl ProviderLedgerV1<'_> {
             },
             Err(error) => Err(error),
         };
-        self.current_sessions.insert(holder_id, installed);
+        if admitted_original_native && result.is_err() {
+            // The final peer/session check follows reservation admission.
+            // Preserve the occupied rows and original hot clock on failure.
+            self.poison_runtime();
+        }
+        if !original_native_packet || !self.poisoned {
+            self.current_sessions.insert(holder_id, installed);
+        }
         result
     }
 }

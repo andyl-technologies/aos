@@ -24,6 +24,9 @@ use crate::ledger::native_completion::{
 };
 use crate::native_completion::{fixture_prepared, fixture_requested};
 
+#[path = "native_v3_admission_tests.rs"]
+mod native_v3_admission_tests;
+
 fn digest(byte: u8) -> ObjectDigest {
     ObjectDigest::from_bytes([byte; 32])
 }

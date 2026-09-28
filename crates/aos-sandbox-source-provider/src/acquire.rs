@@ -40,6 +40,11 @@ use crate::{DurableAcquireRebindPermitV1, DurableAcquireReplayV1, ProviderAdmiss
 
 #[path = "acquire/completion.rs"]
 mod completion;
+#[path = "acquire/native_admission.rs"]
+mod native_admission;
+
+#[cfg(test)]
+pub(crate) use native_admission::matches_original_acquisition as matches_original_native_acquisition;
 #[path = "acquire/reservation.rs"]
 mod reservation;
 #[path = "acquire/validation.rs"]
