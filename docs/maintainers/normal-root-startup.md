@@ -50,10 +50,13 @@ actual Root peer, exact PID1 MainPID/invocation/cgroup/fragment, immutable unit
 bytes and executable/argv, and each original live per-fragment pidfd. Controller
 reads only public immutable profile/code objects; no Root task-file or FD-use
 exception is added. This object cannot serialize or become a peer/read proof.
-The genuine packet-pair coordinator and bounded same-stream transport remain
-unwired, so the original-flight constructor is closed and neither Intent nor
-Floor can be constructed. A Root self-report, canonical-policy equality,
-supplied digest or path cannot replace the original peer join.
+The signed administrative packet pair is delivered and retained independently
+as described in `source-genesis-input.md`. Its delivery is not current-cut or
+Root authority. The genuine held-owner coordinator and bounded same-stream
+transport remain unwired, so the original-flight constructor is closed and
+neither Intent nor Floor can be constructed. A Root self-report,
+canonical-policy equality, supplied digest or path cannot replace the original
+peer join.
 FUSE also still needs the genuine Root-last current history/revocation,
 Source floor, Cache, original Publisher, assignment/lease, two current content
 grants and connected Mount/worker read barrier.
@@ -62,9 +65,10 @@ Qualification is pending: Rust compilation and authored regressions, actual
 profile derivation/ELF resolution, final compiled policy queries, original
 OpenFile delivery and physical labels/filesystem association, exact normal
 unit/credential startup, property/invocation/image mutation negatives, and
-installed Root and Controller process/cgroup/stream tests. The signed seed and
-project-authorization pair, actual current authorization-head route, and real
-held Controller/Source/Root coordinator are still separate closure work.
+installed Root and Controller process/cgroup/stream tests. The delivered signed
+seed and project-authorization pair still needs qualification together with
+the actual current authorization-head route and real held Controller/Source/Root
+coordinator.
 Runtime dependencies, loader-cache and
 future dlopen/environment behavior need actual fixed-image qualification;
 DT_NEEDED resolution plus current maps is not an arbitrary future-load proof.
