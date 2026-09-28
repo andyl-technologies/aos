@@ -72,7 +72,17 @@ GCP runtime. Build the image and Worker from the same reviewed source commit.
 The image execs `/usr/bin/aos-hub serve` directly and has no initialized database,
 credentials, or package-manager initialization step.
 
-The image defaults to `HUB_TOPOLOGY=hybrid`, `HUB_ROOT=/tmp/aos-hub`, and
+The separate initialization image is `container-aos-hub-bootstrap-oci` or
+`container-aos-hub-bootstrap-docker`. It uses the service's binary and layers
+and defaults to `/usr/bin/aos-hub init`. Register it as a bootstrap job with the
+same database URL file, then execute it explicitly before opening public traffic.
+For root initialization, set `HUB_BOOTSTRAP_ROOT_EMAIL` and
+`HUB_BOOTSTRAP_ROOT_PASSWORD_FILE` to an owner-private password file. The image
+contains no credential values. Deploying the job does not execute initialization;
+do not execute it on every service release, because `init` can update an existing
+root password. Its temporary local root is disposable when using PostgreSQL.
+
+The service image defaults to `HUB_TOPOLOGY=hybrid`, `HUB_ROOT=/tmp/aos-hub`, and
 `HUB_LISTEN=0.0.0.0:8080`. Supply `HUB_EXTERNAL_URL`, the paired origins and
 deployment identity, PostgreSQL, release authority, and the credential-file
 variables documented by `aos-hub serve --help`. Configure the platform's

@@ -210,6 +210,13 @@ in {
       })
       .config;
 
+    aos.containers.definitions.aos-hub-bootstrap =
+      (import ../../containers/aos-hub-bootstrap.nix {
+        inherit pkgs;
+        aosSystem = pkgs.stdenv.hostPlatform.system;
+      })
+      .config;
+
     assertions =
       [
         {

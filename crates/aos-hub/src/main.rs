@@ -211,7 +211,7 @@ enum Command {
     /// optionally bootstrapping the root admin.
     Init {
         /// Bootstrap (create or update) this root admin email, if given.
-        #[arg(long)]
+        #[arg(long, env = "HUB_BOOTSTRAP_ROOT_EMAIL")]
         root_email: Option<String>,
         /// The root admin password. Prefer --root-password-stdin.
         #[arg(long, conflicts_with_all = ["root_password_stdin", "root_password_file"])]
@@ -220,7 +220,11 @@ enum Command {
         #[arg(long, conflicts_with = "root_password_file")]
         root_password_stdin: bool,
         /// Read the root admin password from an owner-private UTF-8 file.
-        #[arg(long, requires = "root_email")]
+        #[arg(
+            long,
+            env = "HUB_BOOTSTRAP_ROOT_PASSWORD_FILE",
+            requires = "root_email"
+        )]
         root_password_file: Option<PathBuf>,
     },
     /// Reset (or create) a root admin's password.

@@ -11,6 +11,8 @@
   aosSystem = pkgs.stdenv.hostPlatform.system;
   containerImage = systems.server.build.containers.aos-hub;
   dockerArchive = containerImage.platforms.${aosSystem}.dockerArchive;
+  bootstrapImage = systems.server.build.containers.aos-hub-bootstrap;
+  bootstrapArchive = bootstrapImage.platforms.${aosSystem}.dockerArchive;
   containerPlatform =
     if pkgs.stdenv.hostPlatform.isAarch64
     then "linux/arm64"
@@ -67,7 +69,7 @@ in {
   bootTimeout = 300;
   machines.runtime = {
     system = runtimeSystem;
-    extraClosures = [dockerArchive pkgs.curl pkgs.nerdctl pkgs.grep pkgs.sed];
+    extraClosures = [dockerArchive bootstrapArchive pkgs.curl pkgs.nerdctl pkgs.grep pkgs.sed];
     memoryMiB = 2048;
     varSizeMiB = 4096;
   };
@@ -78,9 +80,13 @@ in {
 
     runtime.wait_for_unit("hub-container-runtime.service", timeout=120)
     runtime.succeed("${nerdctl} load --input ${dockerArchive}/image.docker.tar", timeout=120)
+    runtime.succeed("${nerdctl} load --input ${bootstrapArchive}/image.docker.tar", timeout=120)
     image = json.loads(runtime.succeed("${nerdctl} image inspect aos-hub:latest"))[0]
     assert image["Config"]["Entrypoint"] == ["/usr/bin/aos-hub"], image["Config"]
     assert image["Config"]["Cmd"] == ["serve"], image["Config"]
+    bootstrap = json.loads(runtime.succeed("${nerdctl} image inspect aos-hub-bootstrap:latest"))[0]
+    assert bootstrap["Config"]["Entrypoint"] == ["/usr/bin/aos-hub"], bootstrap["Config"]
+    assert bootstrap["Config"]["Cmd"] == ["init"], bootstrap["Config"]
 
     runtime.succeed(textwrap.dedent("""
         set -eu
@@ -95,18 +101,13 @@ in {
         printf '%s\\n' 'container-bootstrap-password' \\
           > /var/lib/hub-container-credentials/root-password
         chmod 0600 /var/lib/hub-container-credentials/*
-        ${nerdctl} run --rm --net host \\
+        ${nerdctl} run --rm --net host --read-only --tmpfs /tmp \\
           --mount type=bind,src=/var/lib/hub-container-state,dst=/state \\
           --mount type=bind,src=/var/lib/hub-container-credentials,dst=/credentials,readonly \\
-          --env HUB_ROOT=/state aos-hub:latest \\
-          init --root-email container-root@example.test --root-password-file /credentials/root-password
-        printf '%s\\n' 'container-test-password' \\
-          > /var/lib/hub-container-credentials/root-password
-        ${nerdctl} run --rm --net host \\
-          --mount type=bind,src=/var/lib/hub-container-state,dst=/state \\
-          --mount type=bind,src=/var/lib/hub-container-credentials,dst=/credentials,readonly \\
-          --env HUB_ROOT=/state aos-hub:latest \\
-          reset-root --email container-root@example.test --password-file /credentials/root-password
+          --env HUB_ROOT=/state \\
+          --env HUB_BOOTSTRAP_ROOT_EMAIL=container-root@example.test \\
+          --env HUB_BOOTSTRAP_ROOT_PASSWORD_FILE=/credentials/root-password \\
+          aos-hub-bootstrap:latest
     """), timeout=120)
 
     runtime.succeed(textwrap.dedent("""
@@ -133,6 +134,20 @@ in {
         raise
     runtime.succeed(textwrap.dedent("""
         set -eu
+        ${pkgs.curl}/bin/curl -fsS -D /tmp/hub-bootstrap-login.headers -o /dev/null \\
+          --data-urlencode email=container-root@example.test \\
+          --data-urlencode password=container-bootstrap-password \\
+          http://127.0.0.1:8080/login/password
+        ${pkgs.grep}/bin/grep -qi '^set-cookie:' /tmp/hub-bootstrap-login.headers
+
+        printf '%s\\n' 'container-test-password' \\
+          > /var/lib/hub-container-credentials/root-password
+        ${nerdctl} run --rm --net host \\
+          --mount type=bind,src=/var/lib/hub-container-state,dst=/state \\
+          --mount type=bind,src=/var/lib/hub-container-credentials,dst=/credentials,readonly \\
+          --env HUB_ROOT=/state aos-hub:latest \\
+          reset-root --email container-root@example.test --password-file /credentials/root-password
+
         ${pkgs.curl}/bin/curl -fsS -D /tmp/hub-container-login.headers -o /dev/null \\
           --data-urlencode email=container-root@example.test \\
           --data-urlencode password=container-test-password \\
@@ -155,7 +170,8 @@ in {
     runtime.succeed("${nerdctl} rm --force native-hub", timeout=60)
 
     def assert_startup_rejected(command, expected_error):
-        status, stdout, stderr = runtime.execute(command)
+        # Budget cold image unpacking separately from the application's rejection.
+        status, stdout, stderr = runtime.execute(command, timeout=120)
         output = (stdout + stderr).decode("utf-8", errors="replace")
         assert status != 0, output
         assert expected_error in output, output

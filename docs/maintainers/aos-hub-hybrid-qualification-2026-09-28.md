@@ -69,9 +69,29 @@ error/cancellation accounting and provider telemetry for hosted qualification.
 
 ## Remaining qualification and implementation
 
+### Subsequent Native image and database qualification
+
+The dedicated Native service and bootstrap images passed
+`checks.fleet.hub-native-container`. The authoritative result is
+`/nix/store/j3ksy398zradsf8br1g04bsdcmjxgacw-aos-fleet-test-hub-native-container-0`.
+Its shared application prerequisite passed 3,966 tests, with six skipped.
+The VM loaded both real images, initialized the root through the bootstrap image,
+authenticated with that initial password, changed the password, and retained the
+authenticated session after a service restart. It also required each exact
+hybrid startup rejection for missing PostgreSQL, JWT, and instance sealing keys.
+The cold-container execution budget is 120 seconds; application checks and
+request deadlines are unchanged. Container evaluator checks passed separately.
+
+The production PostgreSQL-enabled Native binary from the OCI artifact also
+migrated the actual new staging Cloud SQL database. Corrected direct readback
+confirmed schema version 1, 260 tables, and zero users. Repeat initialization
+passed without resetting the database. Companion infra commit `63f1a360`
+records that evidence. Root administrator creation awaits explicit approval;
+this database migration does not qualify Cloud Run mounts or a hosted paired API.
+
 The dedicated GCP project, PostgreSQL and credential resources are provisioned,
 but no paired Native serving endpoint or public hybrid Worker route is deployed.
-Signed delivery setup, SQL credentials, private credential mounts, initialization,
+Signed delivery setup, private credential mounts, root administrator initialization,
 origin shielding and real cross-cloud latency/byte measurements remain pending.
 
 Frozen external S3 physical GC, durable delete-receipt expiration/cleanup, and
