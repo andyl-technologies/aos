@@ -169,7 +169,7 @@ impl FixedFuseWorkerSessionV1 {
 
         loop {
             self.recheck()?;
-            let mut poll_fds = [PollFd::new(self.cancellation.as_fd(), PollFlags::IN)];
+            let mut poll_fds = [PollFd::new(&self.cancellation, PollFlags::IN)];
             let timeout = Timespec {
                 tv_sec: 1,
                 tv_nsec: 0,
