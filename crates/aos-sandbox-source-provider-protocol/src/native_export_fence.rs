@@ -69,7 +69,7 @@ pub struct NativeExportFenceReleaseV1 {
     pub session_binding: ObjectDigest,
     /// Reserved Root-to-Provider sequence.
     pub request_sequence: u64,
-    /// Correlated Provider-to-Root sequence.
+    /// Independently reserved Provider-to-Root sequence.
     pub response_sequence: u64,
     /// Live Provider execution instance that signs the cut.
     pub provider_process_instance: [u8; 16],
@@ -128,7 +128,9 @@ impl SourceProviderNativeExportFenceV1 {
     ///
     /// # Errors
     ///
-    /// Rejects sentinels, sequence disagreement or native acceptance mismatch.
+    /// Rejects sentinels or native acceptance mismatch. Both direction-local
+    /// sequences must be nonzero, but their independently admitted values need
+    /// not be equal.
     pub fn new(
         release: NativeExportFenceReleaseV1,
         acquire: NativeExportFenceAcquireV1,
@@ -155,7 +157,7 @@ impl SourceProviderNativeExportFenceV1 {
             || release.request_id == [0; 16]
             || release.provider_process_instance == [0; 16]
             || release.request_sequence == 0
-            || release.response_sequence != release.request_sequence
+            || release.response_sequence == 0
             || acquire.acquisition_sequence == 0
             || acquire.backend_id == [0; 32]
             || acquire.lease_id == [0; 16]
