@@ -17,6 +17,9 @@ pub(super) struct PlannerIssueProjection {
     pub simple_finite_issue: bool,
 }
 
+mod basis;
+pub(super) use basis::PlannerIssueBasis;
+
 mod validation;
 use validation::{
     IssueGeneratorValidation, IssueProjectionMode, PlannerIssueAttemptBasis,
@@ -133,43 +136,21 @@ impl CampaignRepository {
 
     pub(super) fn preflight_planner_issue(
         &self,
-        snapshot: &LoadedSnapshot,
-        invocation: PlannerInvocationId,
-        selected: PlanningScanPosition,
-        branch_requests: &[BranchRequest],
-        proposals: &[Proposal],
+        basis: &PlannerIssueBasis<'_>,
     ) -> Result<PlannerIssueProjection, CampaignRepositoryError> {
-        let projected = self.project_planner_issue(
-            snapshot,
-            invocation,
-            selected,
-            branch_requests,
-            proposals,
-            IssueProjectionMode::Preflight,
-        )?;
-        let proposals = u64::try_from(proposals.len())
+        let projected = self.project_planner_issue(basis, IssueProjectionMode::Preflight)?;
+        let proposals = u64::try_from(basis.proposals.len())
             .map_err(|_| integrity("campaign-budget-proposal-count-overflow"))?;
-        self.ensure_budget_available(snapshot, proposals, projected.attempts)?;
+        self.ensure_budget_available(basis.snapshot, proposals, projected.attempts)?;
         Ok(projected)
     }
 
     pub(super) fn publish_planner_issue(
         &self,
-        snapshot: &LoadedSnapshot,
-        invocation: PlannerInvocationId,
-        selected: PlanningScanPosition,
-        branch_requests: &[BranchRequest],
-        proposals: &[Proposal],
+        basis: &PlannerIssueBasis<'_>,
         prepared: &PlannerIssueProjection,
     ) -> Result<PlannerIssueProjection, CampaignRepositoryError> {
-        let published = self.project_planner_issue(
-            snapshot,
-            invocation,
-            selected,
-            branch_requests,
-            proposals,
-            IssueProjectionMode::Publish,
-        )?;
+        let published = self.project_planner_issue(basis, IssueProjectionMode::Publish)?;
         if prepared.branch_requests != published.branch_requests
             || prepared.proposals != published.proposals
             || prepared.attempts != published.attempts
@@ -204,12 +185,11 @@ impl CampaignRepository {
             .iter()
             .map(|id| self.decode_proposal(id.content_id()))
             .collect::<Result<Vec<_>, _>>()?;
+        let invocation = self.load_planner_invocation(step.invocation())?;
+        let basis =
+            self.planner_issue_basis(parent, &invocation, *selected, &branch_requests, &proposals)?;
         let projected = self.project_planner_issue(
-            parent,
-            step.invocation(),
-            *selected,
-            &branch_requests,
-            &proposals,
+            &basis,
             IssueProjectionMode::Validate {
                 target_exploration: child.snapshot.roots().exploration,
                 target_accounting: child.snapshot.roots().accounting,
@@ -229,65 +209,21 @@ impl CampaignRepository {
 
     fn project_planner_issue(
         &self,
-        snapshot: &LoadedSnapshot,
-        invocation_id: PlannerInvocationId,
-        selected: PlanningScanPosition,
-        branch_requests: &[BranchRequest],
-        proposals: &[Proposal],
+        basis: &PlannerIssueBasis<'_>,
         mode: IssueProjectionMode,
     ) -> Result<PlannerIssueProjection, CampaignRepositoryError> {
-        let invocation = self.load_planner_invocation(invocation_id)?;
-        if invocation.policy() != snapshot.snapshot.active_policy()
-            || invocation.input_view() != snapshot.snapshot.planning_view().id()?
-        {
-            return Err(integrity("planner-issue-invocation-is-not-current"));
-        }
-        let selected_request = branch_requests
-            .iter()
-            .find_map(|request| {
-                request
-                    .id()
-                    .ok()
-                    .filter(|request_id| *request_id == selected.source())
-                    .map(|_| request.clone())
-            })
-            .map(Ok)
-            .unwrap_or_else(|| self.read_branch_request(selected.source().content_id()))?;
-        let selected_is_new = branch_requests
-            .iter()
-            .map(BranchRequest::id)
-            .collect::<Result<BTreeSet<_>, _>>()?
-            .contains(&selected.source());
-        if selected_is_new
-            && (!proposals.is_empty()
-                || !matches!(
-                    selected_request.source(),
-                    CandidateSource::StatisticalFinite(_) | CandidateSource::StatisticalSmc(_)
-                ))
-        {
-            return Err(integrity(
-                "planner-new-selected-request-is-not-statistical-request-only",
-            ));
-        }
-        if selected_request.branch_point() != selected.branch_point() {
-            return Err(integrity("planner-issue-selected-request-mismatch"));
-        }
-        let selected_opportunity =
-            self.read_opportunity(selected_request.opportunity().content_id())?;
-        let selected_domain = self.read_choice_domain(selected_request.domain().content_id())?;
-        let selected_profile =
-            self.candidate_source_profile(&selected_request, &selected_domain)?;
-        let feedback_projection = if selected_profile.is_some_and(|profile| {
-            proposals
-                .iter()
-                .any(|proposal| profile.scores_interval_at(proposal.ordinal()))
-        }) {
-            Some(self.project_branch_puct_loaded(snapshot, selected.branch_point())?)
-        } else {
-            None
-        };
-        let lineage = self.read_lineage(required_child(&snapshot.envelope, "lineage")?)?;
-        let parent_path = self.planner_issue_parent_path(snapshot, &lineage, &selected_request)?;
+        let snapshot = basis.snapshot;
+        let invocation_id = basis.invocation_id;
+        let invocation = basis.invocation;
+        let selected = basis.selected;
+        let branch_requests = basis.branch_requests;
+        let proposals = basis.proposals;
+        let selected_request = &basis.selected_request;
+        let selected_opportunity = &basis.selected_opportunity;
+        let selected_domain = &basis.selected_domain;
+        let lineage = &basis.lineage;
+        let parent_path = &basis.parent_path;
+        let feedback_projection = &basis.feedback_projection;
 
         let prior_exploration = snapshot.snapshot.roots().exploration;
         let prior_accounting = snapshot.snapshot.roots().accounting;
@@ -303,9 +239,9 @@ impl CampaignRepository {
         for request in branch_requests {
             self.validate_planner_issue_request(
                 snapshot,
-                &lineage,
+                lineage,
                 invocation_id,
-                &invocation,
+                invocation,
                 request,
                 &mut generator_validation,
             )?;
@@ -408,9 +344,10 @@ impl CampaignRepository {
         let mut proposal_ids = Vec::with_capacity(proposals.len());
         let mut pending_publications = Vec::new();
         let proposal_basis = PlannerIssueProposalBasis {
-            request: &selected_request,
-            domain: &selected_domain,
-            feedback_projection: feedback_projection.as_ref(),
+            request: selected_request,
+            domain: selected_domain,
+            feedback_projection: basis.feedback_projection.as_ref(),
+            completed_visits: basis.completed_visits,
         };
         for (proposal_index, proposal) in proposals.iter().enumerate() {
             self.validate_planner_issue_proposal(
@@ -465,11 +402,11 @@ impl CampaignRepository {
         };
         let attempt_basis = PlannerIssueAttemptBasis {
             snapshot,
-            lineage: &lineage,
-            request: &selected_request,
-            opportunity: &selected_opportunity,
-            domain: &selected_domain,
-            parent_path: &parent_path,
+            lineage,
+            request: selected_request,
+            opportunity: selected_opportunity,
+            domain: selected_domain,
+            parent_path,
         };
         for (proposal, proposal_id) in proposals.iter().zip(proposal_ids.iter().copied()) {
             let attempt = self.derive_planner_issue_attempt(
@@ -501,7 +438,7 @@ impl CampaignRepository {
                 prior_accounting,
                 &accounting_upserts,
                 &prepared_admissions,
-                &selected_request,
+                selected_request,
                 proposal_id,
                 attempt_id,
                 request_attempts,
@@ -630,7 +567,7 @@ impl CampaignRepository {
                         self.parent_budget_ledger(snapshot)?.request_admissions(),
                     ),
                     selected.source(),
-                    &selected_request,
+                    selected_request,
                 )?;
                 self.validate_frontier_projection(
                     frontier_index,
@@ -640,20 +577,17 @@ impl CampaignRepository {
                 )?;
             }
             let proposed = last_proposal.ordinal();
-            let profile = self
-                .candidate_source_profile(&selected_request, &selected_domain)?
+            let profile = basis
+                .selected_profile
                 .ok_or_else(|| integrity("generated-proposal-enumerator-is-not-implemented"))?;
-            let completed_visits = self.branch_completed_visits(
-                snapshot.snapshot.roots().observations,
-                selected_request.branch_point(),
-            )?;
+            let completed_visits = basis.completed_visits;
             let has_next_candidate = if profile
                 == super::projection::CandidateSourceProfile::CorpusMutation
                 && proposed < selected_request.budget().maximum_proposals()
             {
                 self.expected_candidate_at_view(
-                    &selected_request,
-                    &selected_domain,
+                    selected_request,
+                    selected_domain,
                     proposed
                         .checked_add(1)
                         .ok_or_else(|| integrity("planner-candidate-ordinal-overflow"))?,
@@ -860,6 +794,7 @@ impl CampaignRepository {
             request,
             domain,
             feedback_projection,
+            completed_visits,
         } = *basis;
         if proposal.planner_invocation() != Some(invocation)
             || proposal.request() != request.id()?
@@ -873,10 +808,6 @@ impl CampaignRepository {
         {
             return Err(integrity("proposal-campaign-basis-mismatch"));
         }
-        let completed_visits = self.branch_completed_visits(
-            snapshot.snapshot.roots().observations,
-            request.branch_point(),
-        )?;
         let expected = self
             .expected_candidate_at_view(
                 request,

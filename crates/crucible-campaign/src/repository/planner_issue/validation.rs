@@ -45,6 +45,7 @@ pub(super) struct PlannerIssueProposalBasis<'a> {
     pub(super) request: &'a BranchRequest,
     pub(super) domain: &'a ChoiceDomain,
     pub(super) feedback_projection: Option<&'a crate::BranchPuctProjection>,
+    pub(super) completed_visits: u64,
 }
 
 impl IssueGeneratorValidation {

@@ -112,12 +112,11 @@ impl CampaignRepository {
         let current = self.read_snapshot(current_content)?;
         self.validate_complete_head(current_content)?;
 
-        let invocation = self.load_planner_invocation(proposal.invocation())?;
+        let invocation = self.preflight_planner_request_inputs(request)?;
         if request.invocation_id()? != proposal.invocation() || *request.invocation() != invocation
         {
             return Err(integrity("planner-request-invocation-mismatch"));
         }
-        self.preflight_planner_request_inputs(request)?;
         self.validate_builtin_planner_proposal(request, proposal)?;
         let next_state_id = proposal.next_state().id()?;
         let disposition = match proposal.disposition() {
@@ -219,13 +218,14 @@ impl CampaignRepository {
                 let PlannerDisposition::Issue { selected, .. } = &disposition else {
                     return Err(integrity("planner-issue-disposition-mismatch"));
                 };
-                let projected = self.preflight_planner_issue(
+                let basis = self.planner_issue_basis(
                     &current,
-                    proposal.invocation(),
+                    &invocation,
                     *selected,
                     branch_requests,
                     proposals,
                 )?;
+                let projected = self.preflight_planner_issue(&basis)?;
                 if projected.branch_requests != disposition.issued_branch_requests()
                     || projected.proposals != disposition.issued_proposals()
                 {
@@ -237,7 +237,7 @@ impl CampaignRepository {
                     projected.attempts,
                     projected.deduplicated,
                 )?;
-                (accounting, Some(projected))
+                (accounting, Some((basis, projected)))
             }
             PlannerProposalDisposition::ContinueScan { .. }
             | PlannerProposalDisposition::NoWork => (
@@ -276,25 +276,9 @@ impl CampaignRepository {
             }
         }
 
-        let issue_projection = match (issue_preflight.as_ref(), proposal.disposition()) {
-            (
-                Some(prepared),
-                PlannerProposalDisposition::Issue {
-                    selected,
-                    branch_requests,
-                    proposals,
-                },
-            ) => Some(self.publish_planner_issue(
-                &current,
-                proposal.invocation(),
-                *selected,
-                branch_requests,
-                proposals,
-                prepared,
-            )?),
-            (None, PlannerProposalDisposition::ContinueScan { .. })
-            | (None, PlannerProposalDisposition::NoWork) => None,
-            _ => return Err(integrity("planner-issue-preflight-shape-mismatch")),
+        let issue_projection = match issue_preflight.as_ref() {
+            Some((basis, prepared)) => Some(self.publish_planner_issue(basis, prepared)?),
+            None => None,
         };
 
         let next_state_content = self.put_planner_state(proposal.next_state())?;

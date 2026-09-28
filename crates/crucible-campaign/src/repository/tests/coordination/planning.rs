@@ -8,6 +8,7 @@ use crate::{
 
 mod budget;
 mod budget_scale;
+mod issue_basis;
 mod local_budget;
 mod support;
 
