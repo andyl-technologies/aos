@@ -549,6 +549,7 @@ let
     "aos-sandbox-kernel-export-owner"
     "aos-sandbox-kernel-export-ownerd"
     "aos-sandbox-network-observer"
+    "aos-sandbox-view-preparer-tools"
     "aos-selinux-runtime-roots"
     "aos-sandbox-zfs-worker"
     "aos-sandboxd"
@@ -1102,20 +1103,33 @@ let
     "security/_aos-selinux-production-policy/aos_sandbox.fc" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/aos_sandbox.te" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/aos_sandbox_attribute_negative.te" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/aos_sandbox_context_negative.te" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/aos_sandbox_guest_file_negative.te" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/aos_sandbox_loader_negative.te" = "linux-only-test-source";
     "security/_aos-selinux-production-policy/coverage.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/coverage_test.py" = "linux-only-test-source";
     "security/_aos-selinux-production-policy/context_plan.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/context_plan_test.py" = "linux-only-test-source";
     "security/_aos-selinux-production-policy/effective_policy.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/effective_policy_test.py" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/fuse_worker_policy.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/guest_file_policy.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/kernel-classmap.c" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/labeled_erofs_tar.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/owner_confinement.te" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/owner_policy.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/refpolicy-explicit-contexts.patch" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/refpolicy-explicit-loaders.patch" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/refpolicy-linux-6.18.33.patch" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/verify_context_dump.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/verify_context_dump_test.py" = "linux-only-test-source";
     "security/_aos-selinux-production-policy/verify_context_lookups.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/verify_erofs_contexts.py" = "linux-only-build-source";
     "security/_aos-selinux-production-policy/verify_erofs_contexts_test.py" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/view_confinement.te" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/view_policy.py" = "linux-only-build-source";
+    "security/_aos-selinux-runtime-roots/view-roots-test.c" = "linux-only-test-source";
+    "security/_aos-selinux-runtime-roots/view-roots.h" = "linux-only-build-source";
     "security/_krb5-kdc-config/module.nix" = "linux-only-config-source";
     "storage/_garage-config/module.nix" = "linux-only-config-source";
     "storage/_garage-tests/lifecycle.nix" = "linux-only-test-source";

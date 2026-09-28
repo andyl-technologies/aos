@@ -350,6 +350,14 @@ in
   assert (decisionFor "systemd" "x86_64-linux").state == "eligible";
   assert (decisionFor "systemd" "x86_64-linux").blockers == [];
   assert (decisionFor "systemd" "aarch64-darwin").state == "not-applicable";
+  assert builtins.all (system:
+    support.supportsTarget system "aos-sandbox-view-preparer-tools"
+    && (decisionFor "aos-sandbox-view-preparer-tools" system).state == "eligible")
+  ["x86_64-linux" "aarch64-linux"];
+  assert builtins.all (system:
+    !(support.supportsTarget system "aos-sandbox-view-preparer-tools")
+    && (decisionFor "aos-sandbox-view-preparer-tools" system).rule == "package-linux-interface/v1")
+  support.darwinSystems;
   assert (decisionFor "iperf3" "x86_64-linux").state == "eligible";
   assert (decisionFor "iperf3" "x86_64-darwin").rule == "package-linux-interface/v1";
   assert (decisionFor "pango" "aarch64-darwin").rule == "package-darwin-release-scope/v1";
