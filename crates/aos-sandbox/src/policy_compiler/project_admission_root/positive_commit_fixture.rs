@@ -33,15 +33,15 @@ const CONTROLLER_GENERATION: u64 = 4;
 const SOURCE_GENERATION: u64 = 5;
 const NOW: i64 = 20;
 
-struct SignedHeads {
-    deployment: Vec<u8>,
-    deployment_inputs: [Vec<u8>; 4],
-    project: Vec<u8>,
-    project_input: Vec<u8>,
+pub(crate) struct SignedHeads {
+    pub(crate) deployment: Vec<u8>,
+    pub(crate) deployment_inputs: [Vec<u8>; 4],
+    pub(crate) project: Vec<u8>,
+    pub(crate) project_input: Vec<u8>,
 }
 
 impl SignedHeads {
-    fn deployment_inputs(&self) -> PolicyDeploymentInputsV1<'_> {
+    pub(crate) fn deployment_inputs(&self) -> PolicyDeploymentInputsV1<'_> {
         PolicyDeploymentInputsV1 {
             node: &self.deployment_inputs[0],
             site: &self.deployment_inputs[1],
@@ -52,6 +52,14 @@ impl SignedHeads {
 }
 
 fn signed_heads(deployment_key: &SigningKey, project_key: &SigningKey) -> SignedHeads {
+    signed_heads_for_project(deployment_key, project_key, PROJECT)
+}
+
+pub(crate) fn signed_heads_for_project(
+    deployment_key: &SigningKey,
+    project_key: &SigningKey,
+    project: ProjectId,
+) -> SignedHeads {
     let deployment_inputs = ["AOSPNI01", "AOSPSI01", "AOSPBI01", "AOSPCI01"].map(|magic| {
         serde_json::to_vec(&serde_json::json!({
             "generation": 1,
@@ -83,32 +91,32 @@ fn signed_heads(deployment_key: &SigningKey, project_key: &SigningKey) -> Signed
             "revocation": {"grace_nanos": 0, "mode": "deny-new"},
         },
         "magic": "AOSPPL02",
-        "project_id": PROJECT.to_string(),
+        "project_id": project.to_string(),
     }))
     .expect("canonical project fixture");
-    let revocation = project_revocation_digest(PROJECT, REVOCATION_SCOPE, 1);
-    let mut project = b"AOSPPH02".to_vec();
-    project.extend_from_slice(PROJECT.as_bytes());
-    project.extend_from_slice(&1_u64.to_be_bytes());
-    project.extend_from_slice(&10_i64.to_be_bytes());
-    project.extend_from_slice(&30_i64.to_be_bytes());
-    project.extend_from_slice(&1_u64.to_be_bytes());
-    project.extend_from_slice(PUBLISHER_DIGEST.as_bytes());
-    project.extend_from_slice(&Sha256::digest(&project_input));
-    project.extend_from_slice(ANCESTRY.as_bytes());
-    project.extend_from_slice(&Sha256::digest(&deployment));
-    project.extend_from_slice(CACHE_DOMAIN_HEAD.as_bytes());
-    project.extend_from_slice(revocation.as_bytes());
-    project.extend_from_slice(&DEPLOYMENT_GENERATION.to_be_bytes());
-    project.extend_from_slice(&PROJECT_GENERATION.to_be_bytes());
+    let revocation = project_revocation_digest(project, REVOCATION_SCOPE, 1);
+    let mut packet = b"AOSPPH02".to_vec();
+    packet.extend_from_slice(project.as_bytes());
+    packet.extend_from_slice(&1_u64.to_be_bytes());
+    packet.extend_from_slice(&10_i64.to_be_bytes());
+    packet.extend_from_slice(&30_i64.to_be_bytes());
+    packet.extend_from_slice(&1_u64.to_be_bytes());
+    packet.extend_from_slice(PUBLISHER_DIGEST.as_bytes());
+    packet.extend_from_slice(&Sha256::digest(&project_input));
+    packet.extend_from_slice(ANCESTRY.as_bytes());
+    packet.extend_from_slice(&Sha256::digest(&deployment));
+    packet.extend_from_slice(CACHE_DOMAIN_HEAD.as_bytes());
+    packet.extend_from_slice(revocation.as_bytes());
+    packet.extend_from_slice(&DEPLOYMENT_GENERATION.to_be_bytes());
+    packet.extend_from_slice(&PROJECT_GENERATION.to_be_bytes());
     let mut preimage = b"aos.sandbox.policy-project-head.v2\0".to_vec();
-    preimage.extend_from_slice(&project);
-    project.extend_from_slice(&project_key.sign(&preimage).to_bytes());
+    preimage.extend_from_slice(&packet);
+    packet.extend_from_slice(&project_key.sign(&preimage).to_bytes());
 
     SignedHeads {
         deployment,
         deployment_inputs,
-        project,
+        project: packet,
         project_input,
     }
 }
@@ -195,6 +203,15 @@ fn commit_from_signed_owner_rows(
 
 #[test]
 fn held_synthetic_owners_commit_root_once_and_cold_replay_lost_reply() {
+    exercise_held_synthetic_commit(false);
+}
+
+#[test]
+fn held_synthetic_owners_preserve_history_suffix_after_commit_and_cold_replay() {
+    exercise_held_synthetic_commit(true);
+}
+
+fn exercise_held_synthetic_commit(history_retirement: bool) {
     let source_dir = tempfile::tempdir().expect("Source directory");
     let root_dir = tempfile::tempdir().expect("Root directory");
     for directory in [source_dir.path(), root_dir.path()] {
@@ -265,7 +282,12 @@ fn held_synthetic_owners_commit_root_once_and_cold_replay_lost_reply() {
     let preview = source
         .preview_source_project_admission_reservation_v1(client_nonce, PROJECT, names)
         .expect("canonical prospective Source row");
-    let intent = intent::prepare_test_exact_intent_with_journal(
+    let prepare = if history_retirement {
+        intent::prepare_test_exact_history_intent_with_journal
+    } else {
+        intent::prepare_test_exact_intent_with_journal
+    };
+    let intent = prepare(
         &mut root,
         preview,
         &heads.project,
@@ -384,6 +406,15 @@ fn held_synthetic_owners_commit_root_once_and_cold_replay_lost_reply() {
         RootProjectAdmissionOutcomeKindV1::Committed
     );
     assert!(intent::require_intent_capacity(&mut root, intent).is_err());
+    let decided = intent::current_intent(&mut root).unwrap().unwrap();
+    let suffix = root
+        .lookup_global_capacity_reservation_v1(decided.capacity_id())
+        .unwrap();
+    assert_eq!(suffix.is_some(), history_retirement);
+    if history_retirement {
+        assert_eq!(suffix.unwrap().request().future_transactions, 1);
+        assert_eq!(decided.decision(), committed.record_digest());
+    }
     assert_eq!(
         root.claim_protected_authority(RecordNamespace::DesiredState)
             .expect("Root readback custody")
@@ -451,4 +482,73 @@ fn held_synthetic_owners_commit_root_once_and_cold_replay_lost_reply() {
         authority.get(INPUT_KEY_V2).expect("project input"),
         Some(heads.project_input.as_slice())
     );
+    drop(authority);
+
+    if history_retirement {
+        source
+            .settle_source_project_admission_challenge_v1(
+                row,
+                super::super::RootProjectAdmissionOutcomeProofV1::from_test_outcome(committed),
+            )
+            .expect("actual Source terminal after synthetic Controller acceptance");
+        let source_terminal = super::super::source_project_admission_readback::sign_test_source_project_completed_terminal_readback_v1(
+            &source, SOURCE_GENERATION, &source_key,
+        ).unwrap();
+        let claims = crate::reconciler::project_admission::AcceptedControllerProjectTerminalV1 {
+            operation: OPERATION,
+            sandbox: aos_sandbox_core::SandboxId::from_bytes(committed.sandbox()),
+            project: PROJECT,
+            source_commitment: SOURCE_COMMITMENT,
+            admission_revision: ObjectDigest::from_bytes([90; 32]),
+            admission_generation: 1,
+            accepted_metadata: ObjectDigest::from_bytes([91; 32]),
+            reservation,
+            challenge: Some(row),
+            root_terminal: committed.record_digest(),
+            kind: history::RootProjectHistoryTerminalKindV1::Committed,
+        };
+        let controller_terminal = super::super::controller_project_terminal_readback::sign_synthetic_controller_project_terminal_v1(
+            &claims, 811, 99, CONTROLLER_GENERATION, &controller_key,
+        ).unwrap();
+        let floor = history::retire_root_project_history_with_journal(
+            &mut cold,
+            &controller_terminal,
+            &source_terminal,
+            811,
+        )
+        .expect("exact protected committed history retirement");
+        assert_eq!(
+            floor.kind(),
+            history::RootProjectHistoryTerminalKindV1::Committed
+        );
+        assert!(cold.get(RecordNamespace::DesiredState, STAGE_KEY).is_none());
+        assert!(
+            cold.get(
+                RecordNamespace::DesiredState,
+                &outcome_key(stage.record_digest())
+            )
+            .is_none()
+        );
+        assert!(
+            cold.records(RecordNamespace::GlobalCapacityReservation)
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            cold.get(RecordNamespace::DesiredState, HEAD_KEY_V2),
+            Some(heads.project.as_slice())
+        );
+        let cut = cold.snapshot_sequence();
+        assert_eq!(
+            history::retire_root_project_history_with_journal(
+                &mut cold,
+                &controller_terminal,
+                &source_terminal,
+                811,
+            )
+            .unwrap(),
+            floor
+        );
+        assert_eq!(cold.snapshot_sequence(), cut);
+    }
 }

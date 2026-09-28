@@ -76,8 +76,9 @@ use source_project_admission_challenge::SourceProjectAdmissionTransition;
 pub(crate) use source_project_admission_challenge::replay_source_project_admission_challenge_v1;
 pub use source_project_admission_challenge::{
     SOURCE_PROJECT_ADMISSION_CHALLENGE_BYTES_V1, SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1,
-    SourceProjectAdmissionChallengeKindV1, SourceProjectAdmissionChallengeV1,
-    SourceProjectAdmissionReservationV1,
+    SOURCE_PROJECT_ADMISSION_TERMINAL_BYTES_V1, SourceProjectAdmissionChallengeKindV1,
+    SourceProjectAdmissionChallengeV1, SourceProjectAdmissionReservationV1,
+    SourceProjectAdmissionTerminalV1,
 };
 mod mount_source_consumption;
 pub use mount_source_consumption::{
@@ -2296,39 +2297,6 @@ impl Journal {
         )
     }
 
-    fn preflight_source_project_admission_transactions(
-        &self,
-        transactions: &[JournalTransaction; 3],
-    ) -> Result<(), JournalError> {
-        self.preflight_transactions_with_capacity_scope_and_project_admission(
-            transactions,
-            None,
-            false,
-            false,
-            Some(&[
-                SourceProjectAdmissionTransition::Reserve,
-                SourceProjectAdmissionTransition::Acquire,
-                SourceProjectAdmissionTransition::Settle,
-            ]),
-        )
-    }
-
-    fn preflight_source_project_reservation_cancellation_transactions(
-        &self,
-        transactions: &[JournalTransaction; 2],
-    ) -> Result<(), JournalError> {
-        self.preflight_transactions_with_capacity_scope_and_project_admission(
-            transactions,
-            None,
-            false,
-            false,
-            Some(&[
-                SourceProjectAdmissionTransition::Reserve,
-                SourceProjectAdmissionTransition::CancelReservation,
-            ]),
-        )
-    }
-
     fn preflight_transactions_with_capacity_scope_and_project_admission(
         &self,
         transactions: &[JournalTransaction],
@@ -3564,6 +3532,7 @@ impl ProtectedJournalAuthority<'_> {
             GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal => {
                 source_provider_authority
             }
+            GlobalCapacityReservationPurposeV1::ControllerProjectAdmission => effect,
         };
         if !closed_shape || !capacity_record {
             return Err(JournalError::ForeignAuthorityNamespace);
@@ -3641,6 +3610,10 @@ impl ProtectedJournalAuthority<'_> {
             || self.scope
                 == ProtectedAuthorityScope::CapacityReservation(
                     GlobalCapacityReservationPurposeV1::RootProjectAdmission,
+                )
+            || self.scope
+                == ProtectedAuthorityScope::CapacityReservation(
+                    GlobalCapacityReservationPurposeV1::ControllerProjectAdmission,
                 )
         {
             return Err(JournalError::ForeignAuthorityNamespace);
@@ -3968,6 +3941,16 @@ pub(super) fn encoded_transaction_record_bytes(
         })
 }
 
+/// Measures canonical append framing without granting admission or capacity.
+pub(crate) fn encoded_transaction_append_bytes(
+    transaction: &JournalTransaction,
+) -> Result<u64, JournalError> {
+    encode_transaction(transaction, 0)?
+        .iter()
+        .try_fold(0_u64, |total, frame| total.checked_add(frame.len() as u64))
+        .ok_or(JournalError::JournalTooLarge)
+}
+
 fn validate_reserved_capacity(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     prospective_materialized_bytes: usize,
@@ -4018,10 +4001,10 @@ fn validate_reserved_capacity(
             }
         }
     }
-    let (reserved_records, reserved_bytes) =
-        reservations
-            .values()
-            .try_fold((0_usize, 0_u64), |(records, bytes), reservation| {
+    let (reserved_records, reserved_bytes, reserved_transactions) =
+        reservations.values().try_fold(
+            (0_usize, 0_u64, 0_usize),
+            |(records, bytes, transactions), reservation| {
                 Ok::<_, JournalError>((
                     records
                         .checked_add(reservation.maximum_records)
@@ -4029,8 +4012,12 @@ fn validate_reserved_capacity(
                     bytes
                         .checked_add(reservation.maximum_bytes)
                         .ok_or(JournalError::JournalTooLarge)?,
+                    transactions
+                        .checked_add(reservation.maximum_transactions)
+                        .ok_or(JournalError::LimitExceeded("reserved transaction count"))?,
                 ))
-            })?;
+            },
+        )?;
     let projected_entries = projected_materialized_record_count(state, records)?;
     if prospective_materialized_bytes
         .checked_add(
@@ -4045,7 +4032,7 @@ fn validate_reserved_capacity(
             .checked_add(reserved_bytes)
             .is_none_or(|bytes| bytes > limits.maximum_journal_bytes)
         || prospective_transactions
-            .checked_add(reservations.len())
+            .checked_add(reserved_transactions)
             .is_none_or(|count| count > limits.maximum_transactions)
     {
         return Err(JournalError::LimitExceeded(
@@ -4882,6 +4869,7 @@ mod tests {
             artifact_digest: [4; 32],
             checkpoint_digest: [5; 32],
             chain_head_digest: [6; 32],
+            future_transactions: 1,
             terminal_records: 3,
             terminal_bytes: 4096,
             poison_records: 3,
@@ -4958,6 +4946,7 @@ mod tests {
                     artifact_digest: request.artifact_digest,
                     checkpoint_digest: request.checkpoint_digest,
                     chain_head_digest: request.chain_head_digest,
+                    future_transactions: request.future_transactions,
                     terminal_records: request.terminal_records,
                     terminal_bytes: request.terminal_bytes,
                     poison_records: request.poison_records,

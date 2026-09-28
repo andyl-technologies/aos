@@ -3,7 +3,9 @@
 //! Controller and Source writers are already retained in that order. Root
 //! stages and commits last, while its independent Source signer only reads a
 //! narrow protected view. Every ambiguous Root reply is resolved through the
-//! peer-checked outcome query before Source is retired. This module cannot
+//! peer-checked outcome query before Controller acceptance and Source settlement.
+//! Root history is removed only after both exact owner joins; Source's final
+//! fence is lifted after Controller durably accepts that floor. This module cannot
 //! issue a Q04 binding, publish a compiler result, or complete public Create.
 
 use std::io;
@@ -15,21 +17,33 @@ use aos_sandbox::journal::{
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::policy_compiler::{
     ControllerProjectAdmissionChallengeV1, CurrentCreateProjectPolicySourceV1,
-    RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionOutcomeV1, RootProjectAdmissionStageV1,
-    SourceHoldReadbackChallengeV1, abort_fixed_root_project_admission_over_socket_v1,
-    cancel_fixed_root_project_reservation_over_socket_v1, preflight_source_project_admission_v1,
+    RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionOutcomeProofV1,
+    RootProjectAdmissionOutcomeV1, RootProjectAdmissionStageV1,
+    RootProjectReservationCancellationProofV1, SourceHoldReadbackChallengeV1,
+    abort_fixed_root_project_admission_over_socket_v1,
+    acknowledge_source_project_terminal_retirement_v1,
+    cancel_fixed_root_project_reservation_over_socket_v1,
     prepare_fixed_root_project_intent_over_socket_v1, project_admission_client_nonce_v1,
     query_fixed_root_current_project_admission_stage_v1,
-    query_fixed_root_project_admission_outcome_v1, query_fixed_root_project_intent_v1,
-    query_fixed_root_project_reservation_cancellation_v1, read_source_project_admission_status_v1,
-    read_source_project_reservation_status_v1,
+    query_fixed_root_project_admission_outcome_v1, query_fixed_root_project_history_floor_v1,
+    query_fixed_root_project_intent_v1, query_fixed_root_project_reservation_cancellation_v1,
+    read_source_project_admission_status_v1, read_source_project_reservation_status_v1,
     record_current_source_project_admission_challenge_v1,
     record_source_project_abort_only_challenge_v1,
     require_current_source_project_admission_challenge_v1, reserve_source_project_admission_v1,
+    retire_fixed_root_project_history_over_socket_v1,
     settle_current_source_project_admission_challenge_v1, settle_source_project_reservation_v1,
     sign_fixed_controller_project_admission_readback_v1,
+    sign_fixed_controller_project_terminal_readback_v1,
     stage_fixed_root_project_admission_over_socket_v1,
     submit_fixed_root_project_admission_over_socket_v1,
+};
+use aos_sandbox::reconciler::{
+    RetainedControllerProjectAdmissionV1, accept_controller_project_admission_outcome_v1,
+    accept_controller_project_history_floor_v1,
+    accept_controller_project_reservation_cancellation_v1,
+    authorize_controller_project_admission_dispatch_v1,
+    prepare_current_create_project_admission_v1, retained_controller_project_admission_v1,
 };
 use aos_sandbox::{ControllerRequestScopeV1, EffectPlan, Journal};
 use aos_sandbox_core::ObjectDigest;
@@ -44,33 +58,81 @@ pub(crate) enum ProjectAdmissionProgressV1 {
     RetiredPrior,
 }
 
-/// Retires an interrupted pre-Q04 Source flight without its original effect.
+/// Recovers a flight only through its retained original Controller Effect.
 ///
-/// Controller startup calls this under the retained Source writer. A pending
-/// reservation is canceled only through a durable Root marker; a staged row
-/// is first completed as AbortOnly and then retired by exact Root outcome.
+/// Controller startup calls this before publisher installation or serving.
+/// Missing original metadata never permits orphan adoption. A locally prepared
+/// flight with no Root artifact is retained for exact Apply retry, not released
+/// from a bare negative query. Nodes without a flight need no Root RPC.
 pub(crate) fn recover_source_project_admission_v1(
+    controller: &mut Journal,
     source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    scope: ControllerRequestScopeV1,
 ) -> io::Result<()> {
-    let status =
-        read_source_project_admission_status_v1(source_domains).map_err(io::Error::other)?;
-    let reservation =
+    let reservation_status =
         read_source_project_reservation_status_v1(source_domains).map_err(io::Error::other)?;
-    if let Some((row, false)) = status {
-        abort_and_settle(source_domains, row)?;
+    let flight = retained_controller_project_admission_v1(
+        controller,
+        scope,
+        reservation_status.map(|(reservation, _)| reservation),
+    )
+    .map_err(io::Error::other)?;
+    let Some(flight) = flight else {
+        return if reservation_status.is_none() {
+            Ok(())
+        } else {
+            Err(invalid("Source flight has no original Controller Effect"))
+        };
+    };
+    if reservation_status.is_none() {
+        if flight.is_prepared() {
+            return Ok(());
+        }
+        let reservation = flight.reservation();
+        let cancellation = query_fixed_root_project_reservation_cancellation_v1(reservation)?;
+        if cancellation.is_none() && query_fixed_root_project_intent_v1(reservation)?.is_none() {
+            // Dispatch authorization does not prove a Root call happened. Keep
+            // its suffix reserved; only an exact durable Root denial can retire it.
+            if flight.has_accepted_terminal() {
+                return Err(invalid("accepted terminal lost its Source reservation"));
+            }
+            return Ok(());
+        }
+        reserve_source_project_admission_v1(source_domains, reservation)
+            .map_err(io::Error::other)?;
+        cancel_and_settle_reservation(controller, source_domains, scope, &flight)?;
         return Ok(());
     }
-    if let Some((reservation, false)) = reservation.filter(|_| status.is_none()) {
-        if let Some(stage) = query_fixed_root_current_project_admission_stage_v1()? {
-            if stage.source_reservation_digest() == reservation.record_digest() {
-                let row = abort_only_row(source_domains, stage)?;
-                abort_and_settle(source_domains, row)?;
-                return Ok(());
-            }
-        }
-        cancel_and_settle_reservation(source_domains, reservation)?;
+    let status =
+        read_source_project_admission_status_v1(source_domains).map_err(io::Error::other)?;
+    if query_fixed_root_project_history_floor_v1(flight.reservation())?.is_some() {
+        return finish_history(controller, source_domains, scope, &flight);
     }
-    Ok(())
+    if let Some((row, settled)) = status {
+        if settled {
+            let proof = query_fixed_root_project_admission_outcome_v1(row.stage())?
+                .ok_or_else(|| invalid("settled Source row lacks exact Root terminal"))?;
+            return accept_and_settle_outcome(
+                controller,
+                source_domains,
+                scope,
+                &flight,
+                row,
+                proof,
+            );
+        }
+        return abort_and_settle(controller, source_domains, scope, &flight, row);
+    }
+    if let Some(stage) = query_fixed_root_current_project_admission_stage_v1()? {
+        if stage.source_reservation_digest() != flight.reservation().record_digest() {
+            return Err(invalid(
+                "Root stage belongs to a foreign Source reservation",
+            ));
+        }
+        let row = abort_only_row(source_domains, stage)?;
+        return abort_and_settle(controller, source_domains, scope, &flight, row);
+    }
+    cancel_and_settle_reservation(controller, source_domains, scope, &flight)
 }
 
 /// Advances only the Root V2 project-source prerequisite of a public Create.
@@ -90,8 +152,36 @@ pub(crate) fn advance_create_project_admission_v1(
         read_source_project_admission_status_v1(source_domains).map_err(io::Error::other)?;
     let reservation_status =
         read_source_project_reservation_status_v1(source_domains).map_err(io::Error::other)?;
+    let prior_flight = retained_controller_project_admission_v1(
+        controller,
+        request_scope,
+        reservation_status.map(|(reservation, _)| reservation),
+    )
+    .map_err(io::Error::other)?;
+    if reservation_status.is_some() && prior_flight.is_none() {
+        return Err(invalid("Source flight has no original Controller Effect"));
+    }
 
-    if let Some((reservation, false)) = reservation_status.filter(|_| status.is_none()) {
+    let mut prior_retired = false;
+    if let Some(flight) = &prior_flight {
+        if query_fixed_root_project_history_floor_v1(flight.reservation())?.is_some() {
+            finish_history(controller, source_domains, request_scope, flight)?;
+            if let Some(outcome) = flight.outcome()
+                && outcome.client_nonce() == client_nonce
+                && outcome.kind() == RootProjectAdmissionOutcomeKindV1::Committed
+            {
+                return classify_prior_outcome(outcome, source, client_nonce);
+            }
+            prior_retired = true;
+        }
+    }
+
+    if let Some((reservation, false)) =
+        reservation_status.filter(|_| status.is_none() && !prior_retired)
+    {
+        let flight = prior_flight
+            .as_ref()
+            .ok_or_else(|| invalid("missing original flight"))?;
         if let Some(stage) = query_fixed_root_current_project_admission_stage_v1()? {
             if stage.source_reservation_digest() == reservation.record_digest() {
                 if stage.client_nonce() == client_nonce && stage.project() == source.project() {
@@ -105,18 +195,27 @@ pub(crate) fn advance_create_project_admission_v1(
                     );
                 }
                 let row = abort_only_row(source_domains, stage)?;
-                abort_and_settle(source_domains, row)?;
+                abort_and_settle(controller, source_domains, request_scope, flight, row)?;
                 return Ok(ProjectAdmissionProgressV1::RetiredPrior);
             }
         }
-        cancel_and_settle_reservation(source_domains, reservation)?;
+        cancel_and_settle_reservation(controller, source_domains, request_scope, flight)?;
         return Ok(ProjectAdmissionProgressV1::RetiredPrior);
     }
 
-    if let Some((row, false)) = status {
+    if let Some((row, false)) = status.filter(|_| !prior_retired) {
+        let flight = prior_flight
+            .as_ref()
+            .ok_or_else(|| invalid("missing original flight"))?;
         if let Some(proof) = query_fixed_root_project_admission_outcome_v1(row.stage())? {
-            settle_current_source_project_admission_challenge_v1(source_domains, row, proof)
-                .map_err(io::Error::other)?;
+            accept_and_settle_outcome(
+                controller,
+                source_domains,
+                request_scope,
+                flight,
+                row,
+                proof,
+            )?;
             return classify_prior_outcome(proof.outcome(), source, client_nonce);
         }
         let stage = query_fixed_root_current_project_admission_stage_v1()?
@@ -145,16 +244,36 @@ pub(crate) fn advance_create_project_admission_v1(
                 row,
             );
         }
-        abort_and_settle(source_domains, row)?;
+        abort_and_settle(controller, source_domains, request_scope, flight, row)?;
         return Ok(ProjectAdmissionProgressV1::RetiredPrior);
     }
 
-    if let Some((row, true)) = status {
+    if let Some((row, true)) = status.filter(|_| !prior_retired) {
+        let flight = prior_flight
+            .as_ref()
+            .ok_or_else(|| invalid("missing original flight"))?;
         let proof = query_fixed_root_project_admission_outcome_v1(row.stage())?
             .ok_or_else(|| invalid("settled Source row lacks Root outcome"))?;
-        if proof.outcome().client_nonce() == client_nonce {
+        accept_and_settle_outcome(
+            controller,
+            source_domains,
+            request_scope,
+            flight,
+            row,
+            proof,
+        )?;
+        if proof.outcome().client_nonce() == client_nonce
+            && proof.outcome().kind() == RootProjectAdmissionOutcomeKindV1::Committed
+        {
             return classify_prior_outcome(proof.outcome(), source, client_nonce);
         }
+    }
+
+    if let Some((_, true)) = reservation_status.filter(|_| status.is_none() && !prior_retired) {
+        let flight = prior_flight
+            .as_ref()
+            .ok_or_else(|| invalid("missing original flight"))?;
+        cancel_and_settle_reservation(controller, source_domains, request_scope, flight)?;
     }
 
     if query_fixed_root_current_project_admission_stage_v1()?.is_some() {
@@ -163,9 +282,24 @@ pub(crate) fn advance_create_project_admission_v1(
 
     // Root first retains cancellation capacity for the exact prospective
     // Source row. Only then may Source commit its own reservation.
-    let preview =
-        preflight_source_project_admission_v1(source_domains, client_nonce, source.project())
-            .map_err(io::Error::other)?;
+    let preview = prepare_current_create_project_admission_v1(
+        controller,
+        source_domains,
+        source,
+        request_scope,
+        effect_plan,
+    )
+    .map_err(io::Error::other)?;
+    authorize_controller_project_admission_dispatch_v1(
+        controller,
+        source.operation(),
+        request_scope,
+        effect_plan,
+    )
+    .map_err(io::Error::other)?;
+    let flight = retained_controller_project_admission_v1(controller, request_scope, Some(preview))
+        .map_err(io::Error::other)?
+        .ok_or_else(|| invalid("dispatch lost its original Effect"))?;
     if let Err(intent_error) = prepare_fixed_root_project_intent_over_socket_v1(preview) {
         // The first Root append may have succeeded even if its reply was
         // lost. Only an exact active readback allows Source to continue.
@@ -174,10 +308,15 @@ pub(crate) fn advance_create_project_admission_v1(
                 // Root may have canceled an orphan intent before Source committed
                 // its row. Materialize and retire that exact denied row so Source
                 // advances its issue; retry can then use a fresh digest.
-                let reservation = reserve_source_project_admission_v1(source_domains, preview)
+                reserve_source_project_admission_v1(source_domains, preview)
                     .map_err(io::Error::other)?;
-                settle_source_project_reservation_v1(source_domains, reservation, proof)
-                    .map_err(io::Error::other)?;
+                accept_and_settle_cancellation(
+                    controller,
+                    source_domains,
+                    request_scope,
+                    &flight,
+                    proof,
+                )?;
                 return Ok(ProjectAdmissionProgressV1::RetiredPrior);
             }
             return Err(intent_error);
@@ -205,13 +344,13 @@ pub(crate) fn advance_create_project_admission_v1(
                     );
                 }
             }
-            cancel_and_settle_reservation(source_domains, reservation)?;
+            cancel_and_settle_reservation(controller, source_domains, request_scope, &flight)?;
             return Err(stage_error);
         }
     };
     if stage.project() != source.project() {
         let row = abort_only_row(source_domains, stage)?;
-        abort_and_settle(source_domains, row)?;
+        abort_and_settle(controller, source_domains, request_scope, &flight, row)?;
         return Err(invalid(
             "Root signed project does not match accepted Create",
         ));
@@ -234,6 +373,7 @@ fn create_row_and_finish(
     effect_plan: &EffectPlan,
     stage: RootProjectAdmissionStageV1,
 ) -> io::Result<ProjectAdmissionProgressV1> {
+    let flight = bound_flight(controller, source_domains, request_scope)?;
     let reservation = read_source_project_reservation_status_v1(source_domains)
         .map_err(io::Error::other)?
         .ok_or_else(|| invalid("Source reservation absent before Root stage consumption"))?;
@@ -262,11 +402,17 @@ fn create_row_and_finish(
                 if row.stage() != stage.record_digest() {
                     return Err(invalid("Source challenge changed during admission"));
                 }
-                abort_and_settle(source_domains, row)?;
+                abort_and_settle(controller, source_domains, request_scope, &flight, row)?;
                 return Err(io::Error::other(source_error));
             }
             let abort_row = abort_only_row(source_domains, stage)?;
-            abort_and_settle(source_domains, abort_row)?;
+            abort_and_settle(
+                controller,
+                source_domains,
+                request_scope,
+                &flight,
+                abort_row,
+            )?;
             return Err(io::Error::other(source_error));
         }
     };
@@ -290,8 +436,9 @@ fn finish_current_stage(
     stage: RootProjectAdmissionStageV1,
     row: SourceProjectAdmissionChallengeV1,
 ) -> io::Result<ProjectAdmissionProgressV1> {
+    let flight = bound_flight(controller, source_domains, request_scope)?;
     if row.kind() == SourceProjectAdmissionChallengeKindV1::AbortOnly {
-        abort_and_settle(source_domains, row)?;
+        abort_and_settle(controller, source_domains, request_scope, &flight, row)?;
         return Ok(ProjectAdmissionProgressV1::RetiredPrior);
     }
     let packet = with_process_controller_hold_signer_v1(|generation, key| {
@@ -312,12 +459,12 @@ fn finish_current_stage(
     let packet = match packet {
         Ok(packet) => packet,
         Err(error) => {
-            abort_and_settle(source_domains, row)?;
+            abort_and_settle(controller, source_domains, request_scope, &flight, row)?;
             return Err(error);
         }
     };
     if let Err(error) = require_current_source_project_admission_challenge_v1(source_domains, row) {
-        abort_and_settle(source_domains, row)?;
+        abort_and_settle(controller, source_domains, request_scope, &flight, row)?;
         return Err(io::Error::other(error));
     }
 
@@ -334,8 +481,14 @@ fn finish_current_stage(
             .err()
             .unwrap_or_else(|| invalid("Root admission outcome absent"))
     })?;
-    settle_current_source_project_admission_challenge_v1(source_domains, row, proof)
-        .map_err(io::Error::other)?;
+    accept_and_settle_outcome(
+        controller,
+        source_domains,
+        request_scope,
+        &flight,
+        row,
+        proof,
+    )?;
     classify_prior_outcome(
         proof.outcome(),
         source,
@@ -359,7 +512,10 @@ fn abort_only_row(
 }
 
 fn abort_and_settle(
+    controller: &mut Journal,
     source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    scope: ControllerRequestScopeV1,
+    flight: &RetainedControllerProjectAdmissionV1,
     row: SourceProjectAdmissionChallengeV1,
 ) -> io::Result<()> {
     let attempt = abort_fixed_root_project_admission_over_socket_v1(row.stage(), row);
@@ -368,14 +524,16 @@ fn abort_and_settle(
             .err()
             .unwrap_or_else(|| invalid("Root abort outcome absent"))
     })?;
-    settle_current_source_project_admission_challenge_v1(source_domains, row, proof)
-        .map_err(io::Error::other)
+    accept_and_settle_outcome(controller, source_domains, scope, flight, row, proof)
 }
 
 fn cancel_and_settle_reservation(
+    controller: &mut Journal,
     source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
-    reservation: SourceProjectAdmissionReservationV1,
+    scope: ControllerRequestScopeV1,
+    flight: &RetainedControllerProjectAdmissionV1,
 ) -> io::Result<()> {
+    let reservation = flight.reservation();
     let attempt = cancel_fixed_root_project_reservation_over_socket_v1(reservation);
     let proof =
         query_fixed_root_project_reservation_cancellation_v1(reservation)?.ok_or_else(|| {
@@ -383,7 +541,105 @@ fn cancel_and_settle_reservation(
                 .err()
                 .unwrap_or_else(|| invalid("Root reservation cancellation absent"))
         })?;
-    settle_source_project_reservation_v1(source_domains, reservation, proof)
+    accept_and_settle_cancellation(controller, source_domains, scope, flight, proof)
+}
+
+fn accept_and_settle_cancellation(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    scope: ControllerRequestScopeV1,
+    flight: &RetainedControllerProjectAdmissionV1,
+    proof: RootProjectReservationCancellationProofV1,
+) -> io::Result<()> {
+    accept_controller_project_reservation_cancellation_v1(
+        controller,
+        source_domains,
+        flight.operation(),
+        scope,
+        flight.plan(),
+        proof,
+    )
+    .map_err(io::Error::other)?;
+    settle_source_project_reservation_v1(source_domains, flight.reservation(), proof)
+        .map_err(io::Error::other)?;
+    finish_history(controller, source_domains, scope, flight)
+}
+
+fn bound_flight(
+    controller: &Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    scope: ControllerRequestScopeV1,
+) -> io::Result<RetainedControllerProjectAdmissionV1> {
+    let (reservation, _) = read_source_project_reservation_status_v1(source_domains)
+        .map_err(io::Error::other)?
+        .ok_or_else(|| invalid("original flight lacks its Source reservation"))?;
+    retained_controller_project_admission_v1(controller, scope, Some(reservation))
+        .map_err(io::Error::other)?
+        .ok_or_else(|| invalid("Source flight has no original Controller Effect"))
+}
+
+fn accept_and_settle_outcome(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    scope: ControllerRequestScopeV1,
+    flight: &RetainedControllerProjectAdmissionV1,
+    row: SourceProjectAdmissionChallengeV1,
+    proof: RootProjectAdmissionOutcomeProofV1,
+) -> io::Result<()> {
+    // Controller acceptance is durable before Source changes phase. Neither
+    // owner's terminal bit alone permits pruning or lifts the Source fence.
+    accept_controller_project_admission_outcome_v1(
+        controller,
+        source_domains,
+        flight.operation(),
+        scope,
+        flight.plan(),
+        proof,
+    )
+    .map_err(io::Error::other)?;
+    settle_current_source_project_admission_challenge_v1(source_domains, row, proof)
+        .map_err(io::Error::other)?;
+    finish_history(controller, source_domains, scope, flight)
+}
+
+fn finish_history(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    scope: ControllerRequestScopeV1,
+    flight: &RetainedControllerProjectAdmissionV1,
+) -> io::Result<()> {
+    let reservation = flight.reservation();
+    let proof = match query_fixed_root_project_history_floor_v1(reservation)? {
+        Some(proof) => proof,
+        None => {
+            let packet = with_process_controller_hold_signer_v1(|generation, key| {
+                sign_fixed_controller_project_terminal_readback_v1(
+                    controller,
+                    flight.operation(),
+                    generation,
+                    key,
+                )
+                .map_err(io::Error::other)
+            })?;
+            match retire_fixed_root_project_history_over_socket_v1(reservation, &packet) {
+                Ok(proof) => proof,
+                Err(error) => {
+                    query_fixed_root_project_history_floor_v1(reservation)?.ok_or(error)?
+                }
+            }
+        }
+    };
+    let acceptance = accept_controller_project_history_floor_v1(
+        controller,
+        flight.operation(),
+        scope,
+        flight.plan(),
+        proof,
+    )
+    .map_err(io::Error::other)?;
+    // The borrow keeps the exact Controller writer alive and excludes mutable
+    // cuts until Source has committed and read back its own final ACK.
+    acknowledge_source_project_terminal_retirement_v1(source_domains, proof, &acceptance)
         .map_err(io::Error::other)
 }
 

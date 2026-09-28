@@ -1917,21 +1917,20 @@ fn controller_from_journal(
     validate_controller_journal(&mut journal, node_id)?;
     let scope = ControllerRequestScopeV1::new(ObjectDigest::from_bytes(REQUEST_SCOPE))?;
     let limits = NodeControllerLimits::new(1024 * 1024, 65_536, 1)?;
+    let executor = ProductionEffectExecutor::open(
+        &mut journal,
+        sessions,
+        scope,
+        controller_uid,
+        NodeId::from_bytes(node_id),
+        attachment_host,
+        attachment_mount,
+    )?;
     Ok(NodeController::new(
         scope,
         limits,
         ProductionOperationCompilerV1,
-        Reconciler::new(
-            journal,
-            ProductionEffectExecutor::open(
-                sessions,
-                scope,
-                controller_uid,
-                NodeId::from_bytes(node_id),
-                attachment_host,
-                attachment_mount,
-            )?,
-        ),
+        Reconciler::new(journal, executor),
     ))
 }
 
@@ -2121,6 +2120,7 @@ struct ProductionCancellationRequest {
 
 impl ProductionEffectExecutor {
     fn open(
+        journal: &mut Journal,
         sessions: SharedControllerBrokerSessions,
         request_scope: ControllerRequestScopeV1,
         controller_uid: u32,
@@ -2147,7 +2147,9 @@ impl ProductionEffectExecutor {
         aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(&mut source_domains)?
             .replay()?;
         crate::project_admission_coordinator::recover_source_project_admission_v1(
+            journal,
             &mut source_domains,
+            request_scope,
         )
         .map_err(ControllerRuntimeError::ProjectAdmissionRecovery)?;
 

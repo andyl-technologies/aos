@@ -21,6 +21,7 @@ fn capacity_request() -> GlobalCapacityReservationRequestV1 {
         artifact_digest: [4; 32],
         checkpoint_digest: [5; 32],
         chain_head_digest: [6; 32],
+        future_transactions: 1,
         terminal_records: DISPATCH_TERMINAL_RECORDS,
         terminal_bytes: DISPATCH_TERMINAL_BYTES,
         poison_records: DISPATCH_TERMINAL_RECORDS,

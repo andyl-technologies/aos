@@ -2390,7 +2390,8 @@ fn validate_capacity_domain_shape(
             effect && !publisher_authority && !publication
         }
         GlobalCapacityReservationPurposeV1::RootProjectAdmission
-        | GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal => false,
+        | GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal
+        | GlobalCapacityReservationPurposeV1::ControllerProjectAdmission => false,
     };
     closed
         .then_some(())

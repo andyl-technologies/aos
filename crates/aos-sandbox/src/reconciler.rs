@@ -45,6 +45,7 @@ use crate::publication::{
 mod create_failure;
 mod effect;
 mod observe_reservation;
+pub(crate) mod project_admission;
 mod public_operation;
 mod runtime_authority;
 
@@ -68,6 +69,14 @@ use effect::{
 };
 pub use observe_reservation::{
     adopt_execution_observe_child_v1, observe_child_adoption_state_v1, observe_child_identity_v1,
+};
+pub use project_admission::{
+    ControllerProjectAdmissionJournalErrorV1, ControllerProjectHistoryAcceptanceV1,
+    RetainedControllerProjectAdmissionV1, accept_controller_project_admission_outcome_v1,
+    accept_controller_project_history_floor_v1,
+    accept_controller_project_reservation_cancellation_v1,
+    authorize_controller_project_admission_dispatch_v1,
+    prepare_current_create_project_admission_v1, retained_controller_project_admission_v1,
 };
 use public_operation::{DurablePublicOperationV1, PUBLIC_OPERATION_RECORD_BYTES};
 pub use public_operation::{PublicOperationAdmissionV1, PublicOperationAuthorizationV1};
@@ -1471,6 +1480,7 @@ where
                     plan: effect.clone(),
                     state: EffectState::Planned,
                     dispatch: None,
+                    project_admission: None,
                 })?,
             ));
         }
@@ -1730,6 +1740,7 @@ where
                             diagnostic: String::new(),
                         },
                         dispatch,
+                        project_admission: record.project_admission,
                     };
                     self.store_effect(
                         operation_id,
@@ -1920,6 +1931,7 @@ where
                 ReconcilerError::CorruptLedger("authority publication namespace is corrupt")
             })?;
             observe_reservation::validate_all(&self.journal)?;
+            project_admission::validate_all(&self.journal)?;
             self.validate_all_ownership_gates(validate_current_boot)?;
             self.validate_public_operation_authorizations()?;
             validate_runtime_authority_operations(&self.journal)?;
@@ -2632,6 +2644,7 @@ where
                             diagnostic: String::new(),
                         },
                         dispatch: Some(fresh.clone()),
+                        project_admission: None,
                     };
                     // This commit is the crash boundary: no Apply may use the
                     // fresh packet until its exact replacement is durable.
@@ -2646,6 +2659,7 @@ where
                                     receipt,
                                 },
                                 dispatch: Some(fresh),
+                                project_admission: None,
                             };
                             self.store_effect(operation_id, step, &applied, None, wall_seconds)?;
                             return Ok(ReconcileOutcome::EffectApplied);
@@ -2762,6 +2776,7 @@ where
             plan,
             state: EffectState::Applied { attempt, receipt },
             dispatch,
+            project_admission: None,
         };
         self.store_effect(operation_id, step, &applied, None, wall_seconds)?;
         Ok(ReconcileOutcome::EffectApplied)
@@ -2795,6 +2810,7 @@ where
                         diagnostic,
                     },
                     dispatch,
+                    project_admission: None,
                 };
                 self.store_effect(operation_id, step, &applying, None, wall_seconds)?;
                 Ok(ReconcileOutcome::RetryPending)
@@ -2807,6 +2823,7 @@ where
                         diagnostic,
                     },
                     dispatch,
+                    project_admission: None,
                 };
                 self.store_effect(
                     operation_id,
@@ -2861,10 +2878,32 @@ where
         operation_effect_count: Option<u32>,
         wall_seconds: Option<i64>,
     ) -> Result<(), ReconcilerError> {
+        // An executor may append project-admission metadata while retaining this
+        // writer. Re-read that exact Effect before writing the retry diagnostic;
+        // a record captured before dispatch must not erase terminal custody.
+        let current = self
+            .journal
+            .get(RecordNamespace::Effect, &effect_key(operation_id, step))
+            .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?;
+        let current = decode_effect(current)?;
+        if current.plan != record.plan
+            || record
+                .project_admission
+                .as_ref()
+                .is_some_and(|metadata| Some(metadata) != current.project_admission.as_ref())
+        {
+            return Err(ReconcilerError::CorruptLedger(
+                "Effect changed during executor transition",
+            ));
+        }
+        let retained = EffectLedgerRecord {
+            project_admission: current.project_admission,
+            ..record.clone()
+        };
         let mut records = vec![JournalRecord::put(
             RecordNamespace::Effect,
             effect_key(operation_id, step).to_vec(),
-            encode_effect(record)?,
+            encode_effect(&retained)?,
         )];
         let operation = self.load_operation(operation_id)?;
         if let Some(effect_count) = operation_effect_count {
@@ -3121,6 +3160,14 @@ pub(crate) fn live_create_sandbox_admission_revision_v1(
     journal: &Journal,
     operation_id: OperationId,
 ) -> Result<Option<(ObjectDigest, u64, [u8; 32])>, ReconcilerError> {
+    retained_create_sandbox_admission_revision_v1(journal, operation_id, false)
+}
+
+fn retained_create_sandbox_admission_revision_v1(
+    journal: &Journal,
+    operation_id: OperationId,
+    allow_terminal_history: bool,
+) -> Result<Option<(ObjectDigest, u64, [u8; 32])>, ReconcilerError> {
     journal.ensure_protected_authority()?;
     let Some(operation_bytes) = journal.get(RecordNamespace::Operation, operation_id.as_bytes())
     else {
@@ -3136,10 +3183,11 @@ pub(crate) fn live_create_sandbox_admission_revision_v1(
         || operation.runtime_intent_digest.is_some()
         || public.method() != crate::controller_query::PublicOperationMethodV1::CreateSandbox
         || public.accepted_generation() != 1
-        || !matches!(
-            operation.state,
-            OperationState::Accepted | OperationState::Applying
-        )
+        || (!allow_terminal_history
+            && !matches!(
+                operation.state,
+                OperationState::Accepted | OperationState::Applying
+            ))
     {
         return Ok(None);
     }
@@ -3150,12 +3198,27 @@ pub(crate) fn live_create_sandbox_admission_revision_v1(
             "live Create effect is absent",
         ))?;
     let effect = decode_effect(effect_bytes)?;
-    if !matches!(
+    let matching_live_state = matches!(
         (&operation.state, &effect.state),
         (OperationState::Accepted, EffectState::Planned)
             | (OperationState::Applying, EffectState::Applying { .. })
-    ) || effect.plan.public_mutation_method()
-        != Some(crate::controller_query::PublicOperationMethodV1::CreateSandbox)
+    );
+    let matching_terminal_history = allow_terminal_history
+        && matches!(
+            (&operation.state, &effect.state),
+            (
+                OperationState::Succeeded
+                    | OperationState::CanceledBeforeCommit
+                    | OperationState::FailedBeforeCommit,
+                EffectState::Applied { .. }
+            ) | (
+                OperationState::PermanentlyBlocked,
+                EffectState::PermanentlyBlocked { .. }
+            )
+        );
+    if (!matching_live_state && !matching_terminal_history)
+        || effect.plan.public_mutation_method()
+            != Some(crate::controller_query::PublicOperationMethodV1::CreateSandbox)
     {
         return Ok(None);
     }
@@ -3219,6 +3282,7 @@ pub(crate) fn live_create_sandbox_admission_revision_v1(
         plan: effect.plan,
         state: EffectState::Planned,
         dispatch: None,
+        project_admission: None,
     })?;
     let revision =
         public_operation::resource_version(operation_id, &admitted_operation, &[&admitted_effect]);
@@ -4050,7 +4114,7 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct Executor {
+    pub(super) struct Executor {
         applied: BTreeMap<(OperationId, u32), EffectReceipt>,
         failures: VecDeque<EffectFailure>,
         apply_calls: usize,
@@ -4559,7 +4623,7 @@ mod tests {
         .0
     }
 
-    fn live_create_sandbox_plan(descriptor_byte: u8) -> OperationPlan {
+    pub(super) fn live_create_sandbox_plan(descriptor_byte: u8) -> OperationPlan {
         use crate::cli_model::{PublicApiAuditMethodV1, PublicMutationRequestV1};
         use crate::controller::ControllerRequestScopeV1;
         use crate::controller_query::PublicOperationMethodV1;
@@ -4714,6 +4778,7 @@ mod tests {
                             diagnostic: "retry".to_owned(),
                         },
                         dispatch: None,
+                        project_admission: None,
                     },
                     None,
                     Some(102),
@@ -4771,6 +4836,7 @@ mod tests {
                         diagnostic: String::new(),
                     },
                     dispatch: None,
+                    project_admission: None,
                 })
                 .unwrap(),
             )])
@@ -4840,6 +4906,7 @@ mod tests {
                             receipt: EffectReceipt::new(vec![1]).unwrap(),
                         },
                         dispatch: None,
+                        project_admission: None,
                     })
                     .unwrap(),
                 ),
@@ -4938,6 +5005,7 @@ mod tests {
             },
             state: EffectState::Planned,
             dispatch: None,
+            project_admission: None,
         };
         reconciler
             .journal_mut()
@@ -8102,6 +8170,7 @@ mod tests {
                         plan: effect,
                         state: EffectState::Planned,
                         dispatch: None,
+                        project_admission: None,
                     })
                     .unwrap(),
                 ),
@@ -8115,6 +8184,7 @@ mod tests {
                             diagnostic: String::new(),
                         },
                         dispatch: None,
+                        project_admission: None,
                     })
                     .unwrap(),
                 ),
@@ -8128,6 +8198,7 @@ mod tests {
                             receipt: EffectReceipt::new(b"receipt".to_vec()).unwrap(),
                         },
                         dispatch: None,
+                        project_admission: None,
                     })
                     .unwrap(),
                 ),
@@ -8141,6 +8212,7 @@ mod tests {
                             diagnostic: "blocked".to_owned(),
                         },
                         dispatch: None,
+                        project_admission: None,
                     })
                     .unwrap(),
                 ),
@@ -8151,6 +8223,7 @@ mod tests {
                         plan: effect,
                         state: EffectState::Planned,
                         dispatch: None,
+                        project_admission: None,
                     })
                     .unwrap(),
                 ),
