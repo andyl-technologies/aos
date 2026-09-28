@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::os::fd::{AsFd as _, BorrowedFd};
 
 use aos_sandbox_source_provider_protocol::{
-    SignedStorageNativeAcquireRequestV2, StorageNativeAcceptanceV2, StorageNativeAcquireReplyV2,
+    SignedStorageNativeAcquireRequestV2, StorageNativeAcceptanceV3, StorageNativeAcquireReplyV3,
     decode_acquire_request,
 };
 
@@ -28,6 +28,7 @@ pub(super) struct StorageNativeEscrowV2 {
 #[cfg(test)]
 pub(super) struct SyntheticNativeRuntimeV2 {
     pub(super) held: Option<StorageHeldSnapshotReadbackWithMountV1>,
+    pub(super) reply_override: Option<StorageNativeAcquireReplyV3>,
     pub(super) cut: StorageHeldSnapshotCatalogCutV1,
     pub(super) clock: RawPairedClockSample,
     pub(super) measurements: usize,
@@ -36,7 +37,7 @@ pub(super) struct SyntheticNativeRuntimeV2 {
 
 struct NativeOriginalV2 {
     held: StorageHeldSnapshotReadbackWithMountV1,
-    reply: StorageNativeAcquireReplyV2,
+    reply: StorageNativeAcquireReplyV3,
     packet: Vec<u8>,
     fail_stop_boottime: u64,
     initial_clock: RawPairedClockSample,
@@ -74,8 +75,8 @@ enum NativeCustodyActionV2 {
 }
 
 fn native_custody_action(
-    retained: Option<&StorageNativeAcceptanceV2>,
-    original: Option<&StorageNativeAcquireReplyV2>,
+    retained: Option<&StorageNativeAcceptanceV3>,
+    original: Option<&StorageNativeAcquireReplyV3>,
 ) -> Result<NativeCustodyActionV2, StorageRuntimeError> {
     match (retained, original) {
         (None, None) => Ok(NativeCustodyActionV2::MeasureNew),
@@ -221,7 +222,20 @@ impl StorageBrokerRuntime {
                     self.native_clock()?,
                 )
                 .map_err(|_| StorageRuntimeError::Recovery)?;
+            #[cfg(test)]
+            let reply = self
+                .native_fixture
+                .as_mut()
+                .and_then(|fixture| fixture.reply_override.take())
+                .unwrap_or(reply);
             let current = self.recheck_native_original(&held)?;
+            let clock = self.native_clock()?;
+            validate_original_clock(request, initial_clock, clock, initial_deadline)?;
+            // The same verifier protects initial durable acceptance and
+            // retry: signed topology scalars must match this original
+            // confined readback, not merely their own signed digest.
+            key.verify_native_reply(authenticated, &held, &reply, clock)
+                .map_err(|_| StorageRuntimeError::Recovery)?;
             validate_original_clock(
                 request,
                 initial_clock,
@@ -414,8 +428,8 @@ fn validate_original_clock(
 mod tests;
 
 fn validate_original_acceptance(
-    retained: &StorageNativeAcceptanceV2,
-    reply: &StorageNativeAcquireReplyV2,
+    retained: &StorageNativeAcceptanceV3,
+    reply: &StorageNativeAcquireReplyV3,
 ) -> Result<(), StorageRuntimeError> {
     if retained != reply.acceptance().acceptance()
         || retained.receipt_digest() != reply.receipt().digest()

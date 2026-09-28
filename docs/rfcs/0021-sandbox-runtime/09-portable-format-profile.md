@@ -433,6 +433,17 @@ referenced file bytes. Storage still needs protected publication and current
 GUID, hold, policy, and journal cuts before it can attest this value; this
 definition alone enables no positive SourceProvider receipt or Acquire.
 
+The native nonrecursive topology profile additionally carries the complete
+measurement's root-inclusive node count (at most 4,096) and logical file bytes
+(at most 64 MiB) in V3 Storage acceptance under the same dedicated receipt
+signature. It does not alter portable tree objects or use directory nesting as
+mount depth: its mount depth is exactly one and observed submount count is zero.
+The topology digest joins those measured counts and this portable content
+commitment to the exact signed native request, signed receipt, primary Storage
+journal cut, and original Root descriptor. Counts supplied to a canonical helper
+are nonauthorizing; only the complete retained held-root measurement can supply
+production claims. Other V1 topology profiles are not retroactively redefined.
+
 ## Delta objects
 
 V1 deltas are canonical final-tree deltas, not ordered syscall journals. A

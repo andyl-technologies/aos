@@ -24,8 +24,8 @@ use aos_sandbox_source_provider_protocol::storage_zfs_hold_receipt::{
     StorageZfsHoldHeadV1, StorageZfsHoldSignerV1, StorageZfsHoldVerifierV1,
 };
 use aos_sandbox_source_provider_protocol::{
-    SignedStorageNativeAcceptanceV2, SignedStorageZfsHoldReceiptV1, StorageNativeAcceptanceV2,
-    StorageNativeAcquireReplyV2, StorageZfsHoldReceiptV1,
+    SignedStorageNativeAcceptanceV3, SignedStorageZfsHoldReceiptV1, StorageNativeAcceptanceV3,
+    StorageNativeAcquireReplyV3, StorageZfsHoldReceiptV1, storage_native_nonrecursive_topology_v1,
 };
 use ed25519_dalek::{Signer as _, SigningKey};
 use sha2::{Digest as _, Sha256};
@@ -176,7 +176,7 @@ impl StorageZfsHoldKeyV1 {
         held: &StorageHeldSnapshotReadbackWithMountV1,
         issuance_id: [u8; 16],
         clock: aos_sandbox_core::RawPairedClockSample,
-    ) -> Result<StorageNativeAcquireReplyV2, StorageServiceError> {
+    ) -> Result<StorageNativeAcquireReplyV3, StorageServiceError> {
         let request = authenticated.request();
         let claims = request.request().claims();
         let (issued, expires) = claims.validity();
@@ -193,16 +193,18 @@ impl StorageZfsHoldKeyV1 {
             self.signer,
             key.sign(&unsigned.signing_message()).to_bytes(),
         );
-        let acceptance = StorageNativeAcceptanceV2::new(
+        let topology = native_topology_from_original(request, &receipt, &descriptor, held)?;
+        let acceptance = StorageNativeAcceptanceV3::new(
             issuance_id,
             request.digest(),
             receipt.digest(),
             descriptor,
+            topology,
         )
         .map_err(|_| invalid("native acceptance is invalid"))?;
         let signed_acceptance =
-            SignedStorageNativeAcceptanceV2::sign(acceptance, self.signer, &key);
-        let reply = StorageNativeAcquireReplyV2::new(signed_acceptance, receipt)
+            SignedStorageNativeAcceptanceV3::sign(acceptance, self.signer, &key);
+        let reply = StorageNativeAcquireReplyV3::new(signed_acceptance, receipt)
             .map_err(|_| invalid("native signed reply is inconsistent"))?;
         self.recheck()?;
         authenticated
@@ -220,12 +222,26 @@ impl StorageZfsHoldKeyV1 {
         &self,
         authenticated: &AuthenticatedStorageNativeRequestV2<'_>,
         held: &StorageHeldSnapshotReadbackWithMountV1,
-        reply: &StorageNativeAcquireReplyV2,
+        reply: &StorageNativeAcquireReplyV3,
         clock: aos_sandbox_core::RawPairedClockSample,
     ) -> Result<(), StorageServiceError> {
         let (issued, expires) = reply.receipt().receipt().validity();
         let (expected, descriptor) =
             self.native_receipt_basis(authenticated, held, clock, (issued, expires))?;
+        // The shared verifier validates signed topology crosslinks, but its
+        // counts come from the packet. Independently rejoin the original
+        // confined measurement retained with this FD before exact replay.
+        let topology = native_topology_from_original(
+            authenticated.request(),
+            reply.receipt(),
+            &descriptor,
+            held,
+        )?;
+        if reply.acceptance().acceptance().topology() != &topology {
+            return Err(invalid(
+                "saved native topology differs from original measurement",
+            ));
+        }
         authenticated
             .verify_reply(
                 reply,
@@ -312,6 +328,28 @@ impl StorageZfsHoldKeyV1 {
             seed,
         }
     }
+}
+
+/// Derives mount-shaped topology only from the confined original-reader result.
+///
+/// Fresh private fscontext construction and the reader's complete NO_XDEV
+/// walk establish depth one and no attached submounts. Directory nesting is
+/// not mount depth, and a generic inherited FD/tree walk cannot mint this
+/// owner's production readback-with-mount. Exact retry retains these counts.
+fn native_topology_from_original(
+    request: &aos_sandbox_source_provider_protocol::SignedStorageNativeAcquireRequestV2,
+    receipt: &SignedStorageZfsHoldReceiptV1,
+    descriptor: &aos_sandbox_source_provider_protocol::SourceRootObservationV1,
+    held: &StorageHeldSnapshotReadbackWithMountV1,
+) -> Result<aos_sandbox_source_provider_protocol::RecursiveTopologyProofV1, StorageServiceError> {
+    storage_native_nonrecursive_topology_v1(
+        request,
+        receipt,
+        descriptor,
+        u64::from(held.readback.measured_tree.nodes),
+        held.readback.measured_tree.file_bytes,
+    )
+    .map_err(|_| invalid("native confined topology is invalid"))
 }
 
 fn held_snapshot_receipt_physical_digest(

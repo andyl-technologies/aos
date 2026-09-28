@@ -16,7 +16,7 @@
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    SignedStorageNativeAcquireRequestV2, SourceProviderMethod, VerifiedStorageNativeAcquireV2,
+    SignedStorageNativeAcquireRequestV2, SourceProviderMethod, VerifiedStorageNativeAcquireV3,
     decode_acquire_request, digest_acquire_request, digest_signed_request,
 };
 
@@ -97,7 +97,7 @@ pub struct NativeAcquireCompletionRecordV2 {
 }
 
 impl NativeAcquireCompletionRecordV2 {
-    /// Checks an independently verified acceptance against every retained claim.
+    /// Checks an independently verified V3 acceptance against every retained claim.
     ///
     /// This check grants no currentness or FD custody authority. A protected
     /// owner still needs the original live descriptor and an independent
@@ -109,7 +109,7 @@ impl NativeAcquireCompletionRecordV2 {
     pub fn validate_verified_acceptance(
         &self,
         request: &SignedStorageNativeAcquireRequestV2,
-        verified: &VerifiedStorageNativeAcquireV2,
+        verified: &VerifiedStorageNativeAcquireV3,
     ) -> Result<(), LedgerFormatErrorV1> {
         let claims = request.request().claims();
         let signed_root = request.request().signed_root_request();
