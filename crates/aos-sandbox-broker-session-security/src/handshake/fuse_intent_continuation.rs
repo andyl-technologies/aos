@@ -5,6 +5,10 @@
 //! method:u16be=44 || purpose:u32be=57 || major:u16be=3 || minor:u16be=0 ||
 //! deadline:u64be || session[32] || signed-request[32] || semantics[32] ||
 //! challenge[32] || optional exact reservation coordinates[80]
+//!
+//! AOSFIH01 || version:u16be=1 || kind:u8=1 || reserved:u8=0 ||
+//! same original method/purpose/profile/binding || host-packet-size:u32be ||
+//! exact original zero-FD Host ObserveMountScope artifact packet
 //! ```
 //!
 //! These zero-FD controls never advance RequestPrepared into a terminal
@@ -15,8 +19,19 @@
 //! The eventual owner composition must additionally keep its genuine Mount
 //! reservation, Controller writer and original Host/kernel custody held.
 
+use aos_proto::aos::sandbox::local::v1::{Audience, BrokerMethod};
+use aos_sandbox::attachment_effect_owner::CurrentControllerFuseIntentDispatchV1;
+use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
+use aos_sandbox_core::{ProtocolId, RawPairedClockSample};
+use aos_sandbox_linux::cgroup::CgroupV2Root;
+use aos_sandbox_mount::host_scope::{HostMountScopeClient, ObservedMountScope};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodRequestV1, AuthenticatedBrokerRequestDirectionV1,
+};
+use aos_sandbox_protocol::mount_fuse_reserve_intent::decode_fuse_reserve_intent_request_v1;
+use aos_sandbox_protocol::mount_scope::decode_mount_scope_request;
+use aos_sandbox_protocol::{
+    AuthorizationArtifactBytes, PeerCredentials, PeerPolicy, decode_request_envelope,
 };
 
 use super::DormantAuthenticatedBrokerSessionV1;
@@ -27,6 +42,10 @@ const MAGIC: &[u8; 8] = b"AOSFIC01";
 const HEADER_BYTES: usize = 158;
 const COORDINATE_BYTES: usize = 80;
 const MAXIMUM_BYTES: usize = HEADER_BYTES + COORDINATE_BYTES;
+const HOST_QUERY_MAGIC: &[u8; 8] = b"AOSFIH01";
+const HOST_QUERY_PREFIX_BYTES: usize = HEADER_BYTES + 4;
+const MAXIMUM_HOST_QUERY_PACKET_BYTES: usize = 1024 * 1024;
+const MAXIMUM_HOST_QUERY_BYTES: usize = HOST_QUERY_PREFIX_BYTES + MAXIMUM_HOST_QUERY_PACKET_BYTES;
 
 /// Carries only broker-assigned comparison coordinates for local Host issuance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,6 +81,8 @@ enum Stage {
     ClientChallenge,
     ClientHeldAck,
     BrokerHeldAck,
+    ClientHostQuery,
+    BrokerHostQuery,
     BrokerReservation,
     ClientReservation,
     ClientReservationAck(FuseIntentReservationCoordinatesV1),
@@ -81,6 +102,163 @@ pub(crate) struct HeldFuseIntentTransportV1<'session> {
 }
 
 impl<'session> HeldFuseIntentTransportV1<'session> {
+    /// Sends only the query produced by this genuine held Controller cut.
+    ///
+    /// The packet carries an existing signed Host grant. It does not authorize
+    /// Mount preparation until the broker independently obtains the actual
+    /// Host response and retains its original payload descriptors.
+    pub(crate) fn send_original_host_scope_query<T>(
+        &mut self,
+        controller: &mut CurrentControllerFuseIntentDispatchV1<'_>,
+        clock: &mut T,
+    ) -> Result<(), DormantBrokerSessionHandshakeErrorV1>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        let result = (|| {
+            self.recheck()?;
+            if self.stage != Stage::ClientHostQuery
+                || controller.request_body() != self.request.exact_body()
+                || *controller.semantics().commitment().digest().as_bytes()
+                    != self.binding.semantics
+            {
+                return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
+            }
+            let packet = controller
+                .original_host_scope_packet_at(clock)
+                .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+            self.validate_host_scope_packet(&packet)?;
+            let framed = encode_host_query(self.binding, &packet)?;
+            self.session.send_request_packet(&framed)?;
+            self.stage = Stage::ClientReservation;
+            controller
+                .recheck(clock)
+                .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+            self.recheck()?;
+            Ok(())
+        })();
+        if result.is_err()
+            && !matches!(
+                &result,
+                Err(DormantBrokerSessionHandshakeErrorV1::Transport)
+            )
+        {
+            // Keep the signed pending flight: the query may already have
+            // crossed the socket when local currentness or delivery fails.
+            self.stage = Stage::ReconciliationRequired;
+        }
+        result
+    }
+
+    /// Acquires actual Host custody before the lower Mount reservation producer.
+    ///
+    /// The query is accepted only from the original authenticated Controller
+    /// record on this same pending session. The configured Host cgroup comes
+    /// from the existing daemon's retained cgroup root, never from the packet.
+    /// A lost query/Host reply cannot be retried by manufacturing a new scope.
+    pub(crate) fn observe_original_host_scope(
+        &mut self,
+        host_cgroup_root: &CgroupV2Root,
+    ) -> Result<ObservedMountScope, DormantBrokerSessionHandshakeErrorV1> {
+        let result = (|| {
+            self.recheck()?;
+            if self.stage != Stage::BrokerHostQuery {
+                return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
+            }
+            // The common zero-FD receive checks each record's actual subject
+            // against the same original authenticated peer before returning.
+            let framed = self
+                .session
+                .receive_response_packet(MAXIMUM_HOST_QUERY_BYTES)?;
+            let (binding, packet) = decode_host_query(&framed)?;
+            if binding != self.binding {
+                return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
+            }
+            self.validate_host_scope_packet(packet)?;
+            let envelope = decode_request_envelope(packet, ProtocolId::HostBroker, 0)
+                .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+            let authorization = envelope
+                .authorization()
+                .ok_or(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+            self.recheck()?;
+            let scope = HostMountScopeClient::connect(host_cgroup_root)
+                .and_then(|client| {
+                    client.observe(
+                        envelope.body(),
+                        AuthorizationArtifactBytes {
+                            broker_plan: authorization.broker_plan(),
+                            broker_plan_signature: authorization.broker_plan_signature(),
+                            ownership_lease: authorization.ownership_lease(),
+                            ownership_lease_signature: authorization.ownership_lease_signature(),
+                        },
+                    )
+                })
+                .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+            self.recheck()?;
+            self.stage = Stage::BrokerReservation;
+            Ok(scope)
+        })();
+        if result.is_err()
+            && !matches!(
+                &result,
+                Err(DormantBrokerSessionHandshakeErrorV1::Transport)
+            )
+        {
+            self.stage = Stage::ReconciliationRequired;
+        }
+        result
+    }
+
+    fn validate_host_scope_packet(
+        &self,
+        packet: &[u8],
+    ) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
+        let invalid = || DormantBrokerSessionHandshakeErrorV1::RemoteInvalid;
+        let now = super::protected_boottime_nanoseconds()?;
+        let original = decode_fuse_reserve_intent_request_v1(
+            self.request.exact_body(),
+            self.request.peer(),
+            self.request.peer_policy(),
+            now,
+        )
+        .map_err(|_| invalid())?;
+        let envelope =
+            decode_request_envelope(packet, ProtocolId::HostBroker, 0).map_err(|_| invalid())?;
+        if envelope.method() != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE
+            || !envelope.descriptors().is_empty()
+            || envelope.authorization().is_none()
+        {
+            return Err(invalid());
+        }
+        // Fixed decoder coordinates are not sender evidence. Host checks its
+        // real RootMount record independently; this only prevents substitution
+        // of another query under the original authenticated FUSE flight.
+        let query = decode_mount_scope_request(
+            envelope.body(),
+            PeerCredentials {
+                uid: 0,
+                gid: 0,
+                pid: Some(1),
+            },
+            PeerPolicy {
+                uid: 0,
+                gid: Some(0),
+                audience: Audience::AUDIENCE_ROOT_MOUNT,
+            },
+            now,
+        )
+        .map_err(|_| invalid())?;
+        if query.header().request_id() != original.header().request_id()
+            || query.header().deadline_boottime_nanoseconds() != self.binding.deadline
+            || query.fence() != original.fence()
+            || query.runtime_handle() != original.runtime_handle()
+            || query.payload_scope_handle() != original.payload_scope_handle()
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
     /// Joins the actual Mount writer without releasing original session custody.
     ///
     /// This invokes the real signature/slot/Host reservation producer. The
@@ -193,7 +371,7 @@ impl<'session> HeldFuseIntentTransportV1<'session> {
     ) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
         let (control, next) = match self.stage {
             Stage::BrokerChallenge => (Control::Challenge, Stage::BrokerHeldAck),
-            Stage::ClientHeldAck => (Control::HeldAcknowledgement, Stage::ClientReservation),
+            Stage::ClientHeldAck => (Control::HeldAcknowledgement, Stage::ClientHostQuery),
             Stage::ClientReservationAck(coordinates) => (
                 Control::ReservationAcknowledgement(coordinates),
                 Stage::Prepared(coordinates),
@@ -292,7 +470,7 @@ impl<'session> HeldFuseIntentTransportV1<'session> {
         }
         self.stage = match (self.stage, control) {
             (Stage::ClientChallenge, Control::Challenge) => Stage::ClientHeldAck,
-            (Stage::BrokerHeldAck, Control::HeldAcknowledgement) => Stage::BrokerReservation,
+            (Stage::BrokerHeldAck, Control::HeldAcknowledgement) => Stage::BrokerHostQuery,
             (Stage::ClientReservation, Control::Reservation(coordinates)) => {
                 Stage::ClientReservationAck(coordinates)
             }
@@ -320,8 +498,20 @@ fn encode(binding: Binding, control: Control) -> Vec<u8> {
         Control::Reservation(coordinates) => (3, Some(coordinates)),
         Control::ReservationAcknowledgement(coordinates) => (4, Some(coordinates)),
     };
-    let mut bytes = Vec::with_capacity(MAXIMUM_BYTES);
-    bytes.extend_from_slice(MAGIC);
+    let mut bytes = encode_binding_header(binding, MAGIC, kind);
+    if let Some(coordinates) = coordinates {
+        bytes.extend_from_slice(&coordinates.worker_locator);
+        bytes.extend_from_slice(&coordinates.reservation_digest);
+        bytes.extend_from_slice(&coordinates.presentation_plan_digest);
+    }
+    bytes
+}
+
+// Both closed formats share the exact original flight join, not an authority
+// constructor. Their distinct magic and kind checks prevent cross-decoding.
+fn encode_binding_header(binding: Binding, magic: &[u8; 8], kind: u8) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(HEADER_BYTES);
+    bytes.extend_from_slice(magic);
     bytes.extend_from_slice(&1_u16.to_be_bytes());
     bytes.extend_from_slice(&[kind, 0]);
     bytes.extend_from_slice(&44_u16.to_be_bytes());
@@ -337,18 +527,45 @@ fn encode(binding: Binding, control: Control) -> Vec<u8> {
     ] {
         bytes.extend_from_slice(&commitment);
     }
-    if let Some(coordinates) = coordinates {
-        bytes.extend_from_slice(&coordinates.worker_locator);
-        bytes.extend_from_slice(&coordinates.reservation_digest);
-        bytes.extend_from_slice(&coordinates.presentation_plan_digest);
-    }
     bytes
 }
 
 fn decode(bytes: &[u8]) -> Result<(Binding, Control), DormantBrokerSessionHandshakeErrorV1> {
     let invalid = || DormantBrokerSessionHandshakeErrorV1::RemoteInvalid;
-    if !matches!(bytes.len(), HEADER_BYTES | MAXIMUM_BYTES)
-        || bytes.get(..8) != Some(MAGIC.as_slice())
+    if !matches!(bytes.len(), HEADER_BYTES | MAXIMUM_BYTES) {
+        return Err(invalid());
+    }
+    let binding = decode_binding_header(bytes, MAGIC)?;
+    let control = match (bytes[10], bytes.len()) {
+        (1, HEADER_BYTES) => Control::Challenge,
+        (2, HEADER_BYTES) => Control::HeldAcknowledgement,
+        (kind @ (3 | 4), MAXIMUM_BYTES) => {
+            let coordinates = FuseIntentReservationCoordinatesV1 {
+                worker_locator: bytes[158..174].try_into().map_err(|_| invalid())?,
+                reservation_digest: bytes[174..206].try_into().map_err(|_| invalid())?,
+                presentation_plan_digest: bytes[206..238].try_into().map_err(|_| invalid())?,
+            };
+            if !coordinates_valid(coordinates) {
+                return Err(invalid());
+            }
+            if kind == 3 {
+                Control::Reservation(coordinates)
+            } else {
+                Control::ReservationAcknowledgement(coordinates)
+            }
+        }
+        _ => return Err(invalid()),
+    };
+    Ok((binding, control))
+}
+
+fn decode_binding_header(
+    bytes: &[u8],
+    magic: &[u8; 8],
+) -> Result<Binding, DormantBrokerSessionHandshakeErrorV1> {
+    let invalid = || DormantBrokerSessionHandshakeErrorV1::RemoteInvalid;
+    if bytes.len() < HEADER_BYTES
+        || bytes.get(..8) != Some(magic.as_slice())
         || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())
         || bytes[11] != 0
         || bytes.get(12..22) != Some([0, 44, 0, 0, 0, 57, 0, 3, 0, 0].as_slice())
@@ -373,33 +590,104 @@ fn decode(bytes: &[u8]) -> Result<(Binding, Control), DormantBrokerSessionHandsh
     {
         return Err(invalid());
     }
-    let control = match (bytes[10], bytes.len()) {
-        (1, HEADER_BYTES) => Control::Challenge,
-        (2, HEADER_BYTES) => Control::HeldAcknowledgement,
-        (kind @ (3 | 4), MAXIMUM_BYTES) => {
-            let coordinates = FuseIntentReservationCoordinatesV1 {
-                worker_locator: bytes[158..174].try_into().map_err(|_| invalid())?,
-                reservation_digest: bytes[174..206].try_into().map_err(|_| invalid())?,
-                presentation_plan_digest: bytes[206..238].try_into().map_err(|_| invalid())?,
-            };
-            if !coordinates_valid(coordinates) {
-                return Err(invalid());
-            }
-            if kind == 3 {
-                Control::Reservation(coordinates)
-            } else {
-                Control::ReservationAcknowledgement(coordinates)
-            }
-        }
-        _ => return Err(invalid()),
-    };
-    Ok((binding, control))
+    Ok(binding)
+}
+
+fn encode_host_query(
+    binding: Binding,
+    packet: &[u8],
+) -> Result<Vec<u8>, DormantBrokerSessionHandshakeErrorV1> {
+    let invalid = || DormantBrokerSessionHandshakeErrorV1::RemoteInvalid;
+    if packet.is_empty() || packet.len() > MAXIMUM_HOST_QUERY_PACKET_BYTES {
+        return Err(invalid());
+    }
+    let length = u32::try_from(packet.len()).map_err(|_| invalid())?;
+    let mut bytes = encode_binding_header(binding, HOST_QUERY_MAGIC, 1);
+    bytes.extend_from_slice(&length.to_be_bytes());
+    bytes.extend_from_slice(packet);
+    Ok(bytes)
+}
+
+fn decode_host_query(
+    bytes: &[u8],
+) -> Result<(Binding, &[u8]), DormantBrokerSessionHandshakeErrorV1> {
+    let invalid = || DormantBrokerSessionHandshakeErrorV1::RemoteInvalid;
+    if bytes.len() <= HOST_QUERY_PREFIX_BYTES || bytes.len() > MAXIMUM_HOST_QUERY_BYTES {
+        return Err(invalid());
+    }
+    let binding = decode_binding_header(bytes, HOST_QUERY_MAGIC)?;
+    if bytes[10] != 1 {
+        return Err(invalid());
+    }
+    let length = usize::try_from(u32::from_be_bytes(
+        bytes[HEADER_BYTES..HOST_QUERY_PREFIX_BYTES]
+            .try_into()
+            .map_err(|_| invalid())?,
+    ))
+    .map_err(|_| invalid())?;
+    let packet = &bytes[HOST_QUERY_PREFIX_BYTES..];
+    if packet.len() != length {
+        return Err(invalid());
+    }
+    Ok((binding, packet))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use sha2::Digest as _;
+
+    #[test]
+    fn original_host_query_has_a_distinct_bounded_frame() {
+        let binding = Binding {
+            deadline: 100,
+            session: [1; 32],
+            signed_request: [2; 32],
+            semantics: [3; 32],
+            challenge: [4; 32],
+        };
+        // This is only a frame vector, not a signed Host query or live owner.
+        let packet = [0x41; 23];
+        let bytes = encode_host_query(binding, &packet).unwrap();
+
+        assert_eq!(
+            decode_host_query(&bytes).unwrap(),
+            (binding, packet.as_slice())
+        );
+        assert_eq!(&bytes[..8], b"AOSFIH01");
+        assert_eq!(bytes.len(), HOST_QUERY_PREFIX_BYTES + packet.len());
+        assert!(decode(&bytes).is_err());
+        for control in [Control::Challenge, Control::HeldAcknowledgement] {
+            assert!(decode_host_query(&encode(binding, control)).is_err());
+        }
+
+        for length in 0..bytes.len() {
+            assert!(
+                decode_host_query(&bytes[..length]).is_err(),
+                "truncation {length}"
+            );
+        }
+        for offset in [
+            0, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 158, 159, 160, 161,
+        ] {
+            let mut changed = bytes.clone();
+            changed[offset] ^= 1;
+            assert!(
+                decode_host_query(&changed).is_err(),
+                "substitution {offset}"
+            );
+        }
+        for range in [22..30, 30..62, 62..94, 94..126, 126..158] {
+            let mut changed = bytes.clone();
+            changed[range].fill(0);
+            assert!(decode_host_query(&changed).is_err());
+        }
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(decode_host_query(&trailing).is_err());
+        assert!(encode_host_query(binding, &[]).is_err());
+        assert!(encode_host_query(binding, &vec![1; MAXIMUM_HOST_QUERY_PACKET_BYTES + 1]).is_err());
+    }
 
     #[test]
     fn preparation_records_bind_the_original_request_and_refuse_extensions() {
