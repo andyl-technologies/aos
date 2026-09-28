@@ -1169,6 +1169,17 @@ fn validate_send_response_with_source_root(
         .signed_receipt()
         .and_then(|bytes| SignedSourceProviderReceiptV1::from_canonical_bytes(bytes).ok())
         .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+    if let Some(native) = source_root.native_acceptance() {
+        let lease = SignedSourceExportLeaseV1::from_canonical_bytes(
+            receipt.subject().signed_export_lease(),
+        )
+        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+        if !matches!(lease.subject().proof(), aos_sandbox_source_provider_protocol::SourceProviderProofV1::ZfsHeldSnapshot { topology, .. }
+            if topology == native.topology())
+        {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+    }
     let observation = source_root.observation();
     if receipt.subject().kernel_boot_id() != observation.kernel_boot_id()
         || receipt.subject().device() != observation.device()

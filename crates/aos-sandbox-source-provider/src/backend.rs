@@ -8,12 +8,11 @@ use std::os::fd::{AsFd as _, OwnedFd};
 
 use aos_sandbox::ProtectedJournalSnapshot;
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_linux::inventory::ReadOnlyDirectorySnapshot as PhysicalSnapshotV1;
 use aos_sandbox_source_provider_protocol::{
     SignedStorageLiveExportRequestV1, SourceProviderProofV1, SourceResourceV1,
-    SourceRootObservationV1, source_root_descriptor_commitment_v1,
+    SourceRootObservationV1, VerifiedStorageNativeAcquireV3, source_root_descriptor_commitment_v1,
 };
-use rustix::fs::{FileType, OFlags};
-use rustix::io::FdFlags;
 use sha2::{Digest as _, Sha256};
 
 pub use crate::ledger::evidence::{
@@ -34,6 +33,7 @@ pub struct ProviderPhysicalSourceRootV1 {
     identity: SourceRootIdentityV1,
     observation: SourceRootObservationV1,
     physical_snapshot: PhysicalSnapshotV1,
+    native_acceptance: Option<VerifiedStorageNativeAcquireV3>,
     observed_seconds: i64,
 }
 
@@ -50,7 +50,13 @@ impl ProviderPhysicalSourceRootV1 {
             self.identity,
             &self.observation,
             &self.physical_snapshot,
-        )
+        )?;
+        if let Some(native) = &self.native_acceptance {
+            native
+                .require_original_descriptor(&self.observation)
+                .map_err(|_| crate::ProviderLedgerError::BackendConflict)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn descriptor_commitment(&self) -> ObjectDigest {
@@ -68,12 +74,35 @@ impl ProviderPhysicalSourceRootV1 {
             .descriptor
             .try_clone()
             .map_err(|_| crate::ProviderLedgerError::Unavailable)?;
-        let retained = observe_physical_source_root(descriptor, self.plan_binding)?;
+        let mut retained = observe_physical_source_root(descriptor, self.plan_binding)?;
         if retained.observation != self.observation {
             return Err(crate::ProviderLedgerError::BackendConflict);
         }
+        if let Some(native) = &self.native_acceptance {
+            retained.bind_native_acceptance(native)?;
+        }
         self.revalidate()?;
         Ok(retained)
+    }
+
+    /// Retains only a verified native graph matched to this actual original FD.
+    pub(crate) fn bind_native_acceptance(
+        &mut self,
+        native: &VerifiedStorageNativeAcquireV3,
+    ) -> Result<(), crate::ProviderLedgerError> {
+        self.revalidate()?;
+        if self
+            .native_acceptance
+            .as_ref()
+            .is_some_and(|retained| retained != native)
+        {
+            return Err(crate::ProviderLedgerError::BackendConflict);
+        }
+        native
+            .require_original_descriptor(&self.observation)
+            .map_err(|_| crate::ProviderLedgerError::BackendConflict)?;
+        self.native_acceptance = Some(native.clone());
+        self.revalidate()
     }
 
     pub(crate) fn into_security_handoff(
@@ -83,8 +112,18 @@ impl ProviderPhysicalSourceRootV1 {
         crate::ProviderLedgerError,
     > {
         self.revalidate()?;
-        aos_sandbox_source_provider_security::ProviderSourceRootHandoffV1::observe(self.descriptor)
-            .map_err(Into::into)
+        match self.native_acceptance {
+            Some(native) => {
+                aos_sandbox_source_provider_security::ProviderSourceRootHandoffV1::observe_native(
+                    self.descriptor,
+                    &native,
+                )
+            }
+            None => aos_sandbox_source_provider_security::ProviderSourceRootHandoffV1::observe(
+                self.descriptor,
+            ),
+        }
+        .map_err(Into::into)
     }
 }
 
@@ -736,18 +775,6 @@ impl ReopenedSourceRootV1 {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-struct PhysicalSnapshotV1 {
-    boot_id: [u8; 16],
-    status_flags: OFlags,
-    descriptor_flags: FdFlags,
-    device: u64,
-    inode: u64,
-    mode: u32,
-    mount_id: u64,
-    mount_flags: rustix::fs::StatVfsMountFlags,
-}
-
 fn observe_physical_source_root(
     descriptor: OwnedFd,
     plan_binding: ObjectDigest,
@@ -757,13 +784,17 @@ fn observe_physical_source_root(
     if first != second {
         return Err(crate::ProviderLedgerError::BackendConflict);
     }
-    let identity =
-        SourceRootIdentityV1::new(first.boot_id, first.device, first.inode, first.mount_id)?;
+    let identity = SourceRootIdentityV1::new(
+        first.boot_id,
+        first.device,
+        first.inode,
+        first.mount_id.get(),
+    )?;
     let observation = SourceRootObservationV1::new(
         first.boot_id,
         first.device,
         first.inode,
-        first.mount_id,
+        first.mount_id.get(),
         true,
         true,
         true,
@@ -774,6 +805,7 @@ fn observe_physical_source_root(
         identity,
         observation,
         physical_snapshot: first,
+        native_acceptance: None,
         observed_seconds: current_unix_seconds()?,
     })
 }
@@ -790,40 +822,11 @@ fn current_unix_seconds() -> Result<i64, crate::ProviderLedgerError> {
 fn physical_snapshot(
     descriptor: &OwnedFd,
 ) -> Result<PhysicalSnapshotV1, crate::ProviderLedgerError> {
-    let boot_id = aos_sandbox_linux::boot::KernelBootId::current()
-        .map_err(|_| crate::ProviderLedgerError::Unavailable)?
-        .into_bytes();
-    let status_flags =
-        rustix::fs::fcntl_getfl(descriptor).map_err(|_| crate::ProviderLedgerError::Unavailable)?;
-    let descriptor_flags =
-        rustix::io::fcntl_getfd(descriptor).map_err(|_| crate::ProviderLedgerError::Unavailable)?;
-    let stat =
-        rustix::fs::fstat(descriptor).map_err(|_| crate::ProviderLedgerError::Unavailable)?;
-    let mount_id = aos_sandbox_linux::inventory::MountId::from_fd(descriptor.as_fd())
-        .map_err(|_| crate::ProviderLedgerError::Unavailable)?;
-    // The descriptor, including a detached mount, is the kernel object being
-    // authorized. An ID-based statmount query would instead require the mount
-    // to be visible in this process's namespace and CAP_SYS_ADMIN.
-    let mount =
-        rustix::fs::fstatvfs(descriptor).map_err(|_| crate::ProviderLedgerError::Unavailable)?;
-    if !status_flags.contains(OFlags::PATH)
-        || !descriptor_flags.contains(FdFlags::CLOEXEC)
-        || FileType::from_raw_mode(stat.st_mode) != FileType::Directory
-        || stat.st_dev == 0
-        || stat.st_ino == 0
-        || !mount.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY)
-    {
-        return Err(crate::ProviderLedgerError::BackendConflict);
-    }
-    Ok(PhysicalSnapshotV1 {
-        boot_id,
-        status_flags,
-        descriptor_flags,
-        device: stat.st_dev,
-        inode: stat.st_ino,
-        mode: stat.st_mode,
-        mount_id: mount_id.get(),
-        mount_flags: mount.f_flag,
+    PhysicalSnapshotV1::capture(descriptor.as_fd()).map_err(|error| match error {
+        aos_sandbox_linux::Error::InvalidInput { .. } => {
+            crate::ProviderLedgerError::BackendConflict
+        }
+        _ => crate::ProviderLedgerError::Unavailable,
     })
 }
 
@@ -840,7 +843,7 @@ fn validate_physical_identity(
         || first.boot_id != identity.kernel_boot_id()
         || first.device != identity.device()
         || first.inode != identity.inode()
-        || first.mount_id != identity.unique_mount_id()
+        || first.mount_id.get() != identity.unique_mount_id()
         || observation.kernel_boot_id() != identity.kernel_boot_id()
         || observation.device() != identity.device()
         || observation.inode() != identity.inode()
@@ -1234,6 +1237,69 @@ mod tests {
             ),
             Err(crate::ProviderLedgerError::BackendConflict)
         ));
+    }
+
+    #[test]
+    #[ignore = "requires the explicit AOS kernel VM mount fixture"]
+    fn detached_native_original_proof_survives_duplication_and_security_handoff() {
+        // This tests physical custody and signed DATA only. It constructs no
+        // qualified bridge, current Provider session, or Root/Mount admission.
+        use crate::native_completion::{
+            fixture_prepared_with_descriptor, fixture_requested_with_boot,
+        };
+        use aos_sandbox_linux::mount::{FileSystemContext, MountAttributes};
+
+        let mount = FileSystemContext::open("tmpfs")
+            .unwrap()
+            .create()
+            .unwrap()
+            .mount()
+            .unwrap();
+        mount
+            .set_attributes(false, MountAttributes::secure_read_only(), None)
+            .unwrap();
+        let descriptor = rustix::io::fcntl_dupfd_cloexec(mount.as_fd(), 0).unwrap();
+        let mut original = observe_physical_source_root(descriptor, digest(1)).unwrap();
+        let requested = fixture_requested_with_boot(
+            [2; 32],
+            900,
+            digest(3),
+            original.observation.kernel_boot_id(),
+        );
+        let (_, verified) =
+            fixture_prepared_with_descriptor(&requested, original.observation.clone());
+        original.bind_native_acceptance(&verified).unwrap();
+
+        let retained = original.retain_original().unwrap();
+        assert_eq!(retained.native_acceptance.as_ref(), Some(&verified));
+        assert_eq!(retained.physical_snapshot, original.physical_snapshot);
+        let handoff = retained.into_security_handoff().unwrap();
+        // Both original and duplicate remain detached: generic observation is
+        // still fail-closed rather than converting ENOENT into native evidence.
+        let generic = rustix::io::fcntl_dupfd_cloexec(mount.as_fd(), 0).unwrap();
+        assert!(
+            aos_sandbox_source_provider_security::ProviderSourceRootHandoffV1::observe(generic)
+                .is_err()
+        );
+        let other = FileSystemContext::open("tmpfs")
+            .unwrap()
+            .create()
+            .unwrap()
+            .mount()
+            .unwrap();
+        other
+            .set_attributes(false, MountAttributes::secure_read_only(), None)
+            .unwrap();
+        let substituted = rustix::io::fcntl_dupfd_cloexec(other.as_fd(), 0).unwrap();
+        assert!(
+            aos_sandbox_source_provider_security::ProviderSourceRootHandoffV1::observe_native(
+                substituted,
+                &verified
+            )
+            .is_err()
+        );
+        original.revalidate().unwrap();
+        drop(handoff);
     }
 
     #[test]
