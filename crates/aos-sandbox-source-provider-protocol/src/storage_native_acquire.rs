@@ -11,6 +11,13 @@
 //! the unreleased V2 acceptance/reply; request and cleanup remain V2. No deployed
 //! RFC data requires migration.
 //!
+//! The unchanged request V2 envelope carries an exact original Root Acquire V2
+//! or native-only V3. Its explicit V3 constructor crosslinks catalog namespace,
+//! head generation/digest, and current-head commitment to the native claims.
+//! Every original floor/publication claim remains signed and digest-bound, but
+//! this schema proves neither their independent authenticity nor the complete
+//! protected selected tuple. Those checks remain Provider-owner obligations.
+//!
 //! ```text
 //! AOSZNQ02 | version:u16be=2 | reserved[6]=0 |
 //! native-claims-length:u32be | AOSZHQ01-claims[.length] |

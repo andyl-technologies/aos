@@ -7,6 +7,7 @@ use super::*;
 use crate::*;
 
 mod export_fence;
+mod native_root_v3;
 mod readback;
 mod topology;
 
