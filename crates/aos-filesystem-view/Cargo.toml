@@ -24,10 +24,18 @@ rustix = { workspace = true, features = ["fs", "process", "time"] }
 
 [dev-dependencies]
 aos-filesystem-view-core = { workspace = true, features = ["test-fixtures"] }
+serde.workspace = true
+serde_json.workspace = true
 
 [[test]]
 name = "semantic_no_alloc"
 path = "tests/semantic_no_alloc.rs"
+harness = false
+required-features = ["test-fixtures"]
+
+[[test]]
+name = "metadata_scale"
+path = "tests/metadata_scale.rs"
 harness = false
 required-features = ["test-fixtures"]
 

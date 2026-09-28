@@ -2,11 +2,14 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::convert::Infallible;
 use std::hint::black_box;
 use std::io::Cursor;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+#[path = "support/allocation.rs"]
+mod allocation;
+
+use allocation::{CountingAllocator, measure_allocations};
 
 use aos_filesystem_view::{
     AclCapability, DirectoryHandleLimits, ForgetRequest, INDEX_MEDIA_TYPE, IdMapExtent,
@@ -43,77 +46,8 @@ use aos_sandbox_core::{
     Revision, ViewId, descriptor_for_bytes,
 };
 
-// This harness-free binary runs only `main` and starts no threads. Global
-// atomics therefore observe exactly the synchronous operation inside the
-// tracking guard, without test-harness or peer-test allocation races.
-static TRACKING: AtomicBool = AtomicBool::new(false);
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-
-struct CountingAllocator;
-
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
-
-// SAFETY: Every operation delegates to `System` with the original layout and
-// pointer. The additional atomics neither allocate nor alter allocator state.
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if TRACKING.load(Ordering::SeqCst) {
-            ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
-        }
-        // SAFETY: The caller supplied `layout` under `GlobalAlloc::alloc`'s
-        // contract, and it is forwarded unchanged to the system allocator.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        if TRACKING.load(Ordering::SeqCst) {
-            ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
-        }
-        // SAFETY: The caller supplied `layout` under
-        // `GlobalAlloc::alloc_zeroed`'s contract, and it is forwarded unchanged.
-        unsafe { System.alloc_zeroed(layout) }
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        // SAFETY: The caller supplied a pointer/layout pair satisfying
-        // `GlobalAlloc::dealloc`, and both are forwarded unchanged.
-        unsafe { System.dealloc(pointer, layout) }
-    }
-
-    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        if TRACKING.load(Ordering::SeqCst) {
-            ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
-        }
-        // SAFETY: The caller supplied the pointer, old layout, and new size
-        // under `GlobalAlloc::realloc`'s contract; all are forwarded unchanged.
-        unsafe { System.realloc(pointer, layout, size) }
-    }
-}
-
-struct TrackingGuard;
-
-impl TrackingGuard {
-    fn begin() -> Self {
-        ALLOCATIONS.store(0, Ordering::SeqCst);
-        TRACKING.store(true, Ordering::SeqCst);
-        Self
-    }
-}
-
-impl Drop for TrackingGuard {
-    fn drop(&mut self) {
-        TRACKING.store(false, Ordering::SeqCst);
-    }
-}
-
-fn measure_allocations<T>(operation: impl FnOnce() -> T) -> (T, usize) {
-    let guard = TrackingGuard::begin();
-    let result = operation();
-    drop(guard);
-    let allocations = ALLOCATIONS.load(Ordering::SeqCst);
-    (result, allocations)
-}
 
 #[derive(Default)]
 struct MemorySource(Vec<(ObjectDescriptor, Vec<u8>)>);
