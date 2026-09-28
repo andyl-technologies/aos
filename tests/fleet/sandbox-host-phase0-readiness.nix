@@ -15,7 +15,7 @@
   hostd = "${hostPackage}/bin/aos-sandbox-hostd";
   credentialFixture = import ./_broker-session-credential-fixture.nix {inherit lib pkgs;};
   nspawn = "${pkgs.systemd}/bin/systemd-nspawn";
-  policy = "${pkgs.aosSelinuxKernelPolicyReadbackForKernel system.config.system.build.kernel}/policy.33";
+  policy = "${system.config.aos.security.selinux._canonicalReadback}/policy.33";
   report = "/var/lib/aos/sandbox-host-phase0/probe-v2";
 
   # RFC 8032's first Ed25519 vector is public test data, never a deployable key.
@@ -45,11 +45,14 @@
           bootMode = "immutable-stage0";
           _qualificationAdmissionRelease = true;
         };
+        # The fixture releases only admission. Its policy, kernel readback and
+        # provisioner retain the image's exact UID and fixed-view assignments.
         aos.boot.initrd.stage0 = lib.mkForce (pkgs.aosSelinuxStage0With {
+          aos-selinux-production-policy = config.aos.security.selinux._productionPolicy;
+          aos-selinux-runtime-roots = config.aos.security.selinux._runtimeRootsProvisioner;
           admissionUnit = "";
-          expectedPolicy = "${pkgs.aosSelinuxKernelPolicyReadbackForKernel config.system.build.kernel}/policy.33";
+          expectedPolicy = "${config.aos.security.selinux._canonicalReadback}/policy.33";
           expectedPolicyKernel = config.system.build.kernel;
-          aos-selinux-runtime-roots = pkgs.aosSelinuxRuntimeRootsForKernel config.system.build.kernel;
         });
         aos.services.dbus.enable = true;
         aos.sandbox.hostBroker = {
