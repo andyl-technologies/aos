@@ -176,6 +176,14 @@ terminal results; rejected and retry response bodies are excluded. The fleet
 report retains these distinctions and verifies exact signed release tags in
 PostgreSQL, alongside the object-body exclusion checks.
 
+Cross-mode index comparisons retain signed source timestamps, release and tag
+identities, artifact metadata and channels. Container roots, closure members,
+layers, provenance and evidence are compared when present. Each mode must have
+a positive index generation and a valid retention digest. That digest binds local placement IDs,
+observation times and incremental publication history, so its bytes differ
+between deployments. Compare the signed contents independently of that local
+retention identity.
+
 The separate `hybrid storage exchange accounting` event records each plan's
 `exchange_attempts`, total `offered_plan_bytes`, `observed_body_bytes`,
 `discarded_status_responses`, elapsed time, and final outcome. It is emitted on

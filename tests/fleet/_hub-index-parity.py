@@ -17,13 +17,27 @@ def registry_index_observations(query, slug):
     by_registry = " WHERE registry_id = " + registry
     observations = {}
 
+    # The retention digest binds local placement IDs, observation times and
+    # incremental publication history. Validate each local identity separately;
+    # compare the signed contents below across deployments.
+    identities = query(
+        "SELECT generation, content_digest FROM registry_index" + by_registry
+    )
+    assert len(identities) == 1, identities
+    generation, digest = identities[0]
+    assert generation > 0 and isinstance(digest, str), identities
+    assert (
+        len(digest) == 64
+        and all(character in "0123456789abcdef" for character in digest)
+    ), identities
+
     def observe(name, fields, table, predicate=by_registry):
         observations[name] = query("SELECT " + fields + " FROM " + table + predicate)
 
     observe(
         "index",
         "state, error, last_indexed_commit, name, description, refs_digest, "
-        "cache_stack, readme, content_digest, support_json",
+        "cache_stack, readme, support_json",
         "registry_index",
     )
     observe("packages", "name, description, homepage, license, maintainer, sysroot", "packages")
@@ -33,6 +47,45 @@ def registry_index_observations(query, slug):
     observe("keys", "key_id, public_key, status", "key_rosters")
     observe("release_records", "tag_oid, record_json", "release_records")
     observe("release_notes", "tag_oid, body", "release_browse_notes")
+
+    container_repository = " JOIN oci_repositories repository ON repository.id = projection.repository_id"
+    container_predicate = " WHERE projection.registry_id = " + registry
+    observe(
+        "container_roots",
+        "projection.release_tag, repository.name, projection.container_name, "
+        "projection.index_digest, projection.source_commit, projection.verified_tag_oid, projection.catalog_digest",
+        "oci_release_roots projection" + container_repository,
+        container_predicate,
+    )
+    observe(
+        "container_closure_members",
+        "projection.release_tag, repository.name, projection.root_digest, projection.store_path, "
+        "projection.nar_hash, projection.nar_size, projection.layer_digest, projection.is_direct",
+        "oci_release_closure_members projection" + container_repository,
+        container_predicate,
+    )
+    observe(
+        "container_evidence",
+        "projection.release_tag, repository.name, projection.root_digest, projection.evidence_kind, "
+        "projection.digest, projection.media_type, projection.verification, projection.referrer_digest",
+        "oci_release_evidence projection" + container_repository,
+        container_predicate,
+    )
+    observe(
+        "container_provenance",
+        "projection.release_tag, repository.name, projection.root_digest, projection.package_name, "
+        "projection.channel_name, projection.signed_release_root, projection.catalog_digest, projection.verification",
+        "oci_release_provenance projection" + container_repository,
+        container_predicate,
+    )
+    observe(
+        "container_layers",
+        "repository.name, projection.root_digest, projection.manifest_digest, projection.ordinal, "
+        "projection.digest, projection.media_type, projection.compressed_byte_size, "
+        "projection.unpacked_byte_size, projection.diff_id, projection.closure_group",
+        "oci_release_layers projection" + container_repository,
+        container_predicate,
+    )
     observe(
         "versions",
         "package.name, version.version, version.previous",
