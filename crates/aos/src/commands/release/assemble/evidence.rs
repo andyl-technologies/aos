@@ -50,6 +50,9 @@ pub(super) fn build(
     if start > finish {
         bail!("assembly completed before its build report");
     }
+    if plan.staging_only {
+        return Ok(Vec::new());
+    }
     let cases =
         aos_release::qualification_evidence::cases(plan, manifest, QualificationPhase::Build)?;
     let executor_digest = Sha256Digest::of_canonical(

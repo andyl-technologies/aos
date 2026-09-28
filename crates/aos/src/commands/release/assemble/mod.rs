@@ -208,10 +208,11 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
     if require_utc(&report.completed_at, "build completion time")? > completed {
         bail!("assembly completed before its build report");
     }
-    if report
-        .outputs
-        .iter()
-        .any(|output| output.reproducibility != ReproducibilityResult::Reproduced)
+    if !plan.staging_only
+        && report
+            .outputs
+            .iter()
+            .any(|output| output.reproducibility != ReproducibilityResult::Reproduced)
     {
         bail!("build report contains an output without a successful repeat build");
     }
