@@ -105,6 +105,20 @@ Its report and screenshots are retained at
 `/tmp/hub-native-empty-registry-browser-qualified`. Hybrid browser qualification
 remains pending.
 
+### OCI upload request framing
+
+The private diagnostic image upload exposed an empty-request framing failure:
+Artifact Registry rejected the upload-start request with HTTP 411. A real
+loopback regression reproduced that failure over HTTP/1.1; HTTP/2 already
+passed. Explicit zero content length for empty Distribution request bodies
+resolved the regression. All 53 OCI unit, layout, signing and registry tests
+passed, including resumability, cancellation and credential containment.
+
+The next hosted request reached upload data and returned HTTP 405. Artifact
+Registry requires [monolithic uploads](https://docs.cloud.google.com/artifact-registry/docs/reference/docker-api);
+the CLI uses chunked uploads. The framing correction does not establish complete
+Artifact Registry push compatibility or qualify a hosted Hub deployment.
+
 The dedicated GCP project, PostgreSQL and credential resources are provisioned,
 but no paired Native serving endpoint or public hybrid Worker route is deployed.
 Signed delivery setup, private credential mounts, root administrator initialization,

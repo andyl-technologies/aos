@@ -10,6 +10,9 @@ mod publication;
 mod pull;
 mod push;
 
+#[cfg(test)]
+mod request_tests;
+
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -21,7 +24,9 @@ use anyhow::{Context, Result, bail, ensure};
 use bytes::Bytes;
 use futures_util::StreamExt as _;
 use futures_util::future::BoxFuture;
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, WWW_AUTHENTICATE};
+use reqwest::header::{
+    AUTHORIZATION, CONTENT_LENGTH, HeaderMap, HeaderName, HeaderValue, WWW_AUTHENTICATE,
+};
 use reqwest::redirect::Policy;
 use reqwest::{Method, Response, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -419,6 +424,11 @@ impl RegistryClient {
                 request = request.bearer_auth(token);
             }
             if let Some(body) = body.clone() {
+                // Some registries require explicit framing for empty upload
+                // requests even when the transport could infer their length.
+                if body.is_empty() && !headers.contains_key(CONTENT_LENGTH) {
+                    request = request.header(CONTENT_LENGTH, "0");
+                }
                 request = request.body(body);
             }
             let response = tokio::select! {
