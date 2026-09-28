@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass, replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import effective_policy
@@ -849,6 +850,46 @@ class EffectivePolicyTest(unittest.TestCase):
 
                 with self.assertRaisesRegex(ValueError, "missing effective allow"):
                     effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_guest_anchor_source_keeps_var_traversal_separate_from_relabeling(self) -> None:
+        """Pins explicit anchor grants; the binary checker covers inheritance."""
+        source = Path(__file__).with_name("aos_sandbox.te").read_text()
+
+        self.assertIn(
+            "allow aos_sandbox_guest_owner_t var_t:dir { getattr open read search };",
+            source,
+        )
+        self.assertIn(
+            "allow aos_sandbox_guest_owner_t { root_t device_t tmpfs_t }:dir "
+            "{ getattr open read relabelfrom search };",
+            source,
+        )
+        self.assertNotIn(
+            "allow aos_sandbox_guest_owner_t { root_t var_t device_t tmpfs_t }:dir",
+            source,
+        )
+
+    def test_guest_protected_ancestor_relabel_rejects_indirect_conditionals(self) -> None:
+        for source in (effective_policy.GUEST_OWNER, effective_policy.GUEST_TENANT):
+            for active in (True, False):
+                with self.subTest(source=source, active=active):
+                    policy = FakePolicy()
+                    access = effective_policy.Access(
+                        "guest_domains", "guest_ancestors", "dir", "relabelfrom"
+                    )
+                    policy.allows[access] = [
+                        FakeRule(
+                            "conditional inherited ancestor relabel",
+                            active=active,
+                            source=FakeTypeAttribute({source}),
+                            target=FakeTypeAttribute({"var_t", "var_lib_t"}),
+                        )
+                    ]
+
+                    with self.assertRaisesRegex(
+                        ValueError, f"forbidden allow exists.*{source}.*relabelfrom"
+                    ):
+                        effective_policy.check_policy(FAKE_SETOOLS, policy)
 
     def test_missing_original_guest_host_channel_permission_fails(self) -> None:
         policy = FakePolicy()
