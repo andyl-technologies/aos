@@ -39,12 +39,23 @@
     (lib.removePrefix prefix (firstLineWith label prefix content));
 
   shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
-  guestHostProtocolVersionSource = sourceConst "guest-host protocol version" "pub const CONTROL_PROTOCOL_VERSION: u32 = " protocolLib;
-  # The constant includes a version file shared with the package build.
-  guestHostProtocolVersion =
-    if lib.hasPrefix "include!(" guestHostProtocolVersionSource
-    then lib.trim (builtins.readFile ../../crates/crucible-protocol/src/control_protocol_version.in)
-    else guestHostProtocolVersionSource;
+  readControlProtocolVersion = import ../../pkgs/tools/crucible/_control-protocol-version.nix;
+  guestHostProtocolVersion = readControlProtocolVersion {};
+  validControlVersions = ["3" "4\n" "4294967295\n"];
+  invalidControlVersions = [
+    ""
+    "0\n"
+    "03\n"
+    "3\n4\n"
+    "3\r\n"
+    "include!(\"control_protocol_version.in\")\n"
+    "4294967296\n"
+    "18446744073709551616\n"
+  ];
+  controlVersionFromContents = contents:
+    readControlProtocolVersion {
+      versionFile = builtins.toFile "crucible-control-version-regression" contents;
+    };
   rpcProtocolMajor = sourceConst "RPC ABI major version" "pub const RPC_PROTOCOL_MAJOR: u16 = " apiRpcAbi;
   rpcProtocolMinor = sourceConst "RPC ABI minor version" "pub const RPC_PROTOCOL_MINOR: u16 = " apiRpcAbi;
   rpcProtocolPatch = sourceConst "RPC ABI patch version" "pub const RPC_PROTOCOL_PATCH: u16 = " apiRpcAbi;
@@ -115,7 +126,14 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    lib.optionals (qemuPackageShmemAbiVersion != shmemAbiVersion) [
+    lib.optionals (
+      map controlVersionFromContents validControlVersions
+      != ["3" "4" "4294967295"]
+      || !(builtins.all (contents: !(builtins.tryEval (controlVersionFromContents contents)).success) invalidControlVersions)
+    ) [
+      "control protocol version file must accept canonical positive u32 values and reject malformed, zero, or overflowing values"
+    ]
+    ++ lib.optionals (qemuPackageShmemAbiVersion != shmemAbiVersion) [
       "pkgs.qemu-crucible: passthru shmem ABI version ${qemuPackageShmemAbiVersion} does not match Rust ABI version ${shmemAbiVersion}"
     ]
     ++ lib.optionals (qemuPackageShmemAbi != shmemAbi) [
@@ -224,7 +242,7 @@
       }
       {
         label = "CLI package reads guest-host protocol source";
-        needle = "protocolLib = builtins.readFile ../../../crates/crucible-protocol/src/lib.rs;";
+        needle = "guestHostProtocolVersion = import ./_control-protocol-version.nix {};";
       }
       {
         label = "CLI package reads RPC ABI source";
@@ -314,7 +332,7 @@
     ++ failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
       {
         label = "guest-host protocol version constant";
-        needle = "pub const CONTROL_PROTOCOL_VERSION: u32 = ${guestHostProtocolVersionSource};";
+        needle = "pub const CONTROL_PROTOCOL_VERSION: u32 = include!(\"control_protocol_version.in\");";
       }
       {
         label = "guest-host handshake loud ABI mismatch";
