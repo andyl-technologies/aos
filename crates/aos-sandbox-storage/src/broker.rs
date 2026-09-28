@@ -1301,6 +1301,29 @@ impl StorageAdmissionCoordinator {
         Ok(self.transactions.recovery_entries()?.collect())
     }
 
+    /// Reopens a current durable recovery plan for consumer-interest exclusion.
+    ///
+    /// This accessor grants no execution or observation authority. It prevents
+    /// the separate issuance owner from checking a caller-supplied ReleaseHold
+    /// plan instead of the exact plan retained under the primary writer.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unreadable protected state, a stale entry, or an invalid catalog.
+    pub(crate) fn recovery_catalog_for_native_interest(
+        &self,
+        entry: crate::StorageRecoveryEntry,
+    ) -> Result<ResolvedCatalogCommitmentV1, ZfsHelperError> {
+        if self
+            .transactions
+            .current_recovery_entry(entry.operation_id())?
+            != entry
+        {
+            return Err(crate::StorageStateError::InvalidTransition.into());
+        }
+        self.transactions.recover_catalog(entry).map_err(Into::into)
+    }
+
     /// Retires authenticated inactive Prepared operations before startup observation.
     ///
     /// Entries are visited in stable operation-ID order. A fresh exact-current
@@ -3974,6 +3997,17 @@ pub fn advertised_storage_methods(
         methods.push(BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN);
     }
     methods
+}
+
+#[cfg(test)]
+pub(crate) fn native_runtime_fixture_for_test(
+    transaction_directory: &tempfile::TempDir,
+    workspace_directory: &tempfile::TempDir,
+) -> crate::StorageBrokerRuntime {
+    tests::missing_initial_runtime_tests::native_runtime_fixture_for_test(
+        transaction_directory,
+        workspace_directory,
+    )
 }
 
 #[cfg(test)]
@@ -12579,7 +12613,7 @@ mod tests {
         );
     }
 
-    mod missing_initial_runtime_tests;
+    pub(crate) mod missing_initial_runtime_tests;
     mod missing_initial_tests;
 
     #[test]

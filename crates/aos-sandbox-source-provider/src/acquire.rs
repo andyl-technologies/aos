@@ -171,6 +171,10 @@ impl ProviderLedgerV1<'_> {
         backend: &mut B,
     ) -> Result<DurableProviderReplyV1, ProviderLedgerError> {
         self.ensure_open()?;
+        crate::native_completion::require_original_native_custody_closed(
+            self,
+            permit.acquisition_id,
+        )?;
         self.journal
             .validate_source_provider_authority_snapshot(&permit.journal_snapshot)?;
         permit.completion_capacity.validate(&self.journal)?;
@@ -292,6 +296,10 @@ impl ProviderLedgerV1<'_> {
         backend: &mut B,
     ) -> Result<DurableProviderReplyV1, ProviderLedgerError> {
         self.ensure_open()?;
+        crate::native_completion::require_original_native_custody_closed(
+            self,
+            permit.plan.acquisition_id,
+        )?;
         self.journal
             .validate_source_provider_authority_snapshot(&permit.journal_snapshot)?;
         permit.completion_capacity.validate(&self.journal)?;
@@ -337,6 +345,10 @@ impl ProviderLedgerV1<'_> {
         status: SourceProviderStatus,
     ) -> Result<DurableProviderReplyV1, ProviderLedgerError> {
         self.ensure_open()?;
+        crate::native_completion::require_original_native_custody_closed(
+            self,
+            permit.plan.acquisition_id,
+        )?;
         self.journal
             .validate_source_provider_authority_snapshot(&permit.journal_snapshot)?;
         permit.completion_capacity.validate(&self.journal)?;
@@ -360,6 +372,10 @@ impl ProviderLedgerV1<'_> {
         backend: &mut B,
     ) -> Result<DurableProviderReplyV1, ProviderLedgerError> {
         self.ensure_open()?;
+        crate::native_completion::require_original_native_custody_closed(
+            self,
+            replay.acquisition_id,
+        )?;
         self.journal
             .validate_source_provider_authority_snapshot(&replay.journal_snapshot)?;
         let acquisition = self

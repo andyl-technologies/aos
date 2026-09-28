@@ -10,11 +10,12 @@
 //! This systemd credential is separate from the LocalLive lease key and
 //! operator Repair key. It is pinned at Storage startup and rechecked against
 //! the exact credential directory, file identity, and bytes. Signing remains
-//! unavailable until an authenticated broker carrier conveys the Provider's
-//! owner-minted challenge, exact attempt, and holder session. Storage also
+//! restricted to the authenticated native carrier's exact attempt and original
+//! measured SourceRoot under the held Storage cut. Storage also
 //! derives a nonauthorizing AOSZHR01 head from its protected journal cut and
-//! confined physical readback. The key exposes no signing method while
-//! authenticated attempt and SourceRoot descriptor custody are absent.
+//! confined physical readback. The key exposes no raw key or general signing
+//! method. A
+//! retained readback does not prove that the hold or journal remains current.
 
 use std::path::PathBuf;
 
@@ -22,32 +23,49 @@ use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::storage_zfs_hold_receipt::{
     StorageZfsHoldHeadV1, StorageZfsHoldSignerV1, StorageZfsHoldVerifierV1,
 };
-use ed25519_dalek::SigningKey;
+use aos_sandbox_source_provider_protocol::{
+    SignedStorageNativeAcceptanceV3, SignedStorageZfsHoldReceiptV1, StorageNativeAcceptanceV3,
+    StorageNativeAcquireReplyV3, StorageZfsHoldReceiptV1, storage_native_nonrecursive_topology_v1,
+};
+use ed25519_dalek::{Signer as _, SigningKey};
+use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
+use crate::live_export_request_trust::AuthenticatedStorageNativeRequestV2;
 use crate::operator_recovery_credentials::{
     FileIdentity, PinnedCredential, open_directory, read_credential,
 };
+use crate::process::HeldSnapshotReaderObservationV1;
 use crate::runtime::StorageHeldSnapshotReadbackV1;
+use crate::runtime::StorageHeldSnapshotReadbackWithMountV1;
 use crate::service::StorageServiceError;
 
 const CREDENTIAL_NAME: &str = "storage-zfs-hold-key-v1";
 const MAGIC: &[u8; 8] = b"AOSZHK01";
 const VERSION: u16 = 1;
 const KEY_BYTES: usize = 160;
+const RECEIPT_PHYSICAL_DOMAIN: &[u8] = b"aos.sandbox.storage.zfs-hold.receipt-physical.v1\0";
 
 /// Pins the separately provisioned Storage ZFS hold receipt role key.
 pub struct StorageZfsHoldKeyV1 {
-    directory: PathBuf,
-    directory_identity: FileIdentity,
-    key: PinnedCredential,
+    custody: StorageZfsHoldKeyCustodyV1,
     signer: StorageZfsHoldSignerV1,
     verifier: StorageZfsHoldVerifierV1,
     seed: Zeroizing<[u8; 32]>,
 }
 
+enum StorageZfsHoldKeyCustodyV1 {
+    Protected {
+        directory: PathBuf,
+        directory_identity: FileIdentity,
+        key: PinnedCredential,
+    },
+    #[cfg(test)]
+    SyntheticFixture,
+}
+
 impl StorageZfsHoldKeyV1 {
-    /// Loads the fixed systemd credential without creating signing authority.
+    /// Loads and pins the existing dedicated-role systemd credential.
     ///
     /// # Errors
     ///
@@ -60,9 +78,11 @@ impl StorageZfsHoldKeyV1 {
         let key = read_credential(&fd, CREDENTIAL_NAME, KEY_BYTES)?;
         let (signer, verifier, seed) = decode_key_record(&key.bytes)?;
         let retained = Self {
-            directory,
-            directory_identity,
-            key,
+            custody: StorageZfsHoldKeyCustodyV1::Protected {
+                directory,
+                directory_identity,
+                key,
+            },
             signer,
             verifier,
             seed,
@@ -77,12 +97,21 @@ impl StorageZfsHoldKeyV1 {
     ///
     /// Rejects any changed directory, file identity, metadata, or key bytes.
     pub fn recheck(&self) -> Result<(), StorageServiceError> {
-        let (fd, identity) = open_directory(&self.directory)?;
-        if identity != self.directory_identity {
+        let (directory, directory_identity, key) = match &self.custody {
+            StorageZfsHoldKeyCustodyV1::Protected {
+                directory,
+                directory_identity,
+                key,
+            } => (directory, directory_identity, key),
+            #[cfg(test)]
+            StorageZfsHoldKeyCustodyV1::SyntheticFixture => return Ok(()),
+        };
+        let (fd, identity) = open_directory(directory)?;
+        if identity != *directory_identity {
             return Err(invalid("Storage ZFS hold credential directory changed"));
         }
-        let current = read_credential(&fd, self.key.name, KEY_BYTES)?;
-        if current.identity != self.key.identity || current.bytes != self.key.bytes {
+        let current = read_credential(&fd, key.name, KEY_BYTES)?;
+        if current.identity != key.identity || current.bytes != key.bytes {
             return Err(invalid("Storage ZFS hold credential changed"));
         }
         let (signer, verifier, seed) = decode_key_record(&current.bytes)?;
@@ -98,10 +127,12 @@ impl StorageZfsHoldKeyV1 {
         self.verifier
     }
 
-    /// Derives an unsigned head only while this dedicated role key remains current.
+    /// Derives an unsigned head for the time of the supplied Storage readback.
     ///
     /// No Provider attempt, SourceRoot descriptor, or receipt signature is
     /// accepted or emitted here. Key rotation requires a new Storage process.
+    /// A later issuance path must rejoin the live held snapshot, protected
+    /// journal, and policy before it can claim currentness after this readback.
     ///
     /// # Errors
     ///
@@ -111,12 +142,246 @@ impl StorageZfsHoldKeyV1 {
         readback: &StorageHeldSnapshotReadbackV1,
     ) -> Result<StorageZfsHoldHeadV1, StorageServiceError> {
         self.recheck()?;
-        let head = readback
-            .receipt_head(self.signer)
-            .map_err(|_| invalid("Storage ZFS hold receipt head is invalid"))?;
+        let (_, authority_generation, authority_digest) = self.signer.authority();
+        let head = StorageZfsHoldHeadV1::new(
+            readback.cut.catalog.generation(),
+            readback.cut.catalog.digest(),
+            authority_generation,
+            authority_digest,
+            readback.cut.authority_sequence,
+            readback.cut.materialized_state_digest,
+            held_snapshot_receipt_physical_digest(
+                readback.physical_observation_digest,
+                readback.post_measurement_observation_digest,
+                &readback.measured_tree,
+            ),
+        )
+        .map_err(|_| invalid("Storage ZFS hold receipt head is invalid"))?;
         self.recheck()?;
         Ok(head)
     }
+
+    /// Signs only a joined native request and its continuously retained original root.
+    ///
+    /// The caller retains all Storage writers and must durably accept the exact
+    /// reply before transfer. It must rejoin the protected final cut around this
+    /// call: this method checks retained evidence, not journal currentness itself.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed credentials/pins, scope, clock, hold claims, or original FD.
+    pub(crate) fn sign_native_reply(
+        &self,
+        authenticated: &AuthenticatedStorageNativeRequestV2<'_>,
+        held: &StorageHeldSnapshotReadbackWithMountV1,
+        issuance_id: [u8; 16],
+        clock: aos_sandbox_core::RawPairedClockSample,
+    ) -> Result<StorageNativeAcquireReplyV3, StorageServiceError> {
+        let request = authenticated.request();
+        let claims = request.request().claims();
+        let (issued, expires) = claims.validity();
+        let (receipt, descriptor) = self.native_receipt_basis(
+            authenticated,
+            held,
+            clock,
+            (clock.wall_seconds().max(issued), expires),
+        )?;
+        let unsigned = SignedStorageZfsHoldReceiptV1::new(receipt.clone(), self.signer, [0; 64]);
+        let key = SigningKey::from_bytes(&self.seed);
+        let receipt = SignedStorageZfsHoldReceiptV1::new(
+            receipt,
+            self.signer,
+            key.sign(&unsigned.signing_message()).to_bytes(),
+        );
+        let topology = native_topology_from_original(request, &receipt, &descriptor, held)?;
+        let acceptance = StorageNativeAcceptanceV3::new(
+            issuance_id,
+            request.digest(),
+            receipt.digest(),
+            descriptor,
+            topology,
+        )
+        .map_err(|_| invalid("native acceptance is invalid"))?;
+        let signed_acceptance =
+            SignedStorageNativeAcceptanceV3::sign(acceptance, self.signer, &key);
+        let reply = StorageNativeAcquireReplyV3::new(signed_acceptance, receipt)
+            .map_err(|_| invalid("native signed reply is inconsistent"))?;
+        self.recheck()?;
+        authenticated
+            .recheck()
+            .map_err(|_| invalid("native request trust changed"))?;
+        Ok(reply)
+    }
+
+    /// Verifies saved signed bytes against freshly rejoined original custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed custody, signed bytes, claims, head, original FD, or time.
+    pub(crate) fn verify_native_reply(
+        &self,
+        authenticated: &AuthenticatedStorageNativeRequestV2<'_>,
+        held: &StorageHeldSnapshotReadbackWithMountV1,
+        reply: &StorageNativeAcquireReplyV3,
+        clock: aos_sandbox_core::RawPairedClockSample,
+    ) -> Result<(), StorageServiceError> {
+        let (issued, expires) = reply.receipt().receipt().validity();
+        let (expected, descriptor) =
+            self.native_receipt_basis(authenticated, held, clock, (issued, expires))?;
+        // The shared verifier validates signed topology crosslinks, but its
+        // counts come from the packet. Independently rejoin the original
+        // confined measurement retained with this FD before exact replay.
+        let topology = native_topology_from_original(
+            authenticated.request(),
+            reply.receipt(),
+            &descriptor,
+            held,
+        )?;
+        if reply.acceptance().acceptance().topology() != &topology {
+            return Err(invalid(
+                "saved native topology differs from original measurement",
+            ));
+        }
+        authenticated
+            .verify_reply(
+                reply,
+                self.verifier,
+                &expected,
+                &descriptor,
+                clock.wall_seconds(),
+            )
+            .map_err(|_| {
+                invalid("saved native reply differs from authenticated original evidence")
+            })?;
+        self.recheck()?;
+        Ok(())
+    }
+
+    fn native_receipt_basis(
+        &self,
+        authenticated: &AuthenticatedStorageNativeRequestV2<'_>,
+        held: &StorageHeldSnapshotReadbackWithMountV1,
+        clock: aos_sandbox_core::RawPairedClockSample,
+        validity: (i64, i64),
+    ) -> Result<
+        (
+            StorageZfsHoldReceiptV1,
+            aos_sandbox_source_provider_protocol::SourceRootObservationV1,
+        ),
+        StorageServiceError,
+    > {
+        authenticated
+            .recheck()
+            .map_err(|_| invalid("native request trust changed"))?;
+        let descriptor = held
+            .observe_root()
+            .map_err(|_| invalid("original root changed"))?;
+        let request = authenticated.request();
+        crate::runtime::validate_native_request_clock(request, clock)
+            .map_err(|_| invalid("native request is no longer current"))?;
+        let claims = request.request().claims();
+        let catalog = claims.catalog();
+        let (resource, snapshot) = catalog
+            .select_under_head(
+                catalog.generation(),
+                catalog.digest(),
+                catalog.namespace_digest(),
+                claims.selection().0,
+            )
+            .map_err(|_| invalid("native selection is invalid"))?;
+        if descriptor.kernel_boot_id() != clock.host_boot_id()
+            || validity.0 < claims.validity().0
+            || validity.1 != claims.validity().1
+            || !held.readback.cut.matches_native_claim(
+                &snapshot,
+                held.readback.pool_guid,
+                held.readback.measured_tree.content_digest,
+                held.readback.measured_tree.mounted_snapshot_guid,
+            )
+        {
+            return Err(invalid(
+                "native receipt basis differs from held original scope",
+            ));
+        }
+        let (challenge, attempt) = claims.attempt();
+        let receipt = StorageZfsHoldReceiptV1::new(
+            challenge,
+            attempt,
+            claims.selection().0,
+            resource,
+            snapshot,
+            self.receipt_head(&held.readback)?,
+            validity.0,
+            validity.1,
+        )
+        .map_err(|_| invalid("native hold receipt is invalid"))?;
+        Ok((receipt, descriptor))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn synthetic_key_for_test() -> Self {
+        let (signer, verifier, seed) = decode_key_record(&tests::record()).unwrap();
+        Self {
+            custody: StorageZfsHoldKeyCustodyV1::SyntheticFixture,
+            signer,
+            verifier,
+            seed,
+        }
+    }
+}
+
+/// Derives mount-shaped topology only from the confined original-reader result.
+///
+/// Fresh private fscontext construction and the reader's complete NO_XDEV
+/// walk establish depth one and no attached submounts. Directory nesting is
+/// not mount depth, and a generic inherited FD/tree walk cannot mint this
+/// owner's production readback-with-mount. Exact retry retains these counts.
+fn native_topology_from_original(
+    request: &aos_sandbox_source_provider_protocol::SignedStorageNativeAcquireRequestV2,
+    receipt: &SignedStorageZfsHoldReceiptV1,
+    descriptor: &aos_sandbox_source_provider_protocol::SourceRootObservationV1,
+    held: &StorageHeldSnapshotReadbackWithMountV1,
+) -> Result<aos_sandbox_source_provider_protocol::RecursiveTopologyProofV1, StorageServiceError> {
+    storage_native_nonrecursive_topology_v1(
+        request,
+        receipt,
+        descriptor,
+        u64::from(held.readback.measured_tree.nodes),
+        held.readback.measured_tree.file_bytes,
+    )
+    .map_err(|_| invalid("native confined topology is invalid"))
+}
+
+fn held_snapshot_receipt_physical_digest(
+    before: ObjectDigest,
+    after: ObjectDigest,
+    measured: &HeldSnapshotReaderObservationV1,
+) -> ObjectDigest {
+    ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(RECEIPT_PHYSICAL_DOMAIN)
+            .chain_update(before.as_bytes())
+            .chain_update(after.as_bytes())
+            .chain_update(measured.content_digest.as_bytes())
+            .chain_update(measured.tree_digest.as_bytes())
+            .chain_update(measured.tree_size.to_be_bytes())
+            .chain_update(measured.mount_id.to_be_bytes())
+            .chain_update(measured.root_device.to_be_bytes())
+            .chain_update(measured.root_inode.to_be_bytes())
+            .chain_update(measured.nodes.to_be_bytes())
+            .chain_update(measured.file_bytes.to_be_bytes())
+            .chain_update(measured.mounted_snapshot_guid.to_be_bytes())
+            .chain_update(measured.identity.root_attributes.uid().to_be_bytes())
+            .chain_update(measured.identity.root_attributes.gid().to_be_bytes())
+            .chain_update(measured.identity.root_attributes.mode().to_be_bytes())
+            .chain_update(measured.identity.maximum_portable_uid.to_be_bytes())
+            .chain_update(measured.identity.maximum_portable_gid.to_be_bytes())
+            .chain_update(measured.identity.distinct_inode_count.to_be_bytes())
+            .chain_update(measured.identity.directory_entry_count.to_be_bytes())
+            .chain_update(measured.identity.identity_tree_digest.as_bytes())
+            .finalize()
+            .into(),
+    )
 }
 
 fn decode_key_record(
@@ -180,8 +445,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::held_snapshot_tree::HeldSnapshotIdentityObservationV1;
+    use crate::root_policy::PortableRootAttributesV1;
 
-    fn record() -> [u8; KEY_BYTES] {
+    pub(super) fn record() -> [u8; KEY_BYTES] {
         let mut bytes = [0; KEY_BYTES];
         let seed = [7; 32];
         bytes[..8].copy_from_slice(MAGIC);
@@ -194,6 +461,121 @@ mod tests {
         bytes[96..128].copy_from_slice(&SigningKey::from_bytes(&seed).verifying_key().to_bytes());
         bytes[128..160].copy_from_slice(&seed);
         bytes
+    }
+
+    fn measured_observation() -> HeldSnapshotReaderObservationV1 {
+        HeldSnapshotReaderObservationV1 {
+            content_digest: ObjectDigest::from_bytes([3; 32]),
+            tree_digest: ObjectDigest::from_bytes([4; 32]),
+            tree_size: 5,
+            mount_id: 6,
+            root_device: 7,
+            root_inode: 8,
+            nodes: 9,
+            file_bytes: 10,
+            mounted_snapshot_guid: 11,
+            identity: HeldSnapshotIdentityObservationV1 {
+                root_attributes: PortableRootAttributesV1::new(0, 0, 0o755).unwrap(),
+                maximum_portable_uid: 12,
+                maximum_portable_gid: 13,
+                distinct_inode_count: 9,
+                directory_entry_count: 8,
+                identity_tree_digest: ObjectDigest::from_bytes([14; 32]),
+            },
+        }
+    }
+
+    #[test]
+    fn receipt_physical_commitment_binds_both_holds_mount_and_tree() {
+        let before = ObjectDigest::from_bytes([1; 32]);
+        let after = ObjectDigest::from_bytes([2; 32]);
+        let measured = measured_observation();
+        let expected = held_snapshot_receipt_physical_digest(before, after, &measured);
+
+        assert_ne!(
+            expected,
+            held_snapshot_receipt_physical_digest(
+                ObjectDigest::from_bytes([15; 32]),
+                after,
+                &measured,
+            )
+        );
+        assert_ne!(
+            expected,
+            held_snapshot_receipt_physical_digest(
+                before,
+                ObjectDigest::from_bytes([16; 32]),
+                &measured,
+            )
+        );
+        let mut changed = measured;
+        changed.mount_id += 1;
+        assert_ne!(
+            expected,
+            held_snapshot_receipt_physical_digest(before, after, &changed)
+        );
+        changed = measured;
+        changed.content_digest = ObjectDigest::from_bytes([17; 32]);
+        assert_ne!(
+            expected,
+            held_snapshot_receipt_physical_digest(before, after, &changed)
+        );
+    }
+
+    #[test]
+    fn receipt_physical_commitment_binds_every_reader_identity_field() {
+        let before = ObjectDigest::from_bytes([1; 32]);
+        let after = ObjectDigest::from_bytes([2; 32]);
+        let measured = measured_observation();
+        let expected = held_snapshot_receipt_physical_digest(before, after, &measured);
+        let mut changed = measured;
+
+        changed.identity.root_attributes = PortableRootAttributesV1::new(1, 0, 0o755).unwrap();
+        assert_ne!(
+            expected,
+            held_snapshot_receipt_physical_digest(before, after, &changed)
+        );
+        changed.identity.root_attributes = PortableRootAttributesV1::new(0, 1, 0o755).unwrap();
+        assert_ne!(
+            expected,
+            held_snapshot_receipt_physical_digest(before, after, &changed)
+        );
+        changed.identity.root_attributes = PortableRootAttributesV1::new(0, 0, 0o700).unwrap();
+        assert_ne!(
+            expected,
+            held_snapshot_receipt_physical_digest(before, after, &changed)
+        );
+
+        changed = measured;
+        changed.identity.maximum_portable_uid += 1;
+        assert_ne!(
+            expected,
+            held_snapshot_receipt_physical_digest(before, after, &changed)
+        );
+        changed = measured;
+        changed.identity.maximum_portable_gid += 1;
+        assert_ne!(
+            expected,
+            held_snapshot_receipt_physical_digest(before, after, &changed)
+        );
+        changed = measured;
+        changed.identity.distinct_inode_count += 1;
+        assert_ne!(
+            expected,
+            held_snapshot_receipt_physical_digest(before, after, &changed)
+        );
+        changed = measured;
+        changed.identity.directory_entry_count += 1;
+        assert_ne!(
+            expected,
+            held_snapshot_receipt_physical_digest(before, after, &changed)
+        );
+        changed = measured;
+        changed.identity.identity_tree_digest = ObjectDigest::from_bytes([18; 32]);
+        assert_ne!(
+            expected,
+            held_snapshot_receipt_physical_digest(before, after, &changed)
+        );
     }
 
     #[test]

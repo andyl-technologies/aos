@@ -342,6 +342,27 @@ fn open_scripted_runtime(
     .unwrap()
 }
 
+pub(crate) fn native_runtime_fixture_for_test(
+    transaction_directory: &TempDir,
+    workspace_directory: &TempDir,
+) -> crate::StorageBrokerRuntime {
+    let fixture = Fixture::new();
+    let (coordinator, _) = committed_workspace_without_pin(transaction_directory, &fixture);
+    let state = Arc::new(Mutex::new(ScriptedPinState::default()));
+    open_scripted_runtime(
+        coordinator,
+        workspace_directory,
+        &fixture,
+        ZfsHelperContract::new("/nix/store/aos-zfs/sbin/zfs".into()).unwrap(),
+        scripted_pin(
+            "tank/aos/project/work",
+            11,
+            ScriptedEffectFailure::None,
+            &state,
+        ),
+    )
+}
+
 #[test]
 fn public_runtime_missing_initial_create_runs_real_startup_admission_worker_and_catalog() {
     let transaction_directory = TempDir::new().unwrap();

@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  stdenv,
   gnumake,
   pkg-config,
   patch,
@@ -35,7 +36,18 @@ in
     configureFlags = "--with-liblua=${lua} --without-ndiff --without-zenmap";
 
     postPatch = ''
-      patch -p1 < ${./nmap-openssl4.patch}
+      patch -p1 < ${./nmap-openssl4.patch}${
+        if stdenv.isCross && stdenv.hostPlatform.isDarwin
+        then ''
+
+          # The bundled BSD ARP implementation never uses this obsolete
+          # header, which is absent from the AOS Darwin SDK.
+          arpSource=libdnet-stripped/src/arp-bsd.c
+          test "$(grep -Fc '#include <netinet/if_ether.h>' "$arpSource")" -eq 1
+          sed -i '/^#include <netinet\/if_ether.h>$/d' "$arpSource"
+        ''
+        else ""
+      }
     '';
 
     postConfigure = ''

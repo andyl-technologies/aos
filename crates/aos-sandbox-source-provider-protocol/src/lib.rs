@@ -42,6 +42,7 @@ pub mod recovery_currentness;
 pub mod storage_live_export_lease;
 pub mod storage_live_export_request;
 pub mod storage_live_export_transport;
+pub mod storage_native_acquire;
 pub mod storage_zfs_hold_receipt;
 pub mod storage_zfs_hold_transport;
 pub mod trust;
@@ -55,15 +56,17 @@ pub use catalog_manifest::{
     ProviderCatalogRowV1,
 };
 pub use codec::{
-    MAXIMUM_FRAME_BYTES, SIGNED_SOURCE_PROVIDER_HELLO_BYTES, SOURCE_PROVIDER_HELLO_FRAME_BYTES,
-    SOURCE_PROVIDER_HELLO_SUBJECT_BYTES, SourceProviderFrameError, SourceProviderFrameKind,
-    SourceProviderMessageV1, decode_acquire_request, decode_acquire_response, decode_export_lease,
-    decode_hello, decode_inventory, decode_inventory_request, decode_inventory_response,
-    decode_message, decode_provider_proof, decode_provider_receipt, decode_release_receipt,
-    decode_release_request, decode_release_response, decode_response_status,
-    encode_acquire_request, encode_acquire_response, encode_export_lease, encode_hello,
-    encode_inventory, encode_inventory_request, encode_inventory_response, encode_message,
-    encode_provider_proof, encode_provider_receipt, encode_release_receipt, encode_release_request,
+    MAXIMUM_FRAME_BYTES, RECURSIVE_TOPOLOGY_PROOF_BYTES_V1, SIGNED_SOURCE_PROVIDER_HELLO_BYTES,
+    SOURCE_PROVIDER_HELLO_FRAME_BYTES, SOURCE_PROVIDER_HELLO_SUBJECT_BYTES,
+    SourceProviderFrameError, SourceProviderFrameKind, SourceProviderMessageV1,
+    decode_acquire_request, decode_acquire_response, decode_export_lease, decode_hello,
+    decode_inventory, decode_inventory_request, decode_inventory_response, decode_message,
+    decode_provider_proof, decode_provider_receipt, decode_recursive_topology_proof_v1,
+    decode_release_receipt, decode_release_request, decode_release_response,
+    decode_response_status, encode_acquire_request, encode_acquire_response, encode_export_lease,
+    encode_hello, encode_inventory, encode_inventory_request, encode_inventory_response,
+    encode_message, encode_provider_proof, encode_provider_receipt,
+    encode_recursive_topology_proof_v1, encode_release_receipt, encode_release_request,
     encode_release_response, encode_response_status, validate_message_descriptor_contract,
 };
 pub use crypto::{
@@ -127,6 +130,18 @@ pub use storage_live_export_request::{
 pub use storage_live_export_transport::{
     MAXIMUM_STORAGE_EXPORT_REQUEST_PACKET_BYTES_V1, StorageLiveExportTransportErrorV1,
     StorageLiveExportTransportRequestV1, StorageLiveExportUnavailableV1,
+};
+pub use storage_native_acquire::{
+    MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2,
+    MAXIMUM_STORAGE_NATIVE_TOPOLOGY_LOGICAL_BYTES_V1, MAXIMUM_STORAGE_NATIVE_TOPOLOGY_NODES_V1,
+    SIGNED_STORAGE_NATIVE_ACCEPTANCE_BYTES_V3, STORAGE_NATIVE_ACCEPTANCE_BYTES_V3,
+    STORAGE_NATIVE_ACQUIRE_REPLY_BYTES_V3, SignedStorageNativeAcceptanceV3,
+    SignedStorageNativeAcquireRequestV2, SignedStorageNativeCleanupReceiptV2,
+    SignedStorageNativeCleanupRequestV2, StorageNativeAcceptanceV3, StorageNativeAcquireErrorV2,
+    StorageNativeAcquireReplyV3, StorageNativeAcquireRequestV2, StorageNativeAcquireVerificationV3,
+    StorageNativeCleanupDispositionV2, StorageNativeCleanupReasonV2, StorageNativeCleanupReceiptV2,
+    StorageNativeCleanupRequestV2, StorageNativeDescriptorCustodyV2,
+    VerifiedStorageNativeAcquireV3, storage_native_nonrecursive_topology_v1,
 };
 pub use storage_zfs_hold_receipt::{
     SIGNED_STORAGE_ZFS_HOLD_RECEIPT_BYTES_V1, SignedStorageZfsHoldReceiptV1, StorageZfsHoldHeadV1,

@@ -8659,7 +8659,8 @@ accepts a caller-selected catalog head: Storage reloads its own protected
 catalog and compares the catalog, journal sequence, and a domain-separated
 digest of the current materialized journal records before and after worker
 quiescence. This digest does not commit append history. The dedicated signing
-key still exposes no receipt issuance. Storage now derives the expected pool
+key's native issuance path is restricted to authenticated signed intent and
+the original measured root under retained writer custody. Storage derives the expected pool
 GUID from an exact root-owned `AOSSRPC2` managed-root assignment rather than
 the caller, compares it with the physical worker readback, and rechecks the
 protected policy head after worker quiescence. Hold generation, active-hold
@@ -8669,21 +8670,81 @@ bounded portable tree beneath a detached ZFS snapshot mount. The one-shot
 service has a fixed root-only socket, verifies the live `aos-storaged` peer and
 request-record subject, and refuses to run outside a private mount namespace.
 It applies read-only, nodev, nosuid, and noexec attributes before reading, and
-returns only a request-bound digest and mount identity. Storage's dormant held
-readback keeps its sole journal cut while it observes the GUID and hold and
-measures the bytes. A successful path observes the GUID and hold again after
-reader quiescence and rechecks the protected catalog and policy heads.
+returns a request-bound digest and mount identity on its original measurement
+wire. A distinct versioned reply can transfer exactly one GUID-verified,
+read-only detached mount FD to Storage.
+Storage's dormant held readback keeps its sole journal cut while it observes
+the GUID and hold and measures the bytes. A successful path observes the GUID
+and hold again after reader quiescence and rechecks the protected catalog and
+policy heads.
 The private native-claim bridge now derives the opaque snapshot version handle
 from Storage's authenticated Snapshot result, not the Provider row, and checks
 the row's handle, format version, GUIDs, hold lineage, root policy, and portable
 content digest against that unchanged cut and the confined reader. It returns
-only a nonauthorizing Storage sample; no production socket consumes it.
+only a nonauthorizing Storage sample. The Provider-only Storage socket keeps
+the V1 native-claim path descriptor-free and `Unavailable`.
 The separately provisioned `AOSZHK01` Storage role key can derive an unsigned
 `AOSZHR01` head only after exact credential recheck. That head binds the
 unchanged catalog and materialized-journal cut to both ZFS hold observations
-and the confined reader's measured tree and mount identity. No receipt is
-signed: the Provider attempt is not authenticated to Storage, and the reader
-has already detached its mount without transferring a SourceRoot descriptor.
+and the confined reader's complete measured tree, identity fields, and mount
+identity at observation time. A retained head does not prove currentness after
+a hold release or journal change. Any later receipt issuance must rejoin the
+live held cut, current protected journal, and policy. Its separate signed V2
+carrier authenticates the original Root Acquire and Provider attempt under
+existing Storage-owned signer pins. Storage rejoins the physical hold,
+complete policy, primary journal cut, and original mount before signing a
+dedicated-role receipt and acceptance. This does not prove Provider completion
+or authorize a new holder session.
+
+Storage also retains a separate protected native-issuance journal after its
+primary and workspace writers. Its closed admission model binds the exact
+signed Provider request, original Root Acquire, consumer session, acquisition,
+attempt/challenge, native hold lineage, receipt commitment, and original
+descriptor identity. Active interests exclude physical `ReleaseHold` across
+handle/name aliases; exact retirement keeps the original acceptance tombstone.
+Admission reserves capacity for every outstanding retirement. V2 durably
+accepts and reads back the exact interest before transferring one SourceRoot
+FD. In-process escrow retains the original mount and stable signed reply even
+after an ambiguous send; exact live retry rechecks that original and never
+remounts or restamps. An accepted row without Storage-local escrow returns
+descriptor-free `Unavailable` and retains the interest: a Provider-held FD may
+still survive, so this is not proof of total custody loss. Retirement remains
+closed pending exact Provider terminal/cleanup authority. Focused synthetic
+runtime tests exercise signing, durable acceptance-before-send, same-FD retry,
+stale-cut rejection, and non-releasing cold-local recovery; they do not qualify
+the installed positive reader/held-journal vertical. Public Acquire remains
+closed until that installed proof and the Provider challenge/completion bridge
+are qualified.
+
+The shared native positive contract now reserves explicit acceptance/reply V3
+(`AOSZNA03`/`AOSZNP03`) with the existing 80-byte topology layout signed by the
+same dedicated Storage receipt role. Request and authenticated cleanup remain
+V2; old positive V2 framing has no compatibility path because this RFC slice is
+unreleased. The native nonrecursive profile binds the independently pinned
+receipt authority ID and primary journal cut to the exact signed request,
+signed receipt, original descriptor, measured portable content, root-inclusive
+node count, and logical file-byte count. Its bounds match the held reader:
+4,096 nodes and 64 MiB, with mount depth one and no submounts. A scalar helper
+encodes supplied claims only. A production builder must supply the actual
+complete held readback counts and prove zero submounts under the retained cut;
+neither the helper nor a valid signature alone establishes that fact. The
+canonical acceptance is 216 bytes, its signed form is 368 bytes, and the
+one-FD positive reply is exactly 1,192 bytes. Consumer migration, live authority
+ordering, custody recovery, and positive qualification remain separate gates;
+this format amendment enables no production Acquire or cleanup effect.
+
+Storage's V3 producer now derives topology only from the actual counts retained
+with the original confined reader mount. Initial acceptance and exact live
+retry independently rejoin those counts; a validly signed, self-consistent
+replacement count cannot create an acceptance or transfer a descriptor. The
+issuance journal reserves the full 216-byte acceptance and rejects old
+unreleased acceptance rows without reinterpretation. Its kernel clock sampler
+brackets BOOTTIME then REALTIME with matching boot identities, so sampling
+delays cannot extend the original expiry anchor. The complete Storage
+library suite passes 497 tests with five installed fixtures ignored; the
+production, non-test `aos-storaged` binary also compiles and links. These are
+source and synthetic-runtime results, not installed positive-reader/held-cut
+qualification. Public Acquire and authenticated terminal cleanup remain closed.
 
 Storage writes and fsyncs a single exclusive launch marker in its root-owned,
 mode-0700 StateDirectory before connecting to the reader socket. A restart
@@ -8695,7 +8756,9 @@ admission closed; offline recovery needs independent proof that no accepted
 activation can still run. This trades availability after an uncertain launch
 for the absence of overlapping reader attempts.
 
-The reader has no receipt key or descriptor-transfer path. A scoped OpenZFS 2.4.4
+The reader has no receipt key and its descriptor reply is limited to the
+Storage-only, exact-one-FD version; the prior descriptor-free format is unchanged.
+A scoped OpenZFS 2.4.4
 patch for the pinned Linux 7.2 kernel now binds the mounted superblock's UUID
 to the immutable pool and snapshot GUIDs. The reader checks `FS_IOC_GETFSUUID` on a
 readable descriptor of the detached root before and after the complete byte
@@ -8703,15 +8766,21 @@ walk, rejects an absent or mismatched UUID, and only then asserts the
 request-bound mounted GUID. This closes the name-replacement ABA gap that
 pre/post `zfs list` checks alone could not close. The older `statfs` FSID is
 not treated as a GUID. The backport and protected-cut exchange still require
-ZFS/KVM qualification before any production authority is enabled. No
+ZFS/KVM qualification before any production authority is enabled. The installed
+reader fixture now includes an unrun AOSHSM03 transfer, wrong-GUID,
+whole-unit-quiescence, and post-exit retained-FD check. It does not construct
+Storage's protected journal; an installed stale-final-cut readback remains
+separate from the pure cut-comparison tests. No
 `/dev/zfs` node is exposed to the one-shot reader; its private `/dev` and
 mount namespace do not change the fact that CAP_SYS_ADMIN remains an
 initial-user-namespace capability. The syscall and descriptor boundary still
 requires a confinement review before activation of any authority. The Q04
 Source-journal signer cannot substitute for the distinct Storage ZFS-hold role.
-No authenticated broker carrier yet conveys the owner-minted Provider challenge,
-attempt, holder session, and trusted Storage current head. The signed receipt,
-read-only SourceRoot descriptor custody, and Provider replay/MAC gates do not
+The closed Provider-to-Storage request carries the owner-minted challenge,
+attempt, and holder-session assertions from an authenticated live process, but
+the Provider production owner does not yet dispatch it, and Storage still has
+no independent cross-owner durable attempt/current-head acceptance. The signed
+receipt, read-only SourceRoot descriptor custody, and Provider replay/MAC gates do not
 yet compose. The Provider's one-way durable spend transition remains
 behind the future trusted currentness and positive acceptance cut; inspection
 that returns Unavailable does not invoke it. Production positive Acquire remains

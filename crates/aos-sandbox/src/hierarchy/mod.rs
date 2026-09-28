@@ -18,6 +18,7 @@ mod protected_evidence;
 pub mod protected_journal;
 pub mod realizer;
 pub mod recovery;
+pub(crate) mod source_floor;
 pub mod source_seed;
 pub mod state;
 mod tree_lineage;

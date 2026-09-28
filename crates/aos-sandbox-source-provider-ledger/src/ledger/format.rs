@@ -6,12 +6,15 @@
 //! record_digest[32] | body[body_len]
 //! ```
 //!
-//! Version 4 is the only accepted family member. Older versions are not decoded or
+//! Version 4 is the accepted baseline family member. Older versions are not decoded or
 //! upgraded in place: opening a namespace containing them fails before graph
 //! allocation with an explicit offline-migration error. This prevents an
 //! ambiguous dual interpretation of records without protected completion time.
+//! The native completion kind uses an explicitly separate version-5 envelope
+//! and version-2 body. Mixed graphs retain version-4 baseline records; older
+//! readers reject the native kind and cannot silently activate it.
 //!
-//! The seven closed bodies use these exact semantic orders; `authority` is a
+//! The seven baseline closed bodies use these exact semantic orders; `authority` is a
 //! 56-byte authority tuple, `signer` is the protocol's canonical 120-byte
 //! signer reference. Optional fixed-width values use their all-zero sentinel;
 //! variable artifacts have explicit presence and length fields.
@@ -85,6 +88,7 @@ const MAGIC: &[u8; 8] = b"AOSSPL01";
 // Version 4 binds the protected response-completion time into each terminal
 // attempt so historical replay never substitutes request-admission time.
 const VERSION: u16 = 4;
+const NATIVE_COMPLETION_VERSION: u16 = 5;
 const ENVELOPE_BYTES: usize = 64;
 const HEADER_BYTES: usize = 32;
 
@@ -95,6 +99,8 @@ const SESSION_HISTORY_DOMAIN: &[u8] = b"aos.sandbox.source-provider.ledger.sessi
 const ATTEMPT_DOMAIN: &[u8] = b"aos.sandbox.source-provider.ledger.attempt.v1\0";
 const ACQUISITION_DOMAIN: &[u8] = b"aos.sandbox.source-provider.ledger.acquisition.v1\0";
 const RELEASE_DOMAIN: &[u8] = b"aos.sandbox.source-provider.ledger.release.v1\0";
+const NATIVE_COMPLETION_DOMAIN: &[u8] =
+    b"aos.sandbox.source-provider.ledger.native-completion.v2\0";
 
 const AUTHORITY_BODY_BYTES: usize = 632;
 const CATALOG_FIXED_BYTES: usize = 476;
@@ -508,6 +514,14 @@ pub fn decode_record(key: &[u8], bytes: &[u8]) -> Result<DecodedRecordV1, Ledger
         RecordKind::Attempt => DecodedRecordV1::Attempt(decode_attempt_body(envelope)?),
         RecordKind::Acquisition => DecodedRecordV1::Acquisition(decode_acquisition_body(envelope)?),
         RecordKind::Release => DecodedRecordV1::Release(decode_release_body(envelope)?),
+        RecordKind::NativeCompletion => {
+            DecodedRecordV1::NativeCompletion(super::native_completion::decode_body(
+                envelope.key,
+                envelope.body,
+                envelope.revision,
+                envelope.state,
+            )?)
+        }
     };
     Ok(decoded)
 }
@@ -522,7 +536,23 @@ pub fn encode_decoded_record(value: &DecodedRecordV1) -> Vec<u8> {
         DecodedRecordV1::Attempt(value) => encode_attempt(value),
         DecodedRecordV1::Acquisition(value) => encode_acquisition(value),
         DecodedRecordV1::Release(value) => encode_release(value),
+        DecodedRecordV1::NativeCompletion(value) => encode_native_completion_v2(value),
     }
+}
+
+/// Encodes one typed, nonauthorizing native completion recovery record.
+#[must_use]
+pub fn encode_native_completion_v2(
+    value: &super::native_completion::NativeAcquireCompletionRecordV2,
+) -> Vec<u8> {
+    let key = super::native_completion::native_completion_key_v2(value.acquisition_id);
+    encode_envelope(
+        RecordKind::NativeCompletion,
+        value.state as u8,
+        value.revision,
+        &key,
+        &super::native_completion::encode_body(value),
+    )
 }
 
 /// Returns the authenticated digest embedded in a validated AOSSPL01 record.
@@ -549,7 +579,12 @@ struct Envelope<'a> {
 fn encode_envelope(kind: RecordKind, state: u8, revision: u64, key: &[u8], body: &[u8]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(ENVELOPE_BYTES + body.len());
     bytes.extend_from_slice(MAGIC);
-    bytes.extend_from_slice(&VERSION.to_be_bytes());
+    let version = if kind == RecordKind::NativeCompletion {
+        NATIVE_COMPLETION_VERSION
+    } else {
+        VERSION
+    };
+    bytes.extend_from_slice(&version.to_be_bytes());
     bytes.push(kind as u8);
     bytes.push(state);
     bytes.extend_from_slice(&[0; 2]);
@@ -576,7 +611,13 @@ fn decode_envelope<'a>(
             "AOSSPL v2 requires explicit offline migration",
         ));
     }
-    if encoded_version != VERSION {
+    let kind = RecordKind::decode(bytes[10])?;
+    let expected_version = if kind == RecordKind::NativeCompletion {
+        NATIVE_COMPLETION_VERSION
+    } else {
+        VERSION
+    };
+    if encoded_version != expected_version {
         return Err(LedgerFormatErrorV1::Corrupt(
             "unsupported AOSSPL format version",
         ));
@@ -586,7 +627,6 @@ fn decode_envelope<'a>(
     {
         return Err(LedgerFormatErrorV1::Corrupt("record envelope header"));
     }
-    let kind = RecordKind::decode(bytes[10])?;
     let body_len = read_u32(bytes, 16)? as usize;
     if ENVELOPE_BYTES.checked_add(body_len) != Some(bytes.len()) {
         return Err(LedgerFormatErrorV1::Corrupt("record envelope length"));
@@ -634,6 +674,7 @@ fn kind_domain(kind: RecordKind) -> &'static [u8] {
         RecordKind::Attempt => ATTEMPT_DOMAIN,
         RecordKind::Acquisition => ACQUISITION_DOMAIN,
         RecordKind::Release => RELEASE_DOMAIN,
+        RecordKind::NativeCompletion => NATIVE_COMPLETION_DOMAIN,
     }
 }
 

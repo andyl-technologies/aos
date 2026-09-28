@@ -630,8 +630,11 @@ impl<'a> ProviderLedgerV1<'a> {
     }
 
     pub(crate) fn refresh_recovery_work(&mut self) {
-        self.recovered.recovery_work =
-            crate::recovery::recovery_work(&self.recovered.attempts, &self.recovered.acquisitions);
+        self.recovered.recovery_work = crate::recovery::recovery_work(
+            &self.recovered.attempts,
+            &self.recovered.acquisitions,
+            &self.recovered.native_completions,
+        );
     }
 
     pub(crate) fn record_backend_conflict(

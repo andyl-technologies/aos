@@ -235,6 +235,19 @@ pub fn validate_prospective_transition<'current, 'prospective>(
     for (key, current_value) in &current {
         let decoded = ledger::format::decode_record(key, current_value)?;
         match decoded {
+            DecodedRecordV1::NativeCompletion(native) => {
+                let next = prospective.get(key).ok_or(LedgerFormatErrorV1::Corrupt(
+                    "native completion cannot be forgotten",
+                ))?;
+                let DecodedRecordV1::NativeCompletion(next) =
+                    ledger::format::decode_record(key, next)?
+                else {
+                    return Err(LedgerFormatErrorV1::Corrupt(
+                        "native completion kind changed",
+                    ));
+                };
+                native.validate_successor(&next)?;
+            }
             DecodedRecordV1::Catalog(catalog) if prospective.get(key) != Some(current_value) => {
                 let rewritten = prospective.contains_key(key);
                 let still_referenced =
@@ -281,6 +294,21 @@ pub fn validate_prospective_transition<'current, 'prospective>(
             _ => {}
         }
     }
+    for (key, value) in &prospective {
+        if current.contains_key(key) {
+            continue;
+        }
+        if let DecodedRecordV1::NativeCompletion(native) =
+            ledger::format::decode_record(key, value)?
+            && (native.revision != 1
+                || native.state
+                    != ledger::native_completion::NativeAcquireCompletionStateV2::Prepared)
+        {
+            return Err(LedgerFormatErrorV1::Corrupt(
+                "native completion was not prepared",
+            ));
+        }
+    }
     Ok(validated)
 }
 
@@ -313,6 +341,7 @@ pub fn validate_prospective_records<'record>(
     let mut acquisition_ids = BTreeSet::new();
     let mut acquisition_sequences = BTreeSet::new();
     let mut release_ids = BTreeSet::new();
+    let mut native_completion_ids = BTreeSet::new();
 
     for (key, value) in records {
         record_count = record_count
@@ -389,6 +418,11 @@ pub fn validate_prospective_records<'record>(
                     return Err(LedgerFormatErrorV1::Corrupt("duplicate release identity"));
                 }
             }
+            DecodedRecordV1::NativeCompletion(native) => {
+                if !native_completion_ids.insert(native.acquisition_id) {
+                    return Err(LedgerFormatErrorV1::Corrupt("duplicate native completion"));
+                }
+            }
         }
         decoded.push(record);
     }
@@ -412,6 +446,7 @@ pub fn validate_prospective_records<'record>(
             .len()
             .saturating_add(acquisition_ids.len())
             .saturating_add(release_ids.len())
+            .saturating_add(native_completion_ids.len())
             > limits::MAXIMUM_RETAINED_IDENTITIES
     {
         return Err(LedgerFormatErrorV1::LimitExceeded(
@@ -430,6 +465,7 @@ pub fn validate_prospective_records<'record>(
             DecodedRecordV1::Attempt(value) => value.provider.authority_id(),
             DecodedRecordV1::Acquisition(value) => value.provider.authority_id(),
             DecodedRecordV1::Release(value) => value.provider.authority_id(),
+            DecodedRecordV1::NativeCompletion(value) => value.provider_id,
         };
         if record_provider != provider_id {
             return Err(LedgerFormatErrorV1::Corrupt("foreign provider record"));
@@ -582,6 +618,26 @@ pub fn validate_prospective_records<'record>(
             _ => None,
         })
         .collect();
+    for native in decoded.iter().filter_map(|record| match record {
+        DecodedRecordV1::NativeCompletion(value) => Some(value),
+        _ => None,
+    }) {
+        let attempt = attempts
+            .iter()
+            .copied()
+            .find(|attempt| attempt.attempt_digest == native.attempt_digest)
+            .ok_or(LedgerFormatErrorV1::Corrupt(
+                "orphan native completion attempt",
+            ))?;
+        let acquisition = acquisitions
+            .iter()
+            .copied()
+            .find(|acquisition| acquisition.acquisition_id == native.acquisition_id)
+            .ok_or(LedgerFormatErrorV1::Corrupt(
+                "orphan native completion acquisition",
+            ))?;
+        native.validate_provider_graph(attempt, acquisition)?;
+    }
     for attempt in &attempts {
         let Some(predecessor_digest) = attempt.recovery_predecessor_attempt_digest else {
             continue;

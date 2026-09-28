@@ -84,6 +84,22 @@ impl StorageHeldSnapshotCatalogCutV1 {
         Ok(())
     }
 
+    /// Compares the native row's journal-derived fields with this held cut.
+    ///
+    /// Pool identity and portable content are physical observations, not
+    /// journal facts. Callers must compare those independently before issuing
+    /// a receipt or retaining live descriptor authority.
+    pub(crate) fn matches_native_journal_claim(&self, claim: &ZfsHeldSnapshotProofV1) -> bool {
+        self.snapshot.dataset().storage_handle() == claim.storage_handle()
+            && self.storage_version == claim.storage_version()
+            && self.snapshot.dataset().guid() == claim.dataset_guid()
+            && self.snapshot.guid() == claim.snapshot_guid()
+            && self.hold_id.as_bytes() == claim.hold_id()
+            && self.hold_generation == claim.hold_generation()
+            && self.active_hold_digest == claim.active_hold_digest()
+            && self.root_policy_digest == claim.root_policy_digest()
+    }
+
     /// Compares every native row field with the protected cut and physical measurement.
     pub(crate) fn matches_native_claim(
         &self,
@@ -92,15 +108,8 @@ impl StorageHeldSnapshotCatalogCutV1 {
         observed_content_digest: ObjectDigest,
         mounted_snapshot_guid: u64,
     ) -> bool {
-        self.snapshot.dataset().storage_handle() == claim.storage_handle()
-            && self.storage_version == claim.storage_version()
+        self.matches_native_journal_claim(claim)
             && observed_pool_guid == claim.pool_guid()
-            && self.snapshot.dataset().guid() == claim.dataset_guid()
-            && self.snapshot.guid() == claim.snapshot_guid()
-            && self.hold_id.as_bytes() == claim.hold_id()
-            && self.hold_generation == claim.hold_generation()
-            && self.active_hold_digest == claim.active_hold_digest()
-            && self.root_policy_digest == claim.root_policy_digest()
             && observed_content_digest == claim.read_only_content_digest()
             && mounted_snapshot_guid == claim.snapshot_guid()
     }
@@ -797,6 +806,10 @@ mod tests {
         let mut changed_hold = initial.clone();
         changed_hold.active_hold_digest = ObjectDigest::from_bytes([17; 32]);
         assert!(initial.ensure_unchanged(&changed_hold).is_err());
+
+        let mut replaced_hold = initial.clone();
+        replaced_hold.hold_id = HoldId::from_bytes([19; 16]).unwrap();
+        assert!(initial.ensure_unchanged(&replaced_hold).is_err());
 
         let mut changed_policy = initial.clone();
         changed_policy.root_policy_digest = ObjectDigest::from_bytes([18; 32]);

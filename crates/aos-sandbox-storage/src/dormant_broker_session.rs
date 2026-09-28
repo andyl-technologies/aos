@@ -301,6 +301,30 @@ impl DormantStorageApplyCompositionV1 {
         )
     }
 
+    /// Inspects V1 or delivers a durably accepted V2 original native root.
+    ///
+    /// # Errors
+    ///
+    /// Rejects retired activation, Provider identity, or protected state requiring reopen.
+    pub fn serve_zfs_hold_request_once(
+        &mut self,
+        listener: &mut RecordSubjectListener,
+        verifier: &crate::peer::ProviderLiveExportPeerVerifier,
+        authority_directory: &Path,
+        key: Option<&crate::storage_zfs_hold_key::StorageZfsHoldKeyV1>,
+    ) -> Result<
+        crate::zfs_hold_transport::StorageZfsHoldTransportOutcomeV1,
+        crate::service::StorageServiceError,
+    > {
+        crate::zfs_hold_transport::serve_zfs_hold_request_once(
+            listener,
+            &mut self.runtime,
+            verifier,
+            authority_directory,
+            key,
+        )
+    }
+
     /// Returns the retained runtime for explicit recovery coordination.
     #[must_use]
     pub const fn runtime(&self) -> &StorageBrokerRuntime {

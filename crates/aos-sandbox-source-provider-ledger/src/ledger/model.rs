@@ -22,6 +22,8 @@ pub enum RecordKind {
     Acquisition = 5,
     Release = 6,
     SessionHistory = 7,
+    /// Retains the exact native acceptance across challenge and Acquire commits.
+    NativeCompletion = 8,
 }
 
 impl RecordKind {
@@ -39,6 +41,7 @@ impl RecordKind {
             5 => Ok(Self::Acquisition),
             6 => Ok(Self::Release),
             7 => Ok(Self::SessionHistory),
+            8 => Ok(Self::NativeCompletion),
             _ => Err(super::LedgerFormatErrorV1::Corrupt("unknown record kind")),
         }
     }
@@ -53,6 +56,7 @@ pub enum DecodedRecordV1 {
     Attempt(AttemptRecordV1),
     Acquisition(AcquisitionRecordV1),
     Release(ReleaseRecordV1),
+    NativeCompletion(super::native_completion::NativeAcquireCompletionRecordV2),
 }
 
 /// Controls whether the provider can admit new acquisitions.
@@ -473,6 +477,9 @@ pub struct RecoveredProviderLedgerV1 {
     pub attempts: BTreeMap<AttemptKeyV1, AttemptRecordV1>,
     pub acquisitions: BTreeMap<AcquisitionKeyV1, AcquisitionRecordV1>,
     pub releases: BTreeMap<ReleaseKeyV1, ReleaseRecordV1>,
+    /// Retains native challenge-to-Active recovery bindings by acquisition.
+    pub native_completions:
+        BTreeMap<ObjectDigest, super::native_completion::NativeAcquireCompletionRecordV2>,
     pub recovery_work: Vec<ProviderRecoveryWorkV1>,
 }
 

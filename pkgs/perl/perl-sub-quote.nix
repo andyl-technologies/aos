@@ -1,12 +1,13 @@
 ##! perl-sub-quote — Efficient string-generated Perl subroutines
 {
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
 }: let
   version = "2.006008";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     pname = "perl-sub-quote";
     inherit version;
     src = fetchurl {

@@ -11,6 +11,7 @@ pub mod completion;
 pub mod evidence;
 pub mod format;
 pub mod model;
+pub mod native_completion;
 mod primitives;
 pub mod reducer;
 pub mod reopen;

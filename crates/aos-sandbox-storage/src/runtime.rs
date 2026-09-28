@@ -14,7 +14,9 @@
 //! Repair worker admission closes before the final pin/ZFS and guest-root
 //! cgroup scans; it does not itself authorize a Repair commit.
 
+mod native_acquire;
 mod repair_worker_drain;
+pub(crate) use native_acquire::{StorageNativeDeliveryOutcomeV2, validate_native_request_clock};
 
 use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
@@ -43,10 +45,7 @@ use aos_sandbox_protocol::{
     MAXIMUM_RESPONSE_BYTES, PeerCredentials, PeerPolicy, ValidatedStorageWorkspace,
     decode_storage_resource_inventory_response,
 };
-use aos_sandbox_source_provider_protocol::{
-    StorageLiveExportSourceV1, StorageZfsHoldHeadV1, StorageZfsHoldReceiptErrorV1,
-    StorageZfsHoldSignerV1, ZfsHeldSnapshotProofV1,
-};
+use aos_sandbox_source_provider_protocol::{StorageLiveExportSourceV1, ZfsHeldSnapshotProofV1};
 use buffa::Message as _;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use sha2::{Digest as _, Sha256};
@@ -67,6 +66,7 @@ use crate::helper::{
     StorageMutationHelper, SystemdZfsProcessBackend, ZfsHelperOutcome, ZfsProcessBackend,
 };
 use crate::live_export_origin::StorageLiveExportOriginV1;
+use crate::native_issuance::StorageNativeIssuanceLedgerV1;
 use crate::observation_protocol::{
     WorkspaceCatalogObservationBindingsV1, WorkspaceCatalogObservationExpectationV1,
     WorkspaceCatalogObservationRequestV1, encode_request,
@@ -81,6 +81,7 @@ use crate::process::{
     HeldSnapshotPhysicalObservationV1, HeldSnapshotWorkerBindingV1, open_cgroup_root,
 };
 use crate::resolver::protected_catalog::ProtectedStorageResolverPolicyDirectoryV1;
+use crate::resolver::protected_catalog::StorageResolverPolicyCatalogBindingV1;
 use crate::root_policy::PortableRootAttributesV1;
 use crate::snapshot_metadata::CheckedSnapshotMetadataRecordV1;
 use crate::workspace_catalog::{
@@ -111,8 +112,6 @@ const GUEST_ROOT_PUBLISHER_SOCKET: &str = "/run/aos/sandbox-guest-root-publisher
 const STARTUP_CATALOG_OBSERVATION_NANOSECONDS: u64 = 10_000_000_000;
 const STARTUP_CATALOG_WORKER_NANOSECONDS: u64 = 9_000_000_000;
 const KERNEL_CLOCK_PROVENANCE: [u8; 16] = *b"aos-kernel-clock";
-const ZFS_HOLD_RECEIPT_PHYSICAL_DOMAIN: &[u8] =
-    b"aos.sandbox.storage.zfs-hold.receipt-physical.v1\0";
 
 /// Rejects a retained Repair hold before startup observation can dispatch.
 ///
@@ -269,6 +268,8 @@ pub(crate) struct StorageHeldSnapshotReadbackV1 {
     pub(crate) cut: StorageHeldSnapshotCatalogCutV1,
     /// The protected-policy-constrained pool GUID observed on both sides of the hold readback.
     pub(crate) pool_guid: u64,
+    /// The exact complete protected policy publication bracketing this sample.
+    pub(crate) policy_head: StorageResolverPolicyCatalogBindingV1,
     /// The digest of exact worker request, ZFS output, and both pool rows.
     pub(crate) physical_observation_digest: ObjectDigest,
     /// Exact physical portable bytes measured in the confined reader.
@@ -277,56 +278,73 @@ pub(crate) struct StorageHeldSnapshotReadbackV1 {
     pub(crate) post_measurement_observation_digest: ObjectDigest,
 }
 
-impl StorageHeldSnapshotReadbackV1 {
-    /// Derives a nonauthorizing receipt head from the unchanged Storage cut.
-    ///
-    /// The physical commitment covers both ZFS hold observations and the
-    /// confined reader's exact measured mount and tree. It is not a signed
-    /// SourceRoot: the reader has already detached its mount and returned no FD.
-    pub(crate) fn receipt_head(
-        &self,
-        signer: StorageZfsHoldSignerV1,
-    ) -> Result<StorageZfsHoldHeadV1, StorageZfsHoldReceiptErrorV1> {
-        let (_, authority_generation, authority_digest) = signer.authority();
-        StorageZfsHoldHeadV1::new(
-            self.cut.catalog.generation(),
-            self.cut.catalog.digest(),
-            authority_generation,
-            authority_digest,
-            self.cut.authority_sequence,
-            self.cut.materialized_state_digest,
-            held_snapshot_receipt_physical_digest(
-                self.physical_observation_digest,
-                self.post_measurement_observation_digest,
-                &self.measured_tree,
-            ),
-        )
-    }
+/// Pins the original measured detached mount for readback and live Storage escrow.
+pub(crate) struct StorageHeldSnapshotReadbackWithMountV1 {
+    pub(crate) readback: StorageHeldSnapshotReadbackV1,
+    mount: OwnedFd,
+    #[cfg(test)]
+    synthetic_fixture: Option<[u8; 16]>,
 }
 
-fn held_snapshot_receipt_physical_digest(
-    before: ObjectDigest,
-    after: ObjectDigest,
-    measured: &crate::process::HeldSnapshotReaderObservationV1,
-) -> ObjectDigest {
-    ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(ZFS_HOLD_RECEIPT_PHYSICAL_DOMAIN)
-            .chain_update(before.as_bytes())
-            .chain_update(after.as_bytes())
-            .chain_update(measured.content_digest.as_bytes())
-            .chain_update(measured.tree_digest.as_bytes())
-            .chain_update(measured.tree_size.to_be_bytes())
-            .chain_update(measured.mount_id.to_be_bytes())
-            .chain_update(measured.root_device.to_be_bytes())
-            .chain_update(measured.root_inode.to_be_bytes())
-            .chain_update(measured.nodes.to_be_bytes())
-            .chain_update(measured.file_bytes.to_be_bytes())
-            .chain_update(measured.mounted_snapshot_guid.to_be_bytes())
-            .chain_update(measured.identity.identity_tree_digest.as_bytes())
-            .finalize()
-            .into(),
-    )
+impl StorageHeldSnapshotReadbackWithMountV1 {
+    /// Rechecks that the retained mount is the exact read-only measured root.
+    pub(crate) fn verify_mount(&self) -> Result<(), StorageRuntimeError> {
+        #[cfg(test)]
+        if self.synthetic_fixture.is_some() {
+            let observed = fstat(self.mount.as_fd()).map_err(|_| StorageRuntimeError::Recovery)?;
+            if observed.st_dev != self.readback.measured_tree.root_device
+                || observed.st_ino != self.readback.measured_tree.root_inode
+                || MountId::from_fd(self.mount.as_fd())
+                    .map_err(|_| StorageRuntimeError::Recovery)?
+                    .get()
+                    != self.readback.measured_tree.mount_id
+            {
+                return Err(StorageRuntimeError::Recovery);
+            }
+            return Ok(());
+        }
+        crate::process::verify_received_mount_fd(
+            self.mount.as_fd(),
+            &self.readback.measured_tree,
+            self.readback.pool_guid,
+        )
+        .map_err(|_| StorageRuntimeError::Recovery)
+    }
+
+    /// Observes this retained FD, rather than reopening or reconstructing its root.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed measured mount identity/flags, non-O_PATH semantics, or invalid boot.
+    pub(crate) fn observe_root(
+        &self,
+    ) -> Result<aos_sandbox_source_provider_protocol::SourceRootObservationV1, StorageRuntimeError>
+    {
+        self.verify_mount()?;
+        let flags = rustix::fs::fcntl_getfl(self.mount.as_fd())
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        if !flags.contains(OFlags::PATH) {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        let stat = fstat(self.mount.as_fd()).map_err(|_| StorageRuntimeError::Recovery)?;
+        let mount_id =
+            MountId::from_fd(self.mount.as_fd()).map_err(|_| StorageRuntimeError::Recovery)?;
+        let boot_id = KernelBootId::current()
+            .map_err(|_| StorageRuntimeError::Recovery)?
+            .into_bytes();
+        #[cfg(test)]
+        let boot_id = self.synthetic_fixture.unwrap_or(boot_id);
+        aos_sandbox_source_provider_protocol::SourceRootObservationV1::new(
+            boot_id,
+            stat.st_dev,
+            stat.st_ino,
+            mount_id.get(),
+            true,
+            true,
+            true,
+        )
+        .map_err(|_| StorageRuntimeError::Recovery)
+    }
 }
 
 fn identity_observation_matches_snapshot_metadata(
@@ -412,6 +430,10 @@ pub struct StorageBrokerRuntime {
     configuration_binding: ObjectDigest,
     broker_instance_id: [u8; 16],
     held_reader_state_directory: Option<PathBuf>,
+    native_issuance: Option<StorageNativeIssuanceLedgerV1>,
+    native_escrow: native_acquire::StorageNativeEscrowV2,
+    #[cfg(test)]
+    native_fixture: Option<native_acquire::SyntheticNativeRuntimeV2>,
     pin_contract: ZfsHelperContract,
     pin_io: Box<dyn WorkspacePinRuntimeIo + Send>,
     helper: StorageMutationHelper<Box<dyn ZfsProcessBackend + Send>>,
@@ -439,6 +461,18 @@ impl StorageBrokerRuntime {
         &mut self,
         selector: StorageHeldSnapshotSelectorV1,
     ) -> Result<StorageHeldSnapshotReadbackV1, StorageRuntimeError> {
+        let (readback, mount) = self.observe_held_snapshot_readback_inner(selector, false)?;
+        if mount.is_some() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        Ok(readback)
+    }
+
+    fn observe_held_snapshot_readback_inner(
+        &mut self,
+        selector: StorageHeldSnapshotSelectorV1,
+        retain_mount: bool,
+    ) -> Result<(StorageHeldSnapshotReadbackV1, Option<OwnedFd>), StorageRuntimeError> {
         let _dispatch = self
             .worker_dispatch
             .enter()
@@ -478,8 +512,9 @@ impl StorageBrokerRuntime {
             return Err(StorageRuntimeError::Recovery);
         }
 
-        // The reader exits with its detached mount before Storage accepts a
-        // second physical hold observation and the final protected journal cut.
+        // The reader must exit before Storage accepts the second hold and
+        // final protected cut. The versioned path keeps only its verified
+        // read-only mount FD alive across those checks.
         let mut reader = crate::process::SystemdHeldSnapshotReaderV1::new(
             crate::process::open_cgroup_root().map_err(|_| StorageRuntimeError::Recovery)?,
             self.held_reader_state_directory
@@ -487,12 +522,27 @@ impl StorageBrokerRuntime {
                 .ok_or(StorageRuntimeError::Recovery)?,
         )
         .map_err(|_| StorageRuntimeError::Recovery)?;
-        let measured_tree = match reader.measure(
-            &initial.snapshot,
-            expected_pool_guid,
-            initial.materialized_state_digest,
-            random_challenge()?,
-        ) {
+        let nonce = random_challenge()?;
+        let measurement = if retain_mount {
+            reader
+                .measure_with_mount(
+                    &initial.snapshot,
+                    expected_pool_guid,
+                    initial.materialized_state_digest,
+                    nonce,
+                )
+                .map(|(measured, mount)| (measured, Some(mount)))
+        } else {
+            reader
+                .measure(
+                    &initial.snapshot,
+                    expected_pool_guid,
+                    initial.materialized_state_digest,
+                    nonce,
+                )
+                .map(|measured| (measured, None))
+        };
+        let (measured_tree, mount) = match measurement {
             Ok(measured) => measured,
             Err(ZfsWorkerError::Quiescence(_)) => {
                 self.readiness = StorageRuntimeReadiness::ReopenRequired;
@@ -542,13 +592,25 @@ impl StorageBrokerRuntime {
         ) {
             return Err(StorageRuntimeError::Recovery);
         }
-        Ok(StorageHeldSnapshotReadbackV1 {
-            cut: final_cut,
-            pool_guid,
-            physical_observation_digest: digest,
-            measured_tree,
-            post_measurement_observation_digest,
-        })
+        if let Some(descriptor) = mount.as_ref() {
+            crate::process::verify_received_mount_fd(
+                descriptor.as_fd(),
+                &measured_tree,
+                expected_pool_guid,
+            )
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        }
+        Ok((
+            StorageHeldSnapshotReadbackV1 {
+                cut: final_cut,
+                pool_guid,
+                policy_head,
+                physical_observation_digest: digest,
+                measured_tree,
+                post_measurement_observation_digest,
+            },
+            mount,
+        ))
     }
 
     /// Checks a native Provider row against Storage's unchanged protected cut and measured bytes.
@@ -575,6 +637,32 @@ impl StorageBrokerRuntime {
             return Err(StorageRuntimeError::Admission(StorageBrokerError::Request));
         }
         Ok(readback)
+    }
+
+    /// Retains one read-only mount while joining a native claim to Storage's final cut.
+    pub(crate) fn observe_native_held_snapshot_claim_with_mount(
+        &mut self,
+        claim: &ZfsHeldSnapshotProofV1,
+    ) -> Result<StorageHeldSnapshotReadbackWithMountV1, StorageRuntimeError> {
+        let selector = StorageHeldSnapshotSelectorV1::from_native_claim(claim)?;
+        let (readback, mount) = self.observe_held_snapshot_readback_inner(selector, true)?;
+        if !readback.cut.matches_native_claim(
+            claim,
+            readback.pool_guid,
+            readback.measured_tree.content_digest,
+            readback.measured_tree.mounted_snapshot_guid,
+        ) {
+            return Err(StorageRuntimeError::Admission(StorageBrokerError::Request));
+        }
+        let mount = mount.ok_or(StorageRuntimeError::Recovery)?;
+        let held = StorageHeldSnapshotReadbackWithMountV1 {
+            readback,
+            mount,
+            #[cfg(test)]
+            synthetic_fixture: None,
+        };
+        held.verify_mount()?;
+        Ok(held)
     }
 
     /// Observes one authenticated, read-only method-41 candidate.
@@ -1106,6 +1194,14 @@ impl StorageBrokerRuntime {
                     .map_err(Into::into)
             },
         )?;
+        // Preserve one lifetime writer order: primary transaction, workspace,
+        // then separate native issuance. Neither acceptance nor ReleaseHold
+        // may observe a separately reopened/unheld consumer-interest snapshot.
+        let mut native_issuance = StorageNativeIssuanceLedgerV1::open_root_owned(state_directory)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
+        native_issuance
+            .validate_active_holds(&coordinator)
+            .map_err(|_| StorageRuntimeError::Recovery)?;
         let broker_instance_id = random_challenge()?;
 
         let (backend, apply_readiness) = match apply_construction {
@@ -1125,6 +1221,10 @@ impl StorageBrokerRuntime {
             configuration_binding,
             broker_instance_id,
             held_reader_state_directory: Some(state_directory.to_path_buf()),
+            native_issuance: Some(native_issuance),
+            native_escrow: native_acquire::StorageNativeEscrowV2::default(),
+            #[cfg(test)]
+            native_fixture: None,
             pin_contract: contract.clone(),
             pin_io: Box::new(pin_io),
             helper: StorageMutationHelper::new(
@@ -1180,6 +1280,9 @@ impl StorageBrokerRuntime {
             configuration_binding,
             broker_instance_id: random_challenge()?,
             held_reader_state_directory: None,
+            native_issuance: None,
+            native_escrow: native_acquire::StorageNativeEscrowV2::default(),
+            native_fixture: None,
             pin_contract,
             pin_io: Box::new(pin_io),
             helper: helper.into_boxed(),
@@ -1225,6 +1328,9 @@ impl StorageBrokerRuntime {
             configuration_binding,
             broker_instance_id: random_challenge()?,
             held_reader_state_directory: None,
+            native_issuance: None,
+            native_escrow: native_acquire::StorageNativeEscrowV2::default(),
+            native_fixture: None,
             pin_contract,
             pin_io,
             helper,
@@ -1319,14 +1425,23 @@ impl StorageBrokerRuntime {
             && self.worker_dispatch.is_open()
     }
 
-    fn operation_permits_apply(&self, operation_id: [u8; 16]) -> Result<bool, StorageRuntimeError> {
+    fn operation_permits_apply(
+        &mut self,
+        operation_id: [u8; 16],
+    ) -> Result<bool, StorageRuntimeError> {
         if self.apply_readiness != StorageApplyReadiness::ProtectedWorkerReady
             || !self.readiness.permits_catalog_methods()
             || !self.worker_dispatch.is_open()
         {
             return Ok(false);
         }
-        let _ = self.coordinator.prepared_catalog_for_apply(operation_id)?;
+        let catalog = self.coordinator.prepared_catalog_for_apply(operation_id)?;
+        if let Some(issuance) = &mut self.native_issuance {
+            issuance
+                .validate_active_holds(&self.coordinator)
+                .and_then(|()| issuance.check_release(catalog.plan()))
+                .map_err(|_| StorageRuntimeError::Recovery)?;
+        }
         Ok(true)
     }
 
@@ -2697,6 +2812,33 @@ impl StorageBrokerRuntime {
             .worker_dispatch
             .enter()
             .map_err(|_| StorageRuntimeError::Recovery)?;
+        if let Some(issuance) = &mut self.native_issuance {
+            issuance
+                .validate_active_holds(&self.coordinator)
+                .map_err(|_| StorageRuntimeError::Recovery)?;
+            // Recovery must not publish a pending ReleaseHold around an active
+            // interest, even when observation reports that the effect already
+            // happened. Cleanup/recovery remains closed until both owners can
+            // settle the exact original acceptance; journal replay is no bypass.
+            for entry in self
+                .coordinator
+                .recovery_entries()
+                .map_err(|_| StorageRuntimeError::Recovery)?
+            {
+                if !matches!(
+                    entry.phase(),
+                    DurableStoragePhase::Committed | DurableStoragePhase::Aborted
+                ) {
+                    let catalog = self
+                        .coordinator
+                        .recovery_catalog_for_native_interest(entry)
+                        .map_err(|_| StorageRuntimeError::Recovery)?;
+                    issuance
+                        .check_release(catalog.plan())
+                        .map_err(|_| StorageRuntimeError::Recovery)?;
+                }
+            }
+        }
         let mut pending = reconcile_transaction_recovery(&mut self.coordinator, &mut self.helper)?;
         for dispatch in self
             .coordinator
@@ -2871,24 +3013,45 @@ fn finish_live_transaction_mutation<T, E>(
 
 /// Samples the production kernel wall and boot clocks with the current boot identity.
 ///
+/// BOOTTIME precedes the integer wall observation so sampling delays cannot
+/// extend an expiry derived from the pair. Both reads share one boot identity.
+/// This adapter does not alter the paired-clock continuity policy.
+///
 /// # Errors
 ///
 /// Returns [`StorageRuntimeError::Recovery`] when the kernel boot identity or
-/// either clock cannot form a valid paired sample.
+/// either clock cannot form a valid paired sample, including a changed boot.
 pub(crate) fn trusted_paired_clock_sample() -> Result<RawPairedClockSample, StorageRuntimeError> {
-    let wall = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
+    paired_clock_sample_from_kernel_readers(
+        || {
+            KernelBootId::current()
+                .map(KernelBootId::into_bytes)
+                .map_err(|_| StorageRuntimeError::Recovery)
+        },
+        || boottime_now_nanoseconds().map_err(|_| StorageRuntimeError::Recovery),
+        || rustix::time::clock_gettime(rustix::time::ClockId::Realtime).tv_sec,
+    )
+}
+
+// Kept private so only the fixed kernel adapter can provide production samples;
+// injected readers exercise its exact ordering and failure paths in unit tests.
+fn paired_clock_sample_from_kernel_readers(
+    mut boot_identity: impl FnMut() -> Result<[u8; 16], StorageRuntimeError>,
+    boottime: impl FnOnce() -> Result<u64, StorageRuntimeError>,
+    wall_seconds: impl FnOnce() -> i64,
+) -> Result<RawPairedClockSample, StorageRuntimeError> {
+    let boot_before = boot_identity()?;
+    let boottime_nanoseconds = boottime()?;
+    let wall_seconds = wall_seconds();
+    let boot_after = boot_identity()?;
+    if boot_before != boot_after {
+        return Err(StorageRuntimeError::Recovery);
+    }
+
     let provenance = RawClockProvenance::new_untrusted(KERNEL_CLOCK_PROVENANCE)
         .map_err(|_| StorageRuntimeError::Recovery)?;
-    let boot_id = KernelBootId::current()
-        .map_err(|_| StorageRuntimeError::Recovery)?
-        .into_bytes();
-    RawPairedClockSample::new_untrusted(
-        provenance,
-        boot_id,
-        wall.tv_sec,
-        boottime_now_nanoseconds().map_err(|_| StorageRuntimeError::Recovery)?,
-    )
-    .map_err(|_| StorageRuntimeError::Recovery)
+    RawPairedClockSample::new_untrusted(provenance, boot_before, wall_seconds, boottime_nanoseconds)
+        .map_err(|_| StorageRuntimeError::Recovery)
 }
 
 fn finish_reopen_required_reconciliation(
@@ -3436,58 +3599,59 @@ mod tests {
     };
 
     #[test]
-    fn receipt_physical_commitment_binds_both_holds_and_confined_mount_identity() {
-        let before = ObjectDigest::from_bytes([1; 32]);
-        let after = ObjectDigest::from_bytes([2; 32]);
-        let measured = crate::process::HeldSnapshotReaderObservationV1 {
-            content_digest: ObjectDigest::from_bytes([3; 32]),
-            tree_digest: ObjectDigest::from_bytes([4; 32]),
-            tree_size: 5,
-            mount_id: 6,
-            root_device: 7,
-            root_inode: 8,
-            nodes: 9,
-            file_bytes: 10,
-            mounted_snapshot_guid: 11,
-            identity: HeldSnapshotIdentityObservationV1 {
-                root_attributes: PortableRootAttributesV1::new(0, 0, 0o755).unwrap(),
-                maximum_portable_uid: 0,
-                maximum_portable_gid: 0,
-                distinct_inode_count: 1,
-                directory_entry_count: 0,
-                identity_tree_digest: ObjectDigest::from_bytes([12; 32]),
+    fn kernel_paired_clock_sampling_brackets_boot_and_reads_boot_time_before_wall() {
+        let calls = RefCell::new(Vec::new());
+        let sample = paired_clock_sample_from_kernel_readers(
+            || {
+                calls.borrow_mut().push("boot identity");
+                Ok([1; 16])
             },
-        };
-        let expected = held_snapshot_receipt_physical_digest(before, after, &measured);
+            || {
+                calls.borrow_mut().push("BOOTTIME");
+                Ok(123)
+            },
+            || {
+                calls.borrow_mut().push("REALTIME");
+                100
+            },
+        )
+        .unwrap();
 
-        assert_ne!(
-            expected,
-            held_snapshot_receipt_physical_digest(
-                ObjectDigest::from_bytes([13; 32]),
-                after,
-                &measured
-            )
+        assert_eq!(
+            *calls.borrow(),
+            ["boot identity", "BOOTTIME", "REALTIME", "boot identity"]
         );
-        assert_ne!(
-            expected,
-            held_snapshot_receipt_physical_digest(
-                before,
-                ObjectDigest::from_bytes([14; 32]),
-                &measured
-            )
+        assert_eq!(sample.host_boot_id(), [1; 16]);
+        assert_eq!(sample.boottime_nanoseconds(), 123);
+        assert_eq!(sample.wall_seconds(), 100);
+    }
+
+    #[test]
+    fn kernel_paired_clock_sampling_rejects_changed_boot_and_read_errors() {
+        let boot_reads = Cell::new(0);
+        let changed_boot = paired_clock_sample_from_kernel_readers(
+            || {
+                boot_reads.set(boot_reads.get() + 1);
+                Ok([boot_reads.get(); 16])
+            },
+            || Ok(123),
+            || 100,
         );
-        let mut different_mount = measured;
-        different_mount.mount_id += 1;
-        assert_ne!(
-            expected,
-            held_snapshot_receipt_physical_digest(before, after, &different_mount)
+        assert!(matches!(changed_boot, Err(StorageRuntimeError::Recovery)));
+
+        let failed_boot = paired_clock_sample_from_kernel_readers(
+            || Err(StorageRuntimeError::Recovery),
+            || panic!("failed boot read must stop before either clock"),
+            || panic!("failed boot read must stop before either clock"),
         );
-        let mut different_tree = measured;
-        different_tree.content_digest = ObjectDigest::from_bytes([15; 32]);
-        assert_ne!(
-            expected,
-            held_snapshot_receipt_physical_digest(before, after, &different_tree)
+        assert!(matches!(failed_boot, Err(StorageRuntimeError::Recovery)));
+
+        let failed_clock = paired_clock_sample_from_kernel_readers(
+            || Ok([1; 16]),
+            || Err(StorageRuntimeError::Recovery),
+            || panic!("failed BOOTTIME read must stop before REALTIME"),
         );
+        assert!(matches!(failed_clock, Err(StorageRuntimeError::Recovery)));
     }
 
     #[test]

@@ -77,6 +77,7 @@ fn run() -> Result<(), StorageServiceError> {
         control_listener,
         mut export_listener,
         mut live_export_listener,
+        mut zfs_hold_listener,
         mut operator_listener,
         mut existing_output_listener,
     ) = take_systemd_listeners()?;
@@ -146,7 +147,7 @@ fn run() -> Result<(), StorageServiceError> {
             return Err(StorageRuntimeError::Recovery.into());
         }
 
-        let mut ready = Vec::with_capacity(5);
+        let mut ready = Vec::with_capacity(6);
         if let Some(session) = active_session.as_ref() {
             let session_fd = session
                 .as_fd()
@@ -167,6 +168,14 @@ fn run() -> Result<(), StorageServiceError> {
             rustix::event::PollFlags::IN,
         ));
         let live_export_index = live_export_listener.as_ref().map(|listener| {
+            let index = ready.len();
+            ready.push(rustix::event::PollFd::from_borrowed_fd(
+                listener.as_fd(),
+                rustix::event::PollFlags::IN,
+            ));
+            index
+        });
+        let zfs_hold_index = zfs_hold_listener.as_ref().map(|listener| {
             let index = ready.len();
             ready.push(rustix::event::PollFd::from_borrowed_fd(
                 listener.as_fd(),
@@ -203,6 +212,9 @@ fn run() -> Result<(), StorageServiceError> {
         let live_export_ready = live_export_index
             .and_then(|index| ready.get(index))
             .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
+        let zfs_hold_ready = zfs_hold_index
+            .and_then(|index| ready.get(index))
+            .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
         let operator_ready = operator_index
             .and_then(|index| ready.get(index))
             .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
@@ -220,6 +232,7 @@ fn run() -> Result<(), StorageServiceError> {
             && !broker_disconnected
             && !export_ready
             && !live_export_ready
+            && !zfs_hold_ready
             && !operator_ready
             && !existing_output_ready
         {
@@ -276,6 +289,24 @@ fn run() -> Result<(), StorageServiceError> {
                     &verifier,
                     &arguments.authority_directory,
                     Path::new(STATE_ROOT),
+                )?;
+            } else {
+                listener.validate_current()?;
+                let _ = listener.accept();
+            }
+        }
+        if zfs_hold_ready {
+            let listener = zfs_hold_listener.as_mut().ok_or_else(|| {
+                StorageServiceError::Activation("ZFS hold listener disappeared".to_owned())
+            })?;
+            let provider_cgroup = open_cgroup_root()?.resolve(Path::new(SOURCE_PROVIDER_CGROUP));
+            if let Ok(provider_cgroup) = provider_cgroup {
+                let verifier = ProviderLiveExportPeerVerifier::new(provider_cgroup)?;
+                storage.serve_zfs_hold_request_once(
+                    listener,
+                    &verifier,
+                    &arguments.authority_directory,
+                    zfs_hold_key.as_ref(),
                 )?;
             } else {
                 listener.validate_current()?;

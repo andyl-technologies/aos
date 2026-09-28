@@ -36,7 +36,8 @@
   brokerSessionConfiguration = brokerSession.configure cfg.credentials brokerSessionEndpoints;
   minimumIdentityRange = 65536;
   operatorRecoveryConfigured =
-    cfg.operatorRecoveryControllerPublicKey != null
+    cfg.operatorRecoveryControllerPublicKey
+    != null
     && cfg.operatorRecoveryStorageOwnerKey != null;
 in {
   options.aos.sandbox.storageBroker = {
@@ -162,13 +163,15 @@ in {
         }
         {
           assertion =
-            cfg.executionOutputKey == null
+            cfg.executionOutputKey
+            == null
             || (cfg.executionOutputKey != "/nix/store" && !lib.hasPrefix "/nix/store/" cfg.executionOutputKey);
           message = "aos.sandbox.storageBroker.executionOutputKey must be provisioned outside the Nix store";
         }
         {
           assertion =
-            cfg.zfsHoldSigningKey == null
+            cfg.zfsHoldSigningKey
+            == null
             || (cfg.zfsHoldSigningKey != "/nix/store" && !lib.hasPrefix "/nix/store/" cfg.zfsHoldSigningKey);
           message = "aos.sandbox.storageBroker.zfsHoldSigningKey must be provisioned outside the Nix store";
         }
@@ -278,6 +281,30 @@ in {
       };
     };
 
+    # This distinct Provider-only endpoint can inspect a native hold and
+    # detached mount, but returns only descriptor-free Unavailable.
+    systemd.sockets.aos-storaged-zfs-hold-request = {
+      description = "AOS Provider-to-Storage closed ZFS hold request socket";
+      wantedBy = lib.optional config.aos.sandbox.sourceProvider.enable "sockets.target";
+      requires = ["systemd-tmpfiles-setup.service"];
+      after = ["systemd-tmpfiles-setup.service"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/sandbox-storage/zfs-hold-request.sock";
+        FileDescriptorName = "aos-storaged-zfs-hold-request";
+        Service = "aos-storaged.service";
+        Accept = false;
+        PassCredentials = true;
+        PassPIDFD = true;
+        SocketUser = "root";
+        SocketGroup = "root";
+        SocketMode = "0600";
+        DirectoryMode = "0710";
+        ReceiveBuffer = "4M";
+        SendBuffer = "4M";
+        RemoveOnStop = true;
+      };
+    };
+
     systemd.sockets.aos-storaged-operator-repair = {
       description = "AOS controller-signed operator Storage Repair socket";
       wantedBy = lib.optional operatorRecoveryConfigured "sockets.target";
@@ -302,29 +329,33 @@ in {
 
     systemd.services.aos-storaged = {
       description = "AOS authenticated Storage Prepare, repair, and inventory broker";
-      requires = [
-        "aos-storaged.socket"
-        "aos-storaged-root-export.socket"
-        "aos-sandbox-zfs-worker.socket"
-        "aos-sandbox-held-snapshot-reader.socket"
-        "aos-sandbox-workspace-pin-worker.socket"
-        "aos-sandbox-workspace-pin-observer.socket"
-        "aos-sandbox-guest-root-publisher.socket"
-      ]
-      ++ lib.optional config.aos.sandbox.sourceProvider.enable "aos-storaged-live-export-request.socket"
-      ++ lib.optional (cfg.executionOutputKey != null) "aos-storaged-existing-output.socket"
-      ++ lib.optional operatorRecoveryConfigured "aos-storaged-operator-repair.socket";
-      after = [
-        "aos-storaged.socket"
-        "aos-storaged-root-export.socket"
-        "aos-sandbox-guest-root-publisher.socket"
-        "aos-sandbox-zfs-ready.service"
-        "aos-sandbox-held-snapshot-reader.socket"
-        "local-fs.target"
-      ]
-      ++ lib.optional config.aos.sandbox.sourceProvider.enable "aos-storaged-live-export-request.socket"
-      ++ lib.optional (cfg.executionOutputKey != null) "aos-storaged-existing-output.socket"
-      ++ lib.optional operatorRecoveryConfigured "aos-storaged-operator-repair.socket";
+      requires =
+        [
+          "aos-storaged.socket"
+          "aos-storaged-root-export.socket"
+          "aos-sandbox-zfs-worker.socket"
+          "aos-sandbox-held-snapshot-reader.socket"
+          "aos-sandbox-workspace-pin-worker.socket"
+          "aos-sandbox-workspace-pin-observer.socket"
+          "aos-sandbox-guest-root-publisher.socket"
+        ]
+        ++ lib.optional config.aos.sandbox.sourceProvider.enable "aos-storaged-live-export-request.socket"
+        ++ lib.optional config.aos.sandbox.sourceProvider.enable "aos-storaged-zfs-hold-request.socket"
+        ++ lib.optional (cfg.executionOutputKey != null) "aos-storaged-existing-output.socket"
+        ++ lib.optional operatorRecoveryConfigured "aos-storaged-operator-repair.socket";
+      after =
+        [
+          "aos-storaged.socket"
+          "aos-storaged-root-export.socket"
+          "aos-sandbox-guest-root-publisher.socket"
+          "aos-sandbox-zfs-ready.service"
+          "aos-sandbox-held-snapshot-reader.socket"
+          "local-fs.target"
+        ]
+        ++ lib.optional config.aos.sandbox.sourceProvider.enable "aos-storaged-live-export-request.socket"
+        ++ lib.optional config.aos.sandbox.sourceProvider.enable "aos-storaged-zfs-hold-request.socket"
+        ++ lib.optional (cfg.executionOutputKey != null) "aos-storaged-existing-output.socket"
+        ++ lib.optional operatorRecoveryConfigured "aos-storaged-operator-repair.socket";
       unitConfig = {
         RequiresMountsFor =
           [
@@ -355,8 +386,16 @@ in {
             else cfg.resolverPolicyDirectory
           )} \
             ${cfg.guestRootTemplate} \
-            ${if cfg.zfsHoldSigningKey == null then "-" else "zfs-hold-key-v1"} \
-            ${lib.escapeShellArg (if cfg.executionOutputKey == null then "-" else cfg.executionOutputKey)}
+            ${
+            if cfg.zfsHoldSigningKey == null
+            then "-"
+            else "zfs-hold-key-v1"
+          } \
+            ${lib.escapeShellArg (
+            if cfg.executionOutputKey == null
+            then "-"
+            else cfg.executionOutputKey
+          )}
         '';
         LoadCredential =
           brokerSessionConfiguration.loadCredentials

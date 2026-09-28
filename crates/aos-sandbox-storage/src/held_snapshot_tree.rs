@@ -180,6 +180,23 @@ pub(crate) fn measure_bound_detached_snapshot(
     expected_pool_guid: u64,
     expected_snapshot_guid: u64,
 ) -> Result<MeasuredHeldSnapshotTreeV1, HeldSnapshotTreeErrorV1> {
+    let (measured, _mount) = measure_bound_detached_snapshot_with_mount(
+        snapshot_name,
+        expected_pool_guid,
+        expected_snapshot_guid,
+    )?;
+    Ok(measured)
+}
+
+/// Keeps the exact GUID-verified detached mount alive with its measurement.
+///
+/// The caller must transfer or drop the mount before its confined reader exits.
+/// No receipt or authority is issued by retaining this descriptor.
+pub(crate) fn measure_bound_detached_snapshot_with_mount(
+    snapshot_name: &str,
+    expected_pool_guid: u64,
+    expected_snapshot_guid: u64,
+) -> Result<(MeasuredHeldSnapshotTreeV1, DetachedMount), HeldSnapshotTreeErrorV1> {
     if expected_pool_guid == 0 || expected_snapshot_guid == 0 {
         return Err(HeldSnapshotTreeErrorV1::Unsupported);
     }
@@ -211,10 +228,10 @@ pub(crate) fn measure_bound_detached_snapshot(
         expected_pool_guid,
         expected_snapshot_guid,
     )?;
-    Ok(measured)
+    Ok((measured, mount))
 }
 
-fn verify_mounted_snapshot_uuid(
+pub(crate) fn verify_mounted_snapshot_uuid(
     uuid: [u8; 16],
     expected_pool_guid: u64,
     expected_snapshot_guid: u64,
