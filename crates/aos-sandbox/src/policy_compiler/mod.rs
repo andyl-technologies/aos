@@ -20,7 +20,17 @@ mod controller_effect_ack_readback_v8;
 mod controller_hold_pin;
 mod controller_hold_readback;
 mod controller_project_admission_readback;
+mod controller_project_dispatch_readback;
 mod controller_project_terminal_readback;
+
+pub use controller_project_dispatch_readback::{
+    CONTROLLER_PROJECT_DISPATCH_READBACK_BYTES_V1,
+    sign_fixed_controller_project_dispatch_readback_v1,
+};
+#[cfg(test)]
+pub(crate) use controller_project_dispatch_readback::{
+    sign_synthetic_controller_project_dispatch_v1, verify_controller_project_dispatch_readback_v1,
+};
 
 pub use controller_project_terminal_readback::{
     CONTROLLER_PROJECT_TERMINAL_READBACK_BYTES_V1,
@@ -44,7 +54,8 @@ pub(crate) use project_admission_root::test_signed_project_heads_for_history_v1;
 pub(crate) use project_admission_root::test_source_project_admission_outcome_v1;
 pub(crate) use project_admission_root::{
     ROOT_PROJECT_ADMISSION_INTENT_BYTES_V2, ROOT_PROJECT_HISTORY_FLOOR_BYTES_V1,
-    validate_root_project_capacity_settlement_v1, validate_root_project_capacity_transfer_v1,
+    ROOT_PROJECT_NEGATIVE_INTENT_BYTES_V1, validate_root_project_capacity_settlement_v1,
+    validate_root_project_capacity_transfer_v1,
 };
 mod project_source_v2;
 mod protected_journal;
@@ -206,8 +217,9 @@ pub use project_admission_root::{
     admit_fixed_root_project_source_from_owner_proofs_v1, cancel_fixed_root_project_reservation_v1,
     fixed_root_project_admission_recovery_required_v1,
     fixed_root_project_history_readback_available_v1,
-    prepare_fixed_root_project_admission_intent_v1, project_admission_client_nonce_v1,
-    recover_fixed_root_current_project_admission_stage_v1,
+    fixed_root_project_negative_recovery_available_v1,
+    prepare_fixed_root_project_admission_intent_v1, prepare_fixed_root_project_negative_intent_v1,
+    project_admission_client_nonce_v1, recover_fixed_root_current_project_admission_stage_v1,
     recover_fixed_root_project_admission_intent_v1,
     recover_fixed_root_project_admission_outcome_v1, recover_fixed_root_project_admission_stage_v1,
     recover_fixed_root_project_history_floor_v1,
@@ -269,20 +281,22 @@ pub use root_project_admission_proof::{
     ROOT_PROJECT_ADMISSION_CURRENT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_INTENT_QUERY_MAGIC,
     ROOT_PROJECT_ADMISSION_INTENT_REPLAY_MAGIC, ROOT_PROJECT_ADMISSION_OUTCOME_QUERY_MAGIC,
     ROOT_PROJECT_ADMISSION_STAGE_QUERY_MAGIC, ROOT_PROJECT_HISTORY_FLOOR_QUERY_MAGIC,
-    ROOT_PROJECT_HISTORY_RETIRE_MAGIC, ROOT_PROJECT_RESERVATION_CANCEL_MAGIC,
-    ROOT_PROJECT_RESERVATION_CANCEL_QUERY_MAGIC, RootProjectAdmissionOutcomeProofV1,
-    RootProjectHistoryFloorProofV1, RootProjectReservationCancellationProofV1,
-    abort_fixed_root_project_admission_over_socket_v1,
+    ROOT_PROJECT_HISTORY_RETIRE_MAGIC, ROOT_PROJECT_NEGATIVE_INTENT_QUERY_MAGIC,
+    ROOT_PROJECT_RESERVATION_CANCEL_MAGIC, ROOT_PROJECT_RESERVATION_CANCEL_QUERY_MAGIC,
+    RootProjectAdmissionOutcomeProofV1, RootProjectHistoryFloorProofV1,
+    RootProjectReservationCancellationProofV1, abort_fixed_root_project_admission_over_socket_v1,
     cancel_fixed_root_project_reservation_over_socket_v1,
     encode_root_current_project_admission_stage_reply_v1,
     encode_root_project_admission_outcome_reply_v1, encode_root_project_admission_stage_reply_v1,
     encode_root_project_admission_terminal_reply_v1, encode_root_project_history_floor_reply_v1,
     encode_root_project_intent_replay_reply_v1, encode_root_project_intent_reply_v1,
-    encode_root_project_reservation_cancel_reply_v1,
+    encode_root_project_negative_intent_reply_v1, encode_root_project_reservation_cancel_reply_v1,
     prepare_fixed_root_project_intent_over_socket_v1,
+    prepare_fixed_root_project_negative_intent_over_socket_v1,
     query_fixed_root_current_project_admission_stage_v1,
     query_fixed_root_project_admission_outcome_v1, query_fixed_root_project_history_floor_v1,
-    query_fixed_root_project_intent_v1, query_fixed_root_project_reservation_cancellation_v1,
+    query_fixed_root_project_intent_v1, query_fixed_root_project_negative_intent_v1,
+    query_fixed_root_project_reservation_cancellation_v1,
     retire_fixed_root_project_history_over_socket_v1,
     stage_fixed_root_project_admission_over_socket_v1,
     submit_fixed_root_project_admission_over_socket_v1,
@@ -312,8 +326,8 @@ pub use source_project_admission_readback::{
     SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1,
     SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1, SourceProjectAdmissionChallengeErrorV1,
     VerifiedSourceProjectTerminalReadbackV1, acknowledge_source_project_terminal_retirement_v1,
-    preflight_source_project_admission_v1, read_source_project_admission_status_v1,
-    read_source_project_reservation_status_v1,
+    preflight_source_project_admission_v1, preflight_source_project_negative_recovery_v1,
+    read_source_project_admission_status_v1, read_source_project_reservation_status_v1,
     record_current_source_project_admission_challenge_v1,
     record_source_project_abort_only_challenge_v1,
     require_current_source_project_admission_challenge_v1, reserve_source_project_admission_v1,

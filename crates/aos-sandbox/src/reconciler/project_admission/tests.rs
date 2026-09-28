@@ -237,6 +237,76 @@ impl Fixture {
 }
 
 #[test]
+fn historical_dispatch_claims_rejoin_actual_original_effect_without_current_publisher() {
+    use crate::policy_compiler::{
+        sign_synthetic_controller_project_dispatch_v1,
+        verify_controller_project_dispatch_readback_v1,
+    };
+    let mut fixture = Fixture::prepared();
+    assert!(dispatch_readback_from_original_graph(&fixture.journal, fixture.operation).is_err());
+    let effect = fixture.effect();
+    let metadata = effect.project_admission.clone().unwrap();
+    transfer_metadata(
+        &mut fixture.journal,
+        fixture.operation,
+        effect,
+        ProjectAdmissionMetadata {
+            phase: ProjectAdmissionPhase::DispatchAuthorized,
+            ..metadata.clone()
+        },
+    )
+    .unwrap();
+    fixture.reopen();
+    let claims =
+        dispatch_readback_from_original_graph(&fixture.journal, fixture.operation).unwrap();
+    assert_eq!(claims.operation, fixture.operation);
+    assert_eq!(claims.sandbox, metadata.sandbox);
+    assert_eq!(claims.reservation, metadata.reservation);
+    assert_eq!(claims.admission_revision, metadata.admission_revision);
+    assert_eq!(claims.source_commitment, metadata.source_commitment);
+    let key = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
+    let pin = crate::policy_compiler::PinnedControllerHoldSignerV1::decode(
+        &crate::policy_compiler::encode_controller_hold_signer_credential_v1(
+            4,
+            &key.verifying_key(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let packet = sign_synthetic_controller_project_dispatch_v1(
+        &claims,
+        811,
+        fixture.journal.snapshot_sequence(),
+        4,
+        &key,
+    )
+    .unwrap();
+    let verified = verify_controller_project_dispatch_readback_v1(&packet, &pin, 811).unwrap();
+    assert_eq!(verified.metadata, claims.metadata);
+    assert_eq!(verified.reservation, metadata.reservation);
+    let mut terminal_domain = packet;
+    terminal_domain[..8].copy_from_slice(b"AOSCTP04");
+    assert!(verify_controller_project_dispatch_readback_v1(&terminal_domain, &pin, 811).is_err());
+    assert!(
+        crate::policy_compiler::sign_fixed_controller_project_dispatch_readback_v1(
+            &fixture.journal,
+            fixture.operation,
+            4,
+            &key
+        )
+        .is_err(),
+        "temporary owner fixture cannot stand in for installed fixed Controller custody"
+    );
+    assert!(
+        fixture
+            .source
+            .source_project_admission_reservation_v1()
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn original_graph_and_dispatch_suffix_survive_cold_replay_without_source_row() {
     let mut fixture = Fixture::prepared();
     let effect = fixture.effect();

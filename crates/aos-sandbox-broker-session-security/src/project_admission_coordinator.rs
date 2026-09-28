@@ -23,17 +23,21 @@ use aos_sandbox::policy_compiler::{
     abort_fixed_root_project_admission_over_socket_v1,
     acknowledge_source_project_terminal_retirement_v1,
     cancel_fixed_root_project_reservation_over_socket_v1,
-    prepare_fixed_root_project_intent_over_socket_v1, project_admission_client_nonce_v1,
+    preflight_source_project_negative_recovery_v1,
+    prepare_fixed_root_project_intent_over_socket_v1,
+    prepare_fixed_root_project_negative_intent_over_socket_v1, project_admission_client_nonce_v1,
     query_fixed_root_current_project_admission_stage_v1,
     query_fixed_root_project_admission_outcome_v1, query_fixed_root_project_history_floor_v1,
-    query_fixed_root_project_intent_v1, query_fixed_root_project_reservation_cancellation_v1,
-    read_source_project_admission_status_v1, read_source_project_reservation_status_v1,
+    query_fixed_root_project_intent_v1, query_fixed_root_project_negative_intent_v1,
+    query_fixed_root_project_reservation_cancellation_v1, read_source_project_admission_status_v1,
+    read_source_project_reservation_status_v1,
     record_current_source_project_admission_challenge_v1,
     record_source_project_abort_only_challenge_v1,
     require_current_source_project_admission_challenge_v1, reserve_source_project_admission_v1,
     retire_fixed_root_project_history_over_socket_v1,
     settle_current_source_project_admission_challenge_v1, settle_source_project_reservation_v1,
     sign_fixed_controller_project_admission_readback_v1,
+    sign_fixed_controller_project_dispatch_readback_v1,
     sign_fixed_controller_project_terminal_readback_v1,
     stage_fixed_root_project_admission_over_socket_v1,
     submit_fixed_root_project_admission_over_socket_v1,
@@ -89,17 +93,25 @@ pub(crate) fn recover_source_project_admission_v1(
             return Ok(());
         }
         let reservation = flight.reservation();
+        if query_fixed_root_current_project_admission_stage_v1()?.is_some() {
+            return Err(invalid("Root stage lacks its durable Source reservation"));
+        }
         let cancellation = query_fixed_root_project_reservation_cancellation_v1(reservation)?;
-        if cancellation.is_none() && query_fixed_root_project_intent_v1(reservation)?.is_none() {
-            // Dispatch authorization does not prove a Root call happened. Keep
-            // its suffix reserved; only an exact durable Root denial can retire it.
+        let intent = if cancellation.is_none() {
+            query_fixed_root_project_intent_v1(reservation)?
+        } else {
+            None
+        };
+        if cancellation.is_none() && intent.is_none_or(|intent| intent.is_retirement_only()) {
+            // NotFound only selects the denial protocol. It is never retirement
+            // authority: Root first persists its exact cancellation suffix,
+            // then Source appends a real row under this retained writer.
             if flight.has_accepted_terminal() {
                 return Err(invalid("accepted terminal lost its Source reservation"));
             }
-            return Ok(());
+            return recover_undispatched_flight(controller, source_domains, scope, &flight);
         }
-        reserve_source_project_admission_v1(source_domains, reservation)
-            .map_err(io::Error::other)?;
+        reserve_for_cancellation(source_domains, reservation)?;
         cancel_and_settle_reservation(controller, source_domains, scope, &flight)?;
         return Ok(());
     }
@@ -133,6 +145,54 @@ pub(crate) fn recover_source_project_admission_v1(
         return abort_and_settle(controller, source_domains, scope, &flight, row);
     }
     cancel_and_settle_reservation(controller, source_domains, scope, &flight)
+}
+
+fn recover_undispatched_flight(
+    controller: &mut Journal,
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    scope: ControllerRequestScopeV1,
+    flight: &RetainedControllerProjectAdmissionV1,
+) -> io::Result<()> {
+    let reservation = flight.reservation();
+    preflight_source_project_negative_recovery_v1(source_domains, reservation)
+        .map_err(io::Error::other)?;
+    let packet = with_process_controller_hold_signer_v1(|generation, key| {
+        sign_fixed_controller_project_dispatch_readback_v1(
+            controller,
+            flight.operation(),
+            generation,
+            key,
+        )
+        .map_err(io::Error::other)
+    })?;
+    let attempt = prepare_fixed_root_project_negative_intent_over_socket_v1(reservation, &packet);
+    let cancellation = query_fixed_root_project_reservation_cancellation_v1(reservation)?;
+    if cancellation.is_none() {
+        query_fixed_root_project_negative_intent_v1(reservation, &packet)?.ok_or_else(|| {
+            attempt
+                .err()
+                .unwrap_or_else(|| invalid("Root negative intent readback absent"))
+        })?;
+    }
+    // No reservation is synthesized from a Root scalar or a negative query.
+    // Rejoin current physical names, issue and all three Source transactions
+    // before the actual append; Controller custody has not been released.
+    reserve_for_cancellation(source_domains, reservation)?;
+    if let Some(proof) = cancellation {
+        accept_and_settle_cancellation(controller, source_domains, scope, flight, proof)
+    } else {
+        cancel_and_settle_reservation(controller, source_domains, scope, flight)
+    }
+}
+
+fn reserve_for_cancellation(
+    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
+    reservation: SourceProjectAdmissionReservationV1,
+) -> io::Result<()> {
+    preflight_source_project_negative_recovery_v1(source_domains, reservation)
+        .map_err(io::Error::other)?;
+    reserve_source_project_admission_v1(source_domains, reservation).map_err(io::Error::other)?;
+    Ok(())
 }
 
 /// Advances only the Root V2 project-source prerequisite of a public Create.
@@ -308,8 +368,7 @@ pub(crate) fn advance_create_project_admission_v1(
                 // Root may have canceled an orphan intent before Source committed
                 // its row. Materialize and retire that exact denied row so Source
                 // advances its issue; retry can then use a fresh digest.
-                reserve_source_project_admission_v1(source_domains, preview)
-                    .map_err(io::Error::other)?;
+                reserve_for_cancellation(source_domains, preview)?;
                 accept_and_settle_cancellation(
                     controller,
                     source_domains,

@@ -1,12 +1,13 @@
 //! Root-owned capacity intent preceding a durable Source reservation.
 //!
 //! ```text
-//! AOSQPI01 | version:u16=1 or 2 | reserved[6]=0 | client-nonce:16 |
+//! AOSQPI01 | version:u16=1, 2, or 3 | kind:u8 | reserved[5]=0 | client-nonce:16 |
 //! project:16 | Source-reservation-digest:32 | project-packet:32 |
 //! project-input:32 | deployment-packet:32 | prior-packet:32 |
 //! prior-input:32 | capacity-reservation-id:32 |
-//! V2 only: remaining-records:u32 | reserved[4]=0 | remaining-bytes:u64 |
+//! V2/V3 only: remaining-records:u32 | reserved[4]=0 | remaining-bytes:u64 |
 //! exact-terminal-digest:32 or zero |
+//! V3 only: historical-Controller-dispatch-metadata:32 |
 //! SHA-256(versioned-Root-project-intent-domain || preceding bytes):32
 //! ```
 //!
@@ -15,6 +16,15 @@
 //! reservation. Optional staging cannot consume that suffix. V1 retains its
 //! original one-transaction behavior and cannot authorize history retirement.
 //! The intent never asserts Source currentness or authorizes policy admission.
+//! V3 has kind=1 and zero project-packet, project-input, deployment-packet;
+//! V1/V2 have kind=0. V3 can only reserve cancellation/history retirement.
+
+pub(super) mod negative;
+
+pub use negative::{
+    fixed_root_project_negative_recovery_available_v1,
+    prepare_fixed_root_project_negative_intent_v1,
+};
 
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use ed25519_dalek::VerifyingKey;
@@ -44,14 +54,18 @@ pub(super) const KEY: &[u8] = b"\0aos-policy-project-admission-intent-v1\0";
 const MAGIC: &[u8; 8] = b"AOSQPI01";
 const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.policy-project-admission-intent.v1\0";
 const CHECKSUM_DOMAIN_V2: &[u8] = b"aos.sandbox.policy-project-admission-intent.v2\0";
+const CHECKSUM_DOMAIN_V3: &[u8] = b"aos.sandbox.policy-project-negative-intent.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-project-admission-intent-transaction.v1\0";
 const TRANSACTION_DOMAIN_V2: &[u8] =
     b"aos.sandbox.policy-project-admission-intent-transaction.v2\0";
+const TRANSACTION_DOMAIN_V3: &[u8] = b"aos.sandbox.policy-project-negative-intent-transaction.v1\0";
 const DECISION_DOMAIN: &[u8] = b"aos.sandbox.policy-project-admission-decision.v1\0";
 const BINDING_DOMAIN: &[u8] = b"aos.sandbox.policy-project-admission-intent-binding.v1\0";
+const NEGATIVE_BINDING_DOMAIN: &[u8] = b"aos.sandbox.policy-project-negative-intent-binding.v1\0";
 const CHAIN_DOMAIN: &[u8] = b"aos.sandbox.policy-project-admission-intent-chain.v1\0";
 const BYTES_V1: usize = 304;
 pub(crate) const ROOT_PROJECT_ADMISSION_INTENT_BYTES_V2: usize = 352;
+pub(crate) const ROOT_PROJECT_NEGATIVE_INTENT_BYTES_V1: usize = 384;
 
 // The largest terminal writes V2 packet, input, outcome and capacity deletion.
 // Every individual value remains bounded by the Root journal's 4 KiB record
@@ -77,6 +91,7 @@ pub struct RootProjectAdmissionIntentV1 {
     remaining_records: u32,
     remaining_bytes: u64,
     decision: ObjectDigest,
+    negative_dispatch: Option<ObjectDigest>,
 }
 
 impl RootProjectAdmissionIntentV1 {
@@ -98,6 +113,15 @@ impl RootProjectAdmissionIntentV1 {
     /// Returns the capacity reservation that cannot be spent by another writer.
     pub const fn capacity_id(self) -> [u8; 32] {
         self.capacity_id
+    }
+
+    /// Reports a retirement-only intent that can never stage or commit policy.
+    pub const fn is_retirement_only(self) -> bool {
+        self.negative_dispatch.is_some()
+    }
+
+    pub(crate) const fn negative_dispatch_metadata(self) -> Option<ObjectDigest> {
+        self.negative_dispatch
     }
 
     pub(super) const fn retains_history(self) -> bool {
@@ -147,17 +171,22 @@ impl RootProjectAdmissionIntentV1 {
             let start = 32 + index * 32;
             preimage[start..start + 32].copy_from_slice(field.as_bytes());
         }
-        ObjectDigest::from_bytes(
-            Sha256::new()
-                .chain_update(BINDING_DOMAIN)
-                .chain_update(preimage)
-                .finalize()
-                .into(),
-        )
+        let mut hash = Sha256::new();
+        hash.update(if self.is_retirement_only() {
+            NEGATIVE_BINDING_DOMAIN
+        } else {
+            BINDING_DOMAIN
+        });
+        hash.update(preimage);
+        if let Some(dispatch) = self.negative_dispatch {
+            hash.update(dispatch.as_bytes());
+        }
+        ObjectDigest::from_bytes(hash.finalize().into())
     }
 
     fn matches_stage(self, stage: RootProjectAdmissionStageV1) -> bool {
-        self.client_nonce == stage.client_nonce
+        !self.is_retirement_only()
+            && self.client_nonce == stage.client_nonce
             && self.project == stage.project
             && self.source_reservation == stage.source_reservation_digest
             && self.project_packet == stage.packet_digest
@@ -181,7 +210,9 @@ impl RootProjectAdmissionIntentV1 {
             self.decision_binding_digest()
         } else {
             Sha256::new()
-                .chain_update(if !self.history_retirement {
+                .chain_update(if self.is_retirement_only() {
+                    TRANSACTION_DOMAIN_V3
+                } else if !self.history_retirement {
                     TRANSACTION_DOMAIN
                 } else {
                     TRANSACTION_DOMAIN_V2
@@ -214,8 +245,16 @@ impl RootProjectAdmissionIntentV1 {
                 self.decision_binding_digest()
             },
             operation_id: self.client_nonce,
-            artifact_digest: *self.project_packet.as_bytes(),
-            checkpoint_digest: *self.deployment_packet.as_bytes(),
+            artifact_digest: *if self.is_retirement_only() {
+                self.source_reservation
+            } else {
+                self.project_packet
+            }
+            .as_bytes(),
+            checkpoint_digest: *self
+                .negative_dispatch
+                .unwrap_or(self.deployment_packet)
+                .as_bytes(),
             chain_head_digest: *chain.as_bytes(),
             future_transactions: if self.history_retirement && self.decision == zero_digest() {
                 2
@@ -230,17 +269,26 @@ impl RootProjectAdmissionIntentV1 {
     }
 
     fn encode(self) -> Vec<u8> {
-        let body_bytes = if self.history_retirement { 320 } else { 272 };
+        let body_bytes = if self.is_retirement_only() {
+            352
+        } else if self.history_retirement {
+            320
+        } else {
+            272
+        };
         let mut bytes = vec![0; body_bytes + 32];
         bytes[..8].copy_from_slice(MAGIC);
         bytes[8..10].copy_from_slice(
-            &(if self.history_retirement {
+            &(if self.is_retirement_only() {
+                3_u16
+            } else if self.history_retirement {
                 2_u16
             } else {
                 1_u16
             })
             .to_be_bytes(),
         );
+        bytes[10] = u8::from(self.is_retirement_only());
         bytes[16..32].copy_from_slice(&self.client_nonce);
         bytes[32..48].copy_from_slice(self.project.as_bytes());
         for (index, field) in [
@@ -263,8 +311,13 @@ impl RootProjectAdmissionIntentV1 {
             bytes[280..288].copy_from_slice(&self.remaining_bytes.to_be_bytes());
             bytes[288..320].copy_from_slice(self.decision.as_bytes());
         }
+        if let Some(dispatch) = self.negative_dispatch {
+            bytes[320..352].copy_from_slice(dispatch.as_bytes());
+        }
         let checksum = Sha256::new()
-            .chain_update(if self.history_retirement {
+            .chain_update(if self.is_retirement_only() {
+                CHECKSUM_DOMAIN_V3
+            } else if self.history_retirement {
                 CHECKSUM_DOMAIN_V2
             } else {
                 CHECKSUM_DOMAIN
@@ -276,13 +329,18 @@ impl RootProjectAdmissionIntentV1 {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, PolicyDeploymentHeadErrorV1> {
-        let history_retirement = bytes.len() == ROOT_PROJECT_ADMISSION_INTENT_BYTES_V2
-            && bytes.get(8..10) == Some(2_u16.to_be_bytes().as_slice());
+        let negative = bytes.len() == ROOT_PROJECT_NEGATIVE_INTENT_BYTES_V1
+            && bytes.get(8..10) == Some(3_u16.to_be_bytes().as_slice())
+            && bytes.get(10) == Some(&1);
+        let history_retirement = negative
+            || (bytes.len() == ROOT_PROJECT_ADMISSION_INTENT_BYTES_V2
+                && bytes.get(8..10) == Some(2_u16.to_be_bytes().as_slice()));
         if (!history_retirement
             && (bytes.len() != BYTES_V1
                 || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())))
             || bytes.get(..8) != Some(MAGIC.as_slice())
-            || bytes.get(10..16) != Some([0; 6].as_slice())
+            || (!negative && bytes.get(10) != Some(&0))
+            || bytes.get(11..16) != Some([0; 5].as_slice())
             || (history_retirement && bytes[276..280] != [0; 4])
         {
             return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
@@ -316,13 +374,17 @@ impl RootProjectAdmissionIntentV1 {
             } else {
                 zero_digest()
             },
+            negative_dispatch: if negative { Some(field(320)?) } else { None },
         };
         if row.client_nonce == [0; 16]
             || row.project.as_bytes() == &[0; 16]
             || row.source_reservation.as_bytes() == &[0; 32]
-            || row.project_packet.as_bytes() == &[0; 32]
-            || row.project_input.as_bytes() == &[0; 32]
-            || row.deployment_packet.as_bytes() == &[0; 32]
+            || [row.project_packet, row.project_input, row.deployment_packet]
+                .iter()
+                .any(|field| (field == &zero_digest()) != negative)
+            || row
+                .negative_dispatch
+                .is_some_and(|field| field == zero_digest())
             || (row.prior_packet.as_bytes() == &[0; 32]) != (row.prior_input.as_bytes() == &[0; 32])
             || (history_retirement
                 && (row.remaining_records == 0
@@ -455,6 +517,9 @@ fn require_decision_state(
             return Err(PolicyDeploymentHeadErrorV1::StaleHead);
         }
         return Ok(());
+    }
+    if intent.is_retirement_only() {
+        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
     let stage = authority
         .get(STAGE_KEY)?
@@ -698,7 +763,8 @@ pub(super) fn require_stage_intent(
     deployment_packet: &[u8],
 ) -> Result<RootProjectAdmissionIntentV1, PolicyDeploymentHeadErrorV1> {
     let intent = current_intent(journal)?.ok_or(PolicyDeploymentHeadErrorV1::StaleHead)?;
-    if intent.client_nonce != source.client_nonce()
+    if intent.is_retirement_only()
+        || intent.client_nonce != source.client_nonce()
         || intent.project != source.project()
         || intent.source_reservation != source.record_digest()
         || intent.project_packet != digest(project_packet)
@@ -807,6 +873,7 @@ pub fn prepare_fixed_root_project_admission_intent_v1(
         remaining_records: SUFFIX_RECORDS,
         remaining_bytes: SUFFIX_BYTES,
         decision: zero_digest(),
+        negative_dispatch: None,
     };
     let prior_intent = authority
         .get(KEY)?
@@ -1176,6 +1243,7 @@ fn prepare_test_intent_with_digests(
             TERMINAL_BYTES
         },
         decision: zero_digest(),
+        negative_dispatch: None,
     };
     commit_intent(journal, intent)
 }
