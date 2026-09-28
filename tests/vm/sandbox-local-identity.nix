@@ -104,6 +104,18 @@ in
       run_tests() {
         executable=$1
         filter=$2
+        if [ "''${3:-}" = exact ]; then
+          "$executable" --exact --list "$filter" > /tmp/selected-tests
+          selected_count=$(${pkgs.grep}/bin/grep -c ': test$' /tmp/selected-tests || true)
+          if [ "$selected_count" -ne 1 ]; then
+            echo "expected exactly one kernel test: $executable $filter; found $selected_count" >&2
+            exit 1
+          fi
+          ${pkgs.grep}/bin/grep -Fx "$filter: test" /tmp/selected-tests
+          "$executable" --exact "$filter" --test-threads=1 --nocapture
+          return
+        fi
+
         "$executable" --list "$filter" > /tmp/selected-tests
         if ! ${pkgs.grep}/bin/grep -q ': test$' /tmp/selected-tests; then
           echo "kernel qualification selected no tests: $executable $filter" >&2
@@ -121,6 +133,11 @@ in
           *) "$executable" "$filter" --test-threads=1 --nocapture ;;
         esac
       }
+
+      # Feature-gated real-kernel negatives, not positive joined-owner,
+      # installed-MAC, or copy-barrier qualification.
+      run_tests ${fixtures}/bin/aos_sandbox_broker_session_security handshake::host_worker_comparison::rendezvous::kernel_tests::actual_record_subject_cannot_be_replaced_by_the_socket_creation_peer exact
+      run_tests ${fixtures}/bin/aos_sandbox_broker_session_security handshake::host_worker_comparison::rendezvous::kernel_tests::preparation_channel_refuses_rights_and_revokes_the_same_endpoint exact
 
       run_tests ${fixtures}/bin/aos_sandbox_linux cgroup::tests::real_readonly_hierarchy_resolves_exact_current_membership
       run_tests ${fixtures}/bin/aos_sandbox_linux cgroup::tests::retained_population_distinguishes_empty_retired_and_recreated_cgroups
