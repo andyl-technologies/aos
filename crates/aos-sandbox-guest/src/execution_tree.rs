@@ -13,15 +13,18 @@ use std::time::Instant;
 use aos_sandbox_linux::cgroup::{
     CgroupPopulationMonitor, CgroupPopulationState, RetainedCgroupAnchor,
 };
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
 use rustix::fs::{Mode, OFlags, fchmod, fstat, mkdirat, openat};
 
 use crate::GuestProcessEffectErrorV1 as Error;
+
+mod signal;
 
 pub(crate) struct ExecutionTree {
     anchor: RetainedCgroupAnchor,
     population: CgroupPopulationMonitor,
     leader: PidFd,
+    original_leader: PidFdProcessIdentity,
 }
 
 #[cfg(test)]
@@ -86,7 +89,12 @@ impl ExecutionTree {
         if directory.st_uid != 0 || directory.st_gid != 0 || directory.st_mode & 0o777 != 0o700 {
             return Err(Error::UnprotectedLedger);
         }
-        for control in ["cgroup.procs", "cgroup.threads", "cgroup.kill"] {
+        for control in [
+            "cgroup.procs",
+            "cgroup.threads",
+            "cgroup.kill",
+            "cgroup.freeze",
+        ] {
             let file = openat(
                 anchor.as_fd(),
                 control,
@@ -133,6 +141,7 @@ impl ExecutionTree {
             anchor,
             population,
             leader,
+            original_leader: placed,
         })
     }
 
@@ -170,6 +179,58 @@ impl ExecutionTree {
                 &self.leader,
                 aos_sandbox_linux::guest_confinement::GUEST_TENANT_CONTEXT,
             )?)
+    }
+
+    /// Joins the admitted row to original live ownership, even after leader exit.
+    /// Descendants may change credentials or session IDs without leaving their
+    /// retained execution subtree; neither change manufactures new ownership.
+    pub(crate) fn require_original_scope(
+        &self,
+        record: &crate::ledger::ProcessRecord,
+    ) -> Result<(), Error> {
+        self.require_original_identity(record)?;
+        if record.canceled || record.terminal.is_some() {
+            return Err(Error::InvalidRequest);
+        }
+        Ok(())
+    }
+
+    /// Checks original owned scope and current subtree activity, not a live leader UID.
+    ///
+    /// The owning caller retains its shared barrier and this actual tree through
+    /// dependent effects. This predicate does not reconstruct cold ownership or
+    /// confer Controller/Host or SSH holder authority.
+    ///
+    /// # Errors
+    /// Rejects legacy/foreign/canceled/terminal scope, lost cgroup confinement
+    /// or an original subtree that is both recursively empty and leader-exited.
+    pub(crate) fn require_active_original_scope(
+        &self,
+        record: &crate::ledger::ProcessRecord,
+    ) -> Result<(), Error> {
+        self.require_original_scope(record)?;
+        if self.empty_and_exited()? {
+            return Err(Error::InvalidRequest);
+        }
+        Ok(())
+    }
+
+    /// Joins historical terminal data to this originally retained tree only.
+    /// This permits no mutation, attach reservation or descriptor transfer.
+    pub(crate) fn require_original_identity(
+        &self,
+        record: &crate::ledger::ProcessRecord,
+    ) -> Result<(), Error> {
+        aos_sandbox_linux::guest_confinement::require_guest_owner()?;
+        self.anchor.validate_active()?;
+        if record.version != 2
+            || record.cgroup != Some(self.kernel_id())
+            || record.pid != self.original_leader.pid()
+            || record.start_ticks != self.original_leader.start_time_ticks()
+        {
+            return Err(Error::InvalidRequest);
+        }
+        Ok(())
     }
 
     pub(crate) fn empty_and_exited(&self) -> Result<bool, Error> {

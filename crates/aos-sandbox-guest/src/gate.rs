@@ -179,6 +179,52 @@ impl GuestOpenSshGate {
             }
         }
     }
+
+    /// Observes physical installation while retaining the active original tree.
+    /// Historical leader coordinates do not assert current leader credentials.
+    ///
+    /// # Errors
+    /// Rejects changed original scope/runtime/installation, absent active tree,
+    /// expiry, invalid fixed login identity or a missed deadline.
+    pub(super) fn observe_active_original_tree_v5(
+        &mut self,
+        request: &OpenSshGateObserveRequestV1,
+        runtime: &AgentRuntimeBindingV1,
+        channel: ObjectDigest,
+        ledger: &Ledger,
+        deadline: Instant,
+    ) -> Result<OpenSshGateReadbackV1, GuestProcessEffectErrorV1> {
+        check_deadline(deadline)?;
+        let process = ledger.read_process_bytes(request.binding.execution_id)?;
+        let bridge_request =
+            aos_sandbox_agent::openssh_gate::decode_openssh_gate_bridge_request_v1(
+                &self
+                    .claim
+                    .encode_bridge_request()
+                    .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?,
+            )
+            .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
+        if self.claim.binding != request.binding
+            || self.claim.route_digest != request.route_digest
+            || process.runtime != runtime_identity(runtime)
+            || !crate::bridge::request_matches(&bridge_request, &self.claim, &process)
+        {
+            return Err(GuestProcessEffectErrorV1::InvalidRequest);
+        }
+        ledger.require_active_original_tree_v5(&process)?;
+        static_login_identity(&request.binding.user)?;
+        let readback = self
+            .daemon
+            .original_control_physical_readback_v5(
+                request.challenge,
+                request.route_digest,
+                *channel.as_bytes(),
+            )
+            .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
+        check_deadline(deadline)?;
+        ledger.require_active_original_tree_v5(&process)?;
+        Ok(readback)
+    }
 }
 
 fn verify_admitted_process(

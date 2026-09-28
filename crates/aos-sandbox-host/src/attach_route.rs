@@ -24,6 +24,7 @@
 
 #[cfg(test)]
 mod named_storage_tests;
+mod original_control;
 
 use std::fs::OpenOptions;
 use std::io::Read as _;
@@ -968,6 +969,7 @@ fn evidence_from_protected(
         original_ticket_digest_v2: None,
         signed_ticket_readback_v2: Vec::new(),
         original_attach_observation_v3: Vec::new(),
+        original_session_observation_v5: Vec::new(),
     }
 }
 
@@ -990,6 +992,7 @@ fn verify_readback_binding(
 /// Authenticated Host route fields usable only after live gate readback agrees.
 #[derive(Clone, Eq, PartialEq)]
 pub struct HostOpenSshAttachRouteEvidenceV1 {
+    pub(crate) original_session_observation_v5: Vec<u8>,
     pub(crate) original_attach_observation_v3: Vec<u8>,
     pub(crate) original_ticket_digest_v2: Option<[u8; 32]>,
     pub(crate) signed_ticket_readback_v2: Vec<u8>,
@@ -1075,6 +1078,7 @@ impl HostOpenSshAttachRouteEvidenceV1 {
                 .unwrap_or_default(),
             signed_ticket_readback_v2: self.signed_ticket_readback_v2.clone(),
             original_attach_observation_v3: self.original_attach_observation_v3.clone(),
+            original_session_observation_v5: self.original_session_observation_v5.clone(),
             ..Default::default()
         }
         .encode_to_vec()

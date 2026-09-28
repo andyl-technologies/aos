@@ -279,6 +279,33 @@ pub trait GuestOperationEffectsV1 {
     > {
         Err(ProtectedGuestAgentErrorV1::EffectUnavailable)
     }
+
+    /// Observes or applies an original-monitor control under current owner cuts.
+    ///
+    /// # Errors
+    /// Rejects unsupported effects, foreign custody, expiry, unsupported original
+    /// topology, replay or ambiguous effects. Parsing supplies no permission.
+    fn original_control_v5(
+        &mut self,
+        _action: crate::openssh_control_channel::OriginalControlActionV5,
+        _binding: [u8; 32],
+        _control: &[u8],
+        _authority_expires_at: i64,
+        _effect_deadline_boottime_nanoseconds: u64,
+        _request: &OpenSshGateObserveRequestV1,
+        _ticket: &[u8],
+        _runtime: &AgentRuntimeBindingV1,
+        _channel: ObjectDigest,
+        _deadline: Instant,
+    ) -> Result<
+        (
+            OpenSshGateReadbackV1,
+            crate::openssh_control_channel::OriginalControlObservationV5,
+        ),
+        ProtectedGuestAgentErrorV1,
+    > {
+        Err(ProtectedGuestAgentErrorV1::EffectUnavailable)
+    }
 }
 
 /// Conservatively handles the source-only guest without launching a process.
@@ -452,6 +479,67 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
                         MAX_AGENT_SEALED_SPEC_BYTES_V1 as u64,
                         |bytes, _| reference.reconstruct(bytes),
                     )??
+                }
+                AgentFrameV1::OriginalControlRequestV5(bytes) => {
+                    if !descriptors.is_empty() {
+                        return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame);
+                    }
+                    let (action, custody, control, expiry, boottime_deadline, observe, ticket) =
+                        crate::openssh_control_channel::decode_original_control_request_v5(&bytes)
+                            .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
+                    if observe.session_binding != *binding.digest().as_bytes()
+                        || observe.binding.incarnation_id
+                            != *provisioning.runtime.incarnation().as_bytes()
+                        || observe.binding.assignment_epoch
+                            != provisioning.runtime.assignment_epoch().get()
+                    {
+                        return Err(ProtectedGuestAgentErrorV1::SessionMismatch);
+                    }
+                    let (readback, observation) = self.effects.original_control_v5(
+                        action,
+                        custody,
+                        control,
+                        expiry,
+                        boottime_deadline,
+                        &observe,
+                        ticket,
+                        &provisioning.runtime,
+                        provisioning.channel,
+                        deadline,
+                    )?;
+                    check_deadline(deadline)?;
+                    if readback.challenge != observe.challenge
+                        || readback.route_digest != observe.route_digest
+                        || readback.channel_binding != *provisioning.channel.as_bytes()
+                        || readback.binding != observe.binding
+                        || (action
+                            == crate::openssh_control_channel::OriginalControlActionV5::Apply
+                            && (observation.phase
+                                != crate::openssh_control_channel::OriginalControlPhaseV5::Applied
+                                || observation.binding != custody
+                                || observation.request != control))
+                    {
+                        return Err(ProtectedGuestAgentErrorV1::InvalidGateRequest);
+                    }
+                    let physical = crate::openssh_ticket::sign_ticket_gate_readback_v2(
+                        &readback,
+                        crate::openssh_ticket::ticket_digest_v2(ticket),
+                        &provisioning.signing_key,
+                    )
+                    .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
+                    let response =
+                        crate::openssh_control_channel::sign_original_control_response_v5(
+                            &observation,
+                            &physical,
+                            &provisioning.signing_key,
+                        )
+                        .map_err(|_| ProtectedGuestAgentErrorV1::InvalidGateRequest)?;
+                    send(
+                        &mut socket,
+                        &encode_frame_v1(&AgentFrameV1::OriginalControlResponseV5(response)),
+                        deadline,
+                    )?;
+                    continue;
                 }
                 AgentFrameV1::OriginalAttachRequestV3(bytes) => {
                     if !descriptors.is_empty() {

@@ -12,11 +12,16 @@ use nix::libc;
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
 use std::os::unix::process::CommandExt as _;
+use std::os::unix::process::ExitStatusExt as _;
 
 use super::*;
 use crate::openssh_monitor::{
     OPENSSH_MONITOR_BINDING_ACK_V2, OPENSSH_MONITOR_MAXIMUM_RECORD_BYTES_V2,
     OpenSshMonitorWitnessV2,
+};
+use crate::openssh_session::{
+    OpenSshSessionActionV4, OpenSshSessionReplyV4, OpenSshSessionRequestV4, OpenSshSessionStateV4,
+    OriginalExecutionWaitStatusV4,
 };
 
 const SOCKET: &str = "/run/aos-sandbox-agent/exec-gate.sock";
@@ -211,7 +216,7 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
     // They do not replace the production Guest barrier or owner authorization.
     let mut fixture = OwnedProcess(
         Command::new(&bash)
-            .args(["-c", "IFS= read -r line; printf 'stdout:%s\\n' \"$line\"; printf 'stderr:%s\\n' \"$line\" >&2"])
+            .args(["-c", "IFS= read -r line; printf 'stdout:%s\\n' \"$line\"; printf 'stderr:%s\\n' \"$line\" >&2; exit 37"])
             .uid(1001).gid(1001)
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
             .spawn().unwrap(),
@@ -221,6 +226,9 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
         fixture.0.stdout.take().unwrap(),
         fixture.0.stderr.take().unwrap(),
     ));
+    let mut original_io = None;
+    let mut terminal_status = None;
+    let mut terminal_replied = false;
     let deadline = Instant::now() + Duration::from_secs(6);
     loop {
         if client.try_wait().unwrap().is_some() {
@@ -278,7 +286,57 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
             assert_eq!(receipt.subject().credentials().uid(), 1001);
             assert_eq!(receipt.subject().credentials().gid(), 1001);
             drop(receipt);
-            drop(gate);
+            original_io = Some(gate);
+        }
+        if terminal_status.is_none() {
+            if let Some(status) = fixture.0.try_wait().unwrap() {
+                // This real fixture process is not a production admitted
+                // execution. Its exact waitstatus proves native MM reporting
+                // differs from relay exit, not Guest cgroup/authority custody.
+                let status = OriginalExecutionWaitStatusV4::new(status.into_raw() as u32).unwrap();
+                assert_eq!(status.exit_code(), Some(37));
+                original_io
+                    .as_mut()
+                    .unwrap()
+                    .send(&status.encode_io_terminal())
+                    .unwrap();
+                terminal_status = Some(status);
+            }
+        }
+        match connection.receive(32) {
+            Ok(record) => {
+                assert!(!terminal_replied);
+                runtime
+                    .require_original_terminal_monitor_v4(connection.peer().pidfd())
+                    .unwrap();
+                let bound = connection.bind_received(record).unwrap();
+                assert_eq!(
+                    bound.subject().credentials().pid(),
+                    subject.credentials().pid()
+                );
+                assert_eq!(bound.subject().credentials().uid(), 0);
+                assert_eq!(
+                    bound.subject().pidfd().process_identity().unwrap(),
+                    subject.pidfd().process_identity().unwrap()
+                );
+                let request = OpenSshSessionRequestV4::decode(bound.payload()).unwrap();
+                assert_eq!(request.sequence, 1);
+                assert_eq!(request.action, OpenSshSessionActionV4::Terminal);
+                drop(bound);
+                connection
+                    .send(
+                        &OpenSshSessionReplyV4 {
+                            sequence: request.sequence,
+                            state: OpenSshSessionStateV4::Terminal(terminal_status.unwrap()),
+                        }
+                        .encode()
+                        .unwrap(),
+                    )
+                    .unwrap();
+                terminal_replied = true;
+            }
+            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {}
+            Err(error) => panic!("original terminal request: {error}"),
         }
         assert!(
             Instant::now() < deadline,
@@ -290,10 +348,11 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("Authenticated to 127.0.0.1"));
     assert!(stderr.contains("stderr:original-input\n"));
-    assert!(output.status.success());
+    assert_eq!(output.status.code(), Some(37));
     assert_eq!(output.stdout, b"stdout:original-input\n");
     assert!(pipe_ends.is_none());
-    assert!(fixture.0.wait().unwrap().success());
+    assert_eq!(fixture.0.wait().unwrap().code(), Some(37));
+    assert!(terminal_replied);
     assert!(
         fs::read(marker).unwrap().is_empty(),
         "passwd shell was invoked"

@@ -140,6 +140,7 @@ message InstallHostAttachGateRequestV1 {
   bytes pending_grant = 2; // Exact 416-byte AOSAPG01 signed packet.
   bytes original_ticket_binding_v2 = 3; // Optional bounded AOSTKB02 data, not a grant.
   bytes original_ticket_consume_v3 = 4; // Exact custody[32] + observation challenge[32]; requires field 3.
+  bytes original_session_control_v5 = 5; // Monitor[32] + challenge[32] + exact AOSMCQ05; requires field 3 and excludes field 4.
 }
 
 // Host emits this only after fresh signed guest-agent physical readback.
@@ -160,9 +161,10 @@ message HostAttachGateEvidenceV1 {
   bytes route_digest = 14;
   bytes gate_observation_commitment = 15;
   bytes signed_gate_readback = 16;
-  bytes original_ticket_digest_v2 = 17; // Present only for binding-only readback.
+  bytes original_ticket_digest_v2 = 17; // Exact original ticket for binding, consume or control readback.
   bytes signed_ticket_readback_v2 = 18; // Fresh physical AOSTGR02; not SSH custody.
   bytes original_attach_observation_v3 = 19; // Bounded AOSACR03 live custody/one-use completion, never a grant.
+  bytes original_session_observation_v5 = 20; // Signed AOSHCR05 original monitor queue/effect; not a grant or IO readiness.
 }
 
 // Advisory, read-only preflight; method 28 still rechecks after pending CAS.

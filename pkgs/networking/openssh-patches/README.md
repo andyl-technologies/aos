@@ -28,8 +28,10 @@ helper measurement and listener pidfd, the exact immutable original ticket,
 certificate/holder/session proof, protected gate/runtime and active process
 ledger. Partial, substituted, expired, foreign-process and wrong-descriptor
 records fail closed. Custody is memory-only: a restart cannot adopt historical
-monitor proof from ticket files or callback metadata. Exit, expiry, ambiguity
-and cancellation close retained handles; no cached success restores custody.
+monitor proof from ticket files or callback metadata. Before consume, exit,
+expiry, ambiguity and cancellation close retained handles; no cached success
+restores custody. A consumed session's terminal-data lifetime is distinct and
+cannot authorize another consume or control.
 
 The v3 wire profile is `AOSAMR03`, account UID/GID as big-endian u32 values, then
 four u32-length-prefixed sections: KEX session (32–64 bytes), actual binary
@@ -78,25 +80,103 @@ The one logical per-execution marker is create-new, synced and read back exactly
 Any legacy, partial, conflicting, ambiguous or already-present marker stays
 closed. The relay receives exactly one PTY or three stream descriptors, sends
 `AOSRID03`, then performs bounded-buffer transport without exec or claim parsing.
+That receipt does not close its original Guest connection: the connection
+remains live until the relay ends and is the retained disconnect observation.
 Cold restart and cached broker completion cannot recover handles or transfer
 again. Public Create/launch/readiness activation remains closed pending complete
 installed qualification; source availability is not readiness.
 
-Original Stream/OpenSSH execution admission requires disconnect cancellation.
-This checkpoint does not yet retain post-transfer session liveness or an exact
-per-execution cgroup subtree. The existing Guest cancellation uses a process
-group, which cannot contain every descendant of an arbitrary admitted command;
-the retained Host payload cgroup instead contains the entire sandbox. Neither
-is promoted to whole-execution custody. A subsequent existing-owner slice must
-provision a private execution subtree, pin membership before payload exec,
-exclude tenant migration, and hold the same barrier through disconnect,
-`cgroup.kill`, empty-subtree readback and terminal publication. Disconnect
-cancellation and public I/O readiness remain closed until that path is
-implemented and installed qualification succeeds.
+The existing Guest owner now retains a proper per-execution descendant cgroup,
+blocked-helper membership and durable original row before spec release. Its
+enforcing Owner/Tenant projection preserves admitted UID0 credentials while
+denying tenant migration and access to owner control objects. Disconnect
+cancel holds the shared barrier through `cgroup.kill`, recursive empty and
+leader-exit readback, and durable terminal publication. This source is not
+installed delegation, MAC or accepted-Create qualification. Public readiness
+remains closed until the full original-ticket producer is qualified.
+
+Original execution terminal status is distinct from relay exit. After retained
+subtree emptiness and the original child's actual wait result, Guest persists
+the exact Linux raw status and sends nonauthorizing `AOSIOE04 | raw:u32be` on
+the same consumed I/O connection. EOF alone does not let the relay declare
+execution success. The relay drains original output before ending; it cannot
+nominate the status that the root monitor later reports.
+
+The confined post-auth child requests a fixed empty terminal read on private
+MM opcodes120/121. The retained root monitor constructs `AOSMCT04` with its own
+strictly increasing sequence and Terminal action, using the original Guest
+connection. Guest requires the same pinned root sender/child, original witness,
+ticket bytes, protected claim/config inode/trust and measured runtime. Only a
+canonical `AOSMCA04` carrying actual protected original waitstatus permits SSH's
+exit-status/exit-signal message. Missing, pending, partial or substituted data
+disconnects; relay exit never supplies a fallback. This read-only reporting may
+outlive original certificate validity or leader liveness but cannot renew the
+ticket, create custody, control execution or release another descriptor.
+
+[RFC4254 section6.10](https://www.rfc-editor.org/info/rfc4254/)
+permits vendor exit-signal names. Standard POSIX names stay unchanged; other
+genuine Linux terminal signals use `LINUX<number>@andyl.com`, not the upstream
+shared unknown-signal sentinel. Public terminal result V2 separately retains
+exact native signal/core status without expanding the seven selectable control
+signals.
+
+The fourth patch routes original PTY setup, resize and the seven existing SSH
+signal names through private monitor opcodes122/123. The confined child supplies
+bounded mode/geometry/signal data only, never a PID/PGID, ticket, route, expiry or
+sequence. The already authenticated root monitor assigns the next sequence on
+the same retained Guest connection. Initial PTY acknowledgement precedes relay
+registration and SCM; no intermediate sshd PTY, passwd shell or replacement TERM
+environment is introduced. Resize preserves row, column and both pixel counts
+without truncating SSH unsigned values. The Guest applies the bounded RFC4254
+mode table to its actual retained original master and requires native readback;
+unknown platform modes remain ignored according to the RFC.
+
+`AOSMCQ05` contains a root-owned sequence, closed action and bounded payload.
+The Guest can queue this data before or after original SCM, but queuing grants
+nothing. The existing Controller forward poll reauthorizes the original
+LifecycleControl capability/holder under current protected policy, revocation,
+trust and registration. Its borrowed writer signs an exact Host ATTACH plan
+committing the original grant/ticket, monitor binding, readback challenge and
+request bytes. Host retains the original runtime/assignment and named route
+journal writer through a durable per-ticket/session/sequence reservation,
+protected Guest dispatch and final receipt. A partial or equal reservation is
+not recoverable permission or a redispatch path.
+
+The Guest holds one barrier across its monitor lock, actual original execution
+tree/PTY owner, durable sequence reservation, kernel effect and original-root
+acknowledgement. Whole-tree Signal uses the existing freeze/pin/preflight/recheck
+producer and restores exactly its own original freezer request; KILL uses the
+original descendant `cgroup.kill`. No leader-only/PGID substitute is accepted.
+The narrowed original certificate/capability/policy expiry and local BOOTTIME
+deadline remain mandatory for controls even when the original leader exited or
+descendants legitimately changed credentials or session IDs. The V4 terminal
+reader remains separately nonauthorizing after expiry.
+
+Signed `AOSHCR05` queue/effect evidence uses the existing provisioned agent
+runtime key for readback only, not a grant or second certificate. The packet
+commits the original monitor witness, physical ticket readback, exact request
+and whether original SCM was attempted; an attempt may be ambiguous and cannot
+authorize another transfer. Sequence state moves with actual consumed custody
+and is never re-created from a cold row. Any partial effect/readback/ACK is
+ambiguous and drops custody without automatic redispatch. This full source
+producer is still unqualified, not an installed readiness assertion.
+
+Initial registration, relay and consume now also require the original unexpired
+root/holder/ticket custody and active original execution subtree, not a live
+leader with unchanged effective UID. The Guest retains that actual in-memory
+tree borrow, the shared barrier and monitor custody through SCM and receipt.
+The callback's separately named protected profile reader checks the original
+expiry and installation without treating historical leader fields as authority.
+Its output still cannot bind custody or authorize IO. Issuance, provisioning,
+original route installation and immutable ticket binding retain their stricter
+leader checks; this path cannot recover or recreate those earlier mutations.
+V4 historical terminal evidence remains separately nonauthorizing.
 
 Compatibility follows the pinned upstream private monitor layout. The patch
 adds a default-off global option. V3 uses private readiness opcodes 118/119 and
-relay opcodes 116/117; legacy 114/115 cannot mint v3 custody. It does not widen
+relay opcodes116/117, data-only terminal opcodes120/121 and original control
+opcodes122/123. Legacy114/115 cannot
+mint v3 custody. It does not widen
 the public SSH protocol. The Guest registration decoder has an explicit v3
 magic and closed canonical profile, not a generic root-command
 transport. Darwin retains ordinary unpatched OpenSSH.
@@ -104,7 +184,7 @@ transport. Darwin retains ordinary unpatched OpenSSH.
 Primary source boundaries are OpenSSH `V_10_5_P1` `monitor.c` (key verification,
 full method/account decision, post-auth private channel), `sshd-session.c`
 (PAM setup, exact post-auth fork/drop/key-state ordering), and `auth-pam.c`
-(credential/session result state). Linux 6.18 pidfs and Unix peer/record pidfd
+(credential/session result state). Linux7.2.3 pidfs and Unix peer/record pidfd
 carriers remain the existing `aos-sandbox-linux` boundary.
 
 The inspected official tarball SHA-256 is
@@ -127,6 +207,10 @@ wrong-descriptor rejection, same-login ptrace/process-vm/proc-memory/proc-FD
 denial, hostile passwd-shell bypass, old-child pidfd closure, incomplete MFA,
 nologin and PAM account/credential/session denials. A fixed fixture process's
 real stdin/stdout/stderr pipes exercise the native relay transport and receipt.
+The native terminal case uses the real fixture process's raw waitstatus for
+exit code37 and checks SSH returns37 rather than relay success. The fixture,
+including its socket responder, is not a production original-execution
+authority source.
 Those test pipes do not qualify production Guest reservations or the held
 Controller/Host currentness cut; complete installed end-to-end qualification
 is still required before public readiness or I/O activation.
@@ -135,10 +219,14 @@ expected partial/PAM denial phase, so a bad configuration or missing PAM service
 file cannot count as qualification. The old-child test checks the retained
 original pidfd becomes unusable; it does not force actual numeric PID reuse.
 
-Linux 6.18 [ptrace.c](https://github.com/torvalds/linux/blob/v6.18/kernel/ptrace.c)
-checks credential equality and nondumpability before its LSM hook. Yama is not
-used as a blanket proc-read proof. Ordinary exec can reset dumpability in
-[exec.c](https://github.com/torvalds/linux/blob/v6.18/fs/exec.c), hence the no-exec
-boundary. [socket.c](https://github.com/torvalds/linux/blob/v6.18/net/socket.c)
-preserves the requested `MSG_CMSG_CLOEXEC` flag in receive output; the relay
-allows only that bit and rejects truncation or any other returned flag.
+The repository's exact
+[Linux7.2.3 primary archive](https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.3.tar.xz)
+has SHA256 `8ba259e8e7b13ec6ef0941c8a39ad90b24bd4a4d6c0010ba6bafb794550ecd03`.
+Its `kernel/ptrace.c` checks credential equality and nondumpability before the
+LSM hook; Yama is not a blanket proc-read proof. `fs/exec.c` can reset
+dumpability on ordinary exec, hence the no-exec boundary. `net/socket.c`
+preserves requested `MSG_CMSG_CLOEXEC` in receive output; relay accepts only
+that bit and rejects truncation/other flags. `security/selinux/hooks.c` checks
+both cross-subject FD use and inode access after the Owner/Tenant transition.
+The production copied-TCB/loader/config/namespace and MAC projection, not
+fixture ancestry or UID alone, remain required installed prerequisites.

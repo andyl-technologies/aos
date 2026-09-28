@@ -15,9 +15,7 @@ use aos_proto::aos::sandbox::local::v1::{
     HostExecutionCompletionStatusV1, HostExecutionPhaseV1, QueryHostExecutionRequestV1,
     RequestHeader,
 };
-use aos_proto::aos::sandbox::v1::{
-    Command, ExecutionIoMode, ExecutionPhase, ExecutionTerminationKind, Timestamp,
-};
+use aos_proto::aos::sandbox::v1::{Command, ExecutionIoMode, ExecutionPhase, Timestamp};
 use aos_sandbox::cli_model::{DormantSandboxRequestKindV1, ExecutionTerminalOutcomeV1};
 use aos_sandbox::controller_execution_spec_attempt::{
     ControllerExecutionSpecAttemptV1, load_controller_execution_spec_attempt_v1,
@@ -151,6 +149,25 @@ impl ControllerExecutionCompletionV1 {
             BackendExecutionPhaseV1::Exited
                 if matches!(
                     self.terminal,
+                    Some(HostExecutionTerminalResultV1::Original {
+                        canceled: false,
+                        ..
+                    })
+                ) =>
+            {
+                Ok(ExecutionPhase::EXECUTION_PHASE_EXITED)
+            }
+            BackendExecutionPhaseV1::Canceled
+                if matches!(
+                    self.terminal,
+                    Some(HostExecutionTerminalResultV1::Original { canceled: true, .. })
+                ) =>
+            {
+                Ok(ExecutionPhase::EXECUTION_PHASE_CANCELED)
+            }
+            BackendExecutionPhaseV1::Exited
+                if matches!(
+                    self.terminal,
                     Some(HostExecutionTerminalResultV1::Exited(code)) if code >= 0
                 ) =>
             {
@@ -195,9 +212,19 @@ impl ControllerExecutionCompletionV1 {
         )
     }
 
-    fn exit_code(&self) -> Option<i32> {
-        match self.terminal {
-            Some(HostExecutionTerminalResultV1::Exited(code)) if code >= 0 => Some(code),
+    fn terminal_outcome(&self) -> Option<ExecutionTerminalOutcomeV1> {
+        match self.terminal? {
+            HostExecutionTerminalResultV1::Exited(code) if code >= 0 => {
+                Some(ExecutionTerminalOutcomeV1::ExitCode(code))
+            }
+            HostExecutionTerminalResultV1::Original { status, canceled } => {
+                if !canceled {
+                    if let Some(code) = status.exit_code() {
+                        return Some(ExecutionTerminalOutcomeV1::ExitCode(i32::from(code)));
+                    }
+                }
+                Some(ExecutionTerminalOutcomeV1::OriginalLinux { status, canceled })
+            }
             _ => None,
         }
     }
@@ -334,7 +361,10 @@ impl ControllerExecutionIntentV1 {
             ));
         };
         let phase = completion.public_phase()?;
-        let exit_code = if phase == ExecutionPhase::EXECUTION_PHASE_EXITED {
+        let terminal_outcome = if matches!(
+            phase,
+            ExecutionPhase::EXECUTION_PHASE_EXITED | ExecutionPhase::EXECUTION_PHASE_CANCELED
+        ) {
             if self.action != ControllerExecutionActionV1::Observe {
                 return Err(EffectFailure::Permanent(
                     "execution exit requires a distinct signed Host Observe".to_owned(),
@@ -344,8 +374,10 @@ impl ControllerExecutionIntentV1 {
                 EffectFailure::Permanent("execution projection has no command".to_owned())
             })?;
             require_stream_without_capture(command)?;
-            Some(completion.exit_code().ok_or_else(|| {
-                EffectFailure::Permanent("signed Guest exit code is absent".to_owned())
+            Some(completion.terminal_outcome().ok_or_else(|| {
+                EffectFailure::Permanent(
+                    "signed original Guest terminal result is absent".to_owned(),
+                )
             })?)
         } else {
             None
@@ -355,12 +387,10 @@ impl ControllerExecutionIntentV1 {
         } else {
             execution.observation_sequence >= completion.observation_sequence
         };
-        let same_terminal_result = match exit_code {
-            Some(code) => execution.result.as_option().is_some_and(|result| {
-                result.exit_code == code
-                    && result.termination_kind.as_known()
-                        == Some(ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_EXIT_CODE)
-                    && result.signal.to_i32() == 0
+        let same_terminal_result = match terminal_outcome {
+            Some(expected) => execution.result.as_option().is_some_and(|result| {
+                ExecutionTerminalOutcomeV1::try_from_proto(result)
+                    .is_ok_and(|actual| actual == expected)
             }),
             None => true,
         };
@@ -400,8 +430,8 @@ impl ControllerExecutionIntentV1 {
         if completion.is_terminal() {
             observed.access = None.into();
         }
-        if let Some(code) = exit_code {
-            // Guest signs the exit code, not a wall-clock event time. Persist
+        if let Some(terminal) = terminal_outcome {
+            // Guest signs the terminal status, not a wall-clock event time. Persist
             // the Controller's first verified publication time with the result.
             let observed_at = Timestamp {
                 seconds: crate::controller_ownership::sample_ownership_clock()
@@ -410,7 +440,7 @@ impl ControllerExecutionIntentV1 {
                 nanoseconds: 0,
                 ..Default::default()
             };
-            let result = ExecutionTerminalOutcomeV1::ExitCode(code)
+            let result = terminal
                 .to_proto(observed_at.clone(), "Host observed process exit".to_owned())
                 .map_err(|_| {
                     EffectFailure::Retryable("terminal observation time is invalid".to_owned())
@@ -428,7 +458,7 @@ impl ControllerExecutionIntentV1 {
         let mut transaction_hash = Sha256::new()
             .chain_update(CONTROL_PROJECTION_TRANSACTION_DOMAIN)
             .chain_update(self.operation_id.as_bytes());
-        if exit_code.is_some() {
+        if terminal_outcome.is_some() {
             // The durable projection transaction is inseparable from the
             // authenticated Host receipt, including signed Guest result bytes.
             transaction_hash.update((completion.receipt.as_bytes().len() as u64).to_be_bytes());
@@ -1157,6 +1187,8 @@ impl ControllerExecutionExchangeV1 {
 
 #[cfg(test)]
 mod tests {
+    //! Exact admission/observation joins and durable terminal projection replay.
+
     use aos_proto::aos::sandbox::v1::{Command, Duration, Execution};
     use aos_sandbox::JournalLimits;
 
@@ -1372,6 +1404,43 @@ mod tests {
 
     #[test]
     fn signed_exit_code_projects_once_with_durable_observation_time() {
+        assert_durable_terminal_projection(
+            HostExecutionTerminalResultV1::Exited(17),
+            BackendExecutionPhaseV1::Exited,
+            ExecutionTerminalOutcomeV1::ExitCode(17),
+            ExecutionPhase::EXECUTION_PHASE_EXITED,
+        );
+    }
+
+    #[test]
+    fn exact_linux_terminal_and_cancellation_replay_without_status_substitution() {
+        for (raw, canceled) in [(11 | 0x80, false), (64, false), (9, true), (17 << 8, true)] {
+            let status =
+                aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4::new(raw)
+                    .unwrap();
+            assert_durable_terminal_projection(
+                HostExecutionTerminalResultV1::Original { status, canceled },
+                if canceled {
+                    BackendExecutionPhaseV1::Canceled
+                } else {
+                    BackendExecutionPhaseV1::Exited
+                },
+                ExecutionTerminalOutcomeV1::OriginalLinux { status, canceled },
+                if canceled {
+                    ExecutionPhase::EXECUTION_PHASE_CANCELED
+                } else {
+                    ExecutionPhase::EXECUTION_PHASE_EXITED
+                },
+            );
+        }
+    }
+
+    fn assert_durable_terminal_projection(
+        terminal: HostExecutionTerminalResultV1,
+        phase: BackendExecutionPhaseV1,
+        expected: ExecutionTerminalOutcomeV1,
+        expected_phase: ExecutionPhase,
+    ) {
         let project = ProjectId::from_bytes([1; 16]);
         let create_operation = OperationId::from_bytes([2; 16]);
         let observe_operation = OperationId::from_bytes([3; 16]);
@@ -1436,9 +1505,9 @@ mod tests {
         };
         let completion = ControllerExecutionCompletionV1 {
             receipt: EffectReceipt::new(vec![12]).unwrap(),
-            phase: BackendExecutionPhaseV1::Exited,
+            phase,
             observation_sequence: 2,
-            terminal: Some(HostExecutionTerminalResultV1::Exited(17)),
+            terminal: Some(terminal),
             authorization_binding: None,
         };
         intent
@@ -1454,17 +1523,12 @@ mod tests {
         };
         let result = first.result.as_option().unwrap();
         let published_at = result.exited_at.as_option().unwrap().clone();
-        assert_eq!(
-            first.phase.as_known(),
-            Some(ExecutionPhase::EXECUTION_PHASE_EXITED)
-        );
+        assert_eq!(first.phase.as_known(), Some(expected_phase));
         assert_eq!(first.observation_sequence, 2);
-        assert_eq!(result.exit_code, 17);
         assert_eq!(
-            result.termination_kind.as_known(),
-            Some(ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_EXIT_CODE)
+            ExecutionTerminalOutcomeV1::try_from_proto(result).unwrap(),
+            expected,
         );
-        assert_eq!(result.signal.to_i32(), 0);
         assert_eq!(
             first.last_successful_reconciliation_time.as_option(),
             Some(&published_at)
@@ -1491,8 +1555,11 @@ mod tests {
         );
 
         let changed = ControllerExecutionCompletionV1 {
+            receipt: completion.receipt.clone(),
+            phase: completion.phase,
+            observation_sequence: completion.observation_sequence,
             terminal: Some(HostExecutionTerminalResultV1::Exited(18)),
-            ..completion
+            authorization_binding: completion.authorization_binding.clone(),
         };
         assert!(matches!(
             intent.commit_control_projection(project, &mut journal, &changed),
@@ -1504,7 +1571,7 @@ mod tests {
             ..intent
         };
         assert!(matches!(
-            control_intent.commit_control_projection(project, &mut journal, &changed),
+            control_intent.commit_control_projection(project, &mut journal, &completion),
             Err(EffectFailure::Permanent(_))
         ));
     }
@@ -1629,6 +1696,15 @@ fn classify_outcome(
                             ) | (
                                 BackendExecutionPhaseV1::Canceled,
                                 HostExecutionTerminalResultV1::Canceled
+                            ) | (
+                                BackendExecutionPhaseV1::Exited,
+                                HostExecutionTerminalResultV1::Original {
+                                    canceled: false,
+                                    ..
+                                }
+                            ) | (
+                                BackendExecutionPhaseV1::Canceled,
+                                HostExecutionTerminalResultV1::Original { canceled: true, .. }
                             )
                         ) {
                             return Err(EffectFailure::Permanent(

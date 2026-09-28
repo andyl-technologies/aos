@@ -549,6 +549,13 @@ pub enum ExecutionTerminalOutcomeV1 {
     Signal(ExecutionSignalV1),
     /// Authority or node loss prevented a process result.
     Lost,
+    /// Preserves a genuine original Linux signal/cancellation result.
+    OriginalLinux {
+        /// Validated original leader waitstatus, including the exact core bit.
+        status: aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4,
+        /// Reports completed recursive execution-tree cancellation.
+        canceled: bool,
+    },
 }
 
 impl ExecutionTerminalOutcomeV1 {
@@ -557,7 +564,9 @@ impl ExecutionTerminalOutcomeV1 {
     /// # Errors
     ///
     /// Returns [`InvalidCliGrammar::InvalidArguments`] when the timestamp is
-    /// noncanonical or the public reason contains control characters or is oversized.
+    /// noncanonical, the public reason is unsafe or oversized, or an
+    /// `OriginalLinux` value aliases an ordinary noncanceled exit. Ordinary
+    /// exits use `ExitCode`; this keeps terminal replay classification canonical.
     pub fn to_proto(
         self,
         exited_at: aos_proto::aos::sandbox::v1::Timestamp,
@@ -570,10 +579,39 @@ impl ExecutionTerminalOutcomeV1 {
         {
             return Err(InvalidCliGrammar::InvalidArguments);
         }
-        let (exit_code, termination_kind, signal) = match self {
-            Self::ExitCode(code) => (code, 1, 0),
-            Self::Signal(signal) => (0, 2, execution_signal_proto(signal)),
-            Self::Lost => (0, 3, 0),
+        let (exit_code, termination_kind, signal, terminal_signal_v2) = match self {
+            Self::ExitCode(code) => (code, 1, 0, None),
+            Self::Signal(signal) => (0, 2, execution_signal_proto(signal), None),
+            Self::Lost => (0, 3, 0, None),
+            Self::OriginalLinux { status, canceled } => {
+                let number = status.signal();
+                if !canceled && number.is_none() {
+                    return Err(InvalidCliGrammar::InvalidArguments);
+                }
+                let exact =
+                    number.map(
+                        |number| aos_proto::aos::sandbox::v1::ExecutionTerminalSignalV2 {
+                            linux_signal_number: u32::from(number),
+                            core_dumped: status.core_dumped(),
+                            ..Default::default()
+                        },
+                    );
+                (
+                    status.exit_code().map(i32::from).unwrap_or(0),
+                    if canceled {
+                        4
+                    } else if number.is_some() {
+                        2
+                    } else {
+                        1
+                    },
+                    number
+                        .and_then(execution_signal_from_linux)
+                        .map(execution_signal_proto)
+                        .unwrap_or(0),
+                    exact,
+                )
+            }
         };
         Ok(aos_proto::aos::sandbox::v1::ExecutionResult {
             exit_code,
@@ -581,6 +619,7 @@ impl ExecutionTerminalOutcomeV1 {
             exited_at: exited_at.into(),
             termination_kind: termination_kind.into(),
             signal: signal.into(),
+            terminal_signal_v2: terminal_signal_v2.into(),
             ..Default::default()
         })
     }
@@ -605,6 +644,41 @@ impl ExecutionTerminalOutcomeV1 {
         {
             return Err(InvalidCliGrammar::InvalidArguments);
         }
+        if let Some(terminal) = value.terminal_signal_v2.as_option() {
+            let number = u8::try_from(terminal.linux_signal_number)
+                .map_err(|_| InvalidCliGrammar::InvalidArguments)?;
+            let status = aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4::new(
+                u32::from(number) | if terminal.core_dumped { 0x80 } else { 0 },
+            )
+            .map_err(|_| InvalidCliGrammar::InvalidArguments)?;
+            let legacy = execution_signal_from_linux(number)
+                .map(execution_signal_proto)
+                .unwrap_or(0);
+            if status.signal().is_none()
+                || value.exit_code != 0
+                || value.signal.to_i32() != legacy
+                || !matches!(value.termination_kind.to_i32(), 2 | 4)
+            {
+                return Err(InvalidCliGrammar::InvalidArguments);
+            }
+            return Ok(Self::OriginalLinux {
+                status,
+                canceled: value.termination_kind.to_i32() == 4,
+            });
+        }
+        if value.termination_kind.to_i32() == 4 {
+            if value.signal.to_i32() != 0 || !(0..=255).contains(&value.exit_code) {
+                return Err(InvalidCliGrammar::InvalidArguments);
+            }
+            let status = aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4::new(
+                (value.exit_code as u32) << 8,
+            )
+            .map_err(|_| InvalidCliGrammar::InvalidArguments)?;
+            return Ok(Self::OriginalLinux {
+                status,
+                canceled: true,
+            });
+        }
         match (
             value.termination_kind.to_i32(),
             value.signal.to_i32(),
@@ -617,6 +691,19 @@ impl ExecutionTerminalOutcomeV1 {
             (3, 0, 0) => Ok(Self::Lost),
             _ => Err(InvalidCliGrammar::InvalidArguments),
         }
+    }
+}
+
+const fn execution_signal_from_linux(number: u8) -> Option<ExecutionSignalV1> {
+    match number {
+        1 => Some(ExecutionSignalV1::Hangup),
+        2 => Some(ExecutionSignalV1::Interrupt),
+        3 => Some(ExecutionSignalV1::Quit),
+        9 => Some(ExecutionSignalV1::Kill),
+        10 => Some(ExecutionSignalV1::User1),
+        12 => Some(ExecutionSignalV1::User2),
+        15 => Some(ExecutionSignalV1::Terminate),
+        _ => None,
     }
 }
 
@@ -642,5 +729,74 @@ const fn execution_signal_from_proto(value: i32) -> Option<ExecutionSignalV1> {
         6 => Some(ExecutionSignalV1::User1),
         7 => Some(ExecutionSignalV1::User2),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod terminal_v2_tests {
+    //! Exact terminal-only signal projection; control vocabulary is unchanged.
+
+    use super::*;
+    use aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4;
+
+    #[test]
+    fn genuine_fault_and_realtime_status_are_not_guessed_control_signals() {
+        for raw in [11 | 0x80, 64, 9] {
+            let expected = ExecutionTerminalOutcomeV1::OriginalLinux {
+                status: OriginalExecutionWaitStatusV4::new(raw).unwrap(),
+                canceled: false,
+            };
+            let mut value = expected
+                .to_proto(
+                    aos_proto::aos::sandbox::v1::Timestamp {
+                        seconds: 1,
+                        ..Default::default()
+                    },
+                    "Original Guest process terminated".to_owned(),
+                )
+                .unwrap();
+            assert_eq!(
+                ExecutionTerminalOutcomeV1::try_from_proto(&value).unwrap(),
+                expected
+            );
+            assert_eq!(
+                value
+                    .terminal_signal_v2
+                    .as_option()
+                    .unwrap()
+                    .linux_signal_number,
+                raw & 0x7f
+            );
+
+            value.signal = 3.into();
+            assert!(ExecutionTerminalOutcomeV1::try_from_proto(&value).is_err());
+            value.signal = 0.into();
+            value.termination_kind = 1.into();
+            assert!(ExecutionTerminalOutcomeV1::try_from_proto(&value).is_err());
+        }
+    }
+
+    #[test]
+    fn completed_cancellation_retains_original_waitstatus_without_a_sentinel() {
+        for raw in [9, 17 << 8] {
+            let expected = ExecutionTerminalOutcomeV1::OriginalLinux {
+                status: OriginalExecutionWaitStatusV4::new(raw).unwrap(),
+                canceled: true,
+            };
+            let value = expected
+                .to_proto(
+                    aos_proto::aos::sandbox::v1::Timestamp {
+                        seconds: 1,
+                        ..Default::default()
+                    },
+                    "Original execution subtree canceled".to_owned(),
+                )
+                .unwrap();
+            assert_eq!(value.termination_kind.to_i32(), 4);
+            assert_eq!(
+                ExecutionTerminalOutcomeV1::try_from_proto(&value).unwrap(),
+                expected
+            );
+        }
     }
 }

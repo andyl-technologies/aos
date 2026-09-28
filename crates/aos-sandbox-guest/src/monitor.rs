@@ -30,6 +30,9 @@ use crate::ledger::Ledger;
 
 const DEADLINE: Duration = Duration::from_secs(5);
 
+mod control;
+mod terminal;
+
 #[derive(Clone, Default)]
 pub(super) struct MonitorRegistry(Arc<Mutex<Registry>>);
 
@@ -53,9 +56,10 @@ struct MonitorCustody {
     original_expiry: u64,
     relay: Option<PidFd>,
     pending_io: Option<RelayConnection>,
+    controls: control::OriginalSessionControlsV5,
 }
 
-/// Holds only original consumed-channel liveness, never attach authority.
+/// Holds original consumed-channel liveness and terminal data, never authority.
 /// Certificate expiry or policy reads do not create or renew this record.
 struct SessionLiveness {
     execution: [u8; 16],
@@ -64,6 +68,10 @@ struct SessionLiveness {
     child: PidFd,
     relay: PidFd,
     io: RelayConnection,
+    original_witness: Vec<u8>,
+    original_expiry: u64,
+    controls: control::OriginalSessionControlsV5,
+    terminal_notified: bool,
 }
 
 pub(super) struct RelayConnection {
@@ -91,8 +99,25 @@ impl MonitorRegistry {
     /// an authorization decision, reconnect adoption, or a new monitor grant.
     pub(super) fn prune_closed(&self, ledger: &Ledger) -> Result<Option<[u8; 16]>, Error> {
         let mut registry = self.0.lock().map_err(|_| Error::LedgerConflict)?;
+        let original_session_is_valid = {
+            let Registry {
+                installed, session, ..
+            } = &mut *registry;
+            match (installed.as_ref(), session.as_mut()) {
+                (Some(installed), Some(session)) => {
+                    terminal::refresh_original_terminal(installed, session, ledger).is_ok()
+                        && if session.terminal_notified {
+                            session.root_is_live()
+                        } else {
+                            session.is_live()
+                        }
+                }
+                (_, None) => true,
+                (None, Some(_)) => false,
+            }
+        };
         if let Some(session) = registry.session.as_ref() {
-            if !session.is_live() {
+            if !original_session_is_valid {
                 let execution = session.execution;
                 let process = ledger.read_process_bytes(execution)?;
                 if process.cancel_on_disconnect == Some(true) && process.terminal.is_none() {
@@ -124,7 +149,11 @@ impl MonitorRegistry {
         Ok(None)
     }
 
-    pub(super) fn remove(&self, execution: [u8; 16]) -> Result<(), Error> {
+    /// Forecloses new consume while retaining an already consumed data channel.
+    ///
+    /// # Errors
+    /// Rejects a poisoned monitor ownership lock.
+    pub(super) fn finish_execution(&self, execution: [u8; 16]) -> Result<(), Error> {
         let mut registry = self.0.lock().map_err(|_| Error::LedgerConflict)?;
         if registry
             .installed
@@ -132,10 +161,23 @@ impl MonitorRegistry {
             .is_some_and(|scope| scope.runtime.claim().binding.execution_id == execution)
         {
             registry.custody.take();
-            registry.session.take();
-            registry.installed.take();
+            if registry.session.is_none() {
+                registry.installed.take();
+            }
         }
         Ok(())
+    }
+
+    /// Reports original in-memory consumed-session ownership without recovery.
+    ///
+    /// # Errors
+    /// Rejects a poisoned monitor ownership lock.
+    pub(super) fn has_original_session(&self, execution: [u8; 16]) -> Result<bool, Error> {
+        let registry = self.0.lock().map_err(|_| Error::LedgerConflict)?;
+        Ok(registry
+            .session
+            .as_ref()
+            .is_some_and(|session| session.execution == execution))
     }
 
     pub(super) fn install(
@@ -252,6 +294,7 @@ impl MonitorRegistry {
             original_expiry,
             relay: None,
             pending_io: None,
+            controls: control::OriginalSessionControlsV5::new(),
         });
         // Retention itself must not turn an earlier valid sample into an
         // unexpired/current record. This remains only a point-in-time check.
@@ -412,8 +455,12 @@ impl MonitorRegistry {
                 // checks. No callback-supplied PID or cached row can replace it.
                 let mut pending = current.pending_io.take().ok_or(Error::LedgerConflict)?;
                 validate_relay(installed, current, &pending, ledger)?;
-                let mut recheck =
-                    |pending: &RelayConnection| validate_relay(installed, current, pending, ledger);
+                // The effect producer keeps ledger.live borrowed through SCM.
+                // This callback rechecks actual root/relay custody but does not
+                // reacquire that same tree lock; the producer rechecks its tree.
+                let mut recheck = |pending: &RelayConnection| {
+                    validate_relay_custody(installed, current, pending, ledger)
+                };
                 let transferred = (|| {
                     transfer(&mut pending, installed.runtime.claim(), &mut recheck)?;
                     validate_custody(
@@ -453,6 +500,10 @@ impl MonitorRegistry {
                 child: original.child,
                 relay,
                 io,
+                original_witness: original.original_witness,
+                original_expiry: original.original_expiry,
+                controls: original.controls,
+                terminal_notified: false,
             });
         } else if action == OriginalAttachActionV3::Consume || result.is_err() {
             registry.custody.take();
@@ -462,17 +513,21 @@ impl MonitorRegistry {
 }
 
 impl SessionLiveness {
+    fn root_is_live(&self) -> bool {
+        self.subject.is_alive().unwrap_or(false)
+            && self.connection.peer().is_alive().unwrap_or(false)
+            && self.child.is_alive().unwrap_or(false)
+            && connected(&self.connection)
+    }
+
     fn is_live(&self) -> bool {
         // These original handles were retained after the one-use SCM attempt.
         // No callback bytes, expiry refresh, scalar PID or session identifier
         // can recreate them. This method cannot release any descriptor.
-        self.subject.is_alive().unwrap_or(false)
-            && self.connection.peer().is_alive().unwrap_or(false)
-            && self.child.is_alive().unwrap_or(false)
+        self.root_is_live()
             && self.relay.is_alive().unwrap_or(false)
             && self.io.subject.is_alive().unwrap_or(false)
             && self.io.socket.peer().is_alive().unwrap_or(false)
-            && connected(&self.connection)
             && connected(&self.io.socket)
     }
 }
@@ -517,7 +572,7 @@ fn require_root_monitor(
         return Err(Error::InvalidRequest);
     }
     runtime
-        .require_monitor(connection.peer().pidfd())
+        .require_original_control_monitor_v5(connection.peer().pidfd())
         .map_err(|_| Error::InvalidRequest)
 }
 
@@ -529,48 +584,19 @@ fn validate_custody(
     payload: &[u8],
     ledger: &Ledger,
 ) -> Result<(), Error> {
-    require_root_monitor(connection, &installed.runtime)?;
-    installed
-        .runtime
-        .require_monitor(subject.pidfd())
-        .map_err(|_| Error::InvalidRequest)?;
-    let witness =
-        OpenSshMonitorWitnessV2::decode_confined_v3(payload).map_err(|_| Error::InvalidRequest)?;
     let ticket = PublicAttachTicketBindingV2::decode(&installed.original_ticket)
         .map_err(|_| Error::InvalidRequest)?;
-    let claim = installed.runtime.claim();
-    if read_ticket()? != installed.original_ticket {
-        return Err(Error::LedgerConflict);
-    }
-    witness
-        .validate_original_holder(claim, &ticket, now()?)
-        .map_err(|_| Error::InvalidRequest)?;
-    installed
-        .runtime
-        .require_confined_child_v3(
-            child,
-            connection.peer().credentials().pid().get(),
-            witness.uid,
-            witness.gid,
-        )
-        .map_err(|_| Error::InvalidRequest)?;
-
-    let process = ledger.read_process_bytes(claim.binding.execution_id)?;
-    let request = aos_sandbox_agent::openssh_gate::decode_openssh_gate_bridge_request_v1(
-        &claim
-            .encode_bridge_request()
-            .map_err(|_| Error::InvalidRequest)?,
-    )
-    .map_err(|_| Error::InvalidRequest)?;
-    if !crate::bridge::request_matches(&request, claim, &process)
-        || crate::gate::static_login_identity(&claim.binding.user)? != (witness.uid, witness.gid)
-        || process.canceled
-        || process.terminal.is_some()
-        || !ledger.require_live_process(&process)?
-    {
-        return Err(Error::InvalidRequest);
-    }
-    Ok(())
+    control::require_control_custody(
+        installed,
+        connection,
+        subject,
+        child,
+        payload,
+        ticket.expires_at,
+        ledger,
+    )?;
+    let process = ledger.read_process_bytes(installed.runtime.claim().binding.execution_id)?;
+    ledger.require_active_original_tree_v5(&process)
 }
 
 fn refresh_relay(
@@ -578,14 +604,14 @@ fn refresh_relay(
     custody: &mut MonitorCustody,
     ledger: &Ledger,
 ) -> Result<(), Error> {
-    let record = match custody.connection.receive_with_descriptors(8, 1) {
+    let record = match custody.connection.receive_with_descriptors(
+        aos_sandbox_agent::openssh_control::OPENSSH_CONTROL_MAXIMUM_REQUEST_BYTES_V5,
+        1,
+    ) {
         Ok(record) => record,
         Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    if custody.relay.is_some() {
-        return Err(Error::LedgerConflict);
-    }
     let record = custody
         .connection
         .bind_received_descriptors(record)
@@ -593,17 +619,34 @@ fn refresh_relay(
     let (payload, subject, mut descriptors, peer) = record.into_parts();
     let sender = subject.credentials();
     let connector = peer.credentials();
-    if payload != b"AOSRLY03"
-        || sender.pid() != connector.pid()
+    if sender.pid() != connector.pid()
         || sender.uid() != connector.uid()
         || sender.gid() != connector.gid()
-        || descriptors.len() != 1
     {
+        return Err(Error::InvalidRequest);
+    }
+    if payload.get(..8) == Some(b"AOSMCQ05".as_slice()) {
+        if !descriptors.is_empty() {
+            return Err(Error::InvalidRequest);
+        }
+        control::require_same_root_subject(&subject, &custody.subject)?;
+        control::require_control_custody(
+            installed,
+            &custody.connection,
+            &custody.subject,
+            &custody.child,
+            &custody.original_witness,
+            custody.original_expiry,
+            ledger,
+        )?;
+        return custody.controls.queue(&payload);
+    }
+    if payload != b"AOSRLY03" || descriptors.len() != 1 || custody.relay.is_some() {
         return Err(Error::InvalidRequest);
     }
     installed
         .runtime
-        .require_monitor(subject.pidfd())
+        .require_original_control_monitor_v5(subject.pidfd())
         .map_err(|_| Error::InvalidRequest)?;
     let relay = PidFd::from_owned(descriptors.pop().ok_or(Error::InvalidRequest)?)
         .map_err(|_| Error::InvalidRequest)?;
@@ -650,12 +693,26 @@ fn validate_relay(
     pending: &RelayConnection,
     ledger: &Ledger,
 ) -> Result<(), Error> {
-    validate_custody(
+    validate_relay_custody(installed, custody, pending, ledger)?;
+    let process = ledger.read_process_bytes(installed.runtime.claim().binding.execution_id)?;
+    ledger.require_active_original_tree_v5(&process)
+}
+
+// The SCM producer already holds the actual tree's live-map borrow. This
+// current root/relay check deliberately does not reacquire that same mutex.
+fn validate_relay_custody(
+    installed: &InstalledScope,
+    custody: &MonitorCustody,
+    pending: &RelayConnection,
+    ledger: &Ledger,
+) -> Result<(), Error> {
+    control::require_control_custody(
         installed,
         &custody.connection,
         &custody.subject,
         &custody.child,
         &custody.original_witness,
+        custody.original_expiry,
         ledger,
     )?;
     let relay = custody.relay.as_ref().ok_or(Error::InvalidRequest)?;
@@ -744,7 +801,7 @@ mod tests {
     #[test]
     fn cold_registry_never_reconstructs_monitor_custody() {
         let registry = MonitorRegistry::default();
-        registry.remove([1; 16]).unwrap();
+        registry.finish_execution([1; 16]).unwrap();
         let cold = registry.0.lock().unwrap();
         assert!(cold.installed.is_none());
         assert!(cold.custody.is_none());

@@ -68,7 +68,7 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     // This covers the complete comment-free V1 schema rather than a sample of
     // declarations: every method tag, enum value, message field/type/
     // cardinality/oneof, reserved tag, and RPC signature are compatibility-owned.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0xaa04_f048_6954_1cc9;
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0xf6b8_728a_8d97_9fd3;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(
@@ -322,6 +322,7 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
             "bytes pending_grant = 2;",
             "bytes original_ticket_binding_v2 = 3;",
             "bytes original_ticket_consume_v3 = 4;",
+            "bytes original_session_control_v5 = 5;",
         ],
     )?;
     verify_scoped_declarations(
@@ -336,6 +337,7 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
             "bytes original_ticket_digest_v2 = 17;",
             "bytes signed_ticket_readback_v2 = 18;",
             "bytes original_attach_observation_v3 = 19;",
+            "bytes original_session_observation_v5 = 20;",
         ],
     )?;
     verify_scoped_declarations(
@@ -479,6 +481,48 @@ fn verify_sandbox_compatibility() -> Result<(), Box<dyn std::error::Error>> {
         &[
             "Operation operation = 4;",
             "OpenSshAccessEndpoint access = 5;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message ExecutionResult {",
+        &[
+            "int32 exit_code = 1;",
+            "string termination_reason = 2;",
+            "Timestamp exited_at = 3;",
+            "ExecutionTerminationKind termination_kind = 4;",
+            "ExecutionSignal signal = 5;",
+            "ExecutionTerminalSignalV2 terminal_signal_v2 = 6;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message ExecutionTerminalSignalV2 {",
+        &["uint32 linux_signal_number = 1;", "bool core_dumped = 2;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "enum ExecutionTerminationKind {",
+        &[
+            "EXECUTION_TERMINATION_KIND_UNSPECIFIED = 0;",
+            "EXECUTION_TERMINATION_KIND_EXIT_CODE = 1;",
+            "EXECUTION_TERMINATION_KIND_SIGNAL = 2;",
+            "EXECUTION_TERMINATION_KIND_LOST = 3;",
+            "EXECUTION_TERMINATION_KIND_CANCELED = 4;",
+        ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "enum ExecutionSignal {",
+        &[
+            "EXECUTION_SIGNAL_UNSPECIFIED = 0;",
+            "EXECUTION_SIGNAL_HANGUP = 1;",
+            "EXECUTION_SIGNAL_INTERRUPT = 2;",
+            "EXECUTION_SIGNAL_QUIT = 3;",
+            "EXECUTION_SIGNAL_TERMINATE = 4;",
+            "EXECUTION_SIGNAL_KILL = 5;",
+            "EXECUTION_SIGNAL_USER_1 = 6;",
+            "EXECUTION_SIGNAL_USER_2 = 7;",
         ],
     )?;
     verify_scoped_declarations(

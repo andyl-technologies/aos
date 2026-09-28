@@ -50,6 +50,47 @@ pub(super) struct AttachBridge {
 }
 
 impl AttachBridge {
+    /// Applies only existing original-monitor controls under the caller's barrier.
+    ///
+    /// # Errors
+    /// Rejects a closed bridge, expired/nonnarrowed deadline, absent custody,
+    /// replay, unsupported original topology or ambiguous effects/ACK.
+    pub(super) fn original_control_v5(
+        &self,
+        action: aos_sandbox_agent::openssh_control_channel::OriginalControlActionV5,
+        binding: [u8; 32],
+        request: &[u8],
+        authority_expires_at: i64,
+        effect_deadline_boottime_nanoseconds: u64,
+        ticket: &[u8],
+        ledger: &Ledger,
+        deadline: Instant,
+    ) -> Result<
+        aos_sandbox_agent::openssh_control_channel::OriginalControlObservationV5,
+        GuestProcessEffectErrorV1,
+    > {
+        if self.server.is_finished() {
+            return Err(GuestProcessEffectErrorV1::Unavailable(
+                "attach bridge stopped",
+            ));
+        }
+        let deadline = original_authority_deadline(
+            authority_expires_at,
+            effect_deadline_boottime_nanoseconds,
+        )?
+        .min(deadline);
+        self.monitors.original_control_v5(
+            action,
+            binding,
+            request,
+            ticket,
+            ledger,
+            deadline,
+            authority_expires_at,
+            effect_deadline_boottime_nanoseconds,
+        )
+    }
+
     pub(super) fn original_attach_v3(
         &self,
         action: aos_sandbox_agent::openssh_consume::OriginalAttachActionV3,
@@ -180,19 +221,44 @@ impl AttachBridge {
         Ok(())
     }
 
-    pub(super) fn remove(&self, execution: [u8; 16]) -> Result<(), GuestProcessEffectErrorV1> {
+    /// Closes the I/O factory without discarding consumed terminal-data custody.
+    ///
+    /// # Errors
+    /// Rejects poisoned monitor or I/O ownership locks.
+    pub(super) fn finish_execution(
+        &self,
+        execution: [u8; 16],
+    ) -> Result<(), GuestProcessEffectErrorV1> {
         // Owner effects already retain the shared barrier. Preserve lock order
         // for the later held consume: barrier, monitor custody, I/O registry.
-        self.monitors.remove(execution)?;
+        self.monitors.finish_execution(execution)?;
         let mut masters = self.masters.lock().map_err(|_| {
             GuestProcessEffectErrorV1::Unavailable("attach bridge registry poisoned")
         })?;
         masters.remove(&execution);
         Ok(())
     }
+
+    /// Reports retained consumed-session data ownership, not attach permission.
+    ///
+    /// # Errors
+    /// Rejects a poisoned monitor ownership lock.
+    pub(super) fn has_original_session(
+        &self,
+        execution: [u8; 16],
+    ) -> Result<bool, GuestProcessEffectErrorV1> {
+        self.monitors.has_original_session(execution)
+    }
 }
 
-fn original_authority_deadline(
+/// Narrows a local wait by current wall-clock expiry and the admitted BOOTTIME cut.
+///
+/// Repeating this nonauthorizing check detects suspension and forward wall-clock
+/// changes during an effect; it does not refresh either original deadline.
+///
+/// # Errors
+/// Rejects expired, negative, overflowing or unrepresentable deadlines.
+pub(super) fn original_authority_deadline(
     expires_at: i64,
     effect_deadline_boottime_nanoseconds: u64,
 ) -> Result<Instant, GuestProcessEffectErrorV1> {
@@ -242,93 +308,107 @@ fn transfer_original_io_v3(
 ) -> Result<(), GuestProcessEffectErrorV1> {
     crate::process::check_deadline(deadline)?;
     let process = ledger.read_process_bytes(claim.binding.execution_id)?;
-    if read_gate_claim()? != *claim
-        || process.canceled
-        || process.terminal.is_some()
-        || !ledger.require_live_process(&process)?
-    {
+    if read_gate_claim()? != *claim || process.canceled || process.terminal.is_some() {
         return Err(GuestProcessEffectErrorV1::InvalidRequest);
     }
-    let mut masters = masters
-        .lock()
-        .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
-    let io = masters
-        .get(&process.execution)
-        .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
-    let shape = process
-        .attach_io
-        .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
-    match (shape, io, claim.pty) {
-        (crate::ledger::AttachIoShapeV3::Pty, AttachedIo::Pty(_), true)
-        | (crate::ledger::AttachIoShapeV3::Stream, AttachedIo::Stream { .. }, false) => {}
-        _ => return Err(GuestProcessEffectErrorV1::LedgerConflict),
-    }
+    // The barrier and monitor registry are already held by the caller. Keep
+    // this actual original tree borrowed through SCM and its final receipt;
+    // the root/relay callback below must never recursively lock ledger.live.
+    let result = ledger.with_active_original_tree_v5(&process, |tree| {
+        let mut masters = masters
+            .lock()
+            .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+        let io = masters
+            .get(&process.execution)
+            .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
+        let shape = process
+            .attach_io
+            .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
+        match (shape, io, claim.pty) {
+            (crate::ledger::AttachIoShapeV3::Pty, AttachedIo::Pty(_), true)
+            | (crate::ledger::AttachIoShapeV3::Stream, AttachedIo::Stream { .. }, false) => {}
+            _ => return Err(GuestProcessEffectErrorV1::LedgerConflict),
+        }
 
-    // Every rejection above is effect-free. Even an ambiguous SCM send after
-    // this exact durable reservation permanently consumes the logical slot.
-    ledger.reserve_original_attach_v3(
-        &process,
-        aos_sandbox_agent::openssh_ticket::ticket_digest_v2(ticket),
-        expected_binding,
-    )?;
-    crate::process::check_deadline(deadline)?;
-    original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
-    recheck_custody(pending)?;
-    if read_gate_claim()? != *claim || !ledger.require_live_process(&process)? {
-        return Err(GuestProcessEffectErrorV1::InvalidRequest);
-    }
-    crate::process::check_deadline(deadline)?;
-    original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
-    pending.io_attempted = true;
-    match io {
-        AttachedIo::Pty(master) => pending
-            .socket
-            .send_with_descriptors(b"AOSGOK03", &[master.as_fd()])?,
-        AttachedIo::Stream {
-            input,
-            output,
-            error,
-        } => pending
-            .socket
-            .send_with_descriptors(b"AOSGOS03", &[input.as_fd(), output.as_fd(), error.as_fd()])?,
-    }
-
-    // Keep the same barrier and registry custody through kernel-identified
-    // receipt. Neither reflected bytes nor an ACK can nominate another child.
-    let reply = loop {
+        // Every rejection above is effect-free. Even an ambiguous SCM send after
+        // this exact durable reservation permanently consumes the logical slot.
+        ledger.reserve_original_attach_v3(
+            &process,
+            aos_sandbox_agent::openssh_ticket::ticket_digest_v2(ticket),
+            expected_binding,
+        )?;
         crate::process::check_deadline(deadline)?;
         original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
-        match pending.socket.receive(8) {
-            Ok(record) => break record,
-            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
-                thread::sleep(Duration::from_millis(2));
-            }
-            Err(error) => return Err(error.into()),
+        recheck_custody(pending)?;
+        if read_gate_claim()? != *claim {
+            return Err(GuestProcessEffectErrorV1::InvalidRequest);
         }
-    };
-    let reply = pending
-        .socket
-        .bind_received(reply)
-        .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
-    let sender = reply.subject().credentials();
-    let connector = reply.peer().credentials();
-    if reply.payload() != b"AOSRID03"
-        || sender.pid() != connector.pid()
-        || sender.uid() != connector.uid()
-        || sender.gid() != connector.gid()
-        || !reply
-            .subject()
-            .is_alive()
-            .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?
-    {
-        return Err(GuestProcessEffectErrorV1::InvalidRequest);
+        tree.require_active_original_scope(&process)?;
+        crate::process::check_deadline(deadline)?;
+        original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
+        pending.io_attempted = true;
+        match io {
+            AttachedIo::Pty(master) => pending
+                .socket
+                .send_with_descriptors(b"AOSGOK03", &[master.as_fd()])?,
+            AttachedIo::Stream {
+                input,
+                output,
+                error,
+            } => pending.socket.send_with_descriptors(
+                b"AOSGOS03",
+                &[input.as_fd(), output.as_fd(), error.as_fd()],
+            )?,
+        }
+
+        // Keep the same barrier and registry custody through kernel-identified
+        // receipt. Neither reflected bytes nor an ACK can nominate another child.
+        let reply = loop {
+            crate::process::check_deadline(deadline)?;
+            original_authority_deadline(
+                authority_expires_at,
+                effect_deadline_boottime_nanoseconds,
+            )?;
+            match pending.socket.receive(8) {
+                Ok(record) => break record,
+                Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
+                    thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
+        let reply = pending
+            .socket
+            .bind_received(reply)
+            .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?;
+        let sender = reply.subject().credentials();
+        let connector = reply.peer().credentials();
+        if reply.payload() != b"AOSRID03"
+            || sender.pid() != connector.pid()
+            || sender.uid() != connector.uid()
+            || sender.gid() != connector.gid()
+            || !reply
+                .subject()
+                .is_alive()
+                .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?
+        {
+            return Err(GuestProcessEffectErrorV1::InvalidRequest);
+        }
+        drop(reply);
+        crate::process::check_deadline(deadline)?;
+        original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
+        recheck_custody(pending)?;
+        tree.require_active_original_scope(&process)?;
+        masters.remove(&process.execution);
+        Ok(())
+    });
+    if pending.io_attempted {
+        // SCM may already have exposed the original descriptors. Expiry,
+        // tree exit, changed custody or lost receipt cannot become a retry.
+        result.map_err(|_| GuestProcessEffectErrorV1::AmbiguousEffect)
+    } else {
+        result
     }
-    drop(reply);
-    crate::process::check_deadline(deadline)?;
-    original_authority_deadline(authority_expires_at, effect_deadline_boottime_nanoseconds)?;
-    recheck_custody(pending)?;
-    masters.remove(&process.execution);
-    Ok(())
 }
 
 fn bind_listener(path: &Path) -> Result<RecordSubjectListener, GuestProcessEffectErrorV1> {

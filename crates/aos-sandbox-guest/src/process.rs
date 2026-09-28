@@ -2,6 +2,7 @@
 
 use std::os::fd::{FromRawFd as _, OwnedFd};
 use std::os::unix::process::CommandExt as _;
+use std::os::unix::process::ExitStatusExt as _;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::time::Instant;
 
@@ -195,7 +196,7 @@ impl GuestProcessEffectsV1 {
             AgentExecutionOperationV1::Signal {
                 execution,
                 signal_code,
-            } => self.signal(*execution, *signal_code, runtime),
+            } => self.signal(*execution, *signal_code, runtime, deadline),
             AgentExecutionOperationV1::Cancel { execution } => {
                 self.cancel(*execution, runtime, deadline)
             }
@@ -312,6 +313,7 @@ impl GuestProcessEffectsV1 {
             cancel_on_disconnect: Some(cancel_on_disconnect),
             canceled: false,
             terminal: None,
+            terminal_waitstatus: None,
         };
         self.ledger.write_process(execution, &record)?;
         tree.require_leader()?;
@@ -393,7 +395,9 @@ impl GuestProcessEffectsV1 {
         runtime: &AgentRuntimeBindingV1,
     ) -> Result<StoredOutcome, GuestProcessEffectErrorV1> {
         let record = self.bound_process(execution, runtime)?;
-        if !record.pty || !self.ledger.require_live_process(&record)? {
+        // Public Resize applies to the original admitted PTY, independently of
+        // whether that execution was eligible for an OpenSSH attach route.
+        if !record.pty {
             return Err(GuestProcessEffectErrorV1::Unavailable("PTY is not live"));
         }
         let live = self
@@ -401,9 +405,18 @@ impl GuestProcessEffectsV1 {
             .live()
             .lock()
             .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
-        let master = live
+        let process = live
             .get(execution.as_bytes())
-            .and_then(|process| process.pty_master.as_ref())
+            .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+        process.tree.require_original_scope(&record)?;
+        if process.tree.empty_and_exited()? {
+            return Err(GuestProcessEffectErrorV1::Unavailable(
+                "PTY execution has exited",
+            ));
+        }
+        let master = process
+            .pty_master
+            .as_ref()
             .ok_or(GuestProcessEffectErrorV1::Unavailable(
                 "PTY master cannot be reattached after agent restart",
             ))?;
@@ -425,16 +438,24 @@ impl GuestProcessEffectsV1 {
     fn signal(
         &mut self,
         execution: ExecutionId,
-        _code: u8,
+        code: u8,
         runtime: &AgentRuntimeBindingV1,
+        deadline: Instant,
     ) -> Result<StoredOutcome, GuestProcessEffectErrorV1> {
-        self.bound_process(execution, runtime)?;
-        // A retained leader proves neither the complete job-control group nor
-        // atomic delivery to all original descendants. Do not advertise a
-        // leader-only downgrade while the full session signal cut is absent.
-        Err(GuestProcessEffectErrorV1::Unavailable(
-            "whole-execution signal delivery is not qualified",
-        ))
+        let record = self.bound_process(execution, runtime)?;
+        let live = self
+            .ledger
+            .live()
+            .lock()
+            .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+        let process = live
+            .get(execution.as_bytes())
+            .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+        process.tree.require_original_scope(&record)?;
+        process.tree.signal(code, deadline)?;
+        // The surrounding operation reservation stays indeterminate if any
+        // signal or freezer restoration failed; no partial send is replayed.
+        Ok(outcome(AgentExecutionPhaseV1::Running, 3, &[code]))
     }
 
     fn cancel(
@@ -445,15 +466,26 @@ impl GuestProcessEffectsV1 {
     ) -> Result<StoredOutcome, GuestProcessEffectErrorV1> {
         self.bound_process(execution, runtime)?;
         let result = cancel_owned_execution(&self.ledger, execution, deadline)?;
-        self.bridge.remove(*execution.as_bytes())?;
-        if self
-            .gate
-            .as_ref()
-            .is_some_and(|gate| gate.execution() == *execution.as_bytes())
+        self.finish_execution(execution)?;
+        Ok(result)
+    }
+
+    fn finish_execution(
+        &mut self,
+        execution: ExecutionId,
+    ) -> Result<(), GuestProcessEffectErrorV1> {
+        // Close the I/O factory immediately, but retain an already consumed
+        // original monitor long enough to report the actual terminal status.
+        self.bridge.finish_execution(*execution.as_bytes())?;
+        if !self.bridge.has_original_session(*execution.as_bytes())?
+            && self
+                .gate
+                .as_ref()
+                .is_some_and(|gate| gate.execution() == *execution.as_bytes())
         {
             self.gate = None;
         }
-        Ok(result)
+        Ok(())
     }
 
     fn observe(
@@ -461,46 +493,10 @@ impl GuestProcessEffectsV1 {
         execution: ExecutionId,
         runtime: &AgentRuntimeBindingV1,
     ) -> Result<StoredOutcome, GuestProcessEffectErrorV1> {
-        let mut record = self.bound_process(execution, runtime)?;
-        if let Some(terminal) = &record.terminal {
-            return Ok(terminal.clone());
-        }
-        let mut live = self
-            .ledger
-            .live()
-            .lock()
-            .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
-        // A cold ledger cannot reconstruct a process tree or prove recursive
-        // exit from a PID, PGID, cgroup number, or a missing /proc entry.
-        let process = live
-            .get_mut(execution.as_bytes())
-            .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
-        if process.tree.empty_and_exited()? {
-            if let Some(status) = process.child.try_wait()? {
-                let result = if record.canceled {
-                    outcome(AgentExecutionPhaseV1::Canceled, 7, b"canceled")
-                } else {
-                    outcome(
-                        AgentExecutionPhaseV1::Exited,
-                        6,
-                        &status.code().unwrap_or(-1).to_be_bytes(),
-                    )
-                };
-                record.terminal = Some(result.clone());
-                self.ledger.replace_process(execution, &record)?;
-                live.remove(execution.as_bytes());
-                drop(live);
-                self.bridge.remove(*execution.as_bytes())?;
-                if self
-                    .gate
-                    .as_ref()
-                    .is_some_and(|gate| gate.execution() == *execution.as_bytes())
-                {
-                    self.gate = None;
-                }
-                return Ok(result);
-            }
-            return Err(GuestProcessEffectErrorV1::AmbiguousEffect);
+        let record = self.bound_process(execution, runtime)?;
+        if let Some(result) = observe_owned_terminal(&self.ledger, execution)? {
+            self.finish_execution(execution)?;
+            return Ok(result);
         }
         // A dead leader with live descendants is not a terminal execution.
         Ok(outcome(
@@ -519,6 +515,7 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
                 | AgentFeatureV1::ExecutionHandoff
                 | AgentFeatureV1::ExecutionObservation
                 | AgentFeatureV1::TerminalResize
+                | AgentFeatureV1::ExecutionSignal
                 | AgentFeatureV1::Quiesce
         )
     }
@@ -656,6 +653,60 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
         Ok(result)
     }
 
+    fn original_control_v5(
+        &mut self,
+        action: aos_sandbox_agent::openssh_control_channel::OriginalControlActionV5,
+        binding: [u8; 32],
+        control: &[u8],
+        authority_expires_at: i64,
+        effect_deadline_boottime_nanoseconds: u64,
+        request: &OpenSshGateObserveRequestV1,
+        ticket: &[u8],
+        runtime: &AgentRuntimeBindingV1,
+        channel: ObjectDigest,
+        deadline: Instant,
+    ) -> Result<
+        (
+            OpenSshGateReadbackV1,
+            aos_sandbox_agent::openssh_control_channel::OriginalControlObservationV5,
+        ),
+        ProtectedGuestAgentErrorV1,
+    > {
+        let barrier = self.ledger.effect_barrier();
+        let _current = barrier
+            .lock()
+            .map_err(|_| effect_error(GuestProcessEffectErrorV1::LedgerConflict))?;
+        check_deadline(deadline).map_err(effect_error)?;
+        if self.quiesced {
+            return Err(effect_error(GuestProcessEffectErrorV1::InvalidRequest));
+        }
+        let gate = self
+            .gate
+            .as_mut()
+            .ok_or_else(|| effect_error(GuestProcessEffectErrorV1::InvalidRequest))?;
+        let readback = gate
+            .observe_active_original_tree_v5(request, runtime, channel, &self.ledger, deadline)
+            .map_err(effect_error)?;
+        let observation = self
+            .bridge
+            .original_control_v5(
+                action,
+                binding,
+                control,
+                authority_expires_at,
+                effect_deadline_boottime_nanoseconds,
+                ticket,
+                &self.ledger,
+                deadline,
+            )
+            .map_err(effect_error)?;
+        // The effect owner has physically rechecked installation before/after
+        // its effect and ACK. KILL may empty the original tree; that is not a
+        // fresh active-tree permission for another control or consume.
+        check_deadline(deadline).map_err(effect_error)?;
+        Ok((readback, observation))
+    }
+
     fn original_attach_v3(
         &mut self,
         action: aos_sandbox_agent::openssh_consume::OriginalAttachActionV3,
@@ -679,17 +730,7 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
             .lock()
             .map_err(|_| effect_error(GuestProcessEffectErrorV1::LedgerConflict))?;
         check_deadline(deadline).map_err(effect_error)?;
-        if self.quiesced
-            || !self
-                .ledger
-                .require_live_process(
-                    &self
-                        .ledger
-                        .read_process_bytes(request.binding.execution_id)
-                        .map_err(effect_error)?,
-                )
-                .map_err(effect_error)?
-        {
+        if self.quiesced {
             return Err(effect_error(GuestProcessEffectErrorV1::InvalidRequest));
         }
         // Installation and binding are earlier effects. Consume cannot rebuild
@@ -699,7 +740,7 @@ impl GuestOperationEffectsV1 for GuestProcessEffectsV1 {
             .as_mut()
             .ok_or_else(|| effect_error(GuestProcessEffectErrorV1::InvalidRequest))?;
         let readback = gate
-            .observe(request, runtime, channel, &self.ledger, deadline)
+            .observe_active_original_tree_v5(request, runtime, channel, &self.ledger, deadline)
             .map_err(effect_error)?;
         let observation = self
             .bridge
@@ -741,6 +782,177 @@ fn outcome(phase: AgentExecutionPhaseV1, kind: u8, payload: &[u8]) -> StoredOutc
         phase: phase.code(),
         result,
     }
+}
+
+pub(super) fn terminal_outcome(
+    status: aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4,
+    canceled: bool,
+) -> StoredOutcome {
+    let mut result = outcome(
+        if canceled {
+            AgentExecutionPhaseV1::Canceled
+        } else {
+            AgentExecutionPhaseV1::Exited
+        },
+        if canceled { 7 } else { 6 },
+        &status.raw().to_be_bytes(),
+    );
+    // V1's signed -1 sentinel never identifies a terminating signal. V2
+    // preserves the exact original Linux waitstatus, including its core bit.
+    result.result[..8].copy_from_slice(b"AOSGER02");
+    result
+}
+
+/// Retains genuine terminal data while the caller holds the shared barrier.
+///
+/// An absent live tree is never reconstructed from a cold row or missing PID.
+///
+/// # Errors
+/// Rejects foreign original tree custody, missing live process ownership,
+/// ambiguous leader status, or failed protected terminal publication.
+pub(super) fn observe_owned_terminal(
+    ledger: &Ledger,
+    execution: ExecutionId,
+) -> Result<Option<StoredOutcome>, GuestProcessEffectErrorV1> {
+    let mut record = ledger.read_process(execution)?;
+    if let Some(terminal) = &record.terminal {
+        return Ok(Some(terminal.clone()));
+    }
+    let mut live = ledger
+        .live()
+        .lock()
+        .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+    let process = live
+        .get_mut(execution.as_bytes())
+        .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+    process.tree.require_original_identity(&record)?;
+    if !process.tree.empty_and_exited()? {
+        return Ok(None);
+    }
+    let status = process
+        .child
+        .try_wait()?
+        .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+    let status = aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4::new(
+        u32::try_from(status.into_raw()).map_err(|_| GuestProcessEffectErrorV1::AmbiguousEffect)?,
+    )
+    .map_err(|_| GuestProcessEffectErrorV1::AmbiguousEffect)?;
+    let result = terminal_outcome(status, record.canceled);
+    record.terminal_waitstatus = Some(status.raw());
+    record.terminal = Some(result.clone());
+    ledger.replace_process(execution, &record)?;
+    live.remove(execution.as_bytes());
+    Ok(Some(result))
+}
+
+/// Applies only a queued original-session control while all owner cuts stay held.
+///
+/// The monitor owner supplies the already matched immutable ticket/session and
+/// root-owned request; it retains the shared barrier and custody through this
+/// call. This private method cannot select another process, create a PTY or
+/// infer authority from the parsed action. Every actual effect follows its
+/// durable exact sequence reservation, and a failure never permits redispatch.
+///
+/// # Errors
+/// Rejects absent/foreign original tree or PTY ownership, closed process state,
+/// unsupported topology, lost currentness, ambiguous reservation or effect.
+pub(super) fn apply_owned_original_control_v5(
+    ledger: &Ledger,
+    execution: ExecutionId,
+    ticket: [u8; 32],
+    session: [u8; 32],
+    request: &aos_sandbox_agent::openssh_control::OpenSshControlRequestV5,
+    deadline: Instant,
+    mut current_deadline: impl FnMut() -> Result<(), GuestProcessEffectErrorV1>,
+    mut recheck: impl FnMut() -> Result<(), GuestProcessEffectErrorV1>,
+) -> Result<(), GuestProcessEffectErrorV1> {
+    use std::os::fd::AsFd as _;
+
+    use aos_sandbox_agent::openssh_control::OpenSshControlActionV5;
+
+    recheck()?;
+    current_deadline()?;
+    check_deadline(deadline)?;
+    let record = ledger.read_process(execution)?;
+    let live = ledger
+        .live()
+        .lock()
+        .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+    let process = live
+        .get(execution.as_bytes())
+        .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+    process.tree.require_original_scope(&record)?;
+    if process.tree.empty_and_exited()? {
+        return Err(GuestProcessEffectErrorV1::InvalidRequest);
+    }
+
+    // Preflight every mode and the actual retained descriptor before reserving.
+    // The client terminal label is committed data, never an environment update.
+    let prepared_pty = match &request.action {
+        OpenSshControlActionV5::Signal(_) => None,
+        OpenSshControlActionV5::Resize(geometry) | OpenSshControlActionV5::Pty { geometry, .. } => {
+            if record.attach_io != Some(AttachIoShapeV3::Pty) || !record.pty {
+                return Err(GuestProcessEffectErrorV1::InvalidRequest);
+            }
+            let master = process
+                .pty_master
+                .as_ref()
+                .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+            use crate::openssh_pty::PreparedOriginalPtySettings;
+
+            Some(match &request.action {
+                OpenSshControlActionV5::Resize(_) => {
+                    PreparedOriginalPtySettings::prepare_resize(master.as_fd(), *geometry)?
+                }
+                OpenSshControlActionV5::Pty { modes, .. } => {
+                    PreparedOriginalPtySettings::prepare_initial(master.as_fd(), *geometry, modes)?
+                }
+                _ => return Err(GuestProcessEffectErrorV1::InvalidRequest),
+            })
+        }
+    };
+    ledger.reserve_original_control_v5(&record, ticket, session, request)?;
+    recheck()?;
+    current_deadline()?;
+    check_deadline(deadline)?;
+    process.tree.require_original_scope(&record)?;
+    match (&request.action, prepared_pty) {
+        (OpenSshControlActionV5::Signal(signal), None) => {
+            process
+                .tree
+                .signal_with_current_cut(*signal, deadline, || {
+                    recheck()?;
+                    current_deadline()
+                })?;
+        }
+        (_, Some(settings)) => {
+            let master = process
+                .pty_master
+                .as_ref()
+                .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+            settings.apply(master.as_fd(), || {
+                recheck()?;
+                process.tree.require_original_scope(&record)?;
+                if process.tree.empty_and_exited()? {
+                    return Err(GuestProcessEffectErrorV1::InvalidRequest);
+                }
+                // Physical and tree reads precede the final time fence; the
+                // retained PTY syscall follows without intervening owner I/O.
+                current_deadline()?;
+                check_deadline(deadline)
+            })?;
+        }
+        _ => return Err(GuestProcessEffectErrorV1::InvalidRequest),
+    }
+    // The effect has already been attempted. Any final custody or deadline
+    // failure is ambiguous rather than permission to try the sequence again.
+    (|| {
+        recheck()?;
+        process.tree.require_original_scope(&record)?;
+        current_deadline()?;
+        check_deadline(deadline)
+    })()
+    .map_err(|_| GuestProcessEffectErrorV1::AmbiguousEffect)
 }
 
 fn write_specification(
@@ -786,19 +998,23 @@ pub(super) fn cancel_owned_execution(
     let process = live
         .get_mut(execution.as_bytes())
         .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
-    if record.version != 2 || record.cgroup != Some(process.tree.kernel_id()) {
-        return Err(GuestProcessEffectErrorV1::LedgerConflict);
-    }
+    process.tree.require_original_identity(&record)?;
 
     // Foreclose attach before kill. A failed/ambiguous wait leaves the durable
     // row canceled but nonterminal, never a false success or another IO slot.
     record.canceled = true;
     ledger.replace_process(execution, &record)?;
     process.tree.kill_and_wait(deadline)?;
-    if process.child.try_wait()?.is_none() {
-        return Err(GuestProcessEffectErrorV1::AmbiguousEffect);
-    }
-    let result = outcome(AgentExecutionPhaseV1::Canceled, 7, b"canceled");
+    let status = process
+        .child
+        .try_wait()?
+        .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+    let status = aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4::new(
+        u32::try_from(status.into_raw()).map_err(|_| GuestProcessEffectErrorV1::AmbiguousEffect)?,
+    )
+    .map_err(|_| GuestProcessEffectErrorV1::AmbiguousEffect)?;
+    let result = terminal_outcome(status, true);
+    record.terminal_waitstatus = Some(status.raw());
     record.terminal = Some(result.clone());
     ledger.replace_process(execution, &record)?;
     live.remove(execution.as_bytes());

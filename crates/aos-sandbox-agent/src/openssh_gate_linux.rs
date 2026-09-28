@@ -81,6 +81,8 @@ impl MeasuredExecutable {
 #[derive(Clone)]
 struct MonitorInstallationV2 {
     listener: Arc<aos_sandbox_linux::pidfd::PidFd>,
+    configuration_device: u64,
+    configuration_inode: u64,
     session_executable: MeasuredExecutable,
     listener_executable: MeasuredExecutable,
     gate_executable: MeasuredExecutable,
@@ -109,6 +111,22 @@ impl OpenSshMonitorRuntimeV2 {
     /// Rejects a dead/reused listener, changed claim/config/trust/image or
     /// absent owned listening socket. This observation is not a held I/O cut.
     pub fn require_current(&self) -> Result<(), OpenSshGatePhysicalErrorV1> {
+        if load_openssh_gate_claim_v1()? != self.claim {
+            return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
+        }
+        self.require_original_session_installation_v4()
+    }
+
+    // Original-session terminal data remains readable after leader exit or
+    // certificate expiry. This private physical validator does not authorize a
+    // control, recover a session, reserve I/O or weaken require_current().
+    fn require_original_session_installation_v4(&self) -> Result<(), OpenSshGatePhysicalErrorV1> {
+        let installed = check_installed_files(&self.claim.binding)?;
+        if installed.configuration.device != self.installation.configuration_device
+            || installed.configuration.inode != self.installation.configuration_inode
+        {
+            return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
+        }
         let listener = self
             .installation
             .listener
@@ -123,7 +141,7 @@ impl OpenSshMonitorRuntimeV2 {
             .ok_or(OpenSshGatePhysicalErrorV1::InvalidInstallation)?;
         if listener.pid() != self.claim.sshd_pid
             || listener.start_time_ticks() != self.claim.sshd_start_ticks
-            || load_openssh_gate_claim_v1()? != self.claim
+            || load_installed_gate_claim()? != self.claim
             || !owns_listening_socket(listener.pid(), self.claim.binding.port)?
             || credentials.real_user_id() != 0
             || credentials.effective_user_id() != 0
@@ -157,6 +175,47 @@ impl OpenSshMonitorRuntimeV2 {
         monitor: &aos_sandbox_linux::pidfd::PidFd,
     ) -> Result<(), OpenSshGatePhysicalErrorV1> {
         self.require_current()?;
+        self.require_original_monitor_identity(monitor)
+    }
+
+    /// Checks a retained original root monitor for nonauthorizing terminal data.
+    ///
+    /// This requires the original owner-created installation and pinned live
+    /// monitor. It does not establish fresh attach/control permission, reread
+    /// custody from a persisted claim, or allow another descriptor transfer.
+    ///
+    /// # Errors
+    /// Rejects changed claim/config/trust/image, dead listener/monitor, foreign
+    /// ancestry or non-root credentials. Original route expiry is not renewed.
+    pub fn require_original_terminal_monitor_v4(
+        &self,
+        monitor: &aos_sandbox_linux::pidfd::PidFd,
+    ) -> Result<(), OpenSshGatePhysicalErrorV1> {
+        self.require_original_session_installation_v4()?;
+        self.require_original_monitor_identity(monitor)
+    }
+
+    /// Checks physical original monitor custody for an unexpired owner control.
+    ///
+    /// Original leader coordinates remain historical. The Guest must separately
+    /// retain and validate the actual active execution subtree under its barrier;
+    /// this physical observation cannot replace current policy or authorize I/O.
+    ///
+    /// # Errors
+    /// Rejects expiry, physical substitution, dead/foreign monitors or PID reuse.
+    pub fn require_original_control_monitor_v5(
+        &self,
+        monitor: &aos_sandbox_linux::pidfd::PidFd,
+    ) -> Result<(), OpenSshGatePhysicalErrorV1> {
+        require_original_control_expiry_v5(&self.claim)?;
+        self.require_original_session_installation_v4()?;
+        self.require_original_monitor_identity(monitor)
+    }
+
+    fn require_original_monitor_identity(
+        &self,
+        monitor: &aos_sandbox_linux::pidfd::PidFd,
+    ) -> Result<(), OpenSshGatePhysicalErrorV1> {
         let identity = monitor
             .process_identity()
             .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
@@ -355,6 +414,8 @@ impl RunningOpenSshGateV1 {
                     .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
                 Ok::<_, OpenSshGatePhysicalErrorV1>(MonitorInstallationV2 {
                     listener: Arc::new(listener),
+                    configuration_device: installed.configuration.device,
+                    configuration_inode: installed.configuration.inode,
                     session_executable: MeasuredExecutable::opened(&session),
                     listener_executable: MeasuredExecutable::opened(&executable),
                     gate_executable: MeasuredExecutable::opened(&installed.gate_executable),
@@ -438,6 +499,32 @@ impl RunningOpenSshGateV1 {
         route_digest: [u8; 32],
         channel_binding: [u8; 32],
     ) -> Result<OpenSshGateReadbackV1, OpenSshGatePhysicalErrorV1> {
+        let claim = load_openssh_gate_claim_v1()?;
+        self.physical_readback_from_installed_claim(challenge, route_digest, channel_binding, claim)
+    }
+
+    /// Measures the original installation for a separately held active-tree control.
+    ///
+    /// # Errors
+    /// Rejects expired or substituted installation, trust, listener or executable.
+    /// It does not check or authorize an execution; the Guest owner holds that cut.
+    pub fn original_control_physical_readback_v5(
+        &mut self,
+        challenge: [u8; 32],
+        route_digest: [u8; 32],
+        channel_binding: [u8; 32],
+    ) -> Result<OpenSshGateReadbackV1, OpenSshGatePhysicalErrorV1> {
+        let claim = load_unexpired_openssh_attach_profile_v5()?;
+        self.physical_readback_from_installed_claim(challenge, route_digest, channel_binding, claim)
+    }
+
+    fn physical_readback_from_installed_claim(
+        &mut self,
+        challenge: [u8; 32],
+        route_digest: [u8; 32],
+        channel_binding: [u8; 32],
+        claim: OpenSshGateClaimV1,
+    ) -> Result<OpenSshGateReadbackV1, OpenSshGatePhysicalErrorV1> {
         if self.child.try_wait()?.is_some() {
             return Err(OpenSshGatePhysicalErrorV1::DaemonUnavailable);
         }
@@ -454,7 +541,6 @@ impl RunningOpenSshGateV1 {
         }
         let pid = self.child.id();
         let start_ticks = process_start_ticks(pid)?;
-        let claim = load_openssh_gate_claim_v1()?;
         if claim.binding != self.binding
             || claim.route_digest != route_digest
             || claim.sshd_pid != pid
@@ -557,6 +643,48 @@ pub fn expected_openssh_gate_config_v1(
 /// Returns an error if the claim or public CA/config files are changed,
 /// noncanonical, stale, or not protected by root-owned directories.
 pub fn load_openssh_gate_claim_v1() -> Result<OpenSshGateClaimV1, OpenSshGatePhysicalErrorV1> {
+    let claim = load_unexpired_openssh_attach_profile_v5()?;
+    if process_start_ticks(claim.process_pid)? != claim.process_start_ticks {
+        return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
+    }
+    Ok(claim)
+}
+
+/// Reads the protected original unexpired certificate profile without execution authority.
+///
+/// The original leader coordinates are historical data here, not a current
+/// process witness. The certificate-profile callback uses this reader without
+/// a leader check; strict provisioning separately verifies that leader. The
+/// existing trusted root monitor must independently join the actual holder
+/// signature and private child to the Guest's active original
+/// execution subtree, while Controller and Host retain their current cuts.
+/// This metadata check is not a live monitor witness and cannot issue a
+/// ticket, bind custody, reserve or release I/O.
+///
+/// # Errors
+/// Rejects malformed or substituted protected claim/config/trust, an expired
+/// original route or a changed recorded listener identity. No expiry is renewed.
+pub fn load_unexpired_openssh_attach_profile_v5()
+-> Result<OpenSshGateClaimV1, OpenSshGatePhysicalErrorV1> {
+    let claim = load_installed_gate_claim()?;
+    require_original_control_expiry_v5(&claim)?;
+    Ok(claim)
+}
+
+fn require_original_control_expiry_v5(
+    claim: &OpenSshGateClaimV1,
+) -> Result<(), OpenSshGatePhysicalErrorV1> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidInstallation)?
+        .as_secs();
+    if i64::try_from(now).map_or(true, |now| claim.binding.expires_at <= now) {
+        return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
+    }
+    Ok(())
+}
+
+fn load_installed_gate_claim() -> Result<OpenSshGateClaimV1, OpenSshGatePhysicalErrorV1> {
     let file = read_protected_file(Path::new(CLAIM_PATH), 4096, false)?;
     let claim: OpenSshGateClaimV1 = serde_json::from_slice(&file.bytes)
         .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidInstallation)?;
@@ -568,13 +696,6 @@ pub fn load_openssh_gate_claim_v1() -> Result<OpenSshGateClaimV1, OpenSshGatePhy
     {
         return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
     }
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| OpenSshGatePhysicalErrorV1::InvalidInstallation)?
-        .as_secs();
-    if i64::try_from(now).map_or(true, |now| claim.binding.expires_at <= now) {
-        return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
-    }
     let config = read_protected_file(Path::new(CONFIG_PATH), 4096, false)?;
     let ca = read_protected_file(Path::new(CA_PATH), 256, false)?;
     let host_public = read_protected_file(Path::new(HOST_PUBLIC_KEY_PATH), 256, false)?;
@@ -582,7 +703,6 @@ pub fn load_openssh_gate_claim_v1() -> Result<OpenSshGateClaimV1, OpenSshGatePhy
         || digest(&config.bytes) != claim.binding.gate_config_digest
         || ca.bytes != format!("{}\n", claim.binding.trusted_user_ca_public_key).as_bytes()
         || host_public.bytes != format!("{}\n", claim.binding.host_public_key).as_bytes()
-        || process_start_ticks(claim.process_pid)? != claim.process_start_ticks
         || process_start_ticks(claim.sshd_pid)? != claim.sshd_start_ticks
     {
         return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);

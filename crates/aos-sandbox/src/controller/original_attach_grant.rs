@@ -153,6 +153,46 @@ impl<'owner> CurrentOriginalAttachConsumeCutV3<'owner> {
         Ok(CurrentOriginalAttachHostConsumeDraftV3 { cut: self, plan })
     }
 
+    /// Prepares one closed original-session control under current LifecycleControl.
+    ///
+    /// The original accepted attach already required that exact capability
+    /// operation and selector. The same genuine current evaluator and protected
+    /// writer stay borrowed; a queued SSH request or read permission cannot
+    /// create permission. This never changes the original ticket, holder,
+    /// certificate/expiry or chooses another execution or assignment.
+    ///
+    /// # Errors
+    /// Rejects stale current authority, invalid original-session correlation or
+    /// malformed signal/resize/PTY data. Host/Guest custody remains independent.
+    pub fn prepare_host_control_plan_v5(
+        &self,
+        monitor_binding: ObjectDigest,
+        observation_challenge: [u8; 32],
+        request: &[u8],
+    ) -> Result<CurrentOriginalAttachHostConsumeDraftV3<'_, 'owner>, ControllerServiceError> {
+        self.recheck()?;
+        let semantics = aos_sandbox_protocol::semantics::host_attach_gate::canonical_host_attach_control_semantics_v5(
+            self.parent.assignment(),
+            &self.original_grant,
+            self.original_ticket,
+            monitor_binding,
+            observation_challenge,
+            request,
+        )
+        .map_err(rejected)?;
+        let grant = BrokerGrant::new(
+            semantics.verb(),
+            semantics.target(),
+            semantics.commitment(),
+            u32::try_from(aos_sandbox_protocol::HOST_ATTACH_GATE_MAXIMUM_REQUEST_BODY_BYTES)
+                .map_err(rejected)?,
+            0,
+        )
+        .map_err(rejected)?;
+        let plan = self.narrow_host_plan(vec![grant])?;
+        Ok(CurrentOriginalAttachHostConsumeDraftV3 { cut: self, plan })
+    }
+
     fn narrow_host_plan(
         &self,
         grants: Vec<BrokerGrant>,

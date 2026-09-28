@@ -5,8 +5,8 @@
 
 use aos_proto::aos::sandbox::v1::{
     Attachment, AttachmentPhase, Capability, Command, Execution, ExecutionIoMode, ExecutionPhase,
-    ExecutionSignal, ExecutionTerminationKind, FilesystemView, NodeCapabilities,
-    OpenSshAccessEndpoint, Snapshot, SnapshotAvailability, SnapshotPhase, ViewMutation, ViewPhase,
+    FilesystemView, NodeCapabilities, OpenSshAccessEndpoint, Snapshot, SnapshotAvailability,
+    SnapshotPhase, ViewMutation, ViewPhase,
 };
 use buffa::Message as _;
 
@@ -138,30 +138,15 @@ impl TryFrom<Execution> for CheckedExecutionResourceV1 {
                     .as_option()
                     .ok_or(InvalidPublicResource::Unspecified)?,
             )?;
-            let termination_kind = result
-                .termination_kind
-                .as_known()
-                .filter(|kind| {
-                    *kind != ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_UNSPECIFIED
-                })
-                .ok_or(InvalidPublicResource::UnknownRegistryValue)?;
-            let signal = result.signal.as_known();
-            let terminal_shape_is_valid = match termination_kind {
-                ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_EXIT_CODE => {
-                    result.signal.to_i32() == 0
-                }
-                ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_SIGNAL => {
-                    result.exit_code == 0
-                        && signal.is_some_and(|signal| {
-                            signal != ExecutionSignal::EXECUTION_SIGNAL_UNSPECIFIED
-                        })
-                }
-                ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_LOST => {
-                    result.exit_code == 0 && result.signal.to_i32() == 0
-                }
-                ExecutionTerminationKind::EXECUTION_TERMINATION_KIND_UNSPECIFIED => false,
-            };
-            if !terminal_shape_is_valid {
+            // The terminal codec owns both legacy classification and exact
+            // v2 Linux status. MetadataRead cannot invent a missing signal.
+            let terminal = crate::cli_model::ExecutionTerminalOutcomeV1::try_from_proto(result)
+                .map_err(|_| InvalidPublicResource::InvalidOperationState)?;
+            if matches!(
+                terminal,
+                crate::cli_model::ExecutionTerminalOutcomeV1::OriginalLinux { canceled: true, .. }
+            ) && phase != ExecutionPhase::EXECUTION_PHASE_CANCELED
+            {
                 return Err(InvalidPublicResource::InvalidOperationState);
             }
         }

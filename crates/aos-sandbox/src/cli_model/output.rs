@@ -795,8 +795,13 @@ impl StableExitCodeV1 {
     pub const fn for_execution(outcome: ExecutionTerminalOutcomeV1) -> Self {
         match outcome {
             ExecutionTerminalOutcomeV1::ExitCode(0) => Self::Success,
+            ExecutionTerminalOutcomeV1::OriginalLinux {
+                status,
+                canceled: false,
+            } if matches!(status.exit_code(), Some(0)) => Self::Success,
             ExecutionTerminalOutcomeV1::ExitCode(_)
             | ExecutionTerminalOutcomeV1::Signal(_)
+            | ExecutionTerminalOutcomeV1::OriginalLinux { .. }
             | ExecutionTerminalOutcomeV1::Lost => Self::OperationFailed,
         }
     }
@@ -818,6 +823,17 @@ impl StableExecutionExitV1 {
             ExecutionTerminalOutcomeV1::ExitCode(code) if code > 0 && code <= 125 => code as u8,
             ExecutionTerminalOutcomeV1::ExitCode(_) | ExecutionTerminalOutcomeV1::Lost => 1,
             ExecutionTerminalOutcomeV1::Signal(signal) => 128 + signal.posix_number(),
+            ExecutionTerminalOutcomeV1::OriginalLinux { status, canceled } => {
+                if let Some(signal) = status.signal() {
+                    128 + signal
+                } else if canceled {
+                    1
+                } else if let Some(code) = status.exit_code() {
+                    if code <= 125 { code } else { 1 }
+                } else {
+                    1
+                }
+            }
         };
         Self {
             terminal,

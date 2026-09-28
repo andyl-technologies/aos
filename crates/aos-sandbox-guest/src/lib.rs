@@ -11,6 +11,7 @@ mod execution_tree;
 mod gate;
 mod ledger;
 mod monitor;
+mod openssh_pty;
 mod process;
 
 pub use process::{GuestProcessEffectErrorV1, GuestProcessEffectsV1};

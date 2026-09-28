@@ -6,6 +6,8 @@
 //! ```text
 //! attach-<execution> = canonical JSON { version:3, execution, original_authorize,
 //!                                    original_ticket, custody, io:"stream"|"pty" }
+//! control-<execution>-<session>-<sequence> = canonical JSON { version:5,
+//!     execution, original_authorize, original_ticket, session, cgroup, request }
 //! ```
 //!
 //! Every present attach row, including legacy byte-one and partial v3 rows,
@@ -73,6 +75,8 @@ pub(super) struct ProcessRecord {
     pub(super) canceled: bool,
     #[serde(default)]
     pub(super) terminal: Option<StoredOutcome>,
+    #[serde(default)]
+    pub(super) terminal_waitstatus: Option<u32>,
 }
 
 /// Records only the live topology admitted by the original ExecutionSpec.
@@ -92,6 +96,18 @@ struct AttachReservationV3 {
     original_ticket: [u8; 32],
     custody: [u8; 32],
     io: AttachIoShapeV3,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OriginalControlReservationV5 {
+    version: u8,
+    execution: [u8; 16],
+    original_authorize: [u8; 16],
+    original_ticket: [u8; 32],
+    session: [u8; 32],
+    cgroup: u64,
+    request: Vec<u8>,
 }
 
 pub(super) enum Reservation {
@@ -149,6 +165,47 @@ impl Ledger {
             return Ok(false);
         };
         process.tree.matches(record)
+    }
+
+    /// Checks retained active original-subtree ownership, not leader liveness.
+    /// The caller holds the shared effect barrier; this check grants no control.
+    ///
+    /// # Errors
+    /// Rejects absent/poisoned original ownership, closed or foreign scope,
+    /// invalid cgroup/Owner confinement or a fully exited original subtree.
+    pub(super) fn require_active_original_tree_v5(
+        &self,
+        record: &ProcessRecord,
+    ) -> Result<(), GuestProcessEffectErrorV1> {
+        self.with_active_original_tree_v5(record, |_| Ok(()))
+    }
+
+    /// Retains the exact in-memory original tree through the owner's effect.
+    ///
+    /// The caller already holds the shared barrier and authentic original
+    /// monitor/ticket cut. The live-map borrow cannot escape this closure or
+    /// reconstruct a cold tree. Nested currentness callbacks must not reacquire
+    /// the live map; they check physical/root custody while this borrow stays held.
+    ///
+    /// # Errors
+    /// Rejects absent/foreign/closed original ownership, invalid confinement,
+    /// an exited subtree or the effect's currentness/ambiguity failure.
+    pub(super) fn with_active_original_tree_v5<R>(
+        &self,
+        record: &ProcessRecord,
+        effect: impl FnOnce(
+            &crate::execution_tree::ExecutionTree,
+        ) -> Result<R, GuestProcessEffectErrorV1>,
+    ) -> Result<R, GuestProcessEffectErrorV1> {
+        let live = self
+            .live
+            .lock()
+            .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+        let process = live
+            .get(&record.execution)
+            .ok_or(GuestProcessEffectErrorV1::AmbiguousEffect)?;
+        process.tree.require_active_original_scope(record)?;
+        effect(&process.tree)
     }
 
     pub(super) fn processes(&self) -> Result<Vec<ProcessRecord>, GuestProcessEffectErrorV1> {
@@ -350,6 +407,64 @@ impl Ledger {
         Ok(())
     }
 
+    /// Permanently reserves one exact original-session control before effects.
+    ///
+    /// The caller retains actual root-monitor, execution-subtree and current
+    /// Controller/Host custody under the shared effect barrier. A file, scalar
+    /// sequence or equal historical row cannot reconstruct that authority.
+    /// Any existing/partial/conflicting row refuses redispatch, even if the
+    /// original effect may have finished before a crash or lost reply.
+    ///
+    /// # Errors
+    /// Rejects legacy/ineligible/terminal rows, missing correlation, malformed
+    /// data, reused sequence, ambiguous persistence or unequal exact readback.
+    pub(super) fn reserve_original_control_v5(
+        &self,
+        process: &ProcessRecord,
+        ticket: [u8; 32],
+        session: [u8; 32],
+        request: &aos_sandbox_agent::openssh_control::OpenSshControlRequestV5,
+    ) -> Result<(), GuestProcessEffectErrorV1> {
+        let cgroup = process
+            .cgroup
+            .filter(|cgroup| *cgroup != 0)
+            .ok_or(GuestProcessEffectErrorV1::InvalidRequest)?;
+        if process.version != 2
+            || process.attach_io.is_none()
+            || process.canceled
+            || process.terminal.is_some()
+            || ticket == [0; 32]
+            || session == [0; 32]
+        {
+            return Err(GuestProcessEffectErrorV1::InvalidRequest);
+        }
+        let expected = OriginalControlReservationV5 {
+            version: 5,
+            execution: process.execution,
+            original_authorize: process.operation,
+            original_ticket: ticket,
+            session,
+            cgroup,
+            request: request
+                .encode()
+                .map_err(|_| GuestProcessEffectErrorV1::InvalidRequest)?,
+        };
+        let path = self.root.join(format!(
+            "control-{}-{}-{:016x}",
+            hex_bytes(&process.execution),
+            hex_bytes(&session),
+            request.sequence,
+        ));
+        create_record(&path, &expected)?;
+        self.sync_directory()?;
+        let exact =
+            serde_json::to_vec(&expected).map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+        if read_record_bytes(&path)? != exact {
+            return Err(GuestProcessEffectErrorV1::LedgerConflict);
+        }
+        Ok(())
+    }
+
     pub(super) fn replace_process(
         &self,
         execution: ExecutionId,
@@ -399,6 +514,25 @@ fn validate_process(record: &ProcessRecord) -> Result<(), GuestProcessEffectErro
         || record.assignment_epoch == 0
         || record.pid == 0
         || record.start_ticks == 0
+    {
+        return Err(GuestProcessEffectErrorV1::LedgerConflict);
+    }
+    if let Some(raw) = record.terminal_waitstatus {
+        if record.version != 2 {
+            return Err(GuestProcessEffectErrorV1::LedgerConflict);
+        }
+        let status = aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4::new(raw)
+            .map_err(|_| GuestProcessEffectErrorV1::LedgerConflict)?;
+        let expected = crate::process::terminal_outcome(status, record.canceled);
+        if !record.terminal.as_ref().is_some_and(|terminal| {
+            terminal.phase == expected.phase && terminal.result == expected.result
+        }) {
+            return Err(GuestProcessEffectErrorV1::LedgerConflict);
+        }
+    } else if record
+        .terminal
+        .as_ref()
+        .is_some_and(|terminal| terminal.result.starts_with(b"AOSGER02"))
     {
         return Err(GuestProcessEffectErrorV1::LedgerConflict);
     }
@@ -502,9 +636,33 @@ mod tests {
             cancel_on_disconnect: Some(true),
             canceled: false,
             terminal: None,
+            terminal_waitstatus: None,
         };
         validate_process(&historical).unwrap();
         assert!(!ledger.require_live_process(&historical).unwrap());
+
+        let signaled =
+            aos_sandbox_agent::openssh_session::OriginalExecutionWaitStatusV4::new(11 | 0x80)
+                .unwrap();
+        historical.terminal_waitstatus = Some(signaled.raw());
+        historical.terminal = Some(crate::process::terminal_outcome(signaled, false));
+        validate_process(&historical).unwrap();
+        assert!(!ledger.require_live_process(&historical).unwrap());
+
+        let original = historical.clone();
+        for substitution in 0..4 {
+            historical = original.clone();
+            match substitution {
+                0 => historical.terminal_waitstatus = None,
+                1 => historical.terminal_waitstatus = Some(9),
+                2 => historical.canceled = true,
+                _ => historical.terminal.as_mut().unwrap().phase = 5,
+            }
+            assert!(validate_process(&historical).is_err());
+        }
+        historical = original;
+        historical.terminal_waitstatus = None;
+        historical.terminal = None;
 
         // Legacy metadata can remain readable, but neither version can adopt
         // a same-PID or same-cgroup-number process after the handles are gone.
@@ -549,6 +707,7 @@ mod tests {
             cancel_on_disconnect: Some(true),
             canceled: false,
             terminal: None,
+            terminal_waitstatus: None,
         };
         let barrier = ledger.effect_barrier();
         let held = barrier.lock().unwrap();
@@ -586,11 +745,73 @@ mod tests {
         );
         assert_eq!(read_record_bytes(&path).unwrap(), original);
 
+        let control = aos_sandbox_agent::openssh_control::OpenSshControlRequestV5 {
+            sequence: 1,
+            action: aos_sandbox_agent::openssh_control::OpenSshControlActionV5::Signal(15),
+        };
+        ledger
+            .reserve_original_control_v5(&process, [7; 32], [8; 32], &control)
+            .unwrap();
+        assert!(
+            ledger
+                .reserve_original_control_v5(&process, [7; 32], [8; 32], &control)
+                .is_err()
+        );
+        let changed_action = aos_sandbox_agent::openssh_control::OpenSshControlRequestV5 {
+            action: aos_sandbox_agent::openssh_control::OpenSshControlActionV5::Signal(9),
+            ..control.clone()
+        };
+        assert!(
+            ledger
+                .reserve_original_control_v5(&process, [7; 32], [8; 32], &changed_action)
+                .is_err()
+        );
+        assert!(
+            ledger
+                .reserve_original_control_v5(&process, [9; 32], [8; 32], &control)
+                .is_err()
+        );
+        let control_path = ledger.root.join(format!(
+            "control-{}-{}-{:016x}",
+            hex_bytes(&process.execution),
+            hex_bytes(&[8; 32]),
+            control.sequence
+        ));
+        let retained: OriginalControlReservationV5 = read_record(&control_path).unwrap();
+        assert_eq!(retained.original_authorize, process.operation);
+        assert_eq!(retained.original_ticket, [7; 32]);
+        assert_eq!(retained.request, control.encode().unwrap());
+        assert!(ledger.require_active_original_tree_v5(&process).is_err());
+
         drop(held);
         result
             .recv_timeout(std::time::Duration::from_secs(1))
             .unwrap();
         other.join().unwrap();
+        let second = aos_sandbox_agent::openssh_control::OpenSshControlRequestV5 {
+            sequence: 2,
+            ..control
+        };
+        let partial_path = ledger.root.join(format!(
+            "control-{}-{}-{:016x}",
+            hex_bytes(&process.execution),
+            hex_bytes(&[8; 32]),
+            second.sequence
+        ));
+        let mut partial = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&partial_path)
+            .unwrap();
+        partial.write_all(b"{\"version\":5").unwrap();
+        partial.sync_all().unwrap();
+        assert!(
+            ledger
+                .reserve_original_control_v5(&process, [7; 32], [8; 32], &second)
+                .is_err()
+        );
+        assert_eq!(read_record_bytes(&partial_path).unwrap(), b"{\"version\":5");
         for (execution, row) in [
             ([11; 16], b"1".as_slice()),
             ([12; 16], b"{\"version\":3".as_slice()),
