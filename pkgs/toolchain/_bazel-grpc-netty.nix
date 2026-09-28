@@ -23,6 +23,7 @@ in
     pname = "bazel-grpc-netty";
     inherit version;
     src = source;
+    passthru.sourceTargets = ["io/grpc/grpc-netty/${version}/grpc-netty-${version}.jar"];
 
     buildDeps = [
       buildJdk
@@ -102,6 +103,9 @@ in
           mkdir -p "$out/share/java"
           jar --create --file "$out/share/java/grpc-netty-${version}.jar" \
             --no-manifest --date=1980-01-01T00:00:02Z -C classes .
+          mkdir -p "$out/maven/io/grpc/grpc-netty/${version}"
+          cp "$out/share/java/grpc-netty-${version}.jar" \
+            "$out/maven/io/grpc/grpc-netty/${version}/"
         '';
       }
     ];

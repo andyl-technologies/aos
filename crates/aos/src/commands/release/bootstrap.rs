@@ -27,7 +27,11 @@ pub(super) async fn run(args: &ReleaseBootstrapArgs, printer: &Printer) -> Resul
     canonical::require_canonical(&plan_bytes, "release plan")?;
     let plan: aos_release::plan::ReleasePlanV1 =
         canonical::from_slice(&plan_bytes, "release plan")?;
-    plan.require_publishable_qualification()?;
+    if args.environment == "staging" {
+        plan.require_staging_publication()?;
+    } else {
+        plan.require_publishable_qualification()?;
+    }
     let plan_digest = Sha256Digest::of_bytes(&plan_bytes);
     let (environment, hub_url, deployment_id) = match args.environment.as_str() {
         "staging" => (

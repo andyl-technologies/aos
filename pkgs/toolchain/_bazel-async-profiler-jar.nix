@@ -18,6 +18,7 @@ in
     mkDerivation {
       pname = "bazel-async-profiler-jar";
       inherit version;
+      passthru.sourceTargets = ["tools/profiler/async-profiler/${version}/async-profiler-${version}.jar"];
 
       buildDeps = [
         buildJdk
@@ -49,6 +50,9 @@ in
           script = ''
             mkdir -p "$out/share/java"
             cp async-profiler-${version}.jar "$out/share/java/"
+            mkdir -p "$out/maven/tools/profiler/async-profiler/${version}"
+            cp async-profiler-${version}.jar \
+              "$out/maven/tools/profiler/async-profiler/${version}/"
           '';
         }
       ];

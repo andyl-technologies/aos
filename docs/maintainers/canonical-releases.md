@@ -37,8 +37,9 @@ The current implementation provides these fail-closed operations:
 - `aos release plan` derives the complete four-target package inventory and
   exact Nix derivation outputs, verifies source and contributor-authorization
   preconditions, and writes a new canonical plan;
-- `aos release build` realizes every frozen derivation, repeats each build with
-  Nix `--check`, and writes build, SBOM, and append-only journal evidence;
+- `aos release build` realizes every frozen derivation and writes build, SBOM,
+  and append-only journal evidence. Qualified plans additionally repeat each
+  build with Nix `--check`;
 - `aos release signer invoke` sends one canonical role-bound request to a
   deployment-configured external signer executable and independently verifies
   its response and public-key identity;
@@ -181,6 +182,26 @@ Planning is read-only except for the named output. It refuses a dirty checkout
 and never replaces an existing output. The resulting file is canonical JSON;
 its SHA-256 digest becomes the identity bound by every later operation. Preserve
 both the reviewed request and generated plan as release evidence.
+
+## Publication to staging without qualification
+
+For a publication-only `andyl/testing` operation, set `staging_only: true` in
+the reviewed plan request, omit `qualification_predecessor`, and use an empty
+`intended_channels` array. Planning still freezes the current protected source,
+complete package and Linux image matrices, public policy, and separate signing
+authorities. Any blocked inventory cell holds this publication.
+
+Use the ordinary build, image and container finalization, registry authoring,
+cache, manifest, TUF, surface composition, and staging upload commands. The build
+report explicitly records `not-checked` for repeat-build status. Assembly emits
+no qualification observations, and the manifest cannot claim qualification
+evidence. The captured build identities, source artifacts, SBOM, signatures,
+and exact-byte public upload verification remain required.
+
+An empty staging registry may use the signed bootstrap procedure with
+`--environment staging`. This intent cannot bootstrap production, run
+qualification, promote to production, or advance channels. A later qualified
+release requires a separate reviewed plan and its actual qualification evidence.
 
 ## Create a first qualification predecessor
 

@@ -60,6 +60,9 @@ pub mod verify;
 
 pub use digest::Sha256Digest;
 
+#[cfg(test)]
+mod staging_publication_tests;
+
 /// Schema identifier for the first frozen release-plan contract.
 pub const RELEASE_PLAN_V1: &str = "aos.release.plan/v1";
 
