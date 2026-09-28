@@ -144,6 +144,20 @@ impl PreparedCurrentFuseReserveIntentV1 {
     pub const fn target(&self) -> &CurrentNamespaceTarget {
         &self.target
     }
+
+    /// Borrows the Policy descriptor from the actual retained runtime assignment.
+    ///
+    /// This accepted lineage is comparison data, never current read authority.
+    #[must_use]
+    pub fn accepted_policy(&self) -> &aos_sandbox_core::ObjectDescriptor {
+        self.target
+            .runtime_generation()
+            .scope()
+            .binding()
+            .manifest()
+            .manifest()
+            .policy()
+    }
 }
 
 /// Borrows protected controller custody for one attachment effect step.

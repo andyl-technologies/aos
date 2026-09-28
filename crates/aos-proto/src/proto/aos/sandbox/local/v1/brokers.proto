@@ -160,6 +160,8 @@ message ReserveFuseWorkerIntentRequestV1 {
   bytes namespace_allocation_digest = 6; // Exact Controller allocation digest.
   bytes runtime_handle = 7; // Deterministic from the assignment fence.
   bytes payload_scope_handle = 8; // Host-origin retained scope identifier.
+  uint32 intent_binding_version = 9; // Exactly 2; legacy incomplete cuts refuse.
+  Descriptor accepted_policy = 10; // Exact accepted assignment Policy descriptor.
 }
 
 // Carries only a dedicated-key signed controller pending-grant receipt.

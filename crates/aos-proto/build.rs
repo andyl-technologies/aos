@@ -69,8 +69,9 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     // declarations: every method tag, enum value, message field/type/
     // cardinality/oneof, reserved tag, and RPC signature are compatibility-owned.
     // Additive fixed worker preparation: method 49, roles 13..18, and the two
-    // V1 comparison messages. Existing declarations remain compatibility-pinned.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x83a2_1b8c_5cf4_f378;
+    // V1 comparison messages, plus explicit purpose-57 binding version 2 and
+    // its accepted Policy descriptor. All old declarations stay pinned.
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x16fe_edb5_9d13_428f;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(
@@ -103,6 +104,22 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
         &source_declarations,
         "message BrokerClientHello {",
         &["bytes signed_session_hello = 7;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message ReserveFuseWorkerIntentRequestV1 {",
+        &[
+            "RequestHeader header = 1;",
+            "AssignmentFence fence = 2;",
+            "bytes attachment_intent_v2 = 3;",
+            "bytes desired_record_digest = 4;",
+            "uint64 namespace_target_generation = 5;",
+            "bytes namespace_allocation_digest = 6;",
+            "bytes runtime_handle = 7;",
+            "bytes payload_scope_handle = 8;",
+            "uint32 intent_binding_version = 9;",
+            "Descriptor accepted_policy = 10;",
+        ],
     )?;
     verify_scoped_declarations(
         &source_declarations,

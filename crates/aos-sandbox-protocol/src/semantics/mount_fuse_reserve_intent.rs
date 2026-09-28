@@ -10,7 +10,9 @@
 //! | request-id:16 | deadline:u64 | response-ceiling:u32 | assignment-fence
 //! | intent-length:u32 | canonical-attachment-intent-v2
 //! | desired-record:32 | namespace-generation:u64 | allocation:32
-//! | runtime:32 | payload-scope:32 | complete-request:32 | descriptor-count:u16=0
+//! | runtime:32 | payload-scope:32 | binding-version:u32=2
+//! | policy-media-length:u16 | policy-media | policy-digest:32 | policy-size:u64
+//! | complete-request:32 | descriptor-count:u16=0
 //! ```
 //!
 //! Integers use network byte order. Issuance must keep the genuine Controller
@@ -24,7 +26,7 @@ use aos_sandbox_core::{
 
 use crate::mount_fuse_reserve_intent::ValidatedFuseReserveIntentRequestV1;
 
-const DOMAIN: &[u8] = b"aos.sandbox.mount.fuse-reserve-intent.v1\0";
+const DOMAIN: &[u8] = b"aos.sandbox.mount.fuse-reserve-intent.v2\0";
 
 /// Reports an unrepresentable or unspecified FUSE reservation comparison.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -119,6 +121,15 @@ pub fn canonical_mount_fuse_reserve_intent_semantics_v1(
     bytes.extend_from_slice(request.namespace_allocation_digest());
     bytes.extend_from_slice(request.runtime_handle());
     bytes.extend_from_slice(request.payload_scope_handle());
+    bytes.extend_from_slice(&2_u32.to_be_bytes());
+    let policy = request.accepted_policy();
+    let media = policy.media_type().as_str().as_bytes();
+    let media_length = u16::try_from(media.len())
+        .map_err(|_| MountFuseReserveIntentSemanticErrorV1::EncodingTooLarge)?;
+    bytes.extend_from_slice(&media_length.to_be_bytes());
+    bytes.extend_from_slice(media);
+    bytes.extend_from_slice(policy.digest().as_bytes());
+    bytes.extend_from_slice(&policy.encoded_size().to_be_bytes());
     bytes.extend_from_slice(request.request_commitment());
     bytes.extend_from_slice(&0_u16.to_be_bytes());
 

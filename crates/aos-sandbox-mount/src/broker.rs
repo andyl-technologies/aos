@@ -63,6 +63,10 @@ use crate::worker::{
 };
 use crate::{MountError, Result};
 
+mod fuse_intent;
+
+pub use fuse_intent::HeldMountFuseIntentPreparationV1;
+
 /// Applies validated mount requests through durable, idempotent effects.
 pub struct MountBroker<W> {
     journal: Journal,
@@ -3435,6 +3439,159 @@ mod tests {
 
     fn clock() -> RawPairedClockSample {
         clock_at(TEST_WALL_SECONDS)
+    }
+
+    #[test]
+    fn fuse_policy_descriptor_joins_the_actual_signed_plan_not_its_digest() {
+        use aos_proto::aos::sandbox::local::v1::ReserveFuseWorkerIntentRequestV1;
+        use aos_sandbox_broker::AdmissionRequest;
+        use aos_sandbox_core::model::{
+            AttachmentConsistency, AttachmentIntent, AttachmentLease, AttachmentPresentation,
+            ViewMutation,
+        };
+        use aos_sandbox_core::{AttachmentId, LeaseId, NamespaceGeneration, Revision, ViewId};
+        use aos_sandbox_protocol::mount_fuse_reserve_intent::decode_fuse_reserve_intent_request_v1;
+        use aos_sandbox_protocol::semantics::mount_fuse_reserve_intent::canonical_mount_fuse_reserve_intent_semantics_v1;
+
+        let fixture = AuthorityFixture::new();
+        let authority = fixture.authority();
+        let native_body = request(1);
+        let native_request =
+            decode_mount_request(&native_body, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)
+                .unwrap();
+        let catalog =
+            MountCatalogCommitmentV1::from_verified_digest(ObjectDigest::from_bytes([77; 32]))
+                .unwrap();
+        let native_artifacts = fixture.artifacts(
+            &native_body,
+            Some(ObjectDigest::from_bytes([77; 32])),
+            1,
+            &[&native_body],
+        );
+        let native = authority
+            .admit(
+                &native_artifacts,
+                &native_request,
+                &native_body,
+                Some(catalog),
+                &[],
+                ProtocolVersion::new(2, 0),
+                &clock(),
+                None,
+            )
+            .unwrap();
+        let prior = authority.seal_fence(&[1; 16], &native.fence).unwrap();
+        let intent = AttachmentIntent::new_with_presentation(
+            AttachmentId::from_bytes([3; 16]),
+            DesiredGeneration::new(1),
+            SandboxId::from_bytes([1; 16]),
+            IncarnationId::from_bytes([2; 16]),
+            NamespaceGeneration::new(1),
+            ViewId::from_bytes([8; 16]),
+            Revision::new(1),
+            None,
+            ObjectDescriptor::new(
+                MediaType::new(PortableMediaType::View.as_str().to_owned()).unwrap(),
+                ObjectDigest::from_bytes([5; 32]),
+                64,
+            ),
+            AttachmentSlotId::from_bytes([4; 16]),
+            AttachmentConsistency::ImmutableRevision,
+            ViewMutation::ReadOnly,
+            aos_sandbox_core::model::MountAttributes::new(true, true, true, true, true, false),
+            AttachmentLease::new(LeaseId::from_bytes([9; 16]), 100, 250).unwrap(),
+            AttachmentPresentation::Fuse,
+        )
+        .unwrap();
+        let mut wire = ReserveFuseWorkerIntentRequestV1 {
+            header: Some(RequestHeader {
+                protocol_major: 3,
+                protocol_minor: 0,
+                request_id: vec![42; 16],
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds: 1000,
+                maximum_response_bytes: 4096,
+                ..Default::default()
+            })
+            .into(),
+            fence: Some(AssignmentFence {
+                sandbox_id: vec![1; 16],
+                incarnation_id: vec![2; 16],
+                assignment_epoch: 1,
+                desired_generation: 1,
+                assignment_digest: vec![6; 32],
+                ..Default::default()
+            })
+            .into(),
+            attachment_intent_v2: aos_sandbox_core::encode_attachment_intent_v2(&intent),
+            desired_record_digest: vec![80; 32],
+            namespace_target_generation: 1,
+            namespace_allocation_digest: vec![81; 32],
+            runtime_handle: runtime_handle_v1(&[2; 16], 1, &[6; 32]).to_vec(),
+            payload_scope_handle: vec![82; 32],
+            intent_binding_version: 2,
+            accepted_policy: Some(Descriptor {
+                media_type: PortableMediaType::Policy.as_str().to_owned(),
+                sha256: vec![48; 32],
+                encoded_size: 100,
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        };
+        let signed_for = |wire: &ReserveFuseWorkerIntentRequestV1| {
+            let body = wire.encode_to_vec();
+            let decoded = decode_fuse_reserve_intent_request_v1(
+                &body,
+                peer(),
+                policy(),
+                TEST_BOOTTIME_NANOSECONDS,
+            )
+            .unwrap();
+            let semantics = canonical_mount_fuse_reserve_intent_semantics_v1(&decoded).unwrap();
+            let artifacts = fixture.fuse_intent_artifacts(
+                AdmissionRequest {
+                    audience: BrokerAudience::Mount,
+                    protocol: ProtocolId::MountFuseBroker,
+                    protocol_version: ProtocolVersion::new(3, 0),
+                    assignment: native.fence.assignment(),
+                    request_id: *decoded.header().request_id(),
+                    request_body: &body,
+                    descriptor_count: 0,
+                    verb: semantics.verb(),
+                    target: semantics.target(),
+                    argument_commitment: semantics.commitment(),
+                    request_deadline_boottime_nanoseconds: decoded
+                        .header()
+                        .deadline_boottime_nanoseconds(),
+                },
+                &native_artifacts,
+            );
+            (body, decoded, artifacts)
+        };
+        let (body, decoded, artifacts) = signed_for(&wire);
+        let accepted = authority
+            .admit_fuse_reserve_intent(&artifacts, &decoded, &body, &clock(), Some(&prior))
+            .unwrap();
+        let plan_digest = *accepted.effect.plan_digest().as_bytes();
+        assert_ne!(plan_digest, *decoded.accepted_policy().digest().as_bytes());
+
+        // Re-sign the complete changed request, so these refusals exercise
+        // accepted Policy lineage after real signature/current-fence checks.
+        for substituted in [[47; 32], plan_digest] {
+            wire.accepted_policy.as_option_mut().unwrap().sha256 = substituted.to_vec();
+            let (body, decoded, artifacts) = signed_for(&wire);
+            assert!(matches!(
+                authority.admit_fuse_reserve_intent(
+                    &artifacts,
+                    &decoded,
+                    &body,
+                    &clock(),
+                    Some(&prior)
+                ),
+                Err(crate::authorization::MountAdmissionError::RequestMismatch)
+            ));
+        }
     }
 
     #[test]

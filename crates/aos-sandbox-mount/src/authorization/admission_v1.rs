@@ -53,7 +53,7 @@ impl MountAuthorityV1 {
         {
             return Err(MountAdmissionError::RequestMismatch);
         }
-        self.0.admit_fuse_intent(
+        let admission = self.0.admit_fuse_intent(
             artifacts,
             AdmissionRequest {
                 audience: aos_sandbox_core::BrokerAudience::Mount,
@@ -72,7 +72,19 @@ impl MountAuthorityV1 {
             },
             current_clock,
             prior_fence.ok_or(MountAdmissionError::FenceRejected)?,
+        )?;
+        // Read this field only after the exact same artifact quartet passed
+        // real signature/assignment/current-fence admission above. Policy is
+        // not the plan digest, and this accepted lineage is not a Root grant.
+        let plan = aos_sandbox_core::format::decode_broker_authorization_plan(
+            artifacts.broker_plan(),
+            aos_sandbox_core::DecodeLimits::default(),
         )
+        .map_err(|_| MountAdmissionError::VerificationFailed)?;
+        if plan.policy_commitment() != request.accepted_policy().digest() {
+            return Err(MountAdmissionError::RequestMismatch);
+        }
+        Ok(admission)
     }
 
     /// Constructs mount authority from already validated protected anchors.
@@ -231,6 +243,36 @@ impl MountAuthorityV1 {
         effect: &BrokerEffectIntentV1,
     ) -> Result<Vec<u8>, MountAdmissionError> {
         self.0.seal_effect(request_id, effect)
+    }
+
+    pub(crate) fn seal_fuse_origin(
+        &self,
+        key: &[u8],
+        payload: &[u8],
+    ) -> Result<Vec<u8>, MountAdmissionError> {
+        let domain = aos_sandbox_broker::BrokerLocalRecordDomain::new(*b"aos.fuse.origin1")
+            .map_err(|_| MountAdmissionError::FenceRejected)?;
+        self.0.seal_local_record(
+            aos_sandbox::journal::RecordNamespace::AuthorityPublication,
+            key,
+            domain,
+            payload,
+        )
+    }
+
+    pub(crate) fn open_fuse_origin<'a>(
+        &self,
+        key: &[u8],
+        value: &'a [u8],
+    ) -> Result<&'a [u8], MountAdmissionError> {
+        let domain = aos_sandbox_broker::BrokerLocalRecordDomain::new(*b"aos.fuse.origin1")
+            .map_err(|_| MountAdmissionError::FenceRejected)?;
+        self.0.open_local_record(
+            aos_sandbox::journal::RecordNamespace::AuthorityPublication,
+            key,
+            domain,
+            value,
+        )
     }
 }
 

@@ -163,6 +163,7 @@ impl CurrentControllerFuseIntentDispatchV1<'_> {
             || self.request.runtime_handle() != observed.runtime_handle()
             || self.request.payload_scope_handle() != observed.payload_scope_handle()
             || self.request.fence() != observed.fence()
+            || self.request.accepted_policy() != scope.binding().manifest().manifest().policy()
             || self.request.header().deadline_boottime_nanoseconds()
                 > observed.request_deadline_boottime_nanoseconds()
             || desired.intent().lease().expires_seconds() > lease_limit

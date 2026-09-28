@@ -70,6 +70,8 @@ uint64 namespace_target_generation = 5;
 bytes namespace_allocation_digest = 6;
 bytes runtime_handle = 7;
 bytes payload_scope_handle = 8;
+uint32 intent_binding_version = 9;
+Descriptor accepted_policy = 10;
 message ObserveMountScopeIdentityResponseV1 {
 AssignmentFence fence = 1;
 bytes runtime_handle = 2;

@@ -81,6 +81,48 @@ pub(crate) struct HeldFuseIntentTransportV1<'session> {
 }
 
 impl<'session> HeldFuseIntentTransportV1<'session> {
+    /// Joins the actual Mount writer without releasing original session custody.
+    ///
+    /// This invokes the real signature/slot/Host reservation producer. The
+    /// action keeps both owners borrowed through preparation. No returned
+    /// coordinate or ACK becomes a Root/current-worker content grant.
+    pub(crate) fn with_mount_preparation<W, F, R>(
+        &mut self,
+        mount: &mut aos_sandbox_mount::broker::MountBroker<W>,
+        scope: aos_sandbox_mount::host_scope::ObservedMountScope,
+        action: F,
+    ) -> Result<R, DormantBrokerSessionHandshakeErrorV1>
+    where
+        W: aos_sandbox_mount::worker::MountWorker,
+        F: FnOnce(
+            &mut Self,
+            &mut aos_sandbox_mount::broker::HeldMountFuseIntentPreparationV1<'_, W>,
+        ) -> Result<R, DormantBrokerSessionHandshakeErrorV1>,
+    {
+        let result = (|| {
+            self.recheck()?;
+            if self.stage != Stage::BrokerReservation {
+                return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
+            }
+            let mut preparation = mount
+                .prepare_authenticated_fuse_intent(self.request, scope)
+                .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+            self.recheck()?;
+            let result = action(self, &mut preparation);
+            preparation
+                .recheck()
+                .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+            self.recheck()?;
+            result
+        })();
+        if result.is_err() {
+            // A row may have committed or a preparation reply may have been
+            // sent. Neither callback error nor lost ACK permits automatic reuse.
+            self.stage = Stage::ReconciliationRequired;
+        }
+        result
+    }
+
     pub(super) fn capture(
         session: &'session mut DormantAuthenticatedBrokerSessionV1,
         request: &'session AuthenticatedBrokerMethodRequestV1,
