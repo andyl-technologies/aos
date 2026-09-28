@@ -223,6 +223,26 @@ one exists.
    tree. Explicitly out of scope for 1.0 and not precluded by any format.
    See the informative section below for the extension points 1.0 keeps
    open.
+9. **Size-capped, recency-based retention.** Retention values are `gc`,
+   `lease`, `ttl`, and `forever` ([`17-garbage-collection.md`](17-garbage-collection.md)).
+   A cache namespace kept under a byte cap by evicting its least recently
+   read entries needs two additions: a contract for hosts to report touched
+   entries to the authority (the prefetch-profile reports of
+   [`19-tiering-and-topology.md`](19-tiering-and-topology.md) are the
+   natural carrier) and an eviction tree job that writes an access
+   attribute and removes entries under an `lru(<bytes>)` retention value.
+   Both are additive; neither is specified in 1.0.
+10. **Streaming append-only objects.** A log that is appended and tailed
+    with sub-second latency and sealed into an ordinary object later has no
+    first-class form. A `periodic` writer committing frequently with a
+    `follow` reader approximates it ([`20-consistency.md`](20-consistency.md));
+    whether that suffices, or whether an append-only object kind with a
+    follow read belongs in a later version, is open.
+11. **Durable read audit.** The commit graph audits every write, and
+    decision logs and traces ([`34-observability.md`](34-observability.md))
+    can be sunk to an external log, but no requirement records who read
+    which entry. Deployments that need a retained access log need a
+    specified audit event and sink.
 
 ## Informative: the shape of a native working tree
 
