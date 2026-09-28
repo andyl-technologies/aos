@@ -194,11 +194,13 @@ impl SystemdClient {
             Err(error) => return Err(error.into()),
         };
         let unit = UnitProxy::builder(&self.conn)
+            .destination(self.manager.inner().destination().clone())?
             .path(path.clone())?
             .cache_properties(CacheProperties::No)
             .build()
             .await?;
         let service = ServiceProxy::builder(&self.conn)
+            .destination(self.manager.inner().destination().clone())?
             .path(path.clone())?
             .cache_properties(CacheProperties::No)
             .build()
@@ -247,7 +249,7 @@ impl SystemdClient {
     /// # Panics
     ///
     /// Propagates a panic from `before_submission` before manager submission.
-    pub async fn start_fuse_worker_unit_guarded_v1<E>(
+    pub(crate) async fn start_fuse_worker_unit_guarded_v1<E>(
         &self,
         spec: &FuseWorkerUnitSpecV1,
         before_submission: &mut (dyn FnMut() -> std::result::Result<(), E> + Send),

@@ -236,7 +236,26 @@ impl SystemdClient {
     /// established.
     pub async fn from_connection(conn: zbus::Connection) -> Result<Self> {
         let manager = ManagerProxy::new(&conn).await?;
+        Self::from_manager_connection(conn, manager).await
+    }
 
+    /// Uses only the sender established by the fixed worker private handshake.
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn from_worker_private_connection(conn: zbus::Connection) -> Result<Self> {
+        // A well-known destination makes zbus resolve GetNameOwner through a
+        // bus daemon. The direct PID 1 connection has no such daemon; its
+        // role-specific sender must also be the exact signal-stream source.
+        let manager = ManagerProxy::builder(&conn)
+            .destination(":1.0")?
+            .build()
+            .await?;
+        Self::from_manager_connection(conn, manager).await
+    }
+
+    async fn from_manager_connection(
+        conn: zbus::Connection,
+        manager: ManagerProxy<'static>,
+    ) -> Result<Self> {
         // MUST come before constructing any signal stream below. API-bus peers
         // receive NO JobNew/JobRemoved/Reloading until they call Subscribe();
         // direct (private-socket) peers are subscribed implicitly. systemd

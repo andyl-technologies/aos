@@ -36,8 +36,8 @@ pub use sandbox::{
 };
 #[cfg(target_os = "linux")]
 pub use sandbox::{
-    FuseWorkerDescriptorRoleV1, FuseWorkerUnitNameV1, FuseWorkerUnitObservationV1,
-    FuseWorkerUnitSpecV1,
+    FixedFuseWorkerPid1ClientV1, FuseWorkerDescriptorRoleV1, FuseWorkerUnitNameV1,
+    FuseWorkerUnitObservationV1, FuseWorkerUnitSpecV1,
 };
 
 // `unit_property` returns a `zbus::zvariant::OwnedValue` in its public

@@ -14,9 +14,10 @@ use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::fuse_worker_image::FixedFuseWorkerImageV1;
 use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
+use aos_systemd::FixedFuseWorkerPid1ClientV1;
 use aos_systemd::{
     ExactStartError, FuseWorkerUnitNameV1, FuseWorkerUnitObservationV1, FuseWorkerUnitSpecV1,
-    JobResult, SystemdClient,
+    JobResult,
 };
 
 use crate::{HostError, Result};
@@ -67,7 +68,7 @@ impl RetainedFuseWorkerHostLaunchV1 {
     ///
     /// Propagates a panic from `before_effect` before manager submission.
     pub async fn launch_guarded(
-        systemd: &SystemdClient,
+        systemd: &FixedFuseWorkerPid1ClientV1,
         cgroup_root: &CgroupV2Root,
         name: FuseWorkerUnitNameV1,
         original_roles: [OwnedFd; 4],
@@ -165,7 +166,7 @@ impl RetainedFuseWorkerHostLaunchV1 {
     /// Returns an error when any retained kernel object or manager identity
     /// changes. This cannot establish Mount/Controller currentness or authorize
     /// a new backing grant without their independently retained held cut.
-    pub async fn recheck(&self, systemd: &SystemdClient) -> Result<()> {
+    pub async fn recheck(&self, systemd: &FixedFuseWorkerPid1ClientV1) -> Result<()> {
         self.image.recheck().map_err(kernel_error)?;
         if KernelBootId::current().map_err(kernel_error)? != self.boot {
             return Err(HostError::Fence("FUSE worker kernel boot changed"));
@@ -259,7 +260,7 @@ fn is_worker_context(context: &[u8]) -> bool {
 }
 
 async fn observe_running(
-    systemd: &SystemdClient,
+    systemd: &FixedFuseWorkerPid1ClientV1,
     name: &FuseWorkerUnitNameV1,
 ) -> Result<FuseWorkerUnitObservationV1> {
     let observed = systemd

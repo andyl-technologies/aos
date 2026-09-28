@@ -150,6 +150,7 @@ in
       ./patches/0016-reject-truncated-bus-ancillary-data.patch
       ./patches/0017-pin-network-unit-fragments-before-spawn.patch
       ./patches/0018-launch-image-fuse-worker-role.patch
+      ./patches/0019-fixed-fuse-worker-private-transport.patch
     ];
 
     buildDeps = [
