@@ -1059,7 +1059,7 @@ impl SingleScheduler {
         // live effective topology* is held at a *moving* cap (`vt(n) +
         // lookahead(n)`), not a genuine local quiescence point: as the global
         // frontier climbs, that bound climbs with it. Parking such a node `Idle` is
-        // the freeze defect of RFC-0010 [SCHED-7]/[SCHED-8] — the only
+        // the freeze defect of RFC-0010 [SCHED-7]/[SCHED-8] - the only
         // `Idle -> Runnable` re-promotion path (`effective_node_activity`) requires
         // a non-halted or pending-input vCPU, so a network/disk sub-node, or a VM
         // whose vCPUs are all halted with no pending input, would never be re-PICKed
@@ -1702,7 +1702,7 @@ impl SingleScheduler {
         // ([SCHED-18]), and append the fault decisions they drew ([SCHED-30]).
         let (device_events, device_decisions) =
             self.resolve_device_completions(&selected_node, after.ticks)?;
-        // Order (frame ++ device) deliveries together by the §8.6 key, keeping the
+        // Order (frame ++ device) deliveries by the section 8.6 key, keeping the
         // control events prefixed exactly as the no-device path does ([SCHED-33]).
         resolved_events.extend(merge_node_deliveries(frame_deliveries, device_events));
 

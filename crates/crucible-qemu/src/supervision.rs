@@ -82,4 +82,4 @@ pub use runtime_determinism_trace::{
 };
 
 mod world_io_binding;
-pub use world_io_binding::QemuWorldIoBinding;
+pub use world_io_binding::{QemuWorldIoBinding, QemuWorldIoBindingError};

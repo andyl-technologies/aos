@@ -30,7 +30,6 @@ crucible-session/src/session/core.rs	contains non-ASCII comment/doc text	1
 crucible/src/backend.rs	contains non-ASCII comment/doc text	1
 crucible/src/device_subnode.rs	contains non-ASCII comment/doc text	8
 crucible/src/scheduler/runtime_state.rs	contains non-ASCII comment/doc text	1
-crucible/src/scheduler/single_scheduler_drive.rs	contains non-ASCII comment/doc text	3
 crucible/src/scheduler/single_scheduler_state.rs	contains non-ASCII comment/doc text	5
 crucible/src/scheduler/tests.rs	contains non-ASCII comment/doc text	3
 crucible/src/scheduler/topology.rs	contains non-ASCII comment/doc text	1
