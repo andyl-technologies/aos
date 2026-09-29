@@ -250,6 +250,7 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
         plan_digest,
         Sha256Digest::of_bytes(&sbom_bytes),
         completed,
+        plan.staging_only,
     )?;
 
     let authorization_bytes =
@@ -526,6 +527,7 @@ fn validate_advisory(
     plan_digest: Sha256Digest,
     sbom_digest: Sha256Digest,
     completed: std::time::SystemTime,
+    staging_only: bool,
 ) -> Result<()> {
     aos_release::artifact::require_identifier(
         &advisory.authority_id,
@@ -545,9 +547,13 @@ fn validate_advisory(
                 || source.name.chars().any(char::is_control)
                 || source.snapshot.chars().any(char::is_control)
         })
-        || !advisory.unresolved_advisories.is_empty()
     {
-        bail!("advisory disposition is incomplete, unresolved, or bound to different inputs");
+        bail!("advisory disposition is incomplete or bound to different inputs");
+    }
+    // Isolated staging retains findings for operator testing without requiring
+    // a security approval. Production assembly still requires their resolution.
+    if !staging_only && !advisory.unresolved_advisories.is_empty() {
+        bail!("production advisory disposition contains unresolved advisories");
     }
     if require_utc(&advisory.reviewed_at, "advisory review time")? > completed {
         bail!("advisory disposition was reviewed after assembly completion");
