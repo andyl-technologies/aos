@@ -19,6 +19,9 @@ use aos_remote::{HubClient, hub_rpc as HubTopologyMethod, hub_types};
 use futures_util::stream;
 use futures_util::stream::{StreamExt as _, TryStreamExt as _};
 
+/// Bounds each part to the publication service's 8 MiB wire contract.
+const MAX_PUBLICATION_PART_BYTES: u64 = 8 * 1024 * 1024;
+
 #[cfg(test)]
 /// Inventories an offline fixture through the actual publication adapter.
 ///
@@ -263,7 +266,7 @@ async fn upload_publication_object_class(
     // publication-object lookup keeps each remote-SQL response constant-sized;
     // near-limit objects naturally serialize through the byte budget.
     const SNAPSHOT_BUDGET_PERMITS: u32 = 32;
-    const CONCURRENT_MULTIPART_UPLOADS: usize = 1;
+    const CONCURRENT_MULTIPART_UPLOADS: usize = 2;
 
     let snapshot_budget = std::sync::Arc::new(tokio::sync::Semaphore::new(
         SNAPSHOT_BUDGET_PERMITS as usize,
@@ -319,23 +322,28 @@ async fn upload_publication_object_class(
 
             let byte_size = u64::try_from(object.byte_size)
                 .context("Hub publication response returned a negative object size")?;
-            let snapshot_permits = u32::try_from(
+            // Multipart snapshots remain on disk. Reserve the part buffer and
+            // its transport copy so independent large objects can overlap.
+            let resident_bytes = if object.upload_url.is_empty() {
+                byte_size.min(2 * MAX_PUBLICATION_PART_BYTES)
+            } else {
                 byte_size
+            };
+            let snapshot_permits = u32::try_from(
+                resident_bytes
                     .div_ceil(SNAPSHOT_PERMIT_BYTES)
                     .max(1)
                     .min(u64::from(SNAPSHOT_BUDGET_PERMITS)),
             )
             .context("publication snapshot permit count overflowed")?;
-            // The permit is held across snapshotting and upload. Objects larger
-            // than the aggregate budget run exclusively; smaller snapshots can
-            // overlap only while their declared sizes fit the byte budget.
+            // Hold the permit across snapshotting and upload so active request
+            // buffers remain within the aggregate byte budget.
             let _snapshot_permit = snapshot_budget
                 .acquire_many_owned(snapshot_permits)
                 .await
                 .context("publication snapshot budget closed unexpectedly")?;
-            // Multipart requests carry one bounded part buffer and load the
-            // publication coordinator's durable state. Serialize them so a
-            // large manifest cannot amplify coordinator memory use.
+            // Bound independent multipart objects as well as their buffers.
+            // Each object's parts remain sequential for its SHA-256 state.
             let _multipart_permit = if object.upload_url.is_empty() {
                 Some(
                     multipart_budget
@@ -554,7 +562,6 @@ async fn upload_publication_multipart(
     file: std::fs::File,
     progress: &aos_core::output::TransferProgress,
 ) -> Result<()> {
-    const MAX_CLIENT_PART_BYTES: u64 = 20 * 1024 * 1024;
     const MAX_CLIENT_PARTS: u32 = 10_000;
 
     let adapter = PublicationMultipartAdapter {
@@ -567,8 +574,8 @@ async fn upload_publication_multipart(
         MultipartSource::file(file),
     )
     .with_concurrency(1)
-    .with_maximum_in_flight_bytes(MAX_CLIENT_PART_BYTES)
-    .with_part_limits(1, MAX_CLIENT_PART_BYTES, MAX_CLIENT_PARTS)
+    .with_maximum_in_flight_bytes(MAX_PUBLICATION_PART_BYTES)
+    .with_part_limits(1, MAX_PUBLICATION_PART_BYTES, MAX_CLIENT_PARTS)
     .with_failure_policy(MultipartFailurePolicy::Preserve);
     let observer = PublicationMultipartObserver {
         progress,
