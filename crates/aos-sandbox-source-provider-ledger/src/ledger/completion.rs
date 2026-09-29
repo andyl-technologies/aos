@@ -804,6 +804,82 @@ fn finalize_response_completion<'record>(
     })
 }
 
+// Replays the same pure six-row reducers against exact proposed artifacts. This
+// comparison path returns no sealed outcome, signature or live commit permit.
+pub(super) fn validate_native_held_complete(
+    before: &BTreeMap<Vec<u8>, Vec<u8>>,
+    after: &BTreeMap<Vec<u8>, Vec<u8>>,
+    keys: &[Vec<u8>; 6],
+) -> Result<(), LedgerFormatErrorV1> {
+    let attempt = decode_attempt_from(after, &keys[1])?;
+    let DecodedRecordV1::Acquisition(acquisition) = decode_record(
+        &keys[2],
+        after
+            .get(&keys[2])
+            .ok_or(LedgerFormatErrorV1::Corrupt("held Complete acquisition"))?,
+    )?
+    else {
+        return Err(LedgerFormatErrorV1::Corrupt(
+            "held Complete acquisition kind",
+        ));
+    };
+    let DecodedRecordV1::NativeCompletion(native) = decode_record(
+        &keys[5],
+        after
+            .get(&keys[5])
+            .ok_or(LedgerFormatErrorV1::Corrupt("held Complete native"))?,
+    )?
+    else {
+        return Err(LedgerFormatErrorV1::Corrupt("held Complete native kind"));
+    };
+    let lease = SignedSourceExportLeaseV1::from_canonical_bytes(&acquisition.signed_lease)
+        .map_err(|_| LedgerFormatErrorV1::Corrupt("held Complete lease"))?;
+    let patch = AcquireCompletionPatchV1::new(
+        keys[2].clone(),
+        attempt.attempt_digest,
+        acquisition.lease_issue_generation,
+        acquisition.proof_digest,
+        acquisition.resource_commitment,
+        acquisition
+            .backend_evidence
+            .as_ref()
+            .map(|value| value.encode()),
+        acquisition
+            .reopen_identity
+            .as_ref()
+            .map(|value| value.encode().to_vec()),
+        native.original_root,
+    )?;
+    let plan = AcquireCompletionPlanV1::new(
+        keys[1].clone(),
+        patch,
+        crate::limits::MAXIMUM_INVENTORY_TOMBSTONES_PER_HOLDER,
+    )?
+    .with_native_completion(native)?;
+    let finalized = finalize_response_completion(
+        before
+            .iter()
+            .map(|(key, value)| (key.as_slice(), value.as_slice())),
+        plan.0,
+        attempt.completed_response.clone(),
+        Some(lease),
+        attempt
+            .completed_at_seconds
+            .ok_or(LedgerFormatErrorV1::Corrupt("held Complete time"))?,
+    )?;
+    let mut expected = before.clone();
+    for (key, value) in finalized.mutations {
+        let value = value.ok_or(LedgerFormatErrorV1::Corrupt("held Complete deleted row"))?;
+        expected.insert(key, value);
+    }
+    if expected != *after {
+        return Err(LedgerFormatErrorV1::Corrupt(
+            "held Complete exact reducer bytes",
+        ));
+    }
+    Ok(())
+}
+
 fn apply_acquire_status(
     graph: &mut BTreeMap<Vec<u8>, Vec<u8>>,
     attempt: &AttemptRecordV1,

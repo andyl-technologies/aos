@@ -642,22 +642,33 @@ pub fn record_digest(bytes: &[u8]) -> Result<ObjectDigest, LedgerFormatErrorV1> 
     Ok(ObjectDigest::from_bytes(read_array(bytes, 32)?))
 }
 
-struct Envelope<'a> {
-    kind: RecordKind,
-    state: u8,
-    revision: u64,
-    key: &'a [u8],
-    body: &'a [u8],
+pub(super) struct Envelope<'a> {
+    pub(super) kind: RecordKind,
+    pub(super) state: u8,
+    pub(super) revision: u64,
+    pub(super) key: &'a [u8],
+    pub(super) body: &'a [u8],
 }
 
 fn encode_envelope(kind: RecordKind, state: u8, revision: u64, key: &[u8], body: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(ENVELOPE_BYTES + body.len());
-    bytes.extend_from_slice(MAGIC);
     let version = if kind == RecordKind::NativeCompletion {
         super::native_completion::envelope_version(body)
     } else {
         VERSION
     };
+    encode_envelope_version(kind, state, revision, key, body, version)
+}
+
+pub(super) fn encode_envelope_version(
+    kind: RecordKind,
+    state: u8,
+    revision: u64,
+    key: &[u8],
+    body: &[u8],
+    version: u16,
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(ENVELOPE_BYTES + body.len());
+    bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&version.to_be_bytes());
     bytes.push(kind as u8);
     bytes.push(state);
@@ -676,6 +687,16 @@ fn decode_envelope<'a>(
     key: &'a [u8],
     bytes: &'a [u8],
 ) -> Result<Envelope<'a>, LedgerFormatErrorV1> {
+    decode_envelope_version(key, bytes, None)
+}
+
+// Only the separate pure held decoder supplies version8. The legacy decoder
+// continues deriving its exact5/6/7 member from the legacy body magic.
+pub(super) fn decode_envelope_version<'a>(
+    key: &'a [u8],
+    bytes: &'a [u8],
+    held_version: Option<u16>,
+) -> Result<Envelope<'a>, LedgerFormatErrorV1> {
     if bytes.len() < ENVELOPE_BYTES || bytes.get(..8) != Some(MAGIC.as_slice()) {
         return Err(LedgerFormatErrorV1::Corrupt("record envelope header"));
     }
@@ -686,7 +707,12 @@ fn decode_envelope<'a>(
         ));
     }
     let kind = RecordKind::decode(bytes[10])?;
-    let expected_version = if kind == RecordKind::NativeCompletion {
+    if held_version.is_some() && kind != RecordKind::NativeCompletion {
+        return Err(LedgerFormatErrorV1::Corrupt("held native record kind"));
+    }
+    let expected_version = if let Some(version) = held_version {
+        version
+    } else if kind == RecordKind::NativeCompletion {
         super::native_completion::envelope_version(&bytes[ENVELOPE_BYTES..])
     } else {
         VERSION
