@@ -1051,3 +1051,65 @@ global SQL constraints. Scratch-database replay, filesystem/CLI orchestration,
 PostgreSQL/Worker readers, source-key custody, application/object closure,
 whole-Hub import and activation remain pending. The in-flight fleet predates
 this increment.
+
+## Shared issuer control and retained Native journal
+
+The shared issuer control protocol adds bounded authenticated requests, compact
+signed replies, exact installation and applied-receipt checks, and denied-gap
+transitions that preserve sequence, committed expiry and terminal retirement.
+Its final six source files pass all **38 focused tests**, including the earlier
+same-epoch lease overlap regressions. Independent pure-only acceptance is
+`/tmp/hub-live-authority-issuer-pure-independent-review/receipt.json`
+(`e101cfdf99b929d9bff23544e91b3c264ac31896276cfeb1f4d214c2400e9355`),
+bound to the final protocol manifest
+`9c7a0faae6c0bfd3c1d5643ec32e7ebbd2651d0e77fa40b222e407c8276ad4ed`.
+
+The separate Native adapter stores one authority's real journal, publication
+and receipts in an explicitly initialized private SQLite file outside Hub SQL
+and `HUB_ROOT`. Serving opens only an existing exact installation. Actual
+transactions compare the full expected state and commit with EXTRA synchronous
+durability before acknowledgment; cancellation and lost replies never undo a
+possibly committed sequence. File, parent, ancestor, schema and immutable
+installation checks reject replacement or missing history rather than creating
+fresh authority.
+
+All **19 Native adapter tests pass** against those exact final protocol bytes:
+restart, concurrent CAS, denial, lost acknowledgment, cancellation, lossless
+integers, corrupt/missing state and file/ancestor replacement. The actual test
+ELF links AOS SQLite 3.53.4 and OpenSSL 4.0.2 through its baked store RPATH.
+Producer receipt is
+`/tmp/aos-authority-sqlite-journal/qualification-receipt-v3.json`
+(`5027a6fcd6c8359a21d78b1d3f339391184aad15d96408a33da4c3e8d7e2f546`);
+corrected independent binding is
+`/tmp/aos-authority-sqlite-journal-independent-v3-revision2.json`
+(`1f5e948c751a18b3ad75ba6f7a5066b0f22c6bd86915554075d893efc62e0b47`).
+The correction updates a documentation pointer; qualified source, test log,
+patch and linkage bytes are unchanged.
+
+Integration checks twelve source hashes and preserves the existing snapshot
+module while adding the Native journal declaration. That contextual library
+edit is not an exact combined-library nineteen-test claim; ordinary integrated
+artifact qualification remains required. No HTTP original-operation replay,
+provider dispatch, hosted disk/clock, power-loss or rollback recovery is proved.
+The dedicated Native issuer process may eventually hold the issuer seed;
+ordinary Hub/SQL publisher and executor roles must not hold it. Its separate
+HTTP/schema/clock increment and the live Worker adapter remain pending.
+
+## Paired performance diagnostic fleet failure
+
+The frozen diagnostic fleet's packaged CLI prerequisite passes **4,288 tests**
+with six skipped. The four actual VMs boot and pass the external S3 metadata,
+multipart, outage/recovery, range and binding-replay prelude. The run then stops
+before the baseline at `worker_process_counters`: the new bounded sampler
+returns `fleet process counter snapshot failed`. No baseline, loaded latency,
+final parity or new performance result is produced.
+
+The failed derivation is
+`/nix/store/3zh4krc785l0dn8ip0gzgkb9fviki8bk-aos-fleet-test-hub-hybrid-0.drv`;
+root session 20159 returns exit 1. Full driver evidence is retained in
+`/tmp/hub-paired-perf-live-driver.log` and the build directory
+`/nix/var/nix/builds/nix-435670-3462360238/build`. The actual guest sampler
+failure is under diagnosis; the same sampler reads the exact source-built Node
+process successfully on the host. The earlier 6.469 latency miss remains
+unresolved. This frozen fleet predates the lease-floor, encrypted-record and
+issuer/journal increments above.

@@ -153,7 +153,11 @@ impl EpochLeaseIssuerJournal {
         })
     }
 
-    fn validate(&self) -> Result<()> {
+    /// Validates restored structural invariants without proving live provenance.
+    ///
+    /// # Errors
+    /// Returns an error for malformed permanent identity, policy or issuance history.
+    pub fn validate(&self) -> Result<()> {
         self.authority.validate()?;
         key(&self.executor_identity, 255)?;
         ensure!(
@@ -215,6 +219,64 @@ impl EpochLeaseIssuerJournal {
             publication.validate_admission_time(latest)?;
         }
 
+        let mut next = self.clone();
+        next.generation = LeaseInteger::new(publication.generation)?;
+        next.admission_digest = publication.digest.clone();
+        next.publication_digest = canonical_digest(publication)?;
+        next.state = publication.admission.state;
+        next.clock_floor = cutoff.next_clock_floor;
+        Ok(IssuerTransition {
+            expected: self.clone(),
+            next,
+        })
+    }
+
+    /// Prepares a denied-only jump from the exact retained live predecessor.
+    ///
+    /// The adapter verifies registry provenance and compares this complete journal
+    /// atomically. SQL history remains unchanged; skipped admission is never replayed.
+    /// Retirement, committed expiry and sequence remain permanent.
+    ///
+    /// # Errors
+    /// Returns an error for admitted input, identity changes, rollback, conflicting
+    /// SQL predecessor or terminal retirement.
+    pub fn prepare_denied_gap(
+        &self,
+        transition: &crate::storage_authority::control::StorageAuthorityDeniedTransition,
+        clock: LeaseClock,
+    ) -> Result<IssuerTransition> {
+        self.validate()?;
+        transition.validate(&self.authority.guard_namespace_id, &self.executor_identity)?;
+        let publication = &transition.publication;
+        ensure!(
+            publication.authority == self.authority,
+            "permanent authority changed"
+        );
+        ensure!(
+            self.state != StorageAuthorityAdmissionState::Retired,
+            "retirement is terminal"
+        );
+        let remote = transition
+            .expected_remote
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("existing issuer requires exact predecessor"))?;
+        ensure!(
+            remote.generation == self.generation.get() && remote.digest == self.admission_digest,
+            "denial live predecessor differs"
+        );
+        ensure!(
+            publication.generation > self.generation.get(),
+            "denial cannot roll back"
+        );
+        ensure!(
+            publication.admission.expected_generation != self.generation.get()
+                || publication.admission.expected_digest.as_deref()
+                    == Some(self.admission_digest.as_str()),
+            "denial crosses conflicting SQL predecessor"
+        );
+        let cutoff =
+            self.policy
+                .admission_cutoff(self.largest_issued_expiry, self.clock_floor, clock)?;
         let mut next = self.clone();
         next.generation = LeaseInteger::new(publication.generation)?;
         next.admission_digest = publication.digest.clone();

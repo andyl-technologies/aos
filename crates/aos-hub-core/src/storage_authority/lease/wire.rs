@@ -448,6 +448,12 @@ impl EpochLeaseSigningKey {
         &self.key_id
     }
 
+    pub(super) fn sign_domain(&self, domain: &[u8], bytes: &[u8]) -> String {
+        let mut message = domain.to_vec();
+        message.extend_from_slice(bytes);
+        hex::encode(self.key.sign(&message).to_bytes())
+    }
+
     pub(super) fn sign(&self, payload: EpochLeasePayload) -> Result<Vec<u8>> {
         payload.validate()?;
         ensure!(payload.issuer_key_id == self.key_id, "issuer key mismatch");
@@ -479,6 +485,28 @@ impl EpochLeaseVerifier {
             key_id,
             key: VerifyingKey::from_bytes(public)?,
         })
+    }
+
+    pub(super) fn verify_domain(
+        &self,
+        key_id: &str,
+        domain: &[u8],
+        bytes: &[u8],
+        signature: &str,
+    ) -> Result<()> {
+        ensure!(key_id == self.key_id, "untrusted issuer key");
+        ensure!(
+            signature.len() == 128
+                && signature
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "invalid canonical signature"
+        );
+        let mut message = domain.to_vec();
+        message.extend_from_slice(bytes);
+        self.key
+            .verify_strict(&message, &Signature::from_slice(&hex::decode(signature)?)?)?;
+        Ok(())
     }
 
     pub(super) fn verify(&self, bytes: &[u8]) -> Result<EpochLeasePayload> {

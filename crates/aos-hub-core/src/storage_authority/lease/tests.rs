@@ -1325,3 +1325,6 @@ async fn live_denial_during_first_await_refuses_second_cas_without_losing_cutoff
     );
     assert_eq!(current.borrow().largest_issued_expiry, integer(130));
 }
+
+#[path = "control_tests.rs"]
+mod control_tests;

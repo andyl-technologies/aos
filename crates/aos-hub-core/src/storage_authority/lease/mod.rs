@@ -14,6 +14,7 @@
 //!
 //! This abbreviated illustration omits the required full cohort and time profile.
 
+pub mod control;
 mod state;
 mod wire;
 
