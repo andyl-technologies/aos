@@ -6,7 +6,8 @@ use aos_hub_core::direct_upload::{
 };
 use aos_hub_core::storage_authority::{
     external_object::stage::{
-        ExternalStageContext, ExternalStageOperation as Operation, ExternalStageOutcome as Outcome,
+        ExternalStageAdmissionMode, ExternalStageContext, ExternalStageOperation as Operation,
+        ExternalStageOutcome as Outcome,
     },
     lease::{LeaseClock, LeaseEffect, LeaseInteger},
     GuardIncarnation,
@@ -385,11 +386,84 @@ impl Session {
     }
 }
 
+/// Checks recovery eligibility without allocating a turn or proving permission.
+/// Begin repeats this against the retained head after all storage awaits.
+pub(super) fn recovery_read(
+    head: &Head,
+    object: &ObjectConfig,
+    config: &Config,
+    intent: &Intent,
+    closed: &Receipt,
+) -> Result<Turn> {
+    head.validate(object, &intent.scope()?)?;
+    intent.validate()?;
+    ensure!(
+        intent.operation.immutable_read(),
+        "recovery requires immutable verification"
+    );
+    let session = head
+        .stage
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("recovery lacks retained session"))?;
+    session.validate(head, config)?;
+    session.admits(intent)?;
+    ensure!(
+        head.pending.is_none()
+            && session.pending_parts.is_empty()
+            && !session.destination
+            && session.context == intent.context,
+        "recovery conflicts with retained owner"
+    );
+    let pending = session
+        .pending
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("recovery lacks exact pending read"))?;
+    ensure!(pending.intent == *intent, "recovery changed retained read");
+    closed.validate()?;
+    let reference = session
+        .closed
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("recovery lacks positive closure"))?;
+    ensure!(
+        closed.turn.intent.context == intent.context
+            && reference.operation_id == closed.turn.intent.operation_id
+            && reference.digest == digest(closed)?,
+        "recovery changed positive closure"
+    );
+    let stamp = match (&closed.turn.intent.operation, &closed.outcome) {
+        (
+            Operation::CompleteStage {
+                upload_id,
+                manifest,
+            },
+            Outcome::Closed { guard_stamp, .. },
+        ) => {
+            ensure!(
+                session.upload_id.as_ref() == Some(upload_id)
+                    && session.manifest.as_ref() == Some(manifest),
+                "recovery changed frozen source"
+            );
+            guard_stamp
+        }
+        (Operation::CreateStage, Outcome::EmptyClosed { guard_stamp, .. }) => guard_stamp,
+        _ => anyhow::bail!("recovery requires positive immutable stage closure"),
+    };
+    ensure!(
+        stamp.physical_authority_id == head.scope.physical_authority_id
+            && stamp.incarnation.as_str() == head.incarnation.get().to_string()
+            && pending.expected_incarnation == head.incarnation,
+        "recovery changed closed source incarnation"
+    );
+    Ok(pending.clone())
+}
+
 pub(super) fn begin(
     head: &Head,
     object: &ObjectConfig,
     config: &Config,
     intent: Intent,
+    admission_mode: ExternalStageAdmissionMode,
+    recovery_closed: Option<&Receipt>,
     write_lease: &[u8],
     read_lease: &[u8],
     nonce: String,
@@ -400,10 +474,25 @@ pub(super) fn begin(
     head.validate(object, &intent.scope()?)?;
     intent.validate()?;
     let domain = config.domain(&intent.context)?;
-    ensure!(
-        clock.observed_at < i64::try_from(intent.context.logical_expires_at.get())?,
-        "original logical stage eligibility expired"
-    );
+    match admission_mode {
+        ExternalStageAdmissionMode::Fresh => ensure!(
+            clock.observed_at < i64::try_from(intent.context.logical_expires_at.get())?,
+            "original logical stage eligibility expired"
+        ),
+        ExternalStageAdmissionMode::ResumeImmutableRead => {
+            ensure!(
+                source.is_none() && retained_part_turn.is_none(),
+                "read recovery cannot introduce a destination source or part"
+            );
+            let closed = recovery_closed
+                .ok_or_else(|| anyhow::anyhow!("recovery lacks retained closure"))?;
+            let retained = recovery_read(head, object, config, &intent, closed)?;
+            ensure!(
+                retained.dispatch_nonce == nonce,
+                "recovery allocated a different nonce"
+            );
+        }
+    }
     ensure!(
         head.pending.is_none() && head.receipts.get() < MAX_RECEIPTS && digest_string(&nonce),
         "prior object effect or journal capacity blocks stage"

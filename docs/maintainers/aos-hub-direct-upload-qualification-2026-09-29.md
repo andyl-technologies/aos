@@ -40,3 +40,33 @@ Native business reservations, connected clients and hosted timing remain
 activation prerequisites. The current immutable read retry is limited to its
 original logical eligibility; separate recovery work must preserve mutation and
 publication deadlines. No hosted throughput or combined fleet result is claimed.
+
+## Recovery of an already pending immutable read
+
+The subsequent recovery increment adds an explicit authenticated admission mode.
+It can resume only the exact retained verification of a positively closed stage,
+with the original actor, source, manifest, configuration and dispatch nonce.
+Fresh request authentication, snapshot and read-lease deadlines still apply,
+including after awaited journal operations. Recovery preserves the original
+mutation and publication deadlines; it cannot create, close, promote or abort an
+upload, allocate another identity, or turn a HEAD into a completion receipt.
+
+Producer receipt `/tmp/hub-external-stage-read-recovery/qualified-final.json`
+(`76c99058fc69bd5a6771d84f74f96480f63ab9630094354043409b5202a010d0`)
+binds ten source paths and 5,497 unchanged inputs. It records 45 pure tests,
+default Worker Wasm compilation and six persistent recovery groups, including
+restart, lost terminal acknowledgements, post-expiry immutable verification,
+conflicting identities and expiry during a delayed journal acknowledgement.
+Independent final review
+`9c1712704aa51bcec455794b88f9c04f10b07d4b97aa375a033b684886af277f`
+verifies that source and evidence.
+
+Current-context receipt `/tmp/hub-external-stage-current-context-v3/qualification.json`
+(`b5130d6357262397be54aebaf09c52c525830c83a1385ef0ccd504571e6d4b30`)
+records 45 passing Worker tests and actual default Worker Wasm compilation.
+All ten producer postimages match and all 2,888 captured inputs remain unchanged.
+An earlier invocation was interrupted before source-copy completion was
+confirmed and remains unqualified. The six persistent groups remain separate
+producer evidence; no current combined client, real provider, fleet or hosted
+acceptance is claimed. Recovery across configuration rotation or migration is
+outside this increment.

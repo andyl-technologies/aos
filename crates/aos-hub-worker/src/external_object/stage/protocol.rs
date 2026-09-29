@@ -5,7 +5,8 @@ use aos_hub_core::direct_upload::{DirectManifestPart, DirectPart, WireInteger};
 use aos_hub_core::storage_authority::{
     control::StorageAuthorityObjectScope,
     external_object::stage::{
-        ExternalStageContext, ExternalStageOperation, ExternalStageOutcome, ExternalStageResult,
+        ExternalStageAdmissionMode, ExternalStageContext, ExternalStageOperation,
+        ExternalStageOutcome, ExternalStageResult,
     },
     lease::EpochLeaseFloor,
     StorageGuardStamp,
@@ -241,11 +242,15 @@ pub(super) enum Operation {
     Lookup {
         intent: Intent,
     },
+    RecoveryRead {
+        intent: Intent,
+    },
     Delegation {
         intent: Intent,
         write_lease: String,
     },
     Begin {
+        admission_mode: ExternalStageAdmissionMode,
         intent: Intent,
         write_lease: String,
         read_lease: String,
@@ -271,6 +276,10 @@ pub(super) enum Operation {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Reply {
     Unsettled,
+    RecoveryRead {
+        turn: Turn,
+        floor: EpochLeaseFloor,
+    },
     Delegation {
         receipt: Receipt,
         floor: EpochLeaseFloor,

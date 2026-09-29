@@ -22,7 +22,9 @@ mod storage;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use executor::{execute_stage, fetch};
 #[cfg(target_arch = "wasm32")]
-pub(crate) use planning::{prepare_stage_request, presign_registered_parts};
+pub(crate) use planning::{
+    prepare_stage_read_recovery, prepare_stage_request, presign_registered_parts,
+};
 #[cfg(target_arch = "wasm32")]
 pub(crate) use profiles::resolve_external_profiles;
 

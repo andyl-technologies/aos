@@ -15,7 +15,9 @@ use std::collections::BTreeMap;
 use anyhow::{ensure, Result};
 use aos_hub_core::direct_upload::{DirectManifestPart, WireInteger};
 use aos_hub_core::storage_authority::{
-    external_object::stage::{ExternalStageOperation, ExternalStageOutcome},
+    external_object::stage::{
+        ExternalStageAdmissionMode, ExternalStageOperation, ExternalStageOutcome,
+    },
     lease::{EpochLeaseFloor, LeaseEffect, LeaseInteger},
 };
 use rand::TryRngCore as _;
@@ -36,6 +38,17 @@ use super::{
 };
 
 const MAX_GRANTS: u32 = 100_000;
+
+async fn recovery_closed(storage: &Storage, head: &Head) -> Result<Receipt> {
+    let reference = head
+        .stage
+        .as_ref()
+        .and_then(|session| session.closed.as_ref())
+        .ok_or_else(|| anyhow::anyhow!("recovery lacks positive closure reference"))?;
+    load_receipt(storage, &reference.operation_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("recovery lost positive closure receipt"))
+}
 
 impl ExternalObjectGuard {
     pub(crate) async fn stage_fetch(&self, request: &mut Request) -> worker::Result<Response> {
@@ -171,7 +184,21 @@ impl ExternalObjectGuard {
                     Ok(Reply::Unsettled)
                 }
             }
+            Operation::RecoveryRead { intent } => {
+                ensure!(intent.scope()? == message.scope, "recovery scope changed");
+                let head = prior
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("recovery lacks retained head"))?;
+                let closed = recovery_closed(&storage, head).await?;
+                let turn = state::recovery_read(head, &object, &config, &intent, &closed)?;
+                // This read-only projection allocates no permit and changes no floor.
+                Ok(Reply::RecoveryRead {
+                    turn,
+                    floor: head.floor.clone(),
+                })
+            }
             Operation::Begin {
+                admission_mode,
                 intent,
                 write_lease,
                 read_lease,
@@ -186,6 +213,10 @@ impl ExternalObjectGuard {
                 let head = match &prior {
                     Some(head) => head.clone(),
                     None => {
+                        ensure!(
+                            admission_mode == ExternalStageAdmissionMode::Fresh,
+                            "recovery cannot initialize a head"
+                        );
                         ensure!(existing.is_none(), "stage receipt without head");
                         initialize(&object, &config, &intent)?
                     }
@@ -239,19 +270,31 @@ impl ExternalObjectGuard {
                     };
                 let metadata =
                     prepare_metadata(&storage, &intent, &config, &head, &mut changes).await?;
-                let mut nonce = [0_u8; 32];
-                rand::rngs::OsRng
-                    .try_fill_bytes(&mut nonce)
-                    .map_err(|_| anyhow::anyhow!("stage dispatch randomness unavailable"))?;
+                let closed = if admission_mode == ExternalStageAdmissionMode::ResumeImmutableRead {
+                    Some(recovery_closed(&storage, &head).await?)
+                } else {
+                    None
+                };
+                let nonce = if let Some(closed) = &closed {
+                    state::recovery_read(&head, &object, &config, &intent, closed)?.dispatch_nonce
+                } else {
+                    let mut nonce = [0_u8; 32];
+                    rand::rngs::OsRng
+                        .try_fill_bytes(&mut nonce)
+                        .map_err(|_| anyhow::anyhow!("stage dispatch randomness unavailable"))?;
+                    hex::encode(nonce)
+                };
                 // All part/receipt storage awaits precede this clock observation.
                 let (mut next, turn) = state::begin(
                     &head,
                     &object,
                     &config,
                     intent,
+                    admission_mode,
+                    closed.as_ref(),
                     write_lease.as_bytes(),
                     read_lease.as_bytes(),
-                    hex::encode(nonce),
+                    nonce,
                     source,
                     retained_part,
                     object.clock(),

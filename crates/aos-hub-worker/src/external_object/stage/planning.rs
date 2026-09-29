@@ -10,8 +10,8 @@ use anyhow::{ensure, Result};
 use aos_hub_core::direct_upload::{DirectPartGrant, DirectUploadAdmission, WireInteger};
 use aos_hub_core::storage_authority::{
     external_object::stage::{
-        ExternalStageContext, ExternalStageOperation, ExternalStageOutcome, ExternalStageRequest,
-        ExternalStageResult,
+        ExternalStageAdmissionMode, ExternalStageContext, ExternalStageOperation,
+        ExternalStageOutcome, ExternalStageRequest, ExternalStageResult,
     },
     lease::{
         control::{
@@ -33,7 +33,7 @@ use super::super::{
 };
 use super::{
     config::{self, Domain},
-    executor::{call, executor_key, relative_key, validate_publication},
+    executor::{call, executor_key, recovery_read, relative_key, validate_publication},
     protocol::{self, Intent, Operation, Reply},
 };
 
@@ -67,6 +67,54 @@ pub(crate) async fn prepare_stage_request(
     operation_id: String,
     operation: ExternalStageOperation,
 ) -> Result<ExternalStageRequest> {
+    prepare_stage_with_mode(
+        env,
+        admission,
+        placement_id,
+        operation_id,
+        operation,
+        ExternalStageAdmissionMode::Fresh,
+    )
+    .await
+}
+
+/// Prepares fresh authentication/read authority for an exact interrupted stage read.
+///
+/// A read-only probe must find the original pending verification; it is never a
+/// dispatch permit. Begin repeats eligibility under the physical guard's CAS.
+///
+/// # Errors
+/// Returns a value-free refusal for missing/changed pending read or fresh authority.
+pub(crate) async fn prepare_stage_read_recovery(
+    env: &Env,
+    admission: &DirectUploadAdmission,
+    placement_id: WireInteger,
+    operation_id: String,
+    operation: ExternalStageOperation,
+) -> Result<ExternalStageRequest> {
+    ensure!(
+        operation.immutable_read(),
+        "recovery requires immutable stage verification"
+    );
+    prepare_stage_with_mode(
+        env,
+        admission,
+        placement_id,
+        operation_id,
+        operation,
+        ExternalStageAdmissionMode::ResumeImmutableRead,
+    )
+    .await
+}
+
+async fn prepare_stage_with_mode(
+    env: &Env,
+    admission: &DirectUploadAdmission,
+    placement_id: WireInteger,
+    operation_id: String,
+    operation: ExternalStageOperation,
+    admission_mode: ExternalStageAdmissionMode,
+) -> Result<ExternalStageRequest> {
     executor_key(env)?;
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     admission.validate(&deployment)?;
@@ -77,21 +125,33 @@ pub(crate) async fn prepare_stage_request(
         .ok_or_else(|| anyhow::anyhow!("external stage consumer disabled"))?;
     let domain = config.domain(&context)?;
     let now = object.clock().observed_at;
-    let (write_lease, read_lease) = if now < i64::try_from(admission.expires_at.get())? {
-        (
-            acquire_lease(env, &object, domain, &domain.write_cohort).await?,
-            acquire_lease(env, &object, domain, &domain.read_cohort).await?,
-        )
-    } else {
-        // Fresh authentication can recover an exact historical terminal after
-        // original eligibility. Empty leases cannot authorize any new Begin.
-        (String::new(), String::new())
-    };
+    let (write_lease, read_lease) =
+        if admission_mode == ExternalStageAdmissionMode::ResumeImmutableRead {
+            let intent = Intent {
+                operation_id: operation_id.clone(),
+                context: context.clone(),
+                operation: operation.clone(),
+            };
+            recovery_read(env, &intent).await?;
+            (
+                String::new(),
+                acquire_lease(env, &object, domain, &domain.read_cohort).await?,
+            )
+        } else if now < i64::try_from(admission.expires_at.get())? {
+            (
+                acquire_lease(env, &object, domain, &domain.write_cohort).await?,
+                acquire_lease(env, &object, domain, &domain.read_cohort).await?,
+            )
+        } else {
+            // Fresh authentication can recover an exact historical terminal after
+            // original eligibility. Empty leases cannot authorize any new Begin.
+            (String::new(), String::new())
+        };
     let now = object.clock().observed_at;
     let expires = now
         .checked_add(30)
         .ok_or_else(|| anyhow::anyhow!("stage auth time overflow"))?;
-    let work = ExternalStageRequest::new(
+    let mut work = ExternalStageRequest::new(
         deployment.clone(),
         operation_id,
         WireInteger::new(u64::try_from(now)?),
@@ -101,6 +161,7 @@ pub(crate) async fn prepare_stage_request(
         read_lease,
         operation,
     );
+    work.admission_mode = admission_mode;
     work.validate(&deployment, now)?;
     Ok(work)
 }

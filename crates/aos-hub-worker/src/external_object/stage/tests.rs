@@ -168,6 +168,10 @@ fn config() -> Config {
 }
 
 async fn token(config: &Config, index: usize, previous_sequence: i64) -> Vec<u8> {
+    token_at(config, index, previous_sequence, 100).await
+}
+
+async fn token_at(config: &Config, index: usize, previous_sequence: i64, at: i64) -> Vec<u8> {
     let publication = &config.publications[0];
     let mut journal = EpochLeaseIssuerJournal::initialize_fresh_namespace(
         publication,
@@ -175,13 +179,13 @@ async fn token(config: &Config, index: usize, previous_sequence: i64) -> Vec<u8>
         BoundedLeaseRevocationPolicy {
             timing_profile: profile(),
         },
-        clock(100),
+        clock(at),
     )
     .unwrap();
     // Fixture models the exact retained issuer state before a new actual CAS.
     journal.last_sequence = integer(previous_sequence);
     if previous_sequence > 0 {
-        journal.largest_issued_expiry = integer(130);
+        journal.largest_issued_expiry = integer(at + 30);
     }
     let live = RefCell::new(journal);
     let prepared = live
@@ -190,8 +194,8 @@ async fn token(config: &Config, index: usize, previous_sequence: i64) -> Vec<u8>
             publication,
             config.cohorts[index].clone(),
             KEY_ID,
-            130,
-            clock(100),
+            at + 30,
+            clock(at),
         )
         .unwrap();
     let key = EpochLeaseSigningKey::from_bytes(KEY_ID.into(), &[7; 32]).unwrap();
@@ -209,7 +213,7 @@ async fn token(config: &Config, index: usize, previous_sequence: i64) -> Vec<u8>
                     Ok(())
                 }
             },
-            || Ok(clock(100)),
+            || Ok(clock(at)),
         )
         .await
         .unwrap()
@@ -390,6 +394,8 @@ impl Fixture {
             &self.object,
             &self.config,
             intent,
+            aos_hub_core::storage_authority::external_object::stage::ExternalStageAdmissionMode::Fresh,
+            None,
             &self.write,
             &self.read,
             "b".repeat(64),
@@ -994,3 +1000,5 @@ async fn corrupted_pending_incarnation_rejects_before_terminal_replay() {
     };
     assert!(state::terminal(&head, &f.config, &receipt).is_err());
 }
+
+mod recovery;

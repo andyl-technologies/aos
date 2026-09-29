@@ -27,7 +27,9 @@ pub(crate) use stage::resolve_external_profiles;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use stage::{execute_stage, fetch as fetch_stage};
 #[cfg(target_arch = "wasm32")]
-pub(crate) use stage::{prepare_stage_request, presign_registered_parts};
+pub(crate) use stage::{
+    prepare_stage_read_recovery, prepare_stage_request, presign_registered_parts,
+};
 
 #[cfg(test)]
 mod tests;

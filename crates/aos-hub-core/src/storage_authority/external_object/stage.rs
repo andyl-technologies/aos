@@ -412,6 +412,18 @@ impl ExternalStageOperation {
     }
 }
 
+/// Selects fresh eligibility or the exact previously retained immutable read.
+///
+/// Recovery does not extend mutation, publication or logical commit eligibility.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalStageAdmissionMode {
+    /// Requires the original logical owner to remain eligible.
+    Fresh,
+    /// Resumes only an exact pending read of a positively closed private stage.
+    ResumeImmutableRead,
+}
+
 /// Authenticated short-lived control; historical receipt identity excludes leases/time.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -434,6 +446,8 @@ pub struct ExternalStageRequest {
     pub write_lease: String,
     /// Fresh exact read lease for stage verification/copy source.
     pub read_lease: String,
+    /// Required MAC-covered eligibility mode; never defaults on the wire.
+    pub admission_mode: ExternalStageAdmissionMode,
     /// One closed retained effect or metadata operation.
     pub operation: ExternalStageOperation,
 }
@@ -461,6 +475,7 @@ impl ExternalStageRequest {
             context,
             write_lease,
             read_lease,
+            admission_mode: ExternalStageAdmissionMode::Fresh,
             operation,
         }
     }
@@ -539,13 +554,20 @@ impl ExternalStageRequest {
         );
         self.context.validate()?;
         self.operation.validate(&self.context)?;
+        ensure!(
+            self.admission_mode == ExternalStageAdmissionMode::Fresh
+                || self.operation.immutable_read(),
+            "read recovery cannot authorize a mutation"
+        );
         Ok(())
     }
 
     /// Rechecks scalar permission time after all cryptographic validation.
     ///
     /// The executor invokes this without an intervening await immediately before
-    /// the provider Fetch. This proves new-dispatch permission, never drain.
+    /// the provider Fetch. Recovery mode requires a separately admitted exact
+    /// pending immutable read from the physical guard; this scalar check alone
+    /// cannot establish that identity or extend logical commit eligibility.
     ///
     /// # Errors
     /// Returns an error for clock regression/uncertainty or expired lease,
@@ -557,6 +579,11 @@ impl ExternalStageRequest {
         floor: &super::super::lease::EpochLeaseFloor,
         clock: super::super::lease::LeaseClock,
     ) -> Result<()> {
+        ensure!(
+            self.admission_mode == ExternalStageAdmissionMode::Fresh
+                || self.operation.immutable_read(),
+            "read recovery cannot authorize a mutation"
+        );
         let payload = &validated.payload;
         ensure!(
             clock.observed_at >= floor.clock_floor.get()
@@ -581,7 +608,8 @@ impl ExternalStageRequest {
         ensure!(
             issued <= clock.observed_at.saturating_add(5)
                 && clock.observed_at < expires
-                && clock.observed_at < i64::try_from(self.context.logical_expires_at.get())?
+                && (self.admission_mode == ExternalStageAdmissionMode::ResumeImmutableRead
+                    || clock.observed_at < i64::try_from(self.context.logical_expires_at.get())?)
                 && snapshot.issued_at <= clock.observed_at.saturating_add(5)
                 && clock.observed_at <= snapshot.expires_at,
             "stage application permission expired at provider dispatch"

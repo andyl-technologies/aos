@@ -11,9 +11,9 @@ use aos_hub_core::direct_upload::{
 use aos_hub_core::s3surface::{self, Method as S3Method, S3Surface};
 use aos_hub_core::storage_authority::{
     external_object::stage::{
-        ExternalStageOperation as Action, ExternalStageOutcome as Outcome, ExternalStageRequest,
-        ExternalStageResult, EXTERNAL_STAGE_PATH, EXTERNAL_STAGE_SIGNATURE_HEADER,
-        MAX_EXTERNAL_STAGE_REQUEST_BYTES,
+        ExternalStageAdmissionMode, ExternalStageOperation as Action,
+        ExternalStageOutcome as Outcome, ExternalStageRequest, ExternalStageResult,
+        EXTERNAL_STAGE_PATH, EXTERNAL_STAGE_SIGNATURE_HEADER, MAX_EXTERNAL_STAGE_REQUEST_BYTES,
     },
     lease::{EpochLeaseFloor, LeaseEffect},
     GuardIncarnation, StorageGuardStamp,
@@ -122,10 +122,15 @@ pub(crate) async fn execute_stage(
         _ => anyhow::bail!("stage lookup reply differs"),
     }
 
-    ensure!(
-        object.clock().observed_at < i64::try_from(work.context.logical_expires_at.get())?,
-        "original logical stage eligibility expired"
-    );
+    let recovery = if work.admission_mode == ExternalStageAdmissionMode::ResumeImmutableRead {
+        Some(recovery_read(env, &intent).await?)
+    } else {
+        ensure!(
+            object.clock().observed_at < i64::try_from(work.context.logical_expires_at.get())?,
+            "original logical stage eligibility expired"
+        );
+        None
+    };
     let publication = crate::hybrid_binding::resolve_for_delivery(
         env,
         i64::try_from(work.context.placement.binding_id.get())?,
@@ -162,6 +167,7 @@ pub(crate) async fn execute_stage(
             domain: protocol::DOMAIN.into(),
             scope: scope.clone(),
             operation: Operation::Begin {
+                admission_mode: work.admission_mode,
                 intent: intent.clone(),
                 write_lease: work.write_lease.clone(),
                 read_lease: work.read_lease.clone(),
@@ -181,6 +187,7 @@ pub(crate) async fn execute_stage(
     };
     ensure!(
         turn.intent == intent
+            && recovery.as_ref().is_none_or(|retained| retained == &turn)
             && super::super::protocol::digest_string(&turn.dispatch_nonce)
             && floor.full_key == scope.full_key
             && floor.executor_identity == object.executor_identity,
@@ -267,6 +274,31 @@ pub(crate) async fn execute_stage(
             receipt: acknowledged,
         } if acknowledged == receipt => checked_result(&intent, &acknowledged),
         _ => anyhow::bail!("stage terminal acknowledgement differs"),
+    }
+}
+
+/// Returns a retained projection only; Begin must repeat admission under CAS.
+pub(super) async fn recovery_read(env: &Env, intent: &Intent) -> Result<Turn> {
+    match call(
+        env,
+        &protocol::Request {
+            domain: protocol::DOMAIN.into(),
+            scope: intent.scope()?,
+            operation: Operation::RecoveryRead {
+                intent: intent.clone(),
+            },
+        },
+    )
+    .await?
+    {
+        Reply::RecoveryRead { turn, floor } => {
+            ensure!(
+                turn.intent == *intent && floor.full_key == intent.scope()?.full_key,
+                "recovery projection changed original owner"
+            );
+            Ok(turn)
+        }
+        _ => anyhow::bail!("recovery lacks exact retained immutable read"),
     }
 }
 
