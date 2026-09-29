@@ -150,6 +150,13 @@ pub(super) fn validate_private(
     }
 
     match (table, column) {
+        ("oci_image_config_projections", "config_summary_json") => {
+            let summary: crate::hybrid_ingress::projection::OciImageConfigSemanticsV1 =
+                closed(value)?;
+            summary
+                .validate()
+                .map_err(|_| anyhow::anyhow!("snapshot OCI config summary is invalid"))?;
+        }
         ("release_bundle_publications", "receipt_json")
         | ("release_channel_operations", "receipt_json")
         | ("release_qualifications", "receipt_json" | "staging_receipt_json") => {
@@ -214,14 +221,14 @@ fn validate_receipt(value: JsonValue, table: &str, column: &str) -> Result<()> {
     // promote an archived qualification to fresh provider authority.
 }
 
-fn parse(text: &str) -> Result<JsonValue> {
+pub(super) fn parse(text: &str) -> Result<JsonValue> {
     // Reuse the signed-document duplicate-member and bounded-depth parser.
     // Its integer-only dialect deliberately fails closed on unsupported floats.
     aos_release::canonical::parse_json(text.as_bytes(), "snapshot cell")
         .map_err(|_| anyhow::anyhow!("snapshot JSON cell is invalid or unsupported"))
 }
 
-fn closed<T: DeserializeOwned>(value: JsonValue) -> Result<T> {
+pub(super) fn closed<T: DeserializeOwned>(value: JsonValue) -> Result<T> {
     serde_json::from_value(value)
         .map_err(|_| anyhow::anyhow!("snapshot closed JSON contract differs"))
 }

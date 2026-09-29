@@ -52,6 +52,8 @@ async fn apply(db: &Database, input: StorageAuthorityDecisionInput) {
         plan_kind: input.plan_kind().into(),
         actor_kind: "user".into(),
         actor_id: Some(7),
+        // This fixture exercises trusted DB primitives, not public actor authorization.
+        actor_incarnation: None,
         actor_label: "reviewed root".into(),
         scope: "instance".into(),
         input_versions_json: serde_json::to_string(&input).unwrap(),
@@ -73,6 +75,7 @@ async fn apply(db: &Database, input: StorageAuthorityDecisionInput) {
             confirmation_hash: confirmation,
             actor_kind: "user".into(),
             actor_id: 7,
+            actor_incarnation: None,
         },
         &input,
     )

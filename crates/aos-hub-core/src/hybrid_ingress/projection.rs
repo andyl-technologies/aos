@@ -4,6 +4,14 @@
 //! normalized semantic fields. Unknown file content stays at object storage.
 
 mod narinfo;
+mod oci;
+
+pub use oci::{
+    aos_system, measure_oci_layer_metadata, parse_oci_zstd_content_size,
+    validate_config_inspection_request, HybridOciDocumentProjection, HybridOciManifestProjection,
+    OciImageConfigLayerSemantics, OciImageConfigSemanticsV1, OciInspectionDescriptor,
+    OciLayerSizeMeasurement, MAX_HYBRID_OCI_PROJECTION_BYTES,
+};
 
 pub use narinfo::{
     HybridNarinfoProjection, HybridNarinfoSignature, MAX_HYBRID_NARINFO_PROJECTION_BYTES,
@@ -23,6 +31,8 @@ use serde::{Deserialize, Serialize};
 pub enum HybridObjectProjection {
     /// Nix signing and normalized cache-index metadata.
     Narinfo(HybridNarinfoProjection),
+    /// Bounded OCI descriptor graph with separately attested source identity.
+    OciManifest(HybridOciManifestProjection),
 }
 
 impl HybridObjectProjection {
@@ -34,6 +44,7 @@ impl HybridObjectProjection {
     pub fn validate(&self) -> Result<()> {
         match self {
             Self::Narinfo(projection) => projection.validate(),
+            Self::OciManifest(projection) => projection.validate(),
         }
     }
 
@@ -42,6 +53,7 @@ impl HybridObjectProjection {
     pub fn source_identity(&self) -> (&str, u32) {
         match self {
             Self::Narinfo(projection) => (&projection.source_sha256, projection.source_size),
+            Self::OciManifest(projection) => (&projection.source_sha256, projection.source_size),
         }
     }
 }

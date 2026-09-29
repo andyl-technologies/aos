@@ -28,6 +28,7 @@
 //!   -> 404 { "code": "not_found", "message": "registry not found" }
 //! ```
 
+mod authentication;
 mod container;
 mod container_admin;
 mod delivery_workflow;
@@ -2688,12 +2689,14 @@ fn session_cache_key(secret: &str) -> String {
 /// The serializable projection of a [`ResolvedSession`](crate::web::session::ResolvedSession)
 /// stored in KV (RFC-0004 ch.14 Phase C).
 ///
-/// Mirrors `SessionAuth`'s integer fields plus the user's email — everything the
-/// resolution carries except the secret (re-attached on read). Kept local to the
-/// service so the `db` types need no serde derives.
+/// Retains the genuine session's account UUID, cookie hash, integer fields and
+/// user's email. The secret is re-attached only after its exact hash is checked.
+/// Old cache shapes reload from SQL rather than inventing missing provenance.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CachedSession {
     user_id: i64,
+    owner_incarnation: String,
+    session_id_hash: String,
     auth_level: i64,
     last_authenticated_at: i64,
     expires_at: i64,
@@ -2712,6 +2715,8 @@ impl CachedSession {
     fn from_resolved(rs: &crate::web::session::ResolvedSession) -> CachedSession {
         CachedSession {
             user_id: rs.auth.user_id,
+            owner_incarnation: rs.auth.owner_incarnation.clone(),
+            session_id_hash: rs.auth.session_id_hash.clone(),
             auth_level: rs.auth.auth_level,
             last_authenticated_at: rs.auth.last_authenticated_at,
             expires_at: rs.auth.expires_at,
@@ -2725,13 +2730,15 @@ impl CachedSession {
     /// The expiry recheck makes the short cache TTL safe: an entry that expires
     /// mid-window is never served, exactly as `validate_session` would reject it.
     fn into_resolved(self, secret: &str, now: i64) -> Option<crate::web::session::ResolvedSession> {
-        if self.expires_at <= now {
+        if self.expires_at <= now || self.session_id_hash != crate::auth::token::sha256_hex(secret) {
             return None;
         }
         Some(crate::web::session::ResolvedSession {
             secret: secret.to_string(),
             auth: crate::db::SessionAuth {
                 user_id: self.user_id,
+                owner_incarnation: self.owner_incarnation,
+                session_id_hash: self.session_id_hash,
                 auth_level: self.auth_level,
                 last_authenticated_at: self.last_authenticated_at,
                 expires_at: self.expires_at,
@@ -10319,7 +10326,15 @@ impl RpcService {
         let Some(cached) = cached else {
             return Ok(None);
         };
-        if !self.db.principal_is_live("user", cached.user_id).await? {
+        // The cached row belongs to the originally validated account, never a
+        // replacement that happens to reuse the same numeric SQL slot.
+        if self
+            .db
+            .principal_incarnation(Principal::user(cached.user_id))
+            .await?
+            .as_ref()
+            != Some(&cached.owner_incarnation)
+        {
             return Ok(None);
         }
         Ok(cached.into_resolved(secret, now))
@@ -10566,13 +10581,16 @@ impl RpcService {
         if !token_allows(claims, perm, &context) {
             return Err(denied());
         }
-        let principal = claims_principal(claims).ok_or_else(denied)?;
+        let principal = self.current_principal(claims).await?;
         let grants = self
             .db
             .effective_scopes(principal)
             .await
             .map_err(RpcError::internal)?;
         if iam::allow(&grants, perm, &context) {
+            // IAM awaits may observe a replacement in a recyclable numeric
+            // slot. Recheck the exact signed owner and credential before success.
+            self.current_principal(claims).await?;
             Ok(())
         } else {
             Err(denied())
@@ -10594,12 +10612,14 @@ impl RpcService {
         if !token_allows(claims, perm, &context) {
             return false;
         }
-        let Some(principal) = claims_principal(claims) else {
+        let Ok(principal) = self.current_principal(claims).await else {
             return false;
         };
         match self.db.effective_scopes(principal).await {
-            Ok(grants) => iam::allow(&grants, perm, &context),
-            Err(_) => false,
+            Ok(grants) if iam::allow(&grants, perm, &context) => {
+                self.current_principal(claims).await.is_ok()
+            }
+            _ => false,
         }
     }
 
@@ -10928,17 +10948,11 @@ impl RpcService {
     ///
     /// Returns [`RpcError::Internal`] on database failure.
     async fn signup_permitted(&self, claims: &Claims) -> Result<bool, RpcError> {
-        let Some(principal) = claims_principal(claims) else {
-            return Ok(false);
+        let principal = match self.current_principal(claims).await {
+            Ok(principal) => principal,
+            Err(RpcError::PermissionDenied(_)) => return Ok(false),
+            Err(error) => return Err(error),
         };
-        if !self
-            .db
-            .principal_is_live(principal.kind.as_str(), principal.id)
-            .await
-            .map_err(RpcError::internal)?
-        {
-            return Ok(false);
-        }
         if principal.kind != PrincipalKind::User {
             return Ok(true);
         }
@@ -10996,18 +11010,7 @@ impl RpcService {
     /// Returns [`RpcError::PermissionDenied`] when the caller's email domain is
     /// not allowlisted, and [`RpcError::Internal`] on database failure.
     async fn enforce_signup_domain(&self, claims: &Claims) -> Result<(), RpcError> {
-        let principal = claims_principal(claims)
-            .ok_or_else(|| RpcError::PermissionDenied("active principal required".to_string()))?;
-        if !self
-            .db
-            .principal_is_live(principal.kind.as_str(), principal.id)
-            .await
-            .map_err(RpcError::internal)?
-        {
-            return Err(RpcError::PermissionDenied(
-                "active principal required".to_string(),
-            ));
-        }
+        let principal = self.current_principal(claims).await?;
         let settings = self
             .db
             .instance_settings()
@@ -19128,18 +19131,7 @@ impl RpcService {
         _req: pb::WhoAmIRequest,
     ) -> Result<pb::WhoAmIResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        let principal = claims_principal(&claims)
-            .ok_or_else(|| RpcError::PermissionDenied("active principal required".into()))?;
-        if !self
-            .db
-            .principal_is_live(principal.kind.as_str(), principal.id)
-            .await
-            .map_err(RpcError::internal)?
-        {
-            return Err(RpcError::PermissionDenied(
-                "active principal required".into(),
-            ));
-        }
+        let principal = self.current_principal(&claims).await?;
 
         let (principal_ref, email) = match principal.kind {
             PrincipalKind::User => {
@@ -19760,8 +19752,7 @@ impl RpcService {
         current_role: Option<Role>,
         desired_role: Option<Role>,
     ) -> Result<(), RpcError> {
-        let actor = claims_principal(claims)
-            .ok_or_else(|| RpcError::PermissionDenied("active principal required".into()))?;
+        let actor = self.current_principal(claims).await?;
         let context = self
             .db
             .authorization_context(scope.as_str())
@@ -20549,7 +20540,7 @@ impl RpcService {
         req: pb::AcceptInvitationRequest,
     ) -> Result<pb::AcceptInvitationResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        let principal = claims_principal(&claims)
+        let principal = Some(self.current_principal(&claims).await?)
             .filter(|principal| principal.kind == PrincipalKind::User)
             .ok_or_else(|| {
                 RpcError::PermissionDenied("a human user must accept invitations".into())
@@ -29889,6 +29880,7 @@ impl RpcService {
         warnings: Vec<String>,
         confirmation_hash: Option<String>,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        self.current_principal(claims).await?;
         if idempotency_key.is_empty() {
             return Err(RpcError::invalid("idempotency_key is required"));
         }
@@ -29901,6 +29893,7 @@ impl RpcService {
                 plan_kind: plan_kind.to_string(),
                 actor_kind: claims.owner_kind.clone(),
                 actor_id: Some(claims.owner_id),
+                actor_incarnation: claims.owner_incarnation.clone(),
                 actor_label: claims.sub.clone(),
                 scope: scope.to_string(),
                 input_versions_json: serde_json::to_string(input).map_err(RpcError::internal)?,
@@ -29921,6 +29914,7 @@ impl RpcService {
         plan_kind: &str,
         idempotency_key: &str,
     ) -> Result<Option<(crate::db::TopologyPlanRecord, T)>, RpcError> {
+        self.current_principal(claims).await?;
         if idempotency_key.is_empty() {
             return Err(RpcError::invalid("idempotency_key is required"));
         }
@@ -29937,6 +29931,11 @@ impl RpcService {
         else {
             return Ok(None);
         };
+        if !Self::plan_actor_matches(&plan, claims) {
+            return Err(RpcError::FailedPrecondition(
+                "plan belongs to another account incarnation or requires replanning".into(),
+            ));
+        }
         let input = serde_json::from_str(&plan.input_versions_json).map_err(RpcError::internal)?;
         Ok(Some((plan, input)))
     }
@@ -30036,6 +30035,11 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("topology plan"))?;
+        if !Self::plan_actor_matches(&plan, &claims) {
+            return Err(RpcError::FailedPrecondition(
+                "plan belongs to another account incarnation or requires replanning".into(),
+            ));
+        }
         self.require_permission(&claims, permission, &Scope::parse(&plan.scope))
             .await?;
         Ok(claims)
@@ -30049,6 +30053,7 @@ impl RpcService {
         confirmation_hash: Option<&str>,
     ) -> Result<(crate::db::TopologyPlanRecord, T), RpcError> {
         let claims = self.require_claims(auth)?;
+        self.current_principal(&claims).await?;
         let plan = self
             .db
             .topology_plan(plan_id)
@@ -30056,8 +30061,7 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("topology plan"))?;
         if plan.plan_kind != plan_kind
-            || plan.actor_kind != claims.owner_kind
-            || plan.actor_id != Some(claims.owner_id)
+            || !Self::plan_actor_matches(&plan, &claims)
             || plan.applied_at.is_some()
             || (plan.expires_at < clock::now_unix_secs() && plan.apply_idempotency_key.is_none())
         {
@@ -30088,6 +30092,7 @@ impl RpcService {
             return Err(RpcError::invalid("idempotency_key is required"));
         }
         let claims = self.require_claims(auth)?;
+        self.current_principal(&claims).await?;
         let plan = self
             .db
             .topology_plan(plan_id)
@@ -30095,8 +30100,7 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("topology plan"))?;
         if plan.plan_kind != plan_kind
-            || plan.actor_kind != claims.owner_kind
-            || plan.actor_id != Some(claims.owner_id)
+            || !Self::plan_actor_matches(&plan, &claims)
         {
             return Err(RpcError::FailedPrecondition(
                 "plan belongs to another actor or operation".to_string(),
@@ -30144,6 +30148,7 @@ impl RpcService {
             return Err(RpcError::invalid("idempotency_key is required"));
         }
         let claims = self.require_claims(auth)?;
+        self.current_principal(&claims).await?;
         let plan = self
             .db
             .topology_plan(plan_id)
@@ -30151,8 +30156,7 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("topology plan"))?;
         if plan.plan_kind != plan_kind
-            || plan.actor_kind != claims.owner_kind
-            || plan.actor_id != Some(claims.owner_id)
+            || !Self::plan_actor_matches(&plan, &claims)
             || plan.applied_at.is_some()
         {
             return Err(RpcError::FailedPrecondition(
@@ -36658,7 +36662,7 @@ mod cache_upload_tests {
         ChannelSummary, Database, IndexSnapshot, IndexedSystemImage, NewRegistryPublication,
         NewSurfacePlacementSpec, RegistryRecord, ReleaseImageSnapshot, ReleaseRow,
         SetRegistryPublicationObject, SetRegistryPublicationPlacement, SetSurfaceObject,
-        SurfacePlacementBlockers, SurfaceTarget, TokenAuth, VerifiedRegistryImageObject,
+        SurfacePlacementBlockers, SurfaceTarget, VerifiedRegistryImageObject,
         WriteTicketPartRecord,
     };
     use crate::domain::{Permission, Principal, Role, Scope};
@@ -37005,23 +37009,20 @@ mod cache_upload_tests {
             .await
             .unwrap()
             .unwrap();
-        let token = jwt_keys
-            .mint(
-                &TokenAuth {
-                    token_id: "holder".into(),
-                    owner: Principal::user(user_id),
-                    scope: Scope::root(),
-                    permissions: vec![
-                        Permission::RegistryConfigure,
-                        Permission::Publish,
-                        Permission::TokensManage,
-                        Permission::IamAdmin,
-                        Permission::MembersManage,
-                    ],
-                },
-                3600,
-            )
-            .unwrap();
+        let token_authority = crate::service::authentication::provisioned_test_auth(
+            &db,
+            Principal::user(user_id),
+            Scope::root(),
+            &[
+                Permission::RegistryConfigure,
+                Permission::Publish,
+                Permission::TokensManage,
+                Permission::IamAdmin,
+                Permission::MembersManage,
+            ],
+        )
+        .await;
+        let token = jwt_keys.mint(&token_authority, 3600).unwrap();
         let coordinator = Arc::new(InMemoryCoordinator::new());
         let lease = Arc::new(InMemoryLease::new());
         let service = RpcService::new(
@@ -38654,12 +38655,7 @@ mod cache_upload_tests {
         let token = service
             .jwt_keys
             .mint(
-                &TokenAuth {
-                    token_id: "invitee-session".into(),
-                    owner: Principal::user(invitee),
-                    scope: Scope::root(),
-                    permissions: Vec::new(),
-                },
+                &crate::service::authentication::browser_test_auth(&db, invitee, Vec::new()).await,
                 3600,
             )
             .unwrap();
@@ -39751,17 +39747,14 @@ mod cache_upload_tests {
             .await
             .unwrap()
             .unwrap();
-        let token = jwt_keys
-            .mint(
-                &TokenAuth {
-                    token_id: "keys-manager".into(),
-                    owner: Principal::user(user_id),
-                    scope: Scope::root(),
-                    permissions: vec![Permission::KeysManage],
-                },
-                3600,
-            )
-            .unwrap();
+        let token_authority = crate::service::authentication::provisioned_test_auth(
+            &db,
+            Principal::user(user_id),
+            Scope::root(),
+            &[Permission::KeysManage],
+        )
+        .await;
+        let token = jwt_keys.mint(&token_authority, 3600).unwrap();
         let auth = format!("Bearer {token}");
         assert!(matches!(
             service

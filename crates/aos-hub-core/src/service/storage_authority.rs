@@ -112,6 +112,12 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("physical authority plan"))?;
 
+        if !Self::plan_actor_matches(&plan, &claims) {
+            return Err(RpcError::FailedPrecondition(
+                "plan belongs to another account incarnation or requires replanning".into(),
+            ));
+        }
+
         let reviewed: StorageAuthorityReviewedPlanInput =
             serde_json::from_str(&plan.input_versions_json).map_err(|_| {
                 RpcError::FailedPrecondition("stored authority review is invalid".into())
@@ -123,8 +129,6 @@ impl RpcService {
 
         if plan.scope != Scope::root().as_str()
             || plan.plan_kind != input.plan_kind()
-            || plan.actor_kind != claims.owner_kind
-            || plan.actor_id != Some(claims.owner_id)
             || plan.input_versions_json
                 != serde_json::to_string(&reviewed).map_err(RpcError::internal)?
             || plan.confirmation_hash.as_deref() != Some(req.confirmation_hash.as_str())
@@ -179,6 +183,7 @@ impl RpcService {
                     confirmation_hash: req.confirmation_hash,
                     actor_kind: claims.owner_kind,
                     actor_id: claims.owner_id,
+                    actor_incarnation: claims.owner_incarnation,
                 },
                 input,
             )

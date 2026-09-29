@@ -9,19 +9,18 @@
 //! both before planning and before applying. This module binds that decision to
 //! the reserved root topology plan, exact actor, input, confirmation, and key.
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::backend::{CheckedStatement, Statement};
 use crate::storage_authority::{
-    ApproveStorageAuthorityAlias, AssociateStorageAuthorityBinding,
+    canonical_digest, ApproveStorageAuthorityAlias, AssociateStorageAuthorityBinding,
     AttestStorageAuthorityExclusivity, CreatePhysicalStorageAuthority, PhysicalStorageAuthorityId,
     SetStorageAuthorityAdmission, StorageAuthorityAdmissionState, StorageAuthorityDecisionInput,
     StorageAuthorityHost, StorageAuthorityRemoteWatermark, StorageAuthorityReviewedPlanInput,
-    canonical_digest,
 };
 
-use super::{Database, PORTABLE_RELATIONAL_ID_MAX, TopologyPlanRecord, unix_now};
+use super::{unix_now, Database, TopologyPlanRecord, PORTABLE_RELATIONAL_ID_MAX};
 
 mod publication;
 
@@ -40,6 +39,8 @@ pub struct ReviewedStorageAuthorityDecision {
     pub actor_kind: String,
     /// Authenticated principal database identity, supplied by the service.
     pub actor_id: i64,
+    /// Original immutable owner pin; None retains only legacy DB fixture semantics.
+    pub actor_incarnation: Option<String>,
 }
 
 /// Durable result replayed only for the exact reviewed operation and actor.
@@ -126,25 +127,31 @@ impl Database {
             }
         };
         let result_json = serde_json::to_string(&result)?;
-        let mut statements = vec![
-            Statement::new(
-                "UPDATE topology_plans SET applied_at = ?2, apply_result_json = ?3
+        let mut statements = vec![Statement::new(
+            "UPDATE topology_plans SET applied_at = ?2, apply_result_json = ?3
              WHERE plan_id = ?1 AND scope = 'instance' AND applied_at IS NULL
                AND apply_idempotency_key = ?4 AND actor_kind = ?5 AND actor_id = ?6
-               AND input_versions_json = ?7 AND confirmation_hash = ?8",
-                vals![
-                    plan.plan_id,
-                    now,
-                    result_json,
-                    decision.apply_idempotency_key,
-                    decision.actor_kind,
-                    decision.actor_id,
-                    plan.input_versions_json,
-                    decision.confirmation_hash
-                ],
-            )
-            .expecting(1),
-        ];
+               AND input_versions_json = ?7 AND confirmation_hash = ?8
+               AND (actor_incarnation = ?9 OR (actor_incarnation IS NULL AND ?9 IS NULL))
+               AND (?9 IS NULL
+                 OR (?5 = 'user' AND EXISTS (SELECT 1 FROM users u WHERE u.id = ?6
+                     AND u.deleted_at IS NULL AND u.principal_incarnation = ?9))
+                 OR (?5 = 'service_account' AND EXISTS (SELECT 1 FROM service_accounts s
+                     JOIN orgs o ON o.id = s.org_id WHERE s.id = ?6
+                       AND o.deleted_at IS NULL AND s.principal_incarnation = ?9)))",
+            vals![
+                plan.plan_id,
+                now,
+                result_json,
+                decision.apply_idempotency_key,
+                decision.actor_kind,
+                decision.actor_id,
+                plan.input_versions_json,
+                decision.confirmation_hash,
+                decision.actor_incarnation
+            ],
+        )
+        .expecting(1)];
         statements.extend(mutations);
         if let Err(error) = self.backend.checked_batch(&statements).await {
             // A concurrent exact retry may have completed the same atomic
@@ -344,6 +351,19 @@ impl Database {
         decision: &ReviewedStorageAuthorityDecision,
         input: &StorageAuthorityDecisionInput,
     ) -> Result<TopologyPlanRecord> {
+        if let Some(incarnation) = &decision.actor_incarnation {
+            let kind = crate::domain::PrincipalKind::parse(&decision.actor_kind)
+                .context("authority decision actor kind is invalid")?;
+            let principal = crate::domain::Principal {
+                kind,
+                id: decision.actor_id,
+            };
+            super::direct_identity::validate_actor_incarnation(principal, incarnation)?;
+            ensure!(
+                self.principal_incarnation(principal).await?.as_ref() == Some(incarnation),
+                "authority decision actor incarnation is unavailable"
+            );
+        }
         let plan = self
             .topology_plan(&decision.plan_id)
             .await?
@@ -373,6 +393,7 @@ impl Database {
                 && plan.plan_kind == input.plan_kind()
                 && plan.actor_kind == decision.actor_kind
                 && plan.actor_id == Some(decision.actor_id)
+                && plan.actor_incarnation == decision.actor_incarnation
                 && plan.input_versions_json == input_json
                 && plan.confirmation_hash.as_deref() == Some(decision.confirmation_hash.as_str())
                 && decision.confirmation_hash == confirmation

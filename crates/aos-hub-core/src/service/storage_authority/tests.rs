@@ -1,7 +1,7 @@
 //! Operator authorization, typed decision persistence and exact replay behavior.
 
 use super::*;
-use crate::db::{NewBindingWriteRevision, TokenAuth};
+use crate::db::NewBindingWriteRevision;
 use crate::domain::{Principal, Role};
 
 const AUTHORITY: &str = "00000000-0000-4000-8000-000000000001";
@@ -13,23 +13,28 @@ async fn fixture() -> (RpcService, String, i64) {
         .await
         .unwrap()
         .unwrap();
-    let auth = token(&service, user, Scope::root());
+    let auth = token(&service, user, Scope::root()).await;
     (service, auth, user)
 }
 
-fn token(service: &RpcService, user: i64, scope: Scope) -> String {
-    let jwt = service
-        .jwt_keys
-        .mint(
-            &TokenAuth {
-                token_id: format!("authority-operator-{user}"),
-                owner: Principal::user(user),
-                scope,
-                permissions: vec![Permission::StorageManage],
-            },
-            3600,
+async fn token(service: &RpcService, user: i64, scope: Scope) -> String {
+    let auth = if scope == Scope::root() {
+        super::super::authentication::browser_test_auth(
+            &service.db,
+            user,
+            vec![Permission::StorageManage],
         )
-        .unwrap();
+        .await
+    } else {
+        super::super::authentication::provisioned_test_auth(
+            &service.db,
+            Principal::user(user),
+            scope,
+            &[Permission::StorageManage],
+        )
+        .await
+    };
+    let jwt = service.jwt_keys.mint(&auth, 3600).unwrap();
     format!("Bearer {jwt}")
 }
 
@@ -126,8 +131,8 @@ async fn authority_operator_requires_instance_root_permission_for_plan_apply_and
         .grant_membership("user", user, &org.stable_id, Role::Owner.as_str())
         .await
         .unwrap();
-    let org_token = token(&service, user, Scope::parse(&org.stable_id));
-    let broad_token = token(&service, user, Scope::root());
+    let org_token = token(&service, user, Scope::parse(&org.stable_id)).await;
+    let broad_token = token(&service, user, Scope::root()).await;
     let approved = plan(&service, &root, create(), "root-plan").await;
 
     for auth in [None, Some(org_token.as_str()), Some(broad_token.as_str())] {
@@ -281,7 +286,7 @@ async fn authority_operator_binds_request_replay_actor_input_confirmation_and_ap
     assert!(matches!(
         service
             .apply_storage_authority_decision(
-                Some(&token(&service, other, Scope::root())),
+                Some(&token(&service, other, Scope::root()).await),
                 request.clone()
             )
             .await,
@@ -867,23 +872,83 @@ async fn authority_operator_canonical_apply_rejects_unknown_duplicate_and_legacy
                 .await,
             Err(RpcError::FailedPrecondition(_))
         ));
-        assert!(
-            service
-                .db
-                .topology_plan(&request.plan_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .apply_idempotency_key
-                .is_none()
-        );
-    }
-    assert!(
-        service
+        assert!(service
             .db
-            .physical_storage_authority(&conversion::authority_id(AUTHORITY).unwrap())
+            .topology_plan(&request.plan_id)
             .await
             .unwrap()
-            .is_none()
-    );
+            .unwrap()
+            .apply_idempotency_key
+            .is_none());
+    }
+    assert!(service
+        .db
+        .physical_storage_authority(&conversion::authority_id(AUTHORITY).unwrap())
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn authority_operator_replacement_uuid_cannot_apply_or_replay_original_plan() {
+    use crate::value::Value;
+
+    let (service, original, user) = fixture().await;
+    let reviewed = plan(&service, &original, create(), "original-incarnation-plan").await;
+    let request = apply_request(&reviewed, "original-incarnation-apply");
+    let result = service
+        .apply_storage_authority_decision(Some(&original), request.clone())
+        .await
+        .unwrap();
+    assert_eq!(result.authority_id, AUTHORITY);
+
+    service.db.delete_user(user).await.unwrap();
+    service
+        .db
+        .backend
+        .execute("DELETE FROM users WHERE id = ?1", &[Value::Int(user)])
+        .await
+        .unwrap();
+    let replacement = service
+        .db
+        .create_user("authority-replacement@example.test", None)
+        .await
+        .unwrap();
+    assert_eq!(replacement, user);
+    service
+        .db
+        .grant_membership("user", replacement, "instance", Role::Owner.as_str())
+        .await
+        .unwrap();
+    let replacement_bearer = token(&service, replacement, Scope::root()).await;
+    // A genuine current root token can read the shared authority, but cannot
+    // inherit a former account's reviewed input or completed apply receipt.
+    service
+        .get_storage_authority(
+            Some(&replacement_bearer),
+            pb::GetStorageAuthorityRequest {
+                authority_id: AUTHORITY.into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        service
+            .apply_storage_authority_decision(Some(&replacement_bearer), request)
+            .await,
+        Err(RpcError::FailedPrecondition(_))
+    ));
+    assert!(matches!(
+        service
+            .plan_storage_authority_decision(
+                Some(&replacement_bearer),
+                pb::PlanStorageAuthorityDecisionRequest {
+                    decision: Some(create()),
+                    idempotency_key: "original-incarnation-plan".into(),
+                    expected_resource_version: String::new(),
+                },
+            )
+            .await,
+        Err(RpcError::FailedPrecondition(_))
+    ));
 }

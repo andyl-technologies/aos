@@ -58,6 +58,8 @@ async fn review(
         plan_kind: input.plan_kind().into(),
         actor_kind: "user".into(),
         actor_id: Some(7),
+        // This fixture exercises trusted DB primitives, not public actor authorization.
+        actor_incarnation: None,
         actor_label: "dialect root operator".into(),
         scope: "instance".into(),
         input_versions_json: serde_json::to_string(&reviewed).unwrap(),
@@ -80,6 +82,7 @@ async fn review(
         apply_idempotency_key: "authority-dialect-apply".into(),
         actor_kind: "user".into(),
         actor_id: 7,
+        actor_incarnation: None,
     }
 }
 

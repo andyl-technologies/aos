@@ -3360,12 +3360,17 @@ mod entry {
                 .create_session(user_id, 3_600, 0)
                 .await
                 .map_err(|error| worker::Error::RustError(format!("e2e session: {error:#}")))?;
+            let session_auth = db.validate_session(&session).await
+                .map_err(|_| worker::Error::RustError("e2e session validation failed".into()))?
+                .ok_or_else(|| worker::Error::RustError("e2e session validation failed".into()))?;
             let jwt = JwtKeys::from_secret(self.env.secret(HUB_JWT_SECRET)?.to_string().as_bytes());
             let token = jwt
                 .mint(
                     &TokenAuth {
-                        token_id: "workerd-e2e".into(),
+                        token_id: format!("browser-session-{user_id}"),
                         owner: Principal::user(user_id),
+                        owner_incarnation: Some(session_auth.owner_incarnation),
+                        browser_session_id_hash: Some(session_auth.session_id_hash),
                         scope: Scope::root(),
                         permissions: vec![
                             Permission::IamAdmin,

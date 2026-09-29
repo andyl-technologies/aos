@@ -70,3 +70,41 @@ confirmed and remains unqualified. The six persistent groups remain separate
 producer evidence; no current combined client, real provider, fleet or hosted
 acceptance is claimed. Recovery across configuration rotation or migration is
 outside this increment.
+
+## Immutable account identity and live authorization
+
+Account UUIDs now pin API tokens, genuine cookie sessions, JWT provenance and
+reviewed topology operations. Permission checks revalidate the same live actor
+around awaited IAM reads. A replacement account cannot inherit a retained
+request merely by reusing its numeric SQL ID. Existing tokens without an owner
+pin must be reissued; validation never backfills that pin from a numeric ID.
+Migration 004 and the matching snapshot census are additive prerequisites.
+Their presence does not activate the unfinished direct upload service.
+
+Producer receipt `/tmp/hub-native-principal-auth/qualification-v5.json`
+(`c1da1f8433fdc4d56607ccd61591955be337365cc3e1608cfab92ececf57cb98`)
+records 47 named passing tests and Native, ordinary Worker Wasm and CLI
+publication test compilation, with 2,472 unchanged crate inputs. Tests cover
+revocation, expiry, recycled IDs, genuine browser session provenance, account
+changes during IAM reads and exact reviewed-plan ownership. Independent final
+review `88ec3dd261be62a0bcc2e00201b9521ed5c30420b28a62f1e259eca65eb6d250`
+binds the source, named results and retained earlier compiler failures.
+
+Current-context receipt `/tmp/hub-principal-auth-current-context/qualification.json`
+(`0689ea40fa9d89125f81ea1b434840053840b72a7b74ab5927edff7f23d34059`)
+records another 47 passing tests and all three compilation checks. All 2,900
+captured inputs remain unchanged; 44 producer postimages match exactly and one
+Worker parent preserves the newer staging and recovery exports. The four-file
+mechanical prefix is committed separately, with token and import-name
+equivalence checks; the final functional bytes remain the qualified candidate.
+
+The broader core run finished with 1,151 passing tests and 28 failures. Failures
+include snapshot schema and census integration, the fresh-schema expectation,
+complete descriptor-to-router coverage, and timing or database-lock checks.
+The full log is retained at
+`/tmp/hub-principal-auth-current-context/core-full-v1.log`; this increment does
+not establish full-suite acceptance. Actual PostgreSQL/MariaDB identity,
+current combined runtime and hosted gates remain pending. Canonical restored
+token-ID validation and pre-publication identity discovery have their own later
+increments; this receipt does not qualify them or globally transactional
+revocation across arbitrary concurrent changes.

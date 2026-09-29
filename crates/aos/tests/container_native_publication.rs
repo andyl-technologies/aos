@@ -20,7 +20,6 @@ use aos_hub::auth::jwt::JwtKeys;
 use aos_hub::db::{
     Database, EndpointHostInput, EndpointRevisionSpec, NewBindingWriteRevision,
     NewSurfacePlacementSpec, RegistryRecord, RouteSpec, SurfacePlacementRecord, SurfaceTarget,
-    TokenAuth,
 };
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::fetch::LocalFsFetch;
@@ -671,15 +670,20 @@ async fn spawn_hub(workspace: &Path, trust_key: &str) -> Result<RunningHub> {
     db.grant_membership("user", user_id, &registry.owner_scope_key, "maintainer")
         .await?;
     let keys = JwtKeys::from_secret(TEST_JWT_SECRET);
-    let bearer = keys.mint(
-        &TokenAuth {
-            token_id: "native-container-publisher".to_string(),
-            owner: Principal::user(user_id),
-            scope: Scope::parse(&db.registry_authorization_scope(registry.id).await?),
-            permissions: vec![Permission::Read, Permission::Publish],
-        },
-        900,
-    )?;
+    let (_, secret) = db
+        .create_token(
+            Principal::user(user_id),
+            (Scope::parse(&db.registry_authorization_scope(registry.id).await?)).as_str(),
+            &vec![Permission::Read, Permission::Publish],
+            Some("current fixture bearer"),
+            None,
+        )
+        .await?;
+    let token_authority = db
+        .validate_token(&secret)
+        .await?
+        .context("current publication fixture token is unavailable")?;
+    let bearer = keys.mint(&token_authority, 900)?;
     let ratelimit = Arc::new(aos_hub::ratelimit::RateLimiter::new());
     let auth = Arc::new(AuthState {
         db: Arc::clone(&db),

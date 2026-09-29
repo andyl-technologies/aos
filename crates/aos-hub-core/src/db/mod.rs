@@ -521,6 +521,7 @@ mod delivery_identity;
 pub use delivery_identity::*;
 mod delivery_workflow;
 mod direct_delivery;
+mod direct_identity;
 pub use delivery_workflow::*;
 mod egress_nonce;
 mod gc_topology;
@@ -593,7 +594,12 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("002-r2-gc-incarnation.sql"),
     include_str!("003-physical-storage-authorities.sql"),
+    include_str!("004-direct-upload-sessions.sql"),
 ];
+
+// Shared by production initialization and trusted disposable schema compilation.
+pub(crate) const SCHEMA_VERSION_DDL: &str =
+    "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)";
 
 /// Identifies the production migration lineage independently of its version.
 ///
@@ -1254,6 +1260,12 @@ pub struct TokenAuth {
     pub token_id: String,
     /// The principal that owns the token.
     pub owner: crate::domain::Principal,
+    /// Immutable account UUID validated against this exact token or session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_incarnation: Option<String>,
+    /// Hash of a current cookie session; absent for provisioning tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_session_id_hash: Option<String>,
     /// The immutable authorization scope the token is bound to.
     pub scope: crate::domain::Scope,
     /// The permission verbs the token grants.
@@ -1296,6 +1308,10 @@ pub struct AccessTokenMetadata {
 /// bumps `last_seen_at`.
 #[derive(Debug, Clone)]
 pub struct SessionAuth {
+    /// Immutable UUID of the genuinely authenticated current user.
+    pub owner_incarnation: String,
+    /// SHA-256 of the validated cookie, never the cookie secret.
+    pub session_id_hash: String,
     /// The authenticated user's id.
     pub user_id: i64,
     /// `1` when the session is sudo-capable (re-authenticated recently).
@@ -2853,6 +2869,8 @@ pub struct TopologyPlanRecord {
     pub actor_kind: String,
     /// Actor database id, when applicable.
     pub actor_id: Option<i64>,
+    /// Original immutable principal UUID; absent only for legacy/internal plans.
+    pub actor_incarnation: Option<String>,
     /// Human-readable actor label.
     pub actor_label: String,
     /// Authorization scope.
@@ -2892,6 +2910,8 @@ pub struct NewTopologyPlan {
     pub actor_kind: String,
     /// Actor database id, when applicable.
     pub actor_id: Option<i64>,
+    /// Original immutable principal UUID; absent only for legacy/internal plans.
+    pub actor_incarnation: Option<String>,
     /// Human-readable actor label.
     pub actor_label: String,
     /// Authorization scope.
@@ -3642,12 +3662,7 @@ impl Database {
     }
 
     async fn migrate(&self) -> Result<()> {
-        self.backend
-            .execute(
-                "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)",
-                &[],
-            )
-            .await?;
+        self.backend.execute(SCHEMA_VERSION_DDL, &[]).await?;
         let mysql = self.dialect() == Dialect::Mysql;
         if mysql {
             // MySQL DDL can commit before the version marker. A keyed ledger
@@ -11389,6 +11404,23 @@ impl Database {
         ) {
             bail!("invalid topology plan actor kind '{}'", input.actor_kind);
         }
+        if let Some(incarnation) = &input.actor_incarnation {
+            let kind = crate::domain::PrincipalKind::parse(&input.actor_kind)
+                .context("pinned topology plan actor kind is invalid")?;
+            let principal = crate::domain::Principal {
+                kind,
+                id: input
+                    .actor_id
+                    .context("pinned topology plan actor is missing")?,
+            };
+            direct_identity::validate_actor_incarnation(principal, incarnation)?;
+            anyhow::ensure!(
+                self.principal_incarnation(principal).await?.as_ref() == Some(incarnation),
+                "topology plan actor incarnation is unavailable"
+            );
+        }
+        // None remains available to historical trusted DB fixtures. Public
+        // control services require a validated UUID and reject unpinned replay.
         validate_key_bytes(&input.scope, "topology plan scope", 255)?;
         if let Some(hash) = input.confirmation_hash.as_deref() {
             validate_key_bytes(hash, "confirmation hash", 128)?;
@@ -11418,6 +11450,9 @@ impl Database {
                 )
                 .await?;
             if let Some(existing) = rows.first().map(row_to_topology_plan).transpose()? {
+                if existing.actor_incarnation != input.actor_incarnation {
+                    bail!("plan idempotency key belongs to another actor incarnation");
+                }
                 if existing.request_digest.as_deref() != Some(request_digest.as_str()) {
                     bail!("plan idempotency key was already used for different input");
                 }
@@ -11430,8 +11465,14 @@ impl Database {
                 "INSERT INTO topology_plans (plan_id, plan_kind, actor_kind, actor_id,
                 actor_label, scope, input_versions_json, effects_json, warnings_json,
                 confirmation_hash, request_idempotency_key, request_digest,
-                created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                created_at, expires_at, actor_incarnation)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+             WHERE ?15 IS NULL
+               OR (?3 = 'user' AND EXISTS (SELECT 1 FROM users u
+                   WHERE u.id = ?4 AND u.deleted_at IS NULL AND u.principal_incarnation = ?15))
+               OR (?3 = 'service_account' AND EXISTS (SELECT 1 FROM service_accounts s
+                   JOIN orgs o ON o.id = s.org_id WHERE s.id = ?4
+                     AND o.deleted_at IS NULL AND s.principal_incarnation = ?15))",
                 &vals![
                     input.plan_id,
                     input.plan_kind,
@@ -11446,7 +11487,8 @@ impl Database {
                     input.request_idempotency_key,
                     request_digest,
                     now,
-                    input.expires_at
+                    input.expires_at,
+                    input.actor_incarnation
                 ],
             )
             .await;
@@ -11464,7 +11506,9 @@ impl Database {
                     )
                     .await?;
                 if let Some(existing) = rows.first().map(row_to_topology_plan).transpose()? {
-                    if existing.request_digest.as_deref() == Some(request_digest.as_str()) {
+                    if existing.actor_incarnation == input.actor_incarnation
+                        && existing.request_digest.as_deref() == Some(request_digest.as_str())
+                    {
                         return Ok(existing);
                     }
                     bail!("plan idempotency key was concurrently used for different input");
@@ -16553,8 +16597,8 @@ impl Database {
     pub async fn create_user(&self, email: &str, display_name: Option<&str>) -> Result<i64> {
         self.backend
             .execute_insert(
-                "INSERT INTO users (email, display_name, created_at) VALUES (?1, ?2, ?3)",
-                &vals![email, display_name, unix_now()],
+                "INSERT INTO users (email, display_name, created_at, principal_incarnation) VALUES (?1, ?2, ?3, ?4)",
+                &vals![email, display_name, unix_now(), uuid::Uuid::new_v4().to_string()],
             )
             .await
     }
@@ -16612,9 +16656,9 @@ impl Database {
         }
         self.backend
             .execute(
-                "INSERT INTO users (email, display_name, created_at) VALUES (?1, NULL, ?2)
+                "INSERT INTO users (email, display_name, created_at, principal_incarnation) VALUES (?1, NULL, ?2, ?3)
              ON CONFLICT(email) DO NOTHING",
-                &vals![email, unix_now()],
+                &vals![email, unix_now(), uuid::Uuid::new_v4().to_string()],
             )
             .await?;
         self.backend
@@ -16745,8 +16789,8 @@ impl Database {
     pub async fn create_service_account(&self, org_id: i64, name: &str) -> Result<i64> {
         self.backend
             .execute_insert(
-                "INSERT INTO service_accounts (org_id, name, created_at) VALUES (?1, ?2, ?3)",
-                &vals![org_id, name, unix_now()],
+                "INSERT INTO service_accounts (org_id, name, created_at, principal_incarnation) VALUES (?1, ?2, ?3, ?4)",
+                &vals![org_id, name, unix_now(), uuid::Uuid::new_v4().to_string()],
             )
             .await
     }
@@ -20774,6 +20818,9 @@ impl Database {
         if !crate::domain::Scope::is_canonical(scope) {
             bail!("invalid stable authorization scope");
         }
+        // Capture the owner incarnation before authorization reads. The
+        // final INSERT must still observe that exact owner after every await.
+        let owner_incarnation = self.ensure_principal_incarnation(owner).await?;
         if !self
             .principal_is_live(owner.kind.as_str(), owner.id)
             .await?
@@ -20800,16 +20847,16 @@ impl Database {
             .execute(
                 "INSERT INTO tokens
              (id, hash, owner_kind, owner_id, scope_key, permissions, comment, created_at,
-              expires_at, revoked_at, last_used_at)
-             SELECT ?1, ?2, ?3, ?4, a.scope_key, ?6, ?7, ?8, ?9, NULL, NULL
+              expires_at, revoked_at, last_used_at, owner_incarnation)
+             SELECT ?1, ?2, ?3, ?4, a.scope_key, ?6, ?7, ?8, ?9, NULL, NULL, ?10
              FROM authorization_scopes a LEFT JOIN orgs o ON o.id = a.org_id
              WHERE a.scope_key = ?5 AND (a.org_id IS NULL OR o.deleted_at IS NULL)
                AND ((?3 = 'user' AND EXISTS (
-                      SELECT 1 FROM users u WHERE u.id = ?4 AND u.deleted_at IS NULL))
+                      SELECT 1 FROM users u WHERE u.id = ?4 AND u.deleted_at IS NULL AND u.principal_incarnation = ?10))
                  OR (?3 = 'service_account' AND EXISTS (
                       SELECT 1 FROM service_accounts s
                       JOIN orgs owner_org ON owner_org.id = s.org_id
-                       WHERE s.id = ?4 AND owner_org.deleted_at IS NULL)))",
+                       WHERE s.id = ?4 AND owner_org.deleted_at IS NULL AND s.principal_incarnation = ?10)))",
                 &vals![
                     id,
                     hash,
@@ -20820,6 +20867,7 @@ impl Database {
                     comment,
                     unix_now(),
                     expires_at,
+                    owner_incarnation,
                 ],
             )
             .await?;
@@ -20862,18 +20910,20 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT t.owner_kind, t.owner_id, t.scope_key, t.permissions,
-                        t.expires_at, t.revoked_at, t.rotated_at
+                        t.expires_at, t.revoked_at, t.rotated_at, t.owner_incarnation
                  FROM tokens t
                  JOIN authorization_scopes a ON a.scope_key = t.scope_key
                  LEFT JOIN orgs o ON o.id = a.org_id
                  WHERE t.id = ?1 AND (a.org_id IS NULL OR o.deleted_at IS NULL)
                    AND ((t.owner_kind = 'user' AND EXISTS (
                           SELECT 1 FROM users u
-                           WHERE u.id = t.owner_id AND u.deleted_at IS NULL))
+                           WHERE u.id = t.owner_id AND u.deleted_at IS NULL
+                             AND u.principal_incarnation = t.owner_incarnation))
                      OR (t.owner_kind = 'service_account' AND EXISTS (
                           SELECT 1 FROM service_accounts s
                           JOIN orgs owner_org ON owner_org.id = s.org_id
-                           WHERE s.id = t.owner_id AND owner_org.deleted_at IS NULL)))",
+                           WHERE s.id = t.owner_id AND owner_org.deleted_at IS NULL
+                             AND s.principal_incarnation = t.owner_incarnation)))",
                 &vals![id],
             )
             .await
@@ -20899,7 +20949,7 @@ impl Database {
             return Ok(None);
         }
         if let Some(rotated) = rotated_at {
-            if now >= rotated + ROTATION_GRACE_SECS {
+            if now.saturating_sub(rotated) >= ROTATION_GRACE_SECS {
                 return Ok(None);
             }
         }
@@ -20907,6 +20957,12 @@ impl Database {
             return Ok(None);
         };
         let principal = crate::domain::Principal { kind, id: owner_id };
+        let Some(owner_incarnation) = row.get::<Option<String>>(7)? else {
+            return Ok(None);
+        };
+        if direct_identity::validate_actor_incarnation(principal, &owner_incarnation).is_err() {
+            return Ok(None);
+        }
         if !self
             .principal_is_live(principal.kind.as_str(), principal.id)
             .await?
@@ -20940,9 +20996,18 @@ impl Database {
                 tracing::warn!(error = %e, token_id = %id, "failed to stamp token last_used_at");
             }
         }
+        let latest = unix_now();
+        if expires_at.is_some_and(|expiry| latest >= expiry)
+            || rotated_at
+                .is_some_and(|rotated| latest.saturating_sub(rotated) >= ROTATION_GRACE_SECS)
+        {
+            return Ok(None);
+        }
         Ok(Some(TokenAuth {
             token_id: id.to_string(),
             owner: principal,
+            owner_incarnation: Some(owner_incarnation),
+            browser_session_id_hash: None,
             scope: crate::domain::Scope::parse(&scope),
             permissions,
         }))
@@ -21120,7 +21185,7 @@ impl Database {
         let Some(old) = self
             .backend
             .query_opt(
-                "SELECT owner_kind, owner_id, scope_key, permissions, comment, expires_at
+                "SELECT owner_kind, owner_id, scope_key, permissions, comment, expires_at, owner_incarnation
              FROM tokens WHERE id = ?1 AND revoked_at IS NULL",
                 &vals![token_id],
             )
@@ -21138,6 +21203,12 @@ impl Database {
             return Ok(None);
         };
         let owner = crate::domain::Principal { kind, id: owner_id };
+        let Some(owner_incarnation) = old.get::<Option<String>>(6)? else {
+            return Ok(None);
+        };
+        if self.principal_incarnation(owner).await?.as_ref() != Some(&owner_incarnation) {
+            return Ok(None);
+        }
         if !self.principal_is_live(&owner_kind, owner_id).await? {
             return Ok(None);
         }
@@ -21159,26 +21230,27 @@ impl Database {
             .checked_batch(&[
                 Statement::new(
                     "UPDATE tokens SET rotated_at = ?2
-                     WHERE id = ?1 AND revoked_at IS NULL AND rotated_at IS NULL",
-                    vals![token_id, now].to_vec(),
+                     WHERE id = ?1 AND revoked_at IS NULL AND rotated_at IS NULL
+                       AND owner_incarnation = ?3",
+                    vals![token_id, now, owner_incarnation].to_vec(),
                 )
                 .expecting(1),
                 Statement::new(
                     "INSERT INTO tokens
                  (id, hash, owner_kind, owner_id, scope_key, permissions, comment, created_at,
-                  expires_at, revoked_at, last_used_at)
-                 SELECT ?1, ?2, ?3, ?4, a.scope_key, ?6, ?7, ?8, ?9, NULL, NULL
+                  expires_at, revoked_at, last_used_at, owner_incarnation)
+                 SELECT ?1, ?2, ?3, ?4, a.scope_key, ?6, ?7, ?8, ?9, NULL, NULL, ?10
                  FROM authorization_scopes a LEFT JOIN orgs o ON o.id = a.org_id
-                 WHERE (a.org_id IS NULL OR o.deleted_at IS NULL)
+                 WHERE a.scope_key = ?5 AND (a.org_id IS NULL OR o.deleted_at IS NULL)
                    AND ((?3 = 'user' AND EXISTS (
-                          SELECT 1 FROM users u WHERE u.id = ?4 AND u.deleted_at IS NULL))
+                          SELECT 1 FROM users u WHERE u.id = ?4 AND u.deleted_at IS NULL AND u.principal_incarnation = ?10))
                      OR (?3 = 'service_account' AND EXISTS (
                           SELECT 1 FROM service_accounts s
                           JOIN orgs owner_org ON owner_org.id = s.org_id
-                           WHERE s.id = ?4 AND owner_org.deleted_at IS NULL)))",
+                           WHERE s.id = ?4 AND owner_org.deleted_at IS NULL AND s.principal_incarnation = ?10)))",
                     vals![
                         new_id, hash, owner_kind, owner_id, scope, perms_json, comment, now,
-                        expires_at
+                        expires_at, owner_incarnation
                     ]
                     .to_vec(),
                 )
@@ -21256,37 +21328,27 @@ impl Database {
     /// Validates live session state at one clock sample, preserving second-level idle expiry.
     async fn validate_session_at(&self, secret: &str, now: i64) -> Result<Option<SessionAuth>> {
         use crate::auth::session::{ABSOLUTE_LIFETIME_SECS, IDLE_TIMEOUT_SECS};
+
         let hash = crate::auth::token::sha256_hex(secret);
-        let row = self
+        let Some(row) = self
             .backend
             .query_opt(
                 "SELECT s.user_id, s.auth_level, s.last_authenticated_at, s.expires_at,
-                        s.created_at, s.last_seen_at
-                 FROM sessions s JOIN users u ON u.id = s.user_id
-                 WHERE s.id_hash = ?1 AND u.deleted_at IS NULL",
+                    s.created_at, s.last_seen_at, u.principal_incarnation
+             FROM sessions s JOIN users u ON u.id = s.user_id
+             WHERE s.id_hash = ?1 AND u.deleted_at IS NULL",
                 &vals![hash],
             )
             .await
             .context("loading session by hash")?
-            .map(|row| -> Result<(SessionAuth, i64, i64)> {
-                let auth = SessionAuth {
-                    user_id: row.get(0)?,
-                    auth_level: row.get(1)?,
-                    last_authenticated_at: row.get(2)?,
-                    expires_at: row.get(3)?,
-                };
-                let created_at: i64 = row.get(4)?;
-                let last_seen_at: i64 = row.get(5)?;
-                Ok((auth, created_at, last_seen_at))
-            })
-            .transpose()?;
-        let Some((session, created_at, last_seen_at)) = row else {
+        else {
             return Ok(None);
         };
-        // Absolute deadline (the stamped cap), idle timeout (no activity for
-        // too long), and the absolute lifetime from creation. A session that
-        // crosses any bound is dead; expire it so the row does not linger.
-        let dead = now >= session.expires_at
+        let user_id: i64 = row.get(0)?;
+        let created_at: i64 = row.get(4)?;
+        let last_seen_at: i64 = row.get(5)?;
+        let expires_at: i64 = row.get(3)?;
+        let dead = now >= expires_at
             || now.saturating_sub(last_seen_at) > IDLE_TIMEOUT_SECS
             || now.saturating_sub(created_at) > ABSOLUTE_LIFETIME_SECS;
         if dead {
@@ -21295,17 +21357,89 @@ impl Database {
                 .await?;
             return Ok(None);
         }
-        // Repeated reads within one clock second must not rewrite identical
-        // bookkeeping. The SQL predicate also covers concurrent validations;
-        // liveness and expiry above remain authoritative on every request.
+
+        // Only a genuine current cookie can establish a legacy user's UUID.
+        // The retained session identity and original lifetime fields fence the
+        // backfill; a different user occupying the numeric slot cannot win it.
+        let incarnation: Option<String> = row.get(6)?;
+        if incarnation.is_none() {
+            let candidate = uuid::Uuid::new_v4().to_string();
+            self.backend
+                .execute(
+                    "UPDATE users SET principal_incarnation = ?2
+                 WHERE id = ?1 AND deleted_at IS NULL AND principal_incarnation IS NULL
+                   AND EXISTS (SELECT 1 FROM sessions s WHERE s.id_hash = ?3
+                     AND s.user_id = users.id AND s.created_at = ?4
+                     AND s.expires_at = ?5 AND s.expires_at > ?6
+                     AND s.last_seen_at >= ?7)",
+                    &vals![
+                        user_id,
+                        candidate,
+                        hash,
+                        created_at,
+                        expires_at,
+                        now,
+                        now.saturating_sub(IDLE_TIMEOUT_SECS)
+                    ],
+                )
+                .await?;
+        }
+
+        // Reload the winning UUID and session after the possible CAS. A lost
+        // session or changed lifetime never yields a synthesized browser claim.
+        let Some(current) = self
+            .backend
+            .query_opt(
+                "SELECT u.principal_incarnation, s.auth_level, s.last_authenticated_at,
+                    s.last_seen_at FROM sessions s JOIN users u ON u.id = s.user_id
+             WHERE s.id_hash = ?1 AND s.user_id = ?2 AND u.deleted_at IS NULL
+               AND s.created_at = ?3 AND s.expires_at = ?4 AND s.expires_at > ?5",
+                &vals![hash, user_id, created_at, expires_at, now],
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(owner_incarnation) = current.get::<Option<String>>(0)? else {
+            return Ok(None);
+        };
+        let principal = crate::domain::Principal::user(user_id);
+        if direct_identity::validate_actor_incarnation(principal, &owner_incarnation).is_err()
+            || now.saturating_sub(current.get::<i64>(3)?) > IDLE_TIMEOUT_SECS
+            || incarnation
+                .as_ref()
+                .is_some_and(|original| original != &owner_incarnation)
+        {
+            return Ok(None);
+        }
+
+        // Repeated reads within one second do not rewrite bookkeeping. This
+        // final update remains tied to the exact session and immutable owner.
         self.backend
             .execute(
                 "UPDATE sessions SET last_seen_at = ?2
-                 WHERE id_hash = ?1 AND last_seen_at != ?2",
-                &vals![hash, now],
+             WHERE id_hash = ?1 AND user_id = ?3 AND created_at = ?4
+               AND expires_at = ?5 AND last_seen_at != ?2
+               AND EXISTS (SELECT 1 FROM users u WHERE u.id = sessions.user_id
+                 AND u.deleted_at IS NULL AND u.principal_incarnation = ?6)",
+                &vals![
+                    hash,
+                    now,
+                    user_id,
+                    created_at,
+                    expires_at,
+                    owner_incarnation
+                ],
             )
             .await?;
-        Ok(Some(session))
+        Ok(Some(SessionAuth {
+            owner_incarnation,
+            session_id_hash: hash,
+            user_id,
+            auth_level: current.get(1)?,
+            last_authenticated_at: current.get(2)?,
+            expires_at,
+        }))
     }
 
     /// The signed-in user's email for a session secret, without bumping
@@ -21735,6 +21869,7 @@ impl Database {
         {
             return Ok(false);
         }
+        let owner_incarnation = self.ensure_principal_incarnation(approver).await?;
         let Some(row) = self
             .backend
             .query_opt(
@@ -21783,9 +21918,9 @@ impl Database {
                 Statement::new(
                     "INSERT INTO tokens
                  (id, hash, owner_kind, owner_id, scope_key, permissions, comment, created_at,
-                  expires_at, revoked_at, last_used_at)
+                  expires_at, revoked_at, last_used_at, owner_incarnation)
                  SELECT ?1, ?8, ?2, ?3, a.scope_key, ?5,
-                        'OAuth device authorization', ?6, ?9, NULL, NULL
+                        'OAuth device authorization', ?6, ?9, NULL, NULL, ?10
                  FROM device_codes device
                  JOIN authorization_scopes a ON a.scope_key = ?4
                  LEFT JOIN orgs o ON o.id = a.org_id
@@ -21794,11 +21929,11 @@ impl Database {
                    AND device.user_code = ?7 AND device.approved_by_user = ?3
                    AND device.expires_at > ?6
                    AND ((?2 = 'user' AND EXISTS (
-                          SELECT 1 FROM users u WHERE u.id = ?3 AND u.deleted_at IS NULL))
+                          SELECT 1 FROM users u WHERE u.id = ?3 AND u.deleted_at IS NULL AND u.principal_incarnation = ?10))
                      OR (?2 = 'service_account' AND EXISTS (
                           SELECT 1 FROM service_accounts s
                           JOIN orgs owner_org ON owner_org.id = s.org_id
-                           WHERE s.id = ?3 AND owner_org.deleted_at IS NULL)))",
+                           WHERE s.id = ?3 AND owner_org.deleted_at IS NULL AND s.principal_incarnation = ?10)))",
                     vals![
                         token_id,
                         approver.kind.as_str(),
@@ -21809,6 +21944,7 @@ impl Database {
                         user_code,
                         authority_hash,
                         now + crate::auth::token::REFRESH_TOKEN_ABSOLUTE_TTL_SECS,
+                        owner_incarnation,
                     ]
                     .to_vec(),
                 )
@@ -25644,7 +25780,7 @@ const POPULATION_COLUMNS: &str = "id, cache_id, registry_id, trigger_kind, requi
 const PLAN_COLUMNS: &str = "plan_id, plan_kind, actor_kind, actor_id, actor_label,
     scope, input_versions_json, effects_json, warnings_json, confirmation_hash,
     request_idempotency_key, request_digest, apply_idempotency_key, apply_result_json,
-    created_at, expires_at, applied_at";
+    created_at, expires_at, applied_at, actor_incarnation";
 const OPERATION_COLUMNS: &str = "operation_id, operation_kind, authorization_scope_key,
     control_permission, primary_target_kind, primary_target_stable_id,
     primary_target_generation_key, primary_target_configuration_digest,
@@ -25813,6 +25949,7 @@ fn row_to_topology_plan(row: &Row) -> Result<TopologyPlanRecord> {
         created_at: row.get(14)?,
         expires_at: row.get(15)?,
         applied_at: row.get(16)?,
+        actor_incarnation: row.get(17)?,
     })
 }
 
@@ -27917,8 +28054,7 @@ source_nar_hash = ""
         );
         assert!(current_artifacts.iter().any(|artifact| {
             artifact.artifact_kind == "output"
-                && artifact.store_path
-                    == "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev"
+                && artifact.store_path == "/nix/store/dddddddddddddddddddddddddddddddd-curl-dev"
         }));
         assert!(current_artifacts
             .iter()
@@ -30271,7 +30407,7 @@ source_nar_hash = ""
         db.backend
             .execute(
                 "UPDATE sessions SET last_seen_at = ?2 WHERE id_hash = ?1",
-                &vals![hash, now - IDLE_TIMEOUT_SECS - 1],
+                &vals![hash, now.saturating_sub(IDLE_TIMEOUT_SECS) - 1],
             )
             .await
             .unwrap();
@@ -30309,7 +30445,7 @@ source_nar_hash = ""
         db.backend
             .execute(
                 "UPDATE sessions SET last_seen_at = ?2 WHERE id_hash = ?1",
-                &vals![hash3, now - IDLE_TIMEOUT_SECS + 60],
+                &vals![hash3, now.saturating_sub(IDLE_TIMEOUT_SECS) + 60],
             )
             .await
             .unwrap();

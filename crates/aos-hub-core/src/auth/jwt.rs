@@ -3,9 +3,9 @@
 //! A client exchanges its long-lived provisioning secret at
 //! `POST /oauth2/token` for one of these access tokens; the JWT then rides
 //! every machine-path request in `Authorization: Bearer`. The token is
-//! self-describing — it carries the owner, the stable scope key, the explicit
-//! permission verbs — so the gate can decide without a database round-trip on
-//! the hot path.
+//! self-describing: it carries the owner, stable scope and explicit permission
+//! verbs. RPC and direct-effect gates also validate the exact live token or
+//! browser session and immutable account incarnation against current SQL.
 //!
 //! The HS256 signing and verification are implemented directly over `hmac` +
 //! `sha2` (no `jsonwebtoken`/`ring`), so this compiles to
@@ -22,6 +22,8 @@
 //!   "sub":        "1f0c…",                 token id (UUID) it was minted from
 //!   "owner_kind": "user",                  "user" | "service_account"
 //!   "owner_id":   42,                      owning principal's row id
+//!   "owner_incarnation": "4d12…",          immutable account UUID (optional)
+//!   "browser_session_id_hash": "f21a…",    validated cookie hash (browser only)
 //!   "scope":      "project:0123…",         stable scope the token is bound to
 //!   "perms":      ["read","publish"],      permission verbs (snake-case)
 //!   "authz_version": "stable-scope-1",     authorization-model epoch
@@ -80,6 +82,18 @@ pub struct Claims {
     pub owner_kind: String,
     /// Owning principal's row id.
     pub owner_id: i64,
+    /// Immutable account UUID copied from current token or cookie validation.
+    ///
+    /// Missing values decode legacy tokens but cannot authorize direct work or
+    /// current RPC principal checks. Numeric account IDs are recyclable slots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_incarnation: Option<String>,
+    /// SHA-256 of a genuinely validated browser session, never its cookie secret.
+    ///
+    /// API tokens leave this absent. Authentication uses this explicit provenance
+    /// rather than interpreting the subject's presentation prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_session_id_hash: Option<String>,
     /// The immutable authorization scope key the token is bound to.
     pub scope: String,
     /// Permission verbs the token grants, as snake-case wire names.
@@ -189,6 +203,8 @@ impl JwtKeys {
             sub: auth.token_id.clone(),
             owner_kind: auth.owner.kind.as_str().to_string(),
             owner_id: auth.owner.id,
+            owner_incarnation: auth.owner_incarnation.clone(),
+            browser_session_id_hash: auth.browser_session_id_hash.clone(),
             scope: auth.scope.as_str().to_string(),
             perms: auth
                 .permissions
@@ -435,6 +451,8 @@ mod tests {
         TokenAuth {
             token_id: "tok-1".to_string(),
             owner: Principal::user(42),
+            owner_incarnation: None,
+            browser_session_id_hash: None,
             scope: Scope::parse(PROJECT_SCOPE),
             permissions: vec![Permission::Read, Permission::Publish],
         }
@@ -452,6 +470,46 @@ mod tests {
         assert_eq!(claims.perms, vec!["read", "publish"]);
         assert_eq!(claims.authz_version, AUTHORIZATION_CLAIMS_VERSION);
         assert!(claims.exp > claims.iat);
+    }
+
+    #[test]
+    fn mint_preserves_explicit_account_and_session_provenance() {
+        let keys = JwtKeys::random();
+        let mut auth = sample_auth();
+        auth.owner_incarnation = Some("00000000-0000-4000-8000-000000000042".into());
+        auth.browser_session_id_hash = Some("a".repeat(64));
+
+        let token = keys.mint(&auth, 900).unwrap();
+        let claims = keys.verify(&token).unwrap();
+        assert_eq!(claims.owner_incarnation, auth.owner_incarnation);
+        assert_eq!(claims.browser_session_id_hash, auth.browser_session_id_hash);
+
+        // Neither provenance value can be edited without authenticating new
+        // claim bytes with the signing key.
+        let segments: Vec<_> = token.split('.').collect();
+        let mut forged: serde_json::Value =
+            serde_json::from_slice(&B64.decode(segments[1]).unwrap()).unwrap();
+        forged["owner_incarnation"] = "00000000-0000-4000-8000-000000000099".into();
+        let forged = format!(
+            "{}.{}.{}",
+            segments[0],
+            B64.encode(serde_json::to_vec(&forged).unwrap()),
+            segments[2],
+        );
+        assert!(keys.verify(&forged).is_err());
+    }
+
+    #[test]
+    fn legacy_claims_decode_without_inventing_current_provenance() {
+        let keys = JwtKeys::random();
+        let token = keys.mint(&sample_auth(), 900).unwrap();
+        let claims = keys.verify(&token).unwrap();
+        assert!(claims.owner_incarnation.is_none());
+        assert!(claims.browser_session_id_hash.is_none());
+
+        let value: serde_json::Value = serde_json::to_value(&claims).unwrap();
+        assert!(value.get("owner_incarnation").is_none());
+        assert!(value.get("browser_session_id_hash").is_none());
     }
 
     #[test]
@@ -501,6 +559,8 @@ mod tests {
             sub: "tok-1".to_string(),
             owner_kind: "user".to_string(),
             owner_id: 42,
+            owner_incarnation: None,
+            browser_session_id_hash: None,
             scope: PROJECT_SCOPE.to_string(),
             perms: vec!["read".to_string()],
             authz_version: "obsolete-path-scope-v0".to_string(),

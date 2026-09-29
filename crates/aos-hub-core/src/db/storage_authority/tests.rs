@@ -209,6 +209,7 @@ async fn review(
         plan_kind: input.plan_kind().into(),
         actor_kind: "user".into(),
         actor_id: Some(7),
+        actor_incarnation: None,
         actor_label: "root operator".into(),
         scope: "instance".into(),
         input_versions_json: serde_json::to_string(input).unwrap(),
@@ -229,6 +230,7 @@ async fn review(
         apply_idempotency_key: "apply-one".into(),
         actor_kind: "user".into(),
         actor_id: 7,
+        actor_incarnation: None,
     }
 }
 
@@ -832,10 +834,7 @@ async fn association_transaction_rechecks_stable_identity_and_physical_coordinat
             .unwrap();
         let input = StorageAuthorityDecisionInput::AssociateBinding(association.clone());
         let decision = review(&db, &input).await;
-        let plan = db
-            .reviewed_authority_plan(&decision, &input)
-            .await
-            .unwrap();
+        let plan = db.reviewed_authority_plan(&decision, &input).await.unwrap();
         let (_, mutations) = db
             .prepare_association(&association, &plan, unix_now())
             .await

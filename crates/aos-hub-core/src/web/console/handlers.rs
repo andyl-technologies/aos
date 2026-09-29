@@ -147,6 +147,19 @@ impl Session {
         mint_csrf_token(&self.secret)
     }
 
+    // Only SessionAuth from genuine cookie validation supplies these pins.
+    // Keeping the raw cookie solely in Session prevents it entering a JWT.
+    fn access_auth(&self) -> crate::db::TokenAuth {
+        crate::db::TokenAuth {
+            token_id: format!("browser-session-{}", self.auth.user_id),
+            owner: self.principal(),
+            owner_incarnation: Some(self.auth.owner_incarnation.clone()),
+            browser_session_id_hash: Some(self.auth.session_id_hash.clone()),
+            scope: Scope::root(),
+            permissions: iam::role_grants(Role::Owner).to_vec(),
+        }
+    }
+
     fn api_bearer(&self, deps: &ConsoleDeps) -> anyhow::Result<String> {
         let ttl = self
             .auth
@@ -154,12 +167,7 @@ impl Session {
             .saturating_sub(crate::clock::now_unix_secs())
             .clamp(1, BROWSER_ACCESS_TOKEN_TTL_SECS);
         let token = deps.jwt_keys.mint(
-            &crate::db::TokenAuth {
-                token_id: format!("browser-session-{}", self.auth.user_id),
-                owner: self.principal(),
-                scope: Scope::root(),
-                permissions: iam::role_grants(Role::Owner).to_vec(),
-            },
+            &self.access_auth(),
             ttl,
         )?;
         Ok(format!("Bearer {token}"))
@@ -213,12 +221,7 @@ pub(crate) async fn session_token(deps: ConsoleDeps, headers: HeaderMap) -> Resp
         Ok(permissions) => permissions,
         Err(error) => return internal(error),
     };
-    let auth = crate::db::TokenAuth {
-        token_id: format!("browser-session-{}", session.auth.user_id),
-        owner: session.principal(),
-        scope: Scope::root(),
-        permissions: iam::role_grants(Role::Owner).to_vec(),
-    };
+    let auth = session.access_auth();
     let access_token = match deps.jwt_keys.mint(&auth, BROWSER_ACCESS_TOKEN_TTL_SECS) {
         Ok(token) => token,
         Err(error) => return internal(error),
@@ -2251,3 +2254,6 @@ async fn password_login_enabled(deps: &ConsoleDeps) -> bool {
         _ => true,
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod authentication_tests;

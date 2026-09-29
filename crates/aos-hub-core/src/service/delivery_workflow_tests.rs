@@ -1,7 +1,7 @@
 //! End-to-end service regressions for reviewed, resumable delivery preparation.
 
 use super::*;
-use crate::db::{GrantResource, NewSurfacePlacementSpec, TokenAuth};
+use crate::db::{GrantResource, NewSurfacePlacementSpec};
 use base64::Engine as _;
 
 async fn fixture() -> (RpcService, String, pb::DeliveryDestinationIntent, i64) {
@@ -68,11 +68,11 @@ async fn fixture() -> (RpcService, String, pb::DeliveryDestinationIntent, i64) {
     let token = service
         .jwt_keys
         .mint(
-            &TokenAuth {
-                token_id: "delivery-token".into(),
-                owner: Principal::user(user),
-                scope: Scope::try_parse(&org.stable_id).unwrap(),
-                permissions: vec![
+            &crate::service::authentication::provisioned_test_auth(
+                &service.db,
+                Principal::user(user),
+                Scope::try_parse(&org.stable_id).unwrap(),
+                &vec![
                     Permission::Read,
                     Permission::RouteRead,
                     Permission::RouteManage,
@@ -86,7 +86,8 @@ async fn fixture() -> (RpcService, String, pb::DeliveryDestinationIntent, i64) {
                     Permission::NetworkPolicyRead,
                     Permission::PlacementRead,
                 ],
-            },
+            )
+            .await,
             3600,
         )
         .unwrap();

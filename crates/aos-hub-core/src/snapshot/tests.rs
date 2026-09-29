@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod direct;
 mod privacy;
 
 fn shapes() -> Vec<SnapshotTableShape> {

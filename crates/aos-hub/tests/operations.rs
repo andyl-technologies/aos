@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
-use aos_hub::db::{Database, NewSurfacePlacementSpec, SignupPolicy, SurfaceTarget, TokenAuth};
+use aos_hub::db::{Database, NewSurfacePlacementSpec, SignupPolicy, SurfaceTarget};
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
 use aos_hub_core::service::{ReadAuthorization, RpcError, RpcService};
@@ -101,18 +101,15 @@ fn machine_service(state: &Arc<AppState>) -> RpcService {
 }
 
 /// Mint a bearer JWT for `principal` scoped to `scope` with `perms`.
-fn bearer(principal: Principal, scope: &str, perms: &[Permission]) -> String {
-    JwtKeys::from_secret(TEST_JWT_SECRET)
-        .mint(
-            &TokenAuth {
-                token_id: "test-token".into(),
-                owner: principal,
-                scope: Scope::parse(scope),
-                permissions: perms.to_vec(),
-            },
-            900,
-        )
-        .unwrap()
+async fn bearer(db: &Database, principal: Principal, scope: &str, perms: &[Permission]) -> String {
+    common::current_bearer(
+        db,
+        &JwtKeys::from_secret(TEST_JWT_SECRET),
+        principal,
+        scope,
+        perms,
+    )
+    .await
 }
 
 /// GET one machine path with optional native-session and bearer credentials.
@@ -334,7 +331,13 @@ async fn native_cache_streams_preserve_session_and_bearer_authorization() {
         .unwrap();
     let session = db.create_session(member, 3600, 0).await.unwrap();
     let cookie = format!("__Host-aos_session={session}");
-    let token = bearer(Principal::user(member), &private_scope, &[Permission::Read]);
+    let token = bearer(
+        &db,
+        Principal::user(member),
+        &private_scope,
+        &[Permission::Read],
+    )
+    .await;
     let stale_cache = db.binary_cache_by_id(cache_id).await.unwrap().unwrap();
     let state = app_state(Arc::clone(&db)).await;
     let service = machine_service(&state);
@@ -541,10 +544,12 @@ async fn staged_publication_bytes_remain_unaccounted_until_commit() {
     let org = db.org_by_slug("acme").await.unwrap().unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
+        &db,
         Principal::service_account(1),
         &common::registry_scope(&db, "acme/infra/prod/cdn").await,
         &[Permission::Publish],
-    );
+    )
+    .await;
 
     let first = [
         ("objects/ab/cd", b"data".as_slice(), "immutable"),
@@ -570,10 +575,12 @@ async fn concurrent_pointer_uploads_share_the_phase_transition() {
     let (db, _surface, _binding, _placement) = empty_managed().await;
     let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
+        &db,
         Principal::service_account(1),
         &common::registry_scope(&db, "acme/infra/prod/cdn").await,
         &[Permission::Publish],
-    );
+    )
+    .await;
 
     let objects = [
         ("objects/ab/cd", b"data".as_slice(), "immutable"),
@@ -626,10 +633,12 @@ async fn concurrent_publication_generation_is_rejected() {
     let org = db.org_by_slug("acme").await.unwrap().unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
+        &db,
         Principal::service_account(1),
         &common::registry_scope(&db, "acme/infra/prod/cdn").await,
         &[Permission::Publish],
-    );
+    )
+    .await;
 
     let first = [
         ("objects/ab/cd", b"data".as_slice(), "immutable"),
@@ -705,7 +714,7 @@ async fn signup_policy_gates_create_org() {
     // Default policy is invite-only.
     let fresh = db.create_user("nobody@acme.com", None).await.unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
-    let token = bearer(Principal::user(fresh), "instance", &[]);
+    let token = bearer(&db, Principal::user(fresh), "instance", &[]).await;
 
     // invite_only blocks a fresh, unaffiliated user.
     let (status, _) = rpc(
@@ -747,7 +756,7 @@ async fn invite_only_allows_existing_member() {
     .await
     .unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
-    let token = bearer(Principal::user(member), "instance", &[]);
+    let token = bearer(&db, Principal::user(member), "instance", &[]).await;
     let (status, value) = planned_rpc(
         &app,
         "OrganizationService/PlanCreateOrganization",
@@ -814,10 +823,12 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
     // export test concerns physical-byte copying, not signed-index promotion.
     let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
+        &db,
         Principal::service_account(sa),
         &common::registry_scope(&db, "acme/infra/prod/cdn").await,
         &[Permission::Publish],
-    );
+    )
+    .await;
     let objects = [
         ("objects/ab/cd", b"surface-bytes".as_slice(), "immutable"),
         ("info/refs", b"".as_slice(), "mutable_pointer"),

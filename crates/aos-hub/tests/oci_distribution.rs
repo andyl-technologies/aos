@@ -19,7 +19,7 @@ use aos_hub::auth::jwt::{
 use aos_hub::db::{
     Database, EndpointHostInput, EndpointRevisionSpec, NewTopologyOperation,
     NewTopologyOperationTarget, NewTopologyOperationTargetRef, RouteSpec, SetSurfaceObject,
-    SurfaceTarget, TokenAuth,
+    SurfaceTarget,
 };
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
@@ -719,16 +719,7 @@ async fn spawn_registry_with_rollout(
         .unwrap();
     let hub_bearer = Some(
         keys.mint(
-            &TokenAuth {
-                token_id: "native-oci-hub-token".to_string(),
-                owner: Principal::user(user_id),
-                scope: Scope::parse(&scope),
-                permissions: vec![
-                    Permission::Read,
-                    Permission::Publish,
-                    Permission::RegistryConfigure,
-                ],
-            },
+            &db.validate_token(&docker_password).await.unwrap().unwrap(),
             900,
         )
         .unwrap(),

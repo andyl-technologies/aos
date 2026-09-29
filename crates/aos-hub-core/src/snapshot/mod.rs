@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -29,6 +29,7 @@ use crate::value::{Row, Value};
 pub mod archive;
 
 mod capture;
+mod direct;
 mod json;
 
 pub use capture::{CapturedSnapshotRow, PrivateSnapshotCell, ReconstructedSnapshotRow};
@@ -41,12 +42,20 @@ mod tests;
 mod capture_tests;
 
 const CLASSIFICATION_VERSION: &str = "aos-hub.snapshot-classification/v1";
-const CONTRACT: &str = include_str!("schema-v3.tsv");
-const CONTRACT_MIGRATION_DIGESTS: &[&str] = &[
+const LEGACY_CONTRACT: &str = include_str!("schema-v3.tsv");
+const CONTRACT: &str = include_str!("schema-v4.tsv");
+const LEGACY_CONTRACT_MIGRATION_DIGESTS: &[&str] = &[
     "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061",
     "8da079db002b25543fc856e9cc57f335e67a73b3272c9a339ef8cc66c65ae51d",
     "1378ed62ac1a61f2abaf960d64a4617bdf523a437dcf326f3cb083f7e75ccdb1",
 ];
+const CONTRACT_MIGRATION_DIGESTS: &[&str] = &[
+    "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061",
+    "8da079db002b25543fc856e9cc57f335e67a73b3272c9a339ef8cc66c65ae51d",
+    "1378ed62ac1a61f2abaf960d64a4617bdf523a437dcf326f3cb083f7e75ccdb1",
+    "d00f0a4d08e07efb6fd29ac188354fcfc685c1415bea1a76f6dcf4eba64c0aa8",
+];
+
 const MAX_CELL_BYTES: usize = 1024 * 1024;
 const MAX_ROW_BYTES: usize = 8 * 1024 * 1024;
 
@@ -151,7 +160,7 @@ pub struct SnapshotSchemaManifest {
     pub classification_version: String,
     /// Exact compiled production lineage, never inferred from a migration count.
     pub identity: String,
-    /// Fully applied current migration count.
+    /// Exact supported source generation, currently three or four.
     pub version: usize,
     /// Ordered SHA-256 hashes of the compiled schema scripts.
     pub migration_digests: Vec<String>,
@@ -193,22 +202,25 @@ impl SnapshotClassifier {
         migration_digests: &[String],
         shapes: &[SnapshotTableShape],
     ) -> Result<Self> {
-        let expected_digests: Vec<_> = MIGRATIONS
+        let (document, committed_digests) = generation_contract(version)?;
+        let scripts = MIGRATIONS
+            .get(..version)
+            .ok_or_else(|| anyhow::anyhow!("snapshot compiled generation is absent"))?;
+        let expected_digests: Vec<_> = scripts
             .iter()
             .map(|script| hex::encode(Sha256::digest(script.as_bytes())))
             .collect();
         ensure!(
             identity == SCHEMA_IDENTITY
-                && version == MIGRATIONS.len()
                 && migration_digests == expected_digests
                 && expected_digests
                     .iter()
                     .map(String::as_str)
-                    .eq(CONTRACT_MIGRATION_DIGESTS.iter().copied()),
-            "snapshot classification lineage is not the current compiled schema"
+                    .eq(committed_digests.iter().copied()),
+            "snapshot classification lineage is not a supported compiled schema"
         );
 
-        let tables = contract()?;
+        let tables = parse_contract(document)?;
         ensure!(
             shapes.len() == tables.len(),
             "snapshot table coverage differs"
@@ -236,9 +248,40 @@ impl SnapshotClassifier {
                 identity: identity.to_owned(),
                 version,
                 migration_digests: migration_digests.to_owned(),
-                classification_digest: hex::encode(Sha256::digest(CONTRACT.as_bytes())),
+                classification_digest: hex::encode(Sha256::digest(document.as_bytes())),
             },
         })
+    }
+
+    /// Constructs only a checked-in supported catalogue from compiled source.
+    ///
+    /// This factory does not authenticate an archive or choose its generation.
+    /// Readers separately compare the authenticated header with this manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported generations or changed compiled hashes.
+    pub fn for_supported_generation(version: usize) -> Result<Self> {
+        let tables = parse_contract(generation_contract(version)?.0)?;
+        let shapes = tables
+            .iter()
+            .map(|(name, table)| SnapshotTableShape {
+                name: name.clone(),
+                columns: table
+                    .columns
+                    .iter()
+                    .map(|column| column.name.clone())
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        let scripts = MIGRATIONS
+            .get(..version)
+            .ok_or_else(|| anyhow::anyhow!("snapshot compiled generation is absent"))?;
+        let hashes = scripts
+            .iter()
+            .map(|script| hex::encode(Sha256::digest(script.as_bytes())))
+            .collect::<Vec<_>>();
+        Self::new(SCHEMA_IDENTITY, version, &hashes, &shapes)
     }
 
     /// Accepts the catalogue of the read-only Native SQLite adapter.
@@ -316,6 +359,11 @@ impl SnapshotClassifier {
             );
         }
 
+        // Closed business documents are inspected only after the complete row
+        // has passed its allocation and SQL-value budget. These checks preserve
+        // exact private bytes and do not authenticate archived provider proof.
+        direct::validate_row(table_name, table, row)?;
+
         match table.disposition.as_str() {
             "auth_transient" => return Ok(SnapshotRowDisposition::AuthTransient),
             "source_metadata" => return Ok(SnapshotRowDisposition::SourceMetadata),
@@ -357,9 +405,21 @@ impl SnapshotClassifier {
     }
 }
 
+fn generation_contract(version: usize) -> Result<(&'static str, &'static [&'static str])> {
+    match version {
+        3 => Ok((LEGACY_CONTRACT, LEGACY_CONTRACT_MIGRATION_DIGESTS)),
+        4 => Ok((CONTRACT, CONTRACT_MIGRATION_DIGESTS)),
+        _ => anyhow::bail!("snapshot generation is unsupported"),
+    }
+}
+
 fn contract() -> Result<BTreeMap<String, TableContract>> {
+    parse_contract(generation_contract(MIGRATIONS.len())?.0)
+}
+
+fn parse_contract(document: &str) -> Result<BTreeMap<String, TableContract>> {
     let mut tables: BTreeMap<String, TableContract> = BTreeMap::new();
-    for line in CONTRACT.lines().filter(|line| !line.starts_with('#')) {
+    for line in document.lines().filter(|line| !line.starts_with('#')) {
         let fields: Vec<_> = line.split('\t').collect();
         ensure!(fields.len() == 7, "snapshot contract row is malformed");
         ensure!(
@@ -449,6 +509,19 @@ fn classify_cell(
             Ok(None)
         }
         "private_json" => {
+            if table_name == "oci_image_config_projections"
+                && column.name == "config_json"
+                && text(value)?.is_empty()
+                && table
+                    .columns
+                    .iter()
+                    .any(|item| item.name == "config_representation")
+                && text(named_value(table, row, "config_representation")?)? == "storage_summary_v1"
+            {
+                // The closed row validator already checked the typed summary.
+                // Empty legacy raw storage is exact private data, not JSON.
+                return Ok(Some(PrivateDependencyReason::PrivateContext));
+            }
             let plan_kind = if table_name == "topology_plans" {
                 Some(text(named_value(table, row, "plan_kind")?)?)
             } else {

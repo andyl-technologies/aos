@@ -71,9 +71,7 @@ async fn request(
 
 #[tokio::test]
 async fn signed_system_images_work_end_to_end_for_public_and_private_registries() {
-    use aos_hub::db::{
-        NewSurfacePlacementSpec, SurfaceTarget, TokenAuth, UpdateSurfacePlacementSpec,
-    };
+    use aos_hub::db::{NewSurfacePlacementSpec, SurfaceTarget, UpdateSurfacePlacementSpec};
     use aos_hub::domain::{Permission, Principal, Scope};
     use sha2::{Digest as _, Sha256};
 
@@ -255,19 +253,18 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     let mut state = AppState::new(Arc::clone(&db), "http://127.0.0.1:8420".into()).await;
     state.image_snapshots = Some(Arc::clone(&image_snapshots));
     let state = Arc::new(state);
-    let token = state
-        .auth
-        .jwt_keys
-        .mint(
-            &TokenAuth {
-                token_id: "image-reader".into(),
-                owner: Principal::user(user),
-                scope: Scope::parse(&org_scope),
-                permissions: vec![Permission::Read, Permission::Publish],
-            },
-            900,
+    let (_, secret) = db
+        .create_token(
+            Principal::user(user),
+            (Scope::parse(&org_scope)).as_str(),
+            &vec![Permission::Read, Permission::Publish],
+            Some("current fixture bearer"),
+            None,
         )
+        .await
         .unwrap();
+    let token_authority = db.validate_token(&secret).await.unwrap().unwrap();
+    let token = state.auth.jwt_keys.mint(&token_authority, 900).unwrap();
     let app = router(state).await;
 
     // Publish the signed image-bearing surface through the typed producer API.

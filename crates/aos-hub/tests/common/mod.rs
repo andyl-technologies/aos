@@ -1075,3 +1075,40 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
         release_tag,
     }
 }
+
+/// Mints a real current API credential or genuine identity-only browser bearer.
+pub async fn current_bearer(
+    db: &aos_hub::db::Database,
+    keys: &aos_hub::auth::jwt::JwtKeys,
+    principal: aos_hub::domain::Principal,
+    scope: &str,
+    permissions: &[aos_hub::domain::Permission],
+) -> String {
+    let auth = if permissions.is_empty() {
+        assert_eq!(principal.kind, aos_hub::domain::PrincipalKind::User);
+        assert_eq!(scope, "instance");
+        let secret = db.create_session(principal.id, 3600, 1).await.unwrap();
+        let session = db.validate_session(&secret).await.unwrap().unwrap();
+        aos_hub::db::TokenAuth {
+            token_id: format!("browser-session-{}", principal.id),
+            owner: principal,
+            owner_incarnation: Some(session.owner_incarnation),
+            browser_session_id_hash: Some(session.session_id_hash),
+            scope: aos_hub::domain::Scope::root(),
+            permissions: Vec::new(),
+        }
+    } else {
+        let (_, secret) = db
+            .create_token(
+                principal,
+                scope,
+                permissions,
+                Some("RPC integration fixture"),
+                None,
+            )
+            .await
+            .unwrap();
+        db.validate_token(&secret).await.unwrap().unwrap()
+    };
+    keys.mint(&auth, 900).unwrap()
+}
