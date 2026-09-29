@@ -23,6 +23,8 @@
 //! route, and supplied session inputs; [`verification`] authenticates signed
 //! records and validates their complete graph. A future branded Linux adapter
 //! must establish kernel-observation provenance before production use.
+//! [`recovery_pre_requested`] holds distinct no-escape recovery DATA without
+//! claiming a protected Source or Root terminal.
 //! Linux `SOCK_SEQPACKET` and `SCM_RIGHTS` transport lives in
 //! `aos-sandbox-linux`; descriptor integers and endpoint names never enter this
 //! format.
@@ -41,6 +43,7 @@ pub mod native_held_completion;
 pub mod normalized_intent;
 pub mod proof;
 pub mod recovery_currentness;
+pub mod recovery_pre_requested;
 pub mod storage_live_export_lease;
 pub mod storage_live_export_request;
 pub mod storage_live_export_transport;
