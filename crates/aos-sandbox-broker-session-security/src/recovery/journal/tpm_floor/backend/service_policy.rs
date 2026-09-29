@@ -14,6 +14,7 @@
 //! No descriptor-number or shared-flock release ordering is assumed.
 //! The launch FD is not a continuous measurement of a later manager reexec.
 
+use std::ffi::OsStr;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -324,13 +325,14 @@ fn has_exact_launch_fd_properties(
         let [Value::Str(path), Value::Str(name), Value::U64(1)] = entry.fields() else {
             return false;
         };
-        let index = match (Path::new(path.as_str()), name.as_str()) {
-            (path, aos_sandbox_storage::activation::PID1_LAUNCH_IMAGE_FD_NAME)
-                if path == Path::new("/proc/1/exe") =>
+        let index = match (path.as_str(), name.as_str()) {
+            ("/proc/1/exe", aos_sandbox_storage::activation::PID1_LAUNCH_IMAGE_FD_NAME) => 0,
+            (path, "aos-normal-root-client-profile")
+                if expected_profile
+                    .is_some_and(|expected| expected.as_os_str() == OsStr::new(path)) =>
             {
-                0
+                1
             }
-            (path, "aos-normal-root-client-profile") if expected_profile == Some(path) => 1,
             _ => return false,
         };
         if found[index] {
@@ -572,6 +574,14 @@ mod tests {
                 vec![("/nix/store/other/systemd", PID1_ENTRY.1, 1), PROFILE_ENTRY],
             ),
             (
+                "image duplicate separator alias",
+                vec![("/proc//1/exe", PID1_ENTRY.1, 1), PROFILE_ENTRY],
+            ),
+            (
+                "image dot alias",
+                vec![("/proc/1/./exe", PID1_ENTRY.1, 1), PROFILE_ENTRY],
+            ),
+            (
                 "foreign image role",
                 vec![(PID1_ENTRY.0, "other-image", 1), PROFILE_ENTRY],
             ),
@@ -584,6 +594,28 @@ mod tests {
                 vec![
                     PID1_ENTRY,
                     ("/nix/store/other/profile.json", PROFILE_NAME, 1),
+                ],
+            ),
+            (
+                "profile duplicate separator alias",
+                vec![
+                    PID1_ENTRY,
+                    (
+                        "/nix/store//selected-normal-root-profile/profile.json",
+                        PROFILE_NAME,
+                        1,
+                    ),
+                ],
+            ),
+            (
+                "profile dot alias",
+                vec![
+                    PID1_ENTRY,
+                    (
+                        "/nix/store/selected-normal-root-profile/./profile.json",
+                        PROFILE_NAME,
+                        1,
+                    ),
                 ],
             ),
             (
