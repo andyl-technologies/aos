@@ -3,6 +3,11 @@
 use super::*;
 
 pub(super) trait MountSourceAcquisitionJournalViewV2 {
+    fn capture_snapshot(
+        &self,
+    ) -> Result<aos_sandbox::ProtectedJournalSnapshot, SourceProviderSecurityError> {
+        Err(SourceProviderSecurityError::SessionContinuity)
+    }
     fn validated_state(
         &self,
     ) -> Result<
@@ -22,6 +27,12 @@ pub(super) trait MountSourceAcquisitionJournalViewV2 {
 }
 
 impl MountSourceAcquisitionJournalViewV2 for aos_sandbox::ProtectedJournalAuthority<'_> {
+    fn capture_snapshot(
+        &self,
+    ) -> Result<aos_sandbox::ProtectedJournalSnapshot, SourceProviderSecurityError> {
+        self.snapshot()
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)
+    }
     fn validated_state(
         &self,
     ) -> Result<
@@ -68,6 +79,48 @@ impl MountSourceAcquisitionJournalViewV2
                 .map_err(|_| SourceProviderSecurityError::SessionContinuity)?,
         )
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)
+    }
+
+    fn current_value<'view>(
+        &'view self,
+        key: &[u8],
+    ) -> Result<Option<&'view [u8]>, SourceProviderSecurityError> {
+        self.get(key)
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)
+    }
+
+    fn validate_current_snapshot(
+        &self,
+        snapshot: &aos_sandbox::ProtectedJournalSnapshot,
+    ) -> Result<(), SourceProviderSecurityError> {
+        self.validate_snapshot(snapshot)
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)
+    }
+}
+
+impl MountSourceAcquisitionJournalViewV2
+    for aos_sandbox::MountOriginalNativeJournalAuthorityV5<'_>
+{
+    fn capture_snapshot(
+        &self,
+    ) -> Result<aos_sandbox::ProtectedJournalSnapshot, SourceProviderSecurityError> {
+        self.snapshot()
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)
+    }
+    fn validated_state(
+        &self,
+    ) -> Result<
+        aos_sandbox_protocol::mount_source_acquisition_state::MountSourceAcquisitionStateV2,
+        SourceProviderSecurityError,
+    > {
+        // The named physical view validates ALL original floors and the actual
+        // full native graph before projecting legacy rows. No filtering parser
+        // can turn arbitrary R data into reservation/currentness authority.
+        Ok(self
+            .current_graph()
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?
+            .legacy()
+            .clone())
     }
 
     fn current_value<'view>(

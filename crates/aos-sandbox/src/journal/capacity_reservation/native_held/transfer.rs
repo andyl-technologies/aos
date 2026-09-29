@@ -7,7 +7,7 @@ use super::super::super::{
     JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
     encoded_transaction_append_bytes, validate_transaction,
 };
-use super::NativeHeldCapacityRecordV3;
+use super::{NativeHeldCapacityRecordV3, NativeHeldCapacityRequestV3};
 
 pub(super) fn frame_transfer(
     transaction_id: [u8; 16],
@@ -25,19 +25,34 @@ pub(super) fn frame_transfer(
         records.push(next.to_journal_record());
     }
     let transaction = JournalTransaction::new(transaction_id, records)?;
+    check_transfer(
+        &transaction,
+        old.request(),
+        next.map(NativeHeldCapacityRecordV3::request),
+        limits,
+        errors,
+    )?;
+    Ok(transaction)
+}
+
+pub(in crate::journal) fn check_transfer(
+    transaction: &JournalTransaction,
+    old_request: NativeHeldCapacityRequestV3,
+    next: Option<NativeHeldCapacityRequestV3>,
+    limits: JournalLimits,
+    errors: (&'static str, &'static str),
+) -> Result<(), JournalError> {
     validate_transaction(&transaction, limits)?;
 
     let consumed_bytes = encoded_transaction_append_bytes(&transaction)?;
     let consumed_records = u32::try_from(transaction.records().len())
         .map_err(|_| JournalError::LimitExceeded(errors.0))?;
-    let (remaining_records, remaining_bytes) = next.map_or((0, 0), |next| {
-        let request = next.request();
+    let (remaining_records, remaining_bytes) = next.map_or((0, 0), |request| {
         (
             request.terminal_records.max(request.poison_records),
             request.terminal_bytes.max(request.poison_bytes),
         )
     });
-    let old_request = old.request();
     if remaining_records
         .checked_add(consumed_records)
         .is_none_or(|records| {
@@ -49,5 +64,5 @@ pub(super) fn frame_transfer(
     {
         return Err(JournalError::LimitExceeded(errors.1));
     }
-    Ok(transaction)
+    Ok(())
 }

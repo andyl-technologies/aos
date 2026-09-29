@@ -539,20 +539,21 @@ fn require_funded_local_owner(
     state: &State,
     checked: &RootNativeHeldGraphV2,
 ) -> Result<(), JournalError> {
-    // No production original-native admission/envelope exists yet. Canonical
-    // native DATA cannot justify an ordinary change to that original debt.
-    if !checked.sidecars().is_empty()
-        || state.iter().any(|((namespace, _), value)| {
-            *namespace == RecordNamespace::GlobalCapacityReservation
-                && value.get(8..11) == Some(&[0, 3, 40])
-        })
-    {
+    super::root_original_native::require_funded_original_owner(state, checked)?;
+    if state.iter().any(|((namespace, _), value)| {
+        *namespace == RecordNamespace::GlobalCapacityReservation
+            && value.get(8..11) == Some(&[0, 3, 40])
+    }) {
         return Err(JournalError::ProtectedBoundary);
     }
     // Other ordinary owner grammars can pin the very Head/Session changed here.
     // Their numerical floors alone do not prove independence from this edge.
     for ((namespace, key), value) in state {
-        if *namespace == RecordNamespace::MountSourceAcquisition && key_kind(key).is_err() {
+        if *namespace == RecordNamespace::MountSourceAcquisition && key_kind(key).is_err()
+            && !checked.sidecars().keys().any(|attempt|
+                aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::native_root_sidecar_key_v2(*attempt)
+                    .is_ok_and(|known| known == *key))
+        {
             return Err(JournalError::ProtectedBoundary);
         }
         if *namespace == RecordNamespace::GlobalCapacityReservation
@@ -678,7 +679,7 @@ pub(super) fn validate_edge(
     transaction: &JournalTransaction,
     edge: Edge,
 ) -> Result<Option<[u8; 32]>, JournalError> {
-    match edge {
+    let settlement: Result<Option<[u8; 32]>, JournalError> = match edge {
         Edge::Admission => {
             let first = transaction.records().first().ok_or_else(invalid)?;
             let record = aos_sandbox_protocol::mount_source_acquisition_state::decode_mount_source_state_record_v2(
@@ -708,7 +709,10 @@ pub(super) fn validate_edge(
             }
             Ok(Some(floor.reservation_id()))
         }
-    }
+    };
+    let settlement = settlement?;
+    super::root_original_native::preserve_local_owner(state, transaction)?;
+    Ok(settlement)
 }
 
 /// Rechecks both named local logical edges and durable dependency fences.

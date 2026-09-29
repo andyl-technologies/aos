@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::{JournalError, JournalTransaction, RecordNamespace};
-use super::native_held::NativeHeldCapacityRecordV3;
+use super::native_held::{NativeHeldCapacityRecordV3, OriginalRootCapacityRecordV5};
 use super::ordinary::OrdinaryCapacityRecordV4;
 use super::{
     DecodedCapacityReservationV1, GlobalCapacityReservationRequestV1, decode_reservation,
@@ -18,11 +18,12 @@ type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
 type LegacyData = (GlobalCapacityReservationRequestV1, [u8; 16], [u8; 32]);
 
 /// Keeps canonical family classification separate from any legacy authority.
-pub(super) enum CanonicalCapacityFamily {
+pub(in crate::journal) enum CanonicalCapacityFamily {
     Legacy1(LegacyData),
     Legacy2(LegacyData),
     Native3(NativeHeldCapacityRecordV3),
     Ordinary4(OrdinaryCapacityRecordV4),
+    OriginalRoot5(OriginalRootCapacityRecordV5),
 }
 
 impl CanonicalCapacityFamily {
@@ -31,7 +32,7 @@ impl CanonicalCapacityFamily {
     /// # Errors
     ///
     /// Rejects unknown versions or any selected codec/key/identity violation.
-    pub(super) fn decode(key: &[u8], value: &[u8]) -> Result<Self, JournalError> {
+    pub(in crate::journal) fn decode(key: &[u8], value: &[u8]) -> Result<Self, JournalError> {
         let version = value
             .get(8..10)
             .ok_or(JournalError::MalformedRecord("capacity family header"))?;
@@ -58,6 +59,9 @@ impl CanonicalCapacityFamily {
             [0, 4] => Ok(Self::Ordinary4(OrdinaryCapacityRecordV4::decode(
                 key, value,
             )?)),
+            [0, 5] => Ok(Self::OriginalRoot5(OriginalRootCapacityRecordV5::decode(
+                key, value,
+            )?)),
             _ => Err(JournalError::MalformedRecord(
                 "unknown capacity family version",
             )),
@@ -68,7 +72,7 @@ impl CanonicalCapacityFamily {
     pub(super) fn legacy(&self) -> Option<LegacyData> {
         match self {
             Self::Legacy1(data) | Self::Legacy2(data) => Some(*data),
-            Self::Native3(_) | Self::Ordinary4(_) => None,
+            Self::Native3(_) | Self::Ordinary4(_) | Self::OriginalRoot5(_) => None,
         }
     }
 
@@ -88,7 +92,7 @@ impl CanonicalCapacityFamily {
                 request.owner_namespace
             }
             Self::Native3(record) => record.request().purpose.owner_namespace(),
-            Self::Ordinary4(_) => RecordNamespace::MountSourceAcquisition,
+            Self::Ordinary4(_) | Self::OriginalRoot5(_) => RecordNamespace::MountSourceAcquisition,
         }
     }
 
@@ -97,6 +101,7 @@ impl CanonicalCapacityFamily {
             Self::Legacy1((_, _, identity)) | Self::Legacy2((_, _, identity)) => *identity,
             Self::Native3(record) => record.reservation_id(),
             Self::Ordinary4(record) => record.reservation_id(),
+            Self::OriginalRoot5(record) => record.reservation_id(),
         }
     }
 
@@ -113,6 +118,14 @@ impl CanonicalCapacityFamily {
                 request.future_transactions,
             ),
             Self::Native3(record) => {
+                let request = record.request();
+                (
+                    request.terminal_records.max(request.poison_records),
+                    request.terminal_bytes.max(request.poison_bytes),
+                    request.future_transactions,
+                )
+            }
+            Self::OriginalRoot5(record) => {
                 let request = record.request();
                 (
                     request.terminal_records.max(request.poison_records),
@@ -147,7 +160,7 @@ impl CanonicalCapacityFamily {
 /// # Errors
 ///
 /// Rejects any malformed/unknown row or duplicate canonical identity.
-pub(super) fn canonical_reservations(
+pub(in crate::journal) fn canonical_reservations(
     state: &State,
 ) -> Result<Vec<CanonicalCapacityFamily>, JournalError> {
     let mut families = Vec::new();

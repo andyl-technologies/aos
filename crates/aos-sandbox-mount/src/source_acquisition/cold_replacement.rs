@@ -76,6 +76,7 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         let mut writer = self
             .protected
             .root_dead_replacement_authority_v4()

@@ -19,7 +19,7 @@ use super::{
     CommitResult, Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace,
 };
 
-mod family;
+pub(super) mod family;
 pub mod native_held;
 mod ordinary;
 
