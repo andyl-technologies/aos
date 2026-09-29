@@ -64,9 +64,11 @@ All integers are little-endian. Offsets are from the start of the file.
 
 ### Entry bodies
 
-Each body is the stored bytes of one entry: a data chunk compressed with the
-entry's codec, or a meta object in its canonical encoding. Bodies are
-concatenated in the order the writer emitted them. A body MAY be followed by
+Each data body is a chunk codec envelope including the codec byte and, for
+codec `2`, the 32-byte dictionary identity. Meta bodies have no envelope:
+they contain canonical object bytes and use codec `raw` in the index.
+Bodies are concatenated in the order the writer emitted them. A body MAY be
+followed by
 padding only if the index records the padded offset of the next body.
 
 ### Index
@@ -86,10 +88,10 @@ Each entry:
 | 0 | 32 | hash | content identity in the entry's domain ([`04-content-model.md`](04-content-model.md)) |
 | 32 | 8 | offset | body offset from start of file |
 | 40 | 4 | body length | stored (compressed) length |
-| 44 | 4 | uncompressed length | plaintext length; equals body length when codec is `raw` |
+| 44 | 4 | uncompressed length | plaintext length; raw data body length minus one; raw meta body length |
 | 48 | 1 | codec | `0` raw, `1` zstd, `2` zstd with dictionary; others reserved |
 | 49 | 1 | kind | entry kind, see below |
-| 50 | 2 | dictionary id | dictionary registry id when codec is `2`, else zero |
+| 50 | 2 | reserved dictionary field | zero in v1; codec `2` carries the dictionary identity in its body |
 | 52 | 4 | reserved | zero |
 
 Entry kinds:
@@ -142,6 +144,13 @@ Entry kinds:
   and recomputing identities; entries that fail to decode or verify MUST be
   discarded and the pack MUST be rewritten by compaction rather than served
   in place. *Gate:* `gate:pack-scan-recovery`.
+
+The v1 body sequence does not frame raw chunks or identify meta kinds
+without the index. Scanning is therefore optional and cannot generally
+recover arbitrary v1 packs. An implementation that cannot prove body
+boundaries and kinds MUST report unsupported recovery and quarantine the
+damaged pack rather than guess; PACK-8 recovery from an intact embedded
+index remains required.
 
 ## Writer discipline
 

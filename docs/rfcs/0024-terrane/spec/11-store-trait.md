@@ -229,8 +229,15 @@ presigned reads are a function of the `serve` role
   chunking rules in [`05-chunking.md`](05-chunking.md) and every `put` of a
   meta object against `reference/terrane-v1.cddl` by the first store that
   admits it, before the bytes become visible to any `get`. Content that
+  requires schema interpretation MUST be checked by a configured pure
+  format validator invoked by that store at admission. The formats layer
+  owns schema interpretation; the store owns invoking the validator,
+  verifying identity, and withholding visibility on failure (ARCH-2).
+  Caller assertions alone do not establish validation. Content that
   already exists (a dedup hit) MAY be accepted without re-validation only if
-  the store verified it on its original `put`. A `routed` or `guard`
+  the store verified it on its original `put` under the same admission
+  context; final-chunk admission alone does not prove a non-final boundary.
+  A `routed` or `guard`
   combinator MUST NOT be relied upon to perform this validation.
   *Gate:* `gate:store-validates-uploads`.
 

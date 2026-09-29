@@ -616,6 +616,97 @@ is added rather than editing history.
   - **Affects:** OBJ-21, PROV-3, and the commit identity/signature preimage
     distinction in the CDDL and golden vectors.
 
+- **[D-33] Encode deletion conflicts within the existing entry schema.**
+  - **Status:** Decided
+  - **Decision:** Conflict candidates are the ordered sides, with the base
+    carried separately. A whiteout candidate represents an absent side.
+    Correct ALG-17 to agree with TREE-31 and the canonical CDDL.
+  - **Rationale:** The prose's three optional candidates contradicted the
+    CDDL's complete entries and separate nullable base. Whiteouts already
+    encode deletion without adding a new entry type or changing vectors.
+  - **Affects:** ALG-17 and TREE-31; requirement IDs and CDDL stay stable.
+
+- **[D-34] State probabilistic prolly complexity accurately.**
+  - **Status:** Decided
+  - **Decision:** Mutation and comparison costs are expected bounds;
+    boundary resynchronization can take O(n) on adversarial inputs. Require
+    localized rechunking and unchanged-subtree reuse explicitly.
+  - **Rationale:** TREE-22's threshold depends on accumulated node size.
+    A point edit can therefore shift later boundaries, contradicting the
+    strict path-only rewrite claim in ALG-1. Exact canonical boundaries and
+    history independence take precedence over an impossible worst-case
+    bound. This does not permit unconditional whole-tree rebuilding.
+  - **Affects:** ALG-1, ALG-12, ALG-15, ALG-27 and the complexity summary;
+    TREE-21 to TREE-24 and encoded identities remain unchanged.
+
+- **[D-35] Delegate schema interpretation at backend admission.**
+  - **Status:** Decided
+  - **Decision:** The first admitting store invokes a configured pure
+    format validator for meta schemas before publishing bytes. Format code
+    owns interpretation; backend code owns validation invocation, identity
+    verification, and visibility. Dedup shortcuts require equivalent
+    admission context, including final versus non-final chunk position.
+  - **Rationale:** STORE-33 requires schema validation at the backend while
+    ARCH-2 forbids the store from interpreting manifests, nodes, or commits.
+    A configured validator satisfies both; an unchecked caller assertion or
+    validation only in a combinator does not.
+  - **Affects:** ARCH-2, STORE-33 and CDC-12 to CDC-18; no encoded format or
+    requirement ID changes.
+
+- **[D-36] Reconcile property bindings and registry types.**
+  - **Status:** Decided
+  - **Decision:** Encode an explicit inheritance flag using the reserved
+    text-map wrapper `{"inherit": bool, "value": property-value}`; bare
+    values retain their bytes and mean true. Use named text keys for quota
+    fields, as required by the property-value CDDL. Follow DOM-5 reference
+    ordering at graft admission and DOM-2 for effective overrides. Clarify
+    class.magic and conditional ELF/shebang attribute requirements, and
+    exclude the primary manifest hash from secondary hash requirements.
+  - **Rationale:** The prose lacked an inheritance encoding; integer quota
+    keys contradicted the CDDL; PROP-27 allowed disclosure forbidden by
+    DOM-5; classifier names did not identify required attributes; and the
+    primary hash has no derived attribute. These fixes preserve the existing
+    CDDL, canonical bare-property bytes, and all golden vectors.
+  - **Affects:** PROP-1, PROP-18, PROP-19, PROP-27, PROP-28, DOM-2, DOM-5,
+    and the property registry. Requirement IDs remain unchanged.
+
+- **[D-37] Reconcile pack envelopes and dictionary identity fields.**
+  - **Status:** Decided
+  - **Decision:** Data pack bodies include their codec envelope; meta
+    bodies are canonical raw bytes. Raw data stored length includes the
+    codec byte; plaintext length excludes it. The v1 two-byte dictionary
+    field is reserved zero; codec 2's 32-byte chunk identity is authoritative.
+    Require intact embedded-index recovery; unsupported unframed scanning
+    fails explicitly and quarantines the damaged pack.
+  - **Rationale:** Raw-length prose contradicted the codec-first body
+    format, the small dictionary field had no registry or mapping to CDC-9,
+    and raw bodies cannot be safely scanned without framing. Preserve
+    fixed index widths and the authoritative registered dictionary domain.
+  - **Affects:** PACK-4, PACK-7 to PACK-9, CDC-7, CDC-9 and the binary CDDL
+    comments. No existing golden bytes or requirement IDs change.
+
+- **[D-38] Report root metadata separately in tree diffs.**
+  - **Status:** Decided
+  - **Decision:** Preserve ALG-13's three entry change kinds and add a
+    separate before/after root-property report.
+  - **Rationale:** TREE-33 makes properties part of root identity and diff,
+    but TREE-3 gives the implied root no entry. Inventing a root path entry
+    would contradict the namespace model.
+  - **Affects:** ALG-13, TREE-3 and TREE-33; no encoded format changes.
+
+- **[D-39] Preserve structural conflicts as conditional directories.**
+  - **Status:** Decided
+  - **Decision:** A conflict containing a directory candidate may be an
+    ancestor of retained descendants. They remain conditional on selecting
+    a directory side; selecting a nondirectory removes them. Ordinary
+    nondirectory ancestors remain invalid.
+  - **Rationale:** A directory-versus-file merge can conflict at the parent
+    while the directory side changes a child. Rejecting the resulting tree
+    contradicts ALG-17. Conditional descendants preserve existing entry
+    encodings and require explicit conflict-aware handling.
+  - **Affects:** TREE-4, TREE-31, ALG-16 to ALG-19; no CDDL or golden byte
+    changes, and conflict-free tree validation remains unchanged.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

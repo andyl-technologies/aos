@@ -20,6 +20,11 @@ may only narrow `commit` and `admin` in a descendant (PROP-16). Values are
 encoded as `property-value` in
 [`terrane-v1.cddl`](terrane-v1.cddl) using the CBOR type in the third column.
 
+Each property binding MAY instead use the exact text-keyed wrapper
+`{"inherit": bool, "value": property-value}` (PROP-1). The bare encoding
+means inheritance is enabled. The wrapper is reserved for this binding
+purpose and its `value` is checked against the registered type below.
+
 | Property | Class | CBOR type and values | Default | Owner |
 | --- | --- | --- | --- | --- |
 | `store` | storage, boundary | `tstr`: store expression name | the instance's authority | 08, 11 |
@@ -35,7 +40,7 @@ encoded as `property-value` in
 | `replicate` | storage | `tstr`: `async` \| `sync(k)` \| `none` | `async` | 19 |
 | `home` | storage | `tstr`: region label | authority's region at first write | 19, 09 |
 | `warm` | storage | `[* tstr]`: locality labels | `[]` | 19 |
-| `quota` | storage | `{1: bytes-per-root, 2: bytes-per-principal-unreferenced}` | unlimited | 14, 22 |
+| `quota` | storage | `{"bytes-per-root": uint, "bytes-per-principal-unreferenced": uint}` | unlimited | 14, 22 |
 | `compaction_threshold` | storage | `uint`: utilization in basis points (5000 = 0.5) | 5000 | 17 |
 | `whole_pack_threshold` | storage | `uint`: basis points of a pack needed to fetch it whole | 5000 | 21 |
 | `gap_merge_bytes` | storage | `uint` | 262144 | 21 |
@@ -102,6 +107,10 @@ Names accepted in the `hashes` property and as keys of a manifest's hash map
 
 The derived attribute that carries a hash is `hash.<name>`.
 
+`blake3` is the required primary manifest hash, not a derived attribute
+(DRV-6). It is accepted only in manifests; the `hashes` property accepts
+the four secondary names above and does not require `hash.blake3`.
+
 ## Derived attributes
 
 Copied from [`../10-derived-data.md`](../10-derived-data.md) §Registered
@@ -122,6 +131,10 @@ stored as an `AttrRecord` keyed by object hash.
 
 Values of `class.magic` and names accepted by the `classify` property
 (DRV-8): `elf`, `shebang`, `ar`, `zstd`, `gzip`, `tar`, `text`, `other`.
+
+A nonempty `classify` set requires `class.magic` on every regular file.
+If that result is `elf` or `shebang` and the matching class is in the set,
+it additionally requires `class.elf` or `class.shebang` (PROP-19).
 A `content_magic` matcher ([`../31-routing-rulesets.md`](../31-routing-rulesets.md)
 RULE-6) names one of these values; an absent attribute is treated as
 `other` at `on_realize`.

@@ -197,6 +197,24 @@ pub enum EntryKind<'a> {
     },
 }
 
+impl EntryKind<'_> {
+    /// Reports whether this entry can be an ancestor of inline descendants.
+    ///
+    /// A conflict permits conditional descendants when one side is a
+    /// directory. Resolving that conflict to a nondirectory must remove
+    /// them before the result becomes a conflict-free namespace (TREE-4).
+    #[must_use]
+    pub fn permits_descendants(&self) -> bool {
+        match self {
+            Self::Directory { .. } => true,
+            Self::Conflict { candidates, .. } => candidates
+                .iter()
+                .any(|candidate| matches!(candidate.kind, Self::Directory { .. })),
+            _ => false,
+        }
+    }
+}
+
 /// A tree value with common attributes and introducing provenance.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Entry<'a> {
@@ -1153,7 +1171,7 @@ pub fn validate_tree_entries(entries: &[LeafItem<'_>], usage: TreeUse) -> Result
                 let index = entries
                     .binary_search_by(|probe| probe.key.as_slice().cmp(ancestor))
                     .map_err(|_| Error::Tree)?;
-                if !matches!(&entries[index].entry.kind, EntryKind::Directory { .. }) {
+                if !entries[index].entry.kind.permits_descendants() {
                     return Err(Error::Tree);
                 }
             }
@@ -1285,6 +1303,38 @@ mod tests {
 
         let entries = [item(b"a", directory()), item(b"a/b", file(None))];
         validate_tree_entries(&entries, TreeUse::Ordinary).expect("explicit ancestor");
+    }
+
+    #[test]
+    fn only_directory_conflicts_permit_conditional_descendants() {
+        let mut ancestor = directory();
+        ancestor.kind = EntryKind::Conflict {
+            candidates: vec![file(None), directory()],
+            base: None,
+        };
+        let mut entries = [item(b"a", ancestor), item(b"a/b", file(None))];
+
+        validate_tree_entries(&entries, TreeUse::Ordinary).expect("conditional directory");
+        validate_tree_entries(&entries, TreeUse::ConflictSurface).expect("conflict-aware view");
+        assert_eq!(
+            validate_tree_entries(&entries, TreeUse::Surface),
+            Err(Error::Tree)
+        );
+
+        entries[0].entry.kind = EntryKind::Conflict {
+            candidates: vec![file(None), file(None)],
+            base: None,
+        };
+        assert_eq!(
+            validate_tree_entries(&entries, TreeUse::Ordinary),
+            Err(Error::Tree)
+        );
+
+        entries[0].entry = file(None);
+        assert_eq!(
+            validate_tree_entries(&entries, TreeUse::Ordinary),
+            Err(Error::Tree)
+        );
     }
 
     #[test]

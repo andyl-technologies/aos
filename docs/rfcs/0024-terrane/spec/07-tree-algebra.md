@@ -41,9 +41,11 @@ hash that can be sealed, indexed, or exposed by every surface.
 `graft(parent, at, root)` produces a parent tree in which the entry at path
 `at` is a `tree` entry targeting `root`.
 
-- **[ALG-1]** `graft` MUST NOT rewrite any key of `root`. Its cost MUST be
-  O(log n) in the size of `parent`: the nodes on the path to `at` are
-  rewritten and nothing else. *Gate:* `gate:algebra-graft`.
+- **[ALG-1]** `graft` MUST NOT rewrite any key of `root`. It MUST begin
+  mutation at the nodes on the path to `at`, rechunk only until boundaries
+  resynchronize, and reuse unchanged subtrees. Its expected cost is
+  O(log n) in the size of `parent`; adversarial boundary shifts can require
+  O(n) work. *Gate:* `gate:algebra-graft`.
 - **[ALG-2]** If an entry already exists at `at`, `graft` MUST replace it. If
   entries exist beneath `at` in `parent` (that is, `at` is a directory with
   inline children), `graft` MUST fail with a structural error unless the
@@ -104,13 +106,16 @@ consults each layer in order and returns the first entry found.
 `diff(a, b)` produces the ordered set of changes that turn `a` into `b`.
 
 - **[ALG-12]** `diff` MUST skip any subtree whose node hash is equal in both
-  inputs. Its cost is O(delta × log n) where delta is the number of differing
-  entries. *Gate:* `gate:algebra-diff`.
+  inputs. Its expected cost is O(delta × log n) where delta is the number
+  of differing entries; boundary shifts can require O(n) work even for a
+  small delta. *Gate:* `gate:algebra-diff`.
 - **[ALG-13]** Each change MUST be one of: `added(path, entry)`,
   `removed(path, entry)`, `modified(path, old, new)`. Changes to a `tree`
   entry's target MUST be reported as a single `modified` change at the entry's
   path unless the caller requests descent, in which case `diff` recurses into
-  the two targets.
+  the two targets. Root-property changes MUST be reported separately from
+  entry changes, with both property maps, because the implied root has no
+  entry (TREE-3).
 - **[ALG-14]** `diff` output MUST be ordered by path and MUST be
   deterministic for a given pair of roots.
 
@@ -122,8 +127,9 @@ consults each layer in order and returns the first entry found.
 - **[ALG-15]** `merge` MUST be implemented as a three-cursor walk over the
   three inputs in key order and MUST skip any subtree whose hash is equal in
   all three inputs, or equal in `base` and one side (in which case the other
-  side's subtree is taken whole). Its cost is O(delta × log n) where delta is
-  the number of entries changed on either side. *Gate:*
+  side's subtree is taken whole). Its expected cost is O(delta × log n)
+  where delta is the number of entries changed on either side; boundary
+  shifts can require O(n) work. *Gate:*
   `gate:algebra-merge`.
 - **[ALG-16]** For each key the merge MUST apply these rules, where `=` is
   entry equality including attributes and provenance:
@@ -133,9 +139,10 @@ consults each layer in order and returns the first entry found.
   - otherwise: the key is **conflicted**; its result is a conflict value.
 - **[ALG-17]** A merge MUST NOT fail because of a conflict. A conflicted key
   MUST produce a conflict value, an entry of type `conflict` that carries the
-  ordered candidates `[base, ours, theirs]` (a candidate MAY be absent). This
-  is the representation described for jj: a merge of trees is itself a tree
-  whose entries may be sums of alternatives.
+  ordered side candidates `[ours, theirs]` and a separate `base` entry or
+  `null`, as defined by TREE-31 and the CDDL. An absent side is encoded as
+  a `whiteout` candidate, meaning deletion at this key. Such a candidate
+  is internal to the conflict value and MUST NOT be presented by a surface.
 - **[ALG-18]** A merge policy resolves conflict values. The policy is named on
   the merging root's `merge` property ([`08-properties.md`](08-properties.md))
   or supplied by the caller. Registered policies are:
@@ -194,7 +201,8 @@ operations above.
   `b`'s. It is `filter` of `diff(b, a)`'s `added` and `modified` changes.
 - **[ALG-27]** `intersection(a, b)` MUST produce the root containing every
   entry present and equal in both. All three MUST skip equal subtrees and
-  cost O(delta × log n).
+  have expected cost O(delta × log n), subject to boundary resynchronization
+  as in ALG-12.
 
 ## Virtual and materialized composites
 
@@ -272,7 +280,12 @@ The flow that motivated fork and fold:
 | fold | O(delta log n) | commit |
 
 Here n is the number of entries in the largest input and delta is the number
-of differing entries; log n is the tree height.
+of differing entries; log n is the tree height. Costs involving prolly
+mutation or comparison are expected costs under the content hash boundary
+distribution. The size-dependent threshold in TREE-22 can propagate a
+boundary shift through an adversarial input, giving O(n) worst-case work.
+Implementations still MUST start locally and skip reusable equal subtrees;
+the worst-case allowance does not permit unconditional full-tree rebuilds.
 
 ## Interactions
 

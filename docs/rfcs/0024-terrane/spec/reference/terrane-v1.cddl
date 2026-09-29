@@ -435,7 +435,8 @@ selector = [ "issuer", tstr ]
 ;     4   2  version     1
 ;     6   2  flags       bit0 bodies compressed by default; bit1 meta pack
 ;     8  16  pack id
-;   bodies                concatenated entry bodies, codec byte first
+;   bodies                concatenated entry bodies; data chunks include
+;                         the codec byte, meta objects are canonical bytes
 ;   index preamble (12 bytes)
 ;     0   4  magic       ASCII "TRIX"
 ;     4   8  count
@@ -446,7 +447,7 @@ selector = [ "issuer", tstr ]
 ;    44   4  uncompressed length
 ;    48   1  codec       0 raw, 1 zstd, 2 zstd+dictionary
 ;    49   1  kind        pack-kind above
-;    50   2  dictionary id
+;    50   2  reserved dictionary field, zero in v1
 ;    52   4  reserved    zero
 ;   footer (16 bytes)
 ;     0   8  index offset

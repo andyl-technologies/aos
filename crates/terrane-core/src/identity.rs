@@ -268,6 +268,33 @@ impl IdentityProfile {
         })
     }
 
+    /// Binds a decoded digest to this configured profile and immutable kind.
+    ///
+    /// This validates the digest's representation, not its content. Callers
+    /// must still verify the corresponding bytes before using or admitting
+    /// them. Pack indexes use this conversion before checking stored bodies.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityError::UnknownDomain`] for an unregistered kind or
+    /// [`IdentityError::InvalidDigestLength`] for a wrong-sized digest.
+    pub fn from_digest(
+        &self,
+        kind: IdentityKind,
+        digest: &[u8],
+    ) -> Result<Identity, IdentityError> {
+        self.domain(kind)?;
+        if digest.len() != self.digest_len() {
+            return Err(IdentityError::InvalidDigestLength);
+        }
+
+        Ok(Identity {
+            profile: self.name,
+            kind,
+            digest: digest.to_vec(),
+        })
+    }
+
     /// Verifies bytes before they are used or admitted to a cache.
     ///
     /// # Errors
@@ -530,6 +557,24 @@ mod tests {
             );
             TERRANE_V1.verify(&identity, plaintext)?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn decoded_digest_requires_representation_and_content_checks() -> Result<(), IdentityError> {
+        let calculated = TERRANE_V1.calculate(IdentityKind::Chunk, b"plaintext")?;
+        let decoded = TERRANE_V1.from_digest(IdentityKind::Chunk, calculated.digest())?;
+
+        assert_eq!(decoded, calculated);
+        TERRANE_V1.verify(&decoded, b"plaintext")?;
+        assert_eq!(
+            TERRANE_V1.verify(&decoded, b"different bytes"),
+            Err(IdentityError::DigestMismatch),
+        );
+        assert_eq!(
+            TERRANE_V1.from_digest(IdentityKind::Chunk, &[0; 31]),
+            Err(IdentityError::InvalidDigestLength),
+        );
         Ok(())
     }
 

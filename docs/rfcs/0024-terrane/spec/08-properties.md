@@ -13,7 +13,11 @@ defaults are in `reference/property-registry.md`.
 A [root](02-glossary.md#namespace-vocabulary) is a tree root reached from a
 ref or from a `tree` entry. Each root MAY carry a property map. A property is
 a name from the registry, a value of the registered type, and an optional
-`inherit` flag (default true). The **effective** value of a property at a
+`inherit` flag (default true). A bare value means `inherit=true`; the exact
+text-keyed map `{"inherit": bool, "value": property-value}` carries an
+explicit flag. This reserved binding wrapper is itself a valid CDDL
+`property-value` and is unwrapped before checking the registered type.
+The **effective** value of a property at a
 root is its own value if set, otherwise the effective value at the nearest
 ancestor root that sets it, otherwise the registry default.
 
@@ -137,8 +141,10 @@ hash algorithm, a secondary index, a classification) without a format change.
   entry beneath the root MUST carry a content-hash attribute for each
   algorithm listed, as defined in [`10-derived-data.md`](10-derived-data.md).
 - **[PROP-19]** `classify` is a set of classifier names. Every regular-file
-  entry beneath the root MUST carry the classification attribute produced by
-  each listed classifier.
+  entry beneath a root with a nonempty set MUST carry `class.magic`.
+  When the set includes `elf` or `shebang` and `class.magic` matches that
+  class, the entry MUST additionally carry `class.elf` or `class.shebang`,
+  respectively. Other registered classes require only `class.magic`.
 - **[PROP-20]** `index` is a set of attribute names. The root MUST maintain
   an index tree for each listed attribute
   ([`10-derived-data.md`](10-derived-data.md)).
@@ -176,9 +182,11 @@ hash algorithm, a secondary index, a classification) without a format change.
 - **[PROP-27]** At commit, for every `tree` entry added or modified, the
   implementation MUST verify that the target root's own boundary properties
   are compatible with the effective boundary properties at the graft point
-  (a private root MAY be grafted under a public parent; a public root MAY be
-  grafted anywhere; a root MUST NOT be grafted where the graft would widen
-  its effective `domain`).
+  under DOM-5's reference ordering. A public parent MUST NOT reference a
+  private target. A more open target MAY be referenced beneath a more
+  closed parent only when the graft's effective properties preserve or
+  narrow the parent's domain under DOM-2; an explicit graft override may
+  supply that narrowing. A graft MUST NOT widen its effective domain.
 
 ## Property summary
 

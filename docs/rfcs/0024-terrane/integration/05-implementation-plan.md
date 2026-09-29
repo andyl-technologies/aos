@@ -164,11 +164,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 - [ ] **T-ALG-2** Three-cursor `merge` with conflict values and the
   `prefer-ours`, `prefer-theirs`, `prefer-trusted`, `keep-conflict`, and
   `error` policies; fast-forward; fork and fold; recipes for `merge` and
-  `overlay` composites. Narrowed to trunk scope: `filter`, `map`, set
+  `overlay` composites. Native delta parity is completed with T-FUSE-3
+  when the overlay-upper importer exists. Narrowed to trunk scope: `filter`, `map`, set
   operations, and the remaining recipe kinds are T-ALG-3 on B-derive. —
   satisfies ALG-15 to ALG-21, ALG-28 to ALG-35;
-  `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`,
-  `checks.terrane.gates.merge-native-parity`.
+  `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [ ] **T-PROP-1** Property resolution, types, boundary properties,
   completeness, commit-time requirement checks, and strict attribute-name
   validation. — satisfies TREE-14, PROP-1 to PROP-28;
@@ -497,7 +497,8 @@ conformance tests passing over Terrane.
   Narrowed to trunk scope: `fsync` binding in `sync` mode and redirections
   are T-FUSE-4 on B-consistency. — satisfies FUSE-32 to FUSE-35, FUSE-40
   to FUSE-42, CONS-1 to CONS-3, CONS-10 (the `manual` and `periodic`
-  clauses), CONS-13, CONS-24 to CONS-27, CONS-34 to CONS-37;
+  clauses), CONS-13, CONS-24 to CONS-27, CONS-34 to CONS-37, TEST-5;
+  `checks.terrane.gates.merge-native-parity`,
   `checks.terrane.gates.fuse-upper-isolation`,
   `checks.terrane.gates.cons-fsync-sticky`,
   `checks.terrane.gates.cons-control`.

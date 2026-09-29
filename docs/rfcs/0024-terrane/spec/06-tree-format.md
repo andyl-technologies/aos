@@ -38,7 +38,10 @@ descending only into subtrees whose identities differ.
   tree with no entries is the empty tree, whose root node is the encoded
   empty leaf.
 - **[TREE-4]** Every ancestor directory of an entry MUST be present as a
-  `dir` entry, except the implied root. A tree with a file at `a/b` and no
+  `dir` entry, except the implied root. A conflicted ancestor MAY instead
+  be a `conflict` entry with at least one `dir` candidate; its descendants
+  are conditional on resolving that ancestor to a directory. Resolving to
+  a nondirectory MUST remove those descendants. A tree with a file at `a/b` and no
   `dir` entry at `a` is malformed. Index trees have no directory ancestors;
   their keys are opaque. *Gate:* `gate:tree-well-formed`.
 - **[TREE-5]** A key MUST NOT have a `tree` entry as a proper prefix
@@ -152,8 +155,12 @@ Three entry types exist for the algebra rather than for consumers.
   `candidates` holds the candidate entries in the merge's side order, each
   a complete entry of another type, and `base` holds the merge-base value
   or `null` when the key was absent from the base. Candidates MUST NOT
-  themselves be `conflict` entries. A surface MUST NOT present a
+  themselves be `conflict` entries. In a merge conflict, a `whiteout`
+  candidate represents an absent side (ALG-17). A surface MUST NOT present a
   `conflict` entry unless its schema declares conflict support.
+  A structural directory-versus-nondirectory conflict retains descendants
+  under the TREE-4 conditional-directory rule; conflict-aware consumers
+  MUST NOT treat those descendants as accessible under a nondirectory side.
 - **[TREE-32]** An `index` entry is the value of a key in an index tree
   ([`10-derived-data.md`](10-derived-data.md)): `targets` lists the object
   hashes whose indexed attribute equals the key, in ascending byte order
