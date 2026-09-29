@@ -459,6 +459,7 @@ fn tree_boundaries_exact_cap_resets_compression_and_rejects_oversize() {
         if length == 65536 {
             break;
         }
+        drop(item);
         value.resize((value.len() as isize + 65536 - length as isize) as usize, 7);
     }
     let mut large = directory(b"prefix-b");

@@ -193,6 +193,7 @@ fn tree_history_independence_splice_reports_incompatible_overflow_edges() {
         if length == 65536 {
             break;
         }
+        drop(large);
         value.resize((value.len() as isize + 65536 - length as isize) as usize, 7);
     }
     for adjacent in [b"a".as_slice(), b"c".as_slice()] {
