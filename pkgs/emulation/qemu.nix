@@ -1452,6 +1452,7 @@ in
               build/tests/unit/test-crucible-xhci-microframe --tap
               build/tests/unit/test-crucible-hpet-phase --tap
               build/tests/unit/test-crucible-rc4030-period --tap
+              build/tests/unit/test-crucible-riscv-cpc-clock --tap
               # A nested poll must retain the active BH until callback accounting ends.
               build/tests/unit/test-aio --tap -p /aio/bh/callback-delete/nested
               build/tests/unit/test-aio --tap -p /aio/bh/callback-delete/nested-oneshot
