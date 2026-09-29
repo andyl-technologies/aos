@@ -4,6 +4,7 @@
 //! are not Storage observations, and neither this cut nor its retained clock
 //! can construct a native bridge, SourceRoot, or positive lease.
 
+use std::collections::{BTreeMap, btree_map::Entry};
 use std::sync::Arc;
 
 use aos_sandbox_source_provider_protocol::{
@@ -138,6 +139,7 @@ fn require_catalog_claims(
 /// Retains original packet, clock, and selected row until reservation readback.
 pub(super) struct OriginalNativeAdmission {
     original: SignedSourceProviderRequestV1,
+    acquisition_id: ObjectDigest,
     attempt: ObjectDigest,
     session_binding: ObjectDigest,
     namespace: ObjectDigest,
@@ -148,7 +150,7 @@ pub(super) struct OriginalNativeAdmission {
 
 impl OriginalNativeAdmission {
     pub(super) fn prepare(
-        ledger: &mut ProviderLedgerV1<'_>,
+        ledger: &ProviderLedgerV1<'_>,
         packet: &crate::FixedProviderAuthenticatedSourceRequestV1,
         verified: &VerifiedProviderAcquireRequestV1,
         selection: CurrentSelection,
@@ -209,26 +211,23 @@ impl OriginalNativeAdmission {
                     // A historical wall interval cannot recreate live authority.
                     return Err(ProviderLedgerError::Unavailable);
                 }
-                let clock = Arc::new(
+                // A fresh pre-append refusal owns only this local sample. It
+                // cannot accumulate clock-only entries in the retained owner.
+                // A new carrier receive must still verify Fresh and the same
+                // signed expiry; existing rows/ExactReplay cannot recapture.
+                Arc::new(
                     crate::native_completion::NativeAcquireClockGuardV1::before_challenge(
                         packet.signed(),
                         attempt.attempt_digest(),
                         projection.verified_at_seconds(),
                         projection.current_valid_until_seconds(),
                     )?,
-                );
-                ledger.native_acquire_custody.insert(
-                    request.acquisition_id(),
-                    crate::native_completion::NativeAcquireHotCustodyV3 {
-                        clock: Arc::clone(&clock),
-                        source_root: None,
-                    },
-                );
-                clock
+                )
             };
         clock.require_original(packet.signed(), attempt.attempt_digest())?;
         Ok(Self {
             original: packet.signed().clone(),
+            acquisition_id: request.acquisition_id(),
             attempt: attempt.attempt_digest(),
             session_binding: request.session_binding(),
             namespace: projection.resource_namespace_digest(),
@@ -253,6 +252,23 @@ impl OriginalNativeAdmission {
         self.selection
             .require_original(ledger, &self.normalized, rows)?;
         self.require_live(session)
+    }
+
+    /// Retains the same anchor only at the final possible-append boundary.
+    pub(super) fn retain_before_append(
+        &self,
+        ledger: &mut ProviderLedgerV1<'_>,
+        session: &mut CurrentProviderIngressSessionV1,
+        rows: &[u8],
+    ) -> Result<(), ProviderLedgerError> {
+        self.before_commit(ledger, session, rows)?;
+        // No fallible preflight remains after this retention. Any commit
+        // failure may have appended, so poisoning must retain this SAME Arc.
+        retain_original_clock(
+            &mut ledger.native_acquire_custody,
+            self.acquisition_id,
+            &self.clock,
+        )
     }
 
     pub(super) fn after_commit(
@@ -292,6 +308,25 @@ impl OriginalNativeAdmission {
     }
 }
 
+/// Adds original hot custody without replacing an already retained anchor.
+pub(crate) fn retain_original_clock(
+    custody: &mut BTreeMap<ObjectDigest, crate::native_completion::NativeAcquireHotCustodyV3>,
+    acquisition_id: ObjectDigest,
+    clock: &Arc<crate::native_completion::NativeAcquireClockGuardV1>,
+) -> Result<(), ProviderLedgerError> {
+    match custody.entry(acquisition_id) {
+        Entry::Vacant(entry) => {
+            entry.insert(crate::native_completion::NativeAcquireHotCustodyV3 {
+                clock: Arc::clone(clock),
+                source_root: None,
+            });
+            Ok(())
+        }
+        Entry::Occupied(entry) if Arc::ptr_eq(&entry.get().clock, clock) => Ok(()),
+        Entry::Occupied(_) => Err(ProviderLedgerError::Equivocation),
+    }
+}
+
 fn resource_matches_acquisition(
     resource: &SourceResourceV1,
     acquisition: &AcquisitionRecordV1,
@@ -319,7 +354,7 @@ pub(crate) fn matches_original_acquisition(
         && resource_matches_acquisition(selected, existing)
 }
 
-pub(super) fn require_original_packet_profile(
+pub(crate) fn require_original_packet_profile(
     request: &aos_sandbox_source_provider_protocol::AcquireSourceRequestV1,
     packet: Option<&crate::FixedProviderAuthenticatedSourceRequestV1>,
 ) -> Result<bool, ProviderLedgerError> {

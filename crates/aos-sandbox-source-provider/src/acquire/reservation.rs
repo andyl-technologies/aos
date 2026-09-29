@@ -385,7 +385,7 @@ pub(crate) fn reserve_acquire(
             &attempt,
             &session,
             |ledger| {
-                native.before_commit(
+                native.retain_before_append(
                     ledger,
                     security_session,
                     current_catalog.ok_or(ProviderLedgerError::Unavailable)?.1,

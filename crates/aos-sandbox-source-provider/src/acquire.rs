@@ -45,12 +45,15 @@ mod native_admission;
 
 #[cfg(test)]
 pub(crate) use native_admission::matches_original_acquisition as matches_original_native_acquisition;
+#[cfg(test)]
+pub(crate) use native_admission::retain_original_clock;
 #[path = "acquire/reservation.rs"]
 mod reservation;
 #[path = "acquire/validation.rs"]
 mod validation;
 
 pub(crate) use completion::complete_acquire;
+pub(crate) use native_admission::require_original_packet_profile;
 pub(crate) use reservation::reserve_acquire;
 pub(crate) use validation::{
     derive_acquire_effect_id, derive_backend_plan_id, derive_lease_id,

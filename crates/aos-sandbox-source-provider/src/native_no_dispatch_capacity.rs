@@ -291,7 +291,7 @@ pub(crate) fn commit_reservation(
     )
 }
 
-/// Rechecks original-owner custody after capacity preflight, before append.
+/// Rechecks and retains original-owner custody after preflight, before append.
 pub(crate) fn commit_reservation_checked(
     ledger: &mut ProviderLedgerV1<'_>,
     purpose: &[u8],
@@ -299,7 +299,7 @@ pub(crate) fn commit_reservation_checked(
     acquisition: &AcquisitionRecordV1,
     attempt: &AttemptRecordV1,
     session: &HolderSessionHeadRecordV1,
-    before_commit: impl FnOnce(&ProviderLedgerV1<'_>) -> Result<(), ProviderLedgerError>,
+    before_commit: impl FnOnce(&mut ProviderLedgerV1<'_>) -> Result<(), ProviderLedgerError>,
 ) -> Result<ObjectDigest, ProviderLedgerError> {
     let prepared = prepare_mutations_validated(
         ledger,
