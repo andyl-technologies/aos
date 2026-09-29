@@ -115,6 +115,11 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-hppa-timer-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-loongarch-timer-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-ppc-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-apic-timer-wide-clock.c` | LGPL-2.1-or-later | Explicit SPDX identifier; includes the original LGPL APIC common body |
+| `tests/unit/test-crucible-rtc-timer-wide-clock.c` | MIT | Explicit SPDX identifier; literal MC146818 RTC fixture preserves its MIT scope |
+| `tests/unit/test-crucible-pit-timer-wide-clock.c` | MIT | Explicit SPDX identifier; literal 8254 timer fixture preserves its MIT scope |
+| `tests/unit/test-crucible-serial-kbd-timer-wide-clock.c` | MIT | Explicit SPDX identifier; literal UART and keyboard timer fixtures preserve their MIT scope |
+| `tests/unit/test-crucible-acpi-pm-wide-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated
