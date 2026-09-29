@@ -127,6 +127,13 @@ impl ProviderQuerySendRecoveryV2 {
 }
 
 impl SentProviderQueryV2 {
+    pub(super) fn from_original_native_sent(
+        attempt_id: [u8; 32],
+        sent: SentMountProviderRequestV2,
+    ) -> Self {
+        Self { attempt_id, sent }
+    }
+
     pub(super) const fn attempt_id(&self) -> [u8; 32] {
         self.attempt_id
     }
@@ -412,6 +419,72 @@ impl SourceAcquisitionTableV2 {
         prepared: PreparedMountProviderRequestV2,
         native_session: Option<&mut CurrentRootMountSourceProviderSessionV1>,
     ) -> Result<super::native_selection::NativeProviderAcquireProgressV3> {
+        let DerivedAcquireReservationV5 {
+            attempt,
+            head,
+            mutation,
+            records,
+        } = self.derive_acquire_reservation(
+            live_request,
+            mount_request,
+            mount_plan_digest,
+            ownership_lease_digest,
+            &prepared,
+            native_session.is_some(),
+        )?;
+        match native_session {
+            Some(session) => {
+                let coordinates =
+                    super::native_selection::reservation_coordinates(&attempt, &head)?;
+                let (transaction, tentative) = prepare_mutation(self, mutation, records)?;
+                let preflight = session
+                    .revalidate_native_acquire_preparation_v3(journal, &prepared)
+                    .map_err(|_| state_error("native admission drifted before commit"));
+                let prepared = match super::native_selection::commit_after_native_preflight(
+                    prepared,
+                    preflight,
+                    || journal.commit(&transaction).map(|_| ()).map_err(Into::into),
+                )? {
+                    super::native_selection::NativeCommitAttemptV3::Committed(prepared) => prepared,
+                    super::native_selection::NativeCommitAttemptV3::Unconfirmed {
+                        custody: prepared,
+                        error,
+                    } => {
+                        session.invalidate_native_acquire_commit_v3();
+                        return Ok(super::native_selection::NativeProviderAcquireProgressV3::CommitUnconfirmed {
+                            custody: super::native_selection::RetainedNativeAcquireCommitV3 { prepared, attempt, head },
+                            error,
+                        });
+                    }
+                };
+                *self = tentative;
+                return super::native_selection::confirm_native_reservation(
+                    journal,
+                    session,
+                    prepared,
+                    attempt,
+                    head,
+                    coordinates,
+                );
+            }
+            None => commit_mutation(self, journal, mutation, records)?,
+        }
+        confirm_reservation(journal, prepared, &attempt, &head)
+            .map(super::native_selection::NativeProviderAcquireProgressV3::Reserved)
+    }
+
+    // Pure exact owner derivation shared by legacy admission and retained v5
+    // custody. Borrowing preparation keeps it alive on every derivation error.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn derive_acquire_reservation(
+        &self,
+        live_request: &LiveValidatedAcquireMountSourceRequest,
+        mount_request: Vec<u8>,
+        mount_plan_digest: [u8; 32],
+        ownership_lease_digest: [u8; 32],
+        prepared: &PreparedMountProviderRequestV2,
+        native: bool,
+    ) -> Result<DerivedAcquireReservationV5> {
         let historical = decode_historical_acquire_mount_source_request(&mount_request)?;
         if historical.request() != live_request.request()
             || mount_plan_digest == [0; 32]
@@ -499,7 +572,7 @@ impl SourceAcquisitionTableV2 {
             .ok_or_else(|| state_error("prepared Acquire lacks normalized intent digest"))?;
         let normalized = NormalizedAcquisitionIntentV2::from_canonical_bytes(normalized_bytes)
             .map_err(|_| state_error("prepared Acquire normalization is invalid"))?;
-        if normalized.native_catalog().is_some() != native_session.is_some() {
+        if normalized.native_catalog().is_some() != native {
             return Err(state_error(
                 "native Acquire requires its original held admission path",
             ));
@@ -621,46 +694,20 @@ impl SourceAcquisitionTableV2 {
             next_attempt_revision: Some(attempt.revision),
             session_id: Some(session.session_id),
         };
-        match native_session {
-            Some(session) => {
-                let coordinates =
-                    super::native_selection::reservation_coordinates(&attempt, &head)?;
-                let (transaction, tentative) = prepare_mutation(self, mutation, records)?;
-                let preflight = session
-                    .revalidate_native_acquire_preparation_v3(journal, &prepared)
-                    .map_err(|_| state_error("native admission drifted before commit"));
-                let prepared = match super::native_selection::commit_after_native_preflight(
-                    prepared,
-                    preflight,
-                    || journal.commit(&transaction).map(|_| ()).map_err(Into::into),
-                )? {
-                    super::native_selection::NativeCommitAttemptV3::Committed(prepared) => prepared,
-                    super::native_selection::NativeCommitAttemptV3::Unconfirmed {
-                        custody: prepared,
-                        error,
-                    } => {
-                        session.invalidate_native_acquire_commit_v3();
-                        return Ok(super::native_selection::NativeProviderAcquireProgressV3::CommitUnconfirmed {
-                            custody: super::native_selection::RetainedNativeAcquireCommitV3 { prepared, attempt, head },
-                            error,
-                        });
-                    }
-                };
-                *self = tentative;
-                return super::native_selection::confirm_native_reservation(
-                    journal,
-                    session,
-                    prepared,
-                    attempt,
-                    head,
-                    coordinates,
-                );
-            }
-            None => commit_mutation(self, journal, mutation, records)?,
-        }
-        confirm_reservation(journal, prepared, &attempt, &head)
-            .map(super::native_selection::NativeProviderAcquireProgressV3::Reserved)
+        Ok(DerivedAcquireReservationV5 {
+            attempt,
+            head,
+            mutation,
+            records,
+        })
     }
+}
+
+pub(super) struct DerivedAcquireReservationV5 {
+    pub(super) attempt: SourceProviderQueryAttemptV2,
+    pub(super) head: SourceProviderHeadV2,
+    pub(super) mutation: MutationIdentityV2,
+    pub(super) records: Vec<StoredRecordV2>,
 }
 
 fn attempt_id_for_plan(

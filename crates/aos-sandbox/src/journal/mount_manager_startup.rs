@@ -627,6 +627,7 @@ impl ProtectedJournalAuthority<'_> {
             self.scope,
             ProtectedAuthorityScope::RootLocalRecoveryKind2
                 | ProtectedAuthorityScope::RootLocalRecoveryKind5
+                | ProtectedAuthorityScope::RootOriginalNativeV5
         ) {
             return Err(JournalError::ForeignAuthorityNamespace);
         }

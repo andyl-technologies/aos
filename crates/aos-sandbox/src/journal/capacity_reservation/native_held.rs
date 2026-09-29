@@ -21,14 +21,20 @@ use super::{reservation_key, take};
 pub(in crate::journal) use super::family::{require_legacy_owner, require_legacy_transaction};
 
 mod admission;
+mod original;
 mod profile;
 mod root;
 mod root_v2;
 mod transfer;
+pub(in crate::journal) use transfer::check_transfer;
 
 pub use admission::{
     NativeHeldProviderAdmissionDataV3, provider_native_capacity_admission_v3,
     provider_native_capacity_transition_v3,
+};
+pub use original::{
+    ORIGINAL_ROOT_CAPACITY_MAXIMUM_VALUE_BYTES_V5, ORIGINAL_ROOT_PREPARED_BYTES_V5,
+    OriginalRootCapacityRecordV5,
 };
 pub use profile::provider_native_capacity_transition_v2;
 pub use profile::{
@@ -287,20 +293,7 @@ impl NativeHeldCapacityRecordV3 {
             return Err(invalid("native capacity owner namespace"));
         }
         let mut offset = 14;
-        let request = NativeHeldCapacityRequestV3 {
-            purpose,
-            owner_id: take::<32>(value, &mut offset),
-            owner_digest: take::<32>(value, &mut offset),
-            operation_id: take::<16>(value, &mut offset),
-            artifact_digest: take::<32>(value, &mut offset),
-            checkpoint_digest: take::<32>(value, &mut offset),
-            chain_head_digest: take::<32>(value, &mut offset),
-            terminal_records: u32::from_be_bytes(take::<4>(value, &mut offset)),
-            terminal_bytes: u64::from_be_bytes(take::<8>(value, &mut offset)),
-            poison_records: u32::from_be_bytes(take::<4>(value, &mut offset)),
-            poison_bytes: u64::from_be_bytes(take::<8>(value, &mut offset)),
-            future_transactions: u32::from_be_bytes(take::<4>(value, &mut offset)),
-        };
+        let request = decode_bindings(purpose, value, &mut offset);
         let admission = take::<16>(value, &mut offset);
         let candidate = take::<32>(value, &mut offset);
         let decoded = Self::new(request, admission)?;
@@ -308,6 +301,29 @@ impl NativeHeldCapacityRecordV3 {
             return Err(invalid("native capacity key or identity"));
         }
         Ok(decoded)
+    }
+}
+
+// Both native formats check their complete envelope width before using this
+// fixed-width body. Keeping one body codec preserves the old v3 bytes.
+fn decode_bindings(
+    purpose: NativeHeldCapacityPurposeV3,
+    value: &[u8],
+    offset: &mut usize,
+) -> NativeHeldCapacityRequestV3 {
+    NativeHeldCapacityRequestV3 {
+        purpose,
+        owner_id: take::<32>(value, offset),
+        owner_digest: take::<32>(value, offset),
+        operation_id: take::<16>(value, offset),
+        artifact_digest: take::<32>(value, offset),
+        checkpoint_digest: take::<32>(value, offset),
+        chain_head_digest: take::<32>(value, offset),
+        terminal_records: u32::from_be_bytes(take::<4>(value, offset)),
+        terminal_bytes: u64::from_be_bytes(take::<8>(value, offset)),
+        poison_records: u32::from_be_bytes(take::<4>(value, offset)),
+        poison_bytes: u64::from_be_bytes(take::<8>(value, offset)),
+        future_transactions: u32::from_be_bytes(take::<4>(value, offset)),
     }
 }
 

@@ -37,6 +37,11 @@ pub mod canonical_map;
 pub(crate) mod mount_manager_startup;
 mod prepared_transaction;
 mod root_local_recovery;
+mod root_original_native;
+pub use root_original_native::{
+    MountOriginalNativeJournalAuthorityV5, OriginalRootProtectedReadbackV5,
+    PreparedOriginalRootAppendV5,
+};
 mod source_provider_readonly;
 pub use mount_manager_startup::MountManagerStartupPolicyReceiptV1;
 pub(crate) use mount_manager_startup::{
@@ -959,11 +964,32 @@ enum ProtectedAuthorityScope {
     FixedMountSourceAcquisition,
     RootLocalRecoveryKind2,
     RootLocalRecoveryKind5,
+    RootOriginalNativeV5,
     SourceProviderHeldReadOnly,
     MountSourceConsumption,
     MountSourceMigration,
     MountManagerStartup,
     CapacityReservation(GlobalCapacityReservationPurposeV1),
+}
+
+#[derive(Clone, Copy)]
+enum RootOwnerEdge {
+    Local(root_local_recovery::Edge),
+    OriginalNative([u8; 32]),
+}
+
+fn validate_root_owner_edge(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transaction: &JournalTransaction,
+    edge: RootOwnerEdge,
+    limits: JournalLimits,
+) -> Result<Option<[u8; 32]>, JournalError> {
+    match edge {
+        RootOwnerEdge::Local(edge) => root_local_recovery::validate_edge(state, transaction, edge),
+        RootOwnerEdge::OriginalNative(attempt) => {
+            root_original_native::validate_edge(state, transaction, attempt, limits)
+        }
+    }
 }
 
 /// Proves the protected authority snapshot observed at one journal sequence.
@@ -2477,14 +2503,15 @@ impl Journal {
         controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
         source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
         root_genesis_transition: RootSourceGenesisTransitionV1,
-        root_local_edge: Option<root_local_recovery::Edge>,
+        root_local_edge: Option<RootOwnerEdge>,
         mut cache_gate: CacheMutationGateV1<'_>,
     ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
         let settling_reservation = if let Some(edge) = root_local_edge {
-            root_local_recovery::validate_edge(&self.state, transaction, edge)?
+            validate_root_owner_edge(&self.state, transaction, edge, self.limits)?
         } else {
             root_local_recovery::require_fences(&self.state, transaction)?;
+            root_original_native::require_generic_transaction(&self.state, transaction)?;
             native_held::require_legacy_transaction(&self.state, transaction)?;
             settling_reservation
         };
@@ -2767,7 +2794,7 @@ impl Journal {
             &[controller_source_genesis::ControllerSourceGenesisTransition],
         >,
         genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
-        root_local_edge: Option<root_local_recovery::Edge>,
+        root_local_edge: Option<RootOwnerEdge>,
         mut cache_gate: CacheMutationGateV1<'_>,
     ) -> Result<(), JournalError> {
         self.ensure_healthy()?;
@@ -2797,9 +2824,10 @@ impl Journal {
 
         for (index, transaction) in transactions.iter().enumerate() {
             let settling_reservation = if let Some(edge) = root_local_edge {
-                root_local_recovery::validate_edge(&state, transaction, edge)?
+                validate_root_owner_edge(&state, transaction, edge, self.limits)?
             } else {
                 root_local_recovery::require_fences(&state, transaction)?;
+                root_original_native::require_generic_transaction(&state, transaction)?;
                 native_held::require_legacy_transaction(&state, transaction)?;
                 settling_reservation
             };
@@ -2912,6 +2940,7 @@ impl Journal {
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
         root_local_recovery::pending(&self.state)?;
+        root_original_native::pending(&self.state, self.limits)?;
         source_tree_genesis::require_no_compaction(&self.state)?;
         source_project_admission_challenge::require_no_compaction(&self.state)?;
         controller_source_genesis::require_no_compaction(&self.state)?;
@@ -2927,6 +2956,8 @@ impl Journal {
             return Err(error);
         }
         root_local_recovery::pending(&self.state).inspect_err(|_| self.poisoned = true)?;
+        root_original_native::pending(&self.state, self.limits)
+            .inspect_err(|_| self.poisoned = true)?;
         Ok(())
     }
 
@@ -3113,6 +3144,7 @@ impl ProtectedJournalAuthority<'_> {
                     | ProtectedAuthorityScope::FixedMountSourceAcquisition
                     | ProtectedAuthorityScope::RootLocalRecoveryKind2
                     | ProtectedAuthorityScope::RootLocalRecoveryKind5
+                    | ProtectedAuthorityScope::RootOriginalNativeV5
                     | ProtectedAuthorityScope::MountSourceConsumption
                     | ProtectedAuthorityScope::MountSourceMigration
             ) | (
@@ -4407,13 +4439,20 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
                 } else {
                     if materialized_compaction {
                         root_local_recovery::pending(&state)?;
+                        root_original_native::pending(&state, limits)?;
                         materialized_compaction = false;
                     }
                     compaction_prefix = false;
-                    root_local_recovery::validate_replayed_transaction(
+                    if !root_original_native::validate_replayed_transaction(
                         &state,
                         &replay_transaction,
-                    )?;
+                        limits,
+                    )? {
+                        root_local_recovery::validate_replayed_transaction(
+                            &state,
+                            &replay_transaction,
+                        )?;
+                    }
                 }
                 if !transaction_ids.insert(replay_transaction.id) {
                     return Err(JournalError::DuplicateTransaction);
@@ -4445,6 +4484,7 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
     }
 
     root_local_recovery::pending(&state)?;
+    root_original_native::pending(&state, limits)?;
     Ok(ReplayState {
         durable_end,
         next_sequence: durable_next_sequence,
@@ -4627,7 +4667,7 @@ fn validate_reserved_capacity(
     prospective_journal_bytes: u64,
     prospective_transactions: usize,
     limits: JournalLimits,
-    root_local_edge: Option<root_local_recovery::Edge>,
+    root_local_edge: Option<RootOwnerEdge>,
 ) -> Result<(), JournalError> {
     let mut reservations = capacity_reservation::accounting_reservations(state)?;
     for record in records {

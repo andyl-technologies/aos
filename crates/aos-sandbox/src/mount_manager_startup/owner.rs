@@ -88,6 +88,42 @@ pub struct MountManagerSourceControlSessionV1<'owner> {
 }
 
 impl<'journal> MountManagerStartupJournalBorrowV1<'journal> {
+    /// Reborrows original native state from the same fixed held journal.
+    ///
+    /// This validates the full current native graph, original funding, and
+    /// startup replay. It does not reconstruct Live, Session, or sender custody.
+    ///
+    /// # Errors
+    /// Rejects wrong physical names/limits, unhealthy storage or invalid joins.
+    pub fn borrow_fixed_root_original_native_v5(
+        journal: &'journal mut Journal,
+    ) -> Result<Self, MountManagerSourceInventoryError> {
+        journal.require_protected_location(
+            Path::new(PROTECTED_MOUNT_MANAGER_ROOT),
+            MOUNT_MANAGER_JOURNAL,
+            0,
+            mount_manager_journal_limits(),
+        )?;
+        {
+            crate::journal::MountOriginalNativeJournalAuthorityV5::claim(journal)?;
+        }
+        Ok(Self { journal })
+    }
+
+    /// Lends the same held writer for original Root-only native admission.
+    ///
+    /// No additional journal or lock is opened and no public service is enabled.
+    ///
+    /// # Errors
+    /// Rejects unavailable physical currentness, startup or original-floor joins.
+    pub fn root_original_native_authority_v5(
+        &mut self,
+    ) -> Result<
+        crate::journal::MountOriginalNativeJournalAuthorityV5<'_>,
+        MountManagerSourceInventoryError,
+    > {
+        Ok(crate::journal::MountOriginalNativeJournalAuthorityV5::claim(self.journal)?)
+    }
     /// Borrows the same fixed writer for mixed-floor kind2 local recovery.
     ///
     /// Old legacy claims remain closed. This lends no native original admission

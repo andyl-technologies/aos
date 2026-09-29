@@ -17,6 +17,9 @@ use super::format::state_error;
 use super::reservation::ReservedProviderQueryV2;
 use crate::Result;
 
+mod original;
+pub(super) use original::OriginalNativeAcquireFlightV5;
+
 /// Distinguishes pending I/O, current reservation, and postcommit loss of currentness.
 #[derive(Debug)]
 pub(crate) enum NativeProviderAcquireProgressV3 {
@@ -183,6 +186,56 @@ impl core::fmt::Debug for PendingNativeProviderAcquireV3<'_, '_> {
 }
 
 impl SourceAcquisitionTableV2 {
+    /// Parks the original Security plan/query before fallible catalog I/O.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn begin_original_native_provider_acquire_retaining_v5(
+        &mut self,
+        journal: &mut ProtectedJournalAuthority<'_>,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        live_request: &LiveValidatedAcquireMountSourceRequest,
+        mount_request: &[u8],
+        mount_plan_digest: [u8; 32],
+        ownership_lease_digest: [u8; 32],
+        canonical_publication: &[u8],
+        canonical_catalog: &[u8],
+        selection_key: Option<Vec<u8>>,
+        provider_deadline_seconds: i64,
+        retained: &mut Option<PendingNativeMountAcquireV3>,
+    ) -> Result<()> {
+        if live_request.request().kernel_coupled() {
+            return Err(state_error(
+                "native catalog planning cannot use KernelCoupled",
+            ));
+        }
+        let (holder, provider, _) = session
+            .current_authority_scope_v2()
+            .map_err(|_| state_error("native provider authority cut is not current"))?;
+        let (plan, _, request) = self.plan_acquire_draft_v2(
+            journal,
+            session,
+            holder,
+            provider,
+            live_request,
+            mount_request,
+            mount_plan_digest,
+            ownership_lease_digest,
+            provider_deadline_seconds,
+        )?;
+        session
+            .begin_original_native_acquire_retaining_v5(
+                journal,
+                plan,
+                request,
+                live_request,
+                canonical_publication,
+                canonical_catalog,
+                selection_key,
+                retained,
+            )
+            .map_err(|_| state_error("original native catalog challenge failed"))?;
+        Ok(())
+    }
+
     /// Begins native preparation under the original live Mount admission.
     ///
     /// The protected session supplies the fixed identities; artifacts are
@@ -206,36 +259,21 @@ impl SourceAcquisitionTableV2 {
         selection_key: Option<Vec<u8>>,
         provider_deadline_seconds: i64,
     ) -> Result<PendingNativeProviderAcquireV3<'flight, 'journal>> {
-        if live_request.request().kernel_coupled() {
-            return Err(state_error(
-                "native catalog planning cannot use KernelCoupled",
-            ));
-        }
-        let (holder, provider, _) = session
-            .current_authority_scope_v2()
-            .map_err(|_| state_error("native provider authority cut is not current"))?;
-        let (plan, _, request) = self.plan_acquire_draft_v2(
+        let mut pending = None;
+        self.begin_original_native_provider_acquire_retaining_v5(
             journal,
             session,
-            holder,
-            provider,
             live_request,
             &mount_request,
             mount_plan_digest,
             ownership_lease_digest,
+            canonical_publication,
+            canonical_catalog,
+            selection_key,
             provider_deadline_seconds,
+            &mut pending,
         )?;
-        let pending = session
-            .begin_native_acquire_v3(
-                journal,
-                plan,
-                request,
-                live_request,
-                canonical_publication,
-                canonical_catalog,
-                selection_key,
-            )
-            .map_err(|_| state_error("original native catalog challenge failed"))?;
+        let pending = pending.ok_or_else(|| state_error("original catalog owner absent"))?;
         Ok(PendingNativeProviderAcquireV3 {
             table: self,
             journal,
