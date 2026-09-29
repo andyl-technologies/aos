@@ -180,10 +180,10 @@ pub fn validate_property<'a>(property: &Property<'a>) -> Result<(PropertyName, V
     if property.value.len() > 65536 {
         return Err(Error::Limit);
     }
-    // Check canonical ordering and total nesting before typed parsers allocate;
-    // inheritance wrappers are part of the encoded value's nesting budget.
+    // Check canonical ordering before typed parsers allocate. Generic nesting
+    // consumes traversal state proportional to the bounded encoded input.
     let mut canonical = Decoder::new(property.value);
-    canonical.skip_value(65536)?;
+    super::value::skip_value(&mut canonical, 65536)?;
     canonical.finish()?;
 
     let (encoded, inherit) = binding(property.value)?;
@@ -273,7 +273,7 @@ pub fn validate_property<'a>(property: &Property<'a>) -> Result<(PropertyName, V
             }
         }
         PropertyName::Trust if decoder.peek_major()? == 4 => {
-            selector(&mut decoder, 0)?;
+            selector(&mut decoder)?;
             Value::Selector(encoded)
         }
         _ => {
@@ -364,37 +364,38 @@ fn redundancy(value: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn selector(decoder: &mut Decoder<'_>, depth: usize) -> Result<(), Error> {
-    if depth >= 64 {
-        return Err(Error::Limit);
-    }
-    let count = decoder.array(3)?;
-    let atom = decoder.text(65536)?;
-    if count != if atom == "attr-by" { 3 } else { 2 } {
-        return Err(Error::InvalidValue);
-    }
-    match atom {
-        "issuer" | "subject" | "group" | "source" | "signed-by-key" => {
-            nonempty(decoder.text(65536)?)?
+fn selector(decoder: &mut Decoder<'_>) -> Result<(), Error> {
+    let mut pending = 1usize;
+    while pending != 0 {
+        pending -= 1;
+        let count = decoder.array(3)?;
+        let atom = decoder.text(65536)?;
+        if count != if atom == "attr-by" { 3 } else { 2 } {
+            return Err(Error::InvalidValue);
         }
-        "kind" => choice(decoder.text(65536)?, &["human", "workload", "service"])?,
-        "preset" => choice(decoder.text(65536)?, PRESETS)?,
-        "not" | "accepted-by" => selector(decoder, depth + 1)?,
-        "attr-by" => {
-            nonempty(decoder.text(65536)?)?;
-            selector(decoder, depth + 1)?;
-        }
-        "all" | "any" => {
-            let count = decoder.array(65536)?;
-            if count == 0 {
-                return Err(Error::InvalidValue);
+        match atom {
+            "issuer" | "subject" | "group" | "source" | "signed-by-key" => {
+                nonempty(decoder.text(65536)?)?
             }
-            for _ in 0..count {
-                selector(decoder, depth + 1)?;
+            "kind" => choice(decoder.text(65536)?, &["human", "workload", "service"])?,
+            "preset" => choice(decoder.text(65536)?, PRESETS)?,
+            "not" | "accepted-by" => {
+                pending = pending.checked_add(1).ok_or(Error::Limit)?;
             }
+            "attr-by" => {
+                nonempty(decoder.text(255)?)?;
+                pending = pending.checked_add(1).ok_or(Error::Limit)?;
+            }
+            "all" | "any" => {
+                let count = decoder.array(65536)?;
+                if count == 0 {
+                    return Err(Error::InvalidValue);
+                }
+                pending = pending.checked_add(count).ok_or(Error::Limit)?;
+            }
+            // No attestation claims are registered in v1.
+            _ => return Err(Error::InvalidValue),
         }
-        // No attestation claims are registered in v1.
-        _ => return Err(Error::InvalidValue),
     }
     Ok(())
 }
@@ -459,7 +460,9 @@ pub(super) fn binding(encoded: &[u8]) -> Result<(&[u8], bool), Error> {
     }
     decoder.map(2)?;
     decoder.text(5)?;
-    let value = decoder.raw_value(65536)?;
+    let start = decoder.position();
+    super::value::skip_value(&mut decoder, 65536)?;
+    let value = decoder.slice(start, decoder.position())?;
     if decoder.text(7)? != "inherit" {
         return Err(Error::InvalidValue);
     }

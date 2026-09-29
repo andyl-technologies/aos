@@ -6,6 +6,7 @@
 
 mod registry;
 mod validation;
+mod value;
 
 pub use registry::{Class, PropertyName, Value, validate_property};
 pub use validation::{
@@ -367,10 +368,7 @@ pub fn validate_preserved_map(
             }
             Err(_) if later_registered.contains(&property.name) => {
                 let mut decoder = cbor::Decoder::new(property.value);
-                decoder.skip_value(65536)?;
-                decoder.finish()?;
-                let mut decoder = cbor::Decoder::new(property.value);
-                preserved_value(&mut decoder, 0)?;
+                value::skip_value(&mut decoder, 65536)?;
                 decoder.finish()?;
             }
             Err(error) => return Err(error),
@@ -379,43 +377,10 @@ pub fn validate_preserved_map(
     Ok(())
 }
 
-fn preserved_value(decoder: &mut cbor::Decoder<'_>, depth: usize) -> Result<(), Error> {
-    if depth >= 64 {
-        return Err(Error::Limit);
-    }
-    match decoder.peek_major()? {
-        0 => {
-            decoder.uint()?;
-        }
-        3 => {
-            decoder.text(65536)?;
-        }
-        4 => {
-            let count = decoder.array(65536)?;
-            for _ in 0..count {
-                preserved_value(decoder, depth + 1)?;
-            }
-        }
-        5 => {
-            let count = decoder.map(65536)?;
-            for _ in 0..count {
-                let name = decoder.text(255)?;
-                if name.is_empty() {
-                    return Err(Error::InvalidValue);
-                }
-                preserved_value(decoder, depth + 1)?;
-            }
-        }
-        7 => {
-            if !matches!(decoder.simple()?, 0xf4 | 0xf5) {
-                return Err(Error::InvalidValue);
-            }
-        }
-        _ => return Err(Error::InvalidValue),
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests;
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod depth_tests;

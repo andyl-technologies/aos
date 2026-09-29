@@ -7,6 +7,7 @@ in {
   property-resolution = sourceGate "property-resolution" ''
     cd crates
     ${runTests "properties::tests::resolution"}
+    ${runTests "properties::depth_tests"}
     printf 'PASS: closed registry and view-path property resolution\n' > "$out/result"
   '';
 
