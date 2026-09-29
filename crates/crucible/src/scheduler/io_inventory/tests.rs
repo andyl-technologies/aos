@@ -778,3 +778,79 @@ fn native_caps_bound_idle_wake_without_fabricating_quiescent_completion() {
 
 #[path = "fixed_consumers.rs"]
 mod fixed_consumers;
+
+#[test]
+fn live_world_attachment_retains_the_exact_physical_queue_owner() {
+    let (mut scheduler, queue, pipeline) = fixture();
+    let world = scheduler
+        .inventory_world
+        .clone()
+        .unwrap_or_else(|| panic!("fixture World"));
+    // A live backend owns its queues; construct the equivalent scheduler state
+    // before the actual World attachment rather than a modeled device owner.
+    scheduler.inventory_world = None;
+    scheduler.device_sub_nodes.clear();
+    ok(scheduler.attach_world_network_links(&world));
+
+    assert_eq!(
+        scheduler
+            .inventory_world
+            .as_ref()
+            .unwrap_or_else(|| panic!("attached World"))
+            .id(),
+        world.id()
+    );
+    let inventory = observation(&scheduler, &queue, &pipeline);
+    ok(scheduler.import_initial_io_inventory(inventory));
+    assert_eq!(scheduler.imported_io.len(), 1);
+}
+
+#[test]
+fn mismatched_vm_topology_and_rebinding_world_preserve_the_original_owner() {
+    let (mut scheduler, _queue, _pipeline) = fixture();
+    let world = scheduler
+        .inventory_world
+        .clone()
+        .unwrap_or_else(|| panic!("fixture World"));
+    scheduler.inventory_world = None;
+    scheduler.device_sub_nodes.clear();
+    let mut foreign_vm = world
+        .vm_nodes()
+        .first()
+        .unwrap_or_else(|| panic!("VM"))
+        .clone();
+    foreign_vm.id = id("foreign");
+    let foreign = ok(World::from_node_defs_and_links(
+        vec![WorldNodeDef::Vm(foreign_vm)],
+        Vec::new(),
+    ));
+    let before = ok(ok(scheduler.checkpoint()).canonical_bytes());
+    assert!(matches!(
+        scheduler.attach_world_network_links(&foreign),
+        Err(SchedulerWorldInstantiationError::VmTopologyMismatch { .. })
+    ));
+    assert!(scheduler.inventory_world.is_none());
+    assert_eq!(ok(ok(scheduler.checkpoint()).canonical_bytes()), before);
+
+    ok(scheduler.attach_world_network_links(&world));
+    let mut changed_vm = world
+        .vm_nodes()
+        .first()
+        .unwrap_or_else(|| panic!("VM"))
+        .clone();
+    changed_vm.memory_mib += 1;
+    let rebound = ok(World::from_node_defs_and_links(
+        vec![WorldNodeDef::Vm(changed_vm)],
+        Vec::new(),
+    ));
+    assert!(scheduler.attach_world_network_links(&rebound).is_err());
+    assert_eq!(
+        scheduler
+            .inventory_world
+            .as_ref()
+            .unwrap_or_else(|| panic!("original owner"))
+            .id(),
+        world.id()
+    );
+    assert_eq!(ok(ok(scheduler.checkpoint()).canonical_bytes()), before);
+}

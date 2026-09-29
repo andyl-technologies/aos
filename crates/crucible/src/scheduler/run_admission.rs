@@ -41,6 +41,18 @@ impl PreparedRunInputInventory {
         self.generation
     }
 
+    /// Returns the immutable World owner retained by this input enumeration.
+    ///
+    /// An uninstantiated scheduler has no World owner. This identity binds
+    /// modeled inputs; it does not authenticate native Source or RUN permission.
+    #[must_use]
+    pub fn world(&self) -> Option<ContentHash> {
+        self._source
+            .inventory_world
+            .as_ref()
+            .map(|world| world.id())
+    }
+
     /// Returns the earliest known input in the backend's node-local logical ticks.
     ///
     /// This is projected through the actual node time mapping. It is neither a
@@ -183,6 +195,29 @@ impl PartialEq for PreparedRunAdmission {
 impl Eq for PreparedRunAdmission {}
 
 impl SingleScheduler {
+    /// Prepares genuine scheduler admissions for an explicitly modeled fixture.
+    ///
+    /// This runs the ordinary scheduler preparation without dispatching a
+    /// backend. Its records do not grant native Source or execution permission.
+    ///
+    /// # Errors
+    ///
+    /// Returns the scheduler's ordinary planning or inventory validation error.
+    #[cfg(any(test, feature = "test-double"))]
+    pub fn prepare_run_admissions_for_test(
+        &self,
+        maximum_runs: usize,
+    ) -> Result<Vec<PreparedRunAdmission>, SchedulerError> {
+        let prepared = self.prepare_host_concurrent_quantum_limited(
+            QuantumRequest {
+                configuration: self.configuration().clone(),
+                control: Vec::new(),
+            },
+            maximum_runs,
+        )?;
+        Ok(prepared.runs.into_iter().map(|run| run.admission).collect())
+    }
+
     pub(super) fn seal_prepared_run(
         &self,
         plan: &AdvancePlan,
