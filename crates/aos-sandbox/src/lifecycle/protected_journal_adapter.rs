@@ -30,9 +30,10 @@ use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::{
-    GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
-    GlobalCapacityReservationRequestV1, GlobalCapacityReservationV1, Journal, JournalError,
-    JournalLimits, JournalRecord, JournalTransaction, PreparedGlobalCapacityReservationV1,
+    CacheMutationGateV1, GlobalCapacityReservationPurposeV1,
+    GlobalCapacityReservationRecoveryBindingV1, GlobalCapacityReservationRequestV1,
+    GlobalCapacityReservationV1, HeldCacheMutationGateV1, Journal, JournalError, JournalLimits,
+    JournalRecord, JournalTransaction, PreparedGlobalCapacityReservationV1,
     ProtectedJournalPreflight, RecordNamespace, capacity_reservation_identity_is_exact_v1,
 };
 
@@ -43,6 +44,9 @@ const REDUCER_PAYLOAD_MAGIC: &[u8; 8] = b"AOSRDP01";
 const MAXIMUM_REDUCER_COMPANIONS: usize = 64;
 const DURABLE_MEMBER_MAGIC: &[u8; 8] = b"AOSDTX01";
 const MAXIMUM_COLD_REPLAY_MEMBERS: usize = 262_144;
+
+#[cfg(test)]
+mod retained_tests;
 
 /// Classifies the authority which may be released after an exact readback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -919,6 +923,33 @@ pub enum DomainRetainedCommitV1<S: ProtectedDomainSchemaV1> {
     },
 }
 
+/// Retains original local custody without granting retry or effect authority.
+///
+/// The stages describe this Journal call only, not earlier Root effects. No
+/// branch permits dropping the surrounding held owner cut after Root.
+#[must_use = "strict commit failures must keep original custody in the held owner"]
+pub(crate) enum RetainedCommitFailureV1<Prepared, Pending> {
+    /// Keeps the original prepared value before this engine attempted append.
+    BeforeJournalAppend {
+        prepared: Prepared,
+        cause: ProtectedDomainJournalErrorV1,
+    },
+    /// Keeps the original pending value after append but failed exact readback.
+    AfterAppendReadback {
+        pending: Pending,
+        cause: ProtectedDomainJournalErrorV1,
+    },
+    /// Keeps pending custody when the actual applied-token sealing fails.
+    AfterAppendSealing {
+        pending: Pending,
+        cause: ProtectedDomainJournalErrorV1,
+    },
+}
+
+/// Specializes strict custody failures to the existing domain token types.
+pub(crate) type DomainRetainedCommitFailureV1<S> =
+    RetainedCommitFailureV1<PreparedDomainTransactionV1<S>, DomainOutcomeUnknownV1<S>>;
+
 /// Retains an outcome-unknown token when cold recovery cannot be evaluated.
 #[must_use]
 pub enum DomainRetainedRecoveryV1<S: ProtectedDomainSchemaV1> {
@@ -1217,7 +1248,33 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
     pub fn plan(
         &self,
         transaction_id: [u8; 16],
+        successors: Vec<ProtectedDomainEnvelopeV1<S>>,
+    ) -> Result<PreparedDomainTransactionV1<S>, ProtectedDomainJournalErrorV1> {
+        self.plan_with_cache_gate(transaction_id, successors, CacheMutationGateV1::Ordinary)
+    }
+
+    /// Plans the same canonical transition under an original Cache gate.
+    ///
+    /// # Errors
+    /// Returns ordinary replay/CAS/preflight errors or changed-gate refusal.
+    pub(crate) fn plan_with_retained_cache_gate_v1(
+        &self,
+        transaction_id: [u8; 16],
+        successors: Vec<ProtectedDomainEnvelopeV1<S>>,
+        gate: &mut HeldCacheMutationGateV1,
+    ) -> Result<PreparedDomainTransactionV1<S>, ProtectedDomainJournalErrorV1> {
+        self.plan_with_cache_gate(
+            transaction_id,
+            successors,
+            CacheMutationGateV1::Retained(gate),
+        )
+    }
+
+    fn plan_with_cache_gate(
+        &self,
+        transaction_id: [u8; 16],
         mut successors: Vec<ProtectedDomainEnvelopeV1<S>>,
+        mut gate: CacheMutationGateV1<'_>,
     ) -> Result<PreparedDomainTransactionV1<S>, ProtectedDomainJournalErrorV1> {
         let snapshot = self.snapshot()?;
         successors.sort_by(|left, right| {
@@ -1270,8 +1327,7 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
             records.push(JournalRecord::put(namespace, key, encoded));
         }
         let transaction = JournalTransaction::new(transaction_id, records)?;
-        self.journal
-            .preflight_transactions(std::slice::from_ref(&transaction))?;
+        gate.preflight(self.journal, std::slice::from_ref(&transaction))?;
         let digest = transaction_digest::<S>(&transaction);
         Ok(PreparedDomainTransactionV1 {
             snapshot,
@@ -1924,23 +1980,61 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
     fn commit_with_check(
         &mut self,
         prepared: PreparedDomainTransactionV1<S>,
-        mut check: impl FnMut(&Journal) -> Result<(), JournalError>,
+        check: impl FnMut(&Journal) -> Result<(), JournalError>,
     ) -> Result<DomainCommitOutcomeV1<S>, ProtectedDomainJournalErrorV1> {
-        self.validate_snapshot(&prepared.snapshot)?;
-        validate_expected_values(self.journal, &prepared, false)?;
-        self.journal
-            .preflight_transactions(std::slice::from_ref(&prepared.transaction))?;
-        check(self.journal)?;
-        if let Err(cause) = self.journal.commit(&prepared.transaction) {
+        match self.commit_with_custody(prepared, check, CacheMutationGateV1::Ordinary) {
+            Ok(outcome) => Ok(outcome),
+            Err(
+                RetainedCommitFailureV1::BeforeJournalAppend { cause, .. }
+                | RetainedCommitFailureV1::AfterAppendSealing { cause, .. },
+            ) => Err(cause),
+            Err(RetainedCommitFailureV1::AfterAppendReadback { pending, .. }) => {
+                Ok(DomainCommitOutcomeV1::OutcomeUnknown {
+                    pending,
+                    cause: JournalError::AuthorityPreflightMismatch,
+                })
+            }
+        }
+    }
+
+    /// Keeps original Prepared/Pending on every failure; never refreshes a head.
+    ///
+    /// # Errors
+    /// Returns exact local custody and the typed preappend or postappend cause.
+    pub(crate) fn commit_strict_with_retained_cache_gate_v1(
+        &mut self,
+        prepared: PreparedDomainTransactionV1<S>,
+        gate: &mut HeldCacheMutationGateV1,
+    ) -> Result<DomainCommitOutcomeV1<S>, DomainRetainedCommitFailureV1<S>> {
+        self.commit_with_custody(prepared, |_| Ok(()), CacheMutationGateV1::Retained(gate))
+    }
+
+    fn commit_with_custody(
+        &mut self,
+        prepared: PreparedDomainTransactionV1<S>,
+        mut check: impl FnMut(&Journal) -> Result<(), JournalError>,
+        mut gate: CacheMutationGateV1<'_>,
+    ) -> Result<DomainCommitOutcomeV1<S>, DomainRetainedCommitFailureV1<S>> {
+        let before = (|| {
+            self.validate_snapshot(&prepared.snapshot)?;
+            validate_expected_values(self.journal, &prepared, false)?;
+            gate.preflight(self.journal, std::slice::from_ref(&prepared.transaction))?;
+            check(self.journal)?;
+            Ok::<(), ProtectedDomainJournalErrorV1>(())
+        })();
+        if let Err(cause) = before {
+            return Err(RetainedCommitFailureV1::BeforeJournalAppend { prepared, cause });
+        }
+        if let Err(cause) = gate.commit(self.journal, &prepared.transaction) {
             return Ok(DomainCommitOutcomeV1::OutcomeUnknown {
                 pending: DomainOutcomeUnknownV1 { prepared },
                 cause,
             });
         }
-        if validate_expected_values(self.journal, &prepared, true).is_err() {
-            return Ok(DomainCommitOutcomeV1::OutcomeUnknown {
+        if let Err(cause) = validate_expected_values(self.journal, &prepared, true) {
+            return Err(RetainedCommitFailureV1::AfterAppendReadback {
                 pending: DomainOutcomeUnknownV1 { prepared },
-                cause: JournalError::AuthorityPreflightMismatch,
+                cause,
             });
         }
         if let Err(cause) = check(self.journal) {
@@ -1949,7 +2043,14 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
                 cause,
             });
         }
-        self.applied(prepared).map(DomainCommitOutcomeV1::Applied)
+        self.applied_retaining(prepared)
+            .map(DomainCommitOutcomeV1::Applied)
+            .map_err(
+                |(prepared, cause)| RetainedCommitFailureV1::AfterAppendSealing {
+                    pending: DomainOutcomeUnknownV1 { prepared },
+                    cause,
+                },
+            )
     }
 
     /// Commits while retaining the exact prepared token on preflight failure.

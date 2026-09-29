@@ -42,6 +42,7 @@ pub(crate) use mount_manager_startup::{
     MountManagerStartupCaptureRecoveryV1,
 };
 mod cache_policy_hold;
+pub(crate) use cache_policy_hold::{CacheMutationGateV1, HeldCacheMutationGateV1};
 mod capacity_reservation;
 mod controller_policy_hold;
 pub(crate) mod controller_source_genesis;
@@ -2398,6 +2399,63 @@ impl Journal {
         source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
         root_genesis_transition: RootSourceGenesisTransitionV1,
     ) -> Result<CommitResult, JournalError> {
+        self.commit_with_cache_gate(
+            transaction,
+            settling_reservation,
+            allow_capacity_records,
+            allow_policy_hold_transition,
+            allow_host_fence_acquisition,
+            allow_host_currentness_fence_acquisition,
+            allow_host_settlement_admission_append,
+            project_admission_transition,
+            controller_genesis_transition,
+            source_genesis_transition,
+            root_genesis_transition,
+            CacheMutationGateV1::Ordinary,
+        )
+    }
+
+    /// Uses the original Cache interlock without changing generic mutation scope.
+    ///
+    /// # Errors
+    /// Returns unchanged Journal bounds or retained-gate/append refusal.
+    pub(crate) fn commit_with_retained_cache_gate_v1(
+        &mut self,
+        transaction: &JournalTransaction,
+        gate: &mut HeldCacheMutationGateV1,
+    ) -> Result<CommitResult, JournalError> {
+        self.commit_with_cache_gate(
+            transaction,
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+            SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+            source_tree_genesis::SourceGenesisTransitionV1::None,
+            RootSourceGenesisTransitionV1::None,
+            CacheMutationGateV1::Retained(gate),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_with_cache_gate(
+        &mut self,
+        transaction: &JournalTransaction,
+        settling_reservation: Option<[u8; 32]>,
+        allow_capacity_records: bool,
+        allow_policy_hold_transition: bool,
+        allow_host_fence_acquisition: bool,
+        allow_host_currentness_fence_acquisition: bool,
+        allow_host_settlement_admission_append: bool,
+        project_admission_transition: SourceProjectAdmissionTransition,
+        controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
+        source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
+        root_genesis_transition: RootSourceGenesisTransitionV1,
+        mut cache_gate: CacheMutationGateV1<'_>,
+    ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
         self.validate_consumer_resource_transition(
             transaction,
@@ -2503,7 +2561,7 @@ impl Journal {
 
         // Retain the hold-journal lock through the durable append. The freeze
         // writer takes Cache journal locks before this lock in the same order.
-        let _cache_policy_guard = cache_policy_hold::mutation_guard(self)?;
+        let _cache_policy_guard = cache_gate.before_append(self)?;
 
         let durable_bytes = match append_and_sync(&mut self.file, &frames) {
             Ok(bytes) => bytes,
@@ -2528,6 +2586,13 @@ impl Journal {
         self.transaction_ids.insert(transaction.id);
         self.committed_namespaces
             .extend(transaction.records().iter().map(JournalRecord::namespace));
+
+        if let Err(error) =
+            cache_gate.own_successor(self, transaction, following_sequence, durable_bytes)
+        {
+            self.poisoned = true;
+            return Err(error);
+        }
 
         Ok(CommitResult {
             commit_sequence,
@@ -2623,6 +2688,53 @@ impl Journal {
         >,
         genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
     ) -> Result<(), JournalError> {
+        self.preflight_with_cache_gate(
+            transactions,
+            settling_reservation,
+            allow_capacity_records,
+            allow_policy_hold_transition,
+            project_transitions,
+            controller_genesis_transitions,
+            genesis_transitions,
+            CacheMutationGateV1::Ordinary,
+        )
+    }
+
+    /// Simulates the same bounds while borrowing the original Cache interlock.
+    ///
+    /// # Errors
+    /// Returns unchanged preflight errors or changed original-gate refusal.
+    pub(crate) fn preflight_with_retained_cache_gate_v1(
+        &self,
+        transactions: &[JournalTransaction],
+        gate: &mut HeldCacheMutationGateV1,
+    ) -> Result<(), JournalError> {
+        self.preflight_with_cache_gate(
+            transactions,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            CacheMutationGateV1::Retained(gate),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn preflight_with_cache_gate(
+        &self,
+        transactions: &[JournalTransaction],
+        settling_reservation: Option<[u8; 32]>,
+        allow_capacity_records: bool,
+        allow_policy_hold_transition: bool,
+        project_transitions: Option<&[SourceProjectAdmissionTransition]>,
+        controller_genesis_transitions: Option<
+            &[controller_source_genesis::ControllerSourceGenesisTransition],
+        >,
+        genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
+        mut cache_gate: CacheMutationGateV1<'_>,
+    ) -> Result<(), JournalError> {
         self.ensure_healthy()?;
         if project_transitions.is_some_and(|transitions| transitions.len() != transactions.len()) {
             return Err(JournalError::ProtectedBoundary);
@@ -2635,7 +2747,7 @@ impl Journal {
         if genesis_transitions.is_some_and(|transitions| transitions.len() != transactions.len()) {
             return Err(JournalError::ProtectedBoundary);
         }
-        cache_policy_hold::check_unheld(self)?;
+        cache_gate.check(self)?;
 
         let mut state = self.state.clone();
         let mut idempotency = self.idempotency.clone();
@@ -3267,10 +3379,35 @@ impl ProtectedJournalAuthority<'_> {
         &self,
         transactions: &[JournalTransaction],
     ) -> Result<ProtectedJournalPreflight, JournalError> {
+        self.preflight_with_cache_gate(transactions, CacheMutationGateV1::Ordinary)
+    }
+
+    /// Preflights the same protected scope against the original Cache gate.
+    ///
+    /// # Errors
+    /// Refuses stale protected authority, changed gate or failed ordinary bounds.
+    pub(crate) fn preflight_with_retained_cache_gate_v1(
+        &self,
+        transactions: &[JournalTransaction],
+        gate: &mut HeldCacheMutationGateV1,
+    ) -> Result<ProtectedJournalPreflight, JournalError> {
+        self.preflight_with_cache_gate(transactions, CacheMutationGateV1::Retained(gate))
+    }
+
+    fn preflight_with_cache_gate(
+        &self,
+        transactions: &[JournalTransaction],
+        gate: CacheMutationGateV1<'_>,
+    ) -> Result<ProtectedJournalPreflight, JournalError> {
         self.validate_generic_authority_mutation()?;
         self.journal.ensure_protected_authority()?;
         self.validate_transaction_namespaces(transactions)?;
-        self.journal.preflight_transactions(transactions)?;
+        match gate {
+            CacheMutationGateV1::Ordinary => self.journal.preflight_transactions(transactions)?,
+            CacheMutationGateV1::Retained(gate) => self
+                .journal
+                .preflight_with_retained_cache_gate_v1(transactions, gate)?,
+        }
 
         Ok(ProtectedJournalPreflight {
             snapshot: self.current_snapshot(),
@@ -3331,6 +3468,56 @@ impl ProtectedJournalAuthority<'_> {
         self.journal.ensure_protected_authority()?;
         self.validate_transaction_namespace(transaction)?;
         self.journal.commit(transaction)
+    }
+
+    /// Commits one exact preflight under the same original Cache gate borrow.
+    ///
+    /// # Errors
+    /// Returns stale preflight, protected-gate or ambiguous append failure.
+    pub(crate) fn commit_with_retained_cache_gate_v1(
+        &mut self,
+        preflight: &ProtectedJournalPreflight,
+        transaction: &JournalTransaction,
+        gate: &mut HeldCacheMutationGateV1,
+    ) -> Result<CommitResult, JournalError> {
+        self.validate_preflight_for_effect(preflight, std::slice::from_ref(transaction))?;
+        self.journal
+            .commit_with_retained_cache_gate_v1(transaction, gate)
+    }
+
+    /// Rechecks the original target even for a retained same-record replay.
+    ///
+    /// # Errors
+    /// Refuses wrong authority scope or changed original protected target/gate.
+    pub(crate) fn require_retained_cache_gate_v1(
+        &self,
+        gate: &mut HeldCacheMutationGateV1,
+    ) -> Result<(), JournalError> {
+        self.validate_generic_authority_mutation()?;
+        gate.require_for_target(self.journal)
+    }
+
+    /// Checks only the sealed exact own append, never an arbitrary successor head.
+    ///
+    /// # Errors
+    /// Refuses wrong scope, original identity, transaction or successor evidence.
+    pub(crate) fn require_retained_cache_own_append_v1(
+        &self,
+        before: &ProtectedJournalSnapshot,
+        transaction: &JournalTransaction,
+        result: &CommitResult,
+        gate: &mut HeldCacheMutationGateV1,
+    ) -> Result<(), JournalError> {
+        self.validate_generic_authority_mutation()?;
+        self.journal.ensure_protected_authority()?;
+        self.validate_transaction_namespace(transaction)?;
+        if !Arc::ptr_eq(&before.instance, &self.journal.authority_instance)
+            || before.scope != self.scope
+            || before.namespace != self.namespace
+        {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
+        gate.require_own_append(self.journal, before.sequence, transaction, result)
     }
 
     /// Acquires the nonauthorizing Host Effect fence from an exact owner cut.
