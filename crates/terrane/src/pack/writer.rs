@@ -58,11 +58,10 @@ impl PackWriter {
 
         let hash = digest(kind, plaintext)?;
         let body = if kind == EntryKind::Chunk {
-            let mut encoded =
-                Vec::with_capacity(plaintext.len().checked_add(1).ok_or(PackError::Limit)?);
-            encoded.push(Codec::Raw as u8);
-            encoded.extend_from_slice(plaintext);
-            encoded
+            terrane_core::codec::encode_envelope(terrane_core::codec::EncodedChunk {
+                codec: terrane_core::codec::Codec::Raw,
+                body: plaintext,
+            })
         } else {
             super::reader::validate_metadata(kind, plaintext)?;
             plaintext.to_vec()
@@ -253,10 +252,20 @@ impl SealedPack {
 /// success only after verifying byte equality. A conflicting existing pack ID
 /// is corruption, never a reason to overwrite. Success means the complete
 /// object and its publication metadata are durable and readable by key.
-#[async_trait::async_trait]
-pub trait PackPublisher: Sync {
+///
+/// Publication follows the configured runtime's `send` feature: local runtimes
+/// may retain thread-local state and futures; native callers add `Send + Sync`
+/// bounds when transporting the publisher across executor threads.
+#[cfg_attr(feature = "send", async_trait::async_trait)]
+#[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
+pub trait PackPublisher {
     /// The backend's original durable-publication error.
+    #[cfg(feature = "send")]
     type Error: std::error::Error + Send + Sync;
+
+    /// The backend's original durable-publication error.
+    #[cfg(not(feature = "send"))]
+    type Error: std::error::Error;
 
     /// Stores one immutable artifact durably under its registered key.
     ///

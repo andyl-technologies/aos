@@ -555,7 +555,8 @@ struct RecordingPublisher {
     fail_index: bool,
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(feature = "send", async_trait::async_trait)]
+#[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
 impl PackPublisher for RecordingPublisher {
     type Error = PackError;
 
@@ -863,5 +864,33 @@ fn pack_native_codecs_reject_frame_length_identity_and_reserved_field_corruption
             crate::codec::FrameError::ContentSizeMismatch
         ))
     ));
+    Ok(())
+}
+
+#[cfg(not(feature = "send"))]
+#[test]
+fn pack_single_writer_publication_accepts_thread_local_runtime() -> Result<(), PackError> {
+    struct LocalPublisher(std::rc::Rc<std::cell::RefCell<Vec<String>>>);
+
+    #[async_trait::async_trait(?Send)]
+    impl PackPublisher for LocalPublisher {
+        type Error = PackError;
+
+        async fn put_immutable(&self, key: &str, _bytes: &[u8]) -> Result<(), Self::Error> {
+            self.0.borrow_mut().push(key.to_owned());
+            Ok(())
+        }
+    }
+
+    let pack = data_pack(24, &[b"thread-local publication"])?;
+    let writes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let publisher = LocalPublisher(writes.clone());
+    let receipt = run_ready(pack.publish(&publisher))?;
+
+    assert_eq!(receipt.id(), pack.header().id());
+    assert_eq!(
+        *writes.borrow(),
+        [receipt.id().pack_key(), receipt.id().index_key()]
+    );
     Ok(())
 }
