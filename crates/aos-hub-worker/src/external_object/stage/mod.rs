@@ -22,6 +22,8 @@ mod storage;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use executor::{execute_stage, fetch};
 #[cfg(target_arch = "wasm32")]
+pub(in crate::external_object) use planning::prepare_observation_read_lease;
+#[cfg(target_arch = "wasm32")]
 pub(crate) use planning::{
     prepare_stage_read_recovery, prepare_stage_request, presign_registered_parts,
 };

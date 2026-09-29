@@ -17,6 +17,9 @@ use super::{ExternalObjectHead, ExternalObjectRequest};
 use crate::storage_authority::StorageGuardStamp;
 use crate::storage_work::{StorageWorkKey, StorageWorkOperation};
 
+/// Paired semantic requests whose read lease is acquired only by the Worker.
+pub mod semantic;
+
 /// Closed metadata-only endpoint, rejected by older executors.
 pub const EXTERNAL_OBSERVATION_PATH: &str = "/_internal/storage/external-observation/v1";
 /// Maximum whole canonical request before authentication or decoding.

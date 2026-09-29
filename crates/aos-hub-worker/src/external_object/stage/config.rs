@@ -57,6 +57,22 @@ pub(super) struct Config {
 }
 
 impl Config {
+    /// Resolves only one already configured read cohort, without token-derived pins.
+    ///
+    /// # Errors
+    /// Returns an error when no domain or multiple domains match the exact cohort.
+    pub(super) fn observation_domain(&self, cohort: &LeaseCohort) -> Result<&Domain> {
+        let mut candidates = self
+            .domains
+            .iter()
+            .filter(|domain| &domain.read_cohort == cohort);
+        let domain = candidates
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("read issuer domain unavailable"))?;
+        ensure!(candidates.next().is_none(), "read issuer domain ambiguous");
+        Ok(domain)
+    }
+
     pub(super) fn parse(raw: &str, object: &ObjectConfig) -> Result<Self> {
         ensure!(
             raw.len() <= MAX_CONFIG,

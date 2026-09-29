@@ -89,6 +89,9 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     {
         return crate::external_object::fetch_observation(request, env).await;
     }
+    if path == aos_hub_core::storage_authority::external_object::observation::semantic::SEMANTIC_OBSERVATION_PATH {
+        return crate::external_object::fetch_semantic_observation(request, env).await;
+    }
     if path == crate::external_object::PATH {
         return crate::external_object::fetch(request, env).await;
     }

@@ -7,7 +7,9 @@
 use std::{cell::RefCell, collections::BTreeMap};
 
 use anyhow::{ensure, Result};
-use aos_hub_core::direct_upload::{DirectPartGrant, DirectUploadAdmission, WireInteger};
+use aos_hub_core::direct_upload::{
+    DirectExternalStorageCapabilities, DirectPartGrant, DirectUploadAdmission, WireInteger,
+};
 use aos_hub_core::storage_authority::{
     external_object::stage::{
         ExternalStageAdmissionMode, ExternalStageContext, ExternalStageOperation,
@@ -50,6 +52,48 @@ struct CachedLease {
 
 thread_local! {
     static LEASE_CACHE: RefCell<BTreeMap<String, CachedLease>> = RefCell::new(BTreeMap::new());
+}
+
+/// Acquires only the actual independently configured profile's existing read lease.
+///
+/// # Errors
+/// Returns an error for a changed profile, missing or ambiguous domain, or an
+/// issuer response that fails the existing signed context and timing checks.
+pub(in crate::external_object) async fn prepare_observation_read_lease(
+    env: &Env,
+    object: &ObjectConfig,
+    profile: &DirectExternalStorageCapabilities,
+) -> Result<String> {
+    profile.validate()?;
+    ensure!(
+        profile.issuer_key_id == object.issuer_key_id
+            && profile.issuer_public_key == object.issuer_public_key
+            && profile.timing_profile == object.timing_profile
+            && profile.clock_uncertainty.get() == object.clock_uncertainty
+            && object
+                .cohorts
+                .iter()
+                .any(|cohort| cohort == &profile.read_cohort)
+            && profile
+                .read_cohort
+                .allowed_effects
+                .contains(&LeaseEffect::Head),
+        "observation profile differs from independent executor"
+    );
+    let config = config::configured(env, object)?
+        .ok_or_else(|| anyhow::anyhow!("observation issuer domain disabled"))?;
+    let domain = config.observation_domain(&profile.read_cohort)?;
+    ensure!(
+        domain.issuer_installation == profile.issuer_installation
+            && domain.write_cohort == profile.write_cohort
+            && domain.read_credential == profile.selector.read_credential
+            && domain.write_credential == profile.selector.write_credential
+            && domain.presign_credential == profile.selector.presign_credential,
+        "observation issuer domain differs from protected profile"
+    );
+    // Reuse the original profile/attestation horizon and cache key. The caller's
+    // shorter application deadline separately bounds this individual HEAD.
+    acquire_lease(env, object, domain, &domain.read_cohort).await
 }
 
 /// Prepares only the original retained placement, with independently pinned leases.

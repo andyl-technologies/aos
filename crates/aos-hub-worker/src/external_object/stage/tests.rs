@@ -1010,3 +1010,5 @@ mod observation;
 
 #[path = "tests/boxed_journal.rs"]
 mod boxed_journal;
+
+mod semantic_observation;

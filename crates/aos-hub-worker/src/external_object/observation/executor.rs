@@ -4,8 +4,8 @@ use anyhow::{ensure, Result};
 use aos_hub_core::s3surface::{Method as S3Method, S3Surface};
 use aos_hub_core::storage_authority::external_object::{
     observation::{
-        ExternalObservation, ExternalObservationOutcome, ExternalObservationReply,
-        ExternalObservationRequest, MAX_OBSERVATION_REQUEST_BYTES,
+        ExternalObservation, ExternalObservationOutcome, ExternalObservationRequest,
+        MAX_OBSERVATION_REQUEST_BYTES,
     },
     ExternalObjectHead,
 };
@@ -15,7 +15,7 @@ use aos_hub_core::storage_work::{
 use worker::{Env, Fetch, Headers, Method, Request, RequestInit, RequestRedirect, Response};
 
 use super::super::{
-    config::configured,
+    config::{configured, Config},
     executor::select_cohort,
     protocol::{digest, Effect, Intent as ObjectIntent, GUARD_HEADER, SCOPE_HEADER},
     storage as object_storage,
@@ -23,6 +23,7 @@ use super::super::{
 use super::protocol::{
     self, Intent, Operation, Receipt, Reply, Request as GuardRequest, MAX_MESSAGE,
 };
+use super::reply::ReplyBinding;
 
 /// Returns exact-request authenticated metadata observation or generic refusal.
 ///
@@ -66,6 +67,29 @@ async fn execute(request: &mut Request, env: &Env) -> Result<(Vec<u8>, String)> 
         &deployment,
         config.clock().observed_at,
     )?;
+    execute_authorized(
+        env,
+        &config,
+        &deployment,
+        &key,
+        &request,
+        ReplyBinding::Existing(&body),
+    )
+    .await
+}
+
+/// Executes the already authenticated caller's exact guarded HEAD authorization.
+///
+/// # Errors
+/// Returns an error for changed binding, scope, lease, guard or provider outcome.
+pub(super) async fn execute_authorized(
+    env: &Env,
+    config: &Config,
+    deployment: &str,
+    key: &StorageWorkKey,
+    request: &ExternalObservationRequest,
+    reply: ReplyBinding<'_>,
+) -> Result<(Vec<u8>, String)> {
     let work = &request.authorization;
     let publication = crate::hybrid_binding::resolve_for_plan(env, &work.plan).await?;
     publication
@@ -80,6 +104,7 @@ async fn execute(request: &mut Request, env: &Env) -> Result<(Vec<u8>, String)> 
         "read",
         work.binding_write_revision.get(),
     )?;
+    reply.validate_cohort(cohort)?;
     let full_key = [
         &publication.snapshot.object_prefix,
         &work.plan.placement_prefix,
@@ -115,14 +140,17 @@ async fn execute(request: &mut Request, env: &Env) -> Result<(Vec<u8>, String)> 
             lease: work.lease.clone(),
         },
     };
-    let (turn, floor) = match call(env, &begin).await? {
+    let (turn, floor) = match call(env, &begin, || {
+        reply.check_begin_time(work, &publication.snapshot, config.clock().observed_at)
+    })
+    .await?
+    {
         Reply::Historical { receipt } => {
             ensure!(receipt.turn.intent == intent, "historical intent differs");
-            return ExternalObservationReply::new(
-                &body,
+            return reply.sign(
+                key,
                 ExternalObservationOutcome::HistoricalObservation(receipt.observation),
-            )?
-            .sign(&key, &body);
+            );
         }
         Reply::Dispatch { turn, floor } => (turn, floor),
         _ => anyhow::bail!("observation Begin did not acknowledge dispatch"),
@@ -203,7 +231,7 @@ async fn execute(request: &mut Request, env: &Env) -> Result<(Vec<u8>, String)> 
             receipt: receipt.clone(),
         },
     };
-    match call(env, &terminal).await? {
+    match call(env, &terminal, || Ok(())).await? {
         Reply::TerminalAcknowledged {
             receipt: acknowledged,
         } if acknowledged == receipt => {}
@@ -233,7 +261,7 @@ async fn execute(request: &mut Request, env: &Env) -> Result<(Vec<u8>, String)> 
     } else {
         ExternalObservationOutcome::HistoricalObservation(receipt.observation.clone())
     };
-    let signed = ExternalObservationReply::new(&body, outcome)?.sign(&key, &body)?;
+    let signed = reply.sign(key, outcome)?;
     // Canonical reply/MAC CPU must not turn a late acknowledgement into renewed
     // freshness either. A downgrade keeps the original observation unchanged.
     if fresh
@@ -241,16 +269,19 @@ async fn execute(request: &mut Request, env: &Env) -> Result<(Vec<u8>, String)> 
             .check_dispatch_time(&publication.snapshot, &validated, &floor, config.clock())
             .is_err()
     {
-        return ExternalObservationReply::new(
-            &body,
+        return reply.sign(
+            key,
             ExternalObservationOutcome::HistoricalObservation(receipt.observation),
-        )?
-        .sign(&key, &body);
+        );
     }
     Ok(signed)
 }
 
-async fn call(env: &Env, request: &GuardRequest) -> Result<Reply> {
+async fn call(
+    env: &Env,
+    request: &GuardRequest,
+    check_before_send: impl FnOnce() -> Result<()>,
+) -> Result<Reply> {
     let body = serde_json::to_vec(request)?;
     ensure!(body.len() <= MAX_MESSAGE, "observation turn oversized");
     let mac = object_storage::key(env)?.sign_body(&body)?;
@@ -266,12 +297,9 @@ async fn call(env: &Env, request: &GuardRequest) -> Result<Reply> {
     init.with_method(Method::Post)
         .with_headers(headers)
         .with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
-    let response = stub
-        .fetch_with_request(Request::new_with_init(
-            "https://external-object/observation-turn",
-            &init,
-        )?)
-        .await?;
+    let invocation = Request::new_with_init("https://external-object/observation-turn", &init)?;
+    check_before_send()?;
+    let response = stub.fetch_with_request(invocation).await?;
     ensure!(
         response.status_code() == 200,
         "guard refused observation turn"

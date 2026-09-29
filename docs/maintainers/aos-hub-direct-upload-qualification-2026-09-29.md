@@ -392,3 +392,47 @@ metadata case demonstrates batching and overlap; its control count is not an
 observed Native request or SQL count. The running release staging publication
 remains unchanged. Connected storage execution, fleet and hosted acceptance
 remain separate gates.
+
+## Storage-local semantic metadata transport
+
+Native can send a bounded signed metadata observation plan to the paired
+Worker without receiving a lease-renewal credential. The plan retains the
+original SQL-derived object stamp, binding writer revision, exact selector,
+independently selected protected profile fingerprint and application deadline.
+The Worker selects its actual configured issuer and read lease, and keeps the
+durable read slot across provider HEAD and terminal acknowledgment. Ambiguous
+effects retain their fence; historical replay does not dispatch provider work.
+
+The separate Native HTTP pool disables redirects and transport retries.
+Concurrency waiting precedes signing and sending. Response bounds, MAC,
+correlation and the original deadline are checked before returning evidence.
+The business caller still must check current actor, ACL, binding, placement,
+publication and receipt facts after awaiting this transport.
+
+Producer receipt `/tmp/hub-semantic-external-observation-v2/qualified-final-v2.json`
+(`facab83010f94f57e1ea8e57dd9be4a045086018de90c332d5f25e806c03029b`)
+records 23 focused core, Worker and Native HTTP tests, default developer Worker
+Wasm compilation and assembly, and nine persistent controlled issuer/guard
+groups. Those groups use the actual Rust issuer and SQLite guard with a
+controlled signed HEAD provider, covering held reads, lost acknowledgments,
+restart and expiry after awaits. Independent final review
+`dd1e11e40856b410cfcb1559c564758aa1eca56c82743e92177df68a1f0f0014`
+binds that source and evidence.
+
+Current receipt `/tmp/hub-semantic-current-context/qualification.json`
+(`2b8b9a224cf7a79150ef46c390463091787f1c38d0096e1b0d0baa1649ac455d`) records the same 23 exact focused cases passing on current
+direct-client, Legacy, authentication, browser, OCI and schema-004 source,
+with Native test-context and default Worker Wasm compilation. All 2,976
+captured inputs remain unchanged and all 18 owned postimages match exactly.
+Source input digest is
+`af52262c4539111152045a3adec16ae6bfb27dfd59164c74fe8db477040b9481`.
+Root preimage review
+`0fa925a831d24d889edc3bec6a542e6897008f91a21ef1404e6399efc0c405b2`
+binds the surgical current-context integration.
+
+This increment qualifies semantic HEAD transport. It does not qualify a live
+Native service factory, mutable body GET, destination reservation, all writers,
+optimized Worker artifact, actual provider policy, capacity, throughput,
+foreground cancellation, fleet or hosted activation. Existing token-bearing
+observation encoding remains unchanged. The original semantic profile
+fingerprint is distinct from the planned full direct-upload protected pin.

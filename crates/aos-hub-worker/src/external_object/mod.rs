@@ -23,6 +23,8 @@ pub(crate) use executor::{deny_legacy, fetch, PATH};
 #[cfg(target_arch = "wasm32")]
 pub(crate) use observation::fetch as fetch_observation;
 #[cfg(target_arch = "wasm32")]
+pub(crate) use observation::fetch_semantic as fetch_semantic_observation;
+#[cfg(target_arch = "wasm32")]
 pub use storage::ExternalObjectGuard;
 
 #[cfg(target_arch = "wasm32")]

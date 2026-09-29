@@ -51,6 +51,7 @@ mod authority;
 
 pub use authority::StorageAuthorityControlSynchronization;
 mod control;
+mod external_observation;
 mod frozen;
 mod frozen_head;
 mod telemetry;
@@ -99,6 +100,7 @@ pub struct RemoteStorageWorkClient {
     deployment_id: String,
     key: StorageWorkKey,
     http: reqwest::Client,
+    semantic_observation_http: reqwest::Client,
     in_flight: Semaphore,
     binding_publication_gate: Mutex<()>,
     published_bindings: RwLock<BTreeMap<i64, StorageBindingSnapshot>>,
@@ -161,6 +163,7 @@ impl RemoteStorageWorkClient {
             deployment_id,
             key: StorageWorkKey::new(key)?,
             http,
+            semantic_observation_http: external_observation::http_client()?,
             in_flight: Semaphore::new(MAX_IN_FLIGHT_STORAGE_PLANS),
             binding_publication_gate: Mutex::new(()),
             published_bindings: RwLock::new(BTreeMap::new()),
