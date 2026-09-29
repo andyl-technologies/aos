@@ -33,6 +33,12 @@ use super::native_completion::{
 };
 use super::reopen::ReopenIdentityV1;
 
+mod native_held;
+pub(super) use native_held::{
+    HeldReleaseCompletion, finalize_native_held_complete, original_native_complete_artifact,
+    validate_native_held_complete, validate_native_held_release,
+};
+
 /// Supplies durable acquisition facts whose signature-dependent fields are sealed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AcquireCompletionPatchV1 {
@@ -678,6 +684,27 @@ fn finalize_response_completion<'record>(
     signed_lease: Option<SignedSourceExportLeaseV1>,
     completed_at_seconds: i64,
 ) -> Result<FinalizedCompletionV1, LedgerFormatErrorV1> {
+    let graph = canonical_graph(current_records)?;
+    materialize_response_completion(
+        graph,
+        plan,
+        canonical_response,
+        signed_lease,
+        completed_at_seconds,
+        None,
+    )
+}
+
+// The optional native patch is a complete parsed held carrier, never a policy
+// exemption. Public finalizers reach this core only through the strict decoder.
+fn materialize_response_completion(
+    mut prospective: BTreeMap<Vec<u8>, Vec<u8>>,
+    plan: CompletionMutationPlanV1,
+    canonical_response: Vec<u8>,
+    signed_lease: Option<SignedSourceExportLeaseV1>,
+    completed_at_seconds: i64,
+    held_native: Option<&super::native_held_completion::SourceNativeHeldCompletionRecordV1>,
+) -> Result<FinalizedCompletionV1, LedgerFormatErrorV1> {
     let purpose = plan.purpose.clone();
     let (signed_status, method) = decode_response(&canonical_response)?;
     let status = signed_status.subject();
@@ -685,7 +712,6 @@ fn finalize_response_completion<'record>(
         .attempt_key
         .as_deref()
         .ok_or(LedgerFormatErrorV1::Corrupt("missing completion attempt"))?;
-    let mut prospective = canonical_graph(current_records)?;
 
     let mut attempt = decode_attempt_from(&prospective, attempt_key)?;
     if attempt.state != ProviderAttemptStateV1::Reserved
@@ -735,6 +761,7 @@ fn finalize_response_completion<'record>(
                 inventory.subject(),
                 prospective
                     .iter()
+                    .filter(|(_, value)| !super::native_held_completion::graph::is_held(value))
                     .map(|(key, value)| (key.as_slice(), value.as_slice())),
                 crate::limits::MAXIMUM_INVENTORY_TOMBSTONES_PER_HOLDER,
                 crate::limits::MAXIMUM_INVENTORY_ENTRIES_PER_HOLDER,
@@ -779,20 +806,31 @@ fn finalize_response_completion<'record>(
         let current = prospective.get(&key).ok_or(LedgerFormatErrorV1::Corrupt(
             "native completion intent missing",
         ))?;
-        let DecodedRecordV1::NativeCompletion(current) = decode_record(&key, current)? else {
+        let DecodedRecordV1::NativeCompletion(current) =
+            crate::decode_current_record(&key, current)?
+        else {
             return Err(LedgerFormatErrorV1::Corrupt(
                 "native completion intent kind",
             ));
         };
-        current.validate_successor(native)?;
-        prospective.insert(key, super::format::encode_native_completion_v2(native));
+        let value = if let Some(held) = held_native {
+            if held.original() != native
+                || !super::native_held_completion::graph::is_held(
+                    prospective
+                        .get(&key)
+                        .ok_or(LedgerFormatErrorV1::Corrupt("held Complete before carrier"))?,
+                )
+            {
+                return Err(LedgerFormatErrorV1::Corrupt("held Complete actual carrier"));
+            }
+            held.to_canonical_bytes()?
+        } else {
+            current.validate_successor(native)?;
+            super::format::encode_native_completion_v2(native)
+        };
+        prospective.insert(key, value);
     }
-    validate_final_graph(&prospective)?;
-    crate::validate_prospective_records(
-        prospective
-            .iter()
-            .map(|(key, value)| (key.as_slice(), value.as_slice())),
-    )?;
+    crate::validate_current_records(&prospective)?;
     let mutations = collect_mutations(plan, prospective)?;
     Ok(FinalizedCompletionV1 {
         purpose,
@@ -802,82 +840,6 @@ fn finalize_response_completion<'record>(
         session_binding: status.session_binding(),
         response_sequence: status.response_sequence(),
     })
-}
-
-// Replays the same pure six-row reducers against exact proposed artifacts. This
-// comparison path returns no sealed outcome, signature or live commit permit.
-pub(super) fn validate_native_held_complete(
-    before: &BTreeMap<Vec<u8>, Vec<u8>>,
-    after: &BTreeMap<Vec<u8>, Vec<u8>>,
-    keys: &[Vec<u8>; 6],
-) -> Result<(), LedgerFormatErrorV1> {
-    let attempt = decode_attempt_from(after, &keys[1])?;
-    let DecodedRecordV1::Acquisition(acquisition) = decode_record(
-        &keys[2],
-        after
-            .get(&keys[2])
-            .ok_or(LedgerFormatErrorV1::Corrupt("held Complete acquisition"))?,
-    )?
-    else {
-        return Err(LedgerFormatErrorV1::Corrupt(
-            "held Complete acquisition kind",
-        ));
-    };
-    let DecodedRecordV1::NativeCompletion(native) = decode_record(
-        &keys[5],
-        after
-            .get(&keys[5])
-            .ok_or(LedgerFormatErrorV1::Corrupt("held Complete native"))?,
-    )?
-    else {
-        return Err(LedgerFormatErrorV1::Corrupt("held Complete native kind"));
-    };
-    let lease = SignedSourceExportLeaseV1::from_canonical_bytes(&acquisition.signed_lease)
-        .map_err(|_| LedgerFormatErrorV1::Corrupt("held Complete lease"))?;
-    let patch = AcquireCompletionPatchV1::new(
-        keys[2].clone(),
-        attempt.attempt_digest,
-        acquisition.lease_issue_generation,
-        acquisition.proof_digest,
-        acquisition.resource_commitment,
-        acquisition
-            .backend_evidence
-            .as_ref()
-            .map(|value| value.encode()),
-        acquisition
-            .reopen_identity
-            .as_ref()
-            .map(|value| value.encode().to_vec()),
-        native.original_root,
-    )?;
-    let plan = AcquireCompletionPlanV1::new(
-        keys[1].clone(),
-        patch,
-        crate::limits::MAXIMUM_INVENTORY_TOMBSTONES_PER_HOLDER,
-    )?
-    .with_native_completion(native)?;
-    let finalized = finalize_response_completion(
-        before
-            .iter()
-            .map(|(key, value)| (key.as_slice(), value.as_slice())),
-        plan.0,
-        attempt.completed_response.clone(),
-        Some(lease),
-        attempt
-            .completed_at_seconds
-            .ok_or(LedgerFormatErrorV1::Corrupt("held Complete time"))?,
-    )?;
-    let mut expected = before.clone();
-    for (key, value) in finalized.mutations {
-        let value = value.ok_or(LedgerFormatErrorV1::Corrupt("held Complete deleted row"))?;
-        expected.insert(key, value);
-    }
-    if expected != *after {
-        return Err(LedgerFormatErrorV1::Corrupt(
-            "held Complete exact reducer bytes",
-        ));
-    }
-    Ok(())
 }
 
 fn apply_acquire_status(
@@ -973,22 +935,24 @@ fn finalize_release_recovery<'record>(
     plan: CompletionMutationPlanV1,
     signed_receipt: SignedSourceReleaseReceiptV1,
 ) -> Result<FinalizedCompletionV1, LedgerFormatErrorV1> {
+    materialize_release_recovery(canonical_graph(current_records)?, plan, signed_receipt)
+}
+
+fn materialize_release_recovery(
+    mut prospective: BTreeMap<Vec<u8>, Vec<u8>>,
+    plan: CompletionMutationPlanV1,
+    signed_receipt: SignedSourceReleaseReceiptV1,
+) -> Result<FinalizedCompletionV1, LedgerFormatErrorV1> {
     let purpose = plan.purpose.clone();
     if plan.attempt_key.is_some() || plan.release.is_none() {
         return Err(LedgerFormatErrorV1::Corrupt("Release recovery plan"));
     }
-    let mut prospective = canonical_graph(current_records)?;
     apply_release_patch(&mut prospective, plan.release.clone(), Some(signed_receipt))?;
     let maximum_tombstones = plan
         .refresh_inventory_tombstones
         .ok_or(LedgerFormatErrorV1::Corrupt("Release recovery inventory"))?;
     refresh_authority_inventory(&mut prospective, maximum_tombstones)?;
-    validate_final_graph(&prospective)?;
-    crate::validate_prospective_records(
-        prospective
-            .iter()
-            .map(|(key, value)| (key.as_slice(), value.as_slice())),
-    )?;
+    crate::validate_current_records(&prospective)?;
     let mutations = collect_mutations(plan, prospective)?;
     Ok(FinalizedCompletionV1 {
         purpose,
@@ -1113,7 +1077,6 @@ fn apply_acquire_patch(
     let lease = signed_lease.subject();
     let lease_bytes = signed_lease.to_canonical_bytes();
     let lease_digest = digest_signed_export_lease(&signed_lease);
-    let receipt = signed_receipt.subject();
     let mut acquisition = match decode_record(
         &patch.acquisition_key,
         graph
@@ -1123,35 +1086,13 @@ fn apply_acquire_patch(
         DecodedRecordV1::Acquisition(value) => value,
         _ => return Err(LedgerFormatErrorV1::Corrupt("completion acquisition kind")),
     };
-    if patch.attempt_digest != attempt.attempt_digest
-        || acquisition.provider != *lease.provider()
-        || lease.request_id() != attempt.request_id
-        || lease.request_digest() != attempt.typed_request_digest
-        || signed_lease.signer().authority_id() != acquisition.provider.authority_id()
-        || signed_lease.signer().authority_generation()
-            != acquisition.provider.authority_generation()
-        || signed_lease.signer().authority_digest() != acquisition.provider.authority_digest()
-        || acquisition.holder.authority_id() != lease.holder_authority_id()
-        || acquisition.holder.authority_generation() != lease.holder_generation()
-        || acquisition.holder.authority_digest() != lease.holder_authority_digest()
-        || receipt.request_id() != attempt.request_id
-        || receipt.request_digest() != attempt.typed_request_digest
-        || receipt.acquisition_id() != acquisition.acquisition_id
-        || receipt.provider_process_instance() != attempt.provider_process_instance
-        || receipt.lease_digest() != lease_digest
-        || receipt.signed_export_lease() != lease_bytes
-        || receipt.observed_proof_digest() != patch.proof_digest
-        || receipt.kernel_boot_id() != patch.source_root.kernel_boot_id()
-        || receipt.device() != patch.source_root.device()
-        || receipt.inode() != patch.source_root.inode()
-        || receipt.unique_mount_id() != patch.source_root.unique_mount_id()
-        || signed_receipt.signer().authority_id() != acquisition.provider.authority_id()
-        || signed_receipt.signer().authority_generation()
-            != acquisition.provider.authority_generation()
-        || signed_receipt.signer().authority_digest() != acquisition.provider.authority_digest()
-    {
-        return Err(LedgerFormatErrorV1::Corrupt("Acquire lease lineage"));
-    }
+    validate_acquire_artifact_join(
+        &acquisition,
+        &patch,
+        attempt,
+        &signed_lease,
+        &signed_receipt,
+    )?;
     acquisition.revision =
         acquisition
             .revision
@@ -1224,6 +1165,49 @@ fn apply_acquire_patch(
             ))?;
     authority.last_lease_issue_generation = patch.lease_issue_generation;
     graph.insert(authority_key_value, encode_authority(&authority));
+    Ok(())
+}
+
+fn validate_acquire_artifact_join(
+    acquisition: &AcquisitionRecordV1,
+    patch: &AcquireCompletionPatchV1,
+    attempt: &AttemptRecordV1,
+    signed_lease: &SignedSourceExportLeaseV1,
+    signed_receipt: &SignedSourceProviderReceiptV1,
+) -> Result<(), LedgerFormatErrorV1> {
+    let lease = signed_lease.subject();
+    let lease_bytes = signed_lease.to_canonical_bytes();
+    let lease_digest = digest_signed_export_lease(signed_lease);
+    let receipt = signed_receipt.subject();
+    if patch.attempt_digest != attempt.attempt_digest
+        || acquisition.provider != *lease.provider()
+        || lease.request_id() != attempt.request_id
+        || lease.request_digest() != attempt.typed_request_digest
+        || signed_lease.signer().authority_id() != acquisition.provider.authority_id()
+        || signed_lease.signer().authority_generation()
+            != acquisition.provider.authority_generation()
+        || signed_lease.signer().authority_digest() != acquisition.provider.authority_digest()
+        || acquisition.holder.authority_id() != lease.holder_authority_id()
+        || acquisition.holder.authority_generation() != lease.holder_generation()
+        || acquisition.holder.authority_digest() != lease.holder_authority_digest()
+        || receipt.request_id() != attempt.request_id
+        || receipt.request_digest() != attempt.typed_request_digest
+        || receipt.acquisition_id() != acquisition.acquisition_id
+        || receipt.provider_process_instance() != attempt.provider_process_instance
+        || receipt.lease_digest() != lease_digest
+        || receipt.signed_export_lease() != lease_bytes
+        || receipt.observed_proof_digest() != patch.proof_digest
+        || receipt.kernel_boot_id() != patch.source_root.kernel_boot_id()
+        || receipt.device() != patch.source_root.device()
+        || receipt.inode() != patch.source_root.inode()
+        || receipt.unique_mount_id() != patch.source_root.unique_mount_id()
+        || signed_receipt.signer().authority_id() != acquisition.provider.authority_id()
+        || signed_receipt.signer().authority_generation()
+            != acquisition.provider.authority_generation()
+        || signed_receipt.signer().authority_digest() != acquisition.provider.authority_digest()
+    {
+        return Err(LedgerFormatErrorV1::Corrupt("Acquire lease lineage"));
+    }
     Ok(())
 }
 
@@ -1356,78 +1340,13 @@ fn refresh_authority_inventory(
         authority.catalog_digest,
         graph
             .iter()
+            .filter(|(_, value)| !super::native_held_completion::graph::is_held(value))
             .map(|(key, value)| (key.as_slice(), value.as_slice())),
         maximum_tombstones,
     )?;
     authority.inventory_state_digest = digest;
     authority.active_lease_count = count;
     graph.insert(authority_key(provider_id), encode_authority(&authority));
-    Ok(())
-}
-
-fn validate_final_graph(graph: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<(), LedgerFormatErrorV1> {
-    let mut authority_count = 0_usize;
-    let mut attempts = Vec::new();
-    let mut acquisitions = Vec::new();
-    let mut releases = Vec::new();
-    for (key, value) in graph {
-        let decoded = decode_record(key, value)?;
-        if encode_decoded_record(&decoded) != *value {
-            return Err(LedgerFormatErrorV1::Corrupt(
-                "noncanonical completion graph",
-            ));
-        }
-        match decoded {
-            DecodedRecordV1::Authority(_) => authority_count += 1,
-            DecodedRecordV1::Attempt(value) => attempts.push(value),
-            DecodedRecordV1::Acquisition(value) => acquisitions.push(value),
-            DecodedRecordV1::Release(value) => releases.push(value),
-            _ => {}
-        }
-    }
-    if authority_count != 1 {
-        return Err(LedgerFormatErrorV1::Corrupt("completion authority head"));
-    }
-    for acquisition in &acquisitions {
-        let attempt = attempts
-            .iter()
-            .find(|attempt| attempt.attempt_digest == acquisition.current_attempt_digest)
-            .ok_or(LedgerFormatErrorV1::Corrupt(
-                "completion acquisition attempt",
-            ))?;
-        super::reducer::validate_acquisition_join(acquisition, attempt)?;
-    }
-    for release in &releases {
-        let acquisition = acquisitions
-            .iter()
-            .find(|value| value.acquisition_id == release.acquisition_id)
-            .ok_or(LedgerFormatErrorV1::Corrupt(
-                "completion Release acquisition",
-            ))?;
-        let attempt = attempts
-            .iter()
-            .find(|value| value.attempt_digest == release.attempt_digest)
-            .ok_or(LedgerFormatErrorV1::Corrupt("completion Release attempt"))?;
-        super::reducer::validate_release_join(acquisition, release, attempt)?;
-        let key = acquisition_key(&AcquisitionKeyV1 {
-            provider_id: release.provider.authority_id(),
-            holder_id: release.holder.authority_id(),
-            acquisition_id: release.acquisition_id,
-        });
-        let acquisition_digest = graph
-            .get(&key)
-            .ok_or(LedgerFormatErrorV1::Corrupt(
-                "completion Release acquisition bytes",
-            ))
-            .and_then(|bytes| record_digest(bytes))?;
-        if release.state == ProviderReleaseStateV1::Tombstone
-            && release.acquisition_record_digest != acquisition_digest
-        {
-            return Err(LedgerFormatErrorV1::Corrupt(
-                "completion Release acquisition digest",
-            ));
-        }
-    }
     Ok(())
 }
 

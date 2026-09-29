@@ -18,11 +18,16 @@ use super::{LedgerFormatErrorV1, native_completion::NativeAcquireCompletionRecor
 mod admission;
 mod codec;
 mod evidence;
-mod graph;
-mod transition;
+pub(crate) mod graph;
+mod lifecycle;
+pub(crate) mod transition;
 
 pub use admission::SourceNativeHeldAdmissionBindingV1;
 pub use graph::validate_native_held_records_v1;
+pub use lifecycle::{
+    SourceNativeHeldLifecycleTransactionV1, SourceNativeHeldLifecycleV1,
+    propose_native_held_lifecycle_v1,
+};
 pub use transition::{
     SourceNativeHeldMutationV1, SourceNativeHeldStepV1, SourceNativeHeldTransactionV1,
     propose_native_held_transition_v1,

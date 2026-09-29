@@ -10,6 +10,7 @@ use super::recovery_tests::{
 use super::*;
 use aos_sandbox_source_provider_protocol::provider_response_artifact_digest_v1;
 
+mod lifecycle_tests;
 mod negative_tests;
 
 #[derive(Clone)]

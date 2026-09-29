@@ -80,16 +80,60 @@ pub fn native_release_status_capacity_binding_v1(
     attempt: &AttemptRecordV1,
     session: &HolderSessionHeadRecordV1,
 ) -> Result<NativeReleaseStatusCapacityBindingV1, LedgerFormatErrorV1> {
+    release_status_binding(
+        acquisition,
+        native,
+        original_acquire,
+        release,
+        attempt,
+        session,
+        &encode_native_completion_v2(native),
+    )
+}
+
+pub(crate) fn release_status_binding(
+    acquisition: &AcquisitionRecordV1,
+    native: &NativeAcquireCompletionRecordV2,
+    original_acquire: &AttemptRecordV1,
+    release: &ReleaseRecordV1,
+    attempt: &AttemptRecordV1,
+    session: &HolderSessionHeadRecordV1,
+    canonical_native: &[u8],
+) -> Result<NativeReleaseStatusCapacityBindingV1, LedgerFormatErrorV1> {
     native.validate_provider_graph(original_acquire, acquisition)?;
     crate::ledger::reducer::validate_release_join(acquisition, release, attempt)?;
     let signed = SignedSourceProviderRequestV1::from_canonical_bytes(&attempt.signed_request)
         .map_err(|_| LedgerFormatErrorV1::Corrupt("native Release signed original request"))?;
     let root = decode_release_request(signed.subject())
         .map_err(|_| LedgerFormatErrorV1::Corrupt("native Release original request"))?;
-    if !matches!(
+    // A held terminal keeps the original status result as historical evidence
+    // after genuine Released reducers. Its immutable identity is unchanged;
+    // this is never an outstanding status-floor admission.
+    let held = if crate::ledger::native_held_completion::graph::is_held(canonical_native) {
+        let held = crate::ledger::native_held_completion::SourceNativeHeldCompletionRecordV1::from_canonical_bytes(
+            &native_completion_key_v2(native.acquisition_id), canonical_native,
+        )?;
+        if held.original() != native {
+            return Err(LedgerFormatErrorV1::Corrupt("held status actual carrier"));
+        }
+        Some(held)
+    } else {
+        if encode_native_completion_v2(native) != canonical_native {
+            return Err(LedgerFormatErrorV1::Corrupt("legacy status actual carrier"));
+        }
+        None
+    };
+    let historical_terminal = held
+        .as_ref()
+        .is_some_and(|held| held.suffix().phase() == 10)
+        && acquisition.state == ProviderAcquisitionStateV1::Released
+        && release.state == ProviderReleaseStateV1::Tombstone
+        && native_release_status_is_completed_v1(attempt);
+    if (!matches!(
         acquisition.state,
         ProviderAcquisitionStateV1::Releasing | ProviderAcquisitionStateV1::Faulted
-    ) || native.state != NativeAcquireCompletionStateV2::CleanupRequired
+    ) && !historical_terminal)
+        || native.state != NativeAcquireCompletionStateV2::CleanupRequired
         || native.canonical_request.is_none()
         || native.accepted_reply.is_none()
         || native.original_clock.is_none()
@@ -101,7 +145,7 @@ pub fn native_release_status_capacity_binding_v1(
         || attempt.method != SourceProviderMethod::Release
         || !(attempt.state == ProviderAttemptStateV1::Reserved
             || native_release_status_is_completed_v1(attempt))
-        || release.state != ProviderReleaseStateV1::Intent
+        || (release.state != ProviderReleaseStateV1::Intent && !historical_terminal)
         || release.effect_attempt_digest != attempt.attempt_digest
         || session.provider != attempt.provider
         || session.holder != attempt.holder
@@ -130,7 +174,7 @@ pub fn native_release_status_capacity_binding_v1(
     // remains independently joined below and in the capacity recovery fields.
     let mut status_owner = Sha256::new();
     status_owner.update(b"aos.sandbox.source-provider.native-release-status-carrier.v1\0");
-    status_owner.update(record_digest(&encode_native_completion_v2(native))?.as_bytes());
+    status_owner.update(record_digest(canonical_native)?.as_bytes());
     Ok(NativeReleaseStatusCapacityBindingV1 {
         owner_id: owner.finalize().into(),
         owner_digest: ObjectDigest::from_bytes(status_owner.finalize().into()),
@@ -205,6 +249,30 @@ pub fn validate_native_release_admission_v1(
             "native Release original artifact change",
         ));
     }
+    validate_release_admission_rows(
+        current,
+        prospective,
+        &native,
+        &encode_native_completion_v2(&native),
+    )?;
+    Ok(())
+}
+
+// Shared exact Release/request/lease comparison. The held caller has already
+// checked its actual terminal carrier and which native predecessor is present.
+pub(crate) fn validate_release_admission_rows(
+    current: &BTreeMap<Vec<u8>, Vec<u8>>,
+    prospective: &BTreeMap<Vec<u8>, Vec<u8>>,
+    native: &NativeAcquireCompletionRecordV2,
+    canonical_native: &[u8],
+) -> Result<NativeReleaseStatusCapacityBindingV1, LedgerFormatErrorV1> {
+    let native_key = native_completion_key_v2(native.acquisition_id);
+    let changed = current
+        .keys()
+        .chain(prospective.keys())
+        .filter(|key| current.get(*key) != prospective.get(*key))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
     let acquisition_key = acquisition_key(&AcquisitionKeyV1 {
         provider_id: native.provider_id,
         holder_id: native.holder_id,
@@ -304,17 +372,17 @@ pub fn validate_native_release_admission_v1(
         DecodedRecordV1::Session(row) => row,
         _ => return Err(LedgerFormatErrorV1::Corrupt("native Release session type")),
     };
-    native_release_status_capacity_binding_v1(
+    let binding = release_status_binding(
         &acquisition,
         &native,
         original,
         &release,
         attempt,
         &session,
+        canonical_native,
     )?;
-    let expected = [
+    let mut expected = [
         acquisition_key,
-        native_key,
         release_key,
         session_key,
         authority_key(native.provider_id),
@@ -333,12 +401,15 @@ pub fn validate_native_release_admission_v1(
     ]
     .into_iter()
     .collect::<std::collections::BTreeSet<_>>();
+    if current.get(&native_key) != prospective.get(&native_key) {
+        expected.insert(native_key);
+    }
     if changed != expected || expected.iter().any(|key| !prospective.contains_key(key)) {
         return Err(LedgerFormatErrorV1::Corrupt(
             "native Release exact seven owner rows",
         ));
     }
-    Ok(())
+    Ok(binding)
 }
 
 /// Identifies only the two immutable descriptor-free native status outcomes.

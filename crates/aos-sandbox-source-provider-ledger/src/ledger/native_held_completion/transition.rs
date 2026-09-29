@@ -155,6 +155,7 @@ pub fn propose_native_held_transition_v1<'before, 'after>(
     let after = graph::collect(after)?;
     graph::validate(&before)?;
     graph::validate(&after)?;
+    crate::validate_transition_structure(&before, &after)?;
     let key = native_completion::native_completion_key_v2(acquisition);
     let next = Record::from_canonical_bytes(
         &key,
@@ -174,6 +175,22 @@ pub fn propose_native_held_transition_v1<'before, 'after>(
         let previous = previous
             .as_ref()
             .ok_or(corrupt("held transition missing original"))?;
+        if previous.original.state == Outer::CleanupRequired
+            && !matches!(
+                step,
+                SourceNativeHeldStepV1::RootRecoveryRecorded
+                    | SourceNativeHeldStepV1::StorageRecoveryPrepared
+                    | SourceNativeHeldStepV1::StorageRecoveryQueryStored
+                    | SourceNativeHeldStepV1::StorageRecoveryRecorded
+                    | SourceNativeHeldStepV1::ProviderRecoveryPrepared
+                    | SourceNativeHeldStepV1::ProviderRecoveryStored
+                    | SourceNativeHeldStepV1::RootTerminalRecorded
+            )
+        {
+            return Err(corrupt(
+                "held closed original custody cannot resume hot work",
+            ));
+        }
         validate_original(previous, &next, step)?;
     }
     match step {
@@ -193,22 +210,32 @@ pub fn propose_native_held_transition_v1<'before, 'after>(
     }
 
     let keys = graph::companion_keys(&next)?;
+    let pending_retirement = step == SourceNativeHeldStepV1::RootTerminalRecorded
+        && matches!(next.original.state, Outer::Requested | Outer::Prepared);
     let expected: BTreeSet<_> = if step == SourceNativeHeldStepV1::CompletionCommitted {
         keys.iter().cloned().collect()
+    } else if pending_retirement {
+        graph::validate_pending_retirement(
+            &before,
+            &after,
+            previous.as_ref().ok_or(corrupt("held retirement before"))?,
+            &next,
+        )?;
+        [
+            keys[1].clone(),
+            keys[2].clone(),
+            keys[3].clone(),
+            keys[4].clone(),
+            keys[5].clone(),
+        ]
+        .into_iter()
+        .collect()
     } else {
         BTreeSet::from([key])
     };
     let mutations = exact_mutations(&before, &after, &expected)?;
     if step == SourceNativeHeldStepV1::CompletionCommitted {
-        validate_complete(
-            &before,
-            &after,
-            previous
-                .as_ref()
-                .ok_or(corrupt("held Complete missing original"))?,
-            &next,
-            &keys,
-        )?;
+        completion::validate_native_held_complete(&before, &after, &keys)?;
     }
     let admission = if step == SourceNativeHeldStepV1::Requested {
         Some(SourceNativeHeldAdmissionBindingV1::derive(&before, &next)?)
@@ -272,7 +299,7 @@ pub(super) fn validate_original(
     before.original.validate_successor(&expected)
 }
 
-pub(super) fn validate_step(
+pub(crate) fn validate_step(
     before: Option<&Record>,
     after: &Record,
     step: SourceNativeHeldStepV1,
@@ -457,7 +484,10 @@ fn permits_unescaped_held_clear(
     phases: (u8, u8),
 ) -> Result<bool, LedgerFormatErrorV1> {
     if phases != (5, 7)
-        || before.original.state != Outer::Active
+        || !matches!(
+            before.original.state,
+            Outer::Active | Outer::CleanupRequired
+        )
         || before
             .suffix
             .prepared()
@@ -527,28 +557,6 @@ pub(super) fn validate_recovery_before(
     graph::require_witness(state.fields.witness.as_ref().ok_or(corrupt("held recovery before witness missing"))?,
         aos_sandbox_source_provider_protocol::native_held_completion::witness::NativeHeldRecordFamilyV1::ProviderNative,
         &key, Some(bytes))
-}
-
-fn validate_complete(
-    before: &Records,
-    after: &Records,
-    previous: &Record,
-    next: &Record,
-    keys: &[Vec<u8>; 6],
-) -> Result<(), LedgerFormatErrorV1> {
-    let current = graph::legacy_projection(before)?;
-    let mut prospective = graph::legacy_projection(after)?;
-    let mut native = next.original.clone();
-    native.revision = previous
-        .original
-        .revision
-        .checked_add(1)
-        .ok_or(corrupt("held Complete revision"))?;
-    prospective.insert(
-        keys[5].clone(),
-        format::encode_native_completion_v2(&native),
-    );
-    completion::validate_native_held_complete(&current, &prospective, keys)
 }
 
 pub(super) fn exact_mutations(

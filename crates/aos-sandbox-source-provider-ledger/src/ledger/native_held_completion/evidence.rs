@@ -215,7 +215,18 @@ fn validate_predecessor(
         }
         Kind::StorageSettled => retained(prefix, Kind::ProviderRelay)?.digest(),
         Kind::ProviderSettled => retained(prefix, Kind::StorageSettled)?.digest(),
-        Kind::RootTerminalRecorded => retained(prefix, Kind::ProviderSettled)?.digest(),
+        Kind::RootTerminalRecorded => prefix
+            .iter()
+            .rev()
+            .copied()
+            .find(|control| {
+                matches!(
+                    control.kind(),
+                    Kind::ProviderSettled | Kind::ProviderRecoveryState
+                )
+            })
+            .ok_or(corrupt("held exact Source terminal predecessor"))?
+            .digest(),
         Kind::ProviderStorageRecoveryQuery | Kind::ProviderRecoveryState => {
             let root = prefix
                 .iter()
@@ -265,7 +276,10 @@ fn validate_phase(record: &Record) -> Result<(), LedgerFormatErrorV1> {
         let valid = match phase {
             0 | 1 => record.original.state == Outer::Requested,
             2 | 3 => record.original.state == Outer::Prepared,
-            4..=10 => record.original.state == Outer::Active,
+            4..=10 => matches!(
+                record.original.state,
+                Outer::Active | Outer::CleanupRequired
+            ),
             _ => false,
         };
         if !valid {
@@ -450,6 +464,21 @@ pub(super) fn artifact(record: &Record) -> Result<ObjectDigest, LedgerFormatErro
     Ok(result.unwrap_or(ObjectDigest::from_bytes([0; 32])))
 }
 
+pub(super) fn has_artifact_claim(record: &Record) -> bool {
+    record
+        .suffix
+        .controls()
+        .iter()
+        .map(SignedNativeHeldControlV1::prepared)
+        .chain(record.suffix.prepared())
+        .any(|control| {
+            matches!(
+                control.kind(),
+                Kind::ProviderHeld | Kind::ProviderRecoveryState
+            )
+        })
+}
+
 pub(super) fn acceptance(record: &Record) -> Result<ObjectDigest, LedgerFormatErrorV1> {
     if record.original.acceptance_payload_digest.as_bytes() != &[0; 32] {
         return Ok(record.original.acceptance_payload_digest);
@@ -544,8 +573,6 @@ fn validate_assertions(record: &Record) -> Result<(), LedgerFormatErrorV1> {
             if assertion.digest().map_err(schema_error)? != wanted.provider_settlement
                 || assertion.scope != full_scope(record)?
                 || assertion.source_artifact != artifact(record)?
-                || ((assertion.source_artifact.as_bytes() != &[0; 32])
-                    != (record.original.state == Outer::Active))
             {
                 return Err(corrupt("held Provider recovery own assertion"));
             }

@@ -176,7 +176,7 @@ pub(crate) fn validate_faulted_retained_lease(
 }
 
 /// Checks the unchanged signed Acquire artifacts, independently of owner phase.
-fn validate_retained_lease_artifacts(
+pub(super) fn validate_retained_lease_artifacts(
     acquisition: &AcquisitionRecordV1,
     attempt: &AttemptRecordV1,
 ) -> Result<(), LedgerFormatErrorV1> {

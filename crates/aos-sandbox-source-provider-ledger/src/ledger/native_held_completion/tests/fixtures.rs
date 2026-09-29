@@ -45,7 +45,7 @@ fn signer(byte: u8, usage: SourceProviderKeyUsageV1) -> SourceProviderSigningKey
     .unwrap()
 }
 
-fn session(nonce: u8) -> HolderSessionHeadRecordV1 {
+pub(super) fn session(nonce: u8) -> HolderSessionHeadRecordV1 {
     let signers = [
         signer(52, SourceProviderKeyUsageV1::RootMountHello),
         signer(51, SourceProviderKeyUsageV1::RootMountRecord),
@@ -226,6 +226,18 @@ fn requested_with_boot(
     session_binding: ObjectDigest,
     boot_id: [u8; 16],
 ) -> NativeAcquireCompletionRecordV2 {
+    requested_with_identity(nonce, issued, session_binding, boot_id, 2, [3; 16], 4)
+}
+
+fn requested_with_identity(
+    nonce: [u8; 32],
+    issued: i64,
+    session_binding: ObjectDigest,
+    boot_id: [u8; 16],
+    request_sequence: u64,
+    request_id: [u8; 16],
+    acquisition_sequence: u64,
+) -> NativeAcquireCompletionRecordV2 {
     let mut template = Vec::new();
     for tag in 1_u8..=27 {
         let value = match tag {
@@ -242,9 +254,9 @@ fn requested_with_boot(
     let binding_digest = digest_logical_binding_bytes(&binding);
     let root = AcquireSourceRequestV1::new_v2(
         session_binding,
-        2,
-        [3; 16],
-        4,
+        request_sequence,
+        request_id,
+        acquisition_sequence,
         template,
         template_digest,
         SourceUseV1::MountCreate,
@@ -454,8 +466,27 @@ pub(super) struct Graph {
 
 impl Graph {
     pub(super) fn applying() -> Self {
-        let mut session = session(40);
-        let prototype = requested_with_session([1; 32], 500, session.session_binding);
+        Self::applying_for_session(session(40), 2, [3; 16], 4, [1; 32])
+    }
+
+    pub(super) fn applying_for_session(
+        mut session: HolderSessionHeadRecordV1,
+        request_sequence: u64,
+        request_id: [u8; 16],
+        acquisition_sequence: u64,
+        nonce: [u8; 32],
+    ) -> Self {
+        session.next_request_sequence = request_sequence + 1;
+        session.next_acquisition_sequence = acquisition_sequence + 1;
+        let prototype = requested_with_identity(
+            nonce,
+            500,
+            session.session_binding,
+            session.boot_id,
+            request_sequence,
+            request_id,
+            acquisition_sequence,
+        );
         let signed = prototype
             .canonical_request
             .as_ref()
@@ -877,21 +908,6 @@ pub(super) fn completion_rows(
         .unwrap()
         .with_native_completion(native.clone())
         .unwrap();
-    let projection = graph::legacy_projection(rows).unwrap();
-    let finalized = plan
-        .finalize(
-            projection
-                .iter()
-                .map(|(key, value)| (key.as_slice(), value.as_slice())),
-            response,
-            Some(lease),
-            501,
-        )
-        .unwrap();
-    let mut after = rows.clone();
-    for (key, value) in finalized.mutations() {
-        after.insert(key.clone(), value.clone().unwrap());
-    }
     let suffix = NativeHeldCompletionSuffixV1::new(
         Owner::Provider,
         4,
@@ -901,6 +917,13 @@ pub(super) fn completion_rows(
     )
     .unwrap();
     let record = SourceNativeHeldCompletionRecordV1::new(native, suffix).unwrap();
-    after.insert(keys[5].clone(), record.to_canonical_bytes().unwrap());
+    let finalized = crate::ledger::completion::finalize_native_held_complete(
+        rows, plan, &record, response, lease, 501,
+    )
+    .unwrap();
+    let mut after = rows.clone();
+    for (key, value) in finalized.mutations() {
+        after.insert(key.clone(), value.clone().unwrap());
+    }
     after
 }
