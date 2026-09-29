@@ -348,6 +348,12 @@ pub(super) fn remaining(
     if sidecar.no_interest_terminal().is_some() || matches!(sidecar.suffix().phase(), 7 | 13) {
         return Ok(0);
     }
+    // A validated terminal settlement has only its ACK continuation, even when
+    // Closed skipped the original Held/response-CAS path. Ordinary recovery
+    // obligations do not revive this separately funded native continuation.
+    if matches!(sidecar.suffix().phase(), 6 | 12) {
+        return Ok(1);
+    }
     let attempt_id = *sidecar.original_scope().mount_attempt.as_bytes();
     let (attempt, _) = super::graph_v2::original_rows(graph, sidecar)?;
     if sidecar.suffix().control(Kind::ProviderHeld).is_some()
