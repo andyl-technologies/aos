@@ -382,7 +382,7 @@ pub enum RefCasOutcome {
     /// The expected record matched and the new record was written.
     Applied,
     /// The expectation failed; this was the current record, if any.
-    Conflict(Option<RefRecord>),
+    Conflict(Option<Box<RefRecord>>),
 }
 
 /// Reports the outcome of a create-if-absent reflog append (STORE-8).
@@ -805,6 +805,10 @@ impl HttpClient for TokioHttpClient {
 pub struct TokioClock;
 
 #[cfg(feature = "tokio")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "The native clock binding is the injection boundary for host time."
+)]
 impl Clock for TokioClock {
     fn now(&self) -> SystemTime {
         SystemTime::now()
@@ -941,6 +945,10 @@ impl LocalFs for TokioLocalFs {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "A failed test setup or assertion intentionally panics."
+)]
 mod tests {
     use super::*;
 
@@ -1231,7 +1239,7 @@ mod tests {
             fs.remove_file(&destination).await.unwrap();
         }
 
-        let unique = SystemTime::now()
+        let unique = TokioClock.now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
