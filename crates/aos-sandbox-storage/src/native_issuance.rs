@@ -53,6 +53,8 @@ const MAXIMUM_VALUE_BYTES: usize = HEADER_BYTES
 const MAXIMUM_ISSUANCES: usize = 1024;
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.storage.native-issuance.transaction.v1\0";
 
+pub(crate) mod held_completion;
+
 /// Rejects malformed, stale, conflicting, or indeterminate issuance state.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum StorageNativeIssuanceErrorV1 {
