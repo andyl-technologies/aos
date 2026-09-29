@@ -15,8 +15,8 @@ use terrane_core::identity::Digest;
 /// A bounded chunk-envelope decoder supplied by the runtime codec layer.
 ///
 /// Implementations verify sized, single-frame encoding and resolve dictionary
-/// plaintext from the envelope's digest. A dictionary registry hint must never
-/// replace verification against that digest. Returned bytes remain private
+/// plaintext from the envelope's digest. The reserved dictionary field must
+/// remain zero; the envelope digest is authoritative. Returned bytes remain private
 /// until the reader has independently verified their length and identity.
 pub trait BodyDecoder {
     /// Decodes one chunk into at most its declared plaintext length.
@@ -29,6 +29,7 @@ pub trait BodyDecoder {
         encoded: &[u8],
         plaintext_len: u32,
         dictionary_id: u16,
+        expected_hash: &Digest,
     ) -> Result<Vec<u8>, PackError>;
 }
 
@@ -43,6 +44,7 @@ impl BodyDecoder for RawBodyDecoder {
         encoded: &[u8],
         plaintext_len: u32,
         dictionary_id: u16,
+        _expected_hash: &Digest,
     ) -> Result<Vec<u8>, PackError> {
         if encoded.first() != Some(&(Codec::Raw as u8)) || dictionary_id != 0 {
             return Err(PackError::Decoder);
@@ -110,6 +112,21 @@ impl<'a> PackReader<'a> {
         })
     }
 
+    /// Opens recoverable structure or explicitly quarantines a damaged pack.
+    ///
+    /// An intact embedded index reconstructs the detached index with
+    /// [`Self::index_object`]. V1 raw bodies have no lengths and meta bodies have
+    /// no kind tags outside the index, so a damaged footer or index cannot
+    /// safely be recovered by forward scanning. This implementation does not
+    /// invent framing, infer kinds, or serve damaged bytes in place.
+    ///
+    /// # Errors
+    /// Returns [`PackError::RecoveryUnsupported`] containing the original
+    /// structural error when a pack must be quarantined for offline recovery.
+    pub fn recover(bytes: &'a [u8]) -> Result<Self, PackError> {
+        Self::open(bytes).map_err(|error| PackError::RecoveryUnsupported(Box::new(error)))
+    }
+
     /// Returns the validated header.
     pub const fn header(&self) -> PackHeader {
         self.header
@@ -161,7 +178,7 @@ impl<'a> PackReader<'a> {
         }
         let body = body_slice(self.bytes, entry)?;
         let plaintext = if kind == EntryKind::Chunk {
-            decoder.decode(body, entry.plaintext_len, entry.dictionary_id)?
+            decoder.decode(body, entry.plaintext_len, entry.dictionary_id, &entry.hash)?
         } else {
             validate_metadata(kind, body)?;
             body.to_vec()

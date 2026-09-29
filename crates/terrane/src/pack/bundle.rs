@@ -5,7 +5,6 @@
 //! ```
 
 use super::{EntryKind, PackError, digest, verify};
-use std::collections::BTreeSet;
 use terrane_core::cbor::{Decoder, write_array, write_bytes, write_map, write_uint};
 use terrane_core::identity::Digest;
 
@@ -70,7 +69,7 @@ impl Bundle {
     /// this format layer does not inspect tree relationships.
     ///
     /// # Errors
-    /// Rejects duplicate objects or encoded bundles exceeding the CDDL limits.
+    /// Rejects encoded bundles exceeding the CDDL object-count or byte limits.
     pub fn new(
         root_commit: Digest,
         mut objects: Vec<BundleObject>,
@@ -89,7 +88,7 @@ impl Bundle {
             root_commit,
             objects,
         };
-        if bundle.encode().len() > MAX_BYTES {
+        if bundle.encoded_size()? > MAX_BYTES {
             return Err(PackError::Limit);
         }
         Ok(bundle)
@@ -103,6 +102,15 @@ impl Bundle {
     /// Borrows all contained objects only after whole-bundle verification.
     pub fn objects(&self) -> &[BundleObject] {
         &self.objects
+    }
+
+    fn encoded_size(&self) -> Result<usize, PackError> {
+        let mut size = 37_usize.checked_add(argument_size(self.objects.len())).ok_or(PackError::Limit)?;
+        for object in &self.objects {
+            size = size.checked_add(36).and_then(|size| size.checked_add(argument_size(object.bytes.len())))
+                .and_then(|size| size.checked_add(object.bytes.len())).ok_or(PackError::Limit)?;
+        }
+        Ok(size)
     }
 
     /// Returns this bundle's canonical CBOR encoding.
@@ -133,7 +141,7 @@ impl Bundle {
     /// Decodes and verifies every triple before exposing any of them.
     ///
     /// # Errors
-    /// Rejects noncanonical or unknown schema fields, duplicate objects, invalid
+    /// Rejects noncanonical or unknown schema fields, invalid
     /// kinds, excessive lengths, trailing data, or any mismatching identity.
     pub fn decode(bytes: &[u8]) -> Result<Self, PackError> {
         if bytes.len() > MAX_BYTES {
@@ -186,11 +194,15 @@ fn validate_objects(objects: &[BundleObject]) -> Result<(), PackError> {
     if objects.len() > MAX_OBJECTS {
         return Err(PackError::Limit);
     }
-    let mut identities = BTreeSet::new();
-    for object in objects {
-        if !identities.insert(object.hash) {
-            return Err(PackError::Duplicate);
-        }
-    }
     Ok(())
+}
+
+fn argument_size(value: usize) -> usize {
+    match value {
+        0..=23 => 1,
+        24..=255 => 2,
+        256..=65535 => 3,
+        65536..=4294967295 => 5,
+        _ => 9,
+    }
 }

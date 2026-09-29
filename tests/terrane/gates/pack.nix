@@ -17,6 +17,7 @@ in {
   pack-index-consistent = testGate "pack-index-consistent" "pack::tests::pack_index_rejects_";
   pack-kind-domain = testGate "pack-kind-domain" "pack::tests::pack_meta_separation_";
   pack-footer-crc = testGate "pack-footer-crc" "pack::tests::pack_footer_crc_";
+  pack-scan-recovery = testGate "pack-scan-recovery" "pack::tests::pack_scan_recovery_";
   pack-self-describing = testGate "pack-self-describing" "pack::tests::pack_self_describing_";
   pack-single-writer = testGate "pack-single-writer" "pack::tests::pack_single_writer_";
   pack-tree-locality = testGate "pack-tree-locality" "pack::tests::pack_tree_locality_";

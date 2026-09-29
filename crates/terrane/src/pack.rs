@@ -254,7 +254,7 @@ impl IndexEntry {
         self.kind
     }
 
-    /// Returns the dictionary registry identifier recorded in the index.
+    /// Returns the reserved dictionary field, which is always zero in v1.
     pub const fn dictionary_id(&self) -> u16 {
         self.dictionary_id
     }
@@ -295,6 +295,8 @@ pub enum PackError {
     Generation,
     /// A compressed body requires an appropriate decoder or dictionary.
     Decoder,
+    /// Damaged unframed bodies require quarantine rather than guessed recovery.
+    RecoveryUnsupported(Box<PackError>),
 }
 
 impl fmt::Display for PackError {
@@ -302,6 +304,10 @@ impl fmt::Display for PackError {
         match self {
             Self::Identity(error) => write!(formatter, "pack body identity: {error}"),
             Self::Cbor(error) => write!(formatter, "pack metadata: {error}"),
+            Self::RecoveryUnsupported(error) => write!(
+                formatter,
+                "pack quarantined; unframed scan recovery unsupported: {error}"
+            ),
             error => formatter.write_str(match error {
                 Self::Malformed => "malformed pack structure",
                 Self::Version => "unrecognized pack format",
@@ -317,7 +323,9 @@ impl fmt::Display for PackError {
                 Self::DetachedIndex => "per-pack index disagrees with sealed pack",
                 Self::Generation => "stale or conflicting index generation",
                 Self::Decoder => "pack body decoder or dictionary unavailable",
-                Self::Identity(_) | Self::Cbor(_) => "pack validation failed",
+                Self::Identity(_) | Self::Cbor(_) | Self::RecoveryUnsupported(_) => {
+                    "pack validation failed"
+                }
             }),
         }
     }
@@ -328,6 +336,7 @@ impl std::error::Error for PackError {
         match self {
             Self::Identity(error) => Some(error),
             Self::Cbor(error) => Some(error),
+            Self::RecoveryUnsupported(error) => Some(error.as_ref()),
             _ => None,
         }
     }

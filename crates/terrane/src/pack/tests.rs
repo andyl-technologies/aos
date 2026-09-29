@@ -2,6 +2,15 @@
 
 use super::binary::{crc32c, encode_index};
 use super::*;
+
+macro_rules! assert_error {
+    ($result:expr, $expected:pat $(,)?) => {
+        match $result {
+            $expected => {}
+            other => panic!("unexpected result: {other:?}"),
+        }
+    };
+}
 use std::collections::{BTreeMap, BTreeSet};
 
 fn data_pack(id: u8, bodies: &[&[u8]]) -> Result<SealedPack, PackError> {
@@ -126,7 +135,7 @@ fn pack_index_rejects_bad_coverage_duplicates_lengths_and_reserved_bytes() -> Re
     }
     let mut reserved = pack.index_object().to_vec();
     reserved[HEADER_SIZE + 12 + 52] = 1;
-    assert_eq!(
+    assert_error!(
         PackIndexSnapshot::decode(&reserved, 1),
         Err(PackError::Reserved)
     );
@@ -165,7 +174,7 @@ fn pack_self_describing_rebuild_and_idx_disagreement_use_embedded_authority()
     assert_eq!(reader.index_object(), pack.index_object());
     let mut corrupt_copy = pack.index_object().to_vec();
     corrupt_copy[8] ^= 1;
-    assert_eq!(
+    assert_error!(
         reader.check_index_object(&corrupt_copy),
         Err(PackError::DetachedIndex)
     );
@@ -189,7 +198,7 @@ fn pack_self_describing_rebuild_and_idx_disagreement_use_embedded_authority()
 fn pack_single_writer_sealing_duplicates_and_size_threshold() -> Result<(), PackError> {
     let mut writer = PackWriter::new(PackId::from_random_bytes([6; 16]), PackClass::Data, false);
     let hash = writer.append_raw(EntryKind::Chunk, b"one")?;
-    assert_eq!(
+    assert_error!(
         writer.append_raw(EntryKind::Chunk, b"one"),
         Err(PackError::Duplicate)
     );
@@ -204,7 +213,7 @@ fn pack_single_writer_sealing_duplicates_and_size_threshold() -> Result<(), Pack
     let mut large = PackWriter::new(PackId::from_random_bytes([7; 16]), PackClass::Data, false);
     large.append_raw(EntryKind::Chunk, &vec![42; DATA_PACK_LIMIT - 1])?;
     assert!(large.seal_required());
-    assert_eq!(
+    assert_error!(
         large.append_raw(EntryKind::Chunk, b"next"),
         Err(PackError::SealRequired)
     );
@@ -215,12 +224,12 @@ fn pack_single_writer_sealing_duplicates_and_size_threshold() -> Result<(), Pack
 #[test]
 fn pack_meta_separation_and_kind_domain_are_strict() -> Result<(), PackError> {
     let mut data = PackWriter::new(PackId::from_random_bytes([8; 16]), PackClass::Data, false);
-    assert_eq!(
+    assert_error!(
         data.append_raw(EntryKind::Node, &[0xa0]),
         Err(PackError::Kind)
     );
     let mut meta = PackWriter::new(PackId::from_random_bytes([9; 16]), PackClass::Meta, false);
-    assert_eq!(
+    assert_error!(
         meta.append_raw(EntryKind::Chunk, b"data"),
         Err(PackError::Kind)
     );
@@ -228,7 +237,7 @@ fn pack_meta_separation_and_kind_domain_are_strict() -> Result<(), PackError> {
     let pack = meta.seal()?;
     let reader = PackReader::open(pack.bytes())?;
     assert_eq!(reader.header().class(), PackClass::Meta);
-    assert_eq!(
+    assert_error!(
         reader.read(EntryKind::Commit, &hash, &RawBodyDecoder),
         Err(PackError::Kind)
     );
@@ -250,7 +259,7 @@ fn whole_pack_verifies_bystanders_without_pinning() -> Result<(), PackError> {
     let requested = [(EntryKind::Chunk, reader.entries()[0].hash)];
     assert!(reader.prefer_whole_pack(&requested, 50)?);
     assert!(!reader.prefer_whole_pack(&requested, 51)?);
-    assert_eq!(
+    assert_error!(
         reader.prefer_whole_pack(&requested, 101),
         Err(PackError::Limit)
     );
@@ -291,7 +300,8 @@ fn bundle_verify_rejects_one_bad_triple_and_canonical_schema_errors() -> Result<
     let mut trailing = bundle.encode();
     trailing.push(0);
     assert!(Bundle::decode(&trailing).is_err());
-    assert!(Bundle::new([0; 32], vec![object.clone(), object], &[]).is_err());
+    let repeated = Bundle::new([0; 32], vec![object.clone(), object], &[])?;
+    assert_eq!(Bundle::decode(&repeated.encode())?, repeated);
     Ok(())
 }
 
@@ -355,8 +365,8 @@ fn index_shard_generations_refresh_atomically_and_fall_back_to_newer_packs() -> 
     ));
     catalog.refresh(vec![shard.clone()])?;
     let older = MergedShard::decode(&shard.encode(), 0, old_hash[0])?;
-    assert_eq!(catalog.refresh(vec![older]), Err(PackError::Generation));
-    assert_eq!(
+    assert_error!(catalog.refresh(vec![older]), Err(PackError::Generation));
+    assert_error!(
         catalog.refresh(vec![shard.clone(), shard]),
         Err(PackError::Generation)
     );
@@ -468,7 +478,7 @@ fn pack_single_writer_publication_receipt_requires_pack_then_identical_index()
         writes: std::sync::Mutex::new(Vec::new()),
         fail_index: true,
     };
-    assert_eq!(run_ready(pack.publish(&failing)), Err(PackError::Missing));
+    assert_error!(run_ready(pack.publish(&failing)), Err(PackError::Missing));
     assert_eq!(failing.writes.lock().expect("test mutex").len(), 1);
     Ok(())
 }
@@ -486,7 +496,7 @@ fn pack_tree_locality_omits_held_chunks_and_keeps_object_chunks_consecutive()
     )?;
     assert_eq!(first[1], held_hash);
     writer.append_object(b"a/second", [b"third".as_slice(), b"first"], &held)?;
-    assert_eq!(
+    assert_error!(
         writer.append_object(b"a/first", [b"wrong".as_slice()], &held),
         Err(PackError::Index)
     );
@@ -494,7 +504,7 @@ fn pack_tree_locality_omits_held_chunks_and_keeps_object_chunks_consecutive()
     let pack = writer.seal()?;
     let reader = PackReader::open(pack.bytes())?;
     assert_eq!(reader.entries().len(), 4);
-    assert_eq!(
+    assert_error!(
         reader.read(EntryKind::Chunk, &held_hash, &RawBodyDecoder),
         Err(PackError::Missing)
     );
@@ -535,5 +545,74 @@ fn index_tombstones_allow_only_a_newly_published_replacement_pack() -> Result<()
         Lookup::Live(record) => assert_eq!(record.pack(), replacement.header().id()),
         other => panic!("replacement must be live, got {other:?}"),
     }
+    Ok(())
+}
+
+#[test]
+fn pack_scan_recovery_quarantines_unframed_damage_without_serving_guessed_bodies()
+-> Result<(), PackError> {
+    let pack = data_pack(20, &[b"unframed one", b"unframed two"])?;
+    assert_eq!(
+        PackReader::recover(pack.bytes())?.index_object(),
+        pack.index_object()
+    );
+    let mut bad_footer = pack.bytes().to_vec();
+    let last = bad_footer.len() - 1;
+    bad_footer[last] ^= 1;
+    let mut bad_index = pack.bytes().to_vec();
+    let index_start = usize::try_from(u64::from_le_bytes(
+        pack.bytes()[pack.bytes().len() - 16..pack.bytes().len() - 8]
+            .try_into()
+            .expect("fixture footer"),
+    ))
+    .expect("fixture offset");
+    bad_index[index_start + 12] ^= 1;
+    let missing_footer = pack.bytes()[..pack.bytes().len() - FOOTER_SIZE].to_vec();
+    let missing_index = pack.bytes()[..index_start].to_vec();
+    for damaged in [bad_footer, bad_index, missing_footer, missing_index] {
+        assert!(matches!(
+            PackReader::recover(&damaged),
+            Err(PackError::RecoveryUnsupported(_))
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn index_rebuild_rejects_conflicting_pack_ids_and_malformed_shard_records() -> Result<(), PackError>
+{
+    let first = data_pack(21, &[b"first"])?;
+    let conflicting = data_pack(21, &[b"second"])?;
+    let first_index = PackIndexSnapshot::decode(first.index_object(), 1)?;
+    let conflicting_index = PackIndexSnapshot::decode(conflicting.index_object(), 1)?;
+    let hash = *first_index.entries()[0].hash();
+    assert_error!(
+        MergedShard::rebuild(
+            hash[0],
+            1,
+            &[first_index.clone(), conflicting_index],
+            &BTreeSet::new(),
+            None,
+            &BTreeSet::new()
+        ),
+        Err(PackError::Generation)
+    );
+    let shard = MergedShard::rebuild(
+        hash[0],
+        1,
+        &[first_index],
+        &BTreeSet::new(),
+        None,
+        &BTreeSet::new(),
+    )?;
+    for (offset, byte) in [(12 + 64, 3), (12 + 65, 7), (12 + 66, 2), (12 + 67, 1)] {
+        let mut malformed = shard.encode();
+        malformed[offset] = byte;
+        assert!(MergedShard::decode(&malformed, 1, hash[0]).is_err());
+    }
+    assert!(MergedShard::decode(&shard.encode(), 1, hash[0].wrapping_add(1)).is_err());
+    let mut huge_count = shard.encode();
+    huge_count[4..12].copy_from_slice(&u64::MAX.to_le_bytes());
+    assert!(MergedShard::decode(&huge_count, 1, hash[0]).is_err());
     Ok(())
 }

@@ -47,6 +47,10 @@ impl PackWriter {
     /// Rejects duplicate identities, mixed data and metadata, oversized lengths,
     /// noncanonical metadata, and appends after the data size threshold.
     pub fn append_raw(&mut self, kind: EntryKind, plaintext: &[u8]) -> Result<Digest, PackError> {
+        let envelope = usize::from(kind == EntryKind::Chunk);
+        u32::try_from(plaintext.len().checked_add(envelope).ok_or(PackError::Limit)?)
+            .map_err(|_| PackError::Limit)?;
+
         let hash = digest(kind, plaintext)?;
         let body = if kind == EntryKind::Chunk {
             let mut encoded =
@@ -120,7 +124,7 @@ impl PackWriter {
         decoder: &D,
     ) -> Result<(), PackError> {
         let codec = Codec::try_from(*encoded.first().ok_or(PackError::Codec)?)?;
-        let plaintext = decoder.decode(encoded, plaintext_len, dictionary_id)?;
+        let plaintext = decoder.decode(encoded, plaintext_len, dictionary_id, &hash)?;
         if plaintext.len() != plaintext_len as usize {
             return Err(PackError::Index);
         }
