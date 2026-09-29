@@ -12,7 +12,10 @@
 //! ```
 
 use super::token_shape::validate_token;
-use super::{Locality, RecordError, read_bool, read_digest, read_key, write_bool};
+use super::{
+    Locality, RecordError, read_bool, read_digest, read_key, read_nested_value, read_raw_value,
+    write_bool,
+};
 use crate::cbor::{self, Decoder};
 use crate::identity::Digest;
 use crate::identity::{IdentityError, IdentityKind, TERRANE_V1};
@@ -20,10 +23,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
 
-const MAX_COMMIT_BYTES: usize = 1 << 20;
-const MAX_TEXT_BYTES: usize = 65536;
 const MAX_PARENTS: usize = 256;
-const MAX_PACKS: usize = 4096;
 
 /// The principal category asserted by commit provenance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -166,19 +166,19 @@ impl Provenance {
         }
         let mut previous = 0;
         require_key(decoder, &mut previous, 1, 10)?;
-        let issuer = decoder.text(MAX_TEXT_BYTES)?.to_string();
+        let issuer = decoder.text(decoder.remaining().len())?.to_string();
         require_key(decoder, &mut previous, 2, 10)?;
         let token_id = decoder
             .bytes(16)?
             .try_into()
             .map_err(|_| RecordError::Schema)?;
         require_key(decoder, &mut previous, 3, 10)?;
-        let subject = decoder.text(MAX_TEXT_BYTES)?.to_string();
+        let subject = decoder.text(decoder.remaining().len())?.to_string();
         require_key(decoder, &mut previous, 4, 10)?;
         let kind = PrincipalKind::from_code(decoder.uint()?)?;
         let mut next = read_key(decoder, &mut previous, 10)?;
         let workload_identity = if next == 5 {
-            let identity = decoder.text(MAX_TEXT_BYTES)?.to_string();
+            let identity = decoder.text(decoder.remaining().len())?.to_string();
             next = read_key(decoder, &mut previous, 10)?;
             Some(identity)
         } else {
@@ -187,7 +187,7 @@ impl Provenance {
         if next != 6 {
             return Err(RecordError::Schema);
         }
-        let process = decoder.text(MAX_TEXT_BYTES)?.to_string();
+        let process = decoder.text(decoder.remaining().len())?.to_string();
         require_key(decoder, &mut previous, 7, 10)?;
         let observed_at = decoder.uint()?;
         require_key(decoder, &mut previous, 8, 10)?;
@@ -196,7 +196,7 @@ impl Provenance {
         let source = CommitSource::from_code(decoder.uint()?)?;
         let embedded_token = if count == 10 || (count == 9 && workload_identity.is_none()) {
             require_key(decoder, &mut previous, 10, 10)?;
-            let token = decoder.raw_value(MAX_COMMIT_BYTES)?.to_vec();
+            let token = read_raw_value(decoder)?.to_vec();
             validate_token(&token)?;
             Some(token)
         } else {
@@ -347,10 +347,7 @@ impl Commit {
         include_signature: bool,
     ) -> Result<(), RecordError> {
         if self.parents.len() > MAX_PARENTS
-            || self
-                .packs
-                .as_ref()
-                .is_some_and(|packs| packs.is_empty() || packs.len() > MAX_PACKS)
+            || self.packs.as_ref().is_some_and(|packs| packs.is_empty())
         {
             return Err(RecordError::Schema);
         }
@@ -415,7 +412,7 @@ impl Commit {
         require_key(&mut decoder, &mut previous, 4, 8)?;
         let timestamp = decoder.uint()?;
         require_key(&mut decoder, &mut previous, 5, 8)?;
-        let message = decoder.text(MAX_TEXT_BYTES)?.to_string();
+        let message = decoder.text(decoder.remaining().len())?.to_string();
         require_key(&mut decoder, &mut previous, 6, 8)?;
         let profile_pair = ProfilePair::decode_from(&mut decoder)?;
 
@@ -424,7 +421,7 @@ impl Commit {
         for _ in 6..count {
             match read_key(&mut decoder, &mut previous, 8)? {
                 7 => {
-                    let count = decoder.array(MAX_PACKS)?;
+                    let count = decoder.array(decoder.remaining().len())?;
                     if count == 0 {
                         return Err(RecordError::Schema);
                     }
@@ -524,7 +521,7 @@ impl ProfilePair {
             return Err(RecordError::Schema);
         }
         require_key(decoder, &mut previous, 2, 6)?;
-        let chunk_profile = decoder.text(MAX_TEXT_BYTES)?.to_string();
+        let chunk_profile = decoder.text(decoder.remaining().len())?.to_string();
         if chunk_profile.is_empty() {
             return Err(RecordError::Schema);
         }
@@ -536,7 +533,7 @@ impl ProfilePair {
         for _ in 2..count {
             match read_key(decoder, &mut previous, 6)? {
                 3 => {
-                    let bytes = decoder.raw_value(MAX_COMMIT_BYTES)?.to_vec();
+                    let bytes = read_raw_value(decoder)?.to_vec();
                     validate_recipe(&bytes)?;
                     recipe = Some(bytes);
                 }
@@ -545,7 +542,7 @@ impl ProfilePair {
                     if decoder.map(2)? != 2 || decoder.uint()? != 1 {
                         return Err(RecordError::Schema);
                     }
-                    let owner = decoder.text(MAX_TEXT_BYTES)?.to_string();
+                    let owner = decoder.text(decoder.remaining().len())?.to_string();
                     if decoder.uint()? != 2 {
                         return Err(RecordError::Schema);
                     }
@@ -555,7 +552,7 @@ impl ProfilePair {
                     });
                 }
                 6 => {
-                    let bytes = decoder.raw_value(MAX_COMMIT_BYTES)?.to_vec();
+                    let bytes = read_raw_value(decoder)?.to_vec();
                     validate_properties(&bytes)?;
                     required_properties = Some(bytes);
                 }
@@ -598,7 +595,7 @@ fn validate_recipe(bytes: &[u8]) -> Result<(), RecordError> {
     {
         return Err(RecordError::Schema);
     }
-    let inputs = decoder.array(MAX_PARENTS)?;
+    let inputs = decoder.array(decoder.remaining().len())?;
     for _ in 0..inputs {
         read_digest(&mut decoder)?;
     }
@@ -606,7 +603,7 @@ fn validate_recipe(bytes: &[u8]) -> Result<(), RecordError> {
         if decoder.uint()? != 3 {
             return Err(RecordError::Schema);
         }
-        let arguments = decoder.raw_value(MAX_COMMIT_BYTES)?;
+        let arguments = read_raw_value(&mut decoder)?;
         validate_text_map(arguments)?;
     }
     decoder.finish()?;
@@ -615,17 +612,17 @@ fn validate_recipe(bytes: &[u8]) -> Result<(), RecordError> {
 
 fn validate_text_map(bytes: &[u8]) -> Result<(), RecordError> {
     let mut decoder = Decoder::new(bytes);
-    let count = decoder.map(MAX_COMMIT_BYTES)?;
+    let count = decoder.map(decoder.remaining().len())?;
     let mut previous = None;
     for _ in 0..count {
         let start = decoder.position();
-        decoder.text(MAX_TEXT_BYTES)?;
+        decoder.text(decoder.remaining().len())?;
         let key = decoder.slice(start, decoder.position())?;
         if previous.is_some_and(|prior: &[u8]| key <= prior) {
             return Err(RecordError::Schema);
         }
         previous = Some(key);
-        decoder.raw_value(MAX_COMMIT_BYTES)?;
+        read_raw_value(&mut decoder)?;
     }
     decoder.finish()?;
     Ok(())
@@ -633,58 +630,11 @@ fn validate_text_map(bytes: &[u8]) -> Result<(), RecordError> {
 
 fn validate_properties(bytes: &[u8]) -> Result<(), RecordError> {
     let mut decoder = Decoder::new(bytes);
-    validate_property_map(&mut decoder, 0)?;
+    if decoder.peek_major()? != 5 {
+        return Err(RecordError::Schema);
+    }
+    read_nested_value(&mut decoder, true)?;
     decoder.finish()?;
-    Ok(())
-}
-
-fn validate_property_map(decoder: &mut Decoder<'_>, depth: usize) -> Result<(), RecordError> {
-    if depth >= cbor::MAX_NESTING {
-        return Err(RecordError::Schema);
-    }
-    let count = decoder.map(MAX_COMMIT_BYTES)?;
-    let mut previous = None;
-    for _ in 0..count {
-        let start = decoder.position();
-        let name = decoder.text(255)?;
-        if name.is_empty() {
-            return Err(RecordError::Schema);
-        }
-        let key = decoder.slice(start, decoder.position())?;
-        if previous.is_some_and(|prior: &[u8]| key <= prior) {
-            return Err(RecordError::Schema);
-        }
-        previous = Some(key);
-        validate_property_value(decoder, depth + 1)?;
-    }
-    Ok(())
-}
-
-fn validate_property_value(decoder: &mut Decoder<'_>, depth: usize) -> Result<(), RecordError> {
-    if depth >= cbor::MAX_NESTING {
-        return Err(RecordError::Schema);
-    }
-    match decoder.peek_major()? {
-        0 => {
-            decoder.uint()?;
-        }
-        3 => {
-            decoder.text(MAX_TEXT_BYTES)?;
-        }
-        4 => {
-            let count = decoder.array(MAX_COMMIT_BYTES)?;
-            for _ in 0..count {
-                validate_property_value(decoder, depth + 1)?;
-            }
-        }
-        5 => validate_property_map(decoder, depth + 1)?,
-        7 => {
-            if !matches!(decoder.simple()?, 0xf4 | 0xf5) {
-                return Err(RecordError::Schema);
-            }
-        }
-        _ => return Err(RecordError::Schema),
-    }
     Ok(())
 }
 
@@ -708,6 +658,85 @@ fn require_key(
 )]
 mod tests {
     use super::*;
+
+    fn root_commit() -> Commit {
+        Commit {
+            tree: [1; 32],
+            parents: Vec::new(),
+            provenance: Provenance {
+                issuer: "issuer".into(),
+                token_id: [2; 16],
+                subject: "principal".into(),
+                kind: PrincipalKind::Workload,
+                workload_identity: None,
+                process: "process".into(),
+                observed_at: 1,
+                writer_epoch: 1,
+                source: CommitSource::Built,
+                embedded_token: None,
+            },
+            timestamp: 1,
+            message: String::new(),
+            profile_pair: ProfilePair {
+                tree_format: 1,
+                chunk_profile: "cdc-1m".into(),
+                recipe: None,
+                conflicted: None,
+                lease: None,
+                required_properties: None,
+            },
+            packs: None,
+            signature: None,
+        }
+    }
+
+    #[test]
+    fn commit_round_trips_unbounded_message_and_principal() {
+        let mut commit = root_commit();
+        commit.message = "m".repeat((1 << 20) + 1);
+        commit.provenance.subject = "p".repeat(65537);
+        commit.packs = Some(alloc::vec![
+            PackLocation { pack_id: [3; 16], locality: Locality::default() };
+            4097
+        ]);
+
+        let encoded = commit.encode().unwrap();
+
+        assert_eq!(Commit::decode(&encoded).unwrap(), commit);
+    }
+
+    #[test]
+    fn nested_recipe_and_properties_round_trip_without_depth_cap() {
+        let mut nested = alloc::vec![0x81; 128];
+        cbor::write_text(&mut nested, &"v".repeat((1 << 20) + 1));
+
+        let mut properties = Vec::new();
+        cbor::write_map(&mut properties, 1);
+        cbor::write_text(&mut properties, "retention");
+        properties.extend_from_slice(&nested);
+
+        let mut recipe = Vec::new();
+        cbor::write_map(&mut recipe, 3);
+        cbor::write_uint(&mut recipe, 1);
+        cbor::write_text(&mut recipe, "overlay");
+        cbor::write_uint(&mut recipe, 2);
+        cbor::write_array(&mut recipe, 257);
+        for _ in 0..257 {
+            cbor::write_bytes(&mut recipe, &[4; 32]);
+        }
+        cbor::write_uint(&mut recipe, 3);
+        cbor::write_map(&mut recipe, 1);
+        cbor::write_text(&mut recipe, "arguments");
+        recipe.extend_from_slice(&nested);
+
+        let mut commit = root_commit();
+        commit.profile_pair.recipe = Some(recipe);
+        commit.profile_pair.required_properties = Some(properties);
+
+        let encoded = commit.encode().unwrap();
+
+        assert_eq!(Commit::decode(&encoded).unwrap(), commit);
+    }
 
     fn hex_bytes(value: &str) -> Vec<u8> {
         value

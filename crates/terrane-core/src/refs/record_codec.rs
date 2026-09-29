@@ -31,7 +31,7 @@ impl Locality {
         let mut previous = 0;
         for _ in 0..count {
             let key = read_key(decoder, &mut previous, 3)?;
-            let label = decoder.text(MAX_TEXT_BYTES)?.to_string();
+            let label = decoder.text(decoder.remaining().len())?.to_string();
             match key {
                 1 => locality.region = Some(label),
                 2 => locality.zone = Some(label),
@@ -127,7 +127,8 @@ impl SnapshotEnvelope {
         if read_key(decoder, &mut previous, 5)? != 1 {
             return Err(RecordError::Schema);
         }
-        let tag = RefName::parse(decoder.text(MAX_TEXT_BYTES)?).map_err(|_| RecordError::Schema)?;
+        let tag = RefName::parse(decoder.text(decoder.remaining().len())?)
+            .map_err(|_| RecordError::Schema)?;
         if tag.class() != RefClass::Tags || read_key(decoder, &mut previous, 5)? != 2 {
             return Err(RecordError::Schema);
         }
@@ -135,12 +136,12 @@ impl SnapshotEnvelope {
         if read_key(decoder, &mut previous, 5)? != 3 {
             return Err(RecordError::Schema);
         }
-        let attestation = decoder.raw_value(MAX_RECORD_BYTES)?.to_vec();
+        let attestation = read_raw_value(decoder)?.to_vec();
         validate_raw_map(&attestation, 3)?;
         if read_key(decoder, &mut previous, 5)? != 4 {
             return Err(RecordError::Schema);
         }
-        let signer_key = decoder.text(MAX_TEXT_BYTES)?.to_string();
+        let signer_key = decoder.text(decoder.remaining().len())?.to_string();
         if read_key(decoder, &mut previous, 5)? != 5 {
             return Err(RecordError::Schema);
         }
@@ -203,7 +204,7 @@ impl RefPolicy {
             match read_key(decoder, &mut previous, 5)? {
                 1 => policy.multi_writer = Some(read_bool(decoder)?),
                 2 => {
-                    let count = decoder.array(MAX_RECORD_BYTES)?;
+                    let count = decoder.array(decoder.remaining().len())?;
                     if count == 0 {
                         return Err(RecordError::Schema);
                     }
@@ -468,7 +469,7 @@ impl RefLogRecord {
         if read_key(&mut decoder, &mut previous_key, 5)? != 3 {
             return Err(RecordError::Schema);
         }
-        let principal = decoder.text(MAX_TEXT_BYTES)?.to_string();
+        let principal = decoder.text(decoder.remaining().len())?.to_string();
         if read_key(&mut decoder, &mut previous_key, 5)? != 4 {
             return Err(RecordError::Schema);
         }

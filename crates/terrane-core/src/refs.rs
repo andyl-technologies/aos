@@ -21,9 +21,6 @@ pub use codec::{
     Provenance,
 };
 
-const MAX_RECORD_BYTES: usize = 1 << 20;
-const MAX_TEXT_BYTES: usize = 65536;
-
 /// A canonical ref or commit record could not be encoded or decoded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecordError {
@@ -85,22 +82,137 @@ fn read_key(decoder: &mut Decoder<'_>, previous: &mut u64, max: u64) -> Result<u
     Ok(key)
 }
 
+struct ValueFrame<'a> {
+    remaining: usize,
+    is_map: bool,
+    next_is_key: bool,
+    previous_key: Option<&'a [u8]>,
+}
+
+/// Validates arbitrary nesting with input-bounded heap storage, not recursion.
+fn read_raw_value<'a>(decoder: &mut Decoder<'a>) -> Result<&'a [u8], RecordError> {
+    read_nested_value(decoder, false)
+}
+
+fn read_nested_value<'a>(
+    decoder: &mut Decoder<'a>,
+    property_values: bool,
+) -> Result<&'a [u8], RecordError> {
+    let start = decoder.position();
+    let mut frames: Vec<ValueFrame<'a>> = Vec::new();
+
+    loop {
+        if let Some(frame) = frames.last_mut() {
+            if frame.remaining == 0 {
+                frames.pop();
+                if frames.is_empty() {
+                    break;
+                }
+                continue;
+            }
+
+            frame.remaining -= 1;
+            if frame.is_map {
+                let is_key = frame.next_is_key;
+                frame.next_is_key = !is_key;
+                if is_key {
+                    let key_start = decoder.position();
+                    match decoder.peek_major()? {
+                        0 if !property_values => {
+                            decoder.uint()?;
+                        }
+                        2 if !property_values => {
+                            decoder.bytes(decoder.remaining().len())?;
+                        }
+                        3 => {
+                            let limit = if property_values {
+                                255
+                            } else {
+                                decoder.remaining().len()
+                            };
+                            let key = decoder.text(limit)?;
+                            if property_values && key.is_empty() {
+                                return Err(RecordError::Schema);
+                            }
+                        }
+                        _ => return Err(RecordError::Schema),
+                    }
+                    let key = decoder.slice(key_start, decoder.position())?;
+                    if frame.previous_key.is_some_and(|previous| key <= previous) {
+                        return Err(RecordError::Schema);
+                    }
+                    frame.previous_key = Some(key);
+                    continue;
+                }
+            }
+        }
+
+        match decoder.peek_major()? {
+            0 => {
+                decoder.uint()?;
+            }
+            1 if !property_values => {
+                decoder.negative_argument()?;
+            }
+            2 if !property_values => {
+                decoder.bytes(decoder.remaining().len())?;
+            }
+            3 => {
+                decoder.text(decoder.remaining().len())?;
+            }
+            4 | 5 => {
+                let is_map = decoder.peek_major()? == 5;
+                let limit = decoder.remaining().len();
+                let count = if is_map {
+                    decoder.map(limit)?
+                } else {
+                    decoder.array(limit)?
+                };
+                frames.push(ValueFrame {
+                    // The decoder binds map count to half the remaining bytes,
+                    // so converting pairs to item count cannot overflow.
+                    remaining: if is_map { count * 2 } else { count },
+                    is_map,
+                    next_is_key: is_map,
+                    previous_key: None,
+                });
+                continue;
+            }
+            7 => {
+                let value = decoder.simple()?;
+                if property_values && value == 0xf6 {
+                    return Err(RecordError::Schema);
+                }
+            }
+            _ => return Err(RecordError::Schema),
+        }
+
+        if frames.is_empty() {
+            break;
+        }
+    }
+
+    decoder
+        .slice(start, decoder.position())
+        .map_err(RecordError::from)
+}
+
 fn validate_raw_map(bytes: &[u8], key_type: u8) -> Result<(), RecordError> {
     let mut decoder = Decoder::new(bytes);
-    let count = decoder.map(MAX_RECORD_BYTES)?;
+    let count = decoder.map(decoder.remaining().len())?;
     let mut previous = None;
     for _ in 0..count {
         if decoder.peek_major()? != key_type {
             return Err(RecordError::Schema);
         }
         let start = decoder.position();
-        decoder.raw_value(MAX_RECORD_BYTES)?;
+        read_raw_value(&mut decoder)?;
         let key = decoder.slice(start, decoder.position())?;
         if previous.is_some_and(|prior: &[u8]| key <= prior) {
             return Err(RecordError::Schema);
         }
         previous = Some(key);
-        decoder.raw_value(MAX_RECORD_BYTES)?;
+        read_raw_value(&mut decoder)?;
     }
     decoder.finish()?;
     Ok(())
@@ -718,6 +830,52 @@ mod tests {
         assert_eq!(tag.class().write_mode(), RefWriteMode::PutIfAbsent);
         assert_eq!(tag.reflog_key(1), Err(RefLogNameError::NotBranch));
         assert_eq!(branch.reflog_key(0), Err(RefLogNameError::ZeroSequence));
+    }
+
+    #[test]
+    fn reflog_round_trips_unbounded_principal_and_locality() {
+        let long_text = "p".repeat((1 << 20) + 1);
+        let record = RefLogRecord {
+            record: RefRecord::first(
+                digest(1),
+                1,
+                Locality {
+                    region: Some(long_text.clone()),
+                    zone: None,
+                    host: None,
+                },
+            ),
+            previous_commit: None,
+            principal: long_text,
+            reason: RefLogReason::Commit,
+            timestamp: 1,
+        };
+
+        let encoded = record.encode().unwrap();
+
+        assert_eq!(RefLogRecord::decode(&encoded).unwrap(), record);
+    }
+
+    #[test]
+    fn iterative_values_reject_truncation_and_noncanonical_nested_maps() {
+        for bytes in [
+            &[0x81][..],
+            &[0x82, 0x80][..],
+            &[0x81, 0xa2, 1, 0, 1, 1][..],
+            &[0x81, 0xa2, 2, 0, 1, 0][..],
+            &[0x81, 0x18, 0x17][..],
+        ] {
+            assert!(
+                read_raw_value(&mut Decoder::new(bytes)).is_err(),
+                "{bytes:?}"
+            );
+        }
+
+        let bytes = [0x82, 0xa0, 0x81, 0xf6];
+        let mut decoder = Decoder::new(&bytes);
+
+        assert_eq!(read_raw_value(&mut decoder).unwrap(), bytes);
+        assert!(decoder.finish().is_ok());
     }
 
     #[test]
