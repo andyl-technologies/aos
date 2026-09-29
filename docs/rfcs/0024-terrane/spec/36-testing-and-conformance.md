@@ -147,10 +147,10 @@ here is a conformance error of this document.
 | `gate:derivation-memo` | 10 | DRV-21 |
 | `gate:descriptor-strict` | 04 | OBJ-6 |
 | `gate:formats-no-std` | 03 | ARCH-1 |
-| `gate:gc-grace` | 01 | prose in 01 |
-| `gate:identity-idempotence` | 04 | prose in 01, OBJ-1, OBJ-5 |
+| `gate:gc-grace` | 01 | INV-3 |
+| `gate:identity-idempotence` | 04 | PERF-11, TEST-15 |
 | `gate:index-tree-maintenance` | 10 | DRV-12 |
-| `gate:no-duplicate-tiers` | 01 | prose in 01 |
+| `gate:no-duplicate-tiers` | 01 | INV-4 |
 | `gate:no-privileged-mounts` | 03 | ARCH-9 |
 | `gate:object-identity-from-manifest` | 04 | OBJ-13 |
 | `gate:one-protocol` | 03 | ARCH-5 |
@@ -159,14 +159,14 @@ here is a conformance error of this document.
 | `gate:property-resolution` | 08 | PROP-1 |
 | `gate:publisher-sole-writer` | 03 | ARCH-8 |
 | `gate:ref-advance-ordering` | 09 | REF-12 |
-| `gate:ref-cas-only` | 01 | prose in 01 |
+| `gate:ref-cas-only` | 01 | INV-2 |
 | `gate:ref-epoch-fencing` | 09 | REF-6 |
 | `gate:ref-names` | 09 | REF-1 |
 | `gate:repository-portable` | 03 | ARCH-4 |
 | `gate:role-selection` | 03 | ARCH-10 |
 | `gate:store-expression-static` | 03 | ARCH-6 |
 | `gate:store-opaque` | 03 | ARCH-2 |
-| `gate:surface-layering` | 03 | prose in 01, ARCH-3 |
+| `gate:surface-layering` | 03 | PERF-11, TEST-15 |
 | `gate:tree-acyclic` | 04 | OBJ-20 |
 | `gate:tree-boundaries` | 06 | TREE-21 |
 | `gate:tree-hardlinks` | 06 | TREE-11 |
@@ -174,7 +174,7 @@ here is a conformance error of this document.
 | `gate:tree-keys` | 06 | TREE-1 |
 | `gate:tree-well-formed` | 06 | TREE-17, TREE-30, TREE-34, TREE-4, TREE-8 |
 | `gate:verify-before-admit` | 05 | OBJ-5, CDC-14 |
-| `gate:view-identity` | 01 | prose in 01 |
+| `gate:view-identity` | 01 | INV-5 |
 | `gate:worker-no-network` | 03 | ARCH-7 |
 | `gate:zstd-concat` | 05 | CDC-11 |
 
@@ -192,10 +192,10 @@ here is a conformance error of this document.
 | `gate:bucket-key-registry` | 13 | BKT-1 |
 | `gate:bucket-multipart-abort` | 13 | BKT-9 |
 | `gate:bucket-mutability-classes` | 13 | BKT-2 |
-| `gate:bucket-probe` | 13 | BKT-10, MIG-25, TEST-7, EDGE-2, prose in 40 |
+| `gate:bucket-probe` | 13 | PERF-11, TEST-15 |
 | `gate:bucket-ref-cas` | 13 | BKT-5 |
 | `gate:bundle-verify` | 12 | PACK-24 |
-| `gate:commit-order` | 12 | prose in 01, PACK-14 |
+| `gate:commit-order` | 12 | PERF-11, TEST-15 |
 | `gate:gc-grace-window` | 17 | GC-10 |
 | `gate:gc-mark-reachability` | 17 | GC-5 |
 | `gate:gc-roots-complete` | 17 | GC-1 |
@@ -408,31 +408,31 @@ here is a conformance error of this document.
 | `gate:obs-metrics` | 34 | OBS-11 |
 | `gate:obs-status-surface` | 34 | OBS-7 |
 | `gate:obs-trace-propagation` | 34 | OBS-1 |
-| `gate:perf-cold-closure` | 35 | prose in 35 |
-| `gate:perf-cold-mount` | 35 | prose in 35 |
-| `gate:perf-cold-span` | 35 | prose in 35, PERF-2 |
-| `gate:perf-commit-delta` | 35 | prose in 35, PERF-5 |
-| `gate:perf-commit-latency` | 35 | prose in 35 |
-| `gate:perf-erofs-gen` | 35 | prose in 35 |
-| `gate:perf-fork` | 35 | prose in 35 |
-| `gate:perf-fsync-sync` | 35 | prose in 35 |
-| `gate:perf-gateway-memory` | 35 | prose in 35 |
-| `gate:perf-gateway-rps` | 35 | prose in 35 |
-| `gate:perf-gateway-zero-copy` | 35 | prose in 35, PERF-9 |
-| `gate:perf-gc-mark` | 35 | prose in 35 |
-| `gate:perf-hot-read` | 35 | prose in 35, PERF-1 |
-| `gate:perf-index-size` | 35 | prose in 35 |
-| `gate:perf-inode-memory` | 35 | prose in 35, PERF-7 |
-| `gate:perf-merge-delta` | 35 | prose in 35, PERF-6, TEST-4 |
+| `gate:perf-cold-closure` | 35 | PERF-11, TEST-15 |
+| `gate:perf-cold-mount` | 35 | PERF-11, TEST-15 |
+| `gate:perf-cold-span` | 35 | PERF-11, TEST-15 |
+| `gate:perf-commit-delta` | 35 | PERF-11, TEST-15 |
+| `gate:perf-commit-latency` | 35 | PERF-11, TEST-15 |
+| `gate:perf-erofs-gen` | 35 | PERF-11, TEST-15 |
+| `gate:perf-fork` | 35 | PERF-11, TEST-15 |
+| `gate:perf-fsync-sync` | 35 | PERF-11, TEST-15 |
+| `gate:perf-gateway-memory` | 35 | PERF-11, TEST-15 |
+| `gate:perf-gateway-rps` | 35 | PERF-11, TEST-15 |
+| `gate:perf-gateway-zero-copy` | 35 | PERF-11, TEST-15 |
+| `gate:perf-gc-mark` | 35 | PERF-11, TEST-15 |
+| `gate:perf-hot-read` | 35 | PERF-11, TEST-15 |
+| `gate:perf-index-size` | 35 | PERF-11, TEST-15 |
+| `gate:perf-inode-memory` | 35 | PERF-11, TEST-15 |
+| `gate:perf-merge-delta` | 35 | PERF-11, TEST-15 |
 | `gate:perf-methodology` | 35 | PERF-11 |
-| `gate:perf-negotiation` | 35 | prose in 35 |
-| `gate:perf-nested-zero-dup` | 35 | prose in 35 |
-| `gate:perf-no-bookkeeping-on-read` | 35 | prose in 35, PERF-8 |
-| `gate:perf-readdir` | 35 | prose in 35, PERF-3 |
-| `gate:perf-shared-page-cache` | 35 | prose in 35, PERF-10 |
-| `gate:perf-warm-mount` | 35 | prose in 35, PERF-4 |
-| `gate:perf-warm-read` | 35 | prose in 35 |
-| `gate:perf-worker-rss` | 35 | prose in 35 |
+| `gate:perf-negotiation` | 35 | PERF-11, TEST-15 |
+| `gate:perf-nested-zero-dup` | 35 | PERF-11, TEST-15 |
+| `gate:perf-no-bookkeeping-on-read` | 35 | PERF-11, TEST-15 |
+| `gate:perf-readdir` | 35 | PERF-11, TEST-15 |
+| `gate:perf-shared-page-cache` | 35 | PERF-11, TEST-15 |
+| `gate:perf-warm-mount` | 35 | PERF-11, TEST-15 |
+| `gate:perf-warm-read` | 35 | PERF-11, TEST-15 |
+| `gate:perf-worker-rss` | 35 | PERF-11, TEST-15 |
 | `gate:registry-complete` | 36 | TEST-16 |
 | `gate:tier-chaos` | 36 | TEST-8 |
 
@@ -444,15 +444,15 @@ here is a conformance error of this document.
 | `gate:core-no-std` | 37 | CRATE-1, CRATE-21 |
 | `gate:crate-graph` | 37 | CRATE-19 |
 | `gate:edge-native-interop` | 38 | EDGE-14 |
-| `gate:exec-through-overlay` | 40 | prose in 40 |
+| `gate:exec-through-overlay` | 40 | RISK-11 |
 | `gate:feature-matrix` | 37 | CRATE-28, CRATE-29, CRATE-8 |
 | `gate:golden-vectors` | 37 | TEST-1, CRATE-2, CRATE-3 |
 | `gate:lint` | 37 | CRATE-39 |
-| `gate:negotiation-bytes` | 40 | prose in 40 |
-| `gate:perf-write-path` | 40 | prose in 40 |
-| `gate:routing-stability` | 40 | prose in 40 |
+| `gate:negotiation-bytes` | 40 | RISK-7 |
+| `gate:perf-write-path` | 40 | RISK-10 |
+| `gate:routing-stability` | 40 | RISK-12 |
 | `gate:runtime-agnostic` | 37 | CRATE-7 |
-| `gate:tree-node-distribution` | 40 | prose in 40 |
+| `gate:tree-node-distribution` | 40 | TREE-22, RISK-5 |
 | `gate:unsafe-audit` | 37 | CRATE-30, CRATE-31 |
 
 - **[TEST-16]** Every `gate:` name cited anywhere in files `01` through

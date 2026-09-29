@@ -415,6 +415,50 @@ is added rather than editing history.
     `CDC-3`, `PROV-12`, `PACK-17`, `BKT-4`, `GC-15`, `GC-22`, `GC-23`,
     `EROFS-14`, `CRATE-15`, and the glossary.
 
+- **[D-24] Normalize prolly boundaries by stored bytes and split before overflow.**
+  - **Status:** Decided
+  - **Decision:** Scale the existing base threshold by the current item's
+    stored encoded length divided by eight, with exact integer arithmetic
+    and saturation at `2^32`. Split before an item that would exceed the
+    64 KiB item-byte cap, recompute prefix compression after a split, and
+    reject an item that cannot fit alone. Keep every requirement ID stable.
+  - **Rationale:** The original per-item comparison made the expected size
+    depend on entry width. A reference spike over ten million entries
+    measured complete leaf means of 27,674, 27,980, and 39,292 bytes for
+    sequential, shared-prefix, and hash-like keys, rather than the stated
+    8-16 KiB target. Closing after overflow also produced nodes above the
+    hard bound, including 65,693 item bytes in an internal node. Normalizing
+    by bytes restores the intended size hazard, and splitting before
+    overflow preserves the decoder limit. Both decisions depend only on
+    sorted content and preserve history independence. This correction occurs
+    before the identity format is frozen.
+  - **Alternatives considered:** Raising the decoder cap (rejected: leaves
+    entry-width-dependent variance and enlarges untrusted allocations);
+    weakening the target to fit the old measurements (rejected: hides the
+    failed assumption); floating-point exponential normalization (rejected:
+    introduces unnecessary cross-implementation rounding choices).
+  - **Affects:** TREE-21 to TREE-24, TREE-27, TREE-29, RISK-5, and
+    `reference/golden-vectors.md` §node-boundaries.
+
+- **[D-25] Give every gate an explicit owner ID, including risk experiments.**
+  - **Status:** Decided
+  - **Decision:** Replace prose-only registry ownership with existing
+    invariant, performance-methodology, or tracked-risk IDs. TEST-16 permits
+    a tracked-risk owner for experiments defined in the informative risk
+    register. Keep every gate name and requirement ID stable.
+  - **Rationale:** Twenty-three registry rows named only prose, despite
+    TEST-16 requiring a citing requirement ID in every row. The five risk
+    experiments cannot cite a normative requirement because the risk
+    register is deliberately informative. Recognizing its stable RISK IDs
+    preserves the distinction without pretending an experiment is an
+    implemented feature. Performance rows already fall under PERF-11 and
+    TEST-15; invariant rows already have their own stable owners.
+  - **Alternatives considered:** Accepting nonempty prose as ownership
+    (rejected: makes ownership validation meaningless); moving tracked
+    uncertainties into normative requirements (rejected: contradicts the
+    conventions for the informative risk register).
+  - **Affects:** TEST-16 and the gate registry in file 36.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

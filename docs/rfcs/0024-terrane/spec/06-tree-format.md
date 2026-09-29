@@ -212,26 +212,47 @@ is a function of the encoded items alone, so that the same sorted item
 sequence always yields the same nodes.
 
 ```text
-for each item i in key order, with the node so far holding size S bytes:
-  h = rolling-hash over the canonical encoding of item i
-  p = boundary-probability(S)
-  if S >= MAX_NODE:            close the node after item i
-  else if S >= MIN_NODE and (h mod 2^32) < p * 2^32:
-                               close the node after item i
+for each item i in key order:
+  encode i relative to the node's previous key; let L be its stored length
+  if S + L > MAX_NODE:
+    close the nonempty node before i
+    re-encode i as the first item of the new node; recompute L
+  if L > MAX_NODE:            reject the item
+  append i; S = S + L
+  h = low 32 bits of BLAKE3 over the full-key canonical encoding of i
+  T = min(2^32, floor(B(S) * L / 8))
+  if S == MAX_NODE:           close the node after i
+  else if S >= MIN_NODE and h < T:
+                               close the node after i
   else:                        continue
 ```
+
+`S` is the number of stored item bytes in the current node, excluding node
+framing. `L` is the current item's actual stored length, including prefix
+compression. The full-key encoding is used only for hashing. A split before
+an item resets prefix compression before the item is re-encoded. The final
+nonempty node closes at the end of the sequence.
 
 - **[TREE-21]** The rolling hash is the low 32 bits of BLAKE3 over the
   canonical encoding of the item (for a leaf, the encoded `leaf-item` with
   `shared` set to 0 and the full key; for an internal node, the encoded
   `child-ref`). Using the full key makes the boundary decision independent
   of prefix compression state. *Gate:* `gate:tree-boundaries`.
-- **[TREE-22]** `MIN_NODE` is 4 KiB and `MAX_NODE` is 64 KiB of encoded
-  item bytes. `boundary-probability(S)` rises linearly from `1/4096` at
-  `MIN_NODE` to `1/256` at 32 KiB and stays at `1/256` until `MAX_NODE`,
-  giving a target node size in the 8 KiB to 16 KiB range while bounding the
-  variance that a constant probability would produce. The exact table is in
+- **[TREE-22]** `MIN_NODE` is 4 KiB and `MAX_NODE` is 64 KiB of stored
+  encoded item bytes. The base threshold `B(S)` rises linearly from `2^20`
+  at `MIN_NODE` to `2^24` at 32 KiB and stays at `2^24` until `MAX_NODE`.
+  The per-item comparison threshold MUST be
+  `min(2^32, floor(B(S) * L / 8))`, using integer arithmetic, where `S`
+  includes the current item and `L` is its stored encoded length. Scaling
+  by item bytes prevents large entries from reducing the split frequency
+  per byte. The target mean of complete nodes is 8 KiB to 16 KiB for the
+  sequential, shared-prefix, and hash-like fixtures of
+  `gate:tree-node-distribution`; final tail nodes and the root are reported
+  separately. The base table and comparison vectors are in
   [`reference/golden-vectors.md`](reference/golden-vectors.md) §node-boundaries.
+  A builder MUST split before an item that would exceed `MAX_NODE`, and
+  MUST reject an item whose encoding as a node's first item exceeds that
+  bound. *Gate:* `gate:tree-node-distribution`.
 - **[TREE-23]** A node MUST close after its last item regardless of the
   boundary function. The same procedure MUST be applied at every level: the
   `child-ref` items of level *k* + 1 are formed from the nodes of level *k*

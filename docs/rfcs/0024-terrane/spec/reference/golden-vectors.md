@@ -109,12 +109,13 @@ equals the node identity (OBJ-19).
 
 ## Node boundaries
 
-`boundary-probability(S)` for encoded size `S` (TREE-22): `1/4096` at
-`MIN_NODE` = 4 096, rising linearly to `1/256` at 32 768, constant to
-`MAX_NODE` = 65 536. The comparison is `(h mod 2^32) < T(S)` where
-`T(S) = floor(p(S) * 2^32)`.
+The base threshold `B(S)` for stored encoded size `S` (TREE-22) corresponds
+to `1/4096` at `MIN_NODE` = 4 096, rising linearly to `1/256` at 32 768,
+constant to `MAX_NODE` = 65 536. For an item with stored encoded length
+`L`, the comparison is `h < min(2^32, floor(B(S) * L / 8))`. Hashing uses
+the full-key encoding, while `S` and `L` use the stored compressed encoding.
 
-| S (bytes) | p(S) | T(S) |
+| S (bytes) | base probability | B(S) |
 | --- | --- | --- |
 | 4096 | 0.000244141 | 1048576 |
 | 8192 | 0.000767299 | 3295524 |
@@ -127,9 +128,23 @@ equals the node identity (OBJ-19).
 | 49152 | 0.003906250 | 16777216 |
 | 65536 | 0.003906250 | 16777216 |
 
-Between table rows `T(S)` is linear in `S` and MUST be computed exactly as
+Between table rows `B(S)` is linear in `S` and MUST be computed exactly as
 `floor((2^20 + (S - 4096) * (2^24 - 2^20) / 28672))` for
 `4096 <= S <= 32768`, using integer arithmetic.
+
+Per-item comparison vectors (the threshold includes the item length):
+
+| S (bytes) | L (bytes) | comparison threshold |
+| --- | --- | --- |
+| 4096 | 8 | 1048576 |
+| 8192 | 48 | 19773144 |
+| 16384 | 64 | 62315368 |
+| 32768 | 128 | 268435456 |
+| 65536 | 65536 | 4294967296 |
+
+The final row saturates at `2^32`; it MUST NOT wrap to zero. A node at
+`MAX_NODE` closes unconditionally. An item that would exceed the cap is
+re-encoded in a new node before the threshold is computed (TREE-22).
 
 ## Manifest (encoding vector)
 
