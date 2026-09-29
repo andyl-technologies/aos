@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "e67226c8ab5600273d6d15365dfa761b821dea470359b5eec33c214aa4c626de";
+  sha256 = "6403725e28593e96e7a3e2bc417d70fb2cc7d20b1fa03e9813832a8744e9e4e1";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -89,9 +89,15 @@
     "picosecond remainders until the final elapsed conversion. Add an optional"
     "phase migration subsection with legacy zero-phase defaults and exercise"
     "actual controller timestamp, SMART transfer and serialized phase checks."
+    ""
+    "Preserve fractional CXL timestamp elapsed origins."
+    "Keep the guest unsigned-nanosecond timestamp ABI while retaining the"
+    "internal picosecond remainder until the final elapsed conversion."
+    "Migrate timestamp state through an optional subsection with legacy"
+    "unset defaults and reject malformed sub-nanosecond phases."
   ];
-  commit = "55b61b7e82a57cede860739d1b1ccffd46b515e8";
-  tree = "dc3229df194d3db0dd76d7e4120d4dcfa6e9dabb";
+  commit = "71883e595f69dbf9839466b9afdd60340abeb972";
+  tree = "d11a7ac8e73ec93541046d96faa10ba13382dc30";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -100,7 +106,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "1456c300339b7413a8153e8224956583f981aa627d99a787ff77b3a6761d7ab0";
+  bundleSha256 = "871a811226b07f8a74de4804e4deab0a7600f5e42e040fccd602ebc08c5e6204";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
