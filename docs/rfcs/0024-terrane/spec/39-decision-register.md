@@ -707,6 +707,57 @@ is added rather than editing history.
   - **Affects:** TREE-4, TREE-31, ALG-16 to ALG-19; no CDDL or golden byte
     changes, and conflict-free tree validation remains unchanged.
 
+- **[D-40] Separate unresolved root metadata from entry conflicts.**
+  - **Status:** Decided
+  - **Decision:** Merge root properties per key with three-way equality.
+    Explicit side preference may resolve concurrent changes; otherwise
+    return a typed conflict with all three property maps for caller resolution.
+    ALG-17's nonfailure rule and ALG-18's `error` restriction apply to entries.
+  - **Rationale:** The implied root has no entry, and property types have
+    no conflict-value encoding. Fabricating one violates PROP-1 and TREE-3;
+    silently choosing a side loses concurrent metadata changes.
+  - **Affects:** ALG-16 to ALG-18, TREE-3, TREE-33 and PROP-1; existing
+    canonical encodings and requirement IDs remain unchanged.
+
+- **[D-41] Rebuild locations without inventing deleted-pack state.**
+  - **Status:** Decided
+  - **Decision:** Reconstruct content locations from immutable per-pack
+    indexes, and reconcile state using durable GC trash records, deletion
+    confirmations, and the preceding generation's retained tombstones.
+    Use authoritative publication metadata for generations.
+  - **Rationale:** Per-pack indexes contain neither tombstones nor generation
+    fields. Recreating that state from their bytes alone is impossible and
+    would resurrect content forbidden by PACK-18. The registered GC and
+    generation records provide the missing durable facts without a database.
+  - **Affects:** PACK-17 to PACK-20, BKT-4, GC-15 and GC-20; no wire or
+    on-disk layout changes, and requirement IDs remain stable.
+
+- **[D-42] Reuse merge subtrees subject to canonical boundary compatibility.**
+  - **Status:** Decided
+  - **Decision:** Select a side's entire range when base equals the other
+    side, without comparing those entries. Reuse its immutable subtree when
+    canonical cuts fit the result; otherwise rechunk the affected edge
+    regions and resume sharing at compatible boundaries.
+  - **Rationale:** A TREE-22 split-before cut depends on the following item's
+    stored size. A neighboring merge change can invalidate that cut even
+    when the selected subtree is unchanged. Unconditional physical splicing
+    would violate canonical boundaries and history independence. This keeps
+    ALG-15's semantic shortcut and requires measurable compatible reuse.
+  - **Affects:** ALG-15 and TREE-21 to TREE-24; canonical encoding rules and
+    requirement IDs remain unchanged.
+
+- **[D-43] Preserve effective trust when removing a root boundary.**
+  - **Status:** Decided
+  - **Decision:** Flatten must preserve the effective trust conjunction or
+    refuse an incompatible property context, in addition to comparing
+    domain, store, and ACL boundaries.
+  - **Rationale:** A graft's target can require a narrower trust selector
+    than its parent. Discarding that context while inlining its entries
+    exposes previously invisible entries, violating PROV-14 and PROV-15
+    and ALG-6's observable namespace equivalence.
+  - **Affects:** ALG-6, ALG-7 and PROV-14 to PROV-15; no encoding changes
+    or new property types, and requirement IDs remain stable.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

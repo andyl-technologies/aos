@@ -5,6 +5,8 @@
 //! register a separate domain table and digest algorithm without changing any
 //! identity already issued by an existing store.
 
+pub mod descriptor;
+
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;

@@ -132,8 +132,9 @@ data.
 - **[GC-19]** Compaction MUST write the new pack and index before removing
   any old index entry, so that every chunk is resolvable at every instant.
 - **[GC-20]** Merged index shards MUST be rebuilt by compaction at least
-  once per index generation, dropping entries for tombstoned packs and folding in
-  per-pack indexes written since the previous generation. Readers MAY
+  once per index generation, replacing live entries for tombstoned packs
+  with tombstones retained until PACK-18's deletion confirmation, and
+  folding in per-pack indexes written since the previous generation. Readers MAY
   continue to use the previous generation until the new one is published.
 - **[GC-21]** Compaction MUST honour the same bytes-per-second limit as a
   scrub ([`15-redundancy.md`](15-redundancy.md)) and MUST be preemptible by

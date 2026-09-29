@@ -236,8 +236,15 @@ Each shard has the same preamble as a pack index and entries of this shape:
   proportional to change rather than to the index
   ([`21-bandwidth.md`](21-bandwidth.md)).
 - **[PACK-20]** The merged index is a cache. An implementation MUST be able
-  to rebuild every shard from per-pack index objects alone
+  to rebuild every shard's content locations from per-pack index objects alone
   ([STORE-11] in [`11-store-trait.md`](11-store-trait.md)).
+  Live versus tombstoned state MUST be reconciled with the durable GC trash
+  records and verified deletion confirmations (GC-15 and GC-20), retaining
+  a prior generation's tombstones until PACK-18 permits their removal.
+  Publication generations MUST come from authoritative generation manifests
+  or verified publication records; they MUST NOT be guessed from LIST order,
+  random pack IDs, or timestamps. Rebuilding MUST NOT require pack-body reads
+  or an auxiliary database.
   *Gate:* `gate:index-rebuild`.
 
 ## Filters

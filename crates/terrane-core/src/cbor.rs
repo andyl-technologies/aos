@@ -13,9 +13,6 @@
 use alloc::vec::Vec;
 use core::fmt;
 
-/// Maximum nesting of a generic CBOR value.
-pub const MAX_NESTING: usize = 64;
-
 /// A deterministic CBOR decoding failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -208,40 +205,31 @@ impl<'a> Decoder<'a> {
     /// Validates and skips one generic deterministic value.
     ///
     /// # Errors
-    /// Rejects noncanonical maps, unsupported types, excessive nesting, or
-    /// values larger than `max_bytes`.
+    /// Rejects noncanonical maps, unsupported types, or values larger than
+    /// `max_bytes`. Traversal uses an input-bounded heap stack, so deeply
+    /// nested values do not consume the call stack.
     pub fn skip_value(&mut self, max_bytes: usize) -> Result<(), Error> {
-        self.skip_nested(0, max_bytes)
-    }
-
-    fn skip_nested(&mut self, depth: usize, max_bytes: usize) -> Result<(), Error> {
-        if depth >= MAX_NESTING {
-            return Err(Error::Limit);
+        enum Frame<'a> {
+            Values(usize),
+            Map {
+                remaining: usize,
+                previous: Option<&'a [u8]>,
+            },
         }
+
         let start = self.position;
-        match self.peek_major()? {
-            0 => {
-                self.uint()?;
-            }
-            1 => {
-                self.negative_argument()?;
-            }
-            2 => {
-                self.bytes(max_bytes)?;
-            }
-            3 => {
-                self.text(max_bytes)?;
-            }
-            4 => {
-                let count = self.array(max_bytes)?;
-                for _ in 0..count {
-                    self.skip_nested(depth + 1, max_bytes)?;
+        let mut stack = alloc::vec![Frame::Values(1)];
+        while let Some(frame) = stack.last_mut() {
+            match frame {
+                Frame::Values(0) | Frame::Map { remaining: 0, .. } => {
+                    stack.pop();
+                    continue;
                 }
-            }
-            5 => {
-                let count = self.map(max_bytes)?;
-                let mut previous = None;
-                for _ in 0..count {
+                Frame::Values(remaining) => *remaining -= 1,
+                Frame::Map {
+                    remaining,
+                    previous,
+                } => {
                     let key_start = self.position;
                     match self.peek_major()? {
                         0 => {
@@ -256,20 +244,40 @@ impl<'a> Decoder<'a> {
                         _ => return Err(Error::Unsupported),
                     }
                     let key = &self.input[key_start..self.position];
-                    if previous.is_some_and(|prior: &[u8]| key <= prior) {
+                    if previous.is_some_and(|prior| key <= prior) {
                         return Err(Error::NonCanonical);
                     }
-                    previous = Some(key);
-                    self.skip_nested(depth + 1, max_bytes)?;
+                    *previous = Some(key);
+                    *remaining -= 1;
                 }
             }
-            7 => {
-                self.simple()?;
+
+            match self.peek_major()? {
+                0 => {
+                    self.uint()?;
+                }
+                1 => {
+                    self.negative_argument()?;
+                }
+                2 => {
+                    self.bytes(max_bytes)?;
+                }
+                3 => {
+                    self.text(max_bytes)?;
+                }
+                4 => stack.push(Frame::Values(self.array(max_bytes)?)),
+                5 => stack.push(Frame::Map {
+                    remaining: self.map(max_bytes)?,
+                    previous: None,
+                }),
+                7 => {
+                    self.simple()?;
+                }
+                _ => return Err(Error::Unsupported),
             }
-            _ => return Err(Error::Unsupported),
-        }
-        if self.position - start > max_bytes {
-            return Err(Error::Limit);
+            if self.position - start > max_bytes {
+                return Err(Error::Limit);
+            }
         }
         Ok(())
     }
@@ -409,5 +417,30 @@ mod tests {
         for bytes in [&[0xa2, 1, 0, 1, 1][..], &[0xa2, 2, 0, 1, 0][..]] {
             assert_eq!(Decoder::new(bytes).skip_value(64), Err(Error::NonCanonical));
         }
+    }
+
+    #[test]
+    fn deep_values_use_input_bounded_traversal() {
+        let mut value = alloc::vec![0x81; 4096];
+        value.push(0);
+        let mut decoder = Decoder::new(&value);
+        assert_eq!(decoder.raw_value(value.len()), Ok(value.as_slice()));
+        assert_eq!(decoder.finish(), Ok(()));
+        assert_eq!(
+            Decoder::new(&value).skip_value(value.len() - 1),
+            Err(Error::Limit)
+        );
+        assert!(
+            Decoder::new(&value[..value.len() - 1])
+                .skip_value(value.len())
+                .is_err()
+        );
+
+        let mut nested_map = alloc::vec![0x81; 4096];
+        nested_map.extend_from_slice(&[0xa2, 2, 0, 1, 0]);
+        assert_eq!(
+            Decoder::new(&nested_map).skip_value(nested_map.len()),
+            Err(Error::NonCanonical)
+        );
     }
 }

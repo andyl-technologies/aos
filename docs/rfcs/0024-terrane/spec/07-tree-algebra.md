@@ -80,6 +80,10 @@ the parent's key space, prefixing its keys with `at/`.
   as a boundary property (`domain`, `store`, `acl`;
   [`08-properties.md`](08-properties.md)). A root MUST NOT be flattened across
   an authority boundary.
+  Flattening also MUST NOT widen the effective trust selector required by
+  PROV-14. If removing the target root's property context would change
+  entry visibility and the inline representation cannot preserve that
+  context, the operation MUST report an incompatible-property error.
 
 ### Overlay
 
@@ -127,7 +131,11 @@ consults each layer in order and returns the first entry found.
 - **[ALG-15]** `merge` MUST be implemented as a three-cursor walk over the
   three inputs in key order and MUST skip any subtree whose hash is equal in
   all three inputs, or equal in `base` and one side (in which case the other
-  side's subtree is taken whole). Its expected cost is O(delta × log n)
+  side's range is selected without comparing its entries). The selected
+  subtree MUST be reused whole when its boundaries remain canonical in the
+  result. When a neighboring change invalidates a TREE-22 cut, only the
+  affected boundary region MUST be rechunked until resynchronization;
+  unchanged compatible subtrees MUST still be reused. Its expected cost is O(delta × log n)
   where delta is the number of entries changed on either side; boundary
   shifts can require O(n) work. *Gate:*
   `gate:algebra-merge`.
@@ -137,7 +145,8 @@ consults each layer in order and returns the first entry found.
   - `ours = base`: take `theirs`.
   - `theirs = base`: take `ours`.
   - otherwise: the key is **conflicted**; its result is a conflict value.
-- **[ALG-17]** A merge MUST NOT fail because of a conflict. A conflicted key
+- **[ALG-17]** A merge MUST NOT fail because of an unresolved entry conflict.
+  A conflicted key
   MUST produce a conflict value, an entry of type `conflict` that carries the
   ordered side candidates `[ours, theirs]` and a separate `base` entry or
   `null`, as defined by TREE-31 and the CDDL. An absent side is encoded as
@@ -153,8 +162,17 @@ consults each layer in order and returns the first entry found.
   - `prefer-newer`: take the candidate whose introducing commit has the
     later timestamp.
   - `keep-conflict`: leave the conflict value in the result.
-  - `error`: fail the merge. This is the only policy that may fail.
+  - `error`: fail the merge for an unresolved entry conflict. This is the
+    only policy that may fail solely because an entry is conflicted.
   Policies MAY be listed; the first that resolves wins.
+
+Root properties are metadata, not entries. Merge them per property using
+the equality rules in ALG-16. Concurrent unequal changes MAY be resolved
+by an explicit `prefer-ours` or `prefer-theirs` policy; otherwise the
+implementation MUST report a typed root-property conflict carrying the
+three maps for caller resolution. It MUST NOT encode an entry conflict
+inside a typed property value or silently select one side. Validation and
+non-entry metadata failures are separate from ALG-17's entry-conflict rule.
 - **[ALG-19]** A root that contains a conflict value MUST be marked
   `conflicted` in its commit's profile ([`09-refs-and-commits.md`](09-refs-and-commits.md)).
   A surface MUST NOT expose a conflicted root unless the surface declares

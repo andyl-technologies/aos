@@ -291,27 +291,32 @@ fn content_ref(decoder: &mut Decoder<'_>) -> Result<ContentRef, Error> {
     }
 }
 
-fn property_value(decoder: &mut Decoder<'_>, depth: usize) -> Result<(), Error> {
-    if depth >= cbor::MAX_NESTING {
-        return Err(Error::Limit);
+/// Validates the recursively defined property-value schema without recursion.
+///
+/// # Errors
+/// Rejects noncanonical values, excluded property types, invalid text-map
+/// names, and claimed lengths exceeding the format's input limits.
+pub(crate) fn property_value(decoder: &mut Decoder<'_>) -> Result<(), Error> {
+    enum Frame<'a> {
+        Values(usize),
+        Map {
+            remaining: usize,
+            previous: Option<&'a str>,
+        },
     }
-    match decoder.peek_major()? {
-        0 => {
-            decoder.uint()?;
-        }
-        3 => {
-            decoder.text(MAX_NODE_ITEMS_BYTES)?;
-        }
-        4 => {
-            let count = decoder.array(MAX_NODE_ITEMS_BYTES)?;
-            for _ in 0..count {
-                property_value(decoder, depth + 1)?;
+
+    let mut stack = alloc::vec![Frame::Values(1)];
+    while let Some(frame) = stack.last_mut() {
+        match frame {
+            Frame::Values(0) | Frame::Map { remaining: 0, .. } => {
+                stack.pop();
+                continue;
             }
-        }
-        5 => {
-            let count = decoder.map(MAX_NODE_ITEMS_BYTES)?;
-            let mut previous = None;
-            for _ in 0..count {
+            Frame::Values(remaining) => *remaining -= 1,
+            Frame::Map {
+                remaining,
+                previous,
+            } => {
                 let key = decoder.text(MAX_COMPONENT)?;
                 if key.is_empty()
                     || previous
@@ -319,16 +324,26 @@ fn property_value(decoder: &mut Decoder<'_>, depth: usize) -> Result<(), Error> 
                 {
                     return Err(Error::Entry);
                 }
-                previous = Some(key);
-                property_value(decoder, depth + 1)?;
+                *previous = Some(key);
+                *remaining -= 1;
             }
         }
-        7 => {
-            if decoder.simple()? == 0xf6 {
-                return Err(Error::Entry);
+
+        match decoder.peek_major()? {
+            0 => {
+                decoder.uint()?;
             }
+            3 => {
+                decoder.text(MAX_NODE_ITEMS_BYTES)?;
+            }
+            4 => stack.push(Frame::Values(decoder.array(MAX_NODE_ITEMS_BYTES)?)),
+            5 => stack.push(Frame::Map {
+                remaining: decoder.map(MAX_NODE_ITEMS_BYTES)?,
+                previous: None,
+            }),
+            7 if decoder.simple()? != 0xf6 => {}
+            _ => return Err(Error::Entry),
         }
-        _ => return Err(Error::Entry),
     }
     Ok(())
 }
@@ -356,7 +371,7 @@ fn properties<'a>(decoder: &mut Decoder<'a>) -> Result<Vec<Property<'a>>, Error>
         }
         previous = Some(name);
         let start = decoder.position();
-        property_value(decoder, 0)?;
+        property_value(decoder)?;
         result.push(Property {
             name,
             value: decoder.slice(start, decoder.position())?,
@@ -1206,10 +1221,10 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::{
-        ChildRef, ContentRef, Entry, EntryKind, Error, LeafItem, Node, NodeItems, TreeUse,
-        decode_entry_bytes, decode_node, decode_node_for, encode_node, encode_node_for,
-        validate_graft_chain, validate_index_key, validate_key, validate_tree_entries,
-        verify_child_ref,
+        ChildRef, ContentRef, Decoder, Entry, EntryKind, Error, LeafItem, Node, NodeItems,
+        Property, TreeUse, decode_entry_bytes, decode_node, decode_node_for, encode_node,
+        encode_node_for, property_value, validate_graft_chain, validate_index_key, validate_key,
+        validate_tree_entries, verify_child_ref,
     };
 
     const MIN_CHUNK: u64 = 262_144;
@@ -1689,5 +1704,27 @@ mod tests {
     fn graft_chain_rejects_cycles_and_excessive_depth() {
         assert_eq!(validate_graft_chain(&[[1; 32], [1; 32]]), Err(Error::Tree));
         assert_eq!(validate_graft_chain(&[[1; 32]; 65]), Err(Error::Limit));
+    }
+
+    #[test]
+    fn property_nesting_is_distinct_from_graft_depth() {
+        let mut value = vec![0x81; 4096];
+        value.push(1);
+        let node = Node {
+            level: 0,
+            items: NodeItems::Leaf(Vec::new()),
+            props: Some(vec![Property {
+                name: "future",
+                value: &value,
+            }]),
+        };
+        let encoded = encode_node(&node, true, MIN_CHUNK).expect("input-bounded property");
+        assert_eq!(decode_node(&encoded, true, MIN_CHUNK), Ok(node));
+
+        let mut truncated = Decoder::new(&value[..value.len() - 1]);
+        assert!(property_value(&mut truncated).is_err());
+        let mut invalid = vec![0x81; 4096];
+        invalid.push(0xf6);
+        assert!(property_value(&mut Decoder::new(&invalid)).is_err());
     }
 }
