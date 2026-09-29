@@ -414,9 +414,10 @@ fn index_tombstones_block_stale_fallback_and_persist_until_confirmed_deletion()
     Ok(())
 }
 
+#[cfg(feature = "tokio")]
 #[tokio::test]
-async fn pack_id_secure_generator_has_no_repeated_identifiers() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn pack_id_secure_generator_has_no_repeated_identifiers()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut seen = BTreeSet::new();
     for _ in 0..1024 {
         assert!(seen.insert(PackId::generate(&crate::store::TokioLocalFs).await?));
@@ -429,14 +430,18 @@ struct RandomBinding {
     fail: bool,
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(feature = "send", async_trait::async_trait)]
+#[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
 impl crate::store::LocalFs for RandomBinding {
     type Lock = ();
 
     async fn random_bytes(&self, length: usize) -> std::io::Result<Vec<u8>> {
         assert_eq!(length, 16);
         if self.fail {
-            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "entropy unavailable"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "entropy unavailable",
+            ));
         }
         Ok(vec![0xab; self.length])
     }
@@ -473,7 +478,10 @@ impl crate::store::LocalFs for RandomBinding {
         panic!("pack identifier generation must only request entropy")
     }
 
-    async fn symlink_metadata(&self, _path: &std::path::Path) -> std::io::Result<std::fs::Metadata> {
+    async fn symlink_metadata(
+        &self,
+        _path: &std::path::Path,
+    ) -> std::io::Result<std::fs::Metadata> {
         panic!("pack identifier generation must only request entropy")
     }
 
@@ -500,21 +508,42 @@ impl crate::store::LocalFs for RandomBinding {
     async fn sync_directory(&self, _path: &std::path::Path) -> std::io::Result<()> {
         panic!("pack identifier generation must only request entropy")
     }
-
 }
 
-#[tokio::test]
-async fn pack_id_secure_generator_validates_binding_results() -> std::io::Result<()> {
-    let binding = RandomBinding { length: 16, fail: false };
-    assert_eq!(PackId::generate(&binding).await?.as_bytes(), &[0xab; 16]);
+#[test]
+fn pack_id_secure_generator_validates_binding_results() -> std::io::Result<()> {
+    let binding = RandomBinding {
+        length: 16,
+        fail: false,
+    };
+    assert_eq!(
+        run_ready(PackId::generate(&binding))?.as_bytes(),
+        &[0xab; 16]
+    );
 
     for length in [0, 15, 17] {
-        let binding = RandomBinding { length, fail: false };
-        assert_eq!(PackId::generate(&binding).await.expect_err("wrong entropy width").kind(), std::io::ErrorKind::InvalidData);
+        let binding = RandomBinding {
+            length,
+            fail: false,
+        };
+        assert_eq!(
+            run_ready(PackId::generate(&binding))
+                .expect_err("wrong entropy width")
+                .kind(),
+            std::io::ErrorKind::InvalidData
+        );
     }
 
-    let binding = RandomBinding { length: 16, fail: true };
-    assert_eq!(PackId::generate(&binding).await.expect_err("unavailable entropy").kind(), std::io::ErrorKind::PermissionDenied);
+    let binding = RandomBinding {
+        length: 16,
+        fail: true,
+    };
+    assert_eq!(
+        run_ready(PackId::generate(&binding))
+            .expect_err("unavailable entropy")
+            .kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
     Ok(())
 }
 

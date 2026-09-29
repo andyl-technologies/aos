@@ -72,7 +72,9 @@ fn two_entry_pack_matches_independently_proposed_vector() -> Result<(), Error> {
     bodies.push(0);
     bodies.extend_from_slice(plaintext);
     let hello = Record {
-        hash: TERRANE_V1.calculate(IdentityKind::Chunk, plaintext)?.terrane_v1_digest()?,
+        hash: TERRANE_V1
+            .calculate(IdentityKind::Chunk, plaintext)?
+            .terrane_v1_digest()?,
         offset: 25,
         body_len: 16,
         plaintext_len: 15,
@@ -82,9 +84,19 @@ fn two_entry_pack_matches_independently_proposed_vector() -> Result<(), Error> {
     };
 
     let bytes = encode_pack(header, &bodies, &[hello, empty])?;
-    assert_eq!(bytes, unhex("5452504b01000000000102030405060708090a0b0c0d0e0f000068656c6c6f2c2074657272616e650a5452495802000000000000009479e1e57491078eb09f9decc2c56c63110c372de01557d73560dbc2ba9f3ba01900000000000000100000000f0000000000000000000000b8c424f844a636a1baddbc5fbc1fe533739c7399de74eae490e9f6d50a120dc01800000000000000010000000000000000000000000000002900000000000000a515c3ba54525045")?);
+    assert_eq!(
+        bytes,
+        unhex(
+            "5452504b01000000000102030405060708090a0b0c0d0e0f000068656c6c6f2c2074657272616e650a5452495802000000000000009479e1e57491078eb09f9decc2c56c63110c372de01557d73560dbc2ba9f3ba01900000000000000100000000f0000000000000000000000b8c424f844a636a1baddbc5fbc1fe533739c7399de74eae490e9f6d50a120dc01800000000000000010000000000000000000000000000002900000000000000a515c3ba54525045"
+        )?
+    );
     let view = PackView::decode(&bytes)?;
-    assert_eq!(view.index_object(), unhex("5452495802000000000000009479e1e57491078eb09f9decc2c56c63110c372de01557d73560dbc2ba9f3ba01900000000000000100000000f0000000000000000000000b8c424f844a636a1baddbc5fbc1fe533739c7399de74eae490e9f6d50a120dc0180000000000000001000000000000000000000000000000")?);
+    assert_eq!(
+        &bytes[41..bytes.len() - FOOTER_SIZE],
+        unhex(
+            "5452495802000000000000009479e1e57491078eb09f9decc2c56c63110c372de01557d73560dbc2ba9f3ba01900000000000000100000000f0000000000000000000000b8c424f844a636a1baddbc5fbc1fe533739c7399de74eae490e9f6d50a120dc0180000000000000001000000000000000000000000000000"
+        )?
+    );
     assert_eq!(view.index_offset(), 41);
     assert_eq!(crc32c(&bytes[41..bytes.len() - FOOTER_SIZE]), 0xbac3_15a5);
     assert_eq!(bytes.len(), 181);
