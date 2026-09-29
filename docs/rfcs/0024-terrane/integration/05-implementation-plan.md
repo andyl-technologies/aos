@@ -264,8 +264,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.gc-grace-window`,
   `checks.terrane.gates.gc-two-phase-delete`,
   `checks.terrane.gates.gc-singleton-lease`.
-- [ ] **T-PROV-1** Commit signing and verification, entry provenance,
-  selector language and trust presets. — satisfies PROV-1 to PROV-25;
+- [x] **T-PROV-1** Commit signing and verification, entry provenance,
+  selector language and trust presets. Historical signatures, authenticated
+  tree evidence, and entry and attribute origins are verified in the pure
+  core. Current-ACL commit guarding is joint with T-REF-2; merge admission
+  with T-ALG-2; wire and command error translation with their runtime tasks.
+  — satisfies PROV-1 to PROV-25;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`.
 - [ ] **T-DOM-1** Domain property semantics, cross-domain reference checks,
