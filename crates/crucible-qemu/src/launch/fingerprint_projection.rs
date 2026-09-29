@@ -119,7 +119,7 @@ macro_rules! versioned_row {
     };
 }
 
-const X86_APIC: ProjectionRow = versioned_row!("apic", 0, "apic", 3, VOLATILE, "x86-apic", 3);
+const X86_APIC: ProjectionRow = versioned_row!("apic", 0, "apic", 3, VOLATILE, "x86-apic", 4);
 const SIM_PREEMPTION: ProjectionRow = row!(
     "crucible/sim-preemption",
     0,
@@ -164,7 +164,7 @@ const Q35_BODY_BEFORE_SERIAL: &[ProjectionRow] = &[
         3,
         VOLATILE,
         "mc146818rtc",
-        6
+        7
     ),
     versioned_row!(
         "0000:00:1f.0/ICH9LPC",
@@ -173,20 +173,20 @@ const Q35_BODY_BEFORE_SERIAL: &[ProjectionRow] = &[
         1,
         DEVICE,
         "ich9-lpc",
-        3
+        4
     ),
     row!("i8259", 0, "i8259", 1, VOLATILE, "x86-i8259"),
     row!("i8259", 1, "i8259", 1, VOLATILE, "x86-i8259"),
     versioned_row!("ioapic", 0, "ioapic", 3, VOLATILE, "x86-ioapic", 3),
-    versioned_row!("hpet", 0, "hpet", 2, VOLATILE, "hpet", 3),
-    versioned_row!("i8254", 0, "i8254", 3, VOLATILE, "i8254", 3),
+    versioned_row!("hpet", 0, "hpet", 2, VOLATILE, "hpet", 4),
+    versioned_row!("i8254", 0, "i8254", 3, VOLATILE, "i8254", 4),
     row!("pcspk", 0, "pcspk", 1, DEVICE, "pcspk"),
 ];
 
 const Q35_BODY_AFTER_SERIAL: &[ProjectionRow] = &[
     row!("ps2kbd", 0, "ps2kbd", 3, DEVICE, "ps2-keyboard"),
     row!("ps2mouse", 0, "ps2mouse", 2, DEVICE, "ps2-mouse"),
-    versioned_row!("pckbd", 0, "pckbd", 3, DEVICE, "pckbd", 2),
+    versioned_row!("pckbd", 0, "pckbd", 3, DEVICE, "pckbd", 3),
     row!("vmmouse", 0, "vmmouse", 0, DEVICE, "vmmouse"),
     row!("port92", 0, "port92", 1, DEVICE, "port92"),
     row!(
@@ -251,7 +251,7 @@ const SHMEM_CONTROL: ProjectionRow = versioned_row!(
     "block-shmem",
     2
 );
-const SERIAL: ProjectionRow = versioned_row!("serial", 0, "serial", 3, DEVICE, "serial-isa", 2);
+const SERIAL: ProjectionRow = versioned_row!("serial", 0, "serial", 3, DEVICE, "serial-isa", 3);
 const DEBUG_CONSOLE: ProjectionRow = virtio_row!(
     "0000:00:07.0/virtio-console",
     0,
@@ -449,7 +449,7 @@ mod tests {
         assert_eq!(q35.sections, 40);
         assert_eq!(
             q35.digest,
-            "0aaf340ee7377d96537eff5ed8937f5b0b9f4a51e379dc8f8dc0f178b5b50129"
+            "b5382c165959c147054ae246a4e7385aef87e5aa49665e08795611454f03899a"
         );
 
         let aarch64 = expected_manifest_for_shape(base_shape(FaultCapabilityScope::Aarch64))
@@ -504,7 +504,7 @@ mod tests {
         assert_eq!(manifest.sections, 44);
         assert_eq!(
             manifest.digest,
-            "63a2ac36a95e46ecc82ff2150dd66120d0c34ca4c85d037b1f1fd7f854f6077d"
+            "0f8578d9faa08668eb1744f45ef0c6a7705b8addbbabe0c0af67c8e50b1461dc"
         );
         Ok(())
     }
@@ -522,8 +522,17 @@ mod tests {
             .find(|row| row.id == "serial")
             .ok_or("missing ISA serial projection")?;
 
-        assert_eq!(serial.projection_schema, "crucible.qemu.serial-isa.v2");
-        assert_eq!(serial.projection_version, 2);
+        assert_eq!(serial.projection_schema, "crucible.qemu.serial-isa.v3");
+        assert_eq!(serial.projection_version, 3);
+
+        let keyboard = manifest
+            .rows
+            .iter()
+            .find(|row| row.id == "pckbd")
+            .ok_or("missing ISA keyboard projection")?;
+
+        assert_eq!(keyboard.projection_schema, "crucible.qemu.pckbd.v3");
+        assert_eq!(keyboard.projection_version, 3);
         Ok(())
     }
 
@@ -582,7 +591,7 @@ mod tests {
         assert_eq!(manifest.sections, 48);
         assert_eq!(
             manifest.digest,
-            "a208b2a814e0cc8a9161418995a75a020be5d3807ca49768c66ef98f828b01d5"
+            "38ddbd5fed7d432be4d7960bc5a78f9f90f478231d405a14b946b068e0e2483e"
         );
         Ok(())
     }
@@ -605,7 +614,7 @@ mod tests {
         assert_eq!(manifest.sections, 51);
         assert_eq!(
             manifest.digest,
-            "2b8c49b6640c50ca75b2f7155fcb74a8aca0f67e9eae25cdd6b6a116c24cfdeb"
+            "3187f7a38f30b9a3da32d41924703719310f872fd1c35765356135dd5d2e2e8b"
         );
         Ok(())
     }
@@ -643,7 +652,7 @@ mod tests {
         assert_eq!(q35.sections, 49);
         assert_eq!(
             q35.digest,
-            "01289da5247c25409ab9497679513dfe612fb8847d5754fea4f981af6e640202"
+            "c2c9ecd817b804028d8f95dcd90a8a1d3a01de27a644dd0ba1bbae25a0b4d3b9"
         );
 
         let identities = q35
@@ -722,7 +731,7 @@ mod tests {
         .ok_or("missing production manifest")?;
 
         // The digest pins every ordered row; these assertions expose each changed provider.
-        assert_projection_row(&envoy, 0, "apic", 0, 3, "crucible.qemu.x86-apic.v3", 3);
+        assert_projection_row(&envoy, 0, "apic", 0, 3, "crucible.qemu.x86-apic.v4", 4);
         assert_projection_row(
             &envoy,
             1,
@@ -739,8 +748,8 @@ mod tests {
                 "apic",
                 instance,
                 3,
-                "crucible.qemu.x86-apic.v3",
-                3,
+                "crucible.qemu.x86-apic.v4",
+                4,
             );
         }
         assert_projection_row(
@@ -769,8 +778,8 @@ mod tests {
                 "mc146818rtc",
                 0,
                 3,
-                "crucible.qemu.mc146818rtc.v6",
-                6,
+                "crucible.qemu.mc146818rtc.v7",
+                7,
             );
             assert_projection_row(
                 manifest,
@@ -778,8 +787,8 @@ mod tests {
                 "0000:00:1f.0/ICH9LPC",
                 0,
                 1,
-                "crucible.qemu.ich9-lpc.v3",
-                3,
+                "crucible.qemu.ich9-lpc.v4",
+                4,
             );
             assert_projection_row(
                 manifest,
@@ -796,8 +805,8 @@ mod tests {
                 "hpet",
                 0,
                 2,
-                "crucible.qemu.hpet.v3",
-                3,
+                "crucible.qemu.hpet.v4",
+                4,
             );
             assert_projection_row(
                 manifest,
@@ -805,8 +814,8 @@ mod tests {
                 "i8254",
                 0,
                 3,
-                "crucible.qemu.i8254.v3",
-                3,
+                "crucible.qemu.i8254.v4",
+                4,
             );
         }
 
@@ -864,11 +873,90 @@ mod tests {
         })
         .ok_or("missing production manifest")?;
 
-        let mut stale_apic_rows = expected.rows.clone();
-        stale_apic_rows[0].projection_schema = "crucible.qemu.x86-apic.v2".to_owned();
-        stale_apic_rows[0].projection_version = 2;
-        let stale_apic = QmpFingerprintProjectionManifest::from_rows(stale_apic_rows);
-        assert!(expected.first_difference(&stale_apic).contains("row 0:"));
+        for version in [2, 3] {
+            let mut stale_apic_rows = expected.rows.clone();
+            stale_apic_rows[0].projection_schema = format!("crucible.qemu.x86-apic.v{version}");
+            stale_apic_rows[0].projection_version = version;
+            let stale_apic = QmpFingerprintProjectionManifest::from_rows(stale_apic_rows);
+
+            assert!(expected.first_difference(&stale_apic).contains("row 0:"));
+        }
+
+        let mut stale_hpet_rows = expected.rows.clone();
+        let hpet_index = stale_hpet_rows
+            .iter()
+            .position(|row| row.id == "hpet")
+            .ok_or("missing HPET projection row")?;
+        stale_hpet_rows[hpet_index].projection_schema = "crucible.qemu.hpet.v3".to_owned();
+        stale_hpet_rows[hpet_index].projection_version = 3;
+        let stale_hpet = QmpFingerprintProjectionManifest::from_rows(stale_hpet_rows);
+        assert!(
+            expected
+                .first_difference(&stale_hpet)
+                .contains(&format!("row {hpet_index}:"))
+        );
+
+        let mut stale_rtc_rows = expected.rows.clone();
+        let rtc_index = stale_rtc_rows
+            .iter()
+            .position(|row| row.id == "mc146818rtc")
+            .ok_or("missing RTC projection row")?;
+        stale_rtc_rows[rtc_index].projection_schema = "crucible.qemu.mc146818rtc.v6".to_owned();
+        stale_rtc_rows[rtc_index].projection_version = 6;
+        let stale_rtc = QmpFingerprintProjectionManifest::from_rows(stale_rtc_rows);
+        assert!(
+            expected
+                .first_difference(&stale_rtc)
+                .contains(&format!("row {rtc_index}:"))
+        );
+
+        let mut stale_pit_rows = expected.rows.clone();
+        let pit_index = stale_pit_rows
+            .iter()
+            .position(|row| row.id == "i8254")
+            .ok_or("missing PIT projection row")?;
+        stale_pit_rows[pit_index].projection_schema = "crucible.qemu.i8254.v3".to_owned();
+        stale_pit_rows[pit_index].projection_version = 3;
+        let stale_pit = QmpFingerprintProjectionManifest::from_rows(stale_pit_rows);
+        assert!(
+            expected
+                .first_difference(&stale_pit)
+                .contains(&format!("row {pit_index}:"))
+        );
+
+        for (id, schema) in [
+            ("serial", "crucible.qemu.serial-isa.v2"),
+            ("pckbd", "crucible.qemu.pckbd.v2"),
+        ] {
+            let mut stale_rows = expected.rows.clone();
+            let index = stale_rows
+                .iter()
+                .position(|row| row.id == id)
+                .ok_or("missing timer-owner projection row")?;
+            stale_rows[index].projection_schema = schema.to_owned();
+            stale_rows[index].projection_version = 2;
+            let stale = QmpFingerprintProjectionManifest::from_rows(stale_rows);
+
+            assert!(
+                expected
+                    .first_difference(&stale)
+                    .contains(&format!("row {index}:"))
+            );
+        }
+
+        let mut stale_acpi_rows = expected.rows.clone();
+        let acpi_index = stale_acpi_rows
+            .iter()
+            .position(|row| row.id == "0000:00:1f.0/ICH9LPC")
+            .ok_or("missing ICH9 LPC projection row")?;
+        stale_acpi_rows[acpi_index].projection_schema = "crucible.qemu.ich9-lpc.v3".to_owned();
+        stale_acpi_rows[acpi_index].projection_version = 3;
+        let stale_acpi = QmpFingerprintProjectionManifest::from_rows(stale_acpi_rows);
+        assert!(
+            expected
+                .first_difference(&stale_acpi)
+                .contains(&format!("row {acpi_index}:"))
+        );
 
         let mut stale_rng_rows = expected.rows.clone();
         stale_rng_rows[46].vmsd_version = 2;
