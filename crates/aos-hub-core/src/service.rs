@@ -31,6 +31,8 @@
 mod authentication;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod identity_continuity_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod direct_oci_allocation_tests;
 mod container;
 mod container_admin;
 mod delivery_workflow;

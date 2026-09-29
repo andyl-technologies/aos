@@ -53,7 +53,7 @@ const CONTRACT_MIGRATION_DIGESTS: &[&str] = &[
     "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061",
     "8da079db002b25543fc856e9cc57f335e67a73b3272c9a339ef8cc66c65ae51d",
     "1378ed62ac1a61f2abaf960d64a4617bdf523a437dcf326f3cb083f7e75ccdb1",
-    "d00f0a4d08e07efb6fd29ac188354fcfc685c1415bea1a76f6dcf4eba64c0aa8",
+    "9deda63e092058834763c6b9eb608d241a502f80c492bdb7704f9449cd777238",
 ];
 
 const MAX_CELL_BYTES: usize = 1024 * 1024;

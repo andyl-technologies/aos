@@ -73,13 +73,20 @@ outside this increment.
 
 ## Immutable account identity and live authorization
 
-Account UUIDs now pin API tokens, genuine cookie sessions, JWT provenance and
-reviewed topology operations. Permission checks revalidate the same live actor
+Account UUIDs now pin API tokens, retained browser session contexts, JWT provenance
+and reviewed topology operations. Permission checks revalidate the same live actor
 around awaited IAM reads. A replacement account cannot inherit a retained
 request merely by reusing its numeric SQL ID. Existing tokens without an owner
 pin must be reissued; validation never backfills that pin from a numeric ID.
 Migration 004 and the matching snapshot census are additive prerequisites.
 Their presence does not activate the unfinished direct upload service.
+
+Cold browser session reconstruction still needs a separate persisted account
+UUID captured when the session was minted. The existing database session row
+contains a numeric user ID; reconstruction must not adopt a replacement user's
+UUID from that slot. That correction and its real mint/restart tests remain
+activation prerequisites. The earlier session tests qualify retained contexts,
+without establishing that missing cold-session pin.
 
 Producer receipt `/tmp/hub-native-principal-auth/qualification-v5.json`
 (`c1da1f8433fdc4d56607ccd61591955be337365cc3e1608cfab92ececf57cb98`)
@@ -283,3 +290,41 @@ remain unchanged. Source input digest is
 `770eea0410fe4645d2f9c2599b857562f2f92926b99fc43bf4a7066b9bd807dc`.
 This is compatibility validation; connected Native, client, browser, provider,
 fleet and hosted qualification remain separate gates.
+
+## Bodyless OCI allocation and original bearer ownership
+
+Direct OCI allocation retains the original deployment, account UUID and client
+operation together with the exact registry, repository, digest and size. Lost
+responses replay that allocation without creating another logical upload or
+quota hold. Genuine OCI bearer grants carry their original account pin; current
+token provenance and registry push permission are checked around awaited work.
+Repository writes require the originally authorized active registry identity.
+Allocation performs no provider request and receives an empty request body.
+
+The unreleased migration 004 corrects the upload foreign key and adds the
+retained allocation table. The matching current census is 273 tables, 2,668
+columns and 656 CHECK constraints. Historical generation 3 DDL, digests and
+genuine archive fixtures remain unchanged. Databases initialized with an older
+004 draft require manual reset and reinitialization; this is not a migration
+over that draft. The hosted staging database remains at generation 1.
+
+Producer receipt `/tmp/hub-direct-oci-allocation/qualification-v9.json`
+(`7b76c0094fb4c9857fc5cbb879f1325f0331de07c390bc3279546c40517dc37c`)
+binds 201 distinct focused passes: allocation database 7, real outer handlers 9,
+OCI JWT 5, snapshot 158, fresh schema 1 and Native scratch 21. Core results use
+the unchanged V8 inputs; V9 reruns the remaining Native gates after correcting
+three current census assertions. Earlier compiler, fixture and census failures
+remain retained. Independent final review
+`f7190ec1f100c2f4b986042045de6a9735c18ac795f58295d21453b34730dcf0`
+binds the actual source and evidence without claiming a combined producer run.
+
+Current receipt `/tmp/hub-oci-current-context/qualification.json`
+(`0bd7cce346e3ff7f4f7be00887547d934cfb7724be4f5e457d95161793ff6c99`)
+records all 201 exact named cases passing together with Native test compilation
+and ordinary default Worker Wasm compilation. All 2,925 captured inputs remain
+unchanged; all 25 allocator and census postimages match exactly. Source input
+digest is `a400d22f8d7b4b54dad5d9e474b149074520ec7b7197ba0f0b767c2850920760`.
+
+Seven-method direct service routing, Worker readiness markers, signed provider
+delegation, storage-local manifest projection, connected clients, fleet and
+hosted activation remain separate gates. This increment does not enable them.

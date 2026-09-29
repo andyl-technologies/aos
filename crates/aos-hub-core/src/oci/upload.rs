@@ -8,6 +8,7 @@
 //! tokens without exposing a resumable session after its only bytes were
 //! deleted.
 
+mod direct;
 mod manifest;
 
 use std::collections::BTreeMap;
@@ -146,11 +147,28 @@ async fn exact_upload_placement(
 }
 
 #[derive(Debug, Default)]
-struct StartQuery {
+/// Canonical initial-upload metadata, including a retained direct operation.
+pub(crate) struct StartQuery {
     mount: Option<Sha256Digest>,
     from: Option<RepositoryName>,
     digest: Option<Sha256Digest>,
     size: Option<u64>,
+    operation_id: Option<String>,
+}
+
+impl StartQuery {
+    pub(super) fn validate_direct_allocation(&self) -> Result<(), &'static str> {
+        if self.operation_id.is_none()
+            || self.digest.is_none()
+            || self.size.is_none()
+            || self.mount.is_some()
+            || self.from.is_some()
+            || self.size.is_some_and(|size| size > MAX_BLOB_BYTES)
+        {
+            return Err("direct OCI requires one exact operation, digest and size");
+        }
+        Ok(())
+    }
 }
 
 impl RpcService {
@@ -159,6 +177,7 @@ impl RpcService {
         &self,
         registry: &RegistryRecord,
         repository: &OciRepositoryRecord,
+        authority: &str,
         request: OciRequest,
         method: Method,
         headers: HeaderMap,
@@ -255,8 +274,10 @@ impl RpcService {
 
         match (request, method) {
             (OciRequest::BlobUploadCollection { .. }, Method::POST) => {
-                self.begin_blob_upload(registry, repository, &owner, &headers, query, body)
-                    .await
+                self.begin_blob_upload(
+                    registry, repository, authority, &owner, &headers, query, body,
+                )
+                .await
             }
             (OciRequest::BlobUpload { upload_id, .. }, Method::GET | Method::HEAD) => {
                 self.blob_upload_status(repository, &owner, &upload_id)
@@ -544,11 +565,35 @@ impl RpcService {
         &self,
         registry: &RegistryRecord,
         repository: &OciRepositoryRecord,
+        authority: &str,
         owner: &str,
         headers: &HeaderMap,
         query: Option<&str>,
         body: Body,
     ) -> Response {
+        let query = match parse_start_query(query.unwrap_or_default()) {
+            Ok(query) => query,
+            Err(message) => {
+                return upload_error(
+                    StatusCode::BAD_REQUEST,
+                    DistributionErrorCode::BlobUploadInvalid,
+                    message,
+                );
+            }
+        };
+        if self.hybrid_delivery {
+            return self
+                .begin_direct_blob_upload(registry, repository, authority, headers, query, body)
+                .await;
+        }
+        if query.operation_id.is_some() {
+            return upload_error(
+                StatusCode::BAD_REQUEST,
+                DistributionErrorCode::Unsupported,
+                "direct OCI allocation is unavailable on this legacy endpoint",
+            );
+        }
+
         let body = match to_bytes(body, 1).await {
             Ok(body) if body.is_empty() => body,
             Ok(_) | Err(_) => {
@@ -560,16 +605,6 @@ impl RpcService {
             }
         };
         drop(body);
-        let query = match parse_start_query(query.unwrap_or_default()) {
-            Ok(query) => query,
-            Err(message) => {
-                return upload_error(
-                    StatusCode::BAD_REQUEST,
-                    DistributionErrorCode::BlobUploadInvalid,
-                    message,
-                );
-            }
-        };
 
         if let (Some(source_name), Some(mount)) = (&query.from, query.mount) {
             if !upload_token_allows(self, headers, registry, source_name, "pull") {
@@ -1494,13 +1529,20 @@ fn upload_token_allows(
         })
 }
 
-fn parse_start_query(query: &str) -> Result<StartQuery, &'static str> {
+/// Parses one closed initial-upload query without accepting ambiguous direct identity.
+///
+/// # Errors
+/// Returns an error for unknown or repeated fields, malformed selectors, or
+/// noncanonical direct operation and size fields.
+pub(crate) fn parse_start_query(query: &str) -> Result<StartQuery, &'static str> {
     let mut values = BTreeMap::new();
     for (name, value) in url::form_urlencoded::parse(query.as_bytes()) {
-        if !matches!(name.as_ref(), "mount" | "from" | "digest" | "size")
-            || values
-                .insert(name.into_owned(), value.into_owned())
-                .is_some()
+        if !matches!(
+            name.as_ref(),
+            "mount" | "from" | "digest" | "size" | "aos_operation_id"
+        ) || values
+            .insert(name.into_owned(), value.into_owned())
+            .is_some()
         {
             return Err("upload query contains an unknown or duplicate field");
         }
@@ -1528,11 +1570,30 @@ fn parse_start_query(query: &str) -> Result<StartQuery, &'static str> {
         .map(|value| value.parse::<u64>())
         .transpose()
         .map_err(|_| "upload size hint is invalid")?;
+    let operation_id = values.remove("aos_operation_id");
+    if let Some(operation) = &operation_id {
+        if !crate::direct_upload::valid_direct_digest(operation)
+            || !query
+                .split('&')
+                .any(|field| field.strip_prefix("aos_operation_id=") == Some(operation.as_str()))
+        {
+            return Err("direct OCI operation identity must be canonical lowercase hex");
+        }
+        if let Some(size) = size {
+            if !query
+                .split('&')
+                .any(|field| field.strip_prefix("size=") == Some(size.to_string().as_str()))
+            {
+                return Err("direct OCI size must be canonical decimal");
+            }
+        }
+    }
     Ok(StartQuery {
         mount,
         from,
         digest,
         size,
+        operation_id,
     })
 }
 

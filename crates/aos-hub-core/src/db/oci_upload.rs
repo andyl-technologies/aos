@@ -8,6 +8,10 @@ use super::*;
 
 #[path = "oci_upload/claim.rs"]
 mod claim;
+#[path = "oci_upload/direct.rs"]
+mod direct;
+
+pub use direct::BeginDirectOciUpload;
 #[path = "oci_upload/model.rs"]
 mod model;
 #[path = "oci_upload/recovery.rs"]
@@ -32,6 +36,14 @@ impl Database {
     /// mismatched repository/publication, quota exhaustion, or database
     /// failure.
     pub async fn begin_oci_upload(&self, input: &BeginOciUpload) -> Result<OciUploadRecord> {
+        self.begin_oci_upload_retained(input, None).await
+    }
+
+    async fn begin_oci_upload_retained(
+        &self,
+        input: &BeginOciUpload,
+        direct: Option<&BeginDirectOciUpload>,
+    ) -> Result<OciUploadRecord> {
         validate_session_identity(&input.writer_id, "writer id", 128)?;
         validate_session_identity(&input.token_id, "token id", 128)?;
         validate_session_identity(&input.idempotency_key, "idempotency key", 128)?;
@@ -114,6 +126,11 @@ impl Database {
             )
             .expecting(1),
         ];
+        if let Some(direct) = direct {
+            // Reservation and quota/upload creation share one real transaction.
+            // A lost acknowledgment cannot create a replacement logical owner.
+            statements.insert(1, direct.reservation_statement(&upload_id)?);
+        }
         statements.push(
             Statement::new(
                 "INSERT INTO oci_upload_sessions
@@ -174,6 +191,13 @@ impl Database {
             .expecting(1),
         );
         if let Err(error) = self.backend.checked_batch(&statements).await {
+            if let Some(direct) = direct {
+                return self
+                    .direct_oci_allocation_replay(direct)
+                    .await?
+                    .ok_or(error)
+                    .context("opening retained direct OCI allocation");
+            }
             if let Some(existing) = self
                 .oci_upload_by_idempotency(
                     input.registry_id,

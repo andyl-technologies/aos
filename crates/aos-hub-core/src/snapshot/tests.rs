@@ -3,6 +3,7 @@
 use super::*;
 
 mod direct;
+mod direct_oci;
 mod privacy;
 
 #[test]
@@ -11,7 +12,7 @@ fn historical_contract_keeps_exact_digests_and_refuses_mixed_generations() {
     let current = SnapshotClassifier::for_supported_generation(4).unwrap();
 
     assert_eq!(historical.tables.len(), 267);
-    assert_eq!(current.tables.len(), 272);
+    assert_eq!(current.tables.len(), 273);
     assert!(!historical.tables.contains_key("direct_upload_sessions"));
     assert_eq!(historical.manifest().migration_digests, digests()[..3]);
     assert_eq!(
@@ -157,13 +158,13 @@ async fn contract_covers_the_actual_production_initializer() {
     let tables = sqlx::query("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .fetch_all(&pool).await.unwrap();
     let contracts = contract().unwrap();
-    assert_eq!(contracts.len(), 272);
+    assert_eq!(contracts.len(), 273);
     assert_eq!(
         contracts
             .values()
             .map(|table| table.columns.len())
             .sum::<usize>(),
-        2652
+        2668
     );
     assert_eq!(tables.len(), contracts.len());
 

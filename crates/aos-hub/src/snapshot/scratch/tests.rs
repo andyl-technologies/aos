@@ -71,7 +71,7 @@ async fn valid_capture_enforces_child_before_parent_and_preserves_private_origin
     let fixture = fixture().await;
     let result = scratch(&fixture).await.unwrap();
     assert_eq!(result.records().counts(), &fixture.output.counts);
-    assert_eq!(result.checked_tables(), 262);
+    assert_eq!(result.checked_tables(), 263);
     assert_eq!(result.synthetic_lineage_rows(), 2);
     assert!(result.records().counts().private_cells >= 2);
     assert!(!format!("{result:?}").contains("private-credential"));

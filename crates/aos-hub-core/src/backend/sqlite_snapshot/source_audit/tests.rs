@@ -54,7 +54,7 @@ async fn audit_and_enumeration_share_the_original_snapshot() {
 
     assert_eq!(audit.table_counts().len(), reader.schema().tables.len());
     assert!(audit.progress_callbacks() > 0);
-    assert_eq!(audit.checked_expressions(), 652);
+    assert_eq!(audit.checked_expressions(), 656);
     for (count, table) in audit.table_counts().iter().zip(&reader.schema().tables) {
         assert_eq!(count.table, table.name);
     }

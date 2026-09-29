@@ -121,6 +121,10 @@ pub struct OciRepositoryGrant {
 pub struct OciTokenGrant {
     /// Stable principal or anonymous-session subject.
     pub subject: String,
+    /// Original authenticated account kind; absent only for legacy Distribution.
+    pub owner_kind: Option<String>,
+    /// Original authenticated account UUID; direct control requires this pin.
+    pub owner_incarnation: Option<String>,
     /// Exact canonical Distribution service authority.
     pub authority: String,
     /// Stable id of the owning AOS registry incarnation.
@@ -137,6 +141,12 @@ pub struct OciClaims {
     pub oci_version: String,
     /// Stable authenticated principal.
     pub sub: String,
+    /// Original authenticated account kind, signed with the repository grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_kind: Option<String>,
+    /// Original immutable account UUID; never inferred from a later token row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_incarnation: Option<String>,
     /// Exact canonical Distribution service authority.
     pub aud: String,
     /// Stable owning-registry incarnation.
@@ -260,6 +270,8 @@ impl JwtKeys {
         let claims = OciClaims {
             oci_version: OCI_AUTHORIZATION_CLAIMS_VERSION.to_string(),
             sub: grant.subject.clone(),
+            owner_kind: grant.owner_kind.clone(),
+            owner_incarnation: grant.owner_incarnation.clone(),
             aud: grant.authority.clone(),
             registry: grant.registry_stable_id.clone(),
             grants: grant.grants.clone(),
@@ -322,6 +334,8 @@ impl JwtKeys {
         }
         let grant = OciTokenGrant {
             subject: claims.sub.clone(),
+            owner_kind: claims.owner_kind.clone(),
+            owner_incarnation: claims.owner_incarnation.clone(),
             authority: claims.aud.clone(),
             registry_stable_id: claims.registry.clone(),
             grants: claims.grants.clone(),
@@ -370,6 +384,23 @@ impl JwtKeys {
 }
 
 fn validate_oci_grant(grant: &OciTokenGrant) -> Result<()> {
+    match (&grant.owner_kind, &grant.owner_incarnation) {
+        (None, None) => {}
+        (Some(kind), Some(incarnation)) => {
+            let kind = match kind.as_str() {
+                "user" => crate::direct_upload::DirectActorKind::User,
+                "service_account" => crate::direct_upload::DirectActorKind::ServiceAccount,
+                _ => bail!("OCI owner kind is invalid"),
+            };
+            crate::direct_upload::DirectActorSlot {
+                kind,
+                numeric_id: crate::direct_upload::WireInteger::new(1),
+                incarnation: incarnation.clone(),
+            }
+            .validate()?;
+        }
+        _ => bail!("OCI owner pins must be supplied together"),
+    }
     for (value, field, maximum) in [
         (grant.subject.as_str(), "OCI token subject", 128_usize),
         (grant.authority.as_str(), "OCI token authority", 255_usize),
@@ -588,6 +619,8 @@ mod tests {
     fn sample_oci_grant() -> OciTokenGrant {
         OciTokenGrant {
             subject: "token:tok-1".to_string(),
+            owner_kind: None,
+            owner_incarnation: None,
             authority: "containers.example:8443".to_string(),
             registry_stable_id: "registry:0123456789abcdef0123456789abcdef".to_string(),
             grants: vec![OciRepositoryGrant {
@@ -632,6 +665,65 @@ mod tests {
                 "pull"
             )
             .is_err());
+    }
+
+    #[test]
+    fn oci_original_owner_pins_roundtrip_and_cannot_be_tampered() {
+        let keys = JwtKeys::from_secret(b"oci-original-owner-test-key");
+        let mut grant = sample_oci_grant();
+        grant.owner_kind = Some("service_account".into());
+        grant.owner_incarnation = Some("00000000-0000-4000-8000-000000000042".into());
+
+        let token = keys.mint_oci(&grant, 300).unwrap();
+        let claims = keys.verify_oci_claims(&token).unwrap();
+        assert_eq!(claims.owner_kind, grant.owner_kind);
+        assert_eq!(claims.owner_incarnation, grant.owner_incarnation);
+
+        for (field, replacement) in [
+            ("owner_kind", "user"),
+            ("owner_incarnation", "00000000-0000-4000-8000-000000000099"),
+        ] {
+            let segments: Vec<_> = token.split('.').collect();
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&B64.decode(segments[1]).unwrap()).unwrap();
+            value[field] = replacement.into();
+            let altered = format!(
+                "{}.{}.{}",
+                segments[0],
+                B64.encode(serde_json::to_vec(&value).unwrap()),
+                segments[2]
+            );
+            assert!(keys.verify_oci_claims(&altered).is_err());
+        }
+    }
+
+    #[test]
+    fn oci_owner_pins_are_closed_and_legacy_absence_is_not_fabricated() {
+        let keys = JwtKeys::from_secret(b"oci-owner-shape-test-key");
+        let mut grant = sample_oci_grant();
+        let legacy = keys.mint_oci(&grant, 300).unwrap();
+        let claims = keys.verify_oci_claims(&legacy).unwrap();
+        assert!(claims.owner_kind.is_none());
+        assert!(claims.owner_incarnation.is_none());
+        let value = serde_json::to_value(&claims).unwrap();
+        assert!(value.get("owner_kind").is_none());
+        assert!(value.get("owner_incarnation").is_none());
+
+        grant.owner_kind = Some("user".into());
+        assert!(keys.mint_oci(&grant, 300).is_err());
+        grant.owner_incarnation = Some("00000000-0000-4000-8000-000000000042".into());
+        assert!(keys.mint_oci(&grant, 300).is_ok());
+        grant.owner_kind = Some("org".into());
+        assert!(keys.mint_oci(&grant, 300).is_err());
+        grant.owner_kind = Some("user".into());
+        for malformed in [
+            "00000000-0000-4000-0000-000000000042",
+            "00000000-0000-1000-8000-000000000042",
+            "00000000-0000-4000-C000-000000000042",
+        ] {
+            grant.owner_incarnation = Some(malformed.into());
+            assert!(keys.mint_oci(&grant, 300).is_err());
+        }
     }
 
     #[test]

@@ -11,7 +11,7 @@ CREATE TABLE direct_upload_sessions(
   cache_identifier KEYTEXT255,
   publication_id KEYTEXT64,
   surface_object_id INTEGER,
-  oci_upload_id KEYTEXT64 REFERENCES oci_uploads(id) ON DELETE RESTRICT,
+  oci_upload_id KEYTEXT64 REFERENCES oci_upload_sessions(id) ON DELETE RESTRICT,
   object_path KEYTEXT512,
   owner_scope_key KEYTEXT64 NOT NULL REFERENCES authorization_scopes(scope_key) ON DELETE RESTRICT,
   intent_json LONGTEXT NOT NULL,
@@ -155,3 +155,30 @@ ALTER TABLE tokens ADD COLUMN owner_incarnation KEYTEXT64
 -- numeric-slot recycling. Legacy unpinned plans must be replanned, not repaired.
 ALTER TABLE topology_plans ADD COLUMN actor_incarnation KEYTEXT64
     CHECK(actor_incarnation IS NULL OR LENGTH(actor_incarnation) = 36);
+
+-- Initial empty OCI POST is logical metadata only. Its original owner survives
+-- lost replies and token rotation; changed target/content cannot allocate a
+-- second session in another registry under the same business operation.
+CREATE TABLE direct_oci_allocations(
+  business_id KEYTEXT64 NOT NULL PRIMARY KEY,
+  deployment_id KEYTEXT255 NOT NULL,
+  principal_id KEYTEXT64 NOT NULL,
+  client_operation_id KEYTEXT64 NOT NULL,
+  actor_kind KEYTEXT32 NOT NULL,
+  actor_id INTEGER NOT NULL,
+  actor_incarnation KEYTEXT64 NOT NULL,
+  registry_id INTEGER NOT NULL REFERENCES registries(id) ON DELETE RESTRICT,
+  registry_stable_id KEYTEXT255 NOT NULL,
+  repository_id INTEGER NOT NULL REFERENCES oci_repositories(id) ON DELETE RESTRICT,
+  repository_name KEYTEXT255 NOT NULL,
+  source_sha256 KEYTEXT64 NOT NULL,
+  declared_size BIGINT NOT NULL,
+  upload_id KEYTEXT64 NOT NULL,
+  original_token_id KEYTEXT64 NOT NULL,
+  created_at BIGINT NOT NULL,
+  UNIQUE(deployment_id, principal_id, client_operation_id),
+  CHECK(actor_kind IN('user', 'service_account') AND actor_id > 0),
+  CHECK(LENGTH(actor_incarnation) = 36),
+  CHECK(declared_size >= 0 AND declared_size <= 17179869184),
+  CHECK(created_at > 0)
+);

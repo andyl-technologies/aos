@@ -42,13 +42,14 @@ pub(super) fn validate_row(name: &str, table: &TableContract, row: &Row) -> Resu
             );
         }
     }
-    if name.starts_with("direct_upload_") {
+    if name.starts_with("direct_upload_") || name == "direct_oci_allocations" {
         ensure!(
             crate::direct_upload::valid_direct_identity(&cells.get::<String>("deployment_id")?),
             "snapshot direct deployment identity is invalid"
         );
     }
     match name {
+        "direct_oci_allocations" => direct_oci_allocation(&cells)?,
         "direct_upload_sessions" => session(&cells)?,
         "direct_upload_session_placements" => placement(&cells)?,
         "direct_upload_completion_intents" => complete(&cells)?,
@@ -75,6 +76,56 @@ pub(super) fn validate_row(name: &str, table: &TableContract, row: &Row) -> Resu
         "oci_image_config_projections" => config_summary(&cells)?,
         _ => {}
     }
+    Ok(())
+}
+
+fn direct_oci_allocation(cells: &Cells<'_>) -> Result<()> {
+    use crate::direct_upload::{DirectActorKind, DirectActorSlot, WireInteger};
+
+    let kind: String = cells.get("actor_kind")?;
+    let actor = DirectActorSlot {
+        kind: match kind.as_str() {
+            "user" => DirectActorKind::User,
+            "service_account" => DirectActorKind::ServiceAccount,
+            _ => anyhow::bail!("snapshot direct OCI actor kind is invalid"),
+        },
+        numeric_id: WireInteger::new(cells.counter("actor_id")?),
+        incarnation: cells.get("actor_incarnation")?,
+    };
+    actor.validate()?;
+    let deployment: String = cells.get("deployment_id")?;
+    let principal = actor.principal_id(&deployment)?;
+    let operation: String = cells.get("client_operation_id")?;
+    ensure!(
+        principal == cells.get::<String>("principal_id")?
+            && crate::direct_upload::deterministic_business_operation_id(
+                &deployment,
+                &principal,
+                &operation,
+            )? == cells.get::<String>("business_id")?
+            && cells.counter("registry_id")? > 0
+            && cells.counter("repository_id")? > 0
+            && cells.counter("declared_size")? <= 16 * 1024 * 1024 * 1024
+            && cells.counter("created_at")? > 0
+            && crate::direct_upload::valid_direct_identity(
+                &cells.get::<String>("registry_stable_id")?,
+            )
+            && crate::direct_upload::valid_direct_identity(&cells.get::<String>("upload_id")?,)
+            && crate::direct_upload::valid_direct_digest(&cells.get::<String>("source_sha256")?,),
+        "snapshot direct OCI allocation scalar mismatch"
+    );
+    aos_oci_types::RepositoryName::parse(&cells.get::<String>("repository_name")?)?;
+
+    // This checks audit-ID syntax only. An archived token ID never establishes
+    // live credentials or permission to restart an external provider effect.
+    let token: String = cells.get("original_token_id")?;
+    let token_id = uuid::Uuid::parse_str(&token)?;
+    ensure!(
+        token_id.get_version_num() == 4
+            && token_id.get_variant() == uuid::Variant::RFC4122
+            && token_id.to_string() == token,
+        "snapshot direct OCI token audit ID is invalid"
+    );
     Ok(())
 }
 

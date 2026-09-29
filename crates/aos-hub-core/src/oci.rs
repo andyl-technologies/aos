@@ -8,6 +8,9 @@
 
 mod upload;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use upload::parse_start_query;
+
 pub use upload::{recover_expired_oci_work, OciRecoverySummary};
 
 use std::collections::BTreeMap;
@@ -413,10 +416,33 @@ impl RpcService {
             .any(|grant| grant.actions.iter().any(|action| action.as_str() == "push"));
         let read_requires_auth = route_requires_hub_auth
             || !(registry.visibility == "public" || registry.org_id.is_none());
-        let (subject, hub_bearer) = match authorization {
+        let (subject, hub_bearer, owner_kind, owner_incarnation) = match authorization {
             Some(value) if value.starts_with("Bearer ") => {
                 let claims = self.require_claims(Some(value))?;
-                (format!("hub:{}", claims.sub), value.to_string())
+                let (owner_kind, owner_incarnation) = if claims.browser_session_id_hash.is_some() {
+                    // Ordinary browser Distribution remains supported. The
+                    // direct branch separately refuses its pseudo-token subject.
+                    (None, None)
+                } else {
+                    let current = self
+                        .db
+                        .current_token_authority(&claims.sub)
+                        .await
+                        .map_err(RpcError::internal)?
+                        .ok_or_else(|| {
+                            RpcError::Unauthenticated("current API token required".into())
+                        })?;
+                    (
+                        Some(current.owner.kind.as_str().to_owned()),
+                        current.owner_incarnation,
+                    )
+                };
+                (
+                    format!("hub:{}", claims.sub),
+                    value.to_string(),
+                    owner_kind,
+                    owner_incarnation,
+                )
             }
             Some(value) if value.starts_with("Basic ") => {
                 let encoded = value.strip_prefix("Basic ").unwrap_or_default();
@@ -437,6 +463,8 @@ impl RpcService {
                 (
                     format!("token:{}", auth.token_id),
                     format!("Bearer {bearer}"),
+                    Some(auth.owner.kind.as_str().to_owned()),
+                    auth.owner_incarnation.clone(),
                 )
             }
             Some(_) => {
@@ -444,7 +472,9 @@ impl RpcService {
                     "OCI token exchange requires Bearer or Basic credentials".into(),
                 ));
             }
-            None if !wants_push && !read_requires_auth => ("anonymous".to_string(), String::new()),
+            None if !wants_push && !read_requires_auth => {
+                ("anonymous".to_string(), String::new(), None, None)
+            }
             None => {
                 return Err(RpcError::Unauthenticated(
                     "credentials are required for this registry".into(),
@@ -473,6 +503,8 @@ impl RpcService {
             .mint_oci(
                 &OciTokenGrant {
                     subject,
+                    owner_kind,
+                    owner_incarnation,
                     authority: authority.to_string(),
                     registry_stable_id: registry.stable_id.clone(),
                     grants: grants.to_vec(),
@@ -762,6 +794,25 @@ impl RpcService {
                 head,
             );
         }
+        if self.hybrid_delivery
+            && matches!(
+                (&resolved.request, &method),
+                (OciRequest::BlobUploadCollection { .. }, &Method::POST)
+            )
+        {
+            // Direct initial control must authenticate its original live owner
+            // and empty body before even creating a repository in the catalog.
+            return self
+                .begin_direct_oci_allocation_request(
+                    &registry,
+                    repository_name,
+                    &resolved.authority,
+                    &headers,
+                    query,
+                    body,
+                )
+                .await;
+        }
         let creates_repository = matches!(
             (&resolved.request, &method),
             (OciRequest::BlobUploadCollection { .. }, &Method::POST)
@@ -810,6 +861,7 @@ impl RpcService {
                 .serve_oci_write(
                     &registry,
                     &repository,
+                    &resolved.authority,
                     resolved.request,
                     method,
                     headers,

@@ -25,6 +25,8 @@ use super::{
     VerifiedContainerReleaseDescriptor,
 };
 
+#[path = "oci_direct_repository.rs"]
+mod direct_repository;
 #[path = "oci_publication.rs"]
 mod publication;
 #[path = "oci_upload.rs"]
