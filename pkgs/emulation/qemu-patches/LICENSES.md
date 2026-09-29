@@ -104,6 +104,7 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-hpet-phase.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-rc4030-period.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-riscv-cpc-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-mips-gic-migration.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated

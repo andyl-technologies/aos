@@ -1,4 +1,4 @@
-From 7adf6dee86ba0da59489293755db391e09b0004a Mon Sep 17 00:00:00 2001
+From 2dc9a8cab4f56d0994d47b805fccd1ab2c8d6221 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -117,13 +117,26 @@ Preserve the architectural 10 MHz rate, wrapping uint64 counter, unchanged
 legacy clock policy and existing migration fields. Remove the unused target
 header and unreachable read return; test literal MMIO reads and VMState.
 
+Preserve wide MIPS GIC timer deadlines in exact TCG migration.
+Keep the current counter arithmetic and legacy non-TCG wire state, adding
+a checked optional exact deadline subsection and refusing missing or wrong
+clock-mode state before timer effects. Exercise literal timers and QEMUFile.
+
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
 diff --git a/MAINTAINERS b/MAINTAINERS
-index 902db77218eacc2461b54fe675c9816b3d98aec6..179e04c425b5c11c034ec3406a8f23ee9d293540 100644
+index 902db77218eacc2461b54fe675c9816b3d98aec6..524ad6ebefc65a8a39d0010582ebb286058b5b4f 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -3472,6 +3472,7 @@ Main loop
+@@ -3012,6 +3012,7 @@ F: hw/intc/mips_gic.c
+ F: hw/timer/mips_gictimer.c
+ F: include/hw/intc/mips_gic.h
+ F: include/hw/timer/mips_gictimer.h
++F: tests/unit/test-crucible-mips-gic-migration.c
+ 
+ S390 3270 device
+ M: Halil Pasic <pasic@linux.ibm.com>
+@@ -3472,6 +3473,7 @@ Main loop
  M: Paolo Bonzini <pbonzini@redhat.com>
  S: Maintained
  F: include/qemu/main-loop.h
@@ -131,7 +144,7 @@ index 902db77218eacc2461b54fe675c9816b3d98aec6..179e04c425b5c11c034ec3406a8f23ee
  F: include/system/runstate.h
  F: include/system/runstate-action.h
  F: util/main-loop.c
-@@ -4201,11 +4202,24 @@ R: Alexandre Iooss <erdnaxe@crans.org>
+@@ -4201,11 +4203,24 @@ R: Alexandre Iooss <erdnaxe@crans.org>
  S: Maintained
  F: docs/devel/tcg-plugins.rst
  F: plugins/
@@ -44250,7 +44263,7 @@ index 571633803d023a9b73a6085c85951a2ada0b02da..4df8ba5fd2393437e8d88a9dc800a33f
  
  static const Property ibex_timer_properties[] = {
 diff --git a/hw/timer/mips_gictimer.c b/hw/timer/mips_gictimer.c
-index 2b0696d4acb56866cf37e9966f0263964f66a22f..962765af8510493ae22607d7814cb69dd2256403 100644
+index 2b0696d4acb56866cf37e9966f0263964f66a22f..73e411877335e242c70d7d242bc396f35cee3a70 100644
 --- a/hw/timer/mips_gictimer.c
 +++ b/hw/timer/mips_gictimer.c
 @@ -7,10 +7,12 @@
@@ -44381,10 +44394,31 @@ index 2b0696d4acb56866cf37e9966f0263964f66a22f..962765af8510493ae22607d7814cb69d
      for (i = 0; i < gictimer->num_vps; i++) {
          timer_del(gictimer->vptimers[i].qtimer);
      }
-@@ -143,3 +202,130 @@ MIPSGICTimerState *mips_gictimer_init(void *opaque, uint32_t nvps,
+@@ -143,3 +202,190 @@ MIPSGICTimerState *mips_gictimer_init(void *opaque, uint32_t nvps,
      }
      return gictimer;
  }
++
++/*
++ * Preserve the ordinary ns field layout. Current TCG readers require the wide
++ * subsection before arming, so a saturated base projection is never authority.
++ */
++static int64_t mips_gictimer_deadline_projection(__int128 deadline_ps)
++{
++    __int128 deadline_ns = deadline_ps / PICOSECONDS_PER_NANOSECOND;
++
++    if (deadline_ps % PICOSECONDS_PER_NANOSECOND > 0) {
++        deadline_ns++;
++    }
++    deadline_ns = MIN(MAX(deadline_ns, INT64_MIN), INT64_MAX);
++    return deadline_ns == -1 ? 0 : deadline_ns;
++}
++
++static __int128 mips_gictimer_wide_deadline(MIPSGICTimerVPState *vptimer)
++{
++    return (__int128)vptimer->deadline_ps_hi * ((__int128)1 << 64) +
++           vptimer->deadline_ps_lo;
++}
 +
 +static int mips_gictimer_pre_save(void *opaque)
 +{
@@ -44394,12 +44428,30 @@ index 2b0696d4acb56866cf37e9966f0263964f66a22f..962765af8510493ae22607d7814cb69d
 +        MIPSGICTimerVPState *vptimer = &gictimer->vptimers[i];
 +
 +        vptimer->deadline_ns = -1;
-+        vptimer->timer_phase_ps = 0;
-+        if (timer_pending(vptimer->qtimer) &&
-+            timer_expire_time_ns_phase(vptimer->qtimer,
-+                                       &vptimer->deadline_ns,
-+                                       &vptimer->timer_phase_ps) < 0) {
-+            return -EINVAL;
++        vptimer->timer_active = 0;
++        vptimer->deadline_ps_hi = 0;
++        vptimer->deadline_ps_lo = 0;
++        if (!timer_pending(vptimer->qtimer)) {
++            continue;
++        }
++
++        if (qemu_timer_tcg_ps_enabled()) {
++            __int128 deadline_ps = timer_expire_time_ps_wide(vptimer->qtimer);
++
++            vptimer->timer_active = 1;
++            vptimer->deadline_ps_lo = deadline_ps;
++            vptimer->deadline_ps_hi =
++                (unsigned __int128)deadline_ps >> 64;
++            vptimer->deadline_ns =
++                mips_gictimer_deadline_projection(deadline_ps);
++        } else {
++            uint16_t phase_ps;
++
++            if (timer_expire_time_ns_phase(vptimer->qtimer,
++                                           &vptimer->deadline_ns,
++                                           &phase_ps) < 0) {
++                return -EINVAL;
++            }
 +        }
 +    }
 +    return 0;
@@ -44409,50 +44461,69 @@ index 2b0696d4acb56866cf37e9966f0263964f66a22f..962765af8510493ae22607d7814cb69d
 +{
 +    MIPSGICTimerState *gictimer = opaque;
 +
-+    gictimer->ps_phase_loaded = false;
-+    for (int i = 0; i < gictimer->num_vps; i++) {
-+        gictimer->vptimers[i].timer_phase_ps = 0;
-+    }
++    gictimer->ps_wide_loaded = false;
 +    return 0;
 +}
 +
 +static int mips_gictimer_post_load(void *opaque, int version_id)
 +{
 +    MIPSGICTimerState *gictimer = opaque;
++    bool exact = qemu_timer_tcg_ps_enabled();
 +
 +    (void)version_id;
-+    if (!gictimer->ps_phase_loaded) {
++    if (gictimer->ps_wide_loaded != exact || gictimer->countstop > 1) {
 +        return -EINVAL;
 +    }
++
++    /* Validate the whole vector before changing any live timer. */
++    for (int i = 0; exact && i < gictimer->num_vps; i++) {
++        MIPSGICTimerVPState *vptimer = &gictimer->vptimers[i];
++
++        if (vptimer->timer_active > 1 ||
++            (!vptimer->timer_active &&
++             (vptimer->deadline_ps_hi || vptimer->deadline_ps_lo)) ||
++            vptimer->deadline_ns !=
++                (vptimer->timer_active ?
++                 mips_gictimer_deadline_projection(
++                     mips_gictimer_wide_deadline(vptimer)) : -1)) {
++            return -EINVAL;
++        }
++    }
++
 +    for (int i = 0; i < gictimer->num_vps; i++) {
 +        MIPSGICTimerVPState *vptimer = &gictimer->vptimers[i];
 +
-+        if (vptimer->timer_phase_ps >= PICOSECONDS_PER_NANOSECOND) {
-+            return -EINVAL;
-+        }
-+        if (vptimer->deadline_ns == -1) {
++        if (exact) {
++            if (vptimer->timer_active) {
++                timer_mod_ps_wide(vptimer->qtimer,
++                                  mips_gictimer_wide_deadline(vptimer));
++            } else {
++                timer_del(vptimer->qtimer);
++            }
++        } else if (vptimer->deadline_ns == -1) {
 +            timer_del(vptimer->qtimer);
-+        } else if (!timer_mod_ns_phase(vptimer->qtimer,
-+                                       vptimer->deadline_ns,
-+                                       vptimer->timer_phase_ps)) {
-+            return -EINVAL;
++        } else {
++            timer_mod_ns(vptimer->qtimer, vptimer->deadline_ns);
 +        }
 +    }
 +    return 0;
 +}
 +
-+static int mips_gictimer_ps_phase_post_load(void *opaque, int version_id)
++static int mips_gictimer_ps_wide_post_load(void *opaque, int version_id)
 +{
 +    MIPSGICTimerState *gictimer = opaque;
 +
 +    (void)version_id;
-+    gictimer->ps_phase_loaded = true;
++    if (gictimer->ps_wide_loaded) {
++        return -EINVAL;
++    }
++    gictimer->ps_wide_loaded = true;
 +    return 0;
 +}
 +
-+static bool mips_gictimer_ps_phase_needed(void *opaque)
++static bool mips_gictimer_ps_wide_needed(void *opaque)
 +{
-+    return true;
++    return qemu_timer_tcg_ps_enabled();
 +}
 +
 +static const VMStateDescription vmstate_mips_gictimer_vp = {
@@ -44466,26 +44537,28 @@ index 2b0696d4acb56866cf37e9966f0263964f66a22f..962765af8510493ae22607d7814cb69d
 +    },
 +};
 +
-+static const VMStateDescription vmstate_mips_gictimer_vp_phase = {
-+    .name = "mips-gic-timer/vp-ps-phase",
++static const VMStateDescription vmstate_mips_gictimer_vp_wide = {
++    .name = "mips-gic-timer/vp-ps-wide",
 +    .version_id = 1,
 +    .minimum_version_id = 1,
 +    .fields = (const VMStateField[]) {
-+        VMSTATE_UINT16(timer_phase_ps, MIPSGICTimerVPState),
++        VMSTATE_UINT8(timer_active, MIPSGICTimerVPState),
++        VMSTATE_INT64(deadline_ps_hi, MIPSGICTimerVPState),
++        VMSTATE_UINT64(deadline_ps_lo, MIPSGICTimerVPState),
 +        VMSTATE_END_OF_LIST(),
 +    },
 +};
 +
-+static const VMStateDescription vmstate_mips_gictimer_ps_phase = {
-+    .name = "mips-gic-timer/ps-phase",
++static const VMStateDescription vmstate_mips_gictimer_ps_wide = {
++    .name = "mips-gic-timer/ps-wide",
 +    .version_id = 1,
 +    .minimum_version_id = 1,
-+    .needed = mips_gictimer_ps_phase_needed,
-+    .post_load = mips_gictimer_ps_phase_post_load,
++    .needed = mips_gictimer_ps_wide_needed,
++    .post_load = mips_gictimer_ps_wide_post_load,
 +    .fields = (const VMStateField[]) {
 +        VMSTATE_STRUCT_VARRAY_POINTER_INT32(vptimers, MIPSGICTimerState,
 +                                            num_vps,
-+                                            vmstate_mips_gictimer_vp_phase,
++                                            vmstate_mips_gictimer_vp_wide,
 +                                            MIPSGICTimerVPState),
 +        VMSTATE_END_OF_LIST(),
 +    },
@@ -44508,7 +44581,7 @@ index 2b0696d4acb56866cf37e9966f0263964f66a22f..962765af8510493ae22607d7814cb69d
 +        VMSTATE_END_OF_LIST(),
 +    },
 +    .subsections = (const VMStateDescription * const []) {
-+        &vmstate_mips_gictimer_ps_phase,
++        &vmstate_mips_gictimer_ps_wide,
 +        NULL,
 +    },
 +};
@@ -54649,7 +54722,7 @@ index 53055f3351b67e7965cee0d32f257fe20ebd1d80..1a6ab67c651564b83e37bdf493659e91
      /* <public> */
      MemoryRegion mmio;
 diff --git a/include/hw/timer/mips_gictimer.h b/include/hw/timer/mips_gictimer.h
-index c7ca6c821daeff72a442490d70b8e97aa717126c..95bcec7d4b22cea22c58b0c752d0344c31795b8b 100644
+index c7ca6c821daeff72a442490d70b8e97aa717126c..93876fbe1b880c7e5c676a6498afce181f57a38b 100644
 --- a/include/hw/timer/mips_gictimer.h
 +++ b/include/hw/timer/mips_gictimer.h
 @@ -12,6 +12,7 @@
@@ -54660,20 +54733,23 @@ index c7ca6c821daeff72a442490d70b8e97aa717126c..95bcec7d4b22cea22c58b0c752d0344c
  
  typedef void MIPSGICTimerCB(void *opaque, uint32_t vp_index);
  
-@@ -19,6 +20,8 @@ struct MIPSGICTimerVPState {
+@@ -19,6 +20,11 @@ struct MIPSGICTimerVPState {
      QEMUTimer *qtimer;
      uint32_t vp_index;
      uint32_t comparelo;
 +    int64_t deadline_ns;
-+    uint16_t timer_phase_ps;
++    /* Current TCG migration retains an explicit marker and signed128 limbs. */
++    uint8_t timer_active;
++    int64_t deadline_ps_hi;
++    uint64_t deadline_ps_lo;
      MIPSGICTimerState *gictimer;
  };
  
-@@ -29,8 +32,11 @@ struct MIPSGICTimerState {
+@@ -29,8 +35,11 @@ struct MIPSGICTimerState {
      int32_t num_vps;
      MIPSGICTimerVPState *vptimers;
      MIPSGICTimerCB *cb;
-+    bool ps_phase_loaded;
++    bool ps_wide_loaded;
  };
  
 +extern const VMStateDescription vmstate_mips_gictimer;
@@ -141427,7 +141503,7 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
      return g_test_run();
  }
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..cad4fa5b8ef20bfb2d3b6803f6e1710c77bdc1d6 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..dfcf580fdfaa814a49815802b0cdf5d192807024 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -147,6 +147,37 @@ if have_system
@@ -141468,7 +141544,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..cad4fa5b8ef20bfb2d3b6803f6e1710c
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +238,239 @@ foreach test_name, extra: tests
+@@ -207,3 +238,260 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -141701,6 +141777,27 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..cad4fa5b8ef20bfb2d3b6803f6e1710c
 +  test(
 +    'test-crucible-riscv-cpc-clock',
 +    riscv_cpc_clock_test,
++    env: test_env,
++    args: ['--tap', '-k'],
++    protocol: 'tap',
++    timeout: 30,
++    suite: ['unit'],
++  )
++endif
++
++# The literal GIC timer/VMState fixture does not require a realized MIPS board.
++if have_system
++  mips_gic_migration_test = executable(
++    'test-crucible-mips-gic-migration',
++    'test-crucible-mips-gic-migration.c',
++    genh,
++    dependencies: [qemuutil, qom, migration, io],
++    c_args: ['-ffunction-sections', '-fdata-sections'],
++    link_args: ['-Wl,--gc-sections'],
++  )
++  test(
++    'test-crucible-mips-gic-migration',
++    mips_gic_migration_test,
 +    env: test_env,
 +    args: ['--tap', '-k'],
 +    protocol: 'tap',
@@ -151370,6 +151467,531 @@ index 0000000000000000000000000000000000000000..ee2bb16e87d73feab53496231bcb3f46
 +                    test_rr_time_advance_completion_wake_is_idle_and_coalescing);
 +    g_test_add_func("/crucible/idle-wait/rr-wake/timer-notify-work",
 +                    test_rr_timer_notify_queues_work_only_while_parked);
++    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-mips-gic-migration.c b/tests/unit/test-crucible-mips-gic-migration.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..ceb4e1c2c05a9d5886b05ae0b70bcf5b96d0703e
+--- /dev/null
++++ b/tests/unit/test-crucible-mips-gic-migration.c
+@@ -0,0 +1,519 @@
++/*
++ * Literal MIPS GIC timer migration with a controlled virtual-clock producer.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/main-loop.h"
++#include "system/cpu-timers.h"
++#include "exec/icount.h"
++#include "io/channel-buffer.h"
++#include "../../migration/qemu-file.h"
++#include "../../migration/savevm.h"
++
++/* Retain the complete device and VMState without realizing a board. */
++#undef type_init
++#define type_init(function) \
++    static void (*const fixture_##function)(void) G_GNUC_UNUSED = function;
++#include "../../hw/timer/mips_gictimer.c"
++
++static __int128 observed_ps;
++static unsigned nanosecond_reads;
++
++/* Diagnostic CPU-clock adapter, not an installed TCG/controller provider. */
++int64_t cpu_get_clock(void)
++{
++    __int128 nanoseconds = observed_ps / PICOSECONDS_PER_NANOSECOND;
++
++    nanosecond_reads++;
++    if (nanoseconds < 0 || nanoseconds > INT64_MAX) {
++        g_error("Diagnostic nanosecond projection exceeds the API range");
++    }
++    return nanoseconds;
++}
++
++bool icount_crucible_sim_mode(void)
++{
++    return false;
++}
++
++static __int128 observed_clock_ps(void)
++{
++    return observed_ps;
++}
++
++static void initialize_clock(bool exact)
++{
++    Error *error = NULL;
++
++    module_call_init(MODULE_INIT_QOM);
++    qemu_init_main_loop(&error);
++    g_assert_null(error);
++    if (exact) {
++        qemu_timer_enable_tcg_ps_clock(NULL, observed_clock_ps);
++    }
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++    nanosecond_reads = 0;
++}
++
++static void observe_expiry(void *opaque, uint32_t vp_index)
++{
++    unsigned *count = opaque;
++
++    (*count)++;
++}
++
++static MIPSGICTimerState *create_timer(unsigned *callbacks, int vps)
++{
++    MIPSGICTimerState *timer = mips_gictimer_init(callbacks, vps,
++                                                observe_expiry);
++
++    timer->sh_counterlo = 0;
++    for (int i = 0; i < vps; i++) {
++        timer->vptimers[i].comparelo = 0;
++    }
++    return timer;
++}
++
++static void destroy_timer(MIPSGICTimerState *timer)
++{
++    for (int i = 0; i < timer->num_vps; i++) {
++        timer_free(timer->vptimers[i].qtimer);
++    }
++    g_free(timer->vptimers);
++    g_free(timer);
++}
++
++static GByteArray *save_state(MIPSGICTimerState *timer,
++                             const VMStateDescription *description)
++{
++    QIOChannelBuffer *output = qio_channel_buffer_new(128);
++    QEMUFile *file = qemu_file_new_output(QIO_CHANNEL(output));
++    GByteArray *bytes = g_byte_array_new();
++    Error *error = NULL;
++
++    g_assert_cmpint(vmstate_save_state(file, description, timer, NULL,
++                                      &error), ==, 0);
++    g_assert_null(error);
++    /* A following outer marker bounds subsection peeks without channel EOF. */
++    qemu_put_byte(file, QEMU_VM_EOF);
++    g_assert_cmpint(qemu_fflush(file), ==, 0);
++    g_byte_array_append(bytes, output->data, output->usage);
++    g_assert_cmpint(qemu_fclose(file), ==, 0);
++    object_unref(OBJECT(output));
++    return bytes;
++}
++
++static int load_state(MIPSGICTimerState *timer, GByteArray *bytes)
++{
++    QIOChannelBuffer *input = qio_channel_buffer_new(bytes->len);
++    QEMUFile *file;
++    Error *error = NULL;
++    int result;
++
++    input->usage = bytes->len;
++    memcpy(input->data, bytes->data, bytes->len);
++    file = qemu_file_new_input(QIO_CHANNEL(input));
++    result = vmstate_load_state(file, &vmstate_mips_gictimer, timer, 1,
++                                &error);
++    if (result < 0) {
++        g_assert_nonnull(error);
++        g_test_message("Load refusal: %s", error_get_pretty(error));
++        error_free(error);
++    } else {
++        g_assert_null(error);
++    }
++    qemu_fclose(file);
++    object_unref(OBJECT(input));
++    return result;
++}
++
++static void assert_deadline(MIPSGICTimerState *timer, int vp,
++                            __int128 deadline)
++{
++    g_assert_true(timer_pending(timer->vptimers[vp].qtimer));
++    g_assert_true(timer_expire_time_ps_wide(timer->vptimers[vp].qtimer) ==
++                  deadline);
++}
++
++static void test_wide_save(void)
++{
++    MIPSGICTimerState *timer;
++    MIPSGICTimerState *restored;
++    GByteArray *bytes;
++    unsigned callbacks = 0;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    observed_ps = ((__int128)INT64_MAX + 1) *
++                  PICOSECONDS_PER_NANOSECOND + 999;
++    timer = create_timer(&callbacks, 3);
++    restored = create_timer(&callbacks, 3);
++    mips_gictimer_store_sh_count(timer, 100);
++    mips_gictimer_start_count(timer);
++    mips_gictimer_store_vp_compare(timer, 0, 103);
++    mips_gictimer_store_vp_compare(timer, 1, 100 + UINT32_MAX);
++    timer_del(timer->vptimers[2].qtimer);
++    assert_deadline(timer, 0, observed_ps + 3 * TIMER_PERIOD_PS);
++    assert_deadline(timer, 1, observed_ps +
++                              (__int128)UINT32_MAX * TIMER_PERIOD_PS);
++
++    bytes = save_state(timer, &vmstate_mips_gictimer);
++    g_assert_cmpint(load_state(restored, bytes), ==, 0);
++    assert_deadline(restored, 0, observed_ps + 3 * TIMER_PERIOD_PS);
++    assert_deadline(restored, 1, observed_ps +
++                                 (__int128)UINT32_MAX * TIMER_PERIOD_PS);
++    g_assert_false(timer_pending(restored->vptimers[2].qtimer));
++    g_assert_cmpuint(mips_gictimer_get_sh_count(restored), ==, 100);
++    g_assert_cmpuint(mips_gictimer_get_freq(restored), ==, 100000000);
++    g_assert_cmpuint(nanosecond_reads, ==, 0);
++    g_assert_cmpuint(callbacks, ==, 0);
++    g_byte_array_unref(bytes);
++    destroy_timer(timer);
++    destroy_timer(restored);
++}
++
++static void test_signed_deadlines(void)
++{
++    const __int128 maximum = (((__int128)1 << 126) - 1) * 2 + 1;
++    const __int128 deadlines[] = {
++        -maximum - 1, -((__int128)INT64_MAX + 2) * 1000,
++        -1000, -357, -1, 0, 357, (__int128)INT64_MAX * 1000 + 999,
++        ((__int128)INT64_MAX + 1) * 1000 + 999, maximum,
++    };
++    MIPSGICTimerState *timer;
++    MIPSGICTimerState *restored;
++    unsigned callbacks = 0;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    timer = create_timer(&callbacks, 1);
++    restored = create_timer(&callbacks, 1);
++    for (size_t i = 0; i < G_N_ELEMENTS(deadlines); i++) {
++        GByteArray *bytes;
++
++        timer_mod_ps_wide(timer->vptimers[0].qtimer, deadlines[i]);
++        bytes = save_state(timer, &vmstate_mips_gictimer);
++        g_assert_cmpint(load_state(restored, bytes), ==, 0);
++        assert_deadline(restored, 0, deadlines[i]);
++        g_byte_array_unref(bytes);
++    }
++    g_assert_cmpuint(callbacks, ==, 0);
++    destroy_timer(timer);
++    destroy_timer(restored);
++}
++
++/* QEMUFile's base fields precede the named subsection header/version. */
++static size_t wide_payload_offset(GByteArray *bytes, int vps)
++{
++    const char name[] = "mips-gic-timer/ps-wide";
++    size_t base = 1 + 4 + 4 + vps * (4 + 8);
++
++    g_assert_cmpuint(bytes->data[base], ==, QEMU_VM_SUBSECTION);
++    g_assert_cmpuint(bytes->data[base + 1], ==, strlen(name));
++    g_assert_cmpmem(bytes->data + base + 2, strlen(name), name, strlen(name));
++    g_assert_cmpuint(ldl_be_p(bytes->data + base + 2 + strlen(name)), ==, 1);
++    return base + 2 + strlen(name) + 4;
++}
++
++static void assert_rejected_without_timer_effects(GByteArray *bytes, int vps)
++{
++    unsigned callbacks = 0;
++    MIPSGICTimerState *restored = create_timer(&callbacks, vps);
++
++    for (int i = 0; i < vps; i++) {
++        timer_mod_ps_wide(restored->vptimers[i].qtimer, 500001 + i);
++    }
++    g_assert_cmpint(load_state(restored, bytes), <, 0);
++    for (int i = 0; i < vps; i++) {
++        assert_deadline(restored, i, 500001 + i);
++    }
++    g_assert_cmpuint(callbacks, ==, 0);
++    destroy_timer(restored);
++}
++
++typedef enum Corruption {
++    INVALID_ACTIVE,
++    INACTIVE_PAYLOAD,
++    MISMATCHED_PROJECTION,
++    TRUNCATED_WIDE,
++    VP_COUNT,
++    COUNTSTOP,
++} Corruption;
++
++static void test_malformed(gconstpointer opaque)
++{
++    Corruption corruption = GPOINTER_TO_INT(opaque);
++    MIPSGICTimerState *timer;
++    GByteArray *bytes;
++    unsigned callbacks = 0;
++    size_t payload;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    timer = create_timer(&callbacks, 2);
++    timer_mod_ps_wide(timer->vptimers[0].qtimer, 12345);
++    timer_mod_ps_wide(timer->vptimers[1].qtimer, 54321);
++    bytes = save_state(timer, &vmstate_mips_gictimer);
++    payload = wide_payload_offset(bytes, 2);
++    /* Corrupt VP1 so validating/effecting each VP in one loop would fail. */
++    switch (corruption) {
++    case INVALID_ACTIVE:
++        bytes->data[payload + 17] = 2;
++        break;
++    case INACTIVE_PAYLOAD:
++        bytes->data[payload + 17] = 0;
++        break;
++    case MISMATCHED_PROJECTION:
++        stq_be_p(bytes->data + 9 + 12 + 4, 56);
++        break;
++    case TRUNCATED_WIDE:
++        g_byte_array_set_size(bytes, bytes->len - 2);
++        break;
++    case VP_COUNT:
++        stl_be_p(bytes->data + 5, 1);
++        break;
++    case COUNTSTOP:
++        bytes->data[0] = 2;
++        break;
++    }
++    assert_rejected_without_timer_effects(bytes, 2);
++    g_byte_array_unref(bytes);
++    destroy_timer(timer);
++}
++
++static void test_missing_wide(void)
++{
++    MIPSGICTimerState *timer;
++    GByteArray *bytes;
++    unsigned callbacks = 0;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    timer = create_timer(&callbacks, 2);
++    timer_mod_ps_wide(timer->vptimers[0].qtimer, 12345);
++    bytes = save_state(timer, &vmstate_mips_gictimer);
++    g_byte_array_set_size(bytes, 34);
++    bytes->data[33] = QEMU_VM_EOF;
++    g_assert_cmpuint(bytes->len, ==, 34);
++    assert_rejected_without_timer_effects(bytes, 2);
++    g_byte_array_unref(bytes);
++    destroy_timer(timer);
++}
++
++static void test_obsolete_phase(void)
++{
++    MIPSGICTimerState *timer;
++    GByteArray *bytes;
++    GByteArray *obsolete;
++    unsigned callbacks = 0;
++    const char name[] = "mips-gic-timer/ps-phase";
++    uint8_t header[] = { QEMU_VM_SUBSECTION, sizeof(name) - 1 };
++    const uint8_t version[] = { 0, 0, 0, 1 };
++    const uint8_t phases[] = { 0, 0, 0, 0 };
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    timer = create_timer(&callbacks, 2);
++    bytes = save_state(timer, &vmstate_mips_gictimer);
++    obsolete = g_byte_array_new();
++    g_byte_array_append(obsolete, bytes->data, 33);
++    g_byte_array_append(obsolete, header, sizeof(header));
++    g_byte_array_append(obsolete, (const uint8_t *)name, strlen(name));
++    g_byte_array_append(obsolete, version, sizeof(version));
++    g_byte_array_append(obsolete, phases, sizeof(phases));
++    g_byte_array_append(obsolete, bytes->data + bytes->len - 1, 1);
++    assert_rejected_without_timer_effects(obsolete, 2);
++    g_byte_array_unref(obsolete);
++    g_byte_array_unref(bytes);
++    destroy_timer(timer);
++}
++
++static void test_ordinary(void)
++{
++    MIPSGICTimerState *timer;
++    MIPSGICTimerState *restored;
++    GByteArray *bytes;
++    unsigned callbacks = 0;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(false);
++    observed_ps = 123000;
++    timer = create_timer(&callbacks, 2);
++    restored = create_timer(&callbacks, 2);
++    mips_gictimer_store_sh_count(timer, 100);
++    mips_gictimer_start_count(timer);
++    mips_gictimer_store_vp_compare(timer, 0, 103);
++    timer_del(timer->vptimers[1].qtimer);
++    bytes = save_state(timer, &vmstate_mips_gictimer);
++    g_assert_cmpuint(bytes->len, ==, 34);
++    g_assert_cmpuint(ldq_be_p(bytes->data + 13), ==, 153);
++    g_assert_cmpint((int64_t)ldq_be_p(bytes->data + 25), ==, -1);
++    g_assert_cmpint(load_state(restored, bytes), ==, 0);
++    g_assert_cmpuint(timer_expire_time_ns(restored->vptimers[0].qtimer),
++                     ==, 153);
++    g_assert_false(timer_pending(restored->vptimers[1].qtimer));
++    g_assert_cmpuint(mips_gictimer_get_sh_count(restored), ==, 100);
++    g_assert_cmpuint(mips_gictimer_get_freq(restored), ==, 100000000);
++    g_assert_cmpuint(callbacks, ==, 0);
++    g_byte_array_unref(bytes);
++    destroy_timer(timer);
++    destroy_timer(restored);
++}
++
++static void test_duplicate_wide(void)
++{
++    MIPSGICTimerState *timer;
++    GByteArray *bytes;
++    GByteArray *duplicate;
++    unsigned callbacks = 0;
++    const uint8_t end = QEMU_VM_EOF;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    timer = create_timer(&callbacks, 2);
++    bytes = save_state(timer, &vmstate_mips_gictimer);
++    duplicate = g_byte_array_new();
++    g_byte_array_append(duplicate, bytes->data, bytes->len - 1);
++    g_byte_array_append(duplicate, bytes->data + 33, bytes->len - 34);
++    g_byte_array_append(duplicate, &end, 1);
++    assert_rejected_without_timer_effects(duplicate, 2);
++    g_byte_array_unref(duplicate);
++    g_byte_array_unref(bytes);
++    destroy_timer(timer);
++}
++
++static void test_clock_mode_mismatch(void)
++{
++    const char name[] = "mips-gic-timer/ps-wide";
++    uint8_t header[] = { QEMU_VM_SUBSECTION, sizeof(name) - 1 };
++    const uint8_t version[] = { 0, 0, 0, 1 };
++    uint8_t exact_state[17] = { 1 };
++    MIPSGICTimerState *timer;
++    GByteArray *bytes;
++    unsigned callbacks = 0;
++    const uint8_t end = QEMU_VM_EOF;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(false);
++    timer = create_timer(&callbacks, 1);
++    timer_mod_ns(timer->vptimers[0].qtimer, 500);
++    bytes = save_state(timer, &vmstate_mips_gictimer);
++    g_byte_array_set_size(bytes, bytes->len - 1);
++    g_byte_array_append(bytes, header, sizeof(header));
++    g_byte_array_append(bytes, (const uint8_t *)name, strlen(name));
++    g_byte_array_append(bytes, version, sizeof(version));
++    stq_be_p(exact_state + 9, 500000);
++    g_byte_array_append(bytes, exact_state, sizeof(exact_state));
++    g_byte_array_append(bytes, &end, 1);
++
++    g_assert_cmpint(load_state(timer, bytes), <, 0);
++    g_assert_cmpuint(timer_expire_time_ns(timer->vptimers[0].qtimer), ==, 500);
++    g_assert_cmpuint(callbacks, ==, 0);
++    g_byte_array_unref(bytes);
++    destroy_timer(timer);
++}
++
++static void test_counter_and_callback(void)
++{
++    MIPSGICTimerState *timer;
++    unsigned callbacks = 0;
++    const __int128 start = ((__int128)INT64_MAX + 1) * 1000 + 999;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    observed_ps = start;
++    timer = create_timer(&callbacks, 1);
++    mips_gictimer_store_sh_count(timer, UINT32_MAX);
++    mips_gictimer_start_count(timer);
++    mips_gictimer_store_vp_compare(timer, 0, 1);
++    assert_deadline(timer, 0, start + 2 * TIMER_PERIOD_PS);
++    observed_ps = start + 2 * TIMER_PERIOD_PS - 1;
++    g_assert_cmpuint(mips_gictimer_get_sh_count(timer), ==, 1);
++    g_assert_cmpuint(callbacks, ==, 0);
++    observed_ps++;
++    g_assert_cmpuint(mips_gictimer_get_sh_count(timer), ==, 1);
++    g_assert_cmpuint(callbacks, ==, 1);
++    assert_deadline(timer, 0, observed_ps);
++    mips_gictimer_stop_count(timer);
++    g_assert_false(timer_pending(timer->vptimers[0].qtimer));
++    g_assert_cmpuint(mips_gictimer_get_sh_count(timer), ==, 1);
++    g_assert_cmpuint(nanosecond_reads, ==, 0);
++    destroy_timer(timer);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/mips-gic/migration/wide-save", test_wide_save);
++    g_test_add_func("/mips-gic/migration/signed-deadlines",
++                     test_signed_deadlines);
++    g_test_add_data_func("/mips-gic/migration/invalid-active",
++                          GINT_TO_POINTER(INVALID_ACTIVE), test_malformed);
++    g_test_add_data_func("/mips-gic/migration/inactive-payload",
++                          GINT_TO_POINTER(INACTIVE_PAYLOAD), test_malformed);
++    g_test_add_data_func("/mips-gic/migration/projection-mismatch",
++                          GINT_TO_POINTER(MISMATCHED_PROJECTION),
++                          test_malformed);
++    g_test_add_data_func("/mips-gic/migration/truncated",
++                          GINT_TO_POINTER(TRUNCATED_WIDE), test_malformed);
++    g_test_add_data_func("/mips-gic/migration/vp-count",
++                          GINT_TO_POINTER(VP_COUNT), test_malformed);
++    g_test_add_data_func("/mips-gic/migration/countstop",
++                          GINT_TO_POINTER(COUNTSTOP), test_malformed);
++    g_test_add_func("/mips-gic/migration/duplicate-wide", test_duplicate_wide);
++    g_test_add_func("/mips-gic/migration/missing-wide", test_missing_wide);
++    g_test_add_func("/mips-gic/migration/obsolete-phase", test_obsolete_phase);
++    g_test_add_func("/mips-gic/migration/ordinary", test_ordinary);
++    g_test_add_func("/mips-gic/migration/clock-mode-mismatch",
++                     test_clock_mode_mismatch);
++    g_test_add_func("/mips-gic/clock/counter-and-callback",
++                     test_counter_and_callback);
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-mos6522-clock.c b/tests/unit/test-crucible-mos6522-clock.c
