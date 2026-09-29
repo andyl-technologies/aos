@@ -1,4 +1,4 @@
-From 1c341804cf3e538e59ee8aac6f900163f151328e Mon Sep 17 00:00:00 2001
+From b03c28668de69e3916ce8a127579574648ab8424 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -101,6 +101,9 @@ Retain the wide picosecond origin, extended comparator and periodic
 storm-clamp deadline even when all phases align to nanoseconds.
 Require exact TCG state on restore; keep generic non-TCG timing unchanged
 and exercise literal device timers, pin IRQs and full migration streams.
+
+Remove unreachable TCG migration reconstruction after exact-state admission.
+Retain the existing non-TCG comparator and nanosecond history reconstruction.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -42325,7 +42328,7 @@ index 0424539c78fb6dbf70184b935253ec9efd5b1c04..052f966a68732f44bed47c7db4f1475a
  #endif
              qemu_irq_raise(s->irq);
 diff --git a/hw/timer/hpet.c b/hw/timer/hpet.c
-index 42285cff762b03428c608c0e1d3943ba60cb880f..0558aae4e8421e11ae73367ca611f9d954a55bc1 100644
+index 42285cff762b03428c608c0e1d3943ba60cb880f..e2d340b19883f79ab6cebea8773d35a3517fba54 100644
 --- a/hw/timer/hpet.c
 +++ b/hw/timer/hpet.c
 @@ -25,9 +25,12 @@
@@ -42522,7 +42525,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..0558aae4e8421e11ae73367ca611f9d9
      }
  
      /*
-@@ -266,12 +366,30 @@ static int hpet_post_load(void *opaque, int version_id)
+@@ -266,12 +366,21 @@ static int hpet_post_load(void *opaque, int version_id)
      HPETState *s = opaque;
      int i;
  
@@ -42535,35 +42538,26 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..0558aae4e8421e11ae73367ca611f9d9
 +        return 0;
 +    }
 +
-+    if (qemu_timer_tcg_ps_enabled()) {
-+        s->hpet_offset_ps = (__int128)(int64_t)s->hpet_offset *
-+                            PICOSECONDS_PER_NANOSECOND;
-+    }
-+
      for (i = 0; i < s->num_timers; i++) {
          HPETTimer *t = &s->timer[i];
 +
          t->cmp64 = hpet_calculate_cmp64(t, s->hpet_counter, t->cmp);
          t->last = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - NANOSECONDS_PER_SECOND;
-+        if (qemu_timer_tcg_ps_enabled()) {
-+            t->last_ps = qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL) -
-+                         PICOSECONDS_PER_SECOND;
-+        }
      }
 -
      return 0;
  }
  
-@@ -322,17 +440,193 @@ static const VMStateDescription vmstate_hpet_timer = {
+@@ -322,17 +431,193 @@ static const VMStateDescription vmstate_hpet_timer = {
          VMSTATE_UINT64(fsb, HPETTimer),
          VMSTATE_UINT64(period, HPETTimer),
          VMSTATE_UINT8(wrap_flag, HPETTimer),
 -        VMSTATE_TIMER_PTR(qemu_timer, HPETTimer),
 +        VMSTATE_TIMER_NS_PROJECTION_PTR(qemu_timer, HPETTimer),
-+        VMSTATE_END_OF_LIST()
-+    }
-+};
-+
+         VMSTATE_END_OF_LIST()
+     }
+ };
+ 
 +static const VMStateDescription vmstate_hpet_timer_crucible_clock = {
 +    .name = "hpet timer/crucible-clock",
 +    .version_id = 1,
@@ -42642,10 +42636,10 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..0558aae4e8421e11ae73367ca611f9d9
 +        VMSTATE_STRUCT_VARRAY_UINT8(timer, HPETState, num_timers, 0,
 +                                    vmstate_hpet_timer_crucible_clock,
 +                                    HPETTimer),
-         VMSTATE_END_OF_LIST()
-     }
- };
- 
++        VMSTATE_END_OF_LIST()
++    }
++};
++
 +static bool hpet_fingerprint_projection(QEMUFile *f, const void *opaque,
 +                                        Error **errp)
 +{
@@ -42749,7 +42743,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..0558aae4e8421e11ae73367ca611f9d9
      .fields = (const VMStateField[]) {
          VMSTATE_UINT64(config, HPETState),
          VMSTATE_UINT64(isr, HPETState),
-@@ -346,21 +640,143 @@ static const VMStateDescription vmstate_hpet = {
+@@ -346,21 +631,143 @@ static const VMStateDescription vmstate_hpet = {
      .subsections = (const VMStateDescription * const []) {
          &vmstate_hpet_rtc_irq_level,
          &vmstate_hpet_offset,
@@ -42901,7 +42895,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..0558aae4e8421e11ae73367ca611f9d9
  }
  
  /*
-@@ -370,7 +786,24 @@ static void hpet_timer(void *opaque)
+@@ -370,7 +777,24 @@ static void hpet_timer(void *opaque)
  {
      HPETTimer *t = opaque;
      uint64_t period = t->period;
@@ -42927,7 +42921,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..0558aae4e8421e11ae73367ca611f9d9
  
      if (timer_is_periodic(t) && period != 0) {
          while (hpet_time_after(cur_tick, t->cmp64)) {
-@@ -391,7 +824,7 @@ static void hpet_timer(void *opaque)
+@@ -391,7 +815,7 @@ static void hpet_timer(void *opaque)
  
  static void hpet_set_timer(HPETTimer *t)
  {
@@ -42936,7 +42930,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..0558aae4e8421e11ae73367ca611f9d9
  
      t->wrap_flag = 0;
      t->cmp64 = hpet_calculate_cmp64(t, cur_tick, t->cmp);
-@@ -412,7 +845,27 @@ static void hpet_set_timer(HPETTimer *t)
+@@ -412,7 +836,27 @@ static void hpet_set_timer(HPETTimer *t)
  static void hpet_del_timer(HPETTimer *t)
  {
      HPETState *s = t->state;
@@ -42964,7 +42958,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..0558aae4e8421e11ae73367ca611f9d9
  
      if (s->isr & (1 << t->tn)) {
          /* For level-triggered interrupt, this leaves ISR set but lowers irq.  */
-@@ -440,8 +893,20 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
+@@ -440,8 +884,20 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
              version = seqlock_read_begin(&s->state_version);
              if (unlikely(!hpet_enabled(s))) {
                  cur_tick = s->hpet_counter;
@@ -42986,7 +42980,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..0558aae4e8421e11ae73367ca611f9d9
              }
          } while (seqlock_read_retry(&s->state_version, version));
          trace_hpet_ram_read_reading_counter(addr & 4, cur_tick);
-@@ -512,9 +977,32 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
+@@ -512,9 +968,32 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
              seqlock_write_begin(&s->state_version);
              s->config = new_val;
              if (activating_bit(old_val, new_val, HPET_CFG_ENABLE)) {
@@ -43020,7 +43014,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..0558aae4e8421e11ae73367ca611f9d9
                  for (i = 0; i < s->num_timers; i++) {
                      if (timer_enabled(&s->timer[i]) && (s->isr & (1 << i))) {
                          update_irq(&s->timer[i], 1);
-@@ -523,7 +1011,7 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
+@@ -523,7 +1002,7 @@ static void hpet_ram_write(void *opaque, hwaddr addr,
                  }
              } else if (deactivating_bit(old_val, new_val, HPET_CFG_ENABLE)) {
                  /* Halt main counter and disable interrupt generation. */
@@ -43029,7 +43023,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..0558aae4e8421e11ae73367ca611f9d9
                  for (i = 0; i < s->num_timers; i++) {
                      hpet_del_timer(&s->timer[i]);
                  }
-@@ -667,11 +1155,13 @@ static void hpet_reset(DeviceState *d)
+@@ -667,11 +1146,13 @@ static void hpet_reset(DeviceState *d)
          timer->config |=  (uint64_t)s->intcap << 32;
          timer->period = 0ULL;
          timer->wrap_flag = 0;
@@ -43043,7 +43037,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..0558aae4e8421e11ae73367ca611f9d9
      s->config = 0ULL;
      hpet_fw_cfg.hpet[s->hpet_id].event_timer_block_id = (uint32_t)s->capability;
      hpet_fw_cfg.hpet[s->hpet_id].address = sbd->mmio[0].addr;
-@@ -711,6 +1201,57 @@ static void hpet_init(Object *obj)
+@@ -711,6 +1192,57 @@ static void hpet_init(Object *obj)
      sysbus_init_mmio(sbd, &s->iomem);
  }
  
@@ -43101,7 +43095,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..0558aae4e8421e11ae73367ca611f9d9
  static void hpet_realize(DeviceState *dev, Error **errp)
  {
      SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
-@@ -757,6 +1298,38 @@ static void hpet_realize(DeviceState *dev, Error **errp)
+@@ -757,6 +1289,38 @@ static void hpet_realize(DeviceState *dev, Error **errp)
  
      qdev_init_gpio_in(dev, hpet_handle_legacy_irq, 2);
      qdev_init_gpio_out(dev, &s->pit_enabled, 1);
@@ -43140,7 +43134,7 @@ index 42285cff762b03428c608c0e1d3943ba60cb880f..0558aae4e8421e11ae73367ca611f9d9
  }
  
  static const Property hpet_device_properties[] = {
-@@ -769,6 +1342,7 @@ static void hpet_device_class_init(ObjectClass *klass, const void *data)
+@@ -769,6 +1333,7 @@ static void hpet_device_class_init(ObjectClass *klass, const void *data)
  {
      DeviceClass *dc = DEVICE_CLASS(klass);
  
