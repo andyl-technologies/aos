@@ -373,7 +373,7 @@ pub fn render_hybrid_wrangler_toml(cfg: &HybridDeployConfig) -> Result<String> {
          name = {name}\n\
          main = \"shim.mjs\"\n\
          compatibility_date = \"{compat}\"\n\
-         compatibility_flags = [\"nodejs_compat\"]\n\
+         compatibility_flags = [\"nodejs_compat\", \"enable_request_signal\"]\n\
          \n[vars]\n\
          HUB_TOPOLOGY = \"hybrid\"\n\
          HUB_DEPLOYMENT_ID = {deployment_id}\n\
@@ -1909,6 +1909,10 @@ mod tests {
         let source = render_hybrid_wrangler_toml(&cfg).unwrap();
         let parsed: toml::Value = toml::from_str(&source).unwrap();
         assert_eq!(parsed["vars"]["HUB_TOPOLOGY"].as_str(), Some("hybrid"));
+        let flags = parsed["compatibility_flags"].as_array().unwrap();
+        assert!(flags
+            .iter()
+            .any(|flag| flag.as_str() == Some("enable_request_signal")));
         assert_eq!(
             parsed["vars"]["HUB_DEPLOYMENT_ID"].as_str(),
             Some("deployment-1")
