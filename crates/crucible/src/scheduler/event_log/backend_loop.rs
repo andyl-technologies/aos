@@ -460,6 +460,7 @@ where
             self.failed_input_resolution = None;
             self.pending_fixed_input = None;
             self.failed_cap_negotiation = None;
+            self.failed_dispatch_resolution = None;
             self.preselection = None;
             self.pending_network_outputs.clear();
             self.frozen_network_output_times.clear();
