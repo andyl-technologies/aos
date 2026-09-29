@@ -390,7 +390,15 @@ impl UnsignedImageAssemblyV1 {
         }
         for tool in &self.tools {
             require_identifier(&tool.id, "assembly tool id")?;
-            require_store_path(&tool.executable, false)?;
+            let Some((owner, member)) = tool
+                .executable
+                .strip_prefix("/nix/store/")
+                .and_then(|path| path.split_once('/'))
+            else {
+                bail!("assembly tool must name a member of a Nix store output");
+            };
+            require_store_path(&format!("/nix/store/{owner}"), false)?;
+            BundlePath::parse(member)?;
             if !tool.executable.contains("/bin/")
                 && !tool.executable.contains("/sbin/")
                 && !tool.executable.contains("/lib/")
