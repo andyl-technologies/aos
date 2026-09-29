@@ -105,6 +105,9 @@ Entry kinds:
 | `4` | bundle | bundle |
 | `5` | filter | filter |
 | `6` | per-pack index copy | index |
+| `7` | derived attribute record | derived attribute record |
+| `8` | policy object | policy object |
+| `9` | recipe memo | recipe memo |
 
 - **[PACK-3]** Index entries MUST be sorted by hash ascending so that a
   reader can binary-search a mapped index. *Gate:* `gate:pack-index-sorted`.
@@ -172,7 +175,7 @@ index remains required.
   *Gate:* `gate:pack-tree-locality`.
 - **[PACK-13]** Data chunks and meta objects MUST NOT be mixed in one pack.
   A meta pack sets header flag bit 1 and contains only kinds `1` through
-  `6`. *Gate:* `gate:pack-meta-separation`.
+  `9`. *Gate:* `gate:pack-meta-separation`.
 - **[PACK-14]** The commit order in [`09-refs-and-commits.md`](09-refs-and-commits.md)
   applies: packs, then per-pack indexes, then the ref. A writer MUST NOT
   update a ref that references content in a pack whose index has not been

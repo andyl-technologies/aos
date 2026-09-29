@@ -185,7 +185,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 - [x] **T-REF-1** Commit and ref record types, merge base, ancestry, ref
   name grammar. Repository enforcement of tag immutability, ref transitions,
   and commit provenance is completed jointly with T-REF-2; merge/fold parent
-  order and composite recipes are completed jointly with T-ALG-2. —
+  order and composite recipes are completed jointly with T-ALG-2.
   D-46's typed, canonical entry-origin receipts are included in this format
   task; construction and authenticated root/path evidence remain joint with
   T-PROV-1 and T-REF-2. —

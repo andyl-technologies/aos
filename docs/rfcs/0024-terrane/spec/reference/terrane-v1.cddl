@@ -245,8 +245,10 @@ bundle = {
   2 => [ * bundle-object ],             ; root first (PACK-25)
 }
 bundle-object = [ kind: pack-kind, hash: digest32, bytes: bstr ]
-pack-kind = 0 / 1 / 2 / 3 / 4 / 5 / 6   ; chunk, manifest, node, commit,
-                                        ; bundle, filter, index copy
+pack-kind = 0 / 1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9
+                                        ; chunk, manifest, node, commit,
+                                        ; bundle, filter, index copy,
+                                        ; attribute record, policy, memo
 
 ; Domain terrane-filter-v1 (PACK-21..23). One filter per merged shard.
 filter = {

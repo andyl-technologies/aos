@@ -802,6 +802,20 @@ is added rather than editing history.
     absent; decoders explicitly recognize the extension before the format
     freeze. Requirement IDs remain stable.
 
+- **[D-47] Register pack kinds for every stored metadata domain.**
+  - **Status:** Decided
+  - **Decision:** Assign pack kinds 7, 8 and 9 to derived attribute
+    records, policy objects and recipe memos, respectively. Meta packs
+    accept kinds 1 through 9; all existing kind assignments stay fixed.
+  - **Rationale:** DRV-3 requires attribute records in meta packs, while
+    PACK-13 excluded their registered identity domain. Policy objects and
+    recipe memos had the same missing storage representation. Mapping them
+    to another kind would violate PACK-6's domain separation.
+  - **Affects:** PACK-6, PACK-13, DRV-1, DRV-3, DRV-21 and pack-kind CDDL.
+    This draft correction registers previously unrepresentable metadata
+    before the format freeze; existing encodings, identities and golden
+    vectors remain unchanged. Requirement IDs remain stable.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

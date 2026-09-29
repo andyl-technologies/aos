@@ -8,8 +8,11 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "std")]
+pub mod bucket;
 pub mod codec;
 pub mod config;
+pub mod derived;
 pub mod pack;
 pub mod role;
 pub mod store;
