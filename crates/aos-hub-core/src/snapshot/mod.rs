@@ -26,6 +26,8 @@ use sha2::{Digest, Sha256};
 use crate::db::{MIGRATIONS, SCHEMA_IDENTITY};
 use crate::value::{Row, Value};
 
+pub mod archive;
+
 mod capture;
 mod json;
 

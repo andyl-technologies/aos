@@ -811,3 +811,44 @@ The full four-VM fleet remains in progress at this checkpoint. This client
 recovery does not establish the original server-close cause, full runtime parity,
 hosted provider behavior or performance acceptance. The retained pre-003 reset
 and upload-isolation misses remain historical evidence.
+
+
+## Encrypted snapshot byte framing
+
+The independently reviewed framing foundation passes 21 focused tests on its
+frozen source. Integration verified all four file hashes, the prerequisite
+manifest, the patch and the actual passing log. The qualification receipt is
+`/tmp/hub-snapshot-frames-qualified.json`
+(`e16cd9953c067504a4fc71368ab267e1738b1f2f997998c15ef0273f1a6191f6`).
+
+The fixed versioned format binds archive identity and stream role, encrypts
+bounded DATA frames, and authenticates a terminal commitment covering frame
+count, byte count and preceding ciphertext. Complete-stream acceptance requires
+that END commitment and clean EOF. Tampering, truncation, reordering, excess
+limits and failed I/O poison the stream. Writer keys are one-use values generated
+through an explicitly trusted cryptographic random source; decryption-key import
+cannot create a writer key. Owned private buffers zeroize and debug output is
+redacted, without a perfect library/caller-copy erasure claim.
+
+This qualifies arbitrary-byte framing only. Typed records, logical end markers,
+signed archive roots, whole-Hub closure, filesystem custody, export/import and
+activation remain pending. The current full fleet capture predates these framing
+files and is not their qualification evidence.
+
+## Current upload-batch measurement
+
+The current four-VM run records public authenticated page p95 of **15.656 ms**
+before the batch and **101.280 ms** during the eight-upload batch, ratio
+**6.469**, missing the relative target. Direct Native p95 is **7.367 ms**;
+the measured Worker handler interval p95 is **3 ms**. Curl cumulative TLS
+completion p95 is **97.871 ms**, including earlier connection setup; it is not
+an isolated handshake duration. Independently computed percentiles cannot be
+subtracted to attribute delay. The application is warmed before baseline and
+each curl sample opens a fresh connection. The fixture starts uploads alongside
+page samples but does not establish that every sample overlaps an active PUT.
+
+Exact pinned runner inspection confirms public HTTPS already belongs to
+workerd's C++ TLS listener. Its Node loopback service is not a public TLS proxy.
+Local R2 emulation shares the runtime; contention is a hypothesis requiring
+resource evidence. This result does not establish hosted behavior, upload
+isolation acceptance or a production cause. Historical misses remain retained.
