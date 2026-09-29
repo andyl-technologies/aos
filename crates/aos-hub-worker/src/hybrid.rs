@@ -207,7 +207,7 @@ async fn put_oci_manifest(mut request: Request, env: &Env) -> Result<Response> {
     sha256_state
         .update(&bytes)
         .map_err(|error| worker::Error::RustError(format!("manifest digest state: {error}")))?;
-    let sha256 = hex::encode(Sha256::digest(&bytes));
+    let sha256 = crate::digest::sha256_hex(&bytes, MAX_HYBRID_OCI_MANIFEST_BYTES).await?;
     let preflight = serde_json::to_vec(&HybridOciManifestPreflight { sha256_state })
         .map_err(|error| worker::Error::RustError(format!("manifest preflight JSON: {error}")))?;
     let preflight_request = upload_phase_request(&request, &preflight)?;
@@ -349,7 +349,8 @@ async fn append_oci_upload_chunk(mut request: Request, env: &Env) -> Result<Resp
     if next_sha256_state.update(&bytes).is_err() {
         return Response::error("OCI chunk digest state is invalid", 502);
     }
-    let chunk_sha256 = hex::encode(Sha256::digest(&bytes));
+    let chunk_sha256 =
+        crate::digest::sha256_hex(&bytes, admission.maximum_chunk_bytes as usize).await?;
     let byte_size = bytes.len() as u64;
     if let Err(error) = crate::hybrid_object::put(env, &object_key, &bytes).await {
         worker::console_error!("hybrid_oci_chunk_put_failed: {error:#}");
@@ -503,7 +504,8 @@ async fn upload_registry_part(mut request: Request, env: &Env) -> Result<Respons
     if preflight.final_part && next_sha256_state != preflight.expected_sha256 {
         return Response::error("publication multipart bytes have the wrong digest", 400);
     }
-    let body_sha256 = hex::encode(Sha256::digest(&bytes));
+    let body_sha256 =
+        crate::digest::sha256_hex(&bytes, preflight.expected_part_size as usize).await?;
     let admission_body = serde_json::to_vec(&HybridPublicationPartAdmissionRequest {
         size: bytes.len() as u64,
         body_sha256: body_sha256.clone(),
@@ -632,7 +634,7 @@ async fn upload_cache_part(mut request: Request, env: &Env) -> Result<Response> 
         return Response::error("cache multipart part is empty", 400);
     }
     let size = bytes.len() as u64;
-    let sha256 = hex::encode(Sha256::digest(&bytes));
+    let sha256 = crate::digest::sha256_hex(&bytes, preflight.maximum_part_bytes as usize).await?;
     let admission_body = serde_json::to_vec(&HybridCachePartAdmissionRequest {
         size,
         sha256: sha256.clone(),
@@ -719,7 +721,7 @@ async fn upload_registry_object(mut request: Request, env: &Env) -> Result<Respo
         return Response::error("publication upload body is too large", 413);
     };
     let size = bytes.len() as u64;
-    let sha256 = hex::encode(Sha256::digest(&bytes));
+    let sha256 = crate::digest::sha256_hex(&bytes, MAX_CONTROL_BODY_BYTES).await?;
     if aos_hub_core::service::verify_registry_publication_object_bytes(
         &admission.path,
         admission.size,
@@ -835,7 +837,7 @@ async fn upload_cache_object(mut request: Request, env: &Env) -> Result<Response
     if bytes.len() as u64 != preflight.expected_size {
         return Response::error("cache upload body size differs from its ticket", 400);
     }
-    let sha256 = hex::encode(Sha256::digest(&bytes));
+    let sha256 = crate::digest::sha256_hex(&bytes, preflight.expected_size as usize).await?;
     let size = bytes.len() as u64;
     let narinfo = if path.ends_with(".narinfo") {
         if bytes.len() > aos_hub_core::fetch::MAX_CACHE_NARINFO_BYTES {

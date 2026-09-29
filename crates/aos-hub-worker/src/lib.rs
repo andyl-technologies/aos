@@ -148,6 +148,9 @@ mod frozen_surface_access;
 pub mod handlers;
 #[cfg(target_arch = "wasm32")]
 mod hybrid;
+
+#[cfg(target_arch = "wasm32")]
+mod digest;
 #[cfg(target_arch = "wasm32")]
 pub mod hybrid_authority;
 #[cfg(target_arch = "wasm32")]

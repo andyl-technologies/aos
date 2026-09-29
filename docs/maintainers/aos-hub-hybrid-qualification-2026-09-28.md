@@ -1260,3 +1260,30 @@ transcript and optimized artifact hashes. This captured source uses the unchange
 pure issuer prerequisites before the three additive Native time-verifier changes;
 it does not qualify the current combined workspace. Hosted clocks, deployment
 keys, provider dispatch, performance and Native interoperability remain excluded.
+
+## Bounded upload hashing uses native WebCrypto
+
+Six already-buffered upload routes now use native WebCrypto SHA-256 with their
+existing route limits and the existing 20 MiB maximum. The helper checks bounds
+before copying into JavaScript-owned memory, awaits without a borrowed Wasm
+view, validates an exact 32-byte digest and returns value-free errors without
+software fallback. Portable incremental/streaming hashes and publication semantic
+validation remain intact.
+
+Four actual helper groups and four ordinary production cache-upload groups pass:
+known hashes through 20 MiB, cap-before-call refusal, native failure/type/length
+checks, Wasm memory growth across a delayed digest, exact R2 bytes, restart,
+over-ticket refusal and failed hashing before origin admission or storage writes.
+The origin sees only bounded metadata (0/107/92 bytes for the successful 4 MiB
+case). Producer `/tmp/hub-worker-native-digest/qualification-receipt.json`
+(`92f535acf8025473250911f9f3db17776423a8ab2c2e20954f98e09d2b2cff2d`)
+and independent receipt `/tmp/hub-worker-native-digest/independent-review/receipt.json`
+(`6049497d1f467acf7308307f272cb796e7a1ffe470d4dea2c965a5b40b969455`)
+bind the exact three integrated paths. This local dev-profile gate proves no
+optimized, full fleet, hosted or throughput acceptance.
+
+The earlier dev issuer raw compiler intermediate was overwritten when its hot
+target was reused. Its original receipt is unchanged; the final processed Wasm,
+shim and runtime evidence remain intact, as disclosed in
+`/tmp/hub-live-authority-issuer/final-v2-intermediate-retention-disclosure.json`.
+The separate optimized check retains its own immutable ordinary artifact.
