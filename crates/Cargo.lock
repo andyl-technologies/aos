@@ -6291,7 +6291,9 @@ dependencies = [
 name = "terrane"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "terrane-core",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -6299,10 +6301,8 @@ name = "terrane-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
- "serde",
  "terrane",
  "terrane-fs",
- "toml 0.8.23",
 ]
 
 [[package]]
