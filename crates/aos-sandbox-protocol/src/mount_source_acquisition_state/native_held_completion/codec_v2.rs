@@ -80,6 +80,35 @@ pub struct RootNativeNoInterestTerminalV1 {
 }
 
 impl RootNativeNoInterestTerminalV1 {
+    /// Constructs structurally valid local terminal DATA without proving cleanup.
+    ///
+    /// Authenticated settlement, complete current-owner graph validation and
+    /// exact old-floor ID/value-digest deletion remain separate responsibilities.
+    /// No marker data grants no-dispatch, signing or protected journal authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects the existing fixed-format sentinel and terminal revision errors.
+    pub fn new(
+        cleanup_transaction: [u8; 16],
+        closed_disposition: ObjectDigest,
+        settled_attempt: RecordRefV2,
+        faulted_acquisition: RecordRefV2,
+        retired_capacity_id: [u8; 32],
+        retired_capacity_digest: [u8; 32],
+    ) -> Result<Self> {
+        let value = Self {
+            cleanup_transaction,
+            closed_disposition,
+            settled_attempt,
+            faulted_acquisition,
+            retired_capacity_id,
+            retired_capacity_digest,
+        };
+        value.to_canonical_bytes()?;
+        Ok(value)
+    }
+
     /// Returns the exact cleanup append identity as nonauthorizing data.
     #[must_use]
     pub const fn cleanup_transaction(&self) -> [u8; 16] {

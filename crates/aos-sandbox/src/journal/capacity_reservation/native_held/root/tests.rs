@@ -8,6 +8,7 @@ use aos_sandbox_protocol::mount_source_acquisition_state::{
 };
 
 use super::*;
+use crate::journal::encoded_transaction_append_bytes;
 
 fn request(count: u32, bytes: u64, records: u32) -> NativeHeldCapacityRequestV3 {
     NativeHeldCapacityRequestV3 {

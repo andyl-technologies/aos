@@ -23,20 +23,45 @@ pub(in crate::journal) use super::family::{require_legacy_owner, require_legacy_
 mod admission;
 mod profile;
 mod root;
+mod root_v2;
+mod transfer;
 
 pub use admission::{
     NativeHeldProviderAdmissionDataV3, provider_native_capacity_admission_v3,
     provider_native_capacity_transition_v3,
 };
+pub use profile::provider_native_capacity_transition_v2;
 pub use profile::{
-    NativeHeldCapacityAppendV3, NativeHeldCapacityChangeV3, NativeHeldCapacityGeometryV3,
-    NativeHeldCapacityPathV3, NativeHeldCapacityStepV3, NativeHeldCapacitySuffixV3,
+    NativeHeldCapacityAppendV2, NativeHeldCapacityAppendV3, NativeHeldCapacityChangeV3,
+    NativeHeldCapacityGeometryV3, NativeHeldCapacityPathV3, NativeHeldCapacityStepV2,
+    NativeHeldCapacityStepV3, NativeHeldCapacitySuffixV2, NativeHeldCapacitySuffixV3,
     NativeHeldCapacityUsageV3,
 };
 pub use root::{
     root_native_capacity_admission_v3, root_native_capacity_append_v3,
     root_native_capacity_transition_v3,
 };
+pub use root_v2::{
+    root_native_capacity_admission_v2, root_native_capacity_append_v2,
+    root_native_capacity_transition_v2,
+};
+
+/// Validates every canonical floor in a complete DATA snapshot before selection.
+///
+/// The caller supplies the complete journal snapshot, including every namespace46
+/// row. This performs no owner graph check and proves neither currentness nor a
+/// protected scope. Valid native/ordinary DATA never becomes a legacy grant.
+///
+/// # Errors
+///
+/// Rejects unknown/malformed families, noncanonical self-bound keys or duplicate
+/// floor identities anywhere in the supplied snapshot, including foreign owners.
+pub fn validate_capacity_snapshot_data_v2(
+    records: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+) -> Result<(), JournalError> {
+    super::family::canonical_reservations(records)?;
+    Ok(())
+}
 
 /// Fixes the exact native capacity value width, independently of legacy widths.
 pub const NATIVE_HELD_CAPACITY_VALUE_BYTES_V3: usize = 266;

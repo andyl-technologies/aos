@@ -115,8 +115,8 @@ impl AttemptCutState {
 
 /// Retains a compact historical companion cut as nonauthorizing data.
 ///
-/// Capture is private to the native owner reducer. Decoding returns only data;
-/// the nominated transaction must still be joined to its exact atomic proposal.
+/// Capture and decoding return only data; the nominated transaction must still
+/// be joined to the actual complete graph and exact atomic owner proposal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RootNativeCutV1 {
     kind: RootNativeCutKindV1,
@@ -195,7 +195,18 @@ impl RootNativeCutV1 {
         &self.acquisition
     }
 
-    pub(super) fn capture(
+    /// Captures exact canonical companions as nonauthorizing historical DATA.
+    ///
+    /// This reconstructs and compares the selected companions, but does not
+    /// validate an arbitrary caller-supplied whole legacy graph or prove a
+    /// committed atomic capture. The complete graph and native owner reducer
+    /// must independently validate the actual before/after transition.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent originals, unsupported capture/state shapes, prohibited
+    /// fields, noncanonical companions or captured digest/bound mismatches.
+    pub fn capture(
         kind: RootNativeCutKindV1,
         capture_transaction: [u8; 16],
         legacy: &MountSourceAcquisitionStateV2,
