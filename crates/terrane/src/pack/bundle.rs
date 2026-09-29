@@ -4,12 +4,12 @@
 //! {1: root-commit:bytes32, 2: [[kind:uint, hash:bytes32, bytes:bstr], ...]}
 //! ```
 
-use super::{EntryKind, PackError, digest, verify};
-use terrane_core::cbor::{Decoder, write_array, write_bytes, write_map, write_uint};
+use super::{EntryKind, PackError, digest};
 use terrane_core::identity::Digest;
+use terrane_core::pack_format::{self, BundleRecord};
 
-const MAX_OBJECTS: usize = 1_048_576;
-const MAX_BYTES: usize = 1024 * 1024 * 1024;
+const MAX_OBJECTS: usize = pack_format::MAX_BUNDLE_OBJECTS;
+const MAX_BYTES: usize = pack_format::MAX_BUNDLE_BYTES;
 
 /// One verified immutable carried in a bundle.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,30 +104,24 @@ impl Bundle {
         &self.objects
     }
 
+    fn records(&self) -> Vec<BundleRecord<'_>> {
+        self.objects
+            .iter()
+            .map(|object| BundleRecord {
+                kind: object.kind as u8,
+                hash: object.hash,
+                bytes: &object.bytes,
+            })
+            .collect()
+    }
+
     fn encoded_size(&self) -> Result<usize, PackError> {
-        let mut size = 37_usize.checked_add(argument_size(self.objects.len())).ok_or(PackError::Limit)?;
-        for object in &self.objects {
-            size = size.checked_add(36).and_then(|size| size.checked_add(argument_size(object.bytes.len())))
-                .and_then(|size| size.checked_add(object.bytes.len())).ok_or(PackError::Limit)?;
-        }
-        Ok(size)
+        Ok(pack_format::bundle_size(&self.records())?)
     }
 
     /// Returns this bundle's canonical CBOR encoding.
     pub fn encode(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        write_map(&mut bytes, 2);
-        write_uint(&mut bytes, 1);
-        write_bytes(&mut bytes, &self.root_commit);
-        write_uint(&mut bytes, 2);
-        write_array(&mut bytes, self.objects.len());
-        for object in &self.objects {
-            write_array(&mut bytes, 3);
-            write_uint(&mut bytes, object.kind as u64);
-            write_bytes(&mut bytes, &object.hash);
-            write_bytes(&mut bytes, &object.bytes);
-        }
-        bytes
+        pack_format::encode_bundle(&self.root_commit, &self.records())
     }
 
     /// Returns the identity of the canonical bundle in its registered domain.
@@ -144,47 +138,20 @@ impl Bundle {
     /// Rejects noncanonical or unknown schema fields, invalid
     /// kinds, excessive lengths, trailing data, or any mismatching identity.
     pub fn decode(bytes: &[u8]) -> Result<Self, PackError> {
-        if bytes.len() > MAX_BYTES {
-            return Err(PackError::Limit);
-        }
-        let mut decoder = Decoder::new(bytes);
-        if decoder.map(2)? != 2 || decoder.uint()? != 1 {
-            return Err(PackError::Index);
-        }
-        let root_commit = decoder
-            .bytes(32)?
-            .try_into()
-            .map_err(|_| PackError::Index)?;
-        if decoder.uint()? != 2 {
-            return Err(PackError::Index);
-        }
-        let count = decoder.array(MAX_OBJECTS)?;
-        let mut objects = Vec::with_capacity(count);
-        for _ in 0..count {
-            if decoder.array(3)? != 3 {
-                return Err(PackError::Index);
-            }
-            let kind =
-                EntryKind::try_from(u8::try_from(decoder.uint()?).map_err(|_| PackError::Kind)?)?;
-            let hash = decoder
-                .bytes(32)?
-                .try_into()
-                .map_err(|_| PackError::Index)?;
-            let body = decoder.bytes(MAX_BYTES)?;
-            if kind != EntryKind::Chunk {
-                super::reader::validate_metadata(kind, body)?;
-            }
-            verify(kind, &hash, body)?;
-            objects.push(BundleObject {
-                kind,
-                hash,
-                bytes: body.to_vec(),
-            });
-        }
-        decoder.finish()?;
-        validate_objects(&objects)?;
+        let view = pack_format::decode_bundle(bytes)?;
+        let objects = view
+            .objects()
+            .iter()
+            .map(|object| {
+                Ok(BundleObject {
+                    kind: EntryKind::try_from(object.kind)?,
+                    hash: object.hash,
+                    bytes: object.bytes.to_vec(),
+                })
+            })
+            .collect::<Result<Vec<_>, PackError>>()?;
         Ok(Self {
-            root_commit,
+            root_commit: *view.root_commit(),
             objects,
         })
     }
@@ -195,14 +162,4 @@ fn validate_objects(objects: &[BundleObject]) -> Result<(), PackError> {
         return Err(PackError::Limit);
     }
     Ok(())
-}
-
-fn argument_size(value: usize) -> usize {
-    match value {
-        0..=23 => 1,
-        24..=255 => 2,
-        256..=65535 => 3,
-        65536..=4294967295 => 5,
-        _ => 9,
-    }
 }

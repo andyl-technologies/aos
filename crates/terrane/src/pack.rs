@@ -16,6 +16,7 @@
 mod binary;
 mod bundle;
 mod merged;
+mod native;
 mod reader;
 mod writer;
 
@@ -25,6 +26,7 @@ mod tests;
 
 pub use bundle::{Bundle, BundleObject};
 pub use merged::{IndexCatalog, Lookup, MergedEntry, MergedShard, PackIndexSnapshot, RecordState};
+pub use native::NativeBodyDecoder;
 pub use reader::{Admission, BodyDecoder, PackReader, RawBodyDecoder};
 pub use writer::{PackPublisher, PackWriter, PublishedPack, SealedPack};
 
@@ -32,13 +34,13 @@ use std::fmt;
 use terrane_core::identity::{Digest, IdentityError, IdentityKind, TERRANE_V1};
 
 /// The fixed header width in bytes.
-pub const HEADER_SIZE: usize = 24;
+pub const HEADER_SIZE: usize = terrane_core::pack_format::HEADER_SIZE;
 
 /// The fixed footer width in bytes.
-pub const FOOTER_SIZE: usize = 16;
+pub const FOOTER_SIZE: usize = terrane_core::pack_format::FOOTER_SIZE;
 
 /// The fixed per-pack index entry width in bytes.
-pub const INDEX_ENTRY_SIZE: usize = 56;
+pub const INDEX_ENTRY_SIZE: usize = terrane_core::pack_format::RECORD_SIZE;
 
 /// The maximum body bytes accumulated before a data writer requires sealing.
 pub const DATA_PACK_LIMIT: usize = 32 * 1024 * 1024;
@@ -261,7 +263,7 @@ impl IndexEntry {
 }
 
 /// A rejected format, identity, or writer-state transition.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum PackError {
     /// A header, footer, or index is truncated or structurally malformed.
     Malformed,
@@ -295,6 +297,10 @@ pub enum PackError {
     Generation,
     /// A compressed body requires an appropriate decoder or dictionary.
     Decoder,
+    /// The portable pack, shard, or bundle byte format failed validation.
+    Format(terrane_core::pack_format::Error),
+    /// Native chunk decoding or its bounded admission checks failed.
+    Native(crate::codec::FrameError),
     /// Damaged unframed bodies require quarantine rather than guessed recovery.
     RecoveryUnsupported(Box<PackError>),
 }
@@ -304,6 +310,8 @@ impl fmt::Display for PackError {
         match self {
             Self::Identity(error) => write!(formatter, "pack body identity: {error}"),
             Self::Cbor(error) => write!(formatter, "pack metadata: {error}"),
+            Self::Format(error) => write!(formatter, "pack format: {error}"),
+            Self::Native(error) => write!(formatter, "pack chunk decoding: {error}"),
             Self::RecoveryUnsupported(error) => write!(
                 formatter,
                 "pack quarantined; unframed scan recovery unsupported: {error}"
@@ -323,9 +331,11 @@ impl fmt::Display for PackError {
                 Self::DetachedIndex => "per-pack index disagrees with sealed pack",
                 Self::Generation => "stale or conflicting index generation",
                 Self::Decoder => "pack body decoder or dictionary unavailable",
-                Self::Identity(_) | Self::Cbor(_) | Self::RecoveryUnsupported(_) => {
-                    "pack validation failed"
-                }
+                Self::Identity(_)
+                | Self::Cbor(_)
+                | Self::Format(_)
+                | Self::Native(_)
+                | Self::RecoveryUnsupported(_) => "pack validation failed",
             }),
         }
     }
@@ -336,6 +346,8 @@ impl std::error::Error for PackError {
         match self {
             Self::Identity(error) => Some(error),
             Self::Cbor(error) => Some(error),
+            Self::Native(error) => Some(error),
+            Self::Format(error) => Some(error),
             Self::RecoveryUnsupported(error) => Some(error.as_ref()),
             _ => None,
         }
@@ -365,4 +377,16 @@ fn verify(kind: EntryKind, hash: &Digest, bytes: &[u8]) -> Result<(), PackError>
         return Err(PackError::Identity(IdentityError::DigestMismatch));
     }
     Ok(())
+}
+
+impl From<crate::codec::FrameError> for PackError {
+    fn from(error: crate::codec::FrameError) -> Self {
+        Self::Native(error)
+    }
+}
+
+impl From<terrane_core::pack_format::Error> for PackError {
+    fn from(error: terrane_core::pack_format::Error) -> Self {
+        Self::Format(error)
+    }
 }

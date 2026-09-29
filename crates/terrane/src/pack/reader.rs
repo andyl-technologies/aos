@@ -5,11 +5,8 @@
 //! detached-index = header:24 | authoritative-index-bytes
 //! ```
 
-use super::binary::{array, crc32c, decode_header, decode_index, encode_header};
-use super::{
-    Codec, EntryKind, FOOTER_SIZE, HEADER_SIZE, IndexEntry, PackError, PackHeader, verify,
-};
-use terrane_core::cbor::Decoder;
+use super::binary::{encode_header, native_header, native_record};
+use super::{Codec, EntryKind, FOOTER_SIZE, IndexEntry, PackError, PackHeader, verify};
 use terrane_core::identity::Digest;
 
 /// A bounded chunk-envelope decoder supplied by the runtime codec layer.
@@ -76,34 +73,14 @@ impl<'a> PackReader<'a> {
     /// # Errors
     /// Returns a format, CRC, reserved-field, ordering, duplicate, or bounds error.
     pub fn open(bytes: &'a [u8]) -> Result<Self, PackError> {
-        let header = decode_header(bytes)?;
-        let footer_start = bytes
-            .len()
-            .checked_sub(FOOTER_SIZE)
-            .ok_or(PackError::Malformed)?;
-        let footer = bytes.get(footer_start..).ok_or(PackError::Malformed)?;
-        if array::<4>(footer, 12)? != *b"TRPE" {
-            return Err(PackError::Version);
-        }
-        let index_offset =
-            usize::try_from(u64::from_le_bytes(array(footer, 0)?)).map_err(|_| PackError::Limit)?;
-        if index_offset < HEADER_SIZE || index_offset > footer_start {
-            return Err(PackError::Index);
-        }
-        let index = bytes
-            .get(index_offset..footer_start)
-            .ok_or(PackError::Index)?;
-        if crc32c(index) != u32::from_le_bytes(array(footer, 8)?) {
-            return Err(PackError::Crc);
-        }
-        let entries = decode_index(index, header)?;
-        validate_coverage(&entries, index_offset)?;
-        for entry in &entries {
-            let body = body_slice(bytes, entry)?;
-            if entry.kind == EntryKind::Chunk && body.first() != Some(&(entry.codec as u8)) {
-                return Err(PackError::Codec);
-            }
-        }
+        let view = terrane_core::pack_format::PackView::decode(bytes)?;
+        let header = native_header(view.header());
+        let index_offset = view.index_offset();
+        let entries = view
+            .records()
+            .iter()
+            .map(native_record)
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             bytes,
             header,
@@ -274,49 +251,8 @@ fn body_slice<'a>(bytes: &'a [u8], entry: &IndexEntry) -> Result<&'a [u8], PackE
     bytes.get(start..end).ok_or(PackError::Index)
 }
 
-fn validate_coverage(entries: &[IndexEntry], index_offset: usize) -> Result<(), PackError> {
-    let mut physical: Vec<_> = entries.iter().collect();
-    physical.sort_by_key(|entry| entry.offset);
-    let mut next = HEADER_SIZE as u64;
-    for entry in physical {
-        if entry.offset < next {
-            return Err(PackError::Index);
-        }
-        next = entry
-            .offset
-            .checked_add(u64::from(entry.body_len))
-            .ok_or(PackError::Limit)?;
-        if next > index_offset as u64 {
-            return Err(PackError::Index);
-        }
-    }
-    if next != index_offset as u64 {
-        return Err(PackError::Index);
-    }
-    Ok(())
-}
-
 pub(super) fn validate_metadata(kind: EntryKind, bytes: &[u8]) -> Result<(), PackError> {
-    if kind == EntryKind::Chunk {
-        return Err(PackError::Kind);
-    }
-    // Index copies have a registered binary representation, unlike CBOR meta.
-    if kind == EntryKind::Index {
-        if bytes.starts_with(b"TRPK") {
-            super::PackIndexSnapshot::decode(bytes, 0)?;
-        } else if bytes.starts_with(b"TRIX") {
-            let shard = bytes
-                .get(super::binary::PREAMBLE_SIZE)
-                .copied()
-                .unwrap_or(0);
-            super::MergedShard::decode(bytes, 0, shard)?;
-        } else {
-            return Err(PackError::Index);
-        }
-        return Ok(());
-    }
-    let mut decoder = Decoder::new(bytes);
-    decoder.skip_value(bytes.len())?;
-    decoder.finish()?;
-    Ok(())
+    Ok(terrane_core::pack_format::validate_metadata(
+        kind as u8, bytes,
+    )?)
 }

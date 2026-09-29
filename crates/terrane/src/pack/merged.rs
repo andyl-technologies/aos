@@ -5,12 +5,10 @@
 //!                       plain:4, codec:1, kind:1, state:1, reserved:5)*
 //! ```
 
-use super::binary::{PREAMBLE_SIZE, array, decode_header, decode_index, index_count};
-use super::{Codec, EntryKind, HEADER_SIZE, IndexEntry, PackError, PackHeader, PackId};
+use super::binary::{core_record, native_header, native_record};
+use super::{EntryKind, IndexEntry, PackError, PackHeader, PackId};
 use std::collections::{BTreeMap, BTreeSet};
 use terrane_core::identity::Digest;
-
-const ENTRY_SIZE: usize = 72;
 
 /// An immutable per-pack index validated without consulting pack bodies.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31,23 +29,12 @@ impl PackIndexSnapshot {
     /// Rejects malformed headers, index count, reserved fields, kinds, codecs,
     /// duplicate hashes, overlapping offsets, or unsorted index records.
     pub fn decode(bytes: &[u8], generation: u64) -> Result<Self, PackError> {
-        let header = decode_header(bytes)?;
-        let entries = decode_index(
-            bytes.get(HEADER_SIZE..).ok_or(PackError::Malformed)?,
-            header,
-        )?;
-        let mut physical: Vec<_> = entries.iter().collect();
-        physical.sort_by_key(|entry| entry.offset);
-        let mut end = HEADER_SIZE as u64;
-        for entry in physical {
-            if entry.offset < end {
-                return Err(PackError::Index);
-            }
-            end = entry
-                .offset
-                .checked_add(u64::from(entry.body_len))
-                .ok_or(PackError::Limit)?;
-        }
+        let (wire_header, records) = terrane_core::pack_format::decode_detached_index(bytes)?;
+        let header = native_header(wire_header);
+        let entries = records
+            .iter()
+            .map(native_record)
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             header,
             generation,
@@ -221,21 +208,16 @@ impl MergedShard {
 
     /// Encodes the exact registered 72-byte record format.
     pub fn encode(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"TRIX");
-        bytes.extend_from_slice(&(self.entries.len() as u64).to_le_bytes());
-        for record in &self.entries {
-            bytes.extend_from_slice(&record.entry.hash);
-            bytes.extend_from_slice(record.pack.as_bytes());
-            bytes.extend_from_slice(&record.entry.offset.to_le_bytes());
-            bytes.extend_from_slice(&record.entry.body_len.to_le_bytes());
-            bytes.extend_from_slice(&record.entry.plaintext_len.to_le_bytes());
-            bytes.push(record.entry.codec as u8);
-            bytes.push(record.entry.kind as u8);
-            bytes.push(record.state as u8);
-            bytes.extend_from_slice(&[0; 5]);
-        }
-        bytes
+        let records = self
+            .entries
+            .iter()
+            .map(|entry| terrane_core::pack_format::MergedRecord {
+                pack: *entry.pack.as_bytes(),
+                record: core_record(&entry.entry),
+                state: entry.state as u8,
+            })
+            .collect::<Vec<_>>();
+        terrane_core::pack_format::encode_shard(&records)
     }
 
     /// Parses a shard fetched under its manifest generation and shard key.
@@ -244,45 +226,21 @@ impl MergedShard {
     /// Rejects count or reserved-byte disagreement, unknown fields, invalid
     /// offsets or lengths, another hash prefix, unsorted or duplicate hashes.
     pub fn decode(bytes: &[u8], generation: u64, shard: u8) -> Result<Self, PackError> {
-        let count = index_count(bytes, ENTRY_SIZE)?;
-        let mut entries: Vec<MergedEntry> = Vec::with_capacity(count);
-        for body in bytes[PREAMBLE_SIZE..].as_chunks::<ENTRY_SIZE>().0 {
-            if array::<5>(body, 67)? != [0; 5] {
-                return Err(PackError::Reserved);
-            }
-            let entry = IndexEntry {
-                hash: array(body, 0)?,
-                offset: u64::from_le_bytes(array(body, 48)?),
-                body_len: u32::from_le_bytes(array(body, 56)?),
-                plaintext_len: u32::from_le_bytes(array(body, 60)?),
-                codec: Codec::try_from(body[64])?,
-                kind: EntryKind::try_from(body[65])?,
-                dictionary_id: 0,
-            };
-            let class = if entry.kind == EntryKind::Chunk {
-                super::PackClass::Data
-            } else {
-                super::PackClass::Meta
-            };
-            super::binary::validate_entry(&entry, class)?;
-            if entry.hash[0] != shard
-                || entries
-                    .last()
-                    .is_some_and(|previous| previous.entry.hash >= entry.hash)
-            {
-                return Err(PackError::Index);
-            }
-            let state = match body[66] {
-                0 => RecordState::Live,
-                1 => RecordState::Tombstone,
-                _ => return Err(PackError::Reserved),
-            };
-            entries.push(MergedEntry {
-                pack: PackId(array(body, 32)?),
-                entry,
-                state,
-            });
-        }
+        let records = terrane_core::pack_format::decode_shard(bytes, shard)?;
+        let entries = records
+            .iter()
+            .map(|record| {
+                Ok(MergedEntry {
+                    pack: PackId::from_random_bytes(record.pack),
+                    entry: native_record(&record.record)?,
+                    state: if record.state == 0 {
+                        RecordState::Live
+                    } else {
+                        RecordState::Tombstone
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>, PackError>>()?;
         Ok(Self {
             generation,
             shard,

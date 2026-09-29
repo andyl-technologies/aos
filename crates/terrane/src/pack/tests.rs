@@ -137,7 +137,9 @@ fn pack_index_rejects_bad_coverage_duplicates_lengths_and_reserved_bytes() -> Re
     reserved[HEADER_SIZE + 12 + 52] = 1;
     assert_error!(
         PackIndexSnapshot::decode(&reserved, 1),
-        Err(PackError::Reserved)
+        Err(PackError::Format(
+            terrane_core::pack_format::Error::Reserved
+        ))
     );
     Ok(())
 }
@@ -149,7 +151,10 @@ fn pack_footer_crc_and_body_identity_are_independent() -> Result<(), PackError> 
     let mut crc_bad = pack.bytes().to_vec();
     let crc_position = crc_bad.len() - 8;
     crc_bad[crc_position] ^= 1;
-    assert!(matches!(PackReader::open(&crc_bad), Err(PackError::Crc)));
+    assert!(matches!(
+        PackReader::open(&crc_bad),
+        Err(PackError::Format(terrane_core::pack_format::Error::Crc))
+    ));
 
     let mut body_bad = pack.bytes().to_vec();
     body_bad[HEADER_SIZE + 1] ^= 1;
@@ -614,5 +619,123 @@ fn index_rebuild_rejects_conflicting_pack_ids_and_malformed_shard_records() -> R
     let mut huge_count = shard.encode();
     huge_count[4..12].copy_from_slice(&u64::MAX.to_le_bytes());
     assert!(MergedShard::decode(&huge_count, 1, hash[0]).is_err());
+    Ok(())
+}
+
+#[test]
+fn pack_native_codecs_verify_raw_zstd_and_authoritative_dictionary_digest() -> Result<(), PackError>
+{
+    let profile = terrane_core::chunking::ChunkProfile::cdc_1m([0; 32]);
+    let raw = b"raw chunk".to_vec();
+    let zstd_plaintext = vec![b'z'; 8192];
+    let dictionary = b"dictionary words shared across independently compressed chunks".repeat(64);
+    let dictionary_plaintext =
+        b"dictionary words shared across independently compressed chunks".repeat(128);
+    let dictionary_hash = digest(EntryKind::Chunk, &dictionary)?;
+    let dictionaries = BTreeMap::from([(dictionary_hash, dictionary)]);
+    let decoder = NativeBodyDecoder::new(&profile, &dictionaries);
+    let mut raw_encoded = vec![0];
+    raw_encoded.extend_from_slice(&raw);
+    let zstd_encoded = crate::codec::encode_chunk(&zstd_plaintext, profile.maximum(), 3, None)?;
+    let dictionary_encoded = crate::codec::encode_chunk(
+        &dictionary_plaintext,
+        profile.maximum(),
+        3,
+        dictionaries.get(&dictionary_hash).map(Vec::as_slice),
+    )?;
+    assert_eq!(zstd_encoded[0], 1);
+    assert_eq!(dictionary_encoded[0], 2);
+    assert_eq!(&dictionary_encoded[1..33], &dictionary_hash);
+    let bodies = [
+        (raw, raw_encoded),
+        (zstd_plaintext, zstd_encoded),
+        (dictionary_plaintext, dictionary_encoded),
+    ];
+    let mut writer = PackWriter::new(PackId::from_random_bytes([22; 16]), PackClass::Data, true);
+    for (plaintext, encoded) in &bodies {
+        writer.append_chunk(
+            digest(EntryKind::Chunk, plaintext)?,
+            encoded,
+            plaintext.len() as u32,
+            0,
+            &decoder,
+        )?;
+    }
+    let pack = writer.seal()?;
+    let reader = PackReader::open(pack.bytes())?;
+    for (plaintext, _) in &bodies {
+        assert_eq!(
+            reader.read(
+                EntryKind::Chunk,
+                &digest(EntryKind::Chunk, plaintext)?,
+                &decoder
+            )?,
+            *plaintext
+        );
+    }
+    let dictionary_chunk_hash = digest(EntryKind::Chunk, &bodies[2].0)?;
+    assert!(matches!(
+        reader.read(
+            EntryKind::Chunk,
+            &dictionary_chunk_hash,
+            &NativeBodyDecoder::without_dictionaries(&profile)
+        ),
+        Err(PackError::Native(
+            crate::codec::FrameError::MissingDictionary
+        ))
+    ));
+    let wrong_dictionary = BTreeMap::from([(dictionary_hash, b"wrong dictionary".to_vec())]);
+    assert!(matches!(
+        reader.read(
+            EntryKind::Chunk,
+            &dictionary_chunk_hash,
+            &NativeBodyDecoder::new(&profile, &wrong_dictionary)
+        ),
+        Err(PackError::Native(crate::codec::FrameError::WrongDictionary))
+    ));
+    Ok(())
+}
+
+#[test]
+fn pack_native_codecs_reject_frame_length_identity_and_reserved_field_corruption()
+-> Result<(), PackError> {
+    let profile = terrane_core::chunking::ChunkProfile::cdc_1m([0; 32]);
+    let decoder = NativeBodyDecoder::without_dictionaries(&profile);
+    let plaintext = vec![0x2a; 8192];
+    let hash = digest(EntryKind::Chunk, &plaintext)?;
+    let encoded = crate::codec::encode_chunk(&plaintext, profile.maximum(), 3, None)?;
+    let mut writer = PackWriter::new(PackId::from_random_bytes([23; 16]), PackClass::Data, true);
+    assert!(matches!(
+        writer.append_chunk([0; 32], &encoded, plaintext.len() as u32, 0, &decoder),
+        Err(PackError::Native(crate::codec::FrameError::Identity(_)))
+    ));
+    assert_error!(
+        writer.append_chunk(hash, &encoded, plaintext.len() as u32, 1, &decoder),
+        Err(PackError::Reserved)
+    );
+    assert!(
+        writer
+            .append_chunk(hash, &encoded, profile.maximum() as u32 + 1, 0, &decoder)
+            .is_err()
+    );
+    let mut concatenated = encoded.clone();
+    concatenated.extend_from_slice(&encoded[1..]);
+    assert!(matches!(
+        writer.append_chunk(hash, &concatenated, plaintext.len() as u32, 0, &decoder),
+        Err(PackError::Native(crate::codec::FrameError::InvalidFrame))
+    ));
+    writer.append_chunk(hash, &encoded, plaintext.len() as u32, 0, &decoder)?;
+    let pack = writer.seal()?;
+    let reader = PackReader::open(pack.bytes())?;
+    let mut entries = reader.entries().to_vec();
+    entries[0].plaintext_len += 1;
+    let forged = replace_index(&pack, &entries);
+    let forged_reader = PackReader::open(&forged)?;
+    assert!(matches!(
+        forged_reader.read(EntryKind::Chunk, &hash, &decoder),
+        Err(PackError::Native(
+            crate::codec::FrameError::ContentSizeMismatch
+        ))
+    ));
     Ok(())
 }

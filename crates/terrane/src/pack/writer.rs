@@ -4,7 +4,7 @@
 //! directory entries and each object's missing chunks in tree order; already
 //! held identities can be omitted without changing the adjacent body layout.
 
-use super::binary::{crc32c, encode_header, encode_index, validate_entry};
+use super::binary::{core_header, core_record, encode_header, encode_index, validate_entry};
 use super::{
     BodyDecoder, Codec, DATA_PACK_LIMIT, EntryKind, HEADER_SIZE, IndexEntry, PackClass, PackError,
     PackHeader, PackId, digest, verify,
@@ -48,8 +48,13 @@ impl PackWriter {
     /// noncanonical metadata, and appends after the data size threshold.
     pub fn append_raw(&mut self, kind: EntryKind, plaintext: &[u8]) -> Result<Digest, PackError> {
         let envelope = usize::from(kind == EntryKind::Chunk);
-        u32::try_from(plaintext.len().checked_add(envelope).ok_or(PackError::Limit)?)
-            .map_err(|_| PackError::Limit)?;
+        u32::try_from(
+            plaintext
+                .len()
+                .checked_add(envelope)
+                .ok_or(PackError::Limit)?,
+        )
+        .map_err(|_| PackError::Limit)?;
 
         let hash = digest(kind, plaintext)?;
         let body = if kind == EntryKind::Chunk {
@@ -198,21 +203,14 @@ impl PackWriter {
     /// Returns a limit error if offsets do not fit the versioned format.
     pub fn seal(mut self) -> Result<SealedPack, PackError> {
         self.entries.sort_by_key(|entry| entry.hash);
+        let records = self.entries.iter().map(core_record).collect::<Vec<_>>();
+        let bytes = terrane_core::pack_format::encode_pack(
+            core_header(self.header),
+            &self.bodies,
+            &records,
+        )?;
         let header = encode_header(self.header);
         let index = encode_index(&self.entries);
-        let index_offset = u64::try_from(
-            HEADER_SIZE
-                .checked_add(self.bodies.len())
-                .ok_or(PackError::Limit)?,
-        )
-        .map_err(|_| PackError::Limit)?;
-
-        let mut bytes = header.clone();
-        bytes.extend_from_slice(&self.bodies);
-        bytes.extend_from_slice(&index);
-        bytes.extend_from_slice(&index_offset.to_le_bytes());
-        bytes.extend_from_slice(&crc32c(&index).to_le_bytes());
-        bytes.extend_from_slice(b"TRPE");
 
         let mut detached_index = header;
         detached_index.extend_from_slice(&index);
