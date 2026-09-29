@@ -9,6 +9,9 @@ use std::{
     os::unix::fs::{MetadataExt as _, PermissionsExt as _},
 };
 
+// The reducer framing requires at least eight canonical body bytes.
+const STATE_BODY: &[u8; 8] = b"state-v1";
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct StateData;
 
@@ -46,7 +49,7 @@ impl ProtectedDomainSchemaV1 for StateData {
         identity: &[u8],
         body: &[u8],
     ) -> Option<ProtectedReducerPhaseV1> {
-        (identity.len() == 1 && body == b"state").then_some(ProtectedReducerPhaseV1::Terminal)
+        (identity.len() == 1 && body == STATE_BODY).then_some(ProtectedReducerPhaseV1::Terminal)
     }
     fn validates_identity(kind: u8, identity: &[u8]) -> bool {
         kind == 1 && identity.len() == 1
@@ -77,7 +80,7 @@ fn plan(
     gate: &mut HeldCacheMutationGateV1,
 ) -> PreparedDomainTransactionV1<StateData> {
     let key = ProtectedDomainKeyV1::new(1, vec![1]).unwrap();
-    let payload = encode_reducer_payload_with_validator::<StateData>(&key, b"state", &()).unwrap();
+    let payload = encode_reducer_payload_with_validator::<StateData>(&key, STATE_BODY, &()).unwrap();
     let envelope =
         ProtectedDomainEnvelopeV1::new_with_validator(key, 1, None, payload, &()).unwrap();
     adapter
