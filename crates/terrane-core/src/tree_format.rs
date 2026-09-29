@@ -879,7 +879,11 @@ pub fn verify_child_ref(
     reference: &ChildRef,
     child: &Node<'_>,
     child_bytes: &[u8],
+    min_chunk_size: u64,
 ) -> Result<(), Error> {
+    if decode_node(child_bytes, false, min_chunk_size)? != *child {
+        return Err(Error::Node);
+    }
     if child.level.checked_add(1) != Some(parent_level) {
         return Err(Error::Node);
     }
@@ -996,7 +1000,7 @@ pub fn validate_graft_chain(roots: &[Digest]) -> Result<(), Error> {
 /// inconsistent hard-link sets, invalid ordering, or forbidden entry types.
 pub fn validate_tree_entries(entries: &[LeafItem<'_>], usage: TreeUse) -> Result<(), Error> {
     let mut previous = None;
-    let mut hardlinks: alloc::collections::BTreeMap<&[u8], (&[u8], &Entry<'_>)> =
+    let mut hardlinks: alloc::collections::BTreeMap<&[u8], &Entry<'_>> =
         alloc::collections::BTreeMap::new();
     for item in entries {
         validate_key(&item.key)?;
@@ -1031,7 +1035,7 @@ pub fn validate_tree_entries(entries: &[LeafItem<'_>], usage: TreeUse) -> Result
         } = &item.entry.kind
         {
             match hardlinks.get(link_id) {
-                Some((_, first_entry)) if !same_hardlink_value(first_entry, &item.entry) => {
+                Some(first_entry) if !same_hardlink_value(first_entry, &item.entry) => {
                     return Err(Error::Tree);
                 }
                 Some(_) => {}
@@ -1039,7 +1043,7 @@ pub fn validate_tree_entries(entries: &[LeafItem<'_>], usage: TreeUse) -> Result
                     if *link_id != item.key.as_slice() {
                         return Err(Error::Tree);
                     }
-                    hardlinks.insert(*link_id, (&item.key, &item.entry));
+                    hardlinks.insert(*link_id, &item.entry);
                 }
             }
         }
@@ -1175,6 +1179,140 @@ mod tests {
         };
         let encoded = encode_node(&node, true, MIN_CHUNK).expect("small file inline");
         assert!(decode_node(&encoded, true, 14).is_err());
+    }
+
+    #[test]
+    fn entry_limits_and_type_fields_fail_at_decode() {
+        let mut invalid_mode = file(None);
+        if let EntryKind::File { mode, .. } = &mut invalid_mode.kind {
+            *mode = 0x1000;
+        }
+        let node = Node {
+            level: 0,
+            items: NodeItems::Leaf(vec![item(b"f", invalid_mode)]),
+            props: None,
+        };
+        assert!(encode_node(&node, true, MIN_CHUNK).is_err());
+
+        let symlink = Entry {
+            kind: EntryKind::Symlink {
+                target: b"\xff/../raw",
+            },
+            attrs: Vec::new(),
+            attrs_present: false,
+            xattrs: Vec::new(),
+            xattrs_present: false,
+            provenance: None,
+        };
+        let node = Node {
+            level: 0,
+            items: NodeItems::Leaf(vec![item(b"link", symlink)]),
+            props: None,
+        };
+        assert!(encode_node(&node, true, MIN_CHUNK).is_ok());
+
+        let long_target = vec![b'x'; 4097];
+        let symlink = Entry {
+            kind: EntryKind::Symlink {
+                target: &long_target,
+            },
+            attrs: Vec::new(),
+            attrs_present: false,
+            xattrs: Vec::new(),
+            xattrs_present: false,
+            provenance: None,
+        };
+        let node = Node {
+            level: 0,
+            items: NodeItems::Leaf(vec![item(b"link", symlink)]),
+            props: None,
+        };
+        assert!(encode_node(&node, true, MIN_CHUNK).is_err());
+    }
+
+    #[test]
+    fn prefix_compression_must_use_full_common_prefix() {
+        let node = Node {
+            level: 0,
+            items: NodeItems::Leaf(vec![item(b"a1", file(None)), item(b"a2", file(None))]),
+            props: None,
+        };
+        let mut encoded = encode_node(&node, true, MIN_CHUNK).expect("canonical node");
+        let second = encoded
+            .windows(4)
+            .position(|window| window == [0x83, 0x41, b'2', 0x01])
+            .expect("stored suffix and shared length");
+        encoded.splice(second..second + 4, [0x83, 0x42, b'a', b'2', 0x00]);
+        assert!(decode_node(&encoded, true, MIN_CHUNK).is_err());
+    }
+
+    #[test]
+    fn whiteout_and_index_forms_are_strict() {
+        let whiteout_with_attrs = [0xa2, 1, 5, 9, 0xa0];
+        assert_eq!(
+            decode_entry_bytes(&whiteout_with_attrs, MIN_CHUNK),
+            Err(Error::Entry)
+        );
+
+        let index_with_duplicate_targets = {
+            let mut bytes = vec![0xa2, 1, 7, 14, 0x82];
+            for _ in 0..2 {
+                bytes.extend_from_slice(&[0x58, 32]);
+                bytes.extend_from_slice(&[3; 32]);
+            }
+            bytes
+        };
+        assert_eq!(
+            decode_entry_bytes(&index_with_duplicate_targets, MIN_CHUNK),
+            Err(Error::Entry)
+        );
+    }
+
+    #[test]
+    fn conflicts_reject_conflict_candidates() {
+        let nested = Entry {
+            kind: EntryKind::Conflict {
+                candidates: vec![file(None), file(None)],
+                base: Some(None),
+            },
+            attrs: Vec::new(),
+            attrs_present: false,
+            xattrs: Vec::new(),
+            xattrs_present: false,
+            provenance: None,
+        };
+        let outer = Entry {
+            kind: EntryKind::Conflict {
+                candidates: vec![file(None), nested],
+                base: Some(None),
+            },
+            attrs: Vec::new(),
+            attrs_present: false,
+            xattrs: Vec::new(),
+            xattrs_present: false,
+            provenance: None,
+        };
+        assert!(super::encode_entry(&outer, MIN_CHUNK).is_err());
+    }
+
+    #[test]
+    fn properties_are_root_only_and_preserve_presence() {
+        let node = Node {
+            level: 0,
+            items: NodeItems::Leaf(vec![item(b"f", file(None))]),
+            props: Some(Vec::new()),
+        };
+        let encoded = encode_node(&node, true, MIN_CHUNK).expect("root property map");
+        assert_eq!(
+            encode_node(
+                &decode_node(&encoded, true, MIN_CHUNK).expect("decode"),
+                true,
+                MIN_CHUNK
+            )
+            .expect("encode"),
+            encoded
+        );
+        assert_eq!(decode_node(&encoded, false, MIN_CHUNK), Err(Error::Node));
     }
 
     #[test]

@@ -348,7 +348,27 @@ pub fn write_map(output: &mut Vec<u8>, count: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Decoder, Error};
+    use alloc::vec::Vec;
+
+    use super::{Decoder, Error, write_bytes, write_negative_argument, write_uint};
+
+    #[test]
+    fn shortest_numbers_and_borrowed_strings_round_trip() {
+        let mut encoded = Vec::new();
+        for value in [23, 24, 255, 256, 65535, 65536, u64::MAX] {
+            write_uint(&mut encoded, value);
+        }
+        write_negative_argument(&mut encoded, u64::MAX);
+        write_bytes(&mut encoded, b"raw\0bytes");
+
+        let mut decoder = Decoder::new(&encoded);
+        for value in [23, 24, 255, 256, 65535, 65536, u64::MAX] {
+            assert_eq!(decoder.uint().expect("canonical integer"), value);
+        }
+        assert_eq!(decoder.negative_argument(), Ok(u64::MAX));
+        assert_eq!(decoder.bytes(9), Ok(&b"raw\0bytes"[..]));
+        decoder.finish().expect("all items consumed");
+    }
 
     #[test]
     fn rejects_nonminimal_and_excluded_forms() {
