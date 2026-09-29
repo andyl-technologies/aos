@@ -449,4 +449,4 @@ fn proposal_records(proposal: &RootNativeHeldTransitionV2) -> Vec<JournalRecord>
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

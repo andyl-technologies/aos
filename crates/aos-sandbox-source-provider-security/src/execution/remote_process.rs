@@ -31,6 +31,25 @@ impl ProcessExecutionEvidenceV1 {
         peer: &ConnectionPeerIdentity,
         subject: KernelAuthorizedRecordSubject,
     ) -> Result<Self, SourceProviderSecurityError> {
+        Self::capture_retaining(peer, subject).map_err(|(error, _subject)| error)
+    }
+
+    /// Returns the original subject pin if any baseline observation fails.
+    pub(crate) fn capture_retaining(
+        peer: &ConnectionPeerIdentity,
+        subject: KernelAuthorizedRecordSubject,
+    ) -> Result<Self, (SourceProviderSecurityError, KernelAuthorizedRecordSubject)> {
+        let baseline = match Self::capture_baseline(peer, &subject) {
+            Ok(baseline) => baseline,
+            Err(error) => return Err((error, subject)),
+        };
+        Ok(Self { subject, baseline })
+    }
+
+    fn capture_baseline(
+        peer: &ConnectionPeerIdentity,
+        subject: &KernelAuthorizedRecordSubject,
+    ) -> Result<RemoteBaselineV1, SourceProviderSecurityError> {
         let peer_credentials = peer.credentials();
         let subject_credentials = subject.credentials();
         if peer_credentials.pid() != subject_credentials.pid()
@@ -41,7 +60,7 @@ impl ProcessExecutionEvidenceV1 {
         }
         let boot = CurrentKernelBootV1::capture()?;
         let baseline = observe(
-            &subject,
+            subject,
             boot.boot_id(),
             peer.socket_cookie().get(),
             subject_credentials.pid().get(),
@@ -56,7 +75,7 @@ impl ProcessExecutionEvidenceV1 {
             return Err(SourceProviderSecurityError::SessionContinuity);
         }
         require_peer_matches(peer, baseline)?;
-        Ok(Self { subject, baseline })
+        Ok(baseline)
     }
 
     pub(crate) fn revalidate(

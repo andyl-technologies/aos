@@ -50,16 +50,16 @@ fn digest(byte: u8) -> ObjectDigest {
     ObjectDigest::from_bytes([byte; 32])
 }
 
-struct Original {
-    rows: BTreeMap<Vec<u8>, Vec<u8>>,
-    attempt: [u8; 32],
+pub(in crate::journal) struct Original {
+    pub(in crate::journal) rows: BTreeMap<Vec<u8>, Vec<u8>>,
+    pub(in crate::journal) attempt: [u8; 32],
     scope: NativeHeldScopeV1,
     witness: RootNativeHeldWitnessV1,
     cut: RootNativeCutV1,
 }
 
 impl Original {
-    fn new() -> Self {
+    pub(in crate::journal) fn new() -> Self {
         let session = fixture::signed_session([19; 16], 31);
         let catalog = NativeAcquireCatalogBindingV3::new(
             digest(10),
@@ -154,7 +154,7 @@ impl Original {
         }
     }
 
-    fn prepared(&self) -> PreparedNativeHeldControlV1 {
+    pub(in crate::journal) fn prepared(&self) -> PreparedNativeHeldControlV1 {
         PreparedNativeHeldControlV1::new(
             ControlKind::RootPrepared,
             self.scope,
@@ -241,7 +241,7 @@ impl Original {
         .unwrap()
     }
 
-    fn graph(&self, stored: bool, closed: bool) -> RootNativeHeldGraphV2 {
+    pub(in crate::journal) fn graph(&self, stored: bool, closed: bool) -> RootNativeHeldGraphV2 {
         let mut rows = self.rows.clone();
         rows.insert(
             native_root_sidecar_key_v2(self.attempt).unwrap(),

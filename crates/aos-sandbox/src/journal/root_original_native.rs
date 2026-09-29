@@ -33,6 +33,8 @@ use super::{
 
 type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
 
+mod pending_v5;
+
 fn invalid() -> JournalError {
     JournalError::MalformedRecord("invalid original Root native owner edge")
 }
@@ -335,6 +337,24 @@ fn continuation(
     ),
     JournalError,
 > {
+    let (transaction, next, old) = derive_continuation(state, owners, attempt, limits)?;
+    validate_transfer(&transaction, &old, next.as_ref(), limits)?;
+    Ok((transaction, next, old.reservation_id()))
+}
+
+fn derive_continuation(
+    state: &State,
+    owners: &JournalTransaction,
+    attempt: [u8; 32],
+    limits: JournalLimits,
+) -> Result<
+    (
+        JournalTransaction,
+        Option<OriginalRootCapacityRecordV5>,
+        OriginalRootCapacityRecordV5,
+    ),
+    JournalError,
+> {
     require_named_funding(state)?;
     let old = pending(state, limits)?
         .into_iter()
@@ -393,17 +413,25 @@ fn continuation(
         records.push(floor.to_journal_record()?);
     }
     let transaction = JournalTransaction::new(*owners.id(), records)?;
+    Ok((transaction, next, old))
+}
+
+fn validate_transfer(
+    transaction: &JournalTransaction,
+    old: &OriginalRootCapacityRecordV5,
+    next: Option<&OriginalRootCapacityRecordV5>,
+    limits: JournalLimits,
+) -> Result<(), JournalError> {
     super::native_held::check_transfer(
-        &transaction,
+        transaction,
         old.request(),
-        next.as_ref().map(OriginalRootCapacityRecordV5::request),
+        next.map(OriginalRootCapacityRecordV5::request),
         limits,
         (
             "original Root consumed records",
             "original Root complete transferred suffix",
         ),
-    )?;
-    Ok((transaction, next, old.reservation_id()))
+    )
 }
 
 pub(super) fn validate_edge(
@@ -458,6 +486,7 @@ pub(super) fn validate_replayed_transaction(
     state: &State,
     transaction: &JournalTransaction,
     limits: JournalLimits,
+    successor_sequence: u64,
 ) -> Result<bool, JournalError> {
     let mut selected = None;
     for record in transaction.records() {
@@ -487,6 +516,7 @@ pub(super) fn validate_replayed_transaction(
     }
     if let Some(attempt) = selected {
         validate_edge(state, transaction, attempt, limits)?;
+        pending_v5::validate_pending_sequence(state, transaction, attempt, successor_sequence)?;
         return Ok(true);
     }
     let owns_native_archive = state.keys().any(|(namespace, key)| {
@@ -528,6 +558,7 @@ pub struct PreparedOriginalRootAppendV5 {
     attempt: [u8; 32],
     digest: [u8; 32],
     floor: Option<OriginalRootCapacityRecordV5>,
+    preflight_complete: bool,
 }
 
 /// Binds exact original rows/floor to a physical current writer and sequence.
@@ -705,6 +736,22 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
             attempt,
             self.authority.journal.limits,
         )?;
+        let append_frames = u64::try_from(transaction.records().len())
+            .map_err(|_| JournalError::SequenceExhausted)?
+            .checked_add(2)
+            .ok_or(JournalError::SequenceExhausted)?;
+        let successor_sequence = self
+            .authority
+            .journal
+            .snapshot_sequence()
+            .checked_add(append_frames)
+            .ok_or(JournalError::SequenceExhausted)?;
+        pending_v5::validate_pending_sequence(
+            &self.authority.journal.state,
+            &transaction,
+            attempt,
+            successor_sequence,
+        )?;
         self.prepared(transaction, attempt, floor)
     }
 
@@ -783,6 +830,7 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
             attempt,
             digest,
             floor,
+            preflight_complete: true,
         })
     }
 
@@ -813,6 +861,9 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
         &mut self,
         prepared: &PreparedOriginalRootAppendV5,
     ) -> Result<OriginalRootProtectedReadbackV5, JournalError> {
+        if !prepared.preflight_complete {
+            return Err(invalid());
+        }
         self.validate_snapshot(&prepared.snapshot)?;
         if authority_preflight_digest(std::slice::from_ref(&prepared.transaction))
             != prepared.digest

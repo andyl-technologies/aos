@@ -25,6 +25,9 @@ mod original;
 mod profile;
 mod root;
 mod root_v2;
+
+#[cfg(test)]
+pub(in crate::journal) use root_v2::tests::Original as NativeRootDataFixture;
 mod transfer;
 pub(in crate::journal) use transfer::check_transfer;
 

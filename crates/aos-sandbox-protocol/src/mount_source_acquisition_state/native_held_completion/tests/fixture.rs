@@ -33,6 +33,113 @@ const PROCESS: [u8; 16] = [4; 16];
 const NODE: [u8; 16] = [5; 16];
 const ROUTE: [u8; 16] = [6; 16];
 
+/// Derives signed original Pending2 and its exact Acquisition/Head successors.
+pub(super) fn pending_original_rows(
+    rows: &BTreeMap<Vec<u8>, Vec<u8>>,
+) -> BTreeMap<Vec<u8>, Vec<u8>> {
+    use aos_sandbox_source_provider_protocol::{
+        AcquireSourceResponseV1, SourceProviderResponseStatusV1, SourceProviderStatus,
+        empty_descriptor_set_commitment_v1, encode_acquire_response, response_result_digest_v1,
+        sign_response_status,
+    };
+    use sha2::{Digest as _, Sha256};
+
+    let state = validate_mount_source_state_graph_v2(
+        rows.iter().map(|(key, value)| (key.as_slice(), value.as_slice())),
+    )
+    .unwrap();
+    let mut attempt = state
+        .provider_attempts
+        .values()
+        .find(|attempt| attempt.method == ProviderMethodV2::Acquire && attempt.attempt_number == 1)
+        .unwrap()
+        .clone();
+    let session = &state.provider_sessions[&attempt.session_id];
+    let key = SigningKey::from_bytes(&[14; 32]);
+    let result_digest = response_result_digest_v1(
+        SourceProviderMethod::Acquire,
+        SourceProviderStatus::Pending,
+        None,
+    );
+    let status = sign_response_status(
+        SourceProviderResponseStatusV1::new(
+            SourceProviderMethod::Acquire,
+            attempt.request_id,
+            ObjectDigest::from_bytes(attempt.signed_request_digest),
+            SourceProviderStatus::Pending,
+            session.provider_process_instance,
+            ObjectDigest::from_bytes(session.session_binding),
+            attempt.request_sequence,
+            result_digest,
+            empty_descriptor_set_commitment_v1(),
+        )
+        .unwrap(),
+        signer(PROVIDER, [24; 16], SourceProviderKeyUsageV1::ProviderOutcome, &key),
+        &key,
+    )
+    .unwrap();
+    let response = encode_acquire_response(&AcquireSourceResponseV1::new(status.clone(), None).unwrap());
+    let mut anchor = OutcomeVerificationAnchorV2 {
+        verification_started_seconds: 110,
+        verification_completed_seconds: 111,
+        kernel_boot_id: session.kernel_boot_id,
+        trusted_clock_evidence_digest: session.trusted_clock_evidence_digest,
+        anchor_digest: [0; 32],
+    };
+    anchor.anchor_digest = outcome_verification_anchor_digest_v2(
+        &anchor,
+        session.session_id,
+        attempt.attempt_id,
+        attempt.request_sequence,
+        attempt.request_sequence,
+        Sha256::digest(response).into(),
+    );
+
+    attempt.revision = 2;
+    attempt.state = ProviderAttemptStateV2::DispositionConsumed {
+        response_sequence: attempt.request_sequence,
+        verification_anchor: anchor,
+        status: ProviderStatusV2::Pending,
+        signed_status_digest: Sha256::digest(status.to_canonical_bytes()).into(),
+        signed_status: status.to_canonical_bytes(),
+        signed_result: Vec::new(),
+        signed_result_digest: *result_digest.as_bytes(),
+    };
+    let StoredRecordV2::ProviderQueryAttempt { value: attempt } =
+        seal_record(StoredRecordV2::ProviderQueryAttempt { value: attempt }).unwrap()
+    else {
+        panic!("sealed Pending attempt");
+    };
+    let reference = RecordRefV2 {
+        id: attempt.attempt_id,
+        revision: 2,
+        record_digest: attempt.record_digest,
+    };
+    let mut row = state.acquisitions[&attempt.owner.owner_id()].clone();
+    row.revision += 1;
+    row.acquire_lineage.root = reference;
+    row.acquire_lineage.tail = reference;
+    let mut head = state.provider_heads[&(
+        attempt.scope.holder_authority_id,
+        attempt.scope.provider_authority_id,
+    )]
+        .clone();
+    head.revision += 1;
+    head.next_response_sequence += 1;
+    head.pending_attempt = None;
+
+    let mut pending = rows.clone();
+    for record in [
+        StoredRecordV2::ProviderQueryAttempt { value: attempt },
+        seal_record(StoredRecordV2::Acquisition { value: row }).unwrap(),
+        seal_record(StoredRecordV2::ProviderHead { value: head }).unwrap(),
+    ] {
+        let (key, value) = encode_mount_source_state_record_v2(&record).unwrap();
+        pending.insert(key, value);
+    }
+    pending
+}
+
 pub(super) fn signer(
     authority: [u8; 16],
     key_id: [u8; 16],
