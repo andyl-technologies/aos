@@ -708,6 +708,7 @@ fn validate_token(bytes: &[u8]) -> Result<(), RecordError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "invalid golden vectors must fail the test")]
 mod tests {
     use super::*;
 

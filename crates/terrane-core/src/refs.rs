@@ -629,6 +629,7 @@ impl fmt::Display for GraphError {
 impl core::error::Error for GraphError {}
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "invalid test fixtures must fail the test")]
 mod tests {
     use super::*;
     use alloc::format;
