@@ -425,10 +425,9 @@ fn qemu_vmstate_literal_name(expression: &str) -> Result<Option<String>, String>
     if let Some(literal) = expression
         .strip_prefix('"')
         .and_then(|value| value.strip_suffix('"'))
+        && !literal.contains(['"', '\\'])
     {
-        if !literal.contains(['"', '\\']) {
-            return Ok(Some(literal.to_owned()));
-        }
+        return Ok(Some(literal.to_owned()));
     }
 
     // This unchanged header constant is from the pinned sole upstream source:
@@ -530,7 +529,8 @@ fn qemu_vmstate_discovery_rejects_normalization_collision() {
 
 #[test]
 fn qemu_vmstate_discovery_preserves_actual_target_name_separation() {
-    let sections = owned_qemu_vmstate_sections(QEMU_PATCH).unwrap();
+    let sections = owned_qemu_vmstate_sections(QEMU_PATCH)
+        .expect("Actual packaged target formats have valid distinct names");
     assert_eq!(
         sections.get("crucible.qemu.vmstate.cpu%2ftimer%2fclock-wide"),
         Some(&1)
@@ -561,7 +561,11 @@ fn qemu_vmstate_discovery_excludes_qom_and_existing_upstream_formats() {
                   static const VMStateDescription vmstate_upstream = {\n\
                  +    .name = \"upstream/timer-wide\",\n\
                  +    .version_id = 1,\n };\n";
-    assert!(owned_qemu_vmstate_sections(patch).unwrap().is_empty());
+    assert!(
+        owned_qemu_vmstate_sections(patch)
+            .expect("QOM and unchanged upstream declarations are outside the inventory")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -569,7 +573,8 @@ fn qemu_vmstate_discovery_resolves_pinned_owned_macro_name() {
     let patch = "+static const VMStateDescription vmstate_imx6ul_lcdif_crucible_clock = {\n\
                  +    .name = TYPE_IMX6UL_LCDIF \"/crucible-clock\",\n\
                  +    .version_id = 1,\n+};\n";
-    let sections = owned_qemu_vmstate_sections(patch).unwrap();
+    let sections = owned_qemu_vmstate_sections(patch)
+        .expect("The source-pinned macro resolves its actual section name");
     assert_eq!(
         sections.get("crucible.qemu.vmstate.imx6ul-lcdif-crucible-clock"),
         Some(&1)

@@ -1446,7 +1446,7 @@ in
               build/tests/unit/test-coroutine --tap -p /locking/co-sleep
               build/tests/unit/test-crucible-vfio-timer --tap
               build/tests/unit/test-crucible-vga-blink --tap
-              build/tests/unit/test-crucible-rtc-phase --tap
+              build/tests/unit/test-crucible-rtc-calendar --tap
               build/tests/unit/test-crucible-nvme-phase --tap
               build/tests/unit/test-crucible-cxl-timestamp --tap
               build/tests/unit/test-crucible-xhci-microframe --tap
