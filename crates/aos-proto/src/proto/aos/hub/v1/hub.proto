@@ -66,6 +66,15 @@ service ProjectService {
 }
 
 // Bindings (RFC-0004 "Storage: Binding and shared buckets").
+// Root-reviewed permanent physical identity and desired admission only.
+// Every operation requires current StorageManage at the instance root.
+// This service neither confirms executor authorization nor enables provider I/O.
+service StorageAuthorityService {
+  rpc PlanDecision(PlanStorageAuthorityDecisionRequest) returns (StorageAuthorityPlanResponse);
+  rpc ApplyDecision(ApplyStorageAuthorityDecisionRequest) returns (StorageAuthorityDecisionResponse);
+  rpc GetAuthority(GetStorageAuthorityRequest) returns (StorageAuthorityProjection);
+}
+
 service BindingService {
   rpc ListBindings(ListBindingsRequest) returns (ListBindingsResponse);
   rpc GetBinding(GetBindingRequest) returns (GetBindingResponse);
@@ -5525,4 +5534,137 @@ message ExplainRouteResponse {
   string normalized_url = 1;
   repeated string decisions = 2;
   repeated string rejection_reasons = 3;
+}
+
+// -- Permanent physical storage authority operator contracts (RFC-0023) --
+
+// One canonical HTTPS endpoint and case-sensitive bucket. Root evidence,
+// rather than DNS resolution or matching provider metadata, approves equivalence.
+message StorageAuthorityAddress {
+  oneof host {
+    string dns_name = 1;
+    bytes ipv4 = 2;
+    bytes ipv6 = 3;
+  }
+  uint32 port = 4;
+  string bucket = 5;
+}
+
+message CreatePhysicalStorageAuthorityDecision {
+  string authority_id = 1;
+  // Actual immutable executor namespace; multiple authorities may share it.
+  string guard_namespace_id = 2;
+  string physical_resource_evidence_digest = 3;
+  string qualification_digest = 4;
+  // Required immutable scope ceiling; an explicit empty prefix covers the bucket.
+  optional string qualified_managed_prefix = 5;
+}
+
+message ApproveStorageAuthorityAliasDecision {
+  string alias_id = 1;
+  string authority_id = 2;
+  StorageAuthorityAddress address = 3;
+  string equivalence_evidence_digest = 4;
+}
+
+message AssociateStorageAuthorityBindingDecision {
+  string association_id = 1;
+  string authority_id = 2;
+  string alias_id = 3;
+  string binding_id = 4;
+  string binding_stable_id = 5;
+  string binding_resource_version = 6;
+  string binding_write_revision = 7;
+  string binding_prefix = 8;
+}
+
+message StorageAuthorityCredentialMember {
+  string association_id = 1;
+  string purpose = 2;
+  string generation = 3;
+  // Immutable reference and fingerprint only; this API never carries a secret.
+  string secret_version_ref = 4;
+  string credential_fingerprint = 5;
+}
+
+message AttestStorageAuthorityExclusivityDecision {
+  string attestation_id = 1;
+  string authority_id = 2;
+  string managed_prefix = 3;
+  string qualification_digest = 4;
+  string provider_policy_evidence_digest = 5;
+  string executor_identity = 6;
+  repeated StorageAuthorityCredentialMember credentials = 7;
+  int64 valid_until = 8;
+}
+
+enum StorageAuthorityDesiredState {
+  STORAGE_AUTHORITY_DESIRED_STATE_UNSPECIFIED = 0;
+  STORAGE_AUTHORITY_DESIRED_STATE_ADMITTED = 1;
+  STORAGE_AUTHORITY_DESIRED_STATE_BLOCKED = 2;
+  STORAGE_AUTHORITY_DESIRED_STATE_RETIRED = 3;
+}
+
+message SetStorageAuthorityAdmissionDecision {
+  string authority_id = 1;
+  // Exact canonical decimal; zero precedes the first desired generation.
+  string expected_generation = 2;
+  optional string expected_digest = 3;
+  string guard_namespace_id = 4;
+  StorageAuthorityDesiredState state = 5;
+  optional string attestation_id = 6;
+  repeated string association_ids = 7;
+}
+
+message StorageAuthorityDecision {
+  oneof input {
+    CreatePhysicalStorageAuthorityDecision create = 1;
+    ApproveStorageAuthorityAliasDecision approve_alias = 2;
+    AssociateStorageAuthorityBindingDecision associate_binding = 3;
+    AttestStorageAuthorityExclusivityDecision attest = 4;
+    SetStorageAuthorityAdmissionDecision set_admission = 5;
+  }
+}
+
+message PlanStorageAuthorityDecisionRequest {
+  StorageAuthorityDecision decision = 1;
+  string idempotency_key = 2;
+}
+
+message StorageAuthorityPlanResponse {
+  TopologyPlan plan = 1;
+  // Typed exact reviewed input, including immutable coordinates and evidence.
+  StorageAuthorityDecision decision = 2;
+}
+
+message ApplyStorageAuthorityDecisionRequest {
+  string plan_id = 1;
+  string confirmation_hash = 2;
+  string idempotency_key = 3;
+  // Must exactly match the immutable reviewed decision, even on result replay.
+  StorageAuthorityDecision decision = 4;
+}
+
+message StorageAuthorityDecisionResponse {
+  string authority_id = 1;
+  string record_id = 2;
+  // Desired SQL generation only, never an executor authorization watermark.
+  optional string desired_generation = 3;
+  // Always true until a separate authenticated executor adapter is integrated.
+  bool pending_reconciliation = 4;
+}
+
+message GetStorageAuthorityRequest { string authority_id = 1; }
+
+message StorageAuthorityDesiredAdmission {
+  string desired_generation = 1;
+  string digest = 2;
+  SetStorageAuthorityAdmissionDecision decision = 3;
+}
+
+message StorageAuthorityProjection {
+  CreatePhysicalStorageAuthorityDecision authority = 1;
+  StorageAuthorityDesiredAdmission desired_admission = 2;
+  // SQL acknowledgement is not evidence of fresh executor agreement.
+  bool pending_reconciliation = 3;
 }

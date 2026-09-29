@@ -160,8 +160,24 @@ impl Database {
         &self,
         id: &PhysicalStorageAuthorityId,
     ) -> Result<Option<CreatePhysicalStorageAuthority>> {
-        self.authority_json("physical_storage_authorities", "authority_id", id.as_str())
-            .await
+        self.backend
+            .query_opt(
+                "SELECT specification_json, specification_digest
+                 FROM physical_storage_authorities WHERE authority_id = ?1",
+                &vals![id.as_str()],
+            )
+            .await?
+            .map(|row| {
+                let authority: CreatePhysicalStorageAuthority =
+                    serde_json::from_str(&row.get::<String>(0)?)?;
+                authority.validate()?;
+                ensure!(
+                    canonical_digest(&authority)? == row.get::<String>(1)?,
+                    "stored authority creation digest is invalid"
+                );
+                Ok(authority)
+            })
+            .transpose()
     }
 
     /// Reads an immutable root-approved endpoint/bucket equivalence decision.
@@ -343,9 +359,7 @@ impl Database {
         plan: &TopologyPlanRecord,
         now: i64,
     ) -> Result<(StorageAuthorityDecisionResult, Vec<CheckedStatement>)> {
-        validate_key(&spec.guard_namespace_id, 255)?;
-        validate_digest(&spec.physical_resource_evidence_digest)?;
-        validate_digest(&spec.qualification_digest)?;
+        spec.validate()?;
         let result = immutable_result(&spec.authority_id, spec.authority_id.as_str());
         Ok((
             result,
@@ -486,6 +500,11 @@ impl Database {
             authority.qualification_digest == spec.qualification_digest,
             "attestation changes the authority's initial qualification"
         );
+        authority.validate()?;
+        ensure!(
+            within_prefix(&spec.managed_prefix, &authority.qualified_managed_prefix),
+            "attestation expands beyond the authority's qualified prefix"
+        );
         ensure!(
             spec.valid_until > now && !spec.credentials.is_empty() && spec.credentials.len() <= 256,
             "attestation is expired or has an invalid credential set"
@@ -509,6 +528,7 @@ impl Database {
                 .binding_storage_authority_association(&member.association_id)
                 .await?
                 .context("credential association does not exist")?;
+            validate_prefix(&association.binding_prefix)?;
             ensure!(
                 association.authority_id == spec.authority_id
                     && within_prefix(&association.binding_prefix, &spec.managed_prefix),
@@ -645,6 +665,19 @@ impl Database {
             .storage_authority_attestation(attestation_id)
             .await?
             .context("admission attestation does not exist")?;
+        validate_prefix(&attestation.managed_prefix)?;
+        let authority = self
+            .physical_storage_authority(&spec.authority_id)
+            .await?
+            .context("admission authority does not exist")?;
+        ensure!(
+            attestation.qualification_digest == authority.qualification_digest
+                && within_prefix(
+                    &attestation.managed_prefix,
+                    &authority.qualified_managed_prefix
+                ),
+            "admission attestation exceeds the immutable qualification ceiling"
+        );
         ensure!(
             attestation.authority_id == spec.authority_id
                 && attestation.valid_until > now
@@ -663,9 +696,11 @@ impl Database {
                 .binding_storage_authority_association(association_id)
                 .await?
                 .context("admission association does not exist")?;
+            validate_prefix(&association.binding_prefix)?;
             ensure!(
-                association.authority_id == spec.authority_id,
-                "admission association belongs to another physical authority"
+                association.authority_id == spec.authority_id
+                    && within_prefix(&association.binding_prefix, &attestation.managed_prefix),
+                "admission association is outside its physical authority or attested prefix"
             );
             let members = self.backend.query(
                 "SELECT member.purpose, credential.validation_state

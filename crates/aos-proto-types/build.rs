@@ -10,7 +10,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use prost::Message;
-use prost_types::{field_descriptor_proto, DescriptorProto, FileDescriptorSet};
+use prost_types::{DescriptorProto, FileDescriptorSet, field_descriptor_proto};
 
 type BuildResult<T> = Result<T, Box<dyn Error>>;
 
@@ -89,6 +89,7 @@ fn preserve_open_enum_numbers(descriptor: &FileDescriptorSet) -> BuildResult<()>
         ("EndpointIngressKind", "ingress_kind", "ingressKind"),
         ("HubDeliveryKind", "delivery_kind", "deliveryKind"),
         ("ContainerRegistryPurgeFenceAction", "action", "action"),
+        ("StorageAuthorityDesiredState", "state", "state"),
     ] {
         let serialize = format!(
             "            let v = {enum_name}::try_from(self.{field_name})\n\
@@ -196,6 +197,7 @@ fn assert_open_enum_field_inventory(descriptor: &FileDescriptorSet) -> BuildResu
         "TestPlacementPolicyRevisionRequest.access_class:.aos.hub.v1.AccessClass:single",
         "TopologyPinImpact.allowed_actions:.aos.hub.v1.PinResolutionAction:repeated",
         "ContainerRegistryPurgeFence.action:.aos.hub.v1.ContainerRegistryPurgeFenceAction:single",
+        "SetStorageAuthorityAdmissionDecision.state:.aos.hub.v1.StorageAuthorityDesiredState:single",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -643,6 +645,7 @@ fn verify_checked_capability_manifest(generated: &[ConnectMethod]) -> BuildResul
                         "ApplyContainerRegistryPurgeFence"
                     }
                     ("DeliveryService", "PlanDeliveryDestination") => "ApplyDeliveryDestination",
+                    ("StorageAuthorityService", "PlanDecision") => "ApplyDecision",
                     _ => default_apply_name,
                 };
                 if !service_methods.contains(apply_name) {

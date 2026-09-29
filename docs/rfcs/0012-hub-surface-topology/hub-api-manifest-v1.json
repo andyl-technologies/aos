@@ -31,6 +31,27 @@
    "manifest_version" : "aos.hub.api/v1",
    "methods" : [
       {
+         "method" : "PlanDecision",
+         "path" : "aos.hub.v1.StorageAuthorityService/PlanDecision",
+         "request" : "PlanStorageAuthorityDecisionRequest",
+         "response" : "StorageAuthorityPlanResponse",
+         "service" : "StorageAuthorityService"
+      },
+      {
+         "method" : "ApplyDecision",
+         "path" : "aos.hub.v1.StorageAuthorityService/ApplyDecision",
+         "request" : "ApplyStorageAuthorityDecisionRequest",
+         "response" : "StorageAuthorityDecisionResponse",
+         "service" : "StorageAuthorityService"
+      },
+      {
+         "method" : "GetAuthority",
+         "path" : "aos.hub.v1.StorageAuthorityService/GetAuthority",
+         "request" : "GetStorageAuthorityRequest",
+         "response" : "StorageAuthorityProjection",
+         "service" : "StorageAuthorityService"
+      },
+      {
          "method" : "GetRegistryMetadata",
          "path" : "aos.hub.v1.RegistryService/GetRegistryMetadata",
          "request" : "GetRegistryRequest",

@@ -592,6 +592,7 @@ macro_rules! impl_open_proto_enum {
 impl_open_proto_enum!(
     AccessClass,
     ContainerRegistryPurgeFenceAction,
+    StorageAuthorityDesiredState,
     EndpointIngressKind,
     HubDeliveryKind,
     PinResolutionAction,

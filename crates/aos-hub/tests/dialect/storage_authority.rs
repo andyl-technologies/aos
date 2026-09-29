@@ -68,6 +68,7 @@ pub(super) async fn exercise(db: &Database) {
         guard_namespace_id: "dialect/external-guard-namespace".into(),
         physical_resource_evidence_digest: "1".repeat(64),
         qualification_digest: "2".repeat(64),
+        qualified_managed_prefix: "fresh".into(),
     };
     let create = StorageAuthorityDecisionInput::Create(authority.clone());
     let decision = review(db, &create).await;
@@ -88,6 +89,23 @@ pub(super) async fn exercise(db: &Database) {
             .unwrap(),
         Some(authority.clone())
     );
+
+    let mut missing_ceiling = serde_json::to_value(&authority).unwrap();
+    missing_ceiling
+        .as_object_mut()
+        .unwrap()
+        .remove("qualified_managed_prefix");
+    assert!(serde_json::from_value::<CreatePhysicalStorageAuthority>(missing_ceiling).is_err());
+    for prefix in ["fresh/", "/fresh", "fresh//root", "fresh/../root", ""] {
+        let mut changed = authority.clone();
+        changed.qualified_managed_prefix = prefix.into();
+        let input = StorageAuthorityDecisionInput::Create(changed);
+        let decision = review(db, &input).await;
+        assert!(db
+            .apply_storage_authority_decision(&decision, &input)
+            .await
+            .is_err());
+    }
 
     let alias = ApproveStorageAuthorityAlias {
         alias_id: "dialect-physical-alias".into(),
@@ -110,6 +128,8 @@ pub(super) async fn exercise(db: &Database) {
     another.authority_id =
         PhysicalStorageAuthorityId::parse("00000000-0000-4000-8000-000000000004").unwrap();
     another.physical_resource_evidence_digest = "9".repeat(64);
+    // Empty explicitly qualifies the whole bucket; an absent field never does.
+    another.qualified_managed_prefix.clear();
     apply(db, StorageAuthorityDecisionInput::Create(another.clone())).await;
 
     let mut conflicting_alias = alias.clone();
@@ -223,6 +243,36 @@ pub(super) async fn exercise(db: &Database) {
         }],
         valid_until: aos_hub_core::clock::now_unix_secs() + 600,
     };
+    apply(
+        db,
+        StorageAuthorityDecisionInput::Attest(attestation.clone()),
+    )
+    .await;
+
+    let mut narrow = attestation.clone();
+    narrow.attestation_id = "dialect-physical-attestation-narrow".into();
+    narrow.managed_prefix = "fresh/root".into();
+    apply(db, StorageAuthorityDecisionInput::Attest(narrow)).await;
+
+    for (index, prefix) in ["", "fre", "fresh-other", "fresh/"].into_iter().enumerate() {
+        let mut expanded = attestation.clone();
+        expanded.attestation_id = format!("dialect-expanded-attestation-{index}");
+        expanded.managed_prefix = prefix.into();
+        let input = StorageAuthorityDecisionInput::Attest(expanded.clone());
+        let decision = review(db, &input).await;
+        assert!(db
+            .apply_storage_authority_decision(&decision, &input)
+            .await
+            .is_err());
+        assert!(db
+            .storage_authority_attestation(&expanded.attestation_id)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    let mut attestation = attestation;
+    attestation.attestation_id = "dialect-physical-attestation-reopened".into();
     apply(
         db,
         StorageAuthorityDecisionInput::Attest(attestation.clone()),

@@ -41,6 +41,7 @@ mod registry_metadata;
 mod registry_policy;
 mod release_publication;
 mod surface_topology;
+mod storage_authority;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;

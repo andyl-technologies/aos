@@ -2004,6 +2004,10 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         "/aos.hub.v1.ProjectService/DeleteProject",
         apply_delete_project
     );
+    // Permanent physical authority decisions remain instance-root only.
+    r = rpc_route!(r, "/aos.hub.v1.StorageAuthorityService/PlanDecision", plan_storage_authority_decision);
+    r = rpc_route!(r, "/aos.hub.v1.StorageAuthorityService/ApplyDecision", apply_storage_authority_decision);
+    r = rpc_route!(r, "/aos.hub.v1.StorageAuthorityService/GetAuthority", get_storage_authority);
     // BindingService — final topology identity/spec lifecycle.
     r = rpc_route!(
         r,

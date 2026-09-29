@@ -172,6 +172,13 @@ credentials do not establish that two addresses refer to one physical resource.
 Two active guard domains cannot be merged merely because an alias is later
 discovered. The namespace and prior effects must first be reconciled explicitly.
 
+Authority creation freezes the initially qualified managed prefix in its
+canonical specification. An explicitly empty prefix qualifies the entire
+bucket; an absent prefix is invalid. Renewed exclusivity attestations may narrow
+or reopen within that immutable ceiling, using complete path components, but
+cannot expand it. The first published attestation does not choose the ceiling.
+Neither a prefix change nor restored SQL settles existing effects or receipts.
+
 SQL records reviewed identity, credential exclusivity evidence and monotonically
 versioned desired admission. A separately durable executor ledger enforces that
 admission. Restoring an older database cannot reduce its remote generation or
@@ -179,6 +186,13 @@ reopen a revoked authority: a fresh authenticated watermark and explicit reviewe
 reconciliation are required. Root `StorageManage` permission is checked both
 when creating a plan and when applying it. Organization binding permissions do
 not authorize physical equivalence or executor adoption.
+
+The typed `StorageAuthorityService` exposes `PlanDecision`, `ApplyDecision` and
+`GetAuthority` at instance root. Plans bind the exact actor, typed decision,
+confirmation and request/apply keys. Apply and durable result replay require
+fresh root permission. SQL projections distinguish desired admission from
+authenticated executor agreement; a committed decision alone admits no provider
+operation.
 
 Each acknowledged visible mutation advances a guard-issued incarnation for the
 full physical object key, including an identical-byte replacement. The frozen

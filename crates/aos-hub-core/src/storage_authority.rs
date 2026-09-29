@@ -190,6 +190,56 @@ pub struct CreatePhysicalStorageAuthority {
     pub physical_resource_evidence_digest: String,
     /// Digest of fresh, zero-operation namespace qualification evidence.
     pub qualification_digest: String,
+    /// Immutable prefix covered by initial fresh, exclusive qualification.
+    /// Empty means the entire bucket; later attestations may only stay within it.
+    pub qualified_managed_prefix: String,
+}
+
+impl CreatePhysicalStorageAuthority {
+    /// Validates the immutable coordinates and initial qualification ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed namespace, evidence digests, or a
+    /// noncanonical qualification prefix. Missing legacy JSON is rejected by
+    /// deserialization; no attestation or provider HEAD can supply a replacement.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.guard_namespace_id.is_empty()
+                && self.guard_namespace_id.len() <= 255
+                && self.guard_namespace_id.trim() == self.guard_namespace_id
+                && !self.guard_namespace_id.chars().any(char::is_control),
+            "authority namespace is invalid"
+        );
+        for digest in [
+            &self.physical_resource_evidence_digest,
+            &self.qualification_digest,
+        ] {
+            ensure!(
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')),
+                "authority qualification digest is invalid"
+            );
+        }
+
+        let prefix = &self.qualified_managed_prefix;
+        ensure!(
+            prefix.len() <= 512
+                && prefix.trim() == prefix
+                && prefix.trim_matches('/') == prefix
+                && (prefix.is_empty()
+                    || prefix
+                        .split('/')
+                        .all(|part| !part.is_empty() && part != "." && part != ".."))
+                && !prefix
+                    .chars()
+                    .any(|character| character.is_control() || character == '\\'),
+            "authority qualified prefix is invalid"
+        );
+        Ok(())
+    }
 }
 
 /// Root-reviewed exact-address equivalence approval.
@@ -252,7 +302,8 @@ pub struct AttestStorageAuthorityExclusivity {
     pub attestation_id: String,
     /// Physical domain whose provider access was reviewed.
     pub authority_id: PhysicalStorageAuthorityId,
-    /// Scope established fresh and exclusive at initial qualification.
+    /// Current exclusive admission prefix, equal to or within the immutable
+    /// qualified ceiling. Narrowing or reopening inside it never settles effects.
     pub managed_prefix: String,
     /// Same initial zero-operation qualification retained throughout this lifetime.
     pub qualification_digest: String,

@@ -41,6 +41,18 @@
   ],
   "services": [
     {
+      "service": "StorageAuthorityService",
+      "audience": "operator",
+      "cli_families": [],
+      "web_workflows": [],
+      "exclusion": "Permanent physical equivalence and desired admission require current StorageManage on instance root; executor reconciliation remains pending.",
+      "methods": [
+        "PlanDecision",
+        "ApplyDecision",
+        "GetAuthority"
+      ]
+    },
+    {
       "service": "RegistryService",
       "audience": "end-user",
       "cli_families": ["registry"],

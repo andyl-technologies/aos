@@ -14,7 +14,175 @@ fn authority() -> CreatePhysicalStorageAuthority {
         guard_namespace_id: "account-one/namespace-one".into(),
         physical_resource_evidence_digest: "1".repeat(64),
         qualification_digest: "2".repeat(64),
+        qualified_managed_prefix: "fresh".into(),
     }
+}
+
+#[test]
+fn qualification_prefix_containment_requires_component_boundaries() {
+    for prefix in ["foo/", "/foo", "foo//root", "foo/../root"] {
+        assert!(validate_prefix(prefix).is_err());
+    }
+
+    for (candidate, expected) in [
+        ("foo/root", true),
+        ("foo/root/object", true),
+        ("foo", false),
+        ("foo/root-other", false),
+        ("foobar/root", false),
+        ("", false),
+    ] {
+        validate_prefix(candidate).unwrap();
+        assert_eq!(within_prefix(candidate, "foo/root"), expected);
+        assert!(within_prefix(candidate, ""));
+    }
+}
+
+#[tokio::test]
+async fn qualification_ceiling_is_required_canonical_and_frozen_in_creation() {
+    let db = Database::open_in_memory().await.unwrap();
+    let mut legacy = serde_json::to_value(authority()).unwrap();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("qualified_managed_prefix");
+    assert!(serde_json::from_value::<CreatePhysicalStorageAuthority>(legacy).is_err());
+
+    let mut whole_bucket = authority();
+    whole_bucket.authority_id =
+        PhysicalStorageAuthorityId::parse("00000000-0000-4000-8000-000000000099").unwrap();
+    whole_bucket.qualified_managed_prefix.clear();
+    apply(
+        &db,
+        StorageAuthorityDecisionInput::Create(whole_bucket.clone()),
+    )
+    .await;
+    assert_eq!(
+        db.physical_storage_authority(&whole_bucket.authority_id)
+            .await
+            .unwrap(),
+        Some(whole_bucket)
+    );
+
+    for prefix in ["/fresh", "fresh/", "fresh//root", "fresh/../root", " fresh"] {
+        let mut changed = authority();
+        changed.qualified_managed_prefix = prefix.into();
+        let input = StorageAuthorityDecisionInput::Create(changed);
+        let decision = review(&db, &input).await;
+        assert!(db
+            .apply_storage_authority_decision(&decision, &input)
+            .await
+            .is_err());
+    }
+    apply(&db, StorageAuthorityDecisionInput::Create(authority())).await;
+    let mut widened = authority();
+    widened.qualified_managed_prefix.clear();
+    assert_ne!(
+        canonical_digest(&widened).unwrap(),
+        canonical_digest(&authority()).unwrap()
+    );
+    let input = StorageAuthorityDecisionInput::Create(widened);
+    let decision = review(&db, &input).await;
+    assert!(db
+        .apply_storage_authority_decision(&decision, &input)
+        .await
+        .is_err());
+    assert_eq!(
+        db.physical_storage_authority(&authority().authority_id)
+            .await
+            .unwrap(),
+        Some(authority())
+    );
+
+    let mut changed = authority();
+    changed.qualified_managed_prefix = "fresh/root".into();
+    db.backend.execute(
+        "UPDATE physical_storage_authorities SET specification_json = ?2 WHERE authority_id = ?1",
+        &vals![authority().authority_id.as_str(), serde_json::to_string(&changed).unwrap()],
+    ).await.unwrap();
+    assert!(db
+        .physical_storage_authority(&authority().authority_id)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn qualified_ceiling_allows_narrowing_and_reopening_without_expansion() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("qualified.db");
+    let restored_path = directory.path().join("restored.db");
+    let db = Database::open(&path).await.unwrap();
+    let (association, initial) = setup(&db).await;
+    // The first attestation delivered to the executor may already be narrow.
+    // Its scope does not replace the independently frozen creation ceiling.
+    let mut narrow = initial.clone();
+    narrow.attestation_id = "attestation-narrow".into();
+    narrow.managed_prefix = association.binding_prefix.clone();
+    apply(&db, StorageAuthorityDecisionInput::Attest(narrow.clone())).await;
+    db.backend
+        .query("PRAGMA wal_checkpoint(TRUNCATE)", &[])
+        .await
+        .unwrap();
+    std::fs::copy(&path, &restored_path).unwrap();
+    apply(&db, StorageAuthorityDecisionInput::Attest(initial.clone())).await;
+
+    let mut reopened = initial.clone();
+    reopened.attestation_id = "attestation-reopened".into();
+    for (index, attestation) in [narrow, reopened].into_iter().enumerate() {
+        if index == 1 {
+            apply(
+                &db,
+                StorageAuthorityDecisionInput::Attest(attestation.clone()),
+            )
+            .await;
+        }
+        let current = db
+            .desired_storage_authority_admission(&authority().authority_id)
+            .await
+            .unwrap();
+        let desired = SetStorageAuthorityAdmission {
+            authority_id: authority().authority_id,
+            expected_generation: current.as_ref().map_or(0, |current| current.generation),
+            expected_digest: current.map(|current| current.digest),
+            guard_namespace_id: authority().guard_namespace_id,
+            state: StorageAuthorityAdmissionState::Admitted,
+            attestation_id: Some(attestation.attestation_id),
+            association_ids: vec![association.association_id.clone()],
+        };
+        apply(&db, StorageAuthorityDecisionInput::SetAdmission(desired)).await;
+        let current = db
+            .desired_storage_authority_admission(&authority().authority_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.generation, i64::try_from(index + 1).unwrap());
+    }
+
+    for prefix in ["", "fre", "fresh-other"] {
+        let mut expanded = initial.clone();
+        expanded.attestation_id = format!("attestation-expanded-{}", prefix.len());
+        expanded.managed_prefix = prefix.into();
+        let input = StorageAuthorityDecisionInput::Attest(expanded.clone());
+        let decision = review(&db, &input).await;
+        assert!(db
+            .apply_storage_authority_decision(&decision, &input)
+            .await
+            .is_err());
+        assert!(db
+            .storage_authority_attestation(&expanded.attestation_id)
+            .await
+            .unwrap()
+            .is_none());
+    }
+    let restored = Database::open(&restored_path).await.unwrap();
+    assert_eq!(
+        restored
+            .physical_storage_authority(&authority().authority_id)
+            .await
+            .unwrap(),
+        Some(authority())
+    );
+    apply(&restored, StorageAuthorityDecisionInput::Attest(initial)).await;
 }
 
 fn alias() -> ApproveStorageAuthorityAlias {

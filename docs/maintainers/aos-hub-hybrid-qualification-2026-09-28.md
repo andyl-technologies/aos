@@ -607,6 +607,30 @@ remote adapter, operator RPC, provider execution, or external DELETE. A stored
 SQL acknowledgment does not replace a fresh authenticated executor watermark.
 The full fleet run captured before this migration retains its original scope.
 
+### Reviewed authority API and immutable prefix ceiling
+
+The typed root operator API now provides `PlanDecision`, `ApplyDecision` and
+`GetAuthority`. Eight focused Native tests pass for current root authorization,
+revocation, exact actor/request replay, concurrent decisions, expiration and all
+five decision families. Shared routing and generated protobuf descriptor tests
+each pass, and the ordinary Worker Wasm library compiles.
+
+Creation requires an explicit immutable `qualified_managed_prefix`; an empty
+string deliberately permits the whole bucket, while an absent value rejects.
+Thirteen focused database tests pass. Attestations can narrow that ceiling or
+reopen within it, but cannot expand it or settle existing mutation fences.
+Legacy creation records without the field fail closed; migration bytes remain
+unchanged.
+
+The integrated source passed all three live PostgreSQL, MariaDB and SQLite
+contracts in
+`/nix/store/ni4pbgxsm621bxjwv6br9kp8gr9rqrwa-aos-vm-test-aos-hub-live-sql-dialects-0`.
+The captured source is
+`/nix/store/byqzw7awkfgx6ir3n10w19xk991xr6h6-aos-hub-dialect-test-src`.
+These results qualify desired SQL state and operator authorization. Responses
+remain pending reconciliation; no provider access or external DELETE is admitted
+by this API or by a stored SQL acknowledgment.
+
 Frozen external S3 physical GC, safe retirement of obsolete object coordination
 state, and whole-Hub snapshot/restore also remain to be implemented. This successful fleet
 run is one acceptance checkpoint; it does not complete RFC-0023.
