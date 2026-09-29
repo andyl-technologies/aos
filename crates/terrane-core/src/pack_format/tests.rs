@@ -244,7 +244,7 @@ fn metadata_domains_roundtrip_portable_packs_indexes_and_shards() -> Result<(), 
         assert_eq!(view.records(), core::slice::from_ref(&record));
         let (decoded_header, decoded_records) = decode_detached_index(&view.index_object())?;
         assert_eq!(decoded_header, header);
-        assert_eq!(decoded_records, [record.clone()]);
+        assert_eq!(decoded_records.as_slice(), core::slice::from_ref(&record));
 
         let merged = MergedRecord {
             pack: [29; 16],
