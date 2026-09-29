@@ -122,6 +122,15 @@ pub enum RefClass {
     Derived,
 }
 
+/// The conditional write primitive required by a ref class.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RefWriteMode {
+    /// Compare the complete previous value before advancing.
+    CompareAndSwap,
+    /// Create once and reject subsequent ordinary writes.
+    PutIfAbsent,
+}
+
 impl RefClass {
     /// Returns the class's exact namespace component.
     pub const fn as_str(self) -> &'static str {
@@ -132,6 +141,16 @@ impl RefClass {
             Self::Jobs => "jobs",
             Self::Conflicts => "conflicts",
             Self::Derived => "derived",
+        }
+    }
+
+    /// Returns the conditional write mode for this class.
+    pub const fn write_mode(self) -> RefWriteMode {
+        match self {
+            Self::Tags => RefWriteMode::PutIfAbsent,
+            Self::Heads | Self::Notes | Self::Jobs | Self::Conflicts | Self::Derived => {
+                RefWriteMode::CompareAndSwap
+            }
         }
     }
 }
@@ -201,6 +220,27 @@ impl RefName {
     pub const fn class(&self) -> RefClass {
         self.class
     }
+
+    /// Returns the immutable reflog key for a branch advance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefLogNameError::NotBranch`] for another ref class and
+    /// [`RefLogNameError::ZeroSequence`] for a non-record sequence.
+    pub fn reflog_key(&self, seq: u64) -> Result<String, RefLogNameError> {
+        if self.class != RefClass::Heads {
+            return Err(RefLogNameError::NotBranch);
+        }
+        if seq == 0 {
+            return Err(RefLogNameError::ZeroSequence);
+        }
+
+        let mut key = String::from("logs/");
+        key.push_str(&self.value);
+        key.push('/');
+        key.push_str(&seq.to_string());
+        Ok(key)
+    }
 }
 
 impl FromStr for RefName {
@@ -246,6 +286,26 @@ impl fmt::Display for RefNameError {
 }
 
 impl core::error::Error for RefNameError {}
+
+/// A reflog key cannot be formed for this name and sequence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RefLogNameError {
+    /// Reflog keys belong to branch refs only.
+    NotBranch,
+    /// Reflog sequences begin at one.
+    ZeroSequence,
+}
+
+impl fmt::Display for RefLogNameError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotBranch => formatter.write_str("reflog key requires a branch ref"),
+            Self::ZeroSequence => formatter.write_str("reflog sequence must be positive"),
+        }
+    }
+}
+
+impl core::error::Error for RefLogNameError {}
 
 /// An authority's region, zone, and host labels.
 ///
@@ -341,15 +401,21 @@ pub struct RefRecord {
 pub enum RefSequenceError {
     /// The sequence cannot increase by one in `u64`.
     Exhausted,
+    /// A record is not the first write or exact next sequence.
+    InvalidSequence,
     /// The writer's epoch is older than the record being replaced.
     EpochRegression,
+    /// An ordinary write attempted to move the ref's authority.
+    HomeChanged,
 }
 
 impl fmt::Display for RefSequenceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Exhausted => formatter.write_str("ref sequence exhausted"),
+            Self::InvalidSequence => formatter.write_str("ref sequence is not the next value"),
             Self::EpochRegression => formatter.write_str("writer epoch regressed"),
+            Self::HomeChanged => formatter.write_str("ref authority home changed"),
         }
     }
 }
@@ -630,6 +696,17 @@ mod tests {
             RefName::parse("refs/heads/A"),
             RefName::parse("refs/heads/a")
         );
+
+        let branch = RefName::parse("refs/heads/tenant/main").unwrap();
+        assert_eq!(branch.class().write_mode(), RefWriteMode::CompareAndSwap);
+        assert_eq!(
+            branch.reflog_key(17).unwrap(),
+            "logs/refs/heads/tenant/main/17"
+        );
+        let tag = RefName::parse("refs/tags/tenant/v1").unwrap();
+        assert_eq!(tag.class().write_mode(), RefWriteMode::PutIfAbsent);
+        assert_eq!(tag.reflog_key(1), Err(RefLogNameError::NotBranch));
+        assert_eq!(branch.reflog_key(0), Err(RefLogNameError::ZeroSequence));
     }
 
     #[test]
@@ -665,9 +742,24 @@ mod tests {
         let next = first.advance(digest(2), 5).unwrap();
         assert_eq!(next.seq, 2);
         assert_eq!(next.home, first.home);
+        assert_eq!(RefRecord::validate_successor(None, &first), Ok(()));
+        assert_eq!(RefRecord::validate_successor(Some(&first), &next), Ok(()));
         assert_eq!(
             first.advance(digest(2), 4),
             Err(RefSequenceError::EpochRegression)
+        );
+
+        let mut skipped = next.clone();
+        skipped.seq = 3;
+        assert_eq!(
+            RefRecord::validate_successor(Some(&first), &skipped),
+            Err(RefSequenceError::InvalidSequence)
+        );
+        let mut moved = next;
+        moved.home.region = Some(String::from("elsewhere"));
+        assert_eq!(
+            RefRecord::validate_successor(Some(&first), &moved),
+            Err(RefSequenceError::HomeChanged)
         );
     }
 

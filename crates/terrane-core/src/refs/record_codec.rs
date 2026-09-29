@@ -233,6 +233,9 @@ impl RefRecord {
     /// Returns [`RefSequenceError::Exhausted`] at the sequence limit or
     /// [`RefSequenceError::EpochRegression`] for a fenced writer.
     pub fn advance(&self, commit: Digest, writer_epoch: u64) -> Result<Self, RefSequenceError> {
+        if self.seq == 0 {
+            return Err(RefSequenceError::InvalidSequence);
+        }
         if writer_epoch < self.writer_epoch {
             return Err(RefSequenceError::EpochRegression);
         }
@@ -245,6 +248,46 @@ impl RefRecord {
             home: self.home.clone(),
             policy: self.policy.clone(),
         })
+    }
+
+    /// Validates a first write or ordinary successor at an authority.
+    ///
+    /// The backend must still use put-if-absent for tags and compare the
+    /// complete previous record for branches. A region move has its own
+    /// procedure and must not use this ordinary transition check.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefSequenceError`] if the sequence skips, wraps, or starts
+    /// above one, the writer epoch regresses, or the authority home changes.
+    pub fn validate_successor(
+        previous: Option<&Self>,
+        next: &Self,
+    ) -> Result<(), RefSequenceError> {
+        let Some(previous) = previous else {
+            return if next.seq == 1 {
+                Ok(())
+            } else {
+                Err(RefSequenceError::InvalidSequence)
+            };
+        };
+        if previous.seq == 0 {
+            return Err(RefSequenceError::InvalidSequence);
+        }
+        let expected = previous
+            .seq
+            .checked_add(1)
+            .ok_or(RefSequenceError::Exhausted)?;
+        if next.seq != expected {
+            return Err(RefSequenceError::InvalidSequence);
+        }
+        if next.writer_epoch < previous.writer_epoch {
+            return Err(RefSequenceError::EpochRegression);
+        }
+        if next.home != previous.home {
+            return Err(RefSequenceError::HomeChanged);
+        }
+        Ok(())
     }
 
     /// Encodes this record as the deterministic CBOR `RefRecord` map.
