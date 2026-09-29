@@ -3,6 +3,9 @@
 //! The backend current callbacks model missing native Source/transport issuers.
 //! These cases establish core transaction behavior, not physical activation.
 
+// Fixture refusals intentionally fail the test.
+#![allow(clippy::unwrap_used)]
+
 use super::*;
 use crate::scheduler::device_group_selection::DeviceGroupSelectionController;
 use crate::{BackendDeviceGroupObservation, BackendDeviceGroupOwner};
