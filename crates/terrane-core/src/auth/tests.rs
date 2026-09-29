@@ -658,3 +658,68 @@ fn auth_verify_pure_effective_expiry_intersects_strict_time_and_retirement() {
     );
     assert!(zero.verify(&keys(), 1).is_err());
 }
+
+#[test]
+fn auth_verify_pure_registered_chain_and_grant_limits() {
+    let mut chain = token();
+    for _ in 1..16 {
+        chain = chain
+            .attenuate(
+                Attenuation::default(),
+                &delegate_secret(),
+                delegate_public(),
+            )
+            .expect("sixteen blocks including authority are registered");
+    }
+    assert_eq!(chain.blocks.len(), 15);
+    assert!(verify(&chain.encode(), &keys(), 10).is_ok());
+    assert!(
+        chain
+            .attenuate(
+                Attenuation::default(),
+                &delegate_secret(),
+                delegate_public()
+            )
+            .is_err()
+    );
+    chain.blocks.push(chain.blocks[14].clone());
+    assert!(Token::decode(&chain.encode()).is_err());
+
+    let mut body = authority();
+    body.grants = vec![grant("refs/heads/pr/**", 1); 256];
+    let mut full = Token::issue(body, &issuer_secret(), delegate_public())
+        .expect("256 authority grants are registered");
+    assert!(verify(&full.encode(), &keys(), 10).is_ok());
+    full.authority
+        .body
+        .grants
+        .push(grant("refs/heads/pr/**", 1));
+    assert!(Token::decode(&full.encode()).is_err());
+    assert!(
+        Token::issue(
+            full.authority.body.clone(),
+            &issuer_secret(),
+            delegate_public()
+        )
+        .is_err()
+    );
+
+    let mut attenuated = token()
+        .attenuate(
+            Attenuation {
+                grants: Some(vec![grant("refs/heads/pr/1234", 1); 256]),
+                ..Attenuation::default()
+            },
+            &delegate_secret(),
+            delegate_public(),
+        )
+        .expect("256 attenuation grants are registered");
+    assert!(verify(&attenuated.encode(), &keys(), 10).is_ok());
+    attenuated.blocks[0]
+        .body
+        .grants
+        .as_mut()
+        .expect("grants present")
+        .push(grant("refs/heads/pr/1234", 1));
+    assert!(Token::decode(&attenuated.encode()).is_err());
+}

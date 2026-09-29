@@ -13,6 +13,10 @@ use alloc::{
     vec::Vec,
 };
 
+// Registered decoder limits in terrane-v1.cddl, including the authority block.
+const MAX_BLOCKS: usize = 16;
+const MAX_GRANTS: usize = 256;
+
 type Result<T> = core::result::Result<T, Error>;
 
 fn text(decoder: &mut Decoder<'_>) -> Result<String> {
@@ -33,7 +37,7 @@ fn verbs(decoder: &mut Decoder<'_>) -> Result<Verbs> {
 }
 
 fn grants(decoder: &mut Decoder<'_>) -> Result<Vec<Grant>> {
-    let count = decoder.array(decoder.remaining().len())?;
+    let count = decoder.array(MAX_GRANTS)?;
     if count == 0 {
         return Err(Error::Malformed);
     }
@@ -186,7 +190,7 @@ fn attenuation(decoder: &mut Decoder<'_>) -> Result<Signed<Attenuation>> {
 
 pub(super) fn decode(bytes: &[u8]) -> Result<Token> {
     let mut decoder = Decoder::new(bytes);
-    let count = decoder.array(decoder.remaining().len())?;
+    let count = decoder.array(MAX_BLOCKS)?;
     if count == 0 {
         return Err(Error::Malformed);
     }
