@@ -444,6 +444,17 @@
   word-break: break-word;
 }
 
+/* GC evidence includes opaque hashes and provider keys without word boundaries. */
+.container-gc-run-detail .subworkflow li,
+.container-gc-run-detail .subworkflow code {
+  overflow-wrap: anywhere;
+}
+
+.container-gc-run-detail .subworkflow li > .muted {
+  display: block;
+  margin-top: 0.25rem;
+}
+
 .warning-list {
   border-color: var(--warn) !important;
 }

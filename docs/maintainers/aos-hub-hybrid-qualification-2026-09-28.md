@@ -60,10 +60,18 @@ samples overlapped all eight unthrottled 4 MiB uploads; all 50 measured response
 were HTTP 200, and the uploads produced eight Native completion receipts.
 Baseline p95 was 5.278 ms and loaded p95 was 9.082 ms, a 1.721 ratio. Loaded p99
 was 17.178 ms. The absolute targets pass, but the 25% relative target fails.
-Browser transport timing places the slow samples after request send; it does
-not distinguish Worker admission, origin transit or Native handling. Empirical
-p99 from 25 samples is the maximum observation. Shared-host contention and
-emulator effects remain possible confounders, not established causes.
+Original stopped-disk log recovery then bound all 55 sequential browser
+requests, including warmups, to their Worker request spans. The unique upload
+batch admission separates the 30 warmup/baseline requests from the 25 loaded
+requests. The 9.082 ms and 17.178 ms samples each record 1 ms of Worker handler
+time, including 1 ms of origin wait, with Native time below the integer
+millisecond resolution. Their browser transport intervals after request send
+remain longer than those spans. The delay lies outside the instrumented
+application spans, on the local browser-to-Worker admission/return path.
+SOCKS, VM networking, Miniflare ingress/return and shared-host contention are
+possible contributors; the exact component is not established. This compares
+matched requests, without subtracting independent percentiles. Empirical p99
+from 25 samples is the maximum observation.
 
 Current full fleet parity and hosted qualification remain outstanding. These
 local measurements do not establish production acceptance.
@@ -76,6 +84,25 @@ source matches all 49 qualified file hashes and all 2,373 filtered workspace
 files at `429cae6cf3`. PostgreSQL is compiled into the artifact but was not
 exercised on ARM; Hybrid, TLS and hosted behavior are outside this ARM result.
 Earlier results below retain their original artifact scope.
+
+The focused GC browser check found candidate digests and action object keys
+overflowing their panels. Scoped wrapping and separate metadata lines correct
+that layout. Newly built ordinary Native
+`/nix/store/wi89vzvf1ppq0vcikw6d9k53v6gjsdhq-aos-hub-0.1.0` and Worker
+`/nix/store/zai2xfsv1zr5li0xm4ddhc093pcaabi6-aos-hub-worker-dist-0.1.0`
+passed all 11 focused browser checks, with no JavaScript, console or network
+errors. Real Worker/R2 upload, sealed inventory and Native reviewed-plan APIs
+produce the provider version rendered in both desktop and narrow GC views;
+the browser test creates a plan without applying deletion.
+
+At desktop width 1,440 px, document client and scroll widths are both 1,425 px;
+at narrow width 390 px, document and body widths are 390 px. Candidate and
+action contents remain inside their panels, and settings navigation responds
+to each viewport. Both screenshots were inspected. The new Native capture has
+the same 2,373 source files as the previous capture, with only console CSS
+changed. All 49 qualified incarnation file hashes remain unchanged. This
+focused layout result does not replace the retained performance measurements
+or qualify full parity or hosted behavior.
 
 ## Earlier fleet qualification
 
