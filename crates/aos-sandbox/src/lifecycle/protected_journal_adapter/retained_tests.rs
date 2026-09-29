@@ -80,7 +80,8 @@ fn plan(
     gate: &mut HeldCacheMutationGateV1,
 ) -> PreparedDomainTransactionV1<StateData> {
     let key = ProtectedDomainKeyV1::new(1, vec![1]).unwrap();
-    let payload = encode_reducer_payload_with_validator::<StateData>(&key, STATE_BODY, &()).unwrap();
+    let payload =
+        encode_reducer_payload_with_validator::<StateData>(&key, STATE_BODY, &()).unwrap();
     let envelope =
         ProtectedDomainEnvelopeV1::new_with_validator(key, 1, None, payload, &()).unwrap();
     adapter

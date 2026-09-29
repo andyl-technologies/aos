@@ -399,8 +399,7 @@ fn removed_slot_row_refuses_the_original_held_cut() {
     assert_eq!(deletions.len(), 1);
 
     // Deliberately remove comparison DATA; do not invent a legal slot successor.
-    held
-        .journal
+    held.journal
         .commit(&JournalTransaction::new([48; 16], deletions).unwrap())
         .unwrap();
     assert!(held.recheck(&mut clock).is_err());
