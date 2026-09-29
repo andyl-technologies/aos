@@ -577,7 +577,7 @@ fn derivation_is_atomic_historical_and_replays_after_later_mutations() {
 }
 
 #[test]
-fn derivation_rejects_every_campaign_mode_change_without_publication() {
+fn derivation_rejects_unsupported_campaign_mode_changes_without_publication() {
     let (repository, lineage, strict_policy) = fixture();
     let source = repository
         .create("mode-source", &lineage, &strict_policy, &BTreeMap::new())
@@ -608,31 +608,6 @@ fn derivation_rejects_every_campaign_mode_change_without_publication() {
             .snapshot_id(),
         source_snapshot
     );
-
-    let streaming_policy = policy_with_mode(&strict_policy, CampaignMode::Streaming);
-    let streaming_source = repository
-        .create(
-            "streaming-source",
-            &lineage,
-            &streaming_policy,
-            &BTreeMap::new(),
-        )
-        .expect("create streaming source");
-    assert!(matches!(
-        repository.derive_campaign(
-            "streaming-source",
-            streaming_source.snapshot_id(),
-            "strict-mode-target",
-            Some(&strict_policy),
-        ),
-        Err(CampaignRepositoryError::InvalidRequest {
-            reason: "derived policy is incompatible with the source campaign"
-        })
-    ));
-    assert!(matches!(
-        repository.head("strict-mode-target"),
-        Err(CampaignRepositoryError::NotFound)
-    ));
 }
 
 #[test]
@@ -2578,3 +2553,5 @@ fn conflicted_successors_are_never_promoted_as_validated_heads() {
 }
 
 mod finite_proposal;
+
+mod mode_derivation;

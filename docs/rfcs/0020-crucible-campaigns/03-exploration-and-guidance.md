@@ -1047,8 +1047,11 @@ branch and finding remains bit-replayable.
 
 - **[GUIDE-17]** The selected campaign mode MUST be visible in status, exports,
   and reports. Strict and streaming claims MUST never be conflated.
-- **[GUIDE-18]** Switching mode is a policy revision recorded before subsequent
-  proposals. It does not rewrite earlier planner steps.
+- **[GUIDE-18]** Switching mode MUST derive a new campaign with an explicit
+  policy rather than activate a changed mode on an existing ref. Streaming-to-
+  strict derivation reconstructs the authenticated contiguous completion prefix
+  and preserves completed ordinals beyond holes. It does not rewrite earlier
+  planner steps or observation ordering.
 
 ## 03.10 Search reduction and minimization
 

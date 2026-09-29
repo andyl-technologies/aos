@@ -826,7 +826,10 @@ impl CampaignRepository {
         let prior_policy = self.read_policy(parent.snapshot.active_policy().content_id())?;
         let next_policy = self.read_policy(derivation.active_policy().content_id())?;
         if next_policy.scenario() != lineage.scenario()
-            || prior_policy.mode() != next_policy.mode()
+            || !mode_derivation::derivation_modes_compatible(
+                prior_policy.mode(),
+                next_policy.mode(),
+            )
             || (prior_policy.mode() == crate::CampaignMode::Statistical
                 && derivation.active_policy() != parent.snapshot.active_policy())
         {
@@ -840,7 +843,16 @@ impl CampaignRepository {
 
         let prior_roots = parent.snapshot.roots();
         let next_roots = child.snapshot.roots();
-        let accounting_matches = prior_roots.accounting == next_roots.accounting;
+        let accounting_upserts = self.derivation_accounting_upserts(
+            prior_roots.accounting,
+            prior_policy.mode(),
+            next_policy.mode(),
+        )?;
+        let accounting_matches = self.merkle.equals_after_upserts(
+            prior_roots.accounting,
+            next_roots.accounting,
+            &accounting_upserts,
+        )?;
         if prior_roots.graph != next_roots.graph
             || prior_roots.observations != next_roots.observations
             || prior_roots.corpus != next_roots.corpus

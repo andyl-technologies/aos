@@ -1018,6 +1018,7 @@ mod fact_references;
 mod fault_injection;
 mod finding;
 mod finding_candidate;
+mod mode_derivation;
 mod objective;
 mod observation;
 mod planner_driver;

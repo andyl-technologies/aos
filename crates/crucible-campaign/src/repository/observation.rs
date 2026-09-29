@@ -763,7 +763,7 @@ impl CampaignRepository {
         Ok(())
     }
 
-    fn next_strict_completion_ordinal(
+    pub(super) fn next_strict_completion_ordinal(
         &self,
         accounting: ContentId,
     ) -> Result<u64, CampaignRepositoryError> {
@@ -824,7 +824,7 @@ impl CampaignRepository {
         Ok(ordinal.value())
     }
 
-    fn completion_at_ordinal(
+    pub(super) fn completion_at_ordinal(
         &self,
         accounting: ContentId,
         ordinal: AdmissionOrdinal,
