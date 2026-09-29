@@ -330,10 +330,10 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             }
         };
 
-        if let ContentUpload::Meta(meta) = upload {
-            if meta.kind() == IdentityKind::Pack {
-                return self.import_pack(catalog, meta.bytes(), identity).await;
-            }
+        if let ContentUpload::Meta(meta) = upload
+            && meta.kind() == IdentityKind::Pack
+        {
+            return self.import_pack(catalog, meta.bytes(), identity).await;
         }
         if self.is_excluded(&catalog, &identity)? {
             return Err(corrupt(&identity));

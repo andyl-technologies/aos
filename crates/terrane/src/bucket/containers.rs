@@ -128,21 +128,22 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                     .checked_add(entry.body_len() as usize)
                     .ok_or_else(|| invalid("PACK-3"))?;
                 let body = bytes.get(start..end).ok_or_else(|| invalid("PACK-3"))?;
-                if entry.kind() == EntryKind::Chunk {
-                    if let Codec::ZstdDictionary(hash) =
+                if entry.kind() == EntryKind::Chunk
+                    && let Codec::ZstdDictionary(hash) =
                         parse_envelope(body).map_err(|_| invalid("CDC-7"))?.codec
+                    && let std::collections::btree_map::Entry::Vacant(dictionary) =
+                        dictionaries.entry(hash)
+                {
+                    if reader
+                        .entries()
+                        .iter()
+                        .any(|entry| entry.kind() == EntryKind::Chunk && entry.hash() == &hash)
                     {
-                        if !dictionaries.contains_key(&hash) {
-                            if reader.entries().iter().any(|entry| {
-                                entry.kind() == EntryKind::Chunk && entry.hash() == &hash
-                            }) {
-                                remaining.push(*entry);
-                                continue;
-                            }
-                            dictionaries
-                                .insert(hash, self.dictionary_plaintext(&catalog, &hash).await?);
-                        }
+                        remaining.push(*entry);
+                        continue;
                     }
+
+                    dictionary.insert(self.dictionary_plaintext(&catalog, &hash).await?);
                 }
                 let decoder =
                     NativeBodyDecoder::new(&self.inner.config.chunk_profile, &dictionaries);
