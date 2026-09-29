@@ -127,6 +127,18 @@ pub enum BlockIoError {
         /// The device-I/O freeze error.
         source: DeviceIoFreezeError,
     },
+    /// A poll used a token submitted by a different block callback owner.
+    #[error(
+        "block request {identity:?} belongs to owner {actual_owner_id}, expected {expected_owner_id}"
+    )]
+    RequestForDifferentBlockOwner {
+        /// Callback owner receiving the poll.
+        expected_owner_id: u64,
+        /// Original callback owner retained by the request token.
+        actual_owner_id: u64,
+        /// Original epoch-scoped wire identity.
+        identity: BlockRequestIdentity,
+    },
     /// The outbound request enqueue failed after the freeze token was created.
     #[error("block ring {ring_index} enqueue failed after freeze submit: {source}")]
     RingEnqueueFailed {

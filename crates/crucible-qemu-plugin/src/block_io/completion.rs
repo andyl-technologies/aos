@@ -6,6 +6,7 @@ use super::*;
 #[must_use = "block request tokens must be consumed by block poll completion or failure"]
 #[derive(Debug, PartialEq, Eq)]
 pub struct BlockRequestToken {
+    pub(super) block_owner_id: u64,
     pub(super) identity: BlockRequestIdentity,
     pub(super) device_token: DeviceIoRequestToken,
 }

@@ -114,6 +114,28 @@ impl DeviceRingStorage {
 }
 
 #[test]
+fn remapped_block_inbox_gets_a_new_physical_owner_generation() {
+    let mut storage = DeviceRingStorage::new();
+    let original = {
+        let first = storage.block_pair();
+        let generation = first.inbound.owner_generation;
+        assert_ne!(generation, 0);
+        assert_eq!(
+            first.inbound.block_inbound().registered_generation(),
+            generation
+        );
+        generation
+    };
+
+    let replacement = storage.block_pair();
+    assert!(replacement.inbound.owner_generation > original);
+    assert_eq!(
+        replacement.inbound.block_inbound().registered_generation(),
+        replacement.inbound.owner_generation
+    );
+}
+
+#[test]
 fn remapped_ninep_inbox_gets_a_new_physical_owner_generation() {
     let mut storage = DeviceRingStorage::new();
     let original = {

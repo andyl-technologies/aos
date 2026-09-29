@@ -8,6 +8,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
 
@@ -24,10 +25,12 @@ use crate::{
 mod completion;
 mod errors;
 mod history;
+mod inbound_head;
 mod wire;
 
 pub use completion::*;
 pub use errors::*;
+pub use inbound_head::BlockInboundHead;
 pub use wire::*;
 
 use history::{CompletedEpochHistory, CompletedIdentityHistory, reserve_history};
@@ -40,6 +43,17 @@ const BLOCK_TRANSPORT_CONTINUATION_MAGIC: &[u8; 4] = b"CBTS";
 const BLOCK_TRANSPORT_CONTINUATION_VERSION: u16 = 1;
 const BLOCK_TRANSPORT_CONTINUATION_HEADER_LEN: usize = 28;
 const BLOCK_TRANSPORT_CONTINUATION_EPOCH_LEN: usize = 24;
+static NEXT_BLOCK_OWNER_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_block_owner_id() -> u64 {
+    // Epochs and request IDs can repeat in distinct callback owners.
+    match NEXT_BLOCK_OWNER_ID.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        current.checked_add(1)
+    }) {
+        Ok(owner_id) => owner_id,
+        Err(_) => std::process::abort(),
+    }
+}
 
 /// Epoch-scoped identity of one request on the block transport.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -70,6 +84,7 @@ impl BlockRequestIdentity {
 /// Registration-time-fixed block callback state.
 #[derive(Debug)]
 pub struct PluginBlockIo {
+    owner_id: u64,
     vm_slot: u32,
     block_slot: u32,
     outbound_ring_index: u32,
@@ -156,11 +171,7 @@ impl PluginBlockIo {
     /// Builds block callback state for the reserved block rings.
     #[must_use]
     #[cfg(test)]
-    pub(crate) const fn new(
-        vm_slot: u32,
-        outbound_ring_index: u32,
-        inbound_ring_index: u32,
-    ) -> Self {
+    pub(crate) fn new(vm_slot: u32, outbound_ring_index: u32, inbound_ring_index: u32) -> Self {
         Self::new_with_history_limits(
             vm_slot,
             outbound_ring_index,
@@ -171,13 +182,14 @@ impl PluginBlockIo {
 
     /// Builds block callback state with explicit authored history limits.
     #[must_use]
-    pub const fn new_with_history_limits(
+    pub fn new_with_history_limits(
         vm_slot: u32,
         outbound_ring_index: u32,
         inbound_ring_index: u32,
         completed_history_limits: PluginStorageHistoryLimits,
     ) -> Self {
         Self {
+            owner_id: next_block_owner_id(),
             vm_slot,
             block_slot: BLOCK_IO_SLOT_U32,
             outbound_ring_index,
@@ -582,6 +594,7 @@ impl PluginBlockIo {
             request_id,
             payload_len: payload.len(),
             token: BlockRequestToken {
+                block_owner_id: self.owner_id,
                 identity,
                 device_token,
             },
@@ -610,6 +623,14 @@ impl PluginBlockIo {
     where
         D: BlockGuestCompletion + ?Sized,
     {
+        if token.block_owner_id != self.owner_id {
+            let source = BlockIoError::RequestForDifferentBlockOwner {
+                expected_owner_id: self.owner_id,
+                actual_owner_id: token.block_owner_id,
+                identity: token.identity,
+            };
+            return Ok(BlockPoll::Retry { token, source });
+        }
         self.check_inbound_ring(inbound_ring)?;
         if let Some(source) = self
             .pending_delivery

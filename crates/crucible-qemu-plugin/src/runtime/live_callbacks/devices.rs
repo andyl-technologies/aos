@@ -905,8 +905,9 @@ impl StableDirectedRingHandle {
 
     fn block_inbound(&self) -> BlockInboundRing<'_> {
         let (header, entries) = self.ring_parts();
-        BlockInboundRing::new(
+        BlockInboundRing::registered(
             self.descriptor.index,
+            self.owner_generation,
             self.descriptor.src_slot,
             self.descriptor.dst_slot,
             header,

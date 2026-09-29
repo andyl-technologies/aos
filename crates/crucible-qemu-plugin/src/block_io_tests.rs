@@ -7,6 +7,9 @@ use crucible_shmem::{KIND_VM, RegionConfig, RegionLayout, ReservedExecutorSlot};
 #[path = "block_io_tests/resource_limits.rs"]
 mod resource_limits;
 
+#[path = "block_io_tests/inbound_head.rs"]
+mod inbound_head;
+
 #[test]
 fn transport_continuation_round_trips_allocator_and_exact_history() {
     let source = PluginBlockIo::new(2, 8, 9);
