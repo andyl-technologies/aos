@@ -374,9 +374,73 @@ pub(super) fn permits_native_dispatch(
     selected_native && !original_native && bridge.is_some()
 }
 
+/// Narrows slot allocation to the existing qualified V2 held-row profile.
+pub(super) fn permits_native_reply_reservation(
+    has_catalog: bool,
+    version: u16,
+    kernel_coupled: bool,
+    bridge: Option<&crate::native_completion::QualifiedNativeBridgeV2>,
+) -> bool {
+    version == aos_sandbox_source_provider_protocol::ACQUIRE_SOURCE_REQUEST_VERSION_V2
+        && permits_native_dispatch(has_catalog && !kernel_coupled, false, bridge)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn occupied_reply_slot_closes_only_the_qualified_v2_native_candidate() {
+        use crate::native_completion::{NativeReplyCustody, NativeReplyIdentity};
+        use aos_sandbox_source_provider_protocol::{
+            ACQUIRE_SOURCE_REQUEST_VERSION_V2, ACQUIRE_SOURCE_REQUEST_VERSION_V3,
+        };
+
+        let bridge = crate::native_completion::QualifiedNativeBridgeV2::for_test();
+        let mut slot = NativeReplyCustody::default();
+        slot.reserve(NativeReplyIdentity {
+            acquisition: ObjectDigest::from_bytes([1; 32]),
+            attempt: ObjectDigest::from_bytes([2; 32]),
+            session: ObjectDigest::from_bytes([3; 32]),
+            signed_request: ObjectDigest::from_bytes([4; 32]),
+        })
+        .unwrap();
+
+        let available = |catalog, version, kernel, bridge| {
+            slot.require_candidate_available(permits_native_reply_reservation(
+                catalog, version, kernel, bridge,
+            ))
+        };
+        assert!(
+            available(
+                true,
+                ACQUIRE_SOURCE_REQUEST_VERSION_V2,
+                false,
+                Some(&bridge)
+            )
+            .is_err()
+        );
+        assert!(
+            available(
+                true,
+                ACQUIRE_SOURCE_REQUEST_VERSION_V3,
+                false,
+                Some(&bridge)
+            )
+            .is_ok()
+        );
+        assert!(
+            available(
+                false,
+                ACQUIRE_SOURCE_REQUEST_VERSION_V2,
+                false,
+                Some(&bridge)
+            )
+            .is_ok()
+        );
+        assert!(available(true, ACQUIRE_SOURCE_REQUEST_VERSION_V2, true, Some(&bridge)).is_ok());
+        assert!(available(true, ACQUIRE_SOURCE_REQUEST_VERSION_V2, false, None).is_ok());
+    }
 
     #[test]
     fn raw_native_v3_is_closed_and_a_v2_test_bridge_cannot_enable_dispatch() {

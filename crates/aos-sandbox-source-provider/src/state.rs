@@ -750,6 +750,7 @@ pub struct ProviderLedgerV1<'a> {
     pub(crate) qualified_native_bridge: Option<crate::native_completion::QualifiedNativeBridgeV2>,
     pub(crate) native_acquire_custody:
         BTreeMap<ObjectDigest, crate::native_completion::NativeAcquireHotCustodyV3>,
+    pub(crate) native_reply_custody: crate::native_completion::NativeReplyCustody,
     pub(crate) poisoned: bool,
 }
 
@@ -767,10 +768,20 @@ pub(crate) struct DetachedProviderLedgerV1 {
     qualified_native_bridge: Option<crate::native_completion::QualifiedNativeBridgeV2>,
     native_acquire_custody:
         BTreeMap<ObjectDigest, crate::native_completion::NativeAcquireHotCustodyV3>,
+    native_reply_custody: crate::native_completion::NativeReplyCustody,
     poisoned: bool,
 }
 
 impl DetachedProviderLedgerV1 {
+    pub(crate) fn require_native_reply_custody_empty(&self) -> Result<(), ProviderLedgerError> {
+        self.native_reply_custody.require_empty()
+    }
+
+    // A failed journal claim must leave every retained original untouched.
+    pub(crate) fn poison_runtime(&mut self) {
+        self.poisoned = true;
+    }
+
     pub(crate) fn recovered(&self) -> &RecoveredProviderLedgerV1 {
         &self.recovered
     }
@@ -814,6 +825,7 @@ impl<'a> ProviderLedgerV1<'a> {
             pending_recovery_bridge: self.pending_recovery_bridge,
             qualified_native_bridge: self.qualified_native_bridge,
             native_acquire_custody: self.native_acquire_custody,
+            native_reply_custody: self.native_reply_custody,
             poisoned: self.poisoned,
         }
     }
@@ -833,6 +845,7 @@ impl<'a> ProviderLedgerV1<'a> {
             pending_recovery_bridge: detached.pending_recovery_bridge,
             qualified_native_bridge: detached.qualified_native_bridge,
             native_acquire_custody: detached.native_acquire_custody,
+            native_reply_custody: detached.native_reply_custody,
             poisoned: detached.poisoned,
         }
     }

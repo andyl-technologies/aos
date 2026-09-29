@@ -36,6 +36,13 @@ mod clock;
 
 pub(crate) use clock::NativeAcquireClockGuardV1;
 
+#[path = "native_completion/reply_custody.rs"]
+mod reply_custody;
+
+pub(crate) use reply_custody::{
+    NativeReplyCustody, NativeReplyIdentity, NativeReplyPhase, NativeReplyReauthentication,
+};
+
 /// Keeps the hot original anchor and optional same-mount custody together.
 pub(crate) struct NativeAcquireHotCustodyV3 {
     pub(crate) clock: std::sync::Arc<NativeAcquireClockGuardV1>,

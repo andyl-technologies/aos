@@ -353,21 +353,28 @@ impl ProviderLedgerV1<'_> {
         let retained = RetainedNativeChallengeRequestV1::from_owner_readback(self, &record)?;
         let challenge = challenges.ensure_for_retained_request(&retained, staged_challenge)?;
         require_exact_challenge(&record, challenge)?;
-        if !matches!(
-            record.state,
-            NativeAcquireCompletionStateV2::Requested | NativeAcquireCompletionStateV2::Prepared
-        ) {
-            return Err(ProviderLedgerError::Unavailable);
-        }
 
         // No stale permit is rebased. The unchanged original signed request is
         // authenticated again and mints a new authorization at this exact cut.
-        let permit = crate::transaction::reauthorize_native_reservation(
-            self,
-            permit,
-            original,
-            current_catalog,
-        )?;
+        let permit = match record.state {
+            NativeAcquireCompletionStateV2::Requested => {
+                crate::transaction::reauthorize_requested_native_reservation(
+                    self,
+                    permit,
+                    original,
+                    current_catalog,
+                )?
+            }
+            NativeAcquireCompletionStateV2::Prepared => {
+                crate::transaction::reauthorize_prepared_native_reservation(
+                    self,
+                    permit,
+                    original,
+                    current_catalog,
+                )?
+            }
+            _ => return Err(ProviderLedgerError::Unavailable),
+        };
         let capacity = preflight_native_suffix(self, &record)?;
         Ok((permit, record, capacity))
     }

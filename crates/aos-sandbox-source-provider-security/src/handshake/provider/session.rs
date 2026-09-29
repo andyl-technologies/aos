@@ -678,33 +678,70 @@ impl CurrentProviderIngressSessionV1 {
         committed: super::CommittedProviderOutcomeV1,
         source_root: Option<crate::ProviderSourceRootHandoffV1>,
     ) -> Result<(), SourceProviderSecurityError> {
+        self.send_committed_reply_inner(journal, &committed, source_root.as_ref(), None)
+    }
+
+    /// Borrows a sealed outcome for a handoff narrowed by retained-owner checks.
+    ///
+    /// The callback supplies no send authority. The same journal, response,
+    /// session and physical-descriptor checks remain mandatory. It can only
+    /// refuse the handoff before or after the actual `sendmsg`; a refusal
+    /// closes the carrier. The owner must retain custody after either result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderSecurityError`] for the ordinary committed-send
+    /// failures, stale post-send journal authority, or either callback refusal.
+    pub fn send_committed_reply_checked(
+        &mut self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        committed: &super::CommittedProviderOutcomeV1,
+        source_root: Option<&crate::ProviderSourceRootHandoffV1>,
+        mut validate_retained_owner: impl FnMut() -> Result<(), SourceProviderSecurityError>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        self.send_committed_reply_inner(
+            journal,
+            committed,
+            source_root,
+            Some(&mut validate_retained_owner),
+        )
+    }
+
+    fn send_committed_reply_inner(
+        &mut self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        committed: &super::CommittedProviderOutcomeV1,
+        source_root: Option<&crate::ProviderSourceRootHandoffV1>,
+        mut validate_retained_owner: Option<
+            &mut dyn FnMut() -> Result<(), SourceProviderSecurityError>,
+        >,
+    ) -> Result<(), SourceProviderSecurityError> {
+        committed.claim_send_attempt()?;
         journal
             .validate_source_provider_authority_snapshot(&committed.committed_snapshot)
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
         let response = committed
             .response
+            .as_deref()
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
         if committed.artifact_commitment
             != aos_sandbox_source_provider_protocol::provider_response_artifact_digest_v1(
                 committed.method,
-                &response,
+                response,
             )
-            || !journal_retains_exportable_artifact(journal, &response)?
+            || !journal_retains_exportable_artifact(journal, response)?
         {
             return Err(SourceProviderSecurityError::SessionContinuity);
         }
-        let response_identity = validate_send_response_with_source_root(
-            committed.method,
-            &response,
-            source_root.as_ref(),
-        )?;
+        let response_identity =
+            validate_send_response_with_source_root(committed.method, response, source_root)?;
         if response_identity != (committed.session_binding, committed.response_sequence)
             || committed.session_binding != self.session.binding()
         {
             return Err(SourceProviderSecurityError::SessionContinuity);
         }
         self.revalidate()?;
-        if let Some(source_root) = source_root.as_ref() {
+        if let Some(source_root) = source_root {
             if let Err(error) = source_root.revalidate() {
                 return Err(poison_and_close(
                     &mut self.custody,
@@ -713,11 +750,18 @@ impl CurrentProviderIngressSessionV1 {
                 ));
             }
         }
+        if let Some(validate) = validate_retained_owner.as_mut() {
+            if let Err(error) = validate() {
+                return Err(poison_and_close(
+                    &mut self.custody,
+                    &mut self.carrier,
+                    error,
+                ));
+            }
+        }
         if let Err(failure) = self.carrier.send_optional_source_root(
-            &response,
-            source_root
-                .as_ref()
-                .map(crate::ProviderSourceRootHandoffV1::descriptor),
+            response,
+            source_root.map(crate::ProviderSourceRootHandoffV1::descriptor),
         ) {
             let error = match failure {
                 CarrierFailureV1::Retryable => SourceProviderSecurityError::SessionContinuity,
@@ -729,8 +773,21 @@ impl CurrentProviderIngressSessionV1 {
                 error,
             ));
         }
-        if let Some(source_root) = source_root.as_ref() {
+        if let Some(source_root) = source_root {
             if let Err(error) = source_root.revalidate() {
+                return Err(poison_and_close(
+                    &mut self.custody,
+                    &mut self.carrier,
+                    error,
+                ));
+            }
+        }
+        if let Some(validate) = validate_retained_owner.as_mut() {
+            let current = journal
+                .validate_source_provider_authority_snapshot(&committed.committed_snapshot)
+                .map_err(|_| SourceProviderSecurityError::SessionContinuity)
+                .and_then(|()| validate());
+            if let Err(error) = current {
                 return Err(poison_and_close(
                     &mut self.custody,
                     &mut self.carrier,

@@ -167,6 +167,7 @@ impl<'a> ProviderLedgerV1<'a> {
             pending_recovery_bridge: None,
             qualified_native_bridge: None,
             native_acquire_custody: BTreeMap::new(),
+            native_reply_custody: crate::native_completion::NativeReplyCustody::default(),
             poisoned: false,
         })
     }
@@ -211,6 +212,7 @@ impl<'a> ProviderLedgerV1<'a> {
             pending_recovery_bridge: None,
             qualified_native_bridge: None,
             native_acquire_custody: BTreeMap::new(),
+            native_reply_custody: crate::native_completion::NativeReplyCustody::default(),
             poisoned: false,
         }
     }

@@ -559,6 +559,11 @@ impl FixedProviderOwnerV1 {
     /// ingress session and has not yet accepted a fresh request.
     #[doc(hidden)]
     pub fn begin_recovery_successor_handshake(&mut self) -> Result<(), ProviderLedgerError> {
+        if let Some(FixedProviderOwnerStateV1::Ready(detached)) = &self.state {
+            // The old fallible rotation consumes detached ownership. Native
+            // custody needs a genuine future disposition, not that error path.
+            detached.require_native_reply_custody_empty()?;
+        }
         let retained_recovery_is_not_ready =
             self.pending_backend_recovery
                 .first()
@@ -604,6 +609,9 @@ impl FixedProviderOwnerV1 {
         &mut self,
         checkpoint: aos_sandbox_source_provider_security::ProviderIngressReopenCheckpointV1,
     ) -> Result<(), ProviderLedgerError> {
+        if let Some(FixedProviderOwnerStateV1::Ready(detached)) = &self.state {
+            detached.require_native_reply_custody_empty()?;
+        }
         if self.ingress_reopen.is_some() || self.recovery_handshake.is_some() {
             return Err(ProviderLedgerError::InvalidTransition(
                 "provider ingress reopen custody is already retained",
@@ -1305,12 +1313,13 @@ impl FixedProviderOwnerV1 {
     /// is malformed, its session is no longer installed, or final durability,
     /// custody, peer, descriptor, or carrier validation fails.
     pub fn send_reply(&mut self, reply: DurableProviderReplyV1) -> Result<(), ProviderLedgerError> {
+        let native_identity = reply.native_identity();
         let session_binding = reply.session_binding()?;
         let state = self
             .state
             .take()
             .ok_or(ProviderLedgerError::RuntimePoisoned)?;
-        let detached = match state {
+        let mut detached = match state {
             FixedProviderOwnerStateV1::Ready(detached) => detached,
             state @ (FixedProviderOwnerStateV1::MigrationRequired { .. }
             | FixedProviderOwnerStateV1::MigrationRecovery { .. }) => {
@@ -1335,12 +1344,18 @@ impl FixedProviderOwnerV1 {
         let authority = match claim_fixed_provider_authority(self.journal.as_mut()) {
             Ok(authority) => authority,
             Err(error) => {
+                if native_identity.is_some() {
+                    detached.poison_runtime();
+                }
                 self.state = Some(FixedProviderOwnerStateV1::Ready(detached));
                 return Err(error.into());
             }
         };
         let mut ledger = ProviderLedgerV1::attach(authority, detached);
-        let result = {
+        let result = (|| {
+            if native_identity.is_some() {
+                ledger.ensure_open()?;
+            }
             let journal = &ledger.journal;
             let mut matching_sessions = ledger.current_sessions.values_mut().filter(|installed| {
                 installed.session.retained_session_binding() == session_binding
@@ -1353,10 +1368,28 @@ impl FixedProviderOwnerV1 {
                 _ => Err(ProviderLedgerError::Equivocation),
             };
             match session {
-                Ok(session) => reply.send(&mut session.session, journal),
+                Ok(session) => match native_identity {
+                    Some(identity) => {
+                        let (observed, committed) = ledger
+                            .native_reply_custody
+                            .begin_send(identity, session_binding)?;
+                        reply.send_retained_native(
+                            &mut session.session,
+                            journal,
+                            observed,
+                            committed,
+                        )
+                    }
+                    None => reply.send(&mut session.session, journal),
+                },
                 Err(error) => Err(error),
             }
-        };
+        })();
+        if native_identity.is_some() && result.is_err() {
+            // Original observation and sealed outcome remain in the same slot
+            // after both failed and successful sends. No rearm/ACK is inferred.
+            ledger.poison_runtime();
+        }
         self.state = Some(FixedProviderOwnerStateV1::Ready(ledger.detach()));
         result
     }

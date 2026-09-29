@@ -8,6 +8,7 @@ pub(crate) fn reserve_acquire(
     current_request: aos_sandbox_source_provider_security::CurrentProviderRequestV1,
     current_catalog: Option<(&[u8], &[u8])>,
     original_packet: Option<&crate::FixedProviderAuthenticatedSourceRequestV1>,
+    native_reauthentication: Option<crate::native_completion::NativeReplyReauthentication>,
 ) -> Result<ProviderAdmissionDispositionV1, ProviderLedgerError> {
     let provider_execution_identity = current_request.provider_execution_identity();
     let verified = match current_request.verified() {
@@ -45,6 +46,76 @@ pub(crate) fn reserve_acquire(
         None
     };
     let attempt_evidence = verified.attempt();
+    // This slot is only for the already-qualified legacy dispatch seam. The
+    // original V3 no-dispatch/recovery cut and ordinary V2 requests never
+    // reserve it, even when another operation retains a native completion.
+    let native_reply_candidate = super::native_admission::permits_native_reply_reservation(
+        current_catalog.is_some(),
+        request.acquisition_version(),
+        request.kernel_coupled(),
+        ledger.qualified_native_bridge.as_ref(),
+    );
+    let native_reply_identity = crate::native_completion::NativeReplyIdentity {
+        acquisition: request.acquisition_id(),
+        attempt: attempt_evidence.attempt_digest(),
+        session: projection.session_binding(),
+        signed_request: attempt_evidence.signed_request_digest(),
+    };
+    if let Some(cut) = native_reauthentication {
+        let identity = cut.identity;
+        if !native_reply_candidate || identity != native_reply_identity {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        ledger.native_reply_custody.require_reserved(identity)?;
+        let retained = ledger
+            .recovered
+            .native_completions
+            .get(&identity.acquisition)
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        cut.require_record(retained, attempt_evidence.canonical_signed_request())?;
+        if ledger
+            .journal
+            .get(&crate::ledger::native_completion::native_completion_key_v2(
+                identity.acquisition,
+            ))?
+            != Some(crate::format::encode_native_completion_v2(retained).as_slice())
+        {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        ledger
+            .native_acquire_custody
+            .get(&identity.acquisition)
+            .ok_or(ProviderLedgerError::Unavailable)?
+            .clock
+            .require_record(retained)?;
+    } else {
+        ledger
+            .native_reply_custody
+            .require_candidate_available(native_reply_candidate)?;
+    }
+    let native_reply_selection = if native_reply_candidate {
+        let (publication, rows) = current_catalog.ok_or(ProviderLedgerError::Unavailable)?;
+        Some(super::native_admission::select_current_resource(
+            ledger,
+            security_session,
+            &normalized_intent(verified)?,
+            projection.resource_namespace_digest(),
+            publication,
+            rows,
+        )?)
+    } else {
+        None
+    };
+    if native_reply_candidate
+        && native_reauthentication.is_none()
+        && ledger.recovered.acquisitions.values().any(|row| {
+            row.acquisition_id == request.acquisition_id()
+                && row.state == ProviderAcquisitionStateV1::Applying
+                && crate::native_completion::is_native_dispatch_acquisition(row)
+        })
+    {
+        ledger.native_reply_custody.reserve(native_reply_identity)?;
+    }
     let root_record_signer = projection.ordered_signers()[1].clone();
     let key = AttemptKeyV1 {
         provider_id: projection.provider_authority().authority_id(),
@@ -114,6 +185,11 @@ pub(crate) fn reserve_acquire(
         }
         return Ok(disposition);
     }
+    if native_reauthentication.is_some() {
+        // Either named internal cut can only borrow the original Applying
+        // reservation; it cannot admit a fresh operation or a new slot.
+        return Err(ProviderLedgerError::Equivocation);
+    }
     let next_request_sequence = match verified.sequence() {
         VerifiedProviderRequestSequenceV1::Fresh(advance) => {
             if advance.accepted_sequence() != request.sequence()
@@ -130,6 +206,8 @@ pub(crate) fn reserve_acquire(
     let normalized_intent = normalized_intent(&verified)?;
     let selected_resource = if let Some(native) = &native_admission {
         Some(native.resource().clone())
+    } else if let Some(selection) = &native_reply_selection {
+        Some(selection.resource().clone())
     } else if let Some((canonical_publication, canonical_rows)) = current_catalog {
         Some(
             super::native_admission::select_current_resource(
@@ -234,6 +312,12 @@ pub(crate) fn reserve_acquire(
         ledger.qualified_native_bridge.as_ref(),
     );
     let native_no_dispatch = selected_native && !native_dispatch;
+    if native_dispatch {
+        if !native_reply_candidate {
+            return Err(ProviderLedgerError::Unavailable);
+        }
+        ledger.native_reply_custody.reserve(native_reply_identity)?;
+    }
     let backend_id = if native_dispatch {
         aos_sandbox_source_provider_ledger::identity::acquire_native_dispatch_id_v2(
             normalized_intent.digest(),

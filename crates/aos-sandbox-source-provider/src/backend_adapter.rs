@@ -1279,15 +1279,19 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
                     current_catalog,
                 );
                 if result.is_err()
-                    && original_packet.is_some_and(|packet| {
-                        aos_sandbox_source_provider_protocol::decode_acquire_request(
-                            packet.signed().subject(),
-                        )
-                        .is_ok_and(|request| {
-                            crate::acquire::require_original_packet_profile(&request, Some(packet))
+                    && (ledger.native_reply_custody.matches_request(signed_request)
+                        || original_packet.is_some_and(|packet| {
+                            aos_sandbox_source_provider_protocol::decode_acquire_request(
+                                packet.signed().subject(),
+                            )
+                            .is_ok_and(|request| {
+                                crate::acquire::require_original_packet_profile(
+                                    &request,
+                                    Some(packet),
+                                )
                                 .is_ok_and(|native| native)
-                        })
-                    })
+                            })
+                        }))
                 {
                     // Admission already retained the anchor before a possible
                     // append. A failed typed readback cannot reopen this cut.
