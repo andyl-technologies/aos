@@ -207,6 +207,23 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
             .and_then(|state| state.attach_network(0, outbound, inbound, rx_queue, 0))
             .unwrap_or_else(|error| panic!("live network callback state should build: {error}")),
     );
+    let original_head = state
+        .network_inbound_head_observe()
+        .unwrap_or_else(|error| panic!("registered inbound head should be observable: {error}"))
+        .unwrap_or_else(|| panic!("inbound frame should remain queued"));
+    assert_eq!(original_head.ring_index, 1);
+    assert_ne!(original_head.owner_generation, 0);
+    assert_eq!(original_head.src_slot, SLOT_NET_ROUTER as u32);
+    assert_eq!(original_head.dst_slot, 0);
+    assert_eq!(original_head.read_index, 0);
+    assert_eq!(original_head.frame, inbound_frame);
+    assert_eq!(state.network_inbound_head_current(&original_head), Ok(true));
+    let mut foreign_owner = original_head.clone();
+    foreign_owner.owner_generation += 1;
+    assert_eq!(
+        state.network_inbound_head_current(&foreign_owner),
+        Ok(false)
+    );
     TEST_REENTRANT_RX_STATE.store(
         std::ptr::from_ref(state.as_ref()).cast_mut(),
         Ordering::Release,
@@ -262,6 +279,10 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
     assert_eq!(outbound_entries[1].delivery_icount, 7);
     assert_eq!(outbound_entries[1].payload(), Ok(b"flush-tx".as_slice()));
     assert_eq!(inbound_header.read_index(), 1);
+    assert_eq!(
+        state.network_inbound_head_current(&original_head),
+        Ok(false)
+    );
     assert_eq!(TEST_RX_INJECT_COUNT.load(Ordering::SeqCst), 2);
     assert_eq!(TEST_RX_LAST_LEN.load(Ordering::SeqCst), 7);
 }

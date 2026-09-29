@@ -218,7 +218,7 @@ pub use network_rx::{
     CanonicalNetworkRx, NETWORK_RX_DELIVERY_ATTEMPT_LIMIT, NETWORK_RX_RETRY_INTERVAL_ICOUNT,
     NetworkRxDeliveryError, NetworkRxDeliveryOperation, NetworkRxDeliveryOutcome, NetworkRxError,
     NetworkRxInjection, PluginNetworkRx, QEMU_PLUGIN_NET_INJECT_SYMBOL, QemuCanonicalNetworkRx,
-    QemuPluginNetInjectFn, handle_network_rx_idle_callback, resolve_qemu_net_inject_symbol,
+    QemuPluginNetInjectFn, resolve_qemu_net_inject_symbol,
 };
 pub use network_tx::{
     NetworkTxEnqueue, NetworkTxError, NetworkTxRing, PluginNetworkTx,

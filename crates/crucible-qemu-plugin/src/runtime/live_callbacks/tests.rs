@@ -16,6 +16,7 @@ use crucible_shmem::{
 
 mod block_wait;
 mod fault_event_control;
+mod network_custody;
 mod preemption;
 mod preflight_cases;
 

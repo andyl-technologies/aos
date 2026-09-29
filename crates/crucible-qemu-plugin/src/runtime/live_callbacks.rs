@@ -38,7 +38,7 @@ use crate::{
     QemuRegisterNinePCbFn, QemuRegisterSimShmemDispatchCbFn, QemuRegisterTimeAdvanceCbFn,
     QemuRegisterVcpuIdleResumeCbFn, QemuRegisterVcpuInitCbFn, QueuedIdleAdvance,
     QueuedIdleAdvanceError, RoundRobinError, SchedulerCeiling, TimeAdvanceCompletion,
-    VcpuHaltTracker, compute_idle_wake_plan, handle_network_rx_idle_callback,
+    VcpuHaltTracker, compute_idle_wake_plan,
 };
 
 use super::{
@@ -679,6 +679,20 @@ struct LiveNetworkCallbackState {
     rx_delivery_active: AtomicBool,
 }
 
+/// Original registered inbound owner and exact live SPSC head.
+///
+/// This is a local factual observation. It grants no guest delivery or Mode7
+/// selection authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NetworkInboundHeadObservation {
+    pub(crate) ring_index: u32,
+    pub(crate) owner_generation: u64,
+    pub(crate) src_slot: u32,
+    pub(crate) dst_slot: u32,
+    pub(crate) read_index: u64,
+    pub(crate) frame: FrameEntry,
+}
+
 impl LiveNetworkCallbackState {
     fn new(
         vm_slot: u32,
@@ -714,6 +728,61 @@ impl LiveNetworkCallbackState {
             tx_callback_active: AtomicBool::new(false),
             rx_delivery_active: AtomicBool::new(false),
         })
+    }
+
+    fn inbound_head_observe(
+        &self,
+    ) -> Result<Option<NetworkInboundHeadObservation>, LiveVcpuTimeCallbackError> {
+        let inbound = self.inbound.inbound();
+        let read_index = inbound.header().read_index();
+        let head = inbound.header().peek(inbound.entries()).map_err(|source| {
+            LiveVcpuTimeCallbackError::InboundFrames {
+                source: InboundFrameError::RingOperation {
+                    ring_index: self.inbound.descriptor.index,
+                    source,
+                },
+            }
+        })?;
+        if inbound.header().read_index() != read_index {
+            return Ok(None);
+        }
+
+        Ok(head.map(|frame| NetworkInboundHeadObservation {
+            ring_index: self.inbound.descriptor.index,
+            owner_generation: self.inbound.owner_generation,
+            src_slot: self.inbound.descriptor.src_slot,
+            dst_slot: self.inbound.descriptor.dst_slot,
+            read_index,
+            frame,
+        }))
+    }
+
+    fn inbound_head_current(
+        &self,
+        original: &NetworkInboundHeadObservation,
+    ) -> Result<bool, LiveVcpuTimeCallbackError> {
+        if original.ring_index != self.inbound.descriptor.index
+            || original.owner_generation != self.inbound.owner_generation
+            || original.src_slot != self.inbound.descriptor.src_slot
+            || original.dst_slot != self.inbound.descriptor.dst_slot
+        {
+            return Ok(false);
+        }
+
+        let inbound = self.inbound.inbound();
+        if inbound.header().read_index() != original.read_index {
+            return Ok(false);
+        }
+        let head = inbound.header().peek(inbound.entries()).map_err(|source| {
+            LiveVcpuTimeCallbackError::InboundFrames {
+                source: InboundFrameError::RingOperation {
+                    ring_index: original.ring_index,
+                    source,
+                },
+            }
+        })?;
+        Ok(inbound.header().read_index() == original.read_index
+            && head.as_ref() == Some(&original.frame))
     }
 }
 
@@ -1595,6 +1664,10 @@ impl LiveVcpuTimeCallbackState {
     }
 
     fn on_control_boundary(&self, raw_icount: u64) -> Result<(), LiveVcpuTimeCallbackError> {
+        // A stopped boundary permits the host to save VMState. RX poison is not
+        // serialized, so no checkpoint may acknowledge ambiguous ownership.
+        self.require_network_rx_commit_certain()?;
+
         // A drained wake is an exact host-control opportunity, not a vCPU
         // lifecycle transition. Publish before the release acknowledgement so
         // a host acquire-load of the odd successor orders every boundary field.
@@ -1747,6 +1820,8 @@ impl LiveVcpuTimeCallbackState {
                 Ok(true)
             }
             RegionControlAction::Pause => {
+                self.require_network_rx_commit_certain()?;
+
                 // A paired control request owns checkpoint ordering. Its
                 // eventfd callback first resumes device waiters, then invokes
                 // the two-pass control boundary after their bottom halves are
@@ -2088,9 +2163,9 @@ impl LiveVcpuTimeCallbackState {
     ///
     /// The plugin is the only consumer of the router-to-VM SPSC ring. The host
     /// may observe the consumer index after a release-published boundary, but it
-    /// must never dequeue a payload. Previewing before the callback and
-    /// comparing the committed batch afterwards keeps reentrant QEMU RX work
-    /// from changing which deterministic delivery keys this boundary owns.
+    /// must never dequeue a payload. Each accepted head is committed before the
+    /// next guest callback, so a later delivery failure cannot replay an earlier
+    /// guest acceptance. Reentrant delivery remains excluded for the whole pass.
     fn inject_due_network_inbound(
         &self,
         current_icount: u64,
@@ -2119,17 +2194,35 @@ impl LiveVcpuTimeCallbackState {
             )
             .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?
         };
+        if let Some(first) = preview.frames().first() {
+            let original_head = self
+                .network_inbound_head_observe()?
+                .ok_or(LiveVcpuTimeCallbackError::InboundCommitMismatch)?;
+            if original_head.frame != *first
+                || !self.network_inbound_head_current(&original_head)?
+            {
+                return Err(LiveVcpuTimeCallbackError::InboundCommitMismatch);
+            }
+        }
         let injection = if preview.frames().is_empty() {
             None
         } else {
             let mut rx_queue = network.rx_queue;
             Some(
-                handle_network_rx_idle_callback(
+                crate::network_rx::handle_network_rx_idle_callback_with_commit(
                     &network.rx,
                     &mut rx_queue,
                     passed_delivery_floor_icount,
                     current_icount,
                     preview.frames(),
+                    |frame| {
+                        PluginInboundFrames::commit_delivered_prefix(
+                            [network.inbound.inbound()],
+                            current_icount,
+                            std::slice::from_ref(frame),
+                        )
+                        .map(|_| ())
+                    },
                 )
                 .map_err(|source| LiveVcpuTimeCallbackError::NetworkRx { source })?,
             )
@@ -2147,22 +2240,48 @@ impl LiveVcpuTimeCallbackState {
         }) {
             return Err(LiveVcpuTimeCallbackError::InboundCommitMismatch);
         }
-        let inbound = network.inbound.inbound();
-        let committed = PluginInboundFrames::commit_delivered_prefix(
-            [inbound],
-            current_icount,
-            delivered_frames,
-        )
-        .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?;
-        if committed.frames() != delivered_frames {
-            return Err(LiveVcpuTimeCallbackError::InboundCommitMismatch);
-        }
         if let Some(retained) = injection.and_then(|result| result.retained_frame_key()) {
             let inbound = network.inbound.inbound();
             PluginInboundFrames::mark_retained_head([inbound], retained, current_icount)
                 .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?;
         }
         Ok(())
+    }
+
+    /// Refuses checkpoint handoff after an ambiguous guest RX ownership transfer.
+    pub(super) fn network_rx_commit_uncertain(&self) -> bool {
+        self.network
+            .as_ref()
+            .is_some_and(|network| network.rx.commit_uncertain())
+    }
+
+    fn require_network_rx_commit_certain(&self) -> Result<(), LiveVcpuTimeCallbackError> {
+        if self.network_rx_commit_uncertain() {
+            return Err(LiveVcpuTimeCallbackError::NetworkRx {
+                source: crate::NetworkRxError::CommitUncertain,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Observes only the registered network ring's exact live head.
+    pub(crate) fn network_inbound_head_observe(
+        &self,
+    ) -> Result<Option<NetworkInboundHeadObservation>, LiveVcpuTimeCallbackError> {
+        self.network
+            .as_ref()
+            .map_or(Ok(None), LiveNetworkCallbackState::inbound_head_observe)
+    }
+
+    /// Checks the original owner generation, read frontier, and full head.
+    pub(crate) fn network_inbound_head_current(
+        &self,
+        original: &NetworkInboundHeadObservation,
+    ) -> Result<bool, LiveVcpuTimeCallbackError> {
+        self.network
+            .as_ref()
+            .map_or(Ok(false), |network| network.inbound_head_current(original))
     }
 
     fn on_network_tx(

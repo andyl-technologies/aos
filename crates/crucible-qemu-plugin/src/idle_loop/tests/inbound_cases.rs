@@ -246,6 +246,96 @@ fn idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads() {
 }
 
 #[test]
+fn idle_loop_rx_later_delivery_failure_keeps_only_undelivered_head() {
+    let slot = NodeSlot::new(KIND_VM);
+    let clock = owned_clock(10);
+    let ring = RingHeader::new();
+    let mut entries = empty_entries();
+    let first = frame(20, 1, 0, b"accepted");
+    let second = frame(20, 1, 1, b"failed");
+    enqueue(&ring, &mut entries, first);
+    enqueue(&ring, &mut entries, second.clone());
+    publish_ceiling(&slot, ceiling(0, 10));
+    let request = PluginIdleHotLoop::begin_idle_with_inbound_rings(
+        &slot,
+        &clock,
+        &deadline_reader(deadline_80),
+        [InboundFrameRing::new(0, &ring, &entries)],
+        None,
+    )
+    .unwrap_or_else(|error| panic!("idle begin should select inbound head: {error}"));
+
+    publish_ceiling(&slot, ceiling(10, 20));
+    let mut clock = clock;
+    let network_rx = PluginNetworkRx::new();
+    let mut rx_queue = RecordingNetworkRxQueue::for_slot(&slot);
+    rx_queue.delivery_error_at = Some(1);
+    let pending = expect_pending(
+        PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings_with_rx_injection(
+            &slot,
+            &mut clock,
+            &queued_idle_advance(),
+            request,
+            [InboundFrameRing::new(0, &ring, &entries)],
+            &network_rx,
+            &mut rx_queue,
+        ),
+    );
+
+    assert!(matches!(
+        PluginIdleHotLoop::complete_after_time_advance_from_inbound_rings_with_rx_injection(
+            &slot,
+            &mut clock,
+            request,
+            pending,
+            successful_completion(pending),
+            [InboundFrameRing::new(0, &ring, &entries)],
+            &network_rx,
+            &mut rx_queue,
+        ),
+        Err(IdleHotLoopError::NetworkRxInjection {
+            source: NetworkRxError::Delivery { .. }
+        })
+    ));
+    assert_eq!(rx_queue.queued_payloads, vec![b"accepted".to_vec()]);
+    assert_eq!(ring.read_index(), 1);
+    assert_eq!(
+        PluginShmemOrdering::peek_inbound_delivery_icount(&ring, &entries),
+        Ok(Some(second.delivery_icount))
+    );
+
+    rx_queue.delivery_error_at = None;
+    let retry = PluginInboundFrames::preview_deliverable_since(
+        [InboundFrameRing::new(0, &ring, &entries)],
+        20,
+        20,
+    )
+    .unwrap_or_else(|error| panic!("retry should preview only the live head: {error}"));
+    assert_eq!(retry.frames(), std::slice::from_ref(&second));
+    crate::network_rx::handle_network_rx_idle_callback_with_commit(
+        &network_rx,
+        &mut rx_queue,
+        20,
+        20,
+        retry.frames(),
+        |frame| {
+            PluginInboundFrames::commit_delivered_prefix(
+                [InboundFrameRing::new(0, &ring, &entries)],
+                20,
+                std::slice::from_ref(frame),
+            )
+            .map(|_| ())
+        },
+    )
+    .unwrap_or_else(|error| panic!("retry should deliver only the remaining head: {error}"));
+    assert_eq!(ring.read_index(), 2);
+    assert_eq!(
+        rx_queue.queued_payloads,
+        vec![b"accepted".to_vec(), b"failed".to_vec()]
+    );
+}
+
+#[test]
 fn idle_loop_rx_backpressure_marks_canonical_head_retained() {
     let slot = NodeSlot::new(KIND_VM);
     let clock = owned_clock(10);

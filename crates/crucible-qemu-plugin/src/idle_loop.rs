@@ -19,7 +19,7 @@ use crate::{
     PluginClockAdvance, PluginClockError, PluginDeviceIoFreeze, PluginInboundFrames,
     PluginNetworkRx, PluginVirtualClock, QemuIcountRawFn, QueuedIdleAdvance,
     QueuedIdleAdvanceError, SchedulerCeiling, TimeAdvanceCompletion,
-    handle_network_rx_idle_callback, shmem_ordering::PluginShmemOrdering,
+    network_rx::handle_network_rx_idle_callback_with_commit, shmem_ordering::PluginShmemOrdering,
 };
 
 mod planning;
@@ -601,37 +601,24 @@ impl PluginIdleHotLoop {
         )
         .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
         let pending_frames = inbound_batch.into_frames();
-        let network_rx_injection = handle_network_rx_idle_callback(
+        let network_rx_injection = handle_network_rx_idle_callback_with_commit(
             network_rx,
             rx_queue,
             request.plan.current_icount,
             clock.current_icount(),
             &pending_frames,
+            |frame| {
+                PluginInboundFrames::commit_delivered_prefix(
+                    inbound_rings.iter().copied(),
+                    clock.current_icount(),
+                    std::slice::from_ref(frame),
+                )
+                .map(|_| ())
+            },
         )
         .map_err(|source| IdleHotLoopError::NetworkRxInjection { source })?;
         let delivered_count = network_rx_injection.delivered_frame_keys().len();
         let injected_frames = pending_frames[..delivered_count].to_vec();
-        let committed_batch = PluginInboundFrames::commit_delivered_prefix(
-            inbound_rings.iter().copied(),
-            clock.current_icount(),
-            &injected_frames,
-        )
-        .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
-        if committed_batch.frames() != injected_frames.as_slice() {
-            return Err(IdleHotLoopError::InboundFrames {
-                source: InboundFrameError::CommittedBatchMismatch {
-                    expected: injected_frames
-                        .iter()
-                        .map(FrameEntry::delivery_key)
-                        .collect(),
-                    actual: committed_batch
-                        .frames()
-                        .iter()
-                        .map(FrameEntry::delivery_key)
-                        .collect(),
-                },
-            });
-        }
         if let Some(retained) = network_rx_injection.retained_frame_key() {
             PluginInboundFrames::mark_retained_head(
                 inbound_rings.iter().copied(),
@@ -688,37 +675,24 @@ impl PluginIdleHotLoop {
         )
         .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
         let pending_frames = inbound_batch.into_frames();
-        let network_rx_injection = handle_network_rx_idle_callback(
+        let network_rx_injection = handle_network_rx_idle_callback_with_commit(
             network_rx,
             rx_queue,
             request.plan.current_icount,
             clock.current_icount(),
             &pending_frames,
+            |frame| {
+                PluginInboundFrames::commit_delivered_prefix(
+                    inbound_rings.iter().copied(),
+                    clock.current_icount(),
+                    std::slice::from_ref(frame),
+                )
+                .map(|_| ())
+            },
         )
         .map_err(|source| IdleHotLoopError::NetworkRxInjection { source })?;
         let delivered_count = network_rx_injection.delivered_frame_keys().len();
         let injected_frames = pending_frames[..delivered_count].to_vec();
-        let committed_batch = PluginInboundFrames::commit_delivered_prefix(
-            inbound_rings.iter().copied(),
-            clock.current_icount(),
-            &injected_frames,
-        )
-        .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
-        if committed_batch.frames() != injected_frames.as_slice() {
-            return Err(IdleHotLoopError::InboundFrames {
-                source: InboundFrameError::CommittedBatchMismatch {
-                    expected: injected_frames
-                        .iter()
-                        .map(FrameEntry::delivery_key)
-                        .collect(),
-                    actual: committed_batch
-                        .frames()
-                        .iter()
-                        .map(FrameEntry::delivery_key)
-                        .collect(),
-                },
-            });
-        }
         if let Some(retained) = network_rx_injection.retained_frame_key() {
             PluginInboundFrames::mark_retained_head(
                 inbound_rings.iter().copied(),
