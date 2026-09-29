@@ -865,6 +865,10 @@ mod tests {
 
         assert_eq!(upload.to_string(), "content violates CDC-6");
         assert_eq!(range.to_string(), "range beyond content end");
+        assert_eq!(
+            StoreErrorKind::Invalid(InvalidReason::MalformedRequest).to_string(),
+            "malformed request"
+        );
         assert!(
             matches!(range, StoreErrorKind::Invalid(InvalidReason::Range(actual)) if actual == requested)
         );
