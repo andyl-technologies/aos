@@ -105,6 +105,7 @@ pub struct BackendFixedInputResult {
 impl SingleScheduler {
     pub(super) fn prepare_current_fixed_input(
         &mut self,
+        published_consumers: &BTreeSet<NodeId>,
     ) -> Result<Option<PreparedHostFixedInput>, SchedulerError> {
         if self.fixed_input_in_progress {
             return Err(fixed_input_error("fixed input owner is already retained"));
@@ -143,6 +144,13 @@ impl SingleScheduler {
             ));
         }
         let consumer = first.key.consumer().clone();
+        // Refusal must precede generation reservation and owner creation. The
+        // caller cannot retain a newly minted owner after this repeated batch.
+        if published_consumers.contains(&consumer.node) {
+            return Err(fixed_input_error(
+                "current-T consumer repeated before a new scheduler call",
+            ));
+        }
         selected.retain(|event| event.key.consumer() == &consumer);
         let index = self.vm_node_index(&consumer.node)?;
         let at = self.nodes[index].counter;
