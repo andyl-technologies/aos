@@ -22,6 +22,12 @@ pub use crate::ledger::reopen::ReopenIdentityV1;
 
 use crate::model::SourceRootIdentityV1;
 
+#[path = "backend/reply.rs"]
+mod reply;
+
+pub use reply::DurableProviderReplyV1;
+pub(crate) use reply::DurableReplyAuthorityV1;
+
 /// Owns a descriptor after repeated kernel-backed physical validation.
 ///
 /// The private fields prevent adapters from pairing arbitrary scalar claims
@@ -739,6 +745,15 @@ pub struct ObservedBackendAcquisitionV1 {
 }
 
 impl ObservedBackendAcquisitionV1 {
+    pub(crate) fn duplicate_physical_root(
+        &self,
+    ) -> Result<ProviderPhysicalSourceRootV1, crate::ProviderLedgerError> {
+        self.revalidate_physical()?;
+        let root = self.physical_root.retain_original()?;
+        self.revalidate_physical()?;
+        Ok(root)
+    }
+
     pub(crate) fn revalidate_physical(&self) -> Result<(), crate::ProviderLedgerError> {
         self.physical_root.revalidate()?;
         if let Some(native) = &self.native {
@@ -939,89 +954,6 @@ impl DurableReleaseTombstoneV1 {
     #[must_use]
     pub const fn release_generation(&self) -> u64 {
         self.release_generation
-    }
-}
-
-/// Owns a response and optional source-root descriptor after completion sync.
-#[derive(Debug)]
-pub struct DurableProviderReplyV1 {
-    pub(crate) response: Vec<u8>,
-    pub(crate) source_root: Option<ProviderPhysicalSourceRootV1>,
-    pub(crate) durability: DurableReplyAuthorityV1,
-}
-
-pub(crate) enum DurableReplyAuthorityV1 {
-    Fresh(aos_sandbox_source_provider_security::CommittedProviderOutcomeV1),
-    RevalidatedReplay {
-        snapshot: ProtectedJournalSnapshot,
-        attempt_key: Vec<u8>,
-    },
-}
-
-impl core::fmt::Debug for DurableReplyAuthorityV1 {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.write_str("DurableReplyAuthorityV1([protected durability])")
-    }
-}
-
-impl DurableProviderReplyV1 {
-    /// Consumes this reply into the authenticated session carrier.
-    ///
-    /// The security boundary revalidates the exact journal witness, canonical
-    /// response/session identity, and the zero-or-one `SourceRoot` descriptor
-    /// role immediately before the SCM_RIGHTS handoff.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::ProviderLedgerError`] for journal/session drift,
-    /// response substitution, descriptor-shape mismatch, or carrier failure.
-    pub(crate) fn send(
-        self,
-        session: &mut aos_sandbox_source_provider_security::CurrentProviderIngressSessionV1,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-    ) -> Result<(), crate::ProviderLedgerError> {
-        let source_root = self
-            .source_root
-            .map(ProviderPhysicalSourceRootV1::into_security_handoff)
-            .transpose()?;
-        match self.durability {
-            DurableReplyAuthorityV1::Fresh(committed) => {
-                session.send_committed_reply(journal, committed, source_root)?
-            }
-            DurableReplyAuthorityV1::RevalidatedReplay {
-                snapshot,
-                attempt_key,
-            } => {
-                let replay = session.authorize_recovered_reply(
-                    journal,
-                    snapshot,
-                    &attempt_key,
-                    self.response,
-                    source_root.is_some(),
-                )?;
-                session.send_revalidated_reply(journal, replay, source_root)?;
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn session_binding(&self) -> Result<ObjectDigest, crate::ProviderLedgerError> {
-        use aos_sandbox_source_provider_protocol::{
-            ReleaseSourceResponseProfileV2, decode_acquire_response, decode_inventory_response,
-        };
-
-        if let Ok(response) = decode_acquire_response(&self.response) {
-            return Ok(response.signed_status().subject().session_binding());
-        }
-        if let Ok(response) = ReleaseSourceResponseProfileV2::from_canonical_bytes(&self.response) {
-            return Ok(response.signed_status().subject().session_binding());
-        }
-        if let Ok(response) = decode_inventory_response(&self.response) {
-            return Ok(response.signed_status().subject().session_binding());
-        }
-        Err(crate::ProviderLedgerError::Corrupt(
-            "durable reply response framing",
-        ))
     }
 }
 
@@ -1300,6 +1232,95 @@ mod tests {
         );
         original.revalidate().unwrap();
         drop(handoff);
+
+        // Exercise physical slot custody with canonical signed comparison DATA.
+        // There is deliberately no fake NativeAcquireLiveObservation: this
+        // cannot test installed Storage origin or authorize a native reply.
+        use crate::native_completion::{NativeReplyCustody, NativeReplyIdentity};
+        use std::os::fd::AsRawFd as _;
+
+        let catalog = requested
+            .canonical_request
+            .as_ref()
+            .unwrap()
+            .request()
+            .claims()
+            .catalog();
+        let (resource, snapshot) = catalog
+            .select_under_head(
+                catalog.generation(),
+                catalog.digest(),
+                catalog.namespace_digest(),
+                requested.binding_digest,
+            )
+            .unwrap();
+        let evidence = BackendEvidenceV1::new_acquired(
+            BackendEvidenceClassV1::ZfsHeldSnapshot,
+            [4; 16],
+            1,
+            digest(5),
+            1,
+            digest(6),
+            Vec::new(),
+        )
+        .unwrap();
+        let reopen = super::ReopenIdentityV1::new(
+            BackendEvidenceClassV1::ZfsHeldSnapshot,
+            [7; 32],
+            1,
+            digest(5),
+            resource.resource_id(),
+            resource.resource_generation(),
+            resource.resource_digest(),
+            snapshot.storage_handle(),
+            snapshot.storage_version(),
+            snapshot.active_hold_digest(),
+        )
+        .unwrap();
+        let original_fd = original.descriptor.as_raw_fd();
+        let observed = super::ObservedBackendAcquisitionV1 {
+            lineage_digest: digest(1),
+            descriptor_observation: original.observation.clone(),
+            source_root: original.identity,
+            observed_seconds: original.observed_seconds,
+            physical_root: original,
+            resource,
+            proof: super::SourceProviderProofV1::ZfsHeldSnapshot {
+                proof: snapshot,
+                topology: verified.topology().clone(),
+            },
+            evidence,
+            reopen_identity: reopen,
+            backend_id: [7; 32],
+            native: None,
+        };
+        let identity = NativeReplyIdentity {
+            acquisition: requested.acquisition_id,
+            attempt: requested.attempt_digest,
+            session: requested.session_binding,
+            signed_request: requested.root_request_digest,
+        };
+        let mut slot = NativeReplyCustody::default();
+        slot.reserve(identity).unwrap();
+        slot.retain_observed(observed);
+
+        let lent = slot.lend_observed().unwrap();
+        let wire = lent
+            .duplicate_physical_root()
+            .unwrap()
+            .into_security_handoff()
+            .unwrap();
+        assert_eq!(lent.physical_root.descriptor.as_raw_fd(), original_fd);
+        drop(wire);
+        lent.revalidate_physical().unwrap();
+        slot.restore_observed(lent);
+
+        assert!(slot.require_empty().is_err());
+        assert!(slot.begin_send(identity, identity.session).is_err());
+        let retained = slot.lend_observed().unwrap();
+        assert_eq!(retained.physical_root.descriptor.as_raw_fd(), original_fd);
+        retained.revalidate_physical().unwrap();
+        slot.restore_observed(retained);
     }
 
     #[test]

@@ -53,6 +53,7 @@ mod reservation;
 mod validation;
 
 pub(crate) use completion::complete_acquire;
+pub(crate) use completion::complete_retained_native;
 pub(crate) use native_admission::require_original_packet_profile;
 pub(crate) use reservation::reserve_acquire;
 pub(crate) use validation::{

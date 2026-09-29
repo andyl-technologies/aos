@@ -2,12 +2,74 @@
 
 use super::*;
 
+enum CompletedAcquire {
+    Fresh(aos_sandbox_source_provider_security::CommittedProviderOutcomeV1),
+    RetainedNative(ObjectDigest),
+}
+
 pub(crate) fn complete_acquire(
     ledger: &mut ProviderLedgerV1<'_>,
     permit: DurableAcquireEffectPermitV1,
     observed: ObservedBackendAcquisitionV1,
     custody: &mut CurrentProviderIngressSessionV1,
 ) -> Result<DurableProviderReplyV1, ProviderLedgerError> {
+    // Native observations are retained by the native executor before lending
+    // the current session. This generic completion never consumes that token.
+    if observed.native.is_some() {
+        return Err(ProviderLedgerError::Unavailable);
+    }
+    let committed = match complete_observed_acquire(ledger, permit, &observed, custody)? {
+        CompletedAcquire::Fresh(committed) => committed,
+        CompletedAcquire::RetainedNative(_) => return Err(ProviderLedgerError::Equivocation),
+    };
+    Ok(DurableProviderReplyV1 {
+        response: Vec::new(),
+        source_root: Some(observed.into_physical_root()),
+        durability: crate::backend::DurableReplyAuthorityV1::Fresh(committed),
+    })
+}
+
+pub(crate) fn complete_retained_native(
+    ledger: &mut ProviderLedgerV1<'_>,
+    permit: DurableAcquireEffectPermitV1,
+    custody: &mut CurrentProviderIngressSessionV1,
+) -> Result<DurableProviderReplyV1, ProviderLedgerError> {
+    let observed = ledger.native_reply_custody.lend_observed()?;
+    let result = (|| {
+        let identity = observed
+            .native
+            .as_ref()
+            .ok_or(ProviderLedgerError::Unavailable)?
+            .reply_identity();
+        ledger.native_reply_custody.require_reserved(identity)?;
+        let session_binding = match complete_observed_acquire(ledger, permit, &observed, custody)? {
+            CompletedAcquire::RetainedNative(binding) => binding,
+            CompletedAcquire::Fresh(_) => return Err(ProviderLedgerError::Equivocation),
+        };
+        // Only the wire FD is duplicated, never the original live token.
+        let source_root = observed.duplicate_physical_root()?;
+        Ok(DurableProviderReplyV1 {
+            response: Vec::new(),
+            source_root: Some(source_root),
+            durability: crate::backend::DurableReplyAuthorityV1::RetainedNative {
+                identity,
+                session_binding,
+            },
+        })
+    })();
+    ledger.native_reply_custody.restore_observed(observed);
+    if result.is_err() {
+        ledger.poison_runtime();
+    }
+    result
+}
+
+fn complete_observed_acquire(
+    ledger: &mut ProviderLedgerV1<'_>,
+    permit: DurableAcquireEffectPermitV1,
+    observed: &ObservedBackendAcquisitionV1,
+    custody: &mut CurrentProviderIngressSessionV1,
+) -> Result<CompletedAcquire, ProviderLedgerError> {
     let native = match &observed.native {
         Some(native) => Some(native.completion_record(ledger, &permit)?),
         None => {
@@ -71,7 +133,7 @@ pub(crate) fn complete_acquire(
             "acquire attempt not reserved",
         ));
     }
-    validate_backend_selection(ledger, &acquisition, &attempt, &observed)?;
+    validate_backend_selection(ledger, &acquisition, &attempt, observed)?;
     observed.revalidate_physical()?;
     let session_identity = (
         acquisition.provider.authority_id(),
@@ -218,16 +280,22 @@ pub(crate) fn complete_acquire(
         .provider_outcome_facade(&ledger.journal, &permit.signing_authorization)?
         .prepare_acquire_completion(plan, lease, receipt_facts)?;
     observed.revalidate_physical()?;
-    let committed_outcome = crate::transaction::commit_sealed_completion(ledger, custody, builder)?;
+    let completed = if observed.native.is_some() {
+        // Keep the exact sealed outcome even if postcommit readback, peer or
+        // physical validation fails. These checks cannot undo durable effects.
+        let binding =
+            crate::transaction::commit_retained_native_completion(ledger, custody, builder)?;
+        CompletedAcquire::RetainedNative(binding)
+    } else {
+        let committed_outcome =
+            crate::transaction::commit_sealed_completion(ledger, custody, builder)?;
+        CompletedAcquire::Fresh(committed_outcome)
+    };
     let committed_snapshot = ledger.journal.snapshot()?;
     observed.revalidate_physical()?;
     ledger
         .journal
         .validate_source_provider_authority_snapshot(&committed_snapshot)?;
     confirm_current_session_after_commit(custody, committed_session_binding)?;
-    Ok(DurableProviderReplyV1 {
-        response: Vec::new(),
-        source_root: Some(observed.into_physical_root()),
-        durability: crate::backend::DurableReplyAuthorityV1::Fresh(committed_outcome),
-    })
+    Ok(completed)
 }

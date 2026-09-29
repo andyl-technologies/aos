@@ -768,6 +768,7 @@ impl ProviderCompletionBuilderV1 {
             session_binding: self.session_binding,
             committed_snapshot: committed,
             response: self.response,
+            send_attempted: core::cell::Cell::new(false),
         })
     }
 }
