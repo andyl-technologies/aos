@@ -193,5 +193,5 @@ crucible-qemu	src/supervision/node_step_gate/exact_snapshot/source_set	thread::s
 crucible	src/scheduler/tests/concurrent	retry	1
 crucible	src/scheduler/io_inventory/fixed_consumers	retry	1
 crucible	src/scheduler/tests/cap_boundary	retry	1
-crucible	src/scheduler/tests/run_admission	retry	1
+crucible	src/scheduler/tests/run_admission/input_boundary	retry	1
 crucible-cli	tests/support/campaign_packaged_process/guest_choice/storage_recovery	retry	1
