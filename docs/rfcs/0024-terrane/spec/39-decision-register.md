@@ -598,6 +598,24 @@ is added rather than editing history.
   - **Affects:** CRATE-8, CRATE-29, `gate:feature-matrix`, and the
     T1/B-edge target transition.
 
+- **[D-32] Align commit identity prose with the signed canonical record.**
+  - **Status:** Decided
+  - **Decision:** A commit identity hashes its complete canonical record,
+    including key 8 when a signature is present. The signature preimage
+    continues to omit key 8. Correct OBJ-21 without changing the CDDL,
+    golden vectors, identity domains, or requirement IDs.
+  - **Rationale:** OBJ-21 excluded signatures from identity, but the CDDL
+    explicitly includes key 8 in the identity preimage, and the normative
+    commit, ref, reflog, and attribute vectors use that signed-record hash.
+    Keeping the canonical format and vectors avoids incompatible commit
+    names and separates content addressing from signature calculation.
+  - **Alternatives considered:** Hash the unsigned signature preimage
+    (rejected: contradicts the CDDL identity rule and changes dependent
+    golden vectors); leave the contradictory prose (rejected: readers
+    could compute different identities for one stored commit).
+  - **Affects:** OBJ-21, PROV-3, and the commit identity/signature preimage
+    distinction in the CDDL and golden vectors.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

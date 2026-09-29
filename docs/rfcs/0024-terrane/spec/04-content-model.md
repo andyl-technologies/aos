@@ -204,8 +204,10 @@ and semantics).
 - **[OBJ-21]** A commit's identity MUST be the identity of its canonical
   encoding under `terrane-commit-v1`. It covers the tree root, the ordered
   parent list, the provenance record, the message, the profile, and the
-  timestamp; it does not cover any signature, which is carried beside the
-  commit ([`23-provenance-and-trust.md`](23-provenance-and-trust.md)).
+  timestamp, including the signature field when present in the canonical
+  record. The signature preimage alone omits key 8; it is distinct from the
+  identity preimage ([`23-provenance-and-trust.md`](23-provenance-and-trust.md)
+  PROV-3 and `reference/terrane-v1.cddl`).
 
 ## Refs
 
