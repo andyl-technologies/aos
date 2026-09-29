@@ -11,7 +11,7 @@ use crate::ledger::{
 };
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    decode_acquire_request,
+    AcquireSourceRequestV1, StorageZfsHoldTransportRequestV1, decode_acquire_request,
     native_held_completion::{
         NativeHeldOwnerV1 as Owner, NativeHeldSectionTagV1 as Tag,
         frame::PreparedNativeHeldControlV1,
@@ -392,46 +392,12 @@ impl Companions {
             return Err(corrupt("held original dispatch/lineage/session/catalog"));
         }
         original.validate_provider_graph(&self.attempt, &self.acquisition)?;
-        let claims = signed.request().claims();
-        let catalog = claims.catalog();
-        let (resource, _) = catalog
-            .select_under_head(
-                self.acquisition.catalog_generation,
-                self.acquisition.catalog_digest,
-                self.acquisition.resource_namespace_digest,
-                original.binding_digest,
-            )
-            .map_err(|_| corrupt("held exact native catalog selection"))?;
-        if (
-            self.acquisition.resource_id,
-            self.acquisition.resource_generation,
-            self.acquisition.resource_digest,
-            self.acquisition.selection_generation,
-            self.acquisition.selection_digest,
-        ) != (
-            resource.resource_id(),
-            resource.resource_generation(),
-            resource.resource_digest(),
-            resource.selection_generation(),
-            resource.selection_digest(),
-        ) {
-            return Err(corrupt("held original selected resource"));
-        }
-        if let Some(native) = root.native_catalog() {
-            if native.resource_namespace_digest() != self.catalog.resource_namespace_digest
-                || native.head() != (self.catalog.catalog_generation, self.catalog.catalog_digest)
-                || native.floor()
-                    != (
-                        self.catalog.catalog_floor_generation,
-                        self.catalog.catalog_floor_digest,
-                    )
-                || native.current_head_commitment() != catalog_commitment(&self.catalog)
-                || native.canonical_publication_digest() != publication_digest(&self.catalog)
-                || original.publication_head != catalog_commitment(&self.catalog)
-            {
-                return Err(corrupt("held original seven catalog claims"));
-            }
-        }
+        validate_original_selection(
+            &self.acquisition,
+            &self.catalog,
+            &root,
+            signed.request().claims(),
+        )?;
         let cold_original = cold_unleased_original(record, self)?;
         // Only the validated cold lineage uses its historical zero-artifact
         // original. Hot cleanup retains the unchanged full Complete join.
@@ -498,7 +464,7 @@ pub(super) fn original_lineage(value: &AcquisitionRecordV1, session: ObjectDiges
     )
 }
 
-pub(super) fn validate_dispatch(
+pub(crate) fn validate_dispatch(
     value: &AcquisitionRecordV1,
     session: ObjectDigest,
     attempt: ObjectDigest,
@@ -514,6 +480,52 @@ pub(super) fn validate_dispatch(
         || value.native_no_dispatch_reservation_digest.is_some()
     {
         return Err(corrupt("held original dispatch backend/lineage"));
+    }
+    Ok(())
+}
+
+// Original Applying has only unsigned stage claims. It shares this exact
+// selection/catalog join with the existing held path, without inventing N.
+pub(crate) fn validate_original_selection(
+    acquisition: &AcquisitionRecordV1,
+    catalog: &CatalogHeadRecordV1,
+    root: &AcquireSourceRequestV1,
+    claims: &StorageZfsHoldTransportRequestV1,
+) -> Result<(), LedgerFormatErrorV1> {
+    let (resource, _) = claims
+        .catalog()
+        .select_under_head(
+            acquisition.catalog_generation,
+            acquisition.catalog_digest,
+            acquisition.resource_namespace_digest,
+            claims.selection().0,
+        )
+        .map_err(|_| corrupt("held exact native catalog selection"))?;
+    if (
+        acquisition.resource_id,
+        acquisition.resource_generation,
+        acquisition.resource_digest,
+        acquisition.selection_generation,
+        acquisition.selection_digest,
+    ) != (
+        resource.resource_id(),
+        resource.resource_generation(),
+        resource.resource_digest(),
+        resource.selection_generation(),
+        resource.selection_digest(),
+    ) {
+        return Err(corrupt("held original selected resource"));
+    }
+    if let Some(native) = root.native_catalog() {
+        if native.resource_namespace_digest() != catalog.resource_namespace_digest
+            || native.head() != (catalog.catalog_generation, catalog.catalog_digest)
+            || native.floor() != (catalog.catalog_floor_generation, catalog.catalog_floor_digest)
+            || native.current_head_commitment() != catalog_commitment(catalog)
+            || native.canonical_publication_digest() != publication_digest(catalog)
+            || claims.selection().1 != catalog_commitment(catalog)
+        {
+            return Err(corrupt("held original seven catalog claims"));
+        }
     }
     Ok(())
 }

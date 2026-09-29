@@ -45,6 +45,15 @@ pub use original_provenance::{
     OriginalSourceProvenanceV5,
 };
 
+#[path = "native_completion/original_source_owner.rs"]
+mod original_source_owner;
+
+pub use original_source_owner::{
+    OriginalSourceOwnerDataV5, OriginalSourceOwnerPrefixV5, OriginalSourceOwnerTransactionV5,
+    classify_original_source_owner_v5, propose_original_source_applying_v5,
+    propose_original_source_requested_v5,
+};
+
 #[path = "native_completion/export_fence.rs"]
 mod export_fence;
 
