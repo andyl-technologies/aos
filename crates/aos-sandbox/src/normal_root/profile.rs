@@ -19,7 +19,7 @@ pub(super) const MAXIMUM_PROFILE_BYTES: usize = 1024 * 1024;
 pub(super) const MAXIMUM_RUNTIME_FILES: usize = 512;
 pub(super) const PROFILE_PLACEHOLDER: &str = "@AOS_NORMAL_ROOT_PROFILE@";
 pub(super) const UNIT: &str = "aos-sandbox-policy-authorityd.service";
-pub(super) const CONTEXT: &str = "system_u:system_r:aos_sandbox_policy_authority_t:s0";
+pub(super) const CONTEXT: &str = "system_u:system_r:aos_sandbox_policy_authority_t";
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

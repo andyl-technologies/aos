@@ -354,7 +354,7 @@ in {
       serviceConfig = {
         Type = "simple";
         # Recovery CLI uses the same ELF but never inherits this normal role.
-        SELinuxContext = lib.mkIf confined "system_u:system_r:aos_sandbox_policy_authority_t:s0";
+        SELinuxContext = lib.mkIf confined "system_u:system_r:aos_sandbox_policy_authority_t";
         OpenFile = lib.mkIf confined [
           "/proc/1/exe:aos-normal-root-pid1-image:read-only"
           "${normalRootProfile}/profile.json:aos-normal-root-profile:read-only"

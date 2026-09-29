@@ -21,7 +21,6 @@ use crate::immutable_image::RetainedImmutableFileV1;
 
 const UNIT: &str = "aos-sandboxd.service";
 const CGROUP: &str = "aos.slice/aos-control.slice/aos-sandboxd.service";
-const CONTEXT: &[u8] = b"system_u:system_r:aos_sandbox_controller_t:s0";
 
 pub(crate) struct OriginalControllerPolicyPeerV1<'startup> {
     startup: &'startup ProductionNormalRootStartupV1,
@@ -78,7 +77,7 @@ impl OriginalControllerPolicyPeerV1<'_> {
         self.recheck_stream(stream)?;
         let actual = chunk.subject().credentials();
         let expected = stream.peer().credentials();
-        if chunk.socket_context() != CONTEXT
+        if chunk.socket_context() != client::CONTEXT.as_bytes()
             || actual.pid() != expected.pid()
             || actual.uid() != expected.uid()
             || actual.gid() != expected.gid()

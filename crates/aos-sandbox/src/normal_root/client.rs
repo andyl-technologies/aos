@@ -27,8 +27,7 @@ use super::{
 
 const UNIT: &str = "aos-sandboxd.service";
 const CGROUP: &str = "aos.slice/aos-control.slice/aos-sandboxd.service";
-const CONTEXT: &str = "system_u:system_r:aos_sandbox_controller_t:s0";
-const UNIT_CONTEXT: &str = "system_u:system_r:aos_sandbox_controller_t";
+pub(super) const CONTEXT: &str = "system_u:system_r:aos_sandbox_controller_t";
 pub(super) const PROFILE_NAME: &str = "aos-normal-root-client-profile";
 const PUBLISHER_NAME: &str = "aos-sandboxd-publisher";
 const TPM_IMAGE_NAME: &str = "aos-method46-pid1-image";
@@ -380,7 +379,7 @@ pub(super) fn decode_delivery(
     };
     let expected_cgroup = format!("/{CGROUP}");
     if <&str>::try_from(cgroup).ok() != Some(expected_cgroup.as_str())
-        || context.as_str() != UNIT_CONTEXT
+        || context.as_str() != CONTEXT
         || u64::try_from(bounding).ok() != Some(0)
         || u64::try_from(ambient).ok() != Some(0)
         || bool::try_from(nnp).ok() != Some(true)

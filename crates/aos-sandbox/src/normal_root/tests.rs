@@ -220,6 +220,22 @@ fn normal_root_service_currentness_rejects_changed_nonzero_invocation() {
 }
 
 #[test]
+fn normal_root_profile_and_service_reject_mls_suffixes() {
+    assert_eq!(CONTEXT, "system_u:system_r:aos_sandbox_policy_authority_t");
+
+    for suffix in [":s0", ":s0:c0", ":s0-s0:c0.c1"] {
+        let context = format!("{CONTEXT}{suffix}");
+        let mut profile = inert_profile();
+        profile["context"] = json!(context.as_str());
+        assert!(NormalRootProfileV1::decode(&serde_json::to_vec(&profile).unwrap()).is_err());
+
+        let (mut properties, unit) = properties();
+        properties[5] = value((false, context));
+        assert!(service::decode(&properties, &unit, PROFILE).is_err());
+    }
+}
+
+#[test]
 fn normal_root_confinement_status_requires_exact_empty_capability_sets() {
     let status = "CapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t0000000000000000\nCapAmb:\t0000000000000000\nNoNewPrivs:\t1\n";
     assert!(require_status(status.as_bytes()).is_ok());
@@ -384,6 +400,30 @@ fn controller_profile_delivery_is_fixed_unit_invocation_and_original_role_bound(
         assert!(
             client::decode_delivery(&service, &unit, std::path::Path::new(PROFILE), false).is_err()
         );
+    }
+}
+
+#[test]
+fn controller_profile_delivery_rejects_mls_suffixes() {
+    assert_eq!(
+        client::CONTEXT,
+        "system_u:system_r:aos_sandbox_controller_t"
+    );
+
+    for tpm in [false, true] {
+        for suffix in [":s0", ":s0:c0", ":s0-s0:c0.c1"] {
+            let (mut properties, unit) = controller_properties(tpm);
+            properties[5] = value((false, format!("{}{suffix}", client::CONTEXT)));
+
+            assert!(
+                client::decode_delivery(&properties, &unit, std::path::Path::new(PROFILE), tpm)
+                    .is_err()
+            );
+            assert!(
+                controller_peer::decode_delivery(&properties, &unit, std::path::Path::new(PROFILE))
+                    .is_err()
+            );
+        }
     }
 }
 
