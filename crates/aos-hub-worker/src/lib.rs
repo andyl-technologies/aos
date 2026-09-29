@@ -147,6 +147,10 @@ pub mod handlers;
 #[cfg(target_arch = "wasm32")]
 mod hybrid;
 #[cfg(target_arch = "wasm32")]
+pub mod hybrid_authority;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod hybrid_authority_state;
+#[cfg(target_arch = "wasm32")]
 pub mod hybrid_binding;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod hybrid_frozen_cleanup;

@@ -187,10 +187,30 @@ reconciliation are required. Root `StorageManage` permission is checked both
 when creating a plan and when applying it. Organization binding permissions do
 not authorize physical equivalence or executor adoption.
 
-The typed `StorageAuthorityService` exposes `PlanDecision`, `ApplyDecision` and
+The typed `StorageAuthorityService` exposes `PlanStorageAuthorityDecision`, `StorageAuthorityDecision` and
 `GetAuthority` at instance root. Plans bind the exact actor, typed decision,
-confirmation and request/apply keys. Apply and durable result replay require
-fresh root permission. SQL projections distinguish desired admission from
+confirmation and request/apply keys. Plans return the canonical
+`TopologyPlanResponse`. Apply requests contain only `plan_id`,
+`confirmation_hash` and `idempotency_key`; the exact typed intent is loaded from
+the immutable stored plan. Apply and durable result replay require fresh root
+permission.
+
+The plan's `expected_resource_version` is empty for new permanent identities,
+the immutable creation digest exposed by `GetAuthority.resource_version` for
+aliases/attestations, the exact binding resource version for associations, and
+the desired admission generation for admission decisions. Association and
+admission versions must equal their typed decision fields. Admission plans also
+bind the exact predecessor digest. New plans check current mutable versions;
+exact request replay preserves its original reviewed intent after the target
+advances. A closed version-1 plan envelope persists the explicit expected version
+and typed decision together, and its complete canonical bytes determine the
+confirmation. The canonical API rejects bare legacy intent; the trusted DB
+primitive retains deliberate bare-plan compatibility for historical internal
+records. Offline classification admits both known closed formats and preserves
+the exact original private JSON cell and confirmation without rewriting either.
+
+Atomic apply retains all current binding, credential and admission fences. SQL
+projections distinguish desired admission from
 authenticated executor agreement; a committed decision alone admits no provider
 operation.
 

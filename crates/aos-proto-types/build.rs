@@ -10,7 +10,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use prost::Message;
-use prost_types::{DescriptorProto, FileDescriptorSet, field_descriptor_proto};
+use prost_types::{field_descriptor_proto, DescriptorProto, FileDescriptorSet};
 
 type BuildResult<T> = Result<T, Box<dyn Error>>;
 
@@ -645,7 +645,6 @@ fn verify_checked_capability_manifest(generated: &[ConnectMethod]) -> BuildResul
                         "ApplyContainerRegistryPurgeFence"
                     }
                     ("DeliveryService", "PlanDeliveryDestination") => "ApplyDeliveryDestination",
-                    ("StorageAuthorityService", "PlanDecision") => "ApplyDecision",
                     _ => default_apply_name,
                 };
                 if !service_methods.contains(apply_name) {

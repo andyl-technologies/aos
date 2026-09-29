@@ -8,9 +8,12 @@
 //! {"physical_authority_id":"00000000-0000-4000-8000-000000000001","incarnation":"1"}
 //! ```
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+#[path = "storage_authority/control.rs"]
+pub mod control;
 
 /// Permanent identity for one physical bucket and its object guard domain.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -380,6 +383,59 @@ impl StorageAuthorityDecisionInput {
             Self::Attest(_) => "attest_storage_authority_exclusivity",
             Self::SetAdmission(_) => "set_storage_authority_admission",
         }
+    }
+}
+
+/// Exact canonical operator review, including its explicit target version.
+///
+/// Version 1 confirms this entire envelope rather than only the decision. Legacy
+/// bare decisions remain a DB-only compatibility format, never a canonical API
+/// plan. This format contains immutable references and evidence, not secrets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageAuthorityReviewedPlanInput {
+    /// Closed format marker; only version 1 is admitted.
+    pub schema_version: u32,
+    /// Exact canonical target version supplied in the planning request.
+    pub expected_resource_version: String,
+    /// Immutable typed intent loaded during apply.
+    pub decision: StorageAuthorityDecisionInput,
+}
+
+impl StorageAuthorityReviewedPlanInput {
+    /// Checks the format and agreement between generic and typed target versions.
+    ///
+    /// # Errors
+    /// Returns an error for unknown format versions or noncanonical/mismatched
+    /// target versions. Current database state is checked separately.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.schema_version == 1,
+            "authority review version is unknown"
+        );
+        let matches = match &self.decision {
+            StorageAuthorityDecisionInput::Create(_) => self.expected_resource_version.is_empty(),
+            StorageAuthorityDecisionInput::AssociateBinding(input) => {
+                input.binding_resource_version > 0
+                    && input.binding_resource_version <= 9_007_199_254_740_991
+                    && self.expected_resource_version == input.binding_resource_version.to_string()
+            }
+            StorageAuthorityDecisionInput::SetAdmission(input) => {
+                input.expected_generation >= 0
+                    && input.expected_generation <= 9_007_199_254_740_991
+                    && self.expected_resource_version == input.expected_generation.to_string()
+            }
+            StorageAuthorityDecisionInput::ApproveAlias(_)
+            | StorageAuthorityDecisionInput::Attest(_) => {
+                self.expected_resource_version.len() == 64
+                    && self
+                        .expected_resource_version
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            }
+        };
+        ensure!(matches, "authority review target version is invalid");
+        Ok(())
     }
 }
 

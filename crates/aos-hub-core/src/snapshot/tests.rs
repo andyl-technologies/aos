@@ -858,3 +858,5 @@ async fn bounded_reader_page_classifies_private_cells_without_source_mutation() 
 
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
+
+mod authority_plan;

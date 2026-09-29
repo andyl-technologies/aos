@@ -832,9 +832,8 @@ async fn association_transaction_rechecks_stable_identity_and_physical_coordinat
             .unwrap();
         let input = StorageAuthorityDecisionInput::AssociateBinding(association.clone());
         let decision = review(&db, &input).await;
-        let input_json = serde_json::to_string(&input).unwrap();
         let plan = db
-            .reviewed_authority_plan(&decision, &input, &input_json)
+            .reviewed_authority_plan(&decision, &input)
             .await
             .unwrap();
         let (_, mutations) = db
@@ -1005,3 +1004,5 @@ async fn exact_admission_retry_recovers_commit_during_preparation() {
         1
     );
 }
+
+mod publication;

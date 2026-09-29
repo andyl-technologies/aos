@@ -1,5 +1,38 @@
 [
   {
+    "service": "StorageAuthorityService",
+    "method": "PlanStorageAuthorityDecision",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "plan",
+      "pair": "storage_authority_decision"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "StorageAuthorityService",
+    "method": "StorageAuthorityDecision",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "apply",
+      "pair": "storage_authority_decision",
+      "outcome": "immediate"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "StorageAuthorityService",
+    "method": "GetAuthority",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
     "service": "DeliveryService",
     "method": "PlanDeliveryDestination",
     "exposure": "public",

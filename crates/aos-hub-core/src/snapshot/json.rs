@@ -8,15 +8,15 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{ensure, Result};
-use serde::de::DeserializeOwned;
+use anyhow::{Result, ensure};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 
 use crate::storage_authority::{
     ApproveStorageAuthorityAlias, AssociateStorageAuthorityBinding,
     AttestStorageAuthorityExclusivity, CreatePhysicalStorageAuthority,
-    SetStorageAuthorityAdmission, StorageAuthorityDecisionInput,
+    SetStorageAuthorityAdmission, StorageAuthorityDecisionInput, StorageAuthorityReviewedPlanInput,
 };
 
 use super::PrivateDependencyReason;
@@ -118,7 +118,15 @@ pub(super) fn validate_private(
                 | "attest_storage_authority_exclusivity"
                 | "set_storage_authority_admission"
         ) {
-            let input: StorageAuthorityDecisionInput = closed(value)?;
+            let input: StorageAuthorityDecisionInput = if value.get("schema_version").is_some() {
+                let reviewed: StorageAuthorityReviewedPlanInput = closed(value)?;
+                reviewed
+                    .validate()
+                    .map_err(|_| anyhow::anyhow!("snapshot authority review is invalid"))?;
+                reviewed.decision
+            } else {
+                closed(value)?
+            };
             ensure!(
                 input.plan_kind() == kind,
                 "snapshot authority plan discriminator differs"
@@ -184,8 +192,8 @@ pub(super) fn validate_private(
 
 fn validate_receipt(value: JsonValue, table: &str, column: &str) -> Result<()> {
     use aos_release::receipt::{
-        ChannelReceiptV1, PublicationReceiptV1, QualificationReceiptV1, SignedReceiptEnvelopeV1,
-        SIGNED_RECEIPT_V1,
+        ChannelReceiptV1, PublicationReceiptV1, QualificationReceiptV1, SIGNED_RECEIPT_V1,
+        SignedReceiptEnvelopeV1,
     };
     let envelope: SignedReceiptEnvelopeV1 = closed(value)?;
     ensure!(

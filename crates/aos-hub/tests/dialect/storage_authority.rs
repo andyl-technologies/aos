@@ -10,7 +10,7 @@ use aos_hub_core::storage_authority::{
     AttestStorageAuthorityExclusivity, CreatePhysicalStorageAuthority, PhysicalStorageAuthorityId,
     SetStorageAuthorityAdmission, StorageAuthorityAdmissionState, StorageAuthorityAliasSpec,
     StorageAuthorityCredentialMember, StorageAuthorityDecisionInput, StorageAuthorityHost,
-    StorageAuthorityRemoteWatermark,
+    StorageAuthorityRemoteWatermark, StorageAuthorityReviewedPlanInput,
 };
 use sha2::{Digest, Sha256};
 
@@ -19,7 +19,39 @@ async fn review(
     input: &StorageAuthorityDecisionInput,
 ) -> ReviewedStorageAuthorityDecision {
     let plan_id = uuid::Uuid::new_v4().to_string();
-    let confirmation_hash = hex::encode(Sha256::digest(serde_json::to_vec(input).unwrap()));
+    // Preserve requested stale/invalid decision cases for atomic DB rejection;
+    // mutable target versions must not be refreshed while constructing review.
+    let expected_resource_version = match input {
+        StorageAuthorityDecisionInput::Create(_) => String::new(),
+        StorageAuthorityDecisionInput::AssociateBinding(spec) => {
+            spec.binding_resource_version.to_string()
+        }
+        StorageAuthorityDecisionInput::SetAdmission(spec) => spec.expected_generation.to_string(),
+        StorageAuthorityDecisionInput::ApproveAlias(spec) => {
+            let authority = db
+                .physical_storage_authority(&spec.authority_id)
+                .await
+                .unwrap()
+                .unwrap();
+            hex::encode(Sha256::digest(serde_json::to_vec(&authority).unwrap()))
+        }
+        StorageAuthorityDecisionInput::Attest(spec) => {
+            let authority = db
+                .physical_storage_authority(&spec.authority_id)
+                .await
+                .unwrap()
+                .unwrap();
+            hex::encode(Sha256::digest(serde_json::to_vec(&authority).unwrap()))
+        }
+    };
+    let reviewed = StorageAuthorityReviewedPlanInput {
+        schema_version: 1,
+        expected_resource_version,
+        decision: input.clone(),
+    };
+    // Envelope shape admission does not validate domain freshness or evidence.
+    reviewed.validate().unwrap();
+    let confirmation_hash = hex::encode(Sha256::digest(serde_json::to_vec(&reviewed).unwrap()));
 
     db.create_topology_plan(&NewTopologyPlan {
         plan_id: plan_id.clone(),
@@ -28,7 +60,7 @@ async fn review(
         actor_id: Some(7),
         actor_label: "dialect root operator".into(),
         scope: "instance".into(),
-        input_versions_json: serde_json::to_string(input).unwrap(),
+        input_versions_json: serde_json::to_string(&reviewed).unwrap(),
         effects_json: "[]".into(),
         warnings_json: "[]".into(),
         confirmation_hash: Some(confirmation_hash.clone()),
@@ -56,9 +88,17 @@ async fn apply(
     input: StorageAuthorityDecisionInput,
 ) -> StorageAuthorityDecisionResult {
     let decision = review(db, &input).await;
-    db.apply_storage_authority_decision(&decision, &input)
+    let result = db
+        .apply_storage_authority_decision(&decision, &input)
         .await
-        .unwrap()
+        .unwrap();
+    assert_eq!(
+        db.apply_storage_authority_decision(&decision, &input)
+            .await
+            .unwrap(),
+        result,
+    );
+    result
 }
 
 pub(super) async fn exercise(db: &Database) {
@@ -284,7 +324,7 @@ pub(super) async fn exercise(db: &Database) {
         expected_digest: None,
         guard_namespace_id: authority.guard_namespace_id.clone(),
         state: StorageAuthorityAdmissionState::Admitted,
-        attestation_id: Some(attestation.attestation_id),
+        attestation_id: Some(attestation.attestation_id.clone()),
         association_ids: vec![association.association_id],
     };
     apply(db, StorageAuthorityDecisionInput::SetAdmission(admission)).await;
@@ -304,9 +344,47 @@ pub(super) async fn exercise(db: &Database) {
         .storage_authority_admission_for_remote(&remote)
         .await
         .is_err());
-    db.reconcile_storage_authority_watermark(&remote)
+
+    // The same exact publication and acknowledgement contract must work on
+    // SQLite, PostgreSQL and MariaDB, including immutable credential facts.
+    let publication = db
+        .storage_authority_publication(
+            &remote.authority_id,
+            &remote.guard_namespace_id,
+            "dialect-external-executor",
+        )
         .await
         .unwrap();
+    assert_eq!(publication.generation, remote.generation);
+    assert_eq!(publication.digest, remote.digest);
+    assert_eq!(publication.aliases.len(), 1);
+    assert_eq!(publication.associations.len(), 1);
+    assert_eq!(publication.attestation, Some(attestation));
+
+    let mut conflicting_remote = remote.clone();
+    conflicting_remote.digest = "f".repeat(64);
+    assert!(db
+        .reconcile_storage_authority_publication(
+            &publication,
+            &conflicting_remote,
+            &remote.guard_namespace_id,
+            "dialect-external-executor",
+        )
+        .await
+        .is_err());
+    assert!(db
+        .storage_authority_admission_for_remote(&remote)
+        .await
+        .is_err());
+
+    db.reconcile_storage_authority_publication(
+        &publication,
+        &remote,
+        &remote.guard_namespace_id,
+        "dialect-external-executor",
+    )
+    .await
+    .unwrap();
     assert_eq!(
         db.storage_authority_admission_for_remote(&remote)
             .await
@@ -324,6 +402,15 @@ pub(super) async fn exercise(db: &Database) {
         association_ids: Vec::new(),
     };
     apply(db, StorageAuthorityDecisionInput::SetAdmission(retired)).await;
+    assert!(db
+        .reconcile_storage_authority_publication(
+            &publication,
+            &remote,
+            &remote.guard_namespace_id,
+            "dialect-external-executor",
+        )
+        .await
+        .is_err());
     assert!(db
         .reconcile_storage_authority_watermark(&remote)
         .await

@@ -87,6 +87,18 @@ in
       }
       trap cleanup EXIT
 
+      # Authority control requires an explicit paired deployment and an
+      # existing reviewed authority. Missing context fails before DB access.
+      $hub_exec authority-control-sync --help > /tmp/authority-control-help
+      grep -q -- '--authority-id' /tmp/authority-control-help
+      if $hub_exec --root /tmp/authority-control-unconfigured authority-control-sync \
+        --authority-id 00000000-0000-4000-8000-000000000021 \
+        > /tmp/authority-control-unconfigured.log 2>&1; then
+        echo "authority control accepted missing paired deployment context" >&2
+        exit 1
+      fi
+      test ! -e /tmp/authority-control-unconfigured/hub.db
+
       # Materialize host-store fixtures the way a native service manager
       # presents credentials: private regular files owned by the service uid.
       mkdir -m 0700 "$credential_dir"

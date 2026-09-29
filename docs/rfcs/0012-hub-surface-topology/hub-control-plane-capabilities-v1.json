@@ -47,8 +47,8 @@
       "web_workflows": [],
       "exclusion": "Permanent physical equivalence and desired admission require current StorageManage on instance root; executor reconciliation remains pending.",
       "methods": [
-        "PlanDecision",
-        "ApplyDecision",
+        "PlanStorageAuthorityDecision",
+        "StorageAuthorityDecision",
         "GetAuthority"
       ]
     },

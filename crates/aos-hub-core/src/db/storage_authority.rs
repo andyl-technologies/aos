@@ -9,18 +9,21 @@
 //! both before planning and before applying. This module binds that decision to
 //! the reserved root topology plan, exact actor, input, confirmation, and key.
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::backend::{CheckedStatement, Statement};
 use crate::storage_authority::{
-    canonical_digest, ApproveStorageAuthorityAlias, AssociateStorageAuthorityBinding,
+    ApproveStorageAuthorityAlias, AssociateStorageAuthorityBinding,
     AttestStorageAuthorityExclusivity, CreatePhysicalStorageAuthority, PhysicalStorageAuthorityId,
     SetStorageAuthorityAdmission, StorageAuthorityAdmissionState, StorageAuthorityDecisionInput,
-    StorageAuthorityHost, StorageAuthorityRemoteWatermark,
+    StorageAuthorityHost, StorageAuthorityRemoteWatermark, StorageAuthorityReviewedPlanInput,
+    canonical_digest,
 };
 
-use super::{unix_now, Database, TopologyPlanRecord, PORTABLE_RELATIONAL_ID_MAX};
+use super::{Database, PORTABLE_RELATIONAL_ID_MAX, TopologyPlanRecord, unix_now};
+
+mod publication;
 
 /// Actor and confirmation selecting an already reserved, root-reviewed plan.
 ///
@@ -78,39 +81,44 @@ impl Database {
         decision: &ReviewedStorageAuthorityDecision,
         input: &StorageAuthorityDecisionInput,
     ) -> Result<StorageAuthorityDecisionResult> {
-        let input_json = serde_json::to_string(input)?;
-        let plan = self
-            .reviewed_authority_plan(decision, input, &input_json)
-            .await?;
+        let plan = self.reviewed_authority_plan(decision, input).await?;
         if let Some(result) = applied_authority_result(&plan)? {
             return Ok(result);
         }
 
         let now = unix_now();
-        let prepared = match input {
-            StorageAuthorityDecisionInput::Create(spec) => self.prepare_authority(spec, &plan, now),
-            StorageAuthorityDecisionInput::ApproveAlias(spec) => {
-                self.prepare_alias(spec, &plan, now).await
+        let prepared: Result<_> = async {
+            let creation_fence = self.reviewed_authority_creation_fence(input, &plan).await?;
+            let (result, mut mutations) = match input {
+                StorageAuthorityDecisionInput::Create(spec) => {
+                    self.prepare_authority(spec, &plan, now)
+                }
+                StorageAuthorityDecisionInput::ApproveAlias(spec) => {
+                    self.prepare_alias(spec, &plan, now).await
+                }
+                StorageAuthorityDecisionInput::AssociateBinding(spec) => {
+                    self.prepare_association(spec, &plan, now).await
+                }
+                StorageAuthorityDecisionInput::Attest(spec) => {
+                    self.prepare_attestation(spec, &plan, now).await
+                }
+                StorageAuthorityDecisionInput::SetAdmission(spec) => {
+                    self.prepare_admission(spec, &plan, now).await
+                }
+            }?;
+            if let Some(fence) = creation_fence {
+                mutations.insert(0, fence);
             }
-            StorageAuthorityDecisionInput::AssociateBinding(spec) => {
-                self.prepare_association(spec, &plan, now).await
-            }
-            StorageAuthorityDecisionInput::Attest(spec) => {
-                self.prepare_attestation(spec, &plan, now).await
-            }
-            StorageAuthorityDecisionInput::SetAdmission(spec) => {
-                self.prepare_admission(spec, &plan, now).await
-            }
-        };
+            Ok((result, mutations))
+        }
+        .await;
         let (result, mutations) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
                 // Preparation awaits mutable heads. An exact concurrent retry
                 // may commit while those reads are pending; recover only this
                 // same reserved decision, never another plan's CAS result.
-                let completed = self
-                    .reviewed_authority_plan(decision, input, &input_json)
-                    .await?;
+                let completed = self.reviewed_authority_plan(decision, input).await?;
                 if let Some(result) = applied_authority_result(&completed)? {
                     return Ok(result);
                 }
@@ -118,30 +126,30 @@ impl Database {
             }
         };
         let result_json = serde_json::to_string(&result)?;
-        let mut statements = vec![Statement::new(
-            "UPDATE topology_plans SET applied_at = ?2, apply_result_json = ?3
+        let mut statements = vec![
+            Statement::new(
+                "UPDATE topology_plans SET applied_at = ?2, apply_result_json = ?3
              WHERE plan_id = ?1 AND scope = 'instance' AND applied_at IS NULL
                AND apply_idempotency_key = ?4 AND actor_kind = ?5 AND actor_id = ?6
                AND input_versions_json = ?7 AND confirmation_hash = ?8",
-            vals![
-                plan.plan_id,
-                now,
-                result_json,
-                decision.apply_idempotency_key,
-                decision.actor_kind,
-                decision.actor_id,
-                input_json,
-                decision.confirmation_hash
-            ],
-        )
-        .expecting(1)];
+                vals![
+                    plan.plan_id,
+                    now,
+                    result_json,
+                    decision.apply_idempotency_key,
+                    decision.actor_kind,
+                    decision.actor_id,
+                    plan.input_versions_json,
+                    decision.confirmation_hash
+                ],
+            )
+            .expecting(1),
+        ];
         statements.extend(mutations);
         if let Err(error) = self.backend.checked_batch(&statements).await {
             // A concurrent exact retry may have completed the same atomic
             // decision. Recover only its identical durable result.
-            let completed = self
-                .reviewed_authority_plan(decision, input, &input_json)
-                .await?;
+            let completed = self.reviewed_authority_plan(decision, input).await?;
             if completed.applied_at.is_none()
                 || completed.apply_result_json.as_deref() != Some(result_json.as_str())
             {
@@ -262,7 +270,10 @@ impl Database {
             Statement::new(
                 "UPDATE storage_authority_admission_heads SET acknowledged_generation = ?2,
                    acknowledged_digest = ?3, resource_version = resource_version + 1
-                 WHERE authority_id = ?1 AND desired_generation = ?2",
+                 WHERE authority_id = ?1 AND desired_generation = ?2
+                   AND EXISTS (SELECT 1 FROM storage_authority_admission_revisions revision
+                     WHERE revision.authority_id = ?1 AND revision.generation = ?2
+                       AND revision.specification_digest = ?3)",
                 vals![remote.authority_id.as_str(), desired.generation, desired.digest],
             ).expecting(1),
             Statement::new(
@@ -332,12 +343,31 @@ impl Database {
         &self,
         decision: &ReviewedStorageAuthorityDecision,
         input: &StorageAuthorityDecisionInput,
-        input_json: &str,
     ) -> Result<TopologyPlanRecord> {
         let plan = self
             .topology_plan(&decision.plan_id)
             .await?
             .context("authority plan does not exist")?;
+        let (input_json, confirmation) = if let Ok(reviewed) =
+            serde_json::from_str::<StorageAuthorityReviewedPlanInput>(&plan.input_versions_json)
+        {
+            reviewed.validate()?;
+            ensure!(
+                &reviewed.decision == input,
+                "authority review intent differs"
+            );
+            (
+                serde_json::to_string(&reviewed)?,
+                canonical_digest(&reviewed)?,
+            )
+        } else {
+            // Historical DB callers persisted a bare typed decision. Closed
+            // deserialization prevents a malformed/future envelope falling back.
+            let legacy: StorageAuthorityDecisionInput =
+                serde_json::from_str(&plan.input_versions_json)?;
+            ensure!(&legacy == input, "legacy authority review intent differs");
+            (serde_json::to_string(&legacy)?, canonical_digest(&legacy)?)
+        };
         ensure!(
             plan.scope == "instance"
                 && plan.plan_kind == input.plan_kind()
@@ -345,12 +375,47 @@ impl Database {
                 && plan.actor_id == Some(decision.actor_id)
                 && plan.input_versions_json == input_json
                 && plan.confirmation_hash.as_deref() == Some(decision.confirmation_hash.as_str())
-                && decision.confirmation_hash == canonical_digest(input)?
+                && decision.confirmation_hash == confirmation
                 && plan.apply_idempotency_key.as_deref()
                     == Some(decision.apply_idempotency_key.as_str()),
             "authority decision requires its exact reserved root plan, actor, and confirmation"
         );
         Ok(plan)
+    }
+
+    async fn reviewed_authority_creation_fence(
+        &self,
+        input: &StorageAuthorityDecisionInput,
+        plan: &TopologyPlanRecord,
+    ) -> Result<Option<CheckedStatement>> {
+        let Ok(reviewed) =
+            serde_json::from_str::<StorageAuthorityReviewedPlanInput>(&plan.input_versions_json)
+        else {
+            // Legacy DB plans retain their original pre-envelope semantics.
+            return Ok(None);
+        };
+        let authority_id = match input {
+            StorageAuthorityDecisionInput::ApproveAlias(spec) => &spec.authority_id,
+            StorageAuthorityDecisionInput::Attest(spec) => &spec.authority_id,
+            _ => return Ok(None),
+        };
+        let authority = self
+            .physical_storage_authority(authority_id)
+            .await?
+            .context("reviewed authority no longer exists")?;
+        let digest = canonical_digest(&authority)?;
+        ensure!(
+            digest == reviewed.expected_resource_version,
+            "reviewed immutable authority facts changed"
+        );
+
+        // This no-op write fences exact creation facts in the same transaction
+        // as the decision/result. It does not advance the permanent identity.
+        Ok(Some(Statement::new(
+            "UPDATE physical_storage_authorities SET specification_digest = specification_digest
+             WHERE authority_id = ?1 AND specification_digest = ?2 AND specification_json = ?3",
+            vals![authority_id.as_str(), digest, serde_json::to_string(&authority)?],
+        ).expecting(1)))
     }
 
     fn prepare_authority(
@@ -735,9 +800,12 @@ impl Database {
             .desired_storage_authority_admission(&remote.authority_id)
             .await?
             .context("authority has no desired admission")?;
-        ensure!(desired.generation == remote.generation && desired.digest == remote.digest
-            && desired.specification.guard_namespace_id == remote.guard_namespace_id,
-            "remote authority watermark requires reviewed reconciliation; SQL restore cannot reopen admission");
+        ensure!(
+            desired.generation == remote.generation
+                && desired.digest == remote.digest
+                && desired.specification.guard_namespace_id == remote.guard_namespace_id,
+            "remote authority watermark requires reviewed reconciliation; SQL restore cannot reopen admission"
+        );
         Ok(desired)
     }
 }

@@ -59,6 +59,27 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Reconcile reviewed physical authority metadata with the paired Worker.
+    AuthorityControlSync {
+        /// Permanent authority identity already approved through the root API.
+        #[arg(long)]
+        authority_id: String,
+        /// Actual configured Worker guard namespace identity.
+        #[arg(long, env = "HUB_EXTERNAL_GUARD_NAMESPACE_ID")]
+        guard_namespace_id: String,
+        /// Actual configured Worker storage executor identity.
+        #[arg(long, env = "HUB_EXTERNAL_STORAGE_EXECUTOR_ID")]
+        executor_identity: String,
+        /// HTTPS origin of the paired Worker.
+        #[arg(long, env = "HUB_HYBRID_WORKER_URL")]
+        worker_url: String,
+        /// Immutable paired deployment identity.
+        #[arg(long, env = "HUB_DEPLOYMENT_ID")]
+        deployment_id: String,
+        /// Owner-private file containing the existing storage control HMAC key.
+        #[arg(long, env = "HUB_STORAGE_WORK_KEY_FILE")]
+        storage_work_key_file: PathBuf,
+    },
     /// Run the hub server.
     Serve {
         /// Listen address.
@@ -610,6 +631,33 @@ async fn main() -> Result<()> {
     }
 
     match cli.command {
+        Command::AuthorityControlSync {
+            authority_id,
+            guard_namespace_id,
+            executor_identity,
+            worker_url,
+            deployment_id,
+            storage_work_key_file,
+        } => {
+            let authority =
+                aos_hub_core::storage_authority::PhysicalStorageAuthorityId::parse(&authority_id)?;
+            let db = open_db(&cli.root, &cli.target, cli.database_url.as_deref()).await?;
+            let key = aos_hub::auth::seal::read_secret_file(&storage_work_key_file)?;
+            let client = aos_hub::storage_work::RemoteStorageWorkClient::new(
+                &worker_url,
+                deployment_id,
+                &key,
+            )?;
+            let result = client
+                .synchronize_storage_authority(
+                    &db,
+                    &authority,
+                    &guard_namespace_id,
+                    &executor_identity,
+                )
+                .await?;
+            println!("{}", serde_json::to_string(&result)?);
+        }
         Command::Serve {
             listen,
             dev,

@@ -70,8 +70,8 @@ service ProjectService {
 // Every operation requires current StorageManage at the instance root.
 // This service neither confirms executor authorization nor enables provider I/O.
 service StorageAuthorityService {
-  rpc PlanDecision(PlanStorageAuthorityDecisionRequest) returns (StorageAuthorityPlanResponse);
-  rpc ApplyDecision(ApplyStorageAuthorityDecisionRequest) returns (StorageAuthorityDecisionResponse);
+  rpc PlanStorageAuthorityDecision(PlanStorageAuthorityDecisionRequest) returns (TopologyPlanResponse);
+  rpc StorageAuthorityDecision(ApplyStorageAuthorityDecisionRequest) returns (StorageAuthorityDecisionResponse);
   rpc GetAuthority(GetStorageAuthorityRequest) returns (StorageAuthorityProjection);
 }
 
@@ -5629,20 +5629,18 @@ message StorageAuthorityDecision {
 message PlanStorageAuthorityDecisionRequest {
   StorageAuthorityDecision decision = 1;
   string idempotency_key = 2;
-}
-
-message StorageAuthorityPlanResponse {
-  TopologyPlan plan = 1;
-  // Typed exact reviewed input, including immutable coordinates and evidence.
-  StorageAuthorityDecision decision = 2;
+  // Creation: empty; alias/attest: immutable authority resource_version;
+  // association: exact binding version; admission: exact desired generation.
+  string expected_resource_version = 3;
 }
 
 message ApplyStorageAuthorityDecisionRequest {
   string plan_id = 1;
   string confirmation_hash = 2;
   string idempotency_key = 3;
-  // Must exactly match the immutable reviewed decision, even on result replay.
-  StorageAuthorityDecision decision = 4;
+  // Intent is loaded exclusively from the persisted immutable reviewed plan.
+  reserved 4;
+  reserved "decision";
 }
 
 message StorageAuthorityDecisionResponse {
@@ -5667,4 +5665,6 @@ message StorageAuthorityProjection {
   StorageAuthorityDesiredAdmission desired_admission = 2;
   // SQL acknowledgement is not evidence of fresh executor agreement.
   bool pending_reconciliation = 3;
+  // Digest of immutable creation facts, used by alias and attestation plans.
+  string resource_version = 4;
 }

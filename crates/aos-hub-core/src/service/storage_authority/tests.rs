@@ -52,13 +52,30 @@ async fn plan(
     auth: &str,
     input: pb::StorageAuthorityDecision,
     key: &str,
-) -> pb::StorageAuthorityPlanResponse {
+) -> pb::TopologyPlanResponse {
+    let expected_resource_version = service
+        .storage_authority_resource_version(&conversion::decision(Some(input.clone())).unwrap())
+        .await
+        .unwrap();
+    let denied = service
+        .plan_storage_authority_decision(
+            Some(auth),
+            pb::PlanStorageAuthorityDecisionRequest {
+                decision: Some(input.clone()),
+                idempotency_key: format!("{key}-wrong-version"),
+                expected_resource_version: format!("wrong-{expected_resource_version}"),
+            },
+        )
+        .await;
+    assert!(matches!(denied, Err(RpcError::FailedPrecondition(_))));
+
     service
         .plan_storage_authority_decision(
             Some(auth),
             pb::PlanStorageAuthorityDecisionRequest {
                 decision: Some(input),
                 idempotency_key: key.into(),
+                expected_resource_version,
             },
         )
         .await
@@ -66,7 +83,7 @@ async fn plan(
 }
 
 fn apply_request(
-    plan: &pb::StorageAuthorityPlanResponse,
+    plan: &pb::TopologyPlanResponse,
     key: &str,
 ) -> pb::ApplyStorageAuthorityDecisionRequest {
     let control = plan.plan.as_ref().unwrap();
@@ -74,7 +91,6 @@ fn apply_request(
         plan_id: control.plan_id.clone(),
         confirmation_hash: control.confirmation_hash.clone(),
         idempotency_key: key.into(),
-        decision: plan.decision.clone(),
     }
 }
 
@@ -121,6 +137,7 @@ async fn authority_operator_requires_instance_root_permission_for_plan_apply_and
                 pb::PlanStorageAuthorityDecisionRequest {
                     decision: Some(create()),
                     idempotency_key: "denied-plan".into(),
+                    expected_resource_version: String::new(),
                 },
             )
             .await;
@@ -219,7 +236,8 @@ async fn authority_operator_reauthorizes_revoked_role_before_apply_and_result_re
                 Some(&root),
                 pb::PlanStorageAuthorityDecisionRequest {
                     decision: Some(create()),
-                    idempotency_key: "revoked-plan".into()
+                    idempotency_key: "revoked-plan".into(),
+                    expected_resource_version: String::new(),
                 }
             )
             .await,
@@ -245,7 +263,8 @@ async fn authority_operator_binds_request_replay_actor_input_confirmation_and_ap
                 Some(&root),
                 pb::PlanStorageAuthorityDecisionRequest {
                     decision: Some(changed.clone()),
-                    idempotency_key: "exact-plan".into()
+                    idempotency_key: "exact-plan".into(),
+                    expected_resource_version: String::new(),
                 }
             )
             .await,
@@ -272,14 +291,47 @@ async fn authority_operator_binds_request_replay_actor_input_confirmation_and_ap
             .await,
         Err(RpcError::FailedPrecondition(_))
     ));
-    let mut wrong_input = request.clone();
-    wrong_input.decision = Some(changed);
+    // Apply has no mutable intent field. Even a corrupt stored review cannot
+    // change the applied input while keeping the operator confirmation.
+    let stored = service
+        .db
+        .topology_plan(&request.plan_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut changed_review: StorageAuthorityReviewedPlanInput =
+        serde_json::from_str(&stored.input_versions_json).unwrap();
+    changed_review.decision = conversion::decision(Some(changed)).unwrap();
+    service
+        .db
+        .backend
+        .execute(
+            "UPDATE topology_plans SET input_versions_json = ?2 WHERE plan_id = ?1",
+            &[
+                crate::value::Value::Text(request.plan_id.clone()),
+                crate::value::Value::Text(serde_json::to_string(&changed_review).unwrap()),
+            ],
+        )
+        .await
+        .unwrap();
     assert!(matches!(
         service
-            .apply_storage_authority_decision(Some(&root), wrong_input)
+            .apply_storage_authority_decision(Some(&root), request.clone())
             .await,
         Err(RpcError::FailedPrecondition(_))
     ));
+    service
+        .db
+        .backend
+        .execute(
+            "UPDATE topology_plans SET input_versions_json = ?2 WHERE plan_id = ?1",
+            &[
+                crate::value::Value::Text(request.plan_id.clone()),
+                crate::value::Value::Text(stored.input_versions_json),
+            ],
+        )
+        .await
+        .unwrap();
     let mut wrong_confirmation = request.clone();
     wrong_confirmation.confirmation_hash = "0".repeat(64);
     assert!(matches!(
@@ -323,14 +375,11 @@ async fn authority_operator_binds_request_replay_actor_input_confirmation_and_ap
         Err(RpcError::FailedPrecondition(_))
     ));
 
-    let mut wrong_input = request;
-    wrong_input.decision = None;
-    assert!(matches!(
-        service
-            .apply_storage_authority_decision(Some(&root), wrong_input)
-            .await,
-        Err(RpcError::InvalidArgument(_))
-    ));
+    // Exact request replay remains available after creation now exists.
+    assert_eq!(
+        plan(&service, &root, create(), "exact-plan").await,
+        approved
+    );
 }
 
 #[tokio::test]
@@ -522,25 +571,43 @@ async fn authority_operator_roundtrips_all_families_and_projects_desired_pending
         )
         .await
         .unwrap();
-    let response = apply(
-        &service,
-        &root,
-        pb::StorageAuthorityDecision {
-            input: Some(Input::SetAdmission(
-                pb::SetStorageAuthorityAdmissionDecision {
-                    authority_id: AUTHORITY.into(),
-                    expected_generation: "0".into(),
-                    expected_digest: None,
-                    guard_namespace_id: "actual-account/configured-namespace".into(),
-                    state: pb::StorageAuthorityDesiredState::Admitted as i32,
-                    attestation_id: Some("attestation-one".into()),
-                    association_ids: vec!["association-one".into()],
-                },
-            )),
-        },
-        "admission",
-    )
-    .await;
+    let admission_input = pb::StorageAuthorityDecision {
+        input: Some(Input::SetAdmission(
+            pb::SetStorageAuthorityAdmissionDecision {
+                authority_id: AUTHORITY.into(),
+                expected_generation: "0".into(),
+                expected_digest: None,
+                guard_namespace_id: "actual-account/configured-namespace".into(),
+                state: pb::StorageAuthorityDesiredState::Admitted as i32,
+                attestation_id: Some("attestation-one".into()),
+                association_ids: vec!["association-one".into()],
+            },
+        )),
+    };
+    let admission_plan = plan(&service, &root, admission_input.clone(), "admission").await;
+    let response = service
+        .apply_storage_authority_decision(
+            Some(&root),
+            apply_request(&admission_plan, "admission-apply"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        plan(&service, &root, admission_input.clone(), "admission").await,
+        admission_plan
+    );
+
+    let stale = service
+        .plan_storage_authority_decision(
+            Some(&root),
+            pb::PlanStorageAuthorityDecisionRequest {
+                decision: Some(admission_input),
+                idempotency_key: "new-stale-admission".into(),
+                expected_resource_version: "0".into(),
+            },
+        )
+        .await;
+    assert!(matches!(stale, Err(RpcError::FailedPrecondition(_))));
     assert_eq!(response.desired_generation.as_deref(), Some("1"));
     assert!(response.pending_reconciliation);
     let projection = service
@@ -553,6 +620,18 @@ async fn authority_operator_roundtrips_all_families_and_projects_desired_pending
         .await
         .unwrap();
     assert!(projection.pending_reconciliation);
+    assert_eq!(
+        projection.resource_version,
+        canonical_digest(
+            &service
+                .db
+                .physical_storage_authority(&conversion::authority_id(AUTHORITY).unwrap())
+                .await
+                .unwrap()
+                .unwrap()
+        )
+        .unwrap()
+    );
     assert_eq!(
         projection
             .authority
@@ -675,4 +754,146 @@ fn authority_operator_preserves_historical_attestation_input_for_exact_result_re
         panic!("fixture is an attestation decision");
     };
     assert_eq!(specification.valid_until, 1);
+}
+
+#[tokio::test]
+async fn authority_operator_freezes_parent_version_across_restore_and_replay() {
+    let (service, root, _) = fixture().await;
+    apply(&service, &root, create(), "create-for-parent-review").await;
+    let decision = pb::StorageAuthorityDecision {
+        input: Some(pb::storage_authority_decision::Input::ApproveAlias(
+            pb::ApproveStorageAuthorityAliasDecision {
+                alias_id: "restored-parent-alias".into(),
+                authority_id: AUTHORITY.into(),
+                address: Some(pb::StorageAuthorityAddress {
+                    host: Some(pb::storage_authority_address::Host::DnsName(
+                        "storage.example.invalid".into(),
+                    )),
+                    port: 443,
+                    bucket: "exclusive-bucket".into(),
+                }),
+                equivalence_evidence_digest: "3".repeat(64),
+            },
+        )),
+    };
+    let reviewed = plan(&service, &root, decision.clone(), "frozen-parent-plan").await;
+    let original = service
+        .db
+        .physical_storage_authority(&conversion::authority_id(AUTHORITY).unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let original_version = canonical_digest(&original).unwrap();
+    let mut restored = original.clone();
+    restored.physical_resource_evidence_digest = "9".repeat(64);
+    let restored_version = canonical_digest(&restored).unwrap();
+    service.db.backend.execute(
+        "UPDATE physical_storage_authorities SET specification_json = ?2, specification_digest = ?3 WHERE authority_id = ?1",
+        &[crate::value::Value::Text(AUTHORITY.into()),
+          crate::value::Value::Text(serde_json::to_string(&restored).unwrap()),
+          crate::value::Value::Text(restored_version.clone())],
+    ).await.unwrap();
+
+    // Original request replay returns its frozen review without rederivation.
+    let replay = service
+        .plan_storage_authority_decision(
+            Some(&root),
+            pb::PlanStorageAuthorityDecisionRequest {
+                decision: Some(decision.clone()),
+                idempotency_key: "frozen-parent-plan".into(),
+                expected_resource_version: original_version,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay, reviewed);
+    let changed_version = service
+        .plan_storage_authority_decision(
+            Some(&root),
+            pb::PlanStorageAuthorityDecisionRequest {
+                decision: Some(decision),
+                idempotency_key: "frozen-parent-plan".into(),
+                expected_resource_version: restored_version,
+            },
+        )
+        .await;
+    assert!(matches!(
+        changed_version,
+        Err(RpcError::FailedPrecondition(_))
+    ));
+    assert!(matches!(
+        service
+            .apply_storage_authority_decision(
+                Some(&root),
+                apply_request(&reviewed, "frozen-parent-apply")
+            )
+            .await,
+        Err(RpcError::FailedPrecondition(_))
+    ));
+    assert!(
+        service
+            .db
+            .physical_storage_alias("restored-parent-alias")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn authority_operator_canonical_apply_rejects_unknown_duplicate_and_legacy_reviews() {
+    let (service, root, _) = fixture().await;
+    let approved = plan(&service, &root, create(), "closed-review").await;
+    let request = apply_request(&approved, "closed-review-apply");
+    let stored = service
+        .db
+        .topology_plan(&request.plan_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let valid: serde_json::Value = serde_json::from_str(&stored.input_versions_json).unwrap();
+    let mut unknown = valid.clone();
+    unknown["schema_version"] = serde_json::json!(2);
+    let legacy = valid["decision"].clone();
+    let duplicate = stored
+        .input_versions_json
+        .replacen("{", "{\"schema_version\":1,", 1);
+    for json in [unknown.to_string(), legacy.to_string(), duplicate] {
+        service
+            .db
+            .backend
+            .execute(
+                "UPDATE topology_plans SET input_versions_json = ?2 WHERE plan_id = ?1",
+                &[
+                    crate::value::Value::Text(request.plan_id.clone()),
+                    crate::value::Value::Text(json),
+                ],
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            service
+                .apply_storage_authority_decision(Some(&root), request.clone())
+                .await,
+            Err(RpcError::FailedPrecondition(_))
+        ));
+        assert!(
+            service
+                .db
+                .topology_plan(&request.plan_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .apply_idempotency_key
+                .is_none()
+        );
+    }
+    assert!(
+        service
+            .db
+            .physical_storage_authority(&conversion::authority_id(AUTHORITY).unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
 }

@@ -87,6 +87,9 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if path == STORAGE_CAPABILITIES_PATH {
         return storage_capabilities(request, env).await;
     }
+    if path == aos_hub_core::storage_authority::control::STORAGE_AUTHORITY_CONTROL_PATH {
+        return crate::hybrid_authority::control(request, env).await;
+    }
     if path == STORAGE_BINDING_CONTROL_PATH {
         return control_storage_binding(request, env).await;
     }
@@ -1542,7 +1545,10 @@ async fn read_bounded_response(mut response: Response, maximum: usize) -> Result
     Ok(Some(body))
 }
 
-async fn read_bounded_body(request: &mut Request, maximum: usize) -> Result<Option<Vec<u8>>> {
+pub(crate) async fn read_bounded_body(
+    request: &mut Request,
+    maximum: usize,
+) -> Result<Option<Vec<u8>>> {
     if request.inner().body().is_none() {
         return Ok(Some(Vec::new()));
     }

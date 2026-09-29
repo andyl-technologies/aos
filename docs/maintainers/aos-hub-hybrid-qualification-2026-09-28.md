@@ -609,8 +609,8 @@ The full fleet run captured before this migration retains its original scope.
 
 ### Reviewed authority API and immutable prefix ceiling
 
-The typed root operator API now provides `PlanDecision`, `ApplyDecision` and
-`GetAuthority`. Eight focused Native tests pass for current root authorization,
+The first typed root operator API provided `PlanDecision`, `ApplyDecision` and
+`GetAuthority`. Eight focused Native tests passed for current root authorization,
 revocation, exact actor/request replay, concurrent decisions, expiration and all
 five decision families. Shared routing and generated protobuf descriptor tests
 each pass, and the ordinary Worker Wasm library compiles.
@@ -631,9 +631,82 @@ These results qualify desired SQL state and operator authorization. Responses
 remain pending reconciliation; no provider access or external DELETE is admitted
 by this API or by a stored SQL acknowledgment.
 
+The subsequent full CLI test gate rejected that API's retained-method contract
+before the Native operations VM booted. A focused reproduction found four
+violations: the paired method names were not canonical, the plan response was
+not `TopologyPlanResponse`, the plan request lacked canonical idempotency and
+resource-version fields, and apply accepted mutable decision input. The
+validator remains unchanged. The earlier focused tests do not establish full
+API conformance.
+
+The integrated correction exposes `PlanStorageAuthorityDecision` and
+`StorageAuthorityDecision` with the canonical plan/apply contract. Plans return
+`TopologyPlanResponse` and persist a closed version-one envelope binding the
+typed decision and expected resource version. Apply accepts only the plan ID,
+confirmation and idempotency key. Its immutable creation-fact fence and decision
+result commit atomically; exact completed replay still requires current root
+permission.
+
+The independently reviewed correction passed 29 focused cases: ten operator
+tests, the actual retained-method classifier integration test, two snapshot
+envelope tests and sixteen database authority tests. All fifteen integrated
+file hashes match the qualified source. The combined source passed the ordinary
+Worker build, 38 signed HTTP cases and inspection of 2,109 SQLite journal values.
+The full packaged CLI gate passed all 4,195 tests, with six skipped, in 51.241
+seconds, and the Native operations VM completed its operator lifecycle.
+
+A fresh portable fixture uses the canonical review envelope for all five
+decision families and asserts exact completed result replay. All three live
+SQLite, PostgreSQL and MariaDB contracts passed in 4.76 seconds, including the
+alias/attestation checked creation-fact fence. Its VM output is
+`/nix/store/r91jy7v0y5ybymx8qk76lkqy89cxschz-aos-vm-test-aos-hub-live-sql-dialects-0`.
+The complete captured source differs from the earlier combined SQL source only
+in this test fixture.
+
 Frozen external S3 physical GC, safe retirement of obsolete object coordination
-state, and whole-Hub snapshot/restore also remain to be implemented. This successful fleet
-run is one acceptance checkpoint; it does not complete RFC-0023.
+state, and whole-Hub snapshot/restore also remain to be implemented. These SQL
+and focused API results are acceptance checkpoints; they do not complete
+RFC-0023.
+
+### Worker authority journal and SQL publication
+
+The combined working source passed 38 signed HTTP cases against actual
+`workerd`, plus direct inspection of the retained SQLite journal. All 2,109
+stored values use the closed version-one JSON string format. Tests cover exact
+signed 64-bit integers, restart and replay, bounded request/publication sizes,
+denial across skipped generations, conflicting predecessor digests and terminal
+retirement. The Worker Wasm digest is
+`9ee9e07fe2fb97c8e0d1321c4b1d5c0698000dae28951725765a370ceb72d623`.
+
+The same captured SQL source passed three live SQLite, PostgreSQL and MariaDB
+contracts, including full publication, conflicting acknowledgment and refusal
+of superseded publication after retirement. The VM output is
+`/nix/store/398kywgwpf1idrmqaw27ncdzqm4kb4wa-aos-vm-test-aos-hub-live-sql-dialects-0`.
+These results precede the canonical operator API correction. They establish
+metadata protocol and journal behavior; no provider I/O, hosted ownership,
+object HTTP capability or external DELETE was exercised by these cases.
+
+Repeating the same 38 HTTP cases and SQLite gate against the corrected combined
+source passed. All 44 captured source hashes, the ordinary Worker artifact and
+45 evidence-file hashes were verified. Its Worker Wasm digest is
+`8a4ba62cb5a3b5c46405d90ee6f7a22af08852d3e25b4abb8f5835f678b8a823`.
+
+### Latest fleet failure
+
+The corrected Worker ingress fleet run reached Hybrid and Native publication
+and indexing, but Workers-only staging failed with a connection reset on an OCI
+blob request. A fresh request check against the exact Worker artifact passed
+anonymous and scoped missing-blob HEAD requests and subsequent `/v2/` readiness.
+It did not reproduce or explain the reset. Retained VM diagnostics are ongoing.
+The complete 25-table and five-projection parity gate was not reached, and the
+three corresponding fleet fixture changes remain uncommitted.
+
+Retained-state replay localized the reset to the server-side TLS connection:
+it reset 13.36 ms after returning upload completion, before the next HEAD
+entered Worker code. One fresh authenticated HEAD returned 404 and `/v2/`
+returned 200 on the same live runtimes. Exact runtime source does not establish
+a 60-second connection limit; the response/connection-close cause remains
+unresolved. These diagnostic runs do not qualify a runtime fix or full parity.
 
 ## Native SQLite snapshot input
 

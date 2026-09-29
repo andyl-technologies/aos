@@ -31,15 +31,15 @@
    "manifest_version" : "aos.hub.api/v1",
    "methods" : [
       {
-         "method" : "PlanDecision",
-         "path" : "aos.hub.v1.StorageAuthorityService/PlanDecision",
+         "method" : "PlanStorageAuthorityDecision",
+         "path" : "aos.hub.v1.StorageAuthorityService/PlanStorageAuthorityDecision",
          "request" : "PlanStorageAuthorityDecisionRequest",
-         "response" : "StorageAuthorityPlanResponse",
+         "response" : "TopologyPlanResponse",
          "service" : "StorageAuthorityService"
       },
       {
-         "method" : "ApplyDecision",
-         "path" : "aos.hub.v1.StorageAuthorityService/ApplyDecision",
+         "method" : "StorageAuthorityDecision",
+         "path" : "aos.hub.v1.StorageAuthorityService/StorageAuthorityDecision",
          "request" : "ApplyStorageAuthorityDecisionRequest",
          "response" : "StorageAuthorityDecisionResponse",
          "service" : "StorageAuthorityService"

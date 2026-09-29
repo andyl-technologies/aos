@@ -47,6 +47,9 @@ use sha2::Digest as _;
 use tokio::sync::{Mutex, Semaphore};
 use zeroize::Zeroizing;
 
+mod authority;
+
+pub use authority::StorageAuthorityControlSynchronization;
 mod control;
 mod frozen;
 mod frozen_head;
