@@ -84,6 +84,15 @@ pub enum InvalidReason {
     MalformedRequest,
 }
 
+/// Identifies stored data that failed verification (STORE-30).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CorruptSubject {
+    /// An immutable object failed its identity or encoding check.
+    Identity(Identity),
+    /// A mutable ref or its reflog failed validation.
+    RefName(String),
+}
+
 /// Names the closed set of store failures (STORE-30).
 ///
 /// A CAS mismatch and a reflog collision carry their current values as
@@ -92,8 +101,8 @@ pub enum InvalidReason {
 pub enum StoreErrorKind {
     /// Requested immutable content is not held.
     Absent(Identity),
-    /// Stored bytes failed verification and cannot be returned.
-    Corrupt(Identity),
+    /// Stored immutable content, a ref, or a reflog failed verification.
+    Corrupt(CorruptSubject),
     /// The backend cannot accept writes.
     ReadOnly,
     /// The guard denied a verb on a pattern without disclosing more detail.
@@ -112,7 +121,7 @@ impl fmt::Display for StoreErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Absent(_) => f.write_str("content absent"),
-            Self::Corrupt(_) => f.write_str("stored content corrupt"),
+            Self::Corrupt(_) => f.write_str("stored data corrupt"),
             Self::ReadOnly => f.write_str("store is read-only"),
             Self::Denied { verb, pattern } => write!(f, "{verb} denied on {pattern}"),
             Self::Unavailable { .. } => f.write_str("store unavailable"),
@@ -145,11 +154,19 @@ impl StoreFailure {
     }
 
     /// Attaches a backend diagnostic while preserving the outcome.
+    ///
+    /// Denials discard the diagnostic so callers cannot inspect policy detail.
     #[must_use]
     pub fn with_source<E>(kind: StoreErrorKind, source: E) -> Self
     where
         E: Error + Send + Sync + 'static,
     {
+        // A denial must disclose only its verb and pattern, even to callers
+        // that inspect the source chain (STORE-30).
+        if matches!(kind, StoreErrorKind::Denied { .. }) {
+            return Self::new(kind);
+        }
+
         Self {
             kind,
             source: Some(Box::new(source)),
@@ -225,8 +242,8 @@ pub trait ContentStore: CapabilityReport {
     /// # Errors
     ///
     /// Returns `Absent` if content is not held, `Corrupt` on verification
-    /// failure, `Unsupported` if a range cannot be served, or another
-    /// specified failure if retrieval fails.
+    /// failure, `Invalid(Range)` when the range exceeds content, `Unsupported`
+    /// if ranges are unavailable, or another specified retrieval failure.
     async fn get(
         &self,
         identity: &Identity,
@@ -293,15 +310,20 @@ pub trait RefStore: CapabilityReport {
     ///
     /// # Errors
     ///
-    /// Returns a specified store failure if the ref cannot be read.
+    /// Returns `Corrupt(RefName)` for an invalid stored record, or another
+    /// specified failure if the ref cannot be read.
     async fn ref_get(&self, name: &str) -> Result<Option<RefRecord>, StoreFailure>;
 
     /// Atomically swaps a whole ref record when `expect` matches.
     ///
     /// # Errors
     ///
-    /// Returns a specified store failure if the CAS cannot be attempted.
-    /// A mismatch is `Conflict(current)`, not a transport error.
+    /// Returns `Invalid(MalformedRequest)` for a non-successor record, or
+    /// another specified failure if the CAS cannot be attempted.
+    /// A mismatch is `Conflict(current)`, not a transport error. An authority
+    /// validates sequence, epoch, and home transitions at this write boundary
+    /// with [`RefRecord::validate_successor`], even if the caller constructed
+    /// `new` directly.
     async fn ref_cas(
         &self,
         name: &str,
@@ -313,7 +335,8 @@ pub trait RefStore: CapabilityReport {
     ///
     /// # Errors
     ///
-    /// Returns a specified store failure if the append cannot be attempted.
+    /// Returns `Invalid(MalformedRequest)` if the record's sequence differs
+    /// from `seq`, or another specified failure if append cannot be attempted.
     /// An existing key returns `Exists` without modifying that record.
     async fn ref_log_append(
         &self,
@@ -327,6 +350,7 @@ pub trait RefStore: CapabilityReport {
     /// # Errors
     ///
     /// Returns a specified store failure for a read error or a sequence gap.
+    /// A gap is `Corrupt(RefName)` because the request itself is valid.
     async fn ref_log_read(
         &self,
         name: &str,
@@ -810,6 +834,24 @@ mod tests {
             failure.source().map(ToString::to_string).as_deref(),
             Some("backend detail")
         );
+
+        let denied = StoreFailure::with_source(
+            StoreErrorKind::Denied {
+                verb: "get",
+                pattern: "refs/heads/private".to_owned(),
+            },
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "secret policy detail"),
+        );
+        assert!(denied.source().is_none());
+        assert_eq!(denied.to_string(), "get denied on refs/heads/private");
+
+        let corrupt_ref = StoreFailure::new(StoreErrorKind::Corrupt(CorruptSubject::RefName(
+            "refs/heads/main".to_owned(),
+        )));
+        assert!(matches!(
+            corrupt_ref.kind(),
+            StoreErrorKind::Corrupt(CorruptSubject::RefName(name)) if name == "refs/heads/main"
+        ));
     }
 
     #[test]
