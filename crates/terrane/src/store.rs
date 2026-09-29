@@ -15,6 +15,7 @@ use std::fmt;
 use std::num::NonZeroU8;
 use std::time::{Duration, SystemTime};
 
+use terrane_core::chunking::ChunkProfile;
 use terrane_core::identity::{Identity, IdentityKind};
 use terrane_core::refs::{Locality, RefLogRecord, RefRecord};
 
@@ -214,12 +215,107 @@ pub trait CapabilityReport {
     fn capabilities(&self) -> &Capabilities;
 }
 
+/// Identifies a chunk's role in its object for admission checks (CDC-15, CDC-16).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChunkPosition {
+    /// The chunk must end at the first valid chunker boundary.
+    NonFinal,
+    /// The chunk ends its object and may be shorter than the profile minimum.
+    Final,
+}
+
+/// Supplies the context required to verify an encoded chunk before admission.
+#[derive(Clone, Copy, Debug)]
+pub struct ChunkUpload<'a> {
+    /// The codec byte and encoded body to retain after verification.
+    pub encoded: &'a [u8],
+    /// The offered plaintext identity in the chunk domain (CDC-14).
+    pub identity: &'a Identity,
+    /// The exact plaintext length bounding decompression (CDC-12).
+    pub declared_plaintext_len: usize,
+    /// The object's final or nonfinal chunk position (CDC-15, CDC-16).
+    pub position: ChunkPosition,
+    /// The chunking profile, which the backend must match to its configuration.
+    pub profile: &'a ChunkProfile,
+}
+
+/// Carries opaque meta bytes under a non-chunk identity domain.
+///
+/// Construction validates only the domain. The admitting backend must invoke
+/// its configured [`ContentValidator`] before making new bytes visible.
+#[derive(Clone, Copy, Debug)]
+pub struct MetaUpload<'a> {
+    kind: IdentityKind,
+    bytes: &'a [u8],
+}
+
+impl<'a> MetaUpload<'a> {
+    /// Constructs an opaque upload under a non-chunk identity domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Invalid(MalformedRequest)` when `kind` is the chunk domain,
+    /// because chunk admission requires [`ChunkUpload`] context.
+    pub fn new(kind: IdentityKind, bytes: &'a [u8]) -> Result<Self, StoreFailure> {
+        if kind == IdentityKind::Chunk {
+            return Err(StoreFailure::new(StoreErrorKind::Invalid(
+                InvalidReason::MalformedRequest,
+            )));
+        }
+
+        Ok(Self { kind, bytes })
+    }
+
+    /// Returns the non-chunk identity domain.
+    #[must_use]
+    pub fn kind(&self) -> IdentityKind {
+        self.kind
+    }
+
+    /// Returns the opaque encoded bytes.
+    #[must_use]
+    pub fn bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
+}
+
+/// Distinguishes chunk admission context from opaque meta uploads (STORE-33).
+#[derive(Clone, Copy, Debug)]
+pub enum ContentUpload<'a> {
+    /// Encoded chunk bytes and their independent admission declarations.
+    Chunk(ChunkUpload<'a>),
+    /// Opaque meta bytes, requiring the configured format validator.
+    Meta(MetaUpload<'a>),
+}
+
+/// Delegates pure meta-format validation without interpreting storage content.
+///
+/// Formats or repository code supplies this validator when a backend opens.
+/// The backend must invoke it before admitting new meta bytes (STORE-33),
+/// retain failures as `Invalid(Upload)` with the failing rule ID, and never
+/// substitute a validator supplied by an upload request. The validator owns
+/// schema interpretation; the backend owns visibility and identity (ARCH-2).
+pub trait ContentValidator {
+    /// Validates an opaque meta upload against its domain's canonical format.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Invalid(Upload)` when the bytes violate a format rule. Any
+    /// failure prevents admission; it cannot be treated as successful validation.
+    fn validate_meta(&self, upload: &MetaUpload<'_>) -> Result<(), StoreFailure>;
+}
+
 /// Stores immutable content without granting any ref authority (STORE-32).
 ///
 /// Implementations satisfy STORE-1 through STORE-6, STORE-11, and STORE-33.
 /// `put` validates an upload before it becomes visible, computes its identity,
-/// and leaves existing bytes unchanged on a dedup hit. `get` verifies stored
-/// bytes before returning even a partial range. `has` returns one bit per
+/// and leaves existing bytes unchanged on a dedup hit. A backend matches the
+/// chunk profile to its configuration and validates encoded chunks using their
+/// offered identity, declared length, and position. A prior final-chunk admit
+/// does not establish a later nonfinal boundary: the backend must check that
+/// boundary before accepting such an offer. Meta validation is delegated to
+/// the backend's configured [`ContentValidator`], never trusted to the caller.
+/// `get` verifies stored bytes before returning even a partial range. `has` returns one bit per
 /// input, in order, and only claims content that `get` can serve now. `list`
 /// is advisory and only for recovery, GC, or scrub.
 ///
@@ -242,9 +338,14 @@ pub trait ContentStore: CapabilityReport {
     ///
     /// Returns `Invalid` for a failed rule, `ReadOnly` for a non-writing
     /// backend, or another specified failure if admission fails.
-    async fn put(&self, kind: IdentityKind, bytes: &[u8]) -> Result<Identity, StoreFailure>;
+    async fn put(&self, upload: ContentUpload<'_>) -> Result<Identity, StoreFailure>;
 
-    /// Returns verified bytes or exactly the requested byte range.
+    /// Returns the opaque stored encoding or an exact range within it.
+    ///
+    /// A chunk result includes its codec byte and encoded body, not decoded
+    /// plaintext. Its identity is verified against the plaintext before bytes
+    /// are returned. Meta results retain their canonical encoded bytes. Ranges
+    /// address the stored encoding, including encoded chunk bodies within packs.
     ///
     /// # Errors
     ///
@@ -811,7 +912,7 @@ mod tests {
     #[cfg_attr(feature = "send", async_trait::async_trait)]
     #[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
     impl ContentStore for ContentOnlyCache {
-        async fn put(&self, _kind: IdentityKind, _bytes: &[u8]) -> Result<Identity, StoreFailure> {
+        async fn put(&self, _upload: ContentUpload<'_>) -> Result<Identity, StoreFailure> {
             Err(StoreFailure::new(StoreErrorKind::ReadOnly))
         }
 
