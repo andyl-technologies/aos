@@ -22,6 +22,9 @@ pub const MAX_SYMLINK: usize = 4096;
 pub const MAX_ATTRIBUTES: usize = 256;
 /// Maximum encoded item bytes in a node, excluding CBOR framing.
 pub const MAX_NODE_ITEMS_BYTES: usize = 65536;
+// Outer map, field keys, level, and item-array header; the property map is
+// payload. At most eight bytes are needed with a 16,384-item upper bound.
+const MAX_NODE_FRAMING_BYTES: usize = 8;
 /// Maximum height of a tree, with leaves at level zero.
 pub const MAX_TREE_LEVEL: u8 = 15;
 /// Maximum `tree`-entry traversal depth.
@@ -700,7 +703,7 @@ fn common_prefix(left: &[u8], right: &[u8]) -> usize {
 fn leaf_items<'a>(
     decoder: &mut Decoder<'a>,
     min_chunk_size: u64,
-) -> Result<Vec<LeafItem<'a>>, Error> {
+) -> Result<(Vec<LeafItem<'a>>, usize), Error> {
     let count = decoder.array(MAX_NODE_ITEMS_BYTES / 4)?;
     let mut items = Vec::with_capacity(count);
     let mut previous = Vec::<u8>::new();
@@ -731,10 +734,10 @@ fn leaf_items<'a>(
         previous = key.clone();
         items.push(LeafItem { key, entry });
     }
-    Ok(items)
+    Ok((items, encoded_bytes))
 }
 
-fn child_refs(decoder: &mut Decoder<'_>) -> Result<Vec<ChildRef>, Error> {
+fn child_refs(decoder: &mut Decoder<'_>) -> Result<(Vec<ChildRef>, usize), Error> {
     let count = decoder.array(MAX_NODE_ITEMS_BYTES / 37)?;
     let mut items: Vec<ChildRef> = Vec::with_capacity(count);
     let mut encoded_bytes = 0;
@@ -765,7 +768,7 @@ fn child_refs(decoder: &mut Decoder<'_>) -> Result<Vec<ChildRef>, Error> {
             weight,
         });
     }
-    Ok(items)
+    Ok((items, encoded_bytes))
 }
 
 /// Decodes one node with its root status and chunk profile minimum.
@@ -778,9 +781,9 @@ fn child_refs(decoder: &mut Decoder<'_>) -> Result<Vec<ChildRef>, Error> {
 /// Rejects invalid CBOR, node shape or ordering, nonminimal prefix
 /// compression, invalid entries, excessive levels, or resource limits.
 pub fn decode_node(input: &[u8], is_root: bool, min_chunk_size: u64) -> Result<Node<'_>, Error> {
-    // A node can contain at most MAX_NODE item bytes plus root properties
-    // and framing. The extra allowance is bounded before any allocation.
-    if input.len() > MAX_NODE_ITEMS_BYTES * 2 + 32 {
+    // Item and root-property bytes share one 64 KiB payload budget. Only
+    // outer map keys, the level, and the items array header are framing.
+    if input.len() > MAX_NODE_ITEMS_BYTES + MAX_NODE_FRAMING_BYTES {
         return Err(Error::Limit);
     }
     let mut decoder = Decoder::new(input);
@@ -792,19 +795,26 @@ pub fn decode_node(input: &[u8], is_root: bool, min_chunk_size: u64) -> Result<N
     if level > MAX_TREE_LEVEL || decoder.uint()? != 2 {
         return Err(Error::Node);
     }
-    let items = if level == 0 {
-        NodeItems::Leaf(leaf_items(&mut decoder, min_chunk_size)?)
+    let (items, item_bytes) = if level == 0 {
+        let (items, bytes) = leaf_items(&mut decoder, min_chunk_size)?;
+        (NodeItems::Leaf(items), bytes)
     } else {
-        NodeItems::Internal(child_refs(&mut decoder)?)
+        let (items, bytes) = child_refs(&mut decoder)?;
+        (NodeItems::Internal(items), bytes)
     };
-    let props = if fields == 3 {
+    let (props, property_bytes) = if fields == 3 {
         if !is_root || decoder.uint()? != 3 {
             return Err(Error::Node);
         }
-        Some(properties(&mut decoder)?)
+        let start = decoder.position();
+        let props = properties(&mut decoder)?;
+        (Some(props), decoder.position() - start)
     } else {
-        None
+        (None, 0)
     };
+    if item_bytes.checked_add(property_bytes).ok_or(Error::Limit)? > MAX_NODE_ITEMS_BYTES {
+        return Err(Error::Limit);
+    }
     decoder.finish()?;
 
     let empty = match &items {
@@ -835,6 +845,9 @@ pub fn encode_node(node: &Node<'_>, is_root: bool, min_chunk_size: u64) -> Resul
 
     match &node.items {
         NodeItems::Leaf(items) => {
+            if items.len() > MAX_NODE_ITEMS_BYTES / 4 {
+                return Err(Error::Limit);
+            }
             cbor::write_array(&mut output, items.len());
             let mut previous = &[][..];
             for item in items {
@@ -843,10 +856,16 @@ pub fn encode_node(node: &Node<'_>, is_root: bool, min_chunk_size: u64) -> Resul
                 cbor::write_bytes(&mut output, &item.key[shared..]);
                 cbor::write_uint(&mut output, shared as u64);
                 write_entry(&mut output, &item.entry, 0)?;
+                if output.len() > MAX_NODE_ITEMS_BYTES + MAX_NODE_FRAMING_BYTES {
+                    return Err(Error::Limit);
+                }
                 previous = &item.key;
             }
         }
         NodeItems::Internal(items) => {
+            if items.len() > MAX_NODE_ITEMS_BYTES / 37 {
+                return Err(Error::Limit);
+            }
             cbor::write_array(&mut output, items.len());
             for item in items {
                 cbor::write_array(&mut output, 4);
@@ -854,12 +873,18 @@ pub fn encode_node(node: &Node<'_>, is_root: bool, min_chunk_size: u64) -> Resul
                 cbor::write_bytes(&mut output, &item.child);
                 cbor::write_uint(&mut output, item.count);
                 cbor::write_uint(&mut output, item.weight);
+                if output.len() > MAX_NODE_ITEMS_BYTES + MAX_NODE_FRAMING_BYTES {
+                    return Err(Error::Limit);
+                }
             }
         }
     }
     if let Some(props) = &node.props {
         cbor::write_uint(&mut output, 3);
         write_properties(&mut output, props);
+    }
+    if output.len() > MAX_NODE_ITEMS_BYTES + MAX_NODE_FRAMING_BYTES {
+        return Err(Error::Limit);
     }
     decode_node(&output, is_root, min_chunk_size)?;
     Ok(output)
@@ -1313,6 +1338,31 @@ mod tests {
             encoded
         );
         assert_eq!(decode_node(&encoded, false, MIN_CHUNK), Err(Error::Node));
+    }
+
+    #[test]
+    fn root_properties_and_items_share_the_node_payload_cap() {
+        let mut value = Vec::new();
+        crate::cbor::write_argument(&mut value, 3, 65_500);
+        value.extend_from_slice(&vec![b'x'; 65_500]);
+        let props = vec![super::Property {
+            name: "p",
+            value: &value,
+        }];
+
+        let root = Node {
+            level: 0,
+            items: NodeItems::Leaf(Vec::new()),
+            props: Some(props.clone()),
+        };
+        encode_node(&root, true, MIN_CHUNK).expect("properties fit alone");
+
+        let oversized = Node {
+            level: 0,
+            items: NodeItems::Leaf(vec![item(b"file", file(None))]),
+            props: Some(props),
+        };
+        assert_eq!(encode_node(&oversized, true, MIN_CHUNK), Err(Error::Limit));
     }
 
     #[test]
