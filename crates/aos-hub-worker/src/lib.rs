@@ -138,10 +138,14 @@ pub mod bridge;
 pub mod consoleports;
 #[cfg(target_arch = "wasm32")]
 pub mod coordinatorobj;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod direct_digest;
 #[cfg(all(target_arch = "wasm32", feature = "do-e2e"))]
 mod e2e_surface;
 #[cfg(target_arch = "wasm32")]
 pub mod edgeratelimit;
+#[cfg(any(test, target_arch = "wasm32"))]
+pub mod external_object;
 #[cfg(any(target_arch = "wasm32", test))]
 mod frozen_surface_access;
 #[cfg(target_arch = "wasm32")]
@@ -163,8 +167,6 @@ mod hybrid_authority_state;
 pub mod hybrid_binding;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod hybrid_frozen_cleanup;
-#[cfg(any(test, target_arch = "wasm32"))]
-pub mod external_object;
 #[cfg(target_arch = "wasm32")]
 pub mod hybrid_object;
 #[cfg(any(test, target_arch = "wasm32"))]

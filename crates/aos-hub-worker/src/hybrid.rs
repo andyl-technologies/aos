@@ -81,6 +81,9 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if let Some(response) = serve_static_asset(&request, &path).await? {
         return Ok(response);
     }
+    if path == aos_hub_core::storage_authority::external_object::stage::EXTERNAL_STAGE_PATH {
+        return crate::external_object::fetch_stage(request, env).await;
+    }
     if path == crate::external_object::PATH {
         return crate::external_object::fetch(request, env).await;
     }

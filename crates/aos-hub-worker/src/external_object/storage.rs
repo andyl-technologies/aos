@@ -29,7 +29,7 @@ use super::{
 };
 
 pub(super) const BINDING: &str = "EXTERNAL_OBJECT_GUARD";
-const HEAD: &str = "external-object/head/v1";
+pub(super) const HEAD: &str = "external-object/head/v1";
 const GUARD_KEY: &str = "HUB_EXTERNAL_OBJECT_GUARD_KEY";
 
 /// Retains one permanent physical full-key floor, pending turn and receipts.
@@ -37,9 +37,9 @@ const GUARD_KEY: &str = "HUB_EXTERNAL_OBJECT_GUARD_KEY";
 /// Namespace/provider exclusivity qualification remains an external prerequisite.
 #[durable_object]
 pub struct ExternalObjectGuard {
-    state: State,
-    env: Env,
-    gate: Arc<Mutex<()>>,
+    pub(super) state: State,
+    pub(super) env: Env,
+    pub(super) gate: Arc<Mutex<()>>,
 }
 
 impl DurableObject for ExternalObjectGuard {
@@ -52,6 +52,10 @@ impl DurableObject for ExternalObjectGuard {
     }
 
     async fn fetch(&self, mut request: Request) -> worker::Result<Response> {
+        if request.url()?.path() == "/stage-turn" {
+            return self.stage_fetch(&mut request).await;
+        }
+
         match self.handle(&mut request).await {
             Ok(reply) => {
                 let headers = worker::Headers::new();
@@ -175,7 +179,7 @@ fn receipt_key(operation: &str) -> Result<String> {
     ))
 }
 
-async fn load_head(storage: &Storage) -> Result<Option<Head>> {
+pub(super) async fn load_head(storage: &Storage) -> Result<Option<Head>> {
     let raw = storage.get::<String>(HEAD).await?;
     decode(raw, MAX_MESSAGE)
 }
@@ -189,7 +193,10 @@ async fn load_receipt(storage: &Storage, operation: &str) -> Result<Option<Recei
     Ok(receipt)
 }
 
-fn decode<T: serde::de::DeserializeOwned>(raw: Option<String>, cap: usize) -> Result<Option<T>> {
+pub(super) fn decode<T: serde::de::DeserializeOwned>(
+    raw: Option<String>,
+    cap: usize,
+) -> Result<Option<T>> {
     raw.map(|raw| {
         ensure!(raw.len() <= cap, "retained compact record too large");
         Ok(serde_json::from_str(&raw)?)
@@ -197,7 +204,7 @@ fn decode<T: serde::de::DeserializeOwned>(raw: Option<String>, cap: usize) -> Re
     .transpose()
 }
 
-async fn transaction_string(
+pub(super) async fn transaction_string(
     transaction: &Transaction,
     key: &str,
 ) -> worker::Result<Option<String>> {
@@ -260,6 +267,6 @@ async fn commit(
     Ok(())
 }
 
-fn error(_: impl std::fmt::Display) -> worker::Error {
+pub(super) fn error(_: impl std::fmt::Display) -> worker::Error {
     worker::Error::RustError("external object journal unavailable".into())
 }

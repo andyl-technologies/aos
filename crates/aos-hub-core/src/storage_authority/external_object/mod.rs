@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::storage_work::{StorageWorkKey, StorageWorkOperation, StorageWorkPlan};
 
+/// Exact delegated-stage and server-owned external multipart controls.
+pub mod stage;
+
 /// First bounded consumer endpoint; older Workers reject the unknown route.
 pub const EXTERNAL_OBJECT_PATH: &str = "/_internal/storage/external-object/v1";
 /// Bounds the full application envelope before parsing or body decoding.

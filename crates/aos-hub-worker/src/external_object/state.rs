@@ -32,6 +32,10 @@ pub(super) struct Head {
     pub floor: EpochLeaseFloor,
     pub pending: Option<Pending>,
     pub receipts: LeaseInteger,
+    #[serde(default)]
+    pub incarnation: aos_hub_core::direct_upload::WireInteger,
+    #[serde(default)]
+    pub stage: Option<super::stage::state::Session>,
 }
 
 impl Head {
@@ -55,6 +59,8 @@ impl Head {
             floor,
             pending: None,
             receipts: LeaseInteger::new(0)?,
+            incarnation: aos_hub_core::direct_upload::WireInteger::new(0),
+            stage: None,
         })
     }
 
@@ -82,6 +88,13 @@ impl Head {
                 && self.receipts.get() <= MAX_RECEIPTS,
             "retained object pins differ"
         );
+        ensure!(
+            self.incarnation.get() <= super::stage::state::MAX_INCARNATION,
+            "corrupt retained incarnation counter"
+        );
+        if let Some(stage) = &self.stage {
+            stage.validate_shape(self)?;
+        }
         // The foundational floor's validator is private; new dispatch still
         // uses its full validation. Parsed terminal/replay state also rejects
         // incomplete/fork-shaped retained commitments rather than ignoring them.
@@ -150,7 +163,12 @@ impl Head {
         self.validate(config, &intent.scope)?;
         intent.validate()?;
         ensure!(
-            self.pending.is_none(),
+            !matches!(intent.effect, super::protocol::Effect::Put { .. })
+                || self.incarnation.get() < super::stage::state::MAX_INCARNATION,
+            "object incarnation capacity exhausted"
+        );
+        ensure!(
+            self.pending.is_none() && self.stage.is_none(),
             "unknown object turn blocks dispatch"
         );
         ensure!(
@@ -205,6 +223,17 @@ impl Head {
             "object receipt capacity exhausted"
         );
         next.pending = None;
+        if matches!(
+            receipt.turn.intent.effect,
+            super::protocol::Effect::Put { .. }
+        ) {
+            next.incarnation = aos_hub_core::direct_upload::WireInteger::new(
+                self.incarnation
+                    .get()
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("object incarnation exhausted"))?,
+            );
+        }
         Ok(next)
     }
 }

@@ -1,6 +1,7 @@
 //! Bounded external metadata execution with persistent per-key uncertainty.
 //!
-//! This first consumer accepts metadata PUT and historical guarded HEAD only.
+//! It accepts metadata PUT, historical guarded HEAD and qualified private-stage
+//! controls. None of these receipts enables provider domains or business flows.
 //! Bodies and credentials stay at the byte executor. A compact addressed DO
 //! retains admission floors, pending turns and permanent terminal receipts.
 //! Configuration is independently reviewed input, not provider qualification.
@@ -8,6 +9,7 @@
 
 mod config;
 mod protocol;
+mod stage;
 mod state;
 
 #[cfg(target_arch = "wasm32")]
@@ -19,6 +21,13 @@ mod storage;
 pub(crate) use executor::{deny_legacy, fetch, PATH};
 #[cfg(target_arch = "wasm32")]
 pub use storage::ExternalObjectGuard;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) use stage::resolve_external_profiles;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use stage::{execute_stage, fetch as fetch_stage};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use stage::{prepare_stage_request, presign_registered_parts};
 
 #[cfg(test)]
 mod tests;

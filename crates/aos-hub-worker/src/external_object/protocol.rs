@@ -9,9 +9,9 @@
 //! ```
 
 use anyhow::{ensure, Result};
-pub(super) use aos_hub_core::storage_authority::external_object::{
-    ExternalObjectHead as HeadValue, ExternalObjectOutcome as Outcome,
-};
+#[cfg(target_arch = "wasm32")]
+pub(super) use aos_hub_core::storage_authority::external_object::ExternalObjectHead as HeadValue;
+pub(super) use aos_hub_core::storage_authority::external_object::ExternalObjectOutcome as Outcome;
 use aos_hub_core::storage_authority::{
     control::StorageAuthorityObjectScope,
     lease::{EpochLeaseFloor, LeaseEffect},
@@ -175,7 +175,7 @@ pub(super) fn digest_string(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-fn id(value: &str) -> bool {
+pub(super) fn id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && value
