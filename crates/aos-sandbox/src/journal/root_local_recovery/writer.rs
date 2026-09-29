@@ -1,12 +1,15 @@
-//! Purpose-limited physical writer and opaque current-row readback for kind2.
+//! Named kind2/kind5 physical writers sharing one private append/readback core.
 
 use std::path::Path;
 
 use aos_sandbox_protocol::mount_source_acquisition_state::{
-    MountSourceAcquisitionStateV2, SourceProviderSessionV2,
+    DeadProviderExecutionProjectionV2, MountSourceAcquisitionStateV2, SourceProviderSessionV2,
 };
 
-use super::{Edge, OrdinaryCapacityRecordV4, graph, pending, prepare, rejoin, settlement};
+use super::{
+    Edge, Kind, OrdinaryCapacityRecordV4, dead_replacement, graph, pending, prepare, rejoin,
+    settlement,
+};
 use crate::journal::{
     CacheMutationGateV1, CommitResult, Journal, JournalError, JournalTransaction,
     ProtectedAuthorityScope, ProtectedJournalAuthority, ProtectedJournalSnapshot, RecordNamespace,
@@ -14,21 +17,22 @@ use crate::journal::{
     controller_source_genesis, source_tree_genesis,
 };
 
-/// Borrows the same fixed Mount physical writer for exact kind2 edges only.
+/// Borrows one of the two closed fixed Mount local physical scopes.
 ///
 /// Generic mutation is denied. Live Security admission and private Mount table
 /// installation remain trusted higher-owner obligations, not lower proofs.
-pub struct MountBarrierIdleReplacementJournalAuthorityV4<'journal> {
+struct LocalRecoveryWriter<'journal> {
     authority: ProtectedJournalAuthority<'journal>,
 }
 
-/// Retains one exact physical kind2 preflight; it proves no live Session custody.
+/// Retains one exact physical local preflight, never live Session custody.
 #[must_use]
-pub struct PreparedBarrierIdleReplacementV4 {
+struct PreparedLocalReplacement {
     transaction: JournalTransaction,
     floor: OrdinaryCapacityRecordV4,
     snapshot: ProtectedJournalSnapshot,
     transaction_digest: [u8; 32],
+    edge: Edge,
 }
 
 /// Proves exact installed physical rows at a held writer instance and sequence.
@@ -37,18 +41,21 @@ pub struct PreparedBarrierIdleReplacementV4 {
 /// derivative holder can use it for the lower own DELETE; trusted Mount code
 /// must install and compare its actual table first. No effect authority follows.
 #[must_use]
-pub struct Kind2ProtectedReadbackV4 {
+struct LocalReadback {
     snapshot: ProtectedJournalSnapshot,
     floor: OrdinaryCapacityRecordV4,
 }
 
-impl<'journal> MountBarrierIdleReplacementJournalAuthorityV4<'journal> {
-    pub(crate) fn claim(journal: &'journal mut Journal) -> Result<Self, JournalError> {
+impl<'journal> LocalRecoveryWriter<'journal> {
+    fn claim(
+        journal: &'journal mut Journal,
+        scope: ProtectedAuthorityScope,
+    ) -> Result<Self, JournalError> {
         journal.ensure_protected_authority()?;
         let authority = ProtectedJournalAuthority {
             journal,
             namespace: RecordNamespace::MountSourceAcquisition,
-            scope: ProtectedAuthorityScope::RootLocalRecoveryKind2,
+            scope,
         };
         authority.validate_root_local_startup_replay_v4()?;
         let writer = Self { authority };
@@ -62,7 +69,11 @@ impl<'journal> MountBarrierIdleReplacementJournalAuthorityV4<'journal> {
             Path::new("/var/lib/aos/sandbox-mount"),
             "mount.journal",
         )?;
-        if self.authority.scope != ProtectedAuthorityScope::RootLocalRecoveryKind2 {
+        if !matches!(
+            self.authority.scope,
+            ProtectedAuthorityScope::RootLocalRecoveryKind2
+                | ProtectedAuthorityScope::RootLocalRecoveryKind5
+        ) {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
         Ok(())
@@ -72,7 +83,7 @@ impl<'journal> MountBarrierIdleReplacementJournalAuthorityV4<'journal> {
     ///
     /// The raw guard cannot perform generic commits in this purpose scope.
     #[doc(hidden)]
-    pub fn security_view(&self) -> &ProtectedJournalAuthority<'journal> {
+    fn security_view(&self) -> &ProtectedJournalAuthority<'journal> {
         &self.authority
     }
 
@@ -80,33 +91,58 @@ impl<'journal> MountBarrierIdleReplacementJournalAuthorityV4<'journal> {
     ///
     /// # Errors
     /// Refuses stale physical names, unhealthy writer, invalid graph or floors.
-    pub fn current_source_state(&self) -> Result<MountSourceAcquisitionStateV2, JournalError> {
+    fn current_source_state(&self) -> Result<MountSourceAcquisitionStateV2, JournalError> {
         self.require_current()?;
         Ok(graph(&self.authority.journal.state)?.legacy().clone())
     }
 
-    /// Derives and preflights actual S/H plus its own exact local floor.
-    ///
-    /// The physical writer authorizes only this closed map. The trusted Security
-    /// consumer must compare the successor to its real current plan and hold
-    /// live custody through commit; these supplied Session bytes do not prove it.
-    ///
-    /// # Errors
-    /// Refuses stale names, successor reuse, wrong owner edge, unproved native
-    /// debt, overlapping local fences, malformed floors or insufficient headroom.
-    pub fn prepare_barrier_idle_replacement(
+    fn kind(&self) -> Kind {
+        match self.authority.scope {
+            ProtectedAuthorityScope::RootLocalRecoveryKind5 => Kind::DeadReplacement,
+            _ => Kind::BarrierIdleReplacement,
+        }
+    }
+
+    fn prepare_barrier_idle_replacement(
         &self,
         successor: SourceProviderSessionV2,
-    ) -> Result<PreparedBarrierIdleReplacementV4, JournalError> {
+    ) -> Result<PreparedLocalReplacement, JournalError> {
         self.require_current()?;
+        if self.kind() != Kind::BarrierIdleReplacement {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
         let (transaction, floor) = prepare(&self.authority.journal.state, successor)?;
-        self.preflight(&transaction, Edge::Admission)?;
+        self.prepared(transaction, floor, Edge::Admission)
+    }
+
+    fn prepare_dead_replacement(
+        &self,
+        successor: SourceProviderSessionV2,
+        death: DeadProviderExecutionProjectionV2,
+    ) -> Result<PreparedLocalReplacement, JournalError> {
+        self.require_current()?;
+        if self.kind() != Kind::DeadReplacement {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        let (transaction, floor) =
+            dead_replacement::prepare(&self.authority.journal.state, successor, death)?;
+        self.prepared(transaction, floor, Edge::DeadAdmission)
+    }
+
+    fn prepared(
+        &self,
+        transaction: JournalTransaction,
+        floor: OrdinaryCapacityRecordV4,
+        edge: Edge,
+    ) -> Result<PreparedLocalReplacement, JournalError> {
+        self.preflight(&transaction, edge)?;
         let transaction_digest = authority_preflight_digest(std::slice::from_ref(&transaction));
-        Ok(PreparedBarrierIdleReplacementV4 {
+        Ok(PreparedLocalReplacement {
             transaction,
             floor,
             snapshot: self.authority.snapshot()?,
             transaction_digest,
+            edge,
         })
     }
 
@@ -117,10 +153,10 @@ impl<'journal> MountBarrierIdleReplacementJournalAuthorityV4<'journal> {
     /// # Errors
     /// Refuses stale sequence/instance/bytes or bounds; append/readback ambiguity
     /// poisons the writer and never returns a successful readback.
-    pub fn commit_barrier_idle_replacement(
+    fn commit_prepared(
         &mut self,
-        prepared: PreparedBarrierIdleReplacementV4,
-    ) -> Result<Kind2ProtectedReadbackV4, JournalError> {
+        prepared: PreparedLocalReplacement,
+    ) -> Result<LocalReadback, JournalError> {
         self.require_current()?;
         self.authority
             .validate_mount_source_acquisition_snapshot(&prepared.snapshot)?;
@@ -129,24 +165,25 @@ impl<'journal> MountBarrierIdleReplacementJournalAuthorityV4<'journal> {
         {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
-        self.preflight(&prepared.transaction, Edge::Admission)?;
-        self.append(&prepared.transaction, Edge::Admission)?;
+        self.preflight(&prepared.transaction, prepared.edge)?;
+        self.append(&prepared.transaction, prepared.edge)?;
         self.readback(prepared.floor)
             .inspect_err(|_| self.authority.journal.poisoned = true)
     }
 
-    /// Rejoins every pending kind2 local floor under the current physical owner.
+    /// Rejoins this named scope's local floors under the current physical owner.
     ///
     /// Cold readback reconstructs no historical live Session or table installation.
     ///
     /// # Errors
     /// Refuses missing/changed postimages, dependency bindings or fixed names.
-    pub fn pending_local_readbacks(&self) -> Result<Vec<Kind2ProtectedReadbackV4>, JournalError> {
+    fn pending_local_readbacks(&self) -> Result<Vec<LocalReadback>, JournalError> {
         self.require_current()?;
         pending(&self.authority.journal.state)?
             .into_iter()
+            .filter(|floor| floor.data().kind == self.kind())
             .map(|floor| {
-                Ok(Kind2ProtectedReadbackV4 {
+                Ok(LocalReadback {
                     snapshot: self.authority.snapshot()?,
                     floor,
                 })
@@ -154,10 +191,7 @@ impl<'journal> MountBarrierIdleReplacementJournalAuthorityV4<'journal> {
             .collect()
     }
 
-    fn readback(
-        &self,
-        floor: OrdinaryCapacityRecordV4,
-    ) -> Result<Kind2ProtectedReadbackV4, JournalError> {
+    fn readback(&self, floor: OrdinaryCapacityRecordV4) -> Result<LocalReadback, JournalError> {
         self.require_current()?;
         let record = floor.to_journal_record();
         if self
@@ -169,7 +203,7 @@ impl<'journal> MountBarrierIdleReplacementJournalAuthorityV4<'journal> {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
         rejoin(&self.authority.journal.state, &floor)?;
-        Ok(Kind2ProtectedReadbackV4 {
+        Ok(LocalReadback {
             snapshot: self.authority.snapshot()?,
             floor,
         })
@@ -184,13 +218,16 @@ impl<'journal> MountBarrierIdleReplacementJournalAuthorityV4<'journal> {
     /// # Errors
     /// Refuses stale evidence, wrong floor/rows/fences or accounting; ambiguous
     /// commit/final readback poisons the held writer and returns no effect permit.
-    pub fn settle_kind2_local_readback(
+    fn settle_local_readback(
         &mut self,
-        readback: Kind2ProtectedReadbackV4,
+        readback: LocalReadback,
     ) -> Result<CommitResult, JournalError> {
         self.require_current()?;
         self.authority
             .validate_mount_source_acquisition_snapshot(&readback.snapshot)?;
+        if readback.floor.data().kind != self.kind() {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
         rejoin(&self.authority.journal.state, &readback.floor)?;
         let transaction = settlement(&readback.floor)?;
         self.preflight(&transaction, Edge::InstalledDelete)?;
@@ -253,5 +290,207 @@ impl<'journal> MountBarrierIdleReplacementJournalAuthorityV4<'journal> {
             Some(edge),
             CacheMutationGateV1::Ordinary,
         )
+    }
+}
+
+/// Borrows the same fixed Mount physical writer for exact kind2 edges only.
+///
+/// Generic mutation is denied. Security custody and trusted private Mount table
+/// installation remain higher-owner obligations, not physical readback proofs.
+pub struct MountBarrierIdleReplacementJournalAuthorityV4<'journal> {
+    writer: LocalRecoveryWriter<'journal>,
+}
+
+/// Retains one exact kind2 preflight; it proves no live Session custody.
+#[must_use]
+pub struct PreparedBarrierIdleReplacementV4(PreparedLocalReplacement);
+
+/// Proves exact kind2 physical rows, not trusted Mount table installation.
+///
+/// A genuine physical writer holder can call lower DELETE without installation;
+/// the private Mount coordinator must install and compare first.
+#[must_use]
+pub struct Kind2ProtectedReadbackV4(LocalReadback);
+
+impl<'journal> MountBarrierIdleReplacementJournalAuthorityV4<'journal> {
+    pub(crate) fn claim(journal: &'journal mut Journal) -> Result<Self, JournalError> {
+        Ok(Self {
+            writer: LocalRecoveryWriter::claim(
+                journal,
+                ProtectedAuthorityScope::RootLocalRecoveryKind2,
+            )?,
+        })
+    }
+
+    /// Borrows readonly namespace40 for the actual Security plan consumer.
+    #[doc(hidden)]
+    pub fn security_view(&self) -> &ProtectedJournalAuthority<'journal> {
+        self.writer.security_view()
+    }
+
+    /// Returns complete current owner graph DATA under the held writer.
+    ///
+    /// # Errors
+    /// Refuses stale physical names, unhealthy writer, invalid graph or floors.
+    pub fn current_source_state(&self) -> Result<MountSourceAcquisitionStateV2, JournalError> {
+        self.writer.current_source_state()
+    }
+
+    /// Preflights exact S/H plus its local floor, without proving live custody.
+    ///
+    /// # Errors
+    /// Refuses wrong owner edges, overlapping fences, unproved native debt,
+    /// stale physical currentness, malformed rows or insufficient headroom.
+    pub fn prepare_barrier_idle_replacement(
+        &self,
+        successor: SourceProviderSessionV2,
+    ) -> Result<PreparedBarrierIdleReplacementV4, JournalError> {
+        Ok(PreparedBarrierIdleReplacementV4(
+            self.writer.prepare_barrier_idle_replacement(successor)?,
+        ))
+    }
+
+    /// Commits an exact current kind2 preflight and reads back its own floor.
+    ///
+    /// # Errors
+    /// Refuses stale evidence or bounds; append/readback ambiguity poisons.
+    pub fn commit_barrier_idle_replacement(
+        &mut self,
+        prepared: PreparedBarrierIdleReplacementV4,
+    ) -> Result<Kind2ProtectedReadbackV4, JournalError> {
+        Ok(Kind2ProtectedReadbackV4(
+            self.writer.commit_prepared(prepared.0)?,
+        ))
+    }
+
+    /// Rejoins only kind2 floors after validating all supported local families.
+    ///
+    /// # Errors
+    /// Refuses changed graph, rows, fences or physical currentness.
+    pub fn pending_local_readbacks(&self) -> Result<Vec<Kind2ProtectedReadbackV4>, JournalError> {
+        Ok(self
+            .writer
+            .pending_local_readbacks()?
+            .into_iter()
+            .map(Kind2ProtectedReadbackV4)
+            .collect())
+    }
+
+    /// Retires this own floor after current physical readback.
+    ///
+    /// This does not enforce trusted Mount's private installation sequence.
+    ///
+    /// # Errors
+    /// Refuses stale/wrong readback or accounting; ambiguity poisons the writer.
+    pub fn settle_kind2_local_readback(
+        &mut self,
+        readback: Kind2ProtectedReadbackV4,
+    ) -> Result<CommitResult, JournalError> {
+        self.writer.settle_local_readback(readback.0)
+    }
+}
+
+/// Borrows the same fixed physical writer for exact kind5 DeadReplacement only.
+///
+/// Supplied canonical death/Session DATA is not Security custody or protected
+/// execution-death evidence. Trusted Mount must consume the genuine current
+/// death-bound plan and synchronize table plus cold indexes before own DELETE.
+pub struct MountDeadReplacementJournalAuthorityV4<'journal> {
+    writer: LocalRecoveryWriter<'journal>,
+}
+
+/// Retains one exact physical kind5 preflight, never execution-death authority.
+#[must_use]
+pub struct PreparedDeadReplacementV4(PreparedLocalReplacement);
+
+/// Proves kind5 physical postimages, not Mount runtime-index installation.
+///
+/// A genuine derivative writer holder may call lower DELETE without the private
+/// Mount coordinator. No live custody, descriptor, signing or send grant follows.
+#[must_use]
+pub struct Kind5ProtectedReadbackV4(LocalReadback);
+
+impl<'journal> MountDeadReplacementJournalAuthorityV4<'journal> {
+    pub(crate) fn claim(journal: &'journal mut Journal) -> Result<Self, JournalError> {
+        Ok(Self {
+            writer: LocalRecoveryWriter::claim(
+                journal,
+                ProtectedAuthorityScope::RootLocalRecoveryKind5,
+            )?,
+        })
+    }
+
+    /// Borrows readonly namespace40 for the real death-bound plan consumer.
+    #[doc(hidden)]
+    pub fn security_view(&self) -> &ProtectedJournalAuthority<'journal> {
+        self.writer.security_view()
+    }
+
+    /// Returns complete current owner graph DATA under the same held writer.
+    ///
+    /// # Errors
+    /// Refuses stale names, unhealthy journal or invalid graph/floors.
+    pub fn current_source_state(&self) -> Result<MountSourceAcquisitionStateV2, JournalError> {
+        self.writer.current_source_state()
+    }
+
+    /// Derives and preflights exact T/S/[A]/H plus its kind5/profile1 floor.
+    ///
+    /// The closed physical route rederives the full proposal. Its DATA arguments
+    /// do not prove live Security custody or protected execution death.
+    ///
+    /// # Errors
+    /// Refuses wrong pending/first/repeated/death joins, stale names, existing
+    /// local fences, unproved original native debt, malformed floors or limits.
+    pub fn prepare_dead_replacement(
+        &self,
+        successor: SourceProviderSessionV2,
+        death: DeadProviderExecutionProjectionV2,
+    ) -> Result<PreparedDeadReplacementV4, JournalError> {
+        Ok(PreparedDeadReplacementV4(
+            self.writer.prepare_dead_replacement(successor, death)?,
+        ))
+    }
+
+    /// Commits this exact current physical kind5 preflight and reads it back.
+    ///
+    /// # Errors
+    /// Refuses stale evidence/limits; append or readback ambiguity poisons.
+    pub fn commit_dead_replacement(
+        &mut self,
+        prepared: PreparedDeadReplacementV4,
+    ) -> Result<Kind5ProtectedReadbackV4, JournalError> {
+        Ok(Kind5ProtectedReadbackV4(
+            self.writer.commit_prepared(prepared.0)?,
+        ))
+    }
+
+    /// Rejoins only kind5 floors after canonical whole-family validation.
+    ///
+    /// # Errors
+    /// Refuses missing/changed postimages, references, fences or current names.
+    pub fn pending_local_readbacks(&self) -> Result<Vec<Kind5ProtectedReadbackV4>, JournalError> {
+        Ok(self
+            .writer
+            .pending_local_readbacks()?
+            .into_iter()
+            .map(Kind5ProtectedReadbackV4)
+            .collect())
+    }
+
+    /// Retires only this own kind5 floor after current physical readback.
+    ///
+    /// Trusted private Mount must first install/compare its five maps AND four
+    /// cold indexes. This lower method cannot prove that in-memory sequencing,
+    /// and every genuine derivative physical holder can invoke it without it.
+    ///
+    /// # Errors
+    /// Refuses stale/wrong physical evidence, bindings or accounting; ambiguous
+    /// append/final readback poisons and returns no effect authority.
+    pub fn settle_kind5_local_readback(
+        &mut self,
+        readback: Kind5ProtectedReadbackV4,
+    ) -> Result<CommitResult, JournalError> {
+        self.writer.settle_local_readback(readback.0)
     }
 }

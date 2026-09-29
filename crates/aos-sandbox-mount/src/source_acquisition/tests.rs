@@ -17,6 +17,26 @@ use super::{
     qualify_cold_inventory_barrier,
 };
 
+#[test]
+fn fresh_cold_kind5_constructor_refuses_an_unprotected_journal_without_floor_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("mount.journal");
+    let (mut journal, _) =
+        aos_sandbox::Journal::open(&path, aos_sandbox::JournalLimits::default()).unwrap();
+    assert!(
+        super::FixedMountSourceAcquisitionOwnerV2::borrow_existing_kind5_fixed_journal(
+            &mut journal
+        )
+        .is_err()
+    );
+    assert_eq!(
+        journal
+            .records(aos_sandbox::RecordNamespace::GlobalCapacityReservation)
+            .count(),
+        0
+    );
+}
+
 fn signed_inventory_request() -> (Vec<u8>, [u8; 32]) {
     let signing_key = SigningKey::from_bytes(&[22; 32]);
     let signer = SourceProviderSigningKeyV1::for_signing_key(

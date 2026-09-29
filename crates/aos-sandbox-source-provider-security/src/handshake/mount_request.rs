@@ -644,6 +644,40 @@ impl CurrentRootMountSourceProviderSessionV1 {
         Ok(result)
     }
 
+    /// Holds genuine current Session custody through a closed kind5 append.
+    ///
+    /// The consumed plan binds the protected Head, predecessor and actual death
+    /// proof. The trusted fresh-cold Mount coordinator must install and compare
+    /// its table and recovery indexes before lower own-floor retirement; this
+    /// physical writer cannot prove private runtime installation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale custody or protected before-images. Final revalidation
+    /// failure poisons this Session and leaves any committed floor durable.
+    #[doc(hidden)]
+    pub fn with_dead_replacement_v4<R>(
+        &mut self,
+        writer: &mut aos_sandbox::MountDeadReplacementJournalAuthorityV4<'_>,
+        plan: CurrentMountProviderSessionPlanV2,
+        operation: impl FnOnce(
+            &MountProviderSessionProjectionV2,
+            &mut aos_sandbox::MountDeadReplacementJournalAuthorityV4<'_>,
+        ) -> R,
+    ) -> Result<R, SourceProviderSecurityError> {
+        if plan.predecessor_death_commitment.is_none()
+            || plan.predecessor_session_key.is_none()
+            || plan.predecessor_session_record.is_none()
+        {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        let (session, _, _, _) =
+            self.consume_current_mount_plan_with_snapshot(writer.security_view(), plan)?;
+        let result = operation(&session, writer);
+        self.revalidate()?;
+        Ok(result)
+    }
+
     fn validate_current_mount_plan(
         &mut self,
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,

@@ -287,6 +287,46 @@ impl<W: MountWorker> MountBroker<W> {
         result
     }
 
+    /// Establishes a dead-provider successor only before runtime construction.
+    ///
+    /// This actual absent-runtime boundary permits the trusted cold owner to
+    /// install replay-derived indexes without losing live descriptor or reply
+    /// custody. A failure after construction retains that owner and closes all
+    /// further source borrows until protected process restart.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unhealthy or previously failed state, an existing runtime, invalid
+    /// fixed replay, unproved predecessor death, unfunded original native debt,
+    /// changed current Session/graph, local fences or insufficient capacity.
+    #[doc(hidden)]
+    pub fn establish_cold_provider_successor_v4(
+        &mut self,
+        root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
+    ) -> Result<()> {
+        self.ensure_authority_healthy()?;
+        if self.source_runtime_failed {
+            return Err(MountError::State(
+                "source runtime failed; protected restart is required".to_owned(),
+            ));
+        }
+        if self.source_runtime.is_some() {
+            return Err(MountError::State(
+                "kind5 cold successor cannot replace an existing runtime".to_owned(),
+            ));
+        }
+        let mut owner = crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2::borrow_existing_kind5_fixed_journal(
+            &mut self.journal,
+        )?;
+        self.source_runtime_failed = true;
+        let result = owner.establish_cold_dead_successor_v4(root);
+        self.source_runtime = Some(owner.into_runtime());
+        if result.is_ok() {
+            self.source_runtime_failed = false;
+        }
+        result
+    }
+
     /// Reports whether this broker owns a configured destination-slot store.
     #[must_use]
     pub const fn supports_destination_slots(&self) -> bool {
