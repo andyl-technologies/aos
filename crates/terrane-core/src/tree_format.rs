@@ -92,6 +92,21 @@ pub fn validate_key(key: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
+/// Validates an opaque index-tree key without applying path grammar.
+///
+/// Index keys encode attribute values and object hashes, so NUL and slash
+/// bytes have no filesystem meaning in this context.
+///
+/// # Errors
+/// Returns [`Error::Key`] for an empty key or one longer than 4,096 bytes.
+pub fn validate_index_key(key: &[u8]) -> Result<(), Error> {
+    if key.is_empty() || key.len() > MAX_KEY {
+        Err(Error::Key)
+    } else {
+        Ok(())
+    }
+}
+
 /// A chunk or manifest reference in a file entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContentRef {
@@ -703,6 +718,7 @@ fn common_prefix(left: &[u8], right: &[u8]) -> usize {
 fn leaf_items<'a>(
     decoder: &mut Decoder<'a>,
     min_chunk_size: u64,
+    usage: TreeUse,
 ) -> Result<(Vec<LeafItem<'a>>, usize), Error> {
     let count = decoder.array(MAX_NODE_ITEMS_BYTES / 4)?;
     let mut items = Vec::with_capacity(count);
@@ -721,12 +737,13 @@ fn leaf_items<'a>(
         let mut key = Vec::with_capacity(shared + suffix.len());
         key.extend_from_slice(&previous[..shared]);
         key.extend_from_slice(suffix);
-        validate_key(&key)?;
+        validate_key_for(&key, usage)?;
         if shared != common_prefix(&previous, &key) || (!previous.is_empty() && key <= previous) {
             return Err(Error::Node);
         }
 
         let entry = decode_entry(decoder, 0, min_chunk_size)?;
+        validate_entry_use(&entry.kind, usage)?;
         encoded_bytes += decoder.position() - item_start;
         if encoded_bytes > MAX_NODE_ITEMS_BYTES {
             return Err(Error::Limit);
@@ -737,7 +754,7 @@ fn leaf_items<'a>(
     Ok((items, encoded_bytes))
 }
 
-fn child_refs(decoder: &mut Decoder<'_>) -> Result<(Vec<ChildRef>, usize), Error> {
+fn child_refs(decoder: &mut Decoder<'_>, usage: TreeUse) -> Result<(Vec<ChildRef>, usize), Error> {
     let count = decoder.array(MAX_NODE_ITEMS_BYTES / 37)?;
     let mut items: Vec<ChildRef> = Vec::with_capacity(count);
     let mut encoded_bytes = 0;
@@ -747,7 +764,7 @@ fn child_refs(decoder: &mut Decoder<'_>) -> Result<(Vec<ChildRef>, usize), Error
             return Err(Error::Node);
         }
         let last_key = decoder.bytes(MAX_KEY)?.to_vec();
-        validate_key(&last_key)?;
+        validate_key_for(&last_key, usage)?;
         if items.last().is_some_and(|prior| last_key <= prior.last_key) {
             return Err(Error::Node);
         }
@@ -781,6 +798,23 @@ fn child_refs(decoder: &mut Decoder<'_>) -> Result<(Vec<ChildRef>, usize), Error
 /// Rejects invalid CBOR, node shape or ordering, nonminimal prefix
 /// compression, invalid entries, excessive levels, or resource limits.
 pub fn decode_node(input: &[u8], is_root: bool, min_chunk_size: u64) -> Result<Node<'_>, Error> {
+    decode_node_for(input, is_root, min_chunk_size, TreeUse::Ordinary)
+}
+
+/// Decodes a node using the key grammar and entry types of `usage`.
+///
+/// Index-tree keys are opaque bytes; other tree keys are filesystem paths.
+/// Both forms remain strictly sorted and limited to 4,096 bytes.
+///
+/// # Errors
+/// Rejects invalid CBOR, entries incompatible with `usage`, malformed keys,
+/// nonminimal prefix compression, excessive levels, or resource limits.
+pub fn decode_node_for(
+    input: &[u8],
+    is_root: bool,
+    min_chunk_size: u64,
+    usage: TreeUse,
+) -> Result<Node<'_>, Error> {
     // Item and root-property bytes share one 64 KiB payload budget. Only
     // outer map keys, the level, and the items array header are framing.
     if input.len() > MAX_NODE_ITEMS_BYTES + MAX_NODE_FRAMING_BYTES {
@@ -796,10 +830,10 @@ pub fn decode_node(input: &[u8], is_root: bool, min_chunk_size: u64) -> Result<N
         return Err(Error::Node);
     }
     let (items, item_bytes) = if level == 0 {
-        let (items, bytes) = leaf_items(&mut decoder, min_chunk_size)?;
+        let (items, bytes) = leaf_items(&mut decoder, min_chunk_size, usage)?;
         (NodeItems::Leaf(items), bytes)
     } else {
-        let (items, bytes) = child_refs(&mut decoder)?;
+        let (items, bytes) = child_refs(&mut decoder, usage)?;
         (NodeItems::Internal(items), bytes)
     };
     let (props, property_bytes) = if fields == 3 {
@@ -837,6 +871,20 @@ pub fn decode_node(input: &[u8], is_root: bool, min_chunk_size: u64) -> Result<N
 /// Rejects a node the decoder would not accept, including invalid entry
 /// forms, item ordering, resource limits, and non-root properties.
 pub fn encode_node(node: &Node<'_>, is_root: bool, min_chunk_size: u64) -> Result<Vec<u8>, Error> {
+    encode_node_for(node, is_root, min_chunk_size, TreeUse::Ordinary)
+}
+
+/// Encodes a node for a specific tree context.
+///
+/// # Errors
+/// Rejects a node whose entries or keys violate `usage`, or whose encoding
+/// exceeds the node limit or fails deterministic decoding.
+pub fn encode_node_for(
+    node: &Node<'_>,
+    is_root: bool,
+    min_chunk_size: u64,
+    usage: TreeUse,
+) -> Result<Vec<u8>, Error> {
     let mut output = Vec::new();
     cbor::write_map(&mut output, if node.props.is_some() { 3 } else { 2 });
     cbor::write_uint(&mut output, 1);
@@ -886,7 +934,7 @@ pub fn encode_node(node: &Node<'_>, is_root: bool, min_chunk_size: u64) -> Resul
     if output.len() > MAX_NODE_ITEMS_BYTES + MAX_NODE_FRAMING_BYTES {
         return Err(Error::Limit);
     }
-    decode_node(&output, is_root, min_chunk_size)?;
+    decode_node_for(&output, is_root, min_chunk_size, usage)?;
     Ok(output)
 }
 
@@ -906,7 +954,30 @@ pub fn verify_child_ref(
     child_bytes: &[u8],
     min_chunk_size: u64,
 ) -> Result<(), Error> {
-    if decode_node(child_bytes, false, min_chunk_size)? != *child {
+    verify_child_ref_for(
+        parent_level,
+        reference,
+        child,
+        child_bytes,
+        min_chunk_size,
+        TreeUse::Ordinary,
+    )
+}
+
+/// Verifies a child reference under the parent tree's key context.
+///
+/// # Errors
+/// Returns an error for malformed child bytes, a mismatched level or
+/// identity, or an inaccurate last key, count, or weight claim.
+pub fn verify_child_ref_for(
+    parent_level: u8,
+    reference: &ChildRef,
+    child: &Node<'_>,
+    child_bytes: &[u8],
+    min_chunk_size: u64,
+    usage: TreeUse,
+) -> Result<(), Error> {
+    if decode_node_for(child_bytes, false, min_chunk_size, usage)? != *child {
         return Err(Error::Node);
     }
     if child.level.checked_add(1) != Some(parent_level) {
@@ -965,6 +1036,26 @@ pub enum TreeUse {
     Surface,
     /// A consumer surface that declares conflict support.
     ConflictSurface,
+}
+
+fn validate_key_for(key: &[u8], usage: TreeUse) -> Result<(), Error> {
+    if usage == TreeUse::Index {
+        validate_index_key(key)
+    } else {
+        validate_key(key)
+    }
+}
+
+fn validate_entry_use(kind: &EntryKind<'_>, usage: TreeUse) -> Result<(), Error> {
+    match (kind, usage) {
+        (EntryKind::Index { .. }, TreeUse::Index)
+        | (EntryKind::Whiteout, TreeUse::OverlayLayer) => Ok(()),
+        (EntryKind::Index { .. }, _)
+        | (_, TreeUse::Index)
+        | (EntryKind::Whiteout, _)
+        | (EntryKind::Conflict { .. }, TreeUse::Surface) => Err(Error::Tree),
+        _ => Ok(()),
+    }
 }
 
 fn same_hardlink_value(left: &Entry<'_>, right: &Entry<'_>) -> bool {
@@ -1028,32 +1119,26 @@ pub fn validate_tree_entries(entries: &[LeafItem<'_>], usage: TreeUse) -> Result
     let mut hardlinks: alloc::collections::BTreeMap<&[u8], &Entry<'_>> =
         alloc::collections::BTreeMap::new();
     for item in entries {
-        validate_key(&item.key)?;
+        validate_key_for(&item.key, usage)?;
         if previous.is_some_and(|prior: &[u8]| item.key.as_slice() <= prior) {
             return Err(Error::Tree);
         }
         previous = Some(&item.key);
-        for (position, byte) in item.key.iter().enumerate() {
-            if *byte != b'/' {
-                continue;
-            }
-            let ancestor = &item.key[..position];
-            let index = entries
-                .binary_search_by(|probe| probe.key.as_slice().cmp(ancestor))
-                .map_err(|_| Error::Tree)?;
-            if !matches!(&entries[index].entry.kind, EntryKind::Directory { .. }) {
-                return Err(Error::Tree);
+        if usage != TreeUse::Index {
+            for (position, byte) in item.key.iter().enumerate() {
+                if *byte != b'/' {
+                    continue;
+                }
+                let ancestor = &item.key[..position];
+                let index = entries
+                    .binary_search_by(|probe| probe.key.as_slice().cmp(ancestor))
+                    .map_err(|_| Error::Tree)?;
+                if !matches!(&entries[index].entry.kind, EntryKind::Directory { .. }) {
+                    return Err(Error::Tree);
+                }
             }
         }
-
-        match (&item.entry.kind, usage) {
-            (EntryKind::Whiteout, TreeUse::OverlayLayer) => {}
-            (EntryKind::Whiteout, _) => return Err(Error::Tree),
-            (EntryKind::Index { .. }, TreeUse::Index) => {}
-            (EntryKind::Index { .. }, _) | (_, TreeUse::Index) => return Err(Error::Tree),
-            (EntryKind::Conflict { .. }, TreeUse::Surface) => return Err(Error::Tree),
-            _ => {}
-        }
+        validate_entry_use(&item.entry.kind, usage)?;
         if let EntryKind::File {
             link_id: Some(link_id),
             ..
@@ -1084,8 +1169,9 @@ mod tests {
 
     use super::{
         ChildRef, ContentRef, Entry, EntryKind, Error, LeafItem, Node, NodeItems, TreeUse,
-        decode_entry_bytes, decode_node, encode_node, validate_graft_chain, validate_key,
-        validate_tree_entries, verify_child_ref,
+        decode_entry_bytes, decode_node, decode_node_for, encode_node, encode_node_for,
+        validate_graft_chain, validate_index_key, validate_key, validate_tree_entries,
+        verify_child_ref,
     };
 
     const MIN_CHUNK: u64 = 262_144;
@@ -1460,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    fn index_keys_with_separators_cannot_have_directory_ancestors() {
+    fn index_keys_are_opaque_bytes_at_construction_and_decode() {
         let index = || Entry {
             kind: EntryKind::Index {
                 targets: vec![[1; 32]],
@@ -1471,14 +1557,62 @@ mod tests {
             xattrs_present: false,
             provenance: None,
         };
-        let simple = [item(b"value", index())];
-        validate_tree_entries(&simple, TreeUse::Index).expect("one-component index key");
+        let entries = [
+            item(b"\0", index()),
+            item(b"a\0b", index()),
+            item(b"a/b", index()),
+        ];
+        validate_tree_entries(&entries, TreeUse::Index).expect("opaque keys in byte order");
+        assert_eq!(validate_index_key(b""), Err(Error::Key));
+        assert_eq!(validate_index_key(&vec![b'x'; 4097]), Err(Error::Key));
 
-        let nested = [item(b"a", index()), item(b"a/b", index())];
+        let node = Node {
+            level: 0,
+            items: NodeItems::Leaf(entries.to_vec()),
+            props: None,
+        };
+        let encoded =
+            encode_node_for(&node, true, MIN_CHUNK, TreeUse::Index).expect("opaque index node");
+        let decoded = decode_node_for(&encoded, true, MIN_CHUNK, TreeUse::Index)
+            .expect("opaque index decode");
+        assert_eq!(decoded, node);
+        assert_eq!(decode_node(&encoded, true, MIN_CHUNK), Err(Error::Key));
+        assert_eq!(encode_node(&node, true, MIN_CHUNK), Err(Error::Key));
+
+        let ordinary_entries = [item(b"a/b", file(None))];
         assert_eq!(
-            validate_tree_entries(&nested, TreeUse::Index),
+            validate_tree_entries(&ordinary_entries, TreeUse::Ordinary),
             Err(Error::Tree)
         );
+        let ordinary = Node {
+            level: 0,
+            items: NodeItems::Leaf(ordinary_entries.to_vec()),
+            props: None,
+        };
+        let ordinary_bytes =
+            encode_node(&ordinary, true, MIN_CHUNK).expect("single node checks local path grammar");
+        assert!(decode_node(&ordinary_bytes, true, MIN_CHUNK).is_ok());
+    }
+
+    #[test]
+    fn internal_index_keys_preserve_binary_last_key_order() {
+        let node = Node {
+            level: 1,
+            items: NodeItems::Internal(vec![ChildRef {
+                last_key: b"part/\0hash".to_vec(),
+                child: [9; 32],
+                count: 1,
+                weight: 40,
+            }]),
+            props: None,
+        };
+        let encoded =
+            encode_node_for(&node, true, MIN_CHUNK, TreeUse::Index).expect("binary last key");
+        assert_eq!(
+            decode_node_for(&encoded, true, MIN_CHUNK, TreeUse::Index),
+            Ok(node)
+        );
+        assert_eq!(decode_node(&encoded, true, MIN_CHUNK), Err(Error::Key));
     }
 
     #[test]
