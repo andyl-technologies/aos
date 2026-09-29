@@ -147,6 +147,12 @@ pub enum LiveVcpuTimeCallbackError {
         /// Directed ring index without storage.
         ring_index: u32,
     },
+    /// The process cannot issue another unique mapped ring owner generation.
+    #[error("directed ring {ring_index} owner generation exhausted")]
+    DirectedRingOwnerGenerationExhausted {
+        /// Directed ring whose owner could not be installed.
+        ring_index: u32,
+    },
     /// The selected inbound ring was not the router-to-VM network ring.
     #[error(
         "inbound network ring mismatch: expected {expected_src_slot}->{expected_dst_slot}, got {actual_src_slot}->{actual_dst_slot} at ring {actual_ring_index}"

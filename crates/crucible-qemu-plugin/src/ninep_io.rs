@@ -8,6 +8,7 @@
 use std::{
     array,
     cell::{Cell, RefCell},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use thiserror::Error;
@@ -31,10 +32,22 @@ const NINEP_EIO: u32 = 5;
 const NINEP_EINVAL: u32 = 22;
 const NINEP_ENOSYS: u32 = 38;
 const NINEP_EROFS: u32 = 30;
+static NEXT_NINEP_OWNER_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_ninep_owner_id() -> u64 {
+    // Request IDs can repeat in separate callback states; this owner ID may not.
+    match NEXT_NINEP_OWNER_ID.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        current.checked_add(1)
+    }) {
+        Ok(owner_id) => owner_id,
+        Err(_) => std::process::abort(),
+    }
+}
 
 /// Registration-time-fixed 9p callback state.
 #[derive(Debug)]
 pub struct PluginNinePIo {
+    owner_id: u64,
     vm_slot: u32,
     ninep_slot: u32,
     outbound_ring_index: u32,
@@ -52,7 +65,122 @@ struct PendingNinePDelivery {
     quarantine: Option<NinePIoError>,
 }
 
+/// Factual custody of one original inbound ring head before guest delivery.
+///
+/// The observation is process-local and must be rechecked against the original
+/// live ring. It carries no fixed-input Source, Host actor, or permission to
+/// consume the frame.
+#[derive(Clone, Debug)]
+pub struct NinePInboundHead {
+    ring_index: u32,
+    ring_generation: u64,
+    read_index: u64,
+    frame: FrameEntry,
+}
+
+impl NinePInboundHead {
+    /// Returns the registration-fixed directed inbox index.
+    #[must_use]
+    pub const fn ring_index(&self) -> u32 {
+        self.ring_index
+    }
+
+    /// Returns the generation issued when the mapped ring owner was installed.
+    #[must_use]
+    pub const fn ring_generation(&self) -> u64 {
+        self.ring_generation
+    }
+
+    /// Returns the original absolute consumer frontier.
+    #[must_use]
+    pub const fn read_index(&self) -> u64 {
+        self.read_index
+    }
+
+    /// Returns the original physical response key.
+    #[must_use]
+    pub fn delivery_key(&self) -> FrameDeliveryKey {
+        self.frame.delivery_key()
+    }
+}
+
 impl PluginNinePIo {
+    /// Observes the registered physical head for an original pending request.
+    ///
+    /// The caller retains the original request token in the live callback map.
+    /// A different request at the same ring head returns `None`; it cannot be
+    /// selected by copying a request id or a previously observed frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NinePIoError`] for a wrong ring, malformed head, or invalid
+    /// original device-I/O token.
+    pub fn observe_inbound_head(
+        &self,
+        freeze: &PluginDeviceIoFreeze,
+        inbound_ring: &NinePInboundRing<'_>,
+        token: &NinePRequestToken,
+    ) -> Result<Option<NinePInboundHead>, NinePIoError> {
+        self.check_inbound_ring(inbound_ring)?;
+        if inbound_ring.registered_generation() == 0
+            || token.ninep_owner_id != self.owner_id
+            || self.pending_delivery.borrow().is_some()
+            || !self.pending_request_ids.contains(token.request_id)
+            || !freeze.burst_active()
+            || !token.device_token.burst_member()
+        {
+            return Ok(None);
+        }
+        freeze
+            .completion_current(&token.device_token, DeviceIoRequestOutcome::Completed)
+            .map_err(|source| NinePIoError::DeviceIoFreeze { source })?;
+
+        let read_index = inbound_ring.header.read_index();
+        let head = peek_head_frame(inbound_ring)?;
+        if inbound_ring.header.read_index() != read_index {
+            return Ok(None);
+        }
+        let Some(frame) = head else {
+            return Ok(None);
+        };
+        if frame.src_node != self.ninep_slot || frame.seq != token.request_id {
+            return Ok(None);
+        }
+
+        Ok(Some(NinePInboundHead {
+            ring_index: self.inbound_ring_index,
+            ring_generation: inbound_ring.registered_generation(),
+            read_index,
+            frame,
+        }))
+    }
+
+    /// Rechecks the same actual head and original pending request before use.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NinePIoError`] for a wrong ring, malformed head, or invalid
+    /// original device-I/O token. A moved or consumed head returns `false`.
+    pub fn inbound_head_current(
+        &self,
+        freeze: &PluginDeviceIoFreeze,
+        inbound_ring: &NinePInboundRing<'_>,
+        token: &NinePRequestToken,
+        observed: &NinePInboundHead,
+    ) -> Result<bool, NinePIoError> {
+        if observed.ring_index != self.inbound_ring_index
+            || observed.ring_generation != inbound_ring.registered_generation()
+            || inbound_ring.header.read_index() != observed.read_index
+        {
+            return Ok(false);
+        }
+        let current = self.observe_inbound_head(freeze, inbound_ring, token)?;
+        Ok(current.is_some_and(|current| {
+            current.read_index == observed.read_index
+                && same_response_frame(&current.frame, &observed.frame)
+        }))
+    }
+
     /// Builds 9p callback state from the directed rings selected at registration.
     ///
     /// # Errors
@@ -93,6 +221,7 @@ impl PluginNinePIo {
     #[must_use]
     pub fn new(vm_slot: u32, outbound_ring_index: u32, inbound_ring_index: u32) -> Self {
         Self {
+            owner_id: next_ninep_owner_id(),
             vm_slot,
             ninep_slot: NINEP_IO_SLOT_U32,
             outbound_ring_index,
@@ -215,6 +344,7 @@ impl PluginNinePIo {
             request_id,
             payload_len: request.payload().len(),
             token: NinePRequestToken {
+                ninep_owner_id: self.owner_id,
                 request_id,
                 device_token,
             },
@@ -668,6 +798,7 @@ impl<'a> NinePOutboundRing<'a> {
 #[derive(Clone, Copy)]
 pub struct NinePInboundRing<'a> {
     ring_index: u32,
+    registered_generation: u64,
     src_slot: u32,
     dst_slot: u32,
     header: &'a RingHeader,
@@ -675,6 +806,10 @@ pub struct NinePInboundRing<'a> {
 }
 
 impl<'a> NinePInboundRing<'a> {
+    pub(crate) const fn registered_generation(&self) -> u64 {
+        self.registered_generation
+    }
+
     /// Builds an inbound 9p ring view.
     #[must_use]
     pub const fn new(
@@ -686,6 +821,25 @@ impl<'a> NinePInboundRing<'a> {
     ) -> Self {
         Self {
             ring_index,
+            registered_generation: 0,
+            src_slot,
+            dst_slot,
+            header,
+            entries,
+        }
+    }
+
+    pub(crate) const fn registered(
+        ring_index: u32,
+        registered_generation: u64,
+        src_slot: u32,
+        dst_slot: u32,
+        header: &'a RingHeader,
+        entries: &'a [FrameEntry],
+    ) -> Self {
+        Self {
+            ring_index,
+            registered_generation,
             src_slot,
             dst_slot,
             header,
@@ -925,6 +1079,7 @@ pub fn handle_ninep_wire_fuzz_message(frame: &[u8], msize: u32) -> NinePWireHand
 #[must_use = "9p request tokens must be consumed by 9p poll completion or failure"]
 #[derive(Debug, PartialEq, Eq)]
 pub struct NinePRequestToken {
+    ninep_owner_id: u64,
     request_id: u32,
     device_token: DeviceIoRequestToken,
 }
@@ -1321,6 +1476,87 @@ mod tests {
     use crucible_shmem::{
         KIND_VM, MAX_FRAME_DATA, RegionConfig, RegionLayout, ReservedExecutorSlot,
     };
+
+    #[test]
+    fn inbound_head_custody_follows_the_original_request_and_read_frontier() {
+        let slot = NodeSlot::new(KIND_VM);
+        let mut freeze = PluginDeviceIoFreeze::new();
+        let ninep = PluginNinePIo::new(2, 10, 11);
+        start_burst(&ninep, &mut freeze, &slot);
+
+        let outbound_header = RingHeader::new();
+        let mut outbound_entries = empty_entries(4);
+        let mut outbound = outbound_ring(10, 2, &outbound_header, &mut outbound_entries);
+        let first = submit_raw(&ninep, &mut freeze, &slot, &mut outbound, 70).into_token();
+        let second = submit_raw(&ninep, &mut freeze, &slot, &mut outbound, 70).into_token();
+        let other_owner = PluginNinePIo::new(2, 10, 11);
+        let copied_request_id =
+            submit_raw(&other_owner, &mut freeze, &slot, &mut outbound, 70).into_token();
+        assert_eq!(copied_request_id.request_id(), first.request_id());
+
+        let inbound_header = RingHeader::new();
+        let mut inbound_entries = empty_entries(4);
+        enqueue(
+            &inbound_header,
+            &mut inbound_entries,
+            response_frame(80, first.request_id(), b"Rfirst"),
+        );
+        enqueue(
+            &inbound_header,
+            &mut inbound_entries,
+            response_frame(80, second.request_id(), b"Rsecond"),
+        );
+        let inbound = inbound_ring(11, 2, &inbound_header, &inbound_entries);
+
+        let observed = ninep
+            .observe_inbound_head(&freeze, &inbound, &first)
+            .expect("original inbound head should be readable")
+            .expect("first request owns the physical head");
+        assert_eq!(observed.ring_index(), 11);
+        assert_eq!(observed.ring_generation(), 1);
+        assert_eq!(observed.read_index(), 0);
+        assert_eq!(observed.delivery_key().seq, first.request_id());
+        let unregistered =
+            NinePInboundRing::new(11, NINEP_IO_SLOT_U32, 2, &inbound_header, &inbound_entries);
+        assert!(
+            ninep
+                .observe_inbound_head(&freeze, &unregistered, &first)
+                .expect("unregistered ring view should be a factual refusal")
+                .is_none()
+        );
+        assert!(
+            ninep
+                .inbound_head_current(&freeze, &inbound, &first, &observed)
+                .expect("original head currentness should be readable")
+        );
+        assert!(
+            ninep
+                .observe_inbound_head(&freeze, &inbound, &second)
+                .expect("second request should be readable")
+                .is_none()
+        );
+        assert!(
+            ninep
+                .observe_inbound_head(&freeze, &inbound, &copied_request_id)
+                .expect("foreign token must be a factual refusal")
+                .is_none()
+        );
+
+        PluginShmemOrdering::dequeue_inbound_frame(&inbound_header, &inbound_entries)
+            .expect("physical dequeue should succeed")
+            .expect("first response should be present");
+        assert!(
+            !ninep
+                .inbound_head_current(&freeze, &inbound, &first, &observed)
+                .expect("moved head should be a factual refusal")
+        );
+        assert!(
+            ninep
+                .observe_inbound_head(&freeze, &inbound, &second)
+                .expect("second original request should still be readable")
+                .is_some()
+        );
+    }
 
     #[test]
     fn ninep_io_state_binds_reserved_9p_rings() {
@@ -2157,7 +2393,7 @@ mod tests {
         header: &'a RingHeader,
         entries: &'a [FrameEntry],
     ) -> NinePInboundRing<'a> {
-        NinePInboundRing::new(ring_index, NINEP_IO_SLOT_U32, vm_slot, header, entries)
+        NinePInboundRing::registered(ring_index, 1, NINEP_IO_SLOT_U32, vm_slot, header, entries)
     }
 
     fn start_burst(ninep: &PluginNinePIo, freeze: &mut PluginDeviceIoFreeze, slot: &NodeSlot) {

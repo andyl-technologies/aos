@@ -113,6 +113,28 @@ impl DeviceRingStorage {
     }
 }
 
+#[test]
+fn remapped_ninep_inbox_gets_a_new_physical_owner_generation() {
+    let mut storage = DeviceRingStorage::new();
+    let original = {
+        let first = storage.ninep_pair();
+        let generation = first.inbound.owner_generation;
+        assert_ne!(generation, 0);
+        assert_eq!(
+            first.inbound.ninep_inbound().registered_generation(),
+            generation
+        );
+        generation
+    };
+
+    let replacement = storage.ninep_pair();
+    assert!(replacement.inbound.owner_generation > original);
+    assert_eq!(
+        replacement.inbound.ninep_inbound().registered_generation(),
+        replacement.inbound.owner_generation
+    );
+}
+
 // crucible-lint: allow rust-allow -- the fixture spells both directed endpoints and their distinct backing stores.
 #[allow(
     clippy::too_many_arguments,
