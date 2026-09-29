@@ -139,11 +139,10 @@ fn complete_observed_acquire(
         acquisition.provider.authority_id(),
         acquisition.holder.authority_id(),
     );
-    let mut session = ledger
+    let session = ledger
         .recovered
         .sessions
         .get(&session_identity)
-        .cloned()
         .ok_or(ProviderLedgerError::Corrupt("missing acquire session"))?;
     if session.pending_attempt_digest != Some(attempt.attempt_digest) {
         return Err(ProviderLedgerError::Corrupt("acquire pending link"));
@@ -199,40 +198,12 @@ fn complete_observed_acquire(
             "acquisition lease history",
         ));
     }
-    session.revision =
-        session
-            .revision
-            .checked_add(1)
-            .ok_or(ProviderLedgerError::InvalidTransition(
-                "session revision exhausted",
-            ))?;
-    session.pending_attempt_digest = None;
-    session.last_completed_attempt_digest = Some(attempt.attempt_digest);
-    session.next_response_sequence = session.next_response_sequence.checked_add(1).ok_or(
-        ProviderLedgerError::InvalidTransition("response sequence exhausted"),
+    require_completion_headroom(
+        session.revision,
+        session.next_response_sequence,
+        ledger.recovered.authority.revision,
+        ledger.recovered.authority.inventory_generation,
     )?;
-    let mut authority = ledger.recovered.authority.clone();
-    authority.revision =
-        authority
-            .revision
-            .checked_add(1)
-            .ok_or(ProviderLedgerError::InvalidTransition(
-                "authority revision exhausted",
-            ))?;
-    authority.last_lease_issue_generation = lease_generation;
-    authority.inventory_generation = authority.inventory_generation.checked_add(1).ok_or(
-        ProviderLedgerError::InvalidTransition("inventory generation exhausted"),
-    )?;
-    let _derived_records = vec![
-        (
-            authority_key(authority.provider.authority_id()),
-            Some(encode_authority(&authority)),
-        ),
-        (
-            session_key(session_identity.0, session_identity.1),
-            Some(encode_session(&session)),
-        ),
-    ];
     let committed_session_binding = session.session_binding;
     let source_root_identity = aos_sandbox_source_provider_ledger::SourceRootIdentityV1::new(
         observed.source_root.kernel_boot_id,
@@ -298,4 +269,98 @@ fn complete_observed_acquire(
         .validate_source_provider_authority_snapshot(&committed_snapshot)?;
     confirm_current_session_after_commit(custody, committed_session_binding)?;
     Ok(completed)
+}
+
+// These data checks precede signing. The authoritative reducers still derive
+// and encode the final records; they must not be the first overflow checks
+// because completion preparation signs before finalizing those records.
+fn require_completion_headroom(
+    session_revision: u64,
+    response_sequence: u64,
+    authority_revision: u64,
+    inventory_generation: u64,
+) -> Result<(), ProviderLedgerError> {
+    session_revision
+        .checked_add(1)
+        .ok_or(ProviderLedgerError::InvalidTransition(
+            "session revision exhausted",
+        ))?;
+    response_sequence
+        .checked_add(1)
+        .ok_or(ProviderLedgerError::InvalidTransition(
+            "response sequence exhausted",
+        ))?;
+    authority_revision
+        .checked_add(1)
+        .ok_or(ProviderLedgerError::InvalidTransition(
+            "authority revision exhausted",
+        ))?;
+    inventory_generation
+        .checked_add(1)
+        .ok_or(ProviderLedgerError::InvalidTransition(
+            "inventory generation exhausted",
+        ))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProviderLedgerError, require_completion_headroom};
+
+    // These pure data tests exercise no ingress or signer. A genuine completion
+    // fixture is still required to qualify live signing order.
+    #[test]
+    fn completion_headroom_preserves_each_overflow_error() {
+        let cases = [
+            ([u64::MAX, 0, 0, 0], "session revision exhausted"),
+            ([0, u64::MAX, 0, 0], "response sequence exhausted"),
+            ([0, 0, u64::MAX, 0], "authority revision exhausted"),
+            ([0, 0, 0, u64::MAX], "inventory generation exhausted"),
+        ];
+
+        for ([session, response, authority, inventory], expected) in cases {
+            let result = require_completion_headroom(session, response, authority, inventory);
+
+            assert!(matches!(
+                result,
+                Err(ProviderLedgerError::InvalidTransition(message)) if message == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn completion_headroom_preserves_first_overflow_order() {
+        let cases = [
+            ([u64::MAX; 4], "session revision exhausted"),
+            (
+                [0, u64::MAX, u64::MAX, u64::MAX],
+                "response sequence exhausted",
+            ),
+            ([0, 0, u64::MAX, u64::MAX], "authority revision exhausted"),
+        ];
+
+        for ([session, response, authority, inventory], expected) in cases {
+            let result = require_completion_headroom(session, response, authority, inventory);
+
+            assert!(matches!(
+                result,
+                Err(ProviderLedgerError::InvalidTransition(message)) if message == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn completion_headroom_accepts_inclusive_increment_boundary() {
+        let last_available = u64::MAX - 1;
+
+        let boundary = require_completion_headroom(
+            last_available,
+            last_available,
+            last_available,
+            last_available,
+        );
+
+        assert!(boundary.is_ok());
+        assert!(require_completion_headroom(0, 0, 0, 0).is_ok());
+    }
 }
