@@ -1245,3 +1245,18 @@ cancellation remains cooperative. Earlier records-only evidence is retained.
 
 These independently qualified increments do not establish combined packaged,
 full fleet, provider or hosted acceptance. Those gates remain pending.
+
+## Repeatable optimized Worker issuer check
+
+`checks.build.hub-authority-issuer` runs the ordinary optimized Worker package
+with disposable JavaScript persistence-fault wrappers. All 40 original assertions
+and fault definitions are preserved. Its genuine hermetic run passes all 16
+lifecycle groups, output
+`/nix/store/zlydzzzlddj3vj4w2npqksl58p7fhp9s-hub-authority-issuer-lifecycle-check-1`.
+Producer receipt `/tmp/hub-authority-issuer-check/qualification-receipt.json`
+(`10d4950e42afdf144b55493ef7613ae8e743c083ef5a35d4c0baebb01c7547e6`)
+and root source/evidence review verify the four integration hashes, real result,
+transcript and optimized artifact hashes. This captured source uses the unchanged
+pure issuer prerequisites before the three additive Native time-verifier changes;
+it does not qualify the current combined workspace. Hosted clocks, deployment
+keys, provider dispatch, performance and Native interoperability remain excluded.
