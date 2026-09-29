@@ -3736,17 +3736,10 @@ impl ProtectedJournalAuthority<'_> {
         {
             let (request, _admission_transaction, reservation_id) =
                 capacity_reservation::decode_reservation(value)?;
-            let reservation = self
-                .journal
-                .lookup_global_capacity_reservation_v1(reservation_id)?
-                .ok_or(JournalError::MalformedRecord(
-                    "capacity reservation disappeared during protected replay",
-                ))?;
             if key
                 != capacity_reservation::reservation_key_for_validation(reservation_id).as_slice()
                 || request.purpose != purpose
                 || request.owner_namespace != self.namespace
-                || reservation.request() != request
                 || !retained.insert(reservation_id)
             {
                 return Err(JournalError::MalformedRecord(
