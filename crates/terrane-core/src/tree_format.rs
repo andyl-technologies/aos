@@ -8,7 +8,7 @@
 //! The empty leaf has this canonical representation:
 //!
 //! ```text
-//! {0: 0, 1: []} => a2 00 00 01 80
+//! {1: 0, 2: []} => a2 01 00 02 80
 //! ```
 
 use alloc::boxed::Box;
