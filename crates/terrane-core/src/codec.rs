@@ -1,1 +1,144 @@
-//! Defines portable chunk-codec contracts and receiver-side validation.
+//! Parses chunk codec envelopes and enforces limits before decompression.
+//!
+//! A stored chunk starts with a codec byte. Dictionary-coded chunks carry a
+//! 32-byte dictionary identity before the zstd frame. Frame inspection and
+//! decompression live in the portable `terrane` crate; this module performs
+//! checks that need neither zstd nor a system allocator.
+
+use core::fmt;
+
+/// The number of bytes in a `terrane-v1` dictionary identity.
+pub const DICTIONARY_ID_SIZE: usize = 32;
+
+/// The fixed part of the permitted zstd frame overhead, in bytes.
+pub const FRAME_OVERHEAD_BYTES: usize = 128;
+
+/// The compression applied to a chunk body.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Codec {
+    /// The body is the plaintext bytes.
+    Raw,
+    /// The body is exactly one zstd frame.
+    Zstd,
+    /// The body is exactly one zstd frame using the named dictionary.
+    ZstdDictionary([u8; DICTIONARY_ID_SIZE]),
+}
+
+/// A parsed chunk envelope whose body excludes the codec and dictionary ID.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EncodedChunk<'a> {
+    /// The codec described by the envelope.
+    pub codec: Codec,
+    /// The raw bytes or a single zstd frame.
+    pub body: &'a [u8],
+}
+
+/// A malformed chunk envelope or a violation of its declared size bounds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CodecError {
+    /// The envelope has no codec byte.
+    MissingCodec,
+    /// The codec byte has no registered meaning.
+    UnknownCodec(u8),
+    /// A dictionary-coded chunk does not contain a complete identity.
+    TruncatedDictionaryIdentity,
+    /// The declared plaintext exceeds the active chunk profile's maximum.
+    DeclaredLengthTooLarge,
+    /// The body length cannot be the declared raw plaintext length.
+    RawLengthMismatch,
+    /// A compressed body exceeds the profile's allowed frame overhead.
+    CompressedLengthTooLarge,
+}
+
+impl fmt::Display for CodecError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingCodec => f.write_str("chunk envelope has no codec byte"),
+            Self::UnknownCodec(codec) => write!(f, "unknown chunk codec {codec:#04x}"),
+            Self::TruncatedDictionaryIdentity => {
+                f.write_str("dictionary-coded chunk has a truncated identity")
+            }
+            Self::DeclaredLengthTooLarge => {
+                f.write_str("declared plaintext exceeds the chunk profile maximum")
+            }
+            Self::RawLengthMismatch => f.write_str("raw body differs from declared length"),
+            Self::CompressedLengthTooLarge => {
+                f.write_str("compressed body exceeds the frame overhead bound")
+            }
+        }
+    }
+}
+
+impl core::error::Error for CodecError {}
+
+/// Parses the codec byte and optional dictionary identity.
+///
+/// The dictionary identity is opaque here. A receiver must resolve and verify
+/// the exact named dictionary before decoding the frame.
+///
+/// # Errors
+///
+/// Returns an error for an absent or unknown codec byte, or for an incomplete
+/// dictionary identity.
+pub fn parse_envelope(encoded: &[u8]) -> Result<EncodedChunk<'_>, CodecError> {
+    let (&codec, body) = encoded.split_first().ok_or(CodecError::MissingCodec)?;
+
+    let chunk = match codec {
+        0x00 => EncodedChunk { codec: Codec::Raw, body },
+        0x01 => EncodedChunk { codec: Codec::Zstd, body },
+        0x02 => {
+            let (identity, frame) = body
+                .split_at_checked(DICTIONARY_ID_SIZE)
+                .ok_or(CodecError::TruncatedDictionaryIdentity)?;
+            let mut dictionary_id = [0; DICTIONARY_ID_SIZE];
+            dictionary_id.copy_from_slice(identity);
+
+            EncodedChunk {
+                codec: Codec::ZstdDictionary(dictionary_id),
+                body: frame,
+            }
+        }
+        other => return Err(CodecError::UnknownCodec(other)),
+    };
+
+    Ok(chunk)
+}
+
+/// Checks the declared plaintext length and encoded body overhead.
+///
+/// The ratio check compares integers without rounding away a fraction of a
+/// byte: `100 * (body - plaintext) <= 12800 + plaintext`.
+///
+/// # Errors
+///
+/// Returns an error when the declared plaintext exceeds the profile maximum,
+/// raw length disagrees with its declaration, or a compressed body exceeds
+/// the permitted 128 bytes plus one percent overhead.
+pub fn validate_envelope_size(
+    chunk: EncodedChunk<'_>,
+    declared_plaintext_len: usize,
+    profile_max: usize,
+) -> Result<(), CodecError> {
+    if declared_plaintext_len > profile_max {
+        return Err(CodecError::DeclaredLengthTooLarge);
+    }
+
+    match chunk.codec {
+        Codec::Raw if chunk.body.len() != declared_plaintext_len => {
+            Err(CodecError::RawLengthMismatch)
+        }
+        Codec::Raw => Ok(()),
+        Codec::Zstd | Codec::ZstdDictionary(_) => {
+            let excess = chunk.body.len().saturating_sub(declared_plaintext_len) as u128;
+            let scaled_excess = excess * 100;
+            let scaled_allowance = (FRAME_OVERHEAD_BYTES as u128 * 100)
+                + declared_plaintext_len as u128;
+
+            if scaled_excess > scaled_allowance {
+                Err(CodecError::CompressedLengthTooLarge)
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
