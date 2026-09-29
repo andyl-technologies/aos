@@ -179,7 +179,7 @@ def registry_index_observations(query, slug):
     }
 
 
-def assert_registry_index_parity(readers, slug):
+def assert_registry_index_parity(readers, slug, *, container_index_digest):
     """Require equal nonempty signed release, artifact, and channel snapshots."""
     snapshots = {
         mode: registry_index_observations(query, slug)
@@ -190,6 +190,14 @@ def assert_registry_index_parity(readers, slug):
     assert baseline["packages"] and baseline["platforms"] and baseline["release_artifacts"], baseline
     assert baseline["channel_floors"] == [["stable", "2.0.0"]], baseline["channel_floors"]
     assert len(baseline["channel_partitions"]) == 256, len(baseline["channel_partitions"])
+    roots = baseline["container_roots"]
+    assert len(roots) == 1, roots
+    assert roots[0][1:4] == ["aos", "aos", container_index_digest], roots
+    for projection in (
+        "container_roots", "container_closure_members", "container_evidence",
+        "container_provenance", "container_layers",
+    ):
+        assert baseline[projection], (projection, baseline[projection])
 
     for mode, snapshot in snapshots.items():
         differences = {

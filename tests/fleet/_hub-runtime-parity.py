@@ -11,6 +11,7 @@ import json
 import re
 import shlex
 import textwrap
+import urllib.parse
 
 
 def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, snapshot_assert):
@@ -40,12 +41,15 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
     assert corpus_size > 0, "empty signed parity corpus"
     trust_key = fixture["trust_key"]
 
+    # Native signing readers require owner-private files, including fixture seeds.
     native.succeed(textwrap.dedent(f"""
         set -eu
         umask 077
         mkdir -p {native_root}
         printf '[]' > {native_root}/probe-signers.json
         {coreutils}/install -m 0600 {fixture['route_keys']} {native_root}/route-keys.json
+        {coreutils}/install -m 0600 {fixture['release_seed']} {native_root}/release-receipt.key
+        {coreutils}/install -m 0600 {fixture['channel_seed']} {native_root}/channel-receipt.key
         {hub} --root {native_root} init \\
           --root-email {email} --root-password {password}
         HUB_DNS_JSON_ENDPOINT=https://dns.google/resolve \\
@@ -58,9 +62,9 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
           --cloudflare-api-token parity-fixture-token \\
           --deployment-id fleet-native-parity-v1 \\
           --release-receipt-key-id staging-publication-v1 \\
-          --release-receipt-key-file {fixture['release_seed']} \\
+          --release-receipt-key-file {native_root}/release-receipt.key \\
           --channel-receipt-key-id staging-channel-v1 \\
-          --channel-receipt-key-file {fixture['channel_seed']} \\
+          --channel-receipt-key-file {native_root}/channel-receipt.key \\
           --release-publication-keys-file {fixture['publication_keys']} \\
           --qualification-keys-file {fixture['qualification_keys']} \\
           > {native_root}/server.log 2>&1 < /dev/null &
@@ -111,16 +115,22 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
         f"--password {password} --seal-key {seal_key}",
         timeout=120,
     )
-    native.wait_until_succeeds(f"{curl} -fsS {native_origin}/healthz > /dev/null", timeout=180)
+    try:
+        native.wait_until_succeeds(f"{curl} -fsS {native_origin}/healthz > /dev/null", timeout=180)
+    except Exception:
+        print("Native-only parity startup log:", native.succeed(
+            f"tail -n 100 {native_root}/server.log 2>/dev/null || true"
+        ))
+        raise
 
     for mode, machine, origin in (
         ("native_only", native, native_origin),
         ("worker_only", worker, worker_origin),
     ):
-        token = browser_session_token(machine, origin, email, password, curl)
         copy_signed_surface(client, machine, corpus_path, corpus_size, corpus_digest, source_root, tools)
+        token = browser_session_token(machine, origin, email, password, curl)
         setup_and_publish_same_registry(
-            machine, origin, token, trust_key, source_root, tools,
+            machine, origin, token, trust_key, source_root, tools, fixture,
             refresh_token=lambda: browser_session_token(machine, origin, email, password, curl),
             provision_worker_binding=mode == "worker_only",
         )
@@ -159,7 +169,7 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
         "hybrid": hybrid_query,
         "native_only": native_query,
         "worker_only": worker_query,
-    }, "fleet/containers")
+    }, "fleet/containers", container_index_digest=fixture["container_index_digest"])
 
     for machine, root in ((native, native_root), (worker, worker_root)):
         pid_file = "server.pid" if machine is native else "worker.pid"
@@ -224,7 +234,7 @@ def copy_signed_surface(client, destination, corpus_path, corpus_size, corpus_di
 
 
 def setup_and_publish_same_registry(
-    machine, origin, token, trust_key, source_root, tools, *, refresh_token,
+    machine, origin, token, trust_key, source_root, tools, fixture, *, refresh_token,
     provision_worker_binding=False,
 ):
     """Create the same reviewed registry and publish exact pre-authored bytes."""
@@ -271,6 +281,12 @@ def setup_and_publish_same_registry(
     reviewed("parity-promote", "placement promote registry:fleet/containers primary --if-version " + shlex.quote(placement["resource_version"]))
 
     token = refresh_token()
+    configure_oci_parity_route(
+        machine, origin, command, reviewed, org, tools, fixture,
+        worker_ingress=provision_worker_binding,
+    )
+    stage_same_container_graph(machine, origin, tools, fixture, refresh_token=refresh_token)
+    token = refresh_token()
     try:
         publication, token = publish_signed_surface(
             machine,
@@ -288,10 +304,142 @@ def setup_and_publish_same_registry(
         ))
         raise
     assert publication["state"] == "ready", publication
+    token = refresh_token()
     machine.wait_until_succeeds(
         command("registry show fleet/containers") + f" | {tools['jq']} -e '.data.registry.index_state == \"fresh\"' > /dev/null",
         timeout=240,
     )
+
+
+def configure_oci_parity_route(
+    machine, origin, command, reviewed, org, tools, fixture, *, worker_ingress,
+):
+    """Configure and observe a public route using the ordinary reviewed APIs."""
+    def reviewed_control(label, plan_command, apply_command):
+        plan = json.loads(machine.succeed(command(
+            plan_command, "--idempotency-key " + shlex.quote(label + "-plan"),
+        ), timeout=180))["data"]["plan"]
+        assert plan["effects"], plan
+        return json.loads(machine.succeed(command(
+            apply_command,
+            f"--plan-id {shlex.quote(plan['plan_id'])} "
+            f"--confirm-hash {shlex.quote(plan['confirmation_hash'])} "
+            f"--yes --idempotency-key {shlex.quote(label + '-apply')}",
+        ), timeout=180))
+
+    hostname = urllib.parse.urlsplit(origin).hostname
+    assert hostname, origin
+    reviewed("parity-oci-domain", "domain add " + shlex.quote(hostname) + " --org fleet")
+    reviewed_control(
+        "parity-oci-controller", "org service-account create plan fleet parity-controller",
+        "org service-account create apply",
+    )
+    reviewed_control(
+        "parity-oci-controller-membership",
+        "org member set-role plan --principal-kind service_account "
+        "--principal fleet/parity-controller --scope " + shlex.quote(org["stable_id"]) +
+        " --role owner --if-version absent",
+        "org member set-role apply",
+    )
+    issued = reviewed_control(
+        "parity-oci-controller-token",
+        "access-token issue plan " + shlex.quote(org["stable_id"]) +
+        " --owner service_account:fleet/parity-controller "
+        "--permission endpoint.read --permission endpoint.manage "
+        "--ttl-secs 3600 --comment 'Runtime parity endpoint controller'",
+        "access-token issue apply",
+    )
+    controller_secret = issued["data"]["result"]["secret"]
+    controller_token = json.loads(machine.succeed(
+        f"{tools['curl']} -fsS -X POST -H 'Content-Type: application/x-www-form-urlencoded' "
+        f"-H 'Authorization: Bearer {controller_secret}' "
+        "--data-urlencode 'grant_type=urn:aos:params:oauth:grant-type:provisioning-token' "
+        f"{origin}/oauth2/token",
+        timeout=60,
+    ))["access_token"]
+
+    # Both ordinary runtimes supply hub ingress evidence. The Hybrid front's
+    # signed layer7 evidence belongs to its separately configured routes.
+    ingress = "hub"
+    listener_provider = "hub-worker" if worker_ingress else "hub-native"
+    listener_resource = "parity-runner" if worker_ingress else "aos-hub.service"
+    reviewed(
+        "parity-oci-endpoint", "endpoint add " + shlex.quote(origin) +
+        " --stable-id parity-oci --org fleet --network-policy instance:public@1 "
+        f"--ingress {ingress} --listener-provider {listener_provider} "
+        f"--listener-resource-id {listener_resource} "
+        "--tls-provider external --certificate-ref parity-fleet "
+        "--probe-provider native-file --probe-signer-secret-ref fleet-probe-v1 "
+        "--probe-public-key " + shlex.quote(fixture["probe_public_key"]),
+    )
+    endpoint = json.loads(machine.succeed(command("endpoint show parity-oci")))["data"]["endpoint"]
+    generation = int(endpoint["desired_generation"])
+    observation = {
+        "stableId": "parity-oci",
+        "expectedObservationVersion": endpoint["resource_version"],
+        "controllerLeaseId": "parity-fleet-controller",
+        "controllerGeneration": 1,
+        "observation": {
+            "observedGeneration": generation,
+            "boundaryRevision": endpoint["desired"]["boundary_revision"],
+            "state": "healthy", "listenerObserved": True, "tlsObserved": True,
+        },
+    }
+    machine.succeed(
+        f"{tools['curl']} -fsS -X POST -H 'Content-Type: application/json' "
+        "-H 'Connect-Protocol-Version: 1' "
+        f"-H 'Authorization: Bearer {controller_token}' "
+        f"--data {shlex.quote(json.dumps(observation))} "
+        f"{origin}/aos.hub.v1.DeliveryControllerService/ReportEndpoint",
+        timeout=60,
+    )
+    reviewed(
+        "parity-oci-route", f"route add registry:fleet/containers --stable-id parity-oci-route "
+        f"--endpoint parity-oci@{generation} --base-path / --mode hub-proxy "
+        "--placement primary --serves oci --access public",
+    )
+    route = next(row for row in json.loads(machine.succeed(command(
+        "route list registry:fleet/containers",
+    )))["data"]["routes"] if row["stable_id"] == "parity-oci-route")
+    reviewed("parity-oci-route-enable", "route enable parity-oci-route --if-version " + shlex.quote(route["resource_version"]))
+    machine.wait_until_succeeds(f"{tools['curl']} -fsS {origin}/v2/", timeout=180)
+
+
+def stage_same_container_graph(machine, origin, tools, fixture, *, refresh_token):
+    """Finalize and stage the exact externally signed graph on another runtime."""
+    container_root = fixture["container_root"]
+    authority = urllib.parse.urlsplit(origin).netloc
+    # Reassemble the same public signed bundle from the shared Nix inputs and
+    # exact external signature; no private signing key enters these machines.
+    signature_path = "/tmp/parity-container-signature.sig"
+    machine.succeed(
+        f"printf '%s' {shlex.quote(fixture['container_signature'])} > {signature_path}",
+        timeout=60,
+    )
+    finalized = json.loads(machine.succeed(
+        f"{tools['aos']} --json --progress off --color never container finalize-signature "
+        f"{shlex.quote(fixture['container_inputs'])} --signer {shlex.quote(fixture['trust_key'])} "
+        f"--signature {signature_path} --output {shlex.quote(container_root)}",
+        timeout=900,
+    ))
+    assert finalized["verification"] == "verified-external-sshsig", finalized
+    assert finalized["index_digest"] == fixture["container_index_digest"], finalized
+    upload_cache = container_root + "/upload-cache"
+    machine.succeed(f"{tools['coreutils']}/install -d -m 0700 {shlex.quote(upload_cache)}")
+    token = refresh_token()
+    staged = json.loads(machine.succeed(
+        f"XDG_CACHE_HOME={shlex.quote(upload_cache)} "
+        f"{tools['aos']} --json --progress off --color never container publish aos "
+        f"{shlex.quote(authority + '/aos:parity')} "
+        f"--release {shlex.quote(finalized['release'])} "
+        f"--release-layout {shlex.quote(finalized['layout'])} "
+        f"--signature-input {shlex.quote(finalized['signature_input'])} "
+        f"--registry fleet/containers --registry-origin {shlex.quote(origin)} "
+        f"--registry-token {shlex.quote(token)} --idempotency-key runtime-parity-container-stage --stage-only",
+        timeout=900,
+    ))
+    assert staged["state"] == "staged" and not staged["tag_updated"], staged
+    assert staged["index_digest"] == fixture["container_index_digest"], staged
 
 
 def worker_only_configuration(main, origin, root, fixture, secrets):

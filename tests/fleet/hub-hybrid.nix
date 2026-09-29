@@ -10,6 +10,17 @@
   pkgs,
 }: let
   fixture = import ./_native-hub-production.nix {inherit lib mkSystem pkgs;};
+  containerFixture = mkSystem {
+    systemName = "server";
+    modules = [
+      ../../systems/server.nix
+      {
+        # Bind the real AOS base image to the first signed qualification release.
+        aos.containers.definitions.aos.publication.releaseIdentity = lib.mkForce "1.0.0";
+      }
+    ];
+  };
+  containerPublicationInputs = containerFixture.config.system.build.containers.aos.publicationInputs;
   caCertificate = builtins.readFile ../fixtures/hub-hybrid-fleet-ca.crt;
   s3CertificatePem = builtins.readFile ../fixtures/hub-hybrid-fleet-s3.crt;
   writeFixture = name: text:
@@ -240,6 +251,7 @@
       pkgs.garage
       pkgs.nginx
       pkgs.nix
+      pkgs.openssh
       pkgs.postgresql
       pkgs.sed
       pkgs.sqlite
@@ -247,6 +259,7 @@
       pkgs.util-linux
       fixture.helperV1
       fixture.helperV2
+      containerPublicationInputs
       databaseUrl
       ingressKey
       storageKey
@@ -438,7 +451,9 @@ in {
           {POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -Atc 'select 1'
       """), timeout=180)
       native.succeed(textwrap.dedent("""
-          HUB_DATABASE_URL_FILE=${databaseUrl}/value \\
+          install -d -m 0700 /run/hybrid-bootstrap-credentials
+          install -m 0600 ${databaseUrl}/value /run/hybrid-bootstrap-credentials/database-url
+          HUB_DATABASE_URL_FILE=/run/hybrid-bootstrap-credentials/database-url \\
             ${pkgs.aos-hub}/bin/aos-hub --root /var/lib/aos-hub init \\
             --root-email fleet-root@example.test \\
             --root-password fleet-root-password
@@ -1650,6 +1665,39 @@ in {
       publication_size = multipart_part_size + 13
       publication_path = "web/fleet-large.bin"
       publication_digest = hashlib.sha256(bytes(publication_size)).hexdigest()
+      # Complete source evidence exceeds /tmp's memory-backed capacity.
+      finalized_container = json.loads(client.succeed(textwrap.dedent(f"""
+          set -euo pipefail
+          export HOME=/tmp/hybrid-apr-home USER=fleet-publisher
+          export PATH=${pkgs.git}/bin:${pkgs.openssh}/bin:$PATH
+          key="$HOME/.config/apm/keys/containers-initial.key"
+          {AOS} --json --progress off --color never container prepare-signature \\
+            ${containerPublicationInputs} --output /tmp/hybrid-container-signature.pae
+          ${pkgs.openssh}/bin/ssh-keygen -Y sign -f "$key" \\
+            -n aos-container-signature-dsse-v1 /tmp/hybrid-container-signature.pae
+          {AOS} --json --progress off --color never container finalize-signature \\
+            ${containerPublicationInputs} --signer {shlex.quote(trust_key)} \\
+            --signature /tmp/hybrid-container-signature.pae.sig \\
+            --output /var/lib/hybrid-container-final
+      """), timeout=900).splitlines()[-1])
+      assert finalized_container["verification"] == "verified-external-sshsig", finalized_container
+      assert finalized_container["release_identity"] == "1.0.0", finalized_container
+      session_token = refresh_session_token()
+      client.succeed("install -d -m 0700 /var/lib/hybrid-container-upload-state")
+      container_stage = json.loads(client.succeed(
+          "XDG_CACHE_HOME=/var/lib/hybrid-container-upload-state "
+          f"{AOS} --json --progress off --color never container publish aos "
+          "aos.andyl.org/aos:parity "
+          f"--release {shlex.quote(finalized_container['release'])} "
+          f"--release-layout {shlex.quote(finalized_container['layout'])} "
+          f"--signature-input {shlex.quote(finalized_container['signature_input'])} "
+          "--registry fleet/containers --registry-origin https://aos.andyl.org "
+          f"--registry-token {shlex.quote(session_token)} "
+          "--idempotency-key hybrid-container-parity-stage --stage-only",
+          timeout=900,
+      ))
+      assert container_stage["state"] == "staged" and not container_stage["tag_updated"], container_stage
+      assert container_stage["index_digest"] == finalized_container["index_digest"], container_stage
       client.succeed(textwrap.dedent(f"""
           set -eu
           export HOME=/tmp/hybrid-apr-home USER=fleet-publisher
@@ -1668,12 +1716,23 @@ in {
           mkdir -p "$HOME/.config/apm/registries.d"
           printf '[registry]\\nname = "containers"\\nurl = "file://%s"\\n\\n[registry.signing_keys]\\ninitial = "%s"\\n' \\
             "$registry" "$key" > "$HOME/.config/apm/registries.d/containers.toml"
+          # The signed image identity requires its exact package/version in
+          # the signed release tree, alongside the changing helper package.
+          {APR} publish ${pkgs.aos} --registry containers --name aos --version 0.1.0 \\
+            --description 'AOS command-line package for the base-image release' \\
+            --license Apache-2.0 --maintainer fleet-publisher@example.test --key-id initial
           {APR} release 1.0.0 --registry containers \\
+            --container-release /var/lib/hybrid-container-final/container-release.json \\
+            --container-signature-input /var/lib/hybrid-container-final/signature-input.json \\
             --store-path ${fixture.helperV1} --name hub-helper \\
             --description 'Hybrid release indexing fixture' --license MIT \\
             --maintainer fleet-publisher@example.test --key-id initial \\
             --cache-url https://aos.andyl.org/fleet/containers \\
             --upload-url file:///tmp/hybrid-publication-surface
+          # The next release has no container; remove its predecessor's sidecar
+          # through a real commit rather than carrying a mismatched identity.
+          git -C "$registry" rm containers/v1/index.json
+          git -C "$registry" commit -m 'Remove the previous release container sidecar'
           {APR} release 2.0.0 --registry containers \\
             --store-path ${fixture.helperV2} --name hub-helper --previous 1.0.0 \\
             --description 'Hybrid release indexing fixture' --license MIT \\
@@ -1739,6 +1798,12 @@ in {
           print("Native index errors after freshness failure:", native.succeed(
               "journalctl -u aos-hub.service -p warning --no-pager -n 60"
           ))
+          print("Authoritative registry index status:", native.succeed(
+              f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+              "-c \"SELECT state, error FROM registry_index index "
+              "JOIN registries registry ON registry.id = index.registry_id "
+              "WHERE registry.slug = 'fleet/containers'\""
+          ))
           raise
 
       # The operator command must use the same Worker storage adapter as the
@@ -1754,17 +1819,34 @@ in {
           ${pkgs.coreutils}/bin/install -m 0600 -o 802 -g 802 \\
             ${secretVersionManifest}/value /var/lib/aos-hub/fleet-index/secret-version-manifest
       """))
-      operator_index = native.succeed(
-          "HUB_DATABASE_URL_FILE=/var/lib/aos-hub/fleet-index/database-url "
-          "HUB_TOPOLOGY=hybrid HUB_DEPLOYMENT_ID=fleet-hybrid-v1 "
-          "HUB_HYBRID_WORKER_URL=https://aos.andyl.org "
-          "HUB_STORAGE_WORK_KEY_FILE=/var/lib/aos-hub/fleet-index/storage-key "
-          "HUB_SECRET_VERSION_MANIFEST_FILE=/var/lib/aos-hub/fleet-index/secret-version-manifest "
-          f"{CHROOT} ${pkgs.aos-hub}/bin/aos-hub index fleet/containers",
-          timeout=180,
+      operator_index_logs = []
+
+      def run_hybrid_operator_index(slug):
+          output = native.succeed(
+              "HUB_DATABASE_URL_FILE=/var/lib/aos-hub/fleet-index/database-url "
+              "HUB_TOPOLOGY=hybrid HUB_DEPLOYMENT_ID=fleet-hybrid-v1 "
+              "HUB_HYBRID_WORKER_URL=https://aos.andyl.org "
+              "HUB_STORAGE_WORK_KEY_FILE=/var/lib/aos-hub/fleet-index/storage-key "
+              "HUB_SECRET_VERSION_MANIFEST_FILE=/var/lib/aos-hub/fleet-index/secret-version-manifest "
+              f"{CHROOT} ${pkgs.aos-hub}/bin/aos-hub index {shlex.quote(slug)} 2>&1",
+              timeout=180,
+          )
+          operator_index_logs.append("\n".join(
+              line for line in output.splitlines()
+              if any(marker in line for marker in (
+                  "hybrid storage boundary", "registry release index phase completed",
+                  "registry index run completed",
+              ))
+          ))
+          return output
+
+      operator_index = run_hybrid_operator_index("fleet/containers")
+      operator_index_summary = re.search(
+          r"fleet/containers: \d+ packages, 2 releases, \d+ channels @ [0-9a-f]+",
+          operator_index,
       )
-      assert re.search(r"fleet/containers: \d+ packages, 2 releases, \d+ channels @ ", operator_index), operator_index
-      print("standalone hybrid operator indexing:", operator_index.strip())
+      assert operator_index_summary, operator_index
+      print("standalone hybrid operator indexing:", operator_index_summary.group(0))
 
       # The same signed tags produced by APR must reach the authoritative DB.
       # Comparing exact object identities catches successful but partial walks.
@@ -1801,6 +1883,111 @@ in {
           f"-c {shlex.quote(channel_query)}"
       ).strip()
       assert channel_floor == "2.0.0", channel_floor
+
+      # Container indexes must revalidate exact placement evidence on refresh.
+      # Exercise the channel-only optimization with a separately signed graph
+      # whose immutable releases contain package metadata and no image roots.
+      metadata_trust_key = client.succeed(textwrap.dedent(f"""
+          set -eu
+          export HOME=/tmp/hybrid-apr-home
+          {APR} keys generate initial --registry metadata 2>&1 | \\
+            ${pkgs.gawk}/bin/awk '/Public key:/ {{print $NF; exit}}'
+      """), timeout=120).strip()
+      assert metadata_trust_key.startswith("metadata:Ed25519:"), metadata_trust_key
+      session_token = refresh_session_token()
+      reviewed(
+          "hybrid-metadata-registry",
+          "registry create --org fleet --name metadata --visibility public "
+          f"--trust-key {shlex.quote(metadata_trust_key)}",
+      )
+      reviewed(
+          "hybrid-metadata-placement",
+          "placement add registry:fleet/metadata primary --binding instance-default "
+          "--prefix registries/fleet-metadata --kind complete "
+          "--desired-state active --read enabled",
+      )
+      metadata_placement = json.loads(client.succeed(hub_command(
+          "placement show registry:fleet/metadata primary"
+      )))["data"]["placement"]
+      reviewed(
+          "hybrid-metadata-placement-scan",
+          "placement scan registry:fleet/metadata primary --wait --timeout 2m "
+          f"--if-version {shlex.quote(metadata_placement['resource_version'])}",
+          timeout=180,
+      )
+      metadata_placement = json.loads(client.succeed(hub_command(
+          "placement show registry:fleet/metadata primary"
+      )))["data"]["placement"]
+      reviewed(
+          "hybrid-metadata-placement-promote",
+          "placement promote registry:fleet/metadata primary "
+          f"--if-version {shlex.quote(metadata_placement['resource_version'])}",
+      )
+      client.succeed(textwrap.dedent(f"""
+          set -eu
+          export HOME=/tmp/hybrid-apr-home
+          export PATH=${pkgs.git}/bin:${pkgs.openssh}/bin:$PATH
+          key="$HOME/.config/apm/keys/metadata-initial.key"
+          {APR} create metadata --trust-key {shlex.quote(metadata_trust_key)} \\
+            --trust-key-id initial --key "$key"
+          registry="$HOME/.local/share/apm/registries/metadata"
+          printf '[registry]\\nname = "metadata"\\nurl = "file://%s"\\n\\n[registry.signing_keys]\\ninitial = "%s"\\n' \\
+            "$registry" "$key" > "$HOME/.config/apm/registries.d/metadata.toml"
+          {APR} release 1.0.0 --registry metadata \\
+            --store-path ${fixture.helperV1} --name hub-helper \\
+            --description 'Hybrid metadata-only indexing fixture' --license MIT \\
+            --maintainer fleet-publisher@example.test --key-id initial \\
+            --channel stable --init-channel \\
+            --cache-url https://aos.andyl.org/fleet/objects \\
+            --upload-url file:///tmp/hybrid-metadata-surface
+          {APR} verify --registry metadata
+      """), timeout=180)
+      session_token = refresh_session_token()
+      metadata_publication, session_token = publish_signed_surface(
+          client,
+          lambda token: (
+              f"{AOS} --json hub registry publish upload fleet/metadata "
+              "--root /tmp/hybrid-metadata-surface --hub https://aos.andyl.org "
+              f"--token {shlex.quote(token)}"
+          ),
+          session_token,
+          refresh_session_token,
+      )
+      assert metadata_publication["state"] == "ready", metadata_publication
+      # Publication explicitly schedules the cold walk. Wait for its commit
+      # before invoking an unchanged refresh rather than depending on a timer.
+      client.wait_until_succeeds(
+          hub_command("registry show fleet/metadata")
+          + " | ${pkgs.jq}/bin/jq -e '.data.registry.index_state == \"fresh\"' > /dev/null",
+          timeout=180,
+      )
+      metadata_registry_id = int(native.succeed(
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          "-c \"SELECT id FROM registries WHERE slug = 'fleet/metadata'\""
+      ).strip())
+      container_registry_id = int(native.succeed(
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          "-c \"SELECT id FROM registries WHERE slug = 'fleet/containers'\""
+      ).strip())
+      metadata_image_count = int(native.succeed(
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          "-c \"SELECT (SELECT COUNT(*) FROM registry_system_images "
+          f"WHERE registry_id = {metadata_registry_id}) + "
+          "(SELECT COUNT(*) FROM oci_release_roots "
+          f"WHERE registry_id = {metadata_registry_id})\""
+      ).strip())
+      assert metadata_image_count == 0, metadata_image_count
+      metadata_identity_query = (
+          f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
+          "-c \"SELECT last_indexed_commit, refs_digest FROM registry_index "
+          f"WHERE registry_id = {metadata_registry_id}\""
+      )
+      metadata_identity = native.succeed(metadata_identity_query).strip()
+      assert re.fullmatch(r"[0-9a-f]{64}\|[0-9a-f]{64}", metadata_identity), metadata_identity
+      metadata_index = run_hybrid_operator_index("fleet/metadata")
+      assert re.search(r"fleet/metadata: 1 packages, 1 releases, 1 channels @ ", metadata_index), metadata_index
+      assert native.succeed(metadata_identity_query).strip() == metadata_identity
+      print("hybrid metadata-only unchanged operator indexing: passed")
 
       parallel_size = 4 * 1024 * 1024
       client.succeed(
@@ -2194,17 +2381,33 @@ in {
           f"-c {shlex.quote(inventory_query)})\" = 1",
           timeout=240,
       )
-      inventory_pages = int(native.succeed(
+      inventory_progress = json.loads(native.succeed(
           f"{POSTGRES}/psql -h 127.0.0.1 -U postgres -d postgres -At "
-          "-c \"SELECT generation.checkpoint_ordinal "
+          "-c \"SELECT json_build_object("
+          "'pages', generation.checkpoint_ordinal, "
+          "'objects', COUNT(entry.object_key), "
+          "'distinctObjects', COUNT(DISTINCT entry.object_key), "
+          "'observedHashes', COUNT(entry.observed_hash), "
+          "'hashMismatches', SUM(CASE WHEN entry.observed_hash <> "
+          "'sha256:' || SUBSTRING(entry.object_key FROM 18) THEN 1 ELSE 0 END)) "
           "FROM oci_provider_inventory_generations generation "
           "JOIN oci_provider_inventory_heads head "
           "ON head.generation_id = generation.id "
+          "JOIN oci_provider_inventory_entries target "
+          "ON target.generation_id = generation.id "
           "JOIN oci_provider_inventory_entries entry "
           "ON entry.generation_id = generation.id "
-          f"WHERE entry.object_key = 'oci/blobs/sha256/{publication_digest}'\""
+          f"WHERE target.object_key = 'oci/blobs/sha256/{publication_digest}' "
+          "GROUP BY generation.id\""
       ).strip())
-      assert inventory_pages <= 16, inventory_pages
+      # The collector checkpoints one canonical object per page. Sixteen is
+      # its per-dispatch budget; this real image spans several dispatches.
+      assert inventory_progress["objects"] > 16, inventory_progress
+      assert inventory_progress["pages"] == inventory_progress["objects"], inventory_progress
+      assert inventory_progress["distinctObjects"] == inventory_progress["objects"], inventory_progress
+      assert inventory_progress["observedHashes"] == inventory_progress["objects"], inventory_progress
+      assert inventory_progress["hashMismatches"] == 0, inventory_progress
+      print("hybrid sealed OCI inventory:", inventory_progress)
 
       durations = [
           float(client.succeed(f"cat /tmp/hybrid-parallel-{index}.time").strip())
@@ -2240,6 +2443,7 @@ in {
           f"journalctl -u aos-hub.service -o cat --no-pager | "
           f"{GREP} -E 'hybrid storage boundary|registry release index phase completed|registry index run completed'"
       )
+      boundary_log += "\n" + "\n".join(operator_index_logs)
       assert "inspect_git_object" in boundary_log, boundary_log
       assert "hash_oci_range" in boundary_log, boundary_log
       assert "copy_object" in boundary_log, boundary_log
@@ -2316,17 +2520,41 @@ in {
           cold_release_walks = [
               run["releases"][release]
               for run in index_runs.values()
-              if release in run["releases"]
+              if run["registry_id"] == container_registry_id
+              and release in run["releases"]
               and run.get("success", False)
               and run["releases"][release]["completed_calls"] > 0
           ]
           assert cold_release_walks, (release, index_runs)
+      container_refreshes = [
+          run for run in index_runs.values()
+          if run["registry_id"] == container_registry_id
+          and run.get("success", False)
+          and set(run["releases"]) == {"1.0.0", "2.0.0"}
+      ]
+      assert len(container_refreshes) >= 2, index_runs
+      assert all(
+          release.get("phase_completed", False)
+          and release.get("reused") is False
+          and release["completed_calls"] > 0
+          for run in container_refreshes for release in run["releases"].values()
+      ), container_refreshes
+      metadata_cold_walks = [
+          run for run in index_runs.values()
+          if run["registry_id"] == metadata_registry_id
+          and run.get("success", False)
+          and "1.0.0" in run["releases"]
+          and run["releases"]["1.0.0"]["completed_calls"] > 0
+          and run["releases"]["1.0.0"].get("reused") is False
+      ]
+      assert metadata_cold_walks, index_runs
       print("hybrid indexing work by run and release:", json.dumps(
           list(index_runs.values()), sort_keys=True
       ))
       warm_refreshes = [
           run["shared"] for run in index_runs.values()
-          if run.get("success", False) and not run["releases"]
+          if run["registry_id"] == metadata_registry_id
+          and run.get("success", False) and not run["releases"]
           and run["shared"]["object_bytes_processed_at_worker"] > 0
       ]
       assert warm_refreshes, index_runs
@@ -2459,12 +2687,19 @@ in {
       first_probe = write_probe(b"reviewed identity")
       second_probe = write_probe(b"replacement identity")
       assert first_probe["etag"] != second_probe["etag"]
+      for probe in (first_probe, second_probe):
+          version = probe["provider_version"]
+          assert isinstance(version, str) and 0 < len(version.encode()) <= 512, probe
+          assert not any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in version), probe
+      assert first_probe["provider_version"] != second_probe["provider_version"]
+
       rejected_delete = probe_work({
           "kind": "delete_if_matches",
           "path": probe_path,
           "claim_id": "fleet-mismatched-claim",
           "expected_etag": first_probe["etag"],
           "expected_size": first_probe["size"],
+          "expected_provider_version": first_probe["provider_version"],
           "expected_hash": None,
       })
       assert rejected_delete["kind"] == "delete_precondition_failed", rejected_delete
@@ -2475,6 +2710,7 @@ in {
           "claim_id": "fleet-reviewed-claim",
           "expected_etag": second_probe["etag"],
           "expected_size": second_probe["size"],
+          "expected_provider_version": second_probe["provider_version"],
           "expected_hash": None,
       }
       removed = probe_work(reviewed_delete)
@@ -3002,6 +3238,11 @@ in {
               "qualification_keys": "${qualificationKeys}/value",
               "route_keys": "${parityRouteKeys}/value",
               "trust_key": trust_key,
+              "probe_public_key": "${fixture.probePublicKey}",
+              "container_root": "/var/lib/hybrid-container-final",
+              "container_inputs": "${containerPublicationInputs}",
+              "container_signature": client.succeed("cat /tmp/hybrid-container-signature.pae.sig"),
+              "container_index_digest": finalized_container["index_digest"],
           },
           snapshot_assert=assert_registry_index_parity,
       )

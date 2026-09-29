@@ -940,3 +940,40 @@ summaries; it does not inspect files or establish their decoder provenance.
 Actual stream reconciliation, typed logical records, source authenticity,
 whole-Hub closure, filesystem orchestration, export/import and activation remain
 pending. The current full fleet predates this increment.
+
+
+## Completed four-VM runtime parity
+
+The ordinary four-VM fleet captured after OCI HEAD recovery completed with
+**exit 0 and result PASS**. It uses separate client, Worker, Native/PostgreSQL and
+S3 machines, production artifacts and real signed publication APIs. Hybrid,
+Native-only and Workers-only publish the same externally signed base-image
+corpus; all **25 compared tables** match exactly. The five required container
+projections are nonempty: one root, 96 closure members, six evidence rows, one
+provenance row and twelve layer rows. Both releases and the stable channel match,
+including 256 channel partitions. The canonical compared-row digest is
+`2e0e978994372c1dc9baae41691b352124cba57a399a953bbd4eb67c26fefbd8`.
+
+This run also passes Hybrid external S3 multipart/read/write/range/outage and
+recovery workflows, signed indexing, metadata-only refresh, 26-object sealed
+inventory, eight parallel uploads and physical R2 cleanup. Native-to-Worker
+payload counters record 2,608,047 offered plan bytes and 5,702,662 inbound result
+bytes over 4,890 completed calls, versus 8,759,808,096 object bytes processed at
+Worker. These local payload counters do not establish provider billing.
+
+The exact fleet derivation is
+`/nix/store/61wgvyzrlvajr3zb39i9j58lm3nqnfp4-aos-fleet-test-hub-hybrid-0.drv`;
+its passing output is
+`/nix/store/wx36rcq4iny4asb7m0x0k5cjlldphy9f-aos-fleet-test-hub-hybrid-0`.
+The final receipt is `/tmp/hub-head-recovery-current-fleet-qualification.json`
+(`79ed3aed211efa10546b2b5d41a48fd5be8220b8b8f8041c703c4421e0e5cafd`).
+The three fixture hashes remain byte-identical to their prebuild capture and are
+now eligible to commit. The source and actual logs qualify the pre-framing,
+pre-lease and pre-audit runtime capture, including the 4,204-test CLI gate.
+
+Workflow correctness passes; the relative upload-batch latency target still
+misses by 6.469 times baseline. The synthetic performance and earlier server-reset
+cause remain unresolved, and hosted behavior remains unqualified. A separate
+ordinary CLI/Native/Worker build is checking the newly integrated snapshot and
+lease source: all 60 captured source hashes match, but its terminal result is
+pending at this checkpoint.
