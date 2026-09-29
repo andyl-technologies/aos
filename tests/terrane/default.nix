@@ -3,7 +3,7 @@
   lib,
 }: let
   registry = builtins.fromJSON (builtins.readFile ./gate_registry.json);
-  checkNames = builtins.toFile "terrane-check-names.json" (builtins.toJSON (builtins.attrNames gates));
+  checkNames = builtins.toFile "terrane-check-names.json" (builtins.toJSON (builtins.attrNames registeredGates));
 
   # Registration is distinct from conformance: a deferred gate is a failing
   # derivation, so requesting it cannot report an unimplemented MUST green.
@@ -104,13 +104,33 @@
     };
   };
 
-  gates = builtins.listToAttrs (map (row: {
+  registeredGates = builtins.listToAttrs (map (row: {
       name = row.name;
       value = implementedGates.${row.name} or (pendingGate row);
     })
     registry);
+
+  # The aggregate is the current trunk floor. Named checks remain available
+  # through its attributes, including deferred checks that fail on request.
+  aggregate = pkgs.mkDerivation {
+    pname = "terrane-current-gates";
+    version = "0.1.0";
+    src = null;
+    buildDeps = builtins.attrValues implementedGates;
+    phases = [
+      {
+        name = "check";
+        script = ''
+          mkdir -p "$out"
+          printf 'PASS: %s current Terrane gates\n' ${toString (builtins.length (builtins.attrNames implementedGates))} \
+            > "$out/result"
+        '';
+      }
+    ];
+    passthru.registeredGateNames = builtins.attrNames registeredGates;
+  };
 in {
   package = pkgs.terrane;
-  inherit gates;
+  gates = aggregate // registeredGates;
   activeGates = implementedGates;
 }

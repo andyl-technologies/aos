@@ -10,7 +10,9 @@
     kind = builtins.tryEval (value.type or null);
     children = builtins.tryEval (names value);
   in
-    if kind.success && kind.value == "derivation"
+    if prefix == "terrane.gates" && kind.success && kind.value == "derivation"
+    then [prefix] ++ map (name: "${prefix}.${name}") value.passthru.registeredGateNames
+    else if kind.success && kind.value == "derivation"
     then [prefix]
     else if children.success
     then builtins.concatMap (name: collectChecks "${prefix}.${name}" value.${name}) children.value
@@ -73,6 +75,8 @@
       in
         if target == null
         then []
+        else if scope == "terrane.gates"
+        then collectChecks scope target
         else if isDerivation target
         then [scope]
         else collectChecks scope target;
