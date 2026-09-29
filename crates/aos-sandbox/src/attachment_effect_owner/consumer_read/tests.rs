@@ -413,6 +413,8 @@ fn exact_local_terminal_capacity_and_cold_quarantine_preserve_original_data() {
     // A lost return after the committed preparation leaves DATA only. Cold
     // cleanup needs no renewed clock, live owner, Ready proof or current lease.
     let mut cold = open(directory.path(), JournalLimits::default());
+    let journal_path = directory.path().join(CONTROLLER_JOURNAL);
+    let before_quarantine = std::fs::metadata(&journal_path).unwrap().len();
     let quarantined = attempt::quarantine(&mut cold, request.request_id).unwrap();
     let terminal = JournalTransaction::new(
         [50; 16],
@@ -427,7 +429,11 @@ fn exact_local_terminal_capacity_and_cold_quarantine_preserve_original_data() {
     )
     .unwrap();
     assert_eq!(
-        crate::journal::encoded_transaction_record_bytes(&terminal).unwrap(),
+        crate::journal::encoded_transaction_append_bytes(&terminal).unwrap(),
+        terminal_bytes
+    );
+    assert_eq!(
+        std::fs::metadata(&journal_path).unwrap().len() - before_quarantine,
         terminal_bytes
     );
     assert_eq!(quarantined.request(), request);
@@ -587,6 +593,119 @@ fn actual_opened_global_transaction_ceiling_reserves_the_entire_local_suffix() {
                     .unwrap()
                     .phase(),
                 ConsumerResourceAttemptPhaseV1::ResourceQuarantined
+            );
+        }
+    }
+}
+
+#[test]
+fn actual_opened_journal_byte_ceiling_funds_the_full_quarantine_append() {
+    for boundary in ["payload-only", "one-byte-short", "exact-full-append"] {
+        let (directory, mut fixture) = fixture();
+        let journal_path = directory.path().join(CONTROLLER_JOURNAL);
+        let before_bytes = std::fs::metadata(&journal_path).unwrap().len();
+        let request = request(53);
+        let mut held = hold(fixture.journal_mut(), directory.path());
+        let ceilings = limits(held.journal);
+        let prepared = attempt::prepare(held.journal, request, &held.source, ceilings).unwrap();
+        let attempt::Prepared::Append {
+            record,
+            capacity,
+            transaction,
+            ..
+        } = prepared
+        else {
+            panic!("fresh fixture must prepare a new comparison record");
+        };
+        let admission_bytes =
+            crate::journal::encoded_transaction_append_bytes(&transaction).unwrap();
+        // Prepared and Quarantined values have the same fixed width. This is
+        // only a size projection; the actual private reducer performs cleanup.
+        let terminal_shape = JournalTransaction::new(
+            [54; 16],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::ControllerConsumerReadAttempt,
+                    request.request_id.to_vec(),
+                    record.canonical_bytes(),
+                ),
+                capacity.settlement_record(),
+            ],
+        )
+        .unwrap();
+        let full_terminal_bytes =
+            crate::journal::encoded_transaction_append_bytes(&terminal_shape).unwrap();
+        let payload_bytes =
+            crate::journal::encoded_transaction_record_bytes(&terminal_shape).unwrap();
+        assert!(payload_bytes < full_terminal_bytes);
+        assert_eq!(capacity.request().terminal_bytes, full_terminal_bytes);
+        assert_eq!(
+            std::fs::metadata(&journal_path).unwrap().len(),
+            before_bytes
+        );
+        drop(held);
+        drop(fixture);
+
+        let suffix_bytes = match boundary {
+            "payload-only" => payload_bytes,
+            "one-byte-short" => full_terminal_bytes - 1,
+            _ => full_terminal_bytes,
+        };
+        let maximum_journal_bytes = before_bytes + admission_bytes + suffix_bytes;
+        assert!(maximum_journal_bytes < JournalLimits::default().maximum_journal_bytes);
+        let mut journal = open(
+            directory.path(),
+            JournalLimits {
+                maximum_journal_bytes,
+                ..JournalLimits::default()
+            },
+        );
+        let sequence = journal.snapshot_sequence();
+        let capacities = journal
+            .records(RecordNamespace::GlobalCapacityReservation)
+            .count();
+        let mut held = hold(&mut journal, directory.path());
+        let result = held.retain_resource_prepared(request, limits(held.journal), &mut clock);
+        if boundary != "exact-full-append" {
+            assert!(result.is_err(), "{boundary}");
+            assert_eq!(held.journal.snapshot_sequence(), sequence, "{boundary}");
+            assert_eq!(
+                std::fs::metadata(&journal_path).unwrap().len(),
+                before_bytes
+            );
+            assert!(
+                held.journal
+                    .get(
+                        RecordNamespace::ControllerConsumerReadAttempt,
+                        &request.request_id
+                    )
+                    .is_none()
+            );
+            assert_eq!(
+                held.journal
+                    .records(RecordNamespace::GlobalCapacityReservation)
+                    .count(),
+                capacities
+            );
+        } else {
+            assert_eq!(
+                result.unwrap().phase(),
+                ConsumerResourceAttemptPhaseV1::ResourcePrepared
+            );
+            assert_eq!(
+                std::fs::metadata(&journal_path).unwrap().len(),
+                before_bytes + admission_bytes
+            );
+            drop(held);
+            assert_eq!(
+                attempt::quarantine(&mut journal, request.request_id)
+                    .unwrap()
+                    .phase(),
+                ConsumerResourceAttemptPhaseV1::ResourceQuarantined
+            );
+            assert_eq!(
+                std::fs::metadata(&journal_path).unwrap().len(),
+                maximum_journal_bytes
             );
         }
     }

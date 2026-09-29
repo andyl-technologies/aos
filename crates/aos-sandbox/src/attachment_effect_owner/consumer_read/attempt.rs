@@ -371,8 +371,8 @@ pub(super) fn prepare(
         digest: [0; 32],
     };
     record.update_digest();
-    // Measure the actual canonical terminal shape/key through existing journal
-    // serializers. The preview is discarded without appending any record.
+    // Reserve the complete terminal append, including BEGIN/COMMIT and record
+    // frames. The preview is discarded without appending any record.
     let terminal = JournalTransaction::new(
         transaction_id(2, request),
         vec![
@@ -383,7 +383,7 @@ pub(super) fn prepare(
             ),
         ],
     )?;
-    let bytes = crate::journal::encoded_transaction_record_bytes(&terminal)?;
+    let bytes = crate::journal::encoded_transaction_append_bytes(&terminal)?;
     let capacity = authority.prepare_global_capacity_reservation_v1(
         capacity_request(request, source, bytes),
         transaction_id(1, request),
@@ -608,7 +608,7 @@ pub(super) fn require_transition(
                         ),
                     ],
                 )?;
-                if crate::journal::encoded_transaction_record_bytes(&terminal)?
+                if crate::journal::encoded_transaction_append_bytes(&terminal)?
                     != request.terminal_bytes
                 {
                     return Err(ConsumerResourceErrorV1::Changed);
