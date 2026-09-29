@@ -140,3 +140,39 @@ Seven owned outputs match their producer postimages; the Worker parent retains
 the newer staging, recovery and authentication exports. This evidence does not
 resolve the recorded full-core failures or qualify runtime, provider, browser,
 fleet, standalone direct configuration or hosted behavior.
+
+## Browser direct upload and standalone compatibility
+
+The cache-file uploader prepares bounded file slices and signed provider parts
+with four concurrent requests. It checks the retained grant and actual clock
+immediately before Fetch, omits application credentials from provider requests,
+and retains bounded resume metadata in IndexedDB without bearer URLs or tokens.
+Checkpoint merging and cancellation share one read/write transaction. Provider
+ETags must be exposed by CORS; ambiguous outcomes preserve the original part.
+
+Authenticated WhoAmI policy selects discovery. A successful older standalone
+response or explicit `legacy` policy preserves the existing upload path without
+requiring direct capabilities or configured deployment IDs. Required direct
+mode needs the same bearer, actor, target and capability proof. Unknown policy,
+discovery errors and refreshed direct-required credentials refuse legacy file
+dispatch. The marked legacy client checks the exact current bearer before its
+controls, body and single refresh attempt; unrelated console flows are unchanged.
+
+Producer receipt
+`/tmp/hub-direct-upload-console/frozen-v3/qualification.json`
+(`54d29ade959e3da7dfe23cb364b297719d5d2d22f1599ce7fc32211a7db278be`)
+records 20 pure tests and an actual development Wasm library build, with all
+2,466 inputs unchanged. Independent final review
+`bbeb26cc90eb04cbb899787fbfe3335ec157b9fb330c677238114def6bb4a808`
+verifies source, tests, artifact and exact patch application. Earlier dated
+signature, expiry and credential-custody corrections remain preserved.
+
+Current-context receipt `/tmp/hub-console-current-context/qualification.json`
+(`cdaf63979c40680d58974c2560042d587679d499a6f912a3c48c8d3995eaaabe`)
+records another 20 pure passing tests and ordinary Wasm compilation, with all
+2,906 inputs unchanged and all 11 owned postimages exact. Capability-manifest
+presentation is a separate semantic-equivalent formatting commit. Functional
+coverage removes six obsolete browser exceptions; explicit Abort retains its
+CLI exception. This evidence does not qualify an optimized console, actual
+browser Fetch/IndexedDB/CORS, current broker, real provider, fleet or hosted
+performance. No direct uploads are enabled by this increment alone.

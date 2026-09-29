@@ -1240,32 +1240,8 @@
       ],
       "web_method_exceptions": [
         {
-          "method": "GetCapabilities",
-          "reason": "Direct transfer capabilities and staged file control are CLI operations; browser workflows observe committed publication, cache and container state."
-        },
-        {
-          "method": "BeginBatch",
-          "reason": "Direct transfer capabilities and staged file control are CLI operations; browser workflows observe committed publication, cache and container state."
-        },
-        {
-          "method": "StatusBatch",
-          "reason": "Direct transfer capabilities and staged file control are CLI operations; browser workflows observe committed publication, cache and container state."
-        },
-        {
-          "method": "GrantPartsBatch",
-          "reason": "Direct transfer capabilities and staged file control are CLI operations; browser workflows observe committed publication, cache and container state."
-        },
-        {
-          "method": "ReportPartsBatch",
-          "reason": "Direct transfer capabilities and staged file control are CLI operations; browser workflows observe committed publication, cache and container state."
-        },
-        {
-          "method": "CompleteBatch",
-          "reason": "Direct transfer capabilities and staged file control are CLI operations; browser workflows observe committed publication, cache and container state."
-        },
-        {
           "method": "Abort",
-          "reason": "Direct transfer capabilities and staged file control are CLI operations; browser workflows observe committed publication, cache and container state."
+          "reason": "Explicit direct upload abort uses CLI controls; the browser uploader preserves pending effects for resume."
         }
       ],
       "methods": [
