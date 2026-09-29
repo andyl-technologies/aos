@@ -775,21 +775,7 @@ impl OriginalNativeDeadlineV3 {
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
         let expires_seconds = expires_seconds.min(mount_expires_seconds);
 
-        // Derive BOOTTIME only after finalizing the signed expiry. Removing the
-        // omitted wall fraction also rejects a later wall-before-BOOTTIME sample
-        // that straddles that expiry within the paired-clock drift tolerance.
-        // Anchor this ceiling to the before-read, not a delayed after-read.
-        let remaining = expires_seconds
-            .checked_sub(paired.wall_seconds())
-            .and_then(|seconds| seconds.checked_sub(1))
-            .and_then(|seconds| u64::try_from(seconds).ok())
-            .filter(|seconds| *seconds > 0)
-            .and_then(|seconds| seconds.checked_mul(1_000_000_000))
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let boottime_deadline = initial
-            .boottime_before
-            .checked_add(remaining)
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let boottime_deadline = conservative_boot_ceiling(&initial, expires_seconds)?;
         let deadline = Self {
             initial,
             expires_seconds,
@@ -829,6 +815,27 @@ impl OriginalNativeDeadlineV3 {
         }
         Ok(())
     }
+}
+
+/// Derives a conservative BOOTTIME ceiling from the unchanged original bracket.
+fn conservative_boot_ceiling(
+    initial: &OriginalNativeClockBracketV3,
+    expires_seconds: i64,
+) -> Result<u64, SourceProviderSecurityError> {
+    // Removing the omitted wall fraction rejects a wall-before-BOOTTIME sample
+    // that straddles the finalized expiry within the paired-clock tolerance.
+    // Anchor the ceiling to the before-read, not a delayed after-read.
+    let remaining = expires_seconds
+        .checked_sub(initial.paired.wall_seconds())
+        .and_then(|seconds| seconds.checked_sub(1))
+        .and_then(|seconds| u64::try_from(seconds).ok())
+        .filter(|seconds| *seconds > 0)
+        .and_then(|seconds| seconds.checked_mul(1_000_000_000))
+        .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+    initial
+        .boottime_before
+        .checked_add(remaining)
+        .ok_or(SourceProviderSecurityError::SessionContinuity)
 }
 
 fn kernel_clock() -> Result<RawPairedClockSample, SourceProviderSecurityError> {
