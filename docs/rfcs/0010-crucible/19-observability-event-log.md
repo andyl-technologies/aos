@@ -846,8 +846,9 @@ log, so they cannot disagree about what happened.
   `Command` correlation. — satisfies [OBS-5], [OBS-6], [OBS-7], [OBS-8], [OBS-9];
   spec §19.2, §19.2.1.
   Completed by `checks.crucible.phase4.eventLogSchema`: `LogEntry` now carries a
-  full `EventLogTime` (`VirtualTime` plus an `Icount` stamp, with a node on
-  node-local stamps), `EventSource`, `EventLevel`, and `SchedulerEventLogClass`;
+  full `EventLogTime` (`VirtualTime` plus an exact logical tick, with a node
+  on node-local stamps and an optional independently observed raw retirement
+  witness), `EventSource`, `EventLevel`, and `SchedulerEventLogClass`;
   command-caused entries preserve `Command { command_id }` correlation, and
   append material includes the schema fields in the content-addressed segment.
 - [x] **T-OBS-3** Implement the open-set, typed `payload` (kind + named typed
@@ -906,7 +907,7 @@ log, so they cannot disagree about what happened.
   sole input. — satisfies [OBS-28]; spec §19.6.2; cross-ref 24.
   Completed by `checks.crucible.phase4.eventLogDivergenceBisect`: the causal
   event-log comparator now reports the first differing causal entry's
-  node/icount, source, and kind directly from the log, and assertion replay
+  node/logical tick, source, and kind directly from the log, and assertion replay
   divergence carries that same point into the bisection handoff instead of
   smoothing an event-stream mismatch into a later assertion-report difference.
 - [x] **T-OBS-9** Record coverage (plugin TCG basic blocks + white-box named
