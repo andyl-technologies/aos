@@ -136,13 +136,53 @@ fn small_files_are_inline_including_empty_and_threshold() {
             digest: [7; 32],
             length: size,
         }];
+        let digest = if size == 0 {
+            let digest = TERRANE_V1
+                .calculate(IdentityKind::Chunk, &[])
+                .expect("empty identity")
+                .terrane_v1_digest()
+                .expect("digest");
+            manifest.chunks[0].digest = digest;
+            manifest
+                .hashes
+                .insert("blake3".to_string(), blake3::hash(&[]).as_bytes().to_vec());
+            digest
+        } else {
+            [7; 32]
+        };
         assert_eq!(
             manifest.content_ref(&profile).expect("reference"),
-            ContentRef::Inline([7; 32])
+            ContentRef::Inline(digest)
         );
     }
     assert!(matches!(
         fixture().content_ref(&profile).expect("reference"),
         ContentRef::Manifest(_)
     ));
+}
+
+#[test]
+fn empty_object_rejects_forged_chunk_and_primary_plaintext_hash() {
+    let profile = ChunkProfile::cdc_1m([0; 32]);
+    let mut manifest = fixture();
+    manifest.size = 0;
+    manifest.chunks = vec![ChunkRef {
+        digest: TERRANE_V1
+            .calculate(IdentityKind::Chunk, &[])
+            .expect("empty identity")
+            .terrane_v1_digest()
+            .expect("digest"),
+        length: 0,
+    }];
+    manifest
+        .hashes
+        .insert("blake3".to_string(), blake3::hash(&[]).as_bytes().to_vec());
+    assert!(manifest.validate(&profile).is_ok());
+
+    let canonical_digest = manifest.chunks[0].digest;
+    manifest.chunks[0].digest = [7; 32];
+    assert!(manifest.content_ref(&profile).is_err());
+    manifest.chunks[0].digest = canonical_digest;
+    manifest.hashes.insert("blake3".to_string(), vec![7; 32]);
+    assert!(manifest.encode(&profile).is_err());
 }

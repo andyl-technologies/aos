@@ -61,7 +61,15 @@ impl fmt::Display for Error {
     }
 }
 
-impl core::error::Error for Error {}
+impl core::error::Error for Error {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Cbor(error) => Some(error),
+            Self::Identity(error) => Some(error),
+            Self::InvalidManifest => None,
+        }
+    }
+}
 
 impl From<cbor::Error> for Error {
     fn from(error: cbor::Error) -> Self {
@@ -99,6 +107,21 @@ impl Manifest {
         let count_limit = self.size.div_ceil(minimum).saturating_add(1);
         if self.chunks.is_empty() || self.chunks.len() as u64 > count_limit {
             return Err(Error::InvalidManifest);
+        }
+
+        // The empty object has globally known chunk and plaintext identities;
+        // accepting arbitrary digests would invent content without any bytes.
+        if self.size == 0 {
+            let empty_chunk = TERRANE_V1
+                .calculate(IdentityKind::Chunk, &[])?
+                .terrane_v1_digest()?;
+            let empty_hash = blake3::hash(&[]);
+            if self.chunks[0].digest != empty_chunk
+                || self.hashes.get("blake3").map(Vec::as_slice)
+                    != Some(empty_hash.as_bytes().as_slice())
+            {
+                return Err(Error::InvalidManifest);
+            }
         }
 
         let mut total = 0_u64;
@@ -206,7 +229,11 @@ impl Manifest {
         if decoder.uint()? != 2 {
             return Err(Error::InvalidManifest);
         }
-        let count = decoder.array(input.len())?;
+        let count_limit = size.div_ceil(profile.minimum() as u64).saturating_add(1);
+        let allocation_limit = usize::try_from(count_limit)
+            .unwrap_or(usize::MAX)
+            .min(input.len());
+        let count = decoder.array(allocation_limit)?;
         let mut chunks = Vec::new();
         for _ in 0..count {
             if decoder.array(2)? != 2 {
