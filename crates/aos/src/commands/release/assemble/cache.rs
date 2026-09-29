@@ -268,7 +268,8 @@ fn read_cache(cache: &Path, key: &TrustedEd25519Key) -> Result<BTreeMap<String, 
         let bytes = super::super::capture::control_file(&path, "signed narinfo")?;
         let text = std::str::from_utf8(&bytes).context("narinfo is not UTF-8")?;
         let parsed = info::parse(text)?;
-        require_store_path(&parsed.store_path, false)?;
+        // Source-inclusive caches retain build recipes alongside outputs.
+        require_store_path(&parsed.store_path, parsed.store_path.ends_with(".drv"))?;
         verify_signature(&parsed, key)
             .with_context(|| format!("verifying signed narinfo {}", path.display()))?;
         let expected_name = format!("{}.narinfo", info::store_hash(&parsed.store_path));
@@ -423,7 +424,7 @@ fn reference_paths(info: &NarInfo) -> Result<Vec<String>> {
         .map(|reference| format!("{store}/{}", info::basename(reference)))
         .collect::<Vec<_>>();
     for path in &paths {
-        require_store_path(path, false)?;
+        require_store_path(path, path.ends_with(".drv"))?;
     }
     Ok(paths)
 }
