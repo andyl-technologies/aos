@@ -5,6 +5,12 @@
 //! decompression live in the portable `terrane` crate; this module performs
 //! checks that need neither zstd nor a system allocator.
 
+//! ```text
+//! raw: 0x00 || plaintext
+//! zstd: 0x01 || single_sized_frame
+//! dictionary: 0x02 || dictionary_chunk_digest[32] || single_sized_frame
+//! ```
+
 use core::fmt;
 
 /// The number of bytes in a `terrane-v1` dictionary identity.

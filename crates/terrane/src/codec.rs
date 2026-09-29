@@ -4,6 +4,12 @@
 //! destination buffer. Decoded bytes stay private until identity and
 //! boundary checks produce a [`VerifiedChunk`].
 
+//! ```text
+//! raw: 0x00 || plaintext
+//! zstd: 0x01 || single_sized_frame
+//! dictionary: 0x02 || dictionary_chunk_digest[32] || single_sized_frame
+//! ```
+
 use std::{fmt, io};
 
 use terrane_core::{
@@ -156,7 +162,7 @@ pub fn encode_chunk(
     compression_level: i32,
     dictionary: Option<&[u8]>,
 ) -> Result<Vec<u8>, FrameError> {
-    if plaintext.len() > profile_max {
+    if plaintext.len() > profile_max || dictionary.is_some_and(|bytes| bytes.len() > profile_max) {
         return Err(FrameError::Envelope(CodecError::DeclaredLengthTooLarge));
     }
 
@@ -260,6 +266,9 @@ pub fn decode_verified<'a>(
     let chunk = inspect_chunk(encoded, declared_plaintext_len, profile.maximum())?;
     if let Codec::ZstdDictionary(dictionary_id) = chunk.codec {
         let dictionary_bytes = dictionary.ok_or(FrameError::MissingDictionary)?;
+        if dictionary_bytes.len() > profile.maximum() {
+            return Err(FrameError::Envelope(CodecError::DeclaredLengthTooLarge));
+        }
         let actual_id = TERRANE_V1
             .calculate(IdentityKind::Chunk, dictionary_bytes)?
             .terrane_v1_digest()?;
@@ -363,6 +372,36 @@ mod tests {
         TERRANE_V1
             .calculate(IdentityKind::Chunk, bytes)
             .expect("chunk identity")
+    }
+
+    #[test]
+    fn dictionary_plaintext_must_fit_a_standalone_final_chunk() {
+        let dictionary = vec![3; 65];
+        assert!(matches!(
+            encode_chunk(b"abc", 64, 3, Some(&dictionary)),
+            Err(FrameError::Envelope(_))
+        ));
+
+        let profile = ChunkProfile::new(16, 32, 64, 48, 2, [0; 32]).expect("profile");
+        let plaintext = vec![4; 32];
+        let mut encoded = vec![0x02];
+        encoded.extend_from_slice(identity(&dictionary).digest());
+        let frame = zstd::bulk::Compressor::with_dictionary(3, &dictionary)
+            .expect("compressor")
+            .compress(&plaintext)
+            .expect("frame");
+        encoded.extend_from_slice(&frame);
+        assert!(matches!(
+            decode_verified(
+                &encoded,
+                plaintext.len(),
+                &profile,
+                true,
+                &identity(&plaintext),
+                Some(&dictionary)
+            ),
+            Err(FrameError::Envelope(_))
+        ));
     }
 
     #[test]
