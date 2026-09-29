@@ -6,8 +6,10 @@
 use super::{Locality, RecordError, read_bool, read_digest, read_key, write_bool};
 use crate::cbor::{self, Decoder};
 use crate::identity::Digest;
+use crate::identity::{IdentityError, IdentityKind, TERRANE_V1};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::fmt;
 
 const MAX_COMMIT_BYTES: usize = 1 << 20;
 const MAX_TEXT_BYTES: usize = 65536;
@@ -265,7 +267,48 @@ pub struct Commit {
     pub signature: Option<[u8; 64]>,
 }
 
+/// A commit could not be encoded or hashed under the v1 identity profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommitIdentityError {
+    /// The commit is invalid under its canonical schema.
+    Record(RecordError),
+    /// The configured identity profile rejected the bytes.
+    Identity(IdentityError),
+}
+
+impl fmt::Display for CommitIdentityError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Record(error) => fmt::Display::fmt(error, formatter),
+            Self::Identity(error) => fmt::Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl core::error::Error for CommitIdentityError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Record(error) => Some(error),
+            Self::Identity(error) => Some(error),
+        }
+    }
+}
+
 impl Commit {
+    /// Computes the v1 commit identity over the signed canonical record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CommitIdentityError::Record`] for invalid fields or
+    /// [`CommitIdentityError::Identity`] if the identity profile fails.
+    pub fn identity(&self) -> Result<Digest, CommitIdentityError> {
+        let bytes = self.encode().map_err(CommitIdentityError::Record)?;
+        TERRANE_V1
+            .calculate(IdentityKind::Commit, &bytes)
+            .and_then(|identity| identity.terrane_v1_digest())
+            .map_err(CommitIdentityError::Identity)
+    }
+
     /// Encodes the canonical CBOR commit, including its signature when set.
     ///
     /// # Errors
@@ -705,5 +748,9 @@ mod tests {
         assert!(commit.parents.is_empty());
         assert_eq!(commit.timestamp, 1_760_000_000);
         assert_eq!(commit.profile_pair.tree_format, 1);
+        assert_eq!(
+            commit.identity().unwrap().to_vec(),
+            hex_bytes("c8efdd180de6c5b1e04abe4435238e8969776497759682c6094a4cede9c579d6")
+        );
     }
 }
