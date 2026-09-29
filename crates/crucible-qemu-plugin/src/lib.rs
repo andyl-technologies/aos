@@ -160,8 +160,8 @@ pub use args::{
     WhiteboxSetupAttestation,
 };
 pub use block_io::{
-    BlockGuestCompletion, BlockGuestCompletionError, BlockInboundRing, BlockIoError,
-    BlockOperation, BlockOutboundRing, BlockPoll, BlockRequest, BlockRequestIdentity,
+    BlockGuestCompletion, BlockGuestCompletionError, BlockInboundHead, BlockInboundRing,
+    BlockIoError, BlockOperation, BlockOutboundRing, BlockPoll, BlockRequest, BlockRequestIdentity,
     BlockRequestToken, BlockResponse, BlockResponseErrorCode, BlockResponseStatus, BlockSubmit,
     BlockTransportEvent, BlockTransportPending, BlockTransportRequestIds, BlockTransportReset,
     BlockTransportResolved, BlockTransportUnadmitted, BlockTransportUndelivered, BlockWireError,

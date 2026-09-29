@@ -35,6 +35,7 @@ impl<'a> BlockOutboundRing<'a> {
 #[derive(Clone, Copy)]
 pub struct BlockInboundRing<'a> {
     pub(super) ring_index: u32,
+    pub(super) registered_generation: u64,
     pub(super) src_slot: u32,
     pub(super) dst_slot: u32,
     pub(super) header: &'a RingHeader,
@@ -42,7 +43,15 @@ pub struct BlockInboundRing<'a> {
 }
 
 impl<'a> BlockInboundRing<'a> {
+    pub(crate) const fn registered_generation(&self) -> u64 {
+        self.registered_generation
+    }
+
     /// Builds an inbound block ring view.
+    ///
+    /// This view supports transport operations without establishing a mapped
+    /// owner generation. Original-head observation requires the view retained
+    /// by the registered callback mapping owner.
     #[must_use]
     pub const fn new(
         ring_index: u32,
@@ -53,6 +62,25 @@ impl<'a> BlockInboundRing<'a> {
     ) -> Self {
         Self {
             ring_index,
+            registered_generation: 0,
+            src_slot,
+            dst_slot,
+            header,
+            entries,
+        }
+    }
+
+    pub(crate) const fn registered(
+        ring_index: u32,
+        registered_generation: u64,
+        src_slot: u32,
+        dst_slot: u32,
+        header: &'a RingHeader,
+        entries: &'a [FrameEntry],
+    ) -> Self {
+        Self {
+            ring_index,
+            registered_generation,
             src_slot,
             dst_slot,
             header,
