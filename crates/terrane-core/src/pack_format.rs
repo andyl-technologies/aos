@@ -108,7 +108,7 @@ pub struct Record {
     pub plaintext_len: u32,
     /// The registered codec byte, zero through two.
     pub codec: u8,
-    /// The registered kind byte, zero through six.
+    /// The registered kind byte, zero through nine.
     pub kind: u8,
     /// The reserved two-byte dictionary field, zero in version one.
     pub dictionary_id: u16,
