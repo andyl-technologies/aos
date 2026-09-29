@@ -10,6 +10,7 @@ use crate::commands::hub::publication::inventory::{
 };
 use anyhow::{Context as _, Result};
 use aos_core::output::Printer;
+use aos_net::retry::{RetryConfig, compute_retry_delay};
 use aos_net::{
     MultipartAdmission, MultipartBackend, MultipartFailurePolicy, MultipartSessionState,
     MultipartSource, MultipartUploadRequest, TransferEvent, TransferManager, TransferManagerConfig,
@@ -382,8 +383,8 @@ async fn upload_declared_publication_object(
     progress: &aos_core::output::TransferProgress,
     transfer_manager: &TransferManager,
 ) -> Result<()> {
-    let file = snapshot_publication_object(root, declared)?;
     if object.upload_url.is_empty() {
+        let file = snapshot_publication_object(root, declared)?;
         upload_publication_multipart(
             transfer_manager,
             access,
@@ -395,15 +396,51 @@ async fn upload_declared_publication_object(
         .await
         .with_context(|| format!("uploading publication path {}", object.path))
     } else {
-        // Object queues can outlive an access token. Resolve the saved profile
-        // at dispatch, just as multipart operations do for each bounded part.
-        publication_client(access)
-            .await?
-            .upload_publication_object(&object.upload_url, file, &object.path)
+        upload_publication_single_object(access, root, declared, object)
             .await
             .with_context(|| format!("uploading publication path {}", object.path))?;
         progress.inc(u64::try_from(object.byte_size)?);
         Ok(())
+    }
+}
+
+/// Retries transport failures without changing a declared object's bytes.
+async fn upload_publication_single_object(
+    access: &HubAccessArgs,
+    root: &std::os::fd::OwnedFd,
+    declared: &hub_types::RegistryPublicationObjectInput,
+    object: &hub_types::RegistryPublicationObject,
+) -> Result<()> {
+    let retry = RetryConfig::default();
+    let mut attempt = 0;
+
+    loop {
+        // Each request owns an independent snapshot and resolves the current
+        // profile, so retries neither share stream offsets nor reuse old tokens.
+        let file = snapshot_publication_object(root, declared)?;
+        let result = publication_client(access)
+            .await?
+            .upload_publication_object(&object.upload_url, file, &object.path)
+            .await;
+
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                attempt += 1;
+                let transport_failure = error.chain().any(|cause| {
+                    cause
+                        .downcast_ref::<reqwest::Error>()
+                        .is_some_and(|error| error.is_connect() || error.is_timeout())
+                });
+                if !transport_failure || attempt >= retry.max_attempts {
+                    return Err(error);
+                }
+
+                // The declared object endpoint is idempotent even if the
+                // previous request stored its bytes before the connection failed.
+                tokio::time::sleep(compute_retry_delay(&retry, attempt - 1)).await;
+            }
+        }
     }
 }
 
