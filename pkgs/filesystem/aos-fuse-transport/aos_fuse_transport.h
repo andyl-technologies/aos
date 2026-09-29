@@ -183,6 +183,67 @@ int aos_fuse_transport_run_fallback_v2(
     const struct aos_fuse_fallback_operations_v2 *operations,
     void *core_context, const struct aos_fuse_fallback_limits_v2 *limits);
 
+/* Additive private reply-scoped profile; existing V1/V2 layouts stay exact. */
+#define AOS_FUSE_SCOPED_ABI_MAJOR 3U
+#define AOS_FUSE_SCOPED_ABI_MINOR 0U
+#define AOS_FUSE_PROFILE_SCOPED_REPLY 1U
+
+struct aos_fuse_reply_scope_v3;
+
+/* A synchronous read-only check of the caller's separately retained borrow.
+ * Its context must NOT alias a mutably borrowed callback context. It must not
+ * unwind, publish a reply or retain any pointer; zero permits this attempt. */
+typedef int (*aos_fuse_scope_check_v3_fn)(const void *held_context);
+
+/* Callable once, only on the callback stack. The absolute owner cutoff may
+ * only shorten the C request deadline. The guard/check borrow survives every
+ * blocked write and is forgotten before return. Zero reports one complete
+ * kernel reply write, not consumer consumption or durable settlement. Any
+ * attempted failure is ambiguous and terminal; no second reply is permitted.
+ * error is zero for the prepared output or a positive errno for denial. */
+typedef int (*aos_fuse_publish_v3_fn)(
+    struct aos_fuse_reply_scope_v3 *scope, uint64_t owner_deadline_ns,
+    const void *held_context, aos_fuse_scope_check_v3_fn check, int error);
+
+/* The unchanged V2 table supplies OPEN/OPENDIR and cleanup only. All five
+ * disclosure callbacks below are mandatory overrides; returning success
+ * without invoking publish exactly once is an integrity failure. The caller
+ * holds its genuine original authority through publish and subsequent
+ * settlement, returning FATAL if settlement is uncertain after publication.
+ * This process-local table/check is transport mechanics, never a read grant. */
+struct aos_fuse_scoped_operations_v3 {
+  uint16_t abi_major;
+  uint16_t abi_minor;
+  uint32_t struct_size;
+  uint32_t profile;
+  uint32_t reserved;
+  struct aos_fuse_fallback_operations_v2 legacy;
+  int (*lookup)(void *context, uint64_t parent, const uint8_t *name,
+                uint64_t name_length, struct aos_fuse_attributes *attributes,
+                uint64_t deadline_ns, struct aos_fuse_reply_scope_v3 *scope,
+                aos_fuse_publish_v3_fn publish);
+  int (*getattr)(void *context, uint64_t node_id,
+                 struct aos_fuse_attributes *attributes, uint64_t deadline_ns,
+                 struct aos_fuse_reply_scope_v3 *scope,
+                 aos_fuse_publish_v3_fn publish);
+  int (*readlink)(void *context, uint64_t node_id, uint8_t *target,
+                  uint64_t capacity, uint64_t *length, uint64_t deadline_ns,
+                  struct aos_fuse_reply_scope_v3 *scope,
+                  aos_fuse_publish_v3_fn publish);
+  int (*readdir)(void *context, uint64_t node_id, uint64_t handle,
+                 uint64_t cookie, uint64_t maximum_output_bytes,
+                 struct aos_fuse_directory_entry *entries, uint64_t capacity,
+                 uint64_t *count, uint8_t *names, uint64_t names_capacity,
+                 uint64_t *names_length, uint64_t deadline_ns,
+                 struct aos_fuse_reply_scope_v3 *scope,
+                 aos_fuse_publish_v3_fn publish);
+  int (*read)(void *context, uint64_t node_id, uint64_t handle, int64_t offset,
+              uint32_t size, uint64_t deadline_ns, uint8_t *output,
+              uint64_t capacity, uint64_t *length,
+              struct aos_fuse_reply_scope_v3 *scope,
+              aos_fuse_publish_v3_fn publish);
+};
+
 /* Additive private in-process lifecycle; no pointer crosses a process protocol.
  * The old ABI and run entry remain unchanged. These objects prove transport
  * preparation only, never Mount/Root authority, attachment or content access. */
@@ -223,6 +284,15 @@ int aos_fuse_transport_prepare_v1(
 int aos_fuse_transport_continue_prepared_v1(
     struct aos_fuse_prepared_session_v1 *prepared,
     const struct aos_fuse_core_operations *operations, void *core_context);
+
+/* Attaches the reply-scoped profile to the SAME prepared session once. Bounded
+ * READ staging is allocated before any callback/context is attached. Failed
+ * admission leaves preparation idle; terminal dispatch ends the borrow and
+ * destroys only this session's duplicate, as in continue_prepared_v1.
+ * This unsafe private entry has NO installed safe Rust authority adapter. */
+int aos_fuse_transport_continue_prepared_v3(
+    struct aos_fuse_prepared_session_v1 *prepared,
+    const struct aos_fuse_scoped_operations_v3 *operations, void *core_context);
 
 /* Destroys exactly the same retained session and closes only its duplicate
  * FUSE descriptor. NULL is accepted; every non-NULL pointer must be the sole
