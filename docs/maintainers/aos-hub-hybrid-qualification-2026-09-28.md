@@ -1433,3 +1433,31 @@ state preserved. All four local gates, seven module fixtures, the complete
 OpenTofu module policy check and the required CI gate pass. PR 1028 has not been
 merged; merge approval is pending. This does not deploy a serving revision or
 resolve the separate execution-engine publication capacity block.
+
+## Direct broker deployment configuration
+
+The hybrid renderer accepts bounded closed JSON files for managed R2 public
+coordinates and transport clock evidence. An external-only broker can select
+the transport clock independently of managed R2 signing. Both configurations
+bind the exact deployment; selecting both requires equal clock facts. Signing
+secrets are installed separately in the Worker. The default profile omits the
+new broker binding.
+
+Receipt `/tmp/hub-direct-upload-renderer-clock-v2/qualification.json`
+(`6a4d887b56a86ff86a80e853330bf3c1ad81cb1d500a846cd2118ba4a7aa2b2a`)
+binds 25 library tests (eight direct configuration and 17 ordinary regressions),
+the actual Native Hub binary build, and three actual CLI invocations. The CLI
+checks default omission, external-only clock rendering and deployment mismatch
+refusal. All 2,874 captured source inputs remain unchanged. This qualifies
+configuration rendering, not the Worker broker export, provider policy, clock
+evidence or a hosted transfer.
+
+The preceding S3 resolver increment exposes the existing exact physical key
+composition for private staging inspection. Fourteen focused tests pass; no URL
+decoding or provider effects are added. A separate code generator correction
+resolves its source root at execution time when Cargo reuses a compiled build
+script across checkouts. The actual build and five moved-root cases pass,
+including invalid API/capability manifests and stale browser exception refusal.
+Receipt `/tmp/hub-proto-build-runtime-root/qualification.json` records those
+checks. These increments do not establish upload throughput or combined fleet
+acceptance.

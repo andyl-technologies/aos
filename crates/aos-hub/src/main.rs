@@ -355,6 +355,12 @@ struct HybridConfigArgs {
     /// Include an assets binding for an adjacent assets directory.
     #[arg(long)]
     serve_assets: bool,
+    /// Read reviewed secret-free managed R2 direct upload coordinates from JSON.
+    #[arg(long)]
+    direct_upload_profile_file: Option<PathBuf>,
+    /// Read reviewed direct upload transport clock coordinates from JSON.
+    #[arg(long)]
+    direct_upload_clock_file: Option<PathBuf>,
 }
 
 /// The provider selector for `worker` subcommands that take no other options.
@@ -1663,6 +1669,11 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
     use aos_hub::cloudflare;
 
     if let WorkerCommand::RenderHybridConfig(args) = &command {
+        let direct_upload = args
+            .direct_upload_profile_file
+            .as_deref()
+            .map(cloudflare::HybridDirectUploadDeployConfig::from_file)
+            .transpose()?;
         let config = cloudflare::HybridDeployConfig {
             name: args.name.clone(),
             bucket: args.bucket.clone(),
@@ -1671,6 +1682,12 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
             native_origin_url: args.native_origin_url.clone(),
             custom_domains: args.domains.clone(),
             serve_assets: args.serve_assets,
+            direct_upload,
+            direct_upload_clock: args
+                .direct_upload_clock_file
+                .as_deref()
+                .map(cloudflare::HybridDirectUploadClockConfig::from_file)
+                .transpose()?,
         };
         print!("{}", cloudflare::render_hybrid_wrangler_toml(&config)?);
         return Ok(());

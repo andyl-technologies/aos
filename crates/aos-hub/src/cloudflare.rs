@@ -68,6 +68,11 @@ use anyhow::{bail, Context, Result};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+mod direct_upload;
+
+/// Secret-free managed R2 configuration for the hybrid direct upload broker.
+pub use direct_upload::{HybridDirectUploadClockConfig, HybridDirectUploadDeployConfig};
+
 /// The R2 binding name — must match the Worker's bindings.
 const R2_BINDING: &str = aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT;
 /// The KV binding name — must match the Worker's bindings.
@@ -272,12 +277,19 @@ pub struct HybridDeployConfig {
     pub custom_domains: Vec<String>,
     /// Whether the staged artifact includes the static asset bundle.
     pub serve_assets: bool,
+    /// Reviewed managed direct upload coordinates; signing secrets are separate.
+    pub direct_upload: Option<HybridDirectUploadDeployConfig>,
+    /// Independent transport clock for an external-only direct upload broker.
+    pub direct_upload_clock: Option<HybridDirectUploadClockConfig>,
 }
 
 /// Renders a hybrid Worker profile without Worker-only stateful bindings.
 ///
 /// Secrets `HUB_HYBRID_INGRESS_KEY` and `HUB_STORAGE_WORK_KEY` are applied
 /// separately and must match the Native origin's key files.
+/// Direct upload additionally requires the separately installed Worker secrets
+/// `HUB_DIRECT_UPLOAD_R2_ACCESS_KEY_ID` and `HUB_DIRECT_UPLOAD_R2_SECRET_ACCESS_KEY`.
+/// Rendering a reviewed profile is not provider qualification or Native pinning.
 ///
 /// # Errors
 ///
@@ -330,6 +342,32 @@ pub fn render_hybrid_wrangler_toml(cfg: &HybridDeployConfig) -> Result<String> {
     } else {
         ""
     };
+    if let Some(clock) = &cfg.direct_upload_clock {
+        clock.validate(&cfg.deployment_id)?;
+        if let Some(profile) = &cfg.direct_upload {
+            anyhow::ensure!(
+                clock.qualification == profile.clock_qualification
+                    && clock.uncertainty_seconds == profile.clock_uncertainty_seconds,
+                "direct upload transport and managed clocks differ"
+            );
+        }
+    }
+    let (direct_variables, direct_binding) = match &cfg.direct_upload {
+        Some(profile) => {
+            profile.validate(&cfg.deployment_id, &cfg.bucket)?;
+            (
+                profile.render_variables(),
+                direct_upload::DIRECT_UPLOAD_BINDING,
+            )
+        }
+        None => match &cfg.direct_upload_clock {
+            Some(clock) => (
+                clock.render_variables(),
+                direct_upload::DIRECT_UPLOAD_BINDING,
+            ),
+            None => (String::new(), ""),
+        },
+    };
     Ok(format!(
         "# Generated hybrid AOS Hub Worker profile.\n\
          name = {name}\n\
@@ -341,6 +379,7 @@ pub fn render_hybrid_wrangler_toml(cfg: &HybridDeployConfig) -> Result<String> {
          HUB_DEPLOYMENT_ID = {deployment_id}\n\
          HUB_EXTERNAL_URL = {external_url}\n\
          HUB_HYBRID_ORIGIN_URL = {native_origin_url}\n\
+         {direct_variables}\
          \n[limits]\n\
          cpu_ms = {cpu_limit_ms}\n\
          subrequests = {subrequest_limit}\n\
@@ -367,6 +406,7 @@ pub fn render_hybrid_wrangler_toml(cfg: &HybridDeployConfig) -> Result<String> {
          \n[[migrations]]\n\
          tag = \"hybrid-authority-state-v1\"\n\
          new_sqlite_classes = [\"HybridAuthorityState\"]\n\
+         {direct_binding}\
          \n[observability]\n\
          enabled = true\n\
          head_sampling_rate = 1.0\n",
@@ -1863,6 +1903,8 @@ mod tests {
             native_origin_url: "https://native.example.test".into(),
             custom_domains: vec!["hub.example.test".into()],
             serve_assets: true,
+            direct_upload: None,
+            direct_upload_clock: None,
         };
         let source = render_hybrid_wrangler_toml(&cfg).unwrap();
         let parsed: toml::Value = toml::from_str(&source).unwrap();
