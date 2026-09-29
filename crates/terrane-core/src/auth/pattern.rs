@@ -157,29 +157,8 @@ pub(super) fn contained(child: &Grant, parents: &[Grant], verb: u8) -> Result<bo
 }
 
 pub(super) fn canonical_reference(bytes: &[u8]) -> bool {
-    let mut components = bytes.split(|byte| *byte == b'/');
-    if components.next() != Some(b"refs".as_slice()) {
-        return false;
-    }
-    if !matches!(
-        components.next(),
-        Some(b"heads" | b"tags" | b"notes" | b"jobs" | b"conflicts" | b"derived")
-    ) {
-        return false;
-    }
-    let mut count = 0;
-    for component in components {
-        count += 1;
-        if component.is_empty()
-            || component.windows(2).any(|pair| pair == b"..")
-            || component
-                .iter()
-                .any(|byte| !(0x20..=0x7e).contains(byte) || b"~^:?*[\\".contains(byte))
-        {
-            return false;
-        }
-    }
-    count != 0
+    core::str::from_utf8(bytes)
+        .is_ok_and(|reference| crate::refs::RefName::parse(reference).is_ok())
 }
 
 pub(super) fn canonical_root(bytes: &[u8]) -> bool {
@@ -193,8 +172,11 @@ fn canonical_components(bytes: &[u8], root: bool) -> bool {
     !bytes.is_empty()
         && bytes.split(|byte| *byte == b'/').all(|component| {
             !component.is_empty()
-                && component != b"."
-                && component != b".."
+                && (if root {
+                    component != b"." && component != b".."
+                } else {
+                    !component.windows(2).any(|pair| pair == b"..")
+                })
                 && component
                     .iter()
                     .all(|byte| *byte != 0 && (root || *byte != b':'))
