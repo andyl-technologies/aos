@@ -129,6 +129,11 @@ mod attachment_slot_effect;
 mod attachment_target;
 mod cache_pin;
 mod cache_unpin;
+#[allow(
+    dead_code,
+    reason = "PRE-ROOT client awaits genuine later kernel-request/Ready-worker ingress"
+)]
+mod consumer_read;
 pub(crate) mod execution;
 pub(crate) mod execution_argument_observe;
 pub(crate) mod execution_capture_candidate;

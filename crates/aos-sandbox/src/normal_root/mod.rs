@@ -13,6 +13,7 @@
 //! a selected profile alone cannot construct an original-flight proof.
 
 mod client;
+mod controller_peer;
 mod images;
 mod profile;
 mod service;
@@ -42,6 +43,7 @@ pub use client::{
     ProductionControllerNormalRootCaptureV1, ProductionControllerNormalRootProfileV1,
     ProductionControllerNormalRootStartupPartsV1,
 };
+pub(crate) use controller_peer::OriginalControllerPolicyPeerV1;
 
 pub(super) const PID1_FD_NAME: &str = "aos-normal-root-pid1-image";
 pub(super) const PROFILE_FD_NAME: &str = "aos-normal-root-profile";
