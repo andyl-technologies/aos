@@ -575,6 +575,29 @@ is added rather than editing history.
   - **Affects:** TREE-1, TREE-2, TREE-4, TREE-6, TREE-32, DRV-12, and
     tree key validation.
 
+- **[D-31] Make the feature matrix target-compatible and milestone-scoped.**
+  - **Status:** Decided
+  - **Decision:** CRATE-29 tests no-default features, every individual
+    supported feature, and all mutually compatible features on each target
+    supported by the current implementation milestone. Target-restricted
+    features must be explicitly excluded or rejected on incompatible
+    targets. A newly supported target enters the matrix before its
+    milestone exits. An installed compiler target alone does not declare
+    product support.
+  - **Rationale:** The original wording required every feature alone and
+    all features together on every supported target, while CRATE-8 calls
+    `tokio` a native binding and `wasm` a WebAssembly-host binding. Their
+    all-features combination cannot be a valid I/O consumer, and native
+    filesystem surfaces cannot run in a WebAssembly host. The matrix must
+    prove each supported configuration without requiring an invalid one
+    to build or silently omitting an introduced target.
+  - **Alternatives considered:** Require all-features on every target
+    (rejected: contradicts native-only and WebAssembly-only features);
+    omit target-limited features from the gate entirely (rejected: leaves
+    feature declarations unchecked).
+  - **Affects:** CRATE-8, CRATE-29, `gate:feature-matrix`, and the
+    T1/B-edge target transition.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

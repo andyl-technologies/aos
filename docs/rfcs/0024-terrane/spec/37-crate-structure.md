@@ -221,7 +221,10 @@ contains exactly the surfaces it needs and the vocabulary stays closed.
   its feature. *Gate:* `gate:feature-matrix`.
 - **[CRATE-29]** `gate:feature-matrix` MUST build and test the
   no-default-features configuration of every crate, each feature alone, and
-  the all-features configuration, on every supported target.
+  the set of all target-compatible features, on every target supported by
+  that implementation milestone. A feature restricted to another target
+  MUST be rejected or excluded explicitly on the current target. Adding a
+  supported target expands the gate matrix before that milestone exits.
 
 ## Unsafe policy
 
