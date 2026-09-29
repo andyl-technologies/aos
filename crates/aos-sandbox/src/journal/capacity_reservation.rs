@@ -732,7 +732,19 @@ pub(super) fn decode_capacity_record(
     CanonicalCapacityFamily::decode(key, value)?.accounting()
 }
 
-pub(crate) fn decode_capacity_reservation_request_v1(
+/// Decodes one canonical legacy capacity request as nonauthorizing data.
+///
+/// The returned tuple contains the request, admission transaction ID and
+/// reservation ID. This checks only the supplied record, not the complete floor
+/// snapshot, an owner graph or journal currentness. Callers must validate every
+/// retained floor before selecting a record. These values cannot construct a
+/// protected reservation or settlement grant.
+///
+/// # Errors
+///
+/// Rejects another namespace, deletion, malformed or unknown framing, a changed
+/// key or identity, and valid native or ordinary records from other families.
+pub fn decode_capacity_reservation_request_v1(
     record: &JournalRecord,
 ) -> Result<(GlobalCapacityReservationRequestV1, [u8; 16], [u8; 32]), JournalError> {
     if record.namespace() != RecordNamespace::GlobalCapacityReservation {
