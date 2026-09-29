@@ -47,6 +47,37 @@ placement, publication, and job generation. The shared database is expected to
 scale these short transactions and read queries; the RFC does not promise
 unbounded write scale from a single PostgreSQL primary.
 
+## Cloudflare resource provisioning
+
+The infrastructure deployment owns the Cloudflare resources as well as the GCP
+resources. Registered OpenTofu modules provision private R2 buckets, exact-origin
+upload CORS, bounded abandoned-multipart cleanup, and the queues required by the
+storage executor. Worker deployment binds those declared resources and their
+compatible Durable Object classes. Existing buckets can be explicitly adopted
+into infrastructure state; adoption does not recreate a bucket, reset a journal,
+or establish its storage authority. Destruction requires a separate reviewed
+retirement operation. Lifecycle rules must not expire published objects or
+correctness journals merely because an upload staging policy exists.
+
+Credential bootstrap is also automated. A separately supplied account
+provisioning credential permits the deployment to create an R2 S3 credential
+limited to the selected bucket's object read/write operations. The deployment
+stores its value in the approved secret service and delivers an immutable secret
+version to the storage executor. It publishes only secret references and public
+resource coordinates in deployment contracts. Secret values must not appear in
+source, ordinary plan output, logs, or public configuration. Native does not
+receive the R2 signing credential. Rotation follows the existing issuance,
+cutoff, and retirement barriers; creating a replacement credential cannot reset
+an object-effect journal or cancel an already issued upload grant.
+
+The initial account provisioning credential remains an explicit operator
+bootstrap prerequisite. A Wrangler session that manages buckets may lack the
+permission to create API tokens; deployment must report that distinction rather
+than require manual bucket and S3-key creation for each Hub. Emulated fleet
+qualification can proceed without hosted credentials. Hosted acceptance still
+requires the actual bucket, signing credential, Worker binding, and measured
+provider behavior before enabling direct uploads.
+
 ## Permanent journal lifetime and partitioning
 
 The fixed metadata ledger is an implementation foundation, not proof that an

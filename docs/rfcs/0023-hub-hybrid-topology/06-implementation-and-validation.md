@@ -62,7 +62,12 @@ health/compatibility contracts that platform needs, without making provider
 provisioning part of the request path. The Cloudflare deployment code gains a
 hybrid profile for the public Worker and its object bindings. The two artifacts
 carry compatible protocol versions and one deployment identity; a mismatched
-pair fails readiness rather than serving partially.
+pair fails readiness rather than serving partially. Infrastructure registration
+also owns the Cloudflare buckets, upload CORS, lifecycle rules, verification
+queues, and automated credential bootstrap described in the
+[deployment contract](05-state-deployment-and-portability.md#cloudflare-resource-provisioning).
+Provider module tests and emulated fleet tests qualify configuration and local
+behavior separately from the final hosted provider and performance gates.
 
 ## Acceptance gates
 
