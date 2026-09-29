@@ -268,7 +268,7 @@ pub(super) fn signed_session(root_instance: [u8; 16], nonce: u8) -> SourceProvid
     session
 }
 
-fn mount_acquire_request() -> (Vec<u8>, ValidatedAcquireMountSourceRequest) {
+pub(super) fn mount_acquire_request() -> (Vec<u8>, ValidatedAcquireMountSourceRequest) {
     let media_type = MediaType::new("application/vnd.aos.sandbox.tree.v1+cbor".to_owned())
         .expect("valid tree media type");
     let tree = ObjectDescriptor::new(media_type, ObjectDigest::from_bytes([42; 32]), 1);

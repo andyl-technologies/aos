@@ -3,6 +3,7 @@
 //! These tests use genuine signed canonical legacy rows but no live descriptor,
 //! protected journal, owner initializer, currentness factory or dispatch gate.
 
+mod accepted;
 mod fixture;
 mod terminal;
 
@@ -53,7 +54,6 @@ struct Fixture {
 
 impl Fixture {
     fn new(native: bool) -> Self {
-        let session = fixture::signed_session([19; 16], 31);
         let catalog = native.then(|| {
             NativeAcquireCatalogBindingV3::new(
                 digest(10),
@@ -66,10 +66,22 @@ impl Fixture {
             )
             .unwrap()
         });
+        Self::with_catalog(catalog, [62; 32])
+    }
+
+    fn with_catalog(
+        catalog: Option<NativeAcquireCatalogBindingV3>,
+        catalog_digest: [u8; 32],
+    ) -> Self {
+        let session = fixture::signed_session([19; 16], 31);
+        let catalog_claim = NativeHeldGenerationClaimV1 {
+            generation: 1,
+            digest: ObjectDigest::from_bytes(catalog_digest),
+        };
         let rows = fixture::initial_signed_graph_with_catalog(
             session.clone(),
             500,
-            [62; 32],
+            catalog_digest,
             [63; 32],
             catalog,
         );
@@ -122,8 +134,8 @@ impl Fixture {
             planning_sequence: 1,
             trust: claim(16),
             revocation: claim(17),
-            provider_head: claim(62),
-            provider_floor: claim(62),
+            provider_head: catalog_claim,
+            provider_floor: catalog_claim,
             publication: digest(64),
             records: records.try_into().unwrap(),
         };

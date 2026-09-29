@@ -19,8 +19,9 @@ use aos_sandbox_source_provider_protocol::{
     SignedSourceProviderRequestV1, SourceProviderAuthorityV1, SourceProviderMethod,
     source_provider_request_attempt_digest_v1,
 };
+use ed25519_dalek::Signer as _;
 
-fn provider_witness(family: Family) -> NativeHeldByteWitnessV1 {
+pub(super) fn provider_witness(family: Family) -> NativeHeldByteWitnessV1 {
     let prefix: &[u8] = match family {
         Family::ProviderAuthority => b"aos.source-provider.authority.v1\0",
         Family::ProviderAttempt => b"aos.source-provider.attempt.v1\0",

@@ -201,6 +201,9 @@ fn validate_sidecar(
         .ok_or_else(|| state_error("native Root provider acquisition"))?;
     let scope = sidecar.original_scope;
     if attempt.method != ProviderMethodV2::Acquire
+        || attempt.attempt_number != 1
+        || attempt.previous_attempt_id.is_some()
+        || attempt.lineage_root_attempt_id != attempt.attempt_id
         || attempt.scope != session.scope
         || scope.original_source_session.as_bytes() != &session.session_binding
         || scope.provider_acquisition.as_bytes() != &acquisition.acquisition_id
@@ -213,18 +216,21 @@ fn validate_sidecar(
     validate_phase_slots(sidecar)?;
     let cas = sidecar.response_transaction != [0; 16];
     if cas {
-        if !matches!(
-            attempt.state,
-            ProviderAttemptStateV2::DispositionConsumed {
-                status: ProviderStatusV2::Complete,
-                ..
-            }
-        ) {
+        if attempt.revision != 2
+            || sidecar.suffix.control(Kind::ProviderHeld).is_none()
+            || !matches!(
+                attempt.state,
+                ProviderAttemptStateV2::DispositionConsumed {
+                    status: ProviderStatusV2::Complete,
+                    ..
+                }
+            )
+        {
             return Err(state_error(
                 "native Root CAS requires genuine Complete attempt",
             ));
         }
-    } else if !matches!(attempt.state, ProviderAttemptStateV2::Reserved) {
+    } else if attempt.revision != 1 || !matches!(attempt.state, ProviderAttemptStateV2::Reserved) {
         return Err(state_error("native Root pre-CAS attempt changed"));
     }
     let row = graph.legacy.acquisitions.get(&attempt.owner.owner_id());
