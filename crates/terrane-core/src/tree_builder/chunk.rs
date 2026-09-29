@@ -16,7 +16,7 @@ pub(super) enum Item<'a> {
 }
 
 impl Item<'_> {
-    fn canonical(&self, min_chunk_size: u64) -> Result<Vec<u8>, Error> {
+    pub(super) fn canonical(&self, min_chunk_size: u64) -> Result<Vec<u8>, Error> {
         match self {
             Self::Leaf(item) => leaf_bytes(item, &[], min_chunk_size),
             Self::Child(child) => {
@@ -33,7 +33,11 @@ impl Item<'_> {
     }
 }
 
-fn leaf_bytes(item: &LeafItem<'_>, previous: &[u8], min_chunk_size: u64) -> Result<Vec<u8>, Error> {
+pub(super) fn leaf_bytes(
+    item: &LeafItem<'_>,
+    previous: &[u8],
+    min_chunk_size: u64,
+) -> Result<Vec<u8>, Error> {
     let shared = previous
         .iter()
         .zip(&item.key)

@@ -12,7 +12,7 @@ in {
 
   tree-history-independence = sourceGate "tree-history-independence" ''
     cd crates
-    ${runTests "tree_builder::tests::tree_history_independence"}
+    ${runTests "tree_history_independence"}
     printf 'PASS: persistent edits, deterministic replay, history independence, and subtree reuse\n' > "$out/result"
   '';
 }

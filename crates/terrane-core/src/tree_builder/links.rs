@@ -332,3 +332,51 @@ pub(super) fn update<'a>(
     }
     Ok(result)
 }
+
+pub(super) fn replace_changes<'a>(
+    links: &Links<'a>,
+    changes: &[super::splice::Change<'a>],
+    tree: &super::Tree<'a>,
+    reads: &mut usize,
+) -> Result<Links<'a>, Error> {
+    use alloc::collections::BTreeMap;
+    let mut groups: BTreeMap<&[u8], (u64, Vec<&Entry<'a>>)> = BTreeMap::new();
+    for change in changes {
+        if let Some(id) = change.old.as_ref().and_then(link_id) {
+            let group = groups.entry(id).or_default();
+            group.0 = group.0.checked_add(1).ok_or(Error::Limit)?;
+        }
+        if let Some(entry) = &change.new
+            && let Some(id) = link_id(entry)
+        {
+            if change.key.as_slice() < id {
+                return Err(Error::Tree);
+            }
+            groups.entry(id).or_default().1.push(entry);
+        }
+    }
+    let mut result = links.clone();
+    for (id, (removed, added)) in groups {
+        let old = find(links, id, reads);
+        let remaining = old
+            .map_or(0, |group| group.count)
+            .checked_sub(removed)
+            .ok_or(Error::Tree)?;
+        let count = remaining
+            .checked_add(added.len() as u64)
+            .ok_or(Error::Limit)?;
+        if count == 0 {
+            result = remove(&result, id, reads);
+            continue;
+        }
+        let first = super::mutation::lookup(tree, id, reads).ok_or(Error::Tree)?;
+        if link_id(first) != Some(id)
+            || (remaining > 0 && !old.is_some_and(|group| same_value(&group.entry, first)))
+            || added.iter().any(|entry| !same_value(entry, first))
+        {
+            return Err(Error::Tree);
+        }
+        result = set(&result, id, first, count, reads);
+    }
+    Ok(result)
+}

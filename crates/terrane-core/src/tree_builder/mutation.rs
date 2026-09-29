@@ -13,7 +13,7 @@ use super::{
     links,
 };
 
-fn lookup<'tree, 'a>(
+pub(super) fn lookup<'tree, 'a>(
     tree: &'tree Tree<'a>,
     key: &[u8],
     reads: &mut usize,
@@ -42,12 +42,22 @@ fn validate<'a>(
     new: Option<&Entry<'a>>,
     reads: &mut usize,
 ) -> Result<links::Links<'a>, Error> {
+    validate_map_entry(tree, key, new, reads)?;
+    let old = lookup(tree, key, reads);
+    links::update(&tree.links, key, old, new, reads)
+}
+
+pub(super) fn validate_map_entry<'a>(
+    tree: &Tree<'a>,
+    key: &[u8],
+    new: Option<&Entry<'a>>,
+    reads: &mut usize,
+) -> Result<(), Error> {
     if tree.usage == TreeUse::Index {
         validate_index_key(key)?;
     } else {
         validate_key(key)?;
     }
-    let old = lookup(tree, key, reads);
     if let Some(entry) = new {
         encode_entry(entry, tree.min_chunk_size)?;
         match (&entry.kind, tree.usage) {
@@ -85,7 +95,7 @@ fn validate<'a>(
             return Err(Error::Tree);
         }
     }
-    links::update(&tree.links, key, old, new, reads)
+    Ok(())
 }
 
 pub(super) fn insert<'a>(tree: &Tree<'a>, item: LeafItem<'a>) -> Result<Mutation<'a>, Error> {
@@ -117,10 +127,10 @@ pub(super) fn remove<'a>(tree: &Tree<'a>, key: &[u8]) -> Result<Mutation<'a>, Er
     Ok(result)
 }
 
-struct Replacement<'a> {
-    first: Vec<u8>,
-    last: Vec<u8>,
-    nodes: Vec<Rc<StoredNode<'a>>>,
+pub(super) struct Replacement<'a> {
+    pub(super) first: Vec<u8>,
+    pub(super) last: Vec<u8>,
+    pub(super) nodes: Vec<Rc<StoredNode<'a>>>,
 }
 
 fn edit<'a>(
@@ -209,7 +219,7 @@ fn edit_leaves<'a>(
     })
 }
 
-fn edit_parents<'a>(
+pub(super) fn edit_parents<'a>(
     tree: &Tree<'a>,
     level: u8,
     replacement: Replacement<'a>,

@@ -16,9 +16,13 @@ mod chunk;
 mod cursor;
 mod links;
 mod mutation;
+mod splice;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod splice_tests;
 
 use alloc::{rc::Rc, vec::Vec};
 
@@ -30,6 +34,7 @@ use crate::tree_format::{
 
 pub use crate::tree_format::Error;
 pub use cursor::{Cursor, Nodes};
+pub use splice::{SpliceOutcome, SubtreeReplacement};
 
 /// An immutable node with canonical bytes and exact subtree summaries.
 #[derive(Clone, Debug)]
@@ -303,6 +308,27 @@ impl<'a> Tree<'a> {
     /// of a retained hard-link set, and invalid resulting node encodings.
     pub fn remove(&self, key: &[u8]) -> Result<Mutation<'a>, Error> {
         mutation::remove(self, key)
+    }
+
+    /// Replaces disjoint aligned subtrees by their existing immutable nodes.
+    ///
+    /// Each target must have the same first key, last key, and level as its
+    /// predecessor. Canonical cuts at both edges are certified at every
+    /// descendant level before targets are adopted. The method returns
+    /// [`SpliceOutcome::RechunkRequired`] when a changed edge invalidates a
+    /// content boundary; callers can then descend into smaller subtrees.
+    /// Root properties are preserved, and validation compares differing
+    /// entry frontiers while skipping identical immutable nodes.
+    ///
+    /// # Errors
+    /// Rejects unknown predecessor identities, overlapping ranges, changed
+    /// range bounds or levels, nonroot properties, invalid entries or
+    /// ancestors, inconsistent hard links, and resource-limit violations.
+    pub fn splice_subtrees(
+        &self,
+        patches: &[SubtreeReplacement<'a>],
+    ) -> Result<SpliceOutcome<'a>, Error> {
+        splice::apply(self, patches)
     }
 
     /// Changes root properties without rewriting descendant nodes.
