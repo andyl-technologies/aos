@@ -3,6 +3,13 @@
 //! A node decoder validates local ordering, prefix compression, shape, and
 //! resource limits. [`validate_tree_entries`] checks invariants that cross
 //! node boundaries after a reader has loaded the complete ordered tree.
+//!
+//! Nodes encode their level and prefix-compressed items as integer-keyed maps.
+//! The empty leaf has this canonical representation:
+//!
+//! ```text
+//! {0: 0, 1: []} => a2 00 00 01 80
+//! ```
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -158,23 +165,36 @@ pub enum EntryKind<'a> {
         link_id: Option<&'a [u8]>,
     },
     /// A directory needed as an ancestor of child entries.
-    Directory { mode: u16 },
+    Directory {
+        /// POSIX permission and special bits, without file-type bits.
+        mode: u16,
+    },
     /// A verbatim symlink target.
-    Symlink { target: &'a [u8] },
+    Symlink {
+        /// Raw target bytes, without path normalization.
+        target: &'a [u8],
+    },
     /// A reference to another tree root with optional overriding properties.
     Tree {
+        /// Referenced tree root identity.
         root: Digest,
+        /// Property overrides applied at the graft root.
         props: Option<Vec<Property<'a>>>,
     },
     /// An overlay-layer deletion marker.
     Whiteout,
     /// An unresolved merge result in side order.
     Conflict {
+        /// Candidate entries in merge-side order.
         candidates: Vec<Entry<'a>>,
+        /// Absent when unspecified, null for no base, or the base entry.
         base: Option<Option<Box<Entry<'a>>>>,
     },
     /// Sorted, unique object identities in an index tree.
-    Index { targets: Vec<Digest> },
+    Index {
+        /// Referenced object identities in strict byte order.
+        targets: Vec<Digest>,
+    },
 }
 
 /// A tree value with common attributes and introducing provenance.

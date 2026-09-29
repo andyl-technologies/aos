@@ -2,6 +2,13 @@
 //!
 //! Decoding borrows input slices and bounds collection lengths before callers
 //! allocate. No generic value tree is created during validation.
+//!
+//! Values use definite lengths, shortest integer representations, and ordered
+//! map keys. For example, this map has the canonical bytes shown below:
+//!
+//! ```text
+//! {0: 1} => a1 00 01
+//! ```
 
 use alloc::vec::Vec;
 use core::fmt;
