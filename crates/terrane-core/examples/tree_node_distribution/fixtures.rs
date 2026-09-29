@@ -45,10 +45,16 @@ impl KeyFamily {
         }
     }
 
+    /// Generates keys independently of node construction.
+    ///
+    /// # Errors
+    /// Returns an error if digest allocation fails or generated keys collide.
     pub(super) fn fixture(self, entries: usize) -> Result<Fixture, BuildError> {
         let mut digests = Vec::new();
         if matches!(self, Self::HashLike) {
-            digests.try_reserve_exact(entries).map_err(|_| BuildError::Allocation)?;
+            digests
+                .try_reserve_exact(entries)
+                .map_err(|_| BuildError::Allocation)?;
             for ordinal in 0..entries {
                 digests.push(*blake3::hash(&(ordinal as u64).to_le_bytes()).as_bytes());
             }
@@ -58,7 +64,11 @@ impl KeyFamily {
             }
         }
 
-        Ok(Fixture { family: self, entries, digests })
+        Ok(Fixture {
+            family: self,
+            entries,
+            digests,
+        })
     }
 }
 
@@ -96,6 +106,8 @@ pub(super) enum BuildError {
     Depth,
     /// Indicates an empty key stream or zero ingestion batch size.
     EmptyInput,
+    /// Indicates that the fixture encoder disagrees with the normative node.
+    GoldenMismatch,
 }
 
 impl fmt::Display for BuildError {
@@ -106,6 +118,7 @@ impl fmt::Display for BuildError {
             Self::Overflow => "fixture node count or weight overflowed",
             Self::Depth => "fixture exceeded the sixteen-level limit",
             Self::EmptyInput => "fixture requires entries and a nonzero ingestion batch",
+            Self::GoldenMismatch => "fixture encoder failed the normative inline-file node vector",
         })
     }
 }
@@ -142,7 +155,10 @@ impl LevelReport {
         self.bytes.push(bytes);
         self.forced += usize::from(forced);
         if complete {
-            self.complete_total = self.complete_total.checked_add(bytes).ok_or(BuildError::Overflow)?;
+            self.complete_total = self
+                .complete_total
+                .checked_add(bytes)
+                .ok_or(BuildError::Overflow)?;
             self.complete_nodes += 1;
         }
 
@@ -170,7 +186,10 @@ impl Node {
     fn push(&mut self, key: &[u8], count: u64, weight: u64) -> Result<(), BuildError> {
         self.item_count = self.item_count.checked_add(1).ok_or(BuildError::Overflow)?;
         self.count = self.count.checked_add(count).ok_or(BuildError::Overflow)?;
-        self.subtree_weight = self.subtree_weight.checked_add(weight).ok_or(BuildError::Overflow)?;
+        self.subtree_weight = self
+            .subtree_weight
+            .checked_add(weight)
+            .ok_or(BuildError::Overflow)?;
         self.last_key.clear();
         self.last_key.extend_from_slice(key);
 
@@ -196,7 +215,10 @@ impl Node {
             last_key: self.last_key.clone(),
             digest: *hasher.finalize().as_bytes(),
             count: self.count,
-            weight: self.subtree_weight.checked_add(own_weight).ok_or(BuildError::Overflow)?,
+            weight: self
+                .subtree_weight
+                .checked_add(own_weight)
+                .ok_or(BuildError::Overflow)?,
         };
 
         self.items.clear();
@@ -207,6 +229,23 @@ impl Node {
 
         Ok(child)
     }
+}
+
+/// Checks the fixture encoder against the byte-exact inline-file node vector.
+///
+/// # Errors
+/// Returns an error if the fixture encoder yields a different node identity.
+pub(super) fn verify_golden_node() -> Result<(), BuildError> {
+    let mut node = Node::default();
+    leaf_item(&mut node.items, b"hello.txt", 0);
+    node.push(b"hello.txt", 1, 0)?;
+
+    let root = node.finish(0)?;
+    if hex(&root.digest) != "9366ec79c4c37d11877e5767bab653177f4e80be8ed6aeb0cdcf4c3c20bbc392" {
+        return Err(BuildError::GoldenMismatch);
+    }
+
+    Ok(())
 }
 
 /// Constructs canonical nodes and measures the draft boundary procedure.
@@ -226,7 +265,11 @@ pub(super) fn build(fixture: &Fixture, batch: usize) -> Result<Measurement, Buil
     for start in (0..fixture.entries).step_by(batch) {
         for ordinal in start..fixture.entries.min(start + batch) {
             let key = fixture.key(ordinal);
-            let shared = key.iter().zip(&node.last_key).take_while(|(a, b)| a == b).count();
+            let shared = key
+                .iter()
+                .zip(&node.last_key)
+                .take_while(|(a, b)| a == b)
+                .count();
             canonical.clear();
             leaf_item(&mut canonical, &key, 0);
             leaf_item(&mut node.items, &key[shared..], shared as u64);
@@ -284,7 +327,9 @@ fn leaf_item(bytes: &mut Vec<u8>, key_suffix: &[u8], shared: u64) {
     bytes.push(0x83);
     bstr(bytes, key_suffix);
     uint(bytes, shared);
-    bytes.extend_from_slice(&[0xa4, 0x01, 0x01, 0x02, 0x19, 0x01, 0xa4, 0x03, 0x0f, 0x04, 0x82, 0x00]);
+    bytes.extend_from_slice(&[
+        0xa4, 0x01, 0x01, 0x02, 0x19, 0x01, 0xa4, 0x03, 0x0f, 0x04, 0x82, 0x00,
+    ]);
     bstr(bytes, &INLINE_CHUNK);
 }
 
@@ -336,7 +381,3 @@ pub(super) fn hex(bytes: &[u8]) -> String {
 
     encoded
 }
-    /// Generates keys independently of node construction.
-    ///
-    /// # Errors
-    /// Returns an error if digest allocation fails or generated keys collide.
