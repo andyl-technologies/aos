@@ -532,10 +532,17 @@ fn request_sequence_expectation(
     ledger: &ProviderLedgerV1<'_>,
     signed: &SignedSourceProviderRequestV1,
 ) -> Result<ProviderRequestSequenceExpectationV1, ProviderLedgerError> {
-    let journal_snapshot = ledger.journal.snapshot()?;
-    ledger
-        .journal
-        .validate_source_provider_authority_snapshot(&journal_snapshot)?;
+    request_sequence_expectation_at(&ledger.journal, &ledger.recovered, signed)
+}
+
+/// Shares exact replay/Fresh classification with original ingress observations.
+pub(crate) fn request_sequence_expectation_at(
+    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    recovered: &crate::model::RecoveredProviderLedgerV1,
+    signed: &SignedSourceProviderRequestV1,
+) -> Result<ProviderRequestSequenceExpectationV1, ProviderLedgerError> {
+    let journal_snapshot = journal.snapshot()?;
+    journal.validate_source_provider_authority_snapshot(&journal_snapshot)?;
     let (session_binding, sequence, request_id) = match signed.method() {
         SourceProviderMethod::Acquire => {
             let request = decode_acquire_request(signed.subject())
@@ -567,11 +574,11 @@ fn request_sequence_expectation(
         SourceProviderMethod::Hello => return Err(ProviderLedgerError::Equivocation),
     };
     let identity = (
-        ledger.recovered.authority.provider.authority_id(),
+        recovered.authority.provider.authority_id(),
         signed.signer().authority_id(),
     );
     let signed_digest = digest_signed_request(signed);
-    if let Some(retained) = ledger.recovered.attempts.values().find(|attempt| {
+    if let Some(retained) = recovered.attempts.values().find(|attempt| {
         attempt.provider.authority_id() == identity.0
             && attempt.holder.authority_id() == identity.1
             && attempt.method == signed.method()
@@ -585,7 +592,7 @@ fn request_sequence_expectation(
             return Err(ProviderLedgerError::Equivocation);
         }
     }
-    let session = ledger.recovered.sessions.get(&identity);
+    let session = recovered.sessions.get(&identity);
     let key = AttemptKeyV1 {
         provider_id: identity.0,
         holder_id: identity.1,
@@ -593,7 +600,7 @@ fn request_sequence_expectation(
         method: signed.method() as u8,
         request_id,
     };
-    if let (Some(session), Some(attempt)) = (session, ledger.recovered.attempts.get(&key)) {
+    if let (Some(session), Some(attempt)) = (session, recovered.attempts.get(&key)) {
         return Ok(ProviderRequestSequenceExpectationV1::exact_replay(
             session_binding,
             attempt.request_sequence,
@@ -619,11 +626,24 @@ pub(crate) fn validate_projection(
     ledger: &ProviderLedgerV1<'_>,
     projection: &VerifiedProviderIngressProjectionV1,
 ) -> Result<Option<HolderSessionHeadRecordV1>, ProviderLedgerError> {
-    let authority = &ledger.recovered.authority;
-    if !ledger
-        .configuration
-        .matches_authority_and_catalog(authority, &ledger.recovered.catalog)
-    {
+    let (existing, same_session) =
+        projection_session_at(&ledger.configuration, &ledger.recovered, projection)?;
+    if !same_session {
+        if let Some(head) = &existing {
+            let _ = validate_supersession(ledger, projection, head)?;
+        }
+    }
+    Ok(existing)
+}
+
+/// Returns the unchanged current graph comparison without a supersession grant.
+pub(crate) fn projection_session_at(
+    configuration: &crate::state::ProtectedProviderConfigurationV1,
+    recovered: &crate::model::RecoveredProviderLedgerV1,
+    projection: &VerifiedProviderIngressProjectionV1,
+) -> Result<(Option<HolderSessionHeadRecordV1>, bool), ProviderLedgerError> {
+    let authority = &recovered.authority;
+    if !configuration.matches_authority_and_catalog(authority, &recovered.catalog) {
         return Err(ProviderLedgerError::ConfigurationMismatch);
     }
     let root_writer = projection.actual_writer_root_mount_process();
@@ -652,9 +672,8 @@ pub(crate) fn validate_projection(
         projection.provider_authority().authority_id(),
         projection.root_mount_authority().authority_id(),
     );
-    let existing = ledger.recovered.sessions.get(&identity).cloned();
-    let reused_history = ledger
-        .recovered
+    let existing = recovered.sessions.get(&identity).cloned();
+    let reused_history = recovered
         .session_history
         .keys()
         .any(|(_, _, binding)| *binding == projection.session_binding())
@@ -664,8 +683,8 @@ pub(crate) fn validate_projection(
     if reused_history {
         return Err(ProviderLedgerError::Equivocation);
     }
-    if let Some(head) = &existing {
-        let session_matches = head.provider == *projection.provider_authority()
+    let same_session = if let Some(head) = &existing {
+        head.provider == *projection.provider_authority()
             && head.holder == *projection.root_mount_authority()
             && head.session_binding == projection.session_binding()
             && head.boot_id
@@ -693,12 +712,11 @@ pub(crate) fn validate_projection(
             && head.root_hello_digest == projection.root_mount_hello_digest()
             && head.provider_hello_digest == projection.provider_hello_digest()
             && head.root_hello == projection.signed_root_mount_hello().to_canonical_bytes()
-            && head.provider_hello == projection.signed_provider_hello().to_canonical_bytes();
-        if !session_matches {
-            let _ = validate_supersession(ledger, projection, head)?;
-        }
-    }
-    Ok(existing)
+            && head.provider_hello == projection.signed_provider_hello().to_canonical_bytes()
+    } else {
+        true
+    };
+    Ok((existing, same_session))
 }
 
 pub(crate) fn validate_session_capacity(

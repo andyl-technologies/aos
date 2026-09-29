@@ -773,6 +773,47 @@ pub(crate) struct DetachedProviderLedgerV1 {
 }
 
 impl DetachedProviderLedgerV1 {
+    /// Borrows only current configuration, graph and an existing genuine Session.
+    ///
+    /// The original-pair owner cannot obtain a mutable ledger or an effect
+    /// closure through this read-only companion view.
+    pub(crate) fn original_ingress_parts(
+        &mut self,
+    ) -> Result<
+        (
+            &ProtectedProviderConfigurationV1,
+            &RecoveredProviderLedgerV1,
+            &mut CurrentProviderIngressSessionV1,
+        ),
+        ProviderLedgerError,
+    > {
+        let installed = self.current_sessions.values_mut().next().ok_or(
+            ProviderLedgerError::InvalidTransition(
+                "fixed provider owner has no live ingress session",
+            ),
+        )?;
+        Ok((&self.configuration, &self.recovered, &mut installed.session))
+    }
+
+    /// Checks pair-only idle bounds without restricting ordinary reception.
+    pub(crate) fn original_ingress_is_idle(&self) -> Result<(), ProviderLedgerError> {
+        if self.poisoned
+            || self.current_sessions.len() != 1
+            || !self.pending_acquisitions.is_empty()
+            || !self.pending_releases.is_empty()
+            || self.pending_recovery_bridge.is_some()
+            || self
+                .current_sessions
+                .values()
+                .any(|installed| installed.supersession.is_some())
+        {
+            return Err(ProviderLedgerError::InvalidTransition(
+                "original ingress is not idle",
+            ));
+        }
+        self.native_reply_custody.require_empty()
+    }
+
     pub(crate) fn require_native_reply_custody_empty(&self) -> Result<(), ProviderLedgerError> {
         self.native_reply_custody.require_empty()
     }

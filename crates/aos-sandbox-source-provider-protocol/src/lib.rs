@@ -49,6 +49,9 @@ pub mod storage_zfs_hold_receipt;
 pub mod storage_zfs_hold_transport;
 pub mod trust;
 pub mod verification;
+mod verification_native_prepared;
+
+pub use verification_native_prepared::verify_current_root_prepared_v1;
 
 pub use catalog_currentness::{
     CatalogCurrentnessErrorV1, CatalogCurrentnessQueryV1, SignedCatalogCurrentnessV1,

@@ -55,12 +55,14 @@ mod validation;
 pub(crate) use completion::complete_acquire;
 pub(crate) use completion::complete_retained_native;
 pub(crate) use native_admission::require_original_packet_profile;
+pub(crate) use native_admission::select_current_resource_at;
 pub(crate) use reservation::reserve_acquire;
+use validation::enforce_acquire_limits;
+pub(crate) use validation::normalized_intent;
 pub(crate) use validation::{
     derive_acquire_effect_id, derive_backend_plan_id, derive_lease_id,
     derive_native_no_dispatch_id, is_native_no_dispatch_acquisition, validate_backend_selection,
 };
-use validation::{enforce_acquire_limits, normalized_intent};
 
 const ACQUIRE_RESERVE_PURPOSE: &[u8] = b"reserve-acquire";
 const ACQUIRE_COMPLETE_PURPOSE: &[u8] = b"complete-acquire";

@@ -11,7 +11,7 @@ pub(crate) fn is_native_no_dispatch_acquisition(acquisition: &AcquisitionRecordV
         )
 }
 
-pub(super) fn normalized_intent(
+pub(crate) fn normalized_intent(
     verified: &VerifiedProviderAcquireRequestV1,
 ) -> Result<NormalizedAcquisitionIntentV1, ProviderLedgerError> {
     let request = verified.request();

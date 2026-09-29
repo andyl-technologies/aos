@@ -94,11 +94,33 @@ fn serve_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
         match ingress.accept_authenticated_owner(deadline) {
             Ok((mut owner, _report)) => {
                 loop {
-                    match ingress.advance_authenticated_ingress(&mut owner)? {
+                    // Keep failed original custody owned; no old backend or
+                    // replacement Session may resume it. The paired producer
+                    // is a separate required frontier, not enabled here.
+                    if owner.original_native_ingress_closed() {
+                        std::thread::sleep(Duration::from_millis(2));
+                        continue;
+                    }
+                    let progress = match ingress.advance_authenticated_ingress(&mut owner) {
+                        Ok(progress) => progress,
+                        Err(error) if owner.original_native_pair_pending() => {
+                            owner.close_original_native_ingress_after_failure();
+                            eprintln!("original native ingress remains closed: {error}");
+                            continue;
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
+                    match progress {
                         FixedProviderIngressProgressV1::Pending => {
                             std::thread::sleep(Duration::from_millis(2));
                         }
                         FixedProviderIngressProgressV1::CatalogReplied => {}
+                        FixedProviderIngressProgressV1::OriginalRootPreparedRetained
+                        | FixedProviderIngressProgressV1::OriginalPairRetained => {
+                            // No reservation, signing, nonce, bridge or dispatch
+                            // capability is available from this classification.
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
                         FixedProviderIngressProgressV1::Recovery(query) => {
                             let mut storage = ProductionSourceProviderStorageReadbackV1;
                             // A retained no-dispatch cut needs no current row manifest.
