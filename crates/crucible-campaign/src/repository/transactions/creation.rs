@@ -1,6 +1,7 @@
 //! Repository construction and campaign creation or derivation.
 
 use super::*;
+use crate::repository::mode_derivation::derivation_modes_compatible;
 
 impl CampaignRepository {
     /// Builds an in-memory repository with a fixed immutable-object byte limit.
@@ -317,8 +318,10 @@ impl CampaignRepository {
     ///
     /// The source ref is never mutated. The derived ref begins with one audited
     /// derivation transition whose parent is the exact requested source
-    /// snapshot. A supplied policy with the source's exact mode becomes active
-    /// atomically with ref creation. Statistical policies preserve their exact
+    /// snapshot. A policy with the same mode, or a strict policy for a streaming
+    /// source, becomes active atomically with ref creation. Deriving strict mode
+    /// reconstructs the authenticated contiguous completion prefix and retains
+    /// completions beyond any hole. Statistical policies preserve their exact
     /// active revision. Omitting a policy preserves the source policy. Exact
     /// retries are resolved from the derived history even after later mutations.
     ///
@@ -356,7 +359,7 @@ impl CampaignRepository {
             Some(next) => {
                 let next_id = next.id()?;
                 if next.scenario() != lineage.scenario()
-                    || prior_mode != next.mode()
+                    || !derivation_modes_compatible(prior_mode, next.mode())
                     || (prior_mode == CampaignMode::Statistical
                         && next_id != source.snapshot.active_policy())
                 {
@@ -368,6 +371,7 @@ impl CampaignRepository {
             }
             None => source.snapshot.active_policy(),
         };
+        let next_mode = policy.map_or(prior_mode, CampaignPolicy::mode);
         let derivation = CampaignDerivation::new(source_snapshot, active_policy);
         let target_ref = campaign_ref(target_name)?;
         if let Some(current) = self.refs.read_ref(&target_ref)? {
@@ -382,6 +386,11 @@ impl CampaignRepository {
         {
             self.validate_stored_creation_generator_closure(next)?;
         }
+        let accounting_upserts = self.derivation_accounting_upserts(
+            source.snapshot.roots().accounting,
+            prior_mode,
+            next_mode,
+        )?;
 
         let _guard = self.lock_mutation()?;
         if let Some(current) = self.refs.read_ref(&target_ref)? {
@@ -403,6 +412,12 @@ impl CampaignRepository {
         let fact = CampaignFact::CampaignDerived(derivation);
         let transition_content = self.put_fact(&fact)?;
         let mut roots = source.snapshot.roots();
+        for (key, completion) in accounting_upserts {
+            roots.accounting = self
+                .merkle
+                .insert(roots.accounting, key, completion)?
+                .content_id();
+        }
         roots.coordination = self.coordination_with_parent_result(source_content, &source)?;
         let (next, budget_witness) = self.budgeted_successor(
             source_snapshot,

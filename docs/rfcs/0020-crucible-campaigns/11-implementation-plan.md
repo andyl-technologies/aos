@@ -1429,11 +1429,14 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   activates a compatible imported policy, leaves the source ref unchanged, and
   exactly replays the original derived snapshot after later target mutations,
   cache eviction, restart, or a same-basis CAS race. A supplied policy must
-  preserve the source campaign mode. Cross-mode derivation is rejected before
-  publication; there is no mode-migration format or compatibility path.
-  Focused repository tests cover exact derivation replay, cold reconstruction,
-  source immutability, and rejection of every mode change. This slice does not
-  complete the Phase 8 packaged public-lifecycle matrix.
+  preserve the source campaign mode or explicitly derive strict mode from
+  streaming. Streaming-to-strict derivation reconstructs the authenticated
+  contiguous completion prefix, retains completed ordinals beyond holes, and
+  resumes publication at the first incomplete ordinal. Other cross-mode
+  directions remain refused before publication. Focused repository tests cover
+  exact derivation replay, cold reconstruction, source immutability, mixed
+  modeled/non-modeled completion holes, and forged-prefix rejection. This slice
+  does not complete the Phase 8 packaged public-lifecycle matrix.
   Canonical bounded finding
   and self-contained reproduction records now have a verifier-backed Crucible
   importer and an atomic occurrence-clustering owner with restart validation.
