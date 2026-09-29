@@ -897,8 +897,9 @@ impl StableDirectedRingHandle {
 
     fn ninep_inbound(&self) -> NinePInboundRing<'_> {
         let (header, entries) = self.ring_parts();
-        NinePInboundRing::new(
+        NinePInboundRing::registered(
             self.descriptor.index,
+            self.owner_generation,
             self.descriptor.src_slot,
             self.descriptor.dst_slot,
             header,

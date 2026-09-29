@@ -584,10 +584,13 @@ struct LiveFingerprintCallbackState {
 /// Stable raw view of one directed ring retained by the mapping owner.
 struct StableDirectedRingHandle {
     descriptor: DirectedRing,
+    owner_generation: u64,
     header: NonNull<RingHeader>,
     entries: NonNull<FrameEntry>,
     entry_count: usize,
 }
+
+static NEXT_DIRECTED_RING_OWNER_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub(super) struct LiveDirectedRingPair {
     outbound: StableDirectedRingHandle,
@@ -613,8 +616,18 @@ impl StableDirectedRingHandle {
                 ring_index: ring.descriptor.index,
             },
         )?;
+        let owner_generation = NEXT_DIRECTED_RING_OWNER_GENERATION
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .map_err(
+                |_| LiveVcpuTimeCallbackError::DirectedRingOwnerGenerationExhausted {
+                    ring_index: ring.descriptor.index,
+                },
+            )?;
         Ok(Self {
             descriptor: ring.descriptor,
+            owner_generation,
             header: NonNull::from(ring.header),
             entries,
             entry_count: ring.entries.len(),
