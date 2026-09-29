@@ -3,14 +3,14 @@
 use std::io::Cursor;
 use std::time::Duration;
 
-use rand::{rngs::StdRng, SeedableRng};
-use serde_json::{json, Value as Json};
+use rand::{SeedableRng, rngs::StdRng};
+use serde_json::{Value as Json, json};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tempfile::TempDir;
 
 use super::super::root::{ArchiveSigningKey, ArchiveWrappingKey};
 use super::*;
-use crate::backend::{sqlite_snapshot::*, SqlxBackend};
+use crate::backend::{SqlxBackend, sqlite_snapshot::*};
 use crate::db::Database;
 
 struct Fixture {
@@ -207,7 +207,7 @@ fn bytes(lines: &[Json]) -> Vec<u8> {
 // Malformed logical streams get fresh keys/identity and a correct signature.
 // Rejecting them must come from records/reconstruction, not a stale byte hash.
 fn reseal(f: &mut Fixture, mut metadata: Vec<Json>, mut private: Vec<Json>) {
-    use super::super::root::{prepare_archive_keys, sign_declared_root, FreshArchiveId};
+    use super::super::root::{FreshArchiveId, prepare_archive_keys, sign_declared_root};
     use super::super::{FreshStreamKey, StreamContext, StreamEncoder};
     let mut rng = StdRng::seed_from_u64(89789);
     let id = FreshArchiveId::generate(&mut rng).unwrap();
@@ -269,9 +269,10 @@ async fn empty_tables_and_explicit_omission_counts_are_all_present() {
             .count(),
         267
     );
-    assert!(meta
-        .iter()
-        .any(|line| line["kind"] == "table_start" && line["source_rows"] == "0"));
+    assert!(
+        meta.iter()
+            .any(|line| line["kind"] == "table_start" && line["source_rows"] == "0")
+    );
     let sessions = meta
         .iter()
         .position(|line| line["kind"] == "table_start" && line["table"] == "sessions")
@@ -279,9 +280,11 @@ async fn empty_tables_and_explicit_omission_counts_are_all_present() {
     assert_eq!(meta[sessions]["disposition"], "auth_transient");
     assert_eq!(meta[sessions + 1]["omitted_rows"], "1");
     assert!(!String::from_utf8(m).unwrap().contains("private-credential"));
-    assert!(!String::from_utf8(p)
-        .unwrap()
-        .contains("transient-NOT-EXPORTED"));
+    assert!(
+        !String::from_utf8(p)
+            .unwrap()
+            .contains("transient-NOT-EXPORTED")
+    );
     let root: Json = serde_json::from_slice(f.output.root.as_bytes()).unwrap();
     assert_eq!(root["payload"]["profile"], "framing_only");
 }
@@ -463,17 +466,19 @@ async fn ciphertext_truncation_cross_capture_and_wrong_trust_reject() {
     assert!(verify(&first).is_err());
     let f = fixture().await;
     let trust = ArchiveSignerTrust::new([("snapshot-operator".into(), [9; 32])]).unwrap();
-    assert!(verify_database_capture(
-        f.output.root.as_bytes(),
-        &trust,
-        &f.wrapping,
-        &[],
-        Cursor::new(&f.output.metadata),
-        Cursor::new(&f.output.private),
-        StreamLimits::default(),
-        |_, _, _| Ok(())
-    )
-    .is_err());
+    assert!(
+        verify_database_capture(
+            f.output.root.as_bytes(),
+            &trust,
+            &f.wrapping,
+            &[],
+            Cursor::new(&f.output.metadata),
+            Cursor::new(&f.output.private),
+            StreamLimits::default(),
+            |_, _, _| Ok(())
+        )
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -688,34 +693,38 @@ async fn explicit_small_framing_limits_reject_actual_capture_and_verification() 
     let f = fixture().await;
     let mut limits = StreamLimits::default();
     limits.max_plaintext_bytes = 1;
-    assert!(verify_database_capture(
-        f.output.root.as_bytes(),
-        &trust(&f),
-        &f.wrapping,
-        &[],
-        Cursor::new(&f.output.metadata),
-        Cursor::new(&f.output.private),
-        limits,
-        |_, _, _| Ok(())
-    )
-    .is_err());
+    assert!(
+        verify_database_capture(
+            f.output.root.as_bytes(),
+            &trust(&f),
+            &f.wrapping,
+            &[],
+            Cursor::new(&f.output.metadata),
+            Cursor::new(&f.output.private),
+            limits,
+            |_, _, _| Ok(())
+        )
+        .is_err()
+    );
     let (_dir, path, _pool) = source().await;
     let mut bounded = options();
     bounded.streams = limits;
-    assert!(capture_sqlite(
-        SqliteSnapshotReader::open(&path).await.unwrap(),
-        Vec::new(),
-        Vec::new(),
-        CaptureKeyCustody {
-            signer: &f.signer,
-            wrapping: &f.wrapping,
-            exclusions: &[]
-        },
-        &mut StdRng::seed_from_u64(980),
-        bounded,
-    )
-    .await
-    .is_err());
+    assert!(
+        capture_sqlite(
+            SqliteSnapshotReader::open(&path).await.unwrap(),
+            Vec::new(),
+            Vec::new(),
+            CaptureKeyCustody {
+                signer: &f.signer,
+                wrapping: &f.wrapping,
+                exclusions: &[]
+            },
+            &mut StdRng::seed_from_u64(980),
+            bounded,
+        )
+        .await
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -802,12 +811,16 @@ fn record_line_bounds_blank_and_unterminated_records_fail_closed() {
         )
     }
     assert!(reader(b"\n").read::<RowMark>(CONTROL_CAP).is_err());
-    assert!(reader(br#"{"kind":"row_start","row":"0"}"#)
-        .read::<RowMark>(CONTROL_CAP)
-        .is_err());
-    assert!(reader(&vec![b'a'; CONTROL_CAP + 1])
-        .read::<RowMark>(CONTROL_CAP)
-        .is_err());
+    assert!(
+        reader(br#"{"kind":"row_start","row":"0"}"#)
+            .read::<RowMark>(CONTROL_CAP)
+            .is_err()
+    );
+    assert!(
+        reader(&vec![b'a'; CONTROL_CAP + 1])
+            .read::<RowMark>(CONTROL_CAP)
+            .is_err()
+    );
     let mut json = br#"{"kind":"row_start","row":"0","row":"0"}"#.to_vec();
     json.push(b'\n');
     assert!(reader(&json).read::<RowMark>(CONTROL_CAP).is_err());

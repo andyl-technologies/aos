@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use sha2::{Digest, Sha256};
 
 use super::{compiled_schema, SqliteSnapshotSchema};

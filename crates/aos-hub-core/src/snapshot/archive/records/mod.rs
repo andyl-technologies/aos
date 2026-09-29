@@ -22,11 +22,11 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Read;
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use sha2::{Digest, Sha256};
 
 use super::root::{
-    verify_declared_root, ArchiveSignerTrust, ArchiveWrappingKeys, ExcludedArchiveKey,
+    ArchiveSignerTrust, ArchiveWrappingKeys, ExcludedArchiveKey, verify_declared_root,
 };
 use super::{StreamDecoder, StreamLimits, StreamRole};
 use crate::snapshot::{
@@ -40,7 +40,7 @@ mod wire;
 mod sqlite;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use sqlite::{capture_sqlite, CaptureKeyCustody, DatabaseCaptureOutput, SqliteCaptureOptions};
+pub use sqlite::{CaptureKeyCustody, DatabaseCaptureOutput, SqliteCaptureOptions, capture_sqlite};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;

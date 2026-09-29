@@ -266,10 +266,12 @@ fn null_secret_remains_null_and_creates_no_private_dependency() {
         classified.cells["password_hash"],
         ClassifiedCell::Scalar(SnapshotScalar::Null)
     );
-    assert!(classified
-        .private_dependencies
-        .iter()
-        .all(|dependency| dependency.column != "password_hash"));
+    assert!(
+        classified
+            .private_dependencies
+            .iter()
+            .all(|dependency| dependency.column != "password_hash")
+    );
 }
 
 #[test]
@@ -286,9 +288,11 @@ fn sealed_dynamic_setting_is_private_and_unknown_keys_fail_closed() {
         classified.private_dependencies[0].reason,
         PrivateDependencyReason::Secret
     );
-    assert!(!serde_json::to_string(&classified)
-        .unwrap()
-        .contains("PRIVATE-SIGNING-SEED"));
+    assert!(
+        !serde_json::to_string(&classified)
+            .unwrap()
+            .contains("PRIVATE-SIGNING-SEED")
+    );
 
     let unknown = row(
         "instance_config",
@@ -404,15 +408,19 @@ fn secret_bearing_typed_json_rejects_unknown_fields_versions_and_nested_roles() 
     }
     let mut value = idp();
     value["role_map_json"] = serde_json::json!("{\"engineers\":\"future_superadmin\"}");
-    assert!(classifier()
-        .classify("topology_plans", &idp_plan(&value.to_string()))
-        .is_err());
+    assert!(
+        classifier()
+            .classify("topology_plans", &idp_plan(&value.to_string()))
+            .is_err()
+    );
     let duplicate = serde_json::to_string(&idp())
         .unwrap()
         .replacen('{', "{\"org_id\":2,", 1);
-    assert!(classifier()
-        .classify("topology_plans", &idp_plan(&duplicate))
-        .is_err());
+    assert!(
+        classifier()
+            .classify("topology_plans", &idp_plan(&duplicate))
+            .is_err()
+    );
 }
 
 #[test]
@@ -435,9 +443,11 @@ fn opaque_history_is_private_and_unknown_wire_versions_reject_recursively() {
             .classify("change_request_revisions", &history)
             .unwrap(),
     );
-    assert!(!serde_json::to_string(&classified)
-        .unwrap()
-        .contains("PRIVATE-HISTORY"));
+    assert!(
+        !serde_json::to_string(&classified)
+            .unwrap()
+            .contains("PRIVATE-HISTORY")
+    );
     for json in [
         "{\"schema_version\":99}",
         "{\"child\":{\"apiVersion\":\"future\"}}",
@@ -448,9 +458,11 @@ fn opaque_history_is_private_and_unknown_wire_versions_reject_recursively() {
             "change_request_revisions",
             &[("old_json", Value::Text(json.into()))],
         );
-        assert!(classifier()
-            .classify("change_request_revisions", &input)
-            .is_err());
+        assert!(
+            classifier()
+                .classify("change_request_revisions", &input)
+                .is_err()
+        );
     }
 }
 
@@ -578,9 +590,11 @@ fn unknown_storage_classes_nulls_width_and_oversize_cells_reject() {
         Value::Text("1".into()),
         Value::Bytes(vec![1]),
     ] {
-        assert!(classifier
-            .classify("users", &row("users", &[("id", value)]))
-            .is_err());
+        assert!(
+            classifier
+                .classify("users", &row("users", &[("id", value)]))
+                .is_err()
+        );
     }
     assert!(classifier
         .classify(
@@ -686,13 +700,15 @@ fn authority_json_cannot_gain_unknown_keys_versions_or_missing_qualification_cei
             .is_err());
     }
     let wrong_plan = serde_json::json!({"kind":"create", "input":authority()});
-    assert!(json::validate_private(
-        "topology_plans",
-        "input_versions_json",
-        &wrong_plan.to_string(),
-        Some("set_storage_authority_admission")
-    )
-    .is_err());
+    assert!(
+        json::validate_private(
+            "topology_plans",
+            "input_versions_json",
+            &wrong_plan.to_string(),
+            Some("set_storage_authority_admission")
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -757,31 +773,37 @@ fn typed_permissions_and_image_delivery_reject_unknown_contract_extensions() {
     let marker = aos_registry_surface::manifest::ImageDelivery::store_only();
     let value = serde_json::to_value(marker).unwrap();
     let current = serde_json::json!({"store_path":"/nix/store/example", "nar_hash":"sha256:example", "nar_size":1, "delivery":value});
-    assert!(json::validate_private(
-        "registry_system_images",
-        "delivery",
-        &current.to_string(),
-        None
-    )
-    .is_ok());
+    assert!(
+        json::validate_private(
+            "registry_system_images",
+            "delivery",
+            &current.to_string(),
+            None
+        )
+        .is_ok()
+    );
     let mut future = current.clone();
     future["delivery"]["schema_version"] = serde_json::json!(99);
-    assert!(json::validate_private(
-        "registry_system_images",
-        "delivery",
-        &future.to_string(),
-        None
-    )
-    .is_err());
+    assert!(
+        json::validate_private(
+            "registry_system_images",
+            "delivery",
+            &future.to_string(),
+            None
+        )
+        .is_err()
+    );
     let mut extension = current;
     extension["delivery"]["secret_runtime_flags"] = serde_json::json!("private");
-    assert!(json::validate_private(
-        "registry_system_images",
-        "delivery",
-        &extension.to_string(),
-        None
-    )
-    .is_err());
+    assert!(
+        json::validate_private(
+            "registry_system_images",
+            "delivery",
+            &extension.to_string(),
+            None
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -816,8 +838,8 @@ fn oversized_total_row_rejects_before_structured_or_private_output() {
 
 #[tokio::test]
 async fn bounded_reader_page_classifies_private_cells_without_source_mutation() {
-    use crate::backend::sqlite_snapshot::{SqliteSnapshotLimits, SqliteSnapshotReader};
     use crate::backend::SqlxBackend;
+    use crate::backend::sqlite_snapshot::{SqliteSnapshotLimits, SqliteSnapshotReader};
     use crate::db::Database;
 
     let directory = tempfile::TempDir::new().unwrap();
@@ -851,9 +873,11 @@ async fn bounded_reader_page_classifies_private_cells_without_source_mutation() 
         .unwrap();
     assert_eq!(page.rows.len(), 1);
     let classified = classifier.classify("users", &page.rows[0]).unwrap();
-    assert!(!serde_json::to_string(&classified)
-        .unwrap()
-        .contains("PRIVATE-SOURCE-PHC"));
+    assert!(
+        !serde_json::to_string(&classified)
+            .unwrap()
+            .contains("PRIVATE-SOURCE-PHC")
+    );
     drop(table);
     reader.close().await.unwrap();
 

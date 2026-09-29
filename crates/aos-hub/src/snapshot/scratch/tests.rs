@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aos_hub_core::snapshot::archive::root::{ArchiveWrappingKey, ArchiveWrappingKeys};
-use serde_json::{json, Value as Json};
+use serde_json::{Value as Json, json};
 
 use super::budget::TestControls;
 use super::fixture::*;
