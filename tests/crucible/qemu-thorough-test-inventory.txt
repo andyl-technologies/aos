@@ -1475,6 +1475,7 @@ unit - qemu:test-crucible-hot-fork-child
 unit - qemu:test-crucible-hot-fork-coordinator
 unit - qemu:test-crucible-hpet-phase
 unit - qemu:test-crucible-i3c-timer
+unit - qemu:test-crucible-ich9-aux-wide-clock
 unit - qemu:test-crucible-idle-wait
 unit - qemu:test-crucible-mips-gic-migration
 unit - qemu:test-crucible-mos6522-clock
