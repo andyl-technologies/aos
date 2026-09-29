@@ -617,6 +617,8 @@ fn actual_opened_journal_byte_ceiling_funds_the_full_quarantine_append() {
         else {
             panic!("fresh fixture must prepare a new comparison record");
         };
+        let (capacity_request, _, _) =
+            crate::journal::decode_capacity_reservation_request_v1(capacity.record()).unwrap();
         let admission_bytes =
             crate::journal::encoded_transaction_append_bytes(&transaction).unwrap();
         // Prepared and Quarantined values have the same fixed width. This is
@@ -629,7 +631,10 @@ fn actual_opened_journal_byte_ceiling_funds_the_full_quarantine_append() {
                     request.request_id.to_vec(),
                     record.canonical_bytes(),
                 ),
-                capacity.settlement_record(),
+                JournalRecord::delete(
+                    RecordNamespace::GlobalCapacityReservation,
+                    capacity.record().key().to_vec(),
+                ),
             ],
         )
         .unwrap();
@@ -638,7 +643,7 @@ fn actual_opened_journal_byte_ceiling_funds_the_full_quarantine_append() {
         let payload_bytes =
             crate::journal::encoded_transaction_record_bytes(&terminal_shape).unwrap();
         assert!(payload_bytes < full_terminal_bytes);
-        assert_eq!(capacity.request().terminal_bytes, full_terminal_bytes);
+        assert_eq!(capacity_request.terminal_bytes, full_terminal_bytes);
         assert_eq!(
             std::fs::metadata(&journal_path).unwrap().len(),
             before_bytes
