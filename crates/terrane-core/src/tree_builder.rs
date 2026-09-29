@@ -208,6 +208,28 @@ impl<'a> Tree<'a> {
         self.usage
     }
 
+    /// Reinterprets the same nodes in a different semantic context.
+    ///
+    /// Widening `Surface` to `Ordinary` or `OverlayLayer`, or `Ordinary` to
+    /// `OverlayLayer`, shares the existing root without scanning entries.
+    /// Narrowing or crossing the index/path boundary validates all entries.
+    ///
+    /// # Errors
+    /// Rejects entries or keys that are invalid in the requested context.
+    pub fn with_usage(&self, usage: TreeUse) -> Result<Self, Error> {
+        let widening = matches!(
+            (self.usage, usage),
+            (TreeUse::Surface, TreeUse::Ordinary | TreeUse::OverlayLayer)
+                | (TreeUse::Ordinary, TreeUse::OverlayLayer)
+        );
+        if self.usage != usage && !widening {
+            validate_tree_entries(&self.iter().cloned().collect::<Vec<_>>(), usage)?;
+        }
+        let mut tree = self.clone();
+        tree.usage = usage;
+        Ok(tree)
+    }
+
     /// Returns the chunk profile's minimum plaintext chunk size.
     pub fn min_chunk_size(&self) -> u64 {
         self.min_chunk_size

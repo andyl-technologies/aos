@@ -78,7 +78,7 @@ impl core::iter::FusedIterator for Nodes<'_, '_> {}
 pub(super) struct LevelCursor<'tree, 'a> {
     level: u8,
     stack: Vec<(&'tree StoredNode<'a>, usize)>,
-    next: Option<&'tree StoredNode<'a>>,
+    pub(super) next: Option<&'tree StoredNode<'a>>,
     pub(super) reads: usize,
 }
 
@@ -106,6 +106,34 @@ impl<'tree, 'a> LevelCursor<'tree, 'a> {
         }
         cursor.next = Some(node);
         cursor
+    }
+
+    pub(super) fn with_predecessor(mut self) -> Self {
+        let original_stack = self.stack.clone();
+        while let Some((parent, next_index)) = self.stack.pop() {
+            if next_index <= 1 {
+                continue;
+            }
+            let index = next_index - 2;
+            self.stack.push((parent, index + 1));
+            let Some(child) = parent.children().get(index) else {
+                break;
+            };
+            let mut node = child.as_ref();
+            while node.level() > self.level {
+                self.reads += 1;
+                let count = node.children().len();
+                self.stack.push((node, count));
+                let Some(child) = node.children().last() else {
+                    break;
+                };
+                node = child;
+            }
+            self.next = Some(node);
+            return self;
+        }
+        self.stack = original_stack;
+        self
     }
 }
 
