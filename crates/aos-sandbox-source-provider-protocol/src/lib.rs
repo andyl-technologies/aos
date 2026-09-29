@@ -25,6 +25,8 @@
 //! must establish kernel-observation provenance before production use.
 //! [`recovery_pre_requested`] holds distinct no-escape recovery DATA without
 //! claiming a protected Source or Root terminal.
+//! [`pre_requested_closure`] retains query-independent closure DATA without
+//! establishing protected owner state or production signing authority.
 //! Linux `SOCK_SEQPACKET` and `SCM_RIGHTS` transport lives in
 //! `aos-sandbox-linux`; descriptor integers and endpoint names never enter this
 //! format.
@@ -41,6 +43,7 @@ pub mod model;
 pub mod native_export_fence;
 pub mod native_held_completion;
 pub mod normalized_intent;
+pub mod pre_requested_closure;
 pub mod proof;
 pub mod recovery_currentness;
 pub mod recovery_pre_requested;
@@ -126,6 +129,11 @@ pub use native_export_fence::{
 pub use normalized_intent::{
     MAXIMUM_NORMALIZED_ACQUISITION_INTENT_BYTES, MAXIMUM_NORMALIZED_ACQUISITION_INTENT_V2_BYTES,
     NormalizedAcquisitionIntentError, NormalizedAcquisitionIntentV1, NormalizedAcquisitionIntentV2,
+};
+pub use pre_requested_closure::{
+    PREPARED_SOURCE_NO_ESCAPE_CLOSURE_BYTES_V1, SIGNED_SOURCE_NO_ESCAPE_CLOSURE_BYTES_V1,
+    PreparedSourceNoEscapeClosureV1, SignedSourceNoEscapeClosureV1,
+    SourceNoEscapeClosureClaimsV1, SourceNoEscapeClosureErrorV1,
 };
 pub use proof::{
     BestEffortReplicaProofV1, ImmutablePublisherTreeProofV1, LocalLiveExportProofV1,
