@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "c4288ceb5bf4aed40e6b3ba4465c985140a49f7743388f8f4704bba6f108b72c";
+  sha256 = "303efcd3cb6872402107802a0a6c15c924d023f26400a96fa73986dc499ea4f9";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -152,9 +152,11 @@
     "Preserve wide PowerPC timer coordinates and exact precise BookE edges."
     ""
     "Preserve full-width default APIC, HPET, RTC, PIT, serial, keyboard and ACPI PM timer state."
+    ""
+    "Retain actual RTC calendar callbacks in the current GPL unit and remove obsolete split-phase test paths."
   ];
-  commit = "e8f5118975786029130f6b8010e0fe0c889ae149";
-  tree = "5ff5a0f65c54bd431ada9b72535d42fb6be658fc";
+  commit = "adca4c4d0befeb2740c89fc21a925f1a0b206b5c";
+  tree = "f48d96663b9d551f6e404e0649c091541e799f59";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -163,7 +165,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "03f5e4abc776957c3501040cde4e62229b69b3a233d30a53f37259ba8ce43941";
+  bundleSha256 = "996be204a150163183e37cfbcf3be9cd9dc5dc256675b9e7cced5543c3639790";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
