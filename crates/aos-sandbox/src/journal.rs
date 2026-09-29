@@ -58,7 +58,7 @@ pub use cache_policy_hold::CachePolicyHoldV1;
 pub(crate) use cache_policy_hold::NAME as CACHE_POLICY_HOLD_JOURNAL;
 pub(crate) use capacity_reservation::capacity_record_has_legacy_purpose;
 pub(crate) use capacity_reservation::capacity_reservation_identity_is_exact_v1;
-pub(crate) use capacity_reservation::decode_capacity_reservation_request_v1;
+pub use capacity_reservation::decode_capacity_reservation_request_v1;
 pub use capacity_reservation::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
     GlobalCapacityReservationRequestV1, GlobalCapacityReservationV1,
