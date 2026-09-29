@@ -540,6 +540,41 @@ is added rather than editing history.
   - **Affects:** STORE-4, STORE-30, and `reference/errno-mapping.md`'s
     range-beyond-pack-end mapping.
 
+- **[D-29] Identify corrupt refs within the store error taxonomy.**
+  - **Status:** Decided
+  - **Decision:** Keep one `corrupt` outcome, with a typed subject that is
+    either an immutable identity or a ref name. Ref records and reflog
+    gaps that fail verification report the ref-name subject. Preserve the
+    existing quarantine or discard behavior for bad stored data.
+  - **Rationale:** REF-5 and REF-23 require malformed refs and sequence
+    gaps to fail, while STORE-30 forbids an outcome outside its table.
+    The original `corrupt(id)` description only named immutable content;
+    classifying a valid request for bad stored ref data as `invalid` would
+    blame the caller. A typed subject gives the same closed outcome a
+    truthful diagnostic before the T1 store-trait freeze.
+  - **Alternatives considered:** Add `corrupt-ref` (rejected: expands the
+    closed taxonomy); return `invalid` (rejected: the request is valid).
+  - **Affects:** REF-5, REF-23, STORE-30, and the store error table.
+
+- **[D-30] Separate index-tree byte keys from filesystem path keys.**
+  - **Status:** Decided
+  - **Decision:** TREE-1/2/4/6 path-component and ancestor rules apply to
+    ordinary trees. Index trees use opaque, nonempty byte keys formed as
+    DRV-12 specifies; NUL and slash are ordinary key bytes. They retain
+    unsigned-byte order and the 4 096-byte total key limit. A commit is
+    rejected if a configured indexed value would make a longer key.
+  - **Rationale:** DRV-12 concatenates canonical attribute-value bytes and
+    an object hash. Those bytes may contain NUL, slash, or components over
+    255 bytes; TREE-32 also forbids directory entries in an index tree.
+    Applying the path grammar and ancestor rule there would make common
+    valid index keys impossible. This correction keeps the same node CBOR
+    encoding and requirement IDs before the T1 tree-format freeze.
+  - **Alternatives considered:** Escape index bytes into path components
+    (rejected: changes the DRV-12 key identity and ordering); synthesize
+    directory entries (rejected: violates TREE-32).
+  - **Affects:** TREE-1, TREE-2, TREE-4, TREE-6, TREE-32, DRV-12, and
+    tree key validation.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

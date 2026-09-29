@@ -346,7 +346,7 @@ surfaces map them consistently
 | `absent` | The identity or ref does not exist in this store. Not an error for `has` or `ref_get`. |
 | `conflict(current)` | A `ref_cas` expectation did not hold; `current` is returned. |
 | `exists` | A `ref_log_append` hit an existing `(name, seq)`. |
-| `corrupt(id)` | Stored bytes failed verification; the store has quarantined or discarded them. |
+| `corrupt(subject)` | Stored immutable bytes or a ref/reflog record failed verification. The subject is the immutable identity or ref name; the store quarantines or discards the bad data. |
 | `read-only` | The store cannot accept writes (`shared-dir`, a fenced writer, a cache that is full and cannot evict). |
 | `denied` | A `guard` refused the operation. Carries no detail beyond the verb and pattern that failed. |
 | `unavailable(retry-after?)` | The backend is unreachable or a circuit breaker is open. |

@@ -27,22 +27,27 @@ descending only into subtrees whose identities differ.
   tree that contains it, as a byte string, with components separated by a
   single `0x2F` (`/`), no leading or trailing separator, no empty
   component, and no component equal to `.` or `..`. Keys are compared as
-  unsigned bytes. *Gate:* `gate:tree-keys`.
+  unsigned bytes. Index-tree keys are opaque byte strings instead of paths
+  (TREE-32, DRV-12); they are also compared as unsigned bytes. *Gate:*
+  `gate:tree-keys`.
 - **[TREE-2]** A component MUST NOT contain `0x00` or `0x2F`. Components are
   otherwise arbitrary bytes; they are not required to be UTF-8, because
-  filesystems are not.
+  filesystems are not. Index-tree keys MAY contain any byte, including
+  `0x00` and `0x2F`.
 - **[TREE-3]** The root directory of a tree has no entry; it is implied. A
   tree with no entries is the empty tree, whose root node is the encoded
   empty leaf.
 - **[TREE-4]** Every ancestor directory of an entry MUST be present as a
   `dir` entry, except the implied root. A tree with a file at `a/b` and no
-  `dir` entry at `a` is malformed. *Gate:* `gate:tree-well-formed`.
+  `dir` entry at `a` is malformed. Index trees have no directory ancestors;
+  their keys are opaque. *Gate:* `gate:tree-well-formed`.
 - **[TREE-5]** A key MUST NOT have a `tree` entry as a proper prefix
   component path. Entries beneath a `tree` entry belong to the referenced
   root, not to the containing tree.
 - **[TREE-6]** The maximum key length is 4 096 bytes and the maximum
   component length is 255 bytes. Implementations MUST reject longer keys at
-  construction and at decode.
+  construction and at decode. The component limit applies only to path keys;
+  an index-tree key is one opaque byte string with the same 4 096-byte cap.
 
 ## Entries
 
@@ -152,8 +157,9 @@ Three entry types exist for the algebra rather than for consumers.
 - **[TREE-32]** An `index` entry is the value of a key in an index tree
   ([`10-derived-data.md`](10-derived-data.md)): `targets` lists the object
   hashes whose indexed attribute equals the key, in ascending byte order
-  without duplicates. Index trees contain only `index` entries, and a tree
-  served by a surface MUST NOT contain one.
+  without duplicates. Index-tree keys are opaque, nonempty byte strings;
+  path grammar and directory ancestors do not apply. Index trees contain
+  only `index` entries, and a tree served by a surface MUST NOT contain one.
 
 ## Node structure
 

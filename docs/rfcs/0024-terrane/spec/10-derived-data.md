@@ -152,7 +152,10 @@ recomputation.
   same encoding as [`06-tree-format.md`](06-tree-format.md) whose keys are
   the canonical byte encoding of the attribute value followed by the object
   hash, and whose entries are index entries carrying the object hash and,
-  when the property requests it, the referencing paths. *Gate:*
+  when the property requests it, the referencing paths. These are opaque
+  byte keys, not filesystem paths. The combined key MUST fit TREE-6's
+  4 096-byte limit; a commit whose indexed value cannot fit MUST be rejected
+  before publication. *Gate:*
   `gate:index-tree-maintenance`.
 - **[DRV-13]** An index tree MUST be referenced from the root's property map
   by attribute name and MUST carry a recipe `index(root hash, attribute)`.
