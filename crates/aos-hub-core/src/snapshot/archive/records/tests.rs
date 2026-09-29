@@ -19,6 +19,95 @@ struct Fixture {
     wrapping: ArchiveWrappingKeys,
 }
 
+#[test]
+fn historical_wire_arrays_round_trip_without_rewriting_and_unknown_lengths_fail() {
+    let classifier = SnapshotClassifier::for_supported_generation(3).unwrap();
+    let schema = schema(&classifier).unwrap();
+    let original = serde_json::to_vec(&schema).unwrap();
+    let decoded: Schema = serde_json::from_slice(&original).unwrap();
+    assert_eq!(original, serde_json::to_vec(&decoded).unwrap());
+    let mut value: Json = serde_json::from_slice(&original).unwrap();
+    assert_eq!(value["migration_digests"].as_array().unwrap().len(), 3);
+
+    for count in [0, 1, 2, 5] {
+        value["migration_digests"] = json!(vec!["1".repeat(64); count]);
+        assert!(serde_json::from_value::<Schema>(value.clone()).is_err());
+    }
+}
+
+#[tokio::test]
+async fn schema_callback_runs_after_both_headers_and_before_any_row() {
+    use std::cell::Cell;
+
+    let f = fixture().await;
+    let called = Cell::new(false);
+    let report = verify_database_capture_with_schema(
+        f.output.root.as_bytes(),
+        &trust(&f),
+        &f.wrapping,
+        &[],
+        Cursor::new(&f.output.metadata),
+        Cursor::new(&f.output.private),
+        StreamLimits::default(),
+        |manifest| {
+            assert_eq!(manifest.version, 4);
+            assert!(!called.replace(true));
+            Ok(())
+        },
+        |_, _, _| {
+            assert!(called.get());
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(called.get());
+    assert_eq!(report.counts().tables, 272);
+
+    let mut bad = fixture().await;
+    let (metadata, private) = plaintext(&bad);
+    let mut private = lines(&private);
+    private[0]["schema"]["classification_digest"] = json!("1".repeat(64));
+    reseal(&mut bad, lines(&metadata), private);
+    let called = Cell::new(false);
+    assert!(
+        verify_database_capture_with_schema(
+            bad.output.root.as_bytes(),
+            &trust(&bad),
+            &bad.wrapping,
+            &[],
+            Cursor::new(&bad.output.metadata),
+            Cursor::new(&bad.output.private),
+            StreamLimits::default(),
+            |_| {
+                called.set(true);
+                Ok(())
+            },
+            |_, _, _| panic!("row exposed after mismatched private header"),
+        )
+        .is_err()
+    );
+    assert!(!called.get());
+}
+
+#[tokio::test]
+async fn rejected_schema_callback_exposes_no_provisional_rows() {
+    let f = fixture().await;
+    let error = verify_database_capture_with_schema(
+        f.output.root.as_bytes(),
+        &trust(&f),
+        &f.wrapping,
+        &[],
+        Cursor::new(&f.output.metadata),
+        Cursor::new(&f.output.private),
+        StreamLimits::default(),
+        |_| anyhow::bail!("private original schema callback detail"),
+        |_, _, _| panic!("row exposed after schema refusal"),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.to_string(), "snapshot schema callback failed");
+}
+
 fn options() -> SqliteCaptureOptions {
     SqliteCaptureOptions {
         audit: SqliteSnapshotAuditLimits {
@@ -137,7 +226,7 @@ async fn actual_sqlite_capture_reconstructs_every_retained_row_and_omits_session
     )
     .unwrap();
     assert_eq!(report.counts(), &f.output.counts);
-    assert_eq!(report.counts().tables, 267);
+    assert_eq!(report.counts().tables, 272);
     assert_eq!(users.len(), 2);
     assert!(report.counts().private_cells >= 2);
     assert!(report.counts().omitted_rows >= 3);
@@ -261,13 +350,13 @@ async fn empty_tables_and_explicit_omission_counts_are_all_present() {
         meta.iter()
             .filter(|line| line["kind"] == "table_start")
             .count(),
-        267
+        272
     );
     assert_eq!(
         meta.iter()
             .filter(|line| line["kind"] == "table_end")
             .count(),
-        267
+        272
     );
     assert!(
         meta.iter()
@@ -612,10 +701,24 @@ async fn source_audit_and_unknown_dynamic_key_fail_without_completed_output() {
         let signer = ArchiveSigningKey::from_seed("snapshot-operator", [1; 32]).unwrap();
         let wrapping = ArchiveWrappingKeys::new(
             ArchiveWrappingKey::from_bytes("metadata-wrap", [2; 32]).unwrap(),
-            ArchiveWrappingKey::from_bytes("private-wrap", [3; 32]).unwrap()).unwrap();
-        let error = capture_sqlite(SqliteSnapshotReader::open(&path).await.unwrap(), Vec::new(), Vec::new(),
-            CaptureKeyCustody { signer: &signer, wrapping: &wrapping, exclusions: &[] },
-            &mut StdRng::seed_from_u64(471), options()).await.err().unwrap();
+            ArchiveWrappingKey::from_bytes("private-wrap", [3; 32]).unwrap(),
+        )
+        .unwrap();
+        let error = capture_sqlite(
+            SqliteSnapshotReader::open(&path).await.unwrap(),
+            Vec::new(),
+            Vec::new(),
+            CaptureKeyCustody {
+                signer: &signer,
+                wrapping: &wrapping,
+                exclusions: &[],
+            },
+            &mut StdRng::seed_from_u64(471),
+            options(),
+        )
+        .await
+        .err()
+        .unwrap();
         assert_eq!(error.to_string(), "snapshot SQLite database capture failed");
     }
 }

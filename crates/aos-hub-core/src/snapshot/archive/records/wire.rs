@@ -37,13 +37,37 @@ impl<'de> Deserialize<'de> for WireScalar {
     }
 }
 
+// The JSON arrays preserve historical generation-3 bytes. Only these exact
+// closed lengths decode; the authenticated header must separately match the
+// corresponding compiled generation, identity and digest commitments.
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub(super) enum MigrationDigests {
+    Generation3([String; 3]),
+    Generation4([String; 4]),
+}
+
+impl MigrationDigests {
+    pub(super) fn from_vec(values: Vec<String>) -> Result<Self> {
+        match values.len() {
+            3 => Ok(Self::Generation3(values.try_into().map_err(|_| {
+                anyhow::anyhow!("snapshot migration shape differs")
+            })?)),
+            4 => Ok(Self::Generation4(values.try_into().map_err(|_| {
+                anyhow::anyhow!("snapshot migration shape differs")
+            })?)),
+            _ => anyhow::bail!("snapshot migration generation is unsupported"),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Schema {
     pub classification_version: String,
     pub identity: String,
     pub version: String,
-    pub migration_digests: [String; 3],
+    pub migration_digests: MigrationDigests,
     pub classification_digest: String,
 }
 

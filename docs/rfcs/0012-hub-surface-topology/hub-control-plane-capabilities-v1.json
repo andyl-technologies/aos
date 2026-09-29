@@ -1165,10 +1165,6 @@
       ],
       "web_method_exceptions": [
         {
-          "method": "WhoAmI",
-          "reason": "The browser session bridge returns the authenticated principal and live scoped grants before rendering the application."
-        },
-        {
           "method": "GetServiceAccount",
           "reason": "ListServiceAccounts returns the complete service-account rows rendered by the identity workflow."
         },

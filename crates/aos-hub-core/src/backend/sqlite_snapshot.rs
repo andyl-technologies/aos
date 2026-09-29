@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow};
 use sqlx::{Row as _, Sqlite, SqliteConnection, SqlitePool, Transaction, TypeInfo, ValueRef};
 
-use crate::db::{Database, MIGRATIONS, SCHEMA_IDENTITY};
+use crate::db::{MIGRATIONS, SCHEMA_IDENTITY};
 use crate::value::{Row, Value};
 
 #[path = "sqlite_snapshot/source_audit.rs"]
@@ -469,16 +469,32 @@ async fn schema_objects(connection: &mut SqliteConnection) -> Result<Vec<SchemaO
 }
 
 async fn compiled_schema() -> Result<(Vec<SchemaObject>, Vec<SqliteSnapshotTableSchema>)> {
-    // Production initialization also owns metadata outside MIGRATIONS. Run it
-    // only in disposable memory, never against the snapshot source. Built-in
-    // autoindices and any future sqlite_sequence table are compared exactly;
-    // an unknown sqlite_* object is not a schema-validation escape hatch.
+    compiled_schema_for_generation(MIGRATIONS.len()).await
+}
+
+async fn compiled_schema_for_generation(
+    version: usize,
+) -> Result<(Vec<SchemaObject>, Vec<SqliteSnapshotTableSchema>)> {
+    use crate::backend::Backend as _;
+
+    // Only checked-in generations can select a migration slice. Historical
+    // verification never compiles current DDL and calls it an older schema.
+    crate::snapshot::SnapshotClassifier::for_supported_generation(version)?;
+    let scripts = MIGRATIONS
+        .get(..version)
+        .ok_or_else(|| anyhow::anyhow!("snapshot compiled generation is absent"))?;
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(SqliteConnectOptions::new().in_memory(true))
         .await?;
-    let database =
-        Database::with_backend(Box::new(super::SqlxBackend::Sqlite(pool.clone()))).await?;
+    let backend = super::SqlxBackend::Sqlite(pool.clone());
+    backend.execute(crate::db::SCHEMA_VERSION_DDL, &[]).await?;
+    let statements = scripts
+        .iter()
+        .flat_map(|script| super::split_statements(script))
+        .map(|sql| super::Statement::new(sql, Vec::new()))
+        .collect::<Vec<_>>();
+    backend.batch(&statements).await?;
     let mut connection = pool.acquire().await?;
     let objects = schema_objects(&mut connection).await?;
     let mut tables = Vec::new();
@@ -509,7 +525,7 @@ async fn compiled_schema() -> Result<(Vec<SchemaObject>, Vec<SqliteSnapshotTable
         });
     }
     drop(connection);
-    drop(database);
+    drop(backend);
     pool.close().await;
     Ok((objects, tables))
 }

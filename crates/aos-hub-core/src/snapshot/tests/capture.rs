@@ -148,7 +148,7 @@ async fn actual_production_sqlite_rows_round_trip_secrets_and_extreme_integers()
             .await
             .unwrap();
         let source = backend
-            .query("SELECT id,email,display_name,created_at,deleted_at,password_hash FROM users WHERE id=?", &[Value::Int(id)])
+            .query("SELECT id,email,display_name,created_at,deleted_at,password_hash,principal_incarnation FROM users WHERE id=?", &[Value::Int(id)])
             .await
             .unwrap()
             .pop()

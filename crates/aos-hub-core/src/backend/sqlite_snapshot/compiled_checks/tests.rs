@@ -157,9 +157,9 @@ async fn current_compiled_catalogue_preserves_every_declared_check() {
 
     let checks = extract_compiled_checks(&objects).unwrap();
 
-    // This exact count binds the current three-migration catalogue. A future
+    // This exact count binds the current four-migration catalogue. A future
     // constraint change requires reviewing extraction coverage alongside it.
-    assert_eq!(checks.values().map(Vec::len).sum::<usize>(), 634);
+    assert_eq!(checks.values().map(Vec::len).sum::<usize>(), 652);
     for name in checks.keys() {
         assert!(tables.iter().any(|table| &table.name == name));
     }

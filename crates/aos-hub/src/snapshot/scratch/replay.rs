@@ -1,5 +1,6 @@
 //! Exact typed row insertion and final constraint checks in disposable memory.
 
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::io::Read;
 
@@ -7,7 +8,9 @@ use aos_hub_core::backend::sqlite_snapshot::{
     CompiledSqliteSnapshotCatalogue, CompiledSqliteSnapshotDisposition as Disposition,
     CompiledSqliteSnapshotObjectKind as ObjectKind,
 };
-use aos_hub_core::snapshot::archive::records::verify_database_capture;
+use aos_hub_core::snapshot::archive::records::{
+    VerifiedDatabaseCaptureRecords, verify_database_capture_with_schema,
+};
 use aos_hub_core::value::{Row, Value};
 use rusqlite::types::{ToSqlOutput, ValueRef};
 use rusqlite::{Connection, ToSql};
@@ -22,12 +25,60 @@ const PAGE_BYTES: u64 = 4096;
 
 pub(super) fn verify<M: Read, P: Read>(
     inputs: ScratchVerificationInputs<M, P>,
-    catalogue: CompiledSqliteSnapshotCatalogue,
+    catalogues: [CompiledSqliteSnapshotCatalogue; 2],
     limits: ScratchVerificationLimits,
     budget: WorkBudget,
 ) -> ScratchResult<VerifiedRetainedSqliteCapture> {
-    let mut scratch = MemoryReplay::new(catalogue, limits, budget)?;
-    let result = scratch.replay(inputs);
+    let scratch = RefCell::new(None::<MemoryReplay>);
+    let failure = Cell::new(None::<Failure>);
+    let mut candidates = Some(catalogues);
+    let records = verify_database_capture_with_schema(
+        &inputs.root,
+        &inputs.trust,
+        &inputs.wrapping,
+        &inputs.exclusions,
+        inputs.metadata,
+        inputs.private,
+        limits.streams,
+        |manifest| {
+            let result = (|| -> ScratchResult<()> {
+                let catalogue = candidates
+                    .take()
+                    .and_then(|values| {
+                        values
+                            .into_iter()
+                            .find(|value| value.schema_manifest() == manifest)
+                    })
+                    .ok_or(Failure::Schema)?;
+                let mut slot = scratch.try_borrow_mut().map_err(|_| Failure::Schema)?;
+                if slot.is_some() {
+                    return Err(Failure::Schema);
+                }
+                *slot = Some(MemoryReplay::new(catalogue, limits, budget.clone())?);
+                Ok(())
+            })();
+            result.map_err(|error| {
+                failure.set(Some(error));
+                anyhow::anyhow!("snapshot scratch schema rejected")
+            })
+        },
+        |name, sequence, row| {
+            let result = (|| -> ScratchResult<()> {
+                let mut slot = scratch.try_borrow_mut().map_err(|_| Failure::RetainedRow)?;
+                let current = slot.as_mut().ok_or(Failure::Schema)?;
+                row.with_private_row(|row| current.insert(name, sequence, row))
+            })();
+            result.map_err(|error| {
+                failure.set(Some(error));
+                anyhow::anyhow!("snapshot scratch row rejected")
+            })
+        },
+    );
+    let records = records.map_err(|_| budget.error_or(failure.get().unwrap_or(Failure::Records)));
+    let Some(mut scratch) = scratch.into_inner() else {
+        return Err(records.err().unwrap_or(Failure::Schema));
+    };
+    let result = records.and_then(|records| scratch.finish(records));
     scratch.destroy()?;
     result
 }
@@ -406,31 +457,10 @@ impl MemoryReplay {
         Ok(())
     }
 
-    fn replay<M: Read, P: Read>(
+    fn finish(
         &mut self,
-        inputs: ScratchVerificationInputs<M, P>,
+        records: VerifiedDatabaseCaptureRecords,
     ) -> ScratchResult<VerifiedRetainedSqliteCapture> {
-        let mut callback_failure = None;
-        let result = verify_database_capture(
-            &inputs.root,
-            &inputs.trust,
-            &inputs.wrapping,
-            &inputs.exclusions,
-            inputs.metadata,
-            inputs.private,
-            self.limits.streams,
-            |name, sequence, row| {
-                row.with_private_row(|row| self.insert(name, sequence, row))
-                    .map_err(|failure| {
-                        callback_failure = Some(failure);
-                        anyhow::anyhow!("snapshot scratch row rejected")
-                    })
-            },
-        );
-        let records = result.map_err(|_| {
-            self.budget
-                .error_or(callback_failure.unwrap_or(Failure::Records))
-        })?;
         self.budget.check()?;
         self.budget.begin_final_checks();
         self.final_checks()?;
@@ -530,7 +560,7 @@ impl ToSql for Parameter<'_> {
             Value::Real(_) => {
                 return Err(rusqlite::Error::InvalidParameterName(
                     "unsupported snapshot scalar".into(),
-                ))
+                ));
             }
         };
         Ok(ToSqlOutput::Borrowed(borrowed))
@@ -558,13 +588,13 @@ mod tests {
     #[tokio::test]
     async fn exact_compiled_corpus_has_no_seeds_triggers_or_retained_to_omitted_fks() {
         let catalogue = CompiledSqliteSnapshotCatalogue::load().await.unwrap();
-        assert_eq!(catalogue.schema().tables.len(), 267);
+        assert_eq!(catalogue.schema().tables.len(), 272);
         let limits = ScratchVerificationLimits::default();
         let budget = WorkBudget::new(limits, Default::default(), Default::default()).unwrap();
         // Construction traverses EVERY retained FK, fails unknown dispositions
         // and rejects unsupported kinds before any archive row is consumed.
         let mut scratch = MemoryReplay::new(catalogue, limits, budget).unwrap();
-        assert_eq!(scratch.tables.len(), 257);
+        assert_eq!(scratch.tables.len(), 262);
         assert_eq!(scratch.retained_rows, 0);
         for table in &scratch.catalogue.schema().tables {
             let count = scratch

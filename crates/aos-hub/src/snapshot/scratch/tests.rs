@@ -4,7 +4,9 @@ use std::io::{self, Cursor, Read};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use aos_hub_core::snapshot::archive::root::{ArchiveWrappingKey, ArchiveWrappingKeys};
+use aos_hub_core::snapshot::archive::root::{
+    ArchiveSignerTrust, ArchiveSigningKey, ArchiveWrappingKey, ArchiveWrappingKeys,
+};
 use serde_json::{Value as Json, json};
 
 use super::budget::TestControls;
@@ -69,7 +71,7 @@ async fn valid_capture_enforces_child_before_parent_and_preserves_private_origin
     let fixture = fixture().await;
     let result = scratch(&fixture).await.unwrap();
     assert_eq!(result.records().counts(), &fixture.output.counts);
-    assert_eq!(result.checked_tables(), 257);
+    assert_eq!(result.checked_tables(), 262);
     assert_eq!(result.synthetic_lineage_rows(), 2);
     assert!(result.records().counts().private_cells >= 2);
     assert!(!format!("{result:?}").contains("private-credential"));
@@ -437,4 +439,49 @@ async fn public_inputs_reports_and_errors_hide_private_diagnostics() {
         .unwrap_err();
     assert_eq!(error, ScratchVerificationError::Records);
     assert!(!format!("{error:?}: {error}").contains("SECRET"));
+}
+
+// These encrypted bytes were produced by the actual generation-3 initializer
+// and capture implementation; neither schema headers nor migration digests
+// were rewritten to construct backward-compatibility evidence.
+fn historical_generation3_inputs() -> ScratchVerificationInputs<Cursor<Vec<u8>>, Cursor<Vec<u8>>> {
+    let signer = ArchiveSigningKey::from_seed("snapshot-operator", [1; 32]).unwrap();
+
+    ScratchVerificationInputs {
+        root: include_bytes!("fixtures/generation3-root.json").to_vec(),
+        trust: ArchiveSignerTrust::new([(signer.id().to_owned(), signer.public_key())]).unwrap(),
+        wrapping: ArchiveWrappingKeys::new(
+            ArchiveWrappingKey::from_bytes("metadata-wrap", [2; 32]).unwrap(),
+            ArchiveWrappingKey::from_bytes("private-wrap", [3; 32]).unwrap(),
+        )
+        .unwrap(),
+        exclusions: Vec::new(),
+        metadata: Cursor::new(include_bytes!("fixtures/generation3-metadata.enc").to_vec()),
+        private: Cursor::new(include_bytes!("fixtures/generation3-private.enc").to_vec()),
+    }
+}
+
+#[tokio::test]
+async fn genuine_generation3_capture_replays_with_matching_historical_ddl() {
+    let report = verify_capture_in_scratch(
+        historical_generation3_inputs(),
+        Default::default(),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(report.records().counts().tables, 267);
+    assert_eq!(report.checked_tables(), 257);
+    assert_eq!(report.synthetic_lineage_rows(), 2);
+}
+
+#[tokio::test]
+async fn truncated_generation3_capture_cannot_return_a_constraint_report() {
+    let mut inputs = historical_generation3_inputs();
+    inputs.private.get_mut().pop();
+
+    let result = verify_capture_in_scratch(inputs, Default::default(), Default::default()).await;
+
+    assert!(result.is_err());
 }

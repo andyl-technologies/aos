@@ -5,6 +5,27 @@ use super::*;
 mod direct;
 mod privacy;
 
+#[test]
+fn historical_contract_keeps_exact_digests_and_refuses_mixed_generations() {
+    let historical = SnapshotClassifier::for_supported_generation(3).unwrap();
+    let current = SnapshotClassifier::for_supported_generation(4).unwrap();
+
+    assert_eq!(historical.tables.len(), 267);
+    assert_eq!(current.tables.len(), 272);
+    assert!(!historical.tables.contains_key("direct_upload_sessions"));
+    assert_eq!(historical.manifest().migration_digests, digests()[..3]);
+    assert_eq!(
+        historical.manifest().classification_digest,
+        hex::encode(Sha256::digest(LEGACY_CONTRACT))
+    );
+
+    assert!(SnapshotClassifier::new(SCHEMA_IDENTITY, 3, &digests(), &shapes()).is_err());
+    assert!(SnapshotClassifier::new(SCHEMA_IDENTITY, 4, &digests()[..3], &shapes()).is_err());
+    for version in [0, 1, 2, 5, usize::MAX] {
+        assert!(SnapshotClassifier::for_supported_generation(version).is_err());
+    }
+}
+
 fn shapes() -> Vec<SnapshotTableShape> {
     contract()
         .unwrap()
@@ -136,13 +157,13 @@ async fn contract_covers_the_actual_production_initializer() {
     let tables = sqlx::query("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .fetch_all(&pool).await.unwrap();
     let contracts = contract().unwrap();
-    assert_eq!(contracts.len(), 267);
+    assert_eq!(contracts.len(), 272);
     assert_eq!(
         contracts
             .values()
             .map(|table| table.columns.len())
             .sum::<usize>(),
-        2586
+        2652
     );
     assert_eq!(tables.len(), contracts.len());
 
@@ -173,7 +194,7 @@ async fn contract_covers_the_actual_production_initializer() {
             let not_null: i64 = source.get(3);
             let primary_key: i64 = source.get(5);
             let storage = match declared_type.as_str() {
-                "INTEGER" => "integer",
+                "INTEGER" | "BIGINT" => "integer",
                 "BLOB" => "bytes",
                 _ => "text",
             };
@@ -383,16 +404,20 @@ fn historical_idp_plan_externalizes_exact_cell_without_rewriting_hashes() {
         classified.cells["confirmation_hash"],
         ClassifiedCell::Scalar(SnapshotScalar::Text("original-confirmation-hash".into()))
     );
-    assert!(!serde_json::to_string(&classified)
+    assert!(
+        !serde_json::to_string(&classified)
+            .unwrap()
+            .contains("PRIVATE-SEALED-IDP")
+    );
+    assert!(
+        json::validate_private(
+            "topology_plans",
+            "input_versions_json",
+            &json.replace("replace", "preserve"),
+            Some("set_identity_provider")
+        )
         .unwrap()
-        .contains("PRIVATE-SEALED-IDP"));
-    assert!(json::validate_private(
-        "topology_plans",
-        "input_versions_json",
-        &json.replace("replace", "preserve"),
-        Some("set_identity_provider")
-    )
-    .unwrap());
+    );
 }
 
 #[test]
@@ -596,15 +621,17 @@ fn unknown_storage_classes_nulls_width_and_oversize_cells_reject() {
                 .is_err()
         );
     }
-    assert!(classifier
-        .classify(
-            "users",
-            &row(
+    assert!(
+        classifier
+            .classify(
                 "users",
-                &[("password_hash", Value::Text("p".repeat(MAX_CELL_BYTES + 1)))]
+                &row(
+                    "users",
+                    &[("password_hash", Value::Text("p".repeat(MAX_CELL_BYTES + 1)))]
+                )
             )
-        )
-        .is_err());
+            .is_err()
+    );
     assert!(scalar(&Value::Real(f64::NAN)).is_err());
 }
 
@@ -689,15 +716,17 @@ fn authority_json_cannot_gain_unknown_keys_versions_or_missing_qualification_cei
     escape["qualified_managed_prefix"] = serde_json::json!("managed/../outside");
     variants.push(escape);
     for variant in variants {
-        assert!(classifier()
-            .classify(
-                "physical_storage_authorities",
-                &row(
+        assert!(
+            classifier()
+                .classify(
                     "physical_storage_authorities",
-                    &[("specification_json", Value::Text(variant.to_string())),]
+                    &row(
+                        "physical_storage_authorities",
+                        &[("specification_json", Value::Text(variant.to_string())),]
+                    )
                 )
-            )
-            .is_err());
+                .is_err()
+        );
     }
     let wrong_plan = serde_json::json!({"kind":"create", "input":authority()});
     assert!(

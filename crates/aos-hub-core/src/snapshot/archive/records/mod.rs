@@ -23,7 +23,6 @@ use std::fmt;
 use std::io::Read;
 
 use anyhow::{Result, ensure};
-use sha2::{Digest, Sha256};
 
 use super::root::{
     ArchiveSignerTrust, ArchiveWrappingKeys, ExcludedArchiveKey, verify_declared_root,
@@ -31,7 +30,7 @@ use super::root::{
 use super::{StreamDecoder, StreamLimits, StreamRole};
 use crate::snapshot::{
     ClassifiedCell, ClassifiedSnapshotRow, PrivateSnapshotCell, ReconstructedSnapshotRow,
-    SnapshotClassifier, SnapshotTableShape,
+    SnapshotClassifier,
 };
 
 mod wire;
@@ -128,6 +127,42 @@ pub fn verify_database_capture<M: Read, P: Read>(
     metadata: M,
     private: P,
     limits: StreamLimits,
+    on_row: impl FnMut(&str, u64, &ReconstructedSnapshotRow) -> Result<()>,
+) -> Result<VerifiedDatabaseCaptureRecords> {
+    verify_database_capture_with_schema(
+        root_bytes,
+        trust,
+        wrapping,
+        exclusions,
+        metadata,
+        private,
+        limits,
+        |_| Ok(()),
+        on_row,
+    )
+}
+
+/// Verifies supported authenticated schema headers before provisional row callbacks.
+///
+/// Both independently AEAD-authenticated headers must match the same exact
+/// compiled generation. The schema callback may select only its trusted replay
+/// DDL; it cannot activate a restore. Final logical ends, END/EOF and signed
+/// summaries are still required before this function returns a positive report.
+/// The signed-root profile remains `framing_only`.
+///
+/// # Errors
+///
+/// Returns the same bounded, value-free failures as [`verify_database_capture`],
+/// including a rejected schema callback or unsupported generation/digest set.
+pub fn verify_database_capture_with_schema<M: Read, P: Read>(
+    root_bytes: &[u8],
+    trust: &ArchiveSignerTrust,
+    wrapping: &ArchiveWrappingKeys,
+    exclusions: &[ExcludedArchiveKey],
+    metadata: M,
+    private: P,
+    limits: StreamLimits,
+    mut on_schema: impl FnMut(&crate::snapshot::SnapshotSchemaManifest) -> Result<()>,
     mut on_row: impl FnMut(&str, u64, &ReconstructedSnapshotRow) -> Result<()>,
 ) -> Result<VerifiedDatabaseCaptureRecords> {
     let root = verify_declared_root(root_bytes, trust)?;
@@ -146,9 +181,11 @@ pub fn verify_database_capture<M: Read, P: Read>(
         root.stream_context(StreamRole::Private),
         limits,
     )?);
-    let classifier = current_classifier()?;
     let archive_id = hex::encode(root.archive_id());
     let header: Header = metadata.read(CONTROL_CAP)?;
+    let version = usize::try_from(number(&header.schema.version)?)
+        .map_err(|_| anyhow::anyhow!("snapshot generation overflows"))?;
+    let classifier = SnapshotClassifier::for_supported_generation(version)?;
     check_header(&header, &classifier, &archive_id, "metadata")?;
     let private_header: Header = private.read(CONTROL_CAP)?;
     check_header(&private_header, &classifier, &archive_id, "private")?;
@@ -156,6 +193,9 @@ pub fn verify_database_capture<M: Read, P: Read>(
         header.audit == private_header.audit,
         "snapshot source audit declarations differ"
     );
+
+    on_schema(classifier.manifest())
+        .map_err(|_| anyhow::anyhow!("snapshot schema callback failed"))?;
 
     let mut counts = DatabaseCaptureCounts::default();
     for (ordinal, (name, table)) in classifier.tables.iter().enumerate() {
@@ -301,28 +341,7 @@ fn bounded_payload(total: &mut usize, size: usize) -> Result<()> {
 }
 
 fn current_classifier() -> Result<SnapshotClassifier> {
-    let tables = crate::snapshot::contract()?;
-    let shapes: Vec<_> = tables
-        .iter()
-        .map(|(name, table)| SnapshotTableShape {
-            name: name.clone(),
-            columns: table
-                .columns
-                .iter()
-                .map(|column| column.name.clone())
-                .collect(),
-        })
-        .collect();
-    let hashes: Vec<_> = crate::db::MIGRATIONS
-        .iter()
-        .map(|script| hex::encode(Sha256::digest(script.as_bytes())))
-        .collect();
-    SnapshotClassifier::new(
-        crate::db::SCHEMA_IDENTITY,
-        crate::db::MIGRATIONS.len(),
-        &hashes,
-        &shapes,
-    )
+    SnapshotClassifier::for_supported_generation(crate::db::MIGRATIONS.len())
 }
 
 fn schema(classifier: &SnapshotClassifier) -> Result<Schema> {
@@ -331,11 +350,7 @@ fn schema(classifier: &SnapshotClassifier) -> Result<Schema> {
         classification_version: manifest.classification_version.clone(),
         identity: manifest.identity.clone(),
         version: manifest.version.to_string(),
-        migration_digests: manifest
-            .migration_digests
-            .clone()
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("snapshot record compiled migration shape differs"))?,
+        migration_digests: MigrationDigests::from_vec(manifest.migration_digests.clone())?,
         classification_digest: manifest.classification_digest.clone(),
     })
 }

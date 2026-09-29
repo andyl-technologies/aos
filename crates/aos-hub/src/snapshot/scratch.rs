@@ -240,12 +240,20 @@ where
     let budget = WorkBudget::new(limits, cancellation, controls)?;
     let _future_scope = budget::CancelOnDrop::new(budget.clone());
     budget.check()?;
-    let catalogue = CompiledSqliteSnapshotCatalogue::load()
+    // The fixed supported set is compiled before blocking input is read. Only
+    // matching authenticated headers choose one; rows never select replay DDL.
+    let generation3 = CompiledSqliteSnapshotCatalogue::load_generation(3)
+        .await
+        .map_err(|_| budget.error_or(ScratchVerificationError::Schema))?;
+    budget.check()?;
+    let generation4 = CompiledSqliteSnapshotCatalogue::load_generation(4)
         .await
         .map_err(|_| budget.error_or(ScratchVerificationError::Schema))?;
     budget.check()?;
 
-    tokio::task::spawn_blocking(move || replay::verify(inputs, catalogue, limits, budget))
-        .await
-        .map_err(|_| ScratchVerificationError::Cleanup)?
+    tokio::task::spawn_blocking(move || {
+        replay::verify(inputs, [generation3, generation4], limits, budget)
+    })
+    .await
+    .map_err(|_| ScratchVerificationError::Cleanup)?
 }

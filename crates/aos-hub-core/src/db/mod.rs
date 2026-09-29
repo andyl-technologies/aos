@@ -27459,8 +27459,8 @@ source_nar_hash = ""
     fn fresh_schema_is_final_and_foreign_key_clean() {
         assert_eq!(
             MIGRATIONS.len(),
-            3,
-            "production baseline plus the R2 and physical authority forward migrations"
+            4,
+            "production baseline plus R2, physical authority and direct-upload identity/session migrations"
         );
         let connection = Connection::open_in_memory().unwrap();
         connection

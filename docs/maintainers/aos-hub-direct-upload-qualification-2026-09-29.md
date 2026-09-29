@@ -176,3 +176,41 @@ coverage removes six obsolete browser exceptions; explicit Abort retains its
 CLI exception. This evidence does not qualify an optimized console, actual
 browser Fetch/IndexedDB/CORS, current broker, real provider, fleet or hosted
 performance. No direct uploads are enabled by this increment alone.
+
+## Snapshot generation compatibility after principal identity changes
+
+Snapshot records accept exactly the compiled migration generations 3 and 4.
+The paired authenticated headers select the matching trusted schema before any
+row callback. Archives cannot supply SQL or select an unknown generation. The
+historical migration digests and generation-3 archive bytes remain unchanged;
+genuine encrypted fixtures exercise historical replay and truncation refusal.
+Current schema checks cover 272 tables, 2,652 columns and 652 CHECK expressions.
+New nullable principal UUID cells are classified without backfilling old rows.
+
+Producer receipt `/tmp/hub-schema4-current-correction/qualification-v1.json`
+(`dd02b1d2c1306114806a9d71c59737678b932e0d55efcbca4c3431f946871970`)
+records 178 distinct tests: 156 snapshot cases, one fresh-schema case and 21
+Native scratch cases. Independent functional review
+`0b77d9b054289796028c0781a1c141d454155d9b03cdf77676948c8f1d1eed87`
+and split review
+`36d62d43bc07ec1c4703cceba4e1c0c7f8e1edacd6c51aae081368753afc2c4e`
+verify the exact source and separate mechanical prefix, committed as
+`5be6e6cf54`.
+
+The first combined context passes 170 named tests, then fails Native compilation
+because the browser now calls WhoAmI and its old Web capability exception is
+stale. Failure receipt
+`/tmp/hub-schema4-root-context/combined-failure-v1.json`
+(`dbe08795e236fc1e8baa0a04859dd937784d6918d4fc50754b0e7d1914003947`)
+preserves that result. Removing only the obsolete exception produces the
+corrected combined context.
+
+Current receipt `/tmp/hub-schema4-root-context-v2/qualification.json`
+(`33e7d1ef3dab8e03b3f565e9f083450be5d14def9a6e21d06c9c53e4ebdd4f29`)
+records all 178 named tests and ordinary Worker Wasm compilation passing, with
+2,909 unchanged captured inputs and 17 exact owned postimages. Source input
+digest is `a489b16f9eaaf5cd576917a77b0c37a173e35aa15ff56ce2f6971ef61113a359`.
+This resolves the focused schema/archive integration failures. It does not
+establish a new full-core pass, whole-Hub restore activation, current provider
+or fleet acceptance. Direct service routing and later schema continuations
+remain separate work.

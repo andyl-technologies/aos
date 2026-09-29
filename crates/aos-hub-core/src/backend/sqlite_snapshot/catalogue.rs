@@ -10,9 +10,9 @@ use std::fmt;
 use anyhow::{Result, ensure};
 use sha2::{Digest, Sha256};
 
-use super::{compiled_schema, SqliteSnapshotSchema};
+use super::{SqliteSnapshotSchema, compiled_schema_for_generation};
 use crate::db::{MIGRATIONS, SCHEMA_IDENTITY};
-use crate::snapshot::SnapshotClassifier;
+use crate::snapshot::{SnapshotClassifier, SnapshotSchemaManifest};
 
 /// A supported object kind in the independently compiled SQLite catalogue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +75,7 @@ impl CompiledSqliteSnapshotDefinition {
 pub struct CompiledSqliteSnapshotCatalogue {
     definitions: Vec<CompiledSqliteSnapshotDefinition>,
     schema: SqliteSnapshotSchema,
+    manifest: SnapshotSchemaManifest,
     dispositions: BTreeMap<String, CompiledSqliteSnapshotDisposition>,
 }
 
@@ -97,17 +98,32 @@ impl CompiledSqliteSnapshotCatalogue {
     /// Rejects unavailable compilation, unclassified shapes or unsupported
     /// triggers/system/virtual objects. Errors omit underlying SQL diagnostics.
     pub async fn load() -> Result<Self> {
-        Self::load_inner()
+        Self::load_generation(MIGRATIONS.len()).await
+    }
+
+    /// Compiles exactly a supported historical or current schema from trusted DDL.
+    ///
+    /// This factory authenticates no archive. Callers select the returned
+    /// catalogue only after its exact manifest matches authenticated headers.
+    /// No archive SQL or source rows influence compilation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unknown generations, changed hashes or invalid DDL.
+    pub async fn load_generation(version: usize) -> Result<Self> {
+        Self::load_inner(version)
             .await
             .map_err(|_| anyhow::anyhow!("snapshot compiled replay catalogue is unavailable"))
     }
 
-    async fn load_inner() -> Result<Self> {
-        let (objects, tables) = compiled_schema().await?;
+    async fn load_inner(version: usize) -> Result<Self> {
+        let (objects, tables) = compiled_schema_for_generation(version).await?;
         let schema = SqliteSnapshotSchema {
             identity: SCHEMA_IDENTITY.into(),
-            version: MIGRATIONS.len(),
+            version,
             migration_digests: MIGRATIONS
+                .get(..version)
+                .ok_or_else(|| anyhow::anyhow!("snapshot compiled generation is absent"))?
                 .iter()
                 .map(|script| hex::encode(Sha256::digest(script.as_bytes())))
                 .collect(),
@@ -163,6 +179,7 @@ impl CompiledSqliteSnapshotCatalogue {
         Ok(Self {
             definitions,
             schema,
+            manifest: classifier.manifest().clone(),
             dispositions,
         })
     }
@@ -177,8 +194,62 @@ impl CompiledSqliteSnapshotCatalogue {
         &self.schema
     }
 
+    /// Borrows the exact compiled classifier commitment for header comparison.
+    pub fn schema_manifest(&self) -> &SnapshotSchemaManifest {
+        &self.manifest
+    }
+
     /// Returns a table's exact compiled disposition without exposing its policy.
     pub fn disposition(&self, table: &str) -> Option<CompiledSqliteSnapshotDisposition> {
         self.dispositions.get(table).copied()
+    }
+}
+
+#[cfg(test)]
+mod generation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn historical_replay_uses_historical_ddl_and_refuses_unknown_generations() {
+        let historical = CompiledSqliteSnapshotCatalogue::load_generation(3)
+            .await
+            .unwrap();
+        let current = CompiledSqliteSnapshotCatalogue::load_generation(4)
+            .await
+            .unwrap();
+
+        assert_eq!(historical.schema().tables.len(), 267);
+        assert_eq!(current.schema().tables.len(), 272);
+        assert!(
+            !historical
+                .definitions()
+                .iter()
+                .any(|value| value.name() == "direct_upload_sessions")
+        );
+        assert!(
+            current
+                .definitions()
+                .iter()
+                .any(|value| value.name() == "direct_upload_sessions")
+        );
+        let config = |catalogue: &CompiledSqliteSnapshotCatalogue| {
+            catalogue
+                .schema()
+                .tables
+                .iter()
+                .find(|table| table.name == "oci_image_config_projections")
+                .unwrap()
+                .columns
+                .clone()
+        };
+        assert!(!config(&historical).contains(&"config_representation".to_owned()));
+        assert!(config(&current).contains(&"config_representation".to_owned()));
+        assert_eq!(historical.schema_manifest().version, 3);
+        assert_eq!(historical.schema_manifest().migration_digests.len(), 3);
+        assert!(
+            CompiledSqliteSnapshotCatalogue::load_generation(5)
+                .await
+                .is_err()
+        );
     }
 }
