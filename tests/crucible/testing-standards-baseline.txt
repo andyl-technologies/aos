@@ -120,6 +120,9 @@ crucible-api	src/vm_lifecycle/network_faults/route_tests/resource_limits	retry	1
 crucible-cli	tests/serve_process	thread::sleep	1
 crucible-device	src/block/fault	retry	1
 crucible-device	src/block/fault/state_admission	retry	1
+# The extracted restore module validates actual old-epoch retry authorization;
+# it never reruns a failed test.
+crucible-device	src/block/fault/state_admission/restore_validation	retry	1
 crucible-device	src/block/fault/state_execution	retry	1
 crucible-device	src/block/fault/observation_effects	retry	1
 crucible-device	src/block_lifecycle_test	retry	1
