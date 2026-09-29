@@ -275,7 +275,9 @@ fn tree_boundaries_golden_leaf_identity() {
 fn hex(value: &str) -> Vec<u8> {
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u8::from_str_radix(core::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect()
 }
@@ -645,4 +647,34 @@ fn tree_history_independence_noop_preserves_root_and_emits_nothing() {
     assert_eq!(absent.work.node_encodings, 0);
     assert!(absent.work.validation_reads > 0);
     assert!(Rc::ptr_eq(&tree.root_rc(), &absent.tree.root_rc()));
+}
+
+#[test]
+fn tree_history_independence_conditional_directory_ancestors() {
+    let mut parent = directory(b"a");
+    parent.entry.kind = EntryKind::Conflict {
+        candidates: vec![directory(b"a").entry, linked(b"a", b"a").entry],
+        base: None,
+    };
+    let tree = Tree::build(
+        vec![parent.clone(), directory(b"a/b")],
+        None,
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
+    assert!(tree.insert(directory(b"a/c")).is_ok());
+    assert!(tree.remove(b"a").is_err());
+    assert!(tree.insert(linked(b"a", b"a")).is_err());
+    let ordinary = Tree::build(
+        vec![directory(b"a"), directory(b"a/b")],
+        None,
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
+    assert_eq!(
+        ordinary.insert(parent).unwrap().tree.root_identity(),
+        tree.root_identity()
+    );
 }

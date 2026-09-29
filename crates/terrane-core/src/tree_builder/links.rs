@@ -19,7 +19,7 @@ pub(super) struct Link<'a> {
     right: Links<'a>,
 }
 
-pub(super) fn link_id<'entry, 'a>(entry: &'entry Entry<'a>) -> Option<&'a [u8]> {
+pub(super) fn link_id<'a>(entry: &Entry<'a>) -> Option<&'a [u8]> {
     match &entry.kind {
         EntryKind::File { link_id, .. } => *link_id,
         _ => None,

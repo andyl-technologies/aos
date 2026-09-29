@@ -27,6 +27,10 @@ impl<'tree, 'a> Cursor<'tree, 'a> {
             position,
         }
     }
+
+    pub(super) fn node_reads(&self) -> usize {
+        self.nodes.reads
+    }
 }
 
 impl<'tree, 'a> Iterator for Cursor<'tree, 'a> {

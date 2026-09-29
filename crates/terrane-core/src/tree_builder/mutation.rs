@@ -63,7 +63,7 @@ fn validate<'a>(
             for (position, byte) in key.iter().enumerate() {
                 if *byte == b'/'
                     && !lookup(tree, &key[..position], reads)
-                        .is_some_and(|entry| matches!(entry.kind, EntryKind::Directory { .. }))
+                        .is_some_and(|entry| entry.kind.permits_descendants())
                 {
                     return Err(Error::Tree);
                 }
@@ -71,19 +71,17 @@ fn validate<'a>(
         }
     }
 
-    if tree.usage != TreeUse::Index
-        && !new.is_some_and(|entry| matches!(entry.kind, EntryKind::Directory { .. }))
-    {
+    if tree.usage != TreeUse::Index && !new.is_some_and(|entry| entry.kind.permits_descendants()) {
         let mut prefix = key.to_vec();
         prefix.push(b'/');
         // A component-prefix range starts at key + '/', not at key itself:
         // keys such as 'a!' may sort between 'a' and its descendants.
         let mut descendants = tree.cursor_from(&prefix);
-        *reads += usize::from(tree.root().level()) + 1;
-        if descendants
+        let has_descendants = descendants
             .next()
-            .is_some_and(|item| item.key.starts_with(&prefix))
-        {
+            .is_some_and(|item| item.key.starts_with(&prefix));
+        *reads += descendants.node_reads();
+        if has_descendants {
             return Err(Error::Tree);
         }
     }
