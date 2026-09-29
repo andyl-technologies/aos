@@ -1,4 +1,4 @@
-From 0e5e0fb04bfad9e8f5ec70ff5383f47b622e640f Mon Sep 17 00:00:00 2001
+From d498e0591b0344e2c1bb6a79df8e47255dd39e57 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -143,10 +143,12 @@ Link the real IRQ implementation for the configured MIPS timer unit.
 
 Preserve wide ARM, HPPA and LoongArch CPU timer origins and deadlines.
 
+Preserve wide PowerPC timer coordinates and exact precise BookE edges.
+
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
 diff --git a/MAINTAINERS b/MAINTAINERS
-index 902db77218eacc2461b54fe675c9816b3d98aec6..8824f05496d70fe913c0215d744efc79586216c3 100644
+index 902db77218eacc2461b54fe675c9816b3d98aec6..cae883cc5d3c0181b95c3ea346acd6b97ff63ab9 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
 @@ -328,6 +328,7 @@ F: hw/or1k/
@@ -157,7 +159,15 @@ index 902db77218eacc2461b54fe675c9816b3d98aec6..8824f05496d70fe913c0215d744efc79
  
  PowerPC TCG CPUs
  M: Nicholas Piggin <npiggin@gmail.com>
-@@ -406,6 +407,7 @@ F: target/s390x/
+@@ -338,6 +339,7 @@ L: qemu-ppc@nongnu.org
+ S: Odd Fixes
+ F: target/ppc/
+ F: hw/ppc/ppc.c
++F: tests/unit/test-crucible-ppc-wide-clock.c
+ F: hw/ppc/ppc_booke.c
+ F: include/hw/ppc/ppc.h
+ F: hw/ppc/meson.build
+@@ -406,6 +408,7 @@ F: target/s390x/
  F: target/s390x/tcg
  F: hw/s390x/
  F: tests/tcg/s390x/
@@ -165,7 +175,7 @@ index 902db77218eacc2461b54fe675c9816b3d98aec6..8824f05496d70fe913c0215d744efc79
  L: qemu-s390x@nongnu.org
  
  SH4 TCG CPUs
-@@ -3012,6 +3014,7 @@ F: hw/intc/mips_gic.c
+@@ -3012,6 +3015,7 @@ F: hw/intc/mips_gic.c
  F: hw/timer/mips_gictimer.c
  F: include/hw/intc/mips_gic.h
  F: include/hw/timer/mips_gictimer.h
@@ -173,7 +183,7 @@ index 902db77218eacc2461b54fe675c9816b3d98aec6..8824f05496d70fe913c0215d744efc79
  
  S390 3270 device
  M: Halil Pasic <pasic@linux.ibm.com>
-@@ -3472,6 +3475,7 @@ Main loop
+@@ -3472,6 +3476,7 @@ Main loop
  M: Paolo Bonzini <pbonzini@redhat.com>
  S: Maintained
  F: include/qemu/main-loop.h
@@ -181,7 +191,7 @@ index 902db77218eacc2461b54fe675c9816b3d98aec6..8824f05496d70fe913c0215d744efc79
  F: include/system/runstate.h
  F: include/system/runstate-action.h
  F: util/main-loop.c
-@@ -4201,11 +4205,24 @@ R: Alexandre Iooss <erdnaxe@crans.org>
+@@ -4201,11 +4206,24 @@ R: Alexandre Iooss <erdnaxe@crans.org>
  S: Maintained
  F: docs/devel/tcg-plugins.rst
  F: plugins/
@@ -36800,10 +36810,10 @@ index 90fc407d05bb0fd6b1f961924de9bbd764cc9aad..145db70ede15de6f650a4b6cab944607
  {
      DeviceClass *dc = DEVICE_CLASS(klass);
 diff --git a/hw/ppc/ppc.c b/hw/ppc/ppc.c
-index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f60c501ae8 100644
+index b123b4cc1cce7852c7821cf3d3bced347ef998ab..765ba0940aa9a5c15aa89b9db27ad7fcba1aaf9d 100644
 --- a/hw/ppc/ppc.c
 +++ b/hw/ppc/ppc.c
-@@ -488,31 +488,70 @@ void ppce500_set_mpic_proxy(bool enabled)
+@@ -488,31 +488,119 @@ void ppce500_set_mpic_proxy(bool enabled)
  /* PowerPC time base and decrementer emulation */
  
  /*
@@ -36822,28 +36832,77 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
   */
 -static uint64_t ns_to_tb(uint32_t freq, int64_t clock)
 +uint64_t ppc_ps_to_tb(uint32_t freq, __int128 clock)
- {
--    return muldiv64(clock, freq, NANOSECONDS_PER_SECOND);
-+    __int128 scaled_clock = clock * freq;
-+    __int128 ticks = scaled_clock / PICOSECONDS_PER_SECOND;
++{
++    /* Scale only the bounded remainder of the full clock coordinate. */
++    __int128 whole = clock / PICOSECONDS_PER_SECOND;
++    __int128 remainder = clock % PICOSECONDS_PER_SECOND;
++    __int128 scaled_remainder = remainder * freq;
++    __int128 ticks = whole * freq +
++                     scaled_remainder / PICOSECONDS_PER_SECOND;
 +
 +    /* C truncates signed division toward zero; time coordinates use floor. */
-+    if (scaled_clock < 0 && scaled_clock % PICOSECONDS_PER_SECOND) {
++    if (scaled_remainder % PICOSECONDS_PER_SECOND < 0) {
 +        ticks--;
 +    }
 +    return ticks;
 +}
 +
++__int128 ppc_timer_deadline_ps(__int128 now, __int128 interval)
++{
++    __int128 deadline;
++
++    if (__builtin_add_overflow(now, interval, &deadline)) {
++        g_error("PowerPC timer deadline exceeds the picosecond clock range");
++    }
++    return deadline;
++}
++
 +static __int128 tb_to_ps_round_up(uint32_t freq, uint64_t tb)
 +{
 +    return ((__int128)tb * PICOSECONDS_PER_SECOND + freq - 1) / freq;
++}
++
++/* Retain the wide clock epoch until the final architectural tick wrap. */
++__int128 ppc_timer_ticks_deadline_ps(uint32_t frequency, __int128 origin,
++                                   unsigned __int128 ticks)
++{
++    __int128 phase = (origin % PICOSECONDS_PER_SECOND) * frequency %
++                     PICOSECONDS_PER_SECOND;
++    __int128 numerator;
++    __int128 interval;
++
++    if (frequency == 0 || ticks > ((unsigned __int128)1 << 64)) {
++        g_error("PowerPC timer has invalid frequency or tick interval");
++    }
++    if (phase < 0) {
++        phase += PICOSECONDS_PER_SECOND;
++    }
++    numerator = (__int128)ticks * PICOSECONDS_PER_SECOND - phase;
++    interval = numerator / frequency;
++    if (numerator % frequency > 0) {
++        interval++;
++    }
++    return ppc_timer_deadline_ps(origin, interval);
++}
++
++static __int128 ppc_decr_target_ps(const ppc_tb_t *state)
+ {
+-    return muldiv64(clock, freq, NANOSECONDS_PER_SECOND);
++    return (__int128)state->decr_target_hi * ((__int128)1 << 64) +
++           state->decr_target_lo;
  }
  
 -/* virtual clock in TB ticks, not adjusted by TB offset */
 -static int64_t tb_to_ns_round_up(uint32_t freq, uint64_t tb)
-+static __int128 ppc_virtual_clock_get_ps(void)
++static void ppc_decr_target_set(ppc_tb_t *state, __int128 deadline)
  {
 -    return muldiv64_round_up(tb, NANOSECONDS_PER_SECOND, freq);
++    state->decr_target_hi = deadline >> 64;
++    state->decr_target_lo = deadline;
++}
++
++static __int128 ppc_virtual_clock_get_ps(void)
++{
 +    if (qemu_timer_tcg_ps_enabled()) {
 +        return qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL);
 +    }
@@ -36883,7 +36942,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
  }
  
  int64_t cpu_ppc_load_tb_offset(CPUPPCState *env)
-@@ -529,8 +568,8 @@ uint64_t cpu_ppc_load_tbl (CPUPPCState *env)
+@@ -529,8 +617,8 @@ uint64_t cpu_ppc_load_tbl (CPUPPCState *env)
          return env->spr[SPR_TBL];
      }
  
@@ -36894,7 +36953,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
      trace_ppc_tb_load(tb);
  
      return tb;
-@@ -541,8 +580,8 @@ static inline uint32_t _cpu_ppc_load_tbu(CPUPPCState *env)
+@@ -541,8 +629,8 @@ static inline uint32_t _cpu_ppc_load_tbu(CPUPPCState *env)
      ppc_tb_t *tb_env = env->tb_env;
      uint64_t tb;
  
@@ -36905,7 +36964,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
      trace_ppc_tb_load(tb);
  
      return tb >> 32;
-@@ -557,10 +596,10 @@ uint32_t cpu_ppc_load_tbu (CPUPPCState *env)
+@@ -557,10 +645,10 @@ uint32_t cpu_ppc_load_tbu (CPUPPCState *env)
      return _cpu_ppc_load_tbu(env);
  }
  
@@ -36918,7 +36977,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
  
      trace_ppc_tb_store(value, *tb_offsetp);
  }
-@@ -568,10 +607,10 @@ static inline void cpu_ppc_store_tb(ppc_tb_t *tb_env, uint64_t vmclk,
+@@ -568,10 +656,10 @@ static inline void cpu_ppc_store_tb(ppc_tb_t *tb_env, uint64_t vmclk,
  void cpu_ppc_store_tbl (CPUPPCState *env, uint32_t value)
  {
      ppc_tb_t *tb_env = env->tb_env;
@@ -36931,7 +36990,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
      tb &= 0xFFFFFFFF00000000ULL;
      cpu_ppc_store_tb(tb_env, clock, &tb_env->tb_offset, tb | (uint64_t)value);
  }
-@@ -579,10 +618,10 @@ void cpu_ppc_store_tbl (CPUPPCState *env, uint32_t value)
+@@ -579,10 +667,10 @@ void cpu_ppc_store_tbl (CPUPPCState *env, uint32_t value)
  static inline void _cpu_ppc_store_tbu(CPUPPCState *env, uint32_t value)
  {
      ppc_tb_t *tb_env = env->tb_env;
@@ -36944,7 +37003,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
      tb &= 0x00000000FFFFFFFFULL;
      cpu_ppc_store_tb(tb_env, clock, &tb_env->tb_offset,
                       ((uint64_t)value << 32) | tb);
-@@ -598,8 +637,8 @@ uint64_t cpu_ppc_load_atbl (CPUPPCState *env)
+@@ -598,8 +686,8 @@ uint64_t cpu_ppc_load_atbl (CPUPPCState *env)
      ppc_tb_t *tb_env = env->tb_env;
      uint64_t tb;
  
@@ -36955,7 +37014,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
      trace_ppc_tb_load(tb);
  
      return tb;
-@@ -610,8 +649,8 @@ uint32_t cpu_ppc_load_atbu (CPUPPCState *env)
+@@ -610,8 +698,8 @@ uint32_t cpu_ppc_load_atbu (CPUPPCState *env)
      ppc_tb_t *tb_env = env->tb_env;
      uint64_t tb;
  
@@ -36966,7 +37025,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
      trace_ppc_tb_load(tb);
  
      return tb >> 32;
-@@ -620,10 +659,10 @@ uint32_t cpu_ppc_load_atbu (CPUPPCState *env)
+@@ -620,10 +708,10 @@ uint32_t cpu_ppc_load_atbu (CPUPPCState *env)
  void cpu_ppc_store_atbl (CPUPPCState *env, uint32_t value)
  {
      ppc_tb_t *tb_env = env->tb_env;
@@ -36979,7 +37038,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
      tb &= 0xFFFFFFFF00000000ULL;
      cpu_ppc_store_tb(tb_env, clock, &tb_env->atb_offset, tb | (uint64_t)value);
  }
-@@ -631,10 +670,10 @@ void cpu_ppc_store_atbl (CPUPPCState *env, uint32_t value)
+@@ -631,10 +719,10 @@ void cpu_ppc_store_atbl (CPUPPCState *env, uint32_t value)
  void cpu_ppc_store_atbu (CPUPPCState *env, uint32_t value)
  {
      ppc_tb_t *tb_env = env->tb_env;
@@ -36992,7 +37051,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
      tb &= 0x00000000FFFFFFFFULL;
      cpu_ppc_store_tb(tb_env, clock, &tb_env->atb_offset,
                       ((uint64_t)value << 32) | tb);
-@@ -654,25 +693,25 @@ uint64_t cpu_ppc_load_vtb(CPUPPCState *env)
+@@ -654,25 +742,25 @@ uint64_t cpu_ppc_load_vtb(CPUPPCState *env)
  {
      ppc_tb_t *tb_env = env->tb_env;
  
@@ -37023,7 +37082,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
      tb &= 0xFFFFFFUL;
      tb |= (value & ~0xFFFFFFUL);
      cpu_ppc_store_tb(tb_env, clock, &tb_env->tb_offset, tb);
-@@ -681,15 +720,16 @@ void cpu_ppc_store_tbu40(CPUPPCState *env, uint64_t value)
+@@ -681,15 +769,16 @@ void cpu_ppc_store_tbu40(CPUPPCState *env, uint64_t value)
  static void cpu_ppc_tb_stop (CPUPPCState *env)
  {
      ppc_tb_t *tb_env = env->tb_env;
@@ -37044,7 +37103,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
          /* Store the time base value (ie compute the current offset) */
          cpu_ppc_store_tb(tb_env, vmclk, &tb_env->tb_offset, tb);
          /* Store the alternate time base value (compute the current offset) */
-@@ -703,11 +743,12 @@ static void cpu_ppc_tb_stop (CPUPPCState *env)
+@@ -703,11 +792,12 @@ static void cpu_ppc_tb_stop (CPUPPCState *env)
  static void cpu_ppc_tb_start (CPUPPCState *env)
  {
      ppc_tb_t *tb_env = env->tb_env;
@@ -37059,13 +37118,14 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
          /* Get the time base from tb_offset */
          tb = tb_env->tb_offset;
          /* Get the alternate time base from atb_offset */
-@@ -728,14 +769,14 @@ bool ppc_decr_clear_on_delivery(CPUPPCState *env)
+@@ -728,18 +818,26 @@ bool ppc_decr_clear_on_delivery(CPUPPCState *env)
      return ((tb_env->flags & flags) == PPC_DECR_UNDERFLOW_TRIGGERED);
  }
  
 -static inline int64_t __cpu_ppc_load_decr(CPUPPCState *env, int64_t now,
+-                                          uint64_t next)
 +static inline int64_t __cpu_ppc_load_decr(CPUPPCState *env, __int128 now,
-                                           uint64_t next)
++                                          uint64_t next, QEMUTimer *timer)
  {
      ppc_tb_t *tb_env = env->tb_env;
      uint64_t n;
@@ -37073,10 +37133,25 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
  
 -    n = ns_to_tb(tb_env->decr_freq, now);
 +    n = ppc_ps_to_tb(tb_env->decr_freq, now);
++
++    /* BookE stops at the actual expiry, including architectural tick wrap. */
++    if (tb_env->flags & PPC_TIMER_BOOKE) {
++        bool stopped;
  
-     /* BookE timers stop when reaching 0.  */
-     if (next < n && tb_env->flags & PPC_TIMER_BOOKE) {
-@@ -749,7 +790,7 @@ static inline int64_t __cpu_ppc_load_decr(CPUPPCState *env, int64_t now,
+-    /* BookE timers stop when reaching 0.  */
+-    if (next < n && tb_env->flags & PPC_TIMER_BOOKE) {
+-        decr = 0;
++        if (qemu_timer_tcg_ps_enabled()) {
++            stopped = !timer || !timer_pending(timer) ||
++                      timer_expire_time_ps_wide(timer) <= now;
++        } else {
++            stopped = next < n;
++        }
++        decr = stopped ? 0 : next - n;
+     } else {
+         decr = next - n;
+     }
+@@ -749,12 +847,13 @@ static inline int64_t __cpu_ppc_load_decr(CPUPPCState *env, int64_t now,
      return decr;
  }
  
@@ -37085,7 +37160,14 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
  {
      ppc_tb_t *tb_env = env->tb_env;
      uint64_t decr;
-@@ -773,11 +814,11 @@ target_ulong cpu_ppc_load_decr(CPUPPCState *env)
+ 
+-    decr = __cpu_ppc_load_decr(env, now, tb_env->decr_next);
++    decr = __cpu_ppc_load_decr(env, now, tb_env->decr_next,
++                                tb_env->decr_timer);
+ 
+     /*
+      * If large decrementer is enabled then the decrementer is signed extended
+@@ -773,18 +872,19 @@ target_ulong cpu_ppc_load_decr(CPUPPCState *env)
      if (kvm_enabled()) {
          return env->spr[SPR_DECR];
      } else {
@@ -37099,7 +37181,16 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
  {
      PowerPCCPU *cpu = env_archcpu(env);
      PowerPCCPUClass *pcc = POWERPC_CPU_GET_CLASS(cpu);
-@@ -798,15 +839,15 @@ static target_ulong _cpu_ppc_load_hdecr(CPUPPCState *env, int64_t now)
+     ppc_tb_t *tb_env = env->tb_env;
+     uint64_t hdecr;
+ 
+-    hdecr =  __cpu_ppc_load_decr(env, now, tb_env->hdecr_next);
++    hdecr =  __cpu_ppc_load_decr(env, now, tb_env->hdecr_next,
++                                  tb_env->hdecr_timer);
+ 
+     /*
+      * If we have a large decrementer (POWER9 or later) then hdecr is sign
+@@ -798,15 +898,15 @@ static target_ulong _cpu_ppc_load_hdecr(CPUPPCState *env, int64_t now)
  
  target_ulong cpu_ppc_load_hdecr(CPUPPCState *env)
  {
@@ -37118,7 +37209,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
  }
  
  /* When decrementer expires,
-@@ -845,7 +886,8 @@ static inline void cpu_ppc_hdecr_lower(PowerPCCPU *cpu)
+@@ -845,7 +945,8 @@ static inline void cpu_ppc_hdecr_lower(PowerPCCPU *cpu)
      ppc_set_irq(cpu, PPC_INTERRUPT_HDECR, 0);
  }
  
@@ -37128,7 +37219,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
                                   QEMUTimer *timer,
                                   void (*raise_excp)(void *),
                                   void (*lower_excp)(PowerPCCPU *),
-@@ -872,7 +914,7 @@ static void __cpu_ppc_store_decr(PowerPCCPU *cpu, int64_t now, uint64_t *nextp,
+@@ -872,7 +973,7 @@ static void __cpu_ppc_store_decr(PowerPCCPU *cpu, int64_t now, uint64_t *nextp,
       * not adjusted by tb_offset because if TB changes via tb_offset changing,
       * decrementer does not change, so not directly comparable with TB.
       */
@@ -37137,12 +37228,24 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
      *nextp = next; /* nextp is in timebase units */
  
      /*
-@@ -897,10 +939,10 @@ static void __cpu_ppc_store_decr(PowerPCCPU *cpu, int64_t now, uint64_t *nextp,
+@@ -896,11 +997,21 @@ static void __cpu_ppc_store_decr(PowerPCCPU *cpu, int64_t now, uint64_t *nextp,
+         (*lower_excp)(cpu);
      }
  
-     /* Adjust timer */
+-    /* Adjust timer */
 -    timer_mod(timer, tb_to_ns_round_up(tb_env->decr_freq, next));
-+    ppc_timer_mod_ps(timer, tb_to_ps_round_up(tb_env->decr_freq, next));
++    /* The guest-visible tick wraps; the timer keeps its actual clock epoch. */
++    if (qemu_timer_tcg_ps_enabled()) {
++        __int128 deadline = ppc_timer_ticks_deadline_ps(tb_env->decr_freq,
++                                                      now, value);
++
++        if (nextp == &tb_env->decr_next) {
++            ppc_decr_target_set(tb_env, deadline);
++        }
++        ppc_timer_mod_ps(timer, deadline);
++    } else {
++        ppc_timer_mod_ps(timer, tb_to_ps_round_up(tb_env->decr_freq, next));
++    }
  }
  
 -static inline void _cpu_ppc_store_decr(PowerPCCPU *cpu, int64_t now,
@@ -37150,7 +37253,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
                                         target_ulong decr, target_ulong value,
                                         int nr_bits)
  {
-@@ -915,7 +957,7 @@ void cpu_ppc_store_decr(CPUPPCState *env, target_ulong value)
+@@ -915,7 +1026,7 @@ void cpu_ppc_store_decr(CPUPPCState *env, target_ulong value)
  {
      PowerPCCPU *cpu = env_archcpu(env);
      PowerPCCPUClass *pcc = POWERPC_CPU_GET_CLASS(cpu);
@@ -37159,7 +37262,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
      target_ulong decr;
      int nr_bits = 32;
  
-@@ -928,7 +970,7 @@ void cpu_ppc_store_decr(CPUPPCState *env, target_ulong value)
+@@ -928,7 +1039,7 @@ void cpu_ppc_store_decr(CPUPPCState *env, target_ulong value)
          nr_bits = pcc->lrg_decr_bits;
      }
  
@@ -37168,7 +37271,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
      decr = _cpu_ppc_load_decr(env, now);
      _cpu_ppc_store_decr(cpu, now, decr, value, nr_bits);
  }
-@@ -940,7 +982,7 @@ static void cpu_ppc_decr_cb(void *opaque)
+@@ -940,7 +1051,7 @@ static void cpu_ppc_decr_cb(void *opaque)
      cpu_ppc_decr_excp(cpu);
  }
  
@@ -37177,7 +37280,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
                                          target_ulong hdecr, target_ulong value,
                                          int nr_bits)
  {
-@@ -959,10 +1001,10 @@ void cpu_ppc_store_hdecr(CPUPPCState *env, target_ulong value)
+@@ -959,10 +1070,10 @@ void cpu_ppc_store_hdecr(CPUPPCState *env, target_ulong value)
  {
      PowerPCCPU *cpu = env_archcpu(env);
      PowerPCCPUClass *pcc = POWERPC_CPU_GET_CLASS(cpu);
@@ -37190,7 +37293,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
      hdecr = _cpu_ppc_load_hdecr(env, now);
      _cpu_ppc_store_hdecr(cpu, now, hdecr, value, pcc->lrg_decr_bits);
  }
-@@ -974,7 +1016,8 @@ static void cpu_ppc_hdecr_cb(void *opaque)
+@@ -974,7 +1085,8 @@ static void cpu_ppc_hdecr_cb(void *opaque)
      cpu_ppc_hdecr_excp(cpu);
  }
  
@@ -37200,7 +37303,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
  {
      ppc_tb_t *tb_env = env->tb_env;
  
-@@ -983,7 +1026,7 @@ static void _cpu_ppc_store_purr(CPUPPCState *env, int64_t now, uint64_t value)
+@@ -983,7 +1095,7 @@ static void _cpu_ppc_store_purr(CPUPPCState *env, int64_t now, uint64_t value)
  
  void cpu_ppc_store_purr(CPUPPCState *env, uint64_t value)
  {
@@ -37209,7 +37312,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
  }
  
  static void timebase_save(PPCTimebase *tb)
-@@ -1117,6 +1160,7 @@ void cpu_ppc_tb_init(CPUPPCState *env, uint32_t freq)
+@@ -1117,6 +1229,7 @@ void cpu_ppc_tb_init(CPUPPCState *env, uint32_t freq)
  
      tb_env->tb_freq = freq;
      tb_env->decr_freq = freq;
@@ -37217,7 +37320,15 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
  }
  
  void cpu_ppc_tb_reset(CPUPPCState *env)
-@@ -1139,10 +1183,10 @@ void cpu_ppc_tb_reset(CPUPPCState *env)
+@@ -1127,6 +1240,7 @@ void cpu_ppc_tb_reset(CPUPPCState *env)
+     timer_del(tb_env->decr_timer);
+     ppc_set_irq(cpu, PPC_INTERRUPT_DECR, 0);
+     tb_env->decr_next = 0;
++    ppc_decr_target_set(tb_env, 0);
+     if (tb_env->hdecr_timer != NULL) {
+         timer_del(tb_env->hdecr_timer);
+         ppc_set_irq(cpu, PPC_INTERRUPT_HDECR, 0);
+@@ -1139,10 +1253,10 @@ void cpu_ppc_tb_reset(CPUPPCState *env)
       * if a decrementer exception is pending when it enables msr_ee at startup,
       * it's not ready to handle it...
       *
@@ -37232,7 +37343,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
       */
      _cpu_ppc_store_decr(cpu, 0, 0, -1, 64);
      _cpu_ppc_store_purr(env, 0, 0);
-@@ -1152,6 +1196,8 @@ void cpu_ppc_tb_free(CPUPPCState *env)
+@@ -1152,6 +1266,8 @@ void cpu_ppc_tb_free(CPUPPCState *env)
  {
      timer_free(env->tb_env->decr_timer);
      timer_free(env->tb_env->hdecr_timer);
@@ -37241,7 +37352,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
      g_free(env->tb_env);
  }
  
-@@ -1183,10 +1229,6 @@ void cpu_ppc_hdecr_exit(CPUPPCState *env)
+@@ -1183,10 +1299,6 @@ void cpu_ppc_hdecr_exit(CPUPPCState *env)
  typedef struct ppc40x_timer_t ppc40x_timer_t;
  struct ppc40x_timer_t {
      uint64_t pit_reload;  /* PIT auto-reload value        */
@@ -37252,7 +37363,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
  
      /* 405 have the PIT, 440 have a DECR.  */
      unsigned int decr_excp;
-@@ -1198,12 +1240,10 @@ static void cpu_4xx_fit_cb (void *opaque)
+@@ -1198,12 +1310,10 @@ static void cpu_4xx_fit_cb (void *opaque)
      PowerPCCPU *cpu = opaque;
      CPUPPCState *env = &cpu->env;
      ppc_tb_t *tb_env;
@@ -37267,18 +37378,19 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
      switch ((env->spr[SPR_40x_TCR] >> 24) & 0x3) {
      case 0:
          next = 1 << 9;
-@@ -1221,8 +1261,8 @@ static void cpu_4xx_fit_cb (void *opaque)
+@@ -1221,8 +1331,9 @@ static void cpu_4xx_fit_cb (void *opaque)
          /* Cannot occur, but makes gcc happy */
          return;
      }
 -    next = now + tb_to_ns_round_up(tb_env->tb_freq, next);
 -    timer_mod(ppc40x_timer->fit_timer, next);
-+    next = now + tb_to_ps_round_up(tb_env->tb_freq, next);
++    next = ppc_timer_deadline_ps(
++        now, tb_to_ps_round_up(tb_env->tb_freq, next));
 +    ppc_timer_mod_ps(tb_env->fit_timer, next);
      env->spr[SPR_40x_TSR] |= 1 << 26;
      if ((env->spr[SPR_40x_TCR] >> 23) & 0x1) {
          ppc_set_irq(cpu, PPC_INTERRUPT_FIT, 1);
-@@ -1235,7 +1275,7 @@ static void cpu_4xx_fit_cb (void *opaque)
+@@ -1235,7 +1346,7 @@ static void cpu_4xx_fit_cb (void *opaque)
  static void start_stop_pit (CPUPPCState *env, ppc_tb_t *tb_env, int is_excp)
  {
      ppc40x_timer_t *ppc40x_timer;
@@ -37287,7 +37399,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
  
      ppc40x_timer = tb_env->opaque;
      if (ppc40x_timer->pit_reload <= 1 ||
-@@ -1246,16 +1286,16 @@ static void start_stop_pit (CPUPPCState *env, ppc_tb_t *tb_env, int is_excp)
+@@ -1246,16 +1357,25 @@ static void start_stop_pit (CPUPPCState *env, ppc_tb_t *tb_env, int is_excp)
          timer_del(tb_env->decr_timer);
      } else {
          trace_ppc4xx_pit_start(ppc40x_timer->pit_reload);
@@ -37303,12 +37415,21 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
          }
 -        next = tb_to_ns_round_up(tb_env->decr_freq, tb_env->decr_next);
 -        timer_mod(tb_env->decr_timer, next);
-+        next = tb_to_ps_round_up(tb_env->decr_freq, tb_env->decr_next);
++        if (qemu_timer_tcg_ps_enabled()) {
++            /* Auto-reload keeps the retained target after a late callback. */
++            __int128 origin = is_excp ? ppc_decr_target_ps(tb_env) : now;
++
++            next = ppc_timer_ticks_deadline_ps(tb_env->decr_freq, origin,
++                                                ppc40x_timer->pit_reload);
++            ppc_decr_target_set(tb_env, next);
++        } else {
++            next = tb_to_ps_round_up(tb_env->decr_freq, tb_env->decr_next);
++        }
 +        ppc_timer_mod_ps(tb_env->decr_timer, next);
      }
  }
  
-@@ -1285,12 +1325,10 @@ static void cpu_4xx_wdt_cb (void *opaque)
+@@ -1285,12 +1405,10 @@ static void cpu_4xx_wdt_cb (void *opaque)
      PowerPCCPU *cpu = opaque;
      CPUPPCState *env = &cpu->env;
      ppc_tb_t *tb_env;
@@ -37323,12 +37444,13 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
      switch ((env->spr[SPR_40x_TCR] >> 30) & 0x3) {
      case 0:
          next = 1 << 17;
-@@ -1308,18 +1346,16 @@ static void cpu_4xx_wdt_cb (void *opaque)
+@@ -1308,18 +1426,17 @@ static void cpu_4xx_wdt_cb (void *opaque)
          /* Cannot occur, but makes gcc happy */
          return;
      }
 -    next = now + tb_to_ns_round_up(tb_env->decr_freq, next);
-+    next = now + tb_to_ps_round_up(tb_env->decr_freq, next);
++    next = ppc_timer_deadline_ps(
++        now, tb_to_ps_round_up(tb_env->decr_freq, next));
      trace_ppc4xx_wdt(env->spr[SPR_40x_TCR], env->spr[SPR_40x_TSR]);
      switch ((env->spr[SPR_40x_TSR] >> 30) & 0x3) {
      case 0x0:
@@ -37345,7 +37467,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
          env->spr[SPR_40x_TSR] |= 1 << 30;
          if ((env->spr[SPR_40x_TCR] >> 27) & 0x1) {
              ppc_set_irq(cpu, PPC_INTERRUPT_WDT, 1);
-@@ -1418,9 +1454,9 @@ clk_setup_cb ppc_40x_timers_init (CPUPPCState *env, uint32_t freq,
+@@ -1418,9 +1535,9 @@ clk_setup_cb ppc_40x_timers_init (CPUPPCState *env, uint32_t freq,
  
      /* We use decr timer for PIT */
      tb_env->decr_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, &cpu_4xx_pit_cb, cpu);
@@ -37358,7 +37480,7 @@ index b123b4cc1cce7852c7821cf3d3bced347ef998ab..68f465394be1b6e600f24f9574f5f3f6
      ppc40x_timer->decr_excp = decr_excp;
  
 diff --git a/hw/ppc/ppc_booke.c b/hw/ppc/ppc_booke.c
-index 6f0cad1c752c0e7e7432390fb490a535699a572e..7f70cb4b33cb87d68dd6efff16565aa71416ba3e 100644
+index 6f0cad1c752c0e7e7432390fb490a535699a572e..a8afbb73df9a199121772e7dc28d7768e9141f7f 100644
 --- a/hw/ppc/ppc_booke.c
 +++ b/hw/ppc/ppc_booke.c
 @@ -73,18 +73,6 @@ void booke_set_tlb(ppcemb_tlb_t *tlb, target_ulong va, hwaddr pa,
@@ -37380,7 +37502,7 @@ index 6f0cad1c752c0e7e7432390fb490a535699a572e..7f70cb4b33cb87d68dd6efff16565aa7
  static void booke_update_irq(PowerPCCPU *cpu)
  {
      CPUPPCState *env = &cpu->env;
-@@ -140,7 +128,6 @@ static uint8_t booke_get_wdt_target(CPUPPCState *env, ppc_tb_t *tb_env)
+@@ -140,15 +128,16 @@ static uint8_t booke_get_wdt_target(CPUPPCState *env, ppc_tb_t *tb_env)
  
  static void booke_update_fixed_timer(CPUPPCState         *env,
                                       uint8_t           target_bit,
@@ -37388,8 +37510,10 @@ index 6f0cad1c752c0e7e7432390fb490a535699a572e..7f70cb4b33cb87d68dd6efff16565aa7
                                       QEMUTimer         *timer,
                                       int               tsr_bit)
  {
-@@ -148,7 +135,8 @@ static void booke_update_fixed_timer(CPUPPCState         *env,
-     uint64_t delta_tick, ticks = 0;
+     ppc_tb_t *tb_env = env->tb_env;
+-    uint64_t delta_tick, ticks = 0;
++    uint64_t delta_tick;
++    unsigned __int128 ticks = 0;
      uint64_t tb;
      uint64_t period;
 -    uint64_t now;
@@ -37398,7 +37522,7 @@ index 6f0cad1c752c0e7e7432390fb490a535699a572e..7f70cb4b33cb87d68dd6efff16565aa7
  
      if (!(env->spr[SPR_BOOKE_TSR] & tsr_bit)) {
          /*
-@@ -158,8 +146,11 @@ static void booke_update_fixed_timer(CPUPPCState         *env,
+@@ -158,8 +147,11 @@ static void booke_update_fixed_timer(CPUPPCState         *env,
          return;
      }
  
@@ -37412,55 +37536,63 @@ index 6f0cad1c752c0e7e7432390fb490a535699a572e..7f70cb4b33cb87d68dd6efff16565aa7
      period = 1ULL << target_bit;
      delta_tick = period - (tb & (period - 1));
  
-@@ -175,28 +166,38 @@ static void booke_update_fixed_timer(CPUPPCState         *env,
-         ticks += delta_tick;
+@@ -168,35 +160,31 @@ static void booke_update_fixed_timer(CPUPPCState         *env,
+         ticks = period;
      }
+ 
+-    if (ticks + delta_tick < ticks) {
+-        /* Overflow, so assume the biggest number we can express. */
+-        ticks = UINT64_MAX;
+-    } else {
+-        ticks += delta_tick;
+-    }
++    ticks += delta_tick;
  
 -    *next = now + muldiv64(ticks, NANOSECONDS_PER_SECOND, tb_env->tb_freq);
 -    if ((*next < now) || (*next > INT64_MAX)) {
 -        /* Overflow, so assume the biggest number the qemu timer supports. */
 -        *next = INT64_MAX;
--    }
-+    deadline = now +
-+               (ticks * (__int128)PICOSECONDS_PER_SECOND +
-+                tb_env->tb_freq - 1) / tb_env->tb_freq;
- 
-     /* XXX: If expire time is now. We can't run the callback because we don't
-      * have access to it. So we just set the timer one nanosecond later.
-      */
- 
--    if (*next == now) {
--        (*next)++;
-+    if (deadline == now) {
-+        deadline += PICOSECONDS_PER_NANOSECOND;
-     } else {
-         /*
-          * There's no point to fake any granularity that's more fine grained
-          * than milliseconds. Anything beyond that just overloads the system.
-          */
--        *next = MAX(*next, now + SCALE_MS);
-+        deadline = MAX(deadline,
-+                       now + SCALE_MS * PICOSECONDS_PER_NANOSECOND);
++    if (qemu_timer_tcg_ps_enabled()) {
++        /* A bit-63 transition may be a full 2^64 ticks away. */
++        deadline = ppc_timer_ticks_deadline_ps(tb_env->tb_freq, now, ticks);
++        timer_mod_ps_wide(timer, deadline);
++        return;
      }
  
-     /* Fire the next timer */
--    timer_mod(timer, *next);
-+    if (qemu_timer_tcg_ps_enabled()) {
-+        timer_mod_ps_wide(timer, deadline);
-+    } else {
-+        int64_t deadline_ns;
-+        uint16_t phase_ps;
+-    /* XXX: If expire time is now. We can't run the callback because we don't
+-     * have access to it. So we just set the timer one nanosecond later.
+-     */
+-
+-    if (*next == now) {
+-        (*next)++;
+-    } else {
+-        /*
+-         * There's no point to fake any granularity that's more fine grained
+-         * than milliseconds. Anything beyond that just overloads the system.
+-         */
+-        *next = MAX(*next, now + SCALE_MS);
++    /* Ordinary clock mode retains its existing overload limit. */
++    uint64_t ordinary_ticks = MIN(ticks, UINT64_MAX);
++    int64_t deadline_ns;
++    uint16_t phase_ps;
 +
-+        if (!qemu_time_split_ps(deadline, &deadline_ns, &phase_ps)) {
-+            deadline_ns = INT64_MAX;
-+            phase_ps = 0;
-+        }
-+        g_assert(timer_mod_ns_phase(timer, deadline_ns, phase_ps));
-+    }
++    deadline = ppc_timer_deadline_ps(
++        now, (ordinary_ticks * (__int128)PICOSECONDS_PER_SECOND +
++              tb_env->tb_freq - 1) / tb_env->tb_freq);
++    deadline = MAX(deadline, ppc_timer_deadline_ps(
++                                now, SCALE_MS * PICOSECONDS_PER_NANOSECOND));
++    if (!qemu_time_split_ps(deadline, &deadline_ns, &phase_ps)) {
++        deadline_ns = INT64_MAX;
++        phase_ps = 0;
+     }
++    g_assert(timer_mod_ns_phase(timer, deadline_ns, phase_ps));
+ 
+-    /* Fire the next timer */
+-    timer_mod(timer, *next);
  }
  
  static void booke_decr_cb(void *opaque)
-@@ -222,18 +223,15 @@ static void booke_fit_cb(void *opaque)
+@@ -222,18 +210,15 @@ static void booke_fit_cb(void *opaque)
      PowerPCCPU *cpu = opaque;
      CPUPPCState *env = &cpu->env;
      ppc_tb_t *tb_env;
@@ -37480,7 +37612,7 @@ index 6f0cad1c752c0e7e7432390fb490a535699a572e..7f70cb4b33cb87d68dd6efff16565aa7
                               TSR_FIS);
  }
  
-@@ -242,10 +240,8 @@ static void booke_wdt_cb(void *opaque)
+@@ -242,10 +227,8 @@ static void booke_wdt_cb(void *opaque)
      PowerPCCPU *cpu = opaque;
      CPUPPCState *env = &cpu->env;
      ppc_tb_t *tb_env;
@@ -37491,7 +37623,7 @@ index 6f0cad1c752c0e7e7432390fb490a535699a572e..7f70cb4b33cb87d68dd6efff16565aa7
  
      /* TODO: There's lots of complicated stuff to do here */
  
-@@ -253,8 +249,7 @@ static void booke_wdt_cb(void *opaque)
+@@ -253,8 +236,7 @@ static void booke_wdt_cb(void *opaque)
  
      booke_update_fixed_timer(env,
                               booke_get_wdt_target(env, tb_env),
@@ -37501,7 +37633,7 @@ index 6f0cad1c752c0e7e7432390fb490a535699a572e..7f70cb4b33cb87d68dd6efff16565aa7
                               TSR_WIS);
  }
  
-@@ -262,7 +257,6 @@ void store_booke_tsr(CPUPPCState *env, target_ulong val)
+@@ -262,7 +244,6 @@ void store_booke_tsr(CPUPPCState *env, target_ulong val)
  {
      PowerPCCPU *cpu = env_archcpu(env);
      ppc_tb_t *tb_env = env->tb_env;
@@ -37509,7 +37641,7 @@ index 6f0cad1c752c0e7e7432390fb490a535699a572e..7f70cb4b33cb87d68dd6efff16565aa7
  
      env->spr[SPR_BOOKE_TSR] &= ~val;
      kvmppc_clear_tsr_bits(cpu, val);
-@@ -270,16 +264,14 @@ void store_booke_tsr(CPUPPCState *env, target_ulong val)
+@@ -270,16 +251,14 @@ void store_booke_tsr(CPUPPCState *env, target_ulong val)
      if (val & TSR_FIS) {
          booke_update_fixed_timer(env,
                                   booke_get_fit_target(env, tb_env),
@@ -37528,7 +37660,7 @@ index 6f0cad1c752c0e7e7432390fb490a535699a572e..7f70cb4b33cb87d68dd6efff16565aa7
                                   TSR_WIS);
      }
  
-@@ -290,7 +282,6 @@ void store_booke_tcr(CPUPPCState *env, target_ulong val)
+@@ -290,7 +269,6 @@ void store_booke_tcr(CPUPPCState *env, target_ulong val)
  {
      PowerPCCPU *cpu = env_archcpu(env);
      ppc_tb_t *tb_env = env->tb_env;
@@ -37536,7 +37668,7 @@ index 6f0cad1c752c0e7e7432390fb490a535699a572e..7f70cb4b33cb87d68dd6efff16565aa7
  
      env->spr[SPR_BOOKE_TCR] = val;
      kvmppc_set_tcr(cpu);
-@@ -299,14 +290,12 @@ void store_booke_tcr(CPUPPCState *env, target_ulong val)
+@@ -299,14 +277,12 @@ void store_booke_tcr(CPUPPCState *env, target_ulong val)
  
      booke_update_fixed_timer(env,
                               booke_get_fit_target(env, tb_env),
@@ -37553,7 +37685,7 @@ index 6f0cad1c752c0e7e7432390fb490a535699a572e..7f70cb4b33cb87d68dd6efff16565aa7
                               TSR_WIS);
  }
  
-@@ -346,11 +335,9 @@ static void cpu_state_change_handler(void *opaque, bool running, RunState state)
+@@ -346,11 +322,9 @@ static void cpu_state_change_handler(void *opaque, bool running, RunState state)
  void ppc_booke_timers_init(PowerPCCPU *cpu, uint32_t freq, uint32_t flags)
  {
      ppc_tb_t *tb_env;
@@ -37565,7 +37697,7 @@ index 6f0cad1c752c0e7e7432390fb490a535699a572e..7f70cb4b33cb87d68dd6efff16565aa7
  
      cpu->env.tb_env = tb_env;
      if (flags & PPC_TIMER_PPE) {
-@@ -362,12 +349,11 @@ void ppc_booke_timers_init(PowerPCCPU *cpu, uint32_t freq, uint32_t flags)
+@@ -362,12 +336,11 @@ void ppc_booke_timers_init(PowerPCCPU *cpu, uint32_t freq, uint32_t flags)
  
      tb_env->tb_freq    = freq;
      tb_env->decr_freq  = freq;
@@ -54666,24 +54798,40 @@ index d5d76a4de166cf214f00e9de2d5103bc814bd7b7..69c7aaee995c0cc7c65e5415a6df1981
 +
  #endif /* PPC_PNV_SBE_H */
 diff --git a/include/hw/ppc/ppc.h b/include/hw/ppc/ppc.h
-index cb51d704c6d3b26f42d1405fb4d76d1b18b65b2b..0a69173a2da25f3add7acc326f11b52a5f17179c 100644
+index cb51d704c6d3b26f42d1405fb4d76d1b18b65b2b..b19572ceafae68448689f80e9991cc763fd0066a 100644
 --- a/include/hw/ppc/ppc.h
 +++ b/include/hw/ppc/ppc.h
-@@ -34,6 +34,9 @@ struct ppc_tb_t {
+@@ -29,11 +29,22 @@ struct ppc_tb_t {
+     uint32_t tb_freq;      /* TB frequency                    */
+     /* Decrementer management */
+     uint64_t decr_next;    /* Tick for next decr interrupt    */
++    int64_t decr_target_hi; /* Retained PIT target, even when disarmed. */
++    uint64_t decr_target_lo;
+     uint32_t decr_freq;    /* decrementer frequency           */
+     QEMUTimer *decr_timer;
      /* Hypervisor decrementer management */
      uint64_t hdecr_next;    /* Tick for next hdecr interrupt  */
      QEMUTimer *hdecr_timer;
 +    QEMUTimer *fit_timer;
 +    QEMUTimer *wdt_timer;
 +    bool timer_vmstate_loaded;
++    uint8_t timer_state_mode;
++    uint8_t timer_state_present;
++    uint8_t timer_state_active;
++    int64_t timer_deadline_hi[4];
++    uint64_t timer_deadline_lo[4];
++    int64_t timer_deadline_ns[4];
      int64_t purr_offset;
      void *opaque;
      uint32_t flags;
-@@ -55,6 +58,7 @@ struct ppc_tb_t {
+@@ -55,6 +66,10 @@ struct ppc_tb_t {
  #define PPC_TIMER_PPE                (1 << 5) /* Enable PPE support */
  
  uint64_t cpu_ppc_get_tb(ppc_tb_t *tb_env, uint64_t vmclk, int64_t tb_offset);
 +uint64_t ppc_ps_to_tb(uint32_t freq, __int128 clock);
++__int128 ppc_timer_deadline_ps(__int128 now, __int128 interval);
++__int128 ppc_timer_ticks_deadline_ps(uint32_t frequency, __int128 origin,
++                                   unsigned __int128 ticks);
  void cpu_ppc_tb_init(CPUPPCState *env, uint32_t freq);
  void cpu_ppc_tb_reset(CPUPPCState *env);
  void cpu_ppc_tb_free(CPUPPCState *env);
@@ -129516,7 +129664,7 @@ index cbd5964b1acdae315d3766f1e065bbc3524b635f..89369da334a14edb34b64feed0e856e3
      /* Those resources are used only during code translation */
      /* opcode handlers */
 diff --git a/target/ppc/machine.c b/target/ppc/machine.c
-index 569536bd02d84ce09d5ff6904234627a054798b4..2cc7deabad410bdfa808c3d13ad56180a0059b90 100644
+index 569536bd02d84ce09d5ff6904234627a054798b4..0cc2e7a3f615f1fffef90961a4cbf1e77c2b2f81 100644
 --- a/target/ppc/machine.c
 +++ b/target/ppc/machine.c
 @@ -1,5 +1,9 @@
@@ -129586,54 +129734,168 @@ index 569536bd02d84ce09d5ff6904234627a054798b4..2cc7deabad410bdfa808c3d13ad56180
      env->spr[SPR_LR] = env->lr;
      env->spr[SPR_CTR] = env->ctr;
      env->spr[SPR_XER] = cpu_read_xer(env);
-@@ -159,6 +199,142 @@ static int cpu_pre_save(void *opaque)
+@@ -159,6 +199,247 @@ static int cpu_pre_save(void *opaque)
      return 0;
  }
  
++enum {
++    PPC_TIMER_DECR,
++    PPC_TIMER_HDECR,
++    PPC_TIMER_FIT,
++    PPC_TIMER_WDT,
++    PPC_TIMER_COUNT,
++};
++
++static void ppc_timer_array(ppc_tb_t *state, QEMUTimer **timers)
++{
++    timers[PPC_TIMER_DECR] = state->decr_timer;
++    timers[PPC_TIMER_HDECR] = state->hdecr_timer;
++    timers[PPC_TIMER_FIT] = state->fit_timer;
++    timers[PPC_TIMER_WDT] = state->wdt_timer;
++}
++
 +static bool ppc_timer_vmstate_needed(void *opaque)
 +{
 +    PowerPCCPU *cpu = opaque;
-+    ppc_tb_t *tb_env = cpu->env.tb_env;
++    ppc_tb_t *state = cpu->env.tb_env;
 +
-+    return tb_env &&
-+           (tb_env->hdecr_timer || tb_env->fit_timer || tb_env->wdt_timer);
++    return state && (state->decr_timer || state->hdecr_timer ||
++                     state->fit_timer || state->wdt_timer);
 +}
 +
-+static bool ppc_hdecr_timer_exists(void *opaque, int version_id)
++static int ppc_timer_state_pre_save(void *opaque)
 +{
-+    ppc_tb_t *tb_env = opaque;
++    ppc_tb_t *state = opaque;
++    QEMUTimer *timers[PPC_TIMER_COUNT];
 +
-+    return tb_env->hdecr_timer != NULL;
++    ppc_timer_array(state, timers);
++    state->timer_state_mode = qemu_timer_tcg_ps_enabled();
++    if (!state->timer_state_mode) {
++        state->decr_target_hi = 0;
++        state->decr_target_lo = 0;
++    }
++    state->timer_state_present = 0;
++    state->timer_state_active = 0;
++    memset(state->timer_deadline_hi, 0, sizeof(state->timer_deadline_hi));
++    memset(state->timer_deadline_lo, 0, sizeof(state->timer_deadline_lo));
++    for (unsigned index = 0; index < PPC_TIMER_COUNT; index++) {
++        QEMUTimer *timer = timers[index];
++        __int128 deadline;
++
++        if (!timer) {
++            continue;
++        }
++        state->timer_state_present |= 1U << index;
++        if (!timer_pending(timer)) {
++            continue;
++        }
++        if (state->timer_state_mode) {
++            deadline = timer_expire_time_ps_wide(timer);
++        } else {
++            uint64_t nanoseconds = timer_expire_time_ns(timer);
++
++            if (nanoseconds > INT64_MAX) {
++                return -EINVAL;
++            }
++            deadline = (__int128)nanoseconds * PICOSECONDS_PER_NANOSECOND;
++        }
++        state->timer_state_active |= 1U << index;
++        state->timer_deadline_hi[index] = deadline >> 64;
++        state->timer_deadline_lo[index] = deadline;
++    }
++    return 0;
 +}
 +
-+static bool ppc_fit_timer_exists(void *opaque, int version_id)
++static int ppc_timer_state_post_load(void *opaque, int version_id)
 +{
-+    ppc_tb_t *tb_env = opaque;
++    ppc_tb_t *state = opaque;
++    QEMUTimer *timers[PPC_TIMER_COUNT];
++    unsigned present = 0;
 +
-+    return tb_env->fit_timer != NULL;
++    if (state->timer_vmstate_loaded) {
++        return -EINVAL;
++    }
++    ppc_timer_array(state, timers);
++    for (unsigned index = 0; index < PPC_TIMER_COUNT; index++) {
++        present |= !!timers[index] << index;
++    }
++    if (state->timer_state_mode > 1 ||
++        (!state->timer_state_mode &&
++         (state->decr_target_hi || state->decr_target_lo)) ||
++        (qemu_timer_tcg_ps_enabled() && state->timer_state_mode != 1) ||
++        state->timer_state_present != present ||
++        (state->timer_state_active & ~present)) {
++        return -EINVAL;
++    }
++    for (unsigned index = 0; index < PPC_TIMER_COUNT; index++) {
++        __int128 deadline = (__int128)state->timer_deadline_hi[index] *
++                            ((__int128)1 << 64) +
++                            state->timer_deadline_lo[index];
++        bool active = state->timer_state_active & (1U << index);
++
++        if (!active && deadline != 0) {
++            return -EINVAL;
++        }
++        if (!state->timer_state_mode &&
++            deadline % PICOSECONDS_PER_NANOSECOND != 0) {
++            return -EINVAL;
++        }
++        if (!qemu_timer_tcg_ps_enabled() && active) {
++            int64_t nanoseconds;
++            uint16_t phase;
++
++            if (!qemu_time_split_ps(deadline, &nanoseconds, &phase) ||
++                (phase && nanoseconds == INT64_MAX)) {
++                return -EINVAL;
++            }
++            state->timer_deadline_ns[index] = nanoseconds + !!phase;
++        }
++    }
++    return 0;
 +}
 +
-+static bool ppc_wdt_timer_exists(void *opaque, int version_id)
++/* Publish timer effects only after every architectural load check succeeds. */
++static void ppc_timer_state_apply(ppc_tb_t *state)
 +{
-+    ppc_tb_t *tb_env = opaque;
++    QEMUTimer *timers[PPC_TIMER_COUNT];
 +
-+    return tb_env->wdt_timer != NULL;
++    ppc_timer_array(state, timers);
++    for (unsigned index = 0; index < PPC_TIMER_COUNT; index++) {
++        QEMUTimer *timer = timers[index];
++
++        if (!timer) {
++            continue;
++        }
++        if (!(state->timer_state_active & (1U << index))) {
++            timer_del(timer);
++        } else if (qemu_timer_tcg_ps_enabled()) {
++            __int128 deadline = (__int128)state->timer_deadline_hi[index] *
++                                ((__int128)1 << 64) +
++                                state->timer_deadline_lo[index];
++
++            timer_mod_ps_wide(timer, deadline);
++        } else {
++            timer_mod_ns(timer, state->timer_deadline_ns[index]);
++        }
++    }
 +}
 +
 +static const VMStateDescription vmstate_ppc_timer_state = {
-+    .name = "cpu/ppc-timers/state",
-+    .version_id = 1,
-+    .minimum_version_id = 1,
++    .name = "cpu/ppc-timers/state-wide",
++    .version_id = 2,
++    .minimum_version_id = 2,
++    .pre_save = ppc_timer_state_pre_save,
++    .post_load = ppc_timer_state_post_load,
 +    .fields = (const VMStateField[]) {
-+        VMSTATE_UINT64_TEST(hdecr_next, ppc_tb_t,
-+                            ppc_hdecr_timer_exists),
-+        VMSTATE_POINTER_TEST(hdecr_timer, ppc_tb_t,
-+                             ppc_hdecr_timer_exists,
-+                             vmstate_info_timer_ns_phase, QEMUTimer *),
-+        VMSTATE_POINTER_TEST(fit_timer, ppc_tb_t, ppc_fit_timer_exists,
-+                             vmstate_info_timer_ns_phase, QEMUTimer *),
-+        VMSTATE_POINTER_TEST(wdt_timer, ppc_tb_t, ppc_wdt_timer_exists,
-+                             vmstate_info_timer_ns_phase, QEMUTimer *),
++        VMSTATE_UINT64(hdecr_next, ppc_tb_t),
++        VMSTATE_UINT8(timer_state_mode, ppc_tb_t),
++        VMSTATE_UINT8(timer_state_present, ppc_tb_t),
++        VMSTATE_UINT8(timer_state_active, ppc_tb_t),
++        VMSTATE_INT64_ARRAY(timer_deadline_hi, ppc_tb_t, PPC_TIMER_COUNT),
++        VMSTATE_UINT64_ARRAY(timer_deadline_lo, ppc_tb_t, PPC_TIMER_COUNT),
++        VMSTATE_UINT64(decr_next, ppc_tb_t),
++        VMSTATE_INT64(decr_target_hi, ppc_tb_t),
++        VMSTATE_UINT64(decr_target_lo, ppc_tb_t),
 +        VMSTATE_END_OF_LIST()
 +    },
 +};
@@ -129647,9 +129909,9 @@ index 569536bd02d84ce09d5ff6904234627a054798b4..2cc7deabad410bdfa808c3d13ad56180
 +}
 +
 +static const VMStateDescription vmstate_ppc_timers = {
-+    .name = "cpu/ppc-timers",
-+    .version_id = 1,
-+    .minimum_version_id = 1,
++    .name = "cpu/ppc-timers-wide",
++    .version_id = 2,
++    .minimum_version_id = 2,
 +    .needed = ppc_timer_vmstate_needed,
 +    .post_load = ppc_timer_vmstate_post_load,
 +    .fields = (const VMStateField[]) {
@@ -129713,15 +129975,6 @@ index 569536bd02d84ce09d5ff6904234627a054798b4..2cc7deabad410bdfa808c3d13ad56180
 +    }
 +
 +    tb_env->timer_vmstate_loaded = false;
-+    if (tb_env->hdecr_timer) {
-+        timer_del(tb_env->hdecr_timer);
-+    }
-+    if (tb_env->fit_timer) {
-+        timer_del(tb_env->fit_timer);
-+    }
-+    if (tb_env->wdt_timer) {
-+        timer_del(tb_env->wdt_timer);
-+    }
 +
 +    return 0;
 +}
@@ -129729,7 +129982,7 @@ index 569536bd02d84ce09d5ff6904234627a054798b4..2cc7deabad410bdfa808c3d13ad56180
  /*
   * Determine if a given PVR is a "close enough" match to the CPU
   * object.  For TCG and KVM PR it would probably be sufficient to
-@@ -186,6 +362,17 @@ static int cpu_post_load(void *opaque, int version_id)
+@@ -186,6 +467,17 @@ static int cpu_post_load(void *opaque, int version_id)
      CPUPPCState *env = &cpu->env;
      int i;
  
@@ -129739,7 +129992,7 @@ index 569536bd02d84ce09d5ff6904234627a054798b4..2cc7deabad410bdfa808c3d13ad56180
 +        return -EINVAL;
 +    }
 +
-+    if (icount_crucible_sim_mode() && ppc_timer_vmstate_needed(cpu) &&
++    if (qemu_timer_tcg_ps_enabled() && ppc_timer_vmstate_needed(cpu) &&
 +        !env->tb_env->timer_vmstate_loaded) {
 +        return -EINVAL;
 +    }
@@ -129747,9 +130000,14 @@ index 569536bd02d84ce09d5ff6904234627a054798b4..2cc7deabad410bdfa808c3d13ad56180
      /*
       * If we're operating in compat mode, we should be ok as long as
       * the destination supports the same compatibility mode.
-@@ -313,6 +500,13 @@ static int cpu_post_load(void *opaque, int version_id)
+@@ -311,10 +603,22 @@ static int cpu_post_load(void *opaque, int version_id)
+          * interrupt. This works for level-triggered decrementer. Edge
+          * triggered types (including HDEC) would need to carry more state.
           */
-         cpu_ppc_store_decr(env, env->spr[SPR_DECR]);
+-        cpu_ppc_store_decr(env, env->spr[SPR_DECR]);
++        if (!env->tb_env || !env->tb_env->timer_vmstate_loaded) {
++            cpu_ppc_store_decr(env, env->spr[SPR_DECR]);
++        }
          pmu_mmcr01a_updated(env);
 +#if defined(TARGET_PPC64)
 +        if (qemu_timer_tcg_ps_enabled() &&
@@ -129760,8 +130018,13 @@ index 569536bd02d84ce09d5ff6904234627a054798b4..2cc7deabad410bdfa808c3d13ad56180
 +#endif
      }
  
++    if (env->tb_env && env->tb_env->timer_vmstate_loaded) {
++        ppc_timer_state_apply(env->tb_env);
++    }
      return 0;
-@@ -736,6 +930,7 @@ const VMStateDescription vmstate_ppc_cpu = {
+ }
+ 
+@@ -736,6 +1040,7 @@ const VMStateDescription vmstate_ppc_cpu = {
      .version_id = 5,
      .minimum_version_id = 5,
      .pre_save = cpu_pre_save,
@@ -129769,7 +130032,7 @@ index 569536bd02d84ce09d5ff6904234627a054798b4..2cc7deabad410bdfa808c3d13ad56180
      .post_load = cpu_post_load,
      .fields = (const VMStateField[]) {
          VMSTATE_UNUSED(sizeof(target_ulong)), /* was _EQUAL(env.spr[SPR_PVR]) */
-@@ -778,6 +973,8 @@ const VMStateDescription vmstate_ppc_cpu = {
+@@ -778,6 +1083,8 @@ const VMStateDescription vmstate_ppc_cpu = {
          &vmstate_compat,
          &vmstate_reservation,
          &vmstate_rtas_stopped,
@@ -142709,7 +142972,7 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
      return g_test_run();
  }
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..e35dc6c470a75765169b3f83498e204389576bb3 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..4c5519c207a474e4b3be780efffbed53a70a74b0 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -147,6 +147,37 @@ if have_system
@@ -142750,7 +143013,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..e35dc6c470a75765169b3f83498e2043
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +238,460 @@ foreach test_name, extra: tests
+@@ -207,3 +238,491 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -143204,6 +143467,37 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..e35dc6c470a75765169b3f83498e2043
 +  test(
 +    'test-crucible-loongarch-timer-wide-clock',
 +    loongarch_timer_wide_clock_test,
++    env: test_env,
++    args: ['--tap', '-k'],
++    protocol: 'tap',
++    timeout: 30,
++    suite: ['unit'],
++  )
++endif
++
++# Use the actual configured PowerPC CPU layout for the literal timer engine.
++ppc_clock_test_target = ''
++foreach candidate : ['ppc-softmmu', 'ppc64-softmmu']
++  if ppc_clock_test_target == '' and config_target_h.has_key(candidate)
++    ppc_clock_test_target = candidate
++  endif
++endforeach
++if have_system and ppc_clock_test_target != ''
++  ppc_wide_clock_test = executable(
++    'test-crucible-ppc-wide-clock',
++    'test-crucible-ppc-wide-clock.c',
++    config_target_h[ppc_clock_test_target],
++    genh,
++    dependencies: [qemuutil, qom, migration, io],
++    include_directories: include_directories('../../target/ppc'),
++    c_args: ['-DCOMPILING_PER_TARGET',
++             '-DCONFIG_TARGET="' + ppc_clock_test_target + '-config-target.h"',
++             '-ffunction-sections', '-fdata-sections'],
++    link_args: ['-Wl,--gc-sections'],
++  )
++  test(
++    'test-crucible-ppc-wide-clock',
++    ppc_wide_clock_test,
 +    env: test_env,
 +    args: ['--tap', '-k'],
 +    protocol: 'tap',
@@ -157694,6 +157988,805 @@ index 0000000000000000000000000000000000000000..1ba2a64a8846c9d33c82b340038f0e8f
 +    g_test_init(&argc, &argv, NULL);
 +    g_test_add_func("/crucible/parallel/mutable-state",
 +                    test_parallel_mutable_state);
++    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-ppc-wide-clock.c b/tests/unit/test-crucible-ppc-wide-clock.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..8e17de0910d8b55fb8e68357ef4fe77692c1eabd
+--- /dev/null
++++ b/tests/unit/test-crucible-ppc-wide-clock.c
+@@ -0,0 +1,793 @@
++/*
++ * Actual PowerPC timebase conversion over the full picosecond domain.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "hw/ppc/ppc.h"
++#include "qapi/error.h"
++#include "qemu/main-loop.h"
++#include "system/cpu-timers.h"
++#include "exec/icount.h"
++#include "../../hw/ppc/ppc.c"
++#include "../../hw/ppc/ppc_booke.c"
++#include "io/channel-buffer.h"
++#include "migration/savevm.h"
++#include "../../migration/qemu-file.h"
++#include "../../target/ppc/machine.c"
++
++typedef struct TickVector {
++    int64_t high;
++    uint64_t low;
++    uint32_t frequency;
++    uint64_t ticks;
++} TickVector;
++
++static const TickVector vectors[] = {
++    { 0, UINT64_C(0),
++      UINT32_C(0), UINT64_C(0) },
++    { 0, UINT64_C(0),
++      UINT32_C(1), UINT64_C(0) },
++    { 0, UINT64_C(0),
++      UINT32_C(32768), UINT64_C(0) },
++    { 0, UINT64_C(0),
++      UINT32_C(512000000), UINT64_C(0) },
++    { 0, UINT64_C(0),
++      UINT32_C(4294967295), UINT64_C(0) },
++    { 0, UINT64_C(1),
++      UINT32_C(0), UINT64_C(0) },
++    { 0, UINT64_C(1),
++      UINT32_C(1), UINT64_C(0) },
++    { 0, UINT64_C(1),
++      UINT32_C(32768), UINT64_C(0) },
++    { 0, UINT64_C(1),
++      UINT32_C(512000000), UINT64_C(0) },
++    { 0, UINT64_C(1),
++      UINT32_C(4294967295), UINT64_C(0) },
++    { -1, UINT64_C(18446744073709551615),
++      UINT32_C(0), UINT64_C(0) },
++    { -1, UINT64_C(18446744073709551615),
++      UINT32_C(1), UINT64_C(18446744073709551615) },
++    { -1, UINT64_C(18446744073709551615),
++      UINT32_C(32768), UINT64_C(18446744073709551615) },
++    { -1, UINT64_C(18446744073709551615),
++      UINT32_C(512000000), UINT64_C(18446744073709551615) },
++    { -1, UINT64_C(18446744073709551615),
++      UINT32_C(4294967295), UINT64_C(18446744073709551615) },
++    { 0, UINT64_C(357),
++      UINT32_C(0), UINT64_C(0) },
++    { 0, UINT64_C(357),
++      UINT32_C(1), UINT64_C(0) },
++    { 0, UINT64_C(357),
++      UINT32_C(32768), UINT64_C(0) },
++    { 0, UINT64_C(357),
++      UINT32_C(512000000), UINT64_C(0) },
++    { 0, UINT64_C(357),
++      UINT32_C(4294967295), UINT64_C(1) },
++    { -1, UINT64_C(18446744073709551259),
++      UINT32_C(0), UINT64_C(0) },
++    { -1, UINT64_C(18446744073709551259),
++      UINT32_C(1), UINT64_C(18446744073709551615) },
++    { -1, UINT64_C(18446744073709551259),
++      UINT32_C(32768), UINT64_C(18446744073709551615) },
++    { -1, UINT64_C(18446744073709551259),
++      UINT32_C(512000000), UINT64_C(18446744073709551615) },
++    { -1, UINT64_C(18446744073709551259),
++      UINT32_C(4294967295), UINT64_C(18446744073709551614) },
++    { 0, UINT64_C(999999999999),
++      UINT32_C(0), UINT64_C(0) },
++    { 0, UINT64_C(999999999999),
++      UINT32_C(1), UINT64_C(0) },
++    { 0, UINT64_C(999999999999),
++      UINT32_C(32768), UINT64_C(32767) },
++    { 0, UINT64_C(999999999999),
++      UINT32_C(512000000), UINT64_C(511999999) },
++    { 0, UINT64_C(999999999999),
++      UINT32_C(4294967295), UINT64_C(4294967294) },
++    { 0, UINT64_C(1000000000000),
++      UINT32_C(0), UINT64_C(0) },
++    { 0, UINT64_C(1000000000000),
++      UINT32_C(1), UINT64_C(1) },
++    { 0, UINT64_C(1000000000000),
++      UINT32_C(32768), UINT64_C(32768) },
++    { 0, UINT64_C(1000000000000),
++      UINT32_C(512000000), UINT64_C(512000000) },
++    { 0, UINT64_C(1000000000000),
++      UINT32_C(4294967295), UINT64_C(4294967295) },
++    { -1, UINT64_C(18446743073709551615),
++      UINT32_C(0), UINT64_C(0) },
++    { -1, UINT64_C(18446743073709551615),
++      UINT32_C(1), UINT64_C(18446744073709551614) },
++    { -1, UINT64_C(18446743073709551615),
++      UINT32_C(32768), UINT64_C(18446744073709518847) },
++    { -1, UINT64_C(18446743073709551615),
++      UINT32_C(512000000), UINT64_C(18446744073197551615) },
++    { -1, UINT64_C(18446743073709551615),
++      UINT32_C(4294967295), UINT64_C(18446744069414584320) },
++    { 72057594037927936, UINT64_C(357),
++      UINT32_C(0), UINT64_C(0) },
++    { 72057594037927936, UINT64_C(357),
++      UINT32_C(1), UINT64_C(10958065626712109695) },
++    { 72057594037927936, UINT64_C(357),
++      UINT32_C(32768), UINT64_C(8021061345988282295) },
++    { 72057594037927936, UINT64_C(357),
++      UINT32_C(512000000), UINT64_C(1904294284217184432) },
++    { 72057594037927936, UINT64_C(357),
++      UINT32_C(4294967295), UINT64_C(8756426894659196383) },
++    { -72057594037927937, UINT64_C(18446744073709551259),
++      UINT32_C(0), UINT64_C(0) },
++    { -72057594037927937, UINT64_C(18446744073709551259),
++      UINT32_C(1), UINT64_C(7488678446997441920) },
++    { -72057594037927937, UINT64_C(18446744073709551259),
++      UINT32_C(32768), UINT64_C(10425682727721269320) },
++    { -72057594037927937, UINT64_C(18446744073709551259),
++      UINT32_C(512000000), UINT64_C(16542449789492367183) },
++    { -72057594037927937, UINT64_C(18446744073709551259),
++      UINT32_C(4294967295), UINT64_C(9690317179050355232) },
++    { 9223372036854775807, UINT64_C(18446744073709551615),
++      UINT32_C(0), UINT64_C(0) },
++    { 9223372036854775807, UINT64_C(18446744073709551615),
++      UINT32_C(1), UINT64_C(679850617224118151) },
++    { 9223372036854775807, UINT64_C(18446744073709551615),
++      UINT32_C(32768), UINT64_C(12124928232474794914) },
++    { 9223372036854775807, UINT64_C(18446744073709551615),
++      UINT32_C(512000000), UINT64_C(3941995421575436342) },
++    { 9223372036854775807, UINT64_C(18446744073709551615),
++      UINT32_C(4294967295), UINT64_C(14017998093804039870) },
++    { INT64_MIN, UINT64_C(0),
++      UINT32_C(0), UINT64_C(0) },
++    { INT64_MIN, UINT64_C(0),
++      UINT32_C(1), UINT64_C(17766893456485433464) },
++    { INT64_MIN, UINT64_C(0),
++      UINT32_C(32768), UINT64_C(6321815841234756701) },
++    { INT64_MIN, UINT64_C(0),
++      UINT32_C(512000000), UINT64_C(14504748652134115273) },
++    { INT64_MIN, UINT64_C(0),
++      UINT32_C(4294967295), UINT64_C(4428745979905511745) },
++};
++
++static void test_tick_conversion(gconstpointer opaque)
++{
++    const TickVector *vector = opaque;
++    __int128 time = (__int128)vector->high * ((__int128)1 << 64) +
++                    vector->low;
++
++    g_assert_cmpuint(ppc_ps_to_tb(vector->frequency, time), ==, vector->ticks);
++}
++
++static __int128 observed_ps;
++static unsigned nanosecond_reads;
++static bool clock_initialized;
++
++/* Only the clock origin is controlled; timer creation and arming are real. */
++int64_t cpu_get_clock(void)
++{
++    __int128 nanoseconds = observed_ps / PICOSECONDS_PER_NANOSECOND;
++
++    nanosecond_reads++;
++    g_assert_true(nanoseconds >= INT64_MIN && nanoseconds <= INT64_MAX);
++    return nanoseconds;
++}
++
++bool icount_crucible_sim_mode(void)
++{
++    return false;
++}
++
++static __int128 observed_clock_ps(void)
++{
++    return observed_ps;
++}
++
++static void initialize_clock(bool exact)
++{
++    Error *error = NULL;
++
++    if (clock_initialized) {
++        return;
++    }
++    module_call_init(MODULE_INIT_QOM);
++    qemu_init_main_loop(&error);
++    g_assert_null(error);
++    if (exact) {
++        qemu_timer_enable_tcg_ps_clock(NULL, observed_clock_ps);
++    }
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++    clock_initialized = true;
++    nanosecond_reads = 0;
++}
++
++static void check_booke_deadline(__int128 now, __int128 expected)
++{
++    CPUPPCState environment = { 0 };
++    ppc_tb_t timebase = { .tb_freq = 512000000, .tb_offset = 17 };
++    QEMUTimer *timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++
++    observed_ps = now;
++    environment.tb_env = &timebase;
++    environment.spr[SPR_BOOKE_TSR] = TSR_FIS;
++    if (qemu_timer_tcg_ps_enabled()) {
++        timer_mod_ps_wide(timer, 23);
++    } else {
++        timer_mod_ns(timer, 23);
++    }
++    booke_update_fixed_timer(&environment, 16, timer, TSR_FIS);
++
++    g_assert_true(timer_pending(timer));
++    if (qemu_timer_tcg_ps_enabled()) {
++        g_assert_true(timer_expire_time_ps_wide(timer) == expected);
++    } else {
++        int64_t nanoseconds;
++        uint16_t phase;
++
++        g_assert_cmpint(timer_expire_time_ns_phase(timer, &nanoseconds,
++                                                  &phase), ==, 1);
++        g_assert_true((__int128)nanoseconds * PICOSECONDS_PER_NANOSECOND +
++                      phase == expected);
++    }
++    timer_free(timer);
++}
++
++static void test_booke_wide(void)
++{
++    __int128 now = ((__int128)1 << 120) + 357;
++
++    initialize_clock(true);
++    check_booke_deadline(now, now + UINT64_C(71621864));
++    g_assert_cmpuint(nanosecond_reads, ==, 0);
++}
++
++static void test_booke_overflow(void)
++{
++    if (g_test_subprocess()) {
++        CPUPPCState environment = { 0 };
++        ppc_tb_t timebase = { .tb_freq = 512000000 };
++        QEMUTimer *timer;
++
++        initialize_clock(true);
++        observed_ps = (__int128)(((unsigned __int128)1 << 127) - 1) - 357;
++        environment.tb_env = &timebase;
++        environment.spr[SPR_BOOKE_TSR] = TSR_FIS;
++        timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++        timer_mod_ps_wide(timer, 23);
++        booke_update_fixed_timer(&environment, 16, timer, TSR_FIS);
++        timer_free(timer);
++        return;
++    }
++    g_test_trap_subprocess(NULL, 0, 0);
++    g_test_trap_assert_failed();
++    g_test_trap_assert_stderr("*deadline exceeds the picosecond clock range*");
++}
++
++static void test_booke_ordinary(void)
++{
++    if (g_test_subprocess()) {
++        initialize_clock(false);
++        check_booke_deadline(1234000, 1001234000);
++        g_assert_cmpuint(nanosecond_reads, >, 0);
++        return;
++    }
++    g_test_trap_subprocess(NULL, 0, 0);
++    g_test_trap_assert_passed();
++}
++
++static GByteArray *save_timer_state(ppc_tb_t *state)
++{
++    QIOChannelBuffer *channel = qio_channel_buffer_new(4096);
++    QEMUFile *file = qemu_file_new_output(QIO_CHANNEL(channel));
++    PowerPCCPU cpu = { .env.tb_env = state };
++    GByteArray *bytes = g_byte_array_new();
++    Error *error = NULL;
++
++    g_assert_cmpint(vmstate_save_state(file, &vmstate_ppc_timers, &cpu,
++                                      NULL, &error), ==, 0);
++    g_assert_null(error);
++    qemu_put_byte(file, QEMU_VM_EOF);
++    g_assert_cmpint(qemu_fflush(file), ==, 0);
++    g_byte_array_append(bytes, channel->data, channel->usage);
++    g_assert_cmpint(qemu_fclose(file), ==, 0);
++    object_unref(OBJECT(channel));
++    return bytes;
++}
++
++static int load_timer_state(ppc_tb_t *state, GByteArray *bytes, int version)
++{
++    QIOChannelBuffer *channel = qio_channel_buffer_new(bytes->len);
++    QEMUFile *file;
++    PowerPCCPU cpu = { .env.tb_env = state };
++    int result;
++    Error *error = NULL;
++
++    memcpy(channel->data, bytes->data, bytes->len);
++    channel->usage = bytes->len;
++    file = qemu_file_new_input(QIO_CHANNEL(channel));
++    result = vmstate_load_state(file, &vmstate_ppc_timers, &cpu, version,
++                                &error);
++    if (result < 0) {
++        g_test_message("load error: %s; mode=%u present=%u active=%u loaded=%u",
++                       error ? error_get_pretty(error) : "unspecified",
++                       state->timer_state_mode, state->timer_state_present,
++                       state->timer_state_active, state->timer_vmstate_loaded);
++    }
++    error_free(error);
++    qemu_fclose(file);
++    object_unref(OBJECT(channel));
++    return result;
++}
++
++static void diagnostic_decr_raise(void *opaque)
++{
++    g_assert_not_reached();
++}
++
++static void diagnostic_decr_lower(PowerPCCPU *cpu)
++{
++    g_assert_not_reached();
++}
++
++static void test_decrementer_wide(void)
++{
++    PowerPCCPU cpu = { 0 };
++    ppc_tb_t timebase = { .decr_freq = 512000000 };
++    QEMUTimer *timer;
++    __int128 now = ((__int128)1 << 120) + 357;
++    /*
++     * Independently computed ceil((floor(now * 512MHz / 1e12) + 7)
++     *                             * 1e12 / 512MHz) - now.
++     */
++    __int128 expected = now + 12489;
++
++    initialize_clock(true);
++    timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    cpu.env.tb_env = &timebase;
++    observed_ps = now;
++    __cpu_ppc_store_decr(&cpu, now, &timebase.decr_next, timer,
++                         diagnostic_decr_raise,
++                         diagnostic_decr_lower, 0, 0, 7, 32);
++
++    g_assert_true(timer_pending(timer));
++    g_assert_true(timer_expire_time_ps_wide(timer) == expected);
++    g_assert_cmpuint(timebase.decr_next, ==,
++                     ppc_ps_to_tb(timebase.decr_freq, now) + 7);
++    g_assert_true(ppc_decr_target_ps(&timebase) == expected);
++    timer_free(timer);
++}
++
++static void test_pit_wide_reload(void)
++{
++    CPUPPCState environment = { 0 };
++    ppc40x_timer_t pit = { .pit_reload = 7 };
++    ppc_tb_t timebase = { .decr_freq = 512000000, .opaque = &pit };
++    __int128 origin = ((__int128)1 << 120) + 357;
++
++    initialize_clock(true);
++    timebase.decr_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    environment.tb_env = &timebase;
++    environment.spr[SPR_40x_TCR] = (1U << 26) | (1U << 22);
++    observed_ps = origin;
++    start_stop_pit(&environment, &timebase, 0);
++
++    g_assert_true(timer_expire_time_ps_wide(timebase.decr_timer) ==
++                  origin + 12489);
++    /* Dispatch deletes the actual timer before calling the device callback. */
++    timer_del(timebase.decr_timer);
++    observed_ps = origin + 20000;
++    start_stop_pit(&environment, &timebase, 1);
++    g_assert_true(timer_expire_time_ps_wide(timebase.decr_timer) ==
++                  origin + 26161);
++
++    timer_del(timebase.decr_timer);
++    observed_ps = origin + 40000;
++    start_stop_pit(&environment, &timebase, 1);
++    g_assert_true(timer_expire_time_ps_wide(timebase.decr_timer) ==
++                  origin + 39833);
++    timer_free(timebase.decr_timer);
++}
++
++static void test_decrementer_negative_phase(void)
++{
++    PowerPCCPU cpu = { 0 };
++    ppc_tb_t timebase = { .decr_freq = 512000000 };
++    QEMUTimer *timer;
++
++    initialize_clock(true);
++    timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    cpu.env.tb_env = &timebase;
++    observed_ps = -357;
++    __cpu_ppc_store_decr(&cpu, observed_ps, &timebase.decr_next, timer,
++                         diagnostic_decr_raise, diagnostic_decr_lower,
++                         0, 0, 7, 32);
++
++    g_assert_true(timer_expire_time_ps_wide(timer) == 11719);
++    g_assert_true(ppc_decr_target_ps(&timebase) == 11719);
++    timer_free(timer);
++}
++
++static void test_decrementer_tick_wrap(void)
++{
++    PowerPCCPU cpu = { 0 };
++    ppc_tb_t timebase = { .decr_freq = 512000000,
++                          .flags = PPC_TIMER_BOOKE };
++    QEMUTimer *timer;
++    __int128 origin = (__int128)1953 * ((__int128)1 << 64) +
++                      UINT64_C(2305843009213691999);
++
++    initialize_clock(true);
++    timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    cpu.env.tb_env = &timebase;
++    observed_ps = origin;
++    __cpu_ppc_store_decr(&cpu, origin, &timebase.decr_next, timer,
++                         diagnostic_decr_raise, diagnostic_decr_lower,
++                         0, 0, 7, 32);
++
++    g_assert_cmpuint(ppc_ps_to_tb(timebase.decr_freq, origin), ==, UINT64_MAX);
++    g_assert_cmpint(__cpu_ppc_load_decr(&cpu.env, origin,
++                                       timebase.decr_next, timer),
++                    ==, 7);
++    observed_ps = timer_expire_time_ps_wide(timer);
++    g_assert_cmpint(__cpu_ppc_load_decr(&cpu.env, observed_ps,
++                                      timebase.decr_next, timer), ==, 0);
++    timer_del(timer);
++    g_assert_cmpint(__cpu_ppc_load_decr(&cpu.env, origin,
++                                      timebase.decr_next, timer), ==, 0);
++    timer_free(timer);
++}
++
++static void test_tick_interval_refusal(gconstpointer opaque)
++{
++    unsigned mutation = GPOINTER_TO_UINT(opaque);
++
++    if (g_test_subprocess()) {
++        uint32_t frequency = mutation ? 512000000 : 0;
++        unsigned __int128 ticks = mutation ?
++                                 ((unsigned __int128)1 << 64) + 1 : 7;
++
++        ppc_timer_ticks_deadline_ps(frequency, 357, ticks);
++        return;
++    }
++    g_test_trap_subprocess(NULL, 0, 0);
++    g_test_trap_assert_failed();
++    g_test_trap_assert_stderr("*invalid frequency or tick interval*");
++}
++
++static void test_booke_precise_phase(void)
++{
++    CPUPPCState environment = { 0 };
++    ppc_tb_t timebase = { .tb_freq = 512000000, .tb_offset = 17 };
++    __int128 origin = (__int128)72057594037927936 * ((__int128)1 << 64) +
++                      UINT64_C(357);
++    QEMUTimer *timer;
++
++    initialize_clock(true);
++    observed_ps = origin;
++    timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    environment.tb_env = &timebase;
++    environment.spr[SPR_BOOKE_TSR] = TSR_FIS;
++    booke_update_fixed_timer(&environment, 30, timer, TSR_FIS);
++
++    g_assert_true(timer_expire_time_ps_wide(timer) == origin +
++                  (__int128)UINT64_C(2930375621864));
++    timer_free(timer);
++}
++
++static void test_booke_precise_rollover(void)
++{
++    CPUPPCState environment = { 0 };
++    ppc_tb_t timebase = { .tb_freq = 512000000, .tb_offset = 0 };
++    __int128 origin = (__int128)976 * ((__int128)1 << 64) +
++                      UINT64_C(10376293541461622784);
++    QEMUTimer *timer;
++
++    initialize_clock(true);
++    observed_ps = origin;
++    timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    environment.tb_env = &timebase;
++    environment.spr[SPR_BOOKE_TSR] = TSR_FIS;
++    booke_update_fixed_timer(&environment, 63, timer, TSR_FIS);
++
++    g_assert_true(timer_expire_time_ps_wide(timer) == origin +
++                  ((__int128)1953 * ((__int128)1 << 64) +
++                   UINT64_C(2305843009213693952)));
++    timer_free(timer);
++}
++
++static void test_wide_migration(void)
++{
++    ppc_tb_t source = { .hdecr_next = UINT64_MAX };
++    ppc_tb_t restored = { 0 };
++    __int128 deadline = ((__int128)1 << 120) + 1357;
++    GByteArray *bytes;
++
++    initialize_clock(true);
++    source.decr_next = 123;
++    ppc_decr_target_set(&source, deadline - 17);
++    source.fit_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    restored.fit_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    timer_mod_ps_wide(source.fit_timer, deadline);
++    timer_mod_ps_wide(restored.fit_timer, 23);
++    bytes = save_timer_state(&source);
++    g_assert_cmpuint(bytes->len, ==, 100);
++
++    g_assert_cmpint(load_timer_state(&restored, bytes, 2), ==, 0);
++    g_assert_true(restored.timer_vmstate_loaded);
++    g_assert_true(timer_expire_time_ps_wide(restored.fit_timer) == 23);
++    ppc_timer_state_apply(&restored);
++    g_assert_true(timer_expire_time_ps_wide(restored.fit_timer) == deadline);
++    g_assert_cmpuint(restored.hdecr_next, ==, UINT64_MAX);
++    g_assert_cmpuint(restored.decr_next, ==, 123);
++    g_assert_true(ppc_decr_target_ps(&restored) == deadline - 17);
++
++    g_byte_array_unref(bytes);
++    timer_free(source.fit_timer);
++    timer_free(restored.fit_timer);
++}
++
++static void test_booke_submillisecond(gconstpointer opaque)
++{
++    bool one_picosecond = GPOINTER_TO_UINT(opaque);
++    CPUPPCState environment = { 0 };
++    ppc_tb_t timebase = {
++        .tb_freq = one_picosecond ? UINT32_MAX : 512000000,
++    };
++    QEMUTimer *timer;
++
++    initialize_clock(true);
++    observed_ps = one_picosecond ? 232 : 357;
++    timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    environment.tb_env = &timebase;
++    environment.spr[SPR_BOOKE_TSR] = TSR_FIS;
++    booke_update_fixed_timer(&environment, one_picosecond ? 0 : 4,
++                            timer, TSR_FIS);
++
++    /* Independent floor-tick and first-rising-edge integer oracles. */
++    g_assert_true(timer_expire_time_ps_wide(timer) ==
++                  (one_picosecond ? 233 : 31250));
++    timer_free(timer);
++}
++
++static void test_all_timer_migration(void)
++{
++    ppc_tb_t source = { 0 };
++    ppc_tb_t restored = { 0 };
++    QEMUTimer *before[PPC_TIMER_COUNT];
++    QEMUTimer *after[PPC_TIMER_COUNT];
++    __int128 deadlines[PPC_TIMER_COUNT] = {
++        ((__int128)1 << 120) + 357,
++        -1,
++        (__int128)((unsigned __int128)1 << 127),
++        (__int128)(((unsigned __int128)1 << 127) - 1),
++    };
++    GByteArray *bytes;
++
++    initialize_clock(true);
++    source.decr_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    source.hdecr_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    source.fit_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    source.wdt_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    restored.decr_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    restored.hdecr_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    restored.fit_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    restored.wdt_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    ppc_timer_array(&source, before);
++    ppc_timer_array(&restored, after);
++    for (unsigned index = 0; index < PPC_TIMER_COUNT; index++) {
++        timer_mod_ps_wide(before[index], deadlines[index]);
++        timer_mod_ps_wide(after[index], 23);
++    }
++    bytes = save_timer_state(&source);
++
++    g_assert_cmpint(load_timer_state(&restored, bytes, 2), ==, 0);
++    for (unsigned index = 0; index < PPC_TIMER_COUNT; index++) {
++        g_assert_true(timer_expire_time_ps_wide(after[index]) == 23);
++    }
++    ppc_timer_state_apply(&restored);
++    for (unsigned index = 0; index < PPC_TIMER_COUNT; index++) {
++        g_assert_true(timer_pending(after[index]));
++        g_assert_true(timer_expire_time_ps_wide(after[index]) ==
++                      deadlines[index]);
++        timer_free(before[index]);
++        timer_free(after[index]);
++    }
++    g_byte_array_unref(bytes);
++}
++
++static void test_negative_migration(void)
++{
++    ppc_tb_t source = { 0 };
++    ppc_tb_t restored = { 0 };
++    GByteArray *bytes;
++
++    initialize_clock(true);
++    source.fit_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    restored.fit_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    timer_mod_ps_wide(source.fit_timer, -1);
++    timer_mod_ps_wide(restored.fit_timer, 23);
++    bytes = save_timer_state(&source);
++
++    g_assert_cmpint(load_timer_state(&restored, bytes, 2), ==, 0);
++    g_assert_true(timer_expire_time_ps_wide(restored.fit_timer) == 23);
++    ppc_timer_state_apply(&restored);
++    g_assert_true(timer_pending(restored.fit_timer));
++    g_assert_true(timer_expire_time_ps_wide(restored.fit_timer) == -1);
++
++    g_byte_array_unref(bytes);
++    timer_free(source.fit_timer);
++    timer_free(restored.fit_timer);
++}
++
++static void test_malformed_migration(gconstpointer opaque)
++{
++    unsigned mutation = GPOINTER_TO_UINT(opaque);
++    ppc_tb_t source = { 0 };
++    ppc_tb_t restored = { 0 };
++    GByteArray *bytes;
++    int version = 2;
++
++    initialize_clock(true);
++    source.fit_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    restored.fit_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    timer_mod_ps_wide(source.fit_timer, 1001);
++    timer_mod_ps_wide(restored.fit_timer, 23);
++    bytes = save_timer_state(&source);
++    switch (mutation) {
++    case 0:
++        bytes->data[8] = 2;
++        break;
++    case 1:
++        bytes->data[8] = 0;
++        break;
++    case 2:
++        bytes->data[9] = 0;
++        break;
++    case 3:
++        bytes->data[10] = 0x80;
++        break;
++    case 4:
++        bytes->data[10] = 0;
++        break;
++    case 5:
++        version = 1;
++        break;
++    case 6:
++        g_byte_array_set_size(bytes, bytes->len - 1);
++        break;
++    case 7:
++        g_assert_cmpint(load_timer_state(&restored, bytes, version), ==, 0);
++        break;
++    default:
++        g_assert_not_reached();
++    }
++
++    g_assert_cmpint(load_timer_state(&restored, bytes, version), <, 0);
++    g_assert_true(timer_pending(restored.fit_timer));
++    g_assert_true(timer_expire_time_ps_wide(restored.fit_timer) == 23);
++
++    g_byte_array_unref(bytes);
++    timer_free(source.fit_timer);
++    timer_free(restored.fit_timer);
++}
++
++static void test_ordinary_decrementer(void)
++{
++    PowerPCCPU cpu = { 0 };
++    ppc_tb_t timebase = { .decr_freq = 512000000 };
++    QEMUTimer *timer;
++    __int128 origin = 1000000;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++    initialize_clock(false);
++    observed_ps = origin;
++    cpu.env.tb_env = &timebase;
++    timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    __cpu_ppc_store_decr(&cpu, origin, &timebase.decr_next, timer,
++                         diagnostic_decr_raise, diagnostic_decr_lower,
++                         0, 0, 7, 32);
++
++    g_assert_cmpuint(timer_expire_time_ns(timer), ==, 1014);
++    g_assert_cmpuint(timebase.decr_next, ==, 519);
++    g_assert_true(ppc_decr_target_ps(&timebase) == 0);
++    timer_free(timer);
++}
++
++static void test_ordinary_migration(void)
++{
++    ppc_tb_t source = { 0 };
++    ppc_tb_t restored = { 0 };
++    GByteArray *bytes;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++    initialize_clock(false);
++    source.fit_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    restored.fit_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, NULL, NULL);
++    timer_mod_ns(source.fit_timer, 2);
++    timer_mod_ns(restored.fit_timer, 23);
++    bytes = save_timer_state(&source);
++
++    g_assert_cmpint(load_timer_state(&restored, bytes, 2), ==, 0);
++    g_assert_cmpuint(timer_expire_time_ns(restored.fit_timer), ==, 23);
++    ppc_timer_state_apply(&restored);
++    g_assert_cmpuint(timer_expire_time_ns(restored.fit_timer), ==, 2);
++
++    /* A representable exact source projects by the existing ceiling policy. */
++    restored.timer_vmstate_loaded = false;
++    bytes->data[8] = 1;
++    stq_be_p(bytes->data + 59, 1001);
++    g_assert_cmpint(load_timer_state(&restored, bytes, 2), ==, 0);
++    ppc_timer_state_apply(&restored);
++    g_assert_cmpuint(timer_expire_time_ns(restored.fit_timer), ==, 2);
++
++    restored.timer_vmstate_loaded = false;
++    timer_mod_ns(restored.fit_timer, 23);
++    stq_be_p(bytes->data + 27, UINT64_C(1) << 56);
++    g_assert_cmpint(load_timer_state(&restored, bytes, 2), <, 0);
++    g_assert_cmpuint(timer_expire_time_ns(restored.fit_timer), ==, 23);
++
++    /* Ordinary-mode metadata cannot carry a fractional deadline. */
++    restored.timer_vmstate_loaded = false;
++    bytes->data[8] = 0;
++    stq_be_p(bytes->data + 27, 0);
++    g_assert_cmpint(load_timer_state(&restored, bytes, 2), <, 0);
++    g_assert_cmpuint(timer_expire_time_ns(restored.fit_timer), ==, 23);
++
++    /* The retained PIT target is exact-mode state, even while disarmed. */
++    stq_be_p(bytes->data + 59, 2000);
++    stq_be_p(bytes->data + 91, 1);
++    g_assert_cmpint(load_timer_state(&restored, bytes, 2), <, 0);
++    g_assert_cmpuint(timer_expire_time_ns(restored.fit_timer), ==, 23);
++
++    g_byte_array_unref(bytes);
++    timer_free(source.fit_timer);
++    timer_free(restored.fit_timer);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    for (unsigned index = 0; index < G_N_ELEMENTS(vectors); index++) {
++        g_autofree char *name = g_strdup_printf("/ppc/ticks/%u", index);
++
++        g_test_add_data_func(name, &vectors[index], test_tick_conversion);
++    }
++    for (unsigned mutation = 0; mutation < 2; mutation++) {
++        g_autofree char *name = g_strdup_printf("/ppc/interval/refusal/%u",
++                                               mutation);
++
++        g_test_add_data_func(name, GUINT_TO_POINTER(mutation),
++                             test_tick_interval_refusal);
++    }
++    g_test_add_func("/ppc/booke/wide", test_booke_wide);
++    g_test_add_func("/ppc/booke/overflow", test_booke_overflow);
++    g_test_add_func("/ppc/booke/ordinary", test_booke_ordinary);
++    g_test_add_data_func("/ppc/booke/subms", GUINT_TO_POINTER(0),
++                         test_booke_submillisecond);
++    g_test_add_data_func("/ppc/booke/one-ps", GUINT_TO_POINTER(1),
++                         test_booke_submillisecond);
++    g_test_add_func("/ppc/booke/precise/phase", test_booke_precise_phase);
++    g_test_add_func("/ppc/booke/precise/rollover", test_booke_precise_rollover);
++    g_test_add_func("/ppc/decrementer/wide", test_decrementer_wide);
++    g_test_add_func("/ppc/decrementer/negative",
++                    test_decrementer_negative_phase);
++    g_test_add_func("/ppc/pit/wide-reload", test_pit_wide_reload);
++    g_test_add_func("/ppc/decrementer/tick-wrap", test_decrementer_tick_wrap);
++    g_test_add_func("/ppc/decrementer/ordinary", test_ordinary_decrementer);
++    g_test_add_func("/ppc/migration/ordinary", test_ordinary_migration);
++    g_test_add_func("/ppc/migration/wide", test_wide_migration);
++    g_test_add_func("/ppc/migration/negative", test_negative_migration);
++    g_test_add_func("/ppc/migration/all-timers", test_all_timer_migration);
++    for (unsigned mutation = 0; mutation < 8; mutation++) {
++        g_autofree char *name = g_strdup_printf("/ppc/migration/refusal/%u",
++                                               mutation);
++
++        g_test_add_data_func(name, GUINT_TO_POINTER(mutation),
++                             test_malformed_migration);
++    }
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-ptimer-wide-clock.c b/tests/unit/test-crucible-ptimer-wide-clock.c
