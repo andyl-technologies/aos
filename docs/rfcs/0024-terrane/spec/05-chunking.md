@@ -31,9 +31,32 @@ stream without recompression.
   | minimum chunk size | 256 KiB (262 144 bytes) |
   | target (average) chunk size | 1 MiB (1 048 576 bytes) |
   | maximum chunk size | 4 MiB (4 194 304 bytes) |
-  | rolling window | 48 bytes |
+  | effective mask span | 48 bytes |
   | normalization level | 2 |
   | seed | the 32-byte value in the profile record |
+
+The profile fixes the following byte-exact FastCDC scan. Derive the gear
+table as in `reference/golden-vectors.md` §gear-table. Let `k` be
+`floor(log2(target size))` and `n` the normalization level; profiles are
+valid only when `2 <= k - n` and `k + n <= 32`. For a bit count `b`, define
+`mask(b)` by setting bit `16 + floor(31*j/(b - 1))` for every integer
+`j` from zero through `b - 1`. Bits are numbered from the least significant
+bit. The two masks use `b = k + n` up to and including the target size, and
+`b = k - n` afterward. For `cdc-1m`, they are respectively
+`0x0000b6db6db70000` and `0x0000aab556ab0000`. Their set bits span
+positions 16 through 47: the 48-byte span is an effect of the mask, not a
+separate rolling buffer.
+
+At the start of each chunk, set the 64-bit fingerprint to zero and skip
+bytes at offsets below the minimum size. If the remaining input is at most
+the minimum, end the file there. Otherwise, for each byte at zero-based
+offset `i` from the minimum through one less than the smaller of the
+remaining length and maximum size, update
+`fp = ((fp << 1) + gear[byte[i]]) mod 2^64`. Compare `fp & mask` with zero
+using the mask for the resulting chunk length `i + 1`; a match cuts after
+that byte. If no mask matches, cut at the maximum or end of file, whichever
+comes first. Reset the fingerprint for the next chunk. The boundary vector
+in `reference/golden-vectors.md` fixes the offset and mask conventions.
 
 - **[CDC-3]** Chunking parameters are part of the chunk profile and MUST NOT
   change while any chunk cut with that profile exists in the store. Changing them is a migration
@@ -69,12 +92,14 @@ encoded body.
 - **[CDC-8]** A writer SHOULD use codec `0x00` when compression would not
   reduce the body below 97 % of the plaintext length. A reader MUST accept
   any codec for any chunk; the codec is not part of identity.
-- **[CDC-9]** The dictionary identity in codec `0x02` MUST be the identity
-  of the dictionary bytes under the `terrane-attr-v1` domain with the
-  attribute name `zstd-dictionary`, stored as a derived-data record
-  ([`10-derived-data.md`](10-derived-data.md)) so that any tier can fetch
-  the dictionary through the ordinary content path. A reader that lacks the
-  dictionary fetches it before decoding; a reader MUST NOT guess.
+- **[CDC-9]** The dictionary identity in codec `0x02` MUST be the
+  `terrane-chunk-v1` identity of the dictionary plaintext. The
+  `zstd-dictionary` derived-data record ([`10-derived-data.md`](10-derived-data.md))
+  carries that chunk identity as its value; the record has its own distinct
+  `terrane-attr-v1` identity over its canonical encoding. A dictionary is
+  stored as a standalone final chunk so that any tier can fetch and verify
+  it through the ordinary content path. A reader that lacks the dictionary
+  fetches it before decoding; a reader MUST NOT guess.
 - **[CDC-10]** Dictionaries are trained per content class and selected by
   the object's classification attribute ([`10-derived-data.md`](10-derived-data.md),
   [`31-routing-rulesets.md`](31-routing-rulesets.md)). A writer MAY select a
@@ -115,11 +140,11 @@ G-7).
 - **[CDC-16]** For a chunk that is not the final chunk of its object, the
   receiver MUST run the profile's chunker over the plaintext and verify
   that the first boundary it finds is at end of chunk and that no earlier
-  boundary exists past the minimum size. Because the rolling window is
-  shorter than the minimum chunk size, this check is exact using only the
-  chunk's own bytes. A chunk that fails is rejected as malformed even if its
-  identity is correct, so that an uploader cannot pollute the deduplication
-  space with boundaries no honest chunker would produce. *Gate:*
+  boundary exists past the minimum size. Because the fingerprint resets for
+  each chunk and the scan starts after the minimum, this check is exact using
+  only the chunk's own bytes. A chunk that fails is rejected as malformed
+  even if its identity is correct, so that an uploader cannot pollute the
+  deduplication space with boundaries no honest chunker would produce. *Gate:*
   `gate:cdc-boundaries`.
 - **[CDC-17]** When an object is committed, the receiver MUST verify that
   the manifest's chunk count does not exceed `ceil(size / minimum) + 1` and

@@ -467,7 +467,7 @@ selector = [ "issuer", tstr ]
 ;
 ; Chunk body (05-chunking.md §Compression):
 ;     0   1  codec
-;     1  32  dictionary identity      (codec 2 only)
+;     1  32  dictionary chunk digest  (codec 2 only; terrane-chunk-v1)
 ;     -   -  zstd frame or raw plaintext
 ;
 ; Block-device superblock (16-blockdev-backend.md BLK-1..BLK-3), one device

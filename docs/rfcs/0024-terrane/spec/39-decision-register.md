@@ -466,6 +466,60 @@ is added rather than editing history.
     conventions for the informative risk register).
   - **Affects:** TEST-16 and the gate registry in file 36.
 
+- **[D-26] Fix the default FastCDC scan and dictionary identity before the
+  T1 format freeze.**
+  - **Status:** Decided
+  - **Decision:** Derive two sparse Gear masks from the target size and
+    normalization level, with set positions evenly spanning bits 16 through
+    47. Start scanning at the minimum size with a fresh fingerprint for each
+    chunk, compare after consuming each candidate byte, and force a cut at
+    the maximum or EOF. For `cdc-1m`, use the exact masks and 16 MiB boundary
+    vector in `reference/golden-vectors.md`. The 48-byte parameter describes
+    the effective mask span, not a separate rolling buffer. Codec `0x02`
+    carries the `terrane-chunk-v1` identity of dictionary plaintext; the
+    `zstd-dictionary` attribute record carries that identity as its value
+    and retains its own canonical `terrane-attr-v1` identity. Keep CDC and
+    OBJ requirement IDs stable.
+  - **Rationale:** CDC-1 named FastCDC and a seeded Gear table but did not
+    specify the scan start, byte/cut offset convention, mask placement, or
+    fingerprint reset. Those omissions let two implementations cut different
+    chunks under the same profile. The [FastCDC paper](https://www.usenix.org/system/files/conference/atc16/atc16-paper-xia.pdf)
+    uses a shift-and-add Gear recurrence with a skipped minimum region and
+    two sparse masks; its 8 KiB mask constants do not define this profile's
+    1 MiB choices. The exact derived masks preserve its 48-byte effective
+    span and make the profile portable. CDC-9 previously hashed bare
+    dictionary bytes under the attribute-record domain, contradicting OBJ-4
+    and the canonical `AttrRecord` in the CDDL. Storing dictionary bytes as
+    a chunk and referring to its ID from the attribute record preserves
+    both domain meanings and ordinary content verification.
+  - **Alternatives considered:** Reuse the paper's fixed 8 KiB masks
+    (rejected: their cut odds do not describe `cdc-1m`); use contiguous low
+    mask bits (rejected: loses the stated 48-byte effective span); identify
+    bare bytes under `terrane-attr-v1` (rejected: conflicts with the
+    canonical attribute-record preimage).
+  - **Affects:** CDC-1, CDC-2, CDC-9, CDC-16, OBJ-4, and the gear,
+    boundary, dictionary, and chunk-body references.
+
+- **[D-27] Resolve the commit profile pair against its canonical CDDL.**
+  - **Status:** Decided
+  - **Decision:** Keep the CDDL `profile-pair` map unchanged: it records the
+    tree-format version and chunk profile, plus its existing optional
+    fields. The identity profile is fixed by the store's `store-profile`
+    under OBJ-8 and is not repeated in each commit. Correct REF-9, its
+    schematic commit description, and the glossary without renumbering any
+    requirement.
+  - **Rationale:** REF-9 said a commit records the identity profile, but
+    the normative `profile-pair` CDDL has no such field. A reader cannot
+    encode the prose claim without inventing a new key and changing commit
+    identities. The store already binds one identity profile to its
+    content, so the CDDL and OBJ-8 yield one unambiguous profile choice.
+  - **Alternatives considered:** Add an identity-profile key to every
+    commit (rejected: redundant with the store invariant and changes the
+    canonical commit preimage); leave the prose conflict in place
+    (rejected: implementations could assign incompatible commit identities).
+  - **Affects:** REF-9, OBJ-8, `reference/terrane-v1.cddl` §`profile-pair`,
+    and the glossary.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

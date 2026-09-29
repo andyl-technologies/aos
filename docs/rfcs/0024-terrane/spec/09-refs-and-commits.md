@@ -89,7 +89,7 @@ parents     ordered list of commit hashes; empty for a root commit
 provenance  principal, token id, issuer, process identity (23)
 timestamp   unsigned seconds since epoch as asserted by the committer
 message     UTF-8 text, MAY be empty
-profile-pair  map: identity profile, chunk profile, tree-format version,
+profile-pair  map: chunk profile, tree-format version,
             recipe, conflicted flag, lease, required-property snapshot
 packs       optional list of (pack id, locality) for packs first written by
             this commit
@@ -99,10 +99,11 @@ signature   detached signature over the preceding fields (23)
 - **[REF-8]** A commit MUST name exactly one tree root. A commit produced by
   a merge MUST list `ours` first and `theirs` second in `parents`. A fold
   MUST record both ([`07-tree-algebra.md`](07-tree-algebra.md)).
-- **[REF-9]** `profile-pair` MUST record the identity profile
-  ([`04-content-model.md`](04-content-model.md) OBJ-8), the chunk profile
-  ([`05-chunking.md`](05-chunking.md)), and the tree-format version in
-  effect at the commit, and MUST set `conflicted=true` when the tree
+- **[REF-9]** `profile-pair` MUST record the chunk profile
+  ([`05-chunking.md`](05-chunking.md)) and the tree-format version in
+  effect at the commit. The identity profile is fixed by the store's
+  `store-profile` ([`04-content-model.md`](04-content-model.md) OBJ-8), not
+  repeated in this map. The commit MUST set `conflicted=true` when the tree
   contains a conflict value. It MUST record the recipe when the tree was
   produced by materializing a composite (a derivation,
   [`10-derived-data.md`](10-derived-data.md)).

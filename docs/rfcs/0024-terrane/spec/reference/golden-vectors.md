@@ -50,10 +50,21 @@ The `cdc-1m` profile ([`property-registry.md`](property-registry.md)
 
 BLAKE3 of the full 2 048-byte table: `22e8d10aa13d65d681fa4ff159d1151c11c90f652bc059d4418c3f463f49b14c`.
 
-Chunk-boundary vectors over a synthetic stream (a full FastCDC run with
-normalization level 2 over the `cdc-1m` parameters) are produced by the
-conformance suite's reference chunker and checked by `gate:cdc-boundaries`;
-they are not reproduced here because they run to hundreds of boundaries.
+For the `cdc-1m` profile, the two level-2 masks derived by CDC-1 are
+`0x0000b6db6db70000` up to and including 1 MiB and
+`0x0000aab556ab0000` above 1 MiB. Generate a 16,777,216-byte input with
+`BLAKE3-XOF("terrane-cdc-boundaries-v1" || 0x00)` and cut it from offset zero
+using the all-zero profile seed. The cumulative end offsets, including EOF,
+are:
+
+```text
+1,053,018   1,336,528   2,676,886   3,833,803   4,242,108
+5,460,736   6,765,165   8,343,797   9,434,089  10,501,272
+11,945,946  13,357,494  15,153,770  16,005,372  16,777,216
+```
+
+`gate:cdc-boundaries` reproduces the stream and checks every offset. The
+last offset is the mandatory end-of-file cut.
 
 ## Chunk identities
 

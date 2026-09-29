@@ -27,8 +27,8 @@ owns them.
   one. (04)
 - **Chunk profile** — a named set of content-defined chunking parameters
   and seed; fixed for every chunk cut with it. (05)
-- **Profile pair** — the identity profile and chunk profile a commit
-  records as in effect. (09)
+- **Profile pair** — the chunk profile and tree-format version a commit
+  records as in effect; its store fixes the identity profile. (09)
 - **Trust preset** — a named trust selector such as `any`,
   `signed-baseline`, `strict`, or `attested`. (23)
 - **Ref** — a name for a commit. The only mutable state in a store; changed

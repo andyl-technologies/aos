@@ -68,7 +68,7 @@ the store profile record
 fixed for the life of any chunk cut with the profile
 ([`../05-chunking.md`](../05-chunking.md) CDC-3).
 
-| Name | Minimum | Target | Maximum | Window | Normalization | Seed |
+| Name | Minimum | Target | Maximum | Mask span | Normalization | Seed |
 | --- | --- | --- | --- | --- | --- | --- |
 | `cdc-1m` | 262 144 | 1 048 576 | 4 194 304 | 48 | 2 | 32 zero bytes |
 
@@ -82,8 +82,9 @@ Codec bytes ([`../05-chunking.md`](../05-chunking.md) §Compression):
 are the `class.magic` values in §classifiers; the `compression` property
 `zstd:<class>` requests the deployment's trained dictionary for that class.
 This version registers no default dictionaries: a dictionary is a
-deployment artifact stored as an attribute record named `zstd-dictionary`
-(CDC-9), and a reader always fetches it by identity.
+deployment artifact stored as a standalone chunk. The value of an attribute
+record named `zstd-dictionary` is that chunk's identity (CDC-9), and a
+reader always fetches and verifies it by that identity.
 
 ## Hash names
 
