@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "615168814c277feb33035d9e8585534988cae6ab073affccc17e02634f3e2926";
+  sha256 = "01623653cbf7425c0518dcf659e267f1f669d0aeb8ce45271dca65870effa53c";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -156,9 +156,11 @@
     "Retain actual RTC calendar callbacks in the current GPL unit and remove obsolete split-phase test paths."
     ""
     "Pass the source firmware directory explicitly to the pre-install multiboot check. Preserve uninitialized nonperiodic PIT startup before HPET enables its IRQ, and reject a zero periodic divisor."
+    ""
+    "Preserve fullword ICH9 TCO, software SMI and periodic SMI timer state, require exact mode-tagged migration and validate all auxiliary deadlines before any timer arm."
   ];
-  commit = "067f2bae1dc686b071ad0781b190b9ba5cf9534b";
-  tree = "6557d384bf7e7758d37c64c2d06cbf48366cfd16";
+  commit = "b1d2117f5b5e6d2b1092f1cb02e82bbcb4103c2d";
+  tree = "a02f5ee0cc3960377c99dd9c1c3d8d2964f7cc76";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -167,7 +169,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "8aefb253ced4d869a44987470a95fda9032e06010b703b2f085e36ad34ccdc01";
+  bundleSha256 = "2fecc0639554e7d53cb432205a4e2e9573aa7e08a7553657984ed367cb38d3a3";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

@@ -1,4 +1,4 @@
-From 067f2bae1dc686b071ad0781b190b9ba5cf9534b Mon Sep 17 00:00:00 2001
+From b1d2117f5b5e6d2b1092f1cb02e82bbcb4103c2d Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -151,10 +151,12 @@ Retain actual RTC calendar callbacks in the current GPL unit and remove obsolete
 
 Pass the source firmware directory explicitly to the pre-install multiboot check. Preserve uninitialized nonperiodic PIT startup before HPET enables its IRQ, and reject a zero periodic divisor.
 
+Preserve fullword ICH9 TCO, software SMI and periodic SMI timer state, require exact mode-tagged migration and validate all auxiliary deadlines before any timer arm.
+
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
 diff --git a/MAINTAINERS b/MAINTAINERS
-index 902db77218eacc2461b54fe675c9816b3d98aec6..c4b92954a6286784106477824d65a6971a4ad58a 100644
+index 902db77218eacc2461b54fe675c9816b3d98aec6..efa17b3715547e731699fcd0edcb3de3ce8d49bd 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
 @@ -328,6 +328,7 @@ F: hw/or1k/
@@ -197,7 +199,7 @@ index 902db77218eacc2461b54fe675c9816b3d98aec6..c4b92954a6286784106477824d65a697
  F: include/system/runstate.h
  F: include/system/runstate-action.h
  F: util/main-loop.c
-@@ -4201,11 +4206,25 @@ R: Alexandre Iooss <erdnaxe@crans.org>
+@@ -4201,11 +4206,26 @@ R: Alexandre Iooss <erdnaxe@crans.org>
  S: Maintained
  F: docs/devel/tcg-plugins.rst
  F: plugins/
@@ -211,6 +213,7 @@ index 902db77218eacc2461b54fe675c9816b3d98aec6..c4b92954a6286784106477824d65a697
 +F: tests/unit/test-crucible-hot-fork-child.c
 +F: tests/unit/test-crucible-hot-fork-coordinator.c
 +F: tests/unit/test-crucible-acpi-pm-wide-clock.c
++F: tests/unit/test-crucible-ich9-aux-wide-clock.c
 +F: tests/tcg/plugins/crucible-instruction.c
  F: tests/tcg/plugins/
  F: tests/tcg/multiarch/plugin/
@@ -13444,7 +13447,7 @@ index b2d5e3499320c4f0adc7718ded4f1ab0a521fe1a..48da57eb7f7be29510c81c0276f5a361
 +    return true;
 +}
 diff --git a/hw/acpi/ich9.c b/hw/acpi/ich9.c
-index 5e8f8a7eafa33dda0d55c756f184cb157ebb0f0c..7ad951629f2103c90a819a6d71e0baf1ed402d03 100644
+index 5e8f8a7eafa33dda0d55c756f184cb157ebb0f0c..f31831b3460301028a58a2f578326847567a089c 100644
 --- a/hw/acpi/ich9.c
 +++ b/hw/acpi/ich9.c
 @@ -27,10 +27,12 @@
@@ -13460,15 +13463,125 @@ index 5e8f8a7eafa33dda0d55c756f184cb157ebb0f0c..7ad951629f2103c90a819a6d71e0baf1
  #include "system/reset.h"
  #include "system/runstate.h"
  #include "hw/acpi/acpi.h"
-@@ -136,10 +138,42 @@ void ich9_pm_iospace_update(ICH9LPCPMRegs *pm, uint32_t pm_io_base)
+@@ -136,10 +138,156 @@ void ich9_pm_iospace_update(ICH9LPCPMRegs *pm, uint32_t pm_io_base)
      memory_region_transaction_commit();
  }
  
++static ICH9PMTimerClock *ich9_aux_clock(ICH9LPCPMRegs *pm, unsigned index)
++{
++    switch (index) {
++    case 0:
++        return &pm->tco_regs.wide_timer;
++    case 1:
++        return &pm->swsmi_wide_timer;
++    default:
++        assert(index == 2);
++        return &pm->periodic_wide_timer;
++    }
++}
++
++static bool ich9_aux_enabled(const ICH9LPCPMRegs *pm, unsigned index)
++{
++    return index == 0 ? pm->enable_tco :
++           index == 1 ? pm->swsmi_timer_enabled : pm->periodic_timer_enabled;
++}
++
++static QEMUTimer *ich9_aux_timer(ICH9LPCPMRegs *pm, unsigned index)
++{
++    return index == 0 ? pm->tco_regs.tco_timer :
++           index == 1 ? pm->swsmi_timer : pm->periodic_timer;
++}
++
++static __int128 ich9_aux_expiry(const ICH9PMTimerClock *clock)
++{
++    return (__int128)(((__uint128_t)clock->expiry_hi << 64) | clock->expiry_lo);
++}
++
++static int ich9_aux_validate(ICH9LPCPMRegs *pm, unsigned index)
++{
++    ICH9PMTimerClock *clock = ich9_aux_clock(pm, index);
++
++    if (!ich9_aux_enabled(pm, index)) {
++        return clock->loaded ? -EINVAL : 0;
++    }
++    if (!clock->loaded) {
++        return qemu_timer_tcg_ps_enabled() ? -EINVAL : 0;
++    }
++    if (clock->mode != 1 || clock->active > 1 ||
++        (!clock->active && (clock->expiry_hi || clock->expiry_lo))) {
++        return -EINVAL;
++    }
++    if (!qemu_timer_tcg_ps_enabled() && clock->active) {
++        int64_t whole_ns;
++        uint16_t phase_ps;
++
++        if (!qemu_time_split_ps(ich9_aux_expiry(clock), &whole_ns, &phase_ps) ||
++            (phase_ps && whole_ns == INT64_MAX)) {
++            return -ERANGE;
++        }
++    }
++    return 0;
++}
++
++static void ich9_aux_restore(ICH9LPCPMRegs *pm, unsigned index)
++{
++    ICH9PMTimerClock *clock = ich9_aux_clock(pm, index);
++    QEMUTimer *timer;
++
++    if (!ich9_aux_enabled(pm, index)) {
++        return;
++    }
++    timer = ich9_aux_timer(pm, index);
++    if (!clock->loaded) {
++        /* Ordinary streams retain their original TCO timer field. */
++        if (index == 0) {
++            if (pm->tco_regs.legacy_timer_ns == -1) {
++                timer_del(timer);
++            } else {
++                timer_mod_ns(timer, pm->tco_regs.legacy_timer_ns);
++            }
++        }
++        return;
++    }
++    if (!clock->active) {
++        timer_del(timer);
++    } else if (qemu_timer_tcg_ps_enabled()) {
++        timer_mod_ps_wide(timer, ich9_aux_expiry(clock));
++    } else {
++        int64_t whole_ns;
++        uint16_t phase_ps;
++        bool representable = qemu_time_split_ps(ich9_aux_expiry(clock),
++                                                 &whole_ns, &phase_ps);
++
++        assert(representable && !(phase_ps && whole_ns == INT64_MAX));
++        timer_mod_ns(timer, whole_ns + (phase_ps != 0));
++    }
++}
++
 +static int ich9_pm_pre_save(void *opaque)
 +{
 +    ICH9LPCPMRegs *pm = opaque;
++    int result = acpi_pm_tmr_pre_save(&pm->acpi_regs.tmr);
 +
-+    return acpi_pm_tmr_pre_save(&pm->acpi_regs.tmr);
++    if (result < 0) {
++        return result;
++    }
++    for (unsigned index = 0; index < 3; index++) {
++        ICH9PMTimerClock *clock = ich9_aux_clock(pm, index);
++        QEMUTimer *timer;
++        __int128 expiry;
++
++        if (!ich9_aux_enabled(pm, index) || !qemu_timer_tcg_ps_enabled()) {
++            continue;
++        }
++        timer = ich9_aux_timer(pm, index);
++        expiry = timer_pending(timer) ? timer_expire_time_ps_wide(timer) : 0;
++        clock->mode = 1;
++        clock->active = timer_pending(timer);
++        clock->expiry_hi = (__uint128_t)expiry >> 64;
++        clock->expiry_lo = expiry;
++    }
++    return 0;
 +}
 +
 +static int ich9_pm_pre_load(void *opaque)
@@ -13476,9 +13589,9 @@ index 5e8f8a7eafa33dda0d55c756f184cb157ebb0f0c..7ad951629f2103c90a819a6d71e0baf1
 +    ICH9LPCPMRegs *pm = opaque;
 +
 +    acpi_pm_tmr_pre_load(&pm->acpi_regs.tmr);
-+    pm->tco_regs.exact_timer_loaded = false;
-+    pm->swsmi_timer_exact_loaded = false;
-+    pm->periodic_timer_exact_loaded = false;
++    for (unsigned index = 0; index < 3; index++) {
++        ich9_aux_clock(pm, index)->loaded = false;
++    }
 +    return 0;
 +}
 +
@@ -13486,24 +13599,28 @@ index 5e8f8a7eafa33dda0d55c756f184cb157ebb0f0c..7ad951629f2103c90a819a6d71e0baf1
  {
      ICH9LPCPMRegs *pm = opaque;
      uint32_t pm_io_base = pm->pm_io_base;
++    int result;
 +
-+    if (icount_crucible_sim_mode() &&
-+        ((pm->enable_tco && !pm->tco_regs.exact_timer_loaded) ||
-+         (pm->swsmi_timer_enabled && !pm->swsmi_timer_exact_loaded) ||
-+         (pm->periodic_timer_enabled && !pm->periodic_timer_exact_loaded))) {
-+        error_report("ICH9 PM exact timer state is missing");
-+        return -EINVAL;
++    /* Refuse every malformed or absent owner record before any timer arm. */
++    for (unsigned index = 0; index < 3; index++) {
++        result = ich9_aux_validate(pm, index);
++        if (result < 0) {
++            error_report("ICH9 PM wide auxiliary timer state is invalid");
++            return result;
++        }
 +    }
-+
-+    int result = acpi_pm_tmr_post_load(&pm->acpi_regs.tmr);
++    result = acpi_pm_tmr_post_load(&pm->acpi_regs.tmr);
 +    if (result < 0) {
 +        return result;
++    }
++    for (unsigned index = 0; index < 3; index++) {
++        ich9_aux_restore(pm, index);
 +    }
 +
      pm->pm_io_base = 0;
      ich9_pm_iospace_update(pm, pm_io_base);
      return 0;
-@@ -222,17 +256,146 @@ static const VMStateDescription vmstate_pcihp_state = {
+@@ -222,17 +370,161 @@ static const VMStateDescription vmstate_pcihp_state = {
      }
  };
  
@@ -13547,89 +13664,104 @@ index 5e8f8a7eafa33dda0d55c756f184cb157ebb0f0c..7ad951629f2103c90a819a6d71e0baf1
 +    }
 +};
 +
-+static int ich9_tco_timer_exact_post_load(void *opaque, int version_id)
++static int ich9_tco_timer_wide_post_load(void *opaque, int version_id)
 +{
 +    ICH9LPCPMRegs *pm = opaque;
++    ICH9PMTimerClock *clock = ich9_aux_clock(pm, 0);
 +
-+    pm->tco_regs.exact_timer_loaded = true;
++    if (clock->loaded || !ich9_aux_enabled(pm, 0) || clock->mode != 1 ||
++        clock->active > 1 ||
++        (!clock->active && (clock->expiry_hi || clock->expiry_lo))) {
++        return -EINVAL;
++    }
++    clock->loaded = true;
 +    return 0;
 +}
 +
-+static bool ich9_tco_timer_exact_needed(void *opaque)
++static bool ich9_tco_timer_wide_needed(void *opaque)
 +{
-+    ICH9LPCPMRegs *pm = opaque;
-+
-+    return pm->enable_tco &&
-+           (icount_crucible_sim_mode() ||
-+            timer_has_fractional_expiry(pm->tco_regs.tco_timer));
++    return qemu_timer_tcg_ps_enabled() && ich9_aux_enabled(opaque, 0);
 +}
 +
-+static const VMStateDescription vmstate_ich9_tco_timer_exact = {
-+    .name = "ich9_pm/tco-timer-ps",
++static const VMStateDescription vmstate_ich9_tco_timer_wide = {
++    .name = "ich9_pm/tco-timer-wide",
 +    .version_id = 1,
 +    .minimum_version_id = 1,
-+    .needed = ich9_tco_timer_exact_needed,
-+    .post_load = ich9_tco_timer_exact_post_load,
++    .needed = ich9_tco_timer_wide_needed,
++    .post_load = ich9_tco_timer_wide_post_load,
 +    .fields = (const VMStateField[]) {
-+        VMSTATE_TIMER_NS_PHASE_PTR(tco_regs.tco_timer, ICH9LPCPMRegs),
++        VMSTATE_UINT8(tco_regs.wide_timer.mode, ICH9LPCPMRegs),
++        VMSTATE_UINT8(tco_regs.wide_timer.active, ICH9LPCPMRegs),
++        VMSTATE_UINT64(tco_regs.wide_timer.expiry_hi, ICH9LPCPMRegs),
++        VMSTATE_UINT64(tco_regs.wide_timer.expiry_lo, ICH9LPCPMRegs),
 +        VMSTATE_END_OF_LIST()
 +    }
 +};
 +
-+static int ich9_swsmi_timer_exact_post_load(void *opaque, int version_id)
++static int ich9_swsmi_timer_wide_post_load(void *opaque, int version_id)
 +{
 +    ICH9LPCPMRegs *pm = opaque;
++    ICH9PMTimerClock *clock = ich9_aux_clock(pm, 1);
 +
-+    pm->swsmi_timer_exact_loaded = true;
++    if (clock->loaded || !ich9_aux_enabled(pm, 1) || clock->mode != 1 ||
++        clock->active > 1 ||
++        (!clock->active && (clock->expiry_hi || clock->expiry_lo))) {
++        return -EINVAL;
++    }
++    clock->loaded = true;
 +    return 0;
 +}
 +
-+static bool ich9_swsmi_timer_exact_needed(void *opaque)
++static bool ich9_swsmi_timer_wide_needed(void *opaque)
 +{
-+    ICH9LPCPMRegs *pm = opaque;
-+
-+    return pm->swsmi_timer_enabled &&
-+           (icount_crucible_sim_mode() ||
-+            timer_has_fractional_expiry(pm->swsmi_timer));
++    return qemu_timer_tcg_ps_enabled() && ich9_aux_enabled(opaque, 1);
 +}
 +
-+static const VMStateDescription vmstate_ich9_swsmi_timer_exact = {
-+    .name = "ich9_pm/swsmi-timer-ps",
++static const VMStateDescription vmstate_ich9_swsmi_timer_wide = {
++    .name = "ich9_pm/swsmi-timer-wide",
 +    .version_id = 1,
 +    .minimum_version_id = 1,
-+    .needed = ich9_swsmi_timer_exact_needed,
-+    .post_load = ich9_swsmi_timer_exact_post_load,
++    .needed = ich9_swsmi_timer_wide_needed,
++    .post_load = ich9_swsmi_timer_wide_post_load,
 +    .fields = (const VMStateField[]) {
-+        VMSTATE_TIMER_NS_PHASE_PTR(swsmi_timer, ICH9LPCPMRegs),
++        VMSTATE_UINT8(swsmi_wide_timer.mode, ICH9LPCPMRegs),
++        VMSTATE_UINT8(swsmi_wide_timer.active, ICH9LPCPMRegs),
++        VMSTATE_UINT64(swsmi_wide_timer.expiry_hi, ICH9LPCPMRegs),
++        VMSTATE_UINT64(swsmi_wide_timer.expiry_lo, ICH9LPCPMRegs),
 +        VMSTATE_END_OF_LIST()
 +    }
 +};
 +
-+static int ich9_periodic_timer_exact_post_load(void *opaque, int version_id)
++static int ich9_periodic_timer_wide_post_load(void *opaque, int version_id)
 +{
 +    ICH9LPCPMRegs *pm = opaque;
++    ICH9PMTimerClock *clock = ich9_aux_clock(pm, 2);
 +
-+    pm->periodic_timer_exact_loaded = true;
++    if (clock->loaded || !ich9_aux_enabled(pm, 2) || clock->mode != 1 ||
++        clock->active > 1 ||
++        (!clock->active && (clock->expiry_hi || clock->expiry_lo))) {
++        return -EINVAL;
++    }
++    clock->loaded = true;
 +    return 0;
 +}
 +
-+static bool ich9_periodic_timer_exact_needed(void *opaque)
++static bool ich9_periodic_timer_wide_needed(void *opaque)
 +{
-+    ICH9LPCPMRegs *pm = opaque;
-+
-+    return pm->periodic_timer_enabled &&
-+           (icount_crucible_sim_mode() ||
-+            timer_has_fractional_expiry(pm->periodic_timer));
++    return qemu_timer_tcg_ps_enabled() && ich9_aux_enabled(opaque, 2);
 +}
 +
-+static const VMStateDescription vmstate_ich9_periodic_timer_exact = {
-+    .name = "ich9_pm/periodic-timer-ps",
++static const VMStateDescription vmstate_ich9_periodic_timer_wide = {
++    .name = "ich9_pm/periodic-timer-wide",
 +    .version_id = 1,
 +    .minimum_version_id = 1,
-+    .needed = ich9_periodic_timer_exact_needed,
-+    .post_load = ich9_periodic_timer_exact_post_load,
++    .needed = ich9_periodic_timer_wide_needed,
++    .post_load = ich9_periodic_timer_wide_post_load,
 +    .fields = (const VMStateField[]) {
-+        VMSTATE_TIMER_NS_PHASE_PTR(periodic_timer, ICH9LPCPMRegs),
++        VMSTATE_UINT8(periodic_wide_timer.mode, ICH9LPCPMRegs),
++        VMSTATE_UINT8(periodic_wide_timer.active, ICH9LPCPMRegs),
++        VMSTATE_UINT64(periodic_wide_timer.expiry_hi, ICH9LPCPMRegs),
++        VMSTATE_UINT64(periodic_wide_timer.expiry_lo, ICH9LPCPMRegs),
 +        VMSTATE_END_OF_LIST()
 +    }
 +};
@@ -13652,105 +13784,125 @@ index 5e8f8a7eafa33dda0d55c756f184cb157ebb0f0c..7ad951629f2103c90a819a6d71e0baf1
          VMSTATE_GPE_ARRAY(acpi_regs.gpe.sts, ICH9LPCPMRegs),
          VMSTATE_GPE_ARRAY(acpi_regs.gpe.en, ICH9LPCPMRegs),
          VMSTATE_UINT32(smi_en, ICH9LPCPMRegs),
-@@ -244,6 +407,11 @@ const VMStateDescription vmstate_ich9_pm = {
+@@ -244,6 +536,11 @@ const VMStateDescription vmstate_ich9_pm = {
          &vmstate_tco_io_state,
          &vmstate_cpuhp_state,
          &vmstate_pcihp_state,
 +        &vmstate_ich9_pm_crucible_clock,
 +        &vmstate_ich9_pm_timer_wide,
-+        &vmstate_ich9_tco_timer_exact,
-+        &vmstate_ich9_swsmi_timer_exact,
-+        &vmstate_ich9_periodic_timer_exact,
++        &vmstate_ich9_tco_timer_wide,
++        &vmstate_ich9_swsmi_timer_wide,
++        &vmstate_ich9_periodic_timer_wide,
          NULL
      }
  };
 diff --git a/hw/acpi/ich9_tco.c b/hw/acpi/ich9_tco.c
-index 6300db65b7223c0016dbc702be4b7534bb079267..93c1c99cbe3ea0999450d75b30605ce9655e914e 100644
+index 6300db65b7223c0016dbc702be4b7534bb079267..fdad47a46bb599da00041b3590e53553222e2f53 100644
 --- a/hw/acpi/ich9_tco.c
 +++ b/hw/acpi/ich9_tco.c
-@@ -30,14 +30,27 @@ enum {
-     SW_IRQ_GEN_DEFAULT      = 0x03,
- };
- 
-+static bool tco_timer_mod_after_ns(QEMUTimer *timer, int64_t delay_ns)
-+{
-+    if (qemu_timer_tcg_ps_enabled()) {
-+        timer_mod_ps_wide(timer,
-+            qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL) +
-+            (__int128)delay_ns * PICOSECONDS_PER_NANOSECOND);
-+        return true;
-+    }
-+    return timer_mod_after_ns(timer, delay_ns);
-+}
-+
- static inline void tco_timer_reload(TCOIORegs *tr)
- {
-     int ticks = tr->tco.tmr & TCO_TMR_MASK;
+@@ -36,13 +36,13 @@ static inline void tco_timer_reload(TCOIORegs *tr)
      int64_t nsec = (int64_t)ticks * TCO_TICK_NSEC;
  
      trace_tco_timer_reload(ticks, nsec / 1000000);
 -    tr->expire_time = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + nsec;
 -    timer_mod(tr->tco_timer, tr->expire_time);
-+    if (!tco_timer_mod_after_ns(tr->tco_timer, nsec)) {
++    if (!timer_mod_after_ns(tr->tco_timer, nsec)) {
 +        g_error("ICH9 TCO watchdog deadline overflow");
 +    }
-+    tr->expire_time = timer_expire_time_ns(tr->tco_timer);
  }
  
  static inline void tco_timer_stop(TCOIORegs *tr)
-@@ -91,8 +104,22 @@ static uint32_t tco_ioport_readw(TCOIORegs *tr, uint32_t addr)
+ {
+-    tr->expire_time = -1;
+     timer_del(tr->tco_timer);
+ }
+ 
+@@ -90,9 +90,36 @@ static uint32_t tco_ioport_readw(TCOIORegs *tr, uint32_t addr)
+ 
      switch (addr) {
      case TCO_RLD:
-         if (tr->expire_time != -1) {
+-        if (tr->expire_time != -1) {
 -            int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 -            int64_t elapsed = (tr->expire_time - now) / TCO_TICK_NSEC;
++        if (timer_pending(tr->tco_timer)) {
 +            int64_t elapsed;
 +
 +            if (qemu_timer_tcg_ps_enabled()) {
-+                __int128 remaining_ps =
-+                    timer_expire_time_ps_wide(tr->tco_timer) -
-+                    qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL);
-+                __int128 elapsed_wide =
-+                    remaining_ps / (TCO_TICK_NSEC * 1000);
++                __int128 expiry = timer_expire_time_ps_wide(tr->tco_timer);
++                __int128 now = qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL);
++                bool future = expiry >= now;
++                unsigned __int128 gap;
++                unsigned __int128 ticks;
 +
-+                elapsed = elapsed_wide < INT64_MIN ? INT64_MIN :
-+                          elapsed_wide > INT64_MAX ? INT64_MAX : elapsed_wide;
++                if (future) {
++                    gap = (unsigned __int128)expiry - (unsigned __int128)now;
++                } else {
++                    gap = (unsigned __int128)now - (unsigned __int128)expiry;
++                }
++                ticks = gap / (TCO_TICK_NSEC * 1000);
++
++                /* A legal ordered gap can exceed signed 128-bit width. */
++                if (future) {
++                    elapsed = ticks > INT64_MAX ? INT64_MAX : ticks;
++                } else {
++                    elapsed = ticks > (unsigned __int128)INT64_MAX + 1 ?
++                        INT64_MIN : -(__int128)ticks;
++                }
 +            } else {
 +                int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 +
-+                elapsed = (tr->expire_time - now) / TCO_TICK_NSEC;
++                elapsed = (timer_expire_time_ns(tr->tco_timer) - now) /
++                          TCO_TICK_NSEC;
 +            }
              rld = (uint16_t)elapsed | (tr->tco.rld & ~TCO_RLD_MASK);
          } else {
              rld = tr->tco.rld;
-@@ -267,7 +294,7 @@ const VMStateDescription vmstate_tco_io_sts = {
+@@ -242,7 +269,8 @@ void acpi_pm_tco_init(TCOIORegs *tr, MemoryRegion *parent)
+         },
+         .sw_irq_gen    = SW_IRQ_GEN_DEFAULT,
+         .tco_timer     = timer_new_ns(QEMU_CLOCK_VIRTUAL, tco_timer_expired, tr),
+-        .expire_time   = -1,
++        .legacy_timer_ns = -1,
++        .legacy_expire_time = -1,
+         .timeouts_no   = 0,
+     };
+     memory_region_init_io(&tr->io, memory_region_owner(parent),
+@@ -250,8 +278,19 @@ void acpi_pm_tco_init(TCOIORegs *tr, MemoryRegion *parent)
+     memory_region_add_subregion(parent, ICH9_PMIO_TCO_RLD, &tr->io);
+ }
+ 
++static int tco_io_pre_save(void *opaque)
++{
++    TCOIORegs *tr = opaque;
++
++    tr->legacy_timer_ns = !qemu_timer_tcg_ps_enabled() &&
++        timer_pending(tr->tco_timer) ? timer_expire_time_ns(tr->tco_timer) : -1;
++    tr->legacy_expire_time = tr->legacy_timer_ns;
++    return 0;
++}
++
+ const VMStateDescription vmstate_tco_io_sts = {
+     .name = "tco io device status",
++    .pre_save = tco_io_pre_save,
+     .version_id = 1,
+     .minimum_version_id = 1,
+     .fields = (const VMStateField[]) {
+@@ -267,8 +306,8 @@ const VMStateDescription vmstate_tco_io_sts = {
          VMSTATE_UINT8(tco.wdcnt, TCOIORegs),
          VMSTATE_UINT16(tco.tmr, TCOIORegs),
          VMSTATE_UINT8(sw_irq_gen, TCOIORegs),
 -        VMSTATE_TIMER_PTR(tco_timer, TCOIORegs),
-+        VMSTATE_TIMER_NS_PROJECTION_PTR(tco_timer, TCOIORegs),
-         VMSTATE_INT64(expire_time, TCOIORegs),
+-        VMSTATE_INT64(expire_time, TCOIORegs),
++        VMSTATE_INT64(legacy_timer_ns, TCOIORegs),
++        VMSTATE_INT64(legacy_expire_time, TCOIORegs),
          VMSTATE_UINT8(timeouts_no, TCOIORegs),
          VMSTATE_END_OF_LIST()
+     }
 diff --git a/hw/acpi/ich9_timer.c b/hw/acpi/ich9_timer.c
-index 5b1c9101566047783ea09faf1ac2c13f119dd902..31c0abf7a11bfdd781ce4fb505ce30cc781f07b3 100644
+index 5b1c9101566047783ea09faf1ac2c13f119dd902..09943728997de3c00c79d23c112bd93adb4fd2e0 100644
 --- a/hw/acpi/ich9_timer.c
 +++ b/hw/acpi/ich9_timer.c
-@@ -15,10 +15,21 @@
- 
- #include "hw/acpi/ich9_timer.h"
- 
-+static bool ich9_timer_mod_after_ns(QEMUTimer *timer, int64_t delay_ns)
-+{
-+    if (qemu_timer_tcg_ps_enabled()) {
-+        timer_mod_ps_wide(timer,
-+            qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL) +
-+            (__int128)delay_ns * PICOSECONDS_PER_NANOSECOND);
-+        return true;
-+    }
-+    return timer_mod_after_ns(timer, delay_ns);
-+}
-+
+@@ -18,7 +18,7 @@
  void ich9_pm_update_swsmi_timer(ICH9LPCPMRegs *pm, bool enable)
  {
      uint16_t swsmi_rate_sel;
@@ -13759,7 +13911,7 @@ index 5b1c9101566047783ea09faf1ac2c13f119dd902..31c0abf7a11bfdd781ce4fb505ce30cc
      ICH9LPCState *lpc;
  
      if (enable) {
-@@ -27,13 +38,14 @@ void ich9_pm_update_swsmi_timer(ICH9LPCPMRegs *pm, bool enable)
+@@ -27,13 +27,14 @@ void ich9_pm_update_swsmi_timer(ICH9LPCPMRegs *pm, bool enable)
              (pci_get_word(lpc->d.config + ICH9_LPC_GEN_PMCON_3) & 0xc0) >> 6;
  
          if (swsmi_rate_sel == 0) {
@@ -13772,13 +13924,13 @@ index 5b1c9101566047783ea09faf1ac2c13f119dd902..31c0abf7a11bfdd781ce4fb505ce30cc
          }
  
 -        timer_mod(pm->swsmi_timer, expire_time);
-+        if (!ich9_timer_mod_after_ns(pm->swsmi_timer, delay_ns)) {
++        if (!timer_mod_after_ns(pm->swsmi_timer, delay_ns)) {
 +            g_error("ICH9 SWSMI timer deadline overflow");
 +        }
      } else {
          timer_del(pm->swsmi_timer);
      }
-@@ -59,16 +71,17 @@ void ich9_pm_swsmi_timer_init(ICH9LPCPMRegs *pm)
+@@ -59,16 +60,17 @@ void ich9_pm_swsmi_timer_init(ICH9LPCPMRegs *pm)
  void ich9_pm_update_periodic_timer(ICH9LPCPMRegs *pm, bool enable)
  {
      uint16_t per_smi_sel;
@@ -13794,7 +13946,7 @@ index 5b1c9101566047783ea09faf1ac2c13f119dd902..31c0abf7a11bfdd781ce4fb505ce30cc
 +        delay_ns = 8 * (1 << (3 - per_smi_sel)) * NANOSECONDS_PER_SECOND;
  
 -        timer_mod(pm->periodic_timer, expire_time);
-+        if (!ich9_timer_mod_after_ns(pm->periodic_timer, delay_ns)) {
++        if (!timer_mod_after_ns(pm->periodic_timer, delay_ns)) {
 +            g_error("ICH9 periodic timer deadline overflow");
 +        }
      } else {
@@ -28326,7 +28478,7 @@ index 0000000000000000000000000000000000000000..0c639db285ea1abe452231a60f07a22c
 +
 +#endif
 diff --git a/hw/isa/lpc_ich9.c b/hw/isa/lpc_ich9.c
-index edf9783ec8d4ea1cc45c36b4662bb088f2cf1deb..3d7c7e4cbdb59851cfe2d4b811e887a5ed9951cd 100644
+index edf9783ec8d4ea1cc45c36b4662bb088f2cf1deb..aee551a64a3ea54516c319749de6a1ccfed85a9d 100644
 --- a/hw/isa/lpc_ich9.c
 +++ b/hw/isa/lpc_ich9.c
 @@ -37,6 +37,7 @@
@@ -28361,13 +28513,13 @@ index edf9783ec8d4ea1cc45c36b4662bb088f2cf1deb..3d7c7e4cbdb59851cfe2d4b811e887a5
  
 -    if (lpc->pm.swsmi_timer_enabled) {
 +    if (lpc->pm.swsmi_timer_enabled &&
-+        (!migration_load || !lpc->pm.swsmi_timer_exact_loaded)) {
++        (!migration_load || !lpc->pm.swsmi_wide_timer.loaded)) {
          ich9_pm_update_swsmi_timer(
              &lpc->pm, lpc->pm.smi_en & ICH9_PMIO_SMI_EN_SWSMI_EN);
      }
 -    if (lpc->pm.periodic_timer_enabled) {
 +    if (lpc->pm.periodic_timer_enabled &&
-+        (!migration_load || !lpc->pm.periodic_timer_exact_loaded)) {
++        (!migration_load || !lpc->pm.periodic_wide_timer.loaded)) {
          ich9_pm_update_periodic_timer(
              &lpc->pm, lpc->pm.smi_en & ICH9_PMIO_SMI_EN_PERIODIC_EN);
      }
@@ -28389,7 +28541,7 @@ index edf9783ec8d4ea1cc45c36b4662bb088f2cf1deb..3d7c7e4cbdb59851cfe2d4b811e887a5
      }
  }
  
-@@ -811,11 +817,109 @@ static const VMStateDescription vmstate_ich9_smi_feat = {
+@@ -811,11 +817,108 @@ static const VMStateDescription vmstate_ich9_smi_feat = {
      }
  };
  
@@ -28467,7 +28619,6 @@ index edf9783ec8d4ea1cc45c36b4662bb088f2cf1deb..3d7c7e4cbdb59851cfe2d4b811e887a5
 +        qemu_put_byte(f, tco->tco.wdcnt);
 +        qemu_put_be16(f, tco->tco.tmr);
 +        qemu_put_byte(f, tco->sw_irq_gen);
-+        qemu_put_sbe64(f, tco->expire_time);
 +        qemu_put_byte(f, tco->timeouts_no);
 +        ich9_put_timer(f, tco->tco_timer);
 +    }
@@ -28485,8 +28636,8 @@ index edf9783ec8d4ea1cc45c36b4662bb088f2cf1deb..3d7c7e4cbdb59851cfe2d4b811e887a5
 +}
 +
 +static const CrucibleFingerprintProjection ich9_lpc_fingerprint = {
-+    .schema = "crucible.qemu.ich9-lpc.v4",
-+    .version = 4,
++    .schema = "crucible.qemu.ich9-lpc.v5",
++    .version = 5,
 +    .save = ich9_lpc_fingerprint_projection,
 +};
 +
@@ -54418,27 +54569,48 @@ index 5b29aae4dd4f222c317c1e6bef9e74127270723f..ae7674211372a9e9e5b2342cf28dc9d9
 +    uint16_t source_id, const AcpiGhesMemoryErrorState *state);
  #endif
 diff --git a/include/hw/acpi/ich9.h b/include/hw/acpi/ich9.h
-index 30990fcef53f6606bca72528258758bebad7c064..6c46ee8c617fac73f6d2ea7899276a0eec7623b1 100644
+index 30990fcef53f6606bca72528258758bebad7c064..f7cd37ba8705fe3090c076270e4d4d1974a0c089 100644
 --- a/include/hw/acpi/ich9.h
 +++ b/include/hw/acpi/ich9.h
 @@ -72,6 +72,8 @@ typedef struct ICH9LPCPMRegs {
      bool periodic_timer_enabled;
      QEMUTimer *swsmi_timer;
      QEMUTimer *periodic_timer;
-+    bool swsmi_timer_exact_loaded;
-+    bool periodic_timer_exact_loaded;
++    ICH9PMTimerClock swsmi_wide_timer;
++    ICH9PMTimerClock periodic_wide_timer;
  } ICH9LPCPMRegs;
  
  #define ACPI_PM_PROP_TCO_ENABLED "enable_tco"
 diff --git a/include/hw/acpi/ich9_tco.h b/include/hw/acpi/ich9_tco.h
-index b3c3f69451e2afccfd0a563227df613aa3dede42..e0eb4c0bf756ddc5930cf2cb518f09893ee26745 100644
+index b3c3f69451e2afccfd0a563227df613aa3dede42..9440249a876fc7f740073fbfc9afb60ec7c56afc 100644
 --- a/include/hw/acpi/ich9_tco.h
 +++ b/include/hw/acpi/ich9_tco.h
-@@ -71,6 +71,7 @@ typedef struct TCOIORegs {
+@@ -52,6 +52,15 @@ enum {
+     TCO_TMR_MASK     = 0x3ff,
+ };
+ 
++/* Deferred owner state: no timer is armed until the parent validates it. */
++typedef struct ICH9PMTimerClock {
++    uint8_t mode;
++    uint8_t active;
++    uint64_t expiry_hi;
++    uint64_t expiry_lo;
++    bool loaded;
++} ICH9PMTimerClock;
++
+ typedef struct TCOIORegs {
+     struct {
+         uint16_t rld;
+@@ -69,8 +78,11 @@ typedef struct TCOIORegs {
+     uint8_t sw_irq_gen;
+ 
      QEMUTimer *tco_timer;
-     int64_t expire_time;
+-    int64_t expire_time;
++    /* Ordinary eight-byte migration fields, never runtime clock authority. */
++    int64_t legacy_timer_ns;
++    int64_t legacy_expire_time;
      uint8_t timeouts_no;
-+    bool exact_timer_loaded;
++    ICH9PMTimerClock wide_timer;
  
      MemoryRegion io;
  } TCOIORegs;
@@ -144086,7 +144258,7 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
      return g_test_run();
  }
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..785c4f438050fa587e4a97e8d07b2310eee2e145 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..a9096530045bf3898486ef5a25495e8223a1f59c 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -147,6 +147,37 @@ if have_system
@@ -144127,7 +144299,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..785c4f438050fa587e4a97e8d07b2310
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +238,606 @@ foreach test_name, extra: tests
+@@ -207,3 +238,627 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -144727,6 +144899,27 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..785c4f438050fa587e4a97e8d07b2310
 +  test(
 +    'test-crucible-acpi-pm-wide-clock',
 +    acpi_pm_wide_clock_test,
++    env: test_env,
++    args: ['--tap', '-k'],
++    protocol: 'tap',
++    timeout: 30,
++    suite: ['unit'],
++  )
++endif
++
++# Retain actual ICH9 auxiliary timer engines and deferred fullword migration.
++if have_system and config_all_devices.has_key('CONFIG_ACPI_ICH9')
++  ich9_aux_wide_clock_test = executable(
++    'test-crucible-ich9-aux-wide-clock',
++    'test-crucible-ich9-aux-wide-clock.c',
++    genh,
++    dependencies: [qemuutil, qom, migration, io],
++    c_args: ['-ffunction-sections', '-fdata-sections'],
++    link_args: ['-Wl,--gc-sections'],
++  )
++  test(
++    'test-crucible-ich9-aux-wide-clock',
++    ich9_aux_wide_clock_test,
 +    env: test_env,
 +    args: ['--tap', '-k'],
 +    protocol: 'tap',
@@ -156268,6 +156461,747 @@ index 0000000000000000000000000000000000000000..ca1c90abe3b22fa2412002e449f07c67
 +                    test_active_timer_roundtrip);
 +    g_test_add_func("/crucible/i3c/missing-exact-state",
 +                    test_missing_exact_state);
++    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-ich9-aux-wide-clock.c b/tests/unit/test-crucible-ich9-aux-wide-clock.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..3625a5222c36e18e8210088c86e81648c582d72e
+--- /dev/null
++++ b/tests/unit/test-crucible-ich9-aux-wide-clock.c
+@@ -0,0 +1,735 @@
++/*
++ * Literal ICH9 auxiliary timer runtime and deferred migration regressions.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#include "qemu/osdep.h"
++#include <sys/wait.h>
++#include "qapi/error.h"
++#include "qemu/main-loop.h"
++#include "qemu/module.h"
++#include "system/cpu-timers.h"
++#include "io/channel-buffer.h"
++#include "migration/savevm.h"
++#include "../../migration/qemu-file.h"
++
++/* Machine registration is excluded; every timer engine body remains real. */
++#undef opts_init
++#define opts_init(function) \
++    static void (*const fixture_##function)(void) G_GNUC_UNUSED = function;
++#include "../../hw/acpi/core.c"
++#include "../../hw/acpi/ich9.c"
++#include "../../hw/acpi/ich9_tco.c"
++#include "../../hw/acpi/ich9_timer.c"
++
++static __int128 observed_ps;
++static unsigned smi_events;
++static unsigned nanosecond_reads;
++
++int64_t cpu_get_clock(void)
++{
++    __int128 ns = observed_ps / 1000;
++
++    nanosecond_reads++;
++    if (ns < INT64_MIN || ns > INT64_MAX) {
++        g_error("Diagnostic nanosecond projection exceeds the API range");
++    }
++    return ns;
++}
++
++bool icount_crucible_sim_mode(void)
++{
++    return false;
++}
++
++static __int128 observed_clock(void)
++{
++    return observed_ps;
++}
++
++void ich9_generate_smi(void)
++{
++    /* Final CPU SMI delivery is an explicit diagnostic consumer. */
++    smi_events++;
++}
++
++void watchdog_perform_action(void)
++{
++    g_assert_not_reached();
++}
++
++/* No transform is installed: fault paths must not become timer permission. */
++bool qemu_crucible_fault_clock_source_active(uint16_t kind, uint32_t instance)
++{
++    g_assert_cmpuint(kind, ==, QEMU_CRUCIBLE_CLOCK_X86_ACPI_PM_TIMER);
++    g_assert_cmpuint(instance, ==, 0);
++    return false;
++}
++
++bool qemu_crucible_fault_clock_source_rebase(uint16_t kind, uint32_t instance,
++                                            uint64_t raw)
++{
++    g_assert_cmpuint(kind, ==, QEMU_CRUCIBLE_CLOCK_X86_ACPI_PM_TIMER);
++    return true;
++}
++
++bool qemu_crucible_fault_clock_timer_fire(
++    uint16_t kind, uint32_t instance, uint16_t role, uint32_t index,
++    uint64_t sequence, uint64_t guest, uint64_t scheduler, uint64_t generation)
++{
++    g_assert_cmpuint(generation, ==, 0);
++    return true;
++}
++
++bool qemu_crucible_fault_clock_read_ticks(
++    uint16_t kind, uint32_t instance, uint64_t raw, uint64_t opportunity,
++    uint64_t *value, bool *read_error)
++{
++    g_assert_not_reached();
++}
++
++bool qemu_crucible_fault_clock_project_ticks(
++    uint16_t kind, uint32_t instance, uint64_t raw,
++    uint64_t *value, bool *read_error)
++{
++    g_assert_not_reached();
++}
++
++bool qemu_crucible_fault_clock_deadline_ps(
++    uint16_t kind, uint32_t instance, uint64_t guest, uint16_t role,
++    uint32_t index, uint64_t period, uint64_t *sequence, int64_t *scheduler,
++    uint32_t *action, uint64_t *generation, uint64_t *effective)
++{
++    g_assert_not_reached();
++}
++
++bool qemu_crucible_fault_clock_timer_arm(uint64_t *sequence)
++{
++    g_assert_not_reached();
++}
++
++bool qemu_crucible_fault_clock_timer_transition(
++    uint16_t kind, uint32_t instance, uint16_t role, uint32_t index,
++    uint64_t sequence, uint64_t old_guest, uint64_t old_scheduler,
++    uint64_t old_generation, uint64_t new_guest, uint64_t new_scheduler,
++    uint64_t new_generation, uint32_t action)
++{
++    g_assert_not_reached();
++}
++
++void qemu_crucible_fault_clock_event_terminal_at(const char *file,
++                                                unsigned int line)
++{
++    g_assert_not_reached();
++}
++
++
++static void never_dispatch(void *opaque)
++{
++    g_assert_not_reached();
++}
++
++static void initialize_fixture(ICH9LPCState *lpc, bool exact)
++{
++    Error *error = NULL;
++    ICH9LPCPMRegs *pm = &lpc->pm;
++
++    module_call_init(MODULE_INIT_QOM);
++    qemu_init_main_loop(&error);
++    g_assert_null(error);
++    if (exact) {
++        qemu_timer_enable_tcg_ps_clock(NULL, observed_clock);
++    }
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++    lpc->d.config = g_malloc0(PCI_CONFIG_SPACE_SIZE);
++    lpc->pin_strap.spkr_hi = 1;
++    pm->enable_tco = true;
++    pm->swsmi_timer_enabled = true;
++    pm->periodic_timer_enabled = true;
++    pm->tco_regs.tco.tmr = 4;
++    pm->tco_regs.tco_timer = timer_new_ns(
++        QEMU_CLOCK_VIRTUAL, tco_timer_expired, &pm->tco_regs);
++    pm->acpi_regs.tmr.timer = timer_new_ns(
++        QEMU_CLOCK_VIRTUAL, never_dispatch, NULL);
++    ich9_pm_swsmi_timer_init(pm);
++    ich9_pm_periodic_timer_init(pm);
++    nanosecond_reads = 0;
++}
++
++static void destroy_fixture(ICH9LPCState *lpc)
++{
++    timer_free(lpc->pm.tco_regs.tco_timer);
++    timer_free(lpc->pm.swsmi_timer);
++    timer_free(lpc->pm.periodic_timer);
++    timer_free(lpc->pm.acpi_regs.tmr.timer);
++    g_free(lpc->d.config);
++}
++
++static bool run_in_child(void)
++{
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return false;
++    }
++    return true;
++}
++
++static void test_tco_wide_runtime(void)
++{
++    ICH9LPCState lpc = { 0 };
++    __int128 origin = ((__int128)1 << 120) + 357;
++
++    if (!run_in_child()) {
++        return;
++    }
++    initialize_fixture(&lpc, true);
++    observed_ps = origin;
++    tco_timer_reload(&lpc.pm.tco_regs);
++
++    g_assert_true(timer_expire_time_ps_wide(lpc.pm.tco_regs.tco_timer) ==
++                   origin + INT64_C(2400000000000));
++    g_assert_cmpuint(tco_ioport_readw(&lpc.pm.tco_regs, TCO_RLD), ==, 4);
++    g_assert_cmpuint(nanosecond_reads, ==, 0);
++    destroy_fixture(&lpc);
++}
++
++static void test_tco_events(void)
++{
++    ICH9LPCState lpc = { 0 };
++
++    if (!run_in_child()) {
++        return;
++    }
++    initialize_fixture(&lpc, true);
++    observed_ps = ((__int128)1 << 120) + 357;
++    lpc.pm.smi_en = ICH9_PMIO_SMI_EN_TCO_EN;
++    tco_timer_reload(&lpc.pm.tco_regs);
++    observed_ps += INT64_C(2400000000000);
++
++    g_assert_true(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
++    g_assert_cmpuint(smi_events, ==, 1);
++    g_assert_true(lpc.pm.tco_regs.tco.sts1 & TCO_TIMEOUT);
++    g_assert_cmpuint(lpc.pm.tco_regs.timeouts_no, ==, 1);
++    g_assert_true(timer_expire_time_ps_wide(lpc.pm.tco_regs.tco_timer) ==
++                   observed_ps + INT64_C(2400000000000));
++    observed_ps += INT64_C(2400000000000);
++    g_assert_true(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
++    g_assert_cmpuint(smi_events, ==, 2);
++    g_assert_true(lpc.pm.tco_regs.tco.sts2 & TCO_SECOND_TO_STS);
++    g_assert_cmpuint(lpc.pm.tco_regs.timeouts_no, ==, 0);
++    tco_timer_stop(&lpc.pm.tco_regs);
++    g_assert_false(timer_pending(lpc.pm.tco_regs.tco_timer));
++    destroy_fixture(&lpc);
++}
++
++static void test_smi_wide_rates(void)
++{
++    ICH9LPCState lpc = { 0 };
++    const int64_t swsmi_ps[] = {
++        INT64_C(1500000000), INT64_C(16000000000),
++        INT64_C(32000000000), INT64_C(64000000000),
++    };
++    const int64_t periodic_ps[] = {
++        INT64_C(64000000000000), INT64_C(32000000000000),
++        INT64_C(16000000000000), INT64_C(8000000000000),
++    };
++
++    if (!run_in_child()) {
++        return;
++    }
++    initialize_fixture(&lpc, true);
++    observed_ps = ((__int128)1 << 120) + 357;
++    for (unsigned selection = 0; selection < 4; selection++) {
++        pci_set_word(lpc.d.config + ICH9_LPC_GEN_PMCON_3, selection << 6);
++        pci_set_word(lpc.d.config + ICH9_LPC_GEN_PMCON_1, selection);
++
++        ich9_pm_update_swsmi_timer(&lpc.pm, true);
++        ich9_pm_update_periodic_timer(&lpc.pm, true);
++        g_assert_true(timer_expire_time_ps_wide(lpc.pm.swsmi_timer) ==
++                       observed_ps + swsmi_ps[selection]);
++        g_assert_true(timer_expire_time_ps_wide(lpc.pm.periodic_timer) ==
++                       observed_ps + periodic_ps[selection]);
++    }
++    ich9_pm_update_swsmi_timer(&lpc.pm, false);
++    ich9_pm_update_periodic_timer(&lpc.pm, false);
++    g_assert_false(timer_pending(lpc.pm.swsmi_timer));
++    g_assert_false(timer_pending(lpc.pm.periodic_timer));
++    g_assert_cmpuint(nanosecond_reads, ==, 0);
++    destroy_fixture(&lpc);
++}
++
++/* Parent MMIO/PCI/GPE restoration is excluded from this timer-only stream. */
++static int auxiliary_post_load(void *opaque, int version_id)
++{
++    ICH9LPCPMRegs *pm = opaque;
++
++    for (unsigned index = 0; index < 3; index++) {
++        int result = ich9_aux_validate(pm, index);
++
++        if (result < 0) {
++            return result;
++        }
++    }
++    for (unsigned index = 0; index < 3; index++) {
++        ich9_aux_restore(pm, index);
++    }
++    return 0;
++}
++
++static const VMStateDescription auxiliary_stream = {
++    .name = "ich9_pm",
++    .version_id = 1,
++    .minimum_version_id = 1,
++    .pre_save = ich9_pm_pre_save,
++    .pre_load = ich9_pm_pre_load,
++    .post_load = auxiliary_post_load,
++    .fields = (const VMStateField[]) {
++        VMSTATE_STRUCT(tco_regs, ICH9LPCPMRegs, 1, vmstate_tco_io_sts,
++                        TCOIORegs),
++        VMSTATE_END_OF_LIST()
++    },
++    .subsections = (const VMStateDescription * const []) {
++        &vmstate_ich9_tco_timer_wide,
++        &vmstate_ich9_swsmi_timer_wide,
++        &vmstate_ich9_periodic_timer_wide,
++        NULL,
++    },
++};
++
++static GByteArray *save_description(ICH9LPCPMRegs *pm,
++                                    const VMStateDescription *description)
++{
++    QIOChannelBuffer *channel = qio_channel_buffer_new(256);
++    QEMUFile *file = qemu_file_new_output(QIO_CHANNEL(channel));
++    GByteArray *bytes = g_byte_array_new();
++    Error *error = NULL;
++
++    g_assert_cmpint(vmstate_save_state(file, description, pm, NULL,
++                                      &error), ==, 0);
++    g_assert_null(error);
++    qemu_put_byte(file, QEMU_VM_EOF);
++    g_assert_cmpint(qemu_fflush(file), ==, 0);
++    g_byte_array_append(bytes, channel->data, channel->usage);
++    g_assert_cmpint(qemu_fclose(file), ==, 0);
++    object_unref(OBJECT(channel));
++    return bytes;
++}
++
++static GByteArray *save_auxiliary(ICH9LPCPMRegs *pm)
++{
++    return save_description(pm, &auxiliary_stream);
++}
++
++static int load_auxiliary(ICH9LPCPMRegs *pm, GByteArray *bytes)
++{
++    QIOChannelBuffer *channel = qio_channel_buffer_new(bytes->len);
++    QEMUFile *file;
++    Error *error = NULL;
++    int result;
++
++    memcpy(channel->data, bytes->data, bytes->len);
++    channel->usage = bytes->len;
++    file = qemu_file_new_input(QIO_CHANNEL(channel));
++    result = vmstate_load_state(file, &auxiliary_stream, pm, 1, &error);
++    error_free(error);
++    qemu_fclose(file);
++    object_unref(OBJECT(channel));
++    return result;
++}
++
++static void test_wide_roundtrip(void)
++{
++    ICH9LPCState lpc = { 0 };
++    __int128 origin = ((__int128)1 << 120) + 357;
++    __int128 expected[3];
++    GByteArray *bytes;
++
++    if (!run_in_child()) {
++        return;
++    }
++    initialize_fixture(&lpc, true);
++    observed_ps = origin;
++    tco_timer_reload(&lpc.pm.tco_regs);
++    ich9_pm_update_swsmi_timer(&lpc.pm, true);
++    ich9_pm_update_periodic_timer(&lpc.pm, true);
++    for (unsigned index = 0; index < 3; index++) {
++        expected[index] = timer_expire_time_ps_wide(ich9_aux_timer(&lpc.pm,
++                                                                index));
++    }
++    bytes = save_auxiliary(&lpc.pm);
++    for (unsigned index = 0; index < 3; index++) {
++        timer_del(ich9_aux_timer(&lpc.pm, index));
++    }
++
++    g_assert_cmpint(load_auxiliary(&lpc.pm, bytes), ==, 0);
++    for (unsigned index = 0; index < 3; index++) {
++        g_assert_true(timer_pending(ich9_aux_timer(&lpc.pm, index)));
++        g_assert_true(timer_expire_time_ps_wide(ich9_aux_timer(&lpc.pm, index))
++                       == expected[index]);
++    }
++    g_byte_array_unref(bytes);
++    destroy_fixture(&lpc);
++}
++
++static size_t subsection_payload(const GByteArray *bytes, const char *name)
++{
++    size_t length = strlen(name);
++
++    for (size_t index = 2; index + length + 4 < bytes->len; index++) {
++        if (bytes->data[index - 2] == QEMU_VM_SUBSECTION &&
++            bytes->data[index - 1] == length &&
++            memcmp(bytes->data + index, name, length) == 0) {
++            return index + length + 4;
++        }
++    }
++    g_assert_not_reached();
++}
++
++static void test_stream_refusal(gconstpointer opaque)
++{
++    unsigned mutation = GPOINTER_TO_UINT(opaque);
++    ICH9LPCState lpc = { 0 };
++    GByteArray *bytes;
++    size_t payload;
++    __int128 original[3];
++
++    if (!run_in_child()) {
++        return;
++    }
++    initialize_fixture(&lpc, true);
++    observed_ps = ((__int128)1 << 120) + 357;
++    tco_timer_reload(&lpc.pm.tco_regs);
++    ich9_pm_update_swsmi_timer(&lpc.pm, true);
++    ich9_pm_update_periodic_timer(&lpc.pm, true);
++    bytes = save_auxiliary(&lpc.pm);
++    payload = subsection_payload(bytes, "ich9_pm/tco-timer-wide");
++    switch (mutation) {
++    case 0:
++        bytes->data[payload] = 0;
++        break;
++    case 1:
++        bytes->data[payload + 1] = 2;
++        break;
++    case 2:
++        /* A writer-derived active deadline cannot become canonical inactive. */
++        bytes->data[payload + 1] = 0;
++        break;
++    case 3:
++        bytes->data[payload - 1] = 2;
++        break;
++    case 4: {
++        size_t start = payload - strlen("ich9_pm/tco-timer-wide") - 6;
++
++        g_byte_array_remove_range(bytes, start, payload + 18 - start);
++        break;
++    }
++    case 5: {
++        size_t start = payload - strlen("ich9_pm/tco-timer-wide") - 6;
++        GByteArray *duplicate = g_byte_array_new();
++
++        g_byte_array_append(duplicate, bytes->data, bytes->len - 1);
++        g_byte_array_append(duplicate, bytes->data + start,
++                            payload + 18 - start);
++        g_byte_array_append(duplicate, bytes->data + bytes->len - 1, 1);
++        g_byte_array_unref(bytes);
++        bytes = duplicate;
++        break;
++    }
++    case 6:
++        payload = subsection_payload(bytes, "ich9_pm/swsmi-timer-wide");
++        bytes->data[payload] = 0;
++        break;
++    case 7:
++        payload = subsection_payload(bytes, "ich9_pm/periodic-timer-wide");
++        bytes->data[payload] = 0;
++        break;
++    default:
++        g_assert_not_reached();
++    }
++    for (unsigned index = 0; index < 3; index++) {
++        QEMUTimer *timer = ich9_aux_timer(&lpc.pm, index);
++
++        original[index] = observed_ps + 999 + index;
++        timer_mod_ps_wide(timer, original[index]);
++    }
++
++    g_assert_cmpint(load_auxiliary(&lpc.pm, bytes), <, 0);
++    for (unsigned index = 0; index < 3; index++) {
++        g_assert_true(timer_pending(ich9_aux_timer(&lpc.pm, index)));
++        g_assert_true(timer_expire_time_ps_wide(ich9_aux_timer(&lpc.pm, index))
++                       == original[index]);
++    }
++    g_byte_array_unref(bytes);
++    destroy_fixture(&lpc);
++}
++
++static void test_inactive_roundtrip(void)
++{
++    ICH9LPCState lpc = { 0 };
++    GByteArray *bytes;
++
++    if (!run_in_child()) {
++        return;
++    }
++    initialize_fixture(&lpc, true);
++    observed_ps = ((__int128)1 << 120) + 357;
++    bytes = save_auxiliary(&lpc.pm);
++    for (unsigned index = 0; index < 3; index++) {
++        timer_mod_ps_wide(ich9_aux_timer(&lpc.pm, index), observed_ps + 999);
++    }
++
++    g_assert_cmpint(load_auxiliary(&lpc.pm, bytes), ==, 0);
++    for (unsigned index = 0; index < 3; index++) {
++        g_assert_false(timer_pending(ich9_aux_timer(&lpc.pm, index)));
++    }
++    g_byte_array_unref(bytes);
++    destroy_fixture(&lpc);
++}
++
++static void test_negative_pending_roundtrip(void)
++{
++    ICH9LPCState lpc = { 0 };
++    GByteArray *bytes;
++
++    if (!run_in_child()) {
++        return;
++    }
++    initialize_fixture(&lpc, true);
++    observed_ps = -357;
++    for (unsigned index = 0; index < 3; index++) {
++        timer_mod_ps_wide(ich9_aux_timer(&lpc.pm, index), -1);
++    }
++    bytes = save_auxiliary(&lpc.pm);
++    for (unsigned index = 0; index < 3; index++) {
++        timer_del(ich9_aux_timer(&lpc.pm, index));
++    }
++
++    g_assert_cmpint(load_auxiliary(&lpc.pm, bytes), ==, 0);
++    for (unsigned index = 0; index < 3; index++) {
++        g_assert_true(timer_pending(ich9_aux_timer(&lpc.pm, index)));
++        g_assert_true(timer_expire_time_ps_wide(ich9_aux_timer(&lpc.pm, index))
++                       == -1);
++    }
++    g_byte_array_unref(bytes);
++    destroy_fixture(&lpc);
++}
++
++static void test_ordinary_roundtrip(void)
++{
++    ICH9LPCState lpc = { 0 };
++    GByteArray *bytes;
++
++    if (!run_in_child()) {
++        return;
++    }
++    initialize_fixture(&lpc, false);
++    observed_ps = 2000;
++    tco_timer_reload(&lpc.pm.tco_regs);
++    bytes = save_auxiliary(&lpc.pm);
++    g_assert_cmpuint(bytes->len, ==, 36);
++    timer_del(lpc.pm.tco_regs.tco_timer);
++
++    g_assert_cmpint(load_auxiliary(&lpc.pm, bytes), ==, 0);
++    g_assert_true(timer_pending(lpc.pm.tco_regs.tco_timer));
++    g_assert_cmpint(timer_expire_time_ns(lpc.pm.tco_regs.tco_timer), ==,
++                    INT64_C(2400000002));
++    g_byte_array_unref(bytes);
++    destroy_fixture(&lpc);
++}
++
++static void test_full_span_count(void)
++{
++    ICH9LPCState lpc = { 0 };
++    __int128 high = ((__int128)1 << 126) + 357;
++    __int128 low = -((__int128)1 << 126);
++
++    if (!run_in_child()) {
++        return;
++    }
++    initialize_fixture(&lpc, true);
++    observed_ps = low;
++    timer_mod_ps_wide(lpc.pm.tco_regs.tco_timer, high);
++    g_assert_cmpuint(tco_ioport_readw(&lpc.pm.tco_regs, TCO_RLD), ==,
++                     UINT16_MAX);
++    observed_ps = high;
++    timer_mod_ps_wide(lpc.pm.tco_regs.tco_timer, low);
++    g_assert_cmpuint(tco_ioport_readw(&lpc.pm.tco_regs, TCO_RLD), ==, 0);
++    destroy_fixture(&lpc);
++}
++
++static void test_checked_arm_overflow(void)
++{
++    ICH9LPCState lpc = { 0 };
++
++    if (!run_in_child()) {
++        return;
++    }
++    initialize_fixture(&lpc, true);
++    observed_ps = (__int128)(((__uint128_t)1 << 127) - 1);
++    timer_mod_ps_wide(lpc.pm.tco_regs.tco_timer, -357);
++
++    g_assert_false(timer_mod_after_ns(lpc.pm.tco_regs.tco_timer,
++                                      INT64_C(2400000000)));
++    g_assert_true(timer_pending(lpc.pm.tco_regs.tco_timer));
++    g_assert_true(timer_expire_time_ps_wide(lpc.pm.tco_regs.tco_timer) == -357);
++    destroy_fixture(&lpc);
++}
++
++static GByteArray *exact_producer_stream(unsigned scenario)
++{
++    int descriptors[2];
++    pid_t producer;
++    uint32_t length;
++    int status;
++    GByteArray *bytes;
++
++    g_assert_cmpint(pipe(descriptors), ==, 0);
++    producer = fork();
++    g_assert_cmpint(producer, >=, 0);
++    if (!producer) {
++        ICH9LPCState lpc = { 0 };
++        GByteArray *output;
++
++        close(descriptors[0]);
++        initialize_fixture(&lpc, true);
++        observed_ps = scenario == 1 ? ((__int128)1 << 120) + 357 : 357;
++        tco_timer_reload(&lpc.pm.tco_regs);
++        ich9_pm_update_swsmi_timer(&lpc.pm, true);
++        ich9_pm_update_periodic_timer(&lpc.pm, true);
++        if (scenario == 2) {
++            for (unsigned index = 0; index < 3; index++) {
++                timer_mod_ps_wide(ich9_aux_timer(&lpc.pm, index), -1);
++            }
++        }
++        if (scenario == 3) {
++            /* The actual prior 11-byte field writer, never a legacy reader. */
++            const VMStateDescription old_timer = {
++                .name = "ich9_pm/tco-timer-ps",
++                .version_id = 1,
++                .minimum_version_id = 1,
++                .fields = (const VMStateField[]) {
++                    VMSTATE_TIMER_NS_PHASE_PTR(tco_regs.tco_timer,
++                                               ICH9LPCPMRegs),
++                    VMSTATE_END_OF_LIST(),
++                },
++            };
++            const VMStateDescription old_stream = {
++                .name = auxiliary_stream.name,
++                .version_id = 1,
++                .minimum_version_id = 1,
++                .pre_save = auxiliary_stream.pre_save,
++                .fields = auxiliary_stream.fields,
++                .subsections = (const VMStateDescription * const []) {
++                    &old_timer, NULL,
++                },
++            };
++            output = save_description(&lpc.pm, &old_stream);
++        } else {
++            output = save_auxiliary(&lpc.pm);
++        }
++        length = output->len;
++        /* Bounded test IPC only; this is not a process protocol fixture. */
++        g_assert_cmpint(write(descriptors[1], &length, sizeof(length)), ==,
++                        sizeof(length));
++        g_assert_cmpint(write(descriptors[1], output->data, length), ==,
++                        length);
++        _exit(0);
++    }
++    close(descriptors[1]);
++    g_assert_cmpint(read(descriptors[0], &length, sizeof(length)), ==,
++                    sizeof(length));
++    g_assert_cmpuint(length, >, 0);
++    g_assert_cmpuint(length, <, 512);
++    bytes = g_byte_array_sized_new(length);
++    g_byte_array_set_size(bytes, length);
++    for (size_t offset = 0; offset < length;) {
++        ssize_t received = read(descriptors[0], bytes->data + offset,
++                                 length - offset);
++
++        g_assert_cmpint(received, >, 0);
++        offset += received;
++    }
++    close(descriptors[0]);
++    g_assert_cmpint(waitpid(producer, &status, 0), ==, producer);
++    g_assert_true(WIFEXITED(status));
++    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++    return bytes;
++}
++
++static void test_crossmode_stream(gconstpointer opaque)
++{
++    unsigned scenario = GPOINTER_TO_UINT(opaque);
++    ICH9LPCState lpc = { 0 };
++    GByteArray *bytes;
++    const int64_t expected[] = {
++        INT64_C(2400000001), INT64_C(1500001), INT64_C(64000000001),
++    };
++
++    if (!run_in_child()) {
++        return;
++    }
++    bytes = exact_producer_stream(scenario);
++    initialize_fixture(&lpc, scenario == 3);
++    observed_ps = 0;
++    for (unsigned index = 0; index < 3; index++) {
++        timer_mod_ns(ich9_aux_timer(&lpc.pm, index), 999 + index);
++    }
++
++    int result = load_auxiliary(&lpc.pm, bytes);
++
++    if (scenario == 3) {
++        g_assert_cmpint(result, <, 0);
++    } else if (scenario == 1) {
++        /* VMState maps the parent's range refusal to its stream error. */
++        g_assert_cmpint(result, ==, -EINVAL);
++        g_assert_cmpint(ich9_aux_validate(&lpc.pm, 0), ==, -ERANGE);
++    } else {
++        g_assert_cmpint(result, ==, 0);
++    }
++    for (unsigned index = 0; index < 3; index++) {
++        QEMUTimer *timer = ich9_aux_timer(&lpc.pm, index);
++
++        g_assert_true(timer_pending(timer));
++        g_assert_cmpint(timer_expire_time_ns(timer), ==,
++                        (scenario == 1 || scenario == 3) ? 999 + index :
++                        scenario == 2 ? 0 : expected[index]);
++    }
++    g_byte_array_unref(bytes);
++    destroy_fixture(&lpc);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/ich9/tco-wide-runtime", test_tco_wide_runtime);
++    g_test_add_func("/ich9/tco-events", test_tco_events);
++    g_test_add_func("/ich9/smi-wide-rates", test_smi_wide_rates);
++    g_test_add_func("/ich9/wide-roundtrip", test_wide_roundtrip);
++    const char *refusals[] = {
++        "mode", "active", "inactive", "version", "missing", "duplicate",
++        "swsmi-mode", "periodic-mode",
++    };
++
++    for (unsigned index = 0; index < G_N_ELEMENTS(refusals); index++) {
++        char *name = g_strdup_printf("/ich9/refuse-%s", refusals[index]);
++
++        g_test_add_data_func(name, GUINT_TO_POINTER(index),
++                             test_stream_refusal);
++        g_free(name);
++    }
++    g_test_add_func("/ich9/inactive-roundtrip", test_inactive_roundtrip);
++    g_test_add_func("/ich9/negative-pending-roundtrip",
++                    test_negative_pending_roundtrip);
++    g_test_add_func("/ich9/ordinary-roundtrip", test_ordinary_roundtrip);
++    g_test_add_func("/ich9/full-span-count", test_full_span_count);
++    g_test_add_func("/ich9/checked-arm-overflow", test_checked_arm_overflow);
++    g_test_add_data_func("/ich9/crossmode-phase", GUINT_TO_POINTER(0),
++                         test_crossmode_stream);
++    g_test_add_data_func("/ich9/crossmode-refuse-wide", GUINT_TO_POINTER(1),
++                         test_crossmode_stream);
++    g_test_add_data_func("/ich9/crossmode-negative", GUINT_TO_POINTER(2),
++                         test_crossmode_stream);
++    g_test_add_data_func("/ich9/refuse-prior-precise-format",
++                         GUINT_TO_POINTER(3), test_crossmode_stream);
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-idle-wait.c b/tests/unit/test-crucible-idle-wait.c
