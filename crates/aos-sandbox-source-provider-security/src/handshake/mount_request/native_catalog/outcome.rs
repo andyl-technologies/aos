@@ -219,21 +219,10 @@ impl OriginalNativeDeadlineV3 {
     ) -> Result<(), SourceProviderSecurityError> {
         self.require_current(later)?;
         let expires = lease_expires.min(self.expires_seconds);
-        let remaining = expires
-            .checked_sub(self.initial.paired.wall_seconds())
-            .and_then(|seconds| seconds.checked_sub(1))
-            .and_then(|seconds| u64::try_from(seconds).ok())
-            .filter(|seconds| *seconds > 0)
-            .and_then(|seconds| seconds.checked_mul(1_000_000_000))
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
         // A shorter lease uses the same original before-read and paired sample.
         // Outcome latency cannot renew or rebase the retained BOOTTIME fence.
-        let deadline = self
-            .initial
-            .boottime_before
-            .checked_add(remaining)
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?
-            .min(self.boottime_deadline);
+        let deadline =
+            conservative_boot_ceiling(&self.initial, expires)?.min(self.boottime_deadline);
         if later.wall_seconds() >= expires || later.boottime_nanoseconds() >= deadline {
             return Err(SourceProviderSecurityError::SessionContinuity);
         }
