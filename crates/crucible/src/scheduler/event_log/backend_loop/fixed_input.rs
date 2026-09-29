@@ -52,6 +52,7 @@ where
         if self.continuation_poisoned
             || self.held_host_continuation.is_some()
             || self.preselection.is_some()
+            || self.device_group_selection.is_retained()
         {
             return Err(super::super::super::fixed_input::fixed_input_error(
                 "fixed input cannot cross another retained actor owner",

@@ -91,6 +91,11 @@ where
                 message: String::from("backend continuation is poisoned"),
             });
         }
+        if self.device_group_selection.is_retained() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("original Device Group selection must settle before RUN"),
+            });
+        }
         if self.preselection.is_some() {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(

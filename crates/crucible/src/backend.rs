@@ -85,6 +85,58 @@ pub trait Backend {
 /// intentionally does not require [`Send`] because concrete QEMU adapters may
 /// wrap thread-affine channel and process-runtime handles.
 pub trait SimulationBackend {
+    /// Observes an original received Group under complete held Source input.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unavailable receipt custody, physical ownership or coverage.
+    /// The default is unsupported and never infers a Group from copied bytes.
+    fn observe_device_group_opportunity(
+        &mut self,
+        _node: &NodeId,
+    ) -> Result<Option<crate::BackendDeviceGroupObservation>, BackendError> {
+        Err(BackendError::Unsupported {
+            capability: "observe_device_group_opportunity",
+        })
+    }
+
+    /// Reauthenticates both original Group observation owners and physical facts.
+    ///
+    /// # Errors
+    ///
+    /// Refuses different Source or receive custody, changed physical process,
+    /// mapping, paired GRID, input enumeration or opportunity. The default
+    /// cannot acknowledge physical authority supplied by a shape constructor.
+    fn device_group_opportunity_current(
+        &mut self,
+        _observation: &crate::BackendDeviceGroupObservation,
+    ) -> Result<(), BackendError> {
+        Err(BackendError::Unsupported {
+            capability: "device_group_opportunity_current",
+        })
+    }
+
+    /// Queues the exact original scheduler selection as command13.
+    ///
+    /// Success records queued publication only, not native acceptance or release.
+    /// An uncertain attempt retains its original command and selection so retry
+    /// recovers the same actual ACK without replaying publication. Such a retry
+    /// authenticates its pending association even after physical Held ends.
+    ///
+    /// # Errors
+    ///
+    /// The default refuses. Implementations reject unavailable original physical
+    /// ownership on first publication, foreign selection or pending command,
+    /// changed mapping, and any unresolved queued acknowledgement.
+    fn queue_device_group_selection(
+        &mut self,
+        _prepared: &crate::PreparedDeviceGroupSelection,
+    ) -> Result<(), BackendError> {
+        Err(BackendError::Unsupported {
+            capability: "queue_device_group_selection",
+        })
+    }
+
     /// Returns the implemented owner of complete I/O queue observations.
     ///
     /// Operational and unclassified backends require physical Source-backed

@@ -6,6 +6,7 @@ use crate::BackendEffect;
 mod admission;
 mod backend_shutdown;
 mod cap_boundary;
+mod device_group;
 mod dispatch_boundary;
 mod fixed_input;
 mod held_boundary;
@@ -18,6 +19,7 @@ mod input_boundary;
 mod io_inventory;
 mod preselection;
 mod settlement;
+use crate::scheduler::device_group_selection::DeviceGroupSelectionController;
 use admission::{BackendBoundaryEvidence, BackendOutcomeAdmission, complete_backend_outcome_on};
 pub use cap_boundary::FailedCapNegotiation;
 pub use dispatch_boundary::FailedDispatchResolution;
@@ -102,6 +104,7 @@ pub struct BackendQuantumLoop<L, B, I = NoopBackendNetworkOutputInterceptor> {
     held_host_continuation: Option<HeldHostContinuation>,
     failed_input_resolution: Option<FailedInputResolution>,
     pending_fixed_input: Option<fixed_input::RetainedFixedInput>,
+    device_group_selection: DeviceGroupSelectionController,
     failed_cap_negotiation: Option<FailedCapNegotiation>,
     failed_dispatch_resolution: Option<FailedDispatchResolution>,
     held_stop_generation: u64,
@@ -126,6 +129,7 @@ impl<L: Clone, B: Clone, I: Clone> Clone for BackendQuantumLoop<L, B, I> {
             held_host_continuation: self.held_host_continuation.clone(),
             failed_input_resolution: self.failed_input_resolution.clone(),
             pending_fixed_input: self.pending_fixed_input.clone(),
+            device_group_selection: self.device_group_selection.clone(),
             failed_cap_negotiation: self.failed_cap_negotiation.clone(),
             failed_dispatch_resolution: self.failed_dispatch_resolution.clone(),
             held_stop_generation: self.held_stop_generation,
@@ -195,6 +199,7 @@ impl<L, B> BackendQuantumLoop<L, B, NoopBackendNetworkOutputInterceptor> {
             held_host_continuation: None,
             failed_input_resolution: None,
             pending_fixed_input: None,
+            device_group_selection: DeviceGroupSelectionController::default(),
             failed_cap_negotiation: None,
             failed_dispatch_resolution: None,
             held_stop_generation: 0,
@@ -251,6 +256,7 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
             held_host_continuation: None,
             failed_input_resolution: None,
             pending_fixed_input: None,
+            device_group_selection: DeviceGroupSelectionController::default(),
             failed_cap_negotiation: None,
             failed_dispatch_resolution: None,
             held_stop_generation: 0,
@@ -288,6 +294,7 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
             held_host_continuation: None,
             failed_input_resolution: None,
             pending_fixed_input: None,
+            device_group_selection: DeviceGroupSelectionController::default(),
             failed_cap_negotiation: None,
             failed_dispatch_resolution: None,
             held_stop_generation: 0,
@@ -777,6 +784,11 @@ where
         &mut self,
         control: Vec<ControlOperation>,
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        if self.device_group_selection.is_retained() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("control cannot cross an original Device Group selection"),
+            });
+        }
         self.loop_impl.apply_control_at_boundary(control)
     }
 

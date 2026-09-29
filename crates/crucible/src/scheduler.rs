@@ -94,6 +94,7 @@ mod concurrent_prepare;
 mod fixed_input;
 pub use fixed_input::{BackendFixedInputResult, BackendFixedInputState, PreparedHostFixedInput};
 mod control_state;
+mod device_group_selection;
 mod event_codec;
 mod event_log;
 mod inactive_time;
@@ -109,6 +110,10 @@ mod topology;
 pub use checkpoint::*;
 pub use concurrent_prepare::*;
 pub use control_state::*;
+pub use device_group_selection::{
+    BackendDeviceGroupObservation, BackendDeviceGroupOwner, DeviceGroupSelectionPublication,
+    PreparedDeviceGroupSelection,
+};
 pub(crate) use event_codec::*;
 pub(crate) use event_codec::{
     recorded_assertion_log_from_schedule_for_search, scheduler_event_log_empty_prefix,
