@@ -1009,6 +1009,9 @@ in
           cp "$xnuRoot/bsd/sys/ptrace.h" "$out/usr/include/sys/"
           cp "$xnuRoot/bsd/sys/ttydev.h" "$out/usr/include/sys/"
           cp "$xnuRoot/bsd/sys/xattr.h" "$out/usr/include/sys/"
+          # Ruby uses the public vnode type and filesystem tag declarations
+          # when handling Darwin paths. Preserve their pinned XNU source ABI.
+          cp "$xnuRoot/bsd/sys/vnode.h" "$out/usr/include/sys/"
           # XNU generates the installed syscall-number header from its
           # authoritative master table rather than checking it into source.
           # Run Apple's generator with the hermetic AOS shell and build tools.
@@ -1060,6 +1063,10 @@ in
           #include <stdint.h>
 
           typedef uint64_t os_signpost_id_t;
+
+          // Instruments recognizes this public category when displaying
+          // signpost events in its Points of Interest track.
+          #define OS_LOG_CATEGORY_POINTS_OF_INTEREST "PointsOfInterest"
 
           #define OS_SIGNPOST_ID_NULL ((os_signpost_id_t)0)
           #define OS_SIGNPOST_ID_INVALID ((os_signpost_id_t)~0ull)

@@ -120,6 +120,13 @@
     if major <= 10
     then "--with-freetype-include=${freetype}/include/freetype2 --with-freetype-lib=${freetype}/lib"
     else "--with-freetype=bundled";
+  # JDK 9 still uses pre-C23 unspecified-argument C declarations. Confine
+  # their compatibility mode to C; the build phase removes copied VM flags.
+  darwinLegacyCFlag =
+    if major == 9
+    then "-std=gnu17 "
+    else "";
+
   # Their Clang setup predates the compiler's C++17 default and requires the
   # same GNU C++98 dialect that the GCC path already selects upstream.
   darwinLegacyCxxFlag =
@@ -1326,7 +1333,7 @@ in
                           --with-version-build=${build} \
                           --with-version-opt=aos \
                           --with-version-pre= \
-                          --with-extra-cflags="-Wno-error -fcommon -fno-delete-null-pointer-checks ${darwinFrameworkFlags}" \
+                          --with-extra-cflags="${darwinLegacyCFlag}-Wno-error -fcommon -fno-delete-null-pointer-checks ${darwinFrameworkFlags}" \
                           --with-extra-cxxflags="-Wno-error -fno-delete-null-pointer-checks ${darwinLegacyCxxFlag} ${darwinFrameworkFlags}" \
                           --with-extra-ldflags="$darwinLdflags ${darwinFrameworkFlags} ${darwinFrameworkRpathFlags}" \
                           --with-jobs=$NIX_BUILD_CORES \

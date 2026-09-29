@@ -98,6 +98,19 @@ pub(in crate::registry_ops) fn read_registry_toml(
     Ok(Some(config))
 }
 
+/// Returns the local authoring name committed in a registry's manifest.
+///
+/// # Errors
+///
+/// Returns an error when the manifest is missing, unreadable, malformed, or
+/// names a registry that cannot be used by local authoring commands.
+pub fn local_registry_name(dir: &Path) -> Result<String> {
+    let manifest = read_registry_toml(dir)?
+        .with_context(|| format!("missing registry manifest in {}", dir.display()))?;
+    validate_registry_name(&manifest.registry.name)?;
+    Ok(manifest.registry.name)
+}
+
 /// Whether a registry records content addresses in its `store/` graph
 /// (`[registry] content_addressed`, RFC-0005). Defaults to `true` when the
 /// file is missing or unparsable.

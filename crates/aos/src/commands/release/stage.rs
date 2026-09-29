@@ -12,16 +12,15 @@ use aos_release::digest::Sha256Digest;
 use aos_release::receipt::{PublicationReceiptV1, verify_signed_receipt};
 use aos_release::state::{JournalEntryV1, ReleaseState, parse_journal};
 use aos_release::tuf::TufRole;
-use aos_remote::hub::HubClient;
 use aos_remote::hub::hub_rpc;
 
 use crate::cli::{HubAccessArgs, ReleaseStageArgs};
 
-use super::{capture, hub_transition, verify};
+use super::{capture, hub_transition, publication_metadata, verify};
 
 const STAGING_HUB: &str = "https://aos.staging.andyl.org";
 
-/// Verifies, uploads, publicly reads back, and receipts one staging bundle.
+/// Verifies, uploads, and receipts one staging bundle.
 pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()> {
     let captured = capture::bundle(&args.bundle)?;
     let trusted_keys = verify::load_trusted_keys(&args.trusted_keys)?;
@@ -34,16 +33,18 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
     )?;
     let plan: aos_release::plan::ReleasePlanV1 =
         canonical::from_slice(&captured.plan_bytes, "release plan")?;
-    plan.require_publishable_qualification()?;
+    plan.require_staging_publication()?;
     let manifest: aos_release::manifest::ManifestEnvelopeV1 =
         canonical::from_slice(&captured.manifest_bytes, "release manifest")?;
-    aos_release::qualification_evidence::validate_observations(
-        &plan,
-        &manifest.payload,
-        aos_release::qualification::QualificationPhase::Build,
-        &manifest.payload.evidence,
-        &humantime::format_rfc3339(std::time::SystemTime::now()).to_string(),
-    )?;
+    if !plan.staging_only {
+        aos_release::qualification_evidence::validate_observations(
+            &plan,
+            &manifest.payload,
+            aos_release::qualification::QualificationPhase::Build,
+            &manifest.payload.evidence,
+            &humantime::format_rfc3339(std::time::SystemTime::now()).to_string(),
+        )?;
+    }
     let journal_bytes = capture::control_file(&args.journal, "release journal")?;
     let journal = parse_journal(&journal_bytes)?;
     require_finalized_journal(&journal, summary.plan_digest, summary.manifest_digest)?;
@@ -60,11 +61,19 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
         TufRole::for_release(plan.release_class).as_str(),
         plan.version
     );
-    let publication_surface = publication_surface(
-        &args.bundle,
+    let metadata = publication_metadata::capture_metadata(args, &plan, &captured.manifest_bytes)?;
+    let source = metadata
+        .as_ref()
+        .map_or(args.bundle.as_path(), |metadata| metadata.surface.as_path());
+    let additions = metadata
+        .as_ref()
+        .map_or(&[][..], |metadata| metadata.files.as_slice());
+    let publication_surface = publication_surface_with_additions(
+        source,
         &captured.files,
         &manifest_public_path,
         &captured.manifest_bytes,
+        additions,
     )?;
     let publication = crate::commands::hub::upload_registry_publication(
         &access,
@@ -79,13 +88,17 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
     }
     hub_transition::verify_deployment(&public_client, STAGING_HUB, &plan.staging_deployment_id)
         .await?;
-    hub_transition::read_back_publication(
-        &public_client,
-        STAGING_HUB,
-        &plan.registry,
-        &publication,
-    )
-    .await?;
+    // The Hub verifies committed object bytes during upload. Public readback
+    // remains a qualification gate for releases outside staging-only testing.
+    if !plan.staging_only {
+        hub_transition::read_back_publication(
+            &public_client,
+            STAGING_HUB,
+            &plan.registry,
+            &publication,
+        )
+        .await?;
+    }
     let bundle_digest =
         aos_release::verify::bundle_digest(&captured.manifest_bytes, &captured.files)?;
     if publication.parent_publication_id.is_empty() {
@@ -94,11 +107,7 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
     if publication.default_commit != plan.registry_base_commit {
         bail!("staging release publication does not preserve the approved registry base");
     }
-    let token = args
-        .token
-        .as_deref()
-        .context("staging requires an access token")?;
-    let hub = HubClient::connect_with_token(STAGING_HUB, token)?;
+    let hub = crate::commands::hub::release_hub_client(STAGING_HUB, args.token.as_deref()).await?;
     hub.call_topology(
         hub_rpc::BeginReleasePublication,
         &aos_proto_types::BeginReleasePublicationRequest {
@@ -161,7 +170,7 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
         return Ok(());
     }
     printer.success(&format!(
-        "Staged and publicly verified release {} as publication {}",
+        "Staged release {} as publication {}",
         receipt.release_id, receipt.operation_id
     ));
     Ok(())
@@ -179,13 +188,33 @@ pub(super) fn publication_surface(
     manifest_public_path: &str,
     manifest_bytes: &[u8],
 ) -> Result<tempfile::TempDir> {
+    publication_surface_with_additions(
+        bundle,
+        verified_files,
+        manifest_public_path,
+        manifest_bytes,
+        &[],
+    )
+}
+
+fn publication_surface_with_additions(
+    source: &Path,
+    verified_files: &[aos_release::verify::CapturedFile],
+    manifest_public_path: &str,
+    manifest_bytes: &[u8],
+    additions: &[aos_release::verify::CapturedFile],
+) -> Result<tempfile::TempDir> {
     let temporary = tempfile::Builder::new()
         .prefix("aos-release-stage-surface-")
         .tempdir()?;
     let surface = temporary.path().join("surface");
-    let mut copied_files = capture::copy_ephemeral_surface_tree(bundle, &surface)?;
+    let mut copied_files = capture::copy_ephemeral_surface_tree(source, &surface)?;
     copied_files.retain(|file| file.path.as_str() != "release-manifest.json");
-    if copied_files != verified_files {
+    copied_files.sort_by(|left, right| left.path.cmp(&right.path));
+    let mut expected = verified_files.to_vec();
+    expected.extend_from_slice(additions);
+    expected.sort_by(|left, right| left.path.cmp(&right.path));
+    if copied_files != expected {
         bail!("release bundle changed between verification and publication capture");
     }
 
@@ -193,7 +222,13 @@ pub(super) fn publication_surface(
     fs::remove_file(surface.join("release-manifest.json"))?;
     let manifest = surface.join(manifest_public_path);
     if manifest.exists() {
-        bail!("release bundle collides with its canonical public manifest path");
+        if !additions
+            .iter()
+            .any(|file| file.path.as_str() == manifest_public_path)
+        {
+            bail!("release bundle collides with its canonical public manifest path");
+        }
+        return Ok(temporary);
     }
     fs::create_dir_all(
         manifest
@@ -361,6 +396,73 @@ mod tests {
         persist_stage_tree(&output, b"receipt", b"journal")?;
         assert!(persist_stage_tree(&output, b"other", b"other").is_err());
         assert_eq!(fs::read(output.join("staging-receipt.json"))?, b"receipt");
+        Ok(())
+    }
+
+    #[test]
+    fn composed_publication_accepts_only_exact_verified_additions() -> Result<()> {
+        let bundle = tempfile::tempdir()?;
+        fs::write(bundle.path().join("release-plan.json"), b"plan")?;
+        fs::write(bundle.path().join("release-manifest.json"), b"manifest")?;
+        fs::write(bundle.path().join("HEAD"), b"base")?;
+        let captured = capture::bundle(bundle.path())?;
+
+        let public_manifest = "releases/edge/1.0.0/release-manifest.json";
+        let composed = tempfile::tempdir()?;
+        let source = composed.path().join("surface");
+        capture::copy_surface_tree(bundle.path(), &source)?;
+        fs::create_dir_all(source.join("releases/edge/1.0.0"))?;
+        fs::write(source.join(public_manifest), b"manifest")?;
+        fs::create_dir(source.join("tuf"))?;
+        fs::write(source.join("tuf/timestamp.json"), b"verified timestamp")?;
+        let additions = vec![
+            aos_release::verify::CapturedFile {
+                path: aos_release::artifact::BundlePath::parse(public_manifest)?,
+                size_bytes: 8,
+                sha256: Sha256Digest::of_bytes(b"manifest"),
+            },
+            aos_release::verify::CapturedFile {
+                path: aos_release::artifact::BundlePath::parse("tuf/timestamp.json")?,
+                size_bytes: 18,
+                sha256: Sha256Digest::of_bytes(b"verified timestamp"),
+            },
+        ];
+
+        let published = publication_surface_with_additions(
+            &source,
+            &captured.files,
+            public_manifest,
+            b"manifest",
+            &additions,
+        )?;
+        assert_eq!(
+            fs::read(published.path().join("surface/tuf/timestamp.json"))?,
+            b"verified timestamp"
+        );
+
+        fs::write(source.join("tuf/timestamp.json"), b"modified timestamp")?;
+        assert!(
+            publication_surface_with_additions(
+                &source,
+                &captured.files,
+                public_manifest,
+                b"manifest",
+                &additions,
+            )
+            .is_err()
+        );
+        fs::write(source.join("tuf/timestamp.json"), b"verified timestamp")?;
+        fs::write(source.join("tuf/unreviewed.json"), b"extra")?;
+        assert!(
+            publication_surface_with_additions(
+                &source,
+                &captured.files,
+                public_manifest,
+                b"manifest",
+                &additions,
+            )
+            .is_err()
+        );
         Ok(())
     }
 }

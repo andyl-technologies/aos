@@ -13,7 +13,7 @@ use aos_release::receipt::{
     HubEnvironment, RegistryBootstrapIntentV1, verify_signed_receipt_with_key,
 };
 use aos_release::signing::SignerRole;
-use aos_remote::hub::{HubClient, hub_rpc};
+use aos_remote::hub::hub_rpc;
 
 use crate::cli::{HubAccessArgs, ReleaseBootstrapArgs};
 
@@ -27,7 +27,11 @@ pub(super) async fn run(args: &ReleaseBootstrapArgs, printer: &Printer) -> Resul
     canonical::require_canonical(&plan_bytes, "release plan")?;
     let plan: aos_release::plan::ReleasePlanV1 =
         canonical::from_slice(&plan_bytes, "release plan")?;
-    plan.require_publishable_qualification()?;
+    if args.environment == "staging" {
+        plan.require_staging_publication()?;
+    } else {
+        plan.require_publishable_qualification()?;
+    }
     let plan_digest = Sha256Digest::of_bytes(&plan_bytes);
     let (environment, hub_url, deployment_id) = match args.environment.as_str() {
         "staging" => (
@@ -92,11 +96,7 @@ pub(super) async fn run(args: &ReleaseBootstrapArgs, printer: &Printer) -> Resul
 
     let public_client = hub_transition::public_client()?;
     hub_transition::verify_deployment(&public_client, hub_url, deployment_id).await?;
-    let token = args
-        .token
-        .as_deref()
-        .context("registry bootstrap requires an environment-specific access token")?;
-    let hub = HubClient::connect_with_token(hub_url, token)?;
+    let hub = crate::commands::hub::release_hub_client(hub_url, args.token.as_deref()).await?;
     let existing = hub
         .call_topology(
             hub_rpc::ListRegistryPublications,
@@ -132,8 +132,12 @@ pub(super) async fn run(args: &ReleaseBootstrapArgs, printer: &Printer) -> Resul
         bail!("first Hub publication does not match the approved empty base");
     }
     hub_transition::verify_deployment(&public_client, hub_url, deployment_id).await?;
-    hub_transition::read_back_publication(&public_client, hub_url, &plan.registry, &publication)
-        .await?;
+    // Staging uploads are available for operator testing as soon as the Hub
+    // commits their verified objects. Public readback belongs to qualification.
+    if !plan.staging_only {
+        hub_transition::read_back_publication(&public_client, hub_url, &plan.registry, &publication)
+            .await?;
+    }
     persist(args, &envelopes, &publication)?;
 
     if printer.json_if_active(&serde_json::json!({

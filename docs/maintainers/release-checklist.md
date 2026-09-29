@@ -4,6 +4,11 @@ Start here when publishing an AOS release. Work through the sections in order.
 Use the same checklist for testing and production; the release class determines
 the additional checks and observation time.
 
+For an unqualified publication to the staging Hub, use the
+[staging-only checklist](#staging-only-publication) below. Its plan must explicitly
+set `staging_only: true`; the numbered qualified-release procedure applies to
+plans without that intent.
+
 Keep a copy with this release's operator records, outside the source checkout.
 Check an item only after its **Check when** condition is true. Beside the box,
 record your name, UTC time, and the log, output directory, or approval showing
@@ -26,6 +31,32 @@ campaign or operator evidence; do not substitute synthetic fleet reports.
 Follow the [executor setup](qualification.md#native-executors) before treating
 the test environments as ready. Main remains closed until its
 [launch requirements](registry-main.md) are satisfied.
+
+## Staging-only publication
+
+Record each completed item and its exact output in the private release directory.
+This procedure ends at staging and creates no qualification or channel claim.
+
+- [ ] Record the release identity, protected source commit, version, public
+  source authorization, and `andyl/testing` registry trust.
+- [ ] Verify the staging registry state and deployment identity. Preserve its
+  existing authentication secrets when updating the staging Hub.
+- [ ] Freeze a current plan with `staging_only: true`, no predecessor, and an
+  empty `intended_channels` array. Require every eligible package and image
+  cell to be built; any blocked cell holds publication.
+- [ ] Realize every frozen output with release build settings, capture its NAR
+  identity and retained sources, and generate the exact SBOM. Record repeat
+  status as `not-checked`.
+- [ ] Finalize all planned disk images and container platforms, registry
+  provenance, the complete signed cache, manifest, and TUF metadata using the
+  separate planned signing roles. Retain the matching corresponding source
+  for every distributed patched QEMU binary.
+- [ ] Compose the signed publication surface. For an empty registry, perform
+  the signed staging bootstrap.
+- [ ] Upload to the canonical staging Hub and retain the staging receipt and
+  successor journal. The Hub checks uploaded object bytes; public readback and
+  qualification checks are deferred. Stop at staging;
+  future qualification requires its own reviewed plan.
 
 ## 1. Prepare the release
 

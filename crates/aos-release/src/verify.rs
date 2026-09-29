@@ -429,6 +429,7 @@ pub(crate) mod tests {
             .collect();
         let plan = ReleasePlanV1 {
             schema_version: crate::RELEASE_PLAN_V1.to_owned(),
+            staging_only: false,
             qualification: None,
             qualification_predecessor: None,
             release_id: "release-2026.9.0".to_owned(),
@@ -445,6 +446,7 @@ pub(crate) mod tests {
                 contributor_authorization_digest: digest("authorization"),
             },
             packages: vec![PackagePlan {
+                platform_versions: Default::default(),
                 name: "example".to_owned(),
                 publication: Some(crate::inventory::PackagePublicationMetadata {
                     version: "1.0.0".to_owned(),
@@ -1528,6 +1530,52 @@ pub(crate) mod tests {
         assert_eq!(summary.artifact_count, 30);
         assert_eq!(summary.evidence_count, 1);
         assert_eq!(summary.signatures_verified, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn target_package_versions_bind_outputs_and_reject_unpublished_targets() -> anyhow::Result<()> {
+        let (mut plan, _) = qualification_fixture()?;
+        plan.packages[0]
+            .platform_versions
+            .insert(Platform::Aarch64Linux, "0.9.0".into());
+
+        let cell = plan.packages[0]
+            .platforms
+            .iter_mut()
+            .find(|cell| cell.platform == Platform::Aarch64Linux)
+            .unwrap();
+        let MatrixCell::Artifact { artifact } = &mut cell.decision else {
+            panic!("fixture requires a published Arm Linux package");
+        };
+        artifact.artifacts[0].derivation =
+            Some("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv".into());
+        artifact.artifacts[0].output = Some("out".into());
+        artifact.artifacts[0].store_path =
+            Some("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-example".into());
+
+        let outputs = crate::build::planned_nix_outputs(&plan)?;
+        assert_eq!(outputs.values().next().unwrap().version, "0.9.0");
+        plan.validate()?;
+
+        plan.packages[0]
+            .platform_versions
+            .insert(Platform::Aarch64Linux, "1.0.0".into());
+        assert!(plan.validate().is_err());
+
+        plan.packages[0]
+            .platform_versions
+            .insert(Platform::Aarch64Linux, "0.9.0".into());
+        plan.packages[0]
+            .platforms
+            .iter_mut()
+            .find(|cell| cell.platform == Platform::Aarch64Linux)
+            .unwrap()
+            .decision = MatrixCell::NotApplicable {
+            rule: "excluded-target".into(),
+            reason: "Target is not published".into(),
+        };
+        assert!(plan.validate().is_err());
         Ok(())
     }
 

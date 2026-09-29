@@ -4,12 +4,20 @@
   fetchurl,
   buildPackages,
   bazelMavenBootstrap,
+  version ? "1.19.1",
 }: let
-  version = "1.19.1";
+  sourceHash =
+    {
+      "1.19.1" = "sha256-FJcM9EoGrp5+Fg7ZiIx9j/oinb29xXrUcl1c6qqacnM=";
+      "1.27.0" = "sha256-6bhVD5Cz9xmx8zG3sWv0PtWF5f+LGXKOw/ao1PyoahM=";
+    }.${
+      version
+    }
+    or (throw "unsupported Google Java Format source version: ${version}");
   buildJdk = buildPackages.openjdk-21;
   src = fetchurl {
     urls = ["https://repo.maven.apache.org/maven2/com/google/googlejavaformat/google-java-format/${version}/google-java-format-${version}-sources.jar"];
-    hash = "sha256-FJcM9EoGrp5+Fg7ZiIx9j/oinb29xXrUcl1c6qqacnM=";
+    hash = sourceHash;
   };
 in
   mkDerivation {

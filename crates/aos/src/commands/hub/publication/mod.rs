@@ -10,6 +10,7 @@ use crate::commands::hub::publication::inventory::{
 };
 use anyhow::{Context as _, Result};
 use aos_core::output::Printer;
+use aos_net::retry::{RetryConfig, compute_retry_delay};
 use aos_net::{
     MultipartAdmission, MultipartBackend, MultipartFailurePolicy, MultipartSessionState,
     MultipartSource, MultipartUploadRequest, TransferEvent, TransferManager, TransferManagerConfig,
@@ -18,6 +19,22 @@ use aos_net::{
 use aos_remote::{HubClient, hub_rpc as HubTopologyMethod, hub_types};
 use futures_util::stream;
 use futures_util::stream::{StreamExt as _, TryStreamExt as _};
+
+/// Bounds each part to the publication service's 8 MiB wire contract.
+const MAX_PUBLICATION_PART_BYTES: u64 = 8 * 1024 * 1024;
+
+#[cfg(test)]
+/// Inventories an offline fixture through the actual publication adapter.
+///
+/// # Errors
+///
+/// Returns an error for inadmissible paths, Git pointers, or NAR identities.
+pub(crate) fn inspect_publication_for_test(
+    root: &std::path::Path,
+    registry: &str,
+) -> Result<hub_types::BeginRegistryPublicationRequest> {
+    Ok(publication_from_root(root, registry)?.request)
+}
 
 /// Handles the hub publish command family through the public API.
 ///
@@ -181,7 +198,6 @@ async fn upload_registry_publication_with_commit(
         let (immutable_objects, pointer_objects) = objects.split_at(pointer_start);
 
         upload_publication_object_class(
-            &client,
             access,
             &publication_id,
             &pinned.root,
@@ -192,7 +208,6 @@ async fn upload_registry_publication_with_commit(
         )
         .await?;
         upload_publication_object_class(
-            &client,
             access,
             &publication_id,
             &pinned.root,
@@ -233,7 +248,6 @@ async fn upload_registry_publication_with_commit(
 
 /// Uploads one publication class with bounded request concurrency.
 async fn upload_publication_object_class(
-    client: &HubClient,
     access: &HubAccessArgs,
     publication_id: &str,
     root: &std::os::fd::OwnedFd,
@@ -253,7 +267,7 @@ async fn upload_publication_object_class(
     // publication-object lookup keeps each remote-SQL response constant-sized;
     // near-limit objects naturally serialize through the byte budget.
     const SNAPSHOT_BUDGET_PERMITS: u32 = 32;
-    const CONCURRENT_MULTIPART_UPLOADS: usize = 1;
+    const CONCURRENT_MULTIPART_UPLOADS: usize = 2;
 
     let snapshot_budget = std::sync::Arc::new(tokio::sync::Semaphore::new(
         SNAPSHOT_BUDGET_PERMITS as usize,
@@ -309,23 +323,28 @@ async fn upload_publication_object_class(
 
             let byte_size = u64::try_from(object.byte_size)
                 .context("Hub publication response returned a negative object size")?;
-            let snapshot_permits = u32::try_from(
+            // Multipart snapshots remain on disk. Reserve the part buffer and
+            // its transport copy so independent large objects can overlap.
+            let resident_bytes = if object.upload_url.is_empty() {
+                byte_size.min(2 * MAX_PUBLICATION_PART_BYTES)
+            } else {
                 byte_size
+            };
+            let snapshot_permits = u32::try_from(
+                resident_bytes
                     .div_ceil(SNAPSHOT_PERMIT_BYTES)
                     .max(1)
                     .min(u64::from(SNAPSHOT_BUDGET_PERMITS)),
             )
             .context("publication snapshot permit count overflowed")?;
-            // The permit is held across snapshotting and upload. Objects larger
-            // than the aggregate budget run exclusively; smaller snapshots can
-            // overlap only while their declared sizes fit the byte budget.
+            // Hold the permit across snapshotting and upload so active request
+            // buffers remain within the aggregate byte budget.
             let _snapshot_permit = snapshot_budget
                 .acquire_many_owned(snapshot_permits)
                 .await
                 .context("publication snapshot budget closed unexpectedly")?;
-            // Multipart requests carry one bounded part buffer and load the
-            // publication coordinator's durable state. Serialize them so a
-            // large manifest cannot amplify coordinator memory use.
+            // Bound independent multipart objects as well as their buffers.
+            // Each object's parts remain sequential for its SHA-256 state.
             let _multipart_permit = if object.upload_url.is_empty() {
                 Some(
                     multipart_budget
@@ -337,7 +356,6 @@ async fn upload_publication_object_class(
                 None
             };
             upload_declared_publication_object(
-                client,
                 access,
                 publication_id,
                 root,
@@ -357,7 +375,6 @@ async fn upload_publication_object_class(
 }
 
 async fn upload_declared_publication_object(
-    client: &HubClient,
     access: &HubAccessArgs,
     publication_id: &str,
     root: &std::os::fd::OwnedFd,
@@ -366,8 +383,8 @@ async fn upload_declared_publication_object(
     progress: &aos_core::output::TransferProgress,
     transfer_manager: &TransferManager,
 ) -> Result<()> {
-    let file = snapshot_publication_object(root, declared)?;
     if object.upload_url.is_empty() {
+        let file = snapshot_publication_object(root, declared)?;
         upload_publication_multipart(
             transfer_manager,
             access,
@@ -379,12 +396,51 @@ async fn upload_declared_publication_object(
         .await
         .with_context(|| format!("uploading publication path {}", object.path))
     } else {
-        client
-            .upload_publication_object(&object.upload_url, file, &object.path)
+        upload_publication_single_object(access, root, declared, object)
             .await
             .with_context(|| format!("uploading publication path {}", object.path))?;
         progress.inc(u64::try_from(object.byte_size)?);
         Ok(())
+    }
+}
+
+/// Retries transport failures without changing a declared object's bytes.
+async fn upload_publication_single_object(
+    access: &HubAccessArgs,
+    root: &std::os::fd::OwnedFd,
+    declared: &hub_types::RegistryPublicationObjectInput,
+    object: &hub_types::RegistryPublicationObject,
+) -> Result<()> {
+    let retry = RetryConfig::default();
+    let mut attempt = 0;
+
+    loop {
+        // Each request owns an independent snapshot and resolves the current
+        // profile, so retries neither share stream offsets nor reuse old tokens.
+        let file = snapshot_publication_object(root, declared)?;
+        let result = publication_client(access)
+            .await?
+            .upload_publication_object(&object.upload_url, file, &object.path)
+            .await;
+
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                attempt += 1;
+                let transport_failure = error.chain().any(|cause| {
+                    cause
+                        .downcast_ref::<reqwest::Error>()
+                        .is_some_and(|error| error.is_connect() || error.is_timeout())
+                });
+                if !transport_failure || attempt >= retry.max_attempts {
+                    return Err(error);
+                }
+
+                // The declared object endpoint is idempotent even if the
+                // previous request stored its bytes before the connection failed.
+                tokio::time::sleep(compute_retry_delay(&retry, attempt - 1)).await;
+            }
+        }
     }
 }
 
@@ -543,7 +599,6 @@ async fn upload_publication_multipart(
     file: std::fs::File,
     progress: &aos_core::output::TransferProgress,
 ) -> Result<()> {
-    const MAX_CLIENT_PART_BYTES: u64 = 20 * 1024 * 1024;
     const MAX_CLIENT_PARTS: u32 = 10_000;
 
     let adapter = PublicationMultipartAdapter {
@@ -556,8 +611,8 @@ async fn upload_publication_multipart(
         MultipartSource::file(file),
     )
     .with_concurrency(1)
-    .with_maximum_in_flight_bytes(MAX_CLIENT_PART_BYTES)
-    .with_part_limits(1, MAX_CLIENT_PART_BYTES, MAX_CLIENT_PARTS)
+    .with_maximum_in_flight_bytes(MAX_PUBLICATION_PART_BYTES)
+    .with_part_limits(1, MAX_PUBLICATION_PART_BYTES, MAX_CLIENT_PARTS)
     .with_failure_policy(MultipartFailurePolicy::Preserve);
     let observer = PublicationMultipartObserver {
         progress,

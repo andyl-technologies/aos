@@ -4,7 +4,7 @@
 //! ordering, consistency planning, and HTTP responses use one path contract.
 
 /// The machine-surface directory prefixes (also valid as bare paths).
-const MACHINE_DIRS: [&str; 8] = [
+const MACHINE_DIRS: [&str; 9] = [
     "info",
     "objects",
     "channels",
@@ -13,6 +13,7 @@ const MACHINE_DIRS: [&str; 8] = [
     "nar",
     "web",
     "browse",
+    "tuf",
 ];
 
 /// Cache-control for content-addressed payloads.
@@ -49,6 +50,7 @@ pub fn cache_control(path: &str) -> &'static str {
             && !is_git_pack_index_path(path))
             || path.starts_with("publication-receipts/")
             || path.starts_with("nar/")
+            || (path.starts_with("tuf/") && path != "tuf/timestamp.json")
             || is_image_object_path(path)
     };
     if immutable {
@@ -280,5 +282,14 @@ mod tests {
     fn dumb_git_advertisement_uses_the_exact_fallback_media_type() {
         assert_eq!(content_type("info/refs"), "text/plain");
         assert_eq!(content_type("HEAD"), "text/plain; charset=utf-8");
+    }
+
+    #[test]
+    fn tuf_metadata_admits_immutable_versions_and_a_mutable_timestamp() {
+        assert!(is_machine_path("tuf/1.root.json"));
+        assert!(!is_mutable_path("tuf/1.root.json"));
+        assert!(is_machine_path("tuf/timestamp.json"));
+        assert!(is_mutable_path("tuf/timestamp.json"));
+        assert_eq!(content_type("tuf/timestamp.json"), "application/json");
     }
 }

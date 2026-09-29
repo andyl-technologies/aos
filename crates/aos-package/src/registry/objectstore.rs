@@ -150,14 +150,14 @@ pub fn ensure_loose_completeness(repo: &Path) -> Result<()> {
 ///
 /// Bundles are replaceable accelerators, not new trust roots: consumers still
 /// verify each enclosed loose object's Git OID and retain canonical loose-path
-/// fallback. Rebuilding all 256 fixed shard names after loose completeness
-/// makes publication retries deterministic and bounds indexer round trips.
+/// fallback. Rebuilding bounded shards after loose completeness makes
+/// publication retries deterministic and bounds indexer round trips.
 ///
 /// # Errors
 ///
 /// Returns an error when the object store cannot be enumerated or read, a path
-/// is not a canonical SHA-256 loose-object path, or a shard violates its wire
-/// format bounds.
+/// is not a canonical SHA-256 loose-object path, or a loose object exceeds
+/// its published size cap.
 pub fn write_index_bundles(repo: &Path) -> Result<()> {
     assert_sha256(repo)?;
     let git_dir = repo_git_dir(repo)?;
@@ -173,8 +173,8 @@ pub fn write_index_bundles(repo: &Path) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error when the surface has no root object store, an object cannot
-/// be enumerated or read, a path is not canonical, or a shard violates its
-/// wire-format bounds.
+/// be enumerated or read, a path is not canonical, or a loose object exceeds
+/// its published size cap.
 pub fn write_index_bundles_for_surface(surface: &Path) -> Result<()> {
     let objects_dir = surface.join("objects");
     if !objects_dir.is_dir() {
@@ -216,17 +216,28 @@ pub fn write_index_bundles_for_surface(surface: &Path) -> Result<()> {
                     aos_registry_surface::object::Oid::from_hex(&format!("{shard}{filename}"))?;
                 let loose = fs::read(entry.path())
                     .with_context(|| format!("reading loose object {oid}"))?;
+                if loose.len() as u64
+                    > aos_registry_surface::object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES
+                {
+                    bail!("object {oid} exceeds the published loose-object size cap");
+                }
                 entries.push((oid, loose));
             }
         }
         entries.sort_by_key(|(oid, _)| *oid);
-        let encoded = aos_registry_surface::object_bundle::encode(&shard, &entries)?;
         let destination = bundle_dir.join(&shard);
         let temporary = bundle_dir.join(format!(".{shard}.tmp"));
-        fs::write(&temporary, encoded)
-            .with_context(|| format!("writing {}", temporary.display()))?;
-        fs::rename(&temporary, &destination)
-            .with_context(|| format!("installing {}", destination.display()))?;
+        if let Ok(encoded) = aos_registry_surface::object_bundle::encode(&shard, &entries) {
+            fs::write(&temporary, encoded)
+                .with_context(|| format!("writing {}", temporary.display()))?;
+            fs::rename(&temporary, &destination)
+                .with_context(|| format!("installing {}", destination.display()))?;
+        } else if destination.exists() {
+            // Large valid objects use the canonical loose path when their
+            // optional shard exceeds its cap. Remove the previous accelerator.
+            fs::remove_file(&destination)
+                .with_context(|| format!("removing {}", destination.display()))?;
+        }
         aggregate_entries.extend(entries);
     }
 

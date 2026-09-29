@@ -34,7 +34,9 @@ struct NixPathInfo {
     references: Vec<String>,
 }
 
-/// Realizes every planned derivation twice and writes a closed evidence tree.
+/// Realizes every planned derivation and writes its exact evidence tree.
+///
+/// Qualified release intent additionally requires a successful repeat build.
 pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -> Result<()> {
     let started_at = require_utc_time(&args.started_at, "build start time")?;
     if started_at > std::time::SystemTime::now() {
@@ -63,8 +65,13 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
         derivations.len()
     ));
     nix.realise_derivations(&derivations, false)?;
-    printer.info("Repeat-building planned derivations with Nix --check...");
-    nix.realise_derivations(&derivations, true)?;
+    let reproducibility = if plan.staging_only {
+        ReproducibilityResult::NotChecked
+    } else {
+        printer.info("Repeat-building planned derivations with Nix --check...");
+        nix.realise_derivations(&derivations, true)?;
+        ReproducibilityResult::Reproduced
+    };
 
     let source_paths = planned
         .values()
@@ -87,7 +94,10 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
             .with_context(|| format!("Nix omitted planned store path {}", expected.store_path))?;
         let mut info: NixPathInfo = serde_json::from_value(value.clone())
             .with_context(|| format!("decoding Nix facts for {}", expected.store_path))?;
-        if info.deriver.as_deref() != Some(expected.derivation) {
+        // Nix versions can serialize equivalent input derivations differently
+        // while retaining the same output path. Staging reuses those outputs
+        // after realizing the frozen roots; qualification checks are deferred.
+        if !plan.staging_only && info.deriver.as_deref() != Some(expected.derivation) {
             bail!("realized output {id} has a different deriver than the plan");
         }
         info.references.sort();
@@ -106,7 +116,7 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
             nar_size: info.nar_size,
             closure_size: info.closure_size,
             references: info.references,
-            reproducibility: ReproducibilityResult::Reproduced,
+            reproducibility,
         });
     }
     let sources = source_paths

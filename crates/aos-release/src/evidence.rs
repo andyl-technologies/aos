@@ -644,6 +644,7 @@ mod tests {
         let gate_digest = digest("gate");
         let plan = ReleasePlanV1 {
             schema_version: crate::RELEASE_PLAN_V1.to_owned(),
+            staging_only: false,
             qualification: None,
             qualification_predecessor: None,
             release_id: "release-2026.9.0".to_owned(),
@@ -660,6 +661,7 @@ mod tests {
                 contributor_authorization_digest: digest("authorization"),
             },
             packages: vec![PackagePlan {
+                platform_versions: Default::default(),
                 name: "example".to_owned(),
                 publication: None,
                 platforms: platforms.clone(),

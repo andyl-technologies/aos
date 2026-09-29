@@ -439,6 +439,7 @@ fn release_plan(
     ];
     let mut plan = ReleasePlanV1 {
         schema_version: aos_release::RELEASE_PLAN_V1.into(),
+        staging_only: false,
         qualification: None,
         qualification_predecessor: None,
         release_id: RELEASE_ID.into(),
@@ -455,6 +456,7 @@ fn release_plan(
             contributor_authorization_digest: digest("fleet-contributor-authorization"),
         },
         packages: vec![PackagePlan {
+            platform_versions: Default::default(),
             name: "fleet-package".into(),
             publication: Some(PackagePublicationMetadata {
                 version: "1.0.0".into(),

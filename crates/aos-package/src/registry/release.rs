@@ -621,12 +621,16 @@ async fn prepare_registry(
     let source = source_registry
         .to_str()
         .context("source registry path is not valid UTF-8")?;
-    Repository::clone(source, &isolated).with_context(|| {
-        format!(
-            "cloning exact registry base from {}",
-            source_registry.display()
-        )
-    })?;
+    // Publication capture requires independent files, including Git packs.
+    git2::build::RepoBuilder::new()
+        .clone_local(git2::build::CloneLocal::NoLinks)
+        .clone(source, &isolated)
+        .with_context(|| {
+            format!(
+                "cloning exact registry base from {}",
+                source_registry.display()
+            )
+        })?;
     require_head(&isolated, &intent.base_commit)?;
 
     let mut entry_groups = BTreeMap::<(String, String, String), Vec<RegistryReleaseEntry>>::new();
