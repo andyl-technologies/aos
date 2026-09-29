@@ -135,7 +135,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 `checks.terrane.gates.gc-grace-window`,
 `checks.terrane.gates.algebra-merge`, store conformance on `file://`.
 
-- [ ] **T-OBJ-1** Identity domains, descriptors, and the `terrane-v1`
+- [x] **T-OBJ-1** Identity domains, descriptors, and the `terrane-v1`
   identity profile; second-identity-profile registration hook. — satisfies
   OBJ-1 to OBJ-4, OBJ-6 to OBJ-10; `checks.terrane.gates.identity-idempotence`,
   `checks.terrane.gates.descriptor-strict`.
