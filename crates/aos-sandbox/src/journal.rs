@@ -3408,7 +3408,8 @@ impl ProtectedJournalAuthority<'_> {
     /// [`JournalError::ProtectedBoundary`] when this journal lacks retained
     /// protected-open provenance, or [`JournalError::StaleAuthoritySnapshot`]
     /// when `snapshot` belongs to another journal or namespace or its sequence
-    /// is no longer current.
+    /// is no longer current. Read-only Source guards return
+    /// [`JournalError::ForeignAuthorityNamespace`] without granting an effect.
     pub fn validate_snapshot_for_effect(
         &self,
         snapshot: &ProtectedJournalSnapshot,
