@@ -185,7 +185,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `class.magic`), stored per object. Narrowed to trunk scope: index trees,
   derivations, and memos are T-DRV-2 on B-derive. — satisfies DRV-1 to
   DRV-11; `checks.terrane.gates.derived-attr-record`.
-- [ ] **T-AUTH-1** Capability token verification (Ed25519, chain, caveats,
+- [x] **T-AUTH-1** Capability token verification (Ed25519, chain, caveats,
   attenuation) in `no_std`. — satisfies AUTH-7 to AUTH-22;
   `checks.terrane.gates.auth-verify-pure`,
   `checks.terrane.gates.auth-attenuation-monotone`.
