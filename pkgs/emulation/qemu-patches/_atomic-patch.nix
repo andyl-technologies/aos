@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "afd000f884c2cc792ea1f2cda9db7713a4122eec01a7be308712989fc2e18d20";
+  sha256 = "7ec5fcb12c58066f77a243047b61d205abf75f2d80592ee79b8e8565674e4806";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -107,9 +107,12 @@
     "storm-clamp deadline even when all phases align to nanoseconds."
     "Require exact TCG state on restore; keep generic non-TCG timing unchanged"
     "and exercise literal device timers, pin IRQs and full migration streams."
+    ""
+    "Remove unreachable TCG migration reconstruction after exact-state admission."
+    "Retain the existing non-TCG comparator and nanosecond history reconstruction."
   ];
-  commit = "1c341804cf3e538e59ee8aac6f900163f151328e";
-  tree = "86ba352456395842275016c0a6fe43f27c2c14b0";
+  commit = "b03c28668de69e3916ce8a127579574648ab8424";
+  tree = "dc6905d05c68736355d61486e94c1f30946180b4";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -118,7 +121,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "b3dff2c705757211e99481dab79d97ff77e8362ff215768a7d1541e5dd069e57";
+  bundleSha256 = "68587025a7ca5f7564287f3d1eb7de33c643ec6ea249f3aefe57462bad79cd68";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
