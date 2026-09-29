@@ -23,6 +23,18 @@ pub struct PreparedRunInputInventory {
 }
 
 impl PreparedRunInputInventory {
+    pub(super) fn complete_source(
+        source: Arc<SingleScheduler>,
+        generation: NonZeroU64,
+        next_input: Option<NodeCounter>,
+    ) -> Self {
+        Self {
+            generation,
+            next_input,
+            _source: source,
+        }
+    }
+
     pub(super) fn fixed_input(
         source: Arc<SingleScheduler>,
         generation: NonZeroU64,

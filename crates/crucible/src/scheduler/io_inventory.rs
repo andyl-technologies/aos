@@ -300,6 +300,17 @@ impl SingleScheduler {
             .min()
     }
 
+    pub(super) fn imported_source_matches(
+        &self,
+        node: &NodeId,
+        observed: NodeCounter,
+        generation: NonZeroU64,
+    ) -> bool {
+        self.imported_io
+            .get(node)
+            .is_some_and(|source| source.observed == observed && source.generation == generation)
+    }
+
     pub(super) fn imported_native_boundary(&self, node: &NodeId) -> Option<NodeCounter> {
         self.imported_io.get(node).and_then(|observed| {
             [observed.native_caps.timer, observed.native_caps.input]

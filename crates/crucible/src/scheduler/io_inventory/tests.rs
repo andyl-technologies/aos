@@ -854,3 +854,6 @@ fn mismatched_vm_topology_and_rebinding_world_preserve_the_original_owner() {
     );
     assert_eq!(ok(ok(scheduler.checkpoint()).canonical_bytes()), before);
 }
+
+#[path = "../device_group_selection/tests.rs"]
+mod device_group_selection_tests;

@@ -16,6 +16,7 @@ where
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         if self.held_host_continuation.is_some()
             || self.pending_fixed_input.is_some()
+            || self.device_group_selection.is_retained()
             || self.continuation_poisoned
         {
             // Explicit whole-world teardown discards private physical evidence;
@@ -26,6 +27,7 @@ where
             self.held_host_continuation = None;
             self.failed_input_resolution = None;
             self.pending_fixed_input = None;
+            self.device_group_selection = Default::default();
             self.failed_cap_negotiation = None;
             self.failed_dispatch_resolution = None;
             self.preselection = None;
