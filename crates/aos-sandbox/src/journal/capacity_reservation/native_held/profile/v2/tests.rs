@@ -43,8 +43,8 @@ fn request(count: u32) -> NativeHeldCapacityRequestV3 {
 }
 
 #[test]
-fn slot18_five_owner_shape_frames_seven_records_and_preserves_cleanup_credit() {
-    let changes = [40, 49, 96, 99, 103]
+fn slot18_pending_retirement_shape_frames_seven_records_and_preserves_cleanup_credit() {
+    let changes = [40, 63, 96, 99, 103]
         .into_iter()
         .map(|width| change(width, 1, Some(2)))
         .collect::<Vec<_>>();
@@ -86,6 +86,23 @@ fn slot18_five_owner_shape_frames_seven_records_and_preserves_cleanup_credit() {
     assert!(
         provider_native_capacity_transition_v2(&append, &old, None, JournalLimits::default())
             .is_err()
+    );
+}
+
+#[test]
+fn slot18_pending_retirement_rejects_authority_instead_of_current_session() {
+    let changes = [40, 49, 96, 99, 103]
+        .into_iter()
+        .map(|width| change(width, 1, Some(2)))
+        .collect::<Vec<_>>();
+
+    assert!(
+        NativeHeldCapacityAppendV2::provider(
+            NativeHeldCapacityStepV3::ProviderRootTerminalStored,
+            [1; 16],
+            changes
+        )
+        .is_err()
     );
 }
 
