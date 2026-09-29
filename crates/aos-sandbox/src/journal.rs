@@ -4541,20 +4541,7 @@ fn validate_reserved_capacity(
     prospective_transactions: usize,
     limits: JournalLimits,
 ) -> Result<(), JournalError> {
-    let mut reservations = BTreeMap::new();
-    for ((namespace, key), value) in state {
-        if *namespace == RecordNamespace::GlobalCapacityReservation {
-            let decoded = capacity_reservation::decode_capacity_record(key, value)?;
-            if reservations
-                .insert(decoded.reservation_id, decoded)
-                .is_some()
-            {
-                return Err(JournalError::MalformedRecord(
-                    "duplicate global capacity reservation",
-                ));
-            }
-        }
-    }
+    let mut reservations = capacity_reservation::accounting_reservations(state)?;
     for record in records {
         if record.namespace() != RecordNamespace::GlobalCapacityReservation {
             continue;
