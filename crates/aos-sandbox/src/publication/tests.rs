@@ -69,6 +69,20 @@ fn manifest_with_generations(
     desired: u64,
     namespace: u64,
 ) -> CanonicalAssignmentManifestV1 {
+    manifest_with_spec(
+        node,
+        desired,
+        namespace,
+        descriptor(PortableMediaType::SandboxSpec, 9),
+    )
+}
+
+fn manifest_with_spec(
+    node: u8,
+    desired: u64,
+    namespace: u64,
+    spec: ObjectDescriptor,
+) -> CanonicalAssignmentManifestV1 {
     let sandbox = SandboxId::from_bytes([1; 16]);
     let feature = FeatureRef::new("aos.sandbox.runtime.linux-systemd", 1, 0)
         .unwrap_or_else(|error| panic!("test feature failed: {error}"));
@@ -82,7 +96,7 @@ fn manifest_with_generations(
         AssignmentEpoch::new(6),
         DesiredGeneration::new(desired),
         NamespaceGeneration::new(namespace),
-        descriptor(PortableMediaType::SandboxSpec, 9),
+        spec,
         descriptor(PortableMediaType::Policy, 10),
         descriptor(PortableMediaType::Environment, 11),
         descriptor(PortableMediaType::View, 12),
@@ -533,7 +547,14 @@ fn signed_ownership_lease(
 }
 
 fn proposal(lease_generation: u64, expiry: i64) -> AuthorityPublicationProposalV1 {
-    let manifest = manifest();
+    proposal_with_manifest(manifest(), lease_generation, expiry)
+}
+
+fn proposal_with_manifest(
+    manifest: CanonicalAssignmentManifestV1,
+    lease_generation: u64,
+    expiry: i64,
+) -> AuthorityPublicationProposalV1 {
     let lease_key = SigningKey::from_bytes(&[41; 32]);
     let lease_signer = key_reference("lease", KeyUsage::OwnershipLease, &lease_key);
     let (plan, semantics) = signed_plan(&manifest, lease_signer.clone());
@@ -645,7 +666,32 @@ fn control_activation_fixture(
     action: RuntimeAction,
     observe_scope: bool,
 ) -> (AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1) {
-    let mut source = proposal(lease_generation, 190);
+    control_activation_from_proposal(
+        proposal(lease_generation, 190),
+        lease_generation,
+        action,
+        observe_scope,
+    )
+}
+
+pub(crate) fn consumer_resource_activation_fixture(
+    lease_generation: u64,
+    spec: ObjectDescriptor,
+) -> (AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1) {
+    control_activation_from_proposal(
+        proposal_with_manifest(manifest_with_spec(5, 7, 8, spec), lease_generation, 190),
+        lease_generation,
+        RuntimeAction::RUNTIME_ACTION_STOP,
+        false,
+    )
+}
+
+fn control_activation_from_proposal(
+    mut source: AuthorityPublicationProposalV1,
+    lease_generation: u64,
+    action: RuntimeAction,
+    observe_scope: bool,
+) -> (AuthorityPublicationDraftV1, PreparedAuthorityPublicationV1) {
     let lease_signer = source.lease.signer().clone();
     let (plan, semantics, body) =
         signed_host_control_plan_with_scope(&source.manifest, lease_signer, action, observe_scope);

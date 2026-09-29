@@ -209,23 +209,7 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
         origin: &RuntimeAuthorityBindingV1,
         current: &RuntimeAuthorityBindingV1,
     ) -> Result<(), RuntimeAuthorityError> {
-        if origin.revision() > current.revision()
-            || self.current(origin.sandbox())?.as_ref() != Some(current)
-            || binding_in_validated_namespace(self.journal, origin.sandbox(), origin.revision())?
-                != *origin
-        {
-            return Err(RuntimeAuthorityError::Continuity);
-        }
-        for revision in origin.revision()..=current.revision() {
-            let binding = binding_in_validated_namespace(self.journal, origin.sandbox(), revision)?;
-            if binding.state() != RuntimeAuthorityStateV1::Bound
-                || binding.holder() != origin.holder()
-                || binding.manifest() != origin.manifest()
-            {
-                return Err(RuntimeAuthorityError::Continuity);
-            }
-        }
-        Ok(())
+        validate_continuity_in_validated_namespace(self.journal, origin, current)
     }
 
     /// Freezes one operation-indexed pending record without committing it.
@@ -450,7 +434,7 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
     }
 }
 
-fn validate_namespace(
+pub(crate) fn validate_namespace(
     journal: &Journal,
     limits: RuntimeAuthorityLimits,
 ) -> Result<(usize, usize), RuntimeAuthorityError> {
@@ -721,6 +705,58 @@ pub(crate) fn binding_in_validated_namespace(
     let binding = decode_binding(bytes)?;
     if binding.sandbox() != sandbox || binding.revision() != revision {
         return Err(RuntimeAuthorityError::CorruptState);
+    }
+    Ok(binding)
+}
+
+/// Reuses the exact uninterrupted holder/assignment check after full replay.
+///
+/// # Errors
+///
+/// Rejects changed protected endpoints, unhealthy custody or any revoke/rebind
+/// or assignment/holder substitution in the complete intervening chain.
+pub(crate) fn validate_continuity_in_validated_namespace(
+    journal: &Journal,
+    origin: &RuntimeAuthorityBindingV1,
+    current: &RuntimeAuthorityBindingV1,
+) -> Result<(), RuntimeAuthorityError> {
+    if origin.revision() > current.revision() {
+        return Err(RuntimeAuthorityError::Continuity);
+    }
+    // Preserve the original Store::current health check and short-circuit order.
+    journal.ensure_protected_authority()?;
+    if current_from_journal(journal, origin.sandbox())?.as_ref() != Some(current)
+        || binding_in_validated_namespace(journal, origin.sandbox(), origin.revision())? != *origin
+    {
+        return Err(RuntimeAuthorityError::Continuity);
+    }
+    for revision in origin.revision()..=current.revision() {
+        let binding = binding_in_validated_namespace(journal, origin.sandbox(), revision)?;
+        if binding.state() != RuntimeAuthorityStateV1::Bound
+            || binding.holder() != origin.holder()
+            || binding.manifest() != origin.manifest()
+        {
+            return Err(RuntimeAuthorityError::Continuity);
+        }
+    }
+    Ok(())
+}
+
+/// Reads only a fully validated exact current binding for a record cross-link.
+///
+/// # Errors
+///
+/// Rejects unhealthy/corrupt/oversized history or a noncurrent exact reference.
+/// This structural result still requires independent signature/current checks.
+pub(crate) fn validated_consumer_binding(
+    journal: &Journal,
+    reference: DurableRuntimeAuthorityReferenceV1,
+) -> Result<RuntimeAuthorityBindingV1, RuntimeAuthorityError> {
+    journal.ensure_protected_authority()?;
+    validate_namespace(journal, RuntimeAuthorityLimits::default())?;
+    let binding = binding_for_durable_reference_in_validated_namespace(journal, reference)?;
+    if current_from_journal(journal, reference.sandbox())?.as_ref() != Some(&binding) {
+        return Err(RuntimeAuthorityError::Continuity);
     }
     Ok(binding)
 }

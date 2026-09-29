@@ -72,7 +72,14 @@ use crate::runtime_scope::{
 use crate::{Journal, JournalError, SignedBrokerPlan};
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 
+mod consumer_read;
 mod fuse_reserve;
+pub(crate) use consumer_read::validate_consumer_resource_transaction;
+
+pub use consumer_read::{
+    ConsumerReadRequestDataV1, ConsumerResourceAttemptLimitsV1, ConsumerResourceAttemptPhaseV1,
+    ConsumerResourceErrorV1, CurrentControllerConsumerResourceV1, DurableConsumerResourceAttemptV1,
+};
 
 pub use fuse_reserve::{
     ControllerFuseIntentDispatchErrorV1, CurrentControllerFuseIntentDispatchV1,

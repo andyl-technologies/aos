@@ -296,6 +296,8 @@ pub enum RecordNamespace {
     ControllerNoApplySettlementCursor = 73,
     /// Controller-owned original signed Storage output-reserve attempt.
     ControllerStorageOutputReserveAttempt = 74,
+    /// Non-authorizing later-read resource preparations and retained quarantine.
+    ControllerConsumerReadAttempt = 75,
 }
 
 impl RecordNamespace {
@@ -375,6 +377,7 @@ impl RecordNamespace {
             72 => Ok(Self::ControllerCreateFailurePrepare),
             73 => Ok(Self::ControllerNoApplySettlementCursor),
             74 => Ok(Self::ControllerStorageOutputReserveAttempt),
+            75 => Ok(Self::ControllerConsumerReadAttempt),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -2173,6 +2176,66 @@ impl Journal {
         self.next_sequence
     }
 
+    /// Supplies actual opened ceilings to a narrowly owned local protocol.
+    pub(crate) const fn configured_limits(&self) -> JournalLimits {
+        self.limits
+    }
+
+    fn validate_consumer_resource_transition(
+        &self,
+        transaction: &JournalTransaction,
+        allow_capacity: bool,
+        settling: Option<[u8; 32]>,
+    ) -> Result<(), JournalError> {
+        #[cfg(target_os = "linux")]
+        {
+            crate::attachment_effect_owner::validate_consumer_resource_transaction(
+                self,
+                transaction,
+                allow_capacity,
+                settling,
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (allow_capacity, settling);
+            if transaction
+                .records()
+                .iter()
+                .any(|record| record.namespace() == RecordNamespace::ControllerConsumerReadAttempt)
+            {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            for record in transaction
+                .records()
+                .iter()
+                .filter(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation)
+            {
+                let stored;
+                let capacity = if record.value().is_some() {
+                    record
+                } else if let Some(value) =
+                    self.get(RecordNamespace::GlobalCapacityReservation, record.key())
+                {
+                    stored = JournalRecord::put(
+                        RecordNamespace::GlobalCapacityReservation,
+                        record.key().to_vec(),
+                        value.to_vec(),
+                    );
+                    &stored
+                } else {
+                    continue;
+                };
+                if decode_capacity_reservation_request_v1(capacity)?.0.purpose
+                    == GlobalCapacityReservationPurposeV1::ControllerConsumerResource
+                {
+                    return Err(JournalError::ProtectedBoundary);
+                }
+            }
+            Ok(())
+        }
+    }
+
     /// Diagnostically resolves a caller key against materialized request identity.
     ///
     /// This view remains available after poison and does not establish current
@@ -2336,6 +2399,11 @@ impl Journal {
         root_genesis_transition: RootSourceGenesisTransitionV1,
     ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
+        self.validate_consumer_resource_transition(
+            transaction,
+            allow_capacity_records,
+            settling_reservation,
+        )?;
         #[cfg(target_os = "linux")]
         crate::policy_compiler::require_root_source_genesis_mutation_v1(
             self,
@@ -2610,6 +2678,11 @@ impl Journal {
                 .records()
                 .iter()
                 .any(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation);
+            self.validate_consumer_resource_transition(
+                transaction,
+                allow_capacity_records,
+                settling_reservation,
+            )?;
             if has_capacity_records != allow_capacity_records {
                 return Err(JournalError::ProtectedBoundary);
             }
@@ -3802,6 +3875,7 @@ impl ProtectedJournalAuthority<'_> {
         let mut effect = false;
         let mut desired_state = false;
         let mut source_provider_authority = false;
+        let mut consumer_resource = false;
         let mut capacity_record = false;
         for record in transaction.records() {
             if !purpose.permits(record.namespace()) {
@@ -3813,6 +3887,7 @@ impl ProtectedJournalAuthority<'_> {
                 RecordNamespace::Effect => effect = true,
                 RecordNamespace::DesiredState => desired_state = true,
                 RecordNamespace::SourceProviderAuthority => source_provider_authority = true,
+                RecordNamespace::ControllerConsumerReadAttempt => consumer_resource = true,
                 RecordNamespace::GlobalCapacityReservation => capacity_record = true,
                 _ => return Err(JournalError::ForeignAuthorityNamespace),
             }
@@ -3828,6 +3903,7 @@ impl ProtectedJournalAuthority<'_> {
             }
             GlobalCapacityReservationPurposeV1::ControllerProjectAdmission => effect,
             GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor => desired_state,
+            GlobalCapacityReservationPurposeV1::ControllerConsumerResource => consumer_resource,
         };
         if !closed_shape || !capacity_record {
             return Err(JournalError::ForeignAuthorityNamespace);
@@ -3913,6 +3989,10 @@ impl ProtectedJournalAuthority<'_> {
             || self.scope
                 == ProtectedAuthorityScope::CapacityReservation(
                     GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor,
+                )
+            || self.scope
+                == ProtectedAuthorityScope::CapacityReservation(
+                    GlobalCapacityReservationPurposeV1::ControllerConsumerResource,
                 )
         {
             return Err(JournalError::ForeignAuthorityNamespace);
@@ -5579,6 +5659,7 @@ mod tests {
             RecordNamespace::ControllerCreateFailurePrepare,
             RecordNamespace::ControllerNoApplySettlementCursor,
             RecordNamespace::ControllerStorageOutputReserveAttempt,
+            RecordNamespace::ControllerConsumerReadAttempt,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = namespace as u8;

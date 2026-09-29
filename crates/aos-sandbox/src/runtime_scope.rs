@@ -50,6 +50,10 @@ use aos_sandbox_protocol::{
 use buffa::Message as _;
 
 mod current;
+#[cfg(test)]
+pub(crate) use current::tests::{ConsumerResourceFixture, consumer_resource_policy};
+#[cfg(test)]
+pub(crate) use namespace_target::seed_consumer_origin_for_test;
 mod generation;
 #[cfg(all(test, feature = "kernel-tests"))]
 mod kernel_tests;
@@ -69,12 +73,13 @@ pub(crate) use current::{
 };
 pub(crate) use generation::validate_namespace as validate_generation_namespace;
 pub use generation::{CurrentRuntimeGeneration, RuntimeGenerationError};
+pub(crate) use namespace_target::{
+    ConsumerNamespaceOriginV1, DurableNamespaceTargetReferenceV1, consumer_namespace_origin_data,
+    current_consumer_namespace_origin, validate_durable_reference_in_validated_namespace,
+    validate_namespace as validate_namespace_target_namespace,
+};
 pub use namespace_target::{
     CurrentNamespaceTarget, NamespaceTargetAdvanceV1, NamespaceTargetError, NamespaceTargetOutcome,
-};
-pub(crate) use namespace_target::{
-    DurableNamespaceTargetReferenceV1, validate_durable_reference_in_validated_namespace,
-    validate_namespace as validate_namespace_target_namespace,
 };
 
 const CARRIER_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);

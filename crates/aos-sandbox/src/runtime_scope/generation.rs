@@ -16,8 +16,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use aos_sandbox_core::{RawPairedClockSample, SandboxId};
 
 use crate::ownership_authority::ProtectedOwnershipClockError;
+#[cfg(test)]
+use crate::runtime_authority::RuntimeAuthorityStore;
 use crate::runtime_authority::{
-    RuntimeAuthorityError, RuntimeAuthorityLimits, RuntimeAuthorityStateV1, RuntimeAuthorityStore,
+    RuntimeAuthorityError, RuntimeAuthorityLimits, RuntimeAuthorityStateV1,
     binding_in_validated_namespace,
 };
 use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
@@ -224,10 +226,10 @@ pub(super) struct History {
 }
 
 impl History {
-    pub(super) fn load(journal: &mut Journal) -> Result<Self, RuntimeGenerationError> {
+    pub(super) fn load(journal: &Journal) -> Result<Self, RuntimeGenerationError> {
         journal.ensure_protected_authority()?;
-        // Keep the exclusive journal borrow through all historical lookups.
-        RuntimeAuthorityStore::load(journal, RuntimeAuthorityLimits::default())?;
+        // The enclosing owner keeps its writer while these DATA joins borrow it.
+        crate::runtime_authority::validate_namespace(journal, RuntimeAuthorityLimits::default())?;
         let mut history = Self::default();
         let mut heads = BTreeMap::new();
         let mut bindings = BTreeMap::new();
@@ -367,4 +369,36 @@ fn head_key(identity: Identity) -> Vec<u8> {
 /// malformed history or heads, and exhausted replay bounds.
 pub(crate) fn validate_namespace(journal: &mut Journal) -> Result<(), RuntimeGenerationError> {
     History::load(journal).map(|_| ())
+}
+
+/// Resolves a validated audit row's inert original assignment reference.
+///
+/// # Errors
+///
+/// Rejects corrupt or oversized history, a missing row or another audit digest.
+pub(super) fn origin_binding(
+    journal: &Journal,
+    identity: Identity,
+    generation: u64,
+    audit_digest: [u8; 32],
+) -> Result<crate::runtime_authority::DurableRuntimeAuthorityReferenceV1, RuntimeGenerationError> {
+    let history = History::load(journal)?;
+    if history.record_digest(identity, generation) != Some(audit_digest) {
+        return Err(RuntimeGenerationError::CorruptState);
+    }
+    let mut key = vec![b'g'];
+    key.extend_from_slice(&identity.0);
+    key.extend_from_slice(&identity.1);
+    key.extend_from_slice(&generation.to_be_bytes());
+    let record = journal
+        .get(NAMESPACE, &key)
+        .ok_or(RuntimeGenerationError::CorruptState)
+        .and_then(Record::decode)?;
+    Ok(
+        crate::runtime_authority::DurableRuntimeAuthorityReferenceV1::from_parts(
+            SandboxId::from_bytes(identity.0),
+            record.facts.binding_revision,
+            aos_sandbox_core::ObjectDigest::from_bytes(record.facts.binding_digest),
+        ),
+    )
 }

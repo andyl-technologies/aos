@@ -101,6 +101,16 @@ fn activate(
     } else {
         descriptor_free_activation_fixture(u64::from(generation))
     };
+    activate_prepared(reconciler, generation, intent, draft, prepared)
+}
+
+fn activate_prepared(
+    reconciler: &mut Reconciler<NoEffects>,
+    generation: u8,
+    intent: RuntimeAuthorityIntentV1,
+    draft: crate::publication::AuthorityPublicationDraftV1,
+    prepared: crate::publication::PreparedAuthorityPublicationV1,
+) -> RuntimeScopeHolder {
     let selection = RuntimeScopeHolder {
         sandbox: draft.manifest().manifest().sandbox(),
         holder: PrincipalId::from_bytes([0x91; 16]),
@@ -217,6 +227,41 @@ fn policy_keys(broker_key: u8, lease_key: u8) -> CurrentRuntimeScopePolicy {
 
 fn policy() -> CurrentRuntimeScopePolicy {
     policy_keys(40, 41)
+}
+
+/// Reuses signed admission fixtures while exposing only their actual journal.
+/// Synthetic runtime audit rows are added separately; no Host or Ready proof
+/// is constructed by this protected-row fixture.
+pub(crate) struct ConsumerResourceFixture {
+    reconciler: Reconciler<NoEffects>,
+    spec: ObjectDescriptor,
+}
+
+impl ConsumerResourceFixture {
+    pub(crate) fn new(directory: &std::path::Path, spec: ObjectDescriptor) -> Self {
+        let mut fixture = Self {
+            reconciler: Reconciler::new(open(directory), NoEffects),
+            spec,
+        };
+        fixture.activate(1, bind(None));
+        fixture
+    }
+
+    pub(crate) fn journal_mut(&mut self) -> &mut Journal {
+        self.reconciler.journal_mut()
+    }
+
+    pub(crate) fn activate(&mut self, generation: u8, intent: RuntimeAuthorityIntentV1) {
+        let (draft, prepared) = crate::publication::tests::consumer_resource_activation_fixture(
+            u64::from(generation),
+            self.spec.clone(),
+        );
+        activate_prepared(&mut self.reconciler, generation, intent, draft, prepared);
+    }
+}
+
+pub(crate) fn consumer_resource_policy() -> CurrentRuntimeScopePolicy {
+    policy()
 }
 
 fn clock(wall: i64) -> RawPairedClockSample {
