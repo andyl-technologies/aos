@@ -3,7 +3,7 @@
 //! The backend current callbacks model missing native Source/transport issuers.
 //! These cases establish core transaction behavior, not physical activation.
 
-// Fixture refusals intentionally fail the test.
+// crucible-lint: allow panic-shortcut -- fixture refusals intentionally fail the test.
 #![allow(clippy::unwrap_used)]
 
 use super::*;
@@ -48,16 +48,16 @@ fn observed(
 }
 
 #[test]
-fn group_owner_preserves_actual_world_input_and_exact_retry() {
+fn group_owner_preserves_actual_world_input_and_exact_reissue() {
     let (mut scheduler, queue, pipeline) = fixture();
     let observation = observed(&scheduler, &queue, &pipeline);
     ok(scheduler.import_initial_io_inventory(observation.input_inventory().clone()));
     let before = ok(ok(scheduler.checkpoint()).canonical_bytes());
     let mut controller = DeviceGroupSelectionController::default();
     let prepared = ok(controller.prepare(&scheduler, observation.clone()));
-    let retry = ok(controller.prepare(&scheduler, observation));
+    let reissued = ok(controller.prepare(&scheduler, observation));
 
-    assert!(prepared.retains_same_owner(&retry));
+    assert!(prepared.retains_same_owner(&reissued));
     assert_eq!(
         prepared.input_inventory().next_input(),
         Some(NodeCounter { ticks: 30 })
@@ -311,8 +311,8 @@ fn suffix_refusal_retains_original_selection_and_blocks_run_and_fixed_input() {
     assert_eq!(actor.backend().runs, 0);
     actor.backend_mut().refuse_at = None;
     let prepared = ok(actor.prepare_device_group_selection(&id("a"))).unwrap();
-    let retry = ok(actor.prepare_device_group_selection(&id("a"))).unwrap();
-    assert!(prepared.retains_same_owner(&retry));
+    let reissued = ok(actor.prepare_device_group_selection(&id("a"))).unwrap();
+    assert!(prepared.retains_same_owner(&reissued));
     ok(actor.device_group_selection_current(&prepared));
     assert!(actor.loop_impl().ceiling_publications.is_empty());
 }
