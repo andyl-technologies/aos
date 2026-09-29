@@ -2588,81 +2588,25 @@ async fn verify_package_documentation(
     fetch: &dyn SurfaceFetch,
     packages: &[aos_registry_surface::manifest::PackageToml],
 ) -> Result<Vec<IndexedPackageDocumentation>> {
-    let selections = packages.iter().flat_map(|package| {
-        package.versions.iter().flat_map(move |version| {
-            version.platforms.iter().filter_map(move |(platform, entry)| {
-                entry.documentation.as_ref().map(|artifact| {
-                    (package, version, platform, entry, artifact)
-                })
-            })
-        })
-    });
-    let mut indexed: Vec<IndexedPackageDocumentation> = stream::iter(selections)
-        .map(|(package, version, platform, entry, artifact)| async move {
-            let document = fetch_package_documentation(
-                fetch,
-                &package.package.name,
-                &version.version,
-                platform,
-                artifact,
-            )
-            .await?;
-            anyhow::ensure!(
-                documentation_digest_matches(
-                    &document.identity.runtime_nar_hash,
-                    &entry.nar_hash,
-                )?,
-                "package documentation runtime identity mismatch"
-            );
-            if let Some(config) = &entry.config_module {
-                anyhow::ensure!(
-                    document
-                        .identity
-                        .config_module_nar_hash
-                        .as_deref()
-                        .map(|digest| documentation_digest_matches(
-                            digest,
-                            &config.config_output.nar_hash,
-                        ))
-                        .transpose()?
-                        == Some(true),
-                    "package documentation config-module identity mismatch"
-                );
+    let mut pending = Vec::new();
+    for package in packages {
+        for version in &package.versions {
+            for (platform, entry) in &version.platforms {
+                if let Some(artifact) = &entry.documentation {
+                    pending.push(verify_documentation_selection(
+                        fetch,
+                        &package.package.name,
+                        &version.version,
+                        platform,
+                        entry,
+                        artifact,
+                    ));
+                }
             }
-            anyhow::ensure!(
-                document.identity.system_module_nar_hash.as_deref()
-                    == artifact.system_module_nar_hash.as_deref(),
-                "package documentation system-module identity mismatch"
-            );
-            if let Some(expose) = &entry.expose_artifact {
-                anyhow::ensure!(
-                    document
-                        .identity
-                        .expose_artifact_nar_hash
-                        .as_deref()
-                        .map(|digest| documentation_digest_matches(digest, &expose.nar_hash))
-                        .transpose()?
-                        == Some(true),
-                    "package documentation expose-artifact identity mismatch"
-                );
-            }
-            Ok::<_, anyhow::Error>(IndexedPackageDocumentation {
-                package_name: package.package.name.clone(),
-                package_version: version.version.clone(),
-                platform: platform.clone(),
-                artifact: artifact.clone(),
-                search: document.search_documents(),
-                options: document
-                    .options
-                    .iter()
-                    .map(|option| crate::db::IndexedDocumentationOption {
-                        key: option.display_path.clone(),
-                        path: option.path.clone(),
-                        type_signature: option.type_signature.clone(),
-                    })
-                    .collect(),
-            })
-        })
+        }
+    }
+
+    let mut indexed: Vec<IndexedPackageDocumentation> = stream::iter(pending)
         .buffer_unordered(DOCUMENTATION_FETCH_CONCURRENCY)
         .try_collect()
         .await?;
@@ -2675,6 +2619,80 @@ async fn verify_package_documentation(
         ))
     });
     Ok(indexed)
+}
+
+// A named future keeps the native Send requirement independent of iterator closures.
+async fn verify_documentation_selection(
+    fetch: &dyn SurfaceFetch,
+    package_name: &str,
+    package_version: &str,
+    platform: &str,
+    entry: &aos_registry_surface::manifest::PlatformEntry,
+    artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+) -> Result<IndexedPackageDocumentation> {
+    let document = fetch_package_documentation(
+        fetch,
+        package_name,
+        package_version,
+        platform,
+        artifact,
+    )
+    .await?;
+    anyhow::ensure!(
+        documentation_digest_matches(
+            &document.identity.runtime_nar_hash,
+            &entry.nar_hash,
+        )?,
+        "package documentation runtime identity mismatch"
+    );
+    if let Some(config) = &entry.config_module {
+        anyhow::ensure!(
+            document
+                .identity
+                .config_module_nar_hash
+                .as_deref()
+                .map(|digest| documentation_digest_matches(
+                    digest,
+                    &config.config_output.nar_hash,
+                ))
+                .transpose()?
+                == Some(true),
+            "package documentation config-module identity mismatch"
+        );
+    }
+    anyhow::ensure!(
+        document.identity.system_module_nar_hash.as_deref()
+            == artifact.system_module_nar_hash.as_deref(),
+        "package documentation system-module identity mismatch"
+    );
+    if let Some(expose) = &entry.expose_artifact {
+        anyhow::ensure!(
+            document
+                .identity
+                .expose_artifact_nar_hash
+                .as_deref()
+                .map(|digest| documentation_digest_matches(digest, &expose.nar_hash))
+                .transpose()?
+                == Some(true),
+            "package documentation expose-artifact identity mismatch"
+        );
+    }
+    Ok::<_, anyhow::Error>(IndexedPackageDocumentation {
+        package_name: package_name.to_string(),
+        package_version: package_version.to_string(),
+        platform: platform.to_string(),
+        artifact: artifact.clone(),
+        search: document.search_documents(),
+        options: document
+            .options
+            .iter()
+            .map(|option| crate::db::IndexedDocumentationOption {
+                key: option.display_path.clone(),
+                path: option.path.clone(),
+                type_signature: option.type_signature.clone(),
+            })
+            .collect(),
+    })
 }
 
 fn documentation_digest_matches(left: &str, right: &str) -> Result<bool> {
