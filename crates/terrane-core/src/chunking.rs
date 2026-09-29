@@ -33,14 +33,41 @@ impl fmt::Display for ProfileError {
         match self {
             Self::InvalidSizes => f.write_str("chunk sizes must be positive and ordered"),
             Self::InvalidWindow => f.write_str("Gear span must be between 32 and 64 bytes"),
-            Self::InvalidNormalization => {
-                f.write_str("normalized masks must fit the Gear span")
-            }
+            Self::InvalidNormalization => f.write_str("normalized masks must fit the Gear span"),
         }
     }
 }
 
 impl core::error::Error for ProfileError {}
+
+/// A manifest whose chunk list cannot be the output of its chunk profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManifestError {
+    /// The number of chunks exceeds the profile's size-derived bound.
+    TooManyChunks,
+    /// A nonempty object has no chunks, or an empty object has another shape.
+    InvalidEmptyObject,
+    /// The chunk lengths do not sum to the declared object size.
+    SizeMismatch,
+    /// A chunk exceeds the maximum or a non-final chunk is too short.
+    ChunkSize,
+    /// A chunk's end does not match its first content-defined boundary.
+    BoundaryMismatch,
+}
+
+impl fmt::Display for ManifestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooManyChunks => f.write_str("manifest has too many chunks"),
+            Self::InvalidEmptyObject => f.write_str("object has an invalid empty chunk list"),
+            Self::SizeMismatch => f.write_str("manifest chunks do not match object size"),
+            Self::ChunkSize => f.write_str("manifest chunk is outside its size bounds"),
+            Self::BoundaryMismatch => f.write_str("manifest chunk ends at a noncanonical boundary"),
+        }
+    }
+}
+
+impl core::error::Error for ManifestError {}
 
 /// A fixed chunking profile and its seeded Gear table.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -293,10 +320,69 @@ fn sparse_mask(window: u8, bits: u32) -> u64 {
     mask
 }
 
+/// Validates the ordered plaintext chunks of an object before commit.
+///
+/// Chunks must already have passed individual identity verification. This
+/// shape check proves that concatenating them in the supplied manifest order
+/// reproduces the profile's boundaries, including the final EOF boundary.
+///
+/// # Errors
+///
+/// Returns an error for an excessive chunk count, inconsistent total size,
+/// empty-object misuse, an out-of-range chunk, or a noncanonical boundary.
+pub fn validate_object_chunks(
+    profile: &ChunkProfile,
+    total_size: usize,
+    chunks: &[&[u8]],
+) -> Result<(), ManifestError> {
+    if chunks.is_empty() || (total_size == 0 && (chunks.len() != 1 || !chunks[0].is_empty())) {
+        return Err(ManifestError::InvalidEmptyObject);
+    }
+
+    let maximum_count = total_size.div_ceil(profile.minimum).saturating_add(1);
+    if chunks.len() > maximum_count {
+        return Err(ManifestError::TooManyChunks);
+    }
+    if total_size <= profile.minimum && chunks.len() != 1 {
+        return Err(ManifestError::ChunkSize);
+    }
+
+    let mut actual_size = 0_usize;
+    for (index, chunk) in chunks.iter().enumerate() {
+        let final_chunk = index + 1 == chunks.len();
+        if chunk.len() > profile.maximum
+            || (!final_chunk && chunk.len() < profile.minimum)
+            || (total_size > 0 && chunk.is_empty())
+        {
+            return Err(ManifestError::ChunkSize);
+        }
+
+        let canonical = if final_chunk {
+            profile.first_boundary(chunk) == chunk.len()
+        } else {
+            profile.valid_nonfinal_chunk(chunk)
+        };
+        if !canonical {
+            return Err(ManifestError::BoundaryMismatch);
+        }
+
+        actual_size = actual_size
+            .checked_add(chunk.len())
+            .ok_or(ManifestError::SizeMismatch)?;
+    }
+
+    if actual_size != total_size {
+        return Err(ManifestError::SizeMismatch);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        CDC_1M_MAX, CDC_1M_MIN, ChunkProfile, ProfileError, gear_table, sparse_mask,
+        CDC_1M_MAX, CDC_1M_MIN, ChunkProfile, ManifestError, ProfileError, gear_table, sparse_mask,
+        validate_object_chunks,
     };
 
     #[test]
@@ -306,7 +392,10 @@ mod tests {
         assert_eq!(table[1], 0x9700_318b_430e_40f3);
         assert_eq!(table[7], 0xb0cd_9e1c_e544_864c);
 
-        let bytes = table.into_iter().flat_map(u64::to_le_bytes).collect::<alloc::vec::Vec<_>>();
+        let bytes = table
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect::<alloc::vec::Vec<_>>();
         assert_eq!(
             blake3::hash(&bytes).to_hex().as_str(),
             "22e8d10aa13d65d681fa4ff159d1151c11c90f652bc059d4418c3f463f49b14c",
@@ -330,16 +419,40 @@ mod tests {
         let profile = ChunkProfile::cdc_1m([0; 32]);
         assert_eq!(profile.boundaries(&[]), alloc::vec![0..0]);
         assert_eq!(profile.boundaries(&[1; 10]), alloc::vec![0..10]);
-        assert_eq!(profile.boundaries(&alloc::vec![1; CDC_1M_MIN]), alloc::vec![0..CDC_1M_MIN]);
+        assert_eq!(
+            profile.boundaries(&alloc::vec![1; CDC_1M_MIN]),
+            alloc::vec![0..CDC_1M_MIN]
+        );
         assert!(!profile.valid_nonfinal_chunk(&[1; 10]));
         assert!(!profile.valid_nonfinal_chunk(&alloc::vec![1; CDC_1M_MIN]));
+        assert_eq!(validate_object_chunks(&profile, 0, &[&[]]), Ok(()));
+        assert_eq!(
+            validate_object_chunks(&profile, 0, &[&[], &[]]),
+            Err(ManifestError::InvalidEmptyObject),
+        );
     }
 
     #[test]
     fn max_is_forced_and_invalid_profiles_fail_closed() {
-        let profile = ChunkProfile::cdc_1m([0; 32]);
-        let bytes = alloc::vec![0; CDC_1M_MAX];
-        assert!(profile.first_boundary(&bytes) <= CDC_1M_MAX);
+        let profile = ChunkProfile::new(3, 5, 9, 48, 0, [0; 32]).expect("profile");
+        let mut bytes = alloc::vec![0_u8; 3];
+        let mut fingerprint = 0_u64;
+        while bytes.len() < profile.maximum() {
+            let (byte, next) = (0..=u8::MAX)
+                .filter_map(|byte| {
+                    let next = fingerprint
+                        .wrapping_shl(1)
+                        .wrapping_add(profile.gear[usize::from(byte)]);
+                    (next & profile.strict_mask != 0).then_some((byte, next))
+                })
+                .next()
+                .expect("some byte avoids a natural cut");
+            bytes.push(byte);
+            fingerprint = next;
+        }
+        assert_eq!(profile.first_boundary(&bytes), profile.maximum());
+        assert!(profile.valid_nonfinal_chunk(&bytes));
+
         assert_eq!(
             ChunkProfile::new(0, 1, 2, 48, 2, [0; 32]),
             Err(ProfileError::InvalidSizes),
@@ -361,6 +474,53 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(first.first().map(|range| range.start), Some(0));
         assert_eq!(first.last().map(|range| range.end), Some(bytes.len()));
-        assert!(first.iter().all(|range| range.end - range.start <= CDC_1M_MAX));
+        assert!(
+            first
+                .iter()
+                .all(|range| range.end - range.start <= CDC_1M_MAX)
+        );
+    }
+
+    #[test]
+    fn seeded_xof_stream_has_reproducible_boundaries() {
+        let mut bytes = alloc::vec![0_u8; 16 * 1024 * 1024];
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"terrane-cdc-boundaries-v1\0");
+        hasher.finalize_xof().fill(&mut bytes);
+
+        let profile = ChunkProfile::cdc_1m([0; 32]);
+        let ends: alloc::vec::Vec<_> = profile.ranges(&bytes).map(|range| range.end).collect();
+        assert_eq!(
+            ends,
+            [
+                1_053_018, 1_336_528, 2_676_886, 3_833_803, 4_242_108, 5_460_736, 6_765_165,
+                8_343_797, 9_434_089, 10_501_272, 11_945_946, 13_357_494, 15_153_770, 16_005_372,
+                16_777_216,
+            ],
+        );
+
+        for range in profile.boundaries(&bytes).iter().take(14) {
+            assert!(profile.valid_nonfinal_chunk(&bytes[range.clone()]));
+        }
+
+        let ranges = profile.boundaries(&bytes);
+        let chunks: alloc::vec::Vec<&[u8]> =
+            ranges.iter().map(|range| &bytes[range.clone()]).collect();
+        assert_eq!(
+            validate_object_chunks(&profile, bytes.len(), &chunks),
+            Ok(())
+        );
+        let mut shifted_boundary = chunks.clone();
+        shifted_boundary[0] = &bytes[..ranges[0].end - 1];
+        shifted_boundary[1] = &bytes[ranges[0].end - 1..ranges[1].end];
+        assert_eq!(
+            validate_object_chunks(&profile, bytes.len(), &shifted_boundary),
+            Err(ManifestError::BoundaryMismatch),
+        );
+
+        bytes.insert(1_000, 0x80);
+        let shifted = profile.boundaries(&bytes);
+        assert_ne!(shifted[0].end, ends[0]);
+        assert_eq!(shifted.last().map(|range| range.end), Some(bytes.len()));
     }
 }

@@ -84,8 +84,14 @@ pub fn parse_envelope(encoded: &[u8]) -> Result<EncodedChunk<'_>, CodecError> {
     let (&codec, body) = encoded.split_first().ok_or(CodecError::MissingCodec)?;
 
     let chunk = match codec {
-        0x00 => EncodedChunk { codec: Codec::Raw, body },
-        0x01 => EncodedChunk { codec: Codec::Zstd, body },
+        0x00 => EncodedChunk {
+            codec: Codec::Raw,
+            body,
+        },
+        0x01 => EncodedChunk {
+            codec: Codec::Zstd,
+            body,
+        },
         0x02 => {
             let (identity, frame) = body
                 .split_at_checked(DICTIONARY_ID_SIZE)
@@ -131,8 +137,8 @@ pub fn validate_envelope_size(
         Codec::Zstd | Codec::ZstdDictionary(_) => {
             let excess = chunk.body.len().saturating_sub(declared_plaintext_len) as u128;
             let scaled_excess = excess * 100;
-            let scaled_allowance = (FRAME_OVERHEAD_BYTES as u128 * 100)
-                + declared_plaintext_len as u128;
+            let scaled_allowance =
+                (FRAME_OVERHEAD_BYTES as u128 * 100) + declared_plaintext_len as u128;
 
             if scaled_excess > scaled_allowance {
                 Err(CodecError::CompressedLengthTooLarge)
@@ -140,5 +146,69 @@ pub fn validate_envelope_size(
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Codec, CodecError, EncodedChunk, parse_envelope, validate_envelope_size};
+
+    #[test]
+    fn parses_all_codec_envelopes_and_rejects_missing_fields() {
+        assert_eq!(
+            parse_envelope(&[0x00, 3]).map(|chunk| chunk.codec),
+            Ok(Codec::Raw)
+        );
+        assert_eq!(
+            parse_envelope(&[0x01, 7]).map(|chunk| chunk.codec),
+            Ok(Codec::Zstd)
+        );
+
+        let mut encoded = alloc::vec![0x02];
+        encoded.extend_from_slice(&[9; 32]);
+        encoded.push(7);
+        let chunk = parse_envelope(&encoded).expect("dictionary envelope");
+        assert_eq!(chunk.codec, Codec::ZstdDictionary([9; 32]));
+        assert_eq!(chunk.body, &[7]);
+
+        assert_eq!(parse_envelope(&[]), Err(CodecError::MissingCodec));
+        assert_eq!(parse_envelope(&[0xff]), Err(CodecError::UnknownCodec(0xff)));
+        assert_eq!(
+            parse_envelope(&[0x02, 0]),
+            Err(CodecError::TruncatedDictionaryIdentity)
+        );
+    }
+
+    #[test]
+    fn checks_exact_fractional_overhead_and_profile_maximum() {
+        let excess = [0; 230];
+        let too_large = EncodedChunk {
+            codec: Codec::Zstd,
+            body: &excess,
+        };
+        assert_eq!(
+            validate_envelope_size(too_large, 100, 100),
+            Err(CodecError::CompressedLengthTooLarge),
+        );
+        assert_eq!(
+            validate_envelope_size(too_large, 100, 99),
+            Err(CodecError::DeclaredLengthTooLarge),
+        );
+
+        let permitted = [0; 229];
+        let permitted = EncodedChunk {
+            codec: Codec::Zstd,
+            body: &permitted,
+        };
+        assert_eq!(validate_envelope_size(permitted, 100, 100), Ok(()));
+
+        let raw = EncodedChunk {
+            codec: Codec::Raw,
+            body: &[1],
+        };
+        assert_eq!(
+            validate_envelope_size(raw, 2, 100),
+            Err(CodecError::RawLengthMismatch)
+        );
     }
 }
