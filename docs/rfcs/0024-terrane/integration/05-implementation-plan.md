@@ -144,7 +144,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   satisfies CDC-1 to CDC-20; `checks.terrane.gates.cdc-boundaries`,
   `checks.terrane.gates.chunk-codec`, `checks.terrane.gates.chunk-bomb-cap`,
   `checks.terrane.gates.zstd-concat`.
-- [ ] **T-TREE-1** Deterministic CBOR encoder and decoder with limits before
+- [x] **T-TREE-1** Deterministic CBOR encoder and decoder with limits before
   allocation; node and entry encoding; entry types including `tree`,
   `whiteout`, and `conflict`; reserved types rejected. — satisfies TREE-1
   to TREE-8, TREE-11 to TREE-13, TREE-17, TREE-18, TREE-25 to TREE-34;
