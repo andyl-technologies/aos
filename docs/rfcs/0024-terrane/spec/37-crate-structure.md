@@ -205,6 +205,7 @@ contains exactly the surfaces it needs and the vocabulary stays closed.
 | `wasm` | `terrane` | WebAssembly host bindings |
 | `blockdev` | `terrane` | the block-device backend |
 | `redundancy` | `terrane` | `replicated` and `striped` combinators |
+| `surface-sdk` | `terrane` | the SDK checkout surface |
 | `surface-fuse` | `terrane-fs` | the FUSE surface |
 | `surface-erofs` | `terrane-fs` | the EROFS and overlayfs surface |
 | `surface-block` | `terrane-fs` | the block surface |

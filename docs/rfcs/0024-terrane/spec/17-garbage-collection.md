@@ -75,7 +75,24 @@ data.
 - **[GC-7]** The mark set MUST be recorded as an index-shaped structure
   (sorted content hashes with a filter) in the collection's `gc/` prefix,
   written in checkpoints, so that a crashed collector resumes marking from
-  its last checkpoint and never repeats a completed shard.
+  its last checkpoint and never repeats a completed shard. Checkpoint revisions
+  are immutable at `gc/<cycle>/mark/<shard>/<revision>`; the fenced CAS record
+  `gc/<cycle>/state` binds each selected revision's hash and the pending frontier.
+  Final shards may also use `gc/<cycle>/mark/<shard>`. Commit expansion contexts
+  retain the least restrictive parent cutoff already visited; reaching a commit
+  with a broader cutoff must still traverse newly eligible parent edges. Null
+  denotes unbounded retention, and receipt/source edges bypass the ordinary
+  parent-edge age test. All collector records use the CDDL version-one schemas;
+  shard and revision key segments are canonical decimal unsigned integers.
+  A mark checkpoint contains exactly 2,048 filter bytes, initially zero. For
+  every hash, interpret byte pairs beginning at offsets 1, 11 and 21 as
+  big-endian unsigned 16-bit integers, reduce each modulo 16,384, and set
+  bit `n % 8` in byte `n / 8`. Readers MUST reconstruct and compare this
+  filter from the sorted hashes; a positive hint still requires exact hash
+  membership. Checkpoint pointers are strictly ordered by distinct shard
+  numbers (0 to 255); expanded contexts are strictly ordered by distinct
+  commit hashes. A pending item retains its traversal flags and cutoff.
+  Phase progress is a strictly sorted, unique list of pack IDs.
 - **[GC-8]** Marking MUST run over the union of all regions before any
   region sweeps, because a pack may exist only in the region that wrote it
   while a commit in another region already references it (§Cross-region

@@ -1448,5 +1448,10 @@
     "name": "unsafe-audit",
     "owner": "37",
     "requirements": "CRATE-30, CRATE-31"
+  },
+  {
+    "name": "sdk-checkout",
+    "owner": "37",
+    "requirements": "CRATE-22 to CRATE-27, SURF-1 to SURF-3"
   }
 ]

@@ -10,13 +10,17 @@ async-trait.workspace = true
 serde.workspace = true
 toml.workspace = true
 zstd.workspace = true
+blake3.workspace = true
+xattr = { version = "=1.6.1", optional = true }
+libc = { workspace = true, optional = true }
 
 reqwest = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 
 [features]
 default = ["std"]
-std = []
+std = ["dep:xattr", "dep:libc"]
+surface-sdk = ["std"]
 send = []
 tokio = ["std", "send", "dep:tokio", "dep:reqwest"]
 wasm = []

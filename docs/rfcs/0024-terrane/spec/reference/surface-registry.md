@@ -8,6 +8,20 @@ of a view's root, and the conformance level an implementation claims by
 implementing it. Registering a new surface is a `MINOR` specification
 change ([`../README.md`](../README.md) § versioning).
 
+## SDK checkout
+
+| Name | File | Endpoint kinds | Writable | Schema | Level |
+| --- | --- | --- | --- | --- | --- |
+| `sdk` | [`37-crate-structure.md`](../37-crate-structure.md) | `directory-path` | no | none | Surface: `sdk` |
+
+The SDK checkout realizes an authorized view into a new private directory
+through the repository interface. It is selected by the same surface registry
+and `realize` entry point as other surfaces (CRATE-24); it never mounts a kernel
+filesystem or retains backend credentials. A checkout is a snapshot: its
+exposure MUST explicitly select `reader = "pinned"`, including for ref targets;
+a `follow` exposure is rejected rather than silently copied once. *Gate:*
+`gate:sdk-checkout`.
+
 ## Realizers
 
 | Name | File | Endpoint kinds | Writable | Schema | Level |
@@ -38,6 +52,7 @@ reaches the threshold (EROFS-14); the choice is reported in status.
 
 | Kind | Form | Exclusive on |
 | --- | --- | --- |
+| `directory-path` | absolute new checkout directory path | the path |
 | `mount-path` | absolute directory path | the path |
 | `device-node` | `/dev/...` node created by the surface | the node |
 | `device-file` | host file backing a pmem device | the file |
@@ -91,14 +106,14 @@ No path requirements. The root's `hashes` property lists `git-blob-sha1`
 every regular file entry carries `hash.git-blob-sha1` and, where enabled,
 `hash.git-blob-sha256`.
 
-### `fuse`, `erofs`, `block`, `virtiofs`, `virtio-pmem`, `browse`, `api`
+### `sdk`, `fuse`, `erofs`, `block`, `virtiofs`, `virtio-pmem`, `browse`, `api`
 
 No schema. Where a view's policy declares canonical attributes, realizers
 serve them (FUSE-22, EROFS-6).
 
 ## Reserved names
 
-The names `fuse`, `erofs`, `block`, `virtiofs`, `virtio-pmem`,
+The names `sdk`, `fuse`, `erofs`, `block`, `virtiofs`, `virtio-pmem`,
 `nix-cache`, `reapi`, `gha-cache`, `git`, `oci`, `browse`, and `api` are
 reserved by this registry. Implementation-specific experimental surfaces
 MUST use a name beginning with `x-` and MUST NOT be claimed as conformant.

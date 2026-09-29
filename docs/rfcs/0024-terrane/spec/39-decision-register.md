@@ -899,6 +899,31 @@ is added rather than editing history.
   - **Affects:** GC-15, GC-23 and Tombstone CDDL. This correction precedes the
     T1 encoding freeze; keys 1 to 4 and requirement IDs remain stable.
 
+- **[D-55] Register the planned SDK checkout surface.**
+  - **Status:** Decided
+  - **Decision:** Register `sdk` with a `directory-path` endpoint, the
+    `surface-sdk` feature, and `gate:sdk-checkout`. It realizes an authorized
+    view through the repository into a new private directory. The snapshot
+    requires an explicitly pinned exposure; follow mode is rejected.
+  - **Rationale:** T1 requires an SDK checkout surface, but SURF-9's closed
+    registry omitted that name. A private bypass would contradict CRATE-24
+    and SURF-1 to SURF-3.
+  - **Affects:** CRATE-22 to CRATE-28, SURF-1 to SURF-3 and SURF-9. This
+    pre-freeze draft addition preserves existing surface names and IDs.
+
+- **[D-56] Register resumable collector checkpoints.**
+  - **Status:** Decided
+  - **Decision:** Define version-one root, mark and state records. Immutable
+    mark revisions are selected by a fenced CAS state with their hashes,
+    pending frontier, and least restrictive expanded commit contexts.
+  - **Rationale:** GC-7 requires incremental checkpoints, but a single
+    create-once shard key cannot publish successive durable checkpoints.
+    GC-24's resume safety also needs the unexpanded frontier and retention
+    contexts, not only hashes already marked.
+  - **Affects:** GC-4 to GC-7, GC-23, GC-24 and their CDDL/key registry. New
+    keys remain under `gc/<cycle>/`; existing keys and IDs remain stable.
+    This draft correction precedes T1's encoding and bucket-key freeze.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

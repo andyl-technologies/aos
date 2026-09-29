@@ -6292,11 +6292,14 @@ name = "terrane"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "blake3",
+ "libc",
  "reqwest",
  "serde",
  "terrane-core",
  "tokio",
  "toml 0.8.23",
+ "xattr",
  "zstd",
 ]
 

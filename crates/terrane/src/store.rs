@@ -544,6 +544,8 @@ pub trait HttpClient {
 }
 
 /// Supplies wall-clock time without selecting a host binding (CRATE-7).
+#[cfg_attr(feature = "send", async_trait::async_trait)]
+#[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
 pub trait Clock {
     /// Returns the current wall-clock time.
     fn now(&self) -> SystemTime;
@@ -553,6 +555,23 @@ pub trait Clock {
     /// Callers compare values from the same clock instance; they never persist
     /// a tick or compare it with wall time.
     fn monotonic(&self) -> Duration;
+
+    /// Waits for at least the requested elapsed duration through the host timer.
+    ///
+    /// A clock that supplies timestamps alone explicitly refuses timer use.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the timer is unavailable or cannot represent
+    /// the requested duration. The default reports `Unsupported`.
+    ///
+    /// # Panics
+    /// A native Tokio binding requires a runtime with its time driver enabled.
+    async fn sleep(&self, _duration: Duration) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "host timer unavailable",
+        ))
+    }
 }
 
 /// Supplies a WebAssembly host's fetch and time primitives (CRATE-8).
@@ -577,6 +596,17 @@ pub trait WasmHost {
 
     /// Returns the host's monotonic ticks from an arbitrary origin.
     fn monotonic(&self) -> Duration;
+
+    /// Waits through the WebAssembly host's timer primitive.
+    ///
+    /// # Errors
+    /// Returns a host timer failure; the default reports `Unsupported`.
+    async fn sleep(&self, _duration: Duration) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "host timer unavailable",
+        ))
+    }
 }
 
 /// Adapts one WebAssembly host to the portable HTTP and clock contracts.
@@ -608,6 +638,7 @@ impl<H: WasmHost> HttpClient for WasmBindings<H> {
 }
 
 #[cfg(feature = "wasm")]
+#[async_trait::async_trait(?Send)]
 impl<H: WasmHost> Clock for WasmBindings<H> {
     fn now(&self) -> SystemTime {
         self.host.now()
@@ -615,6 +646,10 @@ impl<H: WasmHost> Clock for WasmBindings<H> {
 
     fn monotonic(&self) -> Duration {
         self.host.monotonic()
+    }
+
+    async fn sleep(&self, duration: Duration) -> std::io::Result<()> {
+        self.host.sleep(duration).await
     }
 }
 
@@ -750,226 +785,157 @@ pub trait LocalFs {
     ///
     /// Returns an I/O error if directory durability cannot be established.
     async fn sync_directory(&self, path: &std::path::Path) -> std::io::Result<()>;
-}
 
-/// Binds portable HTTP transport to the native runtime (CRATE-8).
-#[cfg(feature = "tokio")]
-#[derive(Clone, Debug)]
-pub struct TokioHttpClient {
-    client: reqwest::Client,
-}
-
-#[cfg(feature = "tokio")]
-impl TokioHttpClient {
-    /// Wraps an already configured native HTTP client.
-    #[must_use]
-    pub fn new(client: reqwest::Client) -> Self {
-        Self { client }
-    }
-}
-
-#[cfg(feature = "tokio")]
-#[async_trait::async_trait]
-impl HttpClient for TokioHttpClient {
-    async fn send(&self, request: HttpRequest) -> Result<HttpResponse, HttpError> {
-        let method = reqwest::Method::from_bytes(request.method.as_bytes())
-            .map_err(|source| HttpError::InvalidRequest(Box::new(source)))?;
-        let mut outgoing = self.client.request(method, request.url);
-
-        for (name, value) in request.headers {
-            let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
-                .map_err(|source| HttpError::InvalidRequest(Box::new(source)))?;
-            let value = reqwest::header::HeaderValue::from_bytes(&value)
-                .map_err(|source| HttpError::InvalidRequest(Box::new(source)))?;
-            outgoing = outgoing.header(name, value);
-        }
-
-        let response = outgoing
-            .body(request.body)
-            .send()
-            .await
-            .map_err(|source| HttpError::Unavailable(Box::new(source)))?;
-        let status = response.status().as_u16();
-        let headers = response
-            .headers()
-            .iter()
-            .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
-            .collect();
-        let body = response
-            .bytes()
-            .await
-            .map_err(|source| HttpError::Unavailable(Box::new(source)))?;
-
-        Ok(HttpResponse {
-            status,
-            headers,
-            body: body.to_vec(),
-        })
-    }
-}
-
-/// Binds portable wall-clock reads to the native host (CRATE-8).
-#[cfg(feature = "tokio")]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct TokioClock;
-
-#[cfg(feature = "tokio")]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "The native clock binding is the injection boundary for host time."
-)]
-impl Clock for TokioClock {
-    fn now(&self) -> SystemTime {
-        SystemTime::now()
+    /// Reads a regular file while refusing a symbolic link in its final segment.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the operation fails. A binding that does not
+    /// implement it reports `Unsupported` rather than approximating it.
+    async fn read_nofollow(&self, _path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "filesystem operation unavailable",
+        ))
     }
 
-    fn monotonic(&self) -> Duration {
-        static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-
-        ORIGIN.get_or_init(std::time::Instant::now).elapsed()
-    }
-}
-
-/// Retains native file exclusion until dropped or the process terminates.
-///
-/// The descriptor stays private so callers cannot explicitly unlock it while
-/// a CAS write still holds the guard. Closing the descriptor releases the lock.
-#[cfg(feature = "tokio")]
-#[derive(Debug)]
-pub struct TokioFileLock {
-    _file: std::fs::File,
-}
-
-/// Binds portable file operations to the native runtime (CRATE-8).
-#[cfg(feature = "tokio")]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct TokioLocalFs;
-
-#[cfg(feature = "tokio")]
-#[async_trait::async_trait]
-impl LocalFs for TokioLocalFs {
-    type Lock = TokioFileLock;
-
-    async fn random_bytes(&self, length: usize) -> std::io::Result<Vec<u8>> {
-        // Entropy-device I/O belongs to this native binding, and must not
-        // block an executor thread or escape into portable pack code.
-        tokio::task::spawn_blocking(move || {
-            use std::io::Read;
-
-            let mut bytes = Vec::new();
-            bytes
-                .try_reserve_exact(length)
-                .map_err(std::io::Error::other)?;
-            bytes.resize(length, 0);
-            std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-            Ok(bytes)
-        })
-        .await
-        .map_err(std::io::Error::other)?
+    /// Reads a symbolic link target without following it.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the operation fails. A binding that does not
+    /// implement it reports `Unsupported` rather than approximating it.
+    async fn read_link(&self, _path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "filesystem operation unavailable",
+        ))
     }
 
-    async fn lock_exclusive(&self, path: &std::path::Path) -> std::io::Result<Self::Lock> {
-        let path = path.to_owned();
-
-        // Waiting for the kernel lock must not block an async executor thread.
-        tokio::task::spawn_blocking(move || {
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(path)?;
-            file.lock()?;
-
-            Ok(TokioFileLock { _file: file })
-        })
-        .await
-        .map_err(std::io::Error::other)?
-    }
-
-    async fn read(&self, path: &std::path::Path) -> std::io::Result<Vec<u8>> {
-        tokio::fs::read(path).await
-    }
-
-    async fn read_range(
+    /// Creates a symbolic link without replacing an existing path.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the operation fails. A binding that does not
+    /// implement it reports `Unsupported` rather than approximating it.
+    async fn symlink(
         &self,
-        path: &std::path::Path,
-        range: ByteRange,
-    ) -> std::io::Result<Vec<u8>> {
-        use tokio::io::{AsyncReadExt, AsyncSeekExt};
-
-        let length = usize::try_from(range.length)
-            .map_err(|source| std::io::Error::new(std::io::ErrorKind::InvalidInput, source))?;
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(length)
-            .map_err(|source| std::io::Error::new(std::io::ErrorKind::InvalidInput, source))?;
-        bytes.resize(length, 0);
-
-        let mut file = tokio::fs::File::open(path).await?;
-        file.seek(std::io::SeekFrom::Start(range.start)).await?;
-        file.read_exact(&mut bytes).await?;
-        Ok(bytes)
-    }
-
-    async fn write_new(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-        use tokio::io::AsyncWriteExt;
-
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .await?;
-        file.write_all(bytes).await?;
-        file.sync_all().await
-    }
-
-    async fn create_dir_all(&self, path: &std::path::Path) -> std::io::Result<()> {
-        tokio::fs::create_dir_all(path).await
-    }
-
-    async fn read_dir(&self, path: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
-        let mut entries = tokio::fs::read_dir(path).await?;
-        let mut paths = Vec::new();
-        while let Some(entry) = entries.next_entry().await? {
-            paths.push(entry.path());
-        }
-        Ok(paths)
-    }
-
-    async fn metadata(&self, path: &std::path::Path) -> std::io::Result<std::fs::Metadata> {
-        tokio::fs::metadata(path).await
-    }
-
-    async fn symlink_metadata(&self, path: &std::path::Path) -> std::io::Result<std::fs::Metadata> {
-        tokio::fs::symlink_metadata(path).await
-    }
-
-    async fn remove_file(&self, path: &std::path::Path) -> std::io::Result<()> {
-        tokio::fs::remove_file(path).await
-    }
-
-    async fn rename(&self, from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
-        tokio::fs::rename(from, to).await
-    }
-
-    async fn rename_no_replace(
-        &self,
-        from: &std::path::Path,
-        to: &std::path::Path,
+        _target: &std::path::Path,
+        _link: &std::path::Path,
     ) -> std::io::Result<()> {
-        tokio::fs::hard_link(from, to).await?;
-        tokio::fs::remove_file(from).await
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "filesystem operation unavailable",
+        ))
     }
 
-    async fn sync_file(&self, path: &std::path::Path) -> std::io::Result<()> {
-        tokio::fs::File::open(path).await?.sync_all().await
+    /// Creates an additional name for an existing file without replacement.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the operation fails. A binding that does not
+    /// implement it reports `Unsupported` rather than approximating it.
+    async fn hard_link(
+        &self,
+        _existing: &std::path::Path,
+        _new: &std::path::Path,
+    ) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "filesystem operation unavailable",
+        ))
     }
 
-    async fn sync_directory(&self, path: &std::path::Path) -> std::io::Result<()> {
-        tokio::fs::File::open(path).await?.sync_all().await
+    /// Applies the requested permissions to an owned realization path.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the operation fails. A binding that does not
+    /// implement it reports `Unsupported` rather than approximating it.
+    async fn set_permissions(
+        &self,
+        _path: &std::path::Path,
+        _permissions: std::fs::Permissions,
+    ) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "filesystem operation unavailable",
+        ))
+    }
+
+    /// Lists extended attribute names without following the final symbolic link.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the operation fails. A binding that does not
+    /// implement it reports `Unsupported` rather than approximating it.
+    async fn list_xattrs(
+        &self,
+        _path: &std::path::Path,
+    ) -> std::io::Result<Vec<std::ffi::OsString>> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "filesystem operation unavailable",
+        ))
+    }
+
+    /// Reads an extended attribute without following the final symbolic link.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the operation fails. A binding that does not
+    /// implement it reports `Unsupported` rather than approximating it.
+    async fn get_xattr(
+        &self,
+        _path: &std::path::Path,
+        _name: &std::ffi::OsStr,
+    ) -> std::io::Result<Option<Vec<u8>>> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "filesystem operation unavailable",
+        ))
+    }
+
+    /// Writes an extended attribute without following the final symbolic link.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the operation fails. A binding that does not
+    /// implement it reports `Unsupported` rather than approximating it.
+    async fn set_xattr(
+        &self,
+        _path: &std::path::Path,
+        _name: &std::ffi::OsStr,
+        _value: &[u8],
+    ) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "filesystem operation unavailable",
+        ))
+    }
+
+    /// Creates one directory atomically and refuses an existing path.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the operation fails. A binding that does not
+    /// implement it reports `Unsupported` rather than approximating it.
+    async fn create_dir_new(&self, _path: &std::path::Path) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "filesystem operation unavailable",
+        ))
+    }
+
+    /// Removes one empty directory without recursive deletion.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the operation fails. A binding that does not
+    /// implement it reports `Unsupported` rather than approximating it.
+    async fn remove_dir(&self, _path: &std::path::Path) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "filesystem operation unavailable",
+        ))
     }
 }
+
+#[cfg(feature = "tokio")]
+mod bindings;
+
+#[cfg(feature = "tokio")]
+pub use bindings::{TokioClock, TokioFileLock, TokioHttpClient, TokioLocalFs};
 
 #[cfg(test)]
 #[allow(

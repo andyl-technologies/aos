@@ -303,6 +303,45 @@ GcLease = {
   3 => timestamp,                       ; expiry
 }
 
+; Collector records use version 1 at key 0. GC-4, GC-7 and GC-24.
+GcRoots = {
+  0 => 1,
+  1 => cycle,
+  2 => epoch,
+  3 => timestamp,                       ; authority snapshot time
+  4 => [ * gc-root ],
+}
+gc-root = [ ref-name: tstr, commit: digest32,
+            parent-cutoff: timestamp / null, reason: gc-root-reason ]
+gc-root-reason = "current" / "reflog-gc" / "reflog-ttl" / "lease"
+               / "forever" / "tag" / "job"
+
+GcMark = {
+  0 => 1,
+  1 => cycle,
+  2 => epoch,
+  3 => uint,                            ; shard, first digest byte (0..255)
+  4 => [ * digest32 ],                  ; strictly sorted unique hashes
+  5 => bstr .size 2048,                 ; GC-7 reconstructed membership hint
+}
+gc-pending = [ kind: pack-kind, hash: digest32,
+               parent-cutoff: timestamp / null, flags: uint ]
+; Flags: bit 0 ordinary-parent edge, bit 1 root node, bit 2 index tree;
+; all other bits are reserved and zero. Receipt/source roots omit bit 0.
+
+GcState = {
+  0 => 1,
+  1 => cycle,
+  2 => epoch,
+  3 => "snapshot" / "mark" / "sweep" / "delete" / "done",
+  4 => timestamp,                       ; root snapshot time
+  5 => [ * [ shard: uint, revision: uint, checkpoint-hash: digest32 ] ],
+  6 => [ * gc-pending ],                ; exact unexpanded frontier
+  7 => [ * [ commit: digest32, parent-cutoff: timestamp / null ] ],
+                                        ; least restrictive expanded contexts
+  8 => [ * pack-id ],                   ; phase progress, sorted uniquely
+}
+
 ; trash/<cycle>/<pack-id> (GC-15).
 Tombstone = {
   1 => pack-id,

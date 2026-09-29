@@ -66,7 +66,9 @@ zero-padded 20-digit decimal.
 | `gc/lease` | `GcLease` | CAS | collector | 17 |
 | `gc/cycle/<n>` | cycle completion marker | create-once | collector | 13, 17 |
 | `gc/<cycle>/roots` | root-set snapshot of a collection (GC-4) | create-once | collector | 17 |
-| `gc/<cycle>/mark/<shard>` | mark-set checkpoint (GC-8) | create-once | collector | 17 |
+| `gc/<cycle>/mark/<shard>` | final mark-set checkpoint (GC-7) | create-once | collector | 17 |
+| `gc/<cycle>/mark/<shard>/<revision>` | immutable incremental `GcMark` checkpoint | create-once | collector | 17 |
+| `gc/<cycle>/state` | fenced `GcState` progress and checkpoint pointers | CAS | collector | 17 |
 | `trash/<cycle>/<pack-id>` | `Tombstone` | create-once | collector | 13, 17 |
 | `CAPABILITIES` | `Capabilities`, including the store profile | CAS | the opening store | 13, 04 |
 

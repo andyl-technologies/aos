@@ -369,6 +369,7 @@ here is a conformance error of this document.
 | `gate:ruleset-eval-order` | 31 | RULE-15 |
 | `gate:ruleset-magic-memo` | 31 | RULE-6 |
 | `gate:surface-commit-path` | 26 | SURF-16 |
+| `gate:sdk-checkout` | 37 | CRATE-22 to CRATE-27, SURF-1 to SURF-3 |
 | `gate:surface-interface` | 26 | SURF-1, SURF-2 |
 | `gate:surface-schema` | 26 | SURF-13, NIX-4, OCI-1, REAPI-1 |
 | `gate:surface-status` | 26 | SURF-27 |
