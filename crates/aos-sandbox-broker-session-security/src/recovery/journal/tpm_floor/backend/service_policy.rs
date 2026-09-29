@@ -14,6 +14,7 @@
 //! No descriptor-number or shared-flock release ordering is assumed.
 //! The launch FD is not a continuous measurement of a later manager reexec.
 
+use std::ffi::OsStr;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -49,6 +50,7 @@ pub(super) struct RetainedFloorServicePolicyV1 {
     invocation: Vec<u8>,
     fragment: MeasuredFileV1,
     manager: MeasuredFileV1,
+    launch_image: crate::production_startup::Pid1LaunchImageV1,
 }
 
 struct PolicyObservationV1 {
@@ -63,14 +65,7 @@ impl RetainedFloorServicePolicyV1 {
         launch_image: &crate::production_startup::Pid1LaunchImageV1,
     ) -> Result<Self, FloorErrorV1> {
         launch_image
-            .require_endpoint(match endpoint {
-                FloorEndpointV1::ControllerStorageClient => {
-                    crate::ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient
-                }
-                FloorEndpointV1::StorageBroker => {
-                    crate::ProtectedBrokerSessionFixedEndpointV1::StorageBroker
-                }
-            })
+            .require_endpoint(fixed_endpoint(endpoint))
             .map_err(|_| FloorErrorV1::Provisioning)?;
         let manager = open_original_pid1_image(launch_image)?;
         let parent =
@@ -83,7 +78,7 @@ impl RetainedFloorServicePolicyV1 {
         let parent_identity = parent
             .process_identity()
             .map_err(|_| FloorErrorV1::Unavailable)?;
-        let observed = observe(endpoint)?;
+        let observed = observe(endpoint, launch_image)?;
         let root = CgroupV2Root::from_owned(
             open(
                 "/sys/fs/cgroup",
@@ -111,6 +106,7 @@ impl RetainedFloorServicePolicyV1 {
             invocation: observed.invocation,
             fragment: MeasuredFileV1::observe_fragment(observed.fragment)?,
             manager,
+            launch_image: launch_image.clone(),
         };
         retained.revalidate()?;
         Ok(retained)
@@ -119,7 +115,7 @@ impl RetainedFloorServicePolicyV1 {
     pub(super) fn revalidate(&mut self) -> Result<(), FloorErrorV1> {
         self.manager.revalidate()?;
         self.fragment.revalidate()?;
-        let observed = observe(self.endpoint)?;
+        let observed = observe(self.endpoint, &self.launch_image)?;
         if observed.fragment != self.fragment.path()
             || observed.invocation != self.invocation
             || self
@@ -155,8 +151,15 @@ impl RetainedFloorServicePolicyV1 {
 }
 
 /// Runs the shared async bus reader without nesting the daemon's Tokio runtime.
-fn observe(endpoint: FloorEndpointV1) -> Result<PolicyObservationV1, FloorErrorV1> {
-    std::thread::Builder::new()
+fn observe(
+    endpoint: FloorEndpointV1,
+    launch_image: &crate::production_startup::Pid1LaunchImageV1,
+) -> Result<PolicyObservationV1, FloorErrorV1> {
+    let expected_profile = launch_image
+        .recheck_profile_delivery(fixed_endpoint(endpoint))
+        .map_err(|_| FloorErrorV1::Provisioning)?
+        .map(Path::to_path_buf);
+    let observed = std::thread::Builder::new()
         .name("method46-pid1-readback".to_owned())
         .spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -177,7 +180,7 @@ fn observe(endpoint: FloorEndpointV1) -> Result<PolicyObservationV1, FloorErrorV
                         )
                         .await
                         .map_err(|_| FloorErrorV1::Unavailable)?;
-                    decode_policy(&service, &unit, endpoint)
+                    decode_policy(&service, &unit, endpoint, expected_profile.as_deref())
                 })
                 .await
                 .map_err(|_| FloorErrorV1::Unavailable)?
@@ -185,15 +188,20 @@ fn observe(endpoint: FloorEndpointV1) -> Result<PolicyObservationV1, FloorErrorV
         })
         .map_err(|_| FloorErrorV1::Unavailable)?
         .join()
-        .map_err(|_| FloorErrorV1::Unavailable)?
+        .map_err(|_| FloorErrorV1::Unavailable)?;
+    launch_image
+        .recheck_profile_delivery(fixed_endpoint(endpoint))
+        .map_err(|_| FloorErrorV1::Provisioning)?;
+    observed
 }
 
 fn decode_policy(
     service: &[OwnedValue],
     unit: &[OwnedValue],
     endpoint: FloorEndpointV1,
+    expected_profile: Option<&Path>,
 ) -> Result<PolicyObservationV1, FloorErrorV1> {
-    let mut observed = decode_policy_claims(service, unit, endpoint)?;
+    let mut observed = decode_policy_claims(service, unit, endpoint, expected_profile)?;
     observed.fragment =
         std::fs::canonicalize(observed.fragment).map_err(|_| FloorErrorV1::Provisioning)?;
     if !observed.fragment.starts_with("/nix/store")
@@ -212,6 +220,7 @@ fn decode_policy_claims(
     service: &[OwnedValue],
     unit: &[OwnedValue],
     endpoint: FloorEndpointV1,
+    expected_profile: Option<&Path>,
 ) -> Result<PolicyObservationV1, FloorErrorV1> {
     let [
         exit_type,
@@ -255,7 +264,7 @@ fn decode_policy_claims(
         || invocation.len() != 16
         || invocation.iter().all(|byte| *byte == 0)
         || cgroup != expected_cgroup
-        || !has_exact_launch_fd_properties(open_files, extra_fds)
+        || !has_exact_launch_fd_properties(open_files, extra_fds, endpoint, expected_profile)
         || u32::try_from(store_maximum).ok() != Some(0)
         || u32::try_from(stored_fds).ok() != Some(0)
         || !has_exact_owner_context(selinux_context, endpoint)
@@ -284,29 +293,65 @@ fn has_exact_owner_context(value: &OwnedValue, endpoint: FloorEndpointV1) -> boo
         && matches!(context, Value::Str(context) if context.as_str() == super::confinement::owner_context(endpoint))
 }
 
-/// Checks the single fixed launch entry without copying caller-sized arrays.
-fn has_exact_launch_fd_properties(open_files: &OwnedValue, extra_fds: &OwnedValue) -> bool {
+/// Checks only the fixed launch roles named by retained startup custody.
+fn has_exact_launch_fd_properties(
+    open_files: &OwnedValue,
+    extra_fds: &OwnedValue,
+    endpoint: FloorEndpointV1,
+    expected_profile: Option<&Path>,
+) -> bool {
     let Value::Array(open_files) = &**open_files else {
-        return false;
-    };
-    let [Value::Structure(entry)] = open_files.inner() else {
-        return false;
-    };
-    let [path, name, flags] = entry.fields() else {
         return false;
     };
     let Value::Array(extra_fds) = &**extra_fds else {
         return false;
     };
 
-    // OpenFile's public read-only bit, with no append/truncate/graceful options.
-    // The installed pinned 261.2 property encoding still requires qualification.
-    <&str>::try_from(path).ok() == Some("/proc/1/exe")
-        && <&str>::try_from(name).ok()
-            == Some(aos_sandbox_storage::activation::PID1_LAUNCH_IMAGE_FD_NAME)
-        && u64::try_from(flags).ok() == Some(1)
-        && extra_fds.is_empty()
-        && extra_fds.element_signature() == Value::from("").value_signature()
+    if (endpoint == FloorEndpointV1::StorageBroker && expected_profile.is_some())
+        || open_files.len() != 1 + usize::from(expected_profile.is_some())
+        || !extra_fds.is_empty()
+        || extra_fds.element_signature() != Value::from("").value_signature()
+    {
+        return false;
+    }
+
+    // The installed pinned 261.2 encoding still requires qualification.
+    // Flags must be the single public read-only bit, never other open options.
+    let mut found = [false; 2];
+    for entry in open_files.inner() {
+        let Value::Structure(entry) = entry else {
+            return false;
+        };
+        let [Value::Str(path), Value::Str(name), Value::U64(1)] = entry.fields() else {
+            return false;
+        };
+        let index = match (path.as_str(), name.as_str()) {
+            ("/proc/1/exe", aos_sandbox_storage::activation::PID1_LAUNCH_IMAGE_FD_NAME) => 0,
+            (path, "aos-normal-root-client-profile")
+                if expected_profile
+                    .is_some_and(|expected| expected.as_os_str() == OsStr::new(path)) =>
+            {
+                1
+            }
+            _ => return false,
+        };
+        if found[index] {
+            return false;
+        }
+        found[index] = true;
+    }
+    found == [true, expected_profile.is_some()]
+}
+
+const fn fixed_endpoint(endpoint: FloorEndpointV1) -> crate::ProtectedBrokerSessionFixedEndpointV1 {
+    match endpoint {
+        FloorEndpointV1::ControllerStorageClient => {
+            crate::ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient
+        }
+        FloorEndpointV1::StorageBroker => {
+            crate::ProtectedBrokerSessionFixedEndpointV1::StorageBroker
+        }
+    }
 }
 
 const fn unit_name(endpoint: FloorEndpointV1) -> &'static str {
@@ -320,7 +365,16 @@ const fn unit_name(endpoint: FloorEndpointV1) -> &'static str {
 mod tests {
     use aos_systemd::Value;
 
-    use super::{FloorEndpointV1, OwnedValue, decode_policy_claims};
+    use super::{FloorEndpointV1, OwnedValue, Path, decode_policy_claims};
+
+    const PROFILE_PATH: &str = "/nix/store/selected-normal-root-profile/profile.json";
+    const PROFILE_NAME: &str = "aos-normal-root-client-profile";
+    const PID1_ENTRY: (&str, &str, u64) = (
+        "/proc/1/exe",
+        aos_sandbox_storage::activation::PID1_LAUNCH_IMAGE_FD_NAME,
+        1,
+    );
+    const PROFILE_ENTRY: (&str, &str, u64) = (PROFILE_PATH, PROFILE_NAME, 1);
 
     fn value(value: impl Into<Value<'static>>) -> OwnedValue {
         OwnedValue::try_from(value.into()).unwrap()
@@ -356,7 +410,13 @@ mod tests {
     fn effective_floor_service_policy_rejects_weakened_claims() {
         let (service, unit) = claims();
         assert!(
-            decode_policy_claims(&service, &unit, FloorEndpointV1::ControllerStorageClient).is_ok()
+            decode_policy_claims(
+                &service,
+                &unit,
+                FloorEndpointV1::ControllerStorageClient,
+                None
+            )
+            .is_ok()
         );
 
         for (position, replacement) in [
@@ -416,8 +476,13 @@ mod tests {
             let (mut service, unit) = claims();
             service[position] = replacement;
             assert!(
-                decode_policy_claims(&service, &unit, FloorEndpointV1::ControllerStorageClient)
-                    .is_err()
+                decode_policy_claims(
+                    &service,
+                    &unit,
+                    FloorEndpointV1::ControllerStorageClient,
+                    None
+                )
+                .is_err()
             );
         }
         for (position, replacement) in [
@@ -435,8 +500,13 @@ mod tests {
             let (service, mut unit) = claims();
             unit[position] = replacement;
             assert!(
-                decode_policy_claims(&service, &unit, FloorEndpointV1::ControllerStorageClient)
-                    .is_err()
+                decode_policy_claims(
+                    &service,
+                    &unit,
+                    FloorEndpointV1::ControllerStorageClient,
+                    None
+                )
+                .is_err()
             );
         }
         let (service, unit) = claims();
@@ -444,7 +514,8 @@ mod tests {
             decode_policy_claims(
                 &service[..3],
                 &unit,
-                FloorEndpointV1::ControllerStorageClient
+                FloorEndpointV1::ControllerStorageClient,
+                None,
             )
             .is_err()
         );
@@ -452,10 +523,194 @@ mod tests {
             decode_policy_claims(
                 &service,
                 &unit[..3],
-                FloorEndpointV1::ControllerStorageClient
+                FloorEndpointV1::ControllerStorageClient,
+                None,
             )
             .is_err()
         );
-        assert!(decode_policy_claims(&service, &unit, FloorEndpointV1::StorageBroker).is_err());
+        assert!(
+            decode_policy_claims(&service, &unit, FloorEndpointV1::StorageBroker, None).is_err()
+        );
+    }
+
+    #[test]
+    fn controller_profile_delivery_requires_exact_optional_roles() {
+        let expected_profile = Some(Path::new(PROFILE_PATH));
+        for entries in [
+            vec![PID1_ENTRY, PROFILE_ENTRY],
+            vec![PROFILE_ENTRY, PID1_ENTRY],
+        ] {
+            let (mut service, unit) = claims();
+            service[4] = value(entries);
+
+            assert!(
+                decode_policy_claims(
+                    &service,
+                    &unit,
+                    FloorEndpointV1::ControllerStorageClient,
+                    expected_profile,
+                )
+                .is_ok()
+            );
+            assert!(
+                decode_policy_claims(
+                    &service,
+                    &unit,
+                    FloorEndpointV1::ControllerStorageClient,
+                    None,
+                )
+                .is_err()
+            );
+        }
+
+        for (case, entries) in [
+            ("missing image", vec![PROFILE_ENTRY]),
+            ("missing profile", vec![PID1_ENTRY]),
+            ("missing both", vec![]),
+            ("duplicate image", vec![PID1_ENTRY, PID1_ENTRY]),
+            ("duplicate profile", vec![PROFILE_ENTRY, PROFILE_ENTRY]),
+            (
+                "foreign image path",
+                vec![("/nix/store/other/systemd", PID1_ENTRY.1, 1), PROFILE_ENTRY],
+            ),
+            (
+                "image duplicate separator alias",
+                vec![("/proc//1/exe", PID1_ENTRY.1, 1), PROFILE_ENTRY],
+            ),
+            (
+                "image dot alias",
+                vec![("/proc/1/./exe", PID1_ENTRY.1, 1), PROFILE_ENTRY],
+            ),
+            (
+                "foreign image role",
+                vec![(PID1_ENTRY.0, "other-image", 1), PROFILE_ENTRY],
+            ),
+            (
+                "image open flags",
+                vec![(PID1_ENTRY.0, PID1_ENTRY.1, 9), PROFILE_ENTRY],
+            ),
+            (
+                "foreign store profile",
+                vec![
+                    PID1_ENTRY,
+                    ("/nix/store/other/profile.json", PROFILE_NAME, 1),
+                ],
+            ),
+            (
+                "profile duplicate separator alias",
+                vec![
+                    PID1_ENTRY,
+                    (
+                        "/nix/store//selected-normal-root-profile/profile.json",
+                        PROFILE_NAME,
+                        1,
+                    ),
+                ],
+            ),
+            (
+                "profile dot alias",
+                vec![
+                    PID1_ENTRY,
+                    (
+                        "/nix/store/selected-normal-root-profile/./profile.json",
+                        PROFILE_NAME,
+                        1,
+                    ),
+                ],
+            ),
+            (
+                "foreign profile role",
+                vec![PID1_ENTRY, (PROFILE_PATH, "other-profile", 1)],
+            ),
+            (
+                "profile open flags",
+                vec![PID1_ENTRY, (PROFILE_PATH, PROFILE_NAME, 9)],
+            ),
+            ("extra image", vec![PID1_ENTRY, PROFILE_ENTRY, PID1_ENTRY]),
+            (
+                "extra profile",
+                vec![PID1_ENTRY, PROFILE_ENTRY, PROFILE_ENTRY],
+            ),
+            (
+                "extra role",
+                vec![PID1_ENTRY, PROFILE_ENTRY, ("/other", "other", 1)],
+            ),
+        ] {
+            let (mut service, unit) = claims();
+            service[4] = value(entries);
+
+            assert!(
+                decode_policy_claims(
+                    &service,
+                    &unit,
+                    FloorEndpointV1::ControllerStorageClient,
+                    expected_profile,
+                )
+                .is_err(),
+                "{case}",
+            );
+        }
+
+        let (mut service, unit) = claims();
+        service[4] = value(vec![
+            (PID1_ENTRY.0, PID1_ENTRY.1, 1_u32),
+            (PROFILE_PATH, PROFILE_NAME, 1_u32),
+        ]);
+        assert!(
+            decode_policy_claims(
+                &service,
+                &unit,
+                FloorEndpointV1::ControllerStorageClient,
+                expected_profile,
+            )
+            .is_err()
+        );
+
+        for (position, replacement) in [
+            (5, value(vec!["unaccounted-fd"])),
+            (5, value(Vec::<u8>::new())),
+            (6, OwnedValue::from(1_u32)),
+            (7, OwnedValue::from(1_u32)),
+        ] {
+            let (mut service, unit) = claims();
+            service[4] = value(vec![PID1_ENTRY, PROFILE_ENTRY]);
+            service[position] = replacement;
+
+            assert!(
+                decode_policy_claims(
+                    &service,
+                    &unit,
+                    FloorEndpointV1::ControllerStorageClient,
+                    expected_profile,
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn storage_delivery_never_accepts_controller_profile() {
+        let (mut service, mut unit) = claims();
+        service[3] = value("/aos.slice/aos-control.slice/aos-storaged.service");
+        service[8] = value((false, "system_u:system_r:aos_sandbox_storage_t"));
+        unit[0] = value("/nix/store/fixture/aos-storaged.service");
+
+        assert!(
+            decode_policy_claims(&service, &unit, FloorEndpointV1::StorageBroker, None).is_ok()
+        );
+        assert!(
+            decode_policy_claims(
+                &service,
+                &unit,
+                FloorEndpointV1::StorageBroker,
+                Some(Path::new(PROFILE_PATH)),
+            )
+            .is_err()
+        );
+
+        service[4] = value(vec![PID1_ENTRY, PROFILE_ENTRY]);
+        assert!(
+            decode_policy_claims(&service, &unit, FloorEndpointV1::StorageBroker, None).is_err()
+        );
     }
 }
