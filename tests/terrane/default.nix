@@ -41,8 +41,8 @@
             export CARGO_HOME="$TMPDIR/cargo-home"
             export CARGO_TARGET_DIR="$TMPDIR/cargo-target"
             mkdir -p "$CARGO_HOME" crates/.cargo "$out"
-            sed 's|@vendor@|${pkgs.terrane.cargoDeps}|g' \
-              ${pkgs.terrane.cargoDeps}/.cargo/config.toml > crates/.cargo/config.toml
+            sed 's|@vendor@|${pkgs.terrane.passthru.cargoDeps}|g' \
+              ${pkgs.terrane.passthru.cargoDeps}/.cargo/config.toml > crates/.cargo/config.toml
             ${script}
           '';
         }
