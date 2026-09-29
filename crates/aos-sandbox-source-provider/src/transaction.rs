@@ -258,12 +258,44 @@ pub(crate) fn authorize_current_reservation(
     Ok(authorization)
 }
 
-/// Reauthenticates the unchanged original native request at the new journal cut.
-pub(crate) fn reauthorize_native_reservation(
+/// Reauthenticates the original at Requested before the native dispatch cut.
+pub(crate) fn reauthorize_requested_native_reservation(
     ledger: &mut ProviderLedgerV1<'_>,
     permit: crate::DurableAcquireEffectPermitV1,
     original: &SignedSourceProviderRequestV1,
     current_catalog: (&[u8], &[u8]),
+) -> Result<crate::DurableAcquireEffectPermitV1, ProviderLedgerError> {
+    reauthorize_native_reservation(
+        ledger,
+        permit,
+        original,
+        current_catalog,
+        crate::native_completion::NativeReplyPhase::Requested,
+    )
+}
+
+/// Reauthenticates the original at the exact retained Prepared cut.
+pub(crate) fn reauthorize_prepared_native_reservation(
+    ledger: &mut ProviderLedgerV1<'_>,
+    permit: crate::DurableAcquireEffectPermitV1,
+    original: &SignedSourceProviderRequestV1,
+    current_catalog: (&[u8], &[u8]),
+) -> Result<crate::DurableAcquireEffectPermitV1, ProviderLedgerError> {
+    reauthorize_native_reservation(
+        ledger,
+        permit,
+        original,
+        current_catalog,
+        crate::native_completion::NativeReplyPhase::Prepared,
+    )
+}
+
+fn reauthorize_native_reservation(
+    ledger: &mut ProviderLedgerV1<'_>,
+    permit: crate::DurableAcquireEffectPermitV1,
+    original: &SignedSourceProviderRequestV1,
+    current_catalog: (&[u8], &[u8]),
+    phase: crate::native_completion::NativeReplyPhase,
 ) -> Result<crate::DurableAcquireEffectPermitV1, ProviderLedgerError> {
     let identity = crate::native_completion::NativeReplyIdentity::for_request(
         original,
@@ -275,7 +307,7 @@ pub(crate) fn reauthorize_native_reservation(
         &[],
         Some(current_catalog),
         None,
-        Some(identity),
+        Some(crate::native_completion::NativeReplyReauthentication { identity, phase }),
     )?;
     if !matches!(disposition, ProviderAdmissionDispositionV1::Recover(
         ProviderRecoveryWorkV1::ObserveApplying { acquisition_id, effect_id }
@@ -420,7 +452,7 @@ impl ProviderLedgerV1<'_> {
         descriptor_roles: &[SourceProviderDescriptorRole],
         current_catalog: Option<(&[u8], &[u8])>,
         original_packet: Option<&crate::FixedProviderAuthenticatedSourceRequestV1>,
-        native_completion_identity: Option<crate::native_completion::NativeReplyIdentity>,
+        native_reauthentication: Option<crate::native_completion::NativeReplyReauthentication>,
     ) -> Result<ProviderAdmissionDispositionV1, ProviderLedgerError> {
         self.ensure_open()?;
         let original_native_packet = original_packet.is_some()
@@ -453,7 +485,7 @@ impl ProviderLedgerV1<'_> {
                         current,
                         current_catalog,
                         original_packet,
-                        native_completion_identity,
+                        native_reauthentication,
                     ),
                     SourceProviderMethod::Release => {
                         crate::release::reserve_release(self, &mut installed.session, current)

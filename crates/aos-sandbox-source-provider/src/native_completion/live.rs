@@ -249,7 +249,7 @@ impl ProviderLedgerV1<'_> {
 
         // The Provider write invalidated the former authorization. Authenticate
         // the same Root bytes again before any atomic completion is prepared.
-        let permit = crate::transaction::reauthorize_native_reservation(
+        let permit = crate::transaction::reauthorize_prepared_native_reservation(
             self,
             permit,
             original,

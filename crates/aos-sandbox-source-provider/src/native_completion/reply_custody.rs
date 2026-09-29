@@ -23,6 +23,53 @@ pub(crate) struct NativeReplyIdentity {
     pub(crate) signed_request: ObjectDigest,
 }
 
+/// Names one exact internal cut without granting admission or replay authority.
+#[derive(Clone, Copy)]
+pub(crate) enum NativeReplyPhase {
+    Requested,
+    Prepared,
+}
+
+/// Compares an internal reauthentication to its original slot and durable cut.
+#[derive(Clone, Copy)]
+pub(crate) struct NativeReplyReauthentication {
+    pub(crate) identity: NativeReplyIdentity,
+    pub(crate) phase: NativeReplyPhase,
+}
+
+impl NativeReplyReauthentication {
+    pub(crate) fn require_record(
+        &self,
+        record: &NativeAcquireCompletionRecordV2,
+        original_signed_bytes: &[u8],
+    ) -> Result<(), ProviderLedgerError> {
+        let expected = match self.phase {
+            NativeReplyPhase::Requested => NativeAcquireCompletionStateV2::Requested,
+            NativeReplyPhase::Prepared => NativeAcquireCompletionStateV2::Prepared,
+        };
+        record
+            .validate_canonical_artifacts()
+            .map_err(crate::transaction::map_pure_ledger_error)?;
+        let original = record
+            .canonical_request
+            .as_ref()
+            .ok_or(ProviderLedgerError::Unavailable)?
+            .request()
+            .signed_root_request();
+        if record.state != expected
+            || record.acquisition_id != self.identity.acquisition
+            || record.attempt_digest != self.identity.attempt
+            || record.session_binding != self.identity.session
+            || record.root_request_digest != self.identity.signed_request
+            || original.to_canonical_bytes().as_slice() != original_signed_bytes
+            || record.original_clock.is_none()
+        {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 enum SendState {
     #[default]
@@ -167,6 +214,120 @@ mod tests {
             session: ObjectDigest::from_bytes([byte + 2; 32]),
             signed_request: ObjectDigest::from_bytes([byte + 3; 32]),
         }
+    }
+
+    fn signed_root(record: &NativeAcquireCompletionRecordV2) -> Vec<u8> {
+        record
+            .canonical_request
+            .as_ref()
+            .unwrap()
+            .request()
+            .signed_root_request()
+            .to_canonical_bytes()
+    }
+
+    fn cut(
+        record: &NativeAcquireCompletionRecordV2,
+        phase: NativeReplyPhase,
+    ) -> NativeReplyReauthentication {
+        NativeReplyReauthentication {
+            identity: NativeReplyIdentity::for_request(
+                record
+                    .canonical_request
+                    .as_ref()
+                    .unwrap()
+                    .request()
+                    .signed_root_request(),
+                record.attempt_digest,
+            )
+            .unwrap(),
+            phase,
+        }
+    }
+
+    #[test]
+    fn requested_and_prepared_internal_cuts_refuse_phase_substitution() {
+        // These are the existing canonical signed DATA records, not live
+        // endpoint/observation tokens or an installed bridge qualification.
+        let requested =
+            super::super::fixture_requested([1; 32], 500, ObjectDigest::from_bytes([2; 32]));
+        let prepared = super::super::fixture_prepared(&requested);
+        let active = prepared
+            .advance(NativeAcquireCompletionStateV2::Active)
+            .unwrap();
+        let cleanup = prepared
+            .advance(NativeAcquireCompletionStateV2::CleanupRequired)
+            .unwrap();
+        let original = signed_root(&requested);
+        let requested_cut = cut(&requested, NativeReplyPhase::Requested);
+        let prepared_cut = cut(&prepared, NativeReplyPhase::Prepared);
+
+        assert!(requested_cut.require_record(&requested, &original).is_ok());
+        assert!(prepared_cut.require_record(&prepared, &original).is_ok());
+        assert!(requested_cut.require_record(&prepared, &original).is_err());
+        assert!(prepared_cut.require_record(&requested, &original).is_err());
+        for record in [&active, &cleanup] {
+            assert!(requested_cut.require_record(record, &original).is_err());
+            assert!(prepared_cut.require_record(record, &original).is_err());
+        }
+    }
+
+    #[test]
+    fn internal_cut_requires_full_original_identity_bytes_clock_and_artifacts() {
+        let requested =
+            super::super::fixture_requested([1; 32], 500, ObjectDigest::from_bytes([2; 32]));
+        let prepared = super::super::fixture_prepared(&requested);
+        let original = signed_root(&requested);
+        let expected = cut(&prepared, NativeReplyPhase::Prepared);
+        let different = ObjectDigest::from_bytes([99; 32]);
+        let mutations = [
+            NativeReplyIdentity {
+                acquisition: different,
+                ..expected.identity
+            },
+            NativeReplyIdentity {
+                attempt: different,
+                ..expected.identity
+            },
+            NativeReplyIdentity {
+                session: different,
+                ..expected.identity
+            },
+            NativeReplyIdentity {
+                signed_request: different,
+                ..expected.identity
+            },
+        ];
+
+        for identity in mutations {
+            let changed = NativeReplyReauthentication {
+                identity,
+                ..expected
+            };
+            assert!(changed.require_record(&prepared, &original).is_err());
+        }
+        let foreign = super::super::fixture_requested([3; 32], 501, different);
+        assert!(
+            expected
+                .require_record(&prepared, &signed_root(&foreign))
+                .is_err()
+        );
+        let mut changed = prepared.clone();
+        changed.receipt_digest = different;
+        assert!(expected.require_record(&changed, &original).is_err());
+        let mut no_clock = prepared.clone();
+        no_clock.original_clock = None;
+        assert!(expected.require_record(&no_clock, &original).is_err());
+
+        let mut slot = NativeReplyCustody::default();
+        slot.reserve(expected.identity).unwrap();
+        assert!(slot.require_reserved(expected.identity).is_ok());
+        assert!(slot.require_reserved(mutations[0]).is_err());
+        assert!(slot.require_empty().is_err());
+        assert!(
+            slot.begin_send(expected.identity, expected.identity.session)
+                .is_err()
+        );
     }
 
     #[test]
