@@ -843,10 +843,18 @@ async fn upload_cache_object(mut request: Request, env: &Env) -> Result<Response
     let sha256 = crate::digest::sha256_hex(&bytes, preflight.expected_size as usize).await?;
     let size = bytes.len() as u64;
     let projection = if path.ends_with(".narinfo") {
-        let projection = match aos_hub_core::hybrid_ingress::projection::HybridNarinfoProjection::from_bytes(&bytes) {
-            Ok(projection) => projection,
-            Err(_) => return Response::error("narinfo semantic projection is invalid or too large", 400),
-        };
+        let projection =
+            match aos_hub_core::hybrid_ingress::projection::HybridNarinfoProjection::from_bytes(
+                &bytes,
+            ) {
+                Ok(projection) => projection,
+                Err(_) => {
+                    return Response::error(
+                        "narinfo semantic projection is invalid or too large",
+                        400,
+                    )
+                }
+            };
         if projection.validate_cache_path(&path).is_err() {
             return Response::error("narinfo does not match its selected cache path", 400);
         }
