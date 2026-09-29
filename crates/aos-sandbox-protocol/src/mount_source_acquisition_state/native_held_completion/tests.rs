@@ -10,6 +10,8 @@ mod v2;
 
 use std::collections::BTreeMap;
 
+use crate as protocol;
+
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::native_held_completion::{
     NativeHeldControlKindV1 as Kind, NativeHeldOwnerV1 as Owner, NativeHeldScopeV1,

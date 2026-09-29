@@ -13,7 +13,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::super::super::{
     JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
-    encoded_transaction_append_bytes, validate_transaction,
+    validate_transaction,
 };
 use super::super::{GlobalCapacityReservationPurposeV1, decode_capacity_reservation_request_v1};
 use super::{
@@ -223,43 +223,17 @@ pub fn provider_native_capacity_transition_v3(
             "native Provider continuation count did not decrease",
         ));
     }
-    let mut records = append.owner_records();
-    records.push(JournalRecord::delete(
-        RecordNamespace::GlobalCapacityReservation,
-        old.to_journal_record().key().to_vec(),
-    ));
-    if let Some(next) = &next {
-        records.push(next.to_journal_record());
-    }
-    let transaction = JournalTransaction::new(append.transaction_id(), records)?;
-    validate_transaction(&transaction, limits)?;
-    let consumed_bytes = encoded_transaction_append_bytes(&transaction)?;
-    let consumed_records = u32::try_from(transaction.records().len())
-        .map_err(|_| JournalError::LimitExceeded("native Provider consumed records"))?;
-    let (remaining_records, remaining_bytes) = next.as_ref().map_or((0, 0), |next| {
+    let transaction = super::transfer::frame_transfer(
+        append.transaction_id(),
+        append.owner_records(),
+        old,
+        next.as_ref(),
+        limits,
         (
-            next.request()
-                .terminal_records
-                .max(next.request().poison_records),
-            next.request()
-                .terminal_bytes
-                .max(next.request().poison_bytes),
-        )
-    });
-    let old_request = old.request();
-    if remaining_records
-        .checked_add(consumed_records)
-        .is_none_or(|records| {
-            records > old_request.terminal_records.max(old_request.poison_records)
-        })
-        || remaining_bytes
-            .checked_add(consumed_bytes)
-            .is_none_or(|bytes| bytes > old_request.terminal_bytes.max(old_request.poison_bytes))
-    {
-        return Err(JournalError::LimitExceeded(
+            "native Provider consumed records",
             "native Provider complete transferred suffix",
-        ));
-    }
+        ),
+    )?;
     Ok((transaction, next))
 }
 

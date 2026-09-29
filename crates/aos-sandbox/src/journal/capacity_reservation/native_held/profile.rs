@@ -13,6 +13,13 @@ use super::super::super::{
 use super::super::reservation_key;
 use super::{NATIVE_HELD_CAPACITY_VALUE_BYTES_V3, NativeHeldCapacityPurposeV3, invalid};
 
+mod v2;
+
+pub use v2::{
+    NativeHeldCapacityAppendV2, NativeHeldCapacityStepV2, NativeHeldCapacitySuffixV2,
+    provider_native_capacity_transition_v2,
+};
+
 /// Names one native append slot without authorizing its owner transition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeHeldCapacityStepV3 {
@@ -182,16 +189,7 @@ impl NativeHeldCapacityAppendV3 {
         transaction_id: [u8; 16],
         changes: Vec<NativeHeldCapacityChangeV3>,
     ) -> Result<Self, JournalError> {
-        if transaction_id == [0; 16] || changes.is_empty() {
-            return Err(JournalError::InvalidTransaction);
-        }
-        let mut keys = std::collections::BTreeSet::new();
-        if changes
-            .iter()
-            .any(|change| !keys.insert(change.key.as_slice()))
-        {
-            return Err(JournalError::DuplicateRecordKey);
-        }
+        require_changes(transaction_id, &changes)?;
         require_owner_shape(step, &changes)?;
         Ok(Self {
             step,
@@ -199,6 +197,23 @@ impl NativeHeldCapacityAppendV3 {
             changes,
         })
     }
+}
+
+fn require_changes(
+    transaction_id: [u8; 16],
+    changes: &[NativeHeldCapacityChangeV3],
+) -> Result<(), JournalError> {
+    if transaction_id == [0; 16] || changes.is_empty() {
+        return Err(JournalError::InvalidTransaction);
+    }
+    let mut keys = std::collections::BTreeSet::new();
+    if changes
+        .iter()
+        .any(|change| !keys.insert(change.key.as_slice()))
+    {
+        return Err(JournalError::DuplicateRecordKey);
+    }
+    Ok(())
 }
 
 fn require_owner_shape(
@@ -333,87 +348,111 @@ impl NativeHeldCapacitySuffixV3 {
         &self,
         limits: JournalLimits,
     ) -> Result<NativeHeldCapacityGeometryV3, JournalError> {
-        let namespace = self.purpose.owner_namespace();
-        let mut states = BTreeMap::<Vec<u8>, Option<Vec<u8>>>::new();
-        let mut original_bytes = 0_u64;
-        let mut current_bytes = 0_u64;
-        let mut original_records = 0_u32;
-        let mut current_records = 0_u32;
-        let mut geometry = NativeHeldCapacityGeometryV3::default();
-
-        for append in &self.appends {
-            let mut records = Vec::with_capacity(append.changes.len() + 2);
-            for change in &append.changes {
-                if let Some(current) = states.get(&change.key) {
-                    if current != &change.before {
-                        return Err(invalid("native capacity inconsistent before image"));
-                    }
-                } else {
-                    let (bytes, count) = retained(&change.key, change.before.as_deref())?;
-                    original_bytes = add(original_bytes, bytes)?;
-                    current_bytes = add(current_bytes, bytes)?;
-                    original_records = add_records(original_records, count)?;
-                    current_records = add_records(current_records, count)?;
-                }
-                let (before_bytes, before_count) = retained(&change.key, change.before.as_deref())?;
-                let (after_bytes, after_count) = retained(&change.key, change.after.as_deref())?;
-                current_bytes = add(
-                    current_bytes
-                        .checked_sub(before_bytes)
-                        .ok_or(JournalError::InvalidTransaction)?,
-                    after_bytes,
-                )?;
-                current_records = add_records(
-                    current_records
-                        .checked_sub(before_count)
-                        .ok_or(JournalError::InvalidTransaction)?,
-                    after_count,
-                )?;
-                states.insert(change.key.clone(), change.after.clone());
-                records.push(match &change.after {
-                    Some(value) => JournalRecord::put(namespace, change.key.clone(), value.clone()),
-                    None => JournalRecord::delete(namespace, change.key.clone()),
-                });
-            }
-
-            // Private width-only templates are never returned, decoded, or used
-            // as authority. Each nonfinal transfer deletes the old key and puts
-            // a distinct fixed-width successor; final retirement deletes only.
-            records.push(JournalRecord::delete(
-                RecordNamespace::GlobalCapacityReservation,
-                reservation_key([1; 32]),
-            ));
-            if !append.step.is_final() {
-                records.push(JournalRecord::put(
-                    RecordNamespace::GlobalCapacityReservation,
-                    reservation_key([2; 32]),
-                    vec![0; NATIVE_HELD_CAPACITY_VALUE_BYTES_V3],
-                ));
-            }
-            let transaction = JournalTransaction::new(append.transaction_id, records)?;
-            validate_transaction(&transaction, limits)?;
-            let append_bytes = encoded_transaction_append_bytes(&transaction)?;
-            let record_bytes = encoded_transaction_record_bytes(&transaction)?;
-            let record_count = u32::try_from(transaction.records().len())
-                .map_err(|_| JournalError::LimitExceeded("native suffix records"))?;
-
-            geometry.transactions = add_records(geometry.transactions, 1)?;
-            geometry.records = add_records(geometry.records, record_count)?;
-            geometry.append_bytes = add(geometry.append_bytes, append_bytes)?;
-            geometry.maximum_transaction_records =
-                geometry.maximum_transaction_records.max(record_count);
-            geometry.maximum_transaction_record_bytes =
-                geometry.maximum_transaction_record_bytes.max(record_bytes);
-            geometry.maximum_retained_growth_bytes = geometry
-                .maximum_retained_growth_bytes
-                .max(current_bytes.saturating_sub(original_bytes));
-            geometry.maximum_retained_growth_records = geometry
-                .maximum_retained_growth_records
-                .max(current_records.saturating_sub(original_records));
-        }
-        geometry.require_headroom(limits, NativeHeldCapacityUsageV3::default())?;
-        Ok(geometry)
+        measure_appends(
+            self.purpose,
+            self.appends.iter().map(|append| MeasurementAppend {
+                transaction_id: append.transaction_id,
+                changes: &append.changes,
+                final_append: append.step.is_final(),
+            }),
+            limits,
+        )
     }
+}
+
+struct MeasurementAppend<'a> {
+    transaction_id: [u8; 16],
+    changes: &'a [NativeHeldCapacityChangeV3],
+    final_append: bool,
+}
+
+// Both profiles use identical before-image, retained-growth and journal framing
+// arithmetic. Owner chronology is validated separately before reaching here.
+fn measure_appends<'a>(
+    purpose: NativeHeldCapacityPurposeV3,
+    appends: impl IntoIterator<Item = MeasurementAppend<'a>>,
+    limits: JournalLimits,
+) -> Result<NativeHeldCapacityGeometryV3, JournalError> {
+    let namespace = purpose.owner_namespace();
+    let mut states = BTreeMap::<Vec<u8>, Option<Vec<u8>>>::new();
+    let mut original_bytes = 0_u64;
+    let mut current_bytes = 0_u64;
+    let mut original_records = 0_u32;
+    let mut current_records = 0_u32;
+    let mut geometry = NativeHeldCapacityGeometryV3::default();
+
+    for append in appends {
+        let mut records = Vec::with_capacity(append.changes.len() + 2);
+        for change in append.changes {
+            if let Some(current) = states.get(&change.key) {
+                if current != &change.before {
+                    return Err(invalid("native capacity inconsistent before image"));
+                }
+            } else {
+                let (bytes, count) = retained(&change.key, change.before.as_deref())?;
+                original_bytes = add(original_bytes, bytes)?;
+                current_bytes = add(current_bytes, bytes)?;
+                original_records = add_records(original_records, count)?;
+                current_records = add_records(current_records, count)?;
+            }
+            let (before_bytes, before_count) = retained(&change.key, change.before.as_deref())?;
+            let (after_bytes, after_count) = retained(&change.key, change.after.as_deref())?;
+            current_bytes = add(
+                current_bytes
+                    .checked_sub(before_bytes)
+                    .ok_or(JournalError::InvalidTransaction)?,
+                after_bytes,
+            )?;
+            current_records = add_records(
+                current_records
+                    .checked_sub(before_count)
+                    .ok_or(JournalError::InvalidTransaction)?,
+                after_count,
+            )?;
+            states.insert(change.key.clone(), change.after.clone());
+            records.push(match &change.after {
+                Some(value) => JournalRecord::put(namespace, change.key.clone(), value.clone()),
+                None => JournalRecord::delete(namespace, change.key.clone()),
+            });
+        }
+
+        // Private width-only templates are never returned, decoded, or used
+        // as authority. Each nonfinal transfer deletes the old key and puts
+        // a distinct fixed-width successor; final retirement deletes only.
+        records.push(JournalRecord::delete(
+            RecordNamespace::GlobalCapacityReservation,
+            reservation_key([1; 32]),
+        ));
+        if !append.final_append {
+            records.push(JournalRecord::put(
+                RecordNamespace::GlobalCapacityReservation,
+                reservation_key([2; 32]),
+                vec![0; NATIVE_HELD_CAPACITY_VALUE_BYTES_V3],
+            ));
+        }
+        let transaction = JournalTransaction::new(append.transaction_id, records)?;
+        validate_transaction(&transaction, limits)?;
+        let append_bytes = encoded_transaction_append_bytes(&transaction)?;
+        let record_bytes = encoded_transaction_record_bytes(&transaction)?;
+        let record_count = u32::try_from(transaction.records().len())
+            .map_err(|_| JournalError::LimitExceeded("native suffix records"))?;
+
+        geometry.transactions = add_records(geometry.transactions, 1)?;
+        geometry.records = add_records(geometry.records, record_count)?;
+        geometry.append_bytes = add(geometry.append_bytes, append_bytes)?;
+        geometry.maximum_transaction_records =
+            geometry.maximum_transaction_records.max(record_count);
+        geometry.maximum_transaction_record_bytes =
+            geometry.maximum_transaction_record_bytes.max(record_bytes);
+        geometry.maximum_retained_growth_bytes = geometry
+            .maximum_retained_growth_bytes
+            .max(current_bytes.saturating_sub(original_bytes));
+        geometry.maximum_retained_growth_records = geometry
+            .maximum_retained_growth_records
+            .max(current_records.saturating_sub(original_records));
+    }
+    geometry.require_headroom(limits, NativeHeldCapacityUsageV3::default())?;
+    Ok(geometry)
 }
 
 fn normal_successor(purpose: NativeHeldCapacityPurposeV3, before: u8, after: u8) -> bool {
