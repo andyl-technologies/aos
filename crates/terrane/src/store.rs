@@ -296,7 +296,10 @@ pub enum ContentUpload<'a> {
 /// substitute a validator supplied by an upload request. The validator owns
 /// schema interpretation; the backend owns visibility and identity (ARCH-2).
 pub trait ContentValidator {
-    /// Validates an opaque meta upload against its domain's canonical format.
+    /// Validates an opaque upload against its domain's registered canonical format.
+    ///
+    /// Pack and index encodings are binary; CBOR is required only for domains
+    /// whose registered schemas specify it. The validator owns that distinction.
     ///
     /// # Errors
     ///
@@ -344,7 +347,7 @@ pub trait ContentStore: CapabilityReport {
     ///
     /// A chunk result includes its codec byte and encoded body, not decoded
     /// plaintext. Its identity is verified against the plaintext before bytes
-    /// are returned. Meta results retain their canonical encoded bytes. Ranges
+    /// are returned. Other results retain their registered canonical encoded bytes. Ranges
     /// address the stored encoding, including encoded chunk bodies within packs.
     ///
     /// # Errors
