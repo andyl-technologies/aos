@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use terrane_core::identity::{Identity, IdentityKind, TERRANE_V1};
 use terrane_core::manifest::{ChunkRef, Manifest};
 
-async fn fixture() -> FileBucket<TokioLocalFs, TokioClock, Validator> {
+pub(super) async fn fixture() -> FileBucket<TokioLocalFs, TokioClock, Validator> {
     let entropy = TokioLocalFs.random_bytes(16).await.unwrap();
     let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
     let root = std::env::temp_dir().join(format!("terrane-bucket-content-{suffix}"));
@@ -21,17 +21,17 @@ async fn fixture() -> FileBucket<TokioLocalFs, TokioClock, Validator> {
         .unwrap()
 }
 
-fn chunk_identity(bytes: &[u8]) -> Identity {
+pub(super) fn chunk_identity(bytes: &[u8]) -> Identity {
     TERRANE_V1.calculate(IdentityKind::Chunk, bytes).unwrap()
 }
 
-fn raw(bytes: &[u8]) -> Vec<u8> {
+pub(super) fn raw(bytes: &[u8]) -> Vec<u8> {
     let mut encoded = vec![0];
     encoded.extend_from_slice(bytes);
     encoded
 }
 
-fn upload<'a>(
+pub(super) fn upload<'a>(
     encoded: &'a [u8],
     identity: &'a Identity,
     length: usize,
@@ -440,10 +440,22 @@ async fn configured_schema_validator_rejects_canonical_but_invalid_meta() {
     );
 
     let size = bucket.inner.config.chunk_profile.minimum() as u64 + 1;
+    let plaintext = vec![2; size as usize];
+    let chunk_id = chunk_identity(&plaintext);
+    bucket
+        .put(upload(
+            &raw(&plaintext),
+            &chunk_id,
+            plaintext.len(),
+            &bucket.inner.config.chunk_profile,
+            ChunkPosition::Final,
+        ))
+        .await
+        .unwrap();
     let manifest = Manifest {
         size,
         chunks: vec![ChunkRef {
-            digest: [1; 32],
+            digest: chunk_id.terrane_v1_digest().unwrap(),
             length: size,
         }],
         hashes: BTreeMap::from([("blake3".into(), vec![2; 32])]),

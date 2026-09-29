@@ -29,12 +29,16 @@ fn invalid_chunk(error: crate::codec::FrameError) -> StoreFailure {
     use terrane_core::codec::CodecError;
 
     let rule_id = match &error {
-        FrameError::Envelope(CodecError::DeclaredLengthTooLarge)
-        | FrameError::NonfinalChunkTooShort => "CDC-15",
+        FrameError::NonfinalChunkTooShort => "CDC-15",
         FrameError::BoundaryMismatch => "CDC-16",
         FrameError::MissingDictionary | FrameError::WrongDictionary => "CDC-9",
         FrameError::WrongIdentityKind | FrameError::Identity(_) => "CDC-14",
-        FrameError::ContentSizeMismatch | FrameError::PlaintextLengthMismatch => "CDC-12",
+        FrameError::ContentSizeMismatch
+        | FrameError::PlaintextLengthMismatch
+        | FrameError::Envelope(
+            CodecError::DeclaredLengthTooLarge | CodecError::RawLengthMismatch,
+        ) => "CDC-12",
+        FrameError::Envelope(CodecError::CompressedLengthTooLarge) => "CDC-13",
         _ => "CDC-7",
     };
     StoreFailure::with_source(
@@ -108,13 +112,16 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     ) -> Result<(Vec<u8>, usize), StoreFailure> {
         let location = self.location(catalog, identity)?;
         let id = location.pack();
-        let (bytes, index) = if let Some(inventory) = &catalog.inventory {
-            let entry = inventory
-                .iter()
-                .find(|entry| entry.pack_id == *id.as_bytes())
-                .ok_or_else(|| corrupt(identity))?;
+        let inventory = catalog
+            .inventory
+            .as_ref()
+            .and_then(|entries| entries.iter().find(|entry| entry.pack_id == *id.as_bytes()));
+        let (bytes, index) = if let Some(entry) = inventory {
             self.verified_container(entry).await?
         } else {
+            // Optional container inventory does not replace authoritative body
+            // membership. Older live placements remain verified below against
+            // their exact merged record and detached pack index.
             let bytes = self
                 .read_optional(&registered(&id.pack_key())?)
                 .await?
@@ -287,6 +294,54 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         }
         dictionary.ok_or_else(|| invalid("CDC-9"))
     }
+
+    async fn validate_manifest_references(
+        &self,
+        catalog: &Catalog,
+        bytes: &[u8],
+    ) -> Result<(), StoreFailure> {
+        let profile = &self.inner.config.chunk_profile;
+        let manifest = terrane_core::manifest::Manifest::decode(bytes, profile)
+            .map_err(|_| invalid("OBJ-15"))?;
+
+        // A chunk admitted as final has not proved a non-final CDC boundary.
+        // Recheck each reference's independent context before metadata dedup.
+        for (position, chunk) in manifest.chunks.iter().enumerate() {
+            let identity = TERRANE_V1
+                .from_digest(IdentityKind::Chunk, &chunk.digest)
+                .map_err(|_| invalid("OBJ-15"))?;
+            let encoded = self
+                .verified_body(catalog, &identity)
+                .await
+                .map_err(|error| {
+                    if matches!(error.kind(), StoreErrorKind::Absent(_)) {
+                        invalid("OBJ-15")
+                    } else {
+                        error
+                    }
+                })?;
+            let envelope = parse_envelope(&encoded).map_err(|_| invalid("CDC-7"))?;
+            let dictionary = match envelope.codec {
+                Codec::ZstdDictionary(hash) => {
+                    Some(self.dictionary_plaintext(catalog, &hash).await?)
+                }
+                _ => None,
+            };
+            let length = usize::try_from(chunk.length).map_err(|_| invalid("CDC-7"))?;
+
+            crate::codec::decode_verified(
+                &encoded,
+                length,
+                profile,
+                position + 1 == manifest.chunks.len(),
+                &identity,
+                dictionary.as_deref(),
+            )
+            .map_err(invalid_chunk)?;
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg_attr(feature = "send", async_trait::async_trait)]
@@ -324,6 +379,10 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             }
             ContentUpload::Meta(meta) => {
                 self.inner.validator.validate_meta(&meta)?;
+                if meta.kind() == IdentityKind::Manifest {
+                    self.validate_manifest_references(&catalog, meta.bytes())
+                        .await?;
+                }
                 TERRANE_V1
                     .calculate(meta.kind(), meta.bytes())
                     .map_err(|_| invalid("STORE-33"))?
