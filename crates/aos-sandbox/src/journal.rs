@@ -2560,7 +2560,7 @@ impl Journal {
         }
         validate_reserved_capacity(
             &self.state,
-            self.materialized_bytes,
+            materialized_bytes,
             transaction.records(),
             settling_reservation,
             expected_length,
@@ -5660,6 +5660,78 @@ mod tests {
                 Err(JournalError::ForeignAuthorityNamespace)
             ));
         }
+    }
+
+    #[test]
+    fn source_provider_native_capacity_checks_postimage_materialized_bytes_on_commit() {
+        let directory = TestDirectory::new("source-provider-capacity-postimage-bytes");
+        let request = source_provider_capacity_request();
+        let (mut journal, _) = protected_open(&directory.0).unwrap();
+        {
+            let mut authority = journal
+                .claim_source_provider_native_terminal_authority_v1()
+                .unwrap();
+            let prepared = authority
+                .prepare_global_capacity_reservation_v1(request, [11; 16])
+                .unwrap();
+            let admission = transaction(
+                11,
+                vec![
+                    JournalRecord::put(
+                        RecordNamespace::SourceProviderAuthority,
+                        b"owner".to_vec(),
+                        b"admitted".to_vec(),
+                    ),
+                    prepared.record().clone(),
+                ],
+            );
+            let preflight = authority
+                .preflight_global_capacity_reservation_v1(&prepared, &admission)
+                .unwrap();
+            authority
+                .commit_global_capacity_reservation_v1(&preflight, prepared, &admission)
+                .unwrap();
+        }
+
+        // Leave one byte beyond the held promise, then grow the owner by two.
+        // The owner alone fits, but its postimage plus the promise must not.
+        journal.limits.maximum_materialized_bytes =
+            journal.materialized_bytes + usize::try_from(request.terminal_bytes).unwrap() + 1;
+        let before_sequence = journal.snapshot_sequence();
+        let before_length = journal.file.metadata().unwrap().len();
+        let competing = transaction(
+            12,
+            vec![JournalRecord::put(
+                RecordNamespace::SourceProviderAuthority,
+                b"owner".to_vec(),
+                b"admitted++".to_vec(),
+            )],
+        );
+        let mut authority = journal
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+
+        assert!(matches!(
+            authority.preflight_transactions(std::slice::from_ref(&competing)),
+            Err(JournalError::LimitExceeded(
+                "outstanding global capacity reservations"
+            ))
+        ));
+        assert!(matches!(
+            authority.commit(&competing),
+            Err(JournalError::LimitExceeded(
+                "outstanding global capacity reservations"
+            ))
+        ));
+        assert_eq!(
+            authority.get(b"owner").unwrap(),
+            Some(b"admitted".as_slice())
+        );
+        drop(authority);
+
+        assert_eq!(journal.snapshot_sequence(), before_sequence);
+        assert_eq!(journal.file.metadata().unwrap().len(), before_length);
+        assert!(journal.ensure_healthy().is_ok());
     }
 
     #[test]
