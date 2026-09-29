@@ -354,11 +354,15 @@ fn policy_selector_requires_actual_successful_prepared_row_and_live_capacity() {
 }
 
 #[test]
-fn changed_slot_and_missing_protected_allocation_refuse_the_original_cut() {
+fn available_slot_successor_is_rejected_without_changing_the_original_cut() {
     let (directory, mut fixture) = fixture();
     let mut held = hold(fixture.journal_mut(), directory.path());
     let previous = held.slot.record_digest();
-    attachment_slot_state::commit_for_test(
+    let sequence = held.journal.snapshot_sequence();
+    let journal_path = directory.path().join(CONTROLLER_JOURNAL);
+    let journal_bytes = std::fs::read(&journal_path).unwrap();
+
+    let result = attachment_slot_state::commit_for_test(
         held.journal,
         &crate::AttachmentSlotMutationV1::new(
             crate::AttachmentSlotPresenceV1::Available,
@@ -372,16 +376,48 @@ fn changed_slot_and_missing_protected_allocation_refuse_the_original_cut() {
         SandboxId::from_bytes([1; 16]),
         IncarnationId::from_bytes([4; 16]),
         8,
-    )
-    .unwrap();
+    );
+    assert!(matches!(
+        result,
+        Err(crate::AttachmentSlotStateError::Conflict)
+    ));
+    assert_eq!(held.journal.snapshot_sequence(), sequence);
+    assert_eq!(std::fs::read(&journal_path).unwrap(), journal_bytes);
+    held.recheck(&mut clock).unwrap();
+    assert_eq!(held.slot.record_digest(), previous);
+}
+
+#[test]
+fn removed_slot_row_refuses_the_original_held_cut() {
+    let (directory, mut fixture) = fixture();
+    let mut held = hold(fixture.journal_mut(), directory.path());
+    let deletions: Vec<_> = held
+        .journal
+        .records(RecordNamespace::AttachmentSlot)
+        .map(|(key, _)| JournalRecord::delete(RecordNamespace::AttachmentSlot, key.to_vec()))
+        .collect();
+    assert_eq!(deletions.len(), 1);
+
+    // Deliberately remove comparison DATA; do not invent a legal slot successor.
+    held.journal
+        .commit(&JournalTransaction::new([48; 16], deletions).unwrap())
+        .unwrap();
     assert!(held.recheck(&mut clock).is_err());
+}
+
+#[test]
+fn missing_protected_allocation_refuses_a_fresh_original_cut() {
+    let (directory, mut fixture) = fixture();
+    let mut held = hold(fixture.journal_mut(), directory.path());
+    held.recheck(&mut clock).unwrap();
     drop(held);
 
     let journal = fixture.journal_mut();
-    let deletions = journal
+    let deletions: Vec<_> = journal
         .records(RecordNamespace::NamespaceTarget)
         .map(|(key, _)| JournalRecord::delete(RecordNamespace::NamespaceTarget, key.to_vec()))
         .collect();
+    assert!(!deletions.is_empty());
     journal
         .commit(&JournalTransaction::new([49; 16], deletions).unwrap())
         .unwrap();
