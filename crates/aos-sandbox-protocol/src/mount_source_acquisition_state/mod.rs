@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 
 use format::decode_value;
 
+mod dead_replacement;
+
 #[doc(hidden)]
 pub mod checkpoint;
 #[doc(hidden)]
@@ -28,6 +30,8 @@ pub mod projection;
 mod validation;
 
 pub use checkpoint::outcome_verification_anchor_digest_v2;
+#[doc(hidden)]
+pub use dead_replacement::{prepare_dead_replacement_v2, validate_provider_session_successor_v2};
 pub use floor::{
     acquire_verification_floor_v2, protocol_acquire_verification_floor_v2,
     protocol_selection_floor_v2, selection_floor_snapshot_v2,

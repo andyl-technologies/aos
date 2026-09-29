@@ -167,7 +167,11 @@ fn run() -> Result<(), MountDaemonErrorV1> {
     if source_recovery_required {
         // Verify the fixed policy and complete replay before broker recovery
         // can make any durable repair or initiate a provider connection.
-        MountManagerStartupJournalBorrowV1::borrow_fixed(&mut journal)?;
+        if source_provider_enabled {
+            MountManagerStartupJournalBorrowV1::borrow_fixed_root_local_recovery_v4(&mut journal)?;
+        } else {
+            MountManagerStartupJournalBorrowV1::borrow_fixed(&mut journal)?;
+        }
     }
     let kernel_boot_id = KernelBootId::current()
         .map_err(|error| MountError::State(error.to_string()))?
@@ -195,10 +199,11 @@ fn run() -> Result<(), MountDaemonErrorV1> {
         .map_err(|error| MountError::State(error.to_string()))?;
     let mut broker =
         MountBroker::new_with_destination_slots(journal, worker, authority, CATALOG_ROOT, 0)?;
-    // A disabled connector cannot recover a cold request. With the connector
-    // enabled, original Acquires first pass death-proven replacement and native
-    // settlement; the Inventory qualifier runs afterward, before its first
-    // readback commit. Neither path borrows SourceRoot descriptor custody.
+    // A disabled connector cannot recover a cold request. Enabled startup
+    // selects the validated cold graph before constructing the source runtime;
+    // pending replacement still requires proven death and genuine funding.
+    // Unproved original native debt remains closed. Neither startup path borrows
+    // SourceRoot descriptor custody.
     let cold_inventory_count = if source_recovery_required && !source_provider_enabled {
         broker.with_fixed_source_acquisition_owner(|source| {
             source.qualify_inventory_only_cold_recovery()
@@ -218,9 +223,7 @@ fn run() -> Result<(), MountDaemonErrorV1> {
     let mut source_provider_owner = if source_provider_enabled {
         let deadline = production_deadline_after(PROVIDER_STARTUP_TIMEOUT)?;
         let mut owner = connect_authenticated_fixed_source_provider(deadline)?;
-        broker.with_fixed_source_acquisition_owner(|source| {
-            source.establish_startup_provider_successor_v2(&mut owner)
-        })?;
+        broker.establish_cold_provider_successor_v4(&mut owner)?;
         observe_original_pending_acquires(&mut owner, &mut broker, deadline)?;
         recover_reserved_remote_inventories(&mut owner, &mut broker, deadline)?;
         Some(owner)

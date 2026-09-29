@@ -44,8 +44,9 @@ pub(crate) use mount_manager_startup::{
     MountManagerStartupCaptureRecoveryV1,
 };
 pub use root_local_recovery::{
-    Kind2ProtectedReadbackV4, MountBarrierIdleReplacementJournalAuthorityV4,
-    PreparedBarrierIdleReplacementV4,
+    Kind2ProtectedReadbackV4, Kind5ProtectedReadbackV4,
+    MountBarrierIdleReplacementJournalAuthorityV4, MountDeadReplacementJournalAuthorityV4,
+    PreparedBarrierIdleReplacementV4, PreparedDeadReplacementV4,
 };
 pub use source_provider_readonly::SourceProviderHeldReadOnlyJournalAuthorityV1;
 mod cache_policy_hold;
@@ -957,6 +958,7 @@ enum ProtectedAuthorityScope {
     SingleNamespace,
     FixedMountSourceAcquisition,
     RootLocalRecoveryKind2,
+    RootLocalRecoveryKind5,
     SourceProviderHeldReadOnly,
     MountSourceConsumption,
     MountSourceMigration,
@@ -3110,6 +3112,7 @@ impl ProtectedJournalAuthority<'_> {
                 ProtectedAuthorityScope::SingleNamespace
                     | ProtectedAuthorityScope::FixedMountSourceAcquisition
                     | ProtectedAuthorityScope::RootLocalRecoveryKind2
+                    | ProtectedAuthorityScope::RootLocalRecoveryKind5
                     | ProtectedAuthorityScope::MountSourceConsumption
                     | ProtectedAuthorityScope::MountSourceMigration
             ) | (
@@ -4633,7 +4636,7 @@ fn validate_reserved_capacity(
         match record.value() {
             Some(value) => {
                 let decoded = if root_local_edge.is_some() {
-                    // Only the exact private kind2 edge has passed whole-owner
+                    // Only a closed private local edge has passed whole-owner
                     // validation above. Generic and legacy callers stay strict.
                     capacity_reservation::accounting_reservation(record.key(), value)?
                 } else {

@@ -6,6 +6,10 @@
 
 use aos_sandbox::journal::ProtectedJournalAuthority;
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_protocol::mount_source_acquisition_state::{
+    MountSourceAcquisitionStateError, prepare_dead_replacement_v2,
+    validate_provider_session_successor_v2,
+};
 use aos_sandbox_source_provider_security::{
     CurrentRootMountSourceProviderSessionV1, DeadProviderExecutionV1, ProviderExecutionDeathKindV2,
 };
@@ -26,9 +30,9 @@ use crate::Result;
 impl FixedMountSourceAcquisitionOwnerV2<'_> {
     /// Joins a fresh authenticated carrier to the protected predecessor head.
     ///
-    /// A pending request requires kernel-proven predecessor death before its
-    /// attempt is abandoned. An idle recovery barrier preserves the exact
-    /// live or dead predecessor observation until signed terminal settlement.
+    /// A pending request refuses here: only the Broker's absent-runtime entry
+    /// can perform cold kind5 abandonment without losing opaque custody. An idle
+    /// barrier preserves its predecessor until signed terminal settlement.
     ///
     /// # Errors
     ///
@@ -39,123 +43,67 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
+        // A live owner cannot abandon pending requests without retaining their
+        // opaque custody. Only the Broker's absent-runtime kind5 entry may use
+        // cold scheduling derivation.
         if self
             .runtime
             .table
             .provider_heads
             .values()
-            .any(|head| head.pending_attempt.is_none() && head.recovery_barrier.is_some())
+            .any(|head| head.pending_attempt.is_some())
+        {
+            return Err(state_error(
+                "pending startup replacement requires the fresh-cold kind5 entry",
+            ));
+        }
+        if self
+            .runtime
+            .table
+            .provider_heads
+            .values()
+            .any(|head| head.recovery_barrier.is_some())
         {
             return self.establish_kind2_barrier_idle_successor_v4(root);
         }
-        let abandoned = root
-            .with_current_session(|session| {
-                self.with_source_acquisition_authority(|table, authority| {
-                    authority.with_authority(|journal| {
-                        let mut heads = table.provider_heads.values();
-                        let Some(head) = heads.next().cloned() else {
-                            return Ok(None);
-                        };
-                        if heads.next().is_some() {
-                            return Err(state_error(
-                                "startup provider successor has multiple protected scopes",
-                            ));
-                        }
-                        let predecessor = table
-                            .provider_sessions
-                            .get(&head.current_session_id)
-                            .filter(|value| {
-                                value.record_digest == head.current_session_record_digest
-                            })
-                            .cloned()
-                            .ok_or_else(|| {
-                                state_error("startup provider predecessor session is absent")
-                            })?;
-                        if session
-                            .current_session_id_v2()
-                            .map_err(|_| state_error("startup Provider session is stale"))?
-                            .as_bytes()
-                            == &predecessor.session_binding
-                        {
-                            return Ok(None);
-                        }
-                        let scope = head.scope;
-                        if head.pending_attempt.is_none() && head.recovery_barrier.is_none() {
-                            table.replace_idle_provider_session_v2(
-                                journal,
-                                session,
-                                scope.holder_authority_id,
-                                scope.provider_authority_id,
-                            )?;
-                            return Ok(None);
-                        }
-                        let predecessor_record = record_bytes(StoredRecordV2::ProviderSession {
-                            value: predecessor.clone(),
+        root.with_current_session(|session| {
+            self.with_source_acquisition_authority(|table, authority| {
+                authority.with_authority(|journal| {
+                    let mut heads = table.provider_heads.values();
+                    let Some(head) = heads.next().cloned() else {
+                        return Ok(());
+                    };
+                    if heads.next().is_some() {
+                        return Err(state_error(
+                            "startup provider successor has multiple protected scopes",
+                        ));
+                    }
+                    let predecessor = table
+                        .provider_sessions
+                        .get(&head.current_session_id)
+                        .filter(|value| value.record_digest == head.current_session_record_digest)
+                        .ok_or_else(|| {
+                            state_error("startup provider predecessor session is absent")
                         })?;
-                        let death = session
-                            .try_prove_mount_provider_execution_dead_v2(
-                                journal,
-                                &journal.snapshot()?,
-                                &provider_session_key(predecessor.session_id),
-                                &predecessor_record,
-                            )
-                            .map_err(|_| state_error("old Provider liveness is indeterminate"))?;
-                        if let Some(pending) = head.pending_attempt {
-                            match death {
-                                Some(death) => table.suspend_dead_attempt_and_replace_session_v2(
-                                    journal,
-                                    session,
-                                    death,
-                                    scope.holder_authority_id,
-                                    scope.provider_authority_id,
-                                )?,
-                                None => {
-                                    let attempt =
-                                        table.provider_attempts.get(&pending.id).ok_or_else(
-                                            || state_error("live-provider old attempt is missing"),
-                                        )?;
-                                    if attempt.method != ProviderMethodV2::Acquire
-                                        || attempt.previous_attempt_id.is_some()
-                                    {
-                                        return Err(state_error(
-                                            "live-provider startup is not original Acquire",
-                                        ));
-                                    }
-                                    table.replace_backend_recovery_session_v2(
-                                        journal, session, pending.id,
-                                    )?;
-                                }
-                            }
-                            Ok(Some(pending.id))
-                        } else {
-                            table.replace_barrier_idle_session_v2(
-                                journal,
-                                session,
-                                death,
-                                scope.holder_authority_id,
-                                scope.provider_authority_id,
-                            )?;
-                            Ok(None)
-                        }
-                    })
+                    if session
+                        .current_session_id_v2()
+                        .map_err(|_| state_error("startup Provider session is stale"))?
+                        .as_bytes()
+                        == &predecessor.session_binding
+                    {
+                        return Ok(());
+                    }
+                    table.replace_idle_provider_session_v2(
+                        journal,
+                        session,
+                        head.scope.holder_authority_id,
+                        head.scope.provider_authority_id,
+                    )
                 })
             })
-            .map_err(|_| state_error("Root-Mount successor handshake is not current"))?
-            .ok_or_else(|| state_error("Root-Mount successor handshake is pending"))??;
-        if let Some(attempt_id) = abandoned {
-            self.runtime
-                .cold_pending_attempts
-                .retain(|value| *value != attempt_id);
-            if self
-                .runtime
-                .pending_provider
-                .as_ref()
-                .is_some_and(|pending| pending.attempt_id() == attempt_id)
-            {
-                self.runtime.pending_provider = None;
-            }
-        }
-        Ok(())
+        })
+        .map_err(|_| state_error("Root-Mount successor handshake is not current"))?
+        .ok_or_else(|| state_error("Root-Mount successor handshake is pending"))?
     }
 
     fn establish_kind2_barrier_idle_successor_v4(
@@ -774,44 +722,7 @@ impl SourceAcquisitionTableV2 {
             )
             .map_err(|_| state_error("protected provider replacement planning failed"))?;
         let successor = session_from_projection(plan.session(), Some(predecessor.session_id))?;
-        if successor.scope != predecessor.scope
-            || successor.session_id == predecessor.session_id
-            || self.provider_sessions.contains_key(&successor.session_id)
-            || !monotonic(
-                predecessor.root_mount_authority_generation,
-                predecessor.root_mount_authority_digest,
-                successor.root_mount_authority_generation,
-                successor.root_mount_authority_digest,
-            )
-            || !monotonic(
-                predecessor.provider_authority_generation,
-                predecessor.provider_authority_digest,
-                successor.provider_authority_generation,
-                successor.provider_authority_digest,
-            )
-            || !monotonic(
-                predecessor.route_generation,
-                predecessor.route_digest,
-                successor.route_generation,
-                successor.route_digest,
-            )
-            || !monotonic(
-                predecessor.trust_generation,
-                predecessor.trust_digest,
-                successor.trust_generation,
-                successor.trust_digest,
-            )
-            || !monotonic(
-                predecessor.revocation_generation,
-                predecessor.revocation_digest,
-                successor.revocation_generation,
-                successor.revocation_digest,
-            )
-        {
-            return Err(state_error(
-                "provider successor session rolls back or equivocates protected history",
-            ));
-        }
+        validate_successor(&predecessor, &successor, &self.provider_sessions)?;
         let mut next_head = current_head.clone();
         next_head.revision = next_revision(current_head.revision)?;
         next_head.holder_authority_generation = successor.root_mount_authority_generation;
@@ -871,6 +782,28 @@ impl SourceAcquisitionTableV2 {
         holder_authority_id: [u8; 16],
         provider_authority_id: [u8; 16],
     ) -> Result<()> {
+        let (_, identity, records) = self.prepare_dead_replacement_v4(
+            journal,
+            live_successor,
+            predecessor_death,
+            holder_authority_id,
+            provider_authority_id,
+        )?;
+        commit_mutation(self, journal, identity, records)
+    }
+
+    pub(super) fn prepare_dead_replacement_v4(
+        &self,
+        journal: &ProtectedJournalAuthority<'_>,
+        live_successor: &mut CurrentRootMountSourceProviderSessionV1,
+        predecessor_death: DeadProviderExecutionV1,
+        holder_authority_id: [u8; 16],
+        provider_authority_id: [u8; 16],
+    ) -> Result<(
+        aos_sandbox_source_provider_security::CurrentMountProviderSessionPlanV2,
+        MutationIdentityV2,
+        Vec<StoredRecordV2>,
+    )> {
         let identity = (holder_authority_id, provider_authority_id);
         let current_head = self
             .provider_heads
@@ -880,8 +813,7 @@ impl SourceAcquisitionTableV2 {
         let current_attempt_ref = current_head
             .pending_attempt
             .ok_or_else(|| state_error("dead provider replacement has no Reserved attempt"))?;
-        let current_attempt = self
-            .provider_attempts
+        self.provider_attempts
             .get(&current_attempt_ref.id)
             .filter(|attempt| {
                 attempt.revision == current_attempt_ref.revision
@@ -889,7 +821,6 @@ impl SourceAcquisitionTableV2 {
                     && attempt.session_id == current_head.current_session_id
                     && matches!(&attempt.state, ProviderAttemptStateV2::Reserved)
             })
-            .cloned()
             .ok_or_else(|| state_error("dead provider replacement attempt is not current"))?;
         let predecessor = self
             .provider_sessions
@@ -921,158 +852,34 @@ impl SourceAcquisitionTableV2 {
             )
             .map_err(|_| state_error("protected dead-provider replacement planning failed"))?;
         let successor = session_from_projection(plan.session(), Some(predecessor.session_id))?;
-        validate_successor(&predecessor, &successor, &self.provider_sessions)?;
-
-        let existing_barrier = current_head.recovery_barrier.as_ref();
-        let root_attempt_id = existing_barrier.map_or(current_attempt.attempt_id, |barrier| {
-            barrier.root_attempt.id
-        });
-        if existing_barrier.is_some()
-            && !matches!(
-                &current_attempt.intent,
-                ProviderIntentV2::Inventory { value }
-                    if value.recovery_root_attempt_id == Some(root_attempt_id)
-            )
-        {
-            return Err(state_error(
-                "repeated provider death is not the required recovery Inventory",
-            ));
-        }
-        let mut next_attempt = current_attempt.clone();
-        next_attempt.revision = 2;
-        next_attempt.state = ProviderAttemptStateV2::AbandonedIndeterminate {
-            dead_execution: durable_death,
-            successor_session_id: successor.session_id,
-            recovery_root_attempt_id: root_attempt_id,
-            outcome_may_exist: true,
-            resolution: None,
+        let records = prepare_dead_replacement_v2(&self.state(), successor, durable_death)
+            .map_err(protocol_state_error)?;
+        let Some(StoredRecordV2::ProviderQueryAttempt { value: attempt }) = records.first() else {
+            return Err(state_error("dead replacement proposal lacks its Attempt"));
         };
-        next_attempt.record_digest = [0; 32];
-        let next_attempt = sealed_attempt(next_attempt)?;
-        let next_attempt_ref = record_ref(&StoredRecordV2::ProviderQueryAttempt {
-            value: next_attempt.clone(),
-        })?;
-        let root_ref = existing_barrier.map_or(next_attempt_ref, |barrier| barrier.root_attempt);
-
-        let next_row = match current_attempt.owner {
-            ProviderQueryOwnerV2::Acquire { acquisition_id }
-            | ProviderQueryOwnerV2::Release { acquisition_id }
-                if existing_barrier.is_none() =>
-            {
-                let current_row = self
-                    .acquisitions
-                    .get(&acquisition_id)
-                    .cloned()
-                    .ok_or_else(|| state_error("dead provider attempt owner row is absent"))?;
-                let mut row = current_row.clone();
-                row.revision = next_revision(current_row.revision)?;
-                match current_attempt.method {
-                    ProviderMethodV2::Acquire => {
-                        let lineage = &mut row.acquire_lineage;
-                        if lineage.tail != current_attempt_ref
-                            || lineage.root.id != current_attempt.lineage_root_attempt_id
-                            || (lineage.root.id == current_attempt_ref.id
-                                && lineage.root != current_attempt_ref)
-                        {
-                            return Err(state_error(
-                                "dead Acquire does not replace its exact lineage predecessor",
-                            ));
-                        }
-
-                        // The sole stored revision changes; an original root
-                        // must follow it without rewriting a different root.
-                        if lineage.root == current_attempt_ref {
-                            lineage.root = next_attempt_ref;
-                        }
-                        lineage.tail = next_attempt_ref;
-                    }
-                    ProviderMethodV2::Release => {
-                        row.release_lineage
-                            .as_mut()
-                            .ok_or_else(|| state_error("dead Release lineage is absent"))?
-                            .tail = next_attempt_ref;
-                    }
-                    ProviderMethodV2::Inventory => {
-                        return Err(state_error("Inventory attempt has an acquisition owner"));
-                    }
-                }
-                row.recovery = AcquisitionRecoveryV2::InventoryRequired {
-                    root_attempt: root_ref,
-                };
-                row.record_digest = [0; 32];
-                Some(sealed_row(row)?)
-            }
-            ProviderQueryOwnerV2::Inventory => None,
-            _ => {
-                return Err(state_error(
-                    "recovery barrier cannot replace another acquisition attempt",
-                ));
-            }
+        let Some(StoredRecordV2::ProviderHead { value: head }) = records.last() else {
+            return Err(state_error("dead replacement proposal lacks its Head"));
         };
-
-        let mut next_head = current_head.clone();
-        next_head.revision = next_revision(current_head.revision)?;
-        next_head.holder_authority_generation = successor.root_mount_authority_generation;
-        next_head.holder_authority_digest = successor.root_mount_authority_digest;
-        next_head.provider_authority_generation = successor.provider_authority_generation;
-        next_head.provider_authority_digest = successor.provider_authority_digest;
-        next_head.current_session_id = successor.session_id;
-        next_head.current_session_record_digest = successor.record_digest;
-        next_head.next_request_sequence = 1;
-        next_head.next_response_sequence = 1;
-        next_head.pending_attempt = None;
-        next_head.last_reconciliation = None;
-        next_head.recovery_barrier = Some(RecoveryBarrierV2 {
-            root_attempt: root_ref,
-            baseline_inventory_ordinal: existing_barrier
-                .map_or(current_head.inventory_observation_ordinal, |barrier| {
-                    barrier.baseline_inventory_ordinal
-                }),
-            required_session_id: successor.session_id,
-            recovery_inventory_tail: existing_barrier.map(|_| next_attempt_ref),
-            replacement_count: existing_barrier.map_or(Ok(1), |barrier| {
-                barrier
-                    .replacement_count
-                    .checked_add(1)
-                    .ok_or_else(|| state_error("provider replacement count is exhausted"))
-            })?,
+        let row = records.iter().find_map(|record| match record {
+            StoredRecordV2::Acquisition { value } => Some(value),
+            _ => None,
         });
-        next_head.record_digest = [0; 32];
-        let next_head = sealed_head(next_head)?;
-        let acquisition_id = next_row.as_ref().map(|row| row.acquisition_id);
-        let next_row_revision = next_row.as_ref().map(|row| row.revision);
-        let mut records = vec![
-            StoredRecordV2::ProviderQueryAttempt {
-                value: next_attempt,
-            },
-            StoredRecordV2::ProviderSession { value: successor },
-        ];
-        if let Some(row) = next_row {
-            records.push(StoredRecordV2::Acquisition { value: row });
-        }
-        records.push(StoredRecordV2::ProviderHead {
-            value: next_head.clone(),
-        });
-        commit_mutation(
-            self,
-            journal,
-            MutationIdentityV2 {
-                tag: MutationTagV2::DeadReplacement,
-                holder_id: holder_authority_id,
-                provider_id: provider_authority_id,
-                next_holder_sequence_revision: self
-                    .holder_sequences
-                    .get(&holder_authority_id)
-                    .map_or(0, |value| value.revision),
-                next_head_revision: next_head.revision,
-                acquisition_id,
-                next_row_revision,
-                attempt_id: Some(next_attempt_ref.id),
-                next_attempt_revision: Some(next_attempt_ref.revision),
-                session_id: Some(next_head.current_session_id),
-            },
-            records,
-        )
+        let identity = MutationIdentityV2 {
+            tag: MutationTagV2::DeadReplacement,
+            holder_id: holder_authority_id,
+            provider_id: provider_authority_id,
+            next_holder_sequence_revision: self
+                .holder_sequences
+                .get(&holder_authority_id)
+                .map_or(0, |value| value.revision),
+            next_head_revision: head.revision,
+            acquisition_id: row.map(|row| row.acquisition_id),
+            next_row_revision: row.map(|row| row.revision),
+            attempt_id: Some(attempt.attempt_id),
+            next_attempt_revision: Some(attempt.revision),
+            session_id: Some(head.current_session_id),
+        };
+        Ok((plan, identity, records))
     }
 }
 
@@ -1121,14 +928,9 @@ fn durable_death_for_predecessor(
     Ok((protected, durable))
 }
 
-fn monotonic(
-    old_generation: u64,
-    old_digest: [u8; 32],
-    new_generation: u64,
-    new_digest: [u8; 32],
-) -> bool {
-    new_generation > old_generation
-        || (new_generation == old_generation && new_digest == old_digest)
+fn protocol_state_error(error: MountSourceAcquisitionStateError) -> crate::MountError {
+    let MountSourceAcquisitionStateError::Invalid(reason) = error;
+    state_error(reason)
 }
 
 fn validate_successor(
@@ -1136,43 +938,6 @@ fn validate_successor(
     successor: &SourceProviderSessionV2,
     sessions: &std::collections::BTreeMap<[u8; 32], SourceProviderSessionV2>,
 ) -> Result<()> {
-    if successor.scope != predecessor.scope
-        || successor.session_id == predecessor.session_id
-        || sessions.contains_key(&successor.session_id)
-        || !monotonic(
-            predecessor.root_mount_authority_generation,
-            predecessor.root_mount_authority_digest,
-            successor.root_mount_authority_generation,
-            successor.root_mount_authority_digest,
-        )
-        || !monotonic(
-            predecessor.provider_authority_generation,
-            predecessor.provider_authority_digest,
-            successor.provider_authority_generation,
-            successor.provider_authority_digest,
-        )
-        || !monotonic(
-            predecessor.route_generation,
-            predecessor.route_digest,
-            successor.route_generation,
-            successor.route_digest,
-        )
-        || !monotonic(
-            predecessor.trust_generation,
-            predecessor.trust_digest,
-            successor.trust_generation,
-            successor.trust_digest,
-        )
-        || !monotonic(
-            predecessor.revocation_generation,
-            predecessor.revocation_digest,
-            successor.revocation_generation,
-            successor.revocation_digest,
-        )
-    {
-        return Err(state_error(
-            "provider successor session rolls back or equivocates protected history",
-        ));
-    }
-    Ok(())
+    validate_provider_session_successor_v2(predecessor, successor, sessions)
+        .map_err(protocol_state_error)
 }

@@ -40,6 +40,7 @@ use buffa::Message as _;
 use crate::Result;
 
 mod checkpoint;
+mod cold_replacement;
 mod disposition_lineage;
 mod format;
 mod history;
@@ -72,6 +73,7 @@ pub(crate) use reservation::{
     ProviderQuerySendRecoveryV2, ReservedProviderQueryV2, SentProviderQueryV2,
 };
 
+use cold_replacement::install_and_retire_kind5_runtime;
 use format::{
     MAXIMUM_SOURCE_ACQUISITIONS, MAXIMUM_SOURCE_HOLDER_SEQUENCES, MAXIMUM_SOURCE_PROVIDER_ATTEMPTS,
     MAXIMUM_SOURCE_PROVIDER_HEADS, MAXIMUM_SOURCE_PROVIDER_SESSIONS, state_error,
@@ -241,7 +243,7 @@ struct RetainedFreshReleasePreparationV2 {
     prepared_release: aos_sandbox_source_provider_security::PreparedMountSourceReleaseV2,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct BackendRecoveryReplacementV2 {
     acquisition_id: [u8; 32],
     expected_revision: u64,
@@ -751,6 +753,22 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         };
         let mut owner = Self::recover_with_table(protected, table)?;
         owner.install_and_retire_kind2_v4()?;
+        Ok(owner)
+    }
+
+    /// Constructs only the broker's genuinely fresh cold kind5 owner.
+    ///
+    /// This private entry is called only after the broker proves that no runtime
+    /// exists. It must never replace a live owner or reconstruct opaque custody.
+    pub(crate) fn borrow_existing_kind5_fixed_journal(
+        journal: &'journal mut Journal,
+    ) -> Result<Self> {
+        let mut owner = Self::borrow_existing_kind2_fixed_journal(journal)?;
+        let mut writer = owner
+            .protected
+            .root_dead_replacement_authority_v4()
+            .map_err(|error| crate::MountError::State(error.to_string()))?;
+        install_and_retire_kind5_runtime(&mut owner.runtime, &mut writer, None)?;
         Ok(owner)
     }
 

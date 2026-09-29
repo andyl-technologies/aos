@@ -238,13 +238,14 @@ pub use journal::{
     GlobalCapacityReservationRecoveryBindingV1, GlobalCapacityReservationRequestV1,
     GlobalCapacityReservationV1, IdempotencyKey, IdempotencyOutcome, Journal, JournalError,
     JournalLimits, JournalRecord, JournalTransaction, Kind2ProtectedReadbackV4,
-    MountBarrierIdleReplacementJournalAuthorityV4, MountManagerStartupPolicyReceiptV1,
+    Kind5ProtectedReadbackV4, MountBarrierIdleReplacementJournalAuthorityV4,
+    MountDeadReplacementJournalAuthorityV4, MountManagerStartupPolicyReceiptV1,
     MountSourceAcquisitionJournalAuthorityV2, MountSourceConsumptionCommitReceipt,
     MountSourceConsumptionCompanionProjectionV2, MountSourceConsumptionJournalAuthorityV1,
     MountSourceConsumptionPreflight, MountSourceMigrationJournalAuthorityV2,
-    PreparedBarrierIdleReplacementV4, PreparedGlobalCapacityReservationV1,
-    ProtectedJournalAuthority, ProtectedJournalLockCustodyV1, ProtectedJournalPreflight,
-    ProtectedJournalSnapshot, RecordNamespace, RecoveryReport,
+    PreparedBarrierIdleReplacementV4, PreparedDeadReplacementV4,
+    PreparedGlobalCapacityReservationV1, ProtectedJournalAuthority, ProtectedJournalLockCustodyV1,
+    ProtectedJournalPreflight, ProtectedJournalSnapshot, RecordNamespace, RecoveryReport,
     SourceProviderHeldReadOnlyJournalAuthorityV1,
 };
 pub use lifecycle_authority::{
