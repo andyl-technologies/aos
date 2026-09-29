@@ -832,6 +832,62 @@ fn strip_route_base_path<'a>(base_path: &str, request_path: &'a str) -> Option<&
     }
 }
 
+/// Checks an authenticated hybrid authority against the configured control origin.
+///
+/// Native's listener Host may name its private origin. Only the authenticated
+/// public authority is compared using the same canonical control URL rules as
+/// delivery routing.
+///
+/// # Errors
+///
+/// Returns an error when either origin is malformed or noncanonical.
+pub fn hybrid_control_authority_matches(external_url: &str, authority: &str) -> Result<bool, ()> {
+    let expected = configured_control_authority(external_url)?;
+    let actual = configured_control_authority(&format!("https://{authority}"))?;
+    Ok(actual == expected)
+}
+
+/// Resolves the exact OCI path for pre-body hybrid ingress classification.
+///
+/// Callers supply an already authenticated public authority. This applies the
+/// same canonical path and most-specific route selection as delivery dispatch;
+/// it does not authorize a repository operation or replace the later router.
+///
+/// # Errors
+///
+/// Returns an error for invalid authority/path, a database failure, or an
+/// OCI-shaped route that does not admit OCI or has an invalid Distribution path.
+pub async fn resolve_hybrid_oci_path(
+    db: &crate::db::Database,
+    authority: &str,
+    path: &str,
+) -> Result<Option<crate::oci::OciRequest>, ()> {
+    let authority = authority
+        .parse::<axum::http::uri::Authority>()
+        .map_err(|_| ())?;
+    let host = attested_authority_host(authority.as_str())?;
+    let port = authority.port_u16().unwrap_or(443);
+    let path = canonical_request_path(path)?;
+    let routes = db
+        .inbound_routes(&host, port, "https", "layer7")
+        .await
+        .map_err(|_| ())?;
+    let Some((route, relative)) = routes.iter().find_map(|route| {
+        strip_route_base_path(&route.base_path, &path).map(|relative| (route, relative))
+    }) else {
+        return Ok(None);
+    };
+    if relative != "v2" && !relative.starts_with("v2/") {
+        return Ok(None);
+    }
+    if !route.serves_oci {
+        return Err(());
+    }
+    crate::oci::parse_oci_path(relative)
+        .map(Some)
+        .map_err(|_| ())
+}
+
 fn delivery_audience(surface: crate::db::SurfaceTarget, path: &str) -> DeliveryAudience {
     let nix = path == "nix-cache-info"
         || path.starts_with("nar/")

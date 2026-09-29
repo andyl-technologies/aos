@@ -6,7 +6,6 @@
 //! remain fenced for expiry recovery.
 
 use base64::Engine as _;
-use sha2::{Digest as _, Sha256};
 
 use crate::hybrid_ingress::{
     HybridCachePartAdmission, HybridCachePartAdmissionRequest, HybridCachePartCompletionRequest,
@@ -578,23 +577,23 @@ async fn validate_narinfo(
     request: &HybridCacheUploadAdmissionRequest,
 ) -> Result<(), RpcError> {
     if !path.ends_with(".narinfo") {
-        if request.narinfo.is_some() {
+        if request.projection.is_some() {
             return Err(RpcError::invalid(
                 "NAR upload cannot carry narinfo metadata",
             ));
         }
         return Ok(());
     }
-    let narinfo = request
-        .narinfo
-        .as_deref()
-        .ok_or_else(|| RpcError::invalid("narinfo upload omitted its signed body"))?;
-    if narinfo.len() > crate::fetch::MAX_CACHE_NARINFO_BYTES
-        || narinfo.len() as u64 != request.size
-        || hex::encode(Sha256::digest(narinfo.as_bytes())) != request.sha256
-    {
+    let projection = request
+        .projection
+        .as_ref()
+        .ok_or_else(|| RpcError::invalid("narinfo upload omitted its parsed projection"))?;
+    projection
+        .validate_cache_path(path)
+        .map_err(|_| RpcError::invalid("narinfo projection or cache path is invalid"))?;
+    if projection.source_size as u64 != request.size || projection.source_sha256 != request.sha256 {
         return Err(RpcError::invalid(
-            "narinfo body does not match the upload digest",
+            "narinfo projection does not match the original source identity",
         ));
     }
     if let Some(selected) = db
@@ -602,7 +601,8 @@ async fn validate_narinfo(
         .await
         .map_err(RpcError::internal)?
     {
-        crate::nix_sign::verify_narinfo(narinfo, &selected.name, &selected.public_key)
+        projection
+            .verify_selected_key(&selected.name, &selected.public_key)
             .map_err(|_| RpcError::invalid("narinfo is not signed by its selected key"))?;
     }
     Ok(())

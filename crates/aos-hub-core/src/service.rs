@@ -37620,7 +37620,7 @@ mod cache_upload_tests {
                 HybridCacheUploadAdmissionRequest {
                     size: body.len() as u64,
                     sha256: hex::encode(Sha256::digest(body)),
-                    narinfo: None,
+                    projection: None,
                 },
             )
             .await
@@ -37740,7 +37740,7 @@ mod cache_upload_tests {
                 HybridCacheUploadAdmissionRequest {
                     size: body.len() as u64,
                     sha256: hex::encode(Sha256::digest(body)),
-                    narinfo: None,
+                    projection: None,
                 },
             )
             .await

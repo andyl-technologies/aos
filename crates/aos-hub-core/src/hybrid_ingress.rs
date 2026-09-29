@@ -6,6 +6,9 @@
 //! any route, authentication, or rate-limit middleware can use those facts.
 
 mod oci_manifest;
+pub mod projection;
+
+pub use projection::{HybridNarinfoProjection, HybridNarinfoSignature, HybridObjectProjection};
 
 pub use oci_manifest::{
     HybridOciManifestAdmission, HybridOciManifestPreflight, HYBRID_OCI_MANIFEST_UPLOAD_QUERY,
@@ -78,6 +81,12 @@ pub fn oci_chunk_range_matches(value: Option<&str>, offset: u64, length: usize) 
             == Some(end)
 }
 
+/// Returns the lowercase SHA-256 commitment used by ingress assertions.
+#[must_use]
+pub fn body_sha256(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
 /// Marks a verified Worker-to-Native request for data-plane route fencing.
 #[derive(Clone, Copy, Debug)]
 pub struct HybridOriginRequest;
@@ -111,6 +120,9 @@ pub struct HybridIngressAssertion {
     pub path_and_query: String,
     /// SHA-256 of the request body sent to the origin.
     pub body_sha256: String,
+    /// Exact private upload phase authenticated by the Worker, absent for ordinary requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload_phase: Option<String>,
     /// Client IP verified by the Cloudflare ingress.
     pub client_ip: String,
 }
@@ -227,8 +239,8 @@ pub struct HybridCacheUploadAdmissionRequest {
     pub size: u64,
     /// Lowercase SHA-256 of those bytes, computed beside R2.
     pub sha256: String,
-    /// Exact narinfo body, when the object is a small signed narinfo.
-    pub narinfo: Option<String>,
+    /// Closed storage-side parse result for a narinfo; never its original text.
+    pub projection: Option<projection::HybridNarinfoProjection>,
 }
 
 /// Native's decision for one exact Worker-side cache PUT.
@@ -544,6 +556,35 @@ impl HybridIngressKey {
         body: &[u8],
         now: i64,
     ) -> Result<HybridIngressAssertion, HybridIngressError> {
+        let assertion =
+            self.authenticate_request(compact, deployment_id, method, path_and_query, now)?;
+        if assertion.body_sha256 != hex::encode(Sha256::digest(body)) {
+            return Err(HybridIngressError::RequestMismatch);
+        }
+        Ok(assertion)
+    }
+
+    /// Authenticates routing facts before Native reads the request body.
+    ///
+    /// This validates the MAC, request identity and clock window. It does not
+    /// authenticate received body bytes; callers must subsequently call
+    /// [`Self::verify`] before invoking an application handler.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, unauthenticated, stale or mismatched
+    /// assertions. The encoded assertion is bounded before decoding.
+    pub fn authenticate_request(
+        &self,
+        compact: &str,
+        deployment_id: &str,
+        method: &str,
+        path_and_query: &str,
+        now: i64,
+    ) -> Result<HybridIngressAssertion, HybridIngressError> {
+        if compact.len() > 16 * 1024 {
+            return Err(HybridIngressError::Malformed);
+        }
         let (payload_text, signature_text) = compact
             .split_once('.')
             .filter(|(_, signature)| !signature.contains('.'))
@@ -580,7 +621,6 @@ impl HybridIngressKey {
         if assertion.deployment_id != deployment_id
             || assertion.method != method
             || assertion.path_and_query != path_and_query
-            || assertion.body_sha256 != hex::encode(Sha256::digest(body))
         {
             return Err(HybridIngressError::RequestMismatch);
         }
@@ -767,6 +807,13 @@ fn validate_assertion(assertion: &HybridIngressAssertion) -> Result<(), HybridIn
     if assertion.version != 1
         || assertion.deployment_id.is_empty()
         || assertion.deployment_id.len() > 128
+        || assertion.upload_phase.as_ref().is_some_and(|phase| {
+            phase.is_empty()
+                || phase.len() > 32
+                || !phase
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'-')
+        })
         || assertion.request_id.is_empty()
         || assertion.request_id.len() > 128
         || assertion.scheme != "https"
@@ -851,6 +898,7 @@ mod tests {
             method: "POST".into(),
             path_and_query: "/aos.hub.v1.RegistryService/List?view=all".into(),
             body_sha256: hex::encode(Sha256::digest(b"body")),
+            upload_phase: None,
             client_ip: "192.0.2.4".into(),
         }
     }

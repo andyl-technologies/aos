@@ -842,21 +842,22 @@ async fn upload_cache_object(mut request: Request, env: &Env) -> Result<Response
     }
     let sha256 = crate::digest::sha256_hex(&bytes, preflight.expected_size as usize).await?;
     let size = bytes.len() as u64;
-    let narinfo = if path.ends_with(".narinfo") {
-        if bytes.len() > aos_hub_core::fetch::MAX_CACHE_NARINFO_BYTES {
-            return Response::error("narinfo body is too large", 413);
+    let projection = if path.ends_with(".narinfo") {
+        let projection = match aos_hub_core::hybrid_ingress::projection::HybridNarinfoProjection::from_bytes(&bytes) {
+            Ok(projection) => projection,
+            Err(_) => return Response::error("narinfo semantic projection is invalid or too large", 400),
+        };
+        if projection.validate_cache_path(&path).is_err() {
+            return Response::error("narinfo does not match its selected cache path", 400);
         }
-        match String::from_utf8(bytes.clone()) {
-            Ok(body) => Some(body),
-            Err(_) => return Response::error("narinfo is not UTF-8", 400),
-        }
+        Some(projection)
     } else {
         None
     };
     let admission_request = HybridCacheUploadAdmissionRequest {
         size,
         sha256: sha256.clone(),
-        narinfo,
+        projection,
     };
     let admission_body = serde_json::to_vec(&admission_request)
         .map_err(|error| worker::Error::RustError(format!("cache admission JSON: {error}")))?;
@@ -1329,6 +1330,7 @@ async fn proxy_with_upload_phase(
         method: request.method().as_ref().to_owned(),
         path_and_query: path_and_query.clone(),
         body_sha256: hex::encode(Sha256::digest(&body)),
+        upload_phase: upload_phase.map(str::to_owned),
         client_ip,
     };
     let compact = key

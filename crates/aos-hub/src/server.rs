@@ -18,6 +18,8 @@ use axum::Router;
 use base64::Engine as _;
 use tower_http::catch_panic::CatchPanicLayer;
 
+mod hybrid_body;
+
 /// Maximum inbound request-body size for the shared RPC surface (8 MiB).
 ///
 /// Connect requests carry small JSON bodies; capping them well below the
@@ -186,19 +188,27 @@ pub async fn router_with_hybrid_ingress(
     let writes: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> = Arc::new(
         crate::storage_work::HybridSurfaceWrites::new(Arc::clone(&state.db), work),
     );
+    let ingress_db = Arc::clone(&state.db);
+    let control_url = state.external_url.clone();
     let app = router_with_ports(state, None, Some(surface), Some(writes)).await;
     Router::new()
         .fallback_service(app)
         .layer(axum::middleware::from_fn(move |request, next| {
             let key = Arc::clone(&key);
             let deployment_id = deployment_id.clone();
-            async move { verify_hybrid_ingress(key, deployment_id, request, next).await }
+            let ingress_db = Arc::clone(&ingress_db);
+            let control_url = control_url.clone();
+            async move {
+                verify_hybrid_ingress(key, deployment_id, control_url, Some(ingress_db), request, next).await
+            }
         }))
 }
 
 async fn verify_hybrid_ingress(
     key: Arc<aos_hub_core::hybrid_ingress::HybridIngressKey>,
     deployment_id: String,
+    control_url: String,
+    ingress_db: Option<Arc<Database>>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
@@ -225,8 +235,31 @@ async fn verify_hybrid_ingress(
         .map(|value| value.as_str())
         .unwrap_or(request.uri().path())
         .to_owned();
+    // Authenticate the bounded envelope before looking up a route or polling
+    // any body. This is routing evidence, not body/application authorization.
+    let assertion = match key.authenticate_request(
+        &compact,
+        &deployment_id,
+        &method,
+        &path_and_query,
+        aos_hub_core::clock::now_unix_secs(),
+    ) {
+        Ok(assertion) => assertion,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+    let limit = match hybrid_body::body_limit(
+        ingress_db.as_deref(),
+        &control_url,
+        &assertion,
+        request.method(),
+        request.uri(),
+        request.headers(),
+    ).await {
+        Ok(limit) => limit,
+        Err(status) => return status.into_response(),
+    };
     let (mut parts, body) = request.into_parts();
-    let Ok(body) = axum::body::to_bytes(body, RPC_MAX_BODY_BYTES).await else {
+    let Ok(body) = axum::body::to_bytes(body, limit).await else {
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
     };
     let assertion = match key.verify(
@@ -1078,7 +1111,7 @@ mod hybrid_ingress_tests {
                     move |request, next| {
                         let key = Arc::clone(&key);
                         async move {
-                            verify_hybrid_ingress(key, "deployment-1".into(), request, next).await
+                            verify_hybrid_ingress(key, "deployment-1".into(), "https://hub.example.test".into(), None, request, next).await
                         }
                     }
                 }));
@@ -1095,6 +1128,7 @@ mod hybrid_ingress_tests {
             method: "GET".into(),
             path_and_query: "/header-probe".into(),
             body_sha256: hex::encode(Sha256::digest([])),
+            upload_phase: None,
             client_ip: "192.0.2.7".into(),
         };
         let request = axum::http::Request::builder()
@@ -1152,6 +1186,7 @@ mod hybrid_ingress_tests {
             method: "GET".into(),
             path_and_query: "/healthz".into(),
             body_sha256: hex::encode(Sha256::digest([])),
+            upload_phase: None,
             client_ip: "192.0.2.7".into(),
         };
         let signed = key.sign(&assertion).unwrap();
@@ -1219,7 +1254,7 @@ mod hybrid_ingress_tests {
                 move |request, next| {
                     let key = Arc::clone(&key);
                     async move {
-                        verify_hybrid_ingress(key, "deployment-1".into(), request, next).await
+                        verify_hybrid_ingress(key, "deployment-1".into(), "https://hub.example.test".into(), None, request, next).await
                     }
                 }
             }));
@@ -1235,6 +1270,7 @@ mod hybrid_ingress_tests {
             method: "GET".into(),
             path_and_query: "/cache-object".into(),
             body_sha256: hex::encode(Sha256::digest([])),
+            upload_phase: None,
             client_ip: "192.0.2.7".into(),
         };
         let request = axum::http::Request::builder()

@@ -1356,3 +1356,36 @@ The four direct-upload RFC sections now describe intended behavior, including
 private staging, bounded controls, stable operation identity, verified provider
 closure and concurrent metadata staging with publication barriers. Their commit
 does not enable a direct-upload endpoint or qualify the running release transfer.
+
+## Native upload body boundary and storage-local narinfo projection
+
+The Native hybrid ingress authenticates its signed method, path and upload phase
+before polling an upload body. It selects the exact resource authority and
+applies route-specific encoded limits before decoding bounded controls. Legacy
+raw `RegisterCacheNarinfos` and `ReportCacheNarinfos` requests return 415 in hybrid
+mode before reading their bodies, including requests with a misleading signed
+phase. Their standalone behavior is unchanged. All hybrid callers must use the
+new direct upload flow before this topology is enabled for publication.
+
+The Worker parses narinfo beside storage and sends a closed semantic projection.
+Original byte SHA-256 and size remain distinct from the projection. Native
+validates the admitted cache path and the selected Nix signing key; the bounded
+projection reserves room in its outer control envelope.
+
+Producer `/tmp/hub-native-direct-sessions/guard-narinfo-qualified-final-v2.json`
+(`ab48d005e28654d615c6b354532a91affb8f6bf8704a2217b98c7f0a6115b180`)
+and independent review
+`/tmp/hub-native-direct-sessions/independent-review/receipt.json`
+(`a801ebd449dce39a52d74588c9713b7c04b1050610089fc796ef14a496b42209`)
+bind eleven Native boundary tests and seven narinfo tests. The original failed
+compiler capture and original receipt remain retained. The receipt superseder
+only corrects stale scope text.
+
+The matching Worker signer and projection producer pass ordinary default-feature
+Wasm compilation with the same ten Native/core prerequisites. Receipt
+`/tmp/hub-upload-projection-companion/worker-build-qualified.json`
+(`c97b92792b283198242b07e7ba4ef3f6de6f8c1dfd2d052da0cc54779ee7dea6`)
+binds the exact compiler input. Root integration verifies all eleven postimages
+in `/tmp/hub-native-direct-sessions/root-integration-review.json`.
+This partial boundary does not qualify OCI compact completion, direct sessions,
+migration 004, provider uploads, combined runtime acceptance or hosted throughput.
