@@ -623,6 +623,15 @@ impl<H: WasmHost> Clock for WasmBindings<H> {
 #[cfg_attr(feature = "send", async_trait::async_trait)]
 #[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
 pub trait LocalFs {
+    /// Obtains cryptographically secure bytes from the platform entropy source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the requested buffer cannot be allocated or
+    /// the platform cannot supply secure randomness. Implementations must
+    /// never substitute timestamps, counters, or deterministic pseudorandomness.
+    async fn random_bytes(&self, length: usize) -> std::io::Result<Vec<u8>>;
+
     /// The owned guard that releases file exclusion when dropped.
     #[cfg(feature = "send")]
     type Lock: Send;
@@ -840,6 +849,24 @@ pub struct TokioLocalFs;
 #[async_trait::async_trait]
 impl LocalFs for TokioLocalFs {
     type Lock = TokioFileLock;
+
+    async fn random_bytes(&self, length: usize) -> std::io::Result<Vec<u8>> {
+        // Entropy-device I/O belongs to this native binding, and must not
+        // block an executor thread or escape into portable pack code.
+        tokio::task::spawn_blocking(move || {
+            use std::io::Read;
+
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(length)
+                .map_err(std::io::Error::other)?;
+            bytes.resize(length, 0);
+            std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+            Ok(bytes)
+        })
+        .await
+        .map_err(std::io::Error::other)?
+    }
 
     async fn lock_exclusive(&self, path: &std::path::Path) -> std::io::Result<Self::Lock> {
         let path = path.to_owned();

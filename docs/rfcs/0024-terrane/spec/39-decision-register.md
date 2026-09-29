@@ -758,6 +758,50 @@ is added rather than editing history.
   - **Affects:** ALG-6, ALG-7 and PROV-14 to PROV-15; no encoding changes
     or new property types, and requirement IDs remain stable.
 
+- **[D-44] Match golden descriptor coverage to immutable identity.**
+  - **Status:** Decided
+  - **Decision:** TEST-2 requires descriptors for registered immutable
+    media types and encoding vectors for mutable and wire records. Formats
+    introduced later add their vectors with their conformance gates.
+  - **Rationale:** Mutable refs, capabilities, and store capability records
+    do not have immutable-content identity domains. Fabricating descriptors
+    for them contradicts OBJ-2 and the identity registry.
+  - **Affects:** TEST-2; existing golden bytes and requirement IDs remain
+    unchanged. Missing pack and canonical internal-node vectors are still
+    required, rather than excused by this correction.
+
+- **[D-45] Separate derived value determinism from producer provenance.**
+  - **Status:** Decided
+  - **Decision:** Equal plaintext and function versions produce equal
+    attribute values and function metadata. Records retain their distinct
+    producers, remain immutable, and coexist across function versions.
+  - **Rationale:** DRV-1 requires producer provenance in each record while
+    DRV-2 required different producers to produce identical record bytes.
+    Those requirements contradict each other; removing provenance would
+    break PROV-9 and attribute trust selectors.
+  - **Affects:** DRV-1, DRV-2, DRV-8 and PROV-9; no CDDL or existing golden
+    byte changes, and requirement IDs remain unchanged.
+
+- **[D-46] Resolve entry introductions without self-referential hashes.**
+  - **Status:** Decided
+  - **Decision:** Add optional profile-pair key 7 for signed, ordered
+    root/path receipts. `current` means the externally calculated containing
+    commit identity; sources name verified commit/root/path witnesses.
+    Attribute origins and explicit reintroduction sources remain separate.
+    Source commits are provenance GC roots independently of parent edges.
+    Selector memos include immutable view and verified evidence context.
+    Signing key identifiers name the terminal public key in lowercase hex.
+  - **Rationale:** Embedding a new commit's hash in an entry changes the
+    tree and consequently that same commit's hash, making PROV-7 and
+    TREE-16 impossible to construct. Parent history alone cannot preserve
+    a graft's introduction from an unrelated history. Memos keyed only by
+    introduction and selector conflate different acceptance histories.
+  - **Affects:** TREE-16, PROV-7 to PROV-10, PROV-11, PROV-16, PROV-18,
+    PROV-20, GC-5 and profile-pair CDDL. This draft format correction keeps
+    every existing encoding and golden vector unchanged when key 7 is
+    absent; decoders explicitly recognize the extension before the format
+    freeze. Requirement IDs remain stable.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

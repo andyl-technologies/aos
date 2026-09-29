@@ -134,10 +134,14 @@ content-ref = [ 0, chunk: bstr .size 32 ]         ; inline single chunk
   bytes. Names in the `security.`, `system.`, and `trusted.` namespaces MUST
   NOT be presented by a surface to an unprivileged consumer unless the
   root's properties allow that namespace explicitly.
-- **[TREE-16]** `prov` references the provenance record of the commit that
-  introduced the entry's current value
+- **[TREE-16]** An explicit `prov` references the provenance record of a
+  verified prior commit that introduced the entry's current content
   ([`23-provenance-and-trust.md`](23-provenance-and-trust.md)). It is set by
   the repository layer at commit and MUST NOT be supplied by a writer.
+  New introductions use the containing commit's signed profile-pair
+  receipt with origin `current`, leaving `prov` absent to avoid a hash
+  cycle. Unchanged entries may inherit verified parent receipts as defined
+  by PROV-7; absence alone is not proof of introduction or preservation.
 
 ### Layer, merge, and index entries
 

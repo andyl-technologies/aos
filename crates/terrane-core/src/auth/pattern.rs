@@ -64,13 +64,13 @@ fn start(machine: &[Atom]) -> Vec<usize> {
     state
 }
 
-fn step(machine: &[Atom], state: &[usize], byte: u8) -> Vec<usize> {
+fn step(machine: &[Atom], state: &[usize], byte: u8, grant_separator: bool) -> Vec<usize> {
     let mut next = Vec::new();
     for &position in state {
         let target = match machine.get(position) {
             Some(Atom::Literal(literal)) if *literal == byte => Some(position + 1),
-            Some(Atom::Star) if byte != b'/' && byte != 0 => Some(position),
-            Some(Atom::Deep) if byte != 0 => Some(position),
+            Some(Atom::Star) if byte != b'/' && (!grant_separator || byte != 0) => Some(position),
+            Some(Atom::Deep) if !grant_separator || byte != 0 => Some(position),
             _ => None,
         };
         if let Some(target) = target
@@ -87,7 +87,7 @@ pub(super) fn matches(pattern: &str, bytes: &[u8]) -> bool {
     let machine = atoms(pattern);
     let state = bytes
         .iter()
-        .fold(start(&machine), |state, &byte| step(&machine, &state, byte));
+        .fold(start(&machine), |state, &byte| step(&machine, &state, byte, false));
     state.contains(&machine.len())
 }
 
@@ -135,14 +135,14 @@ pub(super) fn contained(child: &Grant, parents: &[Grant], verb: u8) -> Result<bo
             return Ok(false);
         }
         for &byte in &alphabet {
-            let next_child = step(&child_machine, &child_state, byte);
+            let next_child = step(&child_machine, &child_state, byte, true);
             if next_child.is_empty() {
                 continue;
             }
             let next_parents = parent_machines
                 .iter()
                 .zip(&parent_states)
-                .map(|(machine, state)| step(machine, state, byte))
+                .map(|(machine, state)| step(machine, state, byte, true))
                 .collect();
             let next = (next_child, next_parents);
             if seen.insert(next.clone()) {

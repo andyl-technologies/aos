@@ -70,11 +70,35 @@ trusted one", and policy decides which it requires.
 
 ## Entry provenance
 
-- **[PROV-7]** Every entry MUST carry the identity of the commit that
-  introduced it (its *introducing commit*). An entry is introduced when a
+- **[PROV-7]** Every entry MUST resolve to the identity of the commit that
+  introduced it (its *introducing commit*). A signed entry receipt in the
+  commit's profile pair MUST identify a new introduction as `current`,
+  meaning the containing commit's externally calculated identity, or name
+  a verified source commit, root, and path. An entry MUST NOT embed the
+  containing commit's identity in its own tree, which would create a hash
+  cycle. An entry is introduced when a
   commit adds the key or changes the entry's content identity; a change
   only to attributes or metadata MUST NOT change the introducing commit and
   MUST instead be recorded as an attribute provenance (PROV-9).
+
+Receipts are keyed by `(root identity, relative path bytes)` and sorted by
+unsigned byte order of that pair, with duplicates rejected. Paths may be
+ordinary namespace paths or opaque index keys; their meaning is verified
+against the identified root. A source receipt requires a verified signed
+source commit and a canonical tree witness for the source root and path,
+with the same content identity as the carried entry. A source root MUST be
+reachable from that source commit. An explicit prior `prov` remains valid
+only when that introducing commit and the carrying history are verified.
+
+An unchanged entry without a receipt inherits its unambiguous introduction
+through parent history. New or content-changing entries, explicit
+reintroductions, and merge choices with ambiguous parent introductions MUST
+have receipts. Missing, cyclic, contradictory, or unverifiable evidence
+MUST fail closed; selecting the first parent arbitrarily is not evidence.
+Metadata-only changes preserve the introduction and may supply separate
+attribute origins in the receipt. Source edges make provenance reachable
+independently of parent edges; `accepted-by` still requires an ancestor of
+the view that demonstrably carried the entry.
 - **[PROV-8]** A merge, fold, graft, or flatten that carries an entry
   forward unchanged MUST preserve its introducing commit. A `map` transform
   that changes an entry's content MUST set the introducing commit to the
@@ -85,7 +109,8 @@ trusted one", and policy decides which it requires.
   classification was computed by a trusted job.
 - **[PROV-10]** Because entries reference commits by identity, and commits
   are reachable from refs, an implementation MUST treat every introducing
-  commit referenced by a live entry as a garbage-collection root
+  commit referenced by a live entry, and every source commit named by a
+  live signed receipt, as a garbage-collection root
   ([`17-garbage-collection.md`](17-garbage-collection.md)), so that
   provenance can always be resolved for live content.
 
@@ -104,6 +129,9 @@ commit, the commit's ancestry, and the entry's attribute provenance.
   workload identity claim carries a registered attestation), and
   `attr-by(name, selector)` (true if attribute `name` was produced under a
   commit matching the inner selector). Combinators are `all`, `any`, `not`.
+  The identifier in `signed-by-key(id)` is the lowercase 64-character
+  hexadecimal encoding of the terminal Ed25519 public key that signed the
+  commit, not the issuer's rotation key identifier.
 - **[PROV-12]** An implementation MUST provide the following named
   **trust presets**, and MAY register more: `any` (every entry), `signed-baseline`
   (introduced by, or accepted by, a principal in the root's configured
@@ -126,10 +154,13 @@ commit, the commit's ancestry, and the entry's attribute provenance.
   presigned reads for its content are not minted. It MUST NOT be presented
   as present-but-unreadable, since that would leak existence
   ([`24-disclosure-domains.md`](24-disclosure-domains.md)).
-- **[PROV-16]** Selector evaluation MUST be memoized per (introducing
-  commit, selector) so that a large tree with few distinct introducing
-  commits costs few evaluations. The memo MUST be keyed on content
-  identities only and MUST NOT be shared across disclosure domains.
+- **[PROV-16]** Selector evaluation MUST be memoized by disclosure domain,
+  immutable view commit, introducing commit, effective selector identity,
+  baseline configuration identity, and acceptance and attribute-origin
+  context identity. Entries with identical verified contexts share an
+  evaluation. The memo MUST be keyed on content identities only and MUST
+  NOT be shared across disclosure domains. An introducing commit and
+  selector alone do not identify view-dependent acceptance evidence.
 
 ## Folding and acceptance
 
@@ -145,6 +176,8 @@ commit, the commit's ancestry, and the entry's attribute provenance.
   default, and MUST record the original introducing commit as an attribute
   `provenance.reintroduced-from` when it is used, so that history is not
   erased.
+  The `current` receipt MUST include the original source commit, root, and
+  path, whose verified introduction MUST equal that attribute's value.
 - **[PROV-19]** Conflict resolution during merge
   ([`07-tree-algebra.md`](07-tree-algebra.md)) MAY use provenance as a
   policy input, for example "prefer the candidate whose introducing commit
@@ -155,7 +188,8 @@ commit, the commit's ancestry, and the entry's attribute provenance.
 ## Audit
 
 - **[PROV-20]** The complete provenance history of an entry MUST be
-  derivable by walking the commit graph from the view's commit to the
+  derivable by walking parent and signed source-receipt edges from the
+  view's commit to the
   entry's introducing commit and inspecting each commit's provenance record.
   An implementation MUST provide this walk as an operation of the wire
   protocol ([`18-protocol.md`](18-protocol.md)) and of the command-line

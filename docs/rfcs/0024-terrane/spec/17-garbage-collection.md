@@ -62,7 +62,10 @@ data.
   inline chunk an entry names, every index tree of
   [`10-derived-data.md`](10-derived-data.md) named by the root's properties,
   every attribute side-table object for every object hash encountered, and
-  every bundle or profile object the commit references. *Gate:*
+  every bundle or profile object the commit references, every resolved
+  introducing commit, and every source commit referenced by entry,
+  attribute-origin, or reintroduction receipts. Receipt source edges MUST
+  be retained independently of ordinary parent retention. *Gate:*
   `gate:gc-mark-reachability`.
 - **[GC-6]** Marking MUST skip any tree node, manifest, or root already
   marked in this collection. Because trees are history-independent

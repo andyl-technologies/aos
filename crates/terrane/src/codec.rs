@@ -177,23 +177,24 @@ pub fn encode_chunk(
         .saturating_add(usize::from(dictionary.is_some()) * codec::DICTIONARY_ID_SIZE);
 
     if (body_len as u128 * 100) >= (plaintext.len() as u128 * 97) {
-        let mut encoded = Vec::with_capacity(plaintext.len() + 1);
-        encoded.push(0x00);
-        encoded.extend_from_slice(plaintext);
-        return Ok(encoded);
+        return Ok(codec::encode_envelope(codec::EncodedChunk {
+            codec: codec::Codec::Raw,
+            body: plaintext,
+        }));
     }
 
-    let mut encoded = Vec::with_capacity(frame.len() + 33);
-    if let Some(dictionary_bytes) = dictionary {
+    let encoding = if let Some(dictionary_bytes) = dictionary {
         let identity = TERRANE_V1
             .calculate(IdentityKind::Chunk, dictionary_bytes)?
             .terrane_v1_digest()?;
-        encoded.push(0x02);
-        encoded.extend_from_slice(&identity);
+        codec::Codec::ZstdDictionary(identity)
     } else {
-        encoded.push(0x01);
-    }
-    encoded.extend_from_slice(&frame);
+        codec::Codec::Zstd
+    };
+    let encoded = codec::encode_envelope(codec::EncodedChunk {
+        codec: encoding,
+        body: &frame,
+    });
     inspect_chunk(&encoded, plaintext.len(), profile_max)?;
     Ok(encoded)
 }

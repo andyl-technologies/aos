@@ -130,6 +130,25 @@ pub struct Grant {
     verbs: Verbs,
 }
 
+/// Matches subject names with the capability language's byte glob semantics.
+///
+/// `*` matches bytes within one slash-separated component; `**` crosses
+/// components. Other bytes are literal, with no Unicode normalization.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubjectPattern(String);
+
+impl SubjectPattern {
+    /// Stores a subject pattern without imposing ref-name restrictions.
+    pub fn new(pattern: String) -> Self {
+        Self(pattern)
+    }
+
+    /// Tests a subject against the stored byte pattern.
+    pub fn matches(&self, subject: &str) -> bool {
+        pattern::matches(&self.0, subject.as_bytes())
+    }
+}
+
 impl Grant {
     /// Validates a canonical grant glob (AUTH-19/20).
     ///
@@ -248,6 +267,16 @@ pub struct Token {
 }
 
 impl Token {
+    /// Returns the terminal public key used to sign commits with this token.
+    ///
+    /// This accessor does not authenticate the chain. Call [`Self::verify`]
+    /// before trusting the key or any claims carried by the token.
+    pub fn signing_public_key(&self) -> [u8; 32] {
+        self.blocks
+            .last()
+            .map_or(self.authority.next_key, |block| block.next_key)
+    }
+
     /// Parses a canonical token without authenticating its signatures.
     ///
     /// # Errors

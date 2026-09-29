@@ -11,6 +11,7 @@
 //! dictionary: 0x02 || dictionary_chunk_digest[32] || single_sized_frame
 //! ```
 
+use alloc::vec::Vec;
 use core::fmt;
 
 /// The number of bytes in a `terrane-v1` dictionary identity.
@@ -114,6 +115,24 @@ pub fn parse_envelope(encoded: &[u8]) -> Result<EncodedChunk<'_>, CodecError> {
     };
 
     Ok(chunk)
+}
+
+/// Encodes a codec tag, optional dictionary identity, and borrowed body.
+///
+/// This function serializes the envelope only. Compressed frame validation
+/// and plaintext identity verification remain the receiver's responsibility.
+pub fn encode_envelope(chunk: EncodedChunk<'_>) -> Vec<u8> {
+    let mut output = Vec::new();
+    match chunk.codec {
+        Codec::Raw => output.push(0x00),
+        Codec::Zstd => output.push(0x01),
+        Codec::ZstdDictionary(identity) => {
+            output.push(0x02);
+            output.extend_from_slice(&identity);
+        }
+    }
+    output.extend_from_slice(chunk.body);
+    output
 }
 
 /// Checks the declared plaintext length and encoded body overhead.

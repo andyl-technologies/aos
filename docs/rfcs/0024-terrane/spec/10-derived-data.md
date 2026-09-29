@@ -46,7 +46,9 @@ of them. Lookup by a secondary hash is a range lookup in an index tree.
   and the provenance of the producer. *Gate:* `gate:derived-attr-record`.
 - **[DRV-2]** A derived attribute MUST be a pure function of the object's
   plaintext bytes and the function version. Two producers computing the same
-  attribute for the same object MUST produce identical records; an
+  attribute for the same object and function version MUST produce identical
+  values and function metadata. Their records retain each producer's
+  provenance and therefore need not have identical bytes or identities. An
   implementation MAY verify a record by recomputation and MUST quarantine a
   record that fails verification.
 - **[DRV-3]** Side-table records are stored in meta packs

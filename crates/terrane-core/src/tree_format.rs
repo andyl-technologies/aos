@@ -1142,12 +1142,13 @@ fn same_hardlink_value(left: &Entry<'_>, right: &Entry<'_>) -> bool {
 /// Checks the roots traversed while resolving nested `tree` entries.
 ///
 /// The caller appends each root before fetching it. Repeated identities
-/// indicate a cycle; more than 64 roots exceed the graft depth bound.
+/// indicate a cycle. The initial root plus at most 64 referenced roots
+/// represent the registered bound of 64 tree-entry edges.
 ///
 /// # Errors
-/// Returns [`Error::Tree`] on a cycle or [`Error::Limit`] above 64 roots.
+/// Returns [`Error::Tree`] on a cycle or [`Error::Limit`] above 64 edges.
 pub fn validate_graft_chain(roots: &[Digest]) -> Result<(), Error> {
-    if roots.len() > MAX_GRAFT_DEPTH {
+    if roots.len().saturating_sub(1) > MAX_GRAFT_DEPTH {
         return Err(Error::Limit);
     }
     for (position, root) in roots.iter().enumerate() {
@@ -1703,7 +1704,12 @@ mod tests {
     #[test]
     fn graft_chain_rejects_cycles_and_excessive_depth() {
         assert_eq!(validate_graft_chain(&[[1; 32], [1; 32]]), Err(Error::Tree));
-        assert_eq!(validate_graft_chain(&[[1; 32]; 65]), Err(Error::Limit));
+        let roots: Vec<_> = (0..=64).map(|index| [index; 32]).collect();
+        assert_eq!(validate_graft_chain(&roots), Ok(()));
+
+        let mut too_deep = roots;
+        too_deep.push([65; 32]);
+        assert_eq!(validate_graft_chain(&too_deep), Err(Error::Limit));
     }
 
     #[test]

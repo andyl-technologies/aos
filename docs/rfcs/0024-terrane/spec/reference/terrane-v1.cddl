@@ -97,7 +97,7 @@ entry = {
   ? 8 => key-bytes,                     ; link-id (file) (TREE-11)
   ? 9 => { * name => any },             ; attrs (TREE-14)
   ? 10 => xattr-map,                    ; xattrs (TREE-15)
-  ? 11 => provenance-ref,               ; introducing commit (TREE-16, PROV-7)
+  ? 11 => provenance-ref,               ; verified prior introducing commit
   ? 12 => [ 2* entry ],                 ; candidates (conflict) (TREE-31)
   ? 13 => entry / null,                 ; base (conflict) (TREE-31)
   ? 14 => [ + digest32 ],               ; targets (index) (TREE-32)
@@ -149,8 +149,22 @@ profile-pair = {
   ? 4 => bool,                          ; conflicted (REF-9)
   ? 5 => lease,                         ; job or exposure lease
   ? 6 => property-map,                  ; required-property snapshot
+  ? 7 => [ * entry-receipt ],           ; signed entry origins (PROV-7)
 }
 lease = { 1 => tstr, 2 => timestamp }   ; owner, expiry
+
+; Sorted uniquely by (root identity, path bytes), both unsigned byte order.
+; Path syntax is verified against the root, including opaque index keys.
+entry-source = [ digest32, digest32, bstr .size (1..4096) ]
+                                     ; source commit, source root, source path
+entry-origin = 0 / entry-source       ; 0 means this containing signed commit
+attribute-origins = { * name => entry-origin } ; at most 256 entries
+entry-receipt = [ digest32, bstr .size (1..4096), entry-origin ]
+              / [ digest32, bstr .size (1..4096), entry-origin,
+                  attribute-origins ]
+              / [ digest32, bstr .size (1..4096), 0,
+                  attribute-origins / null, entry-source ]
+                                     ; original source for reintroduction
 
 pack-location = [ pack-id, locality ]
 

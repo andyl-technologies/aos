@@ -13,6 +13,7 @@ use crate::cbor::{self, Decoder};
 use crate::identity::Digest;
 
 mod codec;
+mod entry_receipts;
 mod record_codec;
 mod token_shape;
 
@@ -20,6 +21,8 @@ pub use codec::{
     Commit, CommitIdentityError, CommitSource, Lease, PackLocation, PrincipalKind, ProfilePair,
     Provenance,
 };
+
+pub use entry_receipts::{EntryOrigin, EntryReceipt, EntrySource};
 
 /// A canonical ref or commit record could not be encoded or decoded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

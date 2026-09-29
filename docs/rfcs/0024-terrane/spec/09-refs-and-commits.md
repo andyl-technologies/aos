@@ -90,7 +90,8 @@ provenance  principal, token id, issuer, process identity (23)
 timestamp   unsigned seconds since epoch as asserted by the committer
 message     UTF-8 text, MAY be empty
 profile-pair  map: chunk profile, tree-format version,
-            recipe, conflicted flag, lease, required-property snapshot
+            recipe, conflicted flag, lease, required-property snapshot,
+            signed entry-origin receipts
 packs       optional list of (pack id, locality) for packs first written by
             this commit
 signature   detached signature over the preceding fields (23)

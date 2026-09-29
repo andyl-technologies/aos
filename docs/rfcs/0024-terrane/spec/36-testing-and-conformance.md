@@ -35,7 +35,10 @@ requirements it enforces. A gate MAY enforce requirements from several files.
   sequence per registered chunk profile, one manifest, one leaf node and one
   internal node per profile, one node boundary decision, one commit, one
   ref record, one pack with a two-entry index, one capability token, one
-  descriptor of every registered media type.
+  descriptor of every registered immutable media type. Mutable records and
+  non-content-addressed wire records MUST have vectors for their own
+  encodings; they have no immutable-content descriptor. A newly implemented
+  format MUST add its vectors before claiming its conformance gates.
 
 ### Format property tests
 
