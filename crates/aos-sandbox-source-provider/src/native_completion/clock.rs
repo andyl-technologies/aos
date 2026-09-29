@@ -295,6 +295,9 @@ fn kernel_clock() -> Result<RawPairedClockSample, ProviderLedgerError> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
     use super::*;
 
     fn sample(wall: i64, boottime: u64) -> RawPairedClockSample {
@@ -382,5 +385,58 @@ mod tests {
         .unwrap();
         assert!(guard.validate_sample(changed_boot, None).is_err());
         assert!(guard.validate_sample(changed_reader, None).is_err());
+    }
+
+    // These checks use the existing clock DATA fixture and the real hot-map
+    // value/retention helper. They do not construct installed packet brands or
+    // claim that a journal append or live admission was executed.
+    #[test]
+    fn native_preappend_refusals_drop_local_clocks_without_hot_entries() {
+        let custody =
+            BTreeMap::<ObjectDigest, crate::native_completion::NativeAcquireHotCustodyV3>::new();
+        for _ in 0..64 {
+            let local = Arc::new(guard());
+            let observed = Arc::downgrade(&local);
+            assert_eq!(Arc::strong_count(&local), 1);
+
+            // Before the final callback, a refusal drops the local admission's
+            // only strong reference. Nothing is retained in the owner map.
+            drop(local);
+
+            assert!(observed.upgrade().is_none());
+            assert!(custody.is_empty());
+        }
+    }
+
+    #[test]
+    fn native_possible_append_keeps_same_arc_without_replacing_original_anchor() {
+        let acquisition = ObjectDigest::from_bytes([2; 32]);
+        let mut custody = BTreeMap::new();
+        let local = Arc::new(guard());
+        let observed = Arc::downgrade(&local);
+        crate::acquire::retain_original_clock(&mut custody, acquisition, &local).unwrap();
+        assert!(Arc::ptr_eq(&custody[&acquisition].clock, &local));
+
+        // A replay clone is the same anchor, not a new capture. Retention is
+        // idempotent and neither replaces the map value nor clears its fields.
+        let original_address = &custody[&acquisition] as *const _;
+        let replay = Arc::clone(&custody[&acquisition].clock);
+        crate::acquire::retain_original_clock(&mut custody, acquisition, &replay).unwrap();
+        assert_eq!(&custody[&acquisition] as *const _, original_address);
+        let recaptured = Arc::new(guard());
+        assert!(
+            crate::acquire::retain_original_clock(&mut custody, acquisition, &recaptured).is_err()
+        );
+        assert!(Arc::ptr_eq(&custody[&acquisition].clock, &local));
+        assert_eq!(custody.len(), 1);
+
+        // Once the callback ran, an uncertain append drops only local owners.
+        // The map still owns the original sample; no recapture is substituted.
+        drop(recaptured);
+        drop(replay);
+        drop(local);
+        assert!(observed.upgrade().is_some());
+        assert!(custody[&acquisition].source_root.is_none());
+        assert_eq!(Arc::strong_count(&custody[&acquisition].clock), 1);
     }
 }

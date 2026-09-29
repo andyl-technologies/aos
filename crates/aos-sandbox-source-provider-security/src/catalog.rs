@@ -16,10 +16,10 @@
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    ProviderCatalogManifestV1, ProviderHeldSnapshotCatalogV1, SourceProviderAuthorityTrustStateV1,
-    SourceProviderAuthorityV1, SourceProviderKeyTrustStateV1, SourceProviderKeyUsageV1,
-    SourceProviderSigningKeyV1, SourceResourceV1, StorageLiveExportSelectorV1,
-    ZfsHeldSnapshotProofV1,
+    NativeAcquireCatalogBindingV3, ProviderCatalogManifestV1, ProviderHeldSnapshotCatalogV1,
+    SourceProviderAuthorityTrustStateV1, SourceProviderAuthorityV1, SourceProviderKeyTrustStateV1,
+    SourceProviderKeyUsageV1, SourceProviderSigningKeyV1, SourceResourceV1,
+    StorageLiveExportSelectorV1, ZfsHeldSnapshotProofV1,
 };
 use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest as _, Sha256};
@@ -591,6 +591,36 @@ impl ProtectedCurrentCatalogPublicationV1 {
         &self.projection
     }
 
+    /// Requires all native Acquire claims to match this actual current owner.
+    ///
+    /// The complete signed publication uses raw SHA-256, not the distinct
+    /// publication-receipt domain. This comparison neither selects a row nor
+    /// authorizes Storage, and the owner must remain current through admission.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale protected snapshot or any changed namespace, head,
+    /// floor, current-row commitment, or complete signed-publication digest.
+    pub fn require_native_catalog_binding_v3(
+        &self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        claims: &NativeAcquireCatalogBindingV3,
+    ) -> Result<(), SourceProviderSecurityError> {
+        let raw_publication = ObjectDigest::from_bytes(
+            Sha256::digest(self.publication.canonical_publication()).into(),
+        );
+        if !self.validate_current(journal)
+            || claims.resource_namespace_digest() != self.projection.scope().1
+            || claims.head() != self.projection.catalog_head()
+            || claims.floor() != self.projection.floor()
+            || claims.current_head_commitment() != self.projection.head_commitment()
+            || claims.canonical_publication_digest() != raw_publication
+        {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        Ok(())
+    }
+
     /// Selects one manifest row under this exact protected current publication.
     ///
     /// The manifest is untrusted input until its canonical digest equals the
@@ -1022,6 +1052,7 @@ fn i64_at(bytes: &[u8], offset: usize) -> Result<i64, SourceProviderSecurityErro
 
 #[cfg(test)]
 mod tests {
+    use aos_sandbox_source_provider_ledger::ledger::model::CatalogHeadRecordV1;
     use aos_sandbox_source_provider_protocol::ProviderHeldSnapshotRowV1;
 
     use super::*;
@@ -1092,5 +1123,284 @@ mod tests {
             select_held_snapshot_under_head(&bytes, 17, catalog.digest(), digest(18), digest(1),)
                 .is_err()
         );
+    }
+
+    // This fixture exercises the real protected writer/snapshot and comparison
+    // methods. It is NOT a fixed-ingress or installed trust/peer constructor.
+    fn current_row_fixture() -> CatalogHeadRecordV1 {
+        use ed25519_dalek::{Signer as _, SigningKey};
+
+        let key = SigningKey::from_bytes(&[20; 32]);
+        let signer = SourceProviderSigningKeyV1::for_signing_key(
+            [21; 16],
+            1,
+            digest(22),
+            [23; 16],
+            1,
+            SourceProviderKeyUsageV1::CatalogPublisher,
+            &key,
+        )
+        .unwrap();
+        let catalog = held_snapshot_catalog();
+        let mut row = CatalogHeadRecordV1 {
+            revision: 3,
+            provider: SourceProviderAuthorityV1::new([24; 16], 1, digest(25)).unwrap(),
+            resource_namespace_digest: digest(18),
+            catalog_generation: catalog.generation(),
+            catalog_digest: catalog.digest(),
+            publisher_authority_id: signer.authority_id(),
+            publication_generation: 2,
+            publication_receipt_digest: digest(26),
+            predecessor_catalog_generation: 1,
+            predecessor_catalog_digest: digest(27),
+            catalog_floor_generation: 1,
+            catalog_floor_digest: digest(27),
+            publication_seconds: 500,
+            publication_trust_generation: 1,
+            publication_trust_digest: digest(28),
+            publication_revocation_generation: 1,
+            publication_revocation_digest: digest(29),
+            publisher_signer: signer.clone(),
+            canonical_publication: Vec::new(),
+        };
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend_from_slice(&VERSION.to_be_bytes());
+        bytes.extend_from_slice(&[0; 6]);
+        bytes.extend_from_slice(&row.provider.authority_id());
+        bytes.extend_from_slice(&row.provider.authority_generation().to_be_bytes());
+        bytes.extend_from_slice(row.provider.authority_digest().as_bytes());
+        bytes.extend_from_slice(row.resource_namespace_digest.as_bytes());
+        bytes.extend_from_slice(&row.catalog_generation.to_be_bytes());
+        bytes.extend_from_slice(row.catalog_digest.as_bytes());
+        bytes.extend_from_slice(&row.publisher_authority_id);
+        bytes.extend_from_slice(&row.publication_generation.to_be_bytes());
+        bytes.extend_from_slice(&row.predecessor_catalog_generation.to_be_bytes());
+        bytes.extend_from_slice(row.predecessor_catalog_digest.as_bytes());
+        bytes.extend_from_slice(&row.catalog_floor_generation.to_be_bytes());
+        bytes.extend_from_slice(row.catalog_floor_digest.as_bytes());
+        bytes.extend_from_slice(&row.publication_seconds.to_be_bytes());
+        bytes.extend_from_slice(&row.publication_trust_generation.to_be_bytes());
+        bytes.extend_from_slice(row.publication_trust_digest.as_bytes());
+        bytes.extend_from_slice(&row.publication_revocation_generation.to_be_bytes());
+        bytes.extend_from_slice(row.publication_revocation_digest.as_bytes());
+        bytes.extend_from_slice(&signer.authority_id());
+        bytes.extend_from_slice(&signer.authority_generation().to_be_bytes());
+        bytes.extend_from_slice(signer.authority_digest().as_bytes());
+        bytes.extend_from_slice(&signer.key_id());
+        bytes.extend_from_slice(&signer.key_generation().to_be_bytes());
+        bytes.extend_from_slice(signer.public_key_digest().as_bytes());
+        bytes.push(signer.usage() as u8);
+        bytes.extend_from_slice(&[0; 7]);
+        assert_eq!(bytes.len(), SIGNATURE_OFFSET);
+        let mut message = SIGNATURE_DOMAIN.to_vec();
+        message.extend_from_slice(&bytes);
+        bytes.extend_from_slice(&key.sign(&message).to_bytes());
+        let mut receipt = Sha256::new();
+        receipt.update(RECEIPT_DOMAIN);
+        receipt.update(&bytes);
+        row.publication_receipt_digest = ObjectDigest::from_bytes(receipt.finalize().into());
+        row.canonical_publication = bytes;
+        row
+    }
+
+    fn retained_test_owner(
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        row: &CatalogHeadRecordV1,
+    ) -> ProtectedCurrentCatalogPublicationV1 {
+        use aos_sandbox_source_provider_ledger::ledger::format::{catalog_key, encode_catalog};
+        // Signature verification is real, but this fixture deliberately does
+        // not claim actual installed fixed-custody authorization.
+        verify_catalog_signature(
+            &row.canonical_publication,
+            ed25519_dalek::SigningKey::from_bytes(&[20; 32])
+                .verifying_key()
+                .as_bytes(),
+        )
+        .unwrap();
+        ProtectedCurrentCatalogPublicationV1 {
+            projection: current_catalog_projection(row),
+            publication: VerifiedCatalogPublicationV1 {
+                provider: row.provider.clone(),
+                resource_namespace_digest: row.resource_namespace_digest,
+                catalog_generation: row.catalog_generation,
+                catalog_digest: row.catalog_digest,
+                publisher_authority_id: row.publisher_authority_id,
+                publication_generation: row.publication_generation,
+                publication_receipt_digest: row.publication_receipt_digest,
+                predecessor_catalog_generation: row.predecessor_catalog_generation,
+                predecessor_catalog_digest: row.predecessor_catalog_digest,
+                catalog_floor_generation: row.catalog_floor_generation,
+                catalog_floor_digest: row.catalog_floor_digest,
+                publication_seconds: row.publication_seconds,
+                publication_trust_generation: row.publication_trust_generation,
+                publication_trust_digest: row.publication_trust_digest,
+                publication_revocation_generation: row.publication_revocation_generation,
+                publication_revocation_digest: row.publication_revocation_digest,
+                publisher_signer: row.publisher_signer.clone(),
+                canonical_publication: row.canonical_publication.clone(),
+            },
+            journal_snapshot: journal.snapshot().unwrap(),
+            catalog_key: catalog_key(row.provider.authority_id(), row.catalog_generation),
+            catalog_record: encode_catalog(row),
+        }
+    }
+
+    fn native_claims(row: &CatalogHeadRecordV1) -> NativeAcquireCatalogBindingV3 {
+        NativeAcquireCatalogBindingV3::new(
+            row.resource_namespace_digest,
+            row.catalog_generation,
+            row.catalog_digest,
+            row.catalog_floor_generation,
+            row.catalog_floor_digest,
+            current_catalog_projection(row).head_commitment(),
+            ObjectDigest::from_bytes(Sha256::digest(&row.canonical_publication).into()),
+        )
+        .unwrap()
+    }
+
+    fn put_catalog(
+        journal: &mut aos_sandbox::ProtectedJournalAuthority<'_>,
+        row: &CatalogHeadRecordV1,
+        id: u8,
+    ) {
+        use aos_sandbox_source_provider_ledger::ledger::format::{catalog_key, encode_catalog};
+        journal
+            .commit(
+                &aos_sandbox::JournalTransaction::new(
+                    [id; 16],
+                    vec![aos_sandbox::JournalRecord::put(
+                        aos_sandbox::RecordNamespace::SourceProviderAuthority,
+                        catalog_key(row.provider.authority_id(), row.catalog_generation),
+                        encode_catalog(row),
+                    )],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn native_claims_compare_all_seven_fields_against_actual_protected_row() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut journal = aos_sandbox::Journal::open_protected_at_uid(
+            directory.path(),
+            "catalog.journal",
+            aos_sandbox::JournalLimits::default(),
+            rustix::process::geteuid().as_raw(),
+        )
+        .unwrap()
+        .0;
+        let mut writer = journal
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+        let row = current_row_fixture();
+        put_catalog(&mut writer, &row, 1);
+        let owner = retained_test_owner(&writer, &row);
+        let claims = native_claims(&row);
+        assert!(claims.head().0 > claims.floor().0);
+        owner
+            .require_native_catalog_binding_v3(&writer, &claims)
+            .unwrap();
+        let bytes_before: Vec<_> = writer
+            .records()
+            .unwrap()
+            .map(|(k, v)| (k.to_vec(), v.to_vec()))
+            .collect();
+
+        for field in 0..8 {
+            let wrong = NativeAcquireCatalogBindingV3::new(
+                if field == 0 {
+                    digest(99)
+                } else {
+                    claims.resource_namespace_digest()
+                },
+                if field == 1 {
+                    claims.head().0 + 1
+                } else {
+                    claims.head().0
+                },
+                if field == 2 {
+                    digest(99)
+                } else {
+                    claims.head().1
+                },
+                if field == 3 {
+                    claims.floor().0 + 1
+                } else {
+                    claims.floor().0
+                },
+                if field == 4 {
+                    digest(99)
+                } else {
+                    claims.floor().1
+                },
+                if field == 5 {
+                    digest(99)
+                } else {
+                    claims.current_head_commitment()
+                },
+                match field {
+                    6 => digest(99),
+                    7 => row.publication_receipt_digest,
+                    _ => claims.canonical_publication_digest(),
+                },
+            )
+            .unwrap();
+            assert!(
+                owner
+                    .require_native_catalog_binding_v3(&writer, &wrong)
+                    .is_err(),
+                "field {field}"
+            );
+        }
+        assert_eq!(
+            bytes_before,
+            writer
+                .records()
+                .unwrap()
+                .map(|(k, v)| (k.to_vec(), v.to_vec()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn native_current_cut_rejoins_after_append_but_rejects_same_generation_row_drift() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut journal = aos_sandbox::Journal::open_protected_at_uid(
+            directory.path(),
+            "catalog.journal",
+            aos_sandbox::JournalLimits::default(),
+            rustix::process::geteuid().as_raw(),
+        )
+        .unwrap()
+        .0;
+        let mut writer = journal
+            .claim_source_provider_native_terminal_authority_v1()
+            .unwrap();
+        let mut row = current_row_fixture();
+        put_catalog(&mut writer, &row, 1);
+        let old = retained_test_owner(&writer, &row);
+        let claims = native_claims(&row);
+        put_catalog(&mut writer, &row, 2);
+        assert!(
+            old.require_native_catalog_binding_v3(&writer, &claims)
+                .is_err()
+        );
+        retained_test_owner(&writer, &row)
+            .require_native_catalog_binding_v3(&writer, &claims)
+            .unwrap();
+        row.revision += 1;
+        put_catalog(&mut writer, &row, 3);
+        let changed = retained_test_owner(&writer, &row);
+        assert!(
+            changed
+                .require_native_catalog_binding_v3(&writer, &claims)
+                .is_err()
+        );
+        assert_eq!(changed.projection().catalog_head(), claims.head());
     }
 }

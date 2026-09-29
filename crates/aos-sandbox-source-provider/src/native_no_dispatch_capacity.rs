@@ -280,6 +280,27 @@ pub(crate) fn commit_reservation(
     attempt: &AttemptRecordV1,
     session: &HolderSessionHeadRecordV1,
 ) -> Result<ObjectDigest, ProviderLedgerError> {
+    commit_reservation_checked(
+        ledger,
+        purpose,
+        records,
+        acquisition,
+        attempt,
+        session,
+        |_| Ok(()),
+    )
+}
+
+/// Rechecks and retains original-owner custody after preflight, before append.
+pub(crate) fn commit_reservation_checked(
+    ledger: &mut ProviderLedgerV1<'_>,
+    purpose: &[u8],
+    records: Vec<(Vec<u8>, Vec<u8>)>,
+    acquisition: &AcquisitionRecordV1,
+    attempt: &AttemptRecordV1,
+    session: &HolderSessionHeadRecordV1,
+    before_commit: impl FnOnce(&mut ProviderLedgerV1<'_>) -> Result<(), ProviderLedgerError>,
+) -> Result<ObjectDigest, ProviderLedgerError> {
     let prepared = prepare_mutations_validated(
         ledger,
         purpose,
@@ -299,6 +320,7 @@ pub(crate) fn commit_reservation(
     let preflight = ledger
         .journal
         .preflight_global_capacity_reservation_v1(&capacity, &transaction)?;
+    before_commit(ledger)?;
     if let Err(error) =
         ledger
             .journal

@@ -7,9 +7,9 @@
 use aos_sandbox::ProtectedJournalSnapshot;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    ACQUIRE_SOURCE_REQUEST_VERSION_V2, NativeRecoveryTerminalDigestsV1,
-    SignedSourceProviderRequestV1, SourceProviderMethod, decode_acquire_request,
-    digest_acquire_request, digest_signed_request,
+    ACQUIRE_SOURCE_REQUEST_VERSION_V2, ACQUIRE_SOURCE_REQUEST_VERSION_V3,
+    NativeRecoveryTerminalDigestsV1, SignedSourceProviderRequestV1, SourceProviderMethod,
+    decode_acquire_request, digest_acquire_request, digest_signed_request,
 };
 
 use crate::acquire::derive_native_no_dispatch_id;
@@ -146,7 +146,7 @@ impl FixedProviderOwnerV1 {
                 || request.sequence() != attempt.request_sequence
                 || request.request_id() != attempt.request_id
                 || request.acquisition_id() != acquisition_id
-                || request.acquisition_version() != ACQUIRE_SOURCE_REQUEST_VERSION_V2
+                || !matches_original_no_dispatch_profile(&request, &acquisition)
                 || request.acquisition_sequence() != acquisition.acquisition_sequence
                 || request.binding_digest() != acquisition.normalized_intent.binding_digest()
                 || request.kernel_coupled()
@@ -300,5 +300,27 @@ impl FixedProviderOwnerV1 {
             }
             outcome
         })
+    }
+}
+
+/// Compares retained DATA without admitting an effect or recreating a clock.
+pub(crate) fn matches_original_no_dispatch_profile(
+    request: &aos_sandbox_source_provider_protocol::AcquireSourceRequestV1,
+    acquisition: &crate::model::AcquisitionRecordV1,
+) -> bool {
+    match request.acquisition_version() {
+        ACQUIRE_SOURCE_REQUEST_VERSION_V2 => {
+            acquisition.normalized_intent.native_catalog().is_none()
+        }
+        ACQUIRE_SOURCE_REQUEST_VERSION_V3 => request.native_catalog().is_some_and(|catalog| {
+            acquisition
+                .normalized_intent
+                .matches_original_acquire_request(request)
+                && catalog.resource_namespace_digest() == acquisition.resource_namespace_digest
+                && catalog.resource_namespace_digest()
+                    == acquisition.normalized_intent.resource_namespace_digest()
+                && catalog.head() == (acquisition.catalog_generation, acquisition.catalog_digest)
+        }),
+        _ => false,
     }
 }
