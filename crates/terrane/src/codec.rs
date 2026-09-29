@@ -213,6 +213,7 @@ fn decompress_bounded(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use std::io::Write;
 
@@ -272,6 +273,31 @@ mod tests {
             inspect_chunk(&skippable, 0, MAX),
             Err(FrameError::InvalidFrame)
         ));
+    }
+
+    #[test]
+    fn bounded_decoder_rejects_a_frame_with_false_content_size() {
+        let frame = zstd::bulk::compress(&vec![0_u8; 8192], 3).expect("compress");
+        let mut forged = None;
+        for position in 5..frame.len().min(10) {
+            for byte in 0..=u8::MAX {
+                let mut candidate = frame.clone();
+                candidate[position] = byte;
+                if matches!(zstd::zstd_safe::get_frame_content_size(&candidate), Ok(Some(256))) {
+                    forged = Some(candidate);
+                    break;
+                }
+            }
+            if forged.is_some() {
+                break;
+            }
+        }
+        let forged = forged.expect("fixture permits a one-byte false size");
+        let mut encoded = vec![0x01];
+        encoded.extend_from_slice(&forged);
+        let inspected = inspect_chunk(&encoded, 256, MAX).expect("header declares 256 bytes");
+
+        assert!(decompress_bounded(inspected, 256, None).is_err());
     }
 
     #[test]

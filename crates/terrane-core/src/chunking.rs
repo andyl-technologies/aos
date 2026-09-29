@@ -22,7 +22,7 @@ pub const CDC_1M_NORMALIZATION: u8 = 2;
 pub enum ProfileError {
     /// Minimum, target, and maximum sizes are not positive and ordered.
     InvalidSizes,
-    /// The effective Gear span cannot fit a 64-bit fingerprint.
+    /// The effective Gear span is not the registered 48-byte span.
     InvalidWindow,
     /// The derived strict or eager mask cannot fit the Gear span.
     InvalidNormalization,
@@ -32,7 +32,7 @@ impl fmt::Display for ProfileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidSizes => f.write_str("chunk sizes must be positive and ordered"),
-            Self::InvalidWindow => f.write_str("Gear span must be between 32 and 64 bytes"),
+            Self::InvalidWindow => f.write_str("Gear span must be 48 bytes"),
             Self::InvalidNormalization => f.write_str("normalized masks must fit the Gear span"),
         }
     }
@@ -103,7 +103,7 @@ impl ChunkProfile {
     /// # Errors
     ///
     /// Returns an error when chunk sizes are unordered or zero, the effective
-    /// Gear span is outside 32–64 bytes, or the masks cannot fit that span.
+    /// Gear span differs from 48 bytes, or the masks cannot fit that span.
     pub fn new(
         minimum: usize,
         target: usize,
@@ -115,14 +115,14 @@ impl ChunkProfile {
         if minimum == 0 || minimum > target || target > maximum {
             return Err(ProfileError::InvalidSizes);
         }
-        if !(32..=64).contains(&window) {
+        if window != CDC_1M_WINDOW {
             return Err(ProfileError::InvalidWindow);
         }
 
         let bits = target.ilog2();
         let strict = bits + u32::from(normalization);
         let eager = bits.checked_sub(u32::from(normalization));
-        if strict < 2 || strict > 32 || eager.is_none_or(|bits| bits < 2) {
+        if !(2..=32).contains(&strict) || eager.is_none_or(|bits| bits < 2) {
             return Err(ProfileError::InvalidNormalization);
         }
 
@@ -379,6 +379,7 @@ pub fn validate_object_chunks(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::{
         CDC_1M_MAX, CDC_1M_MIN, ChunkProfile, ManifestError, ProfileError, gear_table, sparse_mask,

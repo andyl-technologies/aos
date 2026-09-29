@@ -150,6 +150,7 @@ pub fn validate_envelope_size(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::{Codec, CodecError, EncodedChunk, parse_envelope, validate_envelope_size};
 
