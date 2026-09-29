@@ -15,7 +15,9 @@
 
 use std::path::Path;
 
-use aos_sandbox_core::{AttachmentId, ObjectDescriptor, RawPairedClockSample};
+use aos_sandbox_core::{
+    AttachmentId, ObjectDescriptor, ProjectId, RawPairedClockSample, SandboxId,
+};
 
 use super::ProtectedAttachmentEffectOwnerV1;
 use crate::attachment_slot_state::{self, DurableAttachmentSlotV1};
@@ -132,6 +134,7 @@ pub struct CurrentControllerConsumerResourceV1<'owner> {
     owner_uid: u32,
     sequence: u64,
     request: Option<ConsumerReadRequestDataV1>,
+    policy_flight_used: bool,
     unavailable: bool,
 }
 
@@ -262,6 +265,7 @@ where
         owner_uid,
         sequence,
         request: None,
+        policy_flight_used: false,
         unavailable: false,
     };
     held.recheck(clock)?;
@@ -269,6 +273,40 @@ where
 }
 
 impl CurrentControllerConsumerResourceV1<'_> {
+    // Consumes only availability, never creates read/Ready authority. Even an
+    // unsent or denied flight cannot reconnect this same preparation/borrow.
+    pub(crate) fn begin_pre_root_policy_flight<T>(
+        &mut self,
+        clock: &mut T,
+    ) -> Result<(ProjectId, SandboxId, u64), ConsumerResourceErrorV1>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        if self.policy_flight_used {
+            return Err(ConsumerResourceErrorV1::Changed);
+        }
+        let selected = self.prepared_policy_selector(clock)?;
+        self.policy_flight_used = true;
+        Ok(selected)
+    }
+
+    // The in-memory request is assigned before planning. Only the actual
+    // retained row and its live terminal reservation can select this flight.
+    pub(crate) fn prepared_policy_selector<T>(
+        &mut self,
+        clock: &mut T,
+    ) -> Result<(ProjectId, SandboxId, u64), ConsumerResourceErrorV1>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.recheck(clock)?;
+        let request = self.request.ok_or(ConsumerResourceErrorV1::Changed)?;
+        attempt::require_retained_prepared(self.journal, request, &self.source)?;
+        self.recheck(clock)?;
+        let manifest = self.binding.manifest().manifest();
+        Ok((manifest.project(), manifest.sandbox(), request.deadline))
+    }
+
     /// Borrows the exact accepted Attachment desired record.
     #[must_use]
     pub const fn desired(&self) -> &DurableAttachmentDesiredStateV1 {

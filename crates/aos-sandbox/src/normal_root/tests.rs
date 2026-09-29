@@ -313,6 +313,10 @@ fn controller_profile_delivery_is_fixed_unit_invocation_and_original_role_bound(
     for tpm in [false, true] {
         let (service, unit) = controller_properties(tpm);
         assert!(
+            controller_peer::decode_delivery(&service, &unit, std::path::Path::new(PROFILE))
+                .is_ok()
+        );
+        assert!(
             client::decode_delivery(&service, &unit, std::path::Path::new(PROFILE), tpm).is_ok()
         );
         assert!(
@@ -358,6 +362,10 @@ fn controller_profile_delivery_is_fixed_unit_invocation_and_original_role_bound(
         let (mut service, unit) = controller_properties(false);
         service[index] = replacement;
         assert!(
+            controller_peer::decode_delivery(&service, &unit, std::path::Path::new(PROFILE))
+                .is_err()
+        );
+        assert!(
             client::decode_delivery(&service, &unit, std::path::Path::new(PROFILE), false).is_err()
         );
     }
@@ -370,7 +378,53 @@ fn controller_profile_delivery_is_fixed_unit_invocation_and_original_role_bound(
         let (service, mut unit) = controller_properties(false);
         unit[index] = replacement;
         assert!(
+            controller_peer::decode_delivery(&service, &unit, std::path::Path::new(PROFILE))
+                .is_err()
+        );
+        assert!(
             client::decode_delivery(&service, &unit, std::path::Path::new(PROFILE), false).is_err()
+        );
+    }
+}
+
+#[test]
+fn original_controller_peer_infers_only_exact_existing_optional_pid1_role() {
+    for files in [
+        vec![
+            (PROFILE.to_owned(), client::PROFILE_NAME.to_owned(), 1_u64),
+            (
+                "/proc/1/exe".to_owned(),
+                "aos-method46-pid1-image".to_owned(),
+                0,
+            ),
+        ],
+        vec![
+            (PROFILE.to_owned(), client::PROFILE_NAME.to_owned(), 1_u64),
+            (
+                "/other/exe".to_owned(),
+                "aos-method46-pid1-image".to_owned(),
+                1,
+            ),
+        ],
+        vec![
+            (PROFILE.to_owned(), client::PROFILE_NAME.to_owned(), 1_u64),
+            (PROFILE.to_owned(), client::PROFILE_NAME.to_owned(), 1),
+        ],
+        vec![
+            (PROFILE.to_owned(), client::PROFILE_NAME.to_owned(), 1_u64),
+            (
+                "/proc/1/exe".to_owned(),
+                "aos-normal-root-pid1-image".to_owned(),
+                1,
+            ),
+        ],
+        Vec::new(),
+    ] {
+        let (mut properties, unit) = controller_properties(false);
+        properties[1] = value(files);
+        assert!(
+            controller_peer::decode_delivery(&properties, &unit, std::path::Path::new(PROFILE))
+                .is_err()
         );
     }
 }

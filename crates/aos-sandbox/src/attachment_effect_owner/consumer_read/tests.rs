@@ -311,6 +311,49 @@ fn frozen_selected_binding_and_request_do_not_renew_or_extend() {
 }
 
 #[test]
+fn policy_selector_requires_actual_successful_prepared_row_and_live_capacity() {
+    let (directory, mut fixture) = fixture();
+    let mut held = hold(fixture.journal_mut(), directory.path());
+    assert!(held.prepared_policy_selector(&mut clock).is_err());
+    let request = request(58);
+    let mut ceilings = limits(held.journal);
+    ceilings.maximum_attempts = 0;
+    let sequence = held.journal.snapshot_sequence();
+    assert!(
+        held.retain_resource_prepared(request, ceilings, &mut clock)
+            .is_err()
+    );
+    assert_eq!(held.request, Some(request));
+    assert_eq!(held.journal.snapshot_sequence(), sequence);
+    assert!(held.prepared_policy_selector(&mut clock).is_err());
+
+    let ceilings = limits(held.journal);
+    let row = held
+        .retain_resource_prepared(request, ceilings, &mut clock)
+        .unwrap();
+    let selected = held.prepared_policy_selector(&mut clock).unwrap();
+    let manifest = held.binding.manifest().manifest();
+    assert_eq!(
+        selected,
+        (manifest.project(), manifest.sandbox(), request.deadline)
+    );
+    assert_eq!(
+        held.begin_pre_root_policy_flight(&mut clock).unwrap(),
+        selected
+    );
+    assert!(held.begin_pre_root_policy_flight(&mut clock).is_err());
+    assert_eq!(held.prepared_policy_selector(&mut clock).unwrap(), selected);
+    // A separately decoded DATA row has no effect on selector production.
+    assert_eq!(
+        DurableConsumerResourceAttemptV1::decode_canonical(&row.canonical_bytes()).unwrap(),
+        row
+    );
+    attempt::quarantine(held.journal, request.request_id).unwrap();
+    assert!(held.prepared_policy_selector(&mut clock).is_err());
+    assert!(attempt::require_retained_prepared(held.journal, request, &held.source).is_err());
+}
+
+#[test]
 fn changed_slot_and_missing_protected_allocation_refuse_the_original_cut() {
     let (directory, mut fixture) = fixture();
     let mut held = hold(fixture.journal_mut(), directory.path());
