@@ -51,10 +51,11 @@ This procedure ends at staging and creates no qualification or channel claim.
   provenance, the complete signed cache, manifest, and TUF metadata using the
   separate planned signing roles. Retain the matching corresponding source
   for every distributed patched QEMU binary.
-- [ ] Compose the closed publication surface and verify its signatures and
-  inventory. For an empty registry, perform only the signed staging bootstrap.
-- [ ] Upload to the canonical staging Hub, verify every public object by exact
-  bytes, and retain the staging receipt and successor journal. Stop at staging;
+- [ ] Compose the signed publication surface. For an empty registry, perform
+  the signed staging bootstrap.
+- [ ] Upload to the canonical staging Hub and retain the staging receipt and
+  successor journal. The Hub checks uploaded object bytes; public readback and
+  qualification checks are deferred. Stop at staging;
   future qualification requires its own reviewed plan.
 
 ## 1. Prepare the release

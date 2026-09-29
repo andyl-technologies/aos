@@ -280,7 +280,11 @@ pub(in crate::registry_ops) fn publish_package_documentation(
             version: version.to_string(),
             platform: platform.to_string(),
             summary: description.to_string(),
-            homepage: homepage.map(str::to_string),
+            // Documentation permits HTTPS links. The catalog retains the
+            // upstream homepage unchanged, including legacy HTTP URLs.
+            homepage: homepage
+                .filter(|url| url.starts_with("https://") && !url.contains(char::is_whitespace))
+                .map(str::to_string),
             license: license.to_string(),
         },
         identity: DocumentationIdentity {
