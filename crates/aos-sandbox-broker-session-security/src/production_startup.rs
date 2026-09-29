@@ -8,8 +8,10 @@
 
 use std::fs::File;
 use std::os::fd::OwnedFd;
+use std::path::Path;
 use std::sync::Arc;
 
+use aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1;
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 use aos_sandbox_storage::activation::take_systemd_startup;
 use aos_sandbox_storage::service::StorageServiceError;
@@ -22,6 +24,15 @@ pub(crate) struct Pid1LaunchImageV1 {
     endpoint: ProtectedBrokerSessionFixedEndpointV1,
     process: u32,
     file: Arc<File>,
+    profile_delivery: ControllerProfileDeliveryV1,
+}
+
+// Pending capture cannot stand in for genuinely admitted profile absence.
+#[derive(Clone)]
+enum ControllerProfileDeliveryV1 {
+    Storage,
+    Pending,
+    Admitted(Option<Arc<ProductionControllerNormalRootProfileV1>>),
 }
 
 impl Pid1LaunchImageV1 {
@@ -29,10 +40,61 @@ impl Pid1LaunchImageV1 {
         &self,
         endpoint: ProtectedBrokerSessionFixedEndpointV1,
     ) -> Result<(), crate::BrokerSessionSecurityError> {
-        if self.endpoint != endpoint || self.process != std::process::id() {
+        let admitted_role = matches!(
+            (&self.profile_delivery, endpoint),
+            (
+                ControllerProfileDeliveryV1::Storage,
+                ProtectedBrokerSessionFixedEndpointV1::StorageBroker
+            ) | (
+                ControllerProfileDeliveryV1::Admitted(_),
+                ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient
+            )
+        );
+        if self.endpoint != endpoint || self.process != std::process::id() || !admitted_role {
             return Err(crate::BrokerSessionSecurityError::Currentness);
         }
         Ok(())
+    }
+
+    // The actual startup caller binds only its consumed admit_selected result.
+    pub(crate) fn bind_controller_profile(
+        mut self,
+        profile: Option<Arc<ProductionControllerNormalRootProfileV1>>,
+    ) -> Result<Self, crate::BrokerSessionSecurityError> {
+        if self.endpoint != ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient
+            || self.process != std::process::id()
+            || !matches!(&self.profile_delivery, ControllerProfileDeliveryV1::Pending)
+        {
+            return Err(crate::BrokerSessionSecurityError::Currentness);
+        }
+        if let Some(profile) = &profile {
+            profile
+                .recheck()
+                .map_err(|_| crate::BrokerSessionSecurityError::Currentness)?;
+        }
+        self.profile_delivery = ControllerProfileDeliveryV1::Admitted(profile);
+        Ok(self)
+    }
+
+    pub(crate) fn recheck_profile_delivery(
+        &self,
+        endpoint: ProtectedBrokerSessionFixedEndpointV1,
+    ) -> Result<Option<&Path>, crate::BrokerSessionSecurityError> {
+        self.require_endpoint(endpoint)?;
+        match &self.profile_delivery {
+            ControllerProfileDeliveryV1::Admitted(Some(profile)) => {
+                profile
+                    .recheck()
+                    .map_err(|_| crate::BrokerSessionSecurityError::Currentness)?;
+                Ok(Some(profile.profile_path()))
+            }
+            ControllerProfileDeliveryV1::Storage | ControllerProfileDeliveryV1::Admitted(None) => {
+                Ok(None)
+            }
+            ControllerProfileDeliveryV1::Pending => {
+                Err(crate::BrokerSessionSecurityError::Currentness)
+            }
+        }
     }
 
     pub(crate) fn file(&self) -> &File {
@@ -128,10 +190,20 @@ fn admit_launch_observation(
     descriptor: Option<OwnedFd>,
 ) -> Result<Option<Pid1LaunchImageV1>, crate::BrokerSessionSecurityError> {
     crate::recovery::require_launch_image_presence(endpoint, descriptor.is_some())?;
+    let profile_delivery = match endpoint {
+        ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient => {
+            ControllerProfileDeliveryV1::Pending
+        }
+        ProtectedBrokerSessionFixedEndpointV1::StorageBroker => {
+            ControllerProfileDeliveryV1::Storage
+        }
+        _ => return Err(crate::BrokerSessionSecurityError::Currentness),
+    };
     Ok(descriptor.map(|descriptor| Pid1LaunchImageV1 {
         endpoint,
         process: std::process::id(),
         file: Arc::new(File::from(descriptor)),
+        profile_delivery,
     }))
 }
 

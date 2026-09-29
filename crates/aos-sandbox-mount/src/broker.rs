@@ -272,7 +272,7 @@ impl<W: MountWorker> MountBroker<W> {
                     return Err(error);
                 }
             },
-            None => crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2::borrow_existing_fixed_journal(
+            None => crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2::borrow_existing_kind2_fixed_journal(
                 &mut self.journal,
             )?,
         };
@@ -4608,7 +4608,7 @@ mod tests {
     }
 
     #[test]
-    fn source_owner_borrow_rejects_unprotected_journal_before_callback() {
+    fn kind2_cold_owner_route_rejects_unprotected_journal_before_callback_or_retirement() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("mount.journal");
         let (mut broker, _) = test_broker(open(&path), ScriptedWorker::default());
@@ -4621,6 +4621,15 @@ mod tests {
 
         assert!(result.is_err());
         assert!(!called.get());
+        assert!(broker.source_runtime.is_none());
+        assert_eq!(
+            broker
+                .journal
+                .records(RecordNamespace::GlobalCapacityReservation)
+                .count(),
+            0
+        );
+        assert_eq!(broker.worker.calls, 0);
         assert!(broker.inventory_resources().is_ok());
     }
 

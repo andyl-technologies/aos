@@ -414,7 +414,10 @@ fn mixed_families_account_without_becoming_legacy_grants() {
         maximum_transactions: 31,
         ..JournalLimits::default()
     };
-    assert!(crate::journal::validate_reserved_capacity(&state, 0, &[], None, 0, 0, limits).is_ok());
+    assert!(
+        crate::journal::validate_reserved_capacity(&state, 0, &[], None, 0, 0, limits, None)
+            .is_ok()
+    );
     for limit in [
         JournalLimits {
             maximum_journal_bytes: 8529,
@@ -434,7 +437,8 @@ fn mixed_families_account_without_becoming_legacy_grants() {
         },
     ] {
         assert!(
-            crate::journal::validate_reserved_capacity(&state, 0, &[], None, 0, 0, limit).is_err()
+            crate::journal::validate_reserved_capacity(&state, 0, &[], None, 0, 0, limit, None)
+                .is_err()
         );
     }
 }

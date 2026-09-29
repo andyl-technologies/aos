@@ -360,6 +360,10 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
         .admit_selected(configuration.uid, configuration.gid)
         .map_err(ControllerRuntimeError::NormalRootProfile)?
         .map(Arc::new);
+    let launch_image = launch_image
+        .map(|image| image.bind_controller_profile(normal_root_profile.clone()))
+        .transpose()
+        .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
     let publisher_listener = publisher_descriptor
         .map(publisher_ingress::adopt_observed_listener)
         .transpose()

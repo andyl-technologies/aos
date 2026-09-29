@@ -18,7 +18,9 @@ use super::model::*;
 use super::reservation::{sealed_attempt, sealed_head, sealed_row};
 use super::security::session_from_projection;
 use super::transition::{MutationIdentityV2, commit_mutation, next_revision, record_ref, seal};
-use super::{FixedMountSourceAcquisitionOwnerV2, SourceAcquisitionTableV2};
+use super::{
+    FixedMountSourceAcquisitionOwnerV2, SourceAcquisitionTableV2, install_and_retire_kind2_table,
+};
 use crate::Result;
 
 impl FixedMountSourceAcquisitionOwnerV2<'_> {
@@ -37,6 +39,15 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
+        if self
+            .runtime
+            .table
+            .provider_heads
+            .values()
+            .any(|head| head.pending_attempt.is_none() && head.recovery_barrier.is_some())
+        {
+            return self.establish_kind2_barrier_idle_successor_v4(root);
+        }
         let abandoned = root
             .with_current_session(|session| {
                 self.with_source_acquisition_authority(|table, authority| {
@@ -146,6 +157,107 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
         }
         Ok(())
     }
+
+    fn establish_kind2_barrier_idle_successor_v4(
+        &mut self,
+        root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
+    ) -> Result<()> {
+        let mut writer = self
+            .protected
+            .root_local_recovery_authority_v4()
+            .map_err(|error| state_error(&error.to_string()))?;
+        let table = &mut self.runtime.table;
+        // Cold local metadata is installed under this actual owner before its
+        // floor can disappear. No historical live plan is reconstructed.
+        install_and_retire_kind2_table(table, &mut writer, None)?;
+        root.with_current_session(|session| {
+            let mut heads = table.provider_heads.values();
+            let head = heads
+                .next()
+                .cloned()
+                .ok_or_else(|| state_error("kind2 Head is absent"))?;
+            if heads.next().is_some() {
+                return Err(state_error("kind2 successor has multiple scopes"));
+            }
+            let predecessor = table
+                .provider_sessions
+                .get(&head.current_session_id)
+                .filter(|value| value.record_digest == head.current_session_record_digest)
+                .cloned()
+                .ok_or_else(|| state_error("kind2 predecessor Session is absent"))?;
+            if session
+                .current_session_id_v2()
+                .map_err(|_| state_error("kind2 Session is stale"))?
+                .as_bytes()
+                == &predecessor.session_binding
+            {
+                return Ok(());
+            }
+            let guard = writer.security_view();
+            let death = session
+                .try_prove_mount_provider_execution_dead_v2(
+                    guard,
+                    &guard.snapshot()?,
+                    &provider_session_key(predecessor.session_id),
+                    &record_bytes(StoredRecordV2::ProviderSession {
+                        value: predecessor.clone(),
+                    })?,
+                )
+                .map_err(|_| state_error("kind2 predecessor liveness is indeterminate"))?;
+            let (plan, successor, expected_head) = table.prepare_barrier_idle_session_v4(
+                guard,
+                session,
+                death,
+                head.scope.holder_authority_id,
+                head.scope.provider_authority_id,
+            )?;
+            let readback = session
+                .with_barrier_idle_replacement_v4(&mut writer, plan, |projection, writer| {
+                    let mut actual =
+                        session_from_projection(projection, Some(predecessor.session_id))?;
+                    actual.barrier_idle_replacement = successor.barrier_idle_replacement.clone();
+                    actual.record_digest = [0; 32];
+                    let actual = match seal(StoredRecordV2::ProviderSession { value: actual })? {
+                        StoredRecordV2::ProviderSession { value } => value,
+                        _ => return Err(state_error("kind2 sealed Session changed kind")),
+                    };
+                    if actual != successor {
+                        return Err(state_error("kind2 current plan projection changed"));
+                    }
+                    let prepared = writer.prepare_barrier_idle_replacement(actual)?;
+                    let readback = writer
+                        .commit_barrier_idle_replacement(prepared)
+                        .map_err(crate::MountError::from)?;
+                    let current = writer.current_source_state()?;
+                    if current.provider_heads.get(&(
+                        head.scope.holder_authority_id,
+                        head.scope.provider_authority_id,
+                    )) != Some(&expected_head)
+                    {
+                        return Err(state_error(
+                            "kind2 protected Head differs from actual owner proposal",
+                        ));
+                    }
+                    Ok(readback)
+                })
+                .map_err(|_| state_error("kind2 current plan consumption failed"))??;
+            // Revalidate live custody after CAS and before the trusted owner's
+            // installation/DELETE sequence. A failure retains the local floor.
+            if session
+                .current_session_id_v2()
+                .map_err(|_| state_error("kind2 post-CAS custody is stale"))?
+                .as_bytes()
+                != &successor.session_binding
+            {
+                return Err(state_error(
+                    "kind2 installed Session is not current custody",
+                ));
+            }
+            install_and_retire_kind2_table(table, &mut writer, Some(readback))
+        })
+        .map_err(|_| state_error("kind2 Root custody is stale"))?
+        .ok_or_else(|| state_error("kind2 Root handshake is pending"))?
+    }
 }
 
 impl SourceAcquisitionTableV2 {
@@ -164,6 +276,50 @@ impl SourceAcquisitionTableV2 {
         holder_authority_id: [u8; 16],
         provider_authority_id: [u8; 16],
     ) -> Result<()> {
+        let (_, successor, next_head) = self.prepare_barrier_idle_session_v4(
+            journal,
+            live_successor,
+            predecessor_death,
+            holder_authority_id,
+            provider_authority_id,
+        )?;
+        commit_mutation(
+            self,
+            journal,
+            MutationIdentityV2 {
+                tag: MutationTagV2::BarrierIdleReplacement,
+                holder_id: holder_authority_id,
+                provider_id: provider_authority_id,
+                next_holder_sequence_revision: self
+                    .holder_sequences
+                    .get(&holder_authority_id)
+                    .map_or(0, |value| value.revision),
+                next_head_revision: next_head.revision,
+                acquisition_id: None,
+                next_row_revision: None,
+                attempt_id: None,
+                next_attempt_revision: None,
+                session_id: Some(successor.session_id),
+            },
+            vec![
+                StoredRecordV2::ProviderSession { value: successor },
+                StoredRecordV2::ProviderHead { value: next_head },
+            ],
+        )
+    }
+
+    fn prepare_barrier_idle_session_v4(
+        &self,
+        journal: &ProtectedJournalAuthority<'_>,
+        live_successor: &mut CurrentRootMountSourceProviderSessionV1,
+        predecessor_death: Option<DeadProviderExecutionV1>,
+        holder_authority_id: [u8; 16],
+        provider_authority_id: [u8; 16],
+    ) -> Result<(
+        aos_sandbox_source_provider_security::CurrentMountProviderSessionPlanV2,
+        SourceProviderSessionV2,
+        SourceProviderHeadV2,
+    )> {
         let identity = (holder_authority_id, provider_authority_id);
         let current_head = self
             .provider_heads
@@ -287,29 +443,7 @@ impl SourceAcquisitionTableV2 {
         });
         next_head.record_digest = [0; 32];
         let next_head = sealed_head(next_head)?;
-        commit_mutation(
-            self,
-            journal,
-            MutationIdentityV2 {
-                tag: MutationTagV2::BarrierIdleReplacement,
-                holder_id: holder_authority_id,
-                provider_id: provider_authority_id,
-                next_holder_sequence_revision: self
-                    .holder_sequences
-                    .get(&holder_authority_id)
-                    .map_or(0, |value| value.revision),
-                next_head_revision: next_head.revision,
-                acquisition_id: None,
-                next_row_revision: None,
-                attempt_id: None,
-                next_attempt_revision: None,
-                session_id: Some(successor.session_id),
-            },
-            vec![
-                StoredRecordV2::ProviderSession { value: successor },
-                StoredRecordV2::ProviderHead { value: next_head },
-            ],
-        )
+        Ok((plan, successor, next_head))
     }
 
     /// Supersedes one exact pending attempt for provider-owned backend recovery.

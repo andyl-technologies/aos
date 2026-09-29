@@ -615,6 +615,35 @@ impl CurrentRootMountSourceProviderSessionV1 {
         ))
     }
 
+    /// Holds current Session custody through a closed kind2 physical append.
+    ///
+    /// This consumes the actual before-image plan, not a caller-authored Session
+    /// projection. The trusted Mount coordinator derives its exact S/H from the
+    /// supplied projection, then installs and compares its table before retiring
+    /// the local floor. The lower writer cannot prove that private installation.
+    /// No request, signing or descriptor authority is returned.
+    ///
+    /// # Errors
+    /// Rejects stale custody, protected before bytes or snapshot. A failed final
+    /// custody revalidation poisons this Session; any committed local floor stays
+    /// durable for cold metadata readback rather than being silently discharged.
+    #[doc(hidden)]
+    pub fn with_barrier_idle_replacement_v4<R>(
+        &mut self,
+        writer: &mut aos_sandbox::MountBarrierIdleReplacementJournalAuthorityV4<'_>,
+        plan: CurrentMountProviderSessionPlanV2,
+        operation: impl FnOnce(
+            &MountProviderSessionProjectionV2,
+            &mut aos_sandbox::MountBarrierIdleReplacementJournalAuthorityV4<'_>,
+        ) -> R,
+    ) -> Result<R, SourceProviderSecurityError> {
+        let (session, _, _, _) =
+            self.consume_current_mount_plan_with_snapshot(writer.security_view(), plan)?;
+        let result = operation(&session, writer);
+        self.revalidate()?;
+        Ok(result)
+    }
+
     fn validate_current_mount_plan(
         &mut self,
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,

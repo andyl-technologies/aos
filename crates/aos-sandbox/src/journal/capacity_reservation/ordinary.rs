@@ -313,7 +313,7 @@ impl OrdinaryCapacityRecordV4 {
         )
     }
 
-    pub(super) fn decode(key: &[u8], value: &[u8]) -> Result<Self, JournalError> {
+    pub(in crate::journal) fn decode(key: &[u8], value: &[u8]) -> Result<Self, JournalError> {
         if value.len() != ORDINARY_CAPACITY_VALUE_BYTES_V4
             || &value[..8] != b"AOSJCR01"
             || value[8..12] != [0, 4, 40, 10]
