@@ -819,6 +819,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-terrane"
+version = "0.1.0"
+dependencies = [
+ "terrane",
+]
+
+[[package]]
 name = "arc-swap"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6278,6 +6285,38 @@ dependencies = [
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "terrane"
+version = "0.1.0"
+dependencies = [
+ "terrane-core",
+]
+
+[[package]]
+name = "terrane-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "terrane",
+ "terrane-fs",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "terrane-core"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+]
+
+[[package]]
+name = "terrane-fs"
+version = "0.1.0"
+dependencies = [
+ "terrane",
 ]
 
 [[package]]
