@@ -501,7 +501,7 @@ fn inventory_error(message: &str) -> SchedulerError {
 
 #[cfg(test)]
 #[path = "io_inventory/tests.rs"]
-mod tests;
+pub(in crate::scheduler) mod tests;
 
 // Unknown is not absence, and a deadline before the authenticated physical
 // observation is stale. A due-at-current deadline remains factual input for

@@ -144,6 +144,10 @@ pub(super) fn resolve_dispatch_boundary<B: ConcurrentSimulationBackend>(
                 });
             }
         }
+        // Keep the attempted key until both the physical ACK and its exact
+        // imported-origin ledger update succeed. A ledger refusal cannot undo
+        // ring publication or authorize retry of the uncertain delivery.
+        resolved.record_imported_io_publication(event)?;
         progress.applied.push(event.key.clone());
         progress.attempted = None;
     }
@@ -158,3 +162,6 @@ pub(super) fn resolve_dispatch_boundary<B: ConcurrentSimulationBackend>(
     }
     Ok(result)
 }
+
+#[cfg(test)]
+mod tests;
