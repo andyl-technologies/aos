@@ -14,7 +14,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::journal::{Journal, JournalError, RecordNamespace};
+use crate::journal::{
+    CacheMutationGateV1, HeldCacheMutationGateV1, Journal, JournalError, RecordNamespace,
+};
 use crate::lifecycle::protected_journal_adapter::{
     AppliedDomainTransactionV1, DomainCommitOutcomeV1, DomainOutcomeUnknownV1,
     DomainPostcommitCapabilityV1, DomainRecoveryV1, DomainRetainedRecoveryV1,
@@ -22,7 +24,7 @@ use crate::lifecycle::protected_journal_adapter::{
     ProtectedDomainJournalV1, ProtectedDomainKeyV1, ProtectedDomainProjectionV1,
     ProtectedDomainReplayPhaseV1, ProtectedDomainSchemaV1, ProtectedDomainSnapshotV1,
     ProtectedRecordRoleV1, ProtectedReducerPhaseV1, ReplayedDomainPostcommitV1,
-    ValidatedDomainPostcommitV1, decode_reducer_payload_with_validator,
+    RetainedCommitFailureV1, ValidatedDomainPostcommitV1, decode_reducer_payload_with_validator,
     encode_reducer_payload_with_validator,
 };
 
@@ -36,8 +38,10 @@ use super::{
 #[cfg(target_os = "linux")]
 use super::{CachePinV1, ImmutableAdmissionPlanV1};
 
+mod authority_session;
 mod pin_effect;
 mod provisioning;
+pub(in crate::cache_residency) use authority_session::RetainedCacheAuthoritySessionV1;
 pub(crate) use provisioning::LOGICAL_PIN_ACQUIRE_LIFETIME_SECONDS;
 
 use pin_effect::{
@@ -223,7 +227,7 @@ impl std::fmt::Debug for CacheResidencyReplayValidatorV1 {
 }
 
 /// Owns the exact protected evidence needed to revalidate one cache partition.
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) struct CacheResidencyReplayPartitionEvidenceV1 {
     pub(crate) partition: PhysicalPartitionId,
     pub(crate) purpose: CacheAuthorityPurposeV1,
@@ -392,89 +396,38 @@ impl ProtectedCacheResidencyReplayAuthorityV1 {
         let owner =
             CacheAuthorityOwner::new(&authority, self.owner_scope, self.maximum_record_bytes)
                 .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-        let capabilities = requests
-            .iter()
-            .map(|(purpose, key)| {
-                owner
-                    .verify_current_record_for_purpose(*purpose, key)
-                    .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        if capabilities
-            .iter()
-            .any(|capability| now == 0 || now >= capability.scope().valid_until())
-        {
-            return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-        }
+        let capabilities = authority_session::verify_requested(&owner, requests, now)?;
 
         let partitions = self
             .partitions
             .lock()
             .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?
             .clone();
-        let mut replay_capabilities = Vec::with_capacity(partitions.len());
-        let mut session_partitions = BTreeMap::new();
-        for evidence in partitions.values() {
-            let capability = owner
-                .verify_current_record(evidence.purpose, evidence.scope, &evidence.record_key)
-                .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-            if now >= capability.scope().valid_until() {
-                return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-            }
-            session_partitions.insert(
-                evidence.partition.digest(),
-                CacheResidencyAuthoritySessionPartitionV1 {
-                    evidence: evidence.clone(),
-                    scope: capability.scope(),
-                    record_digest: capability.record_digest(),
-                },
-            );
-            replay_capabilities.push((evidence.purpose, capability));
-        }
-        let effect_observations = authority
-            .records()
-            .map_err(ProtectedDomainJournalErrorV1::from)?
-            .into_iter()
-            .filter(|(key, _)| key.starts_with(EFFECT_OBSERVATION_AUTHORITY_KEY_PREFIX))
-            .map(|(key, value)| (key.to_vec(), value.to_vec()))
-            .collect();
-        let session_validator = CacheResidencyReplayValidatorV1::new(
-            Arc::new(CacheResidencyAuthoritySessionV1 {
-                owner_scope: self.owner_scope,
-                partitions: session_partitions,
-                effect_observations,
-            }),
+        let view = authority_session::verify_replay(
+            &authority,
+            &owner,
+            self.owner_scope,
             self.limits,
+            &partitions,
+            capabilities,
+            now,
         )?;
 
         let result = {
             let refresh = || {
                 let current = self.current_time.current_unix_seconds()?;
-                for ((purpose, _), capability) in requests.iter().zip(&capabilities) {
-                    owner
-                        .validate_for_effect_at(capability, *purpose, capability.scope(), current)
-                        .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-                }
-                for (purpose, capability) in &replay_capabilities {
-                    owner
-                        .validate_for_effect_at(capability, *purpose, capability.scope(), current)
-                        .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-                }
-                Ok(current)
+                authority_session::validate_current(&owner, requests, &view, current)
             };
-            action(&owner, &capabilities, now, session_validator, &refresh)
+            action(
+                &owner,
+                &view.capabilities,
+                now,
+                view.validator.clone(),
+                &refresh,
+            )
         };
         let final_current = self.current_time.current_unix_seconds()?;
-        for ((purpose, _), capability) in requests.iter().zip(&capabilities) {
-            owner
-                .validate_for_effect_at(capability, *purpose, capability.scope(), final_current)
-                .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-        }
-        for (purpose, capability) in replay_capabilities {
-            owner
-                .validate_for_effect_at(&capability, purpose, capability.scope(), final_current)
-                .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-        }
+        authority_session::validate_current(&owner, requests, &view, final_current)?;
         result
     }
 }
@@ -1016,6 +969,10 @@ pub struct PreparedCacheResidencyTransactionV1 {
     inner: PreparedDomainTransactionV1<CacheResidencyProtectedJournalSchemaV1>,
 }
 
+/// Wraps the shared strict failure without exposing underlying domain tokens.
+pub(crate) type CacheRetainedCommitFailureV1 =
+    RetainedCommitFailureV1<PreparedCacheResidencyTransactionV1, CacheResidencyOutcomeUnknownV1>;
+
 /// Retains an exact cache transaction whose durable outcome is unknown.
 #[must_use = "an ambiguous cache commit must be resolved after protected reopen"]
 pub struct CacheResidencyOutcomeUnknownV1 {
@@ -1169,13 +1126,53 @@ impl<'journal> CacheResidencyProtectedJournalV1<'journal> {
         kind: CacheResidencyTransactionKindV1,
         successors: Vec<CacheResidencyProtectedJournalEnvelopeV1>,
     ) -> Result<PreparedCacheResidencyTransactionV1, CacheResidencyProtectedJournalErrorV1> {
+        self.plan_with_cache_gate(
+            transaction_id,
+            kind,
+            successors,
+            CacheMutationGateV1::Ordinary,
+        )
+    }
+
+    /// Plans existing Cache transitions against the same retained gate.
+    ///
+    /// # Errors
+    /// Returns ordinary history/CAS errors or protected retained-gate refusal.
+    pub(crate) fn plan_with_retained_cache_gate_v1(
+        &self,
+        transaction_id: [u8; 16],
+        kind: CacheResidencyTransactionKindV1,
+        successors: Vec<CacheResidencyProtectedJournalEnvelopeV1>,
+        gate: &mut HeldCacheMutationGateV1,
+    ) -> Result<PreparedCacheResidencyTransactionV1, CacheResidencyProtectedJournalErrorV1> {
+        self.plan_with_cache_gate(
+            transaction_id,
+            kind,
+            successors,
+            CacheMutationGateV1::Retained(gate),
+        )
+    }
+
+    fn plan_with_cache_gate(
+        &self,
+        transaction_id: [u8; 16],
+        kind: CacheResidencyTransactionKindV1,
+        successors: Vec<CacheResidencyProtectedJournalEnvelopeV1>,
+        gate: CacheMutationGateV1<'_>,
+    ) -> Result<PreparedCacheResidencyTransactionV1, CacheResidencyProtectedJournalErrorV1> {
         let projection = self.replay()?;
         validate_cache_transition(kind, &successors, &self.validator)?;
         validate_cache_history(
             projection.records().iter().chain(successors.iter()),
             &self.validator,
         )?;
-        let inner = self.inner.plan(transaction_id, successors)?;
+        let inner = match gate {
+            CacheMutationGateV1::Ordinary => self.inner.plan(transaction_id, successors)?,
+            CacheMutationGateV1::Retained(gate) => {
+                self.inner
+                    .plan_with_retained_cache_gate_v1(transaction_id, successors, gate)?
+            }
+        };
         Ok(PreparedCacheResidencyTransactionV1 { kind, inner })
     }
 
@@ -1192,29 +1189,84 @@ impl<'journal> CacheResidencyProtectedJournalV1<'journal> {
         self.replay()?;
         let kind = prepared.kind;
         let outcome = self.inner.commit(prepared.inner)?;
-        match outcome {
-            DomainCommitOutcomeV1::Applied(inner) => {
-                if let Err(cause) = self.replay() {
-                    return Ok(CacheResidencyCommitOutcomeV1::ValidationUnknown {
-                        pending: CacheResidencyOutcomeUnknownV1 {
-                            kind,
-                            inner: CacheResidencyOutcomeUnknownStateV1::PostcommitValidation(inner),
-                        },
-                        cause,
-                    });
-                }
-                Ok(CacheResidencyCommitOutcomeV1::Applied(
-                    AppliedCacheResidencyTransactionV1 { kind, inner },
-                ))
-            }
-            DomainCommitOutcomeV1::OutcomeUnknown { pending, cause } => {
-                Ok(CacheResidencyCommitOutcomeV1::OutcomeUnknown {
+        Ok(self.wrap_commit_outcome(kind, outcome))
+    }
+
+    /// Returns every failure to the still-held owner, never as retry permission.
+    ///
+    /// # Errors
+    /// Keeps exact Prepared or Pending with the typed original failure cause.
+    pub(crate) fn commit_strict_with_retained_cache_gate_v1(
+        &mut self,
+        prepared: PreparedCacheResidencyTransactionV1,
+        gate: &mut HeldCacheMutationGateV1,
+    ) -> Result<CacheResidencyCommitOutcomeV1, CacheRetainedCommitFailureV1> {
+        if let Err(cause) = self.replay() {
+            return Err(RetainedCommitFailureV1::BeforeJournalAppend { prepared, cause });
+        }
+        let kind = prepared.kind;
+        match self
+            .inner
+            .commit_strict_with_retained_cache_gate_v1(prepared.inner, gate)
+        {
+            Ok(outcome) => Ok(self.wrap_commit_outcome(kind, outcome)),
+            Err(RetainedCommitFailureV1::BeforeJournalAppend {
+                prepared: inner,
+                cause,
+            }) => Err(RetainedCommitFailureV1::BeforeJournalAppend {
+                prepared: PreparedCacheResidencyTransactionV1 { kind, inner },
+                cause,
+            }),
+            Err(RetainedCommitFailureV1::AfterAppendReadback { pending, cause }) => {
+                Err(RetainedCommitFailureV1::AfterAppendReadback {
                     pending: CacheResidencyOutcomeUnknownV1 {
                         kind,
                         inner: CacheResidencyOutcomeUnknownStateV1::Commit(pending),
                     },
                     cause,
                 })
+            }
+            Err(RetainedCommitFailureV1::AfterAppendSealing { pending, cause }) => {
+                Err(RetainedCommitFailureV1::AfterAppendSealing {
+                    pending: CacheResidencyOutcomeUnknownV1 {
+                        kind,
+                        inner: CacheResidencyOutcomeUnknownStateV1::Commit(pending),
+                    },
+                    cause,
+                })
+            }
+        }
+    }
+
+    fn wrap_commit_outcome(
+        &self,
+        kind: CacheResidencyTransactionKindV1,
+        outcome: DomainCommitOutcomeV1<CacheResidencyProtectedJournalSchemaV1>,
+    ) -> CacheResidencyCommitOutcomeV1 {
+        match outcome {
+            DomainCommitOutcomeV1::Applied(inner) => {
+                if let Err(cause) = self.replay() {
+                    return CacheResidencyCommitOutcomeV1::ValidationUnknown {
+                        pending: CacheResidencyOutcomeUnknownV1 {
+                            kind,
+                            inner: CacheResidencyOutcomeUnknownStateV1::PostcommitValidation(inner),
+                        },
+                        cause,
+                    };
+                }
+                CacheResidencyCommitOutcomeV1::Applied(AppliedCacheResidencyTransactionV1 {
+                    kind,
+                    inner,
+                })
+            }
+            DomainCommitOutcomeV1::OutcomeUnknown { pending, cause } => {
+                CacheResidencyCommitOutcomeV1::OutcomeUnknown {
+                    pending: CacheResidencyOutcomeUnknownV1 {
+                        kind,
+                        inner: CacheResidencyOutcomeUnknownStateV1::Commit(pending),
+                    },
+                    cause,
+                }
             }
         }
     }

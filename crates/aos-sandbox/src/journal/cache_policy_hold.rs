@@ -34,6 +34,9 @@ use super::{
     ReadOnlyProtectedJournal, RecordNamespace,
 };
 
+mod retained;
+pub(crate) use retained::{CacheMutationGateV1, HeldCacheMutationGateV1};
+
 pub(crate) const NAME: &str = "policy-hold.journal";
 const GENESIS_KEY: &[u8] = b"\0aos-cache-policy-hold-genesis-v1\0";
 const HOLD_KEY: &[u8] = b"\0aos-cache-policy-hold-v1\0";
@@ -163,7 +166,7 @@ impl CachePolicyV8PendingSettlementV1 {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 struct CachePolicyHoldStateV1 {
     hold: Option<CachePolicyHoldV1>,
     v8_pending: Option<CachePolicyV8PendingSettlementV1>,
@@ -1047,6 +1050,28 @@ mod tests {
                 .expect("released record")
                 .is_held()
         );
+    }
+
+    #[test]
+    fn retained_admission_denies_active_and_v8_pending_without_changing_ordinary_mutation() {
+        let (directory, uid) = fixture();
+        initialize_fresh(directory.path(), uid).unwrap();
+        let mut state = open_gated(directory.path(), uid, "state.journal");
+        let authority = open_gated(directory.path(), uid, "authority.journal");
+        let mut gate = open(directory.path(), uid).unwrap();
+        gate.acquire_cache_policy_hold_for_writer(hold()).unwrap();
+        drop(gate);
+        assert!(Journal::retain_cache_read_mutation_gate_v1(&state, &authority).is_err());
+        assert!(state.commit(&put(81)).is_err());
+
+        let mut gate = open(directory.path(), uid).unwrap();
+        gate.release_v8_held_cache_policy_hold_for_writer(hold())
+            .unwrap();
+        drop(gate);
+        assert!(Journal::retain_cache_read_mutation_gate_v1(&state, &authority).is_err());
+        state
+            .commit(&put(82))
+            .expect("ordinary released+pending mutation remains allowed");
     }
 
     #[test]
