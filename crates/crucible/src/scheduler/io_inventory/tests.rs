@@ -13,7 +13,7 @@ use crucible_device::{
     ResponseStatus,
 };
 
-fn ok<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
+pub(in crate::scheduler) fn ok<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
     result.unwrap_or_else(|error| panic!("physical inventory fixture: {error:?}"))
 }
 
@@ -23,7 +23,7 @@ fn id(name: &str) -> NodeId {
     }
 }
 
-struct Echo;
+pub(in crate::scheduler) struct Echo;
 
 impl IoSubNode for Echo {
     type Latency = AffineLatency;
@@ -49,7 +49,7 @@ impl IoSubNode for Echo {
     }
 }
 
-fn fixture() -> (
+pub(in crate::scheduler) fn fixture() -> (
     SingleScheduler,
     IoCore,
     crucible_device::block::BlockFaultState,
@@ -142,7 +142,7 @@ fn fixture_at(
     )
 }
 
-fn observation(
+pub(in crate::scheduler) fn observation(
     scheduler: &SingleScheduler,
     queue: &IoCore,
     pipeline: &crucible_device::block::BlockFaultState,
