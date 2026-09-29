@@ -880,3 +880,37 @@ clock-policy qualification remain pending. The conservative authority-wide
 sequence floor can cause one cohort to force another's early renewal at a touched
 key; scalable cache amortization is unqualified. The current full fleet capture
 predates these files and is not their qualification evidence.
+
+
+## Read-only snapshot source audit
+
+The source audit passes **33 tests, zero failures, 18.10 seconds**: sixteen
+existing reader cases, nine audit cases and eight compiled-CHECK cases. It keeps
+the original read transaction pinned through integrity checks, all **634**
+production CHECK expressions, declared foreign keys and exact table counts.
+Cancellation consumes the reader and signals actual SQLite VM interruption;
+a regression test aborts the public future during a real progress callback and
+then reacquires an exclusive source lock. Success removes that callback before
+returning the same usable reader. Database/WAL bytes remain unchanged in the
+source tests. Errors reduce diagnostics to booleans and omit private row values.
+
+SQLite intentionally discards CHECK expression trees when it parses a read-only
+schema. Integrity PRAGMA alone accepted a deliberately invalid production row.
+The audit therefore evaluates exact expressions from the independently compiled
+production catalogue after full source-schema equality validation. Newline-wrapped
+NOT predicates preserve CHECK's NULL-pass behavior and collation. The corpus
+includes whitespace-separated CHECK declarations and rejects malformed envelopes
+and excessive expression/catalogue bounds before copying.
+
+Frozen qualification is `/tmp/hub-snapshot-source-audit-qualification.json`
+(`4e2dcdbc192a6967374efb8906a711dd6451117e1be8c2f21cba191f2b8e563f`);
+independent acceptance is `/tmp/hub-snapshot-source-audit-independent-final.json`
+(`cc20f715b3400f7c320fb23e51208127f92c4ae2940efcecf608a6d1faddee0b`).
+Integration verified all five files, nine prerequisites, source bases, actual
+terminal logs and the exact patch. Historical failed probes remain retained.
+
+The progress budget bounds approximate SQLite VM work and elapsed observations,
+not physical I/O or a hard wall-clock deadline. Source integrity and declared
+constraints do not establish artifact authenticity, independent archive FK proof,
+application/object closure or activation. The current full fleet predates this
+source-audit increment and is not its qualification evidence.

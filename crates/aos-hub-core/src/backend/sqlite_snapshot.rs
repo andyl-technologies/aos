@@ -12,15 +12,26 @@
 //! coordinate through existing WAL shared memory; `immutable` mode is avoided
 //! because it would ignore concurrent WAL changes and invalidate consistency.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow};
 use sqlx::{Row as _, Sqlite, SqliteConnection, SqlitePool, Transaction, TypeInfo, ValueRef};
 
 use crate::db::{Database, MIGRATIONS, SCHEMA_IDENTITY};
 use crate::value::{Row, Value};
+
+#[path = "sqlite_snapshot/source_audit.rs"]
+mod source_audit;
+
+#[path = "sqlite_snapshot/compiled_checks.rs"]
+mod compiled_checks;
+
+pub use source_audit::{
+    SqliteSnapshotAuditLimits, SqliteSnapshotSourceAudit, SqliteSnapshotTableCount,
+};
 
 const MAX_PAGE_ROWS: usize = 256;
 const MAX_CELL_BYTES: usize = 1024 * 1024;
@@ -109,6 +120,11 @@ pub struct SqliteSnapshotReader {
     transaction: Transaction<'static, Sqlite>,
     pool: SqlitePool,
     schema: SqliteSnapshotSchema,
+    compiled_checks: BTreeMap<String, Vec<String>>,
+    #[cfg(test)]
+    audit_progress_started: Option<tokio::sync::oneshot::Sender<()>>,
+    #[cfg(test)]
+    audit_pause_at_progress: bool,
 }
 
 impl SqliteSnapshotReader {
@@ -150,6 +166,7 @@ impl SqliteSnapshotReader {
             actual_objects == expected_objects,
             "snapshot source schema differs from the compiled production migrations"
         );
+        let compiled_checks = compiled_checks::extract_compiled_checks(&expected_objects)?;
         let schema = SqliteSnapshotSchema {
             identity: SCHEMA_IDENTITY.to_string(),
             version: MIGRATIONS.len(),
@@ -163,6 +180,11 @@ impl SqliteSnapshotReader {
             transaction,
             pool,
             schema,
+            compiled_checks,
+            #[cfg(test)]
+            audit_progress_started: None,
+            #[cfg(test)]
+            audit_pause_at_progress: false,
         })
     }
 
