@@ -216,7 +216,7 @@ pub fn validate_commit(
             domains: change.reference_domains.iter(),
             graft: change.graft_properties,
         };
-        validate_changed_entry(change.entry, change.properties, derived, &mut context, 0)?;
+        validate_changed_entry(change.entry, change.properties, derived, &mut context)?;
         if context.domains.next().is_some() {
             return Err(Error::InvalidValue);
         }
@@ -295,7 +295,7 @@ pub fn validate_commit_with_context(
     context: &mut impl CommitContext,
 ) -> Result<(), Error> {
     for (entry, properties) in changes {
-        validate_changed_entry(entry, properties, derived, context, 0)?;
+        validate_changed_entry(entry, properties, derived, context)?;
     }
     Ok(())
 }
@@ -305,55 +305,57 @@ fn validate_changed_entry(
     properties: &EffectiveProperties<'_>,
     derived: &[DerivedAttribute<'_>],
     context: &mut impl CommitContext,
-    depth: usize,
 ) -> Result<(), Error> {
-    if depth > 1 {
-        return Err(Error::InvalidValue);
-    }
-    validate_entry(entry, properties, derived)?;
-    let domain = properties.domain()?;
-    match &entry.kind {
-        EntryKind::File {
-            content: ContentRef::Inline(identity) | ContentRef::Manifest(identity),
-            ..
-        } => {
-            if !domain.permits_reference(context.reference_domain(*identity)?) {
-                return Err(Error::Domain);
-            }
-        }
-        EntryKind::Tree { root, props } => {
-            if let Some(props) = props {
-                super::validate_preserved_map(props, context.later_registered_properties())?;
-            }
-            if !domain.permits_reference(context.reference_domain(*root)?) {
-                return Err(Error::Domain);
-            }
-            let target = context.graft_policy(entry, properties)?;
-            super::validate_boundary_transition(
-                properties,
-                target,
-                context.ancestor_admin(properties),
-            )?;
-        }
-        EntryKind::Index { targets } => {
-            for identity in targets {
+    let mut pending = alloc::vec![entry];
+    while let Some(entry) = pending.pop() {
+        validate_entry(entry, properties, derived)?;
+        let domain = properties.domain()?;
+        match &entry.kind {
+            EntryKind::File {
+                content: ContentRef::Inline(identity) | ContentRef::Manifest(identity),
+                ..
+            } => {
                 if !domain.permits_reference(context.reference_domain(*identity)?) {
                     return Err(Error::Domain);
                 }
             }
+            EntryKind::Tree { root, props } => {
+                if let Some(props) = props {
+                    super::validate_preserved_map(props, context.later_registered_properties())?;
+                }
+                if !domain.permits_reference(context.reference_domain(*root)?) {
+                    return Err(Error::Domain);
+                }
+                let target = context.graft_policy(entry, properties)?;
+                super::validate_boundary_transition(
+                    properties,
+                    target,
+                    context.ancestor_admin(properties),
+                )?;
+            }
+            EntryKind::Index { targets } => {
+                for identity in targets {
+                    if !domain.permits_reference(context.reference_domain(*identity)?) {
+                        return Err(Error::Domain);
+                    }
+                }
+            }
+            EntryKind::Conflict { candidates, base } => {
+                if candidates.len() < 2
+                    || candidates
+                        .iter()
+                        .any(|candidate| matches!(candidate.kind, EntryKind::Conflict { .. }))
+                {
+                    return Err(Error::InvalidValue);
+                }
+                // Bases are full entries; only direct conflict candidates are forbidden.
+                if let Some(Some(base)) = base {
+                    pending.push(base);
+                }
+                pending.extend(candidates.iter().rev());
+            }
+            _ => {}
         }
-        EntryKind::Conflict { candidates, base } => {
-            if depth != 0 || candidates.len() < 2 {
-                return Err(Error::InvalidValue);
-            }
-            for candidate in candidates {
-                validate_changed_entry(candidate, properties, derived, context, depth + 1)?;
-            }
-            if let Some(Some(base)) = base {
-                validate_changed_entry(base, properties, derived, context, depth + 1)?;
-            }
-        }
-        _ => {}
     }
     Ok(())
 }

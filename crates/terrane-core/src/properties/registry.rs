@@ -374,9 +374,13 @@ fn selector(decoder: &mut Decoder<'_>) -> Result<(), Error> {
             return Err(Error::InvalidValue);
         }
         match atom {
-            "issuer" | "subject" | "group" | "source" | "signed-by-key" => {
-                nonempty(decoder.text(65536)?)?
-            }
+            "issuer" | "subject" | "group" | "signed-by-key" => nonempty(decoder.text(65536)?)?,
+            "source" => choice(
+                decoder.text(65536)?,
+                &[
+                    "built", "uploaded", "imported", "merged", "derived", "migrated",
+                ],
+            )?,
             "kind" => choice(decoder.text(65536)?, &["human", "workload", "service"])?,
             "preset" => choice(decoder.text(65536)?, PRESETS)?,
             "not" | "accepted-by" => {

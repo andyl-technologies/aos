@@ -763,6 +763,44 @@ fn domain_reference_conflict_candidates_checked_individually() {
         xattrs_present: false,
         provenance: None,
     };
+    let nested_base = Entry {
+        kind: EntryKind::Conflict {
+            candidates: vec![file(), file()],
+            base: Some(Some(alloc::boxed::Box::new(conflict.clone()))),
+        },
+        ..conflict.clone()
+    };
+    validate_commit(
+        &[EntryChange {
+            entry: &nested_base,
+            properties: &policy,
+            reference_domains: &[Domain::Public; 4],
+            graft_properties: None,
+        }],
+        &[],
+    )
+    .expect("conflict bases are full entries");
+
+    let invalid_candidate = Entry {
+        kind: EntryKind::Conflict {
+            candidates: vec![conflict.clone(), file()],
+            base: None,
+        },
+        ..conflict.clone()
+    };
+    assert_eq!(
+        validate_commit(
+            &[EntryChange {
+                entry: &invalid_candidate,
+                properties: &policy,
+                reference_domains: &[Domain::Public; 3],
+                graft_properties: None,
+            }],
+            &[]
+        ),
+        Err(Error::InvalidValue)
+    );
+
     let sources = [Domain::Public, Domain::Public];
     let change = EntryChange {
         entry: &conflict,

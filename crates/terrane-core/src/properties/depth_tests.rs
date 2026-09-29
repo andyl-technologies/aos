@@ -81,3 +81,20 @@ fn resolution_rejects_truncated_nesting_and_noncanonical_maps() {
         Err(Error::InvalidValue)
     );
 }
+
+#[test]
+fn resolution_source_selector_uses_closed_commit_sources() {
+    for source in [
+        "built", "uploaded", "imported", "merged", "derived", "migrated", "unknown",
+    ] {
+        let mut encoded = Vec::new();
+        cbor::write_array(&mut encoded, 2);
+        cbor::write_text(&mut encoded, "source");
+        cbor::write_text(&mut encoded, source);
+        let result = validate_property(&Property {
+            name: "trust",
+            value: &encoded,
+        });
+        assert_eq!(result.is_ok(), source != "unknown");
+    }
+}
