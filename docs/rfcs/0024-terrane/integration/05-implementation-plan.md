@@ -99,14 +99,14 @@ Exit gates: `checks.terrane.gates.crate-graph`,
 `checks.terrane.gates.core-no-std`, `checks.terrane.package` building an
 empty `terrane` binary.
 
-- [ ] **T-PKG-1** Add `terrane-core` to the workspace with `#![no_std]`,
+- [x] **T-PKG-1** Add `terrane-core` to the workspace with `#![no_std]`,
   workspace lints, and the AOS Rust documentation standard. — satisfies
   PKG-1, PKG-2, CRATE-1, CRATE-30, CRATE-34 to CRATE-36;
   `checks.terrane.gates.crate-graph`.
 - [ ] **T-PKG-2** `pkgs/tools/terrane.nix`, workspace vendor hashes,
   nextest in the `aos` package check phase, `aos-dev` targets. — satisfies
   PKG-3 to PKG-5, PKG-11; `checks.terrane.package`.
-- [ ] **T-CRATE-2** The `terrane`, `terrane-fs`, and `terrane-cli` crates as
+- [x] **T-CRATE-2** The `terrane`, `terrane-fs`, and `terrane-cli` crates as
   workspace members with the dependency direction rules enforced, the
   `terrane` binary with role selection and configuration loading, and the
   gate harness that maps `gate:` names to `checks.terrane.gates.*`. —
