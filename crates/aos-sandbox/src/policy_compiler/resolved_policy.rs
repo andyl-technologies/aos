@@ -68,6 +68,26 @@ impl PolicyStateLocationV1 {
 }
 
 impl PolicyCompilerStateReadbackOwnerV1 {
+    /// Opens the fixed existing Policy writer without creating or repairing it.
+    ///
+    /// This is the PRE-ROOT transport's opener. Missing state, an incomplete
+    /// append or pending compaction cannot be converted into a fresh state.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing, unsafe, unhealthy or already-held journal/lock names.
+    pub fn open_existing_fixed_protected() -> Result<Self, PolicyCompilerJournalErrorV1> {
+        let (journal, _) = Journal::open_existing_protected_at_for_uid(
+            Path::new(PROTECTED_POLICY_ROOT),
+            POLICY_STATE_JOURNAL,
+            policy_state_journal_limits(),
+            0,
+        )?;
+        let location = PolicyStateLocationV1::default();
+        location.recheck(&journal)?;
+        Ok(Self { journal, location })
+    }
+
     /// Opens only the existing fixed protected Policy state journal.
     ///
     /// This opener belongs to the existing privileged Policy owner. The

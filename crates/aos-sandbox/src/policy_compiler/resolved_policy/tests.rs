@@ -246,3 +246,56 @@ fn held_policy_claim_refuses_changed_state_names_before_and_after_callback() {
         assert_eq!(owner.journal.snapshot_sequence(), sequence);
     }
 }
+
+#[test]
+fn existing_only_state_open_never_creates_repairs_or_replaces_the_writer() {
+    fn existing(
+        root: &Path,
+    ) -> Result<PolicyCompilerStateReadbackOwnerV1, PolicyCompilerJournalErrorV1> {
+        // The existing fixture route shares the final-name/replay core but
+        // omits production root ancestry; this is not installed qualification.
+        let journal = Journal::open_existing_protected_at_uid(
+            root,
+            POLICY_STATE_JOURNAL,
+            policy_state_journal_limits(),
+            fs::metadata(root).unwrap().uid(),
+        )?
+        .0;
+        Ok(PolicyCompilerStateReadbackOwnerV1 {
+            journal,
+            location: PolicyStateLocationV1 {
+                fixture_root: Some(root.to_owned()),
+            },
+        })
+    }
+    let root = tempfile::tempdir().unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(existing(root.path()).is_err());
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    let mut initial = open(root.path());
+    let publication = fixture::compiled_publication();
+    fixture::commit(&mut initial.journal, &publication);
+    assert!(existing(root.path()).is_err());
+    drop(initial);
+    let original_bytes = fs::read(root.path().join(POLICY_STATE_JOURNAL)).unwrap();
+    let mut owner = existing(root.path()).unwrap();
+    owner
+        .with_current_policy_claim(publication.project, publication.sandbox, |claim| {
+            assert_eq!(claim.candidate_bytes(), publication.body);
+            assert!(existing(root.path()).is_err());
+        })
+        .unwrap();
+    drop(owner);
+    assert_eq!(
+        fs::read(root.path().join(POLICY_STATE_JOURNAL)).unwrap(),
+        original_bytes
+    );
+    let mut torn = original_bytes.clone();
+    torn.push(0x7f);
+    fs::write(root.path().join(POLICY_STATE_JOURNAL), &torn).unwrap();
+    assert!(existing(root.path()).is_err());
+    assert_eq!(
+        fs::read(root.path().join(POLICY_STATE_JOURNAL)).unwrap(),
+        torn
+    );
+}

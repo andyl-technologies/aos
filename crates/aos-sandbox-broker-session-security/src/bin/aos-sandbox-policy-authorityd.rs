@@ -214,6 +214,7 @@ enum HeadRequestMode {
     Query,
     Lease,
     SourceGenesis,
+    ConsumerReadPreRoot,
     ClosedBinding,
     QualifiedClosedBinding,
     ClosedBindingReplay,
@@ -742,7 +743,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let listener = bind_policy_socket(Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2))?;
 
     for accepted in listener.incoming() {
-        let mut stream = match accepted {
+        let stream = match accepted {
             Ok(stream) => stream,
             Err(error) => return Err(error.into()),
         };
@@ -750,7 +751,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             owner.recheck()?;
         }
         if let Err(error) = serve_current_head(
-            &mut stream,
+            stream,
             startup.as_ref(),
             controller_uid,
             controller_gid,
@@ -1152,6 +1153,19 @@ fn read_head_request(
 ) -> Result<([u8; REQUEST_BYTES], HeadRequestMode), Box<dyn Error>> {
     let mut request = [0_u8; REQUEST_BYTES];
     stream.read_exact(&mut request)?;
+    if &request[..8]
+        == aos_sandbox::policy_compiler::consumer_read_flight::CONSUMER_READ_BOOTSTRAP_MAGIC_V1
+    {
+        if request[8..24] == [0; 16] || request[24..32] == [0; 8] {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidData, "invalid PRE-ROOT bootstrap").into(),
+            );
+        }
+        // Inert discrimination only. The mandatory normal startup check is
+        // separate, in the owned dispatcher; only this per-flight Root gate
+        // is deferred. Recovery permission sets are intentionally unchanged.
+        return Ok((request, HeadRequestMode::ConsumerReadPreRoot));
+    }
     let mode = match request.get(..8) {
         Some(magic) if magic == POLICY_HEAD_QUERY_MAGIC_V2 => HeadRequestMode::Query,
         Some(magic) if magic == POLICY_HEAD_LEASE_QUERY_MAGIC_V3 => HeadRequestMode::Lease,
@@ -1352,8 +1366,19 @@ fn require_controller_peer(
     Ok(())
 }
 
+fn require_pre_root_startup(
+    startup: Option<&aos_sandbox::normal_root::ProductionNormalRootStartupV1>,
+) -> io::Result<&aos_sandbox::normal_root::ProductionNormalRootStartupV1> {
+    startup.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "PRE-ROOT requires actual normal startup",
+        )
+    })
+}
+
 fn serve_current_head(
-    stream: &mut std::os::unix::net::UnixStream,
+    mut original: std::os::unix::net::UnixStream,
     startup: Option<
         &aos_sandbox_broker_session_security::production_normal_root::ProductionNormalRootStartupV1,
     >,
@@ -1373,6 +1398,7 @@ fn serve_current_head(
     source_pin: Option<&[u8]>,
     controller_hold_pin: Option<&[u8]>,
 ) -> Result<(), Box<dyn Error>> {
+    let stream = &mut original;
     require_controller_peer(stream, controller_uid, controller_gid)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -1384,6 +1410,13 @@ fn serve_current_head(
         require_no_fixed_closed_policy_binding_hold_v1()?;
         Ok(())
     })?;
+    if matches!(mode, HeadRequestMode::ConsumerReadPreRoot) {
+        let owner = require_pre_root_startup(startup)?;
+        // The accepted descriptor is moved exactly once. All old modes keep
+        // borrowing this same stream; no clone or competing reader is made.
+        return aos_sandbox::policy_compiler::consumer_read_flight::serve_consumer_read_policy_state_v1(
+            original.into(), owner, request).map_err(Into::into);
+    }
     if matches!(mode, HeadRequestMode::SourceGenesis) {
         // The Source signer process UID is separate from the physical Source
         // journal owner. The latter is explicitly configured as Controller's
@@ -3869,6 +3902,7 @@ fn select_project_source<'a>(
             )
         }),
         HeadRequestMode::SourceGenesis
+        | HeadRequestMode::ConsumerReadPreRoot
         | HeadRequestMode::ClosedBindingReplay
         | HeadRequestMode::RootEffectAck
         | HeadRequestMode::RootEffectAckReplay
@@ -3905,6 +3939,45 @@ mod tests {
     use std::os::unix::net::UnixStream;
 
     use super::*;
+
+    #[test]
+    fn pre_root_alone_defers_root_gate_but_cannot_use_legacy_or_recovery() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        let mut request = [0; REQUEST_BYTES];
+        request[..8].copy_from_slice(
+            aos_sandbox::policy_compiler::consumer_read_flight::CONSUMER_READ_BOOTSTRAP_MAGIC_V1,
+        );
+        request[8..24].fill(1);
+        request[24..].copy_from_slice(&100_u64.to_be_bytes());
+        client.write_all(&request).unwrap();
+        let gates = Cell::new(0);
+        let (actual, mode) = read_head_request(&mut server, || {
+            gates.set(gates.get() + 1);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(actual, request);
+        assert!(matches!(mode, HeadRequestMode::ConsumerReadPreRoot));
+        assert_eq!(gates.get(), 0);
+        assert!(require_pre_root_startup(None).is_err());
+        assert!(!project_recovery_mode_allowed(mode));
+        assert!(select_project_source(mode, None, None).is_err());
+        for offset in [8, 24] {
+            let (mut client, mut server) = UnixStream::pair().unwrap();
+            let mut malformed = request;
+            malformed[offset..if offset == 8 { 24 } else { 32 }].fill(0);
+            client.write_all(&malformed).unwrap();
+            assert!(
+                read_head_request(&mut server, || panic!(
+                    "malformed bootstrap must not open Root"
+                ))
+                .is_err()
+            );
+        }
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        client.write_all(&request).unwrap();
+        assert!(read_cache_signer_recovery_header(&mut server).is_err());
+    }
 
     #[test]
     fn genesis_query_is_nonce_bound_and_requires_root_custody_gate() {

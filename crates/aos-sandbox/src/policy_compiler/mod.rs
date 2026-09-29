@@ -65,6 +65,8 @@ mod public_create_source;
 pub(crate) use public_create_source::{
     HistoricalCreateProjectSourceHeadsV1, create_project_source_commitment_v1,
 };
+#[cfg(target_os = "linux")]
+pub mod consumer_read_flight;
 mod publisher_origin;
 mod resolved_policy;
 mod resource_read;

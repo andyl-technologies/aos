@@ -301,6 +301,40 @@ fn load(journal: &Journal) -> Result<Vec<Record>, ConsumerResourceErrorV1> {
     Ok(result)
 }
 
+pub(super) fn require_retained_prepared(
+    journal: &Journal,
+    request: ConsumerReadRequestDataV1,
+    source: &ResourceSource,
+) -> Result<(), ConsumerResourceErrorV1> {
+    let record = load(journal)?
+        .into_iter()
+        .find(|record| record.request.request_id == request.request_id)
+        .ok_or(ConsumerResourceErrorV1::Changed)?;
+    require_prepared_record(journal, &record, request, source)
+}
+
+fn require_prepared_record(
+    journal: &Journal,
+    record: &Record,
+    request: ConsumerReadRequestDataV1,
+    source: &ResourceSource,
+) -> Result<(), ConsumerResourceErrorV1> {
+    if record.phase != ConsumerResourceAttemptPhaseV1::ResourcePrepared
+        || record.request != request
+        || &record.source != source
+    {
+        return Err(ConsumerResourceErrorV1::Changed);
+    }
+    let capacity = journal.recover_global_capacity_reservation_v1(record.reservation)?;
+    if !capacity.matches_request(
+        &capacity_request(request, source, capacity.request().terminal_bytes),
+        transaction_id(1, request),
+    ) {
+        return Err(ConsumerResourceErrorV1::Changed);
+    }
+    Ok(())
+}
+
 pub(super) fn prepare(
     journal: &mut Journal,
     request: ConsumerReadRequestDataV1,
@@ -331,19 +365,7 @@ pub(super) fn prepare(
         .iter()
         .find(|record| record.request.request_id == request.request_id)
     {
-        if existing.phase != ConsumerResourceAttemptPhaseV1::ResourcePrepared
-            || existing.request != request
-            || &existing.source != source
-        {
-            return Err(ConsumerResourceErrorV1::Changed);
-        }
-        let capacity = journal.recover_global_capacity_reservation_v1(existing.reservation)?;
-        if !capacity.matches_request(
-            &capacity_request(request, source, capacity.request().terminal_bytes),
-            transaction_id(1, request),
-        ) {
-            return Err(ConsumerResourceErrorV1::Changed);
-        }
+        require_prepared_record(journal, existing, request, source)?;
         return Ok(Prepared::Replay(DurableConsumerResourceAttemptV1 {
             record: existing.clone(),
         }));
