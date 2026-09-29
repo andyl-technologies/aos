@@ -351,7 +351,7 @@ surfaces map them consistently
 | `denied` | A `guard` refused the operation. Carries no detail beyond the verb and pattern that failed. |
 | `unavailable(retry-after?)` | The backend is unreachable or a circuit breaker is open. |
 | `capacity` | A reservation or quota would be exceeded. |
-| `invalid` | Uploaded content failed validation. Carries the failing rule ID. |
+| `invalid` | A request is malformed, its range exceeds content bounds, or uploaded content failed validation. Carries the failing rule ID for an upload, or a `range` diagnostic for an out-of-bounds read. |
 | `unsupported` | The store lacks a required capability for this request. |
 
 - **[STORE-30]** A store MUST NOT return `ok` for an operation that did not

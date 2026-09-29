@@ -520,6 +520,26 @@ is added rather than editing history.
   - **Affects:** REF-9, OBJ-8, `reference/terrane-v1.cddl` §`profile-pair`,
     and the glossary.
 
+- **[D-28] Classify invalid read ranges within the closed store outcomes.**
+  - **Status:** Decided
+  - **Decision:** The store outcome `invalid` covers malformed requests and
+    out-of-bounds ranges as well as rejected uploads. An invalid upload
+    carries its failing rule ID; an out-of-bounds range carries a `range`
+    diagnostic. The existing wire mapping of a range beyond pack end to
+    `OUT_OF_RANGE` remains unchanged. Do not add another store outcome.
+  - **Rationale:** STORE-4 requires exact ranged reads and STORE-30 closes
+    the outcome set, but the original `invalid` description applied only
+    to uploads. An out-of-bounds range cannot truthfully be `ok`, `absent`,
+    or `unsupported`, while the wire error table already specifies its
+    result. The broader `invalid` meaning completes the store taxonomy
+    before the T1 trait freeze.
+  - **Alternatives considered:** Add a store `out-of-range` outcome
+    (rejected: expands the closed taxonomy); return `absent` (rejected:
+    the content exists); return `unsupported` (rejected: ranged reads are
+    supported, but the requested range is invalid).
+  - **Affects:** STORE-4, STORE-30, and `reference/errno-mapping.md`'s
+    range-beyond-pack-end mapping.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
