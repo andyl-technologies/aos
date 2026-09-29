@@ -200,7 +200,7 @@ impl RefName {
             }
             if component
                 .bytes()
-                .any(|byte| !(0x21..=0x7e).contains(&byte) || b"~^:?*[\\".contains(&byte))
+                .any(|byte| !(0x20..=0x7e).contains(&byte) || b"~^:?*[\\".contains(&byte))
             {
                 return Err(RefNameError::ForbiddenCharacter);
             }
@@ -706,6 +706,7 @@ mod tests {
             RefName::parse("refs/heads/A"),
             RefName::parse("refs/heads/a")
         );
+        assert!(RefName::parse("refs/heads/x y").is_ok());
 
         let branch = RefName::parse("refs/heads/tenant/main").unwrap();
         assert_eq!(branch.class().write_mode(), RefWriteMode::CompareAndSwap);
@@ -730,7 +731,6 @@ mod tests {
             "refs/heads//x",
             "refs/heads/x/",
             "refs/heads/a..b",
-            "refs/heads/x y",
             "refs/heads/x\n",
             "refs/heads/é",
             "refs/heads/~",
