@@ -80,8 +80,8 @@ impl core::fmt::Debug for FixedProviderAuthenticatedSourceRequestV1 {
 }
 
 impl FixedProviderAuthenticatedSourceRequestV1 {
-    pub(crate) fn into_signed(self) -> SignedSourceProviderRequestV1 {
-        self.signed
+    pub(crate) fn signed(&self) -> &SignedSourceProviderRequestV1 {
+        &self.signed
     }
 }
 

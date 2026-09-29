@@ -31,6 +31,10 @@ use crate::{
     ReleasePlanV1, ReopenIdentityV1, ReopenObservationV1, SourceProviderBackendV1,
 };
 
+#[cfg(test)]
+#[path = "backend_adapter/native_pending_tests.rs"]
+mod native_pending_tests;
+
 /// Reports an operational result from an authority-free backend transport.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum SourceProviderBackendTransportErrorV1 {
@@ -676,6 +680,53 @@ impl FixedProviderBackendRecoveryV1 {
     }
 }
 
+/// Matches scheduling DATA only; the ledger still authenticates live admission.
+fn matches_original_native_pending(
+    pending: &[FixedProviderBackendRecoveryV1],
+    signed: &SignedSourceProviderRequestV1,
+    priority_retry: Option<[u8; 32]>,
+    priority_rearm: Option<[u8; 32]>,
+) -> bool {
+    if priority_retry.is_some() || priority_rearm.is_some() || pending.len() != 1 {
+        return false;
+    }
+    let original = &pending[0];
+    if signed.method() != aos_sandbox_source_provider_protocol::SourceProviderMethod::Acquire
+        || !original.matches_signed_request(signed)
+        || !original.descriptor_roles.is_empty()
+        || original.quarantined
+        || original.fresh_request.is_some()
+        || original.fresh_request_in_flight
+        || original.successor_session_ready
+    {
+        return false;
+    }
+    let Ok(request) =
+        aos_sandbox_source_provider_protocol::decode_acquire_request(signed.subject())
+    else {
+        return false;
+    };
+    if request.acquisition_version()
+        != aos_sandbox_source_provider_protocol::ACQUIRE_SOURCE_REQUEST_VERSION_V3
+    {
+        return false;
+    }
+    let attempt = aos_sandbox_source_provider_protocol::source_provider_request_attempt_digest_v1(
+        signed.signer(),
+        signed.method(),
+        request.request_id(),
+    );
+    let Ok(effect) = crate::acquire::derive_acquire_effect_id(request.acquisition_id(), attempt)
+    else {
+        return false;
+    };
+    matches!(
+        &original.work,
+        ProviderRecoveryWorkV1::ObserveApplying { acquisition_id, effect_id }
+            if *acquisition_id == request.acquisition_id() && *effect_id == effect
+    )
+}
+
 pub(crate) fn rehydrate_backend_recovery(
     detached: &crate::state::DetachedProviderLedgerV1,
 ) -> Result<Vec<FixedProviderBackendRecoveryV1>, ProviderLedgerError> {
@@ -878,24 +929,31 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
     /// Admits one Acquire or Inventory packet received by the fixed live owner.
     ///
     /// The packet brand has no public constructor. Recovery and retry work
-    /// retain priority; this path never accepts caller-assembled request bytes.
+    /// retain priority except one exact same-original native no-dispatch replay;
+    /// that replay keeps the original pending owner and its markers intact.
+    /// This path never accepts caller-assembled request bytes.
     ///
     /// # Errors
     ///
-    /// Rejects pending recovery, stale carrier custody, failed reservation,
-    /// Storage inspection, or protected completion.
+    /// Rejects unrelated pending recovery, stale carrier custody, failed
+    /// reservation, Storage inspection, or protected completion.
     pub fn execute_authenticated_source_request(
         &mut self,
         request: crate::FixedProviderAuthenticatedSourceRequestV1,
     ) -> Result<FixedProviderBackendRequestOutcomeV1, ProviderLedgerError> {
-        if !self.owner.pending_backend_recovery.is_empty()
-            || self.owner.priority_mount_retry_digest.is_some()
+        if self.owner.priority_mount_retry_digest.is_some()
             || self.owner.priority_mount_retry_rearm_digest.is_some()
+            || (!self.owner.pending_backend_recovery.is_empty()
+                && !matches_original_native_pending(
+                    &self.owner.pending_backend_recovery,
+                    request.signed(),
+                    self.owner.priority_mount_retry_digest,
+                    self.owner.priority_mount_retry_rearm_digest,
+                ))
         {
             return Err(ProviderLedgerError::RuntimePoisoned);
         }
-        let signed = request.into_signed();
-        self.execute_request(&signed, &[])
+        self.execute_request_from_original_packet(&request)
     }
 
     /// Retries one cold selected-row reservation without a successor attempt.
@@ -1169,6 +1227,29 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
         signed_request: &SignedSourceProviderRequestV1,
         descriptor_roles: &[SourceProviderDescriptorRole],
     ) -> Result<FixedProviderBackendRequestOutcomeV1, ProviderLedgerError> {
+        self.execute_request_with_origin(signed_request, descriptor_roles, None)
+    }
+
+    fn execute_request_from_original_packet(
+        &mut self,
+        request: &crate::FixedProviderAuthenticatedSourceRequestV1,
+    ) -> Result<FixedProviderBackendRequestOutcomeV1, ProviderLedgerError> {
+        self.execute_request_with_origin(request.signed(), &[], Some(request))
+    }
+
+    fn execute_request_with_origin(
+        &mut self,
+        signed_request: &SignedSourceProviderRequestV1,
+        descriptor_roles: &[SourceProviderDescriptorRole],
+        original_packet: Option<&crate::FixedProviderAuthenticatedSourceRequestV1>,
+    ) -> Result<FixedProviderBackendRequestOutcomeV1, ProviderLedgerError> {
+        let retaining_original_native_pending = original_packet.is_some()
+            && matches_original_native_pending(
+                &self.owner.pending_backend_recovery,
+                signed_request,
+                self.owner.priority_mount_retry_digest,
+                self.owner.priority_mount_retry_rearm_digest,
+            );
         let verifier = self.owner.backend_verifier();
         let transport = &mut *self.transport;
         let current_catalog = self.current_catalog;
@@ -1177,12 +1258,17 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
             .with_ledger_and_hold_challenges(move |ledger, challenges| {
                 let mut backend =
                     FixedSourceProviderBackendV1::new(transport, Arc::clone(&verifier));
-                let disposition = ledger.verify_and_admit_request_with_catalog(
-                    signed_request,
-                    descriptor_roles,
-                    current_catalog,
-                )?;
-                execute_disposition(
+                let disposition = match original_packet {
+                    Some(packet) => {
+                        ledger.verify_and_admit_original_packet(packet, current_catalog)
+                    }
+                    None => ledger.verify_and_admit_request_with_catalog(
+                        signed_request,
+                        descriptor_roles,
+                        current_catalog,
+                    ),
+                }?;
+                let result = execute_disposition(
                     ledger,
                     challenges,
                     disposition,
@@ -1191,8 +1277,47 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
                     signed_request,
                     descriptor_roles,
                     current_catalog,
-                )
+                );
+                if result.is_err()
+                    && original_packet.is_some_and(|packet| {
+                        aos_sandbox_source_provider_protocol::decode_acquire_request(
+                            packet.signed().subject(),
+                        )
+                        .is_ok_and(|request| {
+                            crate::acquire::require_original_packet_profile(&request, Some(packet))
+                                .is_ok_and(|native| native)
+                        })
+                    })
+                {
+                    // Admission already retained the anchor before a possible
+                    // append. A failed typed readback cannot reopen this cut.
+                    ledger.poison_runtime();
+                }
+                result
             })?;
+        if retaining_original_native_pending {
+            let same = match &prepared {
+                PreparedFixedProviderBackendOutcomeV1::Recovery(recovery)
+                | PreparedFixedProviderBackendOutcomeV1::CachedRecovery { recovery, .. } => {
+                    recovery.work == self.owner.pending_backend_recovery[0].work
+                        && matches_original_native_pending(
+                            core::slice::from_ref(recovery),
+                            signed_request,
+                            None,
+                            None,
+                        )
+                }
+                _ => false,
+            };
+            if !same {
+                // Never replace or discard the original pending owner on an
+                // unexpected replay result; close the runtime around it.
+                return self.owner.with_ledger(|ledger| {
+                    ledger.poison_runtime();
+                    Err(ProviderLedgerError::Equivocation)
+                });
+            }
+        }
         match prepared {
             PreparedFixedProviderBackendOutcomeV1::Reply(reply) => {
                 Ok(FixedProviderBackendRequestOutcomeV1::Reply(reply))
@@ -1201,11 +1326,15 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
                 Ok(FixedProviderBackendRequestOutcomeV1::Released { reply, tombstone })
             }
             PreparedFixedProviderBackendOutcomeV1::Recovery(recovery) => {
-                self.retain_backend_recovery(recovery)?;
+                if !retaining_original_native_pending {
+                    self.retain_backend_recovery(recovery)?;
+                }
                 Ok(FixedProviderBackendRequestOutcomeV1::RecoveryPending)
             }
             PreparedFixedProviderBackendOutcomeV1::CachedRecovery { reply, recovery } => {
-                self.retain_backend_recovery(recovery)?;
+                if !retaining_original_native_pending {
+                    self.retain_backend_recovery(recovery)?;
+                }
                 Ok(FixedProviderBackendRequestOutcomeV1::CachedRecovery { reply })
             }
         }

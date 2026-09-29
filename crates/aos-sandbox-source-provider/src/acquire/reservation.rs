@@ -7,6 +7,7 @@ pub(crate) fn reserve_acquire(
     security_session: &mut CurrentProviderIngressSessionV1,
     current_request: aos_sandbox_source_provider_security::CurrentProviderRequestV1,
     current_catalog: Option<(&[u8], &[u8])>,
+    original_packet: Option<&crate::FixedProviderAuthenticatedSourceRequestV1>,
 ) -> Result<ProviderAdmissionDispositionV1, ProviderLedgerError> {
     let provider_execution_identity = current_request.provider_execution_identity();
     let verified = match current_request.verified() {
@@ -17,14 +18,32 @@ pub(crate) fn reserve_acquire(
     let existing_session = validate_projection(ledger, projection)?;
     validate_session_capacity(ledger, &existing_session, projection)?;
     let request = verified.request();
-    // Native V3 normalization is data only. Admission remains closed until
-    // the actual Provider owner rejoins every fresh catalog/current-row claim
-    // and the selected native tuple before any durable reservation or effect.
-    if request.acquisition_version()
-        == aos_sandbox_source_provider_protocol::ACQUIRE_SOURCE_REQUEST_VERSION_V3
-    {
-        return Err(ProviderLedgerError::Equivocation);
-    }
+    // Raw/public callers remain closed. Only the original carrier packet can
+    // enter the seven-claim preclassification cut below.
+    let native_v3 =
+        super::native_admission::require_original_packet_profile(request, original_packet)?;
+    let mut native_admission = if native_v3 {
+        let (publication, rows) = current_catalog.ok_or(ProviderLedgerError::Unavailable)?;
+        let normalized = normalized_intent(verified)?;
+        let selection = super::native_admission::select_current_resource(
+            ledger,
+            security_session,
+            &normalized,
+            projection.resource_namespace_digest(),
+            publication,
+            rows,
+        )?;
+        let native = super::native_admission::OriginalNativeAdmission::prepare(
+            ledger,
+            original_packet.ok_or(ProviderLedgerError::Equivocation)?,
+            verified,
+            selection,
+        )?;
+        native.before_commit(ledger, security_session, rows)?;
+        Some(native)
+    } else {
+        None
+    };
     let attempt_evidence = verified.attempt();
     let root_record_signer = projection.ordered_signers()[1].clone();
     let key = AttemptKeyV1 {
@@ -47,6 +66,13 @@ pub(crate) fn reserve_acquire(
             ProviderAdmissionDispositionV1::Recover(_)
                 | ProviderAdmissionDispositionV1::CachedRecovery { .. }
         ) {
+            if let Some(native) = &native_admission {
+                native.before_commit(
+                    ledger,
+                    security_session,
+                    current_catalog.ok_or(ProviderLedgerError::Unavailable)?.1,
+                )?;
+            }
             let retained =
                 ledger
                     .recovered
@@ -80,6 +106,12 @@ pub(crate) fn reserve_acquire(
                 .recovery_authorizations
                 .insert(retained_digest, signing_authorization);
         }
+        if let Some(native) = &native_admission {
+            if let Err(error) = native.require_live(security_session) {
+                ledger.poison_runtime();
+                return Err(error);
+            }
+        }
         return Ok(disposition);
     }
     let next_request_sequence = match verified.sequence() {
@@ -96,47 +128,21 @@ pub(crate) fn reserve_acquire(
         }
     };
     let normalized_intent = normalized_intent(&verified)?;
-    let selected_resource = if let Some((canonical_publication, canonical_rows)) = current_catalog {
-        let configuration = security_session.revalidated_provider_configuration()?;
-        let publication = aos_sandbox_source_provider_security::verify_catalog_publication(
-            &configuration,
-            canonical_publication,
-        )?;
-        let journal_snapshot = ledger.journal.snapshot()?;
-        let current = security_session.authorize_fixed_current_catalog_publication_v1(
-            &ledger.journal,
-            journal_snapshot,
-            publication,
-        )?;
-        let (resource, is_current) = if normalized_intent.kernel_coupled() {
-            let selected = current.select_manifest_row(
-                &ledger.journal,
+    let selected_resource = if let Some(native) = &native_admission {
+        Some(native.resource().clone())
+    } else if let Some((canonical_publication, canonical_rows)) = current_catalog {
+        Some(
+            super::native_admission::select_current_resource(
+                ledger,
+                security_session,
+                &normalized_intent,
+                projection.resource_namespace_digest(),
+                canonical_publication,
                 canonical_rows,
-                normalized_intent.binding_digest(),
-            )?;
-            (
-                selected.selected().0.clone(),
-                selected.is_current(&ledger.journal),
-            )
-        } else {
-            let selected = current.select_held_snapshot_row(
-                &ledger.journal,
-                canonical_rows,
-                normalized_intent.binding_digest(),
-            )?;
-            (
-                selected.selected().0.clone(),
-                selected.is_current(&ledger.journal),
-            )
-        };
-        if !is_current
-            || resource.resource_namespace_digest() != projection.resource_namespace_digest()
-            || resource.catalog_generation() != ledger.recovered.catalog.catalog_generation
-            || resource.catalog_digest() != ledger.recovered.catalog.catalog_digest
-        {
-            return Err(ProviderLedgerError::ConfigurationMismatch);
-        }
-        Some(resource)
+            )?
+            .resource()
+            .clone(),
+        )
     } else if normalized_intent.kernel_coupled() {
         return Err(ProviderLedgerError::Unavailable);
     } else {
@@ -222,7 +228,11 @@ pub(crate) fn reserve_acquire(
     let effect_id =
         derive_acquire_effect_id(request.acquisition_id(), attempt_evidence.attempt_digest())?;
     let selected_native = selected_resource.is_some() && !normalized_intent.kernel_coupled();
-    let native_dispatch = selected_native && ledger.qualified_native_bridge.is_some();
+    let native_dispatch = super::native_admission::permits_native_dispatch(
+        selected_native,
+        native_v3,
+        ledger.qualified_native_bridge.as_ref(),
+    );
     let native_no_dispatch = selected_native && !native_dispatch;
     let backend_id = if native_dispatch {
         aos_sandbox_source_provider_ledger::identity::acquire_native_dispatch_id_v2(
@@ -366,7 +376,23 @@ pub(crate) fn reserve_acquire(
         ),
         encode_session_history(&session),
     ));
-    let reservation_digest = if selected_native {
+    let reservation_digest = if let Some(native) = &native_admission {
+        crate::native_no_dispatch_capacity::commit_reservation_checked(
+            ledger,
+            ACQUIRE_RESERVE_PURPOSE,
+            records,
+            &acquisition,
+            &attempt,
+            &session,
+            |ledger| {
+                native.retain_before_append(
+                    ledger,
+                    security_session,
+                    current_catalog.ok_or(ProviderLedgerError::Unavailable)?.1,
+                )
+            },
+        )?
+    } else if selected_native {
         crate::native_no_dispatch_capacity::commit_reservation(
             ledger,
             ACQUIRE_RESERVE_PURPOSE,
@@ -409,6 +435,15 @@ pub(crate) fn reserve_acquire(
         session,
     );
     ledger.refresh_recovery_work();
+    if let Some(native) = &native_admission {
+        let (publication, rows) = current_catalog.ok_or(ProviderLedgerError::Unavailable)?;
+        if let Err(error) = native.after_commit(ledger, security_session, publication, rows) {
+            // The exact occupied rows and hot clock survive this ambiguity.
+            // Poisoning prevents any permit, rollback, or absence claim.
+            ledger.poison_runtime();
+            return Err(error);
+        }
+    }
     let signing_authorization = match authorize_current_reservation(
         security_session,
         current_request,
@@ -435,6 +470,12 @@ pub(crate) fn reserve_acquire(
             MAXIMUM_ACQUIRE_COMPLETION_BYTES,
         )?
     };
+    if let Some(native) = native_admission.take() {
+        if let Err(error) = native.require_live(security_session) {
+            ledger.poison_runtime();
+            return Err(error);
+        }
+    }
     Ok(ProviderAdmissionDispositionV1::Acquire(
         DurableAcquireEffectPermitV1 {
             plan: acquire_plan,
