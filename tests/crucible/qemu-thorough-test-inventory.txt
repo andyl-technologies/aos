@@ -1463,7 +1463,9 @@ unit - qemu:test-char
 unit - qemu:test-clone-visitor
 unit - qemu:test-coroutine
 unit - qemu:test-crucible-acpi-piix-fingerprint
+unit - qemu:test-crucible-acpi-pm-wide-clock
 unit - qemu:test-crucible-ahci-fingerprint
+unit - qemu:test-crucible-apic-timer-wide-clock
 unit - qemu:test-crucible-arm-fingerprint
 unit - qemu:test-crucible-arm-timer-wide-clock
 unit - qemu:test-crucible-cxl-timestamp
@@ -1479,11 +1481,14 @@ unit - qemu:test-crucible-mos6522-clock
 unit - qemu:test-crucible-nvme-phase
 unit - qemu:test-crucible-openrisc-wide-clock
 unit - qemu:test-crucible-parallel-fingerprint
+unit - qemu:test-crucible-pit-timer-wide-clock
 unit - qemu:test-crucible-ptimer-wide-clock
 unit - qemu:test-crucible-rc4030-period
 unit - qemu:test-crucible-riscv-cpc-clock
 unit - qemu:test-crucible-rtc-phase
+unit - qemu:test-crucible-rtc-timer-wide-clock
 unit - qemu:test-crucible-s390-tod-wide-clock
+unit - qemu:test-crucible-serial-kbd-timer-wide-clock
 unit - qemu:test-crucible-slirp-time
 unit - qemu:test-crucible-vfio-timer
 unit - qemu:test-crucible-vga-blink
