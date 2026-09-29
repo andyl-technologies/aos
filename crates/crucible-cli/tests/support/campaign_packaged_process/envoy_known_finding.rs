@@ -5,7 +5,6 @@
 //! must retain the same observation, measurement evidence, and replayable finding.
 
 use std::collections::BTreeSet;
-use std::io::Write as _;
 use std::os::unix::net::UnixStream;
 
 use super::*;
