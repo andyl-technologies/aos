@@ -1,5 +1,7 @@
 //! Original block-head ownership and stale-observation regressions.
 
+#![cfg(test)]
+
 use super::*;
 
 struct BlockHeadFixture {
