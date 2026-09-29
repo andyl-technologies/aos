@@ -5,6 +5,7 @@
   store-error-taxonomy = sourceGate "store-error-taxonomy" ''
     cd crates
     cargo test --frozen --offline -p terrane --lib store::tests::error_outcomes_preserve_sources_without_changing_category
+    cargo test --frozen --offline -p terrane --lib store::tests::invalid_diagnostics_preserve_upload_and_range_context
     cargo test --frozen --offline -p terrane --lib store::tests::conflict_and_existing_log_are_distinct_from_backend_failure
     printf 'PASS: store outcomes and chained diagnostics\n' > "$out/result"
   '';

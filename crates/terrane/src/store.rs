@@ -73,6 +73,17 @@ pub struct Capabilities {
     pub sealed: bool,
 }
 
+/// Distinguishes the two diagnostics carried by `invalid` (STORE-30).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InvalidReason {
+    /// Uploaded bytes failed the named validation rule.
+    Upload { rule_id: &'static str },
+    /// A request asks for bytes beyond the content boundary.
+    Range(ByteRange),
+    /// A request cannot be decoded or exceeds a protocol limit.
+    MalformedRequest,
+}
+
 /// Names the closed set of store failures (STORE-30).
 ///
 /// A CAS mismatch and a reflog collision carry their current values as
@@ -91,8 +102,8 @@ pub enum StoreErrorKind {
     Unavailable { retry_after: Option<Duration> },
     /// A reservation or quota would be exceeded.
     Capacity,
-    /// Uploaded content violates the named rule.
-    Invalid { rule_id: &'static str },
+    /// Uploaded content or a requested range is invalid.
+    Invalid(InvalidReason),
     /// A required backend capability is absent.
     Unsupported,
 }
@@ -106,7 +117,11 @@ impl fmt::Display for StoreErrorKind {
             Self::Denied { verb, pattern } => write!(f, "{verb} denied on {pattern}"),
             Self::Unavailable { .. } => f.write_str("store unavailable"),
             Self::Capacity => f.write_str("store capacity exceeded"),
-            Self::Invalid { rule_id } => write!(f, "content violates {rule_id}"),
+            Self::Invalid(InvalidReason::Upload { rule_id }) => {
+                write!(f, "content violates {rule_id}")
+            }
+            Self::Invalid(InvalidReason::Range(_)) => f.write_str("range beyond content end"),
+            Self::Invalid(InvalidReason::MalformedRequest) => f.write_str("malformed request"),
             Self::Unsupported => f.write_str("store capability unsupported"),
         }
     }
@@ -504,6 +519,13 @@ pub trait LocalFs {
     /// Returns an I/O error if metadata cannot be read.
     async fn metadata(&self, path: &std::path::Path) -> std::io::Result<std::fs::Metadata>;
 
+    /// Returns metadata for a path itself without following a symlink.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if metadata cannot be read.
+    async fn symlink_metadata(&self, path: &std::path::Path) -> std::io::Result<std::fs::Metadata>;
+
     /// Removes a file after GC, eviction, or temporary-write cleanup.
     ///
     /// # Errors
@@ -679,6 +701,10 @@ impl LocalFs for TokioLocalFs {
         tokio::fs::metadata(path).await
     }
 
+    async fn symlink_metadata(&self, path: &std::path::Path) -> std::io::Result<std::fs::Metadata> {
+        tokio::fs::symlink_metadata(path).await
+    }
+
     async fn remove_file(&self, path: &std::path::Path) -> std::io::Result<()> {
         tokio::fs::remove_file(path).await
     }
@@ -764,6 +790,22 @@ mod tests {
         assert_eq!(
             failure.source().map(ToString::to_string).as_deref(),
             Some("backend detail")
+        );
+    }
+
+    #[test]
+    fn invalid_diagnostics_preserve_upload_and_range_context() {
+        let upload = StoreErrorKind::Invalid(InvalidReason::Upload { rule_id: "CDC-6" });
+        let requested = ByteRange {
+            start: 128,
+            length: 32,
+        };
+        let range = StoreErrorKind::Invalid(InvalidReason::Range(requested));
+
+        assert_eq!(upload.to_string(), "content violates CDC-6");
+        assert_eq!(range.to_string(), "range beyond content end");
+        assert!(
+            matches!(range, StoreErrorKind::Invalid(InvalidReason::Range(actual)) if actual == requested)
         );
     }
 
@@ -865,6 +907,21 @@ mod tests {
             );
             fs.rename_no_replace(&source, &destination).await.unwrap();
             assert_eq!(fs.read(&destination).await.unwrap(), b"first bytes");
+
+            #[cfg(unix)]
+            {
+                let link = directory.join("link");
+                std::os::unix::fs::symlink(&destination, &link).unwrap();
+                assert!(
+                    fs.symlink_metadata(&link)
+                        .await
+                        .unwrap()
+                        .file_type()
+                        .is_symlink()
+                );
+                assert_eq!(fs.metadata(&link).await.unwrap().len(), 11);
+                fs.remove_file(&link).await.unwrap();
+            }
 
             fs.write_new(&source, b"new source").await.unwrap();
             let collision = fs.rename_no_replace(&source, &destination).await;
