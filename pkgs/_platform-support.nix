@@ -480,6 +480,14 @@ let
   # The Darwin AOS clients retain their non-VM commands without target GLib.
   linuxScoped = [
     "aos-hub-cloudflare"
+    # WebAssembly and Cargo developer tools for downstream project dev shells.
+    # They are portable, but their Darwin cross builds are not yet qualified.
+    "cargo-deny"
+    "cargo-fuzz"
+    "cargo-llvm-cov"
+    "wac-cli"
+    "wasm-tools"
+    "wasmtime"
     "aos-vm"
     "cairo"
     # The controller compiles the Linux QEMU launcher; the fleet store shares
