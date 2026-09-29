@@ -45,7 +45,7 @@ in {
       target = "gcp-cloud-run";
       enabled = true;
       endpoints.origin = {
-        hosts = ["hub-hybrid-origin.staging.andyl.com"];
+        hosts = ["aos-hybrid-origin.staging.andyl.org"];
         paths = ["/*"];
         protection = "standard";
         rateLimitProfile = null;
@@ -58,9 +58,9 @@ in {
         HUB_TOPOLOGY = "hybrid";
         HUB_LISTEN = "0.0.0.0:8080";
         HUB_ROOT = "/tmp/aos-hub";
-        HUB_EXTERNAL_URL = "https://hub-hybrid.staging.andyl.com";
-        HUB_HYBRID_WORKER_URL = "https://hub-hybrid.staging.andyl.com";
-        HUB_HYBRID_ORIGIN_URL = "https://hub-hybrid-origin.staging.andyl.com";
+        HUB_EXTERNAL_URL = "https://aos-hybrid.staging.andyl.org";
+        HUB_HYBRID_WORKER_URL = "https://aos-hybrid.staging.andyl.org";
+        HUB_HYBRID_ORIGIN_URL = "https://aos-hybrid-origin.staging.andyl.org";
         HUB_DEPLOYMENT_ID = "aos-hub-hybrid-staging";
         HUB_DNS_JSON_ENDPOINT = "https://dns.google/resolve";
         HUB_RELEASE_RECEIPT_KEY_ID = "aos-hub-hybrid-staging-release-receipt-v1";

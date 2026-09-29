@@ -67,13 +67,20 @@ supply workflow evidence, a signed receipt or a real qualification claim.
 The release workflow fails closed when registration or evidence is missing.
 
 Before submitting the signed Native rollout, deploy and configure the
-independently named Worker at `hub-hybrid.staging.andyl.com`. Its R2 attachment,
+independently named Worker at `aos-hybrid.staging.andyl.org`. Its R2 attachment,
 deployment ID, Native origin setting and shared ingress/storage keys must match
 the reviewed pair. Provision its Cloudflare hostname/route and actual secrets
 through the existing operator runbook. The signed storage capability endpoint
 and versioned console assets are served locally by the Worker and must work
 while the Native origin is unavailable. Native checks both before opening its
 listener, so the Worker must already be reachable.
+
+The public Custom Domain uses the existing Cloudflare-owned `andyl.org` zone.
+Its DNS record and certificate belong to the Worker deployment. The separate
+`aos-hybrid-origin.staging.andyl.org` hostname needs the dedicated GCP origin
+frontend, certificate authorization and DNS owner declared in the companion
+infrastructure registration. Origin DNS must not also own the public Worker
+record. A hostname declaration alone does not provision either endpoint.
 
 Then submit the signed Native rollout and its single policy/backend
 continuation. Once Native is listening and the rollout settles, qualify the
