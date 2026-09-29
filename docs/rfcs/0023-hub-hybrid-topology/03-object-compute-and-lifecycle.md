@@ -161,6 +161,43 @@ pending fences or terminal receipts. A topology reset that reuses storage must
 preserve this authority; safe receipt retirement needs a separate protocol
 that proves old requests can no longer take effect.
 
+### External physical storage authority
+
+An external S3 guard is owned by a permanent physical authority, rather than
+a logical binding, placement, credential generation or current SQL deployment.
+Root operators review its bucket identity, immutable guard namespace, canonical
+endpoint aliases and exact binding revisions. An approved endpoint/bucket alias
+remains reserved after revocation. DNS resolution, matching ETags and shared
+credentials do not establish that two addresses refer to one physical resource.
+Two active guard domains cannot be merged merely because an alias is later
+discovered. The namespace and prior effects must first be reconciled explicitly.
+
+SQL records reviewed identity, credential exclusivity evidence and monotonically
+versioned desired admission. A separately durable executor ledger enforces that
+admission. Restoring an older database cannot reduce its remote generation or
+reopen a revoked authority: a fresh authenticated watermark and explicit reviewed
+reconciliation are required. Root `StorageManage` permission is checked both
+when creating a plan and when applying it. Organization binding permissions do
+not authorize physical equivalence or executor adoption.
+
+Each acknowledged visible mutation advances a guard-issued incarnation for the
+full physical object key, including an identical-byte replacement. The frozen
+identity is the explicit pair `(physical_authority_id, incarnation)` and remains
+separate from an R2 provider upload version. Inventory, reviewed actions, jobs,
+claims and receipts carry that exact pair. A later HEAD cannot fill a missing
+stamp or settle an unknown provider effect.
+
+Managed Native-only, Workers-only and Hybrid writers use the same authority
+ledger or reject the operation. This includes ordinary PUT, multipart completion,
+metadata publication, replication, credential probes, recovery writes and
+presigned upload issuance. Already issued direct provider capabilities and other
+provider credentials must be covered by the exclusivity decision. A fresh unused
+namespace with exclusive executor access is the initial adoption path; an
+existing unmanaged namespace requires actual prior-effect settlement. Deletion
+is enabled only after every visible writer and the provider's physical deletion
+semantics are qualified. A versioned S3 delete marker alone does not prove that
+historical object bytes were reclaimed.
+
 ## Failure and cost controls
 
 DO alarms, cache reads, and provider reads are observable separately. Metrics

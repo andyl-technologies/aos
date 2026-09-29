@@ -107,6 +107,14 @@ those are invalidated or reconstructed after import. Provider credentials and
 private signing material travel only through separately controlled secret
 backup and rebinding, never inside a general-purpose export archive.
 
+Mutation guards and physical storage admission are durable external authorities,
+not disposable projections. A database snapshot retains their permanent
+identities and reviewed desired revisions, but cannot replace the live remote
+watermark, pending-effect fences or terminal receipts. Reusing physical storage
+preserves that ledger and requires reconciliation before accepting writes;
+copying into a fresh namespace requires a separately reviewed authority. See
+[physical storage authority](03-object-compute-and-lifecycle.md#external-physical-storage-authority).
+
 The first portable move may require stopping writes and draining or recording
 pending jobs. Export verifies that every database reference has its required
 object, copies object bytes through a storage-to-storage path when available,
