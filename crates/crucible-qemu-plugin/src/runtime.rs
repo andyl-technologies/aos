@@ -1467,6 +1467,37 @@ enum PostRegistrationStage {
     Finalize,
 }
 
+/// Rejects checkpoint handoff when guest RX ownership is ambiguous.
+fn check_hot_fork_network_rx(
+    live: Option<&live_callbacks::LiveVcpuTimeCallbackState>,
+    action: u32,
+) -> Result<(), std::os::raw::c_int> {
+    if matches!(
+        action,
+        crate::QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD | crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY
+    ) && live.is_some_and(live_callbacks::LiveVcpuTimeCallbackState::network_rx_commit_uncertain)
+    {
+        return Err(-libc::EPROTO);
+    }
+
+    Ok(())
+}
+
+/// Checks RX ownership before and after acquiring the barrier's factual state.
+fn collect_hot_fork_state_with_network_rx_check<T>(
+    live: Option<&live_callbacks::LiveVcpuTimeCallbackState>,
+    action: u32,
+    collect: impl FnOnce() -> Result<T, std::os::raw::c_int>,
+) -> Result<T, std::os::raw::c_int> {
+    check_hot_fork_network_rx(live, action)?;
+    let snapshot = collect()?;
+
+    // An RX callback may fail after the entry check but before the acquired
+    // quiescence snapshot. Recheck after observing in-flight work.
+    check_hot_fork_network_rx(live, action)?;
+    Ok(snapshot)
+}
+
 extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
     action: u32,
     status: *mut crate::QemuPluginHotForkBarrierStatus,
@@ -1478,56 +1509,73 @@ extern "C" fn crucible_qemu_plugin_hot_fork_barrier(
     // SAFETY: registration passes the stable pinned runtime-owner address, and
     // production retains that allocation for the QEMU process lifetime.
     let state = unsafe { &*userdata.cast::<OwnedCallbackRuntimeState>() };
-    let (snapshot, rings, workers) = match action {
-        crate::QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD => {
-            let snapshot = state.quiescence.hold_hot_fork();
-            let Ok(rings) = state.setup.mapped_region().hold_hot_fork_ring_io() else {
-                state.quiescence.release_hot_fork();
-                return -libc::EPROTO;
-            };
-            let workers = state.workers.hold();
-            if !state.mapping_excluded_from_child.load(Ordering::Acquire) {
-                if let Err(error) = state.setup.mapped_region().exclude_from_hot_fork_child() {
-                    state.workers.release();
-                    let _released_rings = state.setup.mapped_region().release_hot_fork_ring_io();
-                    state.quiescence.release_hot_fork();
-                    return hot_fork_mapping_disposition_status(error);
+    let snapshot = collect_hot_fork_state_with_network_rx_check(
+        state
+            .live_vcpu_time
+            .as_ref()
+            .map(|live| live.as_ref().get_ref()),
+        action,
+        || {
+            let snapshot = match action {
+                crate::QEMU_PLUGIN_HOT_FORK_BARRIER_HOLD => {
+                    let snapshot = state.quiescence.hold_hot_fork();
+                    let Ok(rings) = state.setup.mapped_region().hold_hot_fork_ring_io() else {
+                        state.quiescence.release_hot_fork();
+                        return Err(-libc::EPROTO);
+                    };
+                    let workers = state.workers.hold();
+                    if !state.mapping_excluded_from_child.load(Ordering::Acquire) {
+                        if let Err(error) =
+                            state.setup.mapped_region().exclude_from_hot_fork_child()
+                        {
+                            state.workers.release();
+                            let _released_rings =
+                                state.setup.mapped_region().release_hot_fork_ring_io();
+                            state.quiescence.release_hot_fork();
+                            return Err(hot_fork_mapping_disposition_status(error));
+                        }
+                        state
+                            .mapping_excluded_from_child
+                            .store(true, Ordering::Release);
+                    }
+                    (snapshot, rings, workers)
                 }
-                state
-                    .mapping_excluded_from_child
-                    .store(true, Ordering::Release);
-            }
-            (snapshot, rings, workers)
-        }
-        crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY => {
-            let snapshot = state.quiescence.snapshot();
-            let Ok(rings) = state.setup.mapped_region().hot_fork_ring_io_snapshot() else {
-                return -libc::EPROTO;
-            };
-            let workers = state.workers.snapshot();
-            (snapshot, rings, workers)
-        }
-        crate::QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE => {
-            if state.mapping_excluded_from_child.load(Ordering::Acquire) {
-                if let Err(error) = state
-                    .setup
-                    .mapped_region()
-                    .restore_hot_fork_parent_inheritance()
-                {
-                    return hot_fork_mapping_disposition_status(error);
+                crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY => {
+                    let snapshot = state.quiescence.snapshot();
+                    let Ok(rings) = state.setup.mapped_region().hot_fork_ring_io_snapshot() else {
+                        return Err(-libc::EPROTO);
+                    };
+                    let workers = state.workers.snapshot();
+                    (snapshot, rings, workers)
                 }
-                state
-                    .mapping_excluded_from_child
-                    .store(false, Ordering::Release);
-            }
-            let Ok(rings) = state.setup.mapped_region().release_hot_fork_ring_io() else {
-                return -libc::EPROTO;
+                crate::QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE => {
+                    if state.mapping_excluded_from_child.load(Ordering::Acquire) {
+                        if let Err(error) = state
+                            .setup
+                            .mapped_region()
+                            .restore_hot_fork_parent_inheritance()
+                        {
+                            return Err(hot_fork_mapping_disposition_status(error));
+                        }
+                        state
+                            .mapping_excluded_from_child
+                            .store(false, Ordering::Release);
+                    }
+                    let Ok(rings) = state.setup.mapped_region().release_hot_fork_ring_io() else {
+                        return Err(-libc::EPROTO);
+                    };
+                    let snapshot = state.quiescence.release_hot_fork();
+                    let workers = state.workers.release();
+                    (snapshot, rings, workers)
+                }
+                _ => return Err(-libc::EINVAL),
             };
-            let snapshot = state.quiescence.release_hot_fork();
-            let workers = state.workers.release();
-            (snapshot, rings, workers)
-        }
-        _ => return -libc::EINVAL,
+            Ok(snapshot)
+        },
+    );
+    let (snapshot, rings, workers) = match snapshot {
+        Ok(snapshot) => snapshot,
+        Err(status) => return status,
     };
     if snapshot.hot_fork_held != workers.held {
         return -libc::EPROTO;
