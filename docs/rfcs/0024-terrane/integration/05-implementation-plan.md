@@ -193,7 +193,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   and checked into `spec/reference/golden-vectors.md`; fuzz and property
   tests for every format. — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
-- [ ] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
+- [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
   capability types, error taxonomy, `HttpClient`, `Clock`, and `LocalFs`
   traits, and compatible runtime features. Concrete operation semantics are
   T-BKT-1; routed authority forwarding is T-STORE-2. — satisfies STORE-30,
