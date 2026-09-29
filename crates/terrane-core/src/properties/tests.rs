@@ -279,6 +279,8 @@ fn required_attrs_strict_names_and_inline_consistency() {
         defaults(),
     )
     .expect("strict");
+    let mut hash = Vec::new();
+    cbor::write_bytes(&mut hash, &[3; 32]);
     let mut entry = file();
     entry.attrs.push(Attribute {
         name: "unregistered",
@@ -321,8 +323,6 @@ fn required_attrs_strict_names_and_inline_consistency() {
         defaults(),
     )
     .expect("hash policy");
-    let mut hash = Vec::new();
-    cbor::write_bytes(&mut hash, &[3; 32]);
     let mut alternate = Vec::new();
     cbor::write_bytes(&mut alternate, &[4; 32]);
     entry.attrs = vec![Attribute {
@@ -616,8 +616,9 @@ fn required_attrs_classification_and_index_gaps() {
         defaults(),
     )
     .expect("classification requirements");
-    let mut entry = file();
     let magic = text("elf");
+    let non_elf = text("text");
+    let mut entry = file();
     entry.attrs.push(Attribute {
         name: "class.magic",
         value: &magic,
@@ -633,7 +634,6 @@ fn required_attrs_classification_and_index_gaps() {
         validate_commit(&[change], &[]),
         Err(Error::MissingAttribute)
     );
-    let non_elf = text("text");
     entry.attrs[0].value = &non_elf;
     validate_commit(
         &[EntryChange {

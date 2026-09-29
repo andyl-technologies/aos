@@ -149,7 +149,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.zstd-concat`.
 - [x] **T-TREE-1** Deterministic CBOR encoder and decoder with limits before
   allocation; node and entry encoding; entry types including `tree`,
-  `whiteout`, and `conflict`; reserved types rejected. — satisfies TREE-1
+  `whiteout`, and `conflict`; reserved types rejected. Full conflict bases
+  use iterative codecs and value operations up to the encoded byte limit;
+  the separate graft-depth limit does not restrict them. — satisfies TREE-1
   to TREE-8, TREE-11 to TREE-13, TREE-17, TREE-18, TREE-25 to TREE-34;
   `checks.terrane.gates.canonical-cbor`,
   `checks.terrane.gates.tree-well-formed`.
