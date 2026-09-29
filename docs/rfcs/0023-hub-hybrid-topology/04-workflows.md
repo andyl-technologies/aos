@@ -198,17 +198,28 @@ may be served from Native or a revisioned Worker cache, but immutable blob
 bytes stay on the storage path.
 
 Manifest and index PUTs retain the same 4 MiB limit in every runtime. In Hybrid,
-the Worker buffers the exact client bytes and sends their bounded hash identity
-to Native through the authenticated manifest PUT action. Native reserves quota
-and persists an attempt-unique staging key, placement and immutable binding
-write revision before admitting the Worker write. The Worker stores the body
-beside R2 and forwards the original document once inbound to Native with the
-reservation identity bound into the signed request URI. Native verifies that
-the owner, repository, body and storage evidence match, validates the closed
-descriptor graph, and commits materialization and catalog state. It returns
-only control receipts; the manifest body is never echoed from Native to the
-Worker for staging. Expiry retains the frozen address for cleanup of an
-interrupted attempt, including an attempt whose provider write never occurred.
+these bounded documents use a Worker-local upload path. The Worker hashes and
+parses the exact client bytes, while Native reserves quota and persists the
+original staging operation, placement and immutable binding write revision
+before admitting a provider write. The client retains the original proved OCI
+actor and provider profile for document, index and tag writes, including
+credential renewal; a shared credential cache cannot substitute another actor.
+
+The Worker stores the document beside R2 through the retained object mutation
+guard, then sends only a closed, signed metadata projection and positive storage
+evidence to Native. The projection binds the document digest, byte size, media
+type and descriptor graph to the original reservation and current registered
+OCI delivery authority. Native validates that evidence and the closed graph,
+checks current repository authority, and commits materialization and catalog
+state. Neither a raw manifest nor blob bytes enter Native on this path. A direct
+request to Native refuses raw bodies before polling; it cannot become a proxy
+fallback when Worker storage or provider readiness fails.
+
+Lost acknowledgements replay the original operation and receipt. Expiry alone
+does not settle unknown provider effects or release quota and mutation fences.
+Final index and tag visibility follows verified object closure and the Native
+publication barrier. Bulk archives and OCI layers use signed provider uploads;
+the bounded manifest path does not authorize bulk Worker uploads.
 
 ## Inventory, reconciliation, and GC
 
