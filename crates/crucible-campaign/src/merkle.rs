@@ -441,9 +441,10 @@ impl MerkleMap {
 
     /// Charges every final-root node position changed from an authenticated root.
     ///
-    /// An old subtree with the same content ID at the same prefix was already
-    /// reachable. A changed subtree is walked even when its nodes existed in
-    /// storage before this update; storage novelty cannot prove reachability.
+    /// The caller completely authenticates the prior root before this walk.
+    /// An old subtree with the same content ID and count at the same prefix was
+    /// already reachable. A changed subtree is walked even when its nodes existed
+    /// in storage before this update; storage novelty cannot prove reachability.
     pub(crate) fn collect_changed_node_positions(
         &self,
         prior: ContentId,
@@ -459,10 +460,16 @@ impl MerkleMap {
                 continue;
             }
             roots.insert(new_root);
-            let mut stack = vec![(Some(old_root), None, new_root, Vec::new(), None)];
-            while let Some((old_id, old_leaf, new_id, prefix, expected_count)) = stack.pop() {
+            let mut stack = vec![(Some(old_root), None, None, new_root, Vec::new(), None)];
+            while let Some((old_id, old_leaf, old_count, new_id, prefix, expected_count)) =
+                stack.pop()
+            {
                 if old_id == Some(new_id) {
-                    if let Some(count) = expected_count {
+                    // The prior authenticated parent already bound this exact
+                    // child count. A changed declaration still needs a read.
+                    if let Some(count) = expected_count
+                        && old_count != Some(count)
+                    {
                         let depth = u8::try_from(prefix.len())
                             .map_err(|_| invalid("closure-node-limit"))?;
                         if self.read_node(new_id, depth)?.entry_count != count {
@@ -534,18 +541,20 @@ impl MerkleMap {
                             content_id,
                             entry_count,
                         } => {
-                            let (old_child, old_leaf) = match old_entry {
-                                Some(MerkleEntry::Node { content_id, .. }) => {
-                                    (Some(content_id), None)
-                                }
+                            let (old_child, old_leaf, old_count) = match old_entry {
+                                Some(MerkleEntry::Node {
+                                    content_id,
+                                    entry_count,
+                                }) => (Some(content_id), None, Some(entry_count)),
                                 Some(MerkleEntry::Leaf { key, value }) => {
-                                    (None, Some((key, value)))
+                                    (None, Some((key, value)), None)
                                 }
-                                None => (None, None),
+                                None => (None, None, None),
                             };
                             stack.push((
                                 old_child,
                                 old_leaf,
+                                old_count,
                                 *content_id,
                                 child_prefix,
                                 Some(*entry_count),
@@ -2669,3 +2678,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "merkle/changed_positions_tests.rs"]
+mod changed_positions_tests;
