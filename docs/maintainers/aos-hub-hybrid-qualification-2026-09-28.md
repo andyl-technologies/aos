@@ -1140,3 +1140,35 @@ failure is under diagnosis; the same sampler reads the exact source-built Node
 process successfully on the host. The earlier 6.469 latency miss remains
 unresolved. This frozen fleet predates the lease-floor, encrypted-record and
 issuer/journal increments above.
+
+## Offline Native snapshot commands
+
+The existing Native binary now dispatches `snapshot capture-sqlite` and
+`snapshot verify` before database configuration or serving initialization.
+Explicit private key/trust files and a literal local SQLite path are required.
+Capture writes private paired streams and the signed root to a retained staging
+directory, verifies readback, syncs files and directories, then publishes without
+replacing an existing output. A failed durability acknowledgment after publication
+keeps the published archive and reports uncertainty.
+
+The isolated ordinary Native binary builds successfully. Actual tests pass:
+**14 workflow**, **11 existing credential-loader**, **two parser** and **ten
+binary privacy/preflight probes**. The strict archive reader retains its owner
+and ancestor checks; the initial sandbox UID-mapping failure is preserved and
+the qualified synthetic tests run in the actual host UID namespace. Producer
+receipt `/tmp/hub-snapshot-cli-qualified.json`
+(`44640e39ec92cb9bcc79ae64b6b4fa247bb427980c0d598cf7ffc509f3d7dc00`)
+and independent final receipt
+`/tmp/hub-snapshot-cli-independent-review/final-receipt.json`
+(`4568ab1a2e7a99f09478225a53bdec11d3452e1dd00f416f11b6f28e6a26ccd1`)
+bind the candidate. Eight integrated files match exactly; the ninth preserves
+the separately qualified public scratch module. Of 2,339 prerequisites, 2,331
+still match; eight have the independently qualified issuer/journal/scratch
+changes described above. Combined artifact qualification remains pending.
+
+These commands currently report `records_and_reconstruction` and retain the
+signed `framing_only` profile. Wiring the stronger scratch verifier into the
+commands follows separately. They provide no PostgreSQL/Worker reader, complete
+storage-object/application closure, import or activation. Path-based opens
+cannot defeat malicious same-owner replacement, and cooperative cancellation
+does not bound blocked I/O.

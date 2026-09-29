@@ -31,6 +31,7 @@ mod indexing;
 mod logging;
 mod password_input;
 mod signing_input;
+mod snapshot_input;
 
 use password_input::read_password;
 
@@ -42,7 +43,7 @@ struct Cli {
     root: Option<PathBuf>,
 
     /// Native database URL; defaults to the SQLite file under --root.
-    #[arg(long, global = true, env = "HUB_DATABASE_URL")]
+    #[arg(long, global = true, env = "HUB_DATABASE_URL", hide_env_values = true)]
     database_url: Option<String>,
 
     /// Owner-private file containing the native database URL.
@@ -59,6 +60,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Capture or verify an offline SQLite database archive.
+    Snapshot(snapshot_input::SnapshotArgs),
     /// Reconcile reviewed physical authority metadata with the paired Worker.
     AuthorityControlSync {
         /// Permanent authority identity already approved through the root API.
@@ -622,6 +625,15 @@ impl WorkerArgs {
 async fn main() -> Result<()> {
     logging::init();
     let mut cli = Cli::parse();
+    if let Command::Snapshot(snapshot) = &cli.command {
+        snapshot_input::validate_runtime_inputs(
+            cli.root.as_deref(),
+            cli.database_url.as_deref(),
+            cli.database_url_file.as_deref(),
+            &cli.target,
+        )?;
+        return snapshot_input::run(snapshot).await;
+    }
     if let Some(path) = cli.database_url_file.as_ref() {
         anyhow::ensure!(
             cli.database_url.is_none(),
@@ -631,6 +643,7 @@ async fn main() -> Result<()> {
     }
 
     match cli.command {
+        Command::Snapshot(_) => anyhow::bail!("snapshot dispatch failed"),
         Command::AuthorityControlSync {
             authority_id,
             guard_namespace_id,

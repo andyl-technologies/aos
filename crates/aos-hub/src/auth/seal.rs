@@ -111,9 +111,37 @@ pub fn read_secret_file(path: &Path) -> Result<Vec<u8>> {
 
 /// Reads a secret into an allocation that is zeroized on every exit path.
 pub(crate) fn read_secret_file_zeroizing(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
+    read_secret_file_with_limit(path, MAX_SECRET_FILE_BYTES, false)
+}
+
+/// Reads strictly owner-private archive input with an explicit size cap.
+///
+/// It validates every ancestor, opens without following links or blocking on
+/// a FIFO, and never admits the runtime systemd group-read exception.
+///
+/// # Errors
+///
+/// Rejects invalid limits, insecure custody, nonregular input, replacement,
+/// excessive size or I/O failure. Callers redact contextual loader errors.
+pub(crate) fn read_secret_file_zeroizing_capped(
+    path: &Path,
+    limit: u64,
+) -> Result<Zeroizing<Vec<u8>>> {
+    anyhow::ensure!(
+        limit > 0 && limit <= MAX_SECRET_FILE_BYTES,
+        "invalid secret read limit"
+    );
+    read_secret_file_with_limit(path, limit, true)
+}
+
+fn read_secret_file_with_limit(
+    path: &Path,
+    limit: u64,
+    strict_archive: bool,
+) -> Result<Zeroizing<Vec<u8>>> {
     #[cfg(unix)]
     {
-        return read_secret_file_unix(path);
+        return read_secret_file_unix(path, limit, strict_archive);
     }
     #[cfg(not(unix))]
     {
@@ -125,20 +153,25 @@ pub(crate) fn read_secret_file_zeroizing(path: &Path) -> Result<Zeroizing<Vec<u8
 }
 
 #[cfg(unix)]
-fn read_secret_file_unix(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
-    let (parent_fd, name) = open_secure_secret_parent(path)?;
-    let fd = rustix::fs::openat(
-        &parent_fd,
-        name,
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NOFOLLOW,
-        rustix::fs::Mode::empty(),
-    )
-    .with_context(|| {
-        format!(
-            "opening secret file {} without following links",
-            path.display()
-        )
-    })?;
+fn read_secret_file_unix(
+    path: &Path,
+    limit: u64,
+    strict_archive: bool,
+) -> Result<Zeroizing<Vec<u8>>> {
+    let (parent_fd, name) = open_secure_secret_parent_with_policy(path, strict_archive)?;
+    let mut flags =
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NOFOLLOW;
+    if strict_archive {
+        flags |= rustix::fs::OFlags::NONBLOCK;
+    }
+    let fd = rustix::fs::openat(&parent_fd, name, flags, rustix::fs::Mode::empty()).with_context(
+        || {
+            format!(
+                "opening secret file {} without following links",
+                path.display()
+            )
+        },
+    )?;
     let metadata = rustix::fs::fstat(&fd)
         .with_context(|| format!("inspecting secret file {}", path.display()))?;
     anyhow::ensure!(
@@ -152,7 +185,11 @@ fn read_secret_file_unix(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
         path.display()
     );
     anyhow::ensure!(
-        secret_file_mode_is_secure(path, u32::from(metadata.st_mode)),
+        if strict_archive {
+            u32::from(metadata.st_mode) & 0o077 == 0
+        } else {
+            secret_file_mode_is_secure(path, u32::from(metadata.st_mode))
+        },
         "secret file {} grants group/other permissions",
         path.display()
     );
@@ -162,18 +199,18 @@ fn read_secret_file_unix(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
         path.display()
     );
     anyhow::ensure!(
-        metadata.st_size >= 0 && metadata.st_size as u64 <= MAX_SECRET_FILE_BYTES,
+        metadata.st_size >= 0 && metadata.st_size as u64 <= limit,
         "secret file {} exceeds the size limit",
         path.display()
     );
     let mut file = fs::File::from(fd);
     let mut bytes = Zeroizing::new(Vec::new());
     file.by_ref()
-        .take(MAX_SECRET_FILE_BYTES + 1)
+        .take(limit + 1)
         .read_to_end(&mut bytes)
         .with_context(|| format!("reading secret file {}", path.display()))?;
     anyhow::ensure!(
-        bytes.len() as u64 <= MAX_SECRET_FILE_BYTES,
+        bytes.len() as u64 <= limit,
         "secret file {} grew past the size limit",
         path.display()
     );
@@ -196,6 +233,30 @@ fn read_secret_file_unix(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
 
 #[cfg(unix)]
 fn open_secure_secret_parent(path: &Path) -> Result<(std::os::fd::OwnedFd, &std::ffi::OsStr)> {
+    open_secure_secret_parent_with_policy(path, false)
+}
+
+#[cfg(unix)]
+fn inspect_archive_ancestor(fd: &std::os::fd::OwnedFd) -> Result<()> {
+    let metadata = rustix::fs::fstat(fd)?;
+    let mode = u32::from(metadata.st_mode);
+    // A root-owned sticky ancestor permits /tmp traversal without admitting
+    // writable final parents. Same-owner custody remains a trusted boundary.
+    let root_sticky = metadata.st_uid == 0 && mode & 0o1000 != 0;
+    anyhow::ensure!(
+        rustix::fs::FileType::from_raw_mode(metadata.st_mode) == rustix::fs::FileType::Directory
+            && trusted_secret_owner(metadata.st_uid)
+            && (mode & 0o022 == 0 || root_sticky),
+        "archive credential ancestor custody is invalid"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn open_secure_secret_parent_with_policy(
+    path: &Path,
+    strict_archive: bool,
+) -> Result<(std::os::fd::OwnedFd, &std::ffi::OsStr)> {
     let parent = path
         .parent()
         .context("secret path has no parent directory")?;
@@ -216,6 +277,9 @@ fn open_secure_secret_parent(path: &Path) -> Result<(std::os::fd::OwnedFd, &std:
         rustix::fs::Mode::empty(),
     )
     .context("opening secret path traversal root")?;
+    if strict_archive {
+        inspect_archive_ancestor(&parent_fd)?;
+    }
     for component in parent.components() {
         let component = match component {
             std::path::Component::RootDir | std::path::Component::CurDir => continue,
@@ -234,6 +298,9 @@ fn open_secure_secret_parent(path: &Path) -> Result<(std::os::fd::OwnedFd, &std:
                     parent.display()
                 )
             })?;
+        if strict_archive {
+            inspect_archive_ancestor(&parent_fd)?;
+        }
     }
     let metadata = rustix::fs::fstat(&parent_fd)
         .with_context(|| format!("inspecting secret parent {}", parent.display()))?;
