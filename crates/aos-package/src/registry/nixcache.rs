@@ -161,7 +161,43 @@ pub async fn generate_static_cache(
     no_skip: bool,
     printer: &Printer,
 ) -> Result<StaticCacheReport> {
-    let inventory = collect_static_cache_root_inventory(registry_dir)?;
+    generate_static_cache_with_roots(
+        registry_dir,
+        output_dir,
+        key_path,
+        priority,
+        jobs,
+        membership,
+        no_skip,
+        &[],
+        printer,
+    )
+    .await
+}
+
+/// Generates a registry cache that also retains explicitly supplied store roots.
+///
+/// Additional roots and their closures are included alongside catalog roots.
+/// Release producers use these roots to retain the exact source paths recorded
+/// in build evidence, even when an output's current deriver differs.
+///
+/// # Errors
+///
+/// Returns an error for mixed store directories, missing local paths, failed
+/// Nix invocations, or unwritable cache files.
+pub async fn generate_static_cache_with_roots(
+    registry_dir: &Path,
+    output_dir: &Path,
+    key_path: Option<&Path>,
+    priority: u32,
+    jobs: Option<usize>,
+    membership: Option<&dyn CacheMembership>,
+    no_skip: bool,
+    additional_roots: &[String],
+    printer: &Printer,
+) -> Result<StaticCacheReport> {
+    let mut inventory = collect_static_cache_root_inventory(registry_dir)?;
+    inventory.roots.extend(additional_roots.iter().cloned());
     let roots = inventory.roots.into_iter().collect::<Vec<_>>();
     if roots.is_empty() {
         bail!("registry contains no store paths to cache");
