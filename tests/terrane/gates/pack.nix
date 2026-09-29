@@ -24,7 +24,12 @@ in {
   pack-kind-domain = testGate "pack-kind-domain" "pack::tests::pack_meta_separation_";
   pack-footer-crc = testGate "pack-footer-crc" "pack::tests::pack_footer_crc_";
   pack-scan-recovery = testGate "pack-scan-recovery" "pack::tests::pack_scan_recovery_";
-  pack-self-describing = testGate "pack-self-describing" "pack::tests::pack_self_describing_";
+  pack-self-describing = sourceGate "pack-self-describing" ''
+    cd crates
+    ${runTests "pack::tests::pack_self_describing_"}
+    ${runTests "pack::tests::pack_native_codecs_"}
+    printf 'PASS: embedded indexes and verified native body codecs\n' > "$out/result"
+  '';
   pack-single-writer = testGate "pack-single-writer" "pack::tests::pack_single_writer_";
   pack-tree-locality = testGate "pack-tree-locality" "pack::tests::pack_tree_locality_";
   pack-meta-separation = testGate "pack-meta-separation" "pack::tests::pack_meta_separation_";

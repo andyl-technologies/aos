@@ -231,12 +231,12 @@ fn pack_meta_separation_and_kind_domain_are_strict() -> Result<(), PackError> {
     let mut data = PackWriter::new(PackId::from_random_bytes([8; 16]), PackClass::Data, false);
     assert_error!(
         data.append_raw(EntryKind::Node, &[0xa0]),
-        Err(PackError::Kind)
+        Err(PackError::Format(terrane_core::pack_format::Error::Kind))
     );
     let mut meta = PackWriter::new(PackId::from_random_bytes([9; 16]), PackClass::Meta, false);
     assert_error!(
         meta.append_raw(EntryKind::Chunk, b"data"),
-        Err(PackError::Kind)
+        Err(PackError::Format(terrane_core::pack_format::Error::Kind))
     );
     let hash = meta.append_raw(EntryKind::Node, &[0xa0])?;
     let pack = meta.seal()?;
