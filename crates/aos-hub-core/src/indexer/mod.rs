@@ -812,6 +812,11 @@ async fn index_registry_inner(
         "registry index phase completed"
     );
 
+    // The verified trees own their parsed data. Release the compressed,
+    // decoded, and parsed Git caches before documentation and SQL projections
+    // expand those same packages into additional buffers in a Worker isolate.
+    drop(reader);
+
     // Channels: branches are channel names; each resolves through 256
     // partition payloads pointing at release tag objects.
     let branch_names = complete_branch_names(&refs)?;
