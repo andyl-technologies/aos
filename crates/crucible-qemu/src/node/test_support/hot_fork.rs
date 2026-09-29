@@ -159,8 +159,12 @@ struct ScriptedShmemHotPath {
 #[derive(Clone, Copy)]
 struct ScriptedPluginControl;
 
-#[derive(Clone, Copy)]
-struct ScriptedHostIoRuntime;
+#[derive(Clone, Default)]
+struct ScriptedHostIoRuntime {
+    // This fixture implements no block/9p queues or native timer/input source.
+    // Binding validates the immutable World instead of guessing absence.
+    io_world: Option<(crucible::model::World, NodeId)>,
+}
 
 struct ScriptedChildFiles {
     generation: u64,
@@ -327,7 +331,7 @@ pub fn scripted_hot_fork_source_with_script_for_test(
         shutdown_policy,
         QemuAsyncDriverPolicy::fast_test(),
         QemuCrashDetector::new("scripted-hot-fork-source"),
-        ScriptedHostIoRuntime,
+        ScriptedHostIoRuntime::default(),
         2,
     ))
 }
@@ -714,6 +718,82 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
 }
 
 impl QemuHostIoRuntime for ScriptedHostIoRuntime {
+    fn validate_scripted_run_admission_for_test(
+        &self,
+        admission: &crucible::PreparedRunAdmission,
+    ) -> Result<(), BackendError> {
+        let Some((world, owner)) = &self.io_world else {
+            return Err(BackendError::Unsupported {
+                capability: "step_node_with_admission",
+            });
+        };
+        if owner != admission.node()
+            || admission.input_inventory().world() != Some(world.id())
+            || world.io_nodes().any(|queue| &queue.owner == owner)
+            || admission.dispatch_horizon().icount.retired
+                > admission.semantic_horizon().icount.retired
+        {
+            return Err(BackendError::Rejected {
+                message: String::from("scripted RUN has a foreign owner or widened dispatch cap"),
+            });
+        }
+        Ok(())
+    }
+
+    fn bind_scripted_io_inventory_for_test(
+        &mut self,
+        world: &crucible::model::World,
+        node: &NodeId,
+    ) -> Result<(), BackendError> {
+        if !world.vm_nodes().iter().any(|vm| &vm.id == node)
+            || world.io_nodes().any(|queue| &queue.owner == node)
+        {
+            return Err(BackendError::Rejected {
+                message: String::from("scripted runtime cannot represent this World queue owner"),
+            });
+        }
+        if self
+            .io_world
+            .as_ref()
+            .is_some_and(|(bound, owner)| bound.id() != world.id() || owner != node)
+        {
+            return Err(BackendError::Rejected {
+                message: String::from("scripted inventory is already bound to another World owner"),
+            });
+        }
+        self.io_world = Some((world.clone(), node.clone()));
+        Ok(())
+    }
+
+    fn observe_scripted_io_inventory_for_test(
+        &self,
+        node: &NodeId,
+        observed: crucible::NodeCounter,
+    ) -> Result<crucible::BackendIoInventory, BackendError> {
+        let Some((world, owner)) = &self.io_world else {
+            return Err(BackendError::Unsupported {
+                capability: "observe_node_io_inventory",
+            });
+        };
+        if owner != node || world.io_nodes().any(|queue| &queue.owner == node) {
+            return Err(BackendError::Rejected {
+                message: String::from("scripted inventory has a foreign or incomplete queue owner"),
+            });
+        }
+        // These are explicit properties of this no-device scripted runtime,
+        // not observations of an operational QEMU Source or its native caps.
+        Ok(crucible::BackendIoInventory {
+            node: owner.clone(),
+            observed,
+            generation: std::num::NonZeroU64::MIN,
+            native_caps: crucible::BackendIoNativeCaps {
+                timer: crucible::BackendIoNativeCap::ObservedAbsent,
+                input: crucible::BackendIoNativeCap::ObservedAbsent,
+            },
+            queues: Vec::new(),
+        })
+    }
+
     fn clone_hot_fork_host_io_continuation(
         &mut self,
         _execution_binding: crucible::model::ContentHash,
@@ -722,7 +802,7 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
         _region_len: u64,
         _console: Option<crate::QemuHotForkChildConsoleObservation>,
     ) -> Result<Box<dyn QemuHostIoRuntime>, QemuAsyncDriverRuntimeError> {
-        Ok(Box::new(*self))
+        Ok(Box::new(self.clone()))
     }
 
     fn publish_current_execution_fingerprint(
@@ -1509,3 +1589,6 @@ fn exact_hot_fork_request() -> crate::QmpHotForkRequest {
         0,
     )
 }
+
+#[cfg(test)]
+mod io_inventory_tests;

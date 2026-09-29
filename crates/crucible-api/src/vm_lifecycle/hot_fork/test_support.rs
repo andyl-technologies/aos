@@ -211,7 +211,7 @@ fn prepared_multi_node_hot_fork_source_world_with_time_limit_and_powered_off_for
     }
 
     let mut retained = Vec::with_capacity(source_nodes.len());
-    for (index, (vm, source_node)) in source
+    for (index, (vm, mut source_node)) in source
         .world()
         .vm_nodes()
         .iter()
@@ -266,6 +266,9 @@ fn prepared_multi_node_hot_fork_source_world_with_time_limit_and_powered_off_for
                 },
             )
             .map_err(|error| test_support_error("activate scripted source VM", error))?;
+        source_node
+            .bind_scripted_io_inventory_for_test(source.world(), &retained_node)
+            .map_err(|error| test_support_error("bind scripted World I/O inventory", error))?;
         lifecycle
             .inner
             .backend_mut()

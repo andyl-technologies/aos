@@ -4,6 +4,62 @@ use super::*;
 
 /// Host-I/O runtime used by the bounded async driver.
 pub trait QemuHostIoRuntime: Send {
+    /// Binds a scripted fixture's complete queue inventory to its World owner.
+    ///
+    /// This test-only seam creates no operational Source or native capability.
+    /// Ordinary runtimes retain their unsupported default even in test builds.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a runtime without explicit scripted inventory or a World whose
+    /// configured queues the fixture cannot completely represent.
+    #[cfg(any(test, feature = "test-support"))]
+    fn bind_scripted_io_inventory_for_test(
+        &mut self,
+        _world: &crucible::model::World,
+        _node: &crucible::model::NodeId,
+    ) -> Result<(), crucible::BackendError> {
+        Err(crucible::BackendError::Unsupported {
+            capability: "bind_scripted_io_inventory_for_test",
+        })
+    }
+
+    /// Observes an explicitly bound scripted runtime's modeled queue facts.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unbound, foreign or non-scripted runtimes. The default preserves
+    /// operational refusal; no absent queue or native cap is inferred.
+    #[cfg(any(test, feature = "test-support"))]
+    fn observe_scripted_io_inventory_for_test(
+        &self,
+        _node: &crucible::model::NodeId,
+        _observed: crucible::NodeCounter,
+    ) -> Result<crucible::BackendIoInventory, crucible::BackendError> {
+        Err(crucible::BackendError::Unsupported {
+            capability: "observe_node_io_inventory",
+        })
+    }
+
+    /// Validates an actor-issued RUN for an explicitly bound scripted fixture.
+    ///
+    /// This test-only model operation creates no native execution permission.
+    /// Ordinary runtimes refuse even when test support is compiled.
+    ///
+    /// # Errors
+    ///
+    /// Refuses non-scripted runtimes, absent or foreign fixture bindings, or a
+    /// dispatch cap wider than the original semantic horizon.
+    #[cfg(any(test, feature = "test-support"))]
+    fn validate_scripted_run_admission_for_test(
+        &self,
+        _admission: &crucible::PreparedRunAdmission,
+    ) -> Result<(), crucible::BackendError> {
+        Err(crucible::BackendError::Unsupported {
+            capability: "step_node_with_admission",
+        })
+    }
+
     /// Services the live 9p ring directly for coordinator-isolation tests.
     ///
     /// # Errors
