@@ -321,17 +321,15 @@ fn measurement_hash_domains_do_not_relabel_payload_versions() {
     );
 }
 
-// An added VMStateDescription declaration establishes ownership in the atomic
-// patch. Upstream descriptors whose existing declarations are merely context
-// do not become owned formats because a field or a QOM name resembles one.
+// Added VMStateDescription declarations with an owned name or declaration
+// identify this inventory. Upstream descriptors whose existing declarations
+// are merely context do not become owned formats because a field or QOM name
+// resembles one.
 fn owned_qemu_vmstate_sections(patch: &str) -> Result<BTreeMap<String, u32>, String> {
     let lines = patch.lines().collect::<Vec<_>>();
     let mut sections = BTreeMap::new();
 
-    if lines.iter().any(|line| {
-        line.strip_prefix('+')
-            .is_some_and(|added| added.trim().starts_with("#define TYPE_IMX6UL_LCDIF "))
-    }) {
+    if lines.iter().any(|line| pinned_qemu_macro_changed(line)) {
         return Err("Pinned QEMU VMState macro definition changed".to_owned());
     }
 
@@ -400,6 +398,26 @@ fn owned_qemu_vmstate_sections(patch: &str) -> Result<BTreeMap<String, u32>, Str
         }
     }
     Ok(sections)
+}
+
+fn pinned_qemu_macro_changed(line: &str) -> bool {
+    let Some(changed) = line.strip_prefix(['+', '-']) else {
+        return false;
+    };
+    let Some(directive) = changed.trim_start().strip_prefix('#') else {
+        return false;
+    };
+    let mut tokens = directive.split_ascii_whitespace();
+    if !matches!(tokens.next(), Some("define" | "undef")) {
+        return false;
+    }
+    let Some(name) = tokens.next() else {
+        return false;
+    };
+    // Function-like definitions must not evade the same alias check.
+    name.split(|byte: char| !byte.is_ascii_alphanumeric() && byte != '_')
+        .next()
+        == Some("TYPE_IMX6UL_LCDIF")
 }
 
 fn qemu_vmstate_literal_name(expression: &str) -> Result<Option<String>, String> {
@@ -561,4 +579,18 @@ fn qemu_vmstate_discovery_resolves_pinned_owned_macro_name() {
 
     let changed_definition = format!("+#define TYPE_IMX6UL_LCDIF \"different-device\"\n{patch}");
     assert!(owned_qemu_vmstate_sections(&changed_definition).is_err());
+
+    for directive in [
+        "#define\tTYPE_IMX6UL_LCDIF\t\"different-device\"",
+        "# define TYPE_IMX6UL_LCDIF \"different-device\"",
+        "#\tdefine\tTYPE_IMX6UL_LCDIF\t\"different-device\"",
+        "#undef TYPE_IMX6UL_LCDIF",
+        "# undef\tTYPE_IMX6UL_LCDIF",
+        "#define TYPE_IMX6UL_LCDIF() \"different-device\"",
+    ] {
+        for change in ['+', '-'] {
+            let changed = format!("{change}{directive}\n{patch}");
+            assert!(owned_qemu_vmstate_sections(&changed).is_err(), "{changed}");
+        }
+    }
 }
