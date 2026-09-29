@@ -913,8 +913,30 @@ fn backend_quantum_loop_routes_gdbstub_to_wrapped_backend() {
         }
     }
 
-    let mut backend = GdbBackend::default();
-    let info = backend
+    impl ConcurrentSimulationBackend for GdbBackend {
+        fn execute_concurrent_runs(
+            &mut self,
+            _runs: Vec<crate::ConcurrentBackendRun>,
+            _max_host_workers: usize,
+        ) -> Result<Vec<crate::ConcurrentBackendRunResult>, BackendError> {
+            Err(BackendError::Unsupported {
+                capability: "execute_concurrent_runs",
+            })
+        }
+    }
+
+    let scheduler = test_scheduler(
+        vec![test_scenario_node(
+            "vm-a",
+            0,
+            SchedulerNodeActivity::Runnable,
+            NetworkLookahead::Infinite,
+            ExactLocalEvent::NoArmedTimer,
+        )],
+        Vec::new(),
+    );
+    let mut adapter = BackendQuantumLoop::new(scheduler, GdbBackend::default());
+    let info = adapter
         .open_gdbstub(
             NodeId {
                 name: String::from("vm-a"),
@@ -926,7 +948,7 @@ fn backend_quantum_loop_routes_gdbstub_to_wrapped_backend() {
 
     assert_eq!(info.qemu_endpoint, "tcp:127.0.0.1:9001");
     assert_eq!(
-        backend.opened,
+        adapter.backend().opened,
         vec![(
             NodeId {
                 name: String::from("vm-a"),
