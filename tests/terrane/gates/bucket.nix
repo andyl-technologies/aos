@@ -40,5 +40,6 @@ in {
   bucket-file-cas = gate "bucket-file-cas" ["tests::whole_record_cas_has_one_winner_across_independent_opens" "tests::stable_exclusion_inode_survives_cas_and_reopen"];
   bucket-mutability-classes = gate "bucket-mutability-classes" ["tests::tags_and_reflogs_never_replace_existing_bytes" "content_tests::repeated_put_preserves_first_encoding_and_survives_reopen"];
   bucket-create-once = gate "bucket-create-once" ["tests::tags_and_reflogs_never_replace_existing_bytes"];
+  bucket-probe = gate "bucket-probe" ["fault_tests::startup_refuses_a_binding_that_overwrites_create_once_keys" "tests::probe_revalidates_persisted_layout_and_profile_each_open"];
   index-generation-manifest = gate "index-generation-manifest" ["content_tests::manifest_and_every_listed_artifact_are_required_for_generation_visibility" "fault_tests::partial_generation_is_unpublished_and_retry_uses_a_fresh_generation" "content_tests::whole_pack_import_verifies_members_without_admitting_them" "content_tests::quarantine_survives_reopen_and_container_or_body_republication"];
 }

@@ -12,6 +12,7 @@ struct FaultFs {
     fail_sync: AtomicBool,
     hide_listing: bool,
     fail_manifest: AtomicBool,
+    overwrite_existing: AtomicBool,
 }
 
 #[async_trait::async_trait]
@@ -58,6 +59,10 @@ impl LocalFs for FaultFs {
     }
 
     async fn rename_no_replace(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        if self.overwrite_existing.load(Ordering::SeqCst) {
+            return TokioLocalFs.rename(from, to).await;
+        }
+
         if to.file_name().is_some_and(|name| name == "MANIFEST")
             && self.fail_manifest.swap(false, Ordering::SeqCst)
         {
@@ -97,6 +102,7 @@ async fn unsynced_temporary_write_never_changes_visible_ref() {
         fail_sync: AtomicBool::new(false),
         hide_listing: false,
         fail_manifest: AtomicBool::new(false),
+        overwrite_existing: AtomicBool::new(false),
     };
     let bucket = FileBucket::open(config(root.clone()), fs, TokioClock, Validator)
         .await
@@ -137,10 +143,34 @@ async fn content_fixture(hide_listing: bool) -> FileBucket<FaultFs, TokioClock, 
         fail_sync: AtomicBool::new(false),
         hide_listing,
         fail_manifest: AtomicBool::new(false),
+        overwrite_existing: AtomicBool::new(false),
     };
     FileBucket::open(config(root), fs, TokioClock, Validator)
         .await
         .unwrap()
+}
+
+#[tokio::test]
+async fn startup_refuses_a_binding_that_overwrites_create_once_keys() {
+    let bucket = content_fixture(false).await;
+    let root = bucket.root().to_path_buf();
+    drop(bucket);
+
+    let broken = FaultFs {
+        fail_sync: AtomicBool::new(false),
+        hide_listing: false,
+        fail_manifest: AtomicBool::new(false),
+        overwrite_existing: AtomicBool::new(true),
+    };
+    let result = FileBucket::open(config(root.clone()), broken, TokioClock, Validator).await;
+
+    assert!(matches!(result, Err(error) if error.kind() == &StoreErrorKind::Unsupported));
+    assert!(
+        FileBucket::open(config(root.clone()), TokioLocalFs, TokioClock, Validator)
+            .await
+            .is_err()
+    );
+    tokio::fs::remove_dir_all(root).await.unwrap();
 }
 
 async fn put_bytes<F: LocalFs + BucketBinding>(

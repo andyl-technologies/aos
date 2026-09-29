@@ -116,7 +116,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         let key = ref_key(name)?;
         BucketKey::reflog(name, 1).map_err(|_| files::malformed())?;
         let _guard = self.exclusive().await?;
-        let horizon = self.read_ref(&key).await?.map_or(0, |record| record.seq);
+        let current = self.read_ref(&key).await?;
+        let horizon = current.as_ref().map_or(0, |record| record.seq);
         let mut seq = from_seq.max(1);
         let mut records = Vec::new();
         let mut previous: Option<RefLogRecord> = None;
@@ -136,6 +137,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             };
             let record = RefLogRecord::decode(&bytes).map_err(|_| corrupt(name))?;
             if record.record.seq != seq {
+                return Err(corrupt(name));
+            }
+            if seq == horizon && current.as_ref() != Some(&record.record) {
                 return Err(corrupt(name));
             }
             if let Some(previous) = &previous {
