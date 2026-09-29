@@ -175,7 +175,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.property-resolution`,
   `checks.terrane.gates.property-required-attrs`,
   `checks.terrane.gates.property-domain-reference`.
-- [ ] **T-REF-1** Commit and ref record types, merge base, ancestry, ref
+- [x] **T-REF-1** Commit and ref record types, merge base, ancestry, ref
   name grammar. Repository enforcement of tag immutability, ref transitions,
   and commit provenance is completed jointly with T-REF-2; merge/fold parent
   order and composite recipes are completed jointly with T-ALG-2. —
