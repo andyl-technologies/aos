@@ -1,6 +1,7 @@
 //! Reproduces fixed pack bytes and checks portable structural and bundle codecs.
 
 use super::*;
+use crate::cbor::{write_array, write_bytes, write_map, write_text, write_uint};
 use crate::identity::{IdentityKind, TERRANE_V1};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -182,5 +183,129 @@ fn metadata_canonical_validation_accepts_deep_input_without_a_guessed_schema_lim
     validate_metadata(3, &bytes)?;
     bytes.pop();
     assert!(validate_metadata(3, &bytes).is_err());
+    Ok(())
+}
+
+fn metadata_objects() -> [(u8, IdentityKind, Vec<u8>); 3] {
+    let mut attribute = Vec::new();
+    write_map(&mut attribute, 5);
+    write_uint(&mut attribute, 1);
+    write_bytes(&mut attribute, &[1; 32]);
+    write_uint(&mut attribute, 2);
+    write_text(&mut attribute, "hash.sha256");
+    write_uint(&mut attribute, 3);
+    write_bytes(&mut attribute, &[2; 32]);
+    write_uint(&mut attribute, 4);
+    write_text(&mut attribute, "hash.sha256/1");
+    write_uint(&mut attribute, 5);
+    write_bytes(&mut attribute, &[3; 32]);
+
+    let mut policy = Vec::new();
+    write_map(&mut policy, 4);
+    write_uint(&mut policy, 1);
+    write_uint(&mut policy, 1);
+    write_uint(&mut policy, 3);
+    write_array(&mut policy, 0);
+    write_uint(&mut policy, 4);
+    write_map(&mut policy, 0);
+    write_uint(&mut policy, 5);
+    write_map(&mut policy, 0);
+
+    let mut memo = Vec::new();
+    write_map(&mut memo, 2);
+    write_uint(&mut memo, 1);
+    write_bytes(&mut memo, &[4; 32]);
+    write_uint(&mut memo, 2);
+    write_bytes(&mut memo, &[5; 32]);
+
+    [
+        (7, IdentityKind::Attribute, attribute),
+        (8, IdentityKind::Policy, policy),
+        (9, IdentityKind::Memo, memo),
+    ]
+}
+
+#[test]
+fn metadata_domains_roundtrip_portable_packs_indexes_and_shards() -> Result<(), Error> {
+    for (kind, domain, bytes) in metadata_objects() {
+        validate_metadata(kind, &bytes)?;
+        let header = Header::new([29; 16], true, false);
+        let record = Record {
+            hash: TERRANE_V1.calculate(domain, &bytes)?.terrane_v1_digest()?,
+            offset: HEADER_SIZE as u64,
+            body_len: bytes.len() as u32,
+            plaintext_len: bytes.len() as u32,
+            codec: 0,
+            kind,
+            dictionary_id: 0,
+        };
+        let pack = encode_pack(header, &bytes, core::slice::from_ref(&record))?;
+        let view = PackView::decode(&pack)?;
+        assert_eq!(view.records(), core::slice::from_ref(&record));
+        let (decoded_header, decoded_records) = decode_detached_index(&view.index_object())?;
+        assert_eq!(decoded_header, header);
+        assert_eq!(decoded_records, [record.clone()]);
+
+        let merged = MergedRecord {
+            pack: [29; 16],
+            record: record.clone(),
+            state: 0,
+        };
+        assert_eq!(
+            decode_shard(
+                &encode_shard(core::slice::from_ref(&merged)),
+                record.hash[0]
+            )?,
+            [merged]
+        );
+        assert_eq!(validate_record(&record, false), Err(Error::Kind));
+        let mut compressed = record.clone();
+        compressed.codec = 1;
+        assert_eq!(validate_record(&compressed, true), Err(Error::Codec));
+
+        for reserved in 10..=u8::MAX {
+            let mut unknown = record.clone();
+            unknown.kind = reserved;
+            assert_eq!(validate_record(&unknown, true), Err(Error::Kind));
+            assert_eq!(validate_metadata(reserved, &bytes), Err(Error::Kind));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn metadata_bundle_triples_verify_each_new_identity_domain() -> Result<(), Error> {
+    let commit_bytes = [0xa1, 1, 0];
+    let root = TERRANE_V1
+        .calculate(IdentityKind::Commit, &commit_bytes)?
+        .terrane_v1_digest()?;
+    let commit = BundleRecord {
+        kind: 3,
+        hash: root,
+        bytes: &commit_bytes,
+    };
+    for (kind, domain, bytes) in metadata_objects() {
+        let object = BundleRecord {
+            kind,
+            hash: TERRANE_V1.calculate(domain, &bytes)?.terrane_v1_digest()?,
+            bytes: &bytes,
+        };
+        let encoded = encode_bundle(&root, &[commit, object]);
+        assert_eq!(decode_bundle(&encoded)?.objects(), &[commit, object]);
+
+        let wrong = BundleRecord {
+            kind: if kind == 7 { 8 } else { 7 },
+            ..object
+        };
+        assert!(matches!(
+            decode_bundle(&encode_bundle(&root, &[commit, wrong])),
+            Err(Error::Identity(_))
+        ));
+        let reserved = BundleRecord { kind: 10, ..object };
+        assert!(matches!(
+            decode_bundle(&encode_bundle(&root, &[commit, reserved])),
+            Err(Error::Kind)
+        ));
+    }
     Ok(())
 }

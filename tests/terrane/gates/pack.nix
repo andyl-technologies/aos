@@ -21,7 +21,12 @@ in {
   pack-id-unique = testGate "pack-id-unique" "pack::tests::pack_id_";
   pack-index-sorted = testGate "pack-index-sorted" "pack::tests::pack_index_is_sorted_";
   pack-index-consistent = testGate "pack-index-consistent" "pack::tests::pack_index_rejects_";
-  pack-kind-domain = testGate "pack-kind-domain" "pack::tests::pack_meta_separation_";
+  pack-kind-domain = sourceGate "pack-kind-domain" ''
+    cd crates
+    ${runTests "pack::tests::pack_meta_separation_"}
+    ${runTests "pack::metadata_tests::"}
+    printf 'PASS: all registered pack metadata domains and reserved kinds\n' > "$out/result"
+  '';
   pack-footer-crc = testGate "pack-footer-crc" "pack::tests::pack_footer_crc_";
   pack-scan-recovery = testGate "pack-scan-recovery" "pack::tests::pack_scan_recovery_";
   pack-self-describing = sourceGate "pack-self-describing" ''
@@ -37,5 +42,10 @@ in {
   index-shard-generations = testGate "index-shard-generations" "pack::tests::index_shard_generations_";
   index-tombstones = testGate "index-tombstones" "pack::tests::index_tombstones_";
   index-rebuild = testGate "index-rebuild" "pack::tests::index_rebuild_";
-  bundle-verify = testGate "bundle-verify" "pack::tests::bundle_verify_";
+  bundle-verify = sourceGate "bundle-verify" ''
+    cd crates
+    ${runTests "pack::tests::bundle_verify_"}
+    ${runTests "pack::metadata_tests::metadata_bundle_"}
+    printf 'PASS: complete verified bundles across all metadata domains\n' > "$out/result"
+  '';
 }

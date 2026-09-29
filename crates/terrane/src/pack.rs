@@ -24,6 +24,9 @@ mod writer;
 #[allow(clippy::expect_used)]
 mod tests;
 
+#[cfg(test)]
+mod metadata_tests;
+
 pub use bundle::{Bundle, BundleObject};
 pub use merged::{IndexCatalog, Lookup, MergedEntry, MergedShard, PackIndexSnapshot, RecordState};
 pub use native::NativeBodyDecoder;
@@ -132,6 +135,12 @@ pub enum EntryKind {
     Filter = 5,
     /// A per-pack index copy.
     Index = 6,
+    /// A derived attribute record.
+    Attribute = 7,
+    /// A policy object, including a ruleset or capability token.
+    Policy = 8,
+    /// A memoized tree recipe result.
+    Memo = 9,
 }
 
 impl EntryKind {
@@ -145,6 +154,9 @@ impl EntryKind {
             Self::Bundle => IdentityKind::Bundle,
             Self::Filter => IdentityKind::Filter,
             Self::Index => IdentityKind::Index,
+            Self::Attribute => IdentityKind::Attribute,
+            Self::Policy => IdentityKind::Policy,
+            Self::Memo => IdentityKind::Memo,
         }
     }
 }
@@ -161,6 +173,9 @@ impl TryFrom<u8> for EntryKind {
             4 => Ok(Self::Bundle),
             5 => Ok(Self::Filter),
             6 => Ok(Self::Index),
+            7 => Ok(Self::Attribute),
+            8 => Ok(Self::Policy),
+            9 => Ok(Self::Memo),
             _ => Err(PackError::Kind),
         }
     }

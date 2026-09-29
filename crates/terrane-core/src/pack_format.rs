@@ -292,7 +292,7 @@ pub fn decode_detached_index(bytes: &[u8]) -> Result<(Header, Vec<Record>), Erro
 /// Rejects unknown fields, nonzero dictionary reservation, class mixing,
 /// inappropriate metadata codecs, impossible raw lengths, or header overlap.
 pub fn validate_record(record: &Record, meta: bool) -> Result<(), Error> {
-    if record.kind > 6 || (record.kind == 0) == meta {
+    if record.kind > 9 || (record.kind == 0) == meta {
         return Err(Error::Kind);
     }
     if record.codec > 2 || (meta && record.codec != 0) {

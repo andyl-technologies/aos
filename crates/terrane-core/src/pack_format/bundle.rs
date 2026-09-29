@@ -186,6 +186,9 @@ fn identity_kind(kind: u8) -> Result<IdentityKind, Error> {
         4 => Ok(IdentityKind::Bundle),
         5 => Ok(IdentityKind::Filter),
         6 => Ok(IdentityKind::Index),
+        7 => Ok(IdentityKind::Attribute),
+        8 => Ok(IdentityKind::Policy),
+        9 => Ok(IdentityKind::Memo),
         _ => Err(Error::Kind),
     }
 }
