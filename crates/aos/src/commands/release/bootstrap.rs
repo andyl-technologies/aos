@@ -135,8 +135,13 @@ pub(super) async fn run(args: &ReleaseBootstrapArgs, printer: &Printer) -> Resul
     // Staging uploads are available for operator testing as soon as the Hub
     // commits their verified objects. Public readback belongs to qualification.
     if !plan.staging_only {
-        hub_transition::read_back_publication(&public_client, hub_url, &plan.registry, &publication)
-            .await?;
+        hub_transition::read_back_publication(
+            &public_client,
+            hub_url,
+            &plan.registry,
+            &publication,
+        )
+        .await?;
     }
     persist(args, &envelopes, &publication)?;
 

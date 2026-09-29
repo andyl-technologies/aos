@@ -6,13 +6,13 @@
 //! the choice to abort or preserve staged state after failure.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures_util::{stream, StreamExt, TryStreamExt};
+use futures_util::{StreamExt, TryStreamExt, stream};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::progress::{NoopObserver, TransferEvent, TransferObserver};
