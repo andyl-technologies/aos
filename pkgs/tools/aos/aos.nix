@@ -164,7 +164,11 @@
     "aos-remote"
     "aos-server"
     "aos-systemd"
-  ];
+    "aos-terrane"
+    "terrane-core"
+    "terrane"
+    "terrane-cli"
+  ] ++ lib.optionals stdenv.hostPlatform.isLinux ["terrane-fs"];
   applicationTestFlags = builtins.concatStringsSep " " (
     map (package: "-p ${package}") applicationTestPackages
   );

@@ -1,0 +1,1452 @@
+[
+  {
+    "name": "algebra-diff",
+    "owner": "07",
+    "requirements": "ALG-12, TEST-4"
+  },
+  {
+    "name": "algebra-fork",
+    "owner": "07",
+    "requirements": "ALG-32"
+  },
+  {
+    "name": "algebra-graft",
+    "owner": "07",
+    "requirements": "ALG-1, TEST-4"
+  },
+  {
+    "name": "algebra-merge",
+    "owner": "07",
+    "requirements": "ALG-15, TEST-4"
+  },
+  {
+    "name": "canonical-cbor",
+    "owner": "00",
+    "requirements": "TREE-4, TREE-25, TREE-28, TEST-3"
+  },
+  {
+    "name": "cdc-boundaries",
+    "owner": "05",
+    "requirements": "CDC-1, CDC-16, CDC-6"
+  },
+  {
+    "name": "chunk-bomb-cap",
+    "owner": "05",
+    "requirements": "CDC-12"
+  },
+  {
+    "name": "chunk-codec",
+    "owner": "05",
+    "requirements": "CDC-7"
+  },
+  {
+    "name": "containers-not-in-identity",
+    "owner": "04",
+    "requirements": "OBJ-23"
+  },
+  {
+    "name": "derived-attr-record",
+    "owner": "10",
+    "requirements": "DRV-1"
+  },
+  {
+    "name": "derivation-memo",
+    "owner": "10",
+    "requirements": "DRV-21"
+  },
+  {
+    "name": "descriptor-strict",
+    "owner": "04",
+    "requirements": "OBJ-6"
+  },
+  {
+    "name": "formats-no-std",
+    "owner": "03",
+    "requirements": "ARCH-1"
+  },
+  {
+    "name": "gc-grace",
+    "owner": "01",
+    "requirements": "prose in 01"
+  },
+  {
+    "name": "identity-idempotence",
+    "owner": "04",
+    "requirements": "prose in 01, OBJ-1, OBJ-5"
+  },
+  {
+    "name": "index-tree-maintenance",
+    "owner": "10",
+    "requirements": "DRV-12"
+  },
+  {
+    "name": "no-duplicate-tiers",
+    "owner": "01",
+    "requirements": "prose in 01"
+  },
+  {
+    "name": "no-privileged-mounts",
+    "owner": "03",
+    "requirements": "ARCH-9"
+  },
+  {
+    "name": "object-identity-from-manifest",
+    "owner": "04",
+    "requirements": "OBJ-13"
+  },
+  {
+    "name": "one-protocol",
+    "owner": "03",
+    "requirements": "ARCH-5"
+  },
+  {
+    "name": "property-domain-reference",
+    "owner": "08",
+    "requirements": "PROP-26"
+  },
+  {
+    "name": "property-required-attrs",
+    "owner": "08",
+    "requirements": "PROP-21"
+  },
+  {
+    "name": "property-resolution",
+    "owner": "08",
+    "requirements": "PROP-1"
+  },
+  {
+    "name": "publisher-sole-writer",
+    "owner": "03",
+    "requirements": "ARCH-8"
+  },
+  {
+    "name": "ref-advance-ordering",
+    "owner": "09",
+    "requirements": "REF-12"
+  },
+  {
+    "name": "ref-cas-only",
+    "owner": "01",
+    "requirements": "prose in 01"
+  },
+  {
+    "name": "ref-epoch-fencing",
+    "owner": "09",
+    "requirements": "REF-6"
+  },
+  {
+    "name": "ref-names",
+    "owner": "09",
+    "requirements": "REF-1"
+  },
+  {
+    "name": "repository-portable",
+    "owner": "03",
+    "requirements": "ARCH-4"
+  },
+  {
+    "name": "role-selection",
+    "owner": "03",
+    "requirements": "ARCH-10"
+  },
+  {
+    "name": "store-expression-static",
+    "owner": "03",
+    "requirements": "ARCH-6"
+  },
+  {
+    "name": "store-opaque",
+    "owner": "03",
+    "requirements": "ARCH-2"
+  },
+  {
+    "name": "surface-layering",
+    "owner": "03",
+    "requirements": "prose in 01, ARCH-3"
+  },
+  {
+    "name": "tree-acyclic",
+    "owner": "04",
+    "requirements": "OBJ-20"
+  },
+  {
+    "name": "tree-boundaries",
+    "owner": "06",
+    "requirements": "TREE-21"
+  },
+  {
+    "name": "tree-hardlinks",
+    "owner": "06",
+    "requirements": "TREE-11"
+  },
+  {
+    "name": "tree-history-independence",
+    "owner": "06",
+    "requirements": "TREE-24, TEST-3"
+  },
+  {
+    "name": "tree-keys",
+    "owner": "06",
+    "requirements": "TREE-1"
+  },
+  {
+    "name": "tree-well-formed",
+    "owner": "06",
+    "requirements": "TREE-17, TREE-30, TREE-34, TREE-4, TREE-8"
+  },
+  {
+    "name": "verify-before-admit",
+    "owner": "05",
+    "requirements": "OBJ-5, CDC-14"
+  },
+  {
+    "name": "view-identity",
+    "owner": "01",
+    "requirements": "prose in 01"
+  },
+  {
+    "name": "worker-no-network",
+    "owner": "03",
+    "requirements": "ARCH-7"
+  },
+  {
+    "name": "zstd-concat",
+    "owner": "05",
+    "requirements": "CDC-11"
+  },
+  {
+    "name": "blockdev-format-roundtrip",
+    "owner": "16",
+    "requirements": "BLK-1"
+  },
+  {
+    "name": "blockdev-ref-cas",
+    "owner": "16",
+    "requirements": "BLK-7"
+  },
+  {
+    "name": "bucket-create-once",
+    "owner": "13",
+    "requirements": "BKT-6"
+  },
+  {
+    "name": "bucket-etag-opaque",
+    "owner": "13",
+    "requirements": "BKT-7"
+  },
+  {
+    "name": "bucket-file-atomic-write",
+    "owner": "13",
+    "requirements": "BKT-13"
+  },
+  {
+    "name": "bucket-file-cas",
+    "owner": "13",
+    "requirements": "BKT-14"
+  },
+  {
+    "name": "bucket-file-layout",
+    "owner": "13",
+    "requirements": "STORE-13, BKT-3"
+  },
+  {
+    "name": "bucket-key-registry",
+    "owner": "13",
+    "requirements": "BKT-1"
+  },
+  {
+    "name": "bucket-multipart-abort",
+    "owner": "13",
+    "requirements": "BKT-9"
+  },
+  {
+    "name": "bucket-mutability-classes",
+    "owner": "13",
+    "requirements": "BKT-2"
+  },
+  {
+    "name": "bucket-probe",
+    "owner": "13",
+    "requirements": "BKT-10, MIG-25, TEST-7, EDGE-2, prose in 40"
+  },
+  {
+    "name": "bucket-ref-cas",
+    "owner": "13",
+    "requirements": "BKT-5"
+  },
+  {
+    "name": "bundle-verify",
+    "owner": "12",
+    "requirements": "PACK-24"
+  },
+  {
+    "name": "commit-order",
+    "owner": "12",
+    "requirements": "prose in 01, PACK-14"
+  },
+  {
+    "name": "gc-grace-window",
+    "owner": "17",
+    "requirements": "GC-10"
+  },
+  {
+    "name": "gc-mark-reachability",
+    "owner": "17",
+    "requirements": "GC-5"
+  },
+  {
+    "name": "gc-roots-complete",
+    "owner": "17",
+    "requirements": "GC-1"
+  },
+  {
+    "name": "gc-singleton-lease",
+    "owner": "17",
+    "requirements": "GC-22"
+  },
+  {
+    "name": "gc-two-phase-delete",
+    "owner": "17",
+    "requirements": "GC-15"
+  },
+  {
+    "name": "guard-single-enforcement",
+    "owner": "11",
+    "requirements": "STORE-22"
+  },
+  {
+    "name": "store-validates-uploads",
+    "owner": "11",
+    "requirements": "STORE-33"
+  },
+  {
+    "name": "store-trait-split",
+    "owner": "11",
+    "requirements": "STORE-32"
+  },
+  {
+    "name": "host-chunk-layout",
+    "owner": "14",
+    "requirements": "HOST-2"
+  },
+  {
+    "name": "host-eviction-s3fifo",
+    "owner": "14",
+    "requirements": "HOST-17"
+  },
+  {
+    "name": "host-layout",
+    "owner": "14",
+    "requirements": "HOST-1"
+  },
+  {
+    "name": "host-pin-durable",
+    "owner": "14",
+    "requirements": "HOST-22"
+  },
+  {
+    "name": "host-pin-never-evicted",
+    "owner": "14",
+    "requirements": "HOST-18"
+  },
+  {
+    "name": "host-publish-no-replace",
+    "owner": "14",
+    "requirements": "HOST-9"
+  },
+  {
+    "name": "host-publish-sequence",
+    "owner": "14",
+    "requirements": "HOST-7"
+  },
+  {
+    "name": "host-publisher-sole-writer",
+    "owner": "14",
+    "requirements": "HOST-6"
+  },
+  {
+    "name": "host-quarantine",
+    "owner": "14",
+    "requirements": "HOST-15"
+  },
+  {
+    "name": "host-quota-exact",
+    "owner": "14",
+    "requirements": "HOST-23"
+  },
+  {
+    "name": "host-reassembly-heuristic",
+    "owner": "14",
+    "requirements": "HOST-10"
+  },
+  {
+    "name": "host-reassembly-verify",
+    "owner": "14",
+    "requirements": "HOST-13"
+  },
+  {
+    "name": "host-reserve-then-evict",
+    "owner": "14",
+    "requirements": "HOST-19"
+  },
+  {
+    "name": "host-sealed-adopt",
+    "owner": "14",
+    "requirements": "HOST-4"
+  },
+  {
+    "name": "host-sealed-before-serve",
+    "owner": "14",
+    "requirements": "HOST-5"
+  },
+  {
+    "name": "host-sealed-immutable",
+    "owner": "14",
+    "requirements": "HOST-3"
+  },
+  {
+    "name": "host-single-residence",
+    "owner": "14",
+    "requirements": "HOST-11"
+  },
+  {
+    "name": "host-state-scope",
+    "owner": "14",
+    "requirements": "HOST-29"
+  },
+  {
+    "name": "host-two-phase-delete",
+    "owner": "14",
+    "requirements": "HOST-28"
+  },
+  {
+    "name": "host-verify-before-admit",
+    "owner": "14",
+    "requirements": "HOST-14"
+  },
+  {
+    "name": "host-wipe-on-release",
+    "owner": "14",
+    "requirements": "HOST-25"
+  },
+  {
+    "name": "index-generation-manifest",
+    "owner": "13",
+    "requirements": "BKT-4"
+  },
+  {
+    "name": "index-filter",
+    "owner": "12",
+    "requirements": "PACK-21"
+  },
+  {
+    "name": "index-filter-hint-only",
+    "owner": "12",
+    "requirements": "PACK-22"
+  },
+  {
+    "name": "index-rebuild",
+    "owner": "12",
+    "requirements": "PACK-20"
+  },
+  {
+    "name": "index-shard-generations",
+    "owner": "12",
+    "requirements": "PACK-17"
+  },
+  {
+    "name": "index-tombstones",
+    "owner": "12",
+    "requirements": "PACK-18"
+  },
+  {
+    "name": "pack-footer-crc",
+    "owner": "12",
+    "requirements": "PACK-7"
+  },
+  {
+    "name": "pack-header",
+    "owner": "12",
+    "requirements": "PACK-1"
+  },
+  {
+    "name": "pack-id-unique",
+    "owner": "12",
+    "requirements": "PACK-2"
+  },
+  {
+    "name": "pack-idx-object",
+    "owner": "12",
+    "requirements": "PACK-15"
+  },
+  {
+    "name": "pack-index-consistent",
+    "owner": "12",
+    "requirements": "PACK-4, PACK-5"
+  },
+  {
+    "name": "pack-index-sorted",
+    "owner": "12",
+    "requirements": "PACK-3"
+  },
+  {
+    "name": "pack-kind-domain",
+    "owner": "12",
+    "requirements": "PACK-6"
+  },
+  {
+    "name": "pack-meta-separation",
+    "owner": "12",
+    "requirements": "PACK-13"
+  },
+  {
+    "name": "pack-scan-recovery",
+    "owner": "12",
+    "requirements": "PACK-9"
+  },
+  {
+    "name": "pack-self-describing",
+    "owner": "12",
+    "requirements": "PACK-8"
+  },
+  {
+    "name": "pack-single-writer",
+    "owner": "12",
+    "requirements": "PACK-10"
+  },
+  {
+    "name": "pack-tree-locality",
+    "owner": "12",
+    "requirements": "PACK-12"
+  },
+  {
+    "name": "redundancy-placement-deterministic",
+    "owner": "15",
+    "requirements": "RED-11"
+  },
+  {
+    "name": "redundancy-quorum-refs",
+    "owner": "15",
+    "requirements": "RED-25"
+  },
+  {
+    "name": "redundancy-replicated-ack",
+    "owner": "15",
+    "requirements": "RED-1"
+  },
+  {
+    "name": "redundancy-striped-reconstruct",
+    "owner": "15",
+    "requirements": "RED-4"
+  },
+  {
+    "name": "redundancy-verify-on-read",
+    "owner": "15",
+    "requirements": "RED-17"
+  },
+  {
+    "name": "shared-dir-read-only",
+    "owner": "11",
+    "requirements": "STORE-14"
+  },
+  {
+    "name": "store-capability-probe",
+    "owner": "11",
+    "requirements": "STORE-12, STORE-9"
+  },
+  {
+    "name": "store-error-taxonomy",
+    "owner": "11",
+    "requirements": "STORE-30"
+  },
+  {
+    "name": "store-expression-validate",
+    "owner": "11",
+    "requirements": "STORE-27, STORE-28"
+  },
+  {
+    "name": "store-has-batched",
+    "owner": "11",
+    "requirements": "STORE-5"
+  },
+  {
+    "name": "store-idempotent-put",
+    "owner": "11",
+    "requirements": "STORE-1"
+  },
+  {
+    "name": "store-list-not-authoritative",
+    "owner": "11",
+    "requirements": "STORE-11"
+  },
+  {
+    "name": "store-ranged-get",
+    "owner": "11",
+    "requirements": "STORE-4"
+  },
+  {
+    "name": "store-ref-cas",
+    "owner": "11",
+    "requirements": "STORE-7"
+  },
+  {
+    "name": "store-ref-forwarding",
+    "owner": "11",
+    "requirements": "STORE-10"
+  },
+  {
+    "name": "store-ref-log-append-once",
+    "owner": "11",
+    "requirements": "STORE-8"
+  },
+  {
+    "name": "store-verify-on-get",
+    "owner": "11",
+    "requirements": "STORE-3"
+  },
+  {
+    "name": "store-verify-on-put",
+    "owner": "11",
+    "requirements": "STORE-2"
+  },
+  {
+    "name": "routed-read-order",
+    "owner": "11",
+    "requirements": "STORE-17"
+  },
+  {
+    "name": "routed-write-authority",
+    "owner": "11",
+    "requirements": "STORE-18"
+  },
+  {
+    "name": "auth-enforcement",
+    "owner": "18",
+    "requirements": "PROTO-22, PROTO-25, PROTO-46, PROTO-5"
+  },
+  {
+    "name": "bandwidth-negotiate-delta",
+    "owner": "21",
+    "requirements": "BW-1"
+  },
+  {
+    "name": "bandwidth-wire-delta-roundtrip",
+    "owner": "21",
+    "requirements": "BW-12"
+  },
+  {
+    "name": "chunk-verify",
+    "owner": "18",
+    "requirements": "PROTO-21"
+  },
+  {
+    "name": "cons-commit-visibility",
+    "owner": "20",
+    "requirements": "CONS-11, CONS-12, CONS-3, CONS-4"
+  },
+  {
+    "name": "cons-control",
+    "owner": "20",
+    "requirements": "CONS-34, CONS-35, CONS-36, CONS-37"
+  },
+  {
+    "name": "cons-durability",
+    "owner": "20",
+    "requirements": "CONS-14, CONS-15, CONS-16, CONS-6"
+  },
+  {
+    "name": "cons-errors",
+    "owner": "20",
+    "requirements": "CONS-25, CONS-26"
+  },
+  {
+    "name": "cons-fencing",
+    "owner": "20",
+    "requirements": "CONS-17, CONS-18, CONS-19, CONS-20"
+  },
+  {
+    "name": "cons-follow-atomic",
+    "owner": "20",
+    "requirements": "CONS-29, CONS-30"
+  },
+  {
+    "name": "cons-fsync-sticky",
+    "owner": "20",
+    "requirements": "CONS-24"
+  },
+  {
+    "name": "cons-local",
+    "owner": "20",
+    "requirements": "CONS-1, CONS-2"
+  },
+  {
+    "name": "cons-multiwriter",
+    "owner": "20",
+    "requirements": "CONS-21, CONS-22, CONS-23"
+  },
+  {
+    "name": "cons-reader-modes",
+    "owner": "20",
+    "requirements": "CONS-28, CONS-31, CONS-32"
+  },
+  {
+    "name": "cons-ref-freshness",
+    "owner": "19",
+    "requirements": "PROTO-26, TOPO-28"
+  },
+  {
+    "name": "cons-sync-fsync",
+    "owner": "20",
+    "requirements": "CONS-10, CONS-27"
+  },
+  {
+    "name": "cons-table",
+    "owner": "20",
+    "requirements": "CONS-33"
+  },
+  {
+    "name": "cons-writer-modes",
+    "owner": "20",
+    "requirements": "CONS-13, CONS-7, CONS-8, CONS-9"
+  },
+  {
+    "name": "dom-oracle",
+    "owner": "18",
+    "requirements": "PROTO-35"
+  },
+  {
+    "name": "gc-multiregion",
+    "owner": "19",
+    "requirements": "TOPO-41, TOPO-42"
+  },
+  {
+    "name": "obs-trace",
+    "owner": "18",
+    "requirements": "PROTO-41"
+  },
+  {
+    "name": "pack-verify",
+    "owner": "18",
+    "requirements": "PROTO-13, PROTO-14"
+  },
+  {
+    "name": "proto-bundle",
+    "owner": "18",
+    "requirements": "PROTO-23"
+  },
+  {
+    "name": "proto-conformance",
+    "owner": "18",
+    "requirements": "PROTO-52, PROTO-6, TEST-13"
+  },
+  {
+    "name": "proto-direct-upload",
+    "owner": "18",
+    "requirements": "PROTO-17"
+  },
+  {
+    "name": "proto-errors",
+    "owner": "18",
+    "requirements": "PROTO-45, PROTO-47"
+  },
+  {
+    "name": "proto-filter",
+    "owner": "18",
+    "requirements": "PROTO-33"
+  },
+  {
+    "name": "proto-idempotent",
+    "owner": "18",
+    "requirements": "PROTO-15, PROTO-43"
+  },
+  {
+    "name": "proto-index",
+    "owner": "18",
+    "requirements": "PROTO-34"
+  },
+  {
+    "name": "proto-negotiate",
+    "owner": "18",
+    "requirements": "PROTO-10, PROTO-11, PROTO-7, PROTO-8, PROTO-9"
+  },
+  {
+    "name": "proto-presign",
+    "owner": "18",
+    "requirements": "PROTO-18, PROTO-19, PROTO-55"
+  },
+  {
+    "name": "proto-reads",
+    "owner": "18",
+    "requirements": "PROTO-20"
+  },
+  {
+    "name": "proto-schema",
+    "owner": "18",
+    "requirements": "PROTO-3, PROTO-48, PROTO-49, PROTO-50"
+  },
+  {
+    "name": "proto-transport",
+    "owner": "18",
+    "requirements": "PROTO-1, PROTO-2, PROTO-4"
+  },
+  {
+    "name": "ref-cas",
+    "owner": "18",
+    "requirements": "PROTO-27, PROTO-28, PROTO-29, CONS-5"
+  },
+  {
+    "name": "ref-log",
+    "owner": "18",
+    "requirements": "PROTO-30"
+  },
+  {
+    "name": "ref-watch",
+    "owner": "18",
+    "requirements": "PROTO-31, PROTO-32"
+  },
+  {
+    "name": "topo-breaker",
+    "owner": "19",
+    "requirements": "TOPO-7"
+  },
+  {
+    "name": "topo-costs",
+    "owner": "19",
+    "requirements": "TOPO-4, TOPO-5"
+  },
+  {
+    "name": "topo-home",
+    "owner": "19",
+    "requirements": "TOPO-26, TOPO-27, TOPO-29"
+  },
+  {
+    "name": "topo-hops",
+    "owner": "19",
+    "requirements": "PROTO-40, TOPO-12, TOPO-13, TOPO-14"
+  },
+  {
+    "name": "topo-labels",
+    "owner": "19",
+    "requirements": "TOPO-1, TOPO-2, TOPO-3"
+  },
+  {
+    "name": "topo-nesting",
+    "owner": "18",
+    "requirements": "PROTO-53"
+  },
+  {
+    "name": "topo-partition",
+    "owner": "19",
+    "requirements": "TOPO-38, TOPO-39, TOPO-40"
+  },
+  {
+    "name": "topo-peers",
+    "owner": "19",
+    "requirements": "TOPO-15, TOPO-16, TOPO-17"
+  },
+  {
+    "name": "topo-promisor",
+    "owner": "19",
+    "requirements": "TOPO-30, TOPO-31"
+  },
+  {
+    "name": "topo-replicate",
+    "owner": "19",
+    "requirements": "TOPO-33, TOPO-34, TOPO-35, TOPO-36"
+  },
+  {
+    "name": "topo-residency",
+    "owner": "19",
+    "requirements": "PROTO-36, PROTO-37, TOPO-18, TOPO-19, TOPO-21"
+  },
+  {
+    "name": "topo-selection",
+    "owner": "19",
+    "requirements": "TOPO-11, TOPO-8, TOPO-9"
+  },
+  {
+    "name": "topo-warm",
+    "owner": "19",
+    "requirements": "PROTO-38, TOPO-22, TOPO-23"
+  },
+  {
+    "name": "auth-acl-intersection",
+    "owner": "22",
+    "requirements": "AUTH-26"
+  },
+  {
+    "name": "auth-attenuation-monotone",
+    "owner": "22",
+    "requirements": "AUTH-14"
+  },
+  {
+    "name": "auth-attenuation-offline",
+    "owner": "22",
+    "requirements": "AUTH-16"
+  },
+  {
+    "name": "auth-mtls",
+    "owner": "22",
+    "requirements": "AUTH-4"
+  },
+  {
+    "name": "auth-oidc-login",
+    "owner": "22",
+    "requirements": "AUTH-2"
+  },
+  {
+    "name": "auth-single-enforcement",
+    "owner": "22",
+    "requirements": "AUTH-31"
+  },
+  {
+    "name": "auth-surface-commit-scope",
+    "owner": "22",
+    "requirements": "AUTH-36"
+  },
+  {
+    "name": "auth-token-chain",
+    "owner": "22",
+    "requirements": "AUTH-7"
+  },
+  {
+    "name": "auth-verify-pure",
+    "owner": "22",
+    "requirements": "AUTH-11"
+  },
+  {
+    "name": "auth-workload-mint",
+    "owner": "22",
+    "requirements": "AUTH-3"
+  },
+  {
+    "name": "dom-dedup-scope",
+    "owner": "24",
+    "requirements": "DOM-8"
+  },
+  {
+    "name": "dom-default-private",
+    "owner": "24",
+    "requirements": "DOM-1"
+  },
+  {
+    "name": "dom-existence-oracle",
+    "owner": "24",
+    "requirements": "DOM-16"
+  },
+  {
+    "name": "dom-host-isolation",
+    "owner": "24",
+    "requirements": "DOM-12"
+  },
+  {
+    "name": "dom-reference-order",
+    "owner": "24",
+    "requirements": "DOM-5"
+  },
+  {
+    "name": "dom-wipe",
+    "owner": "24",
+    "requirements": "DOM-18"
+  },
+  {
+    "name": "prov-commit-signature",
+    "owner": "23",
+    "requirements": "PROV-2"
+  },
+  {
+    "name": "prov-commit-verify",
+    "owner": "23",
+    "requirements": "PROV-4"
+  },
+  {
+    "name": "prov-entry-preserve",
+    "owner": "23",
+    "requirements": "PROV-8"
+  },
+  {
+    "name": "prov-fold-acceptance",
+    "owner": "23",
+    "requirements": "PROV-17"
+  },
+  {
+    "name": "prov-selector-presets",
+    "owner": "23",
+    "requirements": "PROV-12"
+  },
+  {
+    "name": "block-layout-determinism",
+    "owner": "28",
+    "requirements": "VBLK-1, TEST-12"
+  },
+  {
+    "name": "erofs-image-determinism",
+    "owner": "28",
+    "requirements": "EROFS-1, TEST-12"
+  },
+  {
+    "name": "erofs-verity",
+    "owner": "28",
+    "requirements": "EROFS-7"
+  },
+  {
+    "name": "fuse-index-roundtrip",
+    "owner": "27",
+    "requirements": "FUSE-7"
+  },
+  {
+    "name": "fuse-object-scope",
+    "owner": "27",
+    "requirements": "FUSE-3"
+  },
+  {
+    "name": "fuse-passthrough",
+    "owner": "27",
+    "requirements": "FUSE-13"
+  },
+  {
+    "name": "fuse-upper-isolation",
+    "owner": "27",
+    "requirements": "FUSE-32"
+  },
+  {
+    "name": "fuse-verify-before-serve",
+    "owner": "27",
+    "requirements": "FUSE-26"
+  },
+  {
+    "name": "fuse-worker-isolation",
+    "owner": "27",
+    "requirements": "FUSE-1, FUSE-2"
+  },
+  {
+    "name": "nix-frame-concat",
+    "owner": "30",
+    "requirements": "NIX-6"
+  },
+  {
+    "name": "nix-surface-stream",
+    "owner": "30",
+    "requirements": "EDGE-6"
+  },
+  {
+    "name": "reapi-completeness",
+    "owner": "30",
+    "requirements": "REAPI-3"
+  },
+  {
+    "name": "ruleset-blessed-targets",
+    "owner": "31",
+    "requirements": "RULE-10"
+  },
+  {
+    "name": "ruleset-derived-root",
+    "owner": "31",
+    "requirements": "RULE-21"
+  },
+  {
+    "name": "ruleset-eval-order",
+    "owner": "31",
+    "requirements": "RULE-15"
+  },
+  {
+    "name": "ruleset-magic-memo",
+    "owner": "31",
+    "requirements": "RULE-6"
+  },
+  {
+    "name": "surface-commit-path",
+    "owner": "26",
+    "requirements": "SURF-16"
+  },
+  {
+    "name": "surface-interface",
+    "owner": "26",
+    "requirements": "SURF-1, SURF-2"
+  },
+  {
+    "name": "surface-schema",
+    "owner": "26",
+    "requirements": "SURF-13, NIX-4, OCI-1, REAPI-1"
+  },
+  {
+    "name": "surface-status",
+    "owner": "26",
+    "requirements": "SURF-27"
+  },
+  {
+    "name": "vm-export-scope",
+    "owner": "29",
+    "requirements": "VM-1"
+  },
+  {
+    "name": "vm-no-duplication",
+    "owner": "29",
+    "requirements": "VM-10"
+  },
+  {
+    "name": "vm-upload-validation",
+    "owner": "29",
+    "requirements": "VM-16"
+  },
+  {
+    "name": "blockdev-crash-recovery",
+    "owner": "36",
+    "requirements": "TEST-10"
+  },
+  {
+    "name": "gc-reflog-roots",
+    "owner": "33",
+    "requirements": "MIG-33"
+  },
+  {
+    "name": "host-crash-recovery",
+    "owner": "36",
+    "requirements": "HOST-32, TEST-9"
+  },
+  {
+    "name": "job-fold",
+    "owner": "32",
+    "requirements": "JOB-19"
+  },
+  {
+    "name": "job-follow",
+    "owner": "32",
+    "requirements": "JOB-23"
+  },
+  {
+    "name": "job-idempotent",
+    "owner": "32",
+    "requirements": "JOB-15"
+  },
+  {
+    "name": "job-memo",
+    "owner": "32",
+    "requirements": "JOB-16"
+  },
+  {
+    "name": "job-ref-lifecycle",
+    "owner": "32",
+    "requirements": "JOB-1, JOB-2"
+  },
+  {
+    "name": "job-resume",
+    "owner": "32",
+    "requirements": "JOB-17, JOB-3, TEST-11"
+  },
+  {
+    "name": "job-shards",
+    "owner": "32",
+    "requirements": "JOB-6, JOB-7"
+  },
+  {
+    "name": "job-uniform-access",
+    "owner": "32",
+    "requirements": "JOB-31"
+  },
+  {
+    "name": "merge-native-parity",
+    "owner": "36",
+    "requirements": "TEST-5"
+  },
+  {
+    "name": "mig-chunk-read",
+    "owner": "33",
+    "requirements": "MIG-17"
+  },
+  {
+    "name": "mig-digest-coexist",
+    "owner": "33",
+    "requirements": "MIG-30"
+  },
+  {
+    "name": "mig-import-branch",
+    "owner": "33",
+    "requirements": "MIG-1"
+  },
+  {
+    "name": "mig-import-idempotent",
+    "owner": "33",
+    "requirements": "MIG-3"
+  },
+  {
+    "name": "mig-import-verify",
+    "owner": "33",
+    "requirements": "MIG-2"
+  },
+  {
+    "name": "mig-layout",
+    "owner": "33",
+    "requirements": "MIG-8"
+  },
+  {
+    "name": "mig-layout-merge",
+    "owner": "33",
+    "requirements": "MIG-10"
+  },
+  {
+    "name": "mig-encoding-identity",
+    "owner": "33",
+    "requirements": "MIG-14"
+  },
+  {
+    "name": "mig-encoding-read",
+    "owner": "33",
+    "requirements": "MIG-13"
+  },
+  {
+    "name": "mig-rechunk",
+    "owner": "33",
+    "requirements": "MIG-18"
+  },
+  {
+    "name": "mig-reindex",
+    "owner": "33",
+    "requirements": "MIG-6"
+  },
+  {
+    "name": "mig-split-join",
+    "owner": "33",
+    "requirements": "MIG-27"
+  },
+  {
+    "name": "mig-store-move",
+    "owner": "33",
+    "requirements": "MIG-22"
+  },
+  {
+    "name": "obs-blame",
+    "owner": "34",
+    "requirements": "OBS-13"
+  },
+  {
+    "name": "obs-decision-log",
+    "owner": "34",
+    "requirements": "OBS-4"
+  },
+  {
+    "name": "obs-hop-latency",
+    "owner": "34",
+    "requirements": "OBS-2"
+  },
+  {
+    "name": "obs-metrics",
+    "owner": "34",
+    "requirements": "OBS-11"
+  },
+  {
+    "name": "obs-status-surface",
+    "owner": "34",
+    "requirements": "OBS-7"
+  },
+  {
+    "name": "obs-trace-propagation",
+    "owner": "34",
+    "requirements": "OBS-1"
+  },
+  {
+    "name": "perf-cold-closure",
+    "owner": "35",
+    "requirements": "prose in 35"
+  },
+  {
+    "name": "perf-cold-mount",
+    "owner": "35",
+    "requirements": "prose in 35"
+  },
+  {
+    "name": "perf-cold-span",
+    "owner": "35",
+    "requirements": "prose in 35, PERF-2"
+  },
+  {
+    "name": "perf-commit-delta",
+    "owner": "35",
+    "requirements": "prose in 35, PERF-5"
+  },
+  {
+    "name": "perf-commit-latency",
+    "owner": "35",
+    "requirements": "prose in 35"
+  },
+  {
+    "name": "perf-erofs-gen",
+    "owner": "35",
+    "requirements": "prose in 35"
+  },
+  {
+    "name": "perf-fork",
+    "owner": "35",
+    "requirements": "prose in 35"
+  },
+  {
+    "name": "perf-fsync-sync",
+    "owner": "35",
+    "requirements": "prose in 35"
+  },
+  {
+    "name": "perf-gateway-memory",
+    "owner": "35",
+    "requirements": "prose in 35"
+  },
+  {
+    "name": "perf-gateway-rps",
+    "owner": "35",
+    "requirements": "prose in 35"
+  },
+  {
+    "name": "perf-gateway-zero-copy",
+    "owner": "35",
+    "requirements": "prose in 35, PERF-9"
+  },
+  {
+    "name": "perf-gc-mark",
+    "owner": "35",
+    "requirements": "prose in 35"
+  },
+  {
+    "name": "perf-hot-read",
+    "owner": "35",
+    "requirements": "prose in 35, PERF-1"
+  },
+  {
+    "name": "perf-index-size",
+    "owner": "35",
+    "requirements": "prose in 35"
+  },
+  {
+    "name": "perf-inode-memory",
+    "owner": "35",
+    "requirements": "prose in 35, PERF-7"
+  },
+  {
+    "name": "perf-merge-delta",
+    "owner": "35",
+    "requirements": "prose in 35, PERF-6, TEST-4"
+  },
+  {
+    "name": "perf-methodology",
+    "owner": "35",
+    "requirements": "PERF-11"
+  },
+  {
+    "name": "perf-negotiation",
+    "owner": "35",
+    "requirements": "prose in 35"
+  },
+  {
+    "name": "perf-nested-zero-dup",
+    "owner": "35",
+    "requirements": "prose in 35"
+  },
+  {
+    "name": "perf-no-bookkeeping-on-read",
+    "owner": "35",
+    "requirements": "prose in 35, PERF-8"
+  },
+  {
+    "name": "perf-readdir",
+    "owner": "35",
+    "requirements": "prose in 35, PERF-3"
+  },
+  {
+    "name": "perf-shared-page-cache",
+    "owner": "35",
+    "requirements": "prose in 35, PERF-10"
+  },
+  {
+    "name": "perf-warm-mount",
+    "owner": "35",
+    "requirements": "prose in 35, PERF-4"
+  },
+  {
+    "name": "perf-warm-read",
+    "owner": "35",
+    "requirements": "prose in 35"
+  },
+  {
+    "name": "perf-worker-rss",
+    "owner": "35",
+    "requirements": "prose in 35"
+  },
+  {
+    "name": "registry-complete",
+    "owner": "36",
+    "requirements": "TEST-16"
+  },
+  {
+    "name": "tier-chaos",
+    "owner": "36",
+    "requirements": "TEST-8"
+  },
+  {
+    "name": "core-fuzz",
+    "owner": "37",
+    "requirements": "TEST-3, CRATE-33, CRATE-4"
+  },
+  {
+    "name": "core-no-std",
+    "owner": "37",
+    "requirements": "CRATE-1, CRATE-21"
+  },
+  {
+    "name": "crate-graph",
+    "owner": "37",
+    "requirements": "CRATE-19"
+  },
+  {
+    "name": "edge-native-interop",
+    "owner": "38",
+    "requirements": "EDGE-14"
+  },
+  {
+    "name": "exec-through-overlay",
+    "owner": "40",
+    "requirements": "prose in 40"
+  },
+  {
+    "name": "feature-matrix",
+    "owner": "37",
+    "requirements": "CRATE-28, CRATE-29, CRATE-8"
+  },
+  {
+    "name": "golden-vectors",
+    "owner": "37",
+    "requirements": "TEST-1, CRATE-2, CRATE-3"
+  },
+  {
+    "name": "lint",
+    "owner": "37",
+    "requirements": "CRATE-39"
+  },
+  {
+    "name": "negotiation-bytes",
+    "owner": "40",
+    "requirements": "prose in 40"
+  },
+  {
+    "name": "perf-write-path",
+    "owner": "40",
+    "requirements": "prose in 40"
+  },
+  {
+    "name": "routing-stability",
+    "owner": "40",
+    "requirements": "prose in 40"
+  },
+  {
+    "name": "runtime-agnostic",
+    "owner": "37",
+    "requirements": "CRATE-7"
+  },
+  {
+    "name": "tree-node-distribution",
+    "owner": "40",
+    "requirements": "prose in 40"
+  },
+  {
+    "name": "unsafe-audit",
+    "owner": "37",
+    "requirements": "CRATE-30, CRATE-31"
+  }
+]

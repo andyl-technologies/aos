@@ -6,12 +6,24 @@
   names = builtins.attrNames;
   join = builtins.concatStringsSep "\n";
   isDerivation = value: builtins.isAttrs value && (value.type or null) == "derivation";
-  checkNames = builtins.concatMap (
-    group: let
-      kind = builtins.tryEval (aos.checks.${group}.type or null);
-      children = builtins.tryEval (names aos.checks.${group});
+  collectChecks = prefix: value: let
+      kind = builtins.tryEval (value.type or null);
+      children = builtins.tryEval (names value);
     in
       if kind.success && kind.value == "derivation"
+      then [prefix]
+      else if children.success
+      then builtins.concatMap (name: collectChecks "${prefix}.${name}" value.${name}) children.value
+      else [];
+  checkNames = builtins.concatMap (
+    group: let
+      value = aos.checks.${group};
+      kind = builtins.tryEval (value.type or null);
+      children = builtins.tryEval (names value);
+    in
+      if group == "terrane"
+      then collectChecks group value
+      else if kind.success && kind.value == "derivation"
       then [group]
       else if children.success
       then map (name: "${group}.${name}") children.value
@@ -63,7 +75,7 @@
         then []
         else if isDerivation target
         then [scope]
-        else map (name: "${scope}.${name}") (names target);
+        else collectChecks scope target;
     builds = buildNames;
     evals = [
       "eval"
