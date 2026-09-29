@@ -5,10 +5,11 @@
 
 use std::error::Error;
 use std::fmt;
+use std::num::NonZeroU8;
 use std::time::{Duration, SystemTime};
 
 use terrane_core::identity::{Identity, IdentityKind};
-use terrane_core::refs::{RefLogRecord, RefRecord};
+use terrane_core::refs::{Locality, RefLogRecord, RefRecord};
 
 /// Describes an exact range of immutable bytes (STORE-4).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,18 +50,7 @@ pub enum Durability {
     /// Durable across one region.
     Region,
     /// Durable in the given number of independent regions.
-    Regions(u8),
-}
-
-/// Labels a backend's placement for routing and locality (STORE-12).
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct Locality {
-    /// Region, when known.
-    pub region: Option<String>,
-    /// Zone, when known.
-    pub zone: Option<String>,
-    /// Host, when known.
-    pub host: Option<String>,
+    Regions(NonZeroU8),
 }
 
 /// Reports properties verified before a backend serves requests (STORE-12).
@@ -179,6 +169,12 @@ pub struct IdentityPrefix {
     pub digest_prefix: Vec<u8>,
 }
 
+/// Makes verified capabilities available before any store request (STORE-12).
+pub trait CapabilityReport {
+    /// Returns the capabilities established when this backend opened.
+    fn capabilities(&self) -> &Capabilities;
+}
+
 /// Stores immutable content without granting any ref authority (STORE-32).
 ///
 /// Implementations satisfy STORE-1 through STORE-6, STORE-11, and STORE-33.
@@ -187,12 +183,20 @@ pub struct IdentityPrefix {
 /// bytes before returning even a partial range. `has` returns one bit per
 /// input, in order, and only claims content that `get` can serve now. `list`
 /// is advisory and only for recovery, GC, or scrub.
+///
+/// A content-only caller has no ref methods:
+///
+/// ```compile_fail
+/// use terrane::store::{ContentStore, StoreFailure};
+///
+/// async fn cannot_advance_ref<S: ContentStore>(cache: &S) -> Result<(), StoreFailure> {
+///     cache.ref_get("refs/heads/main").await?;
+///     Ok(())
+/// }
+/// ```
 #[cfg_attr(feature = "send", async_trait::async_trait)]
 #[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
-pub trait ContentStore {
-    /// Returns the capabilities verified when this store opened.
-    fn capabilities(&self) -> &Capabilities;
-
+pub trait ContentStore: CapabilityReport {
     /// Validates and idempotently stores bytes under their computed identity.
     ///
     /// # Errors
@@ -266,12 +270,9 @@ pub trait RefWatch {
 /// on `(name, seq)` (STORE-8); reads and watches preserve sequence order.
 #[cfg_attr(feature = "send", async_trait::async_trait)]
 #[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
-pub trait RefStore {
+pub trait RefStore: CapabilityReport {
     /// The stream returned when a caller watches a ref.
     type Watch: RefWatch;
-
-    /// Returns the capabilities verified when this store opened.
-    fn capabilities(&self) -> &Capabilities;
 
     /// Reads the current record, or `None` if the ref is absent.
     ///
@@ -354,6 +355,32 @@ pub struct HttpResponse {
     pub body: Vec<u8>,
 }
 
+/// Classifies failures from an HTTP binding before a store maps them.
+#[derive(Debug)]
+pub enum HttpError {
+    /// The request cannot be represented by the selected transport.
+    InvalidRequest(Box<dyn Error + Send + Sync>),
+    /// The transport could not complete a valid request.
+    Unavailable(Box<dyn Error + Send + Sync>),
+}
+
+impl fmt::Display for HttpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidRequest(_) => f.write_str("invalid HTTP request"),
+            Self::Unavailable(_) => f.write_str("HTTP transport unavailable"),
+        }
+    }
+}
+
+impl Error for HttpError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::InvalidRequest(source) | Self::Unavailable(source) => Some(source.as_ref()),
+        }
+    }
+}
+
 /// Supplies HTTP transport without selecting a runtime (CRATE-7).
 #[cfg_attr(feature = "send", async_trait::async_trait)]
 #[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
@@ -363,13 +390,67 @@ pub trait HttpClient {
     /// # Errors
     ///
     /// Returns a typed failure when the request cannot be sent or received.
-    async fn send(&self, request: HttpRequest) -> Result<HttpResponse, StoreFailure>;
+    async fn send(&self, request: HttpRequest) -> Result<HttpResponse, HttpError>;
 }
 
 /// Supplies wall-clock time without selecting a host binding (CRATE-7).
 pub trait Clock {
     /// Returns the current wall-clock time.
     fn now(&self) -> SystemTime;
+}
+
+/// Supplies a WebAssembly host's fetch and time primitives (CRATE-8).
+///
+/// A host implementation binds these methods to its platform APIs. The
+/// adapter below gives library callers the same [`HttpClient`] and [`Clock`]
+/// contracts used by native callers, without requiring a second identity or
+/// store implementation.
+#[cfg(feature = "wasm")]
+#[async_trait::async_trait(?Send)]
+pub trait WasmHost {
+    /// Fetches an HTTP request through the host's fetch primitive.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed transport failure if the host rejects the request or
+    /// cannot deliver a response.
+    async fn fetch(&self, request: HttpRequest) -> Result<HttpResponse, HttpError>;
+
+    /// Returns the host's current wall-clock time.
+    fn now(&self) -> SystemTime;
+}
+
+/// Adapts one WebAssembly host to the portable HTTP and clock contracts.
+#[cfg(feature = "wasm")]
+#[derive(Clone, Debug)]
+pub struct WasmBindings<H> {
+    host: H,
+}
+
+#[cfg(feature = "wasm")]
+impl<H> WasmBindings<H> {
+    /// Selects the host binding for this I/O consumer.
+    #[must_use]
+    pub fn new(host: H) -> Self {
+        Self { host }
+    }
+}
+
+// A WebAssembly fetch future may be !Send. A consumer enabling `send` selects
+// the native binding; `wasm` and `tokio` may coexist in an all-features build.
+#[cfg(all(feature = "wasm", not(feature = "send")))]
+#[async_trait::async_trait(?Send)]
+impl<H: WasmHost> HttpClient for WasmBindings<H> {
+    async fn send(&self, request: HttpRequest) -> Result<HttpResponse, HttpError> {
+        self.host.fetch(request).await
+    }
+}
+
+#[cfg(feature = "wasm")]
+impl<H: WasmHost> Clock for WasmBindings<H> {
+    fn now(&self) -> SystemTime {
+        self.host.now()
+    }
 }
 
 /// Supplies filesystem operations only under `std` (CRATE-7).
@@ -382,23 +463,227 @@ pub trait LocalFs {
     /// # Errors
     ///
     /// Returns a typed failure if the file cannot be read.
-    async fn read(&self, path: &std::path::Path) -> Result<Vec<u8>, StoreFailure>;
+    async fn read(&self, path: &std::path::Path) -> std::io::Result<Vec<u8>>;
 
     /// Creates a new file without replacing an existing one.
     ///
     /// # Errors
     ///
     /// Returns a typed failure if the file exists or cannot be written.
-    async fn write_new(&self, path: &std::path::Path, bytes: &[u8]) -> Result<(), StoreFailure>;
+    async fn write_new(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()>;
 
     /// Renames one path within a filesystem.
     ///
     /// # Errors
     ///
     /// Returns a typed failure if the rename cannot complete.
-    async fn rename(
-        &self,
-        from: &std::path::Path,
-        to: &std::path::Path,
-    ) -> Result<(), StoreFailure>;
+    async fn rename(&self, from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()>;
+}
+
+/// Binds portable HTTP transport to the native runtime (CRATE-8).
+#[cfg(feature = "tokio")]
+#[derive(Clone, Debug)]
+pub struct TokioHttpClient {
+    client: reqwest::Client,
+}
+
+#[cfg(feature = "tokio")]
+impl TokioHttpClient {
+    /// Wraps an already configured native HTTP client.
+    #[must_use]
+    pub fn new(client: reqwest::Client) -> Self {
+        Self { client }
+    }
+}
+
+#[cfg(feature = "tokio")]
+#[async_trait::async_trait]
+impl HttpClient for TokioHttpClient {
+    async fn send(&self, request: HttpRequest) -> Result<HttpResponse, HttpError> {
+        let method = reqwest::Method::from_bytes(request.method.as_bytes())
+            .map_err(|source| HttpError::InvalidRequest(Box::new(source)))?;
+        let mut outgoing = self.client.request(method, request.url);
+
+        for (name, value) in request.headers {
+            outgoing = outgoing.header(name, value);
+        }
+
+        let response = outgoing
+            .body(request.body)
+            .send()
+            .await
+            .map_err(|source| HttpError::Unavailable(Box::new(source)))?;
+        let status = response.status().as_u16();
+        let headers = response
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.as_str().to_owned(),
+                    String::from_utf8_lossy(value.as_bytes()).into_owned(),
+                )
+            })
+            .collect();
+        let body = response
+            .bytes()
+            .await
+            .map_err(|source| HttpError::Unavailable(Box::new(source)))?;
+
+        Ok(HttpResponse {
+            status,
+            headers,
+            body: body.to_vec(),
+        })
+    }
+}
+
+/// Binds portable wall-clock reads to the native host (CRATE-8).
+#[cfg(feature = "tokio")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TokioClock;
+
+#[cfg(feature = "tokio")]
+impl Clock for TokioClock {
+    fn now(&self) -> SystemTime {
+        SystemTime::now()
+    }
+}
+
+/// Binds portable file operations to the native runtime (CRATE-8).
+#[cfg(feature = "tokio")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TokioLocalFs;
+
+#[cfg(feature = "tokio")]
+#[async_trait::async_trait]
+impl LocalFs for TokioLocalFs {
+    async fn read(&self, path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+        tokio::fs::read(path).await
+    }
+
+    async fn write_new(&self, path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .await?;
+        file.write_all(bytes).await?;
+        file.sync_all().await
+    }
+
+    async fn rename(&self, from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+        tokio::fs::rename(from, to).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(all(feature = "wasm", not(feature = "send")))]
+    fn poll_ready<F: std::future::Future>(future: F) -> F::Output {
+        use std::task::{Context, Poll, Waker};
+
+        let mut future = Box::pin(future);
+        let mut context = Context::from_waker(Waker::noop());
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("test host must complete synchronously"),
+        }
+    }
+
+    #[test]
+    fn error_outcomes_preserve_sources_without_changing_category() {
+        let source = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "backend detail");
+        let failure = StoreFailure::with_source(StoreErrorKind::ReadOnly, source);
+
+        assert_eq!(failure.kind(), &StoreErrorKind::ReadOnly);
+        assert_eq!(failure.to_string(), "store is read-only");
+        assert_eq!(
+            failure.source().map(ToString::to_string).as_deref(),
+            Some("backend detail")
+        );
+    }
+
+    #[test]
+    fn conflict_and_existing_log_are_distinct_from_backend_failure() {
+        let conflict = RefCasOutcome::Conflict(None);
+        let duplicate = RefLogAppendOutcome::Exists;
+
+        assert!(matches!(conflict, RefCasOutcome::Conflict(None)));
+        assert_eq!(duplicate, RefLogAppendOutcome::Exists);
+    }
+
+    #[test]
+    fn ref_capabilities_distinguish_authority_from_cache() {
+        let cache = Capabilities {
+            refs: RefCapability::None,
+            ranges: RangeCapability::Ranges,
+            presign: false,
+            locality: Locality::default(),
+            durability: Durability::Local,
+            sealed: false,
+        };
+        let authority = Capabilities {
+            refs: RefCapability::Cas,
+            ..cache.clone()
+        };
+
+        assert_eq!(cache.refs, RefCapability::None);
+        assert_eq!(authority.refs, RefCapability::Cas);
+    }
+
+    #[cfg(all(feature = "wasm", not(feature = "send")))]
+    #[test]
+    fn wasm_binding_forwards_fetch_and_host_time() {
+        struct TestHost;
+
+        #[async_trait::async_trait(?Send)]
+        impl WasmHost for TestHost {
+            async fn fetch(&self, request: HttpRequest) -> Result<HttpResponse, HttpError> {
+                Ok(HttpResponse {
+                    status: 206,
+                    headers: vec![],
+                    body: request.body,
+                })
+            }
+
+            fn now(&self) -> SystemTime {
+                SystemTime::UNIX_EPOCH + Duration::from_secs(42)
+            }
+        }
+
+        let binding = WasmBindings::new(TestHost);
+        let request = HttpRequest {
+            method: "POST".to_owned(),
+            url: "https://example.invalid".to_owned(),
+            headers: vec![],
+            body: b"payload".to_vec(),
+        };
+
+        let response = poll_ready(binding.send(request)).unwrap();
+        assert_eq!(response.status, 206);
+        assert_eq!(response.body, b"payload");
+        assert_eq!(binding.now(), SystemTime::UNIX_EPOCH + Duration::from_secs(42));
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn native_create_new_preserves_existing_bytes() {
+        let path =
+            std::env::temp_dir().join(format!("terrane-store-create-new-{}", std::process::id()));
+        let fs = TokioLocalFs;
+
+        fs.write_new(&path, b"first").await.unwrap();
+        let second = fs.write_new(&path, b"second").await;
+        assert_eq!(
+            second.unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs.read(&path).await.unwrap(), b"first");
+
+        tokio::fs::remove_file(path).await.unwrap();
+    }
 }
