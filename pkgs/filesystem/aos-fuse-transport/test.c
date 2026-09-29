@@ -9,6 +9,7 @@
 #include <linux/fuse.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -687,9 +688,12 @@ static void prepared_session_case(unsigned scenario) {
   close(continuation[1]);
 }
 
+#include "scoped_reply_test.c.inc"
+
 int main(void) {
   if (fuse_version() != 318)
     fail("runtime libfuse version differs from the qualified 3.18.2 ABI");
+  test_scoped_reply_v3();
   test_fallback_v2();
   for (unsigned scenario = 0; scenario <= 5; scenario++)
     prepared_session_case(scenario);

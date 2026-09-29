@@ -109,6 +109,7 @@ in
           "aos_fuse_transport_run_fallback_v2"
           "aos_fuse_transport_prepare_v1"
           "aos_fuse_transport_continue_prepared_v1"
+          "aos_fuse_transport_continue_prepared_v3"
           "aos_fuse_transport_destroy_prepared_v1"
         ];
       };
@@ -148,6 +149,12 @@ in
                          "prepared-session v1 ABI changed");
           _Static_assert(offsetof(struct aos_fuse_preparation_v1, limits) == 24,
                          "prepared-session limit offset changed");
+          _Static_assert(sizeof(struct aos_fuse_scoped_operations_v3) == 192,
+                         "reply-scoped operation ABI changed");
+          _Static_assert(offsetof(struct aos_fuse_scoped_operations_v3, legacy) == 16,
+                         "reply-scoped legacy embedding changed");
+          _Static_assert(offsetof(struct aos_fuse_scoped_operations_v3, lookup) == 152,
+                         "reply-scoped callback offset changed");
 
           int main(void) {
             int (*volatile run)(
@@ -163,11 +170,16 @@ in
                 aos_fuse_transport_continue_prepared_v1;
             void (*volatile destroy)(struct aos_fuse_prepared_session_v1 *) =
               aos_fuse_transport_destroy_prepared_v1;
+            int (*volatile scoped)(
+              struct aos_fuse_prepared_session_v1 *,
+              const struct aos_fuse_scoped_operations_v3 *, void *) =
+                aos_fuse_transport_continue_prepared_v3;
             return AOS_FUSE_TRANSPORT_ABI_MAJOR == 1U &&
                            AOS_FUSE_TRANSPORT_ABI_MINOR == 0U && run != 0 &&
                            AOS_FUSE_PREPARED_SESSION_ABI_MAJOR == 1U &&
                            AOS_FUSE_PREPARED_SESSION_ABI_MINOR == 0U &&
-                           prepare != 0 && resume != 0 && destroy != 0
+                           prepare != 0 && resume != 0 && destroy != 0 &&
+                           AOS_FUSE_SCOPED_ABI_MAJOR == 3U && scoped != 0
                        ? 0
                        : 1;
           }
