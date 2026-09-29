@@ -153,7 +153,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   to TREE-8, TREE-11 to TREE-13, TREE-17, TREE-18, TREE-25 to TREE-34;
   `checks.terrane.gates.canonical-cbor`,
   `checks.terrane.gates.tree-well-formed`.
-- [ ] **T-TREE-2** Prolly-tree builder with content-defined boundaries and
+- [x] **T-TREE-2** Prolly-tree builder with content-defined boundaries and
   history independence, balanced levels, and exact child summaries. —
   satisfies TREE-19 to TREE-24;
   `checks.terrane.gates.tree-boundaries`,
