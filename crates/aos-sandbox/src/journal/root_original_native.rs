@@ -863,6 +863,65 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
         })
     }
 
+    /// Reconstructs protected metadata for one existing original Root terminal.
+    ///
+    /// This permits readback after restart without a retained append container.
+    /// It requires actual retained admission transaction provenance and either
+    /// the current no-interest marker's cleanup transaction or a stored terminal
+    /// ACK in the fully validated graph. It provides no original hot flight,
+    /// positive FD or time authority, current signer, or new ACK authority.
+    ///
+    /// # Errors
+    /// Rejects an absent or nonterminal original v2 sidecar, a remaining original
+    /// floor for the attempt, missing retained transaction provenance, invalid
+    /// graph/funding, or unavailable physical currentness. A compacted generation
+    /// without the original transaction identities cannot supply this readback.
+    pub fn terminal_readback(
+        &self,
+        attempt: [u8; 32],
+    ) -> Result<OriginalRootProtectedReadbackV5, JournalError> {
+        let checked = self.current_graph()?;
+        let sidecar = checked.sidecars().get(&attempt).ok_or_else(invalid)?;
+        if original_root_remaining_v5(&checked, attempt).map_err(|_| invalid())? != 0 {
+            return Err(invalid());
+        }
+
+        let families = canonical_reservations(&self.authority.journal.state)?;
+        if families.iter().any(|family| {
+            matches!(family, CanonicalCapacityFamily::OriginalRoot5(floor)
+                if floor.request().owner_id == attempt)
+        }) {
+            return Err(invalid());
+        }
+
+        let transactions = &self.authority.journal.transaction_ids;
+        if !transactions.contains(&sidecar.admission_cut().capture_transaction()) {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
+        if let Some(marker) = sidecar.no_interest_terminal() {
+            if !transactions.contains(&marker.cleanup_transaction()) {
+                return Err(JournalError::StaleAuthoritySnapshot);
+            }
+        } else if !sidecar.suffix().controls().last().is_some_and(|control| {
+            matches!(
+                control.kind(),
+                NativeHeldControlKindV1::RootTerminalRecorded
+                    | NativeHeldControlKindV1::RootRecoveryQuery
+            )
+        }) {
+            return Err(invalid());
+        }
+
+        let readback = OriginalRootProtectedReadbackV5 {
+            snapshot: self.snapshot()?,
+            graph: checked,
+            floor: None,
+            attempt,
+        };
+        self.validate_readback(&readback)?;
+        Ok(readback)
+    }
+
     /// Rechecks exact physical readback at its actual current-use boundary.
     ///
     /// # Errors
