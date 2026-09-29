@@ -72,10 +72,10 @@ impl ResourceSource {
         bytes.extend_from_slice(&slot.revision().get().to_be_bytes());
         bytes.extend_from_slice(slot.record_digest().as_bytes());
         let allocation = origin.allocation;
-        bytes.extend_from_slice(&allocation.observed_generation.to_be_bytes());
-        bytes.extend_from_slice(&allocation.observed_audit_digest);
-        bytes.extend_from_slice(&allocation.target_generation.to_be_bytes());
-        bytes.extend_from_slice(&allocation.allocation_digest);
+        bytes.extend_from_slice(&allocation.observed_generation().to_be_bytes());
+        bytes.extend_from_slice(&allocation.observed_audit_digest());
+        bytes.extend_from_slice(&allocation.target_generation().to_be_bytes());
+        bytes.extend_from_slice(&allocation.allocation_digest());
         bytes.extend_from_slice(&origin.binding.revision().to_be_bytes());
         bytes.extend_from_slice(origin.binding.binding_digest().as_bytes());
         let attachment_lease = desired.intent().lease();
@@ -85,7 +85,7 @@ impl ResourceSource {
         bytes.extend_from_slice(&Sha256::digest(encode_object_descriptor(manifest.policy())));
         bytes.extend_from_slice(&lease_commitment(lease_bytes));
         bytes.extend_from_slice(&sample.host_boot_id());
-        bytes.extend_from_slice(sample.provenance().as_bytes());
+        bytes.extend_from_slice(&sample.provenance().as_bytes());
         bytes.extend_from_slice(&sample.wall_seconds().to_be_bytes());
         bytes.extend_from_slice(&sample.boottime_nanoseconds().to_be_bytes());
         bytes.extend_from_slice(&deadline.to_be_bytes());
