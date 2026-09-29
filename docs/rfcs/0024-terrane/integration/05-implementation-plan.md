@@ -169,9 +169,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   operations, and the remaining recipe kinds are T-ALG-3 on B-derive. —
   satisfies ALG-15 to ALG-21, ALG-28 to ALG-35;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
-- [ ] **T-PROP-1** Property resolution, types, boundary properties,
+- [x] **T-PROP-1** Property resolution, types, boundary properties,
   completeness, commit-time requirement checks, and strict attribute-name
-  validation. — satisfies TREE-14, PROP-1 to PROP-28;
+  validation. This task provides pure resolution and validation. Actual
+  commit admission and graft checks are joint with T-REF-2 and T-CRATE-1;
+  trust and flatten policy with T-PROV-1 and T-ALG-2; placement, domains,
+  retention, and durability with the corresponding store, domain, GC,
+  redundancy, and topology tasks; attribute production with T-DRV-1 and
+  T-DRV-2. Host realizers enforce hints and wipe policy. Backfill execution
+  belongs to T-JOB-1; this task reports gaps without starting jobs. —
+  satisfies TREE-14, PROP-1 to PROP-28;
   `checks.terrane.gates.property-resolution`,
   `checks.terrane.gates.property-required-attrs`,
   `checks.terrane.gates.property-domain-reference`.
