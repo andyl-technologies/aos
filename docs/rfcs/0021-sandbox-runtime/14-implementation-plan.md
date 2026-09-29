@@ -220,11 +220,13 @@ unsafe boundary in the FUSE crate.
 
 ## Nix packages and modules
 
-`modules/services/sandbox-runtime.nix` owns `aos.sandbox.*` options, persistent
+Feature modules under `modules/sandbox/` own `aos.sandbox.*` options, persistent
 daemon/socket/slice/network configuration, tmpfiles, policy assertions, and
-checks. Deliberately imported implementation helpers live under
-`modules/services/_sandbox-runtime/`. Per-sandbox transient units are never
-rendered into `/etc`.
+checks. `modules/default.nix` discovers these modules automatically. Each
+feature keeps its options and configuration together; shared controller
+identity lives in `modules/sandbox/controller.nix`. Underscore-prefixed helpers
+in the same directory are imported explicitly, not auto-discovered.
+Per-sandbox transient units are never rendered into `/etc`.
 
 A focused sandbox-root builder composes the existing AOS module and closure
 assembly machinery into a bootable root and seed snapshot. It may factor common
