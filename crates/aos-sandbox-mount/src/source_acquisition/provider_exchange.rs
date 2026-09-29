@@ -35,6 +35,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         if self.has_cold_provider_recovery()
             || self.runtime.pending_provider.is_some()
             || self.runtime.pending_provider_send.is_some()
@@ -94,6 +95,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<bool> {
+        self.require_no_original_native_flight()?;
         let sent = self
             .runtime
             .pending_provider
@@ -171,6 +173,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<bool> {
+        self.require_no_original_native_flight()?;
         if self.runtime.pending_provider.is_some() || self.runtime.pending_provider_send.is_some() {
             return Err(state_error("live provider custody must be resolved first"));
         }
@@ -251,6 +254,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         let recovery = self
             .runtime
             .pending_provider_send
@@ -306,6 +310,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
         catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         let sent = self
             .runtime
             .pending_provider
@@ -394,6 +399,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
         catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         if self.runtime.pending_provider.is_some() {
             return Err(state_error(
                 "live SourceProvider response custody must be resumed directly",
@@ -499,6 +505,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         catalog_journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         historical: aos_sandbox_source_provider::FixedProviderHistoricalOutcomeV1,
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         if self.runtime.pending_provider.is_some() {
             return Err(state_error(
                 "live SourceProvider response custody must be resumed directly",
@@ -649,6 +656,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         if let Some(retained) = self.runtime.retained_postcommit_recovery.last()
             && let Some(terminal) = retained.startup_acquire_terminal
             && self.exact_complete_terminal_attempt(

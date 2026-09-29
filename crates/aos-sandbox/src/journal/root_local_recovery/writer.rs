@@ -13,8 +13,8 @@ use super::{
 use crate::journal::{
     CacheMutationGateV1, CommitResult, Journal, JournalError, JournalTransaction,
     ProtectedAuthorityScope, ProtectedJournalAuthority, ProtectedJournalSnapshot, RecordNamespace,
-    RootSourceGenesisTransitionV1, SourceProjectAdmissionTransition, authority_preflight_digest,
-    controller_source_genesis, source_tree_genesis,
+    RootOwnerEdge, RootSourceGenesisTransitionV1, SourceProjectAdmissionTransition,
+    authority_preflight_digest, controller_source_genesis, source_tree_genesis,
 };
 
 /// Borrows one of the two closed fixed Mount local physical scopes.
@@ -264,7 +264,7 @@ impl<'journal> LocalRecoveryWriter<'journal> {
             None,
             None,
             None,
-            Some(edge),
+            Some(RootOwnerEdge::Local(edge)),
             CacheMutationGateV1::Ordinary,
         )
     }
@@ -287,7 +287,7 @@ impl<'journal> LocalRecoveryWriter<'journal> {
             controller_source_genesis::ControllerSourceGenesisTransition::None,
             source_tree_genesis::SourceGenesisTransitionV1::None,
             RootSourceGenesisTransitionV1::None,
-            Some(edge),
+            Some(RootOwnerEdge::Local(edge)),
             CacheMutationGateV1::Ordinary,
         )
     }

@@ -92,6 +92,22 @@ pub fn validate_native_root_transition_v2(
     mount_attempt: [u8; 32],
     transaction_id: [u8; 16],
 ) -> Result<RootNativeHeldTransitionV2> {
+    let mut proposal = validate_owner_transition(before, after, mount_attempt, transaction_id)?;
+    let next = after
+        .sidecars
+        .get(&mount_attempt)
+        .ok_or_else(|| state_error("native Root v2 successor sidecar absent"))?;
+    proposal.maximum_remaining_transactions = remaining(after, next)?;
+    Ok(proposal)
+}
+
+/// Shares exact owner validation independently of the legacy mixed ceiling.
+pub(super) fn validate_owner_transition(
+    before: &RootNativeHeldGraphV2,
+    after: &RootNativeHeldGraphV2,
+    mount_attempt: [u8; 32],
+    transaction_id: [u8; 16],
+) -> Result<RootNativeHeldTransitionV2> {
     let next = after
         .sidecars
         .get(&mount_attempt)
@@ -102,7 +118,7 @@ pub fn validate_native_root_transition_v2(
             transaction_id,
             puts: BTreeMap::new(),
             before_images: BTreeMap::new(),
-            maximum_remaining_transactions: remaining(after, next)?,
+            maximum_remaining_transactions: 0,
             admission_binding: None,
         });
     }
@@ -248,7 +264,7 @@ pub fn validate_native_root_transition_v2(
         transaction_id,
         puts,
         before_images,
-        maximum_remaining_transactions: remaining(after, next)?,
+        maximum_remaining_transactions: 0,
         admission_binding,
     })
 }

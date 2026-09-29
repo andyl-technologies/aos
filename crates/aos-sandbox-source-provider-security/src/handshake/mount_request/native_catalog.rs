@@ -31,7 +31,13 @@ pub(super) use outcome::retain_original_outcome_owner;
 /// progress must use the same current session and protected Mount writer.
 #[must_use = "continue the same original flight or abandon its preparation"]
 pub struct PendingNativeMountAcquireV3 {
+    retained_plan: Option<CurrentMountProviderSessionPlanV2>,
+    retained_draft: Option<AcquireSourceRequestV1>,
+    retained_deadline: Option<OriginalNativeDeadlineV3>,
     preparation: Option<NativeAcquirePreparationV3>,
+    retained_currentness: Option<NativeAcquireCurrentnessGuardV3>,
+    retained_prepared: Option<PreparedMountProviderRequestV2>,
+    retained_signed_request: Option<Vec<u8>>,
 }
 
 struct NativeAcquirePreparationV3 {
@@ -40,7 +46,7 @@ struct NativeAcquirePreparationV3 {
     publication: VerifiedCatalogPublicationV1,
     catalog: ProviderHeldSnapshotCatalogV1,
     selection_key: Option<Vec<u8>>,
-    query: CatalogCurrentnessQueryV1,
+    query: Option<CatalogCurrentnessQueryV1>,
     mount_head_minimum: (u64, ObjectDigest),
     socket_cookie: std::num::NonZeroU64,
     deadline: OriginalNativeDeadlineV3,
@@ -60,6 +66,28 @@ pub(super) struct NativeAcquireCurrentnessGuardV3 {
     mount_head_minimum: (u64, ObjectDigest),
     deadline: OriginalNativeDeadlineV3,
     planning_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+}
+
+impl NativeAcquireCurrentnessGuardV3 {
+    pub(super) const fn original_planning_snapshot(
+        &self,
+    ) -> &aos_sandbox::ProtectedJournalSnapshot {
+        &self.planning_snapshot
+    }
+
+    pub(super) fn original_root_witness(
+        &self, records: [aos_sandbox_source_provider_protocol::native_held_completion::witness::NativeHeldByteWitnessV1; 4],
+        journal_sequence: u64,
+    ) -> aos_sandbox_source_provider_protocol::native_held_completion::witness::RootNativeHeldWitnessV1{
+        use aos_sandbox_source_provider_protocol::native_held_completion::witness::NativeHeldGenerationClaimV1;
+        let claim = |(generation, digest)| NativeHeldGenerationClaimV1 { generation, digest };
+        aos_sandbox_source_provider_protocol::native_held_completion::witness::RootNativeHeldWitnessV1 {
+            local_socket_cookie: self.proof.socket_cookie.get(), journal_sequence,
+            planning_sequence: self.planning_snapshot.sequence(), trust: claim(self.trust),
+            revocation: claim(self.revocation), provider_head: claim(self.proof.head()),
+            provider_floor: claim(self.proof.floor()), publication: self.proof.publication_digest(), records,
+        }
+    }
 }
 
 struct OriginalNativeDeadlineV3 {
@@ -126,7 +154,59 @@ impl CurrentRootMountSourceProviderSessionV1 {
         canonical_catalog: &[u8],
         selection_key: Option<Vec<u8>>,
     ) -> Result<PendingNativeMountAcquireV3, SourceProviderSecurityError> {
-        self.validate_current_mount_plan(journal, &plan)?;
+        let mut retained = None;
+        self.begin_original_native_acquire_retaining_v5(
+            journal,
+            plan,
+            request,
+            live_mount_request,
+            canonical_publication,
+            canonical_catalog,
+            selection_key,
+            &mut retained,
+        )?;
+        retained.ok_or(SourceProviderSecurityError::SessionContinuity)
+    }
+
+    /// Begins the SAME catalog exchange while parking original custody first.
+    ///
+    /// # Errors
+    /// Retains any actual plan, paired deadline and pending exchange on failure;
+    /// callers must not replace the owner or restart a poisoned original flight.
+    #[allow(clippy::too_many_arguments)]
+    #[doc(hidden)]
+    pub fn begin_original_native_acquire_retaining_v5(
+        &mut self,
+        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        plan: CurrentMountProviderSessionPlanV2,
+        request: AcquireSourceRequestV1,
+        live_mount_request: &aos_sandbox_protocol::LiveValidatedAcquireMountSourceRequest,
+        canonical_publication: &[u8],
+        canonical_catalog: &[u8],
+        selection_key: Option<Vec<u8>>,
+        retained: &mut Option<PendingNativeMountAcquireV3>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        *retained = Some(PendingNativeMountAcquireV3 {
+            retained_plan: Some(plan),
+            retained_draft: Some(request),
+            retained_deadline: None,
+            preparation: None,
+            retained_currentness: None,
+            retained_prepared: None,
+            retained_signed_request: None,
+        });
+        let pending = retained
+            .as_mut()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let plan = pending
+            .retained_plan
+            .as_ref()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let request = pending
+            .retained_draft
+            .as_ref()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        self.validate_current_mount_plan(journal, plan)?;
         let mount = live_mount_request.request();
         if self.has_pending_control_exchange()
             || request.acquisition_version() != ACQUIRE_SOURCE_REQUEST_VERSION_V2
@@ -158,8 +238,13 @@ impl CurrentRootMountSourceProviderSessionV1 {
             mount.header().deadline_boottime_nanoseconds(),
         )
         .map_err(|error| self.poison(error))?;
-        let request =
-            bound_native_draft_deadline(request, &deadline).map_err(|error| self.poison(error))?;
+        pending.retained_deadline = Some(deadline);
+        let deadline = pending
+            .retained_deadline
+            .as_ref()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let request = bound_native_draft_deadline(request.clone(), deadline)
+            .map_err(|error| self.poison(error))?;
         let configuration = RevalidatedProviderConfigurationV1::capture_root_mount(
             &mut self.custody,
             deadline.initial.paired.wall_seconds(),
@@ -190,10 +275,35 @@ impl CurrentRootMountSourceProviderSessionV1 {
         )
         .map_err(|error| self.poison(error))?;
         let socket_cookie = self.carrier.socket().peer().socket_cookie();
-        let proof = self.advance_catalog_currentness_checked(&bounds.query_floor, || {
-            deadline.require_current(kernel_clock()?)
-        })?;
-        let query = match &proof {
+        // Park the actual plan and paired clock BEFORE catalog IO. Even a
+        // poisoned post-IO check leaves this same original owner in the flight.
+        pending.preparation = Some(NativeAcquirePreparationV3 {
+            plan: pending
+                .retained_plan
+                .take()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?,
+            request,
+            publication,
+            catalog,
+            selection_key,
+            query: None,
+            mount_head_minimum: bounds.head_minimum,
+            socket_cookie,
+            deadline: pending
+                .retained_deadline
+                .take()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?,
+            proof: None,
+        });
+        let preparation = pending
+            .preparation
+            .as_mut()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        preparation.proof = self
+            .advance_catalog_currentness_checked(&bounds.query_floor, || {
+                preparation.deadline.require_current(kernel_clock()?)
+            })?;
+        preparation.query = Some(match &preparation.proof {
             Some(proof) => proof.query.clone(),
             None => self
                 .catalog_exchange
@@ -201,23 +311,10 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 .ok_or(SourceProviderSecurityError::SessionContinuity)?
                 .query
                 .clone(),
-        };
-        self.require_original_native_deadline_v3(&deadline)?;
-        self.validate_current_mount_plan(journal, &plan)?;
-        Ok(PendingNativeMountAcquireV3 {
-            preparation: Some(NativeAcquirePreparationV3 {
-                plan,
-                request,
-                publication,
-                catalog,
-                selection_key,
-                query,
-                mount_head_minimum: bounds.head_minimum,
-                socket_cookie,
-                deadline,
-                proof,
-            }),
-        })
+        });
+        self.require_original_native_deadline_v3(&preparation.deadline)?;
+        self.validate_current_mount_plan(journal, &preparation.plan)?;
+        Ok(())
     }
 
     /// Advances and signs one exact original native Acquire V3 preparation.
@@ -245,10 +342,14 @@ impl CurrentRootMountSourceProviderSessionV1 {
             return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
         if preparation.proof.is_none() {
+            let query = preparation
+                .query
+                .as_ref()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?;
             // An absent or different exchange means another caller completed
             // or superseded our query. Never start a new query on that path.
             if !original_query_is_pending(
-                &preparation.query,
+                query,
                 self.catalog_exchange
                     .as_ref()
                     .map(|exchange| &exchange.query),
@@ -262,8 +363,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
                     .authority
                     .authority_id(),
                 preparation.plan.session.resource_namespace_digest,
-                preparation.query.minimum().0,
-                preparation.query.minimum().1,
+                query.minimum().0,
+                query.minimum().1,
             )
             .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
             preparation.proof = self.advance_catalog_currentness_checked(&minimum, || {
@@ -275,18 +376,18 @@ impl CurrentRootMountSourceProviderSessionV1 {
             }
         }
 
-        let preparation = pending
-            .preparation
-            .take()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let proof = preparation
+        // Recheck while every original owner is still parked in pending. No
+        // fallible operation below may discard the received proof or nonce.
+        self.validate_current_mount_plan(journal, &preparation.plan)?;
+        let original_proof = preparation
             .proof
+            .as_ref()
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        if proof.query != preparation.query || proof.socket_cookie != preparation.socket_cookie {
+        if Some(&original_proof.query) != preparation.query.as_ref()
+            || original_proof.socket_cookie != preparation.socket_cookie
+        {
             return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
-        let (session, request_sequence, response_sequence, planning_snapshot) =
-            self.consume_current_mount_plan_with_snapshot(journal, preparation.plan)?;
         let (resource, snapshot) = select_catalog_claim(
             &preparation.catalog,
             &preparation.publication,
@@ -294,12 +395,26 @@ impl CurrentRootMountSourceProviderSessionV1 {
         )
         .map_err(|error| self.poison(error))?;
         let binding = join_current_catalog_claims(
-            &proof.signed,
-            &proof.query,
+            &original_proof.signed,
+            &original_proof.query,
             &preparation.publication,
             preparation.mount_head_minimum,
         )
         .map_err(|error| self.poison(error))?;
+        let preparation = pending
+            .preparation
+            .take()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let proof = preparation
+            .proof
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let CurrentMountProviderSessionPlanV2 {
+            session,
+            current_request_sequence: request_sequence,
+            current_response_sequence: response_sequence,
+            journal_snapshot: planning_snapshot,
+            ..
+        } = preparation.plan;
         let guard = NativeAcquireCurrentnessGuardV3 {
             proof,
             publication: preparation.publication,
@@ -313,6 +428,11 @@ impl CurrentRootMountSourceProviderSessionV1 {
             deadline: preparation.deadline,
             planning_snapshot,
         };
+        pending.retained_currentness = Some(guard);
+        let guard = pending
+            .retained_currentness
+            .as_ref()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
         self.require_native_acquire_currentness_v3(&guard)?;
         let request = AcquireSourceRequestV1::new_native_v3(preparation.request, binding)
             .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
@@ -346,7 +466,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
             session.revocation_digest,
         )
         .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        let mut prepared = self.prepare_acquire_from_catalog(
+        let prepared = self.prepare_acquire_from_catalog_retaining(
             session,
             request_sequence,
             response_sequence,
@@ -355,13 +475,23 @@ impl CurrentRootMountSourceProviderSessionV1 {
             catalog_floor,
             selection_floor,
             guard.proof.head_commitment(),
+            &mut pending.retained_signed_request,
         )?;
-        self.require_native_acquire_currentness_v3(&guard)?;
+        pending.retained_prepared = Some(prepared);
+        let prepared = pending
+            .retained_prepared
+            .as_mut()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        prepared.native_currentness = pending.retained_currentness.take();
+        let guard = prepared
+            .native_currentness
+            .as_ref()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        self.require_native_acquire_currentness_v3(guard)?;
         journal
             .validate_mount_source_acquisition_snapshot(&guard.planning_snapshot)
             .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        prepared.native_currentness = Some(guard);
-        Ok(Some(prepared))
+        Ok(pending.retained_prepared.take())
     }
 
     /// Rechecks original native preparation immediately before Mount commit.
@@ -399,6 +529,14 @@ impl CurrentRootMountSourceProviderSessionV1 {
     pub fn revalidate_native_acquire_reservation_v3(
         &mut self,
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        reservation: &ReservedMountProviderRequestV2,
+    ) -> Result<(), SourceProviderSecurityError> {
+        self.revalidate_native_acquire_reservation_with_view(journal, reservation)
+    }
+
+    pub(super) fn revalidate_native_acquire_reservation_with_view(
+        &mut self,
+        journal: &impl MountSourceAcquisitionJournalViewV2,
         reservation: &ReservedMountProviderRequestV2,
     ) -> Result<(), SourceProviderSecurityError> {
         let guard = reservation
@@ -444,6 +582,29 @@ impl CurrentRootMountSourceProviderSessionV1 {
         ReservedMountProviderRequestV2,
         (PreparedMountProviderRequestV2, SourceProviderSecurityError),
     > {
+        self.confirm_native_acquire_reservation_with_view(
+            journal,
+            prepared,
+            attempt_key,
+            attempt_record,
+            head_key,
+            head_record,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn confirm_native_acquire_reservation_with_view(
+        &mut self,
+        journal: &impl MountSourceAcquisitionJournalViewV2,
+        prepared: PreparedMountProviderRequestV2,
+        attempt_key: Vec<u8>,
+        attempt_record: Vec<u8>,
+        head_key: Vec<u8>,
+        head_record: Vec<u8>,
+    ) -> Result<
+        ReservedMountProviderRequestV2,
+        (PreparedMountProviderRequestV2, SourceProviderSecurityError),
+    > {
         let validation = (|| {
             let guard = prepared
                 .native_currentness
@@ -459,7 +620,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 return Err(SourceProviderSecurityError::SessionContinuity);
             }
             let snapshot = journal
-                .snapshot()
+                .capture_snapshot()
                 .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
             prepared.validate_protected_reservation(
                 journal,

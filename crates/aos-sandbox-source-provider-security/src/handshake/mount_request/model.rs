@@ -560,7 +560,7 @@ impl PreparedMountProviderRequestV2 {
     /// containing this request, session, request sequence, and response head.
     pub(super) fn validate_protected_reservation(
         &self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &impl super::projection::MountSourceAcquisitionJournalViewV2,
         reservation_snapshot: &aos_sandbox::ProtectedJournalSnapshot,
         attempt_key: &[u8],
         attempt_record: &[u8],
@@ -686,10 +686,10 @@ impl PreparedMountProviderRequestV2 {
                 head.scope.provider_authority_id,
             )) != Some(&head)
             || journal
-                .validate_mount_source_acquisition_snapshot(reservation_snapshot)
+                .validate_current_snapshot(reservation_snapshot)
                 .is_err()
-            || journal.get(attempt_key).ok().flatten() != Some(attempt_record)
-            || journal.get(head_key).ok().flatten() != Some(head_record)
+            || journal.current_value(attempt_key).ok().flatten() != Some(attempt_record)
+            || journal.current_value(head_key).ok().flatten() != Some(head_record)
         {
             return Err(SourceProviderSecurityError::SessionContinuity);
         }

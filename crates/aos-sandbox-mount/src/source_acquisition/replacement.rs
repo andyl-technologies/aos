@@ -43,6 +43,7 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         // A live owner cannot abandon pending requests without retaining their
         // opaque custody. Only the Broker's absent-runtime kind5 entry may use
         // cold scheduling derivation.

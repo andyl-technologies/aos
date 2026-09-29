@@ -36,6 +36,7 @@ mod cut;
 mod evidence;
 mod graph;
 mod graph_v2;
+mod original_v5;
 mod recovery_v2;
 mod reducer;
 mod reducer_v2;
@@ -57,6 +58,10 @@ pub use cut::{
 pub use evidence::{MAXIMUM_ROOT_NATIVE_VERIFIER_BYTES_V1, RootNativeTerminalVerifierV1};
 pub use graph::{RootNativeHeldGraphV1, validate_native_root_graph_v1};
 pub use graph_v2::{RootNativeDataClassV2, RootNativeHeldGraphV2, validate_native_root_graph_v2};
+pub use original_v5::{
+    original_root_remaining_v5, validate_original_root_preparation_v5,
+    validate_original_root_transition_v5,
+};
 pub use reducer::{
     RootNativeHeldTransitionV1, RootNativeTransitionKindV1,
     validate_native_root_cold_transition_v1, validate_native_root_transition_v1,

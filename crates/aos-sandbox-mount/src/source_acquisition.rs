@@ -49,6 +49,7 @@ mod lifecycle;
 mod model;
 mod native_recovery;
 mod native_selection;
+mod original_native_runtime;
 mod outcome;
 mod projection;
 mod provider_exchange;
@@ -167,6 +168,9 @@ pub(crate) struct SourceAcquisitionRuntimeV2 {
     pending_remote_inventory_outcome:
         Option<aos_sandbox_source_provider_security::VerifiedMountProviderOutcomeV2>,
     pending_provider_send: Option<ProviderQuerySendRecoveryV2>,
+    pending_original_native: Option<native_selection::OriginalNativeAcquireFlightV5>,
+    original_native_sidecars: BTreeMap<[u8; 32],
+        aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::RootNativeHeldSidecarV2>,
     pending_backend_recovery_replacement: Option<BackendRecoveryReplacementV2>,
     pending_inventory_recovery_replacement:
         Option<([u8; 16], [u8; 16], Option<[u8; 32]>, [u8; 32])>,
@@ -782,7 +786,16 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         journal: &'journal mut Journal,
         runtime: SourceAcquisitionRuntimeV2,
     ) -> std::result::Result<Self, (crate::MountError, SourceAcquisitionRuntimeV2)> {
-        match aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed(journal) {
+        // Only an already retained original flight may select the named native
+        // reborrow. A replayed row alone cannot reconstruct original custody.
+        let protected = if runtime.pending_original_native.is_some() {
+            aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed_root_original_native_v5(
+                journal,
+            )
+        } else {
+            aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed(journal)
+        };
+        match protected {
             Ok(protected) => Ok(Self { protected, runtime }),
             Err(error) => Err((crate::MountError::State(error.to_string()), runtime)),
         }
@@ -831,6 +844,8 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 pending_provider: None,
                 pending_remote_inventory_outcome: None,
                 pending_provider_send: None,
+                pending_original_native: None,
+                original_native_sidecars: BTreeMap::new(),
                 pending_backend_recovery_replacement,
                 pending_inventory_recovery_replacement,
                 pending_release_preparation: None,
@@ -858,6 +873,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     }
 
     fn install_and_retire_kind2_v4(&mut self) -> Result<()> {
+        self.require_no_original_native_flight()?;
         let mut writer = self
             .protected
             .root_local_recovery_authority_v4()
@@ -883,6 +899,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             &mut aos_sandbox::MountSourceConsumptionJournalAuthorityV1<'authority>,
         ) -> Result<R>,
     ) -> Result<R> {
+        self.require_no_original_native_flight()?;
         let mut authority = self
             .protected
             .source_consumption_authority()
@@ -909,6 +926,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             &mut aos_sandbox::MountSourceAcquisitionJournalAuthorityV2<'authority>,
         ) -> Result<R>,
     ) -> Result<R> {
+        self.require_no_original_native_flight()?;
         let mut authority = self
             .protected
             .source_acquisition_authority()
@@ -1077,6 +1095,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         if let Some(acquisition_id) = self
             .runtime
             .startup_manager_sources
@@ -1306,6 +1325,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     /// Returns an error for missing source/control authority or stale protected state.
     #[doc(hidden)]
     pub fn begin_manager_source_handoff(&mut self, acquisition_id: [u8; 32]) -> Result<Vec<u8>> {
+        self.require_no_original_native_flight()?;
         if self
             .runtime
             .manager_handoffs
@@ -1377,6 +1397,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         acquisition_id: [u8; 32],
         accepted: aos_sandbox_protocol::mount_manager_startup::SignedManagerSourceControlOutcomeV1,
     ) -> Result<Vec<u8>> {
+        self.require_no_original_native_flight()?;
         let index = self
             .runtime
             .manager_handoffs
@@ -1425,6 +1446,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         acquisition_id: [u8; 32],
         present: aos_sandbox_protocol::mount_manager_startup::SignedManagerSourceControlOutcomeV1,
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         let index = self
             .runtime
             .manager_handoffs
@@ -1473,6 +1495,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     /// outcome, fresh manager presence, control authority, and row CAS agree.
     #[doc(hidden)]
     pub fn begin_manager_source_removal(&mut self, acquisition_id: [u8; 32]) -> Result<Vec<u8>> {
+        self.require_no_original_native_flight()?;
         if self
             .runtime
             .pending_manager_removals
@@ -1552,6 +1575,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     /// provider-outcome custody when protected recovery or request issue fails.
     #[doc(hidden)]
     pub fn resume_manager_source_removal(&mut self, acquisition_id: [u8; 32]) -> Result<Vec<u8>> {
+        self.require_no_original_native_flight()?;
         let index = self
             .runtime
             .pending_manager_removals
@@ -1648,6 +1672,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         acquisition_id: [u8; 32],
         removed: aos_sandbox_protocol::mount_manager_startup::SignedManagerSourceControlOutcomeV1,
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         let index = self
             .runtime
             .pending_manager_removals
@@ -1703,6 +1728,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         acquisition_id: [u8; 32],
         absent: aos_sandbox_protocol::mount_manager_startup::SignedManagerSourceControlOutcomeV1,
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         let index = self
             .runtime
             .pending_manager_removals
@@ -1764,6 +1790,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
         acquisition_id: [u8; 32],
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         let index = self
             .runtime
             .pending_manager_removals
@@ -1898,6 +1925,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         if self.runtime.retained_negative_custody_recovery.is_empty() {
             return self.recover_next_cold_released_row(root);
         }
@@ -2352,6 +2380,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         mount_plan_digest: [u8; 32],
         ownership_lease_digest: [u8; 32],
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         if self.runtime.pending_provider.is_some()
             || self.runtime.pending_provider_send.is_some()
             || self.runtime.pending_release_preparation.is_some()
@@ -2427,6 +2456,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             aos_sandbox_source_provider_security::ProtectedCurrentCatalogPublicationV1,
         >,
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         if self.runtime.pending_provider_send.is_some() {
             return self.retry_pending_provider_send(root);
         }
@@ -2732,6 +2762,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
         retry_authority: aos_sandbox_source_provider::ProtectedProviderMountRetryAuthorityV1,
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         if self.runtime.pending_provider_send.is_some() {
             return self.retry_pending_provider_send(root);
         }
@@ -2886,6 +2917,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         policy: PeerPolicy,
         protected_boot_id: [u8; 16],
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         if self.runtime.pending_provider.is_some()
             || self.runtime.pending_provider_send.is_some()
             || !self.runtime.cold_pending_attempts.is_empty()
@@ -3069,6 +3101,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         acquisition_id: [u8; 32],
         manager_presence: aos_sandbox::mount_manager_startup::FreshManagerSourcePresenceV1,
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         let manager_evidence = manager_presence.custody_evidence();
         let manager_acquisition_id = manager_evidence.acquisition_id;
         let expected_revision = manager_evidence.acquisition_revision;
@@ -3101,6 +3134,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
+        self.require_no_original_native_flight()?;
         let mut retained = self.runtime.pending_manager_custody.pop();
         let acquisition_id = retained
             .as_ref()

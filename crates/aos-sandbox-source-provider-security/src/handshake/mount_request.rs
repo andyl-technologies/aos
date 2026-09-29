@@ -47,6 +47,8 @@ mod recovery;
 
 #[path = "mount_request/native_catalog.rs"]
 mod native_catalog;
+#[path = "mount_request/native_root_prepared.rs"]
+mod native_root_prepared;
 
 #[path = "mount_request/catalog_floor.rs"]
 mod catalog_floor;
@@ -741,6 +743,18 @@ impl CurrentRootMountSourceProviderSessionV1 {
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
         reservation: ReservedMountProviderRequestV2,
     ) -> Result<SentMountProviderRequestV2, MountProviderRequestSendRecoveryV2> {
+        self.send_reserved_mount_request_with_view(journal, reservation, |_, _| Ok(()))
+    }
+
+    fn send_reserved_mount_request_with_view(
+        &mut self,
+        journal: &impl MountSourceAcquisitionJournalViewV2,
+        reservation: ReservedMountProviderRequestV2,
+        after_send: impl FnOnce(
+            &mut Self,
+            &ReservedMountProviderRequestV2,
+        ) -> Result<(), SourceProviderSecurityError>,
+    ) -> Result<SentMountProviderRequestV2, MountProviderRequestSendRecoveryV2> {
         if self.revalidate().is_err() {
             return Err(MountProviderRequestSendRecoveryV2 { reservation });
         }
@@ -770,11 +784,14 @@ impl CurrentRootMountSourceProviderSessionV1 {
             && !reservation.attempt_record.is_empty()
             && !reservation.head_record.is_empty()
             && journal
-                .validate_mount_source_acquisition_snapshot(&reservation.reservation_snapshot)
+                .validate_current_snapshot(&reservation.reservation_snapshot)
                 .is_ok()
-            && journal.get(&reservation.attempt_key).ok().flatten()
+            && journal
+                .current_value(&reservation.attempt_key)
+                .ok()
+                .flatten()
                 == Some(reservation.attempt_record.as_slice())
-            && journal.get(&reservation.head_key).ok().flatten()
+            && journal.current_value(&reservation.head_key).ok().flatten()
                 == Some(reservation.head_record.as_slice());
         if !journal_current {
             self.poison(SourceProviderSecurityError::SessionContinuity);
@@ -791,7 +808,15 @@ impl CurrentRootMountSourceProviderSessionV1 {
         if let Err(failure) = self.carrier.send(&reservation.prepared.signed_request) {
             if let CarrierFailureV1::Fatal(error) = failure {
                 self.poison(error);
+            } else if let Err(error) = after_send(self, &reservation) {
+                // A retryable carrier result still crosses an I/O boundary.
+                // Native callers must retain and recheck the SAME custody.
+                self.poison(error);
             }
+            return Err(MountProviderRequestSendRecoveryV2 { reservation });
+        }
+        if let Err(error) = after_send(self, &reservation) {
+            self.poison(error);
             return Err(MountProviderRequestSendRecoveryV2 { reservation });
         }
         // A successful sequenced-packet send is atomic. Outcome receive checks
@@ -981,6 +1006,33 @@ impl CurrentRootMountSourceProviderSessionV1 {
         selection_floor: Option<SourceSelectionFloorV1>,
         current_catalog_head_commitment: ObjectDigest,
     ) -> Result<PreparedMountProviderRequestV2, SourceProviderSecurityError> {
+        let mut signed_request = None;
+        self.prepare_acquire_from_catalog_retaining(
+            session_projection,
+            expected_request_sequence,
+            expected_response_sequence,
+            request,
+            normalized_intent,
+            catalog_floor,
+            selection_floor,
+            current_catalog_head_commitment,
+            &mut signed_request,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_acquire_from_catalog_retaining(
+        &mut self,
+        session_projection: MountProviderSessionProjectionV2,
+        expected_request_sequence: u64,
+        expected_response_sequence: u64,
+        request: AcquireSourceRequestV1,
+        normalized_intent: NormalizedAcquisitionIntentV2,
+        catalog_floor: ProviderCatalogFloorV1,
+        selection_floor: Option<SourceSelectionFloorV1>,
+        current_catalog_head_commitment: ObjectDigest,
+        signed_request_custody: &mut Option<Vec<u8>>,
+    ) -> Result<PreparedMountProviderRequestV2, SourceProviderSecurityError> {
         let now = super::current_unix_seconds()?;
         let session_binding = self.session.binding();
         let signer_set_commitment = self.session.signer_set_commitment();
@@ -1036,6 +1088,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 inner.outcome_key().signing_key(),
             )
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+            *signed_request_custody = Some(signed_request.to_canonical_bytes());
             inner.revalidate_at(super::current_unix_seconds()?)?;
             let provider_key = inner
                 .trust()
