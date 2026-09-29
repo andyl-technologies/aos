@@ -72,7 +72,15 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     }
 
     pub(super) async fn exclusive(&self) -> Result<F::Lock, StoreFailure> {
-        let path = self.inner.config.root.join(".terrane-lock");
+        let locks = self.inner.config.root.join(".terrane-locks");
+        self.inner
+            .fs
+            .create_dir_all(&locks)
+            .await
+            .map_err(io_failure)?;
+        self.check_directory(&locks).await?;
+        let key = BucketKey::parse("CAPABILITIES").map_err(|_| malformed())?;
+        let path = self.inner.config.root.join(key.lock_name());
         match self.inner.fs.symlink_metadata(&path).await {
             Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
             Ok(_) => return Err(layout_corrupt()),
@@ -90,6 +98,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         self.inner
             .fs
             .sync_directory(&self.inner.config.root)
+            .await
+            .map_err(io_failure)?;
+        self.inner
+            .fs
+            .sync_directory(&locks)
             .await
             .map_err(io_failure)?;
         Ok(guard)
@@ -139,7 +152,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             return Err(StoreFailure::new(StoreErrorKind::Unsupported));
         }
         let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
-        let temporary = parent.join(format!(".terrane-temp-{suffix}"));
+        let temporary = parent.join(format!(".terrane-tmp:{suffix}"));
         self.inner
             .fs
             .write_new(&temporary, bytes)

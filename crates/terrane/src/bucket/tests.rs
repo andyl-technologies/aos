@@ -215,7 +215,9 @@ async fn probe_revalidates_persisted_layout_and_profile_each_open() {
 async fn stable_exclusion_inode_survives_cas_and_reopen() {
     use std::os::unix::fs::MetadataExt;
     let bucket = fixture().await;
-    let path = bucket.root().join(".terrane-lock");
+    let path = bucket
+        .root()
+        .join(BucketKey::parse("CAPABILITIES").unwrap().lock_name());
     let inode = tokio::fs::metadata(&path).await.unwrap().ino();
     let record = RefRecord::first([1; 32], 1, Locality::default());
     bucket
@@ -288,10 +290,24 @@ async fn missing_capabilities_never_reinitializes_existing_portable_state() {
     let bucket = fixture().await;
     let root = bucket.root().to_owned();
     let record = RefRecord::first([1; 32], 1, Locality::default());
-    bucket.ref_cas("refs/heads/_/main", None, &record).await.unwrap();
-    tokio::fs::remove_file(root.join("CAPABILITIES")).await.unwrap();
+    bucket
+        .ref_cas("refs/heads/_/main", None, &record)
+        .await
+        .unwrap();
+    tokio::fs::remove_file(root.join("CAPABILITIES"))
+        .await
+        .unwrap();
 
-    assert!(FileBucket::open(config(root.clone()), TokioLocalFs, TokioClock, Validator).await.is_err());
-    assert_eq!(tokio::fs::read(root.join("refs/heads/_/main")).await.unwrap(), record.encode().unwrap());
+    assert!(
+        FileBucket::open(config(root.clone()), TokioLocalFs, TokioClock, Validator)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        tokio::fs::read(root.join("refs/heads/_/main"))
+            .await
+            .unwrap(),
+        record.encode().unwrap()
+    );
     tokio::fs::remove_dir_all(root).await.unwrap();
 }

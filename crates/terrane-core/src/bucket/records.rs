@@ -70,6 +70,8 @@ pub struct BucketCapabilities {
     pub probed_at: u64,
     /// The persistent identity and chunk profile binding.
     pub profile: StoreProfile,
+    /// The authoritative published index generation, absent for an empty catalog.
+    pub generation: Option<u64>,
 }
 
 impl BucketCapabilities {
@@ -83,7 +85,7 @@ impl BucketCapabilities {
         }
 
         let mut bytes = Vec::new();
-        cbor::write_map(&mut bytes, 8);
+        cbor::write_map(&mut bytes, 8 + usize::from(self.generation.is_some()));
         uint_field(&mut bytes, 1, self.layout_version);
         for (key, value) in [
             (2, self.create_if_absent),
@@ -108,6 +110,9 @@ impl BucketCapabilities {
         }
         cbor::write_uint(&mut bytes, 4);
         cbor::write_bytes(&mut bytes, &self.profile.seed);
+        if let Some(generation) = self.generation {
+            uint_field(&mut bytes, 9, generation);
+        }
         Ok(bytes)
     }
 
@@ -118,7 +123,8 @@ impl BucketCapabilities {
     /// noncanonical encoding, or trailing bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, RecordError> {
         let mut decoder = Decoder::new(bytes);
-        if decoder.map(8)? != 8 {
+        let fields = decoder.map(9)?;
+        if !matches!(fields, 8 | 9) {
             return Err(RecordError::Schema);
         }
         key(&mut decoder, 1)?;
@@ -155,6 +161,12 @@ impl BucketCapabilities {
         let chunk = decoder.text(decoder.remaining().len())?.to_string();
         key(&mut decoder, 4)?;
         let seed = digest(&mut decoder)?;
+        let generation = if fields == 9 {
+            key(&mut decoder, 9)?;
+            Some(decoder.uint()?)
+        } else {
+            None
+        };
         decoder.finish()?;
 
         Ok(Self {
@@ -165,6 +177,7 @@ impl BucketCapabilities {
             presign,
             multi_writer,
             probed_at,
+            generation,
             profile: StoreProfile {
                 identity,
                 algorithm,
@@ -377,6 +390,7 @@ fn boolean(decoder: &mut Decoder<'_>) -> Result<bool, RecordError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -390,6 +404,7 @@ mod tests {
             presign: false,
             multi_writer: true,
             probed_at: 7,
+            generation: Some(8),
             profile: StoreProfile {
                 identity: "terrane-v1".into(),
                 algorithm: "blake3".into(),

@@ -134,8 +134,10 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         let key = BucketKey::parse("CAPABILITIES").map_err(|_| files::malformed())?;
         let _guard = self.exclusive().await?;
         let old = self.read_optional(&key).await?;
+        let mut generation = None;
         if let Some(bytes) = &old {
             let record = BucketCapabilities::decode(bytes).map_err(|_| files::layout_corrupt())?;
+            generation = record.generation;
             if record.profile != self.profile() {
                 return Err(StoreFailure::new(StoreErrorKind::Unsupported));
             }
@@ -143,9 +145,14 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             // Existing portable state without its layout/profile binding is
             // never reinterpreted as a new empty store.
             for prefix in ["objects", "refs", "logs", "gc", "trash"] {
-                match self.inner.fs.symlink_metadata(&self.inner.config.root.join(prefix)).await {
+                match self
+                    .inner
+                    .fs
+                    .symlink_metadata(&self.inner.config.root.join(prefix))
+                    .await
+                {
                     Ok(_) => return Err(files::layout_corrupt()),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => return Err(files::io_failure(error)),
                 }
             }
@@ -166,6 +173,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             presign: false,
             multi_writer: true,
             probed_at: timestamp,
+            generation,
             profile: self.profile(),
         };
         let bytes = record.encode().map_err(|_| files::malformed())?;

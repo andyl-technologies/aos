@@ -144,6 +144,15 @@ impl BucketKey {
         self.class
     }
 
+    /// Returns the filesystem-private stable lock name for this logical key.
+    #[must_use]
+    pub fn lock_name(&self) -> String {
+        alloc::format!(
+            ".terrane-locks/{}",
+            blake3::hash(self.key.as_bytes()).to_hex()
+        )
+    }
+
     /// Formats the registered, zero-padded reflog key for a tenant branch.
     ///
     /// # Errors
@@ -175,6 +184,7 @@ fn hex(value: &str, length: usize) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
