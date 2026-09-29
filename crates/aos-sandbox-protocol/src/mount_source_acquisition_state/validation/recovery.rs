@@ -237,17 +237,26 @@ pub(super) fn validate_recovery_graph(table: &SourceAcquisitionTableV2) -> Resul
             recovery_root_attempt_id,
             resolution,
             ..
-        } = &attempt.state
+        } = retained_indeterminate_state(attempt)
         else {
             continue;
         };
-        let root = table
+        let current_root = table
             .provider_attempts
             .get(recovery_root_attempt_id)
             .ok_or_else(|| state_error("abandoned attempt recovery root is missing"))?;
+        let settled = matches!(
+            current_root.state,
+            ProviderAttemptStateV2::NativeNoDispatchSettled { .. }
+        );
+        let root = if settled {
+            reconstruct_native_no_dispatch_prior(current_root)?
+        } else {
+            current_root.clone()
+        };
         if root.scope != attempt.scope
             || !matches!(
-                &root.state,
+                retained_indeterminate_state(current_root),
                 ProviderAttemptStateV2::AbandonedIndeterminate { .. }
             )
             || (attempt.attempt_id != root.attempt_id
@@ -257,13 +266,14 @@ pub(super) fn validate_recovery_graph(table: &SourceAcquisitionTableV2) -> Resul
                 "abandoned provider attempt does not join its recovery root",
             ));
         }
-        let unresolved = matches!(
-            &root.state,
-            ProviderAttemptStateV2::AbandonedIndeterminate {
-                resolution: None,
-                ..
-            }
-        );
+        let unresolved = !settled
+            && matches!(
+                &root.state,
+                ProviderAttemptStateV2::AbandonedIndeterminate {
+                    resolution: None,
+                    ..
+                }
+            );
         let barrier_exists = table.provider_heads.values().any(|head| {
             head.recovery_barrier
                 .as_ref()
@@ -280,7 +290,7 @@ pub(super) fn validate_recovery_graph(table: &SourceAcquisitionTableV2) -> Resul
                 let replacement_count =
                     session_successor_distance(table, root.session_id, inventory.session_id)?;
                 let replacement_attempts =
-                    recovery_session_chain(table, root, inventory.session_id, replacement_count)?;
+                    recovery_session_chain(table, &root, inventory.session_id, replacement_count)?;
                 if replacement_attempts
                     .into_iter()
                     .flatten()
@@ -288,6 +298,28 @@ pub(super) fn validate_recovery_graph(table: &SourceAcquisitionTableV2) -> Resul
                 {
                     return Err(state_error(
                         "abandoned provider attempt belongs to multiple recovery chains",
+                    ));
+                }
+            } else if let ProviderAttemptStateV2::NativeNoDispatchSettled {
+                settlement_session_id,
+                ..
+            } = &current_root.state
+            {
+                let replacement_count =
+                    session_successor_distance(table, root.session_id, *settlement_session_id)?;
+                let replacements = recovery_session_chain(
+                    table,
+                    &root,
+                    *settlement_session_id,
+                    replacement_count,
+                )?;
+                if replacements
+                    .into_iter()
+                    .flatten()
+                    .any(|id| !covered_abandoned_attempts.insert(id))
+                {
+                    return Err(state_error(
+                        "native settlement replacement chain is duplicated",
                     ));
                 }
             }
@@ -319,7 +351,7 @@ pub(super) fn validate_recovery_graph(table: &SourceAcquisitionTableV2) -> Resul
         .values()
         .filter(|attempt| {
             matches!(
-                &attempt.state,
+                retained_indeterminate_state(attempt),
                 ProviderAttemptStateV2::AbandonedIndeterminate { .. }
             )
         })
@@ -344,7 +376,16 @@ pub(super) fn validate_resolution_causality(table: &SourceAcquisitionTableV2) ->
         })
         .collect::<BTreeMap<_, _>>();
 
-    for root in table.provider_attempts.values() {
+    for current_root in table.provider_attempts.values() {
+        let settled = matches!(
+            current_root.state,
+            ProviderAttemptStateV2::NativeNoDispatchSettled { .. }
+        );
+        let root = if settled {
+            reconstruct_native_no_dispatch_prior(current_root)?
+        } else {
+            current_root.clone()
+        };
         let ProviderAttemptStateV2::AbandonedIndeterminate {
             resolution: Some(resolution),
             ..
@@ -374,20 +415,34 @@ pub(super) fn validate_resolution_causality(table: &SourceAcquisitionTableV2) ->
                     .ok_or_else(|| state_error("provider retry owner row is missing"))?;
                 match successor {
                     None => {
-                        if !matches!(
-                            &row.recovery,
-                            AcquisitionRecoveryV2::RetryPermitted { root_attempt }
-                                if root_attempt.id == root.attempt_id
-                                    && root_attempt.revision == root.revision
-                                    && root_attempt.record_digest == root.record_digest
-                        ) {
+                        let retained_terminal = settled
+                            && row.phase == SourceAcquisitionPhaseV2::Faulted
+                            && row.faulted_from == Some(SourceAcquisitionPhaseV2::PendingQuery)
+                            && row.recovery == AcquisitionRecoveryV2::Ready
+                            && row.acquire_lineage.root
+                                == (RecordRefV2 {
+                                    id: current_root.attempt_id,
+                                    revision: current_root.revision,
+                                    record_digest: current_root.record_digest,
+                                })
+                            && row.acquire_lineage.root == row.acquire_lineage.tail;
+                        if !retained_terminal
+                            && !matches!(
+                                &row.recovery,
+                                AcquisitionRecoveryV2::RetryPermitted { root_attempt }
+                                    if root_attempt.id == root.attempt_id
+                                        && root_attempt.revision == root.revision
+                                        && root_attempt.record_digest == root.record_digest
+                            )
+                        {
                             return Err(state_error(
                                 "resolved provider retry lacks its durable permit",
                             ));
                         }
                     }
                     Some(retry) => {
-                        if retry.method != root.method
+                        if settled
+                            || retry.method != root.method
                             || retry.owner != root.owner
                             || retry.immutable_intent_digest != root.immutable_intent_digest
                             || retry.attempt_number
@@ -539,7 +594,12 @@ pub(super) fn recovery_session_chain(
         ));
     }
     let mut replacements = Vec::new();
-    for current in session_predecessor_path(table, root.session_id, terminal_session_id)? {
+    // The path is collected backwards; each retained count describes the
+    // chronological prefix from the original abandoned Session.
+    for current in session_predecessor_path(table, root.session_id, terminal_session_id)?
+        .into_iter()
+        .rev()
+    {
         let session = table
             .provider_sessions
             .get(&current)
@@ -552,7 +612,7 @@ pub(super) fn recovery_session_chain(
                 return false;
             }
             matches!(
-                &attempt.state,
+                retained_indeterminate_state(attempt),
                 ProviderAttemptStateV2::AbandonedIndeterminate {
                     successor_session_id,
                     recovery_root_attempt_id,
@@ -578,16 +638,24 @@ pub(super) fn recovery_session_chain(
             {
                 replacements.push(Some(attempt.attempt_id));
             }
-            (None, Some(witness))
-                if predecessor != root.session_id
-                    && witness.root_attempt.id == root.attempt_id
-                    && witness.root_attempt.revision == root.revision
-                    && witness.root_attempt.record_digest == root.record_digest
-                    && witness.replacement_count
-                        == u64::try_from(replacements.len() + 1).map_err(|_| {
+            (None, Some(witness)) if predecessor != root.session_id => {
+                let historical_root = resolve_historical_attempt(table, witness.root_attempt)?;
+                if historical_root.attempt_id != root.attempt_id
+                    || historical_root.revision != 2
+                    || !matches!(
+                        historical_root.state,
+                        ProviderAttemptStateV2::AbandonedIndeterminate {
+                            resolution: None,
+                            ..
+                        }
+                    )
+                    || witness.replacement_count
+                        != u64::try_from(replacements.len() + 1).map_err(|_| {
                             state_error("provider recovery replacement count exceeds u64")
-                        })? =>
-            {
+                        })?
+                {
+                    return Err(state_error("provider recovery idle root reference differs"));
+                }
                 replacements.push(None);
             }
             _ => {

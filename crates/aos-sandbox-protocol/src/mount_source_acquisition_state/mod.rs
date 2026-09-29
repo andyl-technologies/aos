@@ -22,6 +22,7 @@ mod migration_v1;
 #[doc(hidden)]
 pub mod model;
 pub mod native_export_fence;
+pub mod native_held_completion;
 #[doc(hidden)]
 pub mod projection;
 mod validation;
@@ -52,6 +53,8 @@ pub use projection::{
     project_scope, projection_entries, projection_from_entries, reconciliation_commitment,
     reproduce_reconciliation,
 };
+#[doc(hidden)]
+pub use validation::validate_native_no_dispatch_absent_resolution_v2;
 pub use validation::validate_recovered_table;
 
 /// Maximum aggregate key and value bytes accepted for one recovered snapshot.

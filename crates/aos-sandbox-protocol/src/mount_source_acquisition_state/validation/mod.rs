@@ -53,6 +53,8 @@ mod artifact;
 mod common;
 mod inventory;
 mod lineage;
+#[cfg(test)]
+pub(in crate::mount_source_acquisition_state) mod native_settlement_tests;
 mod predecessor;
 mod recovery;
 mod row;
@@ -61,6 +63,7 @@ mod session;
 use artifact::*;
 use common::*;
 
+pub use artifact::validate_native_no_dispatch_absent_resolution_v2;
 pub(super) use common::{exact_attempt, exact_session};
 use inventory::*;
 use lineage::*;

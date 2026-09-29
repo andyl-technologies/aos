@@ -345,8 +345,10 @@ pub(super) fn validate_owner_predecessor_witness(
                 }
             }
             if let Some(barrier) = &value.recovery_barrier {
-                let root = exact_attempt(table, barrier.root_attempt)?;
-                if !attempt_happens_after(table, root, attempt)? {
+                // This is the immutable Head before-image, not a current edge.
+                // Native cleanup retains its genuine original root2 in prior3/4.
+                let root = resolve_historical_attempt(table, barrier.root_attempt)?;
+                if !attempt_happens_after(table, &root, attempt)? {
                     return Err(state_error(
                         "Inventory predecessor recovery root is not historically prior",
                     ));
