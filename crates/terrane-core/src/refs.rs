@@ -122,7 +122,7 @@ pub enum RefClass {
     Derived,
 }
 
-/// The conditional write primitive required by a ref class.
+/// The conditional write primitive for an ordinary ref update.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RefWriteMode {
     /// Compare the complete previous value before advancing.
@@ -144,7 +144,10 @@ impl RefClass {
         }
     }
 
-    /// Returns the conditional write mode for this class.
+    /// Returns the ordinary conditional write mode for this class.
+    ///
+    /// Administrative tag mutation is a separate, explicitly authorized
+    /// procedure; ordinary tag creation always uses put-if-absent.
     pub const fn write_mode(self) -> RefWriteMode {
         match self {
             Self::Tags => RefWriteMode::PutIfAbsent,
