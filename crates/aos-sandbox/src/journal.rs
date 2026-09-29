@@ -36,10 +36,15 @@ use sha2::{Digest, Sha256};
 pub mod canonical_map;
 pub(crate) mod mount_manager_startup;
 mod prepared_transaction;
+mod root_local_recovery;
 pub use mount_manager_startup::MountManagerStartupPolicyReceiptV1;
 pub(crate) use mount_manager_startup::{
     MountManagerStartupCapturePreflightV1, MountManagerStartupCaptureReceiptV1,
     MountManagerStartupCaptureRecoveryV1,
+};
+pub use root_local_recovery::{
+    Kind2ProtectedReadbackV4, MountBarrierIdleReplacementJournalAuthorityV4,
+    PreparedBarrierIdleReplacementV4,
 };
 mod cache_policy_hold;
 pub(crate) use cache_policy_hold::{CacheMutationGateV1, HeldCacheMutationGateV1};
@@ -949,6 +954,7 @@ pub struct ProtectedJournalAuthority<'journal> {
 enum ProtectedAuthorityScope {
     SingleNamespace,
     FixedMountSourceAcquisition,
+    RootLocalRecoveryKind2,
     MountSourceConsumption,
     MountSourceMigration,
     MountManagerStartup,
@@ -2421,6 +2427,7 @@ impl Journal {
             controller_genesis_transition,
             source_genesis_transition,
             root_genesis_transition,
+            None,
             CacheMutationGateV1::Ordinary,
         )
     }
@@ -2446,6 +2453,7 @@ impl Journal {
             controller_source_genesis::ControllerSourceGenesisTransition::None,
             source_tree_genesis::SourceGenesisTransitionV1::None,
             RootSourceGenesisTransitionV1::None,
+            None,
             CacheMutationGateV1::Retained(gate),
         )
     }
@@ -2464,10 +2472,17 @@ impl Journal {
         controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
         source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
         root_genesis_transition: RootSourceGenesisTransitionV1,
+        root_local_edge: Option<root_local_recovery::Edge>,
         mut cache_gate: CacheMutationGateV1<'_>,
     ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
-        native_held::require_legacy_transaction(&self.state, transaction)?;
+        let settling_reservation = if let Some(edge) = root_local_edge {
+            root_local_recovery::validate_edge(&self.state, transaction, edge)?
+        } else {
+            root_local_recovery::require_fences(&self.state, transaction)?;
+            native_held::require_legacy_transaction(&self.state, transaction)?;
+            settling_reservation
+        };
         self.validate_consumer_resource_transition(
             transaction,
             allow_capacity_records,
@@ -2568,6 +2583,7 @@ impl Journal {
                 .checked_add(1)
                 .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
             self.limits,
+            root_local_edge,
         )?;
 
         // Retain the hold-journal lock through the durable append. The freeze
@@ -2707,6 +2723,7 @@ impl Journal {
             project_transitions,
             controller_genesis_transitions,
             genesis_transitions,
+            None,
             CacheMutationGateV1::Ordinary,
         )
     }
@@ -2728,6 +2745,7 @@ impl Journal {
             None,
             None,
             None,
+            None,
             CacheMutationGateV1::Retained(gate),
         )
     }
@@ -2744,9 +2762,13 @@ impl Journal {
             &[controller_source_genesis::ControllerSourceGenesisTransition],
         >,
         genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
+        root_local_edge: Option<root_local_recovery::Edge>,
         mut cache_gate: CacheMutationGateV1<'_>,
     ) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        if root_local_edge.is_some() && transactions.len() != 1 {
+            return Err(JournalError::ProtectedBoundary);
+        }
         if project_transitions.is_some_and(|transitions| transitions.len() != transactions.len()) {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -2769,7 +2791,13 @@ impl Journal {
         let mut expected_length = self.file.metadata()?.len();
 
         for (index, transaction) in transactions.iter().enumerate() {
-            native_held::require_legacy_transaction(&state, transaction)?;
+            let settling_reservation = if let Some(edge) = root_local_edge {
+                root_local_recovery::validate_edge(&state, transaction, edge)?
+            } else {
+                root_local_recovery::require_fences(&state, transaction)?;
+                native_held::require_legacy_transaction(&state, transaction)?;
+                settling_reservation
+            };
             controller_source_genesis::require_no_mutation(
                 &state,
                 transaction,
@@ -2848,6 +2876,7 @@ impl Journal {
                     .checked_add(1)
                     .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
                 self.limits,
+                root_local_edge,
             )?;
 
             for record in transaction.records() {
@@ -2877,6 +2906,7 @@ impl Journal {
     /// Effect fence is held.
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        root_local_recovery::pending(&self.state)?;
         source_tree_genesis::require_no_compaction(&self.state)?;
         source_project_admission_challenge::require_no_compaction(&self.state)?;
         controller_source_genesis::require_no_compaction(&self.state)?;
@@ -2891,6 +2921,7 @@ impl Journal {
             self.poisoned = true;
             return Err(error);
         }
+        root_local_recovery::pending(&self.state).inspect_err(|_| self.poisoned = true)?;
         Ok(())
     }
 
@@ -3071,6 +3102,7 @@ impl ProtectedJournalAuthority<'_> {
                 RecordNamespace::MountSourceAcquisition,
                 ProtectedAuthorityScope::SingleNamespace
                     | ProtectedAuthorityScope::FixedMountSourceAcquisition
+                    | ProtectedAuthorityScope::RootLocalRecoveryKind2
                     | ProtectedAuthorityScope::MountSourceConsumption
                     | ProtectedAuthorityScope::MountSourceMigration
             ) | (
@@ -4265,6 +4297,10 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
     let mut materialized_bytes = 0_usize;
     let mut idempotency = BTreeMap::new();
     let mut pending: Option<PendingTransaction> = None;
+    let mut compaction_prefix = true;
+    let mut compaction_index = 1_u64;
+    let mut compaction_last_key = None;
+    let mut materialized_compaction = false;
 
     loop {
         let Some((frame, bytes_read)) = read_frame(file, offset, limits)? else {
@@ -4330,6 +4366,41 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
                     records: transaction.records,
                 };
                 validate_transaction(&replay_transaction, limits)?;
+                let mut compaction_id = [0_u8; 16];
+                compaction_id[..8].copy_from_slice(&compaction_index.to_le_bytes());
+                compaction_id[8..].copy_from_slice(b"compact1");
+                if compaction_prefix && replay_transaction.id == compaction_id {
+                    // Private compaction emits a sorted, PUT-only initial copy.
+                    // Its IDs alone never exempt an ordinary logical mutation.
+                    for record in replay_transaction.records() {
+                        let key = (record.namespace(), record.key().to_vec());
+                        if record.value().is_none()
+                            || compaction_last_key
+                                .as_ref()
+                                .is_some_and(|last| *last >= key)
+                            || state.contains_key(&key)
+                        {
+                            return Err(JournalError::MalformedTransaction(
+                                "invalid compaction snapshot",
+                            ));
+                        }
+                        compaction_last_key = Some(key);
+                    }
+                    compaction_index = compaction_index
+                        .checked_add(1)
+                        .ok_or(JournalError::SequenceExhausted)?;
+                    materialized_compaction = true;
+                } else {
+                    if materialized_compaction {
+                        root_local_recovery::pending(&state)?;
+                        materialized_compaction = false;
+                    }
+                    compaction_prefix = false;
+                    root_local_recovery::validate_replayed_transaction(
+                        &state,
+                        &replay_transaction,
+                    )?;
+                }
                 if !transaction_ids.insert(replay_transaction.id) {
                     return Err(JournalError::DuplicateTransaction);
                 }
@@ -4359,6 +4430,7 @@ fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, Journal
         }
     }
 
+    root_local_recovery::pending(&state)?;
     Ok(ReplayState {
         durable_end,
         next_sequence: durable_next_sequence,
@@ -4532,6 +4604,7 @@ pub fn encoded_transaction_append_bytes(
         .ok_or(JournalError::JournalTooLarge)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_reserved_capacity(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     prospective_materialized_bytes: usize,
@@ -4540,6 +4613,7 @@ fn validate_reserved_capacity(
     prospective_journal_bytes: u64,
     prospective_transactions: usize,
     limits: JournalLimits,
+    root_local_edge: Option<root_local_recovery::Edge>,
 ) -> Result<(), JournalError> {
     let mut reservations = capacity_reservation::accounting_reservations(state)?;
     for record in records {
@@ -4548,7 +4622,13 @@ fn validate_reserved_capacity(
         }
         match record.value() {
             Some(value) => {
-                let decoded = capacity_reservation::decode_capacity_record(record.key(), value)?;
+                let decoded = if root_local_edge.is_some() {
+                    // Only the exact private kind2 edge has passed whole-owner
+                    // validation above. Generic and legacy callers stay strict.
+                    capacity_reservation::accounting_reservation(record.key(), value)?
+                } else {
+                    capacity_reservation::decode_capacity_record(record.key(), value)?
+                };
                 if reservations
                     .insert(decoded.reservation_id, decoded)
                     .is_some()

@@ -610,6 +610,27 @@ impl ProtectedJournalAuthority<'_> {
         &self,
     ) -> Result<(u64, usize), JournalError> {
         self.validate_mount_manager_startup_scope()?;
+        let result = self.validate_startup_policy_replay()?;
+        validate_mount_source_state_graph_v2(
+            self.journal
+                .records(RecordNamespace::MountSourceAcquisition),
+        )
+        .map_err(|_| JournalError::MalformedRecord("invalid startup acquisition graph"))?;
+        Ok(result)
+    }
+
+    pub(crate) fn validate_root_local_startup_replay_v4(
+        &self,
+    ) -> Result<(u64, usize), JournalError> {
+        self.journal.ensure_protected_authority()?;
+        if self.scope != ProtectedAuthorityScope::RootLocalRecoveryKind2 {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+        super::root_local_recovery::graph(&self.journal.state)?;
+        self.validate_startup_policy_replay()
+    }
+
+    fn validate_startup_policy_replay(&self) -> Result<(u64, usize), JournalError> {
         let policy_key = mount_manager_startup_policy_key_v1();
         let policy = self
             .journal
@@ -635,12 +656,6 @@ impl ProtectedJournalAuthority<'_> {
         )
         .map_err(|_| JournalError::MalformedRecord("invalid startup capture history"))?;
         validate_capture_policy_history(&policies, &captures)?;
-        validate_mount_source_state_graph_v2(
-            self.journal
-                .records(RecordNamespace::MountSourceAcquisition),
-        )
-        .map_err(|_| JournalError::MalformedRecord("invalid startup acquisition graph"))?;
-
         Ok((policy.generation, captures.len()))
     }
 

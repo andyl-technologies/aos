@@ -27,8 +27,9 @@ use aos_sandbox_protocol::mount_source_acquisition_state::{
     ProviderScopeV2, RecordRefV2, SignerRoleV2, SignerSnapshotV2, SourceAcquisitionPhaseV2,
     SourceProviderQueryAttemptV2, SourceProviderSessionV2, StoredRecordV2,
     acquire_verification_floor_v2, attempt_id, checkpoint::validate_session_checkpoint,
-    format::execution_digest, intent_digest, native_recovery_settlement_digest_v2, request_id,
-    seal_record, session_id, validate_mount_source_state_graph_v2,
+    encode_mount_source_state_record_v2, format::execution_digest, intent_digest,
+    native_recovery_settlement_digest_v2, request_id, seal_record, session_id,
+    validate_mount_source_state_graph_v2,
 };
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, ValidatedAcquireMountSourceRequest,
@@ -870,6 +871,27 @@ fn initial_signed_acquire_graph_passes_full_typed_replay() {
     validate_fixture_graph(&superseded_signed_graph());
     validate_fixture_graph(&restarted_signed_graph());
     validate_fixture_graph(&terminal_signed_graph());
+}
+
+#[test]
+fn kind2_private_installation_gate_refuses_changed_table_before_retirement() {
+    let encoded: Vec<_> = initial_signed_graph()
+        .iter()
+        .map(|record| encode_mount_source_state_record_v2(record).unwrap())
+        .collect();
+    let current = validate_mount_source_state_graph_v2(
+        encoded
+            .iter()
+            .map(|(key, value)| (key.as_slice(), value.as_slice())),
+    )
+    .unwrap();
+    let mut table = super::super::SourceAcquisitionTableV2::from_state(current.clone());
+    assert!(super::super::require_kind2_installed_table(&table, &current).is_ok());
+
+    table.provider_heads.clear();
+    // The actual private coordinator propagates this error before obtaining or
+    // consuming a lower DELETE. This pure DATA vector mints no writer/readback.
+    assert!(super::super::require_kind2_installed_table(&table, &current).is_err());
 }
 
 fn initial_signed_native_graph() -> Vec<StoredRecordV2> {

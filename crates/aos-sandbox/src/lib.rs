@@ -237,12 +237,14 @@ pub use journal::{
     FixedSourceProviderJournalHandoffV1, GlobalCapacityReservationPurposeV1,
     GlobalCapacityReservationRecoveryBindingV1, GlobalCapacityReservationRequestV1,
     GlobalCapacityReservationV1, IdempotencyKey, IdempotencyOutcome, Journal, JournalError,
-    JournalLimits, JournalRecord, JournalTransaction, MountManagerStartupPolicyReceiptV1,
+    JournalLimits, JournalRecord, JournalTransaction, Kind2ProtectedReadbackV4,
+    MountBarrierIdleReplacementJournalAuthorityV4, MountManagerStartupPolicyReceiptV1,
     MountSourceAcquisitionJournalAuthorityV2, MountSourceConsumptionCommitReceipt,
     MountSourceConsumptionCompanionProjectionV2, MountSourceConsumptionJournalAuthorityV1,
     MountSourceConsumptionPreflight, MountSourceMigrationJournalAuthorityV2,
-    PreparedGlobalCapacityReservationV1, ProtectedJournalAuthority, ProtectedJournalLockCustodyV1,
-    ProtectedJournalPreflight, ProtectedJournalSnapshot, RecordNamespace, RecoveryReport,
+    PreparedBarrierIdleReplacementV4, PreparedGlobalCapacityReservationV1,
+    ProtectedJournalAuthority, ProtectedJournalLockCustodyV1, ProtectedJournalPreflight,
+    ProtectedJournalSnapshot, RecordNamespace, RecoveryReport,
 };
 pub use lifecycle_authority::{
     AtomicStorageLifecyclePublicationErrorV1, compile_atomic_storage_lifecycle_template_v1,
