@@ -248,7 +248,8 @@ pub(crate) fn decode_bounded<T: Canonical>(
 }
 
 pub(crate) fn validate_nfc(value: &str) -> Result<(), CampaignCodecError> {
-    if value.nfc().eq(value.chars()) {
+    // Every ASCII string is already NFC; avoid the Unicode iterator on this path.
+    if value.is_ascii() || value.nfc().eq(value.chars()) {
         Ok(())
     } else {
         Err(CampaignCodecError::NonCanonical)
@@ -410,9 +411,7 @@ impl<'a> Decoder<'a> {
         let length = self.bounded_length(maximum as u64, limit)?;
         let bytes = self.take(length)?;
         let value = str::from_utf8(bytes).map_err(|_| CampaignCodecError::InvalidUtf8)?;
-        if value.nfc().ne(value.chars()) {
-            return Err(CampaignCodecError::NonCanonical);
-        }
+        validate_nfc(value)?;
         Ok(value.to_owned())
     }
 
@@ -580,6 +579,70 @@ impl<'a> Decoder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ascii_strings_preserve_canonical_bytes() {
+        let all_ascii: String = (0..=127).map(char::from).collect();
+        for value in ["", "scenario-a", all_ascii.as_str()] {
+            assert_eq!(validate_nfc(value), Ok(()));
+
+            let bytes = encode(&value.to_owned());
+            assert_eq!(&bytes[..8], &(value.len() as u64).to_be_bytes());
+            assert_eq!(&bytes[8..], value.as_bytes());
+            assert_eq!(decode::<String>(&bytes), Ok(value.to_owned()));
+        }
+    }
+
+    #[test]
+    fn unicode_strings_retain_normalization_validation() {
+        for value in ["é", "가", "\u{0301}", "👩\u{200d}💻"] {
+            assert_eq!(validate_nfc(value), Ok(()));
+            let bytes = encode(&value.to_owned());
+            assert_eq!(decode::<String>(&bytes), Ok(value.to_owned()));
+        }
+
+        for value in ["e\u{0301}", "\u{1100}\u{1161}", "\u{212b}"] {
+            assert_eq!(validate_nfc(value), Err(CampaignCodecError::NonCanonical));
+            let bytes = encode(&value.to_owned());
+            assert_eq!(
+                decode::<String>(&bytes),
+                Err(CampaignCodecError::NonCanonical)
+            );
+        }
+    }
+
+    #[test]
+    fn string_byte_limits_and_utf8_errors_keep_their_order() {
+        let bytes = encode(&"é".to_owned());
+        assert_eq!(
+            Decoder::new(&bytes).string_bounded(2, "test-string"),
+            Ok("é".to_owned())
+        );
+        assert_eq!(
+            Decoder::new(&bytes).string_bounded(1, "test-string"),
+            Err(CampaignCodecError::LimitExceeded {
+                limit: "test-string"
+            })
+        );
+
+        let mut invalid = Encoder::new();
+        invalid.bytes(&[0xc0]);
+        let invalid = invalid.finish();
+        assert_eq!(
+            Decoder::new(&invalid).string_bounded(1, "test-string"),
+            Err(CampaignCodecError::InvalidUtf8)
+        );
+        assert_eq!(
+            Decoder::new(&invalid).string_bounded(0, "test-string"),
+            Err(CampaignCodecError::LimitExceeded {
+                limit: "test-string"
+            })
+        );
+        assert_eq!(
+            decode::<String>(&invalid[..8]),
+            Err(CampaignCodecError::Truncated)
+        );
+    }
 
     #[test]
     fn declared_sequence_length_does_not_preallocate_without_item_bytes() {
