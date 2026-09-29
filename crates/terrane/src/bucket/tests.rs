@@ -286,6 +286,31 @@ async fn missing_reflog_with_committed_horizon_is_corruption() {
 }
 
 #[tokio::test]
+async fn committed_reflog_must_match_the_complete_ref_record() {
+    let bucket = fixture().await;
+    let pending = RefRecord::first([1; 32], 1, Locality::default());
+    let committed = RefRecord::first([2; 32], 1, Locality::default());
+    bucket
+        .ref_log_append("refs/heads/_/main", 1, &log(pending, None))
+        .await
+        .unwrap();
+    bucket
+        .ref_cas("refs/heads/_/main", None, &committed)
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        bucket
+            .ref_log_read("refs/heads/_/main", 1)
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Corrupt(_)
+    ));
+    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
+}
+
+#[tokio::test]
 async fn missing_capabilities_never_reinitializes_existing_portable_state() {
     let bucket = fixture().await;
     let root = bucket.root().to_owned();

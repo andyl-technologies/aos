@@ -9,8 +9,11 @@ use terrane_core::bucket::{BucketKey, Mutability};
 
 pub(super) fn io_failure(error: std::io::Error) -> StoreFailure {
     let kind = match error.kind() {
-        std::io::ErrorKind::PermissionDenied => StoreErrorKind::ReadOnly,
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => {
+            StoreErrorKind::ReadOnly
+        }
         std::io::ErrorKind::StorageFull => StoreErrorKind::Capacity,
+        std::io::ErrorKind::Unsupported => StoreErrorKind::Unsupported,
         _ => StoreErrorKind::Unavailable { retry_after: None },
     };
     StoreFailure::with_source(kind, error)
