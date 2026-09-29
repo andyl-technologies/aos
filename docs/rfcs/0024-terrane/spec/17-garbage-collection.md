@@ -80,9 +80,10 @@ data.
   region sweeps, because a pack may exist only in the region that wrote it
   while a commit in another region already references it (§Cross-region
   packs).
-- **[GC-9]** Marking MUST NOT read bytes from packs. It needs only meta
-  objects and indexes. A collector that needs a pack's chunk list reads the
-  per-pack index, never the pack.
+- **[GC-9]** Marking MUST NOT read chunk bodies from data packs. It needs
+  only meta objects and indexes; verified meta objects MAY be obtained from
+  meta packs. A collector that needs a data pack's chunk list reads the
+  per-pack index, never the data pack.
 
 ## Grace window
 

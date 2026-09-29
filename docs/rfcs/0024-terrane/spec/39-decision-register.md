@@ -877,6 +877,28 @@ is added rather than editing history.
     existing manifest bytes when key 5 is absent and every existing kind
     assignment and bucket key. Requirement IDs remain stable.
 
+- **[D-53] Read collector metadata from meta packs.**
+  - **Status:** Decided
+  - **Decision:** GC-9 prohibits reading data-pack chunk bodies during mark;
+    verified meta objects may be read from meta packs, and a data pack's
+    membership comes from its detached index.
+  - **Rationale:** PACK-13 stores metadata in separate meta packs. An absolute
+    ban on reading any pack contradicts GC-5's required commit, tree, manifest,
+    and attribute traversal. Metadata reads preserve the intended avoidance
+    of reading file content during collection.
+  - **Affects:** GC-5, GC-9 and PACK-13. No identity, encoding, or bucket-key
+    change; requirement IDs remain stable.
+
+- **[D-54] Carry the collector epoch in tombstone records.**
+  - **Status:** Decided
+  - **Decision:** Tombstone key 5 carries the collector fencing epoch and is
+    mandatory for new collection tombstones.
+  - **Rationale:** GC-23 requires every checkpoint and tombstone to carry its
+    epoch, but the Tombstone CDDL omitted that field. Fencing cannot depend on
+    an unrecorded or inferred epoch.
+  - **Affects:** GC-15, GC-23 and Tombstone CDDL. This correction precedes the
+    T1 encoding freeze; keys 1 to 4 and requirement IDs remain stable.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

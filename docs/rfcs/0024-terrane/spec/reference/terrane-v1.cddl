@@ -309,6 +309,7 @@ Tombstone = {
   2 => cycle,
   3 => timestamp,                       ; tombstoned at
   4 => uint,                            ; index entries removed
+  5 => epoch,                           ; collector fencing epoch (GC-23)
 }
 
 ; ---------------------------------------------------------------------------
