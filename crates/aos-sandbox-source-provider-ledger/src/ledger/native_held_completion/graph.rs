@@ -22,7 +22,7 @@ use aos_sandbox_source_provider_protocol::{
     },
 };
 use sha2::{Digest as _, Sha256};
-use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::BTreeMap};
 
 pub(super) type Records = BTreeMap<Vec<u8>, Vec<u8>>;
 
@@ -106,7 +106,15 @@ impl TerminalHeldArchive {
     }
 }
 
-fn validate_cold_schedule(record: &Record, rows: &Companions) -> Result<(), LedgerFormatErrorV1> {
+// A marked cold original is a historical canonical comparison only. Its
+// unique Requested/Prepared predecessor cannot recreate a live owner cut.
+pub(super) fn cold_unleased_original<'record>(
+    record: &'record Record,
+    rows: &Companions,
+) -> Result<
+    Option<Cow<'record, native_completion::NativeAcquireCompletionRecordV2>>,
+    LedgerFormatErrorV1,
+> {
     use crate::ledger::model::{
         ProviderAcquisitionStateV1 as Acquisition, ProviderAttemptStateV1 as Attempt,
     };
@@ -115,9 +123,30 @@ fn validate_cold_schedule(record: &Record, rows: &Companions) -> Result<(), Ledg
     };
     use native_completion::NativeAcquireCompletionStateV2 as Outer;
 
-    if !matches!(record.original.state, Outer::Requested | Outer::Prepared) {
-        return Ok(());
-    }
+    let original = match record.original.state {
+        Outer::Requested | Outer::Prepared => Cow::Borrowed(&record.original),
+        Outer::CleanupRequired if rows.attempt.state == Attempt::Retired => {
+            TerminalHeldArchive::read(record)?;
+            let mut previous = record.original.clone();
+            previous.state = if previous.accepted_reply.is_some() {
+                Outer::Prepared
+            } else {
+                Outer::Requested
+            };
+            previous.revision = previous
+                .revision
+                .checked_sub(1)
+                .filter(|revision| *revision != 0)
+                .ok_or(corrupt("held cold cleanup predecessor revision"))?;
+            previous.validate_canonical_artifacts()?;
+            if previous.advance(Outer::CleanupRequired)? != record.original {
+                return Err(corrupt("held exact cold cleanup predecessor"));
+            }
+            Cow::Owned(previous)
+        }
+        _ => return Ok(None),
+    };
+
     let mut reservation = rows.acquisition.clone();
     if record.suffix.phase() == 10 {
         TerminalHeldArchive::read(record)?;
@@ -169,7 +198,7 @@ fn validate_cold_schedule(record: &Record, rows: &Companions) -> Result<(), Ledg
     {
         return Err(corrupt("held full original unleased Applying reservation"));
     }
-    Ok(())
+    Ok(Some(original))
 }
 
 pub(super) fn pending_retirement_rows(
@@ -183,7 +212,7 @@ pub(super) fn pending_retirement_rows(
     use native_completion::NativeAcquireCompletionStateV2 as Outer;
 
     let mut rows = Companions::read(before, previous)?;
-    validate_cold_schedule(previous, &rows)?;
+    cold_unleased_original(previous, &rows)?;
     TerminalHeldArchive::read(next)?;
     if previous.suffix.phase() != 9
         || previous.suffix.prepared().is_some()
@@ -251,10 +280,10 @@ pub(crate) fn validate_retained_transition(
     let terminal = previous.suffix.phase() == 10;
     if terminal {
         TerminalHeldArchive::read(&previous)?;
+        let cold = cold_unleased_original(&previous, &rows)?.is_some();
         if previous.suffix != next.suffix
             || after.get(&rows.keys[1]) != before.get(&rows.keys[1])
-            || (matches!(previous.original.state, Outer::Requested | Outer::Prepared)
-                && after.get(&rows.keys[2]) != before.get(&rows.keys[2]))
+            || (cold && after.get(&rows.keys[2]) != before.get(&rows.keys[2]))
         {
             return Err(corrupt("held terminal original dependencies changed"));
         }
@@ -403,8 +432,11 @@ impl Companions {
                 return Err(corrupt("held original seven catalog claims"));
             }
         }
+        let cold_original = cold_unleased_original(record, self)?;
+        // Only the validated cold lineage uses its historical zero-artifact
+        // original. Hot cleanup retains the unchanged full Complete join.
         let actual_artifact = crate::ledger::completion::original_native_complete_artifact(
-            original,
+            cold_original.as_deref().unwrap_or(original),
             &self.attempt,
             &self.acquisition,
         )?;
@@ -414,7 +446,6 @@ impl Companions {
         {
             return Err(corrupt("held exact completed response artifact"));
         }
-        validate_cold_schedule(record, self)?;
         Ok(())
     }
 }

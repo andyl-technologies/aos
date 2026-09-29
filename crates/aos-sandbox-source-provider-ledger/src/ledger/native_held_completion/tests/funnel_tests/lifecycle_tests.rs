@@ -400,6 +400,10 @@ fn completed_terminal() -> Flight {
 }
 
 fn marker(flight: &Flight) -> Flight {
+    cleanup_marker(flight, Lifecycle::OriginalCustodyMarked)
+}
+
+fn cleanup_marker(flight: &Flight, lifecycle: Lifecycle) -> Flight {
     let record = SourceNativeHeldCompletionRecordV1::new(
         flight
             .record
@@ -410,19 +414,306 @@ fn marker(flight: &Flight) -> Flight {
     )
     .unwrap();
     let rows = flight.proposed_rows(&record);
-    let proposal = propose_lifecycle(
-        &flight.rows,
-        &rows,
-        &flight.record,
-        Lifecycle::OriginalCustodyMarked,
-    )
-    .unwrap();
+    let proposal = propose_lifecycle(&flight.rows, &rows, &flight.record, lifecycle).unwrap();
     assert_eq!(proposal.mutations().len(), 1);
+    assert_eq!(proposal.lifecycle(), lifecycle);
+    assert_eq!(proposal.status_binding(), None);
+    let key = graph::companion_keys(&flight.record).unwrap()[5].clone();
+    assert_eq!(proposal.mutations()[0].key(), key.as_slice());
+    assert_eq!(
+        proposal.mutations()[0].before(),
+        Some(flight.rows[&key].as_slice())
+    );
+    assert_eq!(proposal.mutations()[0].after(), rows[&key].as_slice());
     assert_eq!(
         proposal.original_custody_required(),
         Some(flight.rows[&graph::companion_keys(&flight.record).unwrap()[5]].as_slice())
     );
     Flight { rows, record }
+}
+
+#[test]
+fn cold_cleanup_marks_requested_and_prepared_originals_without_releasing_storage_interest() {
+    for prepared in [false, true] {
+        for metadata in [false, true] {
+            let mut flight = cold_prefix(prepared);
+            retire(&mut flight, metadata);
+            let marked = cleanup_marker(&flight, Lifecycle::ColdTerminalCleanupMarked);
+            let key = graph::companion_keys(&flight.record).unwrap()[5].clone();
+            let rows = graph::Companions::read(&marked.rows, &marked.record).unwrap();
+
+            assert_eq!(
+                marked.record.original,
+                flight
+                    .record
+                    .original
+                    .advance(Outer::CleanupRequired)
+                    .unwrap()
+            );
+            assert_eq!(marked.record.suffix, flight.record.suffix);
+            for (owner, bytes) in &flight.rows {
+                if owner != &key {
+                    assert_eq!(marked.rows[owner], *bytes);
+                }
+            }
+            assert_eq!(
+                graph::cold_unleased_original(&marked.record, &rows)
+                    .unwrap()
+                    .as_deref(),
+                Some(&flight.record.original)
+            );
+            assert_eq!(rows.attempt.state, ProviderAttemptStateV1::Retired);
+            assert_eq!(rows.acquisition.state, ProviderAcquisitionStateV1::Faulted);
+            assert_eq!(evidence::artifact(&marked.record).unwrap(), d(0));
+            let storage = evidence::storage_assertion(&marked.record)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                storage.to_canonical_bytes().unwrap(),
+                evidence::storage_assertion(&flight.record)
+                    .unwrap()
+                    .unwrap()
+                    .to_canonical_bytes()
+                    .unwrap()
+            );
+            assert_eq!(storage.to_canonical_bytes().unwrap()[11], 1);
+            graph::validate(&marked.rows).unwrap();
+            assert!(
+                completion::original_native_complete_artifact(
+                    &marked.record.original,
+                    &rows.attempt,
+                    &rows.acquisition,
+                )
+                .is_err()
+            );
+            assert!(
+                propose_lifecycle(
+                    &marked.rows,
+                    &marked.rows,
+                    &marked.record,
+                    Lifecycle::ColdTerminalCleanupMarked,
+                )
+                .is_err()
+            );
+        }
+    }
+}
+
+#[test]
+fn marked_cold_original_survives_current_work_but_freezes_its_retired_acquisition() {
+    for prepared in [false, true] {
+        for successor in [false, true] {
+            let mut flight = cold_prefix(prepared);
+            retire(&mut flight, successor);
+            let marked = cleanup_marker(&flight, Lifecycle::ColdTerminalCleanupMarked);
+            let current = add_fresh_acquire(&marked, successor);
+            let keys = graph::companion_keys(&marked.record).unwrap();
+            for index in [1, 2, 5] {
+                assert_eq!(current.rows[&keys[index]], marked.rows[&keys[index]]);
+            }
+            graph::validate(&current.rows).unwrap();
+
+            let mut rewritten = current.rows.clone();
+            let mut rows = graph::Companions::read(&rewritten, &marked.record).unwrap();
+            rows.acquisition.revision += 1;
+            rewritten.insert(
+                keys[2].clone(),
+                format::encode_acquisition(&rows.acquisition),
+            );
+            assert!(
+                graph::validate_retained_transition(
+                    &current.rows,
+                    &rewritten,
+                    &keys[5],
+                    &current.rows[&keys[5]],
+                    &rewritten[&keys[5]],
+                )
+                .is_err()
+            );
+            assert!(
+                propose_lifecycle(
+                    &current.rows,
+                    &rewritten,
+                    &marked.record,
+                    Lifecycle::CurrentOwnersAdvanced,
+                )
+                .is_err()
+            );
+            assert!(graph::validate(&rewritten).is_err());
+        }
+    }
+}
+
+#[test]
+fn cold_cleanup_rejects_nonterminal_hot_legacy_and_incomplete_retired_cuts() {
+    let mut flight = cold_prefix(false);
+    retire(&mut flight, true);
+    let marked = cleanup_marker(&flight, Lifecycle::ColdTerminalCleanupMarked);
+    let rows = graph::Companions::read(&flight.rows, &flight.record).unwrap();
+
+    for case in 0..8 {
+        let mut before = flight.rows.clone();
+        match case {
+            0 => {
+                let mut attempt = rows.attempt.clone();
+                attempt.state = ProviderAttemptStateV1::Reserved;
+                before.insert(rows.keys[1].clone(), format::encode_attempt(&attempt));
+            }
+            1 => {
+                let mut attempt = rows.attempt.clone();
+                attempt.state = ProviderAttemptStateV1::Completed;
+                before.insert(rows.keys[1].clone(), format::encode_attempt(&attempt));
+            }
+            2 => {
+                let mut acquisition = rows.acquisition.clone();
+                acquisition.lease_id = Some([201; 16]);
+                before.insert(
+                    rows.keys[2].clone(),
+                    format::encode_acquisition(&acquisition),
+                );
+            }
+            3 => {
+                before.remove(&rows.keys[4]);
+            }
+            4 => {
+                before.remove(&format::catalog_key(
+                    flight.record.original.provider_id,
+                    rows.acquisition.catalog_generation,
+                ));
+            }
+            5 => {
+                before.insert(
+                    rows.keys[5].clone(),
+                    format::encode_native_completion_v2(&flight.record.original),
+                );
+            }
+            6 => {
+                let mut acquisition = rows.acquisition.clone();
+                acquisition.backend_lineage_digest = d(201);
+                before.insert(
+                    rows.keys[2].clone(),
+                    format::encode_acquisition(&acquisition),
+                );
+            }
+            _ => {
+                before.insert(b"extra-owner".to_vec(), vec![0; 64]);
+            }
+        }
+        assert!(
+            propose_lifecycle(
+                &before,
+                &marked.rows,
+                &flight.record,
+                Lifecycle::ColdTerminalCleanupMarked,
+            )
+            .is_err(),
+            "cold cleanup before case {case}"
+        );
+    }
+    for other in [cold_prefix(false), completed_terminal()] {
+        let record = SourceNativeHeldCompletionRecordV1::new(
+            other
+                .record
+                .original
+                .advance(Outer::CleanupRequired)
+                .unwrap(),
+            other.record.suffix.clone(),
+        )
+        .unwrap();
+        assert!(
+            propose_lifecycle(
+                &other.rows,
+                &other.proposed_rows(&record),
+                &other.record,
+                Lifecycle::ColdTerminalCleanupMarked,
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn cold_cleanup_rejects_changed_revision_original_archive_and_extra_owner() {
+    let mut flight = cold_prefix(true);
+    retire(&mut flight, false);
+    let marked = cleanup_marker(&flight, Lifecycle::ColdTerminalCleanupMarked);
+    let key = graph::companion_keys(&flight.record).unwrap()[5].clone();
+
+    for case in 0..7 {
+        let mut original = marked.record.original.clone();
+        let mut suffix = marked.record.suffix.clone();
+        let mut after = marked.rows.clone();
+        match case {
+            0 => original.revision -= 1,
+            1 => original.revision += 1,
+            2 => original.original_clock = None,
+            3 => original.canonical_request = None,
+            4 => original.accepted_reply = None,
+            5 => {
+                let mut controls = suffix.controls().to_vec();
+                let last = controls.pop().unwrap();
+                controls.push(last.prepared().clone().with_signature([0xCE; 64]));
+                suffix = NativeHeldCompletionSuffixV1::new(
+                    Owner::Provider,
+                    suffix.phase(),
+                    suffix.flight(),
+                    None,
+                    controls,
+                )
+                .unwrap();
+            }
+            _ => {
+                let mut rows = graph::Companions::read(&after, &marked.record).unwrap();
+                rows.authority.revision += 1;
+                after.insert(
+                    rows.keys[0].clone(),
+                    format::encode_authority(&rows.authority),
+                );
+            }
+        }
+        let mut body = original_body(&original, b"AOSNCR05");
+        body.extend_from_slice(&suffix.to_canonical_bytes().unwrap());
+        after.insert(key.clone(), independent_envelope(&original, 8, &body));
+        assert!(
+            propose_lifecycle(
+                &flight.rows,
+                &after,
+                &flight.record,
+                Lifecycle::ColdTerminalCleanupMarked,
+            )
+            .is_err(),
+            "cold cleanup after case {case}"
+        );
+    }
+    let mut invalid_revision = marked.record.original.clone();
+    invalid_revision.revision = 1;
+    let mut body = original_body(&invalid_revision, b"AOSNCR05");
+    body.extend_from_slice(&marked.record.suffix.to_canonical_bytes().unwrap());
+    let mut invalid = marked.rows;
+    invalid.insert(key, independent_envelope(&invalid_revision, 8, &body));
+    assert!(graph::validate(&invalid).is_err());
+
+    let mut original = flight.record.original.clone();
+    original.revision = u64::MAX;
+    let before_record =
+        SourceNativeHeldCompletionRecordV1::new(original.clone(), flight.record.suffix.clone())
+            .unwrap();
+    let before = flight.proposed_rows(&before_record);
+    original.state = Outer::CleanupRequired;
+    let after_record =
+        SourceNativeHeldCompletionRecordV1::new(original, flight.record.suffix.clone()).unwrap();
+    let after = flight.proposed_rows(&after_record);
+    graph::validate(&before).unwrap();
+    graph::validate(&after).unwrap();
+    assert!(
+        propose_lifecycle(
+            &before,
+            &after,
+            &before_record,
+            Lifecycle::ColdTerminalCleanupMarked,
+        )
+        .is_err()
+    );
 }
 
 fn refresh_inventory(rows: &mut graph::Records, authority: &mut AuthorityHeadRecordV1) {
