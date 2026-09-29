@@ -1,4 +1,4 @@
-From 23a4e278aa6ddcdd6b858a2204854c75dd51125d Mon Sep 17 00:00:00 2001
+From 466e51167a99d290558816a7646ad0f2c6329466 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -125,6 +125,14 @@ clock-mode state before timer effects. Exercise literal timers and QEMUFile.
 Validate asynchronous block job pause and resume progress.
 Retain actual QMP progress invariants without comparing racy pause offset
 samples to a fixed zero delta; keep test coverage and skip policy unchanged.
+
+Preserve the full signed picosecond horizon in the ptimer engine.
+Keep absolute time separate from fractional period state, validate the
+versioned exact-wide migration subsection before timer effects, and retain
+the ordinary nanosecond wire format and countdown policy tests.
+
+Reject migrated active ptimer countdowns without a period before arming.
+Preserve valid disabled zero-period state in exact and ordinary modes.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -18423,195 +18431,256 @@ index 3dc008ea4f3c911bdb428ef287cef04b8f3990dd..805fd3d22b08e6f85bcf7ecec239d69d
      .minimum_version_id = 1,
      .needed = vmstate_extras_needed,
 diff --git a/hw/core/ptimer.c b/hw/core/ptimer.c
-index 0cbe1ed5787cd4b1652e8d96e490be09d2c9097a..efb7aaf3b4e8767e6f10aa18e2087041531cb629 100644
+index 0cbe1ed5787cd4b1652e8d96e490be09d2c9097a..55b9517fae32fe282b9dbd478487aee2c04db189 100644
 --- a/hw/core/ptimer.c
 +++ b/hw/core/ptimer.c
-@@ -27,6 +27,13 @@ struct ptimer_state
+@@ -27,6 +27,18 @@ struct ptimer_state
      int64_t period;
      int64_t last_event;
      int64_t next_event;
-+    int64_t last_event_exact_ns;
-+    int64_t next_event_exact_ns;
-+    uint16_t last_event_phase_ps;
-+    uint16_t next_event_phase_ps;
++    int64_t last_event_ps_hi;
++    uint64_t last_event_ps_lo;
++    int64_t next_event_ps_hi;
++    uint64_t next_event_ps_lo;
 +    uint32_t last_event_subps;
 +    uint32_t next_event_subps;
++    int64_t timer_deadline_ns;
++    int64_t timer_deadline_ps_hi;
++    uint64_t timer_deadline_ps_lo;
++    uint8_t timer_active;
++    uint8_t exact_clock_mode;
 +    bool exact_state_loaded;
      uint8_t policy_mask;
      QEMUTimer *timer;
      ptimer_cb callback;
-@@ -41,6 +48,150 @@ struct ptimer_state
+@@ -41,6 +53,207 @@ struct ptimer_state
      bool need_reload;
  };
  
-+#define PTIMER_SUBPS_SCALE ((__int128)UINT64_C(1) << 32)
-+#define PTIMER_FIXED_NS_SCALE \
-+    (PICOSECONDS_PER_NANOSECOND * PTIMER_SUBPS_SCALE)
++/* Absolute time and the period fraction stay separate across the full clock. */
++typedef struct PtimerTime {
++    __int128 ps;
++    uint32_t subps;
++} PtimerTime;
 +
-+static bool ptimer_fixed_time_split(__int128 time, int64_t *ns,
-+                                    uint16_t *phase_ps, uint32_t *subps)
++typedef struct PtimerDuration {
++    __uint128_t ps;
++    uint32_t subps;
++} PtimerDuration;
++
++#define PTIMER_PS_MAX ((__uint128_t)-1 >> 1)
++
++static __int128 ptimer_join_words(int64_t hi, uint64_t lo)
 +{
-+    __int128 time_ps = time / PTIMER_SUBPS_SCALE;
-+    int64_t remainder = time % PTIMER_SUBPS_SCALE;
++    return (__int128)hi * ((__int128)1 << 64) + lo;
++}
 +
-+    if (remainder < 0) {
-+        time_ps--;
-+        remainder += PTIMER_SUBPS_SCALE;
++static int64_t ptimer_high_word(__int128 ps)
++{
++    uint64_t lo = ps;
++
++    return (ps - (__int128)lo) / ((__int128)1 << 64);
++}
++
++static PtimerTime ptimer_last_time(const ptimer_state *s)
++{
++    return (PtimerTime) {
++        ptimer_join_words(s->last_event_ps_hi, s->last_event_ps_lo),
++        s->last_event_subps,
++    };
++}
++
++static PtimerTime ptimer_next_time(const ptimer_state *s)
++{
++    return (PtimerTime) {
++        ptimer_join_words(s->next_event_ps_hi, s->next_event_ps_lo),
++        s->next_event_subps,
++    };
++}
++
++static bool ptimer_time_project(PtimerTime time, int64_t *ns)
++{
++    __int128 projected = time.ps / PICOSECONDS_PER_NANOSECOND;
++    int64_t remainder = time.ps % PICOSECONDS_PER_NANOSECOND;
++
++    if (remainder > 0 || (!remainder && time.subps)) {
++        projected++;
 +    }
-+    if (!qemu_time_split_ps(time_ps, ns, phase_ps)) {
++    if (projected < INT64_MIN || projected > INT64_MAX) {
 +        return false;
 +    }
-+    *subps = remainder;
++    *ns = projected;
 +    return true;
 +}
 +
-+static bool ptimer_fixed_time_join(int64_t ns, uint16_t phase_ps,
-+                                   uint32_t subps, __int128 *time)
++static int64_t ptimer_time_projection(PtimerTime time)
 +{
-+    __int128 time_ps;
++    int64_t ns;
 +
-+    if (!qemu_time_join_ps(ns, phase_ps, &time_ps)) {
-+        return false;
++    if (ptimer_time_project(time, &ns)) {
++        return ns;
 +    }
-+    *time = time_ps * PTIMER_SUBPS_SCALE + subps;
-+    return true;
++    return time.ps < 0 ? INT64_MIN : INT64_MAX;
 +}
 +
-+static bool ptimer_fixed_time_project(__int128 time, int64_t *projected_ns)
++static void ptimer_set_last_time(ptimer_state *s, PtimerTime time)
 +{
-+    __int128 ns = time / PTIMER_FIXED_NS_SCALE;
-+
-+    if (time % PTIMER_FIXED_NS_SCALE > 0) {
-+        ns++;
-+    }
-+    if (ns < INT64_MIN || ns > INT64_MAX) {
-+        return false;
-+    }
-+    *projected_ns = ns;
-+    return true;
++    s->last_event_ps_hi = ptimer_high_word(time.ps);
++    s->last_event_ps_lo = time.ps;
++    s->last_event_subps = time.subps;
++    s->last_event = ptimer_time_projection(time);
 +}
 +
-+static int64_t ptimer_fixed_time_projection(__int128 time)
++static void ptimer_set_next_time(ptimer_state *s, PtimerTime time)
 +{
-+    int64_t projected_ns;
-+
-+    if (ptimer_fixed_time_project(time, &projected_ns)) {
-+        return projected_ns;
-+    }
-+    return time < 0 ? INT64_MIN : INT64_MAX;
++    s->next_event_ps_hi = ptimer_high_word(time.ps);
++    s->next_event_ps_lo = time.ps;
++    s->next_event_subps = time.subps;
++    s->next_event = ptimer_time_projection(time);
 +}
 +
-+static __int128 ptimer_last_event_fixed(const ptimer_state *s)
-+{
-+    __int128 event;
-+
-+    g_assert(ptimer_fixed_time_join(s->last_event_exact_ns,
-+                                    s->last_event_phase_ps,
-+                                    s->last_event_subps, &event));
-+    return event;
-+}
-+
-+static __int128 ptimer_next_event_fixed(const ptimer_state *s)
-+{
-+    __int128 event;
-+
-+    g_assert(ptimer_fixed_time_join(s->next_event_exact_ns,
-+                                    s->next_event_phase_ps,
-+                                    s->next_event_subps, &event));
-+    return event;
-+}
-+
-+static void ptimer_set_last_event_fixed(ptimer_state *s, __int128 event)
-+{
-+    if (!ptimer_fixed_time_split(event, &s->last_event_exact_ns,
-+                                 &s->last_event_phase_ps,
-+                                 &s->last_event_subps)) {
-+        g_error("ptimer last event exceeds the migration horizon");
-+    }
-+    s->last_event = ptimer_fixed_time_projection(event);
-+}
-+
-+static void ptimer_set_next_event_fixed(ptimer_state *s, __int128 event)
-+{
-+    if (!ptimer_fixed_time_split(event, &s->next_event_exact_ns,
-+                                 &s->next_event_phase_ps,
-+                                 &s->next_event_subps)) {
-+        g_error("ptimer next event exceeds the migration horizon");
-+    }
-+    s->next_event = ptimer_fixed_time_projection(event);
-+}
-+
-+static __int128 ptimer_period_fixed_ps(const ptimer_state *s,
-+                                       uint64_t period,
-+                                       uint32_t period_frac)
++static __uint128_t ptimer_period_fixed(const ptimer_state *s,
++                                     uint64_t period, uint32_t fraction)
 +{
 +    if (s->period < 0) {
 +        g_error("ptimer period is negative");
 +    }
-+    return (((__int128)period << 32) + period_frac) *
++    return (((__uint128_t)period << 32) + fraction) *
 +           PICOSECONDS_PER_NANOSECOND;
 +}
 +
-+static __int128 ptimer_fixed_time_ceil_ps(__int128 time)
++static bool ptimer_duration(__uint128_t period, __uint128_t count,
++                            PtimerDuration *duration)
 +{
-+    __int128 time_ps = time / PTIMER_SUBPS_SCALE;
++    __uint128_t fractional = (uint32_t)period * count;
++    __uint128_t ps;
 +
-+    if (time % PTIMER_SUBPS_SCALE > 0) {
-+        time_ps++;
++    if (__builtin_mul_overflow(period >> 32, count, &ps) ||
++        __builtin_add_overflow(ps, fractional >> 32, &ps)) {
++        return false;
 +    }
-+    return time_ps;
++    *duration = (PtimerDuration) { ps, fractional };
++    return true;
 +}
 +
-+static bool ptimer_exact_timer_valid(const ptimer_state *s,
-+                                     __int128 next_fixed)
++static bool ptimer_time_add(PtimerTime base, PtimerDuration duration,
++                            PtimerTime *next)
 +{
-+    __int128 deadline_ps = ptimer_fixed_time_ceil_ps(next_fixed);
++    uint64_t fraction = (uint64_t)base.subps + duration.subps;
++    __uint128_t ps;
++    __uint128_t raw;
 +
-+    if (timer_pending(s->timer) != (s->enabled != 0)) {
++    if (__builtin_add_overflow(duration.ps, (__uint128_t)(fraction >> 32),
++                               &ps) ||
++        ps > PTIMER_PS_MAX - (__uint128_t)base.ps) {
 +        return false;
 +    }
-+    if (!timer_pending(s->timer)) {
-+        return true;
-+    }
-+    if (qemu_timer_tcg_ps_enabled()) {
-+        return timer_expire_time_ps_wide(s->timer) == deadline_ps;
-+    }
++    raw = (__uint128_t)base.ps + ps;
++    /* Conversion never casts a value outside the signed destination range. */
++    next->ps = raw <= PTIMER_PS_MAX ? (__int128)raw :
++               -1 - (__int128)~raw;
++    next->subps = fraction;
++    return true;
++}
 +
-+    if (deadline_ps <= 0) {
-+        return timer_expire_time_ns(s->timer) == 0;
-+    }
-+    if (deadline_ps > (__int128)INT64_MAX * PICOSECONDS_PER_NANOSECOND) {
++static bool ptimer_time_before(PtimerTime a, PtimerTime b)
++{
++    return a.ps < b.ps || (a.ps == b.ps && a.subps < b.subps);
++}
++
++static bool ptimer_time_equal(PtimerTime a, PtimerTime b)
++{
++    return a.ps == b.ps && a.subps == b.subps;
++}
++
++static bool ptimer_time_deadline(PtimerTime time, __int128 *deadline)
++{
++    if (time.subps && (__uint128_t)time.ps == PTIMER_PS_MAX) {
 +        return false;
 +    }
-+    return timer_expire_time_ns(s->timer) ==
-+           DIV_ROUND_UP((uint64_t)deadline_ps,
-+                        PICOSECONDS_PER_NANOSECOND);
++    *deadline = time.ps + (time.subps != 0);
++    return true;
++}
++
++static bool ptimer_duration_fits(PtimerDuration duration,
++                                 PtimerDuration remaining)
++{
++    return duration.ps < remaining.ps ||
++           (duration.ps == remaining.ps && duration.subps <= remaining.subps);
++}
++
++static __uint128_t ptimer_count_remaining(PtimerDuration remaining,
++                                         __uint128_t period)
++{
++    PtimerDuration duration;
++    uint64_t low = 0;
++    uint64_t high = UINT64_MAX;
++
++    /* Common short intervals use the same fixed-point division as before. */
++    if (remaining.ps <= ((__uint128_t)-1 >> 32)) {
++        return ((remaining.ps << 32) + remaining.subps) / period;
++    }
++    if (ptimer_duration(period, (__uint128_t)UINT64_MAX + 1, &duration) &&
++        ptimer_duration_fits(duration, remaining)) {
++        g_error("ptimer countdown exceeds the counter range");
++    }
++
++    /* At most 64 comparisons, without narrowing a long elapsed interval. */
++    while (low < high) {
++        uint64_t span = high - low;
++        uint64_t middle = low + span / 2 + (span & 1);
++
++        if (ptimer_duration(period, middle, &duration) &&
++            ptimer_duration_fits(duration, remaining)) {
++            low = middle;
++        } else {
++            high = middle - 1;
++        }
++    }
++    return low;
++}
++
++static bool ptimer_exact_timer_valid(const ptimer_state *s)
++{
++    __int128 deadline;
++
++    if (s->timer_active > 1 || s->timer_active != (s->enabled != 0) ||
++        !ptimer_time_deadline(ptimer_next_time(s), &deadline)) {
++        return false;
++    }
++    if (!s->timer_active) {
++        return !s->timer_deadline_ps_hi && !s->timer_deadline_ps_lo &&
++               s->timer_deadline_ns == -1;
++    }
++    return ptimer_join_words(s->timer_deadline_ps_hi,
++                              s->timer_deadline_ps_lo) == deadline &&
++           s->timer_deadline_ns ==
++               ptimer_time_projection((PtimerTime) { deadline, 0 });
 +}
 +
  /* Use a bottom-half routine to avoid reentrancy issues.  */
  static void ptimer_trigger(ptimer_state *s)
  {
-@@ -143,12 +294,86 @@ static void ptimer_reload(ptimer_state *s, int delta_adjust)
+@@ -143,12 +356,80 @@ static void ptimer_reload(ptimer_state *s, int delta_adjust)
          period_frac = 0;
      }
  
 +    if (qemu_timer_tcg_ps_enabled()) {
-+        __int128 period_fixed = ptimer_period_fixed_ps(s, period,
-+                                                       period_frac);
-+        __int128 last_fixed = ptimer_next_event_fixed(s);
-+        __int128 duration;
-+        __int128 next_fixed;
++        __uint128_t period_fixed = ptimer_period_fixed(s, period, period_frac);
++        PtimerTime last = ptimer_next_time(s);
++        PtimerDuration duration;
++        PtimerTime next;
++        __int128 deadline;
 +
-+        if (!period_fixed ||
-+            __builtin_mul_overflow(period_fixed, (__int128)delta,
-+                                   &duration) ||
-+            __builtin_add_overflow(last_fixed, duration, &next_fixed)) {
++        if (!period_fixed || !ptimer_duration(period_fixed, delta, &duration) ||
++            !ptimer_time_add(last, duration, &next) ||
++            !ptimer_time_deadline(next, &deadline)) {
 +            g_error("ptimer deadline exceeds the virtual clock range");
 +        }
 +
-+        ptimer_set_last_event_fixed(s, last_fixed);
-+        ptimer_set_next_event_fixed(s, next_fixed);
-+        timer_mod_ps_wide(s->timer, ptimer_fixed_time_ceil_ps(next_fixed));
++        ptimer_set_last_time(s, last);
++        ptimer_set_next_time(s, next);
++        timer_mod_ps_wide(s->timer, deadline);
 +        return;
 +    }
 +
@@ -18626,51 +18695,46 @@ index 0cbe1ed5787cd4b1652e8d96e490be09d2c9097a..efb7aaf3b4e8767e6f10aa18e2087041
 +
 +static uint64_t ptimer_get_count_exact(ptimer_state *s)
 +{
-+    __int128 now_fixed_ps;
-+    __int128 next_fixed_ps;
-+    __int128 last_fixed_ps;
-+    __int128 period_fixed_ps;
-+    __uint128_t remaining;
++    PtimerTime now = { 0 };
++    PtimerTime next = ptimer_next_time(s);
++    PtimerTime last = ptimer_last_time(s);
++    __uint128_t period = ptimer_period_fixed(s, s->period, s->period_frac);
 +    __uint128_t counter;
 +    bool oneshot = s->enabled == 2;
 +
-+    if (qemu_timer_tcg_ps_enabled()) {
-+        now_fixed_ps = qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL) *
-+                       PTIMER_SUBPS_SCALE;
-+    } else {
-+        now_fixed_ps = (__int128)qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) *
-+                       PTIMER_FIXED_NS_SCALE;
-+    }
-+    next_fixed_ps = ptimer_next_event_fixed(s);
-+    last_fixed_ps = ptimer_last_event_fixed(s);
-+    period_fixed_ps = ptimer_period_fixed_ps(s, s->period, s->period_frac);
-+
-+    if (now_fixed_ps >= next_fixed_ps) {
++    now.ps = qemu_timer_tcg_ps_enabled() ?
++             qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL) :
++             (__int128)qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) *
++                 PICOSECONDS_PER_NANOSECOND;
++    if (!ptimer_time_before(now, next)) {
 +        counter = 0;
 +    } else {
-+        if (!period_fixed_ps) {
-+            g_error("ptimer sim countdown has a zero period");
-+        }
-+        remaining = next_fixed_ps - now_fixed_ps;
-+        counter = remaining / period_fixed_ps;
++        PtimerDuration remaining = {
++            (__uint128_t)next.ps - (__uint128_t)now.ps, next.subps,
++        };
 +
-+        if (s->policy_mask & PTIMER_POLICY_WRAP_AFTER_ONE_PERIOD) {
-+            if (!oneshot && s->delta == s->limit) {
-+                if (now_fixed_ps == last_fixed_ps) {
-+                    if (counter == (__uint128_t)s->limit + DELTA_ADJUST) {
-+                        return 0;
-+                    }
-+                } else if (counter == s->limit) {
++        if (!period) {
++            g_error("ptimer exact countdown has a zero period");
++        }
++        counter = ptimer_count_remaining(remaining, period);
++
++        if ((s->policy_mask & PTIMER_POLICY_WRAP_AFTER_ONE_PERIOD) &&
++            !oneshot && s->delta == s->limit) {
++            if (ptimer_time_equal(now, last)) {
++                if (counter == (__uint128_t)s->limit + DELTA_ADJUST) {
 +                    return 0;
 +                }
++            } else if (counter == s->limit) {
++                return 0;
 +            }
 +        }
 +    }
 +
 +    if ((s->policy_mask & PTIMER_POLICY_NO_COUNTER_ROUND_DOWN) &&
-+        now_fixed_ps != last_fixed_ps) {
++        !ptimer_time_equal(now, last)) {
 +        counter++;
 +    }
++
 +    if (counter > UINT64_MAX) {
 +        g_error("ptimer countdown exceeds the counter range");
 +    }
@@ -18678,7 +18742,7 @@ index 0cbe1ed5787cd4b1652e8d96e490be09d2c9097a..efb7aaf3b4e8767e6f10aa18e2087041
  }
  
  static void ptimer_tick(void *opaque)
-@@ -201,6 +426,11 @@ uint64_t ptimer_get_count(ptimer_state *s)
+@@ -201,6 +482,11 @@ uint64_t ptimer_get_count(ptimer_state *s)
  {
      uint64_t counter;
  
@@ -18690,15 +18754,15 @@ index 0cbe1ed5787cd4b1652e8d96e490be09d2c9097a..efb7aaf3b4e8767e6f10aa18e2087041
      if (s->enabled && s->delta != 0) {
          int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
          int64_t next = s->next_event;
-@@ -429,17 +659,105 @@ void ptimer_transaction_commit(ptimer_state *s)
+@@ -429,17 +715,168 @@ void ptimer_transaction_commit(ptimer_state *s)
       */
      while (s->need_reload && s->enabled) {
          s->need_reload = false;
 -        s->next_event = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 +        if (qemu_timer_tcg_ps_enabled()) {
-+            ptimer_set_next_event_fixed(
-+                s, qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL) *
-+                   PTIMER_SUBPS_SCALE);
++            ptimer_set_next_time(s, (PtimerTime) {
++                qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL), 0,
++            });
 +        } else {
 +            s->next_event = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 +        }
@@ -18708,11 +18772,52 @@ index 0cbe1ed5787cd4b1652e8d96e490be09d2c9097a..efb7aaf3b4e8767e6f10aa18e2087041
      s->in_transaction = false;
  }
  
++static int ptimer_pre_save(void *opaque)
++{
++    ptimer_state *s = opaque;
++
++    s->timer_active = timer_pending(s->timer);
++    s->timer_deadline_ns = -1;
++    s->timer_deadline_ps_hi = 0;
++    s->timer_deadline_ps_lo = 0;
++    s->exact_clock_mode = qemu_timer_tcg_ps_enabled();
++    if (s->timer_active) {
++        if (s->exact_clock_mode) {
++            __int128 deadline = timer_expire_time_ps_wide(s->timer);
++
++            s->timer_deadline_ps_hi = ptimer_high_word(deadline);
++            s->timer_deadline_ps_lo = deadline;
++            s->timer_deadline_ns =
++                ptimer_time_projection((PtimerTime) { deadline, 0 });
++        } else {
++            uint16_t phase;
++            int status = timer_expire_time_ns_phase(s->timer,
++                                                    &s->timer_deadline_ns,
++                                                    &phase);
++
++            if (status != 1) {
++                return -EINVAL;
++            }
++            if (phase && s->timer_deadline_ns != INT64_MAX) {
++                s->timer_deadline_ns++;
++            }
++            if (s->timer_deadline_ns == -1) {
++                s->timer_deadline_ns = 0;
++            }
++        }
++    }
++    if (s->exact_clock_mode && !ptimer_exact_timer_valid(s)) {
++        return -EINVAL;
++    }
++    return 0;
++}
++
 +static int ptimer_pre_load(void *opaque)
 +{
 +    ptimer_state *s = opaque;
 +
 +    s->exact_state_loaded = false;
++    s->exact_clock_mode = 0;
 +    return 0;
 +}
 +
@@ -18721,6 +18826,9 @@ index 0cbe1ed5787cd4b1652e8d96e490be09d2c9097a..efb7aaf3b4e8767e6f10aa18e2087041
 +    ptimer_state *s = opaque;
 +
 +    (void)version_id;
++    if (s->exact_state_loaded) {
++        return -EINVAL;
++    }
 +    s->exact_state_loaded = true;
 +    return 0;
 +}
@@ -18732,19 +18840,22 @@ index 0cbe1ed5787cd4b1652e8d96e490be09d2c9097a..efb7aaf3b4e8767e6f10aa18e2087041
 +}
 +
 +static const VMStateDescription vmstate_ptimer_exact = {
-+    .name = "ptimer/exact",
++    .name = "ptimer/exact-wide",
 +    .version_id = 1,
 +    .minimum_version_id = 1,
 +    .needed = ptimer_exact_needed,
 +    .post_load = ptimer_exact_post_load,
 +    .fields = (const VMStateField[]) {
-+        VMSTATE_INT64(last_event_exact_ns, ptimer_state),
-+        VMSTATE_UINT16(last_event_phase_ps, ptimer_state),
++        VMSTATE_UINT8(exact_clock_mode, ptimer_state),
++        VMSTATE_INT64(last_event_ps_hi, ptimer_state),
++        VMSTATE_UINT64(last_event_ps_lo, ptimer_state),
 +        VMSTATE_UINT32(last_event_subps, ptimer_state),
-+        VMSTATE_INT64(next_event_exact_ns, ptimer_state),
-+        VMSTATE_UINT16(next_event_phase_ps, ptimer_state),
++        VMSTATE_INT64(next_event_ps_hi, ptimer_state),
++        VMSTATE_UINT64(next_event_ps_lo, ptimer_state),
 +        VMSTATE_UINT32(next_event_subps, ptimer_state),
-+        VMSTATE_TIMER_NS_PHASE_PTR(timer, ptimer_state),
++        VMSTATE_UINT8(timer_active, ptimer_state),
++        VMSTATE_INT64(timer_deadline_ps_hi, ptimer_state),
++        VMSTATE_UINT64(timer_deadline_ps_lo, ptimer_state),
 +        VMSTATE_END_OF_LIST()
 +    },
 +};
@@ -18752,38 +18863,53 @@ index 0cbe1ed5787cd4b1652e8d96e490be09d2c9097a..efb7aaf3b4e8767e6f10aa18e2087041
 +static int ptimer_post_load(void *opaque, int version_id)
 +{
 +    ptimer_state *s = opaque;
-+    __int128 last_fixed;
-+    __int128 next_fixed;
++    PtimerTime last;
++    PtimerTime next;
++    __int128 deadline;
 +
 +    (void)version_id;
-+    if (icount_crucible_sim_mode() && !s->exact_state_loaded) {
++    if (s->enabled > 2 || s->period < 0 ||
++        (s->enabled && !s->period && !s->period_frac) ||
++        (qemu_timer_tcg_ps_enabled() && !s->exact_state_loaded)) {
 +        return -EINVAL;
 +    }
 +    if (!s->exact_state_loaded) {
-+        s->last_event_exact_ns = s->last_event;
-+        s->next_event_exact_ns = s->next_event;
-+        s->last_event_phase_ps = 0;
-+        s->next_event_phase_ps = 0;
-+        s->last_event_subps = 0;
-+        s->next_event_subps = 0;
-+    }
-+    if (!ptimer_fixed_time_join(s->last_event_exact_ns,
-+                                s->last_event_phase_ps,
-+                                s->last_event_subps, &last_fixed) ||
-+        !ptimer_fixed_time_join(s->next_event_exact_ns,
-+                                s->next_event_phase_ps,
-+                                s->next_event_subps, &next_fixed) ||
-+        next_fixed < last_fixed) {
-+        return -EINVAL;
-+    }
-+    if (s->exact_state_loaded && !ptimer_exact_timer_valid(s, next_fixed)) {
-+        return -EINVAL;
-+    }
-+    if (!qemu_timer_tcg_ps_enabled() && s->exact_state_loaded) {
-+        if (!ptimer_fixed_time_project(last_fixed, &s->last_event) ||
-+            !ptimer_fixed_time_project(next_fixed, &s->next_event)) {
++        if ((s->timer_deadline_ns != -1) != (s->enabled != 0)) {
 +            return -EINVAL;
 +        }
++        ptimer_set_last_time(s, (PtimerTime) {
++            (__int128)s->last_event * PICOSECONDS_PER_NANOSECOND, 0,
++        });
++        ptimer_set_next_time(s, (PtimerTime) {
++            (__int128)s->next_event * PICOSECONDS_PER_NANOSECOND, 0,
++        });
++    } else if (s->exact_clock_mode != 1 || !ptimer_exact_timer_valid(s)) {
++        return -EINVAL;
++    }
++
++    last = ptimer_last_time(s);
++    next = ptimer_next_time(s);
++    if (ptimer_time_before(next, last) ||
++        (s->exact_state_loaded &&
++         (s->last_event != ptimer_time_projection(last) ||
++          s->next_event != ptimer_time_projection(next)))) {
++        return -EINVAL;
++    }
++    if (!qemu_timer_tcg_ps_enabled() && s->exact_state_loaded &&
++        (!ptimer_time_project(last, &s->last_event) ||
++         !ptimer_time_project(next, &s->next_event))) {
++        return -EINVAL;
++    }
++
++    /* Parent wire fields are scalar projections; no timer is changed above. */
++    if (!s->enabled) {
++        timer_del(s->timer);
++    } else if (qemu_timer_tcg_ps_enabled()) {
++        deadline = ptimer_join_words(s->timer_deadline_ps_hi,
++                                     s->timer_deadline_ps_lo);
++        timer_mod_ps_wide(s->timer, deadline);
++    } else {
++        timer_mod_ns(s->timer, s->timer_deadline_ns);
 +    }
 +    return 0;
 +}
@@ -18792,17 +18918,18 @@ index 0cbe1ed5787cd4b1652e8d96e490be09d2c9097a..efb7aaf3b4e8767e6f10aa18e2087041
      .name = "ptimer",
      .version_id = 1,
      .minimum_version_id = 1,
++    .pre_save = ptimer_pre_save,
 +    .pre_load = ptimer_pre_load,
 +    .post_load = ptimer_post_load,
      .fields = (const VMStateField[]) {
          VMSTATE_UINT8(enabled, ptimer_state),
          VMSTATE_UINT64(limit, ptimer_state),
-@@ -448,9 +766,13 @@ const VMStateDescription vmstate_ptimer = {
+@@ -448,9 +885,13 @@ const VMStateDescription vmstate_ptimer = {
          VMSTATE_INT64(period, ptimer_state),
          VMSTATE_INT64(last_event, ptimer_state),
          VMSTATE_INT64(next_event, ptimer_state),
 -        VMSTATE_TIMER_PTR(timer, ptimer_state),
-+        VMSTATE_TIMER_NS_PROJECTION_PTR(timer, ptimer_state),
++        VMSTATE_INT64(timer_deadline_ns, ptimer_state),
          VMSTATE_END_OF_LIST()
 -    }
 +    },
@@ -141852,7 +141979,7 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
      return g_test_run();
  }
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..dfcf580fdfaa814a49815802b0cdf5d192807024 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..590577c23f27e3fc0e6c8853838c9e7288b15560 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -147,6 +147,37 @@ if have_system
@@ -141893,7 +142020,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..dfcf580fdfaa814a49815802b0cdf5d1
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +238,260 @@ foreach test_name, extra: tests
+@@ -207,3 +238,281 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -142154,8 +142281,29 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..dfcf580fdfaa814a49815802b0cdf5d1
 +    suite: ['unit'],
 +  )
 +endif
++
++# The literal ptimer engine uses real timers and QEMUFile migration helpers.
++if have_system
++  ptimer_wide_clock_test = executable(
++    'test-crucible-ptimer-wide-clock',
++    'test-crucible-ptimer-wide-clock.c',
++    genh,
++    dependencies: [qemuutil, qom, migration, io],
++    c_args: ['-ffunction-sections', '-fdata-sections'],
++    link_args: ['-Wl,--gc-sections'],
++  )
++  test(
++    'test-crucible-ptimer-wide-clock',
++    ptimer_wide_clock_test,
++    env: test_env,
++    args: ['--tap', '-k'],
++    protocol: 'tap',
++    timeout: 30,
++    suite: ['unit'],
++  )
++endif
 diff --git a/tests/unit/ptimer-test-stubs.c b/tests/unit/ptimer-test-stubs.c
-index da46dda32d2e69f12a4ce531a91806ee07b027d0..31195d0520c268d34e08b3ccb3901ec4a24f59cc 100644
+index da46dda32d2e69f12a4ce531a91806ee07b027d0..a3b3030ce1393b2411ead4a7a31e2d558fdf8b7c 100644
 --- a/tests/unit/ptimer-test-stubs.c
 +++ b/tests/unit/ptimer-test-stubs.c
 @@ -10,16 +10,20 @@
@@ -142245,10 +142393,21 @@ index da46dda32d2e69f12a4ce531a91806ee07b027d0..31195d0520c268d34e08b3ccb3901ec4
  bool qtest_allowed;
  
  void timer_init_full(QEMUTimer *ts,
-@@ -68,6 +127,28 @@ void timer_mod(QEMUTimer *ts, int64_t expire_time)
+@@ -68,6 +127,39 @@ void timer_mod(QEMUTimer *ts, int64_t expire_time)
      t->next = ts;
  }
  
++/* Policy tests use local timers; migration has a separate real unit. */
++void timer_mod_ns(QEMUTimer *ts, int64_t expire_time)
++{
++    if (ptimer_test_ps_enabled) {
++        timer_mod_ps_wide(ts, (__int128)expire_time *
++                          PICOSECONDS_PER_NANOSECOND);
++    } else {
++        timer_mod(ts, expire_time);
++    }
++}
++
 +void timer_mod_ps(QEMUTimer *ts, int64_t expire_time)
 +{
 +    timer_mod(ts, expire_time);
@@ -142274,7 +142433,7 @@ index da46dda32d2e69f12a4ce531a91806ee07b027d0..31195d0520c268d34e08b3ccb3901ec4
  void timer_del(QEMUTimer *ts)
  {
      QEMUTimerList *timer_list = ts->timer_list;
-@@ -83,6 +164,33 @@ void timer_del(QEMUTimer *ts)
+@@ -83,6 +175,48 @@ void timer_del(QEMUTimer *ts)
      }
  }
  
@@ -142303,6 +142462,21 @@ index da46dda32d2e69f12a4ce531a91806ee07b027d0..31195d0520c268d34e08b3ccb3901ec4
 +    }
 +    return DIV_ROUND_UP((__uint128_t)ts->expire_time,
 +                        PICOSECONDS_PER_NANOSECOND);
++}
++
++int timer_expire_time_ns_phase(const QEMUTimer *ts, int64_t *expire_time_ns,
++                               uint16_t *phase_ps)
++{
++    if (!timer_pending(ts)) {
++        return 0;
++    }
++    if (ptimer_test_ps_enabled) {
++        return qemu_time_split_ps(ts->expire_time, expire_time_ns, phase_ps) ?
++               1 : -ERANGE;
++    }
++    *expire_time_ns = ts->expire_time;
++    *phase_ps = 0;
++    return 1;
 +}
 +
  int64_t qemu_clock_get_ns(QEMUClockType type)
@@ -153177,6 +153351,605 @@ index 0000000000000000000000000000000000000000..1ba2a64a8846c9d33c82b340038f0e8f
 +    g_test_init(&argc, &argv, NULL);
 +    g_test_add_func("/crucible/parallel/mutable-state",
 +                    test_parallel_mutable_state);
++    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-ptimer-wide-clock.c b/tests/unit/test-crucible-ptimer-wide-clock.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..49b54cb72fc04601b3021c5cdaf7fb6251af5463
+--- /dev/null
++++ b/tests/unit/test-crucible-ptimer-wide-clock.c
+@@ -0,0 +1,593 @@
++/*
++ * Literal ptimer execution and migration with a controlled CPU clock.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include <glib/gstdio.h>
++#include "qapi/error.h"
++#include "qemu/main-loop.h"
++#include "system/cpu-timers.h"
++#include "exec/icount.h"
++#include "io/channel-buffer.h"
++#include "../../migration/qemu-file.h"
++#include "migration/savevm.h"
++#include "../../hw/core/ptimer.c"
++
++static __int128 observed_ps;
++static unsigned nanosecond_reads;
++
++/* Diagnostic CPU-clock adapter, not an installed TCG/controller provider. */
++int64_t cpu_get_clock(void)
++{
++    __int128 nanoseconds = observed_ps / PICOSECONDS_PER_NANOSECOND;
++
++    nanosecond_reads++;
++    if (nanoseconds < 0 || nanoseconds > INT64_MAX) {
++        g_error("Diagnostic nanosecond projection exceeds the API range");
++    }
++    return nanoseconds;
++}
++
++bool icount_crucible_sim_mode(void)
++{
++    return false;
++}
++
++static __int128 observed_clock_ps(void)
++{
++    return observed_ps;
++}
++
++static void initialize_clock(bool exact)
++{
++    Error *error = NULL;
++
++    module_call_init(MODULE_INIT_QOM);
++    qemu_init_main_loop(&error);
++    g_assert_null(error);
++    if (exact) {
++        qemu_timer_enable_tcg_ps_clock(NULL, observed_clock_ps);
++    }
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++    nanosecond_reads = 0;
++}
++
++static unsigned callbacks;
++
++static void observe_expiry(void *opaque)
++{
++    callbacks++;
++}
++
++static ptimer_state *create_countdown(uint64_t count)
++{
++    ptimer_state *timer = ptimer_init(observe_expiry, NULL,
++                                    PTIMER_POLICY_LEGACY);
++
++    ptimer_transaction_begin(timer);
++    ptimer_set_freq(timer, 3000000000U);
++    ptimer_set_count(timer, count);
++    ptimer_run(timer, 1);
++    ptimer_transaction_commit(timer);
++    return timer;
++}
++
++static void test_wide_origin(void)
++{
++    ptimer_state *timer;
++    __int128 origin = ((__int128)INT64_MAX + 1) *
++                      PICOSECONDS_PER_NANOSECOND + 357;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    observed_ps = origin;
++    timer = create_countdown(3);
++    g_assert_true(timer_expire_time_ps_wide(timer->timer) == origin + 1000);
++    g_assert_cmpuint(ptimer_get_count(timer), ==, 3);
++    observed_ps = origin + 999;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(callbacks, ==, 0);
++    observed_ps++;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(callbacks, ==, 1);
++    g_assert_false(timer_pending(timer->timer));
++    g_assert_cmpuint(nanosecond_reads, ==, 0);
++    ptimer_free(timer);
++}
++
++static GByteArray *save_state(ptimer_state *timer)
++{
++    QIOChannelBuffer *output = qio_channel_buffer_new(256);
++    QEMUFile *file = qemu_file_new_output(QIO_CHANNEL(output));
++    GByteArray *bytes = g_byte_array_new();
++    Error *error = NULL;
++
++    g_assert_cmpint(vmstate_save_state(file, &vmstate_ptimer, timer, NULL,
++                                      &error), ==, 0);
++    g_assert_null(error);
++    qemu_put_byte(file, QEMU_VM_EOF);
++    g_assert_cmpint(qemu_fflush(file), ==, 0);
++    g_byte_array_append(bytes, output->data, output->usage);
++    g_assert_cmpint(qemu_fclose(file), ==, 0);
++    object_unref(OBJECT(output));
++    return bytes;
++}
++
++static int load_state(ptimer_state *timer, GByteArray *bytes)
++{
++    QIOChannelBuffer *input = qio_channel_buffer_new(bytes->len);
++    QEMUFile *file;
++    Error *error = NULL;
++    int result;
++
++    input->usage = bytes->len;
++    memcpy(input->data, bytes->data, bytes->len);
++    file = qemu_file_new_input(QIO_CHANNEL(input));
++    result = vmstate_load_state(file, &vmstate_ptimer, timer, 1, &error);
++    error_free(error);
++    qemu_fclose(file);
++    object_unref(OBJECT(input));
++    return result;
++}
++
++static void test_wide_migration(void)
++{
++    __int128 origin = ((__int128)1 << 120) + 357;
++    ptimer_state *original;
++    ptimer_state *restored;
++    GByteArray *bytes;
++    PtimerTime next;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    observed_ps = origin;
++    original = create_countdown(1);
++    bytes = save_state(original);
++    next = ptimer_next_time(original);
++    g_assert_cmpuint(next.subps, !=, 0);
++    restored = ptimer_init(observe_expiry, NULL, PTIMER_POLICY_LEGACY);
++    g_assert_cmpint(load_state(restored, bytes), ==, 0);
++    g_assert_true(ptimer_time_equal(ptimer_next_time(restored), next));
++    g_assert_true(timer_expire_time_ps_wide(restored->timer) == origin + 334);
++    g_assert_cmpuint(ptimer_get_count(restored), ==, 1);
++    ptimer_free(original);
++
++    observed_ps = origin + 333;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(callbacks, ==, 0);
++    observed_ps++;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(callbacks, ==, 1);
++    g_assert_false(timer_pending(restored->timer));
++    ptimer_free(restored);
++    g_byte_array_unref(bytes);
++}
++
++static void test_long_countdown(void)
++{
++    ptimer_state *timer;
++    const uint64_t count = UINT64_C(1) << 40;
++    const int64_t period_ns = INT64_C(1) << 55;
++    __int128 period_ps = (__int128)period_ns * PICOSECONDS_PER_NANOSECOND;
++    __int128 origin = (__int128)1 << 110;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    observed_ps = origin;
++    timer = ptimer_init(observe_expiry, NULL, PTIMER_POLICY_LEGACY);
++    ptimer_transaction_begin(timer);
++    ptimer_set_period(timer, period_ns);
++    ptimer_set_count(timer, count);
++    ptimer_run(timer, 1);
++    ptimer_transaction_commit(timer);
++    g_assert_true(timer_expire_time_ps_wide(timer->timer) ==
++                  origin + period_ps * count);
++    g_assert_cmpuint(ptimer_get_count(timer), ==, count);
++    observed_ps += period_ps;
++    g_assert_cmpuint(ptimer_get_count(timer), ==, count - 1);
++    observed_ps = origin + period_ps * (count - 1);
++    g_assert_cmpuint(ptimer_get_count(timer), ==, 1);
++    observed_ps++;
++    g_assert_cmpuint(ptimer_get_count(timer), ==, 0);
++    ptimer_free(timer);
++}
++
++static void test_full_horizon(void)
++{
++    ptimer_state *timer;
++    __int128 horizon = (__int128)PTIMER_PS_MAX;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    observed_ps = horizon - 1000;
++    timer = create_countdown(3);
++    g_assert_true(timer_expire_time_ps_wide(timer->timer) == horizon);
++    g_assert_cmpuint(ptimer_get_count(timer), ==, 3);
++    observed_ps = horizon - 1;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(callbacks, ==, 0);
++    observed_ps++;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(callbacks, ==, 1);
++    ptimer_free(timer);
++}
++
++static void test_deadline_overflow(void)
++{
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_failed();
++        g_test_trap_assert_stderr(
++            "*ptimer deadline exceeds the virtual clock range*");
++        return;
++    }
++
++    initialize_clock(true);
++    observed_ps = (__int128)PTIMER_PS_MAX - 500;
++    create_countdown(3);
++    g_assert_not_reached();
++}
++
++static void test_negative_origin(void)
++{
++    ptimer_state *timer;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    observed_ps = -((__int128)1 << 110) + 357;
++    timer = create_countdown(3);
++    g_assert_cmpuint(ptimer_get_count(timer), ==, 3);
++    g_assert_true(timer_expire_time_ps_wide(timer->timer) ==
++                  observed_ps + 1000);
++    observed_ps += 1000;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(callbacks, ==, 1);
++    ptimer_free(timer);
++}
++
++static void test_ordinary_migration(void)
++{
++    ptimer_state *original;
++    ptimer_state *restored;
++    GByteArray *bytes;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(false);
++    observed_ps = 357000;
++    original = ptimer_init(observe_expiry, NULL, PTIMER_POLICY_LEGACY);
++    ptimer_transaction_begin(original);
++    ptimer_set_period(original, 1000);
++    ptimer_set_count(original, 3);
++    ptimer_run(original, 1);
++    ptimer_transaction_commit(original);
++    bytes = save_state(original);
++    /* The original parent format and its following outer marker stay intact. */
++    g_assert_cmpuint(bytes->len, ==, 54);
++    restored = ptimer_init(observe_expiry, NULL, PTIMER_POLICY_LEGACY);
++    g_assert_cmpint(load_state(restored, bytes), ==, 0);
++    g_assert_cmpuint(timer_expire_time_ns(restored->timer), ==, 3357);
++    g_assert_cmpuint(ptimer_get_count(restored), ==, 3);
++    ptimer_free(original);
++    observed_ps = 3356000;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(callbacks, ==, 0);
++    observed_ps = 3357000;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(callbacks, ==, 1);
++    ptimer_free(restored);
++    g_byte_array_unref(bytes);
++}
++
++typedef enum InvalidStream {
++    MISSING_EXACT,
++    INVALID_MODE,
++    INVALID_ACTIVE,
++    INVALID_PROJECTION,
++    INVALID_DEADLINE,
++    REVERSED_EVENTS,
++    DUPLICATE_EXACT,
++    TRUNCATED_EXACT,
++    INACTIVE_PAYLOAD,
++    ZERO_PERIOD,
++} InvalidStream;
++
++static void test_invalid_stream(gconstpointer data)
++{
++    InvalidStream invalid = GPOINTER_TO_INT(data);
++    ptimer_state *original;
++    ptimer_state *restored;
++    GByteArray *bytes;
++    const size_t parent_size = 53;
++    size_t payload;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    observed_ps = ((__int128)1 << 120) + 357;
++    original = create_countdown(3);
++    if (invalid == INACTIVE_PAYLOAD) {
++        ptimer_transaction_begin(original);
++        ptimer_stop(original);
++        ptimer_transaction_commit(original);
++    }
++    bytes = save_state(original);
++    g_assert_cmpuint(bytes->data[parent_size], ==, QEMU_VM_SUBSECTION);
++    payload = parent_size + 2 + bytes->data[parent_size + 1] + 4;
++    g_assert_cmpuint(bytes->len, ==, payload + 58 + 1);
++
++    switch (invalid) {
++    case MISSING_EXACT:
++        g_byte_array_set_size(bytes, parent_size + 1);
++        bytes->data[parent_size] = QEMU_VM_EOF;
++        break;
++    case INVALID_MODE:
++        bytes->data[payload] = 2;
++        break;
++    case INVALID_ACTIVE:
++        bytes->data[payload + 41] = 2;
++        break;
++    case INVALID_PROJECTION:
++        bytes->data[52] ^= 1;
++        break;
++    case INVALID_DEADLINE:
++    case INACTIVE_PAYLOAD:
++        bytes->data[payload + 57] ^= 1;
++        break;
++    case REVERSED_EVENTS:
++        /* Replace next with zero while the genuine last event is positive. */
++        memset(bytes->data + payload + 21, 0, 20);
++        break;
++    case DUPLICATE_EXACT: {
++        GByteArray *duplicate = g_byte_array_sized_new(bytes->len);
++
++        g_byte_array_append(duplicate, bytes->data + parent_size,
++                            bytes->len - parent_size - 1);
++        g_byte_array_set_size(bytes, bytes->len - 1);
++        g_byte_array_append(bytes, duplicate->data, duplicate->len);
++        g_byte_array_append(bytes, (const uint8_t[]) { QEMU_VM_EOF }, 1);
++        g_byte_array_unref(duplicate);
++        break;
++    }
++    case TRUNCATED_EXACT:
++        g_byte_array_set_size(bytes, bytes->len - 8);
++        break;
++    case ZERO_PERIOD:
++        /* An enabled countdown cannot run without an integer or fraction. */
++        memset(bytes->data + 17, 0, 12);
++        break;
++    }
++
++    restored = ptimer_init(observe_expiry, NULL, PTIMER_POLICY_LEGACY);
++    timer_mod_ps_wide(restored->timer, observed_ps + 12345);
++    g_assert_cmpint(load_state(restored, bytes), <, 0);
++    g_assert_true(timer_pending(restored->timer));
++    g_assert_true(timer_expire_time_ps_wide(restored->timer) ==
++                  observed_ps + 12345);
++    g_assert_cmpuint(callbacks, ==, 0);
++    ptimer_free(original);
++    ptimer_free(restored);
++    g_byte_array_unref(bytes);
++}
++
++static void test_inactive_zero_period(gconstpointer data)
++{
++    bool exact = GPOINTER_TO_INT(data);
++    ptimer_state *original;
++    ptimer_state *restored;
++    GByteArray *bytes;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(exact);
++    observed_ps = 357000;
++    original = ptimer_init(observe_expiry, NULL, PTIMER_POLICY_LEGACY);
++    bytes = save_state(original);
++    restored = ptimer_init(observe_expiry, NULL, PTIMER_POLICY_LEGACY);
++    if (exact) {
++        timer_mod_ps_wide(restored->timer, observed_ps + 12345);
++    } else {
++        timer_mod_ns(restored->timer, 5555);
++    }
++
++    g_assert_cmpint(load_state(restored, bytes), ==, 0);
++    g_assert_false(timer_pending(restored->timer));
++    g_assert_cmpuint(ptimer_get_count(restored), ==, 0);
++    g_assert_cmpuint(callbacks, ==, 0);
++    ptimer_free(original);
++    ptimer_free(restored);
++    g_byte_array_unref(bytes);
++}
++
++static void test_periodic_fraction(void)
++{
++    const int64_t offsets[] = { 334, 667, 1000, 1334 };
++    __int128 origin = (__int128)1 << 120;
++    ptimer_state *timer;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    /* Select the existing qtest policy that leaves rapid periods unclamped. */
++    qtest_allowed = true;
++    observed_ps = origin;
++    timer = ptimer_init(observe_expiry, NULL, PTIMER_POLICY_LEGACY);
++    ptimer_transaction_begin(timer);
++    ptimer_set_freq(timer, 3000000000U);
++    ptimer_set_limit(timer, 1, 1);
++    ptimer_run(timer, 0);
++    ptimer_transaction_commit(timer);
++
++    for (size_t i = 0; i < G_N_ELEMENTS(offsets); i++) {
++        g_assert_true(timer_expire_time_ps_wide(timer->timer) ==
++                      origin + offsets[i]);
++        observed_ps = origin + offsets[i];
++        qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++        g_assert_cmpuint(callbacks, ==, i + 1);
++    }
++    ptimer_free(timer);
++}
++
++static char *test_executable;
++
++static GByteArray *save_in_exact_process(bool wide)
++{
++    GError *error = NULL;
++    char *directory = g_dir_make_tmp("ptimer-stream-XXXXXX", &error);
++    char *path;
++    char *contents;
++    char option[] = "--encode-stream";
++    char *kind = g_strdup(wide ? "wide" : "narrow");
++    gsize length;
++    int status;
++    GByteArray *bytes;
++
++    g_assert_no_error(error);
++    path = g_build_filename(directory, "state", NULL);
++    char *arguments[] = { test_executable, option, path, kind, NULL };
++
++    g_assert_true(g_spawn_sync(NULL, arguments, NULL, 0, NULL, NULL,
++                               NULL, NULL, &status, &error));
++    g_assert_no_error(error);
++    g_assert_true(g_spawn_check_exit_status(status, &error));
++    g_assert_no_error(error);
++    g_assert_true(g_file_get_contents(path, &contents, &length, &error));
++    g_assert_no_error(error);
++    bytes = g_byte_array_new_take((uint8_t *)contents, length);
++    g_assert_cmpint(g_remove(path), ==, 0);
++    g_assert_cmpint(g_rmdir(directory), ==, 0);
++    g_free(path);
++    g_free(directory);
++    g_free(kind);
++    return bytes;
++}
++
++static void test_cross_mode(gconstpointer data)
++{
++    bool wide = GPOINTER_TO_INT(data);
++    ptimer_state *restored;
++    GByteArray *bytes;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(false);
++    observed_ps = 357000;
++    bytes = save_in_exact_process(wide);
++    restored = ptimer_init(observe_expiry, NULL, PTIMER_POLICY_LEGACY);
++    timer_mod_ns(restored->timer, 5555);
++    if (wide) {
++        g_assert_cmpint(load_state(restored, bytes), <, 0);
++        g_assert_cmpuint(timer_expire_time_ns(restored->timer), ==, 5555);
++    } else {
++        g_assert_cmpint(load_state(restored, bytes), ==, 0);
++        g_assert_cmpuint(timer_expire_time_ns(restored->timer), ==, 358);
++        g_assert_cmpuint(ptimer_get_count(restored), ==, 1);
++        observed_ps = 358000;
++        qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++        g_assert_cmpuint(callbacks, ==, 1);
++    }
++    ptimer_free(restored);
++    g_byte_array_unref(bytes);
++}
++
++static int encode_exact_stream(const char *path, bool wide)
++{
++    ptimer_state *timer;
++    GByteArray *bytes;
++    GError *error = NULL;
++
++    initialize_clock(true);
++    observed_ps = wide ? ((__int128)1 << 120) + 357 : 357000;
++    timer = create_countdown(1);
++    bytes = save_state(timer);
++    g_assert_true(g_file_set_contents(path, (const char *)bytes->data,
++                                      bytes->len, &error));
++    g_assert_no_error(error);
++    g_byte_array_unref(bytes);
++    ptimer_free(timer);
++    return 0;
++}
++
++int main(int argc, char **argv)
++{
++    test_executable = argv[0];
++    if (argc == 4 && !strcmp(argv[1], "--encode-stream")) {
++        return encode_exact_stream(argv[2], !strcmp(argv[3], "wide"));
++    }
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/ptimer/wide-origin", test_wide_origin);
++    g_test_add_func("/ptimer/wide-migration", test_wide_migration);
++    g_test_add_func("/ptimer/long-countdown", test_long_countdown);
++    g_test_add_func("/ptimer/full-horizon", test_full_horizon);
++    g_test_add_func("/ptimer/deadline-overflow", test_deadline_overflow);
++    g_test_add_func("/ptimer/negative-origin", test_negative_origin);
++    g_test_add_func("/ptimer/ordinary-migration", test_ordinary_migration);
++    g_test_add_func("/ptimer/periodic-fraction", test_periodic_fraction);
++    g_test_add_data_func("/ptimer/cross-mode/narrow", GINT_TO_POINTER(false),
++                         test_cross_mode);
++    g_test_add_data_func("/ptimer/cross-mode/wide", GINT_TO_POINTER(true),
++                         test_cross_mode);
++    g_test_add_data_func("/ptimer/zero-period/inactive-exact",
++                         GINT_TO_POINTER(true), test_inactive_zero_period);
++    g_test_add_data_func("/ptimer/zero-period/inactive-ordinary",
++                         GINT_TO_POINTER(false), test_inactive_zero_period);
++    const char *names[] = { "missing-exact", "invalid-mode", "invalid-active",
++                            "invalid-projection", "invalid-deadline",
++                            "reversed-events", "duplicate-exact",
++                            "truncated-exact", "inactive-payload",
++                            "zero-period" };
++
++    for (size_t i = 0; i < G_N_ELEMENTS(names); i++) {
++        char *path = g_strdup_printf("/ptimer/migration/%s", names[i]);
++
++        g_test_add_data_func(path, GINT_TO_POINTER(i), test_invalid_stream);
++        g_free(path);
++    }
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-rc4030-period.c b/tests/unit/test-crucible-rc4030-period.c
