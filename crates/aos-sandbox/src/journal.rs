@@ -43,6 +43,7 @@ pub(crate) use mount_manager_startup::{
 };
 mod cache_policy_hold;
 mod capacity_reservation;
+pub use capacity_reservation::native_held;
 mod controller_policy_hold;
 pub(crate) mod controller_source_genesis;
 pub(crate) mod host_currentness_fence;
@@ -1882,6 +1883,7 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
+        native_held::require_legacy_owner(&self.state, RecordNamespace::MountSourceAcquisition)?;
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace: RecordNamespace::MountSourceAcquisition,
@@ -1905,6 +1907,7 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
+        native_held::require_legacy_owner(&self.state, RecordNamespace::MountSourceAcquisition)?;
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace: RecordNamespace::MountSourceAcquisition,
@@ -1916,6 +1919,7 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
+        native_held::require_legacy_owner(&self.state, RecordNamespace::MountSourceAcquisition)?;
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace: RecordNamespace::MountSourceAcquisition,
@@ -1939,6 +1943,7 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
+        native_held::require_legacy_owner(&self.state, RecordNamespace::MountSourceAcquisition)?;
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace: RecordNamespace::MountManagerStartupAuthority,
@@ -2399,6 +2404,7 @@ impl Journal {
         root_genesis_transition: RootSourceGenesisTransitionV1,
     ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
+        native_held::require_legacy_transaction(&self.state, transaction)?;
         self.validate_consumer_resource_transition(
             transaction,
             allow_capacity_records,
@@ -2646,6 +2652,7 @@ impl Journal {
         let mut expected_length = self.file.metadata()?.len();
 
         for (index, transaction) in transactions.iter().enumerate() {
+            native_held::require_legacy_transaction(&state, transaction)?;
             controller_source_genesis::require_no_mutation(
                 &state,
                 transaction,
@@ -4321,7 +4328,16 @@ pub(super) fn encoded_transaction_record_bytes(
 }
 
 /// Measures canonical append framing without granting admission or capacity.
-pub(crate) fn encoded_transaction_append_bytes(
+///
+/// The measurement includes the begin and commit frames, every record frame,
+/// and their checksums. It does not inspect a journal, reserve space, or validate
+/// an owner's proposed transition.
+///
+/// # Errors
+///
+/// Returns an error when a record length, record count, sequence, or aggregate
+/// append length cannot be represented by the journal format.
+pub fn encoded_transaction_append_bytes(
     transaction: &JournalTransaction,
 ) -> Result<u64, JournalError> {
     encode_transaction(transaction, 0)?

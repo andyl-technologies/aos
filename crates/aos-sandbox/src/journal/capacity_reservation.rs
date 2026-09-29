@@ -6,12 +6,16 @@
 //! V1 reserves one future transaction. V2 also retains an explicit bounded
 //! transaction count for an ordered owner suffix; it cannot infer extra slots
 //! from a legacy record or change the closed namespace purpose.
+//! Native V3 records use a separate DATA-only codec and bounded profile; replay
+//! accounts their floors, but no legacy protected reservation route admits them.
 
 use sha2::{Digest as _, Sha256};
 
 use super::{
     CommitResult, Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace,
 };
+
+pub mod native_held;
 
 const KEY_PREFIX: &[u8] = b"aos.journal.global-capacity-reservation.v1\0";
 const RECORD_DOMAIN: &[u8] = b"aos.sandbox.journal.global-capacity-reservation.v1\0";
@@ -728,6 +732,9 @@ pub(super) fn decode_capacity_record(
     key: &[u8],
     value: &[u8],
 ) -> Result<DecodedCapacityReservationV1, JournalError> {
+    if native_held::has_native_version(value) {
+        return native_held::decode_accounting_record(key, value);
+    }
     let (request, admission, decoded_reservation_id) = decode_reservation(value)?;
     if key != reservation_key(decoded_reservation_id).as_slice()
         || reservation_id(&request, admission) != decoded_reservation_id
