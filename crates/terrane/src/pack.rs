@@ -62,6 +62,7 @@ impl PackId {
     /// # Errors
     /// Returns the binding's I/O error if secure randomness is unavailable, or
     /// [`std::io::ErrorKind::InvalidData`] if it returns a length other than 16.
+    #[cfg(feature = "std")]
     pub async fn generate(filesystem: &impl crate::store::LocalFs) -> std::io::Result<Self> {
         let bytes = filesystem.random_bytes(16).await?;
         let bytes = bytes.try_into().map_err(|_| {

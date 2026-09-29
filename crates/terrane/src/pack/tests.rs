@@ -425,11 +425,13 @@ async fn pack_id_secure_generator_has_no_repeated_identifiers()
     Ok(())
 }
 
+#[cfg(feature = "std")]
 struct RandomBinding {
     length: usize,
     fail: bool,
 }
 
+#[cfg(feature = "std")]
 #[cfg_attr(feature = "send", async_trait::async_trait)]
 #[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
 impl crate::store::LocalFs for RandomBinding {
@@ -510,6 +512,7 @@ impl crate::store::LocalFs for RandomBinding {
     }
 }
 
+#[cfg(feature = "std")]
 #[test]
 fn pack_id_secure_generator_validates_binding_results() -> std::io::Result<()> {
     let binding = RandomBinding {
