@@ -43,6 +43,15 @@ impl core::fmt::Debug for NativeAcquireLiveObservationV3 {
 }
 
 impl NativeAcquireLiveObservationV3 {
+    pub(crate) fn reply_identity(&self) -> NativeReplyIdentity {
+        NativeReplyIdentity {
+            acquisition: self.active.acquisition_id,
+            attempt: self.active.attempt_digest,
+            session: self.active.session_binding,
+            signed_request: self.active.root_request_digest,
+        }
+    }
+
     pub(crate) fn revalidate(
         &self,
         descriptor: &aos_sandbox_source_provider_protocol::SourceRootObservationV1,
@@ -118,6 +127,9 @@ impl ProviderLedgerV1<'_> {
         backend_verifier: Arc<ProtectedBackendVerifierV1>,
     ) -> Result<DurableProviderReplyV1, ProviderLedgerError> {
         self.ensure_open()?;
+        let identity =
+            NativeReplyIdentity::for_request(original, permit.completion_attempt_digest)?;
+        self.native_reply_custody.require_reserved(identity)?;
         let (permit, requested, capacity) =
             self.prepare_native_acquire_request_v2(challenges, permit, original, current_catalog)?;
         let signed = requested
@@ -298,11 +310,17 @@ impl ProviderLedgerV1<'_> {
             manifest,
             clock,
         });
-        observed.revalidate_physical()?;
-        self.with_current_completion_session(
+        // Retain the entire original before even the final session lookup:
+        // no validation or completion failure may drop its live endpoint.
+        self.native_reply_custody.retain_observed(observed);
+        let result = self.with_current_completion_session(
             permit.plan.holder_id(),
             permit.completion_session_binding,
-            |ledger, custody| crate::acquire::complete_acquire(ledger, permit, observed, custody),
-        )
+            |ledger, custody| crate::acquire::complete_retained_native(ledger, permit, custody),
+        );
+        if result.is_err() {
+            self.poison_runtime();
+        }
+        result
     }
 }

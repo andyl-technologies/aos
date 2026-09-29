@@ -67,6 +67,28 @@ pub(crate) fn commit_sealed_completion(
     custody: &mut aos_sandbox_source_provider_security::CurrentProviderIngressSessionV1,
     builder: aos_sandbox_source_provider_security::ProviderCompletionBuilderV1,
 ) -> Result<aos_sandbox_source_provider_security::CommittedProviderOutcomeV1, ProviderLedgerError> {
+    let committed = commit_sealed_builder(ledger, custody, builder)?;
+    recover_after_sealed_commit(ledger)?;
+    Ok(committed)
+}
+
+pub(crate) fn commit_retained_native_completion(
+    ledger: &mut ProviderLedgerV1<'_>,
+    custody: &mut aos_sandbox_source_provider_security::CurrentProviderIngressSessionV1,
+    builder: aos_sandbox_source_provider_security::ProviderCompletionBuilderV1,
+) -> Result<ObjectDigest, ProviderLedgerError> {
+    let committed = commit_sealed_builder(ledger, custody, builder)?;
+    let binding = committed.session_binding();
+    ledger.native_reply_custody.retain_committed(committed);
+    recover_after_sealed_commit(ledger)?;
+    Ok(binding)
+}
+
+fn commit_sealed_builder(
+    ledger: &mut ProviderLedgerV1<'_>,
+    custody: &mut aos_sandbox_source_provider_security::CurrentProviderIngressSessionV1,
+    builder: aos_sandbox_source_provider_security::ProviderCompletionBuilderV1,
+) -> Result<aos_sandbox_source_provider_security::CommittedProviderOutcomeV1, ProviderLedgerError> {
     let committed = match builder.commit(&mut ledger.journal, custody) {
         Ok(committed) => committed,
         Err(error) => {
@@ -74,6 +96,12 @@ pub(crate) fn commit_sealed_completion(
             return Err(error.into());
         }
     };
+    Ok(committed)
+}
+
+fn recover_after_sealed_commit(
+    ledger: &mut ProviderLedgerV1<'_>,
+) -> Result<(), ProviderLedgerError> {
     let recovered =
         match crate::recovery::recover_capacity_checked(&ledger.journal, &ledger.configuration) {
             Ok(recovered) => recovered,
@@ -84,7 +112,7 @@ pub(crate) fn commit_sealed_completion(
         };
     ledger.recovered = recovered;
     ledger.refresh_recovery_work();
-    Ok(committed)
+    Ok(())
 }
 
 pub(crate) fn map_pure_ledger_error(
@@ -237,8 +265,18 @@ pub(crate) fn reauthorize_native_reservation(
     original: &SignedSourceProviderRequestV1,
     current_catalog: (&[u8], &[u8]),
 ) -> Result<crate::DurableAcquireEffectPermitV1, ProviderLedgerError> {
-    let disposition =
-        ledger.verify_and_admit_request_with_catalog(original, &[], Some(current_catalog))?;
+    let identity = crate::native_completion::NativeReplyIdentity::for_request(
+        original,
+        permit.completion_attempt_digest,
+    )?;
+    ledger.native_reply_custody.require_reserved(identity)?;
+    let disposition = ledger.verify_and_admit_with_origin(
+        original,
+        &[],
+        Some(current_catalog),
+        None,
+        Some(identity),
+    )?;
     if !matches!(disposition, ProviderAdmissionDispositionV1::Recover(
         ProviderRecoveryWorkV1::ObserveApplying { acquisition_id, effect_id }
     ) if acquisition_id == permit.plan.acquisition_id() && effect_id == permit.plan.effect_id())
@@ -359,7 +397,13 @@ impl ProviderLedgerV1<'_> {
         descriptor_roles: &[SourceProviderDescriptorRole],
         current_catalog: Option<(&[u8], &[u8])>,
     ) -> Result<ProviderAdmissionDispositionV1, ProviderLedgerError> {
-        self.verify_and_admit_with_origin(signed_request, descriptor_roles, current_catalog, None)
+        self.verify_and_admit_with_origin(
+            signed_request,
+            descriptor_roles,
+            current_catalog,
+            None,
+            None,
+        )
     }
 
     pub(crate) fn verify_and_admit_original_packet(
@@ -367,7 +411,7 @@ impl ProviderLedgerV1<'_> {
         packet: &crate::FixedProviderAuthenticatedSourceRequestV1,
         current_catalog: Option<(&[u8], &[u8])>,
     ) -> Result<ProviderAdmissionDispositionV1, ProviderLedgerError> {
-        self.verify_and_admit_with_origin(packet.signed(), &[], current_catalog, Some(packet))
+        self.verify_and_admit_with_origin(packet.signed(), &[], current_catalog, Some(packet), None)
     }
 
     fn verify_and_admit_with_origin(
@@ -376,6 +420,7 @@ impl ProviderLedgerV1<'_> {
         descriptor_roles: &[SourceProviderDescriptorRole],
         current_catalog: Option<(&[u8], &[u8])>,
         original_packet: Option<&crate::FixedProviderAuthenticatedSourceRequestV1>,
+        native_completion_identity: Option<crate::native_completion::NativeReplyIdentity>,
     ) -> Result<ProviderAdmissionDispositionV1, ProviderLedgerError> {
         self.ensure_open()?;
         let original_native_packet = original_packet.is_some()
@@ -408,6 +453,7 @@ impl ProviderLedgerV1<'_> {
                         current,
                         current_catalog,
                         original_packet,
+                        native_completion_identity,
                     ),
                     SourceProviderMethod::Release => {
                         crate::release::reserve_release(self, &mut installed.session, current)

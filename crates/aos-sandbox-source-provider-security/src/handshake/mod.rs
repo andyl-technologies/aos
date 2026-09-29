@@ -42,6 +42,47 @@ pub struct CommittedProviderOutcomeV1 {
     pub(super) session_binding: aos_sandbox_core::ObjectDigest,
     pub(super) committed_snapshot: aos_sandbox::ProtectedJournalSnapshot,
     pub(super) response: Option<Vec<u8>>,
+    pub(super) send_attempted: Cell<bool>,
+}
+
+impl CommittedProviderOutcomeV1 {
+    /// Returns the sealed routing binding without granting send authority.
+    #[must_use]
+    pub const fn session_binding(&self) -> aos_sandbox_core::ObjectDigest {
+        self.session_binding
+    }
+
+    fn claim_send_attempt(&self) -> Result<(), crate::SourceProviderSecurityError> {
+        claim_committed_send_attempt(&self.send_attempted)
+    }
+}
+
+// Keeping sealed bytes borrowed does not make their move-only send authority
+// repeatable. This bit records only an attempt, never receipt or Root ACK.
+fn claim_committed_send_attempt(
+    attempted: &Cell<bool>,
+) -> Result<(), crate::SourceProviderSecurityError> {
+    if attempted.replace(true) {
+        return Err(crate::SourceProviderSecurityError::SessionContinuity);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod committed_send_attempt_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_send_attempt_cannot_be_rearmed_after_success_or_failure() {
+        // This exercises the actual in-memory attempt primitive, not a fake
+        // sealed outcome or a native observation authority constructor.
+        let attempted = Cell::new(false);
+
+        claim_committed_send_attempt(&attempted).unwrap();
+        assert!(claim_committed_send_attempt(&attempted).is_err());
+        assert!(claim_committed_send_attempt(&attempted).is_err());
+        assert!(attempted.get());
+    }
 }
 
 /// Proves one exact response was durably completed under Provider deadline checks.
