@@ -1,0 +1,18 @@
+[package]
+name = "terrane"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+terrane-core.workspace = true
+
+[features]
+default = ["std"]
+std = []
+send = []
+tokio = ["std", "send"]
+wasm = []
+
+[lints]
+workspace = true

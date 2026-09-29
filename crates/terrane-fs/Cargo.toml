@@ -1,0 +1,11 @@
+[package]
+name = "terrane-fs"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+terrane = { workspace = true, features = ["std"] }
+
+[lints]
+workspace = true

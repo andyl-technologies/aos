@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
+    "terrane-core",
+    "terrane",
+    "terrane-fs",
+    "terrane-cli",
+    "aos-terrane",
     "aos",
     "aos-oci",
     "aos-oci-types",
@@ -202,6 +207,11 @@ tokio-rustls = "0.26"
 rcgen = "0.14"
 
 # Internal crates
+terrane-core = { path = "terrane-core" }
+terrane = { path = "terrane", default-features = false }
+terrane-fs = { path = "terrane-fs" }
+terrane-cli = { path = "terrane-cli" }
+aos-terrane = { path = "aos-terrane" }
 aos-contract = { path = "aos-contract" }
 aos-maintain = { path = "aos-maintain" }
 crucible-cas = { path = "crucible-cas" }

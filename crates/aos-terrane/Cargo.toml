@@ -1,0 +1,11 @@
+[package]
+name = "aos-terrane"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+terrane = { workspace = true, features = ["tokio"] }
+
+[lints]
+workspace = true
