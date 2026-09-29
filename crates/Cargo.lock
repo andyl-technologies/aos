@@ -6291,9 +6291,13 @@ dependencies = [
 name = "terrane"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "reqwest",
  "serde",
  "terrane-core",
+ "tokio",
  "toml 0.8.23",
+ "zstd",
 ]
 
 [[package]]

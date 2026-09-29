@@ -17,4 +17,5 @@ pub mod cbor;
 pub mod chunking;
 pub mod codec;
 pub mod identity;
+pub mod refs;
 pub mod tree_format;
