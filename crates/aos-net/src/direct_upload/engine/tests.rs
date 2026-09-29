@@ -169,6 +169,13 @@ impl DirectCheckpointStore for Store {
             .insert(request.session.session_id.clone(), request.clone());
         Ok(request.clone())
     }
+
+    async fn retained_complete(
+        &self,
+        session: &DirectSessionRef,
+    ) -> Result<Option<DirectCompleteRequest>, DirectClientError> {
+        Ok(self.0.lock().unwrap().complete.get(&session.session_id).cloned())
+    }
 }
 
 struct Server {
@@ -177,6 +184,7 @@ struct Server {
     grants: BTreeMap<String, DirectPartGrant>,
     controls: Vec<DirectUploadRequest>,
     fail_reports: usize,
+    pending_completions: usize,
     blocked_begin: bool,
 }
 
@@ -195,6 +203,7 @@ impl Control {
                 grants: BTreeMap::new(),
                 controls: Vec::new(),
                 fail_reports: 0,
+                pending_completions: 0,
                 blocked_begin: false,
             }),
         }
@@ -354,11 +363,17 @@ impl DirectUploadControl for Control {
                         }
                         assert_eq!(hash.finish().unwrap(), manifest.manifest_digest);
                     }
+                    let pending = state.pending_completions > 0;
+                    state.pending_completions = state.pending_completions.saturating_sub(1);
                     let current = state
                         .sessions
                         .get_mut(fixture_session_key(&item.session))
                         .unwrap();
-                    current.state = DirectSessionState::StagedVerified;
+                    current.state = if pending {
+                        DirectSessionState::CompletingStaging
+                    } else {
+                        DirectSessionState::StagedVerified
+                    };
                     current.resource_version = WireInteger::new(2);
                     response.sessions.push(current.clone());
                 }
@@ -808,6 +823,90 @@ async fn staged_resume_replays_original_completion_version_without_more_provider
     assert_eq!(complete.len(), 2);
     assert_eq!(complete[0], complete[1]);
     assert_eq!(complete[1].items[0].expected_resource_version.get(), 1);
+}
+
+#[tokio::test]
+async fn pending_verification_replays_original_complete_without_part_or_owner_replacement() {
+    let destinations = placements(1);
+    let source = objects(2, b"retained-pending-content", &destinations, 0).await;
+    let control = Control::new(destinations);
+    control.state.lock().unwrap().pending_completions = 2;
+    let store = Store::default();
+    let provider = Provider::default();
+
+    let pending = upload_direct_batch(&control, &store, &provider, source.clone())
+        .await
+        .unwrap();
+    assert!(pending
+        .iter()
+        .all(|item| item.state == DirectSessionState::CompletingStaging));
+    let attempts = provider.attempts.load(Ordering::SeqCst);
+
+    let verified = upload_direct_batch(&control, &store, &provider, source)
+        .await
+        .unwrap();
+    assert!(verified
+        .iter()
+        .all(|item| item.state == DirectSessionState::StagedVerified));
+    assert_eq!(provider.attempts.load(Ordering::SeqCst), attempts);
+    let state = control.state.lock().unwrap();
+    let requests: Vec<_> = state
+        .controls
+        .iter()
+        .filter_map(|request| match request {
+            DirectUploadRequest::CompleteBatch(batch) => Some(batch),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0], requests[1]);
+    assert!(requests[1]
+        .items
+        .iter()
+        .all(|item| item.expected_resource_version.get() == 1));
+    assert_eq!(state.sessions.len(), 2);
+}
+
+#[tokio::test]
+async fn pending_server_state_without_original_completion_refuses_before_provider_effects() {
+    let destinations = placements(1);
+    let source = objects(1, b"retained-pending-content", &destinations, 0).await;
+    let control = Control::new(destinations.clone());
+    let store = Store::default();
+    let provider = Provider::default();
+    let intent = source[0].intent.clone();
+    control.state.lock().unwrap().sessions.insert(
+        intent.client_operation_id.clone(),
+        DirectSessionStatus {
+            session: DirectSessionRef {
+                session_id: format!("session-{}", intent.client_operation_id),
+                logical_fingerprint: intent.fingerprint().unwrap(),
+            },
+            resource_version: WireInteger::new(2),
+            intent,
+            placements: destinations,
+            state: DirectSessionState::CompletingStaging,
+            parts: vec![],
+            next_cursor: None,
+            outstanding_grants: false,
+        },
+    );
+
+    assert_eq!(
+        upload_direct_batch(&control, &store, &provider, source)
+            .await
+            .unwrap_err(),
+        DirectClientError::Checkpoint
+    );
+    assert_eq!(provider.attempts.load(Ordering::SeqCst), 0);
+    assert_eq!(store.0.lock().unwrap().complete.len(), 0);
+    assert!(control
+        .state
+        .lock()
+        .unwrap()
+        .controls
+        .iter()
+        .all(|request| matches!(request, DirectUploadRequest::BeginBatch(_))));
 }
 
 #[tokio::test]

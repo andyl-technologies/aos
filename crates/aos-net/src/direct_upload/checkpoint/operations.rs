@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
 
-use super::{SqliteDirectCheckpoints, sqlite};
+use super::{SqliteDirectCheckpoints, sqlite, DirectRetainedCompletion};
 use crate::direct_upload::{
     DirectCheckpointStore, DirectClientError, DirectGrantAttempt, DirectObservedPart,
     DirectPartReceipt,
@@ -183,6 +183,82 @@ pub(super) fn complete(
             )?;
             Ok(request.clone())
         }
+    }
+}
+
+impl SqliteDirectCheckpoints {
+    /// Finds exact original completions before a restarted file wave can replay Begin.
+    ///
+    /// A completed local request is only a replay handle. The later final barrier
+    /// still needs a current authenticated server response for every owner.
+    ///
+    /// # Errors
+    /// Refuses changed source declarations, torn local custody or excessive waves.
+    pub async fn retained_completions(
+        &self,
+        intents: &[DirectUploadIntent],
+    ) -> Result<Vec<Option<DirectRetainedCompletion>>, DirectClientError> {
+        if intents.is_empty() || intents.len() > MAX_DIRECT_BATCH_ITEMS {
+            return Err(DirectClientError::Checkpoint);
+        }
+        bound(intents)?;
+        let mut identities = std::collections::BTreeSet::new();
+        for intent in intents {
+            intent
+                .validate()
+                .map_err(|_| DirectClientError::Checkpoint)?;
+            if !identities.insert(&intent.client_operation_id) {
+                return Err(DirectClientError::Checkpoint);
+            }
+        }
+
+        let intents = intents.to_vec();
+        let reservation = self.reserve().await?;
+        self.wave(reservation, move |transaction| {
+            let mut completions = Vec::with_capacity(intents.len());
+            for intent in &intents {
+                let original: Option<DirectUploadIntent> =
+                    sqlite::read(transaction, "intent", &intent.client_operation_id, 0, 0)?;
+                if original.as_ref().is_some_and(|original| original != intent) {
+                    return Err(DirectClientError::Checkpoint);
+                }
+                let Some(session) = sqlite::read::<Session>(
+                    transaction,
+                    "session",
+                    &format!("client-{}", intent.client_operation_id),
+                    0,
+                    0,
+                )?
+                else {
+                    completions.push(None);
+                    continue;
+                };
+                if original.is_none() || &session.intent != intent {
+                    return Err(DirectClientError::Checkpoint);
+                }
+                let request: Option<DirectCompleteRequest> =
+                    sqlite::read(transaction, "complete", &session.session.session_id, 0, 0)?;
+                completions.push(match request {
+                    Some(request) => {
+                        let placements: Vec<_> = request
+                            .manifests
+                            .iter()
+                            .map(|manifest| manifest.placement.clone())
+                            .collect();
+                        if session.session != request.session || session.placements != placements {
+                            return Err(DirectClientError::Checkpoint);
+                        }
+                        Some(DirectRetainedCompletion {
+                            request: complete(transaction, &request)?,
+                            intent: intent.clone(),
+                        })
+                    }
+                    None => None,
+                });
+            }
+            Ok(completions)
+        })
+        .await
     }
 }
 
@@ -502,6 +578,25 @@ impl DirectCheckpointStore for SqliteDirectCheckpoints {
             .into_iter()
             .next()
             .ok_or(DirectClientError::Checkpoint)
+    }
+
+    async fn retained_complete(
+        &self,
+        session: &DirectSessionRef,
+    ) -> Result<Option<DirectCompleteRequest>, DirectClientError> {
+        session
+            .validate()
+            .map_err(|_| DirectClientError::Checkpoint)?;
+        let session = session.clone();
+        let reservation = self.reserve().await?;
+        self.wave(reservation, move |transaction| {
+            let request: Option<DirectCompleteRequest> =
+                sqlite::read(transaction, "complete", &session.session_id, 0, 0)?;
+            request
+                .map(|request| complete(transaction, &request))
+                .transpose()
+        })
+        .await
     }
 }
 

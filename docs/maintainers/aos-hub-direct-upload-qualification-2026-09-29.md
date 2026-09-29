@@ -481,3 +481,29 @@ snapshot contracts remain unchanged; the session pin is authentication state
 excluded from snapshot records. Older initialized migration004 requires an
 explicit reset or migration, and hosted staging remains generation1. This
 supersedes the earlier retained-context limitation for the tested cold paths.
+
+## Client restart while server verification is pending
+
+Clients accept `CompletingStaging` as pending verification so independent staging
+waves can continue. Their publication barrier still requires `Committed` for
+every original owner. A reopened private SQLite journal retains the original
+Complete request and skips Begin and provider body transfers for that completed
+local request. Polls preserve its operation, resource version, manifest, actor,
+and placement identity. One original finish deadline bounds discovery, journal
+page reads, control requests, and polling waits.
+
+Current source receipt
+`/tmp/hub-direct-upload-client-pending-current/qualification.json`
+(`9f888a784e99795de08b80ac6217f2fcdfb328de8026e2723f4e16fce6a89fcf`)
+records six focused tests and successful checks of `aos`, `aos-package`,
+`aos-cache`, and `aos-oci`. All 5,628 captured tracked inputs remain unchanged;
+six approved client postimages match exactly. The subsequent deployment RFC
+clarification changes two documentation files and no compiled source. The
+actual SQLite reopen and HTTP fixture sends the identical Complete twice,
+receiving pending then committed, with no Begin or provider body. Deadline
+helpers are separately checked with held futures and an already elapsed cutoff.
+
+This is client protocol and local restart evidence. It does not qualify actual
+Worker queue consumption, Native commit, real R2/S3 behavior, throughput,
+cross-cloud byte budgets, full fleet execution, or hosted acceptance. Mechanical
+formatting follows in a separate commit.

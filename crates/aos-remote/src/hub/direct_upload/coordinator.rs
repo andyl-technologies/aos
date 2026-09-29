@@ -3,7 +3,7 @@
 //! The same coordinator and provider pool serve publication, cache and OCI
 //! adapters. Private staging may finish before the authoritative graph allows
 //! final promotion. Only actual Committed replies permit a caller's release
-//! visibility step; StagedVerified never satisfies that barrier.
+//! visibility step; neither CompletingStaging nor StagedVerified satisfies it.
 
 use std::fmt;
 use std::path::Path;
@@ -164,7 +164,7 @@ impl DirectUploadCoordinator {
 
     /// Stages at most64 admitted files in count/byte packed before-effect waves.
     ///
-    /// A returned StagedVerified projection allows subsequent independent waves
+    /// A returned CompletingStaging or StagedVerified state allows independent waves
     /// to proceed. Call [`Self::finish`] after all files have been staged before
     /// any public root/channel/tag commit. No request uses a proxy body fallback.
     ///
@@ -189,7 +189,8 @@ impl DirectUploadCoordinator {
             }
         }
         let discovery = self.control.snapshot().await?;
-        let mut objects = std::collections::VecDeque::with_capacity(files.len());
+        let mut objects = Vec::with_capacity(files.len());
+        let mut identities = std::collections::BTreeSet::new();
         for file in files {
             let target =
                 encode_direct_control(&file.target).map_err(|_| DirectClientError::Invalid)?;
@@ -207,19 +208,42 @@ impl DirectUploadCoordinator {
                 transfer_mode: DirectTransferMode::DirectRequired,
             };
             intent.validate().map_err(|_| DirectClientError::Invalid)?;
-            if !target_matches(&intent.target, &self.capabilities.target)
+            if !identities.insert(intent.client_operation_id.clone())
+                || !target_matches(&intent.target, &self.capabilities.target)
                 || intent.byte_size.get() > self.capabilities.maximum_object_bytes.get()
                 || intent.part_size.get() != self.part_size()
             {
                 return Err(DirectClientError::Invalid);
             }
-            objects.push_back(DirectUploadObject {
+            objects.push(DirectUploadObject {
                 intent,
                 source: file.source,
                 placements: Vec::new(),
                 discovery: discovery.clone(),
             });
         }
+        let original_intents: Vec<_> = objects.iter().map(|object| object.intent.clone()).collect();
+        let completions = self.store.retained_completions(&original_intents).await?;
+        if completions.len() != objects.len() {
+            return Err(DirectClientError::Checkpoint);
+        }
+        let mut remaining = std::collections::VecDeque::with_capacity(objects.len());
+        for (object, completion) in objects.into_iter().zip(completions) {
+            if let Some(completion) = completion {
+                let placements: Vec<_> = completion
+                    .request
+                    .manifests
+                    .iter()
+                    .map(|manifest| manifest.placement.clone())
+                    .collect();
+                discovery
+                    .validate_placements_for(&discovery_target(&discovery), &placements, now()?)
+                    .map_err(|_| DirectClientError::Invalid)?;
+            } else {
+                remaining.push_back(object);
+            }
+        }
+        let mut objects = remaining;
         while !objects.is_empty() {
             let discovery = self.control.snapshot().await?;
             let mut wave = Vec::new();
@@ -254,7 +278,9 @@ impl DirectUploadCoordinator {
             if statuses.iter().any(|status| {
                 !matches!(
                     status.state,
-                    DirectSessionState::StagedVerified | DirectSessionState::Committed
+                    DirectSessionState::CompletingStaging
+                        | DirectSessionState::StagedVerified
+                        | DirectSessionState::Committed
                 )
             }) {
                 return Err(DirectClientError::Blocked);
@@ -289,14 +315,15 @@ impl DirectUploadCoordinator {
             let mut pending = false;
             let mut count = 0u64;
             loop {
-                let discovery = self.control.snapshot().await?;
-                let page = self
-                    .store
-                    .completion_page(
+                let discovery = before_deadline(deadline, self.control.snapshot()).await?;
+                let page = before_deadline(
+                    deadline,
+                    self.store.completion_page(
                         after.as_deref(),
                         self.capabilities.maximum_batch_items as usize,
-                    )
-                    .await?;
+                    ),
+                )
+                .await?;
                 if !page.items.is_empty() {
                     let mut requests = Vec::with_capacity(page.items.len());
                     for item in &page.items {
@@ -331,11 +358,19 @@ impl DirectUploadCoordinator {
                         return Err(DirectClientError::Invalid);
                     }
                     let request = DirectUploadRequest::CompleteBatch(batch);
-                    let response = execute_retry(&self.control, &request).await?;
+                    let response = before_deadline(
+                        deadline,
+                        execute_retry(&self.control, &request),
+                    )
+                    .await?;
                     if response.sessions.len() != page.items.len() || !response.grants.is_empty() {
                         return Err(DirectClientError::Invalid);
                     }
+                    let mut seen = std::collections::BTreeSet::new();
                     for status in &response.sessions {
+                        if !seen.insert(&status.session.session_id) {
+                            return Err(DirectClientError::Invalid);
+                        }
                         let item = page
                             .items
                             .iter()
@@ -352,7 +387,8 @@ impl DirectUploadCoordinator {
                             .map_err(|_| DirectClientError::Invalid)?;
                         match status.state {
                             DirectSessionState::Committed => {}
-                            DirectSessionState::StagedVerified => pending = true,
+                            DirectSessionState::CompletingStaging
+                            | DirectSessionState::StagedVerified => pending = true,
                             _ => return Err(DirectClientError::Blocked),
                         }
                     }
@@ -377,7 +413,11 @@ impl DirectUploadCoordinator {
             if tokio::time::Instant::now() >= deadline {
                 return Err(DirectClientError::ControlUnavailable);
             }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            let next = tokio::time::Instant::now()
+                .checked_add(Duration::from_millis(250))
+                .unwrap_or(deadline)
+                .min(deadline);
+            tokio::time::sleep_until(next).await;
         }
     }
 }
@@ -455,10 +495,319 @@ async fn execute_retry(
         }
     }
     let response = result?;
+    response
+        .validate()
+        .map_err(|_| DirectClientError::Invalid)?;
+    let DirectUploadRequest::CompleteBatch(batch) = request else {
+        return Err(DirectClientError::Invalid);
+    };
+    if response.operation_id != batch.operation_id {
+        return Err(DirectClientError::Invalid);
+    }
     if !response.errors.is_empty() {
         return Err(DirectClientError::Blocked);
     }
     Ok(response)
+}
+
+async fn before_deadline<T>(
+    deadline: tokio::time::Instant,
+    future: impl std::future::Future<Output = Result<T, DirectClientError>>,
+) -> Result<T, DirectClientError> {
+    if tokio::time::Instant::now() >= deadline {
+        return Err(DirectClientError::ControlUnavailable);
+    }
+    tokio::time::timeout_at(deadline, future)
+        .await
+        .map_err(|_| DirectClientError::ControlUnavailable)?
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn held_snapshot_and_page_futures_end_at_original_finish_deadline() {
+        for _ in 0..2 {
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(20);
+            let held = std::future::pending::<Result<(), DirectClientError>>();
+            let result = tokio::time::timeout(
+                Duration::from_secs(1),
+                before_deadline(deadline, held),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result, Err(DirectClientError::ControlUnavailable));
+        }
+    }
+
+    #[tokio::test]
+    async fn elapsed_deadline_never_polls_a_new_control_effect() {
+        let expired = tokio::time::Instant::now() - Duration::from_millis(1);
+        let late = std::future::poll_fn(|_| -> std::task::Poll<Result<(), DirectClientError>> {
+            panic!("expired finish dispatched a new control effect");
+        });
+        assert_eq!(
+            before_deadline(expired, late).await,
+            Err(DirectClientError::ControlUnavailable)
+        );
+    }
+}
+
+#[cfg(test)]
+mod pending_restart_tests {
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use aos_net::direct_upload::DirectCheckpointStore as _;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn restarted_pending_wave_sends_no_begin_or_provider_body_and_finishes_original() {
+        let directory =
+            std::env::temp_dir().join(format!("aos-direct-pending-test-{}", rand::random::<u64>()));
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let source_path = directory.join("source.nar");
+        std::fs::write(&source_path, b"abc").unwrap();
+        let checkpoint = directory.join("direct.sqlite");
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let hub = HubClient::connect_with_token(&origin, "original-owned-bearer").unwrap();
+        let profile = DirectProviderProfile {
+            placement_id: WireInteger::new(1),
+            placement_resource_version: WireInteger::new(1),
+            write_spec_version: WireInteger::new(1),
+            binding_id: WireInteger::new(1),
+            binding_resource_version: WireInteger::new(1),
+            binding_write_revision: WireInteger::new(1),
+            checksum_algorithm: DirectChecksumAlgorithm::Sha256,
+            provider_origin: "https://provider.invalid".into(),
+            profile_fingerprint: "af".repeat(32),
+            private_policy_digest: "fe".repeat(32),
+        };
+        let capabilities = DirectUploadCapabilities {
+            target: DirectCapabilitiesTarget::Cache {
+                cache_id: "cache-1".into(),
+            },
+            requested_delivery_url: None,
+            deployment_id: "deployment".into(),
+            principal_id: "de".repeat(32),
+            version: 1,
+            capability: DIRECT_UPLOAD_CAPABILITY.into(),
+            transfer_mode: DirectAdvertisedTransferMode::DirectRequired,
+            config_generation: WireInteger::new(1),
+            valid_until: WireInteger::new(now().unwrap() + 600),
+            maximum_control_bytes: MAX_DIRECT_CONTROL_BYTES as u32,
+            maximum_batch_items: 64,
+            maximum_batch_parts: 64,
+            maximum_object_bytes: WireInteger::new(MAX_DIRECT_OBJECT_BYTES),
+            minimum_part_bytes: WireInteger::new(MIN_DIRECT_PART_BYTES),
+            maximum_part_bytes: WireInteger::new(MAX_DIRECT_PART_BYTES),
+            profiles: vec![profile.clone()],
+        };
+        let target = DirectUploadTarget::CacheObject {
+            cache_id: "cache-1".into(),
+            path: "nar/source.nar".into(),
+        };
+        let first = DirectUploadCoordinator::open(
+            &hub,
+            capabilities.clone(),
+            &checkpoint,
+            ProviderOptions::default(),
+        )
+        .await
+        .unwrap();
+        let target_bytes = encode_direct_control(&target).unwrap();
+        let intent = DirectUploadIntent {
+            version: 1,
+            client_operation_id: commitment(
+                "object-operation",
+                &[first.store.run_id().as_bytes(), &target_bytes],
+            ),
+            target: target.clone(),
+            expected_sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+                .into(),
+            byte_size: WireInteger::new(3),
+            part_size: WireInteger::new(first.part_size()),
+            dependency_phase: DirectDependencyPhase::Content,
+            transfer_mode: DirectTransferMode::DirectRequired,
+        };
+        let placement = DirectPlacementRef {
+            placement_id: profile.placement_id,
+            placement_fingerprint: "ab".repeat(32),
+            placement_resource_version: profile.placement_resource_version,
+            write_spec_version: profile.write_spec_version,
+            binding_id: profile.binding_id,
+            binding_resource_version: profile.binding_resource_version,
+            binding_write_revision: profile.binding_write_revision,
+            profile_fingerprint: profile.profile_fingerprint,
+            private_policy_digest: profile.private_policy_digest,
+            checksum_algorithm: profile.checksum_algorithm,
+        };
+        let session = DirectSessionRef {
+            session_id: "original-session".into(),
+            logical_fingerprint: intent.fingerprint().unwrap(),
+        };
+        let original_status = DirectSessionStatus {
+            session: session.clone(),
+            resource_version: WireInteger::new(1),
+            intent: intent.clone(),
+            placements: vec![placement.clone()],
+            state: DirectSessionState::Active,
+            parts: Vec::new(),
+            next_cursor: None,
+            outstanding_grants: false,
+        };
+        first.store.admit_intent(&intent).await.unwrap();
+        first.store.admit_session(&original_status).await.unwrap();
+        let observed = DirectManifestPart {
+            part: DirectPart {
+                part_number: 1,
+                offset: WireInteger::new(0),
+                byte_size: WireInteger::new(3),
+                sha256: intent.expected_sha256.clone(),
+                checksum: DirectPartChecksum {
+                    algorithm: DirectChecksumAlgorithm::Sha256,
+                    value: "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=".into(),
+                },
+            },
+            etag: "\"original-etag\"".into(),
+        };
+        first
+            .store
+            .record_server_part(&session, &placement, &observed)
+            .await
+            .unwrap();
+        let manifest_digest = canonical_manifest_digest(&intent, &placement, &[observed]).unwrap();
+        let manifests = vec![DirectManifestCommitment {
+            placement,
+            manifest_digest,
+            part_count: 1,
+        }];
+        let manifest_bytes = encode_direct_control(&manifests).unwrap();
+        let manifest_commitment = hex::encode(Sha256::digest(&manifest_bytes));
+        let original_complete = DirectCompleteRequest {
+            session: session.clone(),
+            operation_id: commitment(
+                "complete",
+                &[
+                    session.session_id.as_bytes(),
+                    session.logical_fingerprint.as_bytes(),
+                    manifest_commitment.as_bytes(),
+                ],
+            ),
+            expected_resource_version: WireInteger::new(1),
+            manifests,
+        };
+        first
+            .store
+            .admit_complete(&original_complete)
+            .await
+            .unwrap();
+        drop(first);
+
+        let second = DirectUploadCoordinator::open(
+            &hub,
+            capabilities,
+            &checkpoint,
+            ProviderOptions::default(),
+        )
+        .await
+        .unwrap();
+        // Only the original Complete request may reach the Hub, twice: pending
+        // verification, then final committed evidence. No Begin/grant/body path.
+        let worker = std::thread::spawn(move || {
+            let mut captured = Vec::new();
+            for state in [
+                DirectSessionState::CompletingStaging,
+                DirectSessionState::Committed,
+            ] {
+                let started = std::time::Instant::now();
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(started.elapsed() < Duration::from_secs(5));
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("local HTTP accept failed: {error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut chunk = [0u8; 4096];
+                    let count = stream.read(&mut chunk).unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&chunk[..count]);
+                    assert!(request.len() <= MAX_DIRECT_CONTROL_BYTES);
+                    let Some(headers_end) =
+                        request.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+                    else {
+                        continue;
+                    };
+                    let headers = String::from_utf8_lossy(&request[..headers_end]);
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length: ")
+                                .and_then(|value| value.parse::<usize>().ok())
+                        })
+                        .unwrap();
+                    if request.len() >= headers_end + 4 + length {
+                        let body: DirectBatch<DirectCompleteRequest> = decode_direct_control(
+                            &request[headers_end + 4..headers_end + 4 + length],
+                        )
+                        .unwrap();
+                        assert_eq!(body.items, vec![original_complete.clone()]);
+                        assert!(headers
+                            .starts_with("POST /aos.hub.v1.DirectUploadService/CompleteBatch "));
+                        assert!(!request.windows(3).any(|bytes| bytes == b"abc"));
+                        captured.push(body.clone());
+                        let response = DirectUploadResponse {
+                            operation_id: body.operation_id,
+                            sessions: vec![DirectSessionStatus {
+                                state,
+                                resource_version: WireInteger::new(2),
+                                ..original_status.clone()
+                            }],
+                            grants: Vec::new(),
+                            errors: Vec::new(),
+                        };
+                        let bytes = encode_direct_control(&response).unwrap();
+                        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bytes.len()).unwrap();
+                        stream.write_all(&bytes).unwrap();
+                        break;
+                    }
+                }
+            }
+            captured
+        });
+
+        second
+            .stage_paths(vec![super::super::DirectStagePath {
+                source: source_path,
+                expected_sha256: Some(intent.expected_sha256.clone()),
+                target,
+                phase: DirectDependencyPhase::Content,
+            }])
+            .await
+            .unwrap();
+        second.finish(Duration::from_secs(5)).await.unwrap();
+        let captured = worker.join().unwrap();
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0], captured[1]);
+        drop(second);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 pub(super) fn discovery_target(

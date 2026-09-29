@@ -300,6 +300,19 @@ pub trait DirectCheckpointStore: Send + Sync {
         &self,
         request: &DirectCompleteRequest,
     ) -> Result<DirectCompleteRequest, DirectClientError>;
+
+    /// Reads an original completion before accepting server-side pending work.
+    ///
+    /// Stores without a verified retained read refuse pending resume by default.
+    ///
+    /// # Errors
+    /// Refuses missing custody, malformed records or storage failures.
+    async fn retained_complete(
+        &self,
+        _session: &DirectSessionRef,
+    ) -> Result<Option<DirectCompleteRequest>, DirectClientError> {
+        Err(DirectClientError::Checkpoint)
+    }
 }
 
 /// Small authenticated Hub controls, without an application-body upload method.

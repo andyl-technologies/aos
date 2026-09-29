@@ -37,7 +37,8 @@ struct PartJob {
 /// most 32 requests, eight active bulk files, four parts per file, or 32 small
 /// metadata files. Caller orchestration streams subsequent batches and keeps
 /// final publication behind the server's authoritative graph/visibility barrier.
-/// `StagedVerified` is a usable intermediate state, never a committed release.
+/// `CompletingStaging` is pending server verification, while `StagedVerified`
+/// is verified but still cannot commit release visibility.
 ///
 /// Checkpoint intents and grant ordinals are durable before remote effects.
 /// Content-bound UploadPart transport retry is separate from unknown provider
@@ -196,6 +197,19 @@ pub async fn upload_direct_batch<
 
     store.admit_sessions(&admitted).await?;
     for owner in &mut work {
+        if owner.status.state == DirectSessionState::CompletingStaging {
+            let original = store
+                .retained_complete(&owner.status.session)
+                .await?
+                .ok_or(DirectClientError::Checkpoint)?;
+            if original.session != owner.status.session {
+                return Err(DirectClientError::Checkpoint);
+            }
+            // A pending server hash has no new part work. The retained
+            // manifest is checked again before replaying Complete below.
+            owner.status.parts.clear();
+            continue;
+        }
         owner.status =
             status::reconcile(control, store, &owner.object, owner.status.clone()).await?;
     }
@@ -642,7 +656,9 @@ async fn finish_batch<C: DirectUploadControl, S: DirectCheckpointStore>(
             .map_err(|_| DirectClientError::Invalid)?;
         if !matches!(
             session.state,
-            DirectSessionState::StagedVerified | DirectSessionState::Committed
+            DirectSessionState::CompletingStaging
+                | DirectSessionState::StagedVerified
+                | DirectSessionState::Committed
         ) {
             return Err(DirectClientError::Blocked);
         }

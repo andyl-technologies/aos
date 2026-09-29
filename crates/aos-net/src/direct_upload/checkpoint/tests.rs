@@ -471,6 +471,40 @@ async fn completion_pages_are_bounded_exact_and_exclusive_journal_custody_is_ret
     );
 }
 
+#[tokio::test]
+async fn retained_completion_lookup_preserves_original_identity_after_restart() {
+    let directory = directory();
+    let path = directory.path().join("direct.sqlite");
+    let namespace = "33".repeat(32);
+    let store = SqliteDirectCheckpoints::open(&path, &namespace, true)
+        .await
+        .unwrap();
+    let first = admitted(&store, 1).await;
+    let original = store.admit_complete(&complete(&first)).await.unwrap();
+    let second = intent(2);
+    store.admit_intent(&second).await.unwrap();
+    drop(store);
+
+    let store = SqliteDirectCheckpoints::open(&path, &namespace, false)
+        .await
+        .unwrap();
+    let found = store
+        .retained_completions(&[first.intent.clone(), second.clone()])
+        .await
+        .unwrap();
+    assert_eq!(found[0].as_ref().unwrap().request, original);
+    assert_eq!(found[0].as_ref().unwrap().intent, first.intent);
+    assert!(found[1].is_none());
+
+    let mut changed = second.clone();
+    changed.expected_sha256 = "aa".repeat(32);
+    assert!(store.retained_completions(&[changed]).await.is_err());
+    assert!(store
+        .retained_completions(&[second.clone(), second])
+        .await
+        .is_err());
+}
+
 #[test]
 fn directory_admission_creates_private_levels_and_refuses_link_or_writable_ancestors() {
     let directory = directory();
