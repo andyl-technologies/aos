@@ -10,8 +10,12 @@ use crate::cache_residency::protected_owner::{
     CACHE_MANIFEST_KEY_PREFIX, MAXIMUM_CACHE_MANIFESTS, encode_cache_replay_manifest,
 };
 use crate::cache_residency::{CachePinId, CachePinV1, ValidatedPublicLogicalPinAcquisitionV1};
-use crate::journal::{JournalRecord, JournalTransaction, RecordNamespace};
+use crate::journal::{
+    CacheMutationGateV1, JournalRecord, JournalTransaction, ProtectedJournalAuthority,
+    RecordNamespace,
+};
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
+use aos_sandbox_core::ObjectDigest;
 
 use super::{
     CacheAuthorityOwner, CacheAuthorityPurposeV1, CacheHistoryFloorV1, CacheRecoveryInventoryV1,
@@ -23,6 +27,85 @@ const LOGICAL_PIN_ACQUIRE_KEY_PREFIX: &[u8] = b"aos.cache.logical-pin-acquire.v1
 pub(crate) const LOGICAL_PIN_ACQUIRE_LIFETIME_SECONDS: u64 = 120;
 const LOGICAL_PIN_DRAIN_KEY_PREFIX: &[u8] = b"aos.cache.logical-pin-drain.v1/";
 const LOGICAL_PIN_DRAIN_LIFETIME_SECONDS: u64 = 120;
+
+/// Shares canonical single-record mechanics under an already borrowed claim.
+///
+/// Only existing proof-consuming issuers may call this. Its ordinary return
+/// does not retain a failed transaction, so it is NOT a positive Read issuer or
+/// a post-Root pending-custody contract.
+///
+/// # Errors
+/// Returns canonical validation, gate, preflight, append or readback failure.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn commit_canonical_record_under_claim_v1(
+    authority: &mut ProtectedJournalAuthority<'_>,
+    owner_scope: ObjectDigest,
+    maximum_record_bytes: usize,
+    purpose: CacheAuthorityPurposeV1,
+    scope: super::CacheAuthorityScopeV1,
+    record_key: Vec<u8>,
+    transaction_domain: &[u8],
+    mut gate: CacheMutationGateV1<'_>,
+) -> Result<Vec<u8>, CacheResidencyProtectedJournalErrorV1> {
+    if let CacheMutationGateV1::Retained(original) = &mut gate {
+        authority.require_retained_cache_gate_v1(original)?;
+    }
+    let owner = CacheAuthorityOwner::new(authority, owner_scope, maximum_record_bytes)
+        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+    let record = owner.canonical_record(purpose, scope);
+    let previous = authority.get(&record_key)?.map(ToOwned::to_owned);
+    if previous.as_deref() == Some(record.as_slice()) {
+        if let CacheMutationGateV1::Retained(original) = &mut gate {
+            authority.require_retained_cache_gate_v1(original)?;
+        }
+        return Ok(record_key);
+    }
+    if previous.is_some()
+        && owner
+            .verify_current_record_for_purpose(purpose, &record_key)
+            .is_err()
+    {
+        return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
+    }
+
+    let digest = Sha256::new()
+        .chain_update(transaction_domain)
+        .chain_update(&record_key)
+        .chain_update(previous.as_deref().unwrap_or_default())
+        .chain_update(record)
+        .finalize();
+    let transaction_id: [u8; 16] = digest[..16]
+        .try_into()
+        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+    let transaction = JournalTransaction::new(
+        transaction_id,
+        vec![JournalRecord::put(
+            RecordNamespace::DesiredState,
+            record_key.clone(),
+            record.to_vec(),
+        )],
+    )?;
+    let preflight = match &mut gate {
+        CacheMutationGateV1::Ordinary => {
+            authority.preflight_transactions(std::slice::from_ref(&transaction))?
+        }
+        CacheMutationGateV1::Retained(original) => authority
+            .preflight_with_retained_cache_gate_v1(std::slice::from_ref(&transaction), original)?,
+    };
+    authority.validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))?;
+    match &mut gate {
+        CacheMutationGateV1::Ordinary => {
+            authority.commit(&transaction)?;
+        }
+        CacheMutationGateV1::Retained(original) => {
+            authority.commit_with_retained_cache_gate_v1(&preflight, &transaction, original)?;
+        }
+    }
+    if authority.get(&record_key)? != Some(record.as_slice()) {
+        return Err(ProtectedDomainJournalErrorV1::DivergentRecovery);
+    }
+    Ok(record_key)
+}
 
 impl ProtectedCacheResidencyReplayAuthorityV1 {
     // Read the protected clock floor before classifying same-tick renewals.
@@ -111,46 +194,16 @@ impl ProtectedCacheResidencyReplayAuthorityV1 {
             .lock()
             .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
         let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
-        let owner =
-            CacheAuthorityOwner::new(&authority, self.owner_scope, self.maximum_record_bytes)
-                .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-        let record = owner.canonical_record(purpose, scope);
-        let previous = authority.get(&record_key)?.map(ToOwned::to_owned);
-        if previous.as_deref() == Some(record.as_slice()) {
-            return Ok(record_key);
-        }
-        if previous.is_some()
-            && owner
-                .verify_current_record_for_purpose(purpose, &record_key)
-                .is_err()
-        {
-            return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord.into());
-        }
-
-        let digest = Sha256::new()
-            .chain_update(transaction_domain)
-            .chain_update(&record_key)
-            .chain_update(previous.as_deref().unwrap_or_default())
-            .chain_update(record)
-            .finalize();
-        let transaction_id: [u8; 16] = digest[..16]
-            .try_into()
-            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-        let transaction = JournalTransaction::new(
-            transaction_id,
-            vec![JournalRecord::put(
-                RecordNamespace::DesiredState,
-                record_key.clone(),
-                record.to_vec(),
-            )],
-        )?;
-        let preflight = authority.preflight_transactions(std::slice::from_ref(&transaction))?;
-        authority.validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))?;
-        authority.commit(&transaction)?;
-        if authority.get(&record_key)? != Some(record.as_slice()) {
-            return Err(ProtectedDomainJournalErrorV1::DivergentRecovery.into());
-        }
-        Ok(record_key)
+        commit_canonical_record_under_claim_v1(
+            &mut authority,
+            self.owner_scope,
+            self.maximum_record_bytes,
+            purpose,
+            scope,
+            record_key,
+            transaction_domain,
+            CacheMutationGateV1::Ordinary,
+        )
     }
 
     /// Installs a Replay record supplied by the locked controller source.

@@ -33,6 +33,7 @@ mod owner_readback;
 pub mod pin;
 mod protected_journal;
 mod protected_owner;
+pub(crate) use protected_owner::PROTECTED_CACHE_ROOT;
 mod public_pin;
 pub mod read_authority;
 pub mod recovery;

@@ -185,6 +185,44 @@ pub struct CacheResidencyProtectedOwnerV1 {
     owner_uid: u32,
 }
 
+impl CacheResidencyProtectedOwnerV1 {
+    /// Supplies only a dormant local Cache cut; no positive Read caller exists.
+    ///
+    /// The callback must not cross Root until an actual retained-owner
+    /// disposition contract handles return and unwind. HRTB is not release proof.
+    ///
+    /// # Errors
+    /// Refuses missing/substituted clock or journals, active/pending gates and
+    /// stale local authority; an error never proves post-Root disposition.
+    pub(in crate::cache_residency) fn with_retained_mutable_authority_v1<R>(
+        &mut self,
+        action: impl for<'session, 'claim, 'journal, 'gate, 'clock> FnOnce(
+            &'session mut super::protected_journal::RetainedCacheAuthoritySessionV1<
+                'claim,
+                'journal,
+                'gate,
+                'clock,
+            >,
+            &'session mut Journal,
+        ) -> Result<
+            R,
+            CacheResidencyProtectedJournalErrorV1,
+        >,
+    ) -> Result<R, CacheResidencyProtectedJournalErrorV1> {
+        let clock = self
+            .clock
+            .as_ref()
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        let held_clock = clock.hold_writer_for_readback()?;
+        let state = self
+            .state_journal
+            .as_mut()
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        self.authority
+            .with_retained_mutable_authority_v1(state, &held_clock, action)
+    }
+}
+
 /// Identifies one unambiguous project partition from complete protected Cache replay.
 ///
 /// This is a source observation, not effect or policy-publication authority.
@@ -2523,13 +2561,82 @@ struct CacheClockFloorV1 {
     predecessor_unix_seconds: u64,
 }
 
-struct CacheClockWriterReadbackGuard<'clock> {
+pub(in crate::cache_residency) struct CacheClockWriterReadbackGuard<'clock> {
     clock: &'clock ProtectedCacheClockV1,
     witness: ProtectedWriterNameWitness,
 }
 
 impl CacheClockWriterReadbackGuard<'_> {
-    fn revalidate(&self) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+    /// Samples the original clock without reopening its held writer.
+    ///
+    /// # Errors
+    /// Refuses changed protected clock identity or nonmonotonic time.
+    pub(in crate::cache_residency) fn current_unix_seconds(
+        &self,
+    ) -> Result<u64, CacheResidencyProtectedJournalErrorV1> {
+        self.revalidate()?;
+        let current = self.clock.current_unix_seconds()?;
+        self.revalidate()?;
+        Ok(current)
+    }
+
+    /// Requires the authority to own this same original clock allocation.
+    ///
+    /// # Errors
+    /// Refuses a different clock or changed original writer witness.
+    pub(in crate::cache_residency) fn require_time_authority(
+        &self,
+        authority: &Arc<dyn CacheResidencyCurrentTimeAuthorityV1>,
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+        self.revalidate()?;
+        if !std::ptr::addr_eq(
+            Arc::as_ptr(authority),
+            self.clock as *const ProtectedCacheClockV1,
+        ) {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+        }
+        Ok(())
+    }
+
+    /// Checks both original Cache writers against this clock's protected root.
+    ///
+    /// # Errors
+    /// Refuses changed clock or unsafe Cache names, UID, mode or limits.
+    pub(in crate::cache_residency) fn require_cache_targets(
+        &self,
+        state: &Journal,
+        authority: &Journal,
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+        self.revalidate()?;
+        for (journal, name) in [
+            (state, CACHE_STATE_JOURNAL),
+            (authority, CACHE_AUTHORITY_JOURNAL),
+        ] {
+            #[cfg(test)]
+            journal.require_protected_named_location_at_uid_for_test(
+                &self.clock.root,
+                name,
+                self.clock.owner_uid,
+                journal.configured_limits(),
+            )?;
+            #[cfg(not(test))]
+            journal.require_protected_named_location(
+                &self.clock.root,
+                name,
+                self.clock.owner_uid,
+                journal.configured_limits(),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Rechecks the existing clock writer's complete original witness.
+    ///
+    /// # Errors
+    /// Refuses a missing, released or changed original clock writer.
+    pub(in crate::cache_residency) fn revalidate(
+        &self,
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
         let state = self
             .clock
             .state
@@ -3083,7 +3190,7 @@ fn read_array<const N: usize>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::cache_residency) mod tests {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
 
     use aos_sandbox_core::CacheDomainId;
@@ -3282,6 +3389,68 @@ mod tests {
         let now = sample_wall_clock().expect("live Cache fixture time");
         let valid_until = now.checked_add(86_400).expect("live Replay interval");
         cache_hold_fixture(valid_until, now)
+    }
+
+    pub(in crate::cache_residency) fn retained_owner_fixture()
+    -> (tempfile::TempDir, CacheResidencyProtectedOwnerV1) {
+        let (directory, uid, hold) = live_cache_hold_fixture();
+        let mut gate = Journal::open_protected_at_uid(
+            directory.path(),
+            CACHE_POLICY_HOLD_JOURNAL,
+            Journal::cache_policy_hold_limits(),
+            uid,
+        )
+        .unwrap()
+        .0;
+        gate.release_held_cache_policy_hold_for_writer(hold)
+            .unwrap();
+        drop(gate);
+        let clock = Arc::new(
+            ProtectedCacheClockV1::open(directory.path(), cache_owner_scope(), uid)
+                .unwrap()
+                .0,
+        );
+        let mut authority_journal = open_cache_journal(
+            directory.path(),
+            CACHE_AUTHORITY_JOURNAL,
+            cache_authority_journal_limits(),
+            uid,
+        )
+        .unwrap()
+        .0;
+        let evidence = recover_cache_replay_evidence(
+            &mut authority_journal,
+            cache_owner_scope(),
+            CacheRecoveryLimitsV1::default(),
+        )
+        .unwrap();
+        let current_time: Arc<dyn CacheResidencyCurrentTimeAuthorityV1> = clock.clone();
+        let (_, authority) = CacheResidencyReplayValidatorV1::from_protected_authority(
+            authority_journal,
+            cache_owner_scope(),
+            MAXIMUM_AUTHORITY_RECORD_BYTES,
+            evidence,
+            CacheRecoveryLimitsV1::default(),
+            current_time,
+        )
+        .unwrap();
+        let state_journal = open_cache_journal(
+            directory.path(),
+            CACHE_STATE_JOURNAL,
+            cache_state_journal_limits(),
+            uid,
+        )
+        .unwrap()
+        .0;
+        (
+            directory,
+            CacheResidencyProtectedOwnerV1 {
+                state_journal: Some(state_journal),
+                authority,
+                clock: Some(clock),
+                owner_uid: uid,
+            },
+        )
     }
 
     fn fixture_physical_limits(
