@@ -163,17 +163,7 @@ fn adopt<'a>(
     for parent_level in level + 1..=tree.root().level() {
         replacement = mutation::edit_parents(tree, parent_level, replacement, factory)?;
     }
-    let mut nodes = replacement.nodes;
-    let mut level = tree.root().level();
-    while nodes.len() > 1 {
-        level = level.checked_add(1).ok_or(Error::Limit)?;
-        nodes = chunk::parents(nodes, level, factory)?;
-    }
-    let mut root = nodes.pop().ok_or(Error::Node)?;
-    while root.children().len() == 1 {
-        root = Rc::clone(&root.children()[0]);
-    }
-    factory.root(root, tree.root.node.props.clone())
+    mutation::finish_nodes(tree, replacement.nodes, factory)
 }
 
 fn edge<'node, 'a>(

@@ -144,14 +144,22 @@ fn edit<'a>(
         replacement = edit_parents(tree, level, replacement, &mut factory)?;
     }
 
-    let mut nodes = replacement.nodes;
+    let root = finish_nodes(tree, replacement.nodes, &mut factory)?;
+    Ok(tree.finish(root, factory))
+}
+
+pub(super) fn finish_nodes<'a>(
+    tree: &Tree<'a>,
+    mut nodes: Vec<Rc<StoredNode<'a>>>,
+    factory: &mut Factory<'a>,
+) -> Result<Rc<StoredNode<'a>>, Error> {
     let mut level = tree.root().level();
     if nodes.is_empty() {
-        nodes = chunk::leaves(Vec::new(), &mut factory)?;
+        nodes = chunk::leaves(Vec::new(), factory)?;
     }
     while nodes.len() > 1 {
         level = level.checked_add(1).ok_or(Error::Limit)?;
-        nodes = chunk::parents(nodes, level, &mut factory)?;
+        nodes = chunk::parents(nodes, level, factory)?;
     }
     let mut root = nodes.pop().ok_or(Error::Node)?;
     // A single node at the preceding level is already the canonical root.
@@ -159,7 +167,7 @@ fn edit<'a>(
         root = Rc::clone(&root.children()[0]);
     }
     let root = factory.root(root, tree.root.node.props.clone())?;
-    Ok(tree.finish(root, factory))
+    Ok(root)
 }
 
 fn edit_leaves<'a>(

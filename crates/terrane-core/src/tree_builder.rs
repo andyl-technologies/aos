@@ -16,6 +16,7 @@ mod chunk;
 mod cursor;
 mod links;
 mod mutation;
+mod range;
 mod splice;
 
 #[cfg(test)]
@@ -308,6 +309,28 @@ impl<'a> Tree<'a> {
     /// of a retained hard-link set, and invalid resulting node encodings.
     pub fn remove(&self, key: &[u8]) -> Result<Mutation<'a>, Error> {
         mutation::remove(self, key)
+    }
+
+    /// Replaces a half-open key range with strictly sorted entries.
+    ///
+    /// `start` is inclusive and `end` is exclusive; `None` extends to the
+    /// greatest key. An empty `start` addresses the beginning of the tree.
+    /// Entries must lie within the range. One leaf-stream replacement and
+    /// ancestor resynchronization share unaffected nodes. Ancestor lookups
+    /// are memoized across entries instead of repeated per point mutation.
+    /// Hard-link changes are validated and committed as complete set deltas.
+    ///
+    /// # Errors
+    /// Rejects reversed bounds, unsorted or out-of-range entries, invalid
+    /// entry forms or ancestors, inconsistent hard links, oversized items,
+    /// and excessive depth. The original tree remains unchanged on error.
+    pub fn replace_range(
+        &self,
+        start: &[u8],
+        end: Option<&[u8]>,
+        entries: Vec<LeafItem<'a>>,
+    ) -> Result<Mutation<'a>, Error> {
+        range::replace(self, start, end, entries)
     }
 
     /// Replaces disjoint aligned subtrees by their existing immutable nodes.
