@@ -15,6 +15,9 @@ use sha2::{Digest, Sha256};
 #[path = "storage_authority/control.rs"]
 pub mod control;
 
+#[path = "storage_authority/external_object/mod.rs"]
+pub mod external_object;
+
 #[path = "storage_authority/lease/mod.rs"]
 pub mod lease;
 

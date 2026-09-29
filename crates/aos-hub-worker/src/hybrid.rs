@@ -81,6 +81,9 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if let Some(response) = serve_static_asset(&request, &path).await? {
         return Ok(response);
     }
+    if path == crate::external_object::PATH {
+        return crate::external_object::fetch(request, env).await;
+    }
     if path == STORAGE_WORK_PATH {
         return execute_storage_work(request, env).await;
     }
@@ -1011,6 +1014,9 @@ async fn probe_storage_credential(mut request: Request, env: &Env) -> Result<Res
     if probe.validate(&deployment_id, now).is_err() {
         return Response::error("credential probe is not authorized", 400);
     }
+    if crate::external_object::deny_legacy(env, &probe.publication.snapshot).is_err() {
+        return Response::error("managed external credential probe unavailable", 409);
+    }
     let credential = &probe.publication.snapshot.credentials[0];
     let selector = aos_hub_core::storage_work::StorageCredentialSelector {
         purpose: credential.purpose.clone(),
@@ -1129,6 +1135,9 @@ async fn frozen_cleanup_head(mut request: Request, env: &Env) -> Result<Response
         Err(_) => return Response::error("frozen cleanup HEAD is not authorized", 401),
     };
 
+    if crate::external_object::deny_legacy(env, grant.snapshot()).is_err() {
+        return Response::error("managed external cleanup HEAD unavailable", 409);
+    }
     // This retained credential must never enter monotonic binding publication.
     // HEAD cannot alter provider state or leave an ambiguous mutation receipt.
     // Redirects cannot establish absence for the exact claimed key.

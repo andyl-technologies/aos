@@ -1305,3 +1305,30 @@ bind the exact integrated file. Unix preserves the cursor. The Windows explicit
 offset implementation advances it; its pinned standard-library/API contract was
 reviewed, but no Windows build or runtime test was performed. This increment does
 not enable direct uploads or establish provider, throughput or combined acceptance.
+
+## Retained external metadata effects
+
+The external object consumer supports bounded metadata PUT and explicitly
+historical guarded HEAD. It retains a compact effect intent before dispatch,
+performs provider I/O outside the object Durable Object, and persists terminal
+receipts atomically. Lost acknowledgments and uncertain provider results remain
+fenced through restart. Historical HEAD replay cannot settle an uncertain write
+or prove current object presence. Configured external aliases refuse the older
+hybrid work, credential-probe and cleanup escape paths before provider I/O.
+
+The frozen component passes 25 pure tests and 16 actual persistent Worker fault
+groups using controlled S3-compatible Fetch. Producer
+`/tmp/hub-external-object-consumer/qualified.json`
+(`757c4758d6562e1def94bd02cca42fbf517c972dbc73de8dfde0d5aa2d6446ea`)
+and independent final review
+`/tmp/hub-external-object-consumer/independent-source-review/final-runtime-receipt.json`
+(`e4614dff3b707beeb7877413059ef163a4e9ad337d48bd84c78310ba39f585e0`)
+bind the ordinary dev-profile artifact and fault evidence. Root integration
+checks 11 exact postimages; two contextual merges preserve the qualified native
+digest helper and its six upload call sites. Existing qualified Native time
+helpers and the unrelated release dependency change remain intact.
+
+This increment does not enable provider credentials or establish current combined
+runtime acceptance. Multipart staging/promotion, retained Native callers, all
+alternate writers and historical capabilities, permanent provider exclusivity,
+hosted clocks and actual provider qualification remain required before activation.

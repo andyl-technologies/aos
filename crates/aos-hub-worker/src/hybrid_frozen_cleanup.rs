@@ -57,6 +57,11 @@ impl FrozenCleanupHead {
         })
     }
 
+    /// Borrows retained coordinates for independently configured alias refusal.
+    pub(crate) fn snapshot(&self) -> &aos_hub_core::storage_work::StorageBindingSnapshot {
+        &self.request.publication.snapshot
+    }
+
     /// Returns the one signed provider URL; callers must issue HEAD only.
     pub(crate) fn signed_url(&self) -> &str {
         &self.signed_url

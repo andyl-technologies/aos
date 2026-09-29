@@ -77,6 +77,7 @@ pub(crate) async fn execute_external_storage_work(
     plan: &StorageWorkPlan,
     publication: &StorageBindingPublication,
 ) -> Result<Option<StorageWorkResult>> {
+    crate::external_object::deny_legacy(env, &publication.snapshot)?;
     let now = aos_hub_core::clock::now_unix_secs();
     let deployment_id = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     publication.snapshot.authorizes(plan, &deployment_id, now)?;
