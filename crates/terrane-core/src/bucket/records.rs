@@ -245,7 +245,11 @@ impl GenerationManifest {
             return Err(RecordError::Schema);
         }
 
-        if self.inventory.as_ref().is_some_and(|entries| entries.windows(2).any(|pair| pair[0].pack_id >= pair[1].pack_id)) {
+        if self.inventory.as_ref().is_some_and(|entries| {
+            entries
+                .windows(2)
+                .any(|pair| pair[0].pack_id >= pair[1].pack_id)
+        }) {
             return Err(RecordError::Schema);
         }
 
@@ -331,17 +335,35 @@ impl GenerationManifest {
             let count = decoder.array(decoder.remaining().len())?;
             let mut entries = Vec::with_capacity(count);
             for _ in 0..count {
-                if decoder.array(5)? != 5 {return Err(RecordError::Schema);}
-                let pack_id = decoder.bytes(16)?.try_into().map_err(|_| RecordError::Schema)?;
-                if entries.last().is_some_and(|prior: &PackInventoryEntry| prior.pack_id >= pack_id) {return Err(RecordError::Schema);}
+                if decoder.array(5)? != 5 {
+                    return Err(RecordError::Schema);
+                }
+                let pack_id = decoder
+                    .bytes(16)?
+                    .try_into()
+                    .map_err(|_| RecordError::Schema)?;
+                if entries
+                    .last()
+                    .is_some_and(|prior: &PackInventoryEntry| prior.pack_id >= pack_id)
+                {
+                    return Err(RecordError::Schema);
+                }
                 let pack_hash = digest(&mut decoder)?;
                 let pack_size = decoder.uint()?;
                 let index_hash = digest(&mut decoder)?;
                 let index_size = decoder.uint()?;
-                entries.push(PackInventoryEntry {pack_id, pack_hash, pack_size, index_hash, index_size});
+                entries.push(PackInventoryEntry {
+                    pack_id,
+                    pack_hash,
+                    pack_size,
+                    index_hash,
+                    index_size,
+                });
             }
             Some(entries)
-        } else {None};
+        } else {
+            None
+        };
         decoder.finish()?;
 
         Ok(Self {

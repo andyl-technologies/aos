@@ -8,5 +8,6 @@ mod records;
 
 pub use keys::{BucketKey, KeyError, Mutability};
 pub use records::{
-    BucketCapabilities, GenerationManifest, GenerationShard, PackInventoryEntry, RecordError, StoreProfile, Tombstone,
+    BucketCapabilities, GenerationManifest, GenerationShard, PackInventoryEntry, RecordError,
+    StoreProfile, Tombstone,
 };

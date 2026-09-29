@@ -1,142 +1,359 @@
 //! Selects and verifies authoritative index generations without directory listing.
 
-use std::collections::{BTreeMap,BTreeSet};
-use terrane_core::bucket::{BucketCapabilities,BucketKey,GenerationManifest,GenerationShard,Mutability};
-use terrane_core::identity::{Identity,IdentityKind,TERRANE_V1};
-use crate::pack::{MergedShard,PackId,PackIndexSnapshot,RecordState};
-use crate::store::{Clock,ContentValidator,LocalFs,StoreFailure};
-use super::{BucketBinding,FileBucket,files};
+use super::{BucketBinding, FileBucket, files};
+use crate::pack::{MergedShard, PackIndexSnapshot, RecordState};
+use crate::store::{Clock, ContentValidator, LocalFs, StoreFailure};
+use std::collections::{BTreeMap, BTreeSet};
+use terrane_core::bucket::{
+    BucketCapabilities, BucketKey, GenerationManifest, GenerationShard, Mutability,
+    PackInventoryEntry,
+};
+use terrane_core::identity::{Identity, IdentityKind, TERRANE_V1};
 
 pub(super) struct Catalog {
-    pub capabilities:BucketCapabilities,
-    pub capability_bytes:Vec<u8>,
-    pub shards:Vec<MergedShard>,
+    pub capabilities: BucketCapabilities,
+    pub capability_bytes: Vec<u8>,
+    pub shards: Vec<MergedShard>,
+    pub inventory: Option<Vec<PackInventoryEntry>>,
 }
 
-impl<F:LocalFs+BucketBinding,C:Clock+BucketBinding,V:ContentValidator+BucketBinding> FileBucket<F,C,V> {
-    pub(super) async fn catalog(&self)->Result<Catalog,StoreFailure> {
-        let key=BucketKey::parse("CAPABILITIES").map_err(|_| files::malformed())?;
-        let capability_bytes=self.read_optional(&key).await?.ok_or_else(files::layout_corrupt)?;
-        let capabilities=BucketCapabilities::decode(&capability_bytes).map_err(|_| files::layout_corrupt())?;
-        if capabilities.profile!=self.profile() {return Err(files::layout_corrupt());}
-        let mut shards=Vec::new();
-        if let Some(generation)=capabilities.generation {
-            let key=registered(&format!("objects/index/{generation}/MANIFEST"))?;
-            let bytes=self.read_optional(&key).await?.ok_or_else(files::layout_corrupt)?;
-            let manifest=GenerationManifest::decode(&bytes).map_err(|_| files::layout_corrupt())?;
-            if manifest.generation!=generation {return Err(files::layout_corrupt());}
+impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
+    FileBucket<F, C, V>
+{
+    pub(super) async fn catalog(&self) -> Result<Catalog, StoreFailure> {
+        let key = BucketKey::parse("CAPABILITIES").map_err(|_| files::malformed())?;
+        let capability_bytes = self
+            .read_optional(&key)
+            .await?
+            .ok_or_else(files::layout_corrupt)?;
+        let capabilities =
+            BucketCapabilities::decode(&capability_bytes).map_err(|_| files::layout_corrupt())?;
+        if capabilities.profile != self.profile() {
+            return Err(files::layout_corrupt());
+        }
+        let mut shards = Vec::new();
+        let mut inventory = None;
+        if let Some(generation) = capabilities.generation {
+            let key = registered(&format!("objects/index/{generation}/MANIFEST"))?;
+            let bytes = self
+                .read_optional(&key)
+                .await?
+                .ok_or_else(files::layout_corrupt)?;
+            let manifest =
+                GenerationManifest::decode(&bytes).map_err(|_| files::layout_corrupt())?;
+            inventory = manifest.inventory.clone();
+            if manifest.generation != generation {
+                return Err(files::layout_corrupt());
+            }
             for entry in &manifest.shards {
-                let shard=u8::try_from(entry.shard).map_err(|_| files::layout_corrupt())?;
-                let bytes=self.verified_artifact(generation,entry.shard,"idx",IdentityKind::Index,entry.index_hash,entry.index_size).await?;
-                if let Some((hash,size))=entry.filter {
-                    self.verified_artifact(generation,entry.shard,"flt",IdentityKind::Filter,hash,size).await?;
+                let shard = u8::try_from(entry.shard).map_err(|_| files::layout_corrupt())?;
+                let bytes = self
+                    .verified_artifact(
+                        generation,
+                        entry.shard,
+                        "idx",
+                        IdentityKind::Index,
+                        entry.index_hash,
+                        entry.index_size,
+                    )
+                    .await?;
+                if let Some((hash, size)) = entry.filter {
+                    self.verified_artifact(
+                        generation,
+                        entry.shard,
+                        "flt",
+                        IdentityKind::Filter,
+                        hash,
+                        size,
+                    )
+                    .await?;
                 }
-                shards.push(MergedShard::decode(&bytes,generation,shard).map_err(|_| files::layout_corrupt())?);
+                shards.push(
+                    MergedShard::decode(&bytes, generation, shard)
+                        .map_err(|_| files::layout_corrupt())?,
+                );
             }
         }
-        Ok(Catalog {capabilities,capability_bytes,shards})
+        Ok(Catalog {
+            capabilities,
+            capability_bytes,
+            shards,
+            inventory,
+        })
     }
 
-    async fn verified_artifact(&self,generation:u64,shard:u64,suffix:&str,kind:IdentityKind,hash:[u8;32],size:u64)->Result<Vec<u8>,StoreFailure> {
-        let key=registered(&format!("objects/index/{generation}/{shard}.{suffix}"))?;
-        let bytes=self.read_optional(&key).await?.ok_or_else(files::layout_corrupt)?;
-        let identity=TERRANE_V1.from_digest(kind,&hash).map_err(|_| files::layout_corrupt())?;
-        if bytes.len() as u64!=size {return Err(files::layout_corrupt());}
-        TERRANE_V1.verify(&identity,&bytes).map_err(|_| files::layout_corrupt())?;
+    async fn verified_artifact(
+        &self,
+        generation: u64,
+        shard: u64,
+        suffix: &str,
+        kind: IdentityKind,
+        hash: [u8; 32],
+        size: u64,
+    ) -> Result<Vec<u8>, StoreFailure> {
+        let key = registered(&format!("objects/index/{generation}/{shard}.{suffix}"))?;
+        let bytes = self
+            .read_optional(&key)
+            .await?
+            .ok_or_else(files::layout_corrupt)?;
+        let identity = TERRANE_V1
+            .from_digest(kind, &hash)
+            .map_err(|_| files::layout_corrupt())?;
+        if bytes.len() as u64 != size {
+            return Err(files::layout_corrupt());
+        }
+        TERRANE_V1
+            .verify(&identity, &bytes)
+            .map_err(|_| files::layout_corrupt())?;
         Ok(bytes)
     }
 
-    pub(super) async fn immutable(&self,key:&BucketKey,bytes:&[u8])->Result<(),StoreFailure> {
-        if key.mutability()!=Mutability::Immutable {return Err(files::malformed());}
-        if !self.install(key,bytes,false).await? {
-            let current=self.read_optional(key).await?.ok_or_else(files::layout_corrupt)?;
-            if current!=bytes {return Err(files::layout_corrupt());}
+    pub(super) async fn immutable(
+        &self,
+        key: &BucketKey,
+        bytes: &[u8],
+    ) -> Result<(), StoreFailure> {
+        if key.mutability() != Mutability::Immutable {
+            return Err(files::malformed());
+        }
+        if !self.install(key, bytes, false).await? {
+            let current = self
+                .read_optional(key)
+                .await?
+                .ok_or_else(files::layout_corrupt)?;
+            if current != bytes {
+                return Err(files::layout_corrupt());
+            }
         }
         Ok(())
     }
 
-    pub(super) async fn publish_pack_catalog(&self,catalog:Catalog,new:PackIndexSnapshot)->Result<(),StoreFailure> {
-        let mut generation=catalog.capabilities.generation.unwrap_or(0).checked_add(1).ok_or_else(files::layout_corrupt)?;
+    pub(super) async fn next_generation(&self, catalog: &Catalog) -> Result<u64, StoreFailure> {
+        let mut generation = catalog
+            .capabilities
+            .generation
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(files::layout_corrupt)?;
         // Shard zero is always installed first. A crashed unpublished attempt
         // reserves its generation without making listing authoritative.
         loop {
-            let first=registered(&format!("objects/index/{generation}/0.idx"))?;
-            let manifest=registered(&format!("objects/index/{generation}/MANIFEST"))?;
-            if self.read_optional(&first).await?.is_none() && self.read_optional(&manifest).await?.is_none() {break;}
-            generation=generation.checked_add(1).ok_or_else(files::layout_corrupt)?;
-        }
-
-        let mut packs=BTreeMap::new();
-        let mut tombstoned=BTreeSet::new();
-        let mut prefixes=BTreeSet::from([0]);
-        for shard in &catalog.shards {
-            prefixes.insert(shard.shard());
-            for record in shard.entries() {
-                let id=record.pack();
-                if record.state()==RecordState::Tombstone {tombstoned.insert(id);continue;}
-                if let std::collections::btree_map::Entry::Vacant(slot)=packs.entry(id) {
-                    let bytes=self.read_optional(&registered(&id.index_key())?).await?.ok_or_else(files::layout_corrupt)?;
-                    let index=PackIndexSnapshot::decode(&bytes,generation).map_err(|_| files::layout_corrupt())?;
-                    if index.header().id()!=id {return Err(files::layout_corrupt());}
-                    slot.insert(index);
-                }
+            let first = registered(&format!("objects/index/{generation}/0.idx"))?;
+            let manifest = registered(&format!("objects/index/{generation}/MANIFEST"))?;
+            if self.read_optional(&first).await?.is_none()
+                && self.read_optional(&manifest).await?.is_none()
+            {
+                return Ok(generation);
             }
+            generation = generation
+                .checked_add(1)
+                .ok_or_else(files::layout_corrupt)?;
         }
-        for entry in new.entries() {prefixes.insert(entry.hash()[0]);}
-        packs.insert(new.header().id(),new);
-        let packs:Vec<_>=packs.into_values().collect();
-        let mut shards=Vec::new();
-        for prefix in prefixes {
-            let previous=catalog.shards.iter().find(|shard|shard.shard()==prefix);
-            shards.push(MergedShard::rebuild(prefix,generation,&packs,&tombstoned,previous,&BTreeSet::new()).map_err(|_| files::layout_corrupt())?);
-        }
-        self.publish_shards(catalog,generation,&shards).await
     }
 
-    async fn publish_shards(&self,mut catalog:Catalog,generation:u64,shards:&[MergedShard])->Result<(),StoreFailure> {
-        let mut entries=Vec::new();
-        for shard in shards {
-            let bytes=shard.encode();
-            let identity=TERRANE_V1.calculate(IdentityKind::Index,&bytes).map_err(|_| files::layout_corrupt())?;
-            let hash=identity.terrane_v1_digest().map_err(|_| files::layout_corrupt())?;
-            let key=registered(&format!("objects/index/{generation}/{}.idx",shard.shard()))?;
-            self.immutable(&key,&bytes).await?;
-            // Verify durable bytes before the manifest can promise them.
-            self.verified_artifact(generation,u64::from(shard.shard()),"idx",IdentityKind::Index,hash,bytes.len() as u64).await?;
-            entries.push(GenerationShard {shard:u64::from(shard.shard()),index_hash:hash,index_size:bytes.len() as u64,filter:None});
+    pub(super) async fn publish_pack_catalog(
+        &self,
+        mut catalog: Catalog,
+        new: PackIndexSnapshot,
+        inventory: PackInventoryEntry,
+    ) -> Result<(), StoreFailure> {
+        let generation = self.next_generation(&catalog).await?;
+        let mut prefixes = BTreeSet::from([0]);
+        prefixes.extend(catalog.shards.iter().map(MergedShard::shard));
+        prefixes.extend(new.entries().iter().map(|entry| entry.hash()[0]));
+        let mut shards = Vec::new();
+        for prefix in prefixes {
+            let delta = MergedShard::rebuild(
+                prefix,
+                generation,
+                std::slice::from_ref(&new),
+                &BTreeSet::new(),
+                None,
+                &BTreeSet::new(),
+            )
+            .map_err(|_| files::layout_corrupt())?;
+            let mut records = BTreeMap::new();
+            if let Some(previous) = catalog.shards.iter().find(|shard| shard.shard() == prefix) {
+                for record in terrane_core::pack_format::decode_shard(&previous.encode(), prefix)
+                    .map_err(|_| files::layout_corrupt())?
+                {
+                    records.insert(record.record.hash, record);
+                }
+            }
+            for record in terrane_core::pack_format::decode_shard(&delta.encode(), prefix)
+                .map_err(|_| files::layout_corrupt())?
+            {
+                // Ordinary admission cannot restore a quarantined identity or
+                // retire other entries sharing that pack's retained bytes.
+                records.entry(record.record.hash).or_insert(record);
+            }
+            let bytes =
+                terrane_core::pack_format::encode_shard(&records.into_values().collect::<Vec<_>>());
+            shards.push(
+                MergedShard::decode(&bytes, generation, prefix)
+                    .map_err(|_| files::layout_corrupt())?,
+            );
         }
-        let timestamp=self.inner.clock.now().duration_since(std::time::SystemTime::UNIX_EPOCH).map_err(|_| files::malformed())?.as_secs();
-        let manifest=GenerationManifest {generation,shards:entries,written_at:timestamp,cycle:0};
-        let bytes=manifest.encode().map_err(|_| files::malformed())?;
-        let key=registered(&format!("objects/index/{generation}/MANIFEST"))?;
-        self.immutable(&key,&bytes).await?;
-        catalog.capabilities.generation=Some(generation);
-        let bytes=catalog.capabilities.encode().map_err(|_| files::malformed())?;
-        let key=registered("CAPABILITIES")?;
-        if !self.replace_conditionally(&key,Some(&catalog.capability_bytes),&bytes).await? {return Err(files::layout_corrupt());}
+        self.add_inventory(&mut catalog, inventory)?;
+        self.publish_shards(catalog, generation, &shards).await
+    }
+
+    pub(super) fn add_inventory(
+        &self,
+        catalog: &mut Catalog,
+        entry: PackInventoryEntry,
+    ) -> Result<(), StoreFailure> {
+        let entries = catalog.inventory.get_or_insert_with(Vec::new);
+        match entries.binary_search_by_key(&entry.pack_id, |entry| entry.pack_id) {
+            Ok(position) if entries[position] != entry => Err(files::layout_corrupt()),
+            Ok(_) => Ok(()),
+            Err(position) => {
+                entries.insert(position, entry);
+                Ok(())
+            }
+        }
+    }
+
+    pub(super) async fn publish_shards(
+        &self,
+        mut catalog: Catalog,
+        generation: u64,
+        shards: &[MergedShard],
+    ) -> Result<(), StoreFailure> {
+        let mut entries = Vec::new();
+        for shard in shards {
+            let bytes = shard.encode();
+            let identity = TERRANE_V1
+                .calculate(IdentityKind::Index, &bytes)
+                .map_err(|_| files::layout_corrupt())?;
+            let hash = identity
+                .terrane_v1_digest()
+                .map_err(|_| files::layout_corrupt())?;
+            let key = registered(&format!("objects/index/{generation}/{}.idx", shard.shard()))?;
+            self.immutable(&key, &bytes).await?;
+            // Verify durable bytes before the manifest can promise them.
+            self.verified_artifact(
+                generation,
+                u64::from(shard.shard()),
+                "idx",
+                IdentityKind::Index,
+                hash,
+                bytes.len() as u64,
+            )
+            .await?;
+            entries.push(GenerationShard {
+                shard: u64::from(shard.shard()),
+                index_hash: hash,
+                index_size: bytes.len() as u64,
+                filter: None,
+            });
+        }
+        let timestamp = self
+            .inner
+            .clock
+            .now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .map_err(|_| files::malformed())?
+            .as_secs();
+        let manifest = GenerationManifest {
+            generation,
+            shards: entries,
+            written_at: timestamp,
+            cycle: 0,
+            inventory: catalog.inventory.clone(),
+        };
+        let bytes = manifest.encode().map_err(|_| files::malformed())?;
+        let key = registered(&format!("objects/index/{generation}/MANIFEST"))?;
+        self.immutable(&key, &bytes).await?;
+        catalog.capabilities.generation = Some(generation);
+        let bytes = catalog
+            .capabilities
+            .encode()
+            .map_err(|_| files::malformed())?;
+        let key = registered("CAPABILITIES")?;
+        if !self
+            .replace_conditionally(&key, Some(&catalog.capability_bytes), &bytes)
+            .await?
+        {
+            return Err(files::layout_corrupt());
+        }
         Ok(())
     }
 
-    /// Enumerates verified live content identities from the selected generation.
+    /// Enumerates body and container identities in one selected catalog snapshot.
+    ///
+    /// Manifest and shard integrity are verified while exclusion is held. Body
+    /// verification is left to `get`, so recovery can identify and quarantine
+    /// corrupt individual records. Later concurrent changes can make `get`
+    /// return a typed absence; callers must not treat that as a complete rebuild.
     ///
     /// # Errors
-    /// Returns corruption or unavailable I/O if the catalog or a live body cannot
-    /// be verified. Directory listing never selects authoritative content.
-    pub async fn live_identities(&self,kind:IdentityKind)->Result<Vec<Identity>,StoreFailure> {
-        let _guard=self.exclusive().await?;
-        let catalog=self.catalog().await?;
-        let mut identities=Vec::new();
+    /// Returns corruption or unavailable I/O when the selected catalog cannot
+    /// be verified. Directory listing never selects authoritative identities.
+    pub async fn published_identities(
+        &self,
+        kind: IdentityKind,
+    ) -> Result<Vec<Identity>, StoreFailure> {
+        let _guard = self.exclusive().await?;
+        let catalog = self.catalog().await?;
+        self.catalog_identities(&catalog, kind)
+    }
+
+    fn catalog_identities(
+        &self,
+        catalog: &Catalog,
+        kind: IdentityKind,
+    ) -> Result<Vec<Identity>, StoreFailure> {
+        let mut identities = Vec::new();
+        if let Some(entries) = &catalog.inventory {
+            for entry in entries {
+                let hash = match kind {
+                    IdentityKind::Pack => Some(entry.pack_hash),
+                    IdentityKind::Index => Some(entry.index_hash),
+                    _ => None,
+                };
+                if let Some(hash) = hash {
+                    identities.push(
+                        TERRANE_V1
+                            .from_digest(kind, &hash)
+                            .map_err(|_| files::layout_corrupt())?,
+                    );
+                }
+            }
+        }
         for shard in &catalog.shards {
             for record in shard.entries() {
-                if record.state()==RecordState::Live && record.entry().kind().identity_kind()==kind {
-                    let identity=TERRANE_V1.from_digest(kind,record.entry().hash()).map_err(|_| files::layout_corrupt())?;
-                    self.verified_body(&catalog,&identity).await?;
-                    identities.push(identity);
+                if record.state() == RecordState::Live
+                    && record.entry().kind().identity_kind() == kind
+                {
+                    let identity = TERRANE_V1
+                        .from_digest(kind, record.entry().hash())
+                        .map_err(|_| files::layout_corrupt())?;
+                    if !identities.contains(&identity) {
+                        identities.push(identity);
+                    }
                 }
             }
         }
         Ok(identities)
     }
+
+    /// Enumerates body-verified live identities from one selected generation.
+    ///
+    /// # Errors
+    /// Returns corruption or unavailable I/O if the catalog or a live body cannot
+    /// be verified. Directory listing never selects authoritative content.
+    pub async fn live_identities(&self, kind: IdentityKind) -> Result<Vec<Identity>, StoreFailure> {
+        let _guard = self.exclusive().await?;
+        let catalog = self.catalog().await?;
+        let identities = self.catalog_identities(&catalog, kind)?;
+        for identity in &identities {
+            self.verified_body(&catalog, identity).await?;
+        }
+        Ok(identities)
+    }
 }
 
-pub(super) fn registered(key:&str)->Result<BucketKey,StoreFailure> {BucketKey::parse(key).map_err(|_| files::malformed())}
+pub(super) fn registered(key: &str) -> Result<BucketKey, StoreFailure> {
+    BucketKey::parse(key).map_err(|_| files::malformed())
+}

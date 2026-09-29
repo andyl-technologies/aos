@@ -5,7 +5,11 @@
 //! guard is retained through directory synchronization. Content is opaque to
 //! the backend and format validation is delegated to the configured validator.
 
+mod catalog;
+mod containers;
+mod content;
 mod files;
+mod quarantine;
 mod refs;
 
 #[cfg(all(test, feature = "tokio"))]
@@ -13,6 +17,9 @@ mod tests;
 
 #[cfg(all(test, feature = "tokio"))]
 mod fault_tests;
+
+#[cfg(all(test, feature = "tokio"))]
+mod content_tests;
 
 use crate::store::{
     Capabilities, CapabilityReport, Clock, ContentValidator, Durability, LocalFs, RangeCapability,
@@ -118,6 +125,10 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .map_err(files::io_failure)?;
         bucket.check_directory(&bucket.inner.config.root).await?;
         bucket.probe().await?;
+        {
+            let _guard = bucket.exclusive().await?;
+            bucket.catalog().await?;
+        }
         Ok(bucket)
     }
 
