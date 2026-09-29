@@ -1,4 +1,4 @@
-From adca4c4d0befeb2740c89fc21a925f1a0b206b5c Mon Sep 17 00:00:00 2001
+From 067f2bae1dc686b071ad0781b190b9ba5cf9534b Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -148,6 +148,8 @@ Preserve wide PowerPC timer coordinates and exact precise BookE edges.
 Preserve full-width default APIC, HPET, RTC, PIT, serial, keyboard and ACPI PM timer state.
 
 Retain actual RTC calendar callbacks in the current GPL unit and remove obsolete split-phase test paths.
+
+Pass the source firmware directory explicitly to the pre-install multiboot check. Preserve uninitialized nonperiodic PIT startup before HPET enables its IRQ, and reject a zero periodic divisor.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -44914,7 +44916,7 @@ index 1a8b6bf9abe54632011ba7fd37fc6d2400bfbbe8..4da467d1a082a7173ca4e457a5d2230b
  
  static void pit_class_initfn(ObjectClass *klass, const void *data)
 diff --git a/hw/timer/i8254_common.c b/hw/timer/i8254_common.c
-index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..b0a8dd5ca8b2d3bf4eef535a49490e0d7bdd24d8 100644
+index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..292370a713365325e8c12dfe17d028bc953836c4 100644
 --- a/hw/timer/i8254_common.c
 +++ b/hw/timer/i8254_common.c
 @@ -26,10 +26,13 @@
@@ -45049,7 +45051,7 @@ index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..b0a8dd5ca8b2d3bf4eef535a49490e0d
      next_time = s->count_load_time + muldiv64(next_time, NANOSECONDS_PER_SECOND,
                                                PIT_FREQ);
      /* fix potential rounding problems */
-@@ -129,13 +187,68 @@ int64_t pit_get_next_transition_time(PITChannelState *s, int64_t current_time)
+@@ -129,13 +187,77 @@ int64_t pit_get_next_transition_time(PITChannelState *s, int64_t current_time)
      return next_time;
  }
  
@@ -45060,11 +45062,20 @@ index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..b0a8dd5ca8b2d3bf4eef535a49490e0d
 +{
 +    uint64_t fraction;
 +    __uint128_t ticks = pit_elapsed_ticks(s, current_time_ps, &fraction);
-+    uint64_t remainder = ticks % s->count;
++    uint64_t remainder = 0;
 +    uint64_t delta;
 +    __int128 anchor = MAX(current_time_ps, s->count_load_time_ps);
 +    const __int128 maximum = (__int128)(((__uint128_t)1 << 127) - 1);
 +    uint64_t delay;
++
++    /* HPET can enable a zero-initialized one-shot channel before PIT reset.
++     * Only periodic modes need a modulus, and their period must be nonzero. */
++    if (s->mode == 2 || s->mode == 3) {
++        if (!s->count) {
++            return -EINVAL;
++        }
++        remainder = ticks % s->count;
++    }
 +
 +    switch (s->mode) {
 +    default:
@@ -45119,7 +45130,7 @@ index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..b0a8dd5ca8b2d3bf4eef535a49490e0d
  }
  
  void pit_get_channel_info(PITCommonState *pit, int channel, PITChannelInfo *info)
-@@ -155,11 +268,30 @@ void pit_reset_common(PITCommonState *pit)
+@@ -155,11 +277,30 @@ void pit_reset_common(PITCommonState *pit)
          s = &pit->channels[i];
          s->mode = 3;
          s->gate = (i != 2);
@@ -45153,7 +45164,7 @@ index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..b0a8dd5ca8b2d3bf4eef535a49490e0d
          }
      }
  }
-@@ -197,6 +329,222 @@ static const VMStateDescription vmstate_pit_channel = {
+@@ -197,6 +338,222 @@ static const VMStateDescription vmstate_pit_channel = {
      }
  };
  
@@ -45376,7 +45387,7 @@ index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..b0a8dd5ca8b2d3bf4eef535a49490e0d
  static int pit_dispatch_pre_save(void *opaque)
  {
      PITCommonState *s = opaque;
-@@ -206,6 +554,19 @@ static int pit_dispatch_pre_save(void *opaque)
+@@ -206,6 +563,19 @@ static int pit_dispatch_pre_save(void *opaque)
          c->pre_save(s);
      }
  
@@ -45396,7 +45407,7 @@ index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..b0a8dd5ca8b2d3bf4eef535a49490e0d
      return 0;
  }
  
-@@ -213,19 +574,92 @@ static int pit_dispatch_post_load(void *opaque, int version_id)
+@@ -213,19 +583,92 @@ static int pit_dispatch_post_load(void *opaque, int version_id)
  {
      PITCommonState *s = opaque;
      PITCommonClass *c = PIT_COMMON_GET_CLASS(s);
@@ -45489,7 +45500,7 @@ index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..b0a8dd5ca8b2d3bf4eef535a49490e0d
      .fields = (const VMStateField[]) {
          VMSTATE_UINT32_V(channels[0].irq_disabled, PITCommonState, 3),
          VMSTATE_STRUCT_ARRAY(channels, PITCommonState, 3, 2,
-@@ -233,6 +667,10 @@ static const VMStateDescription vmstate_pit_common = {
+@@ -233,6 +676,10 @@ static const VMStateDescription vmstate_pit_common = {
          VMSTATE_INT64(channels[0].next_transition_time,
                        PITCommonState), /* formerly irq_timer */
          VMSTATE_END_OF_LIST()
@@ -45500,7 +45511,7 @@ index 419d4cd6e572e4387a26c9981456dd5ebe6b5806..b0a8dd5ca8b2d3bf4eef535a49490e0d
      }
  };
  
-@@ -244,6 +682,7 @@ static void pit_common_class_init(ObjectClass *klass, const void *data)
+@@ -244,6 +691,7 @@ static void pit_common_class_init(ObjectClass *klass, const void *data)
  {
      DeviceClass *dc = DEVICE_CLASS(klass);
  
@@ -136047,10 +136058,10 @@ index 0000000000000000000000000000000000000000..b777593bd92644da39a0a1b96c6d7f39
 +    main()
 diff --git a/tests/qtest/crucible-multiboot-gap.py b/tests/qtest/crucible-multiboot-gap.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..30f10456a0920b3f3f15f8a5de12278fd8be67af
+index 0000000000000000000000000000000000000000..12c74a9448a3106e9db2f8a0f89d5ea823f99950
 --- /dev/null
 +++ b/tests/qtest/crucible-multiboot-gap.py
-@@ -0,0 +1,145 @@
+@@ -0,0 +1,151 @@
 +# Copyright (c) 2026 ANDYL Technologies
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Checks deterministic initialization of gaps in a multiboot ELF image."""
@@ -136108,10 +136119,11 @@ index 0000000000000000000000000000000000000000..30f10456a0920b3f3f15f8a5de12278f
 +    return bytes.fromhex(response[len(prefix):-1].decode())
 +
 +
-+def verify_direct_kernel_boot(qemu, kernel_path):
++def verify_direct_kernel_boot(qemu, kernel_path, data_dir):
 +    """Runs the multiboot image through firmware and checks guest entry."""
 +    command = [
 +        qemu,
++        "-L", data_dir,
 +        "-machine", "pc-q35-9.2",
 +        "-cpu", "qemu64",
 +        "-m", "16M",
@@ -136148,6 +136160,10 @@ index 0000000000000000000000000000000000000000..30f10456a0920b3f3f15f8a5de12278f
 +def main():
 +    parser = argparse.ArgumentParser()
 +    parser.add_argument("--qemu", required=True)
++    parser.add_argument(
++        "--data-dir", required=True,
++        help="Firmware directory available before QEMU installation",
++    )
 +    args = parser.parse_args()
 +
 +    with tempfile.TemporaryDirectory(prefix="multiboot-gap-") as directory:
@@ -136161,6 +136177,7 @@ index 0000000000000000000000000000000000000000..30f10456a0920b3f3f15f8a5de12278f
 +        process = subprocess.Popen(
 +            [
 +                args.qemu,
++                "-L", args.data_dir,
 +                "-machine", "pc-q35-9.2",
 +                "-cpu", "qemu64",
 +                "-m", "16M",
@@ -136190,7 +136207,7 @@ index 0000000000000000000000000000000000000000..30f10456a0920b3f3f15f8a5de12278f
 +            process.terminate()
 +            process.wait(timeout=10)
 +            listener.close()
-+        verify_direct_kernel_boot(args.qemu, kernel_path)
++        verify_direct_kernel_boot(args.qemu, kernel_path, args.data_dir)
 +    print("multiboot_sim_intersegment_gap_zero=true")
 +
 +
@@ -161036,10 +161053,10 @@ index 0000000000000000000000000000000000000000..1ba2a64a8846c9d33c82b340038f0e8f
 +}
 diff --git a/tests/unit/test-crucible-pit-timer-wide-clock.c b/tests/unit/test-crucible-pit-timer-wide-clock.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c19deac4be5ce25143ba1c491d5de7174af824f3
+index 0000000000000000000000000000000000000000..5de510d543012b6ea7ad7f47bb04643115ad65fd
 --- /dev/null
 +++ b/tests/unit/test-crucible-pit-timer-wide-clock.c
-@@ -0,0 +1,734 @@
+@@ -0,0 +1,833 @@
 +/*
 + * Literal PIT fullword arithmetic, physical timers and exact migration.
 + * Clock/final callback consumers are diagnostic; QOM, architectural IRQ,
@@ -161059,6 +161076,35 @@ index 0000000000000000000000000000000000000000..c19deac4be5ce25143ba1c491d5de717
 +#define type_init(function) \
 +    static void *const excluded_##function __attribute__((unused)) = function;
 +#include "../../hw/timer/i8254_common.c"
++#include "../../hw/timer/i8254.c"
++
++/* The startup route uses real QEMU IRQ objects, without realizing ISA/QOM
++ * device classes. Only the inactive fault-service boundary is modeled. */
++#undef type_init
++#define type_init(function) module_init(function, MODULE_INIT_QOM)
++#include "../../hw/core/irq.c"
++
++bool qemu_crucible_fault_clock_source_active(
++    uint16_t source_kind, uint32_t source_index)
++{
++    return false;
++}
++
++/* No registered fault-service timer may fire in this startup fixture. */
++bool qemu_crucible_fault_clock_timer_fire(
++    uint16_t source_kind, uint32_t instance, uint16_t timer_role,
++    uint32_t timer_index, uint64_t timer_arm_sequence,
++    uint64_t guest_deadline_ps, uint64_t scheduler_deadline_ps,
++    uint64_t transform_generation)
++{
++    g_assert_not_reached();
++}
++
++void qemu_crucible_fault_clock_event_terminal_at(
++    const char *source_file, unsigned int source_line)
++{
++    g_assert_not_reached();
++}
 +
 +static __int128 observed_ps;
 +static unsigned fired;
@@ -161489,6 +161535,70 @@ index 0000000000000000000000000000000000000000..c19deac4be5ce25143ba1c491d5de717
 +    destroy_timers(&state);
 +}
 +
++static void startup_irq_observe(void *opaque, int index, int level)
++{
++    int *observed = opaque;
++
++    *observed = level;
++}
++
++static void test_hpet_enable_before_pit_reset(void)
++{
++    PITCommonState state = { 0 };
++    PITChannelState *channel = &state.channels[0];
++    int irq_level = -1;
++    qemu_irq pit_enabled;
++
++    observed_ps = 357;
++    channel->irq = qemu_allocate_irq(startup_irq_observe, &irq_level, 0);
++    channel->irq_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, pit_irq_timer, channel);
++    channel->irq_disabled = 1;
++    pit_enabled = qemu_allocate_irq(pit_irq_control, &state, 0);
++
++    /* hpet_reset raises this actual connected output before PIT reset has
++     * initialized mode/count. Exercise the same real qemu_set_irq route. */
++    qemu_set_irq(pit_enabled, 1);
++
++    g_assert_cmpint(channel->mode, ==, 0);
++    g_assert_cmpint(channel->count, ==, 0);
++    g_assert_cmpint(channel->irq_disabled, ==, 0);
++    g_assert_cmpint(irq_level, ==, 1);
++    g_assert_false(channel->next_transition_valid);
++    g_assert_false(timer_pending(channel->irq_timer));
++
++    qemu_free_irq(pit_enabled);
++    qemu_free_irq(channel->irq);
++    timer_free(channel->irq_timer);
++}
++
++static void test_uninitialized_nonperiodic_transition(void)
++{
++    PITChannelState state = { 0 };
++    __int128 next = 73;
++
++    for (unsigned mode = 0; mode <= 1; mode++) {
++        state.mode = mode;
++
++        g_assert_cmpint(pit_get_next_transition_time_ps(&state, 357, &next), ==, 0);
++        assert_coordinate(next, 73);
++        g_assert_cmpint(pit_get_next_transition_time(&state, 0), ==, -1);
++    }
++}
++
++static void test_invalid_periodic_zero(void)
++{
++    PITChannelState state = { 0 };
++    __int128 next = 73;
++
++    for (unsigned mode = 2; mode <= 3; mode++) {
++        state.mode = mode;
++
++        g_assert_cmpint(pit_get_next_transition_time_ps(&state, 357, &next),
++                        ==, -EINVAL);
++        assert_coordinate(next, 73);
++    }
++}
++
 +static void test_overflow(void)
 +{
 +    PITChannelState state = { .mode = 3, .count = 65536 };
@@ -161768,6 +161878,12 @@ index 0000000000000000000000000000000000000000..c19deac4be5ce25143ba1c491d5de717
 +        g_test_add_data_func(name, GUINT_TO_POINTER(index), test_projection);
 +        g_free(name);
 +    }
++    g_test_add_func("/pit-wide/startup/hpet-enable-before-reset",
++                    test_hpet_enable_before_pit_reset);
++    g_test_add_func("/pit-wide/startup/nonperiodic-zero",
++                    test_uninitialized_nonperiodic_transition);
++    g_test_add_func("/pit-wide/startup/invalid-periodic-zero",
++                    test_invalid_periodic_zero);
 +    g_test_add_func("/pit-wide/negative-edge", test_negative_edge);
 +    g_test_add_func("/pit-wide/overflow", test_overflow);
 +    g_test_add_func("/pit-wide/actual-callback", test_actual_callback);

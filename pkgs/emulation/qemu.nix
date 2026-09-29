@@ -3537,6 +3537,7 @@ in
               PYTHON
               python3 tests/qtest/crucible-multiboot-gap.py \
                 --qemu build/qemu-system-x86_64 \
+                --data-dir pc-bios \
                 > multiboot-gap.txt
               cat multiboot-gap.txt
               grep -F -x -q 'multiboot_sim_intersegment_gap_zero=true' \
