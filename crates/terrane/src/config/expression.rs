@@ -86,18 +86,27 @@ impl Parser<'_> {
 
     fn take(&mut self, expected: char) -> Result<(), ExpressionError> {
         self.whitespace();
-        self.remaining = self.remaining.strip_prefix(expected).ok_or(ExpressionError::Syntax)?;
+        self.remaining = self
+            .remaining
+            .strip_prefix(expected)
+            .ok_or(ExpressionError::Syntax)?;
         Ok(())
     }
 
     fn arguments(&mut self) -> Result<Vec<String>, ExpressionError> {
         self.take('(')?;
-        let (arguments, remaining) = self.remaining.split_once(')').ok_or(ExpressionError::Syntax)?;
+        let (arguments, remaining) = self
+            .remaining
+            .split_once(')')
+            .ok_or(ExpressionError::Syntax)?;
         if arguments.contains(['(', '[', ']']) {
             return Err(ExpressionError::Syntax);
         }
 
-        let values: Vec<String> = arguments.split(',').map(|value| value.trim().to_owned()).collect();
+        let values: Vec<String> = arguments
+            .split(',')
+            .map(|value| value.trim().to_owned())
+            .collect();
         if values.iter().any(String::is_empty) {
             return Err(ExpressionError::Syntax);
         }
@@ -110,7 +119,10 @@ impl Parser<'_> {
             return Err(ExpressionError::NestingLimit);
         }
         self.whitespace();
-        let length = self.remaining.find(|c: char| !(c.is_ascii_lowercase() || c == '-')).unwrap_or(self.remaining.len());
+        let length = self
+            .remaining
+            .find(|c: char| !(c.is_ascii_lowercase() || c == '-'))
+            .unwrap_or(self.remaining.len());
         let (name, remaining) = self.remaining.split_at(length);
         self.remaining = remaining;
 
@@ -141,7 +153,11 @@ impl Parser<'_> {
             _ => return Err(ExpressionError::Syntax),
         };
 
-        Ok(StoreExpression { name: name.to_owned(), arguments, children })
+        Ok(StoreExpression {
+            name: name.to_owned(),
+            arguments,
+            children,
+        })
     }
 
     fn children(&mut self, depth: usize) -> Result<Vec<StoreExpression>, ExpressionError> {
@@ -168,9 +184,18 @@ fn validate_counts(name: &str, arguments: &[String]) -> Result<(), ExpressionErr
     let [count, second] = arguments else {
         return Err(ExpressionError::Syntax);
     };
-    let prefix = if name == "replicated" { "ack=" } else { "parity=" };
+    let prefix = if name == "replicated" {
+        "ack="
+    } else {
+        "parity="
+    };
     let count: u32 = count.parse().map_err(|_| ExpressionError::Syntax)?;
-    let second: u32 = second.strip_prefix(prefix).ok_or(ExpressionError::Syntax)?.trim().parse().map_err(|_| ExpressionError::Syntax)?;
+    let second: u32 = second
+        .strip_prefix(prefix)
+        .ok_or(ExpressionError::Syntax)?
+        .trim()
+        .parse()
+        .map_err(|_| ExpressionError::Syntax)?;
     if count == 0 || second == 0 || (name == "replicated" && second > count) {
         return Err(ExpressionError::Syntax);
     }
@@ -184,10 +209,13 @@ mod tests {
     #[test]
     fn parses_registered_expression_shapes() {
         for expression in [
-            "bucket(file:///tmp/store)", "disk(/tmp/cache)", "blockdev(/dev/a,/dev/b)",
+            "bucket(file:///tmp/store)",
+            "disk(/tmp/cache)",
+            "blockdev(/dev/a,/dev/b)",
             "guard(policy=warehouse)(bucket(s3://example/prefix))",
             "routed[shared-dir(/objects), remote(unix:///run/terrane.sock),]",
-            "cache(policy)(disk(/tmp/cache))", "replicated(3,ack=2)[disk(/a),disk(/b),disk(/c)]",
+            "cache(policy)(disk(/tmp/cache))",
+            "replicated(3,ack=2)[disk(/a),disk(/b),disk(/c)]",
             "striped(2,parity=1)[disk(/a),disk(/b),disk(/c)]",
         ] {
             assert!(StoreExpression::parse(expression).is_ok(), "{expression}");
@@ -196,10 +224,29 @@ mod tests {
 
     #[test]
     fn rejects_malformed_and_excessively_nested_expressions() {
-        for expression in ["", "unknown(/tmp)", "disk()", "disk(/a,/b)", "routed[]", "disk(/a)garbage", "replicated(1,ack=2)[disk(/a)]"] {
-            assert_eq!(StoreExpression::parse(expression), Err(ExpressionError::Syntax), "{expression}");
+        for expression in [
+            "",
+            "unknown(/tmp)",
+            "disk()",
+            "disk(/a,/b)",
+            "routed[]",
+            "disk(/a)garbage",
+            "replicated(1,ack=2)[disk(/a)]",
+        ] {
+            assert_eq!(
+                StoreExpression::parse(expression),
+                Err(ExpressionError::Syntax),
+                "{expression}"
+            );
         }
-        let expression = format!("{}disk(/tmp){}", "guard(policy)(".repeat(65), ")".repeat(65));
-        assert_eq!(StoreExpression::parse(&expression), Err(ExpressionError::NestingLimit));
+        let expression = format!(
+            "{}disk(/tmp){}",
+            "guard(policy)(".repeat(65),
+            ")".repeat(65)
+        );
+        assert_eq!(
+            StoreExpression::parse(&expression),
+            Err(ExpressionError::NestingLimit)
+        );
     }
 }

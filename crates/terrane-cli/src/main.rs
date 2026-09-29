@@ -12,13 +12,21 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use terrane::config::Config;
+use terrane::role::Role;
 
 #[derive(Parser)]
-#[command(name = "terrane", version, about = "Content-addressed, branchable filesystem store")]
+#[command(
+    name = "terrane",
+    version,
+    about = "Content-addressed, branchable filesystem store"
+)]
 struct Arguments {
     /// Load one process role and store expression from TOML.
     #[arg(long)]
     config: PathBuf,
+    /// Select the process role named in configuration.
+    #[arg(long)]
+    role: Option<Role>,
     /// Check configuration syntax without opening stores or starting services.
     #[arg(long)]
     check_config: bool,
@@ -38,11 +46,15 @@ fn main() -> ExitCode {
 fn run(arguments: Arguments) -> Result<(), Box<dyn std::error::Error>> {
     let input = std::fs::read_to_string(&arguments.config)?;
     let config = Config::parse(&input)?;
+    let role = config.select_role(arguments.role)?;
     if arguments.check_config {
-        println!("configuration syntax valid for role {}; backend, token, and schema checks are pending", config.role());
+        println!(
+            "configuration syntax valid for role {}; backend, token, and schema checks are pending",
+            role
+        );
         return Ok(());
     }
 
-    config.role().run()?;
+    role.run()?;
     Ok(())
 }

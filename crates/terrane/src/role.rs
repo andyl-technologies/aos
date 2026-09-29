@@ -83,14 +83,33 @@ pub enum RoleError {
     Unknown(String),
     /// Reports a role whose runtime has not been implemented.
     Unavailable(Role),
+    /// Rejects an invocation selecting a role different from its configuration.
+    Mismatch {
+        /// Names the role required by configuration.
+        configured: Role,
+        /// Names the role requested by the command line.
+        requested: Role,
+    },
 }
 
 impl fmt::Display for RoleError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unknown(name) => write!(formatter, "unknown role {name:?}"),
+            Self::Mismatch {
+                configured,
+                requested,
+            } => {
+                write!(
+                    formatter,
+                    "requested role {requested} differs from configured role {configured}"
+                )
+            }
             Self::Unavailable(role) => {
-                write!(formatter, "role {role} runtime is unavailable in this foundation build")
+                write!(
+                    formatter,
+                    "role {role} runtime is unavailable in this foundation build"
+                )
             }
         }
     }
@@ -112,6 +131,9 @@ mod tests {
 
     #[test]
     fn unknown_roles_are_rejected() {
-        assert!(matches!("mount-broker".parse::<Role>(), Err(RoleError::Unknown(_))));
+        assert!(matches!(
+            "mount-broker".parse::<Role>(),
+            Err(RoleError::Unknown(_))
+        ));
     }
 }

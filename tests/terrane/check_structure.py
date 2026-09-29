@@ -47,7 +47,12 @@ def main():
             if name in standalone:
                 check(not any(dep.startswith(("aos-", "crucible-")) for dep in dependencies), f"host dependency in {name}")
             if name == "terrane-core":
-                check(dependencies == {"blake3"}, "core dependency boundary changed; audit no_std support")
+                # The isolated core-no-std compilation is the semantic check.
+                # New portable dependencies can land without changing this gate,
+                # but enabling default or std features requires deliberate review.
+                for dependency in package["dependencies"]:
+                    check(not dependency["uses_default_features"], f"core dependency enables default features: {dependency['name']}")
+                    check("std" not in dependency["features"], f"core dependency enables std: {dependency['name']}")
                 root = (manifest_path.parent / "src/lib.rs").read_text()
                 check("#![no_std]" in root and "extern crate alloc;" in root, "core must use no_std + alloc")
             if name == "terrane-cli":

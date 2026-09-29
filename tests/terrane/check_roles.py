@@ -15,6 +15,7 @@ def main():
     help_result = invoke(binary, "--help")
     assert help_result.returncode == 0, help_result.stderr
     assert "--check-config" in help_result.stdout
+    assert "--role" in help_result.stdout
 
     with tempfile.TemporaryDirectory() as directory:
         config = pathlib.Path(directory) / "config.toml"
@@ -23,6 +24,11 @@ def main():
             result = invoke(binary, "--config", str(config), "--check-config")
             assert result.returncode == 0, (role, result.stderr)
             assert role in result.stdout and "syntax" in result.stdout
+            result = invoke(binary, "--role", role, "--config", str(config), "--check-config")
+            assert result.returncode == 0, (role, result.stderr)
+            other_role = "gc" if role == "serve" else "serve"
+            result = invoke(binary, "--role", other_role, "--config", str(config), "--check-config")
+            assert result.returncode != 0 and "differs" in result.stderr
 
             result = invoke(binary, "--config", str(config))
             assert result.returncode != 0, f"unimplemented role falsely succeeded: {role}"

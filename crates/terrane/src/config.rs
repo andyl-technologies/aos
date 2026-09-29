@@ -15,7 +15,7 @@ use std::fmt;
 
 use serde::Deserialize;
 
-use crate::role::Role;
+use crate::role::{Role, RoleError};
 
 pub mod expression;
 
@@ -38,19 +38,40 @@ impl Config {
     /// store syntax, or any exposure naming a missing surface.
     pub fn parse(input: &str) -> Result<Self, ConfigError> {
         let raw: RawConfig = toml::from_str(input).map_err(ConfigError::Toml)?;
-        let store = expression::StoreExpression::parse(&raw.store)
-            .map_err(ConfigError::Store)?;
+        let store = expression::StoreExpression::parse(&raw.store).map_err(ConfigError::Store)?;
 
         if let Some(exposure) = raw.expose.first() {
             return Err(ConfigError::UnavailableSurface(exposure.surface.clone()));
         }
 
-        Ok(Self { role: raw.role, store })
+        Ok(Self {
+            role: raw.role,
+            store,
+        })
     }
 
     /// Returns the sole process role selected by this invocation.
     pub const fn role(&self) -> Role {
         self.role
+    }
+
+    /// Validates an optional command-line role against the configured role.
+    ///
+    /// Returning the configured role keeps one invocation confined to its
+    /// selected responsibility; command-line arguments cannot broaden it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RoleError::Mismatch`] when the requested role differs from
+    /// the configured role.
+    pub fn select_role(&self, requested: Option<Role>) -> Result<Role, RoleError> {
+        match requested {
+            Some(requested) if requested != self.role => Err(RoleError::Mismatch {
+                configured: self.role,
+                requested,
+            }),
+            _ => Ok(self.role),
+        }
     }
 
     /// Returns the immutable, parsed store-expression tree (ARCH-6).
@@ -105,7 +126,10 @@ impl fmt::Display for ConfigError {
             Self::Toml(error) => write!(formatter, "invalid configuration: {error}"),
             Self::Store(error) => write!(formatter, "invalid store expression: {error}"),
             Self::UnavailableSurface(surface) => {
-                write!(formatter, "surface {surface:?} is unavailable in this build")
+                write!(
+                    formatter,
+                    "surface {surface:?} is unavailable in this build"
+                )
             }
         }
     }
@@ -122,6 +146,7 @@ impl std::error::Error for ConfigError {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -138,6 +163,8 @@ mod tests {
         assert!(Config::parse("role = 'serve'\nstore = 'disk(/tmp)'\nsecret = 'x'").is_err());
 
         let input = "role = 'realize'\nstore = 'disk(/tmp)'\n[[expose]]\nid = 'root'\nview = 'refs/heads/main'\nsurface = 'fuse'\nat = '/tmp/view'\ntoken = 'file:/tmp/token'";
-        assert!(matches!(Config::parse(input), Err(ConfigError::UnavailableSurface(name)) if name == "fuse"));
+        assert!(
+            matches!(Config::parse(input), Err(ConfigError::UnavailableSurface(name)) if name == "fuse")
+        );
     }
 }
