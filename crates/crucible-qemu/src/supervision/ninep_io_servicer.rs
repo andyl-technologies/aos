@@ -42,6 +42,7 @@ const SERVICER_OUTBOX_CAPACITY: u64 = 16;
 
 /// A production host servicer for one live node's `SLOT_9P_IO` rings.
 pub struct QemuLive9pIoServicer {
+    world_binding: Option<super::QemuWorldIoBinding>,
     region: MappedSetupRegion,
     device: NinepDevice,
     tree: FsTree,
@@ -83,12 +84,13 @@ impl QemuLive9pIoServicer {
         execution_binding: ContentHash,
     ) -> Result<Self, QemuLive9pIoServicerError> {
         let checkpoint = self.checkpoint(execution_binding)?;
-        let mut continuation = Self::from_shmem_fd_with_tree(
+        let mut continuation = Self::from_bound_parts(
             shmem_fd,
             region_len,
             checkpoint.vm_slot,
             self.tree.clone(),
             checkpoint.device.latency,
+            self.world_binding.clone(),
         )?;
         continuation.restore_checkpoint(execution_binding, &checkpoint)?;
         Ok(continuation)
@@ -150,10 +152,45 @@ impl QemuLive9pIoServicer {
         tree: FsTree,
         latency: NinepLatency,
     ) -> Result<Self, QemuLive9pIoServicerError> {
+        Self::from_bound_parts(shmem_fd, region_len, vm_slot, tree, latency, None)
+    }
+
+    /// Maps a device queue with its explicit World-derived source identity.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a binding of the wrong device family and the ordinary mapping or
+    /// device-construction failures.
+    pub fn from_shmem_fd_with_tree_and_binding(
+        shmem_fd: BorrowedFd<'_>,
+        region_len: u64,
+        vm_slot: u32,
+        tree: FsTree,
+        latency: NinepLatency,
+        binding: super::QemuWorldIoBinding,
+    ) -> Result<Self, QemuLive9pIoServicerError> {
+        if binding.is_block() {
+            return Err(QemuLive9pIoServicerError::Device {
+                source: DeviceError::InvalidComputedResponse,
+            });
+        }
+        Self::from_bound_parts(shmem_fd, region_len, vm_slot, tree, latency, Some(binding))
+    }
+
+    fn from_bound_parts(
+        shmem_fd: BorrowedFd<'_>,
+        region_len: u64,
+        vm_slot: u32,
+        tree: FsTree,
+        latency: NinepLatency,
+        world_binding: Option<super::QemuWorldIoBinding>,
+    ) -> Result<Self, QemuLive9pIoServicerError> {
         let region = mmap_setup_region(shmem_fd, region_len)
             .map_err(|source| QemuLive9pIoServicerError::MapRegion { source })?;
         let core = IoCore::new(
-            SLOT_9P_IO as u32,
+            world_binding
+                .as_ref()
+                .map_or(SLOT_9P_IO as u32, |binding| binding.source_node()),
             SERVICER_INBOX_CAPACITY,
             SERVICER_OUTBOX_CAPACITY,
         )
@@ -163,6 +200,7 @@ impl QemuLive9pIoServicer {
         };
         let device = NinepDevice::new(core, tree.clone(), latency);
         Ok(Self {
+            world_binding,
             region,
             device,
             tree,
@@ -524,6 +562,7 @@ impl QemuLive9pIoServicer {
             .map_err(DeviceError::from)
             .map_err(|source| QemuLive9pIoServicerError::Device { source })?;
         Ok(QemuLive9pIoServicerCheckpoint {
+            world_binding: self.world_binding.clone(),
             execution_binding,
             tree: self.tree_hash,
             region_header: self.region.header_snapshot(),
@@ -554,10 +593,14 @@ impl QemuLive9pIoServicer {
         expected_execution_binding: ContentHash,
         checkpoint: &QemuLive9pIoServicerCheckpoint,
     ) -> Result<(), QemuLive9pIoServicerError> {
+        if self.world_binding != checkpoint.world_binding {
+            return Err(QemuLive9pIoServicerError::CheckpointTopologyMismatch);
+        }
         if checkpoint.execution_binding != expected_execution_binding {
             return Err(QemuLive9pIoServicerError::CheckpointBindingMismatch);
         }
-        if checkpoint.tree != self.tree_hash
+        if checkpoint.device.core.src_node != self.device.core().snapshot().src_node
+            || checkpoint.tree != self.tree_hash
             || checkpoint.vm_slot != self.vm_slot
             || !same_region_layout(checkpoint.region_header, self.region.header_snapshot())
         {

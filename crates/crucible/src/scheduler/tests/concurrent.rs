@@ -4,10 +4,19 @@ use super::*;
 use crate::AdvanceOutcome;
 use crate::BackendEffect;
 
+#[path = "concurrent/network_output.rs"]
+mod network_output;
+
+#[path = "concurrent/held_stop.rs"]
+mod held_stop;
+
 struct TestConcurrentBackend {
     inner: MockSimulationBackend,
     fail: bool,
     run_sizes: Vec<usize>,
+    run_history: Vec<ConcurrentBackendRun>,
+    network_outputs: BTreeMap<NodeId, std::collections::VecDeque<BackendNetworkOutput>>,
+    retained_dispatch: BTreeMap<NodeId, BackendRunDispatchBoundary>,
 }
 
 impl TestConcurrentBackend {
@@ -16,11 +25,46 @@ impl TestConcurrentBackend {
             inner: MockSimulationBackend::new(),
             fail,
             run_sizes: Vec::new(),
+            run_history: Vec::new(),
+            network_outputs: BTreeMap::new(),
+            retained_dispatch: BTreeMap::new(),
         }
+    }
+
+    fn with_network_output(self, source: &str, emit_tick: u64) -> Self {
+        self.with_network_output_to(source, "z-peer", emit_tick)
+    }
+
+    fn with_network_output_to(mut self, source: &str, destination: &str, emit_tick: u64) -> Self {
+        let node = NodeId {
+            name: source.to_owned(),
+        };
+        let outputs = self.network_outputs.entry(node.clone()).or_default();
+        let sequence = outputs.len() as u64;
+        let mut payload = vec![0_u8; 60];
+        payload[..6].copy_from_slice(&[0xff; 6]);
+        payload[6..12].copy_from_slice(&[0x02, 0, 0, 0, 0, 1]);
+        payload[12..14].copy_from_slice(&[0x08, 0x00]);
+        outputs.push_back(BackendNetworkOutput {
+            source: node,
+            destination: NodeId {
+                name: destination.to_owned(),
+            },
+            emit_icount: Icount { retired: emit_tick },
+            sequence,
+            payload,
+            route: None,
+            fault_continuation: BackendNetworkFaultContinuation::default(),
+        });
+        self
     }
 }
 
 impl SimulationBackend for TestConcurrentBackend {
+    fn io_inventory_authority(&self) -> crate::BackendIoInventoryAuthority {
+        crate::BackendIoInventoryAuthority::SchedulerOwnedModel
+    }
+
     fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
         self.inner.step_to(ceiling)
     }
@@ -48,6 +92,27 @@ impl SimulationBackend for TestConcurrentBackend {
     fn shutdown(&mut self) -> Result<(), BackendError> {
         self.inner.shutdown()
     }
+
+    fn stage_dispatch_boundary_effect(
+        &mut self,
+        boundary: &BackendRunDispatchBoundary,
+        key: &ScheduledEventKey,
+        effect: &BackendEffect,
+        at: VirtualTime,
+    ) -> Result<(), BackendError> {
+        if self.retained_dispatch.get(boundary.admission.node()) != Some(boundary)
+            || at.ticks != boundary.reached.ticks
+        {
+            return Err(BackendError::Rejected {
+                message: String::from("modeled dispatch input changed owner"),
+            });
+        }
+        boundary
+            .admission
+            .validate_input_delivery_coordinate(key, NodeCounter { ticks: at.ticks })?;
+        self.inner
+            .apply_to_node(boundary.admission.node(), effect, at)
+    }
 }
 
 impl ConcurrentSimulationBackend for TestConcurrentBackend {
@@ -55,8 +120,9 @@ impl ConcurrentSimulationBackend for TestConcurrentBackend {
         &mut self,
         runs: Vec<ConcurrentBackendRun>,
         _max_host_workers: usize,
-    ) -> Result<Vec<ConcurrentBackendRunOutcome>, BackendError> {
+    ) -> Result<Vec<ConcurrentBackendRunResult>, BackendError> {
         self.run_sizes.push(runs.len());
+        self.run_history.extend(runs.iter().cloned());
         if self.fail {
             return Err(BackendError::Rejected {
                 message: String::from("injected host worker failure"),
@@ -64,17 +130,78 @@ impl ConcurrentSimulationBackend for TestConcurrentBackend {
         }
         Ok(runs
             .into_iter()
-            .map(|run| ConcurrentBackendRunOutcome {
-                node: run.node,
-                step: StepObservation::from_advance_outcome(
-                    run.ceiling,
-                    AdvanceOutcome::ReachedHorizon,
-                ),
-                rng_evidence: Vec::new(),
-                network_outputs: Vec::new(),
-                observations: Vec::new(),
+            .map(|run| {
+                let node = run.node().clone();
+                let network_outputs = self
+                    .network_outputs
+                    .get_mut(run.node())
+                    .filter(|outputs| {
+                        outputs
+                            .front()
+                            .is_some_and(|output| output.emit_icount.retired <= run.ceiling().ticks)
+                    })
+                    .and_then(std::collections::VecDeque::pop_front)
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                // A TX stops this RUN at its exact emission coordinate.
+                let outcome =
+                    network_outputs
+                        .first()
+                        .map_or(AdvanceOutcome::ReachedHorizon, |output| {
+                            AdvanceOutcome::Paused {
+                                at: output.emit_icount,
+                            }
+                        });
+                let mut step = StepObservation::from_advance_outcome(run.ceiling(), outcome);
+                if !network_outputs.is_empty() {
+                    step.physical_stop = crate::BackendPhysicalStop::NetworkOutput;
+                }
+                if network_outputs.is_empty()
+                    && step.reached.ticks < run.admission.semantic_horizon().icount.retired
+                {
+                    let boundary = BackendRunDispatchBoundary {
+                        reached: NodeCounter {
+                            ticks: step.reached.ticks,
+                        },
+                        admission: run.admission,
+                    };
+                    self.retained_dispatch.insert(node, boundary.clone());
+                    return ConcurrentBackendRunResult::DispatchBoundary(boundary);
+                }
+                step.applied_preemptions = run
+                    .preemptions
+                    .into_iter()
+                    .filter(|command| command.at.ticks <= step.reached.ticks)
+                    .collect();
+                ConcurrentBackendRunResult::Completed(ConcurrentBackendRunOutcome {
+                    node,
+                    step,
+                    rng_evidence: Vec::new(),
+                    network_outputs,
+                    observations: Vec::new(),
+                })
             })
             .collect())
+    }
+
+    fn resume_dispatch_boundary(
+        &mut self,
+        run: ConcurrentBackendRun,
+        boundary: &BackendRunDispatchBoundary,
+    ) -> Result<ConcurrentBackendRunResult, BackendError> {
+        if self.retained_dispatch.get(run.node()) != Some(boundary)
+            || run.admission.context() != boundary.admission.context()
+            || run.admission.control_token() != boundary.admission.control_token()
+            || run.admission.input_inventory().generation()
+                <= boundary.admission.input_inventory().generation()
+        {
+            return Err(BackendError::Rejected {
+                message: String::from("modeled dispatch readmission changed owner"),
+            });
+        }
+        self.retained_dispatch.remove(run.node());
+        let mut results = self.execute_concurrent_runs(vec![run], 1)?;
+        Ok(results.remove(0))
     }
 }
 
@@ -92,7 +219,7 @@ fn concurrent_prepare_is_private_until_canonical_commit() {
             )
         })
         .collect::<Vec<_>>();
-    let mut scheduler = test_scheduler(nodes, Vec::new());
+    let scheduler = test_scheduler(nodes, Vec::new());
     let before_configuration = scheduler.configuration().clone();
     let before_quanta = scheduler.quanta();
     let before_offset = scheduler.event_log().offset();
@@ -101,37 +228,27 @@ fn concurrent_prepare_is_private_until_canonical_commit() {
         control: Vec::new(),
     };
 
-    let serial_prepared = scheduler
-        .prepare_concurrent_quantum(request.clone())
-        .unwrap_or_else(|error| panic!("serial concurrent quantum should prepare: {error}"));
     let prepared = scheduler
-        .prepare_concurrent_quantum(request.clone())
+        .prepare_host_concurrent_quantum_limited(request.clone(), usize::MAX)
         .unwrap_or_else(|error| panic!("concurrent quantum should prepare: {error}"));
 
     assert_eq!(scheduler.configuration(), &before_configuration);
     assert_eq!(scheduler.quanta(), before_quanta);
     assert_eq!(scheduler.event_log().offset(), before_offset);
-    assert_eq!(prepared.run_set().candidates.len(), 2);
-    assert_eq!(serial_prepared.run_set(), prepared.run_set());
-    assert_eq!(serial_prepared.outcomes(), prepared.outcomes());
+    assert_eq!(prepared.run_set.candidates.len(), 2);
+    assert_eq!(prepared.runs.len(), 2);
+    assert_eq!(prepared.next.event_log().offset(), before_offset);
+    assert_eq!(prepared.next.quanta(), before_quanta);
 
     let mut expected = scheduler.clone();
-    let expected_outcome = expected
+    let committed = expected
         .drive_concurrent_authoritative_quantum(request)
         .unwrap_or_else(|error| panic!("reference concurrent quantum should drive: {error}"));
-    let PreparedSchedulerConcurrentQuantum {
-        next,
-        outcome: committed,
-    } = prepared;
-    scheduler = next;
 
-    assert_eq!(committed, expected_outcome);
-    assert_eq!(scheduler.configuration(), expected.configuration());
-    assert_eq!(scheduler.quanta(), expected.quanta());
-    assert_eq!(
-        scheduler.event_log().offset(),
-        expected.event_log().offset()
-    );
+    assert_eq!(committed.run_set, prepared.run_set);
+    assert_eq!(committed.outcomes.len(), prepared.runs.len());
+    assert_eq!(expected.quanta(), before_quanta + 2);
+    assert!(expected.event_log().offset().events > before_offset.events);
 }
 
 #[test]
@@ -155,18 +272,15 @@ fn choice_pause_prepares_only_the_first_canonical_run_before_backend_execution()
     };
 
     let ordinary = scheduler
-        .prepare_concurrent_quantum(request.clone())
+        .prepare_host_concurrent_quantum_limited(request.clone(), usize::MAX)
         .expect("ordinary same-frontier RUN set");
     let paused = scheduler
-        .prepare_concurrent_quantum_limited(request, 1)
+        .prepare_host_concurrent_quantum_limited(request, 1)
         .expect("choice-search RUN set");
 
-    assert_eq!(ordinary.run_set().candidates.len(), 2);
-    assert_eq!(
-        paused.run_set().candidates,
-        ordinary.run_set().candidates[..1]
-    );
-    assert_eq!(paused.outcomes().len(), 1);
+    assert_eq!(ordinary.run_set.candidates.len(), 2);
+    assert_eq!(paused.run_set.candidates, ordinary.run_set.candidates[..1]);
+    assert_eq!(paused.runs.len(), 1);
     assert_eq!(scheduler.quanta(), 0);
 }
 
@@ -251,7 +365,7 @@ fn choice_free_boot_batches_five_peers_then_returns_to_serial_pause() {
             5,
         )
         .expect("post-marker choice pause");
-    assert_eq!(post_marker.backend().run_sizes, vec![1]);
+    assert_eq!(post_marker.backend().run_sizes, vec![1; 5]);
 }
 
 #[test]
@@ -338,6 +452,10 @@ fn concurrent_publication_failure_leaves_logical_state_uncommitted_and_poisons()
     struct InvalidEvidenceBackend(MockSimulationBackend);
 
     impl SimulationBackend for InvalidEvidenceBackend {
+        fn io_inventory_authority(&self) -> crate::BackendIoInventoryAuthority {
+            crate::BackendIoInventoryAuthority::SchedulerOwnedModel
+        }
+
         fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
             self.0.step_to(ceiling)
         }
@@ -372,17 +490,17 @@ fn concurrent_publication_failure_leaves_logical_state_uncommitted_and_poisons()
             &mut self,
             runs: Vec<ConcurrentBackendRun>,
             _max_host_workers: usize,
-        ) -> Result<Vec<ConcurrentBackendRunOutcome>, BackendError> {
+        ) -> Result<Vec<ConcurrentBackendRunResult>, BackendError> {
             Ok(runs
                 .into_iter()
                 .map(|run| ConcurrentBackendRunOutcome {
-                    node: run.node.clone(),
+                    node: run.node().clone(),
                     step: StepObservation::from_advance_outcome(
-                        run.ceiling,
+                        run.ceiling(),
                         AdvanceOutcome::ReachedHorizon,
                     ),
                     rng_evidence: vec![BackendRngEvidence {
-                        node: run.node,
+                        node: run.node().clone(),
                         stream: RngStreamId::from_name("invalid-width"),
                         request_id: 0,
                         width: 65,
@@ -391,6 +509,7 @@ fn concurrent_publication_failure_leaves_logical_state_uncommitted_and_poisons()
                     network_outputs: Vec::new(),
                     observations: Vec::new(),
                 })
+                .map(ConcurrentBackendRunResult::Completed)
                 .collect())
         }
     }

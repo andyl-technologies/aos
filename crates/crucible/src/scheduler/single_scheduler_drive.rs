@@ -761,9 +761,14 @@ impl SingleScheduler {
             wake_time = min_instant(wake_time, cap);
         }
 
+        let native_bounded = self
+            .imported_native_boundary(&node.id.node)
+            .map(|boundary| self.node_time_for_counter(node, boundary))
+            .transpose()?
+            .is_some_and(|deadline| deadline == wake_time);
         Ok(EffectiveHorizonProjection::Finite {
             target_time: wake_time,
-            quiescent_horizon: Some(wake_time),
+            quiescent_horizon: (!native_bounded).then_some(wake_time),
             conservative_dependency: None,
             icount_rounding,
         })
@@ -892,6 +897,13 @@ impl SingleScheduler {
             }
         }
 
+        if let Some(boundary) = self.imported_native_boundary(&node.id.node) {
+            merge_idle_wake_target(
+                &mut target,
+                self.node_time_for_counter(node, boundary)?,
+                SchedulerIcountRounding::ConservativeFloor,
+            );
+        }
         Ok(target)
     }
 
@@ -910,8 +922,11 @@ impl SingleScheduler {
         topology_activation_cap: Option<SimInstant>,
     ) -> Result<AdvanceWindow, SchedulerError> {
         let exact_local_event = self.effective_exact_local_event(node)?;
-        let horizon =
-            horizon_from_network_lookahead(current_time, node.network_lookahead, exact_local_event);
+        let horizon = horizon_from_network_lookahead(
+            current_time,
+            node.network_lookahead,
+            exact_local_event.clone(),
+        );
         let finite_horizon = horizon.virtual_time().unwrap_or(self.time_limit);
         let mut icount_rounding = horizon
             .virtual_time()
@@ -933,6 +948,17 @@ impl SingleScheduler {
                 icount_rounding = SchedulerIcountRounding::ConservativeFloor;
             }
             requested_target = min_instant(requested_target, cap);
+        }
+        // Native event bounds join the actual mapping before conservative
+        // authorization; a later dependency must not block an earlier timer.
+        let native_time = self
+            .imported_native_boundary(&node.id.node)
+            .map(|boundary| self.node_time_for_counter(node, boundary))
+            .transpose()?;
+        let native_bounded = native_time.is_some_and(|deadline| deadline <= requested_target);
+        if let Some(deadline) = native_time.filter(|deadline| *deadline <= requested_target) {
+            requested_target = deadline;
+            icount_rounding = SchedulerIcountRounding::ConservativeFloor;
         }
         let authorization = authorize_conservative_advance(
             &node.id,
@@ -960,6 +986,74 @@ impl SingleScheduler {
             }
         }
 
+        let mut pipeline_bounded = false;
+        if let Some(boundary) = self.imported_pipeline_boundary(&node.id.node) {
+            let pipeline_time = self.node_time_for_counter(node, boundary)?;
+            if pipeline_time <= target_time {
+                target_time = pipeline_time;
+                icount_rounding = SchedulerIcountRounding::ConservativeFloor;
+                pipeline_bounded = true;
+            }
+        }
+
+        // A moving topology lookahead limits this physical wave. It does not
+        // replace the original RUN authorization. Every factual local/input
+        // deadline and authored control bound still limits semantic ownership.
+        let mut semantic_target_time = exact_local_event.virtual_time().unwrap_or(self.time_limit);
+        let mut semantic_icount_rounding = if exact_local_event.virtual_time().is_some() {
+            horizon_source_icount_rounding(exact_local_event_horizon_source(&exact_local_event))
+        } else {
+            SchedulerIcountRounding::ConservativeFloor
+        };
+        if self.time_limit <= semantic_target_time {
+            semantic_target_time = self.time_limit;
+            semantic_icount_rounding = SchedulerIcountRounding::ConservativeFloor;
+        }
+        if self.effective_topology.edges().is_empty()
+            && let NetworkLookahead::Finite(duration) = node.network_lookahead
+        {
+            let fixed_target = current_time + duration;
+            if fixed_target <= semantic_target_time {
+                semantic_target_time = fixed_target;
+                semantic_icount_rounding = SchedulerIcountRounding::ConservativeFloor;
+            }
+        }
+        if let Some(cap) = rendezvous_cap
+            && cap <= semantic_target_time
+        {
+            semantic_target_time = cap;
+            semantic_icount_rounding = SchedulerIcountRounding::ConservativeFloor;
+        }
+        if let Some(cap) = topology_activation_cap
+            && cap <= semantic_target_time
+        {
+            semantic_target_time = cap;
+            semantic_icount_rounding = SchedulerIcountRounding::ConservativeFloor;
+        }
+        if let Some(deadline) = native_time.filter(|deadline| *deadline <= semantic_target_time) {
+            semantic_target_time = deadline;
+            semantic_icount_rounding = SchedulerIcountRounding::ConservativeFloor;
+        }
+        let semantic_authorization = authorize_conservative_advance(
+            &node.id,
+            current_time,
+            semantic_target_time,
+            &self.pending_events,
+        )?;
+        if semantic_authorization.authorized_target < semantic_target_time {
+            semantic_target_time = semantic_authorization.authorized_target;
+            semantic_icount_rounding = SchedulerIcountRounding::ConservativeFloor;
+        }
+        for event in &self.pending_events {
+            let event_time = SimInstant {
+                ticks: event.key.virtual_time().ticks,
+            };
+            if event.key.consumer() == &node.id && event_time <= semantic_target_time {
+                semantic_target_time = event_time;
+                semantic_icount_rounding = SchedulerIcountRounding::ConservativeFloor;
+            }
+        }
+
         let mut quiescent_horizon = horizon.virtual_time();
         // A node bound by the conservative network-lookahead term *derived from a
         // live effective topology* is held at a *moving* cap (`vt(n) +
@@ -983,7 +1077,7 @@ impl SingleScheduler {
         // retained.
         let network_bounded = !self.effective_topology.edges().is_empty()
             && horizon.source == SchedulerHorizonSource::NetworkLookahead;
-        if network_bounded {
+        if network_bounded || pipeline_bounded || native_bounded {
             quiescent_horizon = None;
         }
         if let (Some(horizon_time), Some(activation_time)) =
@@ -996,6 +1090,8 @@ impl SingleScheduler {
 
         Ok(AdvanceWindow {
             target_time,
+            semantic_target_time,
+            semantic_icount_rounding,
             quiescent_horizon,
             conservative_dependency,
             icount_rounding,
@@ -1018,8 +1114,21 @@ impl SingleScheduler {
             });
         }
 
+        let sequence = u64::try_from(self.ceiling_publications.len()).map_err(|_| {
+            SchedulerError::BoundaryViolation {
+                message: String::from("RUN publication table exceeds its sequence width"),
+            }
+        })?;
+        // A publication also mints its one-based admission revision. Refuse
+        // exhaustion before publishing any planner state.
+        let _revision =
+            sequence
+                .checked_add(1)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from("RUN publication revision is exhausted"),
+                })?;
         let publication = SchedulerRunCeilingPublication {
-            sequence: self.ceiling_publications.len() as u64,
+            sequence,
             quantum: self.quanta,
             node,
             current_icount,
@@ -1077,6 +1186,22 @@ impl SingleScheduler {
         current_icount: NodeCounter,
         ceiling: &SchedulerRunCeilingPublication,
     ) -> Result<Vec<PlannedPreemptionApplication>, SchedulerError> {
+        self.planned_preemptions_for_authorized_run(
+            node,
+            current_icount,
+            ceiling,
+            ceiling.max_advance_icount,
+        )
+    }
+
+    /// Keeps commands beyond an artificial catch-up cap pending within their natural RUN.
+    pub(super) fn planned_preemptions_for_authorized_run(
+        &self,
+        node: &SchedulerNodeId,
+        current_icount: NodeCounter,
+        ceiling: &SchedulerRunCeilingPublication,
+        authorized_horizon: u64,
+    ) -> Result<Vec<PlannedPreemptionApplication>, SchedulerError> {
         let Some(runtime_node) = self.nodes.iter().find(|runtime| &runtime.id == node) else {
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
@@ -1110,17 +1235,20 @@ impl SingleScheduler {
 
         let mut planned = Vec::with_capacity(decisions.len());
         for decision in decisions {
-            if decision.at < deadline_tick || decision.at > horizon_tick {
+            if decision.at < deadline_tick || decision.at.ticks > authorized_horizon {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
                         "explorer preemption for {} outside authorized window: at={} deadline={} horizon={} ceiling={}",
                         decision.node.name,
                         decision.at.ticks,
                         deadline_tick.ticks,
-                        horizon_tick.ticks,
+                        authorized_horizon,
                         ceiling.max_advance_icount
                     ),
                 });
+            }
+            if decision.at > horizon_tick {
+                continue;
             }
             let virtual_time = self.node_time_for_counter(
                 runtime_node,
@@ -1252,74 +1380,46 @@ impl SingleScheduler {
         request: QuantumRequest,
         maximum_runs: usize,
     ) -> Result<SchedulerConcurrentQuantumOutcome, SchedulerError> {
-        if request.configuration != self.configuration {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "quantum request configuration is not the scheduler frontier",
-                ),
-            });
-        }
+        let PreparedHostConcurrentQuantum {
+            next: mut staged,
+            run_set,
+            runs,
+            mut boundary_events,
+            mut control_applications,
+            topology_recomputed,
+        } = self.prepare_host_concurrent_quantum_limited(request, maximum_runs)?;
 
-        self.last_advance = None;
-        self.last_topology_recompute = false;
-
-        // Fold each device sub-node's in-flight head into its target node's exact
-        // I/O-completion horizon term BEFORE PICK, so a requester's horizon is the
-        // device's real next completion ([IO-3], [SCHED-10]).
-        self.refresh_device_horizons()?;
-
-        self.admit_control_at_boundary(request.control);
-        let SchedulerControlDrain {
-            events: mut boundary_resolved_events,
-            applications: mut boundary_control_applications,
-        } = self.drain_control_events()?;
-        let topology_recomputed = self.apply_topology_changes_at_boundary()?;
-        self.last_topology_recompute = topology_recomputed;
-
-        let candidates = self.advance_candidates()?;
-        let mut run_set = self.concurrent_run_set_from_candidates(&candidates)?;
-        run_set.candidates.truncate(maximum_runs.max(1));
-        let selected_candidates = candidates
-            .into_iter()
-            .filter(|candidate| {
-                run_set
-                    .candidates
-                    .iter()
-                    .any(|run| run.node == self.nodes[candidate.index].id)
-            })
-            .collect::<Vec<_>>();
-
-        if selected_candidates.is_empty() {
-            let clock_advanced = boundary_resolved_events.is_empty()
+        if runs.is_empty() {
+            let clock_advanced = boundary_events.is_empty()
                 && !topology_recomputed
-                && self.advance_inactive_clock();
+                && staged.advance_inactive_clock();
             let at = SimInstant {
-                ticks: self.frontier.ticks,
+                ticks: staged.frontier.ticks,
             };
-            let decisions = self.emit_quantum_decisions(&boundary_resolved_events, &[], &[], at)?;
+            let decisions = staged.emit_quantum_decisions(&boundary_events, &[], &[], at)?;
             let emit_boundary = !decisions.is_empty() || topology_recomputed || clock_advanced;
-            let event_log = self.emit_quantum_event_log(
-                &boundary_resolved_events,
+            let event_log = staged.emit_quantum_event_log(
+                &boundary_events,
                 &decisions,
                 &[],
                 at,
                 emit_boundary,
             )?;
-            let configuration = self.step_quantum(&decisions)?;
+            let configuration = staged.step_quantum(&decisions)?;
             if !decisions.is_empty() {
-                self.configuration = configuration.clone();
-                self.quanta = self.quanta.saturating_add(1);
-                self.yield_to_control_inbox();
+                staged.configuration = configuration.clone();
+                staged.quanta = staged.quanta.saturating_add(1);
+                staged.yield_to_control_inbox();
             } else if topology_recomputed || clock_advanced {
-                self.quanta = self.quanta.saturating_add(1);
-                self.yield_to_control_inbox();
+                staged.quanta = staged.quanta.saturating_add(1);
+                staged.yield_to_control_inbox();
             }
-            self.commit_control_applications(boundary_control_applications);
+            staged.commit_control_applications(control_applications);
             let outcome = QuantumOutcome {
                 configuration,
-                frontier: self.frontier,
+                frontier: staged.frontier,
                 advanced_node: None,
-                resolved_events: boundary_resolved_events,
+                resolved_events: boundary_events,
                 decisions,
                 discovered_choices: Vec::new(),
                 event_log_entries: event_log.entries,
@@ -1327,128 +1427,176 @@ impl SingleScheduler {
                 event_log_segment_text: event_log.segment_text,
                 event_log_segment_hash: event_log.segment_hash,
                 event_log_offset: event_log.offset,
-                scheduler_quiescence: Some(self.quiescence()?),
+                scheduler_quiescence: Some(staged.quiescence()?),
             };
+            *self = staged;
             return Ok(SchedulerConcurrentQuantumOutcome {
                 run_set,
                 outcomes: vec![outcome],
             });
         }
 
-        let mut plans = Vec::with_capacity(selected_candidates.len());
-        for candidate in selected_candidates {
-            let plan = {
-                let critical_section = SchedulerCriticalSection::enter(self);
-                critical_section.advance_plan(candidate)?
-            };
-            plans.push(plan);
-        }
-
-        let plan_preemptions = plans
-            .iter()
-            .map(|plan| self.planned_preemptions_for_run(&plan.node, plan.before, &plan.ceiling))
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut ordered_plans = plans
+        let mut ordered_runs = runs
             .into_iter()
-            .zip(plan_preemptions)
             .enumerate()
-            .map(|(index, (plan, preemptions))| {
+            .map(|(index, run)| {
                 Ok((
-                    concurrent_completion_order_key(&plan, &preemptions)?,
+                    concurrent_completion_order_key(&run.plan, &run.preemptions)?,
                     index,
-                    plan,
-                    preemptions,
+                    run,
                 ))
             })
             .collect::<Result<Vec<_>, SchedulerError>>()?;
-        ordered_plans.sort_by(|left, right| {
+        ordered_runs.sort_by(|left, right| {
             left.0
                 .ticks
                 .cmp(&right.0.ticks)
                 .then_with(|| left.1.cmp(&right.1))
         });
 
-        let mut outcomes = Vec::with_capacity(ordered_plans.len());
-        for (_, _, plan, preemptions) in ordered_plans {
-            let selected_node = plan.node.clone();
-            let before = plan.before;
-            let (after, after_time, yielded_before_advance) =
-                self.advance_node_after_yield(&plan)?;
-            let mut resolved_events = if outcomes.is_empty() {
-                std::mem::take(&mut boundary_resolved_events)
-            } else {
-                Vec::new()
-            };
-            let control_applications = if outcomes.is_empty() {
-                std::mem::take(&mut boundary_control_applications)
-            } else {
-                Vec::new()
-            };
-            let frame_deliveries =
-                resolve_due_scheduled_events(&mut self.pending_events, &selected_node, after_time)?;
-
-            // Device I/O completions are cross-node events too: drain each
-            // targeting sub-node's due completions at the exact delivery icount
-            // ([SCHED-29]), minting their sequence from the owned counter on the
-            // LIVE RESOLVE path ([SCHED-18]), and append the fault decisions they
-            // drew ([SCHED-30]).
-            let (device_events, device_decisions) =
-                self.resolve_device_completions(&selected_node, after.ticks)?;
-            // Order (frame ++ device) deliveries together by the §8.6 key, keeping
-            // the control/boundary events prefixed exactly as the no-device path
-            // does ([SCHED-33]).
-            resolved_events.extend(merge_node_deliveries(frame_deliveries, device_events));
-
-            let decisions = self.emit_quantum_decisions(
-                &resolved_events,
-                &preemptions,
-                &device_decisions,
-                after_time,
-            )?;
-            let event_log = self.emit_quantum_event_log(
-                &resolved_events,
-                &decisions,
-                &preemptions,
-                after_time,
-                true,
-            )?;
-            let configuration = self.step_quantum(&decisions)?;
-            let frontier = frontier_for(&self.nodes, Some(self.frontier))?;
-
-            self.configuration = configuration.clone();
-            self.frontier = frontier;
-            self.quanta = self.quanta.saturating_add(1);
-            self.last_advance = Some(NodeAdvance {
-                node: selected_node.clone(),
-                before,
-                after,
-                ceiling: plan.ceiling.clone(),
-                yielded_before_advance,
-            });
-            self.yield_to_control_inbox();
-            self.commit_control_applications(control_applications);
-            if let Some(subdivision) = plan.subdivision {
-                self.record_run_subdivision(subdivision, plan.ceiling.clone());
-            }
-            self.commit_preemption_applications(preemptions);
-
-            outcomes.push(QuantumOutcome {
-                configuration,
-                frontier: self.frontier,
-                advanced_node: Some(selected_node),
-                resolved_events,
-                decisions,
-                discovered_choices: Vec::new(),
-                event_log_entries: event_log.entries,
-                event_log_segment_bytes: event_log.segment_bytes,
-                event_log_segment_text: event_log.segment_text,
-                event_log_segment_hash: event_log.segment_hash,
-                event_log_offset: event_log.offset,
-                scheduler_quiescence: Some(self.quiescence()?),
-            });
+        let mut outcomes = Vec::with_capacity(ordered_runs.len());
+        for (index, (_, _, run)) in ordered_runs.into_iter().enumerate() {
+            let reached = run.plan.ceiling.max_advance_icount;
+            let applied_preemptions = run
+                .preemptions
+                .iter()
+                .map(|application| application.decision.clone())
+                .collect::<Vec<_>>();
+            outcomes.push(staged.commit_prepared_host_run(
+                run,
+                reached,
+                &applied_preemptions,
+                if index == 0 {
+                    std::mem::take(&mut boundary_events)
+                } else {
+                    Vec::new()
+                },
+                if index == 0 {
+                    std::mem::take(&mut control_applications)
+                } else {
+                    Vec::new()
+                },
+            )?);
         }
 
+        *self = staged;
         Ok(SchedulerConcurrentQuantumOutcome { run_set, outcomes })
+    }
+
+    /// Commits one physically completed host RUN before later RUNs can emit.
+    pub(super) fn commit_prepared_host_run(
+        &mut self,
+        mut run: PreparedHostRun,
+        reached: u64,
+        applied_preemptions: &[PreemptionDecision],
+        mut boundary_events: Vec<ScheduledEvent>,
+        control_applications: Vec<SchedulerControlApplication>,
+    ) -> Result<QuantumOutcome, SchedulerError> {
+        if reached < run.plan.before.ticks || reached > run.plan.ceiling.max_advance_icount {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "host RUN for `{}` reached {} outside published window {}..={}",
+                    run.plan.node.node.name,
+                    reached,
+                    run.plan.before.ticks,
+                    run.plan.ceiling.max_advance_icount,
+                ),
+            });
+        }
+        let reached_time = self
+            .node_time_for_counter(&self.nodes[run.plan.index], NodeCounter { ticks: reached })?;
+        if applied_preemptions
+            .iter()
+            .enumerate()
+            .any(|(index, decision)| {
+                decision.at.ticks > reached
+                    || applied_preemptions[..index].contains(decision)
+                    || !run
+                        .preemptions
+                        .iter()
+                        .any(|planned| &planned.decision == decision)
+            })
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "native preemption acknowledgement exceeds the prepared RUN authorization",
+                ),
+            });
+        }
+        run.preemptions
+            .retain(|preemption| applied_preemptions.contains(&preemption.decision));
+        if reached != run.plan.target_counter {
+            run.plan.subdivision =
+                self.planned_run_subdivision(&run.plan.node, run.plan.before, reached)?;
+            run.plan.target_counter = reached;
+            run.plan.projected_target_time = reached_time;
+        }
+
+        let selected_node = run.plan.node.clone();
+        let before = run.plan.before;
+        let (after, after_time, yielded_before_advance) =
+            self.advance_node_after_yield(&run.plan)?;
+        let frame_deliveries =
+            resolve_due_scheduled_events(&mut self.pending_events, &selected_node, after_time)?;
+        let (device_events, mut device_decisions) =
+            self.resolve_device_completions(&selected_node, after.ticks)?;
+        boundary_events.extend(
+            self.settled_fixed_input_events
+                .iter()
+                .filter(|event| event.key.consumer() == &selected_node)
+                .cloned(),
+        );
+        boundary_events.extend(run.staged_input_events);
+        boundary_events.extend(merge_node_deliveries(frame_deliveries, device_events));
+        device_decisions.extend(run.staged_device_decisions);
+
+        let decisions = self.emit_quantum_decisions(
+            &boundary_events,
+            &run.preemptions,
+            &device_decisions,
+            after_time,
+        )?;
+        let event_log = self.emit_quantum_event_log(
+            &boundary_events,
+            &decisions,
+            &run.preemptions,
+            after_time,
+            true,
+        )?;
+        let configuration = self.step_quantum(&decisions)?;
+        self.configuration = configuration.clone();
+        self.settled_fixed_input_events
+            .retain(|event| event.key.consumer() != &selected_node);
+        self.frontier = frontier_for(&self.nodes, Some(self.frontier))?;
+        self.quanta = self.quanta.saturating_add(1);
+        self.last_advance = Some(NodeAdvance {
+            node: selected_node.clone(),
+            before,
+            after,
+            ceiling: run.plan.ceiling.clone(),
+            yielded_before_advance,
+        });
+        self.yield_to_control_inbox();
+        self.commit_control_applications(control_applications);
+        if let Some(subdivision) = run.plan.subdivision {
+            self.record_run_subdivision(subdivision, run.plan.ceiling.clone());
+        }
+        self.commit_preemption_applications(run.preemptions);
+
+        Ok(QuantumOutcome {
+            configuration,
+            frontier: self.frontier,
+            advanced_node: Some(selected_node),
+            resolved_events: boundary_events,
+            decisions,
+            discovered_choices: Vec::new(),
+            event_log_entries: event_log.entries,
+            event_log_segment_bytes: event_log.segment_bytes,
+            event_log_segment_text: event_log.segment_text,
+            event_log_segment_hash: event_log.segment_hash,
+            event_log_offset: event_log.offset,
+            scheduler_quiescence: Some(self.quiescence()?),
+        })
     }
 
     pub(super) fn drive_authoritative_quantum(
@@ -1853,12 +2001,15 @@ impl SingleScheduler {
                 message: String::from("scheduler lock spans node advance"),
             });
         }
-        if plan.ceiling.max_advance_icount != plan.target_counter {
+        if plan.target_counter < plan.before.ticks
+            || plan.target_counter > plan.ceiling.max_advance_icount
+        {
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
-                    "RUN target for {}:{:?} diverged from published max-advance ceiling: target={} ceiling={}",
+                    "RUN endpoint for {}:{:?} is outside its published window: before={} reached={} ceiling={}",
                     plan.node.node.name,
                     plan.node.kind,
+                    plan.before.ticks,
                     plan.target_counter,
                     plan.ceiling.max_advance_icount
                 ),

@@ -203,6 +203,12 @@ fn io_event_at_virtual_time(
             delivery_tick: crucible::SimInstant {
                 ticks: delivery_tick,
             },
+            // This explicit model key is evidence only, never physical authority.
+            source_delivery: crucible_device::FrameDeliveryKey {
+                delivery_icount: delivery_tick,
+                src_node: 37,
+                seq: 11,
+            },
             payload: payload.to_vec(),
         }),
     }

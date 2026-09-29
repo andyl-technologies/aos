@@ -35,13 +35,14 @@ fn host_io_checkpoint_codec_round_trips_device_free_state() {
             ..
         })
     ));
-    let mut unsupported_version = bytes;
-    unsupported_version[..b"crucible.qemu-host-io-checkpoint.v5\0".len()]
-        .copy_from_slice(b"crucible.qemu-host-io-checkpoint.v4\0");
-    assert_eq!(
-        QemuHostIoCheckpoint::from_canonical_bytes(&unsupported_version, binding),
-        Err(QemuHostIoCheckpointCodecError::Version)
-    );
+    for version in *b"45" {
+        let mut unsupported_version = bytes.clone();
+        unsupported_version[b"crucible.qemu-host-io-checkpoint.v".len()] = version;
+        assert_eq!(
+            QemuHostIoCheckpoint::from_canonical_bytes(&unsupported_version, binding),
+            Err(QemuHostIoCheckpointCodecError::Version),
+        );
+    }
 }
 
 #[test]
@@ -59,6 +60,7 @@ fn host_io_checkpoint_codec_round_trips_block_state() {
     let checkpoint = QemuHostIoCheckpoint {
         execution_binding: binding,
         block: Some(QemuLiveBlockIoServicerCheckpoint {
+            world_binding: None,
             execution_binding: binding,
             storage_device: Some(ContentHash::from_bytes(b"storage identity")),
             region_header,
@@ -110,6 +112,7 @@ fn device_continuation_comparison_allows_only_coherent_owner_rebinding() {
     let source = QemuHostIoCheckpoint {
         execution_binding: source_binding,
         block: Some(QemuLiveBlockIoServicerCheckpoint {
+            world_binding: None,
             execution_binding: source_binding,
             storage_device: Some(ContentHash::from_bytes(b"storage identity")),
             region_header,
@@ -122,6 +125,7 @@ fn device_continuation_comparison_allows_only_coherent_owner_rebinding() {
             frames_delivered: 3,
         }),
         ninep: Some(QemuLive9pIoServicerCheckpoint {
+            world_binding: None,
             execution_binding: source_binding,
             tree: ContentHash::from_bytes(b"tree identity"),
             region_header,

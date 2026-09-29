@@ -433,6 +433,16 @@ pub struct SingleScheduler {
     pub(super) control_admissions: Vec<SchedulerControlAdmission>,
     pub(super) control_applications: Vec<SchedulerControlApplication>,
     pub(super) pending_events: Vec<ScheduledEvent>,
+    /// Physical queue origins and canonical publication history retained for replay.
+    pub(super) imported_io: BTreeMap<NodeId, super::io_inventory::ImportedIoNode>,
+    /// Exact immutable World used by the production device instantiation owner.
+    pub(super) inventory_world: Option<Arc<World>>,
+    /// Checked actor issuance sequence for nonexecution fixed-input owners.
+    pub(super) fixed_input_generation: u64,
+    /// Snapshot veto while a real backend may owe fixed-input publication.
+    pub(super) fixed_input_in_progress: bool,
+    /// Settled canonical inputs awaiting their original semantic event commit.
+    pub(super) settled_fixed_input_events: Vec<ScheduledEvent>,
     pub(super) event_sequences: EventSequenceState,
     /// Exact-completion I/O scheduling sub-nodes (disk/9p) keyed by target VM.
     ///

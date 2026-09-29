@@ -43,6 +43,7 @@ impl SingleScheduler {
     ) -> Result<Self, SchedulerWorldInstantiationError> {
         let seed = scenario.configuration.def.seed();
         let mut scheduler = Self::new(scenario.with_world(world))?;
+        scheduler.inventory_world = Some(Arc::new(world.clone()));
         let expected = scheduler
             .world_scheduling_nodes
             .iter()
@@ -159,6 +160,11 @@ impl SingleScheduler {
             control_admissions: Vec::new(),
             control_applications: Vec::new(),
             pending_events: scenario.pending_events,
+            imported_io: BTreeMap::new(),
+            inventory_world: None,
+            fixed_input_generation: 0,
+            fixed_input_in_progress: false,
+            settled_fixed_input_events: Vec::new(),
             event_sequences: scenario.event_sequences,
             device_sub_nodes: BTreeMap::new(),
             world_network_links: BTreeMap::new(),
@@ -722,7 +728,7 @@ impl SingleScheduler {
                 self.project_device_decisions_for_vm_time(&node.node, delivery.decisions)?;
             decisions.extend(completion_decisions);
 
-            let Some(completion) = delivery.completion else {
+            let Some(mut completion) = delivery.completion else {
                 continue;
             };
             let producer = completion.sub_node.clone();
@@ -754,6 +760,7 @@ impl SingleScheduler {
                     ticks: stamp_icount,
                 },
             )?;
+            completion.delivery_tick = instant;
             let key = ScheduledEventKey::new(
                 SharedTimelineKey {
                     virtual_time: instant,
@@ -768,7 +775,12 @@ impl SingleScheduler {
             });
         }
 
-        let consumer_time = self.node_current_time(&self.nodes[self.vm_node_index(&node.node)?])?;
+        let consumer_time = self.node_time_for_counter(
+            &self.nodes[self.vm_node_index(&node.node)?],
+            NodeCounter {
+                ticks: consumer_icount,
+            },
+        )?;
         let network_consumer_tick = self.network_tick_for_time(consumer_time);
         let mut network_due = Vec::new();
         for runtime in self

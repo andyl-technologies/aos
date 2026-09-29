@@ -371,3 +371,6 @@ pub use supervision::{
     parse_qemu_runtime_determinism_trace, run_qemu_live_hot_fork_child_gate,
     run_qemu_live_hot_fork_child_stress_gate,
 };
+
+/// World-derived device producer identity retained by live I/O queues.
+pub use supervision::QemuWorldIoBinding;

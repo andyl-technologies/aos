@@ -620,7 +620,11 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         };
         if let Some(block) = block {
             if restored_service_state != Some(ProductionNodeServiceState::PermanentlyFailed) {
-                launch = launch.with_shmem_block(block.base.clone(), block.durability.clone());
+                launch = launch.with_world_shmem_block(
+                    block.queue_binding.clone(),
+                    block.base.clone(),
+                    block.durability.clone(),
+                );
             }
             block_bindings.insert(vm.id.clone(), block);
         }
@@ -631,7 +635,11 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         };
         if let Some(ninep) = ninep {
             if restored_service_state != Some(ProductionNodeServiceState::PermanentlyFailed) {
-                launch = launch.with_shmem_ninep(ninep.tree.clone(), ninep.latency);
+                launch = launch.with_world_shmem_ninep(
+                    ninep.queue_binding.clone(),
+                    ninep.tree.clone(),
+                    ninep.latency,
+                );
             }
             ninep_bindings.insert(vm.id.clone(), ninep);
         }

@@ -171,6 +171,7 @@ pub struct QemuLiveNodeStepGateConfig {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct QemuLiveNodeStepBlockConfig {
+    world_binding: Option<super::QemuWorldIoBinding>,
     base: BaseImage,
     durability: BlockDurabilityConfig,
     latency: BlockLatency,
@@ -179,6 +180,7 @@ struct QemuLiveNodeStepBlockConfig {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct QemuLiveNodeStepNinepConfig {
+    world_binding: Option<super::QemuWorldIoBinding>,
     tree: FsTree,
     latency: NinepLatency,
 }
@@ -547,6 +549,7 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub fn with_shmem_block(mut self, base: BaseImage, durability: BlockDurabilityConfig) -> Self {
         self.shmem_block = Some(QemuLiveNodeStepBlockConfig {
+            world_binding: None,
             base,
             durability,
             latency: BlockLatency::default(),
@@ -566,6 +569,7 @@ impl QemuLiveNodeStepGateConfig {
         durability: BlockDurabilityConfig,
     ) -> Self {
         self.shmem_block = Some(QemuLiveNodeStepBlockConfig {
+            world_binding: None,
             base,
             durability,
             latency: BlockLatency::default(),
@@ -577,7 +581,41 @@ impl QemuLiveNodeStepGateConfig {
     /// Returns this configuration with one World-backed shared-memory 9p device.
     #[must_use]
     pub fn with_shmem_ninep(mut self, tree: FsTree, latency: NinepLatency) -> Self {
-        self.shmem_ninep = Some(QemuLiveNodeStepNinepConfig { tree, latency });
+        self.shmem_ninep = Some(QemuLiveNodeStepNinepConfig {
+            world_binding: None,
+            tree,
+            latency,
+        });
+        self
+    }
+
+    /// Retains the actual World binding for the configured block queue.
+    #[must_use]
+    pub fn with_world_shmem_block(
+        mut self,
+        binding: super::QemuWorldIoBinding,
+        base: BaseImage,
+        durability: BlockDurabilityConfig,
+    ) -> Self {
+        self = self.with_shmem_block(base, durability);
+        if let Some(block) = &mut self.shmem_block {
+            block.world_binding = Some(binding);
+        }
+        self
+    }
+
+    /// Retains the actual World binding for the configured 9p queue.
+    #[must_use]
+    pub fn with_world_shmem_ninep(
+        mut self,
+        binding: super::QemuWorldIoBinding,
+        tree: FsTree,
+        latency: NinepLatency,
+    ) -> Self {
+        self = self.with_shmem_ninep(tree, latency);
+        if let Some(ninep) = &mut self.shmem_ninep {
+            ninep.world_binding = Some(binding);
+        }
         self
     }
 
@@ -1306,12 +1344,23 @@ fn build_live_node_with_authority(
     };
     let mut block_servicer = if let Some(block) = &config.shmem_block {
         let mut servicer = launch_try!(
-            QemuLiveBlockIoServicer::from_shmem_fd_with_base(
-                setup.shmem_as_fd(),
-                setup.region().region_len,
-                GATE_SLOT,
-                block.base.clone(),
-            )
+            match &block.world_binding {
+                Some(binding) =>
+                    QemuLiveBlockIoServicer::from_shmem_fd_with_base_and_latency_and_binding(
+                        setup.shmem_as_fd(),
+                        setup.region().region_len,
+                        GATE_SLOT,
+                        block.base.clone(),
+                        BlockLatency::default(),
+                        binding.clone(),
+                    ),
+                None => QemuLiveBlockIoServicer::from_shmem_fd_with_base(
+                    setup.shmem_as_fd(),
+                    setup.region().region_len,
+                    GATE_SLOT,
+                    block.base.clone(),
+                ),
+            }
             .map_err(|source| QemuLiveNodeStepGateError::BlockServicer { source })
         );
         launch_try!(
@@ -1328,13 +1377,23 @@ fn build_live_node_with_authority(
             .shmem_ninep
             .as_ref()
             .map(|ninep| {
-                QemuLive9pIoServicer::from_shmem_fd_with_tree(
-                    setup.shmem_as_fd(),
-                    setup.region().region_len,
-                    GATE_SLOT,
-                    ninep.tree.clone(),
-                    ninep.latency,
-                )
+                match &ninep.world_binding {
+                    Some(binding) => QemuLive9pIoServicer::from_shmem_fd_with_tree_and_binding(
+                        setup.shmem_as_fd(),
+                        setup.region().region_len,
+                        GATE_SLOT,
+                        ninep.tree.clone(),
+                        ninep.latency,
+                        binding.clone(),
+                    ),
+                    None => QemuLive9pIoServicer::from_shmem_fd_with_tree(
+                        setup.shmem_as_fd(),
+                        setup.region().region_len,
+                        GATE_SLOT,
+                        ninep.tree.clone(),
+                        ninep.latency,
+                    ),
+                }
             })
             .transpose()
             .map_err(|source| QemuLiveNodeStepGateError::NinepServicer { source })

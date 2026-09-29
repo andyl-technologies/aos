@@ -5,6 +5,8 @@ use super::*;
 /// Authenticated World material retained for launch and coordinator binding.
 #[derive(Clone)]
 pub(in crate::vm_lifecycle) struct ProductionBlockBinding {
+    /// Canonical logical device identity and producer retained by the live queue.
+    pub(in crate::vm_lifecycle) queue_binding: crucible_qemu::QemuWorldIoBinding,
     /// Immutable base image passed to the live servicer.
     pub(in crate::vm_lifecycle) base: BaseImage,
     /// Complete World durability contract.
@@ -24,6 +26,8 @@ impl ProductionBlockBinding {
 /// Authenticated World material retained for one production 9p device.
 #[derive(Clone)]
 pub(in crate::vm_lifecycle) struct ProductionNinepBinding {
+    /// Canonical logical device identity and producer retained by the live queue.
+    pub(in crate::vm_lifecycle) queue_binding: crucible_qemu::QemuWorldIoBinding,
     /// Immutable filesystem tree passed to the live servicer.
     pub(in crate::vm_lifecycle) tree: FsTree,
     /// Deterministic World-declared latency model.
@@ -90,6 +94,8 @@ pub(in crate::vm_lifecycle) fn block_binding_for_vm(
         ))
     })?;
     Ok(Some(ProductionBlockBinding {
+        queue_binding: crucible_qemu::QemuWorldIoBinding::from_world(world, &node.id)
+            .map_err(loop_factory_error)?,
         base,
         durability,
         target,
@@ -152,6 +158,8 @@ pub(in crate::vm_lifecycle) fn ninep_binding_for_vm(
         )));
     }
     Ok(Some(ProductionNinepBinding {
+        queue_binding: crucible_qemu::QemuWorldIoBinding::from_world(world, &node.id)
+            .map_err(loop_factory_error)?,
         tree,
         latency: NinepLatency::new(latency.control_ns, latency.data_ns, latency.per_byte_ns),
         target: ResolvedFaultTarget::NinePDevice {

@@ -55,6 +55,7 @@ use crate::{
     WorldDeviceKind, WorldIoNodeKind,
 };
 
+mod arrive;
 mod checkpoint;
 pub use checkpoint::{DeviceSchedulingSubNodeCheckpoint, DeviceSchedulingSubNodeCheckpointError};
 
@@ -806,7 +807,11 @@ impl DeviceSchedulingSubNode {
         }
     }
 
-    /// Submits a block request at `request_icount` and COMPUTEs its completion.
+    /// Submits one block arrival whose FIFO input order is already authoritative.
+    ///
+    /// Immediate COMPUTE assigns the next original response sequence. A complete
+    /// modeled ARRIVE phase with unconstrained host collection order uses
+    /// [`Self::submit_arrivals`] before any request is COMPUTEd.
     ///
     /// Computes the exact `(delivery_icount, payload)` through the device and
     /// records it in delivery-key order. The device's own clock
@@ -819,7 +824,7 @@ impl DeviceSchedulingSubNode {
     /// inbound ring is full ([IO-32]), or when its COMPUTE step fails (a
     /// clock/overflow/past-delivery guard). Returns
     /// [`DeviceError::WrongDeviceKind`] when called on a 9p sub-node.
-    pub fn submit(
+    pub fn submit_fifo(
         &mut self,
         request_icount: u64,
         request: &BlockRequest,
@@ -832,7 +837,7 @@ impl DeviceSchedulingSubNode {
 
     /// Submits a raw 9p request frame at `request_icount` and COMPUTEs its reply.
     ///
-    /// This mirrors [`DeviceSchedulingSubNode::submit`] for the 9p sub-node:
+    /// This mirrors [`DeviceSchedulingSubNode::submit_fifo`] for the 9p sub-node:
     /// COMPUTE pins the exact modeled reply and
     /// [`DeviceSchedulingSubNode::deliver_due`] later makes it visible.
     ///
@@ -952,6 +957,11 @@ impl DeviceSchedulingSubNode {
                 target: self.target.clone(),
                 delivery_tick: crate::SimInstant {
                     ticks: completion.delivery_icount,
+                },
+                source_delivery: crucible_device::FrameDeliveryKey {
+                    delivery_icount: completion.delivery_icount,
+                    src_node: completion.src_node,
+                    seq: completion.seq,
                 },
                 payload: payload.clone(),
             });
@@ -1140,9 +1150,9 @@ mod tests {
     fn next_exact_local_event_is_the_inflight_head_final_icount() {
         let mut disk = fresh_disk(Seed::from_u64(0xd15c));
         // Two reads at different request icounts -> two completions in flight.
-        disk.submit(0, &read_request(1, 0, 8))
+        disk.submit_fifo(0, &read_request(1, 0, 8))
             .unwrap_or_else(|error| panic!("submit should succeed: {error}"));
-        disk.submit(100, &read_request(2, 0, 8))
+        disk.submit_fifo(100, &read_request(2, 0, 8))
             .unwrap_or_else(|error| panic!("submit should succeed: {error}"));
 
         let head = disk
@@ -1160,7 +1170,7 @@ mod tests {
     #[test]
     fn deliver_due_makes_completions_visible_at_exact_icount_in_order() {
         let mut disk = fresh_disk(Seed::from_u64(0xd15c));
-        disk.submit(0, &read_request(1, 0, 8))
+        disk.submit_fifo(0, &read_request(1, 0, 8))
             .unwrap_or_else(|error| panic!("submit should succeed: {error}"));
         let delivery = disk
             .next_exact_local_event()
@@ -1183,7 +1193,7 @@ mod tests {
     #[test]
     fn wrong_request_kind_fails_loudly_without_computing() {
         let mut fs = fresh_ninep(Seed::from_u64(0x9f5));
-        let result = fs.submit(0, &read_request(1, 0, 8));
+        let result = fs.submit_fifo(0, &read_request(1, 0, 8));
         assert!(matches!(
             result,
             Err(DeviceError::WrongDeviceKind {
@@ -1209,7 +1219,7 @@ mod tests {
     fn block_sub_node_checkpoint_round_trips_pending_completion() {
         let seed = Seed::from_u64(0xd15c);
         let mut disk = fresh_disk(seed);
-        disk.submit(41, &read_request(7, 0, 8))
+        disk.submit_fifo(41, &read_request(7, 0, 8))
             .unwrap_or_else(|error| panic!("submit should succeed: {error}"));
         let checkpoint = disk.checkpoint();
         let bytes = checkpoint

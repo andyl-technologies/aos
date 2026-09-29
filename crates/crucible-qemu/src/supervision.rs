@@ -80,3 +80,6 @@ pub use runtime_determinism_trace::{
     QemuRuntimeDeterminismTraceRecord, QemuRuntimeDeterminismTraceValidator,
     parse_qemu_runtime_determinism_trace,
 };
+
+mod world_io_binding;
+pub use world_io_binding::QemuWorldIoBinding;

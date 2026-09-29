@@ -3,6 +3,7 @@
 use super::*;
 
 pub(super) struct BackendBoundaryEvidence {
+    pub(super) staged_inputs: BTreeSet<ScheduledEventKey>,
     pub(super) rng_evidence: Vec<BackendRngEvidence>,
     pub(super) network_outputs: Vec<BackendNetworkOutput>,
     pub(super) observations: Vec<ObservableEvent>,
@@ -17,6 +18,7 @@ pub(super) struct BackendOutcomeAdmission<'a, L, B, I> {
     pub(super) pending_observations: &'a mut Vec<ObservableEvent>,
     pub(super) preselection: &'a mut Option<BackendPendingPreselection>,
     pub(super) pause_before_live_network_choice: bool,
+    pub(super) network_release_at: VirtualTime,
 }
 
 pub(super) fn complete_backend_outcome_on<L, B, I>(
@@ -30,6 +32,7 @@ where
     I: BackendNetworkOutputInterceptor<L, B>,
 {
     let BackendBoundaryEvidence {
+        staged_inputs,
         rng_evidence,
         network_outputs,
         observations,
@@ -43,9 +46,13 @@ where
         pending_observations,
         preselection,
         pause_before_live_network_choice,
+        network_release_at,
     } = admission;
 
     for event in &outcome.resolved_events {
+        if staged_inputs.contains(&event.key) {
+            continue;
+        }
         let ScheduledEventPayload::BackendInput(input) = &event.payload else {
             continue;
         };
@@ -105,7 +112,7 @@ where
             ))
     });
     let committed =
-        timed_network_outputs.partition_point(|(at, _output)| at.ticks <= outcome.frontier.ticks);
+        timed_network_outputs.partition_point(|(at, _output)| at.ticks <= network_release_at.ticks);
     *pending_network_outputs = timed_network_outputs
         .drain(committed..)
         .map(|(_at, output)| output)

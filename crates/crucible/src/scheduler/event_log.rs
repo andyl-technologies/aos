@@ -5,10 +5,13 @@ use crate::{DebugCoordinate, RuntimeState};
 use crucible_campaign::ChoiceDiscovery;
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 mod backend_loop;
+pub(super) use backend_loop::HeldDeliveryCeiling;
+pub(super) use backend_loop::HeldRunLineage;
 mod observation_append;
 pub use backend_loop::{
     BackendNetworkOutputInterceptor, BackendNetworkSettlement, BackendQuantumLoop,
-    NoopBackendNetworkOutputInterceptor,
+    FailedCapNegotiation, FailedDispatchResolution, FailedInputResolution, HeldHostStopKind,
+    HeldHostStopWitness, NoopBackendNetworkOutputInterceptor,
 };
 
 /// Terminal verdict emitted by a scenario trigger at a quantum boundary.
@@ -1485,7 +1488,7 @@ impl SchedulerEventLogEntry {
         }
         self.content_hash
             == ContentHash::from_canonical_material(
-                "crucible.scheduler.event-log.entry.v4",
+                "crucible.scheduler.event-log.entry.v5",
                 &scheduler_event_log_entry_material(
                     self.sequence,
                     &self.at,

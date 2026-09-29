@@ -40,7 +40,7 @@ use crate::{
 };
 
 const EVENT_LOG_SEGMENT_BINARY_MAGIC: &[u8; 16] = b"CRUCIBLE-ELOGSEG";
-const EVENT_LOG_SEGMENT_BINARY_VERSION: u32 = 4;
+const EVENT_LOG_SEGMENT_BINARY_VERSION: u32 = 5;
 const EVENT_LOG_SEGMENT_NODE_ABSENT: u8 = 0;
 const EVENT_LOG_SEGMENT_NODE_PRESENT: u8 = 1;
 const EVENT_LOG_LEVEL_TRACE: u8 = 0;
@@ -91,11 +91,15 @@ mod backend_lifecycle;
 mod branch_exploration;
 mod checkpoint;
 mod concurrent_prepare;
+mod fixed_input;
+pub use fixed_input::{BackendFixedInputResult, BackendFixedInputState, PreparedHostFixedInput};
 mod control_state;
 mod event_codec;
 mod event_log;
 mod inactive_time;
+mod io_inventory;
 mod liveness;
+mod run_admission;
 mod runtime_state;
 mod scenario;
 mod single_scheduler_drive;
@@ -112,6 +116,7 @@ pub(crate) use event_codec::{
 };
 pub use event_log::*;
 pub use liveness::*;
+pub use run_admission::{PreparedRunAdmission, PreparedRunInputInventory};
 pub use runtime_state::*;
 pub use scenario::*;
 pub use topology::*;

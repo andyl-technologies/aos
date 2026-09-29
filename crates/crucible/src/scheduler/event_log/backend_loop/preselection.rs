@@ -86,6 +86,8 @@ where
     ///
     /// A higher-priority terminal or budget stop calls this before it seals its
     /// observation, preserving the same decision order as an uninterrupted RUN.
+    /// The returned outcome contains only decisions and entries newly committed
+    /// by settlement; the offered RUN prefix has already been reported.
     ///
     /// # Errors
     ///
@@ -95,6 +97,13 @@ where
         if self.continuation_poisoned {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("backend continuation is poisoned"),
+            });
+        }
+        if self.held_host_continuation.is_some() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "held physical RUN evidence requires the host-concurrent choice continuation",
+                ),
             });
         }
         let pending =
@@ -120,6 +129,14 @@ where
         self.pending_network_outputs = pending.pending_network_outputs;
         self.pending_observations = pending.pending_observations;
         let mut outcome = pending.outcome;
+        let (reported_decisions, reported_events) = if pending.selected.is_some() {
+            (
+                pending.selected_decision_count,
+                pending.selected_event_count,
+            )
+        } else {
+            (outcome.decisions.len(), outcome.event_log_entries.len())
+        };
         if outcome.discovered_choices.pop() != Some(pending.choice.discovery.clone()) {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -218,12 +235,10 @@ where
                 .append_backend_observations_at_boundary(observations, outcome.frontier)?;
             append_to_outcome(&mut outcome, append);
         }
-        if pending.selected.is_some() {
-            outcome.decisions.drain(..pending.selected_decision_count);
-            outcome
-                .event_log_entries
-                .drain(..pending.selected_event_count);
-        }
+        // The reservation carries its RUN context for admission, but reporting
+        // that context again would duplicate physical application receipts.
+        outcome.decisions.drain(..reported_decisions);
+        outcome.event_log_entries.drain(..reported_events);
         Ok(outcome)
     }
 
@@ -285,6 +300,9 @@ where
         let observations = observations.map_err(SchedulerError::from)?;
         let loop_entries = loop_result?;
         backend_result?;
+        // A handoff replays from the admitted ancestor in another QEMU world.
+        // Only the successful shutdown may discard this world's physical RUNs.
+        self.held_host_continuation.take();
         if !pending.handed_off
             || !self.pending_network_outputs.is_empty()
             || !self.pending_observations.is_empty()
@@ -315,6 +333,15 @@ impl<B, I> BackendQuantumLoop<SingleScheduler, B, I> {
         &mut self,
         selection: SelectionDecision,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        let before_selection = self.loop_impl.clone();
+        if let Some(held) = self.held_host_continuation.as_ref() {
+            held.lineage.ensure_extension_room()?;
+            if !held.lineage.context_is_current(&before_selection) {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from("live selection changed its retained canonical union"),
+                });
+            }
+        }
         let pending =
             self.preselection
                 .as_mut()
@@ -364,6 +391,22 @@ impl<B, I> BackendQuantumLoop<SingleScheduler, B, I> {
         pending.selected_decision_count = pending.outcome.decisions.len();
         pending.selected_event_count = pending.outcome.event_log_entries.len();
         pending.selected = Some(selection);
+        let source = pending.choice.output.source.clone();
+        if let Some(held) = self.held_host_continuation.as_mut() {
+            held.lineage
+                .extend_commit(&before_selection, &self.loop_impl, &source)?;
+            for run in held.original_runs.values_mut() {
+                run.canonical_lineage = Some(held.lineage.clone());
+            }
+            for run in held.runs.values_mut() {
+                run.run.canonical_lineage = Some(held.lineage.clone());
+            }
+            for run in held.boundary_runs.values_mut() {
+                run.run.canonical_lineage = Some(held.lineage.clone());
+            }
+            held.offer_configuration = self.loop_impl.configuration().clone();
+            held.offer_log_offset = self.loop_impl.event_log_offset();
+        }
         Ok(append)
     }
 }

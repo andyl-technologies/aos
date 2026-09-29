@@ -148,7 +148,7 @@ pub(super) fn scheduler_event_log_entry_with_time(
     let source = scheduler_event_log_payload_source(&payload);
     let level = scheduler_event_log_payload_level(&payload);
     let content_hash = ContentHash::from_canonical_material(
-        "crucible.scheduler.event-log.entry.v4",
+        "crucible.scheduler.event-log.entry.v5",
         &scheduler_event_log_entry_material(
             sequence,
             &time,
@@ -182,7 +182,7 @@ pub(super) fn scheduler_event_log_entry_with_material(
     payload: SchedulerEventLogPayload,
 ) -> SchedulerEventLogEntry {
     let content_hash = ContentHash::from_canonical_material(
-        "crucible.scheduler.event-log.entry.v4",
+        "crucible.scheduler.event-log.entry.v5",
         &scheduler_event_log_entry_material(
             sequence,
             &at,
@@ -363,6 +363,18 @@ pub(super) fn resolved_happening_event_payload(event: &ScheduledEvent) -> EventP
             attributes.insert(
                 String::from("payload"),
                 EventAttributeValue::Bytes(completion.payload.clone()),
+            );
+            attributes.insert(
+                String::from("source_delivery_tick"),
+                EventAttributeValue::U64(completion.source_delivery.delivery_icount),
+            );
+            attributes.insert(
+                String::from("source_node"),
+                EventAttributeValue::U64(u64::from(completion.source_delivery.src_node)),
+            );
+            attributes.insert(
+                String::from("source_sequence"),
+                EventAttributeValue::U64(u64::from(completion.source_delivery.seq)),
             );
             EventPayload::new("io_completion", attributes)
         }
@@ -1909,10 +1921,10 @@ impl SchedulerEventLogSegmentMaterial {
     pub(super) fn text_view(&self) -> String {
         let mut lines = Vec::new();
         lines.push(String::from(
-            "format=crucible.scheduler.event-log.segment-text.v4",
+            "format=crucible.scheduler.event-log.segment-text.v5",
         ));
         lines.push(String::from(
-            "canonical_format=crucible.scheduler.event-log.segment.v4",
+            "canonical_format=crucible.scheduler.event-log.segment.v5",
         ));
         lines.push(format!("schema_version={EVENT_LOG_SEGMENT_BINARY_VERSION}"));
         lines.push(format!("previous_prefix={}", self.previous_prefix.to_hex()));

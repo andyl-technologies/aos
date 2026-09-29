@@ -504,3 +504,160 @@ fn multi_device_write_commits_every_member_and_orders_dependencies() {
         vec![0x5a; 512]
     );
 }
+
+#[cfg(unix)]
+fn declared_world_binding(device: &str) -> super::super::QemuWorldIoBinding {
+    use crucible::{
+        ContentAddressedBlobRef, ContentHash, Icount, NodeId, NodeTemplate, ReadyPoint,
+        VmArchitecture, WhiteBoxPolicy, World, WorldBlockLatency, WorldIoCoreConfig, WorldIoNode,
+        WorldNode, WorldNodeDef,
+    };
+
+    let owner = NodeId { name: "vm".into() };
+    let mut definitions = vec![WorldNodeDef::Vm(WorldNode {
+        id: owner.clone(),
+        arch: VmArchitecture::X86_64,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 0 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+        smp_vcpus: 1,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    })];
+    for name in ["disk-a", "disk-b"] {
+        definitions.push(WorldNodeDef::Io(WorldIoNode::block(
+            NodeId { name: name.into() },
+            owner.clone(),
+            WorldIoCoreConfig::new(),
+            ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(b"base image")),
+            4096,
+            WorldBlockLatency::new(0, 0, 0, 0, 0),
+        )));
+    }
+    let world = World::from_node_defs_and_links(definitions, Vec::new())
+        .unwrap_or_else(|error| panic!("configured World: {error}"));
+    super::super::QemuWorldIoBinding::from_world(
+        &world,
+        &NodeId {
+            name: device.into(),
+        },
+    )
+    .unwrap_or_else(|error| panic!("declared queue binding: {error}"))
+}
+
+#[cfg(unix)]
+#[test]
+fn world_bound_queue_retains_original_key_through_codec_restore_and_private_clone() {
+    // The mapped pause is modeled. This tests actual host queue/codec ownership,
+    // without claiming a native Source or permission to publish a guest reply.
+    let (file, bytes, unbound) = checkpoint_fixture();
+    drop(unbound);
+    let binding = declared_world_binding("disk-b");
+    let mut source = QemuLiveBlockIoServicer::from_shmem_fd_with_base_and_latency_and_binding(
+        file.as_fd(),
+        bytes,
+        0,
+        BaseImage::new(deterministic_base_image(4096)),
+        BlockLatency::default(),
+        binding.clone(),
+    )
+    .unwrap_or_else(|error| panic!("bound constructor: {error}"));
+    source
+        .device
+        .lock()
+        .unwrap_or_else(|error| panic!("device lock: {error}"))
+        .submit(0, &crucible_device::BlockRequest::read(7, 0, 8))
+        .unwrap_or_else(|error| panic!("actual request compute: {error}"));
+    let execution = ContentHash::from_bytes(b"paired host continuation");
+    let checkpoint = source
+        .checkpoint(execution)
+        .unwrap_or_else(|error| panic!("capture actual queue: {error}"));
+    assert_eq!(checkpoint.world_binding, Some(binding.clone()));
+    assert_eq!(checkpoint.device.core.inflight.len(), 1);
+    let original = checkpoint.device.core.inflight[0].key;
+    assert_eq!(original.src_node, binding.source_node());
+
+    let mut host = crate::QemuHostIoCheckpoint::without_devices(execution);
+    host.block = Some(checkpoint.clone());
+    let encoded = host
+        .to_canonical_bytes()
+        .unwrap_or_else(|error| panic!("encode bound host state: {error}"));
+    assert!(encoded.starts_with(b"crucible.qemu-host-io-checkpoint.v6\0"));
+    let decoded = crate::QemuHostIoCheckpoint::from_canonical_bytes(&encoded, execution)
+        .unwrap_or_else(|error| panic!("decode bound host state: {error}"));
+    assert_eq!(decoded, host);
+
+    let prefix = b"crucible.qemu-host-io-checkpoint.v6\0";
+    let mut bare: ciborium::Value = ciborium::de::from_reader(&encoded[prefix.len()..])
+        .unwrap_or_else(|error| panic!("inspect current wire: {error}"));
+    let ciborium::Value::Map(fields) = &mut bare else {
+        panic!("current host wire map");
+    };
+    let (_, ciborium::Value::Map(block)) = fields
+        .iter_mut()
+        .find(|(key, _)| key == &ciborium::Value::Text("block".into()))
+        .unwrap_or_else(|| panic!("serialized real block owner"))
+    else {
+        panic!("current block wire map");
+    };
+    block.retain(|(key, _)| key != &ciborium::Value::Text("world_binding".into()));
+    let mut omitted = prefix.to_vec();
+    ciborium::ser::into_writer(&bare, &mut omitted)
+        .unwrap_or_else(|error| panic!("encode missing binding fixture: {error}"));
+    assert!(crate::QemuHostIoCheckpoint::from_canonical_bytes(&omitted, execution).is_err());
+
+    for _ in 0..2 {
+        source
+            .restore_checkpoint(execution, &checkpoint)
+            .unwrap_or_else(|error| panic!("repeated exact restore: {error}"));
+        assert_eq!(
+            source
+                .checkpoint(execution)
+                .unwrap_or_else(|error| panic!("restored actual queue: {error}")),
+            checkpoint
+        );
+    }
+    let (branch_file, branch_bytes, empty_branch) = checkpoint_fixture();
+    drop(empty_branch);
+    let mut branch = source
+        .clone_hot_fork_continuation(branch_file.as_fd(), branch_bytes, execution)
+        .unwrap_or_else(|error| panic!("private host continuation: {error}"));
+    assert_eq!(
+        branch
+            .checkpoint(execution)
+            .unwrap_or_else(|error| panic!("private queue capture: {error}")),
+        checkpoint
+    );
+    assert_eq!(
+        source
+            .checkpoint(execution)
+            .unwrap_or_else(|error| panic!("unchanged original queue: {error}")),
+        checkpoint
+    );
+
+    let other = declared_world_binding("disk-a");
+    assert_ne!(other.source_node(), binding.source_node());
+    let mut wrong = QemuLiveBlockIoServicer::from_shmem_fd_with_base_and_latency_and_binding(
+        branch_file.as_fd(),
+        branch_bytes,
+        0,
+        BaseImage::new(deterministic_base_image(4096)),
+        BlockLatency::default(),
+        other,
+    )
+    .unwrap_or_else(|error| panic!("other actual queue: {error}"));
+    let before = wrong
+        .checkpoint(execution)
+        .unwrap_or_else(|error| panic!("other queue before refusal: {error}"));
+    assert!(wrong.restore_checkpoint(execution, &checkpoint).is_err());
+    assert_eq!(
+        wrong
+            .checkpoint(execution)
+            .unwrap_or_else(|error| panic!("other queue after refusal: {error}")),
+        before
+    );
+}

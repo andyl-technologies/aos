@@ -142,7 +142,7 @@ fn disk_sub_node(seed: Seed) -> DeviceSchedulingSubNode {
         seed,
     );
     sub_node
-        .submit(0, &BlockRequest::read(1, 0, 8))
+        .submit_arrivals(vec![(0, BlockRequest::read(1, 0, 8))])
         .unwrap_or_else(|error| panic!("disk submit should succeed: {error}"));
     sub_node
 }

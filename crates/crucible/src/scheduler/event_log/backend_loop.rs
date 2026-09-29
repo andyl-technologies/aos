@@ -4,9 +4,27 @@ use super::*;
 use crate::BackendEffect;
 
 mod admission;
+mod cap_boundary;
+mod dispatch_boundary;
+mod fixed_input;
+mod held_boundary;
+mod held_delivery;
+mod held_lineage;
+mod held_stop;
+mod host_concurrent;
+mod input_boundary;
+mod io_inventory;
+mod preselection;
 mod settlement;
 use admission::{BackendBoundaryEvidence, BackendOutcomeAdmission, complete_backend_outcome_on};
-mod preselection;
+pub use cap_boundary::FailedCapNegotiation;
+pub use dispatch_boundary::FailedDispatchResolution;
+pub(in crate::scheduler) use held_delivery::HeldDeliveryCeiling;
+pub(in crate::scheduler) use held_lineage::HeldRunLineage;
+use held_stop::HeldHostStopController;
+pub use held_stop::{HeldHostStopKind, HeldHostStopWitness};
+use host_concurrent::HeldHostContinuation;
+pub use input_boundary::FailedInputResolution;
 use preselection::{BackendPendingPreselection, append_to_outcome};
 pub use settlement::BackendNetworkSettlement;
 
@@ -64,7 +82,7 @@ impl<L, B> BackendNetworkOutputInterceptor<L, B> for NoopBackendNetworkOutputInt
 }
 
 /// Advances one live backend and drains it at completed scheduler boundaries.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct BackendQuantumLoop<L, B, I = NoopBackendNetworkOutputInterceptor> {
     pub(super) loop_impl: L,
     pub(super) backend: B,
@@ -79,6 +97,42 @@ pub struct BackendQuantumLoop<L, B, I = NoopBackendNetworkOutputInterceptor> {
     pause_before_live_network_choice: bool,
     parallel_choice_free_boot: bool,
     preselection: Option<BackendPendingPreselection>,
+    held_host_continuation: Option<HeldHostContinuation>,
+    failed_input_resolution: Option<FailedInputResolution>,
+    pending_fixed_input: Option<fixed_input::RetainedFixedInput>,
+    failed_cap_negotiation: Option<FailedCapNegotiation>,
+    failed_dispatch_resolution: Option<FailedDispatchResolution>,
+    held_stop_generation: u64,
+    held_union_generation: u64,
+    held_stop_controller: HeldHostStopController,
+}
+
+impl<L: Clone, B: Clone, I: Clone> Clone for BackendQuantumLoop<L, B, I> {
+    fn clone(&self) -> Self {
+        Self {
+            loop_impl: self.loop_impl.clone(),
+            backend: self.backend.clone(),
+            network_output_interceptor: self.network_output_interceptor.clone(),
+            pending_network_outputs: self.pending_network_outputs.clone(),
+            frozen_network_output_times: self.frozen_network_output_times.clone(),
+            pending_observations: self.pending_observations.clone(),
+            committed_frontier: self.committed_frontier,
+            continuation_poisoned: self.continuation_poisoned,
+            pause_before_live_network_choice: self.pause_before_live_network_choice,
+            parallel_choice_free_boot: self.parallel_choice_free_boot,
+            preselection: self.preselection.clone(),
+            held_host_continuation: self.held_host_continuation.clone(),
+            failed_input_resolution: self.failed_input_resolution.clone(),
+            pending_fixed_input: self.pending_fixed_input.clone(),
+            failed_cap_negotiation: self.failed_cap_negotiation.clone(),
+            failed_dispatch_resolution: self.failed_dispatch_resolution.clone(),
+            held_stop_generation: self.held_stop_generation,
+            held_union_generation: self.held_union_generation,
+            // A cloned mock world has its own controller authority. Witness
+            // clones retain the original identity and cannot cross this fork.
+            held_stop_controller: HeldHostStopController::new(),
+        }
+    }
 }
 
 fn observation_kind(payload: &ObservableEventPayload) -> &'static str {
@@ -123,7 +177,7 @@ fn normalize_backend_observations(
 impl<L, B> BackendQuantumLoop<L, B, NoopBackendNetworkOutputInterceptor> {
     /// Builds an adapter from an authoritative quantum loop and backend.
     #[must_use]
-    pub const fn new(loop_impl: L, backend: B) -> Self {
+    pub fn new(loop_impl: L, backend: B) -> Self {
         Self {
             loop_impl,
             backend,
@@ -136,6 +190,14 @@ impl<L, B> BackendQuantumLoop<L, B, NoopBackendNetworkOutputInterceptor> {
             pause_before_live_network_choice: false,
             parallel_choice_free_boot: false,
             preselection: None,
+            held_host_continuation: None,
+            failed_input_resolution: None,
+            pending_fixed_input: None,
+            failed_cap_negotiation: None,
+            failed_dispatch_resolution: None,
+            held_stop_generation: 0,
+            held_union_generation: 0,
+            held_stop_controller: HeldHostStopController::new(),
         }
     }
 }
@@ -167,7 +229,7 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
 
     /// Builds an adapter with an exact pre-routing network-output interceptor.
     #[must_use]
-    pub const fn with_network_output_interceptor(
+    pub fn with_network_output_interceptor(
         loop_impl: L,
         backend: B,
         network_output_interceptor: I,
@@ -184,6 +246,14 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
             pause_before_live_network_choice: false,
             parallel_choice_free_boot: false,
             preselection: None,
+            held_host_continuation: None,
+            failed_input_resolution: None,
+            pending_fixed_input: None,
+            failed_cap_negotiation: None,
+            failed_dispatch_resolution: None,
+            held_stop_generation: 0,
+            held_union_generation: 0,
+            held_stop_controller: HeldHostStopController::new(),
         }
     }
 
@@ -213,7 +283,37 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
             pause_before_live_network_choice: false,
             parallel_choice_free_boot: false,
             preselection: None,
+            held_host_continuation: None,
+            failed_input_resolution: None,
+            pending_fixed_input: None,
+            failed_cap_negotiation: None,
+            failed_dispatch_resolution: None,
+            held_stop_generation: 0,
+            held_union_generation: 0,
+            held_stop_controller: HeldHostStopController::new(),
         }
+    }
+
+    /// Returns retained publication progress for an input-boundary RUN.
+    ///
+    /// No readmission or retry is authorized by this diagnostic record. Only
+    /// explicit successful backend teardown retires a failed resolution. A
+    /// healthy held boundary may retain progress before final settlement.
+    #[must_use]
+    pub const fn failed_input_resolution(&self) -> Option<&FailedInputResolution> {
+        self.failed_input_resolution.as_ref()
+    }
+
+    /// Returns retained ownership when physical-cap readmission failed.
+    #[must_use]
+    pub const fn failed_cap_negotiation(&self) -> Option<&FailedCapNegotiation> {
+        self.failed_cap_negotiation.as_ref()
+    }
+
+    /// Returns cleanup-only ownership of a failed internal dispatch settlement.
+    #[must_use]
+    pub const fn failed_dispatch_resolution(&self) -> Option<&FailedDispatchResolution> {
+        self.failed_dispatch_resolution.as_ref()
     }
 
     /// Returns the wrapped quantum loop.
@@ -310,6 +410,184 @@ where
     B: SimulationBackend,
     I: BackendNetworkOutputInterceptor<L, B>,
 {
+    #[cfg(test)]
+    pub(crate) fn complete_test_observation_boundary(
+        &mut self,
+        request: QuantumRequest,
+    ) -> Result<QuantumOutcome, SchedulerError> {
+        let outcome = self.loop_impl.drive_quantum(request)?;
+        assert!(
+            outcome.advanced_node.is_none(),
+            "observation fixture cannot execute a physical RUN"
+        );
+        self.committed_frontier = outcome.frontier;
+        let evidence = BackendBoundaryEvidence {
+            staged_inputs: BTreeSet::new(),
+            rng_evidence: self.backend.drain_rng_evidence()?,
+            network_outputs: self.backend.drain_network_outputs()?,
+            observations: self.backend.drain_observable_events()?,
+        };
+        complete_backend_outcome_on(
+            BackendOutcomeAdmission {
+                loop_impl: &mut self.loop_impl,
+                backend: &mut self.backend,
+                network_output_interceptor: &mut self.network_output_interceptor,
+                pending_network_outputs: &mut self.pending_network_outputs,
+                frozen_network_output_times: &mut self.frozen_network_output_times,
+                pending_observations: &mut self.pending_observations,
+                preselection: &mut self.preselection,
+                pause_before_live_network_choice: self.pause_before_live_network_choice,
+                network_release_at: outcome.frontier,
+            },
+            outcome,
+            evidence,
+        )
+    }
+
+    pub(crate) fn shutdown_backend_owner(
+        &mut self,
+    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        if self.held_host_continuation.is_some()
+            || self.pending_fixed_input.is_some()
+            || self.continuation_poisoned
+        {
+            // Explicit whole-world teardown discards private physical evidence;
+            // it never settles the source or admits a held peer receipt. Retain
+            // ownership on failure so shutdown can be retried without any RUN.
+            self.continuation_poisoned = true;
+            self.backend.shutdown().map_err(SchedulerError::from)?;
+            self.held_host_continuation = None;
+            self.failed_input_resolution = None;
+            self.pending_fixed_input = None;
+            self.failed_cap_negotiation = None;
+            self.preselection = None;
+            self.pending_network_outputs.clear();
+            self.frozen_network_output_times.clear();
+            self.pending_observations.clear();
+            return self.loop_impl.shutdown();
+        }
+        if self.preselection.is_some() {
+            return self.shutdown_preselection();
+        }
+        let final_network_append = self.backend.drain_network_outputs().and_then(|outputs| {
+            self.pending_network_outputs.extend(outputs);
+            let first_uncommitted = self
+                .pending_network_outputs
+                .iter()
+                .map(|output| {
+                    pending_network_output_time(
+                        &self.loop_impl,
+                        &self.frozen_network_output_times,
+                        output,
+                    )
+                        .map(|at| (at, output))
+                        .map_err(|error| BackendError::Rejected {
+                            message: error.to_string(),
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter(|(at, _output)| at.ticks > self.committed_frontier.ticks)
+                .min_by_key(|(at, _output)| at.ticks);
+            if let Some((at, output)) = first_uncommitted {
+                return Err(BackendError::Rejected {
+                    message: format!(
+                        "{} live-backend network outputs remain uncommitted at shutdown; first future frame {} from `{}` has tick {} beyond committed frontier {}",
+                        self.pending_network_outputs.len(),
+                        output.sequence,
+                        output.source.name,
+                        at.ticks,
+                        self.committed_frontier.ticks,
+                    ),
+                });
+            }
+            if self.pending_network_outputs.is_empty() {
+                return Ok(Vec::new());
+            }
+            let outputs = std::mem::take(&mut self.pending_network_outputs);
+            self.loop_impl
+                .append_backend_network_outputs(
+                    outputs,
+                    &self.frozen_network_output_times,
+                )
+                .map(|(_recorded, _discoveries, _configuration, append)| append.entries)
+                .map_err(|error| BackendError::Rejected {
+                    message: error.to_string(),
+                })
+        });
+        let final_decisions = match self.backend.drain_rng_evidence() {
+            Ok(decisions) if decisions.is_empty() => Ok(()),
+            Ok(decisions) => Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "{} live-backend causal decisions remain without a quantum discovery handoff at shutdown",
+                    decisions.len()
+                ),
+            }),
+            Err(error) => Err(SchedulerError::from(error)),
+        };
+        let final_observations = self.backend.drain_observable_events().and_then(|events| {
+            normalize_backend_observations(&self.loop_impl, events, self.committed_frontier)
+                .map_err(|error| BackendError::Rejected {
+                    message: error.to_string(),
+                })
+        });
+        let final_append = final_observations.and_then(|events| {
+            self.pending_observations.extend(events);
+            self.pending_observations.sort_by_key(ObservableEvent::at);
+            let committed = self
+                .pending_observations
+                .partition_point(|event| event.at().ticks <= self.committed_frontier.ticks);
+            let observations = self
+                .pending_observations
+                .drain(..committed)
+                .collect::<Vec<_>>();
+            if let Some(first) = self.pending_observations.first() {
+                let source = first
+                    .backend_node()
+                    .map(|node| node.name.as_str())
+                    .unwrap_or("scheduler");
+                Err(BackendError::Rejected {
+                    message: format!(
+                        "{} live-backend observations remain uncommitted at shutdown; first timestamp is {} (kind {}, source `{source}`, committed frontier {})",
+                        self.pending_observations.len(),
+                        first.at().ticks,
+                        observation_kind(first.payload()),
+                        self.committed_frontier.ticks,
+                    ),
+                })
+            } else if observations.is_empty() {
+                Ok(Vec::new())
+            } else {
+                self.loop_impl
+                    .append_backend_observations_at_boundary(
+                        observations,
+                        self.committed_frontier,
+                    )
+                    .map(|append| append.entries)
+                    .map_err(|error| BackendError::Rejected {
+                        message: error.to_string(),
+                    })
+            }
+        });
+        let loop_result = self.loop_impl.shutdown();
+        let backend_result = self.backend.shutdown().map_err(SchedulerError::from);
+        let mut entries = final_network_append?;
+        final_decisions?;
+        entries.extend(final_append.map_err(SchedulerError::from)?);
+        entries.extend(loop_result?);
+        backend_result?;
+        Ok(entries)
+    }
+
+    /// Reports whether failed physical or logical settlement forbids continuation.
+    ///
+    /// A poisoned continuation retains ownership for whole-world teardown and
+    /// cannot admit a new RUN, offered stop, queued publication, or checkpoint.
+    #[must_use]
+    pub const fn continuation_is_poisoned(&self) -> bool {
+        self.continuation_poisoned
+    }
+
     /// Captures existing pending frames' logical emission times before a VM rebase.
     ///
     /// # Errors
@@ -366,6 +644,13 @@ where
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
                     "queued network release cannot cross an unresolved preselection",
+                ),
+            });
+        }
+        if self.held_host_continuation.is_some() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "held physical RUNs must settle before queued network release",
                 ),
             });
         }
@@ -582,314 +867,34 @@ where
     }
 }
 
-impl<L, B, I> BackendQuantumLoop<L, B, I>
-where
-    L: QuantumLoop,
-    B: SimulationBackend,
-    I: BackendNetworkOutputInterceptor<L, B>,
-{
-    /// Executes one scheduler-prepared RUN set on bounded host workers.
-    ///
-    /// The scheduler continuation remains speculative until every backend has
-    /// reached its prepublished ceiling. Successful outcomes are then applied
-    /// in the scheduler's canonical completion order, independent of worker
-    /// completion timing.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when planning, host dispatch, backend
-    /// validation, or canonical boundary publication fails.
-    fn drive_host_concurrent_quantum(
-        &mut self,
-        request: QuantumRequest,
-        max_host_workers: usize,
-    ) -> Result<SchedulerConcurrentQuantumOutcome, SchedulerError>
-    where
-        L: std::borrow::Borrow<SingleScheduler> + std::borrow::BorrowMut<SingleScheduler>,
-        B: ConcurrentSimulationBackend,
-        I: BackendNetworkOutputInterceptor<SingleScheduler, B> + Clone,
-    {
-        if self.continuation_poisoned {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from("backend continuation is poisoned"),
-            });
-        }
-        if self.preselection.is_some() {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "live-network preselection must be settled or handed off before another RUN",
-                ),
-            });
-        }
-        if max_host_workers == 0 {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from("concurrent backend max_host_workers must be positive"),
-            });
-        }
-        let prepared = if self.pause_before_live_network_choice && !self.parallel_choice_free_boot {
-            self.loop_impl
-                .borrow()
-                .prepare_concurrent_quantum_limited(request, 1)?
-        } else {
-            self.loop_impl
-                .borrow()
-                .prepare_concurrent_quantum(request)?
-        };
-        let run_set = prepared.run_set().clone();
-        let mut runs = Vec::with_capacity(prepared.run_set().candidates.len());
-        for candidate in &prepared.run_set().candidates {
-            let outcome = prepared
-                .outcomes()
-                .iter()
-                .find(|outcome| {
-                    outcome
-                        .advanced_node
-                        .as_ref()
-                        .is_some_and(|node| node == &candidate.node)
-                })
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "prepared concurrent RUN for `{}` has no scheduler outcome",
-                        candidate.node.node.name
-                    ),
-                })?;
-            let preemptions = outcome
-                .decisions
-                .iter()
-                .filter_map(|decision| match decision {
-                    Decision::Preemption(preemption) => Some(preemption.clone()),
-                    _ => None,
-                })
-                .collect();
-            runs.push(ConcurrentBackendRun {
-                node: candidate.node.node.clone(),
-                ceiling: VirtualTime {
-                    ticks: candidate.max_advance_icount,
-                },
-                preemptions,
-            });
-        }
-        let completed = match self.backend.execute_concurrent_runs(runs, max_host_workers) {
-            Ok(completed) => completed,
-            Err(error) => return Err(self.poison_continuation(error.into())),
-        };
-        if completed.len() != prepared.run_set().candidates.len() {
-            let error = SchedulerError::BoundaryViolation {
-                message: String::from("host worker outcome cardinality changed"),
-            };
-            return Err(self.poison_continuation(error));
-        }
-        let mut evidence = BTreeMap::new();
-        for completed in completed {
-            if evidence.insert(completed.node.clone(), completed).is_some() {
-                let error = SchedulerError::BoundaryViolation {
-                    message: String::from("host workers repeated a scheduler RUN node"),
-                };
-                return Err(self.poison_continuation(error));
-            }
-        }
-        for candidate in &prepared.run_set().candidates {
-            let Some(completed) = evidence.get(&candidate.node.node) else {
-                let error = SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "host workers omitted scheduler RUN for `{}`",
-                        candidate.node.node.name
-                    ),
-                };
-                return Err(self.poison_continuation(error));
-            };
-            let ceiling = VirtualTime {
-                ticks: candidate.max_advance_icount,
-            };
-            if completed.step.requested_ceiling != ceiling || completed.step.reached != ceiling {
-                let error = SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "host worker for `{}` reached {} for scheduler ceiling {}",
-                        candidate.node.node.name, completed.step.reached.ticks, ceiling.ticks
-                    ),
-                };
-                return Err(self.poison_continuation(error));
-            }
-        }
-
-        let PreparedSchedulerConcurrentQuantum {
-            next: mut staged_scheduler,
-            outcome,
-        } = prepared;
-        let mut staged_interceptor = self.network_output_interceptor.clone();
-        let mut staged_pending_network_outputs = self.pending_network_outputs.clone();
-        let mut staged_frozen_network_output_times = self.frozen_network_output_times.clone();
-        let mut staged_pending_observations = self.pending_observations.clone();
-        let mut staged_preselection = None;
-        let mut staged_frontier = self.committed_frontier;
-        let mut published = Vec::with_capacity(outcome.outcomes.len());
-        for outcome in outcome.outcomes {
-            staged_frontier = outcome.frontier;
-            let boundary = if let Some(advanced) = &outcome.advanced_node {
-                let Some(completed) = evidence.remove(&advanced.node) else {
-                    let error = SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "host worker evidence for `{}` was already consumed",
-                            advanced.node.name
-                        ),
-                    };
-                    return Err(self.poison_continuation(error));
-                };
-                BackendBoundaryEvidence {
-                    rng_evidence: completed.rng_evidence,
-                    network_outputs: completed.network_outputs,
-                    observations: completed.observations,
-                }
-            } else {
-                BackendBoundaryEvidence {
-                    rng_evidence: Vec::new(),
-                    network_outputs: Vec::new(),
-                    observations: Vec::new(),
-                }
-            };
-            let completed = complete_backend_outcome_on(
-                BackendOutcomeAdmission {
-                    loop_impl: &mut staged_scheduler,
-                    backend: &mut self.backend,
-                    network_output_interceptor: &mut staged_interceptor,
-                    pending_network_outputs: &mut staged_pending_network_outputs,
-                    frozen_network_output_times: &mut staged_frozen_network_output_times,
-                    pending_observations: &mut staged_pending_observations,
-                    preselection: &mut staged_preselection,
-                    pause_before_live_network_choice: self.pause_before_live_network_choice,
-                },
-                outcome,
-                boundary,
-            );
-            match completed {
-                Ok(outcome) => {
-                    if self.parallel_choice_free_boot
-                        && (staged_preselection.is_some()
-                            || !outcome.discovered_choices.is_empty()
-                            || outcome.decisions.iter().any(|decision| {
-                                matches!(decision, Decision::Selection(_) | Decision::Override(_))
-                            }))
-                    {
-                        return Err(self.poison_continuation(SchedulerError::BoundaryViolation {
-                            message: String::from(
-                                "choice-free parallel boot reached a selectable before the serial boundary",
-                            ),
-                        }));
-                    }
-                    published.push(outcome);
-                }
-                Err(error) => return Err(self.poison_continuation(error)),
-            }
-        }
-        if !evidence.is_empty() {
-            let error = SchedulerError::BoundaryViolation {
-                message: String::from("host workers returned an unselected QEMU node"),
-            };
-            return Err(self.poison_continuation(error));
-        }
-
-        *self.loop_impl.borrow_mut() = staged_scheduler;
-        self.network_output_interceptor = staged_interceptor;
-        self.pending_network_outputs = staged_pending_network_outputs;
-        self.frozen_network_output_times = staged_frozen_network_output_times;
-        self.pending_observations = staged_pending_observations;
-        self.preselection = staged_preselection;
-        self.prune_frozen_network_output_times();
-        self.committed_frontier = staged_frontier;
-        Ok(SchedulerConcurrentQuantumOutcome {
-            run_set,
-            outcomes: published,
-        })
-    }
-}
-
-impl<B, I> ConcurrentQuantumLoop for BackendQuantumLoop<SingleScheduler, B, I>
+impl<B, I> QuantumLoop for BackendQuantumLoop<SingleScheduler, B, I>
 where
     B: ConcurrentSimulationBackend,
     I: BackendNetworkOutputInterceptor<SingleScheduler, B> + Clone,
 {
-    fn drive_concurrent_quantum(
-        &mut self,
-        request: QuantumRequest,
-        max_host_workers: usize,
-    ) -> Result<SchedulerConcurrentQuantumOutcome, SchedulerError> {
-        self.drive_host_concurrent_quantum(request, max_host_workers)
-    }
-}
-
-impl<L, B, I> QuantumLoop for BackendQuantumLoop<L, B, I>
-where
-    L: QuantumLoop,
-    B: SimulationBackend,
-    I: BackendNetworkOutputInterceptor<L, B>,
-{
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
-        if self.continuation_poisoned {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from("backend continuation is poisoned"),
-            });
+        let batch = self.drive_concurrent_quantum(request, 1)?;
+        let mut outcomes = batch.outcomes.into_iter();
+        let mut merged = outcomes
+            .next()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("causal host round returned no scheduler completion"),
+            })?;
+        for outcome in outcomes {
+            merged.configuration = outcome.configuration;
+            merged.frontier = outcome.frontier;
+            merged.advanced_node = outcome.advanced_node;
+            merged.resolved_events.extend(outcome.resolved_events);
+            merged.decisions.extend(outcome.decisions);
+            merged.discovered_choices.extend(outcome.discovered_choices);
+            merged.event_log_entries.extend(outcome.event_log_entries);
+            merged.event_log_segment_bytes = outcome.event_log_segment_bytes;
+            merged.event_log_segment_text = outcome.event_log_segment_text;
+            merged.event_log_segment_hash = outcome.event_log_segment_hash;
+            merged.event_log_offset = outcome.event_log_offset;
+            merged.scheduler_quiescence = outcome.scheduler_quiescence;
         }
-        if self.preselection.is_some() {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "live-network preselection must be settled or handed off before another RUN",
-                ),
-            });
-        }
-        let outcome = self.loop_impl.drive_quantum(request)?;
-        self.committed_frontier = outcome.frontier;
-        if let Some(advanced_node) = outcome.advanced_node.as_ref() {
-            let backend_ceiling = self.loop_impl.backend_step_ceiling(&outcome)?;
-            for decision in &outcome.decisions {
-                if let Decision::Preemption(preemption) = decision {
-                    let at = self.backend.node_now(&preemption.node)?;
-                    self.backend.apply_to_node(
-                        &preemption.node,
-                        &BackendEffect::Preemption(preemption.clone()),
-                        at,
-                    )?;
-                }
-            }
-            let backend_step = self
-                .backend
-                .step_node_to(&advanced_node.node, backend_ceiling)?;
-            if backend_step.requested_ceiling != backend_ceiling
-                || backend_step.reached != backend_ceiling
-            {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "backend step reached {} for selected-node ceiling {}",
-                        backend_step.reached.ticks, backend_ceiling.ticks
-                    ),
-                });
-            }
-        }
-        let evidence = BackendBoundaryEvidence {
-            rng_evidence: self.backend.drain_rng_evidence()?,
-            network_outputs: self.backend.drain_network_outputs()?,
-            observations: self.backend.drain_observable_events()?,
-        };
-        let completed = complete_backend_outcome_on(
-            BackendOutcomeAdmission {
-                loop_impl: &mut self.loop_impl,
-                backend: &mut self.backend,
-                network_output_interceptor: &mut self.network_output_interceptor,
-                pending_network_outputs: &mut self.pending_network_outputs,
-                frozen_network_output_times: &mut self.frozen_network_output_times,
-                pending_observations: &mut self.pending_observations,
-                preselection: &mut self.preselection,
-                pause_before_live_network_choice: self.pause_before_live_network_choice,
-            },
-            outcome,
-            evidence,
-        );
-        match completed {
-            Ok(outcome) => {
-                self.prune_frozen_network_output_times();
-                Ok(outcome)
-            }
-            Err(error) => Err(self.poison_continuation(error)),
-        }
+        Ok(merged)
     }
 
     fn sample_fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, SchedulerError> {
@@ -1037,7 +1042,7 @@ where
     }
 
     fn search_frontiers(&self) -> Result<Vec<SearchRuntimeFrontier>, SchedulerError> {
-        self.loop_impl.search_frontiers()
+        QuantumLoop::search_frontiers(&self.loop_impl)
     }
 
     fn pending_search_branch_choices(&self) -> usize {
@@ -1045,116 +1050,6 @@ where
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
-        if self.preselection.is_some() {
-            return self.shutdown_preselection();
-        }
-        let final_network_append = self.backend.drain_network_outputs().and_then(|outputs| {
-            self.pending_network_outputs.extend(outputs);
-            let first_uncommitted = self
-                .pending_network_outputs
-                .iter()
-                .map(|output| {
-                    pending_network_output_time(
-                        &self.loop_impl,
-                        &self.frozen_network_output_times,
-                        output,
-                    )
-                        .map(|at| (at, output))
-                        .map_err(|error| BackendError::Rejected {
-                            message: error.to_string(),
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .filter(|(at, _output)| at.ticks > self.committed_frontier.ticks)
-                .min_by_key(|(at, _output)| at.ticks);
-            if let Some((at, output)) = first_uncommitted {
-                return Err(BackendError::Rejected {
-                    message: format!(
-                        "{} live-backend network outputs remain uncommitted at shutdown; first future frame {} from `{}` has tick {} beyond committed frontier {}",
-                        self.pending_network_outputs.len(),
-                        output.sequence,
-                        output.source.name,
-                        at.ticks,
-                        self.committed_frontier.ticks,
-                    ),
-                });
-            }
-            if self.pending_network_outputs.is_empty() {
-                return Ok(Vec::new());
-            }
-            let outputs = std::mem::take(&mut self.pending_network_outputs);
-            self.loop_impl
-                .append_backend_network_outputs(
-                    outputs,
-                    &self.frozen_network_output_times,
-                )
-                .map(|(_recorded, _discoveries, _configuration, append)| append.entries)
-                .map_err(|error| BackendError::Rejected {
-                    message: error.to_string(),
-                })
-        });
-        let final_decisions = match self.backend.drain_rng_evidence() {
-            Ok(decisions) if decisions.is_empty() => Ok(()),
-            Ok(decisions) => Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "{} live-backend causal decisions remain without a quantum discovery handoff at shutdown",
-                    decisions.len()
-                ),
-            }),
-            Err(error) => Err(SchedulerError::from(error)),
-        };
-        let final_observations = self.backend.drain_observable_events().and_then(|events| {
-            normalize_backend_observations(&self.loop_impl, events, self.committed_frontier)
-                .map_err(|error| BackendError::Rejected {
-                    message: error.to_string(),
-                })
-        });
-        let final_append = final_observations.and_then(|events| {
-            self.pending_observations.extend(events);
-            self.pending_observations.sort_by_key(ObservableEvent::at);
-            let committed = self
-                .pending_observations
-                .partition_point(|event| event.at().ticks <= self.committed_frontier.ticks);
-            let observations = self
-                .pending_observations
-                .drain(..committed)
-                .collect::<Vec<_>>();
-            if let Some(first) = self.pending_observations.first() {
-                let source = first
-                    .backend_node()
-                    .map(|node| node.name.as_str())
-                    .unwrap_or("scheduler");
-                Err(BackendError::Rejected {
-                    message: format!(
-                        "{} live-backend observations remain uncommitted at shutdown; first timestamp is {} (kind {}, source `{source}`, committed frontier {})",
-                        self.pending_observations.len(),
-                        first.at().ticks,
-                        observation_kind(first.payload()),
-                        self.committed_frontier.ticks,
-                    ),
-                })
-            } else if observations.is_empty() {
-                Ok(Vec::new())
-            } else {
-                self.loop_impl
-                    .append_backend_observations_at_boundary(
-                        observations,
-                        self.committed_frontier,
-                    )
-                    .map(|append| append.entries)
-                    .map_err(|error| BackendError::Rejected {
-                        message: error.to_string(),
-                    })
-            }
-        });
-        let loop_result = self.loop_impl.shutdown();
-        let backend_result = self.backend.shutdown().map_err(SchedulerError::from);
-        let mut entries = final_network_append?;
-        final_decisions?;
-        entries.extend(final_append.map_err(SchedulerError::from)?);
-        entries.extend(loop_result?);
-        backend_result?;
-        Ok(entries)
+        self.shutdown_backend_owner()
     }
 }

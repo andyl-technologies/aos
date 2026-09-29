@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 
-const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v3\0";
+const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v6\0";
 /// Maximum canonical byte length of one complete single-scheduler continuation.
 pub const MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES: usize =
     MAX_SINGLE_SCHEDULER_CHECKPOINT_PAYLOAD_BYTES + MAGIC.len();
@@ -30,6 +30,9 @@ struct SingleSchedulerWire {
     network_state: Vec<u8>,
     device_state: Vec<(String, Vec<Vec<u8>>)>,
     pending_events: Vec<ScheduledEvent>,
+    imported_io: BTreeMap<NodeId, super::io_inventory::ImportedIoNode>,
+    fixed_input_generation: u64,
+    settled_fixed_input_events: Vec<ScheduledEvent>,
     run_subdivision_policies: Vec<SchedulerRunSubdivisionPolicy>,
     run_subdivision_records: Vec<SchedulerRunSubdivisionRecord>,
     preemption_requests: Vec<PreemptionDecision>,
@@ -95,7 +98,10 @@ impl SingleScheduler {
     /// Returns [`SingleSchedulerCheckpointError`] if a device or network owner
     /// cannot encode its independently validated continuation.
     pub fn checkpoint(&self) -> Result<SingleSchedulerCheckpoint, SingleSchedulerCheckpointError> {
-        if self.lock_held || !self.app_random_branch_selections.is_empty() {
+        if self.lock_held
+            || self.fixed_input_in_progress
+            || !self.app_random_branch_selections.is_empty()
+        {
             return Err(SingleSchedulerCheckpointError::Transient);
         }
         let device_state = self
@@ -127,6 +133,9 @@ impl SingleScheduler {
                 network_state,
                 device_state,
                 pending_events: self.pending_events.clone(),
+                imported_io: self.imported_io.clone(),
+                fixed_input_generation: self.fixed_input_generation,
+                settled_fixed_input_events: self.settled_fixed_input_events.clone(),
                 run_subdivision_policies: self.run_subdivision_policies.clone(),
                 run_subdivision_records: self.run_subdivision_records.clone(),
                 preemption_requests: self.preemption_requests.clone(),
@@ -412,6 +421,9 @@ impl SingleSchedulerCheckpoint {
         &self,
         scheduler: &mut SingleScheduler,
     ) -> Result<(), SingleSchedulerCheckpointError> {
+        if scheduler.fixed_input_in_progress {
+            return Err(SingleSchedulerCheckpointError::Transient);
+        }
         validate_wire(&self.wire)?;
         if scheduler.configuration.def.id() != self.wire.scenario {
             return Err(SingleSchedulerCheckpointError::Configuration);
@@ -464,6 +476,9 @@ impl SingleSchedulerCheckpoint {
         staged.control_admissions = self.wire.control_admissions.clone();
         staged.control_applications = self.wire.control_applications.clone();
         staged.pending_events = self.wire.pending_events.clone();
+        staged.imported_io = self.wire.imported_io.clone();
+        staged.fixed_input_generation = self.wire.fixed_input_generation;
+        staged.settled_fixed_input_events = self.wire.settled_fixed_input_events.clone();
         staged.event_sequences = state.event_sequences;
         staged.world_network_decisions = state.pending_device_decisions;
         staged.device_horizons = state
@@ -490,6 +505,9 @@ impl SingleSchedulerCheckpoint {
         staged.lock_held = false;
         staged.last_advance = self.wire.last_advance.clone();
         staged.last_topology_recompute = self.wire.last_topology_recompute;
+        staged
+            .validate_imported_io_ledger()
+            .map_err(|_| SingleSchedulerCheckpointError::State)?;
 
         let projected = staged.materialized_scheduler_state();
         if projected
@@ -516,6 +534,46 @@ fn validate_wire(wire: &SingleSchedulerWire) -> Result<(), SingleSchedulerCheckp
             .any(|pair| pair[0].key >= pair[1].key)
     {
         return Err(SingleSchedulerCheckpointError::State);
+    }
+    if wire
+        .settled_fixed_input_events
+        .windows(2)
+        .any(|pair| pair[0].key >= pair[1].key)
+        || wire.settled_fixed_input_events.iter().any(|settled| {
+            wire.pending_events
+                .iter()
+                .any(|pending| pending.key == settled.key)
+        })
+    {
+        return Err(SingleSchedulerCheckpointError::State);
+    }
+    for event in wire
+        .pending_events
+        .iter()
+        .chain(&wire.settled_fixed_input_events)
+    {
+        if let ScheduledEventPayload::IoCompletion(completion) = &event.payload {
+            let target = wire
+                .nodes
+                .iter()
+                .find(|node| {
+                    node.id.node == completion.target && node.id.kind == SchedulingNodeKind::Vm
+                })
+                .ok_or(SingleSchedulerCheckpointError::State)?;
+            let delivery_time = target
+                .time_mapping
+                .logical_time(NodeCounter {
+                    ticks: completion.source_delivery.delivery_icount,
+                })
+                .map_err(|_| SingleSchedulerCheckpointError::State)?;
+            if delivery_time != completion.delivery_tick
+                || event.key.virtual_time().ticks != delivery_time.ticks
+                || event.key.producer() != &completion.sub_node
+                || event.key.consumer() != &target.id
+            {
+                return Err(SingleSchedulerCheckpointError::State);
+            }
+        }
     }
     if wire.event_log.events < wire.event_log.condition_base_events {
         return Err(SingleSchedulerCheckpointError::EventLog);
