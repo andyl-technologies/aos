@@ -71,7 +71,7 @@ impl NativeHeldCapacityAppendV2<'_> {
                 .collect::<Vec<_>>();
             widths.sort_unstable();
             let valid = if step == NativeHeldCapacityStepV3::ProviderRootTerminalStored {
-                (widths == [40] || widths == [40, 49, 96, 99, 103])
+                (widths == [40] || widths == [40, 63, 96, 99, 103])
                     && changes
                         .iter()
                         .all(|change| change.before.is_some() && change.after.is_some())
