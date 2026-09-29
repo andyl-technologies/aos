@@ -966,6 +966,17 @@ mod tests {
 
     #[test]
     fn invalid_diagnostics_preserve_upload_and_range_context() {
+        let encoded = b"opaque meta bytes";
+        let meta = MetaUpload::new(IdentityKind::Manifest, encoded).unwrap();
+        let chunk_without_context = MetaUpload::new(IdentityKind::Chunk, encoded).unwrap_err();
+
+        assert_eq!(meta.kind(), IdentityKind::Manifest);
+        assert_eq!(meta.bytes(), encoded);
+        assert_eq!(
+            chunk_without_context.kind(),
+            &StoreErrorKind::Invalid(InvalidReason::MalformedRequest)
+        );
+
         let upload = StoreErrorKind::Invalid(InvalidReason::Upload { rule_id: "CDC-6" });
         let requested = ByteRange {
             start: 128,
