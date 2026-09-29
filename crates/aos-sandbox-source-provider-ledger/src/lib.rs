@@ -94,10 +94,23 @@ pub fn validate_prospective_transition<'current, 'prospective>(
             .map(|(key, value)| (key.as_slice(), value.as_slice())),
     )?;
 
+    validate_transition_structure(&current, &prospective)?;
+    Ok(validated)
+}
+
+// The strict public entry point authenticates the legacy profile above. Held
+// proposals use this same current-owner/history core after their actual-profile
+// graph checks; it never produces a public legacy validation seal.
+pub(crate) fn validate_transition_structure(
+    current: &BTreeMap<Vec<u8>, Vec<u8>>,
+    prospective: &BTreeMap<Vec<u8>, Vec<u8>>,
+) -> Result<(), LedgerFormatErrorV1> {
+    use ledger::model::DecodedRecordV1;
+
     let current_authority = current
         .iter()
         .find_map(
-            |(key, value)| match ledger::format::decode_record(key, value).ok()? {
+            |(key, value)| match decode_current_record(key, value).ok()? {
                 DecodedRecordV1::Authority(authority) => Some(authority),
                 _ => None,
             },
@@ -106,7 +119,7 @@ pub fn validate_prospective_transition<'current, 'prospective>(
     let prospective_authority = prospective
         .iter()
         .find_map(
-            |(key, value)| match ledger::format::decode_record(key, value).ok()? {
+            |(key, value)| match decode_current_record(key, value).ok()? {
                 DecodedRecordV1::Authority(authority) => Some(authority),
                 _ => None,
             },
@@ -155,7 +168,7 @@ pub fn validate_prospective_transition<'current, 'prospective>(
     let current_catalog = current
         .iter()
         .find_map(
-            |(key, value)| match ledger::format::decode_record(key, value).ok()? {
+            |(key, value)| match decode_current_record(key, value).ok()? {
                 DecodedRecordV1::Catalog(catalog)
                     if catalog.catalog_generation == current_authority.catalog_generation =>
                 {
@@ -168,7 +181,7 @@ pub fn validate_prospective_transition<'current, 'prospective>(
     let prospective_catalog = prospective
         .iter()
         .find_map(
-            |(key, value)| match ledger::format::decode_record(key, value).ok()? {
+            |(key, value)| match decode_current_record(key, value).ok()? {
                 DecodedRecordV1::Catalog(catalog)
                     if catalog.catalog_generation == prospective_authority.catalog_generation =>
                 {
@@ -193,9 +206,8 @@ pub fn validate_prospective_transition<'current, 'prospective>(
         ));
     }
 
-    for (key, current_value) in &current {
-        let DecodedRecordV1::Session(current_session) =
-            ledger::format::decode_record(key, current_value)?
+    for (key, current_value) in current {
+        let DecodedRecordV1::Session(current_session) = decode_current_record(key, current_value)?
         else {
             continue;
         };
@@ -204,7 +216,7 @@ pub fn validate_prospective_transition<'current, 'prospective>(
             .ok_or(LedgerFormatErrorV1::Corrupt(
                 "holder sequence head was deleted",
             ))
-            .and_then(|value| ledger::format::decode_record(key, value))?;
+            .and_then(|value| decode_current_record(key, value))?;
         let DecodedRecordV1::Session(prospective_session) = prospective_session else {
             return Err(LedgerFormatErrorV1::Corrupt(
                 "holder sequence head kind changed",
@@ -232,15 +244,29 @@ pub fn validate_prospective_transition<'current, 'prospective>(
         }
     }
 
-    for (key, current_value) in &current {
-        let decoded = ledger::format::decode_record(key, current_value)?;
+    for (key, current_value) in current {
+        let decoded = decode_current_record(key, current_value)?;
         match decoded {
             DecodedRecordV1::NativeCompletion(native) => {
                 let next = prospective.get(key).ok_or(LedgerFormatErrorV1::Corrupt(
                     "native completion cannot be forgotten",
                 ))?;
-                let DecodedRecordV1::NativeCompletion(next) =
-                    ledger::format::decode_record(key, next)?
+                if ledger::native_held_completion::graph::is_held(current_value)
+                    != ledger::native_held_completion::graph::is_held(next)
+                {
+                    return Err(LedgerFormatErrorV1::Corrupt("native profile cannot change"));
+                }
+                if ledger::native_held_completion::graph::is_held(current_value) {
+                    ledger::native_held_completion::graph::validate_retained_transition(
+                        current,
+                        prospective,
+                        key,
+                        current_value,
+                        next,
+                    )?;
+                    continue;
+                }
+                let DecodedRecordV1::NativeCompletion(next) = decode_current_record(key, next)?
                 else {
                     return Err(LedgerFormatErrorV1::Corrupt(
                         "native completion kind changed",
@@ -253,7 +279,7 @@ pub fn validate_prospective_transition<'current, 'prospective>(
                 let rewritten = prospective.contains_key(key);
                 let still_referenced =
                     prospective.iter().any(|(candidate_key, candidate_value)| {
-                        match ledger::format::decode_record(candidate_key, candidate_value) {
+                        match decode_current_record(candidate_key, candidate_value) {
                             Ok(DecodedRecordV1::Attempt(attempt)) => {
                                 attempt.response_catalog_generation == catalog.catalog_generation
                                     && attempt.response_catalog_digest == catalog.catalog_digest
@@ -279,7 +305,7 @@ pub fn validate_prospective_transition<'current, 'prospective>(
             {
                 let was_current = current.iter().any(|(candidate_key, candidate_value)| {
                     matches!(
-                        ledger::format::decode_record(candidate_key, candidate_value),
+                        decode_current_record(candidate_key, candidate_value),
                         Ok(DecodedRecordV1::Session(ref session))
                             if session.provider == history.provider
                                 && session.holder == history.holder
@@ -295,12 +321,19 @@ pub fn validate_prospective_transition<'current, 'prospective>(
             _ => {}
         }
     }
-    for (key, value) in &prospective {
+    for (key, value) in prospective {
         if current.contains_key(key) {
             continue;
         }
-        if let DecodedRecordV1::NativeCompletion(native) =
-            ledger::format::decode_record(key, value)?
+        if ledger::native_held_completion::graph::is_held(value) {
+            let held = ledger::native_held_completion::SourceNativeHeldCompletionRecordV1::from_canonical_bytes(key, value)?;
+            ledger::native_held_completion::transition::validate_step(
+                None,
+                &held,
+                ledger::native_held_completion::SourceNativeHeldStepV1::Requested,
+            )?;
+        }
+        if let DecodedRecordV1::NativeCompletion(native) = decode_current_record(key, value)?
             && (native.revision != 1
                 || native.state
                     != if native.canonical_request.is_some() {
@@ -314,7 +347,7 @@ pub fn validate_prospective_transition<'current, 'prospective>(
             ));
         }
     }
-    Ok(validated)
+    Ok(())
 }
 
 // Requested/Prepared retain ordered suffix headroom outside the durable
@@ -408,9 +441,40 @@ fn require_native_suffix_progress(
 pub fn validate_prospective_records<'record>(
     records: impl IntoIterator<Item = (&'record [u8], &'record [u8])>,
 ) -> Result<ValidatedProspectiveLedgerV1, LedgerFormatErrorV1> {
+    let records = collect_bounded_records(records)?;
+    for (key, value) in &records {
+        // Keep envelope8 out of every existing public recovery/admission path.
+        ledger::format::decode_record(key, value)?;
+    }
+    validate_current_records(&records)
+}
+
+pub(crate) fn decode_current_record(
+    key: &[u8],
+    value: &[u8],
+) -> Result<ledger::model::DecodedRecordV1, LedgerFormatErrorV1> {
+    use ledger::model::DecodedRecordV1;
+
+    if ledger::native_held_completion::graph::is_held(value) {
+        let held = ledger::native_held_completion::SourceNativeHeldCompletionRecordV1::from_canonical_bytes(key, value)?;
+        if held.to_canonical_bytes()? != value {
+            return Err(LedgerFormatErrorV1::Corrupt("noncanonical held record"));
+        }
+        return Ok(DecodedRecordV1::NativeCompletion(held.original().clone()));
+    }
+    let record = ledger::format::decode_record(key, value)?;
+    if ledger::format::encode_decoded_record(&record) != value {
+        return Err(LedgerFormatErrorV1::Corrupt("noncanonical AOSSPL record"));
+    }
+    Ok(record)
+}
+
+pub(crate) fn validate_current_records(
+    records: &BTreeMap<Vec<u8>, Vec<u8>>,
+) -> Result<ValidatedProspectiveLedgerV1, LedgerFormatErrorV1> {
     use ledger::model::{DecodedRecordV1, ProviderAttemptStateV1};
 
-    let mut canonical = BTreeMap::<Vec<u8>, Vec<u8>>::new();
+    let canonical = records;
     let mut decoded = Vec::new();
     let mut aggregate_bytes = 0_usize;
     let mut record_count = 0_usize;
@@ -444,14 +508,7 @@ pub fn validate_prospective_records<'record>(
                 "prospective ledger aggregate bounds",
             ));
         }
-        if canonical.contains_key(key) {
-            return Err(LedgerFormatErrorV1::Corrupt("duplicate AOSSPL key"));
-        }
-        canonical.insert(key.to_vec(), value.to_vec());
-        let record = ledger::format::decode_record(key, value)?;
-        if ledger::format::encode_decoded_record(&record) != value {
-            return Err(LedgerFormatErrorV1::Corrupt("noncanonical AOSSPL record"));
-        }
+        let record = decode_current_record(key, value)?;
         match &record {
             DecodedRecordV1::Authority(authority) => {
                 authority_count = authority_count
@@ -717,14 +774,27 @@ pub fn validate_prospective_records<'record>(
             .ok_or(LedgerFormatErrorV1::Corrupt(
                 "orphan native completion acquisition",
             ))?;
-        native.validate_provider_graph(attempt, acquisition)?;
+        let native_key = ledger::native_completion::native_completion_key_v2(native.acquisition_id);
+        let bytes = canonical
+            .get(&native_key)
+            .ok_or(LedgerFormatErrorV1::Corrupt("native canonical row"))?;
+        if ledger::native_held_completion::graph::is_held(bytes) {
+            ledger::native_held_completion::graph::validate_original_cut(
+                canonical,
+                &native_key,
+                bytes,
+            )?;
+        } else {
+            native.validate_provider_graph(attempt, acquisition)?;
+        }
     }
     for attempt in &attempts {
         if attempt.method == aos_sandbox_source_provider_protocol::SourceProviderMethod::Release
             && attempt.state == ProviderAttemptStateV1::Completed
         {
-            ledger::native_completion::export_result::validate_native_export_fence_result_decoded(
+            ledger::native_completion::export_result::validate_native_export_fence_result_current(
                 &decoded,
+                canonical,
                 attempt.attempt_digest,
                 &attempt.completed_response,
             )?;
@@ -988,6 +1058,7 @@ pub fn validate_prospective_records<'record>(
         authority.catalog_digest,
         canonical
             .iter()
+            .filter(|(_, value)| !ledger::native_held_completion::graph::is_held(value))
             .map(|(key, value)| (key.as_slice(), value.as_slice())),
         limits::MAXIMUM_INVENTORY_TOMBSTONES_PER_HOLDER,
     )?;
