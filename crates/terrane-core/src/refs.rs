@@ -760,11 +760,24 @@ mod tests {
             RefRecord::validate_successor(Some(&first), &skipped),
             Err(RefSequenceError::InvalidSequence)
         );
+        let mut fenced = next.clone();
+        fenced.writer_epoch = 4;
+        assert_eq!(
+            RefRecord::validate_successor(Some(&first), &fenced),
+            Err(RefSequenceError::EpochRegression)
+        );
         let mut moved = next;
         moved.home.region = Some(String::from("elsewhere"));
         assert_eq!(
             RefRecord::validate_successor(Some(&first), &moved),
             Err(RefSequenceError::HomeChanged)
+        );
+
+        let mut exhausted = first;
+        exhausted.seq = u64::MAX;
+        assert_eq!(
+            exhausted.advance(digest(2), 5),
+            Err(RefSequenceError::Exhausted)
         );
     }
 
