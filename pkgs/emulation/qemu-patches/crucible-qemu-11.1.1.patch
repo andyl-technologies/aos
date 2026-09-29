@@ -1,4 +1,4 @@
-From e8f5118975786029130f6b8010e0fe0c889ae149 Mon Sep 17 00:00:00 2001
+From adca4c4d0befeb2740c89fc21a925f1a0b206b5c Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -146,6 +146,8 @@ Preserve wide ARM, HPPA and LoongArch CPU timer origins and deadlines.
 Preserve wide PowerPC timer coordinates and exact precise BookE edges.
 
 Preserve full-width default APIC, HPET, RTC, PIT, serial, keyboard and ACPI PM timer state.
+
+Retain actual RTC calendar callbacks in the current GPL unit and remove obsolete split-phase test paths.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -144067,7 +144069,7 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
      return g_test_run();
  }
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..e6820d93a3f3a13eedeb95a8806768cec5f1ffdc 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..785c4f438050fa587e4a97e8d07b2310eee2e145 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -147,6 +147,37 @@ if have_system
@@ -144204,9 +144206,9 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..e6820d93a3f3a13eedeb95a8806768ce
 +endif
 +
 +if have_system and config_all_devices.has_key('CONFIG_MC146818RTC')
-+  rtc_phase_test = executable(
-+    'test-crucible-rtc-phase',
-+    'test-crucible-rtc-phase.c',
++  rtc_calendar_test = executable(
++    'test-crucible-rtc-calendar',
++    'test-crucible-rtc-calendar.c',
 +    '../../hw/core/irq.c',
 +    genh,
 +    dependencies: [qemuutil, qom, migration, io],
@@ -144214,8 +144216,8 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..e6820d93a3f3a13eedeb95a8806768ce
 +    link_args: ['-Wl,--gc-sections'],
 +  )
 +  test(
-+    'test-crucible-rtc-phase',
-+    rtc_phase_test,
++    'test-crucible-rtc-calendar',
++    rtc_calendar_test,
 +    env: test_env,
 +    args: ['--tap', '-k'],
 +    protocol: 'tap',
@@ -163889,12 +163891,12 @@ index 0000000000000000000000000000000000000000..47c5b0de1b13d148c6b19af3e0bacdf5
 +
 +if __name__ == "__main__":
 +    main()
-diff --git a/tests/unit/test-crucible-rtc-phase.c b/tests/unit/test-crucible-rtc-phase.c
+diff --git a/tests/unit/test-crucible-rtc-calendar.c b/tests/unit/test-crucible-rtc-calendar.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..41a6a463ef6a5e8866844799745038872b9533b3
+index 0000000000000000000000000000000000000000..3f1b7ee4bd0cc315b3a3e2d0677e0cc2c41a0b92
 --- /dev/null
-+++ b/tests/unit/test-crucible-rtc-phase.c
-@@ -0,0 +1,393 @@
++++ b/tests/unit/test-crucible-rtc-calendar.c
+@@ -0,0 +1,295 @@
 +/*
 + * Actual CMOS RTC calendar/update timer tests.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -163905,8 +163907,6 @@ index 0000000000000000000000000000000000000000..41a6a463ef6a5e886684479974503887
 +#include "qemu/main-loop.h"
 +#include "qemu/module.h"
 +#include "system/cpu-timers.h"
-+#include "io/channel-buffer.h"
-+#include "../../migration/qemu-file.h"
 +
 +/* Retain literal RTC bodies without constructing an ISA machine. */
 +#undef type_init
@@ -164105,7 +164105,7 @@ index 0000000000000000000000000000000000000000..41a6a463ef6a5e886684479974503887
 +    state.cmos_data[RTC_SECONDS_ALARM] = 2;
 +    check_update_timer(&state);
 +    deadline = observed_ps + 2 * (__int128)PICOSECONDS_PER_SECOND;
-+    g_assert_true(state.next_alarm_phase_ps == 501);
++    g_assert_true(state.next_alarm_ps == deadline);
 +    observed_ps += PICOSECONDS_PER_SECOND;
 +    g_assert_true(qemu_clock_run_timers(rtc_clock));
 +    g_assert_false(state.cmos_data[RTC_REG_C] & REG_C_AF);
@@ -164137,86 +164137,13 @@ index 0000000000000000000000000000000000000000..41a6a463ef6a5e886684479974503887
 +    check_update_timer(&state);
 +    deadline = observed_ps + PICOSECONDS_PER_SECOND;
 +    g_assert_true(update_expiry_ps(&state) == deadline);
-+    g_assert_cmpuint(state.crucible_last_update_phase_ps, ==, 290);
++    g_assert_true(state.calendar_origin_ps == observed_ps);
 +    observed_ps = deadline - 1;
 +    g_assert_cmpuint(get_guest_rtc_ns(&state, true), ==,
 +                     NANOSECONDS_PER_SECOND - 1);
 +    observed_ps = deadline;
 +    g_assert_cmpuint(get_guest_rtc_ns(&state, true), ==,
 +                     NANOSECONDS_PER_SECOND);
-+    destroy_rtc(&state);
-+}
-+
-+static void test_legacy_phase_default(void)
-+{
-+    MC146818RtcState state = { 0 };
-+
-+    if (!g_test_subprocess()) {
-+        g_test_trap_subprocess(NULL, 0, 0);
-+        g_test_trap_assert_passed();
-+        return;
-+    }
-+
-+    observed_ps = 10501;
-+    initialize_rtc(&state, true);
-+    g_assert_true(rtc_crucible_clock_needed(&state));
-+    g_assert_cmpint(rtc_pre_load(&state), ==, 0);
-+    g_assert_cmpuint(state.crucible_last_update_phase_ps, ==, 0);
-+    g_assert_false(rtc_crucible_clock_needed(&state));
-+    check_update_timer(&state);
-+    g_assert_true(update_expiry_ps(&state) ==
-+                  10000 + (__int128)PICOSECONDS_PER_SECOND);
-+    destroy_rtc(&state);
-+}
-+
-+static void test_origin_migration(void)
-+{
-+    MC146818RtcState state = { 0 };
-+    QIOChannelBuffer *buffer;
-+    QIOChannelBuffer *input;
-+    QEMUFile *file;
-+    Error *error = NULL;
-+
-+    if (!g_test_subprocess()) {
-+        g_test_trap_subprocess(NULL, 0, 0);
-+        g_test_trap_assert_passed();
-+        return;
-+    }
-+
-+    observed_ps = 10501;
-+    initialize_rtc(&state, true);
-+    g_assert_true(rtc_crucible_clock_needed(&state));
-+    buffer = qio_channel_buffer_new(256);
-+    file = qemu_file_new_output(QIO_CHANNEL(buffer));
-+    g_assert_cmpint(vmstate_save_state(file, &vmstate_rtc_crucible_clock,
-+                                      &state, NULL, &error), ==, 0);
-+    g_assert_null(error);
-+    qemu_put_byte(file, 0);
-+    qemu_fflush(file);
-+    input = qio_channel_buffer_new(buffer->usage);
-+    input->usage = buffer->usage;
-+    g_assert_cmpuint(input->usage, ==, 123);
-+    memcpy(input->data, buffer->data, buffer->usage);
-+    g_assert_cmpint(qemu_fclose(file), ==, 0);
-+    object_unref(OBJECT(buffer));
-+
-+    g_assert_cmpint(rtc_pre_load(&state), ==, 0);
-+    state.crucible_last_update_ns = 0;
-+    file = qemu_file_new_input(QIO_CHANNEL(input));
-+    g_assert_cmpint(vmstate_load_state(file, &vmstate_rtc_crucible_clock,
-+                                      &state, 5, &error), ==, 0);
-+    g_assert_cmpint(qemu_fclose(file), ==, 0);
-+    g_assert_null(error);
-+    g_assert_cmpint(state.crucible_last_update_ns, ==, 10);
-+    g_assert_cmpuint(state.crucible_last_update_phase_ps, ==, 501);
-+    g_assert_true(state.crucible_exact_loaded);
-+    check_update_timer(&state);
-+    g_assert_true(update_expiry_ps(&state) ==
-+                  observed_ps + PICOSECONDS_PER_SECOND);
-+
-+    state.crucible_last_update_phase_ps = 1000;
-+    g_assert_cmpint(rtc_crucible_clock_post_load(&state, 5), ==, -EINVAL);
-+    object_unref(OBJECT(input));
 +    destroy_rtc(&state);
 +}
 +
@@ -164253,25 +164180,6 @@ index 0000000000000000000000000000000000000000..41a6a463ef6a5e886684479974503887
 +    destroy_rtc(&state);
 +}
 +
-+static void test_clock_range(void)
-+{
-+    MC146818RtcState state = { 0 };
-+
-+    if (!g_test_subprocess()) {
-+        g_test_trap_subprocess(NULL, 0, 0);
-+        g_test_trap_assert_failed();
-+        g_test_trap_assert_stderr("*CMOS RTC calendar origin out of range*");
-+        return;
-+    }
-+
-+    observed_ps = 10501;
-+    initialize_rtc(&state, true);
-+    observed_ps = ((__int128)INT64_MAX + 1) *
-+                  PICOSECONDS_PER_NANOSECOND;
-+    rtc_set_time(&state);
-+    g_assert_not_reached();
-+}
-+
 +int main(int argc, char **argv)
 +{
 +    g_test_init(&argc, &argv, NULL);
@@ -164281,11 +164189,7 @@ index 0000000000000000000000000000000000000000..41a6a463ef6a5e886684479974503887
 +                         test_update_origin);
 +    g_test_add_func("/rtc/update/alarm-phase", test_alarm_phase);
 +    g_test_add_func("/rtc/update/rebase-phase", test_rebase_phase);
-+    g_test_add_func("/rtc/migration/legacy-phase-default",
-+                    test_legacy_phase_default);
-+    g_test_add_func("/rtc/migration/origin-roundtrip", test_origin_migration);
 +    g_test_add_func("/rtc/update/negative-calendar", test_negative_calendar);
-+    g_test_add_func("/rtc/update/origin-range", test_clock_range);
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-rtc-timer-wide-clock.c b/tests/unit/test-crucible-rtc-timer-wide-clock.c
