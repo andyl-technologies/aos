@@ -555,7 +555,7 @@ fn campaign_model_standard_requires_public_repository_recovery_proofs() -> Resul
         "assert_eq!(lineage.id()?, reverse_lineage.id()?)",
         "CampaignRepositoryError::Stale",
         "derive_campaign",
-        "assert_eq!(rebuilt.snapshot_id(), derived.new_snapshot)",
+        "assert_eq!(rebuilt.snapshot_id(), derived_paused.new_snapshot)",
         "restarted.state",
     ] {
         let without_proof = source.replace(proof, "missing_repository_proof");

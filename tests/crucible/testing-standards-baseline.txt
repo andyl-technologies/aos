@@ -33,6 +33,10 @@
 # the specified topology appears and checks their exit under fixed deadlines.
 # The lifecycle `retry` variable names a modeled guest execution-quanta choice;
 # its submission is single-shot and every unmet observation fails the test.
+# The fixed-input and cap tests exercise retained transaction recovery or
+# poisoned-owner refusal; each test runs once and asserts every result. The
+# storage observation macro names the retained retry-authorization set, while
+# the packaged recovery fixture submits one modeled retry-quanta choice.
 crucible-api	src/vm_lifecycle/checkpoint_store/tests	retry	1
 crucible-api	src/vm_lifecycle/checkpoint_store/storage/tests	std::thread::sleep	1
 crucible-api	src/vm_lifecycle/checkpoint_store/storage/tests	thread::sleep	1
@@ -117,6 +121,7 @@ crucible-cli	tests/serve_process	thread::sleep	1
 crucible-device	src/block/fault	retry	1
 crucible-device	src/block/fault/state_admission	retry	1
 crucible-device	src/block/fault/state_execution	retry	1
+crucible-device	src/block/fault/observation_effects	retry	1
 crucible-device	src/block_lifecycle_test	retry	1
 crucible-device	src/block_snapshot_array_test	retry	1
 crucible-guest	src/guest_introspection_agent	retry	1
@@ -183,3 +188,7 @@ crucible-qemu	src/supervision/node_step_gate/exact_snapshot/child_support	std::t
 crucible-qemu	src/supervision/node_step_gate/exact_snapshot/child_support	thread::sleep	1
 crucible-qemu	src/supervision/node_step_gate/exact_snapshot/source_set	thread::sleep	1
 crucible	src/scheduler/tests/concurrent	retry	1
+crucible	src/scheduler/io_inventory/fixed_consumers	retry	1
+crucible	src/scheduler/tests/cap_boundary	retry	1
+crucible	src/scheduler/tests/run_admission	retry	1
+crucible-cli	tests/support/campaign_packaged_process/guest_choice/storage_recovery	retry	1

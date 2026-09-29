@@ -241,7 +241,7 @@ pub(super) fn source_shape_failures(
             "assert_eq!(lineage.id()?, reverse_lineage.id()?)",
             "CampaignRepositoryError::Stale",
             "derive_campaign",
-            "assert_eq!(rebuilt.snapshot_id(), derived.new_snapshot)",
+            "assert_eq!(rebuilt.snapshot_id(), derived_paused.new_snapshot)",
             "restarted.state",
         ] {
             if !code.contains(required) {
@@ -691,6 +691,26 @@ pub(super) fn testing_source_regression_failures() -> Vec<String> {
     {
         failures.push(
             "testing-standard regression rejected the scoped modeled-retry baseline".to_string(),
+        );
+    }
+
+    let other_escapes = flaky_escape_failures(
+        "crucible-daemon",
+        native_scenario_target,
+        "let retry_domain = modeled_guest_choice(); rerun_failed_test(); thread::sleep(wait);",
+    );
+    let refused_escapes = semantic_baseline.filter_flaky_findings(other_escapes);
+    if refused_escapes.len() != 2
+        || !refused_escapes
+            .iter()
+            .any(|finding| finding.contains("`rerun`"))
+        || !refused_escapes
+            .iter()
+            .any(|finding| finding.contains("`thread::sleep`"))
+    {
+        failures.push(
+            "testing-standard regression allowed rerun or sleep escapes in a semantic-retry target"
+                .to_string(),
         );
     }
 

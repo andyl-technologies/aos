@@ -321,7 +321,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         ),
         (
             "crucible.executor.scheduler-continuation",
-            "3",
+            "6",
             "crucible-daemon::exact_checkpoint_store",
             "device-state",
         ),
