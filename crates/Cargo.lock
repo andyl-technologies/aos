@@ -841,6 +841,7 @@ dependencies = [
  "aos-sandbox-linux",
  "aos-sandbox-ownership-protocol",
  "aos-sandbox-protocol",
+ "aos-sandbox-source-provider-ledger",
  "aos-sandbox-source-provider-protocol",
  "aos-systemd",
  "axum",

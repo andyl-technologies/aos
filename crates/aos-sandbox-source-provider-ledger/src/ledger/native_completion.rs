@@ -37,6 +37,14 @@ mod clock;
 
 pub use clock::NativeAcquireClockAnchorV1;
 
+#[path = "native_completion/original_provenance.rs"]
+mod original_provenance;
+
+pub use original_provenance::{
+    MAXIMUM_ORIGINAL_SOURCE_PROVENANCE_BYTES_V5, OriginalSourceProvenanceClaimsV5,
+    OriginalSourceProvenanceV5,
+};
+
 #[path = "native_completion/export_fence.rs"]
 mod export_fence;
 

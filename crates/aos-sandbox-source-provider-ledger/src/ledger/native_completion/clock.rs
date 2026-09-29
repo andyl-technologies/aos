@@ -18,7 +18,8 @@ use aos_sandbox_source_provider_protocol::{
 use super::super::LedgerFormatErrorV1;
 use super::super::codec::{Decoder, Encoder};
 
-pub(super) const CLOCK_BYTES: usize = 56;
+pub(super) const RAW_PAIR_BYTES: usize = 48;
+pub(super) const CLOCK_BYTES: usize = RAW_PAIR_BYTES + 8;
 
 /// Retains raw original clock claims without granting completion authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -82,31 +83,42 @@ impl NativeAcquireClockAnchorV1 {
     }
 
     pub(super) fn encode(self, body: &mut Encoder) {
-        body.array(&self.initial.provenance().as_bytes());
-        body.array(&self.initial.host_boot_id());
-        body.i64(self.initial.wall_seconds());
-        body.u64(self.initial.boottime_nanoseconds());
+        encode_raw_pair(self.initial, body);
         body.u64(self.deadline);
     }
 
     pub(super) fn decode(body: &mut Decoder<'_>) -> Result<Self, LedgerFormatErrorV1> {
-        let provenance = RawClockProvenance::new_untrusted(body.nonzero_array()?)
-            .map_err(|_| LedgerFormatErrorV1::Corrupt("native clock provenance"))?;
-        let initial = RawPairedClockSample::new_untrusted(
-            provenance,
-            body.nonzero_array()?,
-            body.nonnegative_i64()?,
-            body.u64()?,
-        )
-        .map_err(|_| LedgerFormatErrorV1::Corrupt("native original clock pair"))?;
         Ok(Self {
-            initial,
+            initial: decode_raw_pair(body)?,
             deadline: body.u64()?,
         })
     }
 }
 
-fn conservative_deadline(
+// Original Source metadata and the old anchor use the same raw48 encoding.
+// These helpers serialize claims only; they never sample or authenticate a clock.
+pub(super) fn encode_raw_pair(initial: RawPairedClockSample, body: &mut Encoder) {
+    body.array(&initial.provenance().as_bytes());
+    body.array(&initial.host_boot_id());
+    body.i64(initial.wall_seconds());
+    body.u64(initial.boottime_nanoseconds());
+}
+
+pub(super) fn decode_raw_pair(
+    body: &mut Decoder<'_>,
+) -> Result<RawPairedClockSample, LedgerFormatErrorV1> {
+    let provenance = RawClockProvenance::new_untrusted(body.nonzero_array()?)
+        .map_err(|_| LedgerFormatErrorV1::Corrupt("native clock provenance"))?;
+    RawPairedClockSample::new_untrusted(
+        provenance,
+        body.nonzero_array()?,
+        body.nonnegative_i64()?,
+        body.u64()?,
+    )
+    .map_err(|_| LedgerFormatErrorV1::Corrupt("native original clock pair"))
+}
+
+pub(super) fn conservative_deadline(
     initial: RawPairedClockSample,
     expires: i64,
 ) -> Result<u64, LedgerFormatErrorV1> {
@@ -125,6 +137,46 @@ fn conservative_deadline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_anchor56_preserves_independent_raw48_then_deadline8_bytes() {
+        let initial = RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
+            [2; 16],
+            100,
+            1_000_000_000,
+        )
+        .unwrap();
+        let anchor = NativeAcquireClockAnchorV1 {
+            initial,
+            deadline: 30_000_000_000,
+        };
+        let mut encoded = Encoder::with_capacity(56);
+        anchor.encode(&mut encoded);
+        let mut expected = b"aos-kernel-clock".to_vec();
+        expected.extend_from_slice(&[2; 16]);
+        expected.extend_from_slice(&100_i64.to_be_bytes());
+        expected.extend_from_slice(&1_000_000_000_u64.to_be_bytes());
+        expected.extend_from_slice(&30_000_000_000_u64.to_be_bytes());
+
+        assert_eq!(RAW_PAIR_BYTES, 48);
+        assert_eq!(CLOCK_BYTES, 56);
+        assert_eq!(encoded.as_slice(), expected);
+        let mut decoded = Decoder::new(&expected);
+        assert_eq!(
+            NativeAcquireClockAnchorV1::decode(&mut decoded).unwrap(),
+            anchor,
+        );
+        decoded.finish().unwrap();
+        for offset in [0, 16] {
+            let mut invalid = expected.clone();
+            invalid[offset..offset + 16].fill(0);
+            assert!(NativeAcquireClockAnchorV1::decode(&mut Decoder::new(&invalid)).is_err());
+        }
+        let mut invalid = expected;
+        invalid[32..40].copy_from_slice(&(-1_i64).to_be_bytes());
+        assert!(NativeAcquireClockAnchorV1::decode(&mut Decoder::new(&invalid)).is_err());
+    }
 
     #[test]
     fn native_clock_deadline_rejects_exact_expiry_fraction_and_arithmetic_overflow() {

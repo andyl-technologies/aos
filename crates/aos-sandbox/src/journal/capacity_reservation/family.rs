@@ -7,7 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::{JournalError, JournalTransaction, RecordNamespace};
-use super::native_held::{NativeHeldCapacityRecordV3, OriginalRootCapacityRecordV5};
+use super::native_held::{
+    NativeHeldCapacityRecordV3, OriginalRootCapacityRecordV5, OriginalSourceCapacityRecordV5,
+};
 use super::ordinary::OrdinaryCapacityRecordV4;
 use super::{
     DecodedCapacityReservationV1, GlobalCapacityReservationRequestV1, decode_reservation,
@@ -24,6 +26,7 @@ pub(in crate::journal) enum CanonicalCapacityFamily {
     Native3(NativeHeldCapacityRecordV3),
     Ordinary4(OrdinaryCapacityRecordV4),
     OriginalRoot5(OriginalRootCapacityRecordV5),
+    OriginalSource5(OriginalSourceCapacityRecordV5),
 }
 
 impl CanonicalCapacityFamily {
@@ -59,9 +62,17 @@ impl CanonicalCapacityFamily {
             [0, 4] => Ok(Self::Ordinary4(OrdinaryCapacityRecordV4::decode(
                 key, value,
             )?)),
-            [0, 5] => Ok(Self::OriginalRoot5(OriginalRootCapacityRecordV5::decode(
-                key, value,
-            )?)),
+            [0, 5] => match value.get(8..14) {
+                Some([0, 5, 40, 8, 0, 0]) => Ok(Self::OriginalRoot5(
+                    OriginalRootCapacityRecordV5::decode(key, value)?,
+                )),
+                Some([0, 5, 41, 11, 0, 0]) => Ok(Self::OriginalSource5(
+                    OriginalSourceCapacityRecordV5::decode(key, value)?,
+                )),
+                _ => Err(JournalError::MalformedRecord(
+                    "unknown original capacity family tuple",
+                )),
+            },
             _ => Err(JournalError::MalformedRecord(
                 "unknown capacity family version",
             )),
@@ -72,7 +83,10 @@ impl CanonicalCapacityFamily {
     pub(super) fn legacy(&self) -> Option<LegacyData> {
         match self {
             Self::Legacy1(data) | Self::Legacy2(data) => Some(*data),
-            Self::Native3(_) | Self::Ordinary4(_) | Self::OriginalRoot5(_) => None,
+            Self::Native3(_)
+            | Self::Ordinary4(_)
+            | Self::OriginalRoot5(_)
+            | Self::OriginalSource5(_) => None,
         }
     }
 
@@ -93,6 +107,7 @@ impl CanonicalCapacityFamily {
             }
             Self::Native3(record) => record.request().purpose.owner_namespace(),
             Self::Ordinary4(_) | Self::OriginalRoot5(_) => RecordNamespace::MountSourceAcquisition,
+            Self::OriginalSource5(_) => RecordNamespace::SourceProviderAuthority,
         }
     }
 
@@ -102,6 +117,7 @@ impl CanonicalCapacityFamily {
             Self::Native3(record) => record.reservation_id(),
             Self::Ordinary4(record) => record.reservation_id(),
             Self::OriginalRoot5(record) => record.reservation_id(),
+            Self::OriginalSource5(record) => record.reservation_id(),
         }
     }
 
@@ -126,6 +142,14 @@ impl CanonicalCapacityFamily {
                 )
             }
             Self::OriginalRoot5(record) => {
+                let request = record.request();
+                (
+                    request.terminal_records.max(request.poison_records),
+                    request.terminal_bytes.max(request.poison_bytes),
+                    request.future_transactions,
+                )
+            }
+            Self::OriginalSource5(record) => {
                 let request = record.request();
                 (
                     request.terminal_records.max(request.poison_records),
