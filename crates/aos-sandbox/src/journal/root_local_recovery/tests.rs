@@ -282,7 +282,7 @@ fn unsupported_kind5_overlap_refuses_before_head_mutation() {
     let (_, proposed) = prepare(&state, successor.clone()).unwrap();
     // Canonical kind5 DATA stands for the unsupported retained owner grammar;
     // it is deliberately not a qualified protected kind5 producer proof.
-    let mut data = *proposed.data();
+    let mut data = proposed.data();
     data.kind = Kind::DeadReplacement;
     data.owner_id = graph(&state)
         .unwrap()
