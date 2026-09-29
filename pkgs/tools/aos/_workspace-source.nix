@@ -36,6 +36,7 @@ in
         || pathString == "${repoRootString}/tests"
         || lib.hasPrefix "${repoRootString}/tests/fleet" pathString
         || lib.hasPrefix "${repoRootString}/tests/qualification" pathString
+        || lib.hasPrefix "${repoRootString}/tests/terrane" pathString
         || lib.hasPrefix "${repoRootString}/tests/vm" pathString
         || pathString == "${repoRootString}/tests/native"
         || pathString == "${repoRootString}/tests/native/hub-settings.py"
@@ -45,5 +46,6 @@ in
         || pathString == "${repoRootString}/docs"
         || pathString == "${repoRootString}/docs/rfcs"
         || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
+        || lib.hasPrefix "${repoRootString}/docs/rfcs/0024-terrane" pathString
       );
   }

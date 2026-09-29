@@ -139,32 +139,38 @@
     export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
   '';
   src = import ./_workspace-source.nix {inherit lib;};
-  applicationTestPackages = [
-    "aos"
-    "aos-cache"
-    "aos-contract"
-    "aos-core"
-    "aos-doc"
-    "aos-doc-model"
-    "aos-hub"
-    "aos-hub-core"
-    "aos-hub-worker"
-    "aos-maintain"
-    "aos-net"
-    "aos-oci"
-    "aos-oci-types"
-    "aos-package"
-    "aos-profile"
-    "aos-proto"
-    "aos-proto-types"
-    "aos-registry-spa"
-    "aos-registry-surface"
-    "aos-release"
-    "aos-release-signer"
-    "aos-remote"
-    "aos-server"
-    "aos-systemd"
-  ];
+  applicationTestPackages =
+    [
+      "aos"
+      "aos-cache"
+      "aos-contract"
+      "aos-core"
+      "aos-doc"
+      "aos-doc-model"
+      "aos-hub"
+      "aos-hub-core"
+      "aos-hub-worker"
+      "aos-maintain"
+      "aos-net"
+      "aos-oci"
+      "aos-oci-types"
+      "aos-package"
+      "aos-profile"
+      "aos-proto"
+      "aos-proto-types"
+      "aos-registry-spa"
+      "aos-registry-surface"
+      "aos-release"
+      "aos-release-signer"
+      "aos-remote"
+      "aos-server"
+      "aos-systemd"
+      "aos-terrane"
+      "terrane-core"
+      "terrane"
+      "terrane-cli"
+    ]
+    ++ lib.optionals stdenv.hostPlatform.isLinux ["terrane-fs"];
   applicationTestFlags = builtins.concatStringsSep " " (
     map (package: "-p ${package}") applicationTestPackages
   );
@@ -172,7 +178,7 @@
     inherit src;
     name = "aos-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-6FU3M+iwF2iVd+nl7JvCC6r2oGz4Yq1PWOqBC2nBqDQ=";
+    hash = "sha256-ufQHfgNDDEgTh2tadmGf+4ZiFspFLbyVfAZMl3jHAgY=";
   };
   cargoArtifactContract = {
     family = "aos-native-release-and-test";

@@ -1,13 +1,23 @@
 ##! terrane — branchable content-addressed store (RFC-0024)
-{lib, mkCargoPackage, fetchCargoVendor}: let
+{
+  lib,
+  stdenv,
+  mkCargoPackage,
+  fetchCargoVendor,
+}: let
   version = "0.1.0";
   src = import ./aos/_workspace-source.nix {inherit lib;};
   cargoDeps = fetchCargoVendor {
     inherit src;
     name = "terrane-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-6FU3M+iwF2iVd+nl7JvCC6r2oGz4Yq1PWOqBC2nBqDQ=";
+    hash = "sha256-ufQHfgNDDEgTh2tadmGf+4ZiFspFLbyVfAZMl3jHAgY=";
   };
+  # Linux realizers are target-specific; the portable SDK and CLI are tested
+  # on every supported native target (PKG-3).
+  testPackages =
+    ["terrane-core" "terrane" "terrane-cli" "aos-terrane"]
+    ++ lib.optionals stdenv.hostPlatform.isLinux ["terrane-fs"];
 in
   mkCargoPackage {
     pname = "terrane";
@@ -15,7 +25,8 @@ in
     cargoRoot = "crates";
     cargoFlags = "-p terrane-cli --bin terrane";
     cargoNextest = true;
-    cargoTestFlags = "-p terrane-core -p terrane -p terrane-fs -p terrane-cli -p aos-terrane";
+    cargoTestFlags = lib.concatStringsSep " " (map (package: "-p ${package}") testPackages);
     doCheck = true;
+    passthru = {inherit cargoDeps;};
     meta.description = "Branchable content-addressed filesystem store";
   }
