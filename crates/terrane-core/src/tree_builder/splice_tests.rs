@@ -493,3 +493,90 @@ fn tree_history_independence_range_randomized_replacement_matches_bulk_build() {
         }
     }
 }
+
+#[test]
+fn tree_history_independence_sparse_batch_admits_only_final_link_sets_and_ancestors() {
+    let tree = Tree::build(
+        vec![linked(b"a", 0o644), directory(b"m"), linked(b"z", 0o644)],
+        None,
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
+    let edits = vec![
+        (b"a".to_vec(), Some(linked(b"a", 0o600).entry)),
+        (b"m".to_vec(), None),
+        (b"n".to_vec(), Some(directory(b"n").entry)),
+        (b"n/child".to_vec(), Some(directory(b"n/child").entry)),
+        (b"z".to_vec(), Some(linked(b"z", 0o600).entry)),
+    ];
+    assert!(tree.edit_entries(&edits[..1]).is_err());
+    let result = tree.edit_entries(&edits).unwrap();
+    let rebuilt = Tree::build(
+        vec![
+            linked(b"a", 0o600),
+            directory(b"n"),
+            directory(b"n/child"),
+            linked(b"z", 0o600),
+        ],
+        None,
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
+    assert_eq!(result.tree.root_identity(), rebuilt.root_identity());
+    assert!(result.tree.remove(b"a").is_err());
+    assert!(tree.get(b"m").is_some());
+    assert!(
+        tree.edit_entries(&[edits[1].clone(), edits[0].clone()])
+            .is_err()
+    );
+    let no_op = tree.edit_entries(&[(b"absent".to_vec(), None)]).unwrap();
+    assert!(Rc::ptr_eq(&tree.root_rc(), &no_op.tree.root_rc()));
+    assert!(no_op.emitted.is_empty());
+}
+
+#[test]
+fn tree_history_independence_combined_sparse_and_subtree_link_set_is_atomic() {
+    let mut entries = vec![linked(b"a", 0o644), directory(b"m")];
+    entries.extend(
+        (0..5000).map(|number| {
+            directory(alloc::format!("m/{number:08}-{}", "x".repeat(120)).as_bytes())
+        }),
+    );
+    entries.push(linked(b"z", 0o644));
+    let tree = Tree::build(entries.clone(), None, 262144, TreeUse::Ordinary).unwrap();
+    assert!(!tree.root().children().is_empty());
+    entries[0] = linked(b"a", 0o600);
+    let last = entries.len() - 1;
+    entries[last] = linked(b"z", 0o600);
+    let rebuilt = Tree::build(entries, None, 262144, TreeUse::Ordinary).unwrap();
+    let old = Rc::clone(&tree.root().children()[0]);
+    let target = matching(&rebuilt, &old).unwrap();
+    let patches = [SubtreeReplacement {
+        old_identity: old.identity(),
+        target: Rc::clone(&target),
+    }];
+    assert!(tree.splice_subtrees(&patches).is_err());
+    let edits = [(b"z".to_vec(), Some(linked(b"z", 0o600).entry))];
+    let SpliceOutcome::Applied(result) = tree.edit_entries_with_subtrees(&edits, &patches).unwrap()
+    else {
+        panic!("compatible adopted subtree must remain shared");
+    };
+    assert_eq!(result.tree.root_identity(), rebuilt.root_identity());
+    assert!(Rc::ptr_eq(
+        &matching(&result.tree, &target).unwrap(),
+        &target
+    ));
+    assert!(
+        !result
+            .emitted
+            .iter()
+            .any(|node| node.identity() == target.identity())
+    );
+    assert!(result.tree.remove(b"a").is_err());
+    assert!(
+        tree.edit_entries_with_subtrees(&[(b"a".to_vec(), None)], &patches)
+            .is_err()
+    );
+}

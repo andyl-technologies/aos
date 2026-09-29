@@ -133,7 +133,7 @@ pub(super) struct Replacement<'a> {
     pub(super) nodes: Vec<Rc<StoredNode<'a>>>,
 }
 
-fn edit<'a>(
+pub(super) fn edit<'a>(
     tree: &Tree<'a>,
     key: &[u8],
     item: Option<LeafItem<'a>>,

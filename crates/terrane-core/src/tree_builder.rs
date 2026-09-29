@@ -333,6 +333,45 @@ impl<'a> Tree<'a> {
         range::replace(self, start, end, entries)
     }
 
+    /// Applies strictly sorted sparse entry changes as one atomic transaction.
+    ///
+    /// A missing entry value removes its key. Each changed key rechunks its
+    /// local stream and ancestors; intervening key ranges are not enumerated.
+    /// Ancestors and complete hard-link deltas are validated on the final map.
+    ///
+    /// # Errors
+    /// Rejects duplicate or unsorted keys, invalid final entries or ancestors,
+    /// inconsistent hard links, oversized items, and excessive tree depth.
+    pub fn edit_entries(
+        &self,
+        edits: &[(Vec<u8>, Option<Entry<'a>>)],
+    ) -> Result<Mutation<'a>, Error> {
+        match splice::apply_edits(self, &[], edits)? {
+            SpliceOutcome::Applied(result) => Ok(result),
+            SpliceOutcome::RechunkRequired(_) => Err(Error::Node),
+        }
+    }
+
+    /// Atomically combines sparse entry changes with whole-subtree adoption.
+    ///
+    /// Sparse keys must be strictly sorted and outside every adopted range.
+    /// Final-map validation permits complete hard-link sets to change across
+    /// both kinds of edits. Canonical boundary compatibility and actual target
+    /// sharing are checked after all changes. Failed adoption returns measured
+    /// work in [`SpliceOutcome::RechunkRequired`] and leaves the map unchanged.
+    ///
+    /// # Errors
+    /// Rejects invalid or overlapping patches, unsorted or overlapping sparse
+    /// keys, invalid final entries or ancestors, inconsistent hard links, and
+    /// resource-limit violations.
+    pub fn edit_entries_with_subtrees(
+        &self,
+        edits: &[(Vec<u8>, Option<Entry<'a>>)],
+        patches: &[SubtreeReplacement<'a>],
+    ) -> Result<SpliceOutcome<'a>, Error> {
+        splice::apply_edits(self, patches, edits)
+    }
+
     /// Replaces disjoint aligned subtrees by their existing immutable nodes.
     ///
     /// Each target must have the same first key, last key, and level as its

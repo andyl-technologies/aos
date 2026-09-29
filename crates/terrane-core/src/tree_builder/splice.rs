@@ -73,7 +73,15 @@ pub(super) fn apply<'a>(
     tree: &Tree<'a>,
     patches: &[SubtreeReplacement<'a>],
 ) -> Result<SpliceOutcome<'a>, Error> {
-    if patches.is_empty() {
+    apply_edits(tree, patches, &[])
+}
+
+pub(super) fn apply_edits<'a>(
+    tree: &Tree<'a>,
+    patches: &[SubtreeReplacement<'a>],
+    edits: &[(Vec<u8>, Option<Entry<'a>>)],
+) -> Result<SpliceOutcome<'a>, Error> {
+    if patches.is_empty() && edits.is_empty() {
         return Ok(SpliceOutcome::Applied(tree.unchanged()));
     }
     let mut ordered: Vec<_> = patches.iter().collect();
@@ -102,13 +110,40 @@ pub(super) fn apply<'a>(
         collect_changes(old, &patch.target, &mut changes, &mut work.validation_reads)?;
     }
 
+    let mut previous_key = None;
+    let mut range_index = 0;
+    for (key, _) in edits {
+        if previous_key.is_some_and(|previous: &[u8]| previous >= key.as_slice()) {
+            return Err(Error::Tree);
+        }
+        while ordered.get(range_index).is_some_and(|patch| {
+            patch
+                .target
+                .last_key()
+                .is_some_and(|last| last < key.as_slice())
+        }) {
+            range_index += 1;
+        }
+        if ordered.get(range_index).is_some_and(|patch| {
+            patch
+                .target
+                .first_key()
+                .is_some_and(|first| first <= key.as_slice())
+        }) {
+            return Err(Error::Tree);
+        }
+        previous_key = Some(key.as_slice());
+    }
+
     // Higher-level replacements go first. Their descendants remain available
     // by identity for subsequent disjoint lower-level replacements.
     ordered.sort_by_key(|patch| core::cmp::Reverse(patch.target.level()));
     let mut result = tree.clone();
     let mut emitted = Vec::new();
     for patch in &ordered {
-        let old = locate(&result, &patch.target, &mut work.validation_reads)?;
+        let Ok(old) = locate(&result, &patch.target, &mut work.validation_reads) else {
+            return Ok(SpliceOutcome::RechunkRequired(work));
+        };
         if old.identity() != patch.old_identity {
             return Ok(SpliceOutcome::RechunkRequired(work));
         }
@@ -123,8 +158,32 @@ pub(super) fn apply<'a>(
         emitted.extend(factory.emitted);
     }
 
+    // Only the final map is admitted. A hard-link set or directory subtree
+    // can have invalid intermediate states while its complete delta is applied.
+    for (key, new) in edits {
+        let old = mutation::lookup(tree, key, &mut work.validation_reads);
+        if old == new.as_ref() {
+            continue;
+        }
+        changes.push(Change {
+            key: key.clone(),
+            old: old.cloned(),
+            new: new.clone(),
+        });
+        let item = new.as_ref().map(|entry| LeafItem {
+            key: key.clone(),
+            entry: entry.clone(),
+        });
+        let next = mutation::edit(&result, key, item)?;
+        combine(&mut work, next.work);
+        emitted.extend(next.emitted);
+        result = next.tree;
+    }
+
     for patch in &ordered {
-        let present = locate(&result, &patch.target, &mut work.validation_reads)?;
+        let Ok(present) = locate(&result, &patch.target, &mut work.validation_reads) else {
+            return Ok(SpliceOutcome::RechunkRequired(work));
+        };
         if present.identity() != patch.target.identity()
             || !core::ptr::eq(present, patch.target.as_ref())
         {
