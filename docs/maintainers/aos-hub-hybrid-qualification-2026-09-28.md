@@ -1287,3 +1287,21 @@ target was reused. Its original receipt is unchanged; the final processed Wasm,
 shim and runtime evidence remain intact, as disclosed in
 `/tmp/hub-live-authority-issuer/final-v2-intermediate-retention-disclosure.json`.
 The separate optimized check retains its own immutable ordinary artifact.
+
+## Retained multipart descriptors use explicit byte offsets
+
+Retained file descriptors now read each multipart range at an explicit offset.
+The previous clone/seek reader shared the descriptor cursor: a regression against
+that implementation failed when its cursor moved from 21 to 16. The corrected
+reader passes six actual Linux tests, including 32 concurrent ranges while a
+separate descriptor moves the shared cursor, exact retries and short-file errors.
+The existing multipart protocol, admission, buffers and concurrency are unchanged.
+
+Producer `/tmp/hub-direct-upload-range-v2-qualified.json`
+(`202a1753ccf071471dd166398ccc7e08ad192e08d67e69ee17d0049db2354b40`)
+and independent review `/tmp/hub-direct-upload-range-v2-independent-review.json`
+(`fe226a9d775bc0433d85f0d2a64abceea6391a4003ed4bc8387209519c55584d`)
+bind the exact integrated file. Unix preserves the cursor. The Windows explicit
+offset implementation advances it; its pinned standard-library/API contract was
+reviewed, but no Windows build or runtime test was performed. This increment does
+not enable direct uploads or establish provider, throughput or combined acceptance.
