@@ -352,7 +352,7 @@ struct History {
 }
 
 impl History {
-    fn load(journal: &mut Journal) -> Result<Self, NamespaceTargetError> {
+    fn load(journal: &Journal) -> Result<Self, NamespaceTargetError> {
         journal.ensure_protected_authority()?;
         let runtimes = RuntimeHistory::load(journal)?;
         let mut history = Self::default();
@@ -516,6 +516,55 @@ fn head_key(identity: Identity) -> Vec<u8> {
     key
 }
 
+/// Seeds protected comparison rows, not an authenticated Host execution.
+/// No live generation/namespace/worker guard is constructed by this fixture.
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Protected comparison-row fixture setup intentionally panics."
+)]
+pub(crate) fn seed_consumer_origin_for_test(
+    journal: &mut Journal,
+    binding: &crate::runtime_authority::RuntimeAuthorityBindingV1,
+) {
+    let manifest = binding.manifest().manifest();
+    let facts = super::generation::Facts {
+        identity: (
+            *manifest.sandbox().as_bytes(),
+            *manifest.incarnation().as_bytes(),
+        ),
+        runtime: aos_sandbox_protocol::semantics::host::runtime_handle_v1(
+            manifest.incarnation().as_bytes(),
+            manifest.epoch().get(),
+            binding.assignment_digest().as_bytes(),
+        ),
+        scope: [3; 32],
+        pid: 123,
+        leaf_cgroup: 456,
+        anchor: 789,
+        binding_revision: binding.revision(),
+        binding_digest: *binding.digest().as_bytes(),
+    };
+    let (observed, changed) = RuntimeHistory::load(journal)
+        .unwrap()
+        .select(facts)
+        .unwrap();
+    assert!(changed);
+    journal.commit(&observed.transaction().unwrap()).unwrap();
+    let (allocation, changed) = History::load(journal)
+        .unwrap()
+        .select(
+            observed.facts.identity,
+            observed.generation,
+            observed.digest,
+            manifest.namespace_generation().get(),
+        )
+        .unwrap();
+    assert!(changed);
+    journal.commit(&allocation.transaction().unwrap()).unwrap();
+    History::load(journal).unwrap();
+}
+
 pub(crate) fn validate_namespace(journal: &mut Journal) -> Result<(), NamespaceTargetError> {
     History::load(journal).map(|_| ())
 }
@@ -545,4 +594,74 @@ pub(crate) fn validate_durable_reference_in_validated_namespace(
         return Err(NamespaceTargetError::CorruptState);
     }
     Ok(())
+}
+
+/// Contains only validated historical coordinates, never live worker custody.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ConsumerNamespaceOriginV1 {
+    pub(crate) allocation: DurableNamespaceTargetReferenceV1,
+    pub(crate) binding: crate::runtime_authority::DurableRuntimeAuthorityReferenceV1,
+}
+
+/// Joins actual protected allocation/runtime origin to current signed ownership.
+///
+/// This returns inert coordinates, never original/live/Ready worker custody.
+///
+/// # Errors
+///
+/// Rejects malformed history, another signed target, or broken holder continuity.
+pub(crate) fn current_consumer_namespace_origin(
+    journal: &mut Journal,
+    assignment: &super::CurrentAssignmentTarget,
+) -> Result<ConsumerNamespaceOriginV1, NamespaceTargetError> {
+    let origin = consumer_namespace_origin_data(
+        journal,
+        assignment.sandbox(),
+        assignment.incarnation(),
+        assignment.namespace_generation(),
+    )?;
+    assignment
+        .validate_durable_reference(journal, origin.binding)
+        .map_err(super::RuntimeGenerationError::from)?;
+    Ok(origin)
+}
+
+/// Resolves only a complete protected historical allocation/runtime relation.
+///
+/// # Errors
+///
+/// Rejects absent, corrupt, oversized or substituted protected history/target.
+pub(crate) fn consumer_namespace_origin_data(
+    journal: &Journal,
+    sandbox: SandboxId,
+    incarnation: IncarnationId,
+    namespace_generation: u64,
+) -> Result<ConsumerNamespaceOriginV1, NamespaceTargetError> {
+    let identity = (*sandbox.as_bytes(), *incarnation.as_bytes());
+    let history = History::load(journal)?;
+    let record = history
+        .latest
+        .get(&identity)
+        .ok_or(NamespaceTargetError::Conflict)?;
+    if record.target_generation != namespace_generation {
+        return Err(NamespaceTargetError::Conflict);
+    }
+    let allocation = DurableNamespaceTargetReferenceV1 {
+        sandbox,
+        incarnation,
+        observed_generation: record.observed_generation,
+        observed_audit_digest: record.observed_audit_digest,
+        target_generation: record.target_generation,
+        allocation_digest: record.digest,
+    };
+    let binding = super::generation::origin_binding(
+        journal,
+        identity,
+        record.observed_generation,
+        record.observed_audit_digest,
+    )?;
+    Ok(ConsumerNamespaceOriginV1 {
+        allocation,
+        binding,
+    })
 }

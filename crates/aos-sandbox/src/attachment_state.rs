@@ -737,6 +737,43 @@ pub(crate) fn get(
         .map(|record| DurableAttachmentDesiredStateV1 { record }))
 }
 
+/// Commits fixture DATA with the ordinary transition/reference checks.
+/// This deliberately does not construct a live namespace target or admission.
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Protected-row fixture setup intentionally panics."
+)]
+pub(crate) fn commit_consumer_fixture(
+    journal: &mut Journal,
+    mutation: AttachmentDesiredMutationV1,
+) {
+    let history = History::load(journal).unwrap();
+    let outcome = history.validate_mutation(&mutation).unwrap();
+    if outcome == AttachmentDesiredCommitOutcomeV1::Recorded {
+        crate::filesystem_view_state::validate_attachment_reference(
+            journal,
+            &mutation.record.intent,
+        )
+        .unwrap();
+        crate::attachment_slot_state::validate_attachment_reference(
+            journal,
+            &mutation.record.intent,
+        )
+        .unwrap();
+        journal
+            .commit(&mutation.record.transaction().unwrap())
+            .unwrap();
+    }
+    assert_eq!(
+        History::load(journal)
+            .unwrap()
+            .records
+            .get(&mutation.record.intent.id()),
+        Some(&mutation.record)
+    );
+}
+
 pub(crate) fn get_generation(
     journal: &Journal,
     attachment_id: AttachmentId,
