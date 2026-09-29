@@ -458,12 +458,17 @@ in rec {
       allElems = builtins.concatLists (builtins.map processDef defs);
       # Stable sort by priority (lower = earlier in the list).
       sorted = builtins.sort (a: b: a.priority < b.priority) allElems;
-      resolveOne = i: e:
-        elemType.merge
-        (loc ++ ["[${builtins.toString i}]"])
-        [
-          (builtins.removeAttrs e ["priority"])
-        ];
+      resolveOne = i: e: let
+        merged =
+          elemType.merge
+          (loc ++ ["[${builtins.toString i}]"])
+          [
+            (builtins.removeAttrs e ["priority"])
+          ];
+      in
+        if elemType ? _elementType || elemType.check merged
+        then merged
+        else throw "The option '${showLoc loc}' has an element that does not satisfy type '${elemType.description}'.";
     in
       builtins.genList
       (i: resolveOne i (builtins.elemAt sorted i))
@@ -567,7 +572,12 @@ in rec {
             else [
               {
                 name = key;
-                value = elemType.merge (loc ++ [key]) filteredDefs;
+                value = let
+                  merged = elemType.merge (loc ++ [key]) filteredDefs;
+                in
+                  if elemType ? _elementType || elemType.check merged
+                  then merged
+                  else throw "The option '${showLoc (loc ++ [key])}' does not satisfy type '${elemType.description}'.";
               }
             ]
         )
@@ -621,7 +631,6 @@ in rec {
       winningNull = builtins.any (def: def.value == null) winningDefs;
       winningValue = builtins.any (def: def.value != null) winningDefs;
       nonNullDefs = builtins.filter (def: def.value != null) defs;
-      selectedDef = builtins.elemAt winningDefs (builtins.length winningDefs - 1);
     in
       if winningNull && winningValue
       then throw "The option '${showLoc loc}' has conflicting null and non-null definitions: ${showDefs winningDefs}"
@@ -629,7 +638,7 @@ in rec {
       then null
       else if structural
       then elemType.merge loc nonNullDefs
-      else elemType.merge loc [selectedDef];
+      else elemType.merge loc winningDefs;
     _aosDocType = {
       kind = "nullable";
       value =
@@ -771,6 +780,47 @@ in rec {
     _aosDocType = {
       kind = "opaque";
       signature = "deferred module";
+    };
+  };
+
+  ## An output reference denotes a value available only during activation.
+  ## Its schema travels with it so inputs can reject incompatible references
+  ## during module evaluation without demanding the producer's execution.
+  effectOutput = {
+    name = "effectOutput";
+    description = "typed deferred effect output";
+    check = value:
+      builtins.isAttrs value
+      && builtins.attrNames value == ["_type" "identity" "output" "schema"]
+      && value._type == "aos-effect-output"
+      && builtins.isList value.identity
+      && builtins.length value.identity == 3
+      && builtins.all builtins.isString value.identity
+      && builtins.isString value.output
+      && builtins.isAttrs value.schema;
+    merge = mergeEqualOption;
+  };
+
+  ## Accepts an ordinary value or a deferred output of the same declared type.
+  ## This wraps an option type; it does not construct graph expressions.
+  deferred = valueType: {
+    name = "deferred(${valueType.name})";
+    description = "${valueType.description} or its deferred result";
+    check = value:
+      if builtins.isAttrs value && (value._type or null) == "aos-effect-output"
+      then effectOutput.check value && value.schema == valueType._aosDocType
+      else valueType.check value;
+    merge = loc: definitions:
+      if
+        builtins.any (definition:
+          builtins.isAttrs definition.value
+          && (definition.value._type or null) == "aos-effect-output")
+        definitions
+      then mergeEqualOption loc definitions
+      else valueType.merge loc definitions;
+    _aosDocType = {
+      kind = "deferred";
+      value = valueType._aosDocType;
     };
   };
 
