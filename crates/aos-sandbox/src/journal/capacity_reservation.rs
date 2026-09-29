@@ -9,8 +9,9 @@
 //! Native V3 records use a separate DATA-only codec and bounded profile; replay
 //! accounts their floors, but no legacy protected reservation route admits them.
 //! Ordinary V4 uses the same canonical family dispatch with a distinct closed
-//! DATA codec. Its owner/profile commitments remain opaque until a separately
-//! reviewed producer derives them; all generic protected append gates stay closed.
+//! DATA codec. The closed kind2 fixed-writer path derives its local commitments;
+//! other kinds remain opaque to protected producers. Generic append gates stay
+//! closed, and no original native admission follows from canonical floor DATA.
 
 use sha2::{Digest as _, Sha256};
 
@@ -22,8 +23,15 @@ mod family;
 pub mod native_held;
 mod ordinary;
 
+pub(in crate::journal) use ordinary::{
+    OrdinaryCapacityDataV4, OrdinaryCapacityKindV4, OrdinaryCapacityProfileV4,
+    OrdinaryCapacityRecordV4,
+};
+
 use family::{CanonicalCapacityFamily, canonical_reservations};
-pub(in crate::journal) use family::{accounting_reservations, require_legacy_reservations};
+pub(in crate::journal) use family::{
+    accounting_reservation, accounting_reservations, require_legacy_reservations,
+};
 
 const KEY_PREFIX: &[u8] = b"aos.journal.global-capacity-reservation.v1\0";
 const RECORD_DOMAIN: &[u8] = b"aos.sandbox.journal.global-capacity-reservation.v1\0";

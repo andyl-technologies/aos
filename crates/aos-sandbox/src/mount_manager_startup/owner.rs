@@ -88,6 +88,42 @@ pub struct MountManagerSourceControlSessionV1<'owner> {
 }
 
 impl<'journal> MountManagerStartupJournalBorrowV1<'journal> {
+    /// Borrows the same fixed writer for mixed-floor kind2 local recovery.
+    ///
+    /// Old legacy claims remain closed. This lends no native original admission
+    /// or effect authority and opens no additional journal or lock.
+    ///
+    /// # Errors
+    /// Refuses wrong names/owner/limits, unhealthy storage, invalid startup
+    /// history, source/native graph, capacity families or local read fences.
+    pub fn borrow_fixed_root_local_recovery_v4(
+        journal: &'journal mut Journal,
+    ) -> Result<Self, MountManagerSourceInventoryError> {
+        journal.require_protected_location(
+            Path::new(PROTECTED_MOUNT_MANAGER_ROOT),
+            MOUNT_MANAGER_JOURNAL,
+            0,
+            mount_manager_journal_limits(),
+        )?;
+        {
+            crate::journal::MountBarrierIdleReplacementJournalAuthorityV4::claim(journal)?;
+        }
+        Ok(Self { journal })
+    }
+
+    /// Lends only the exact kind2 coupled-admission and local-retirement writer.
+    ///
+    /// # Errors
+    /// Refuses unavailable physical currentness, startup/graph/floor invariants.
+    pub fn root_local_recovery_authority_v4(
+        &mut self,
+    ) -> Result<
+        crate::journal::MountBarrierIdleReplacementJournalAuthorityV4<'_>,
+        MountManagerSourceInventoryError,
+    > {
+        Ok(crate::journal::MountBarrierIdleReplacementJournalAuthorityV4::claim(self.journal)?)
+    }
+
     /// Borrows an existing protected fixed Mount journal without opening it.
     ///
     /// # Errors

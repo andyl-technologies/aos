@@ -105,6 +105,42 @@ pub struct SourceAcquisitionTableV2 {
     provider_attempts: BTreeMap<[u8; 32], SourceProviderQueryAttemptV2>,
 }
 
+// This trusted owner installation is deliberately not a lower authorization
+// token. A genuine physical derivative holder can call lower DELETE directly.
+fn install_and_retire_kind2_table(
+    table: &mut SourceAcquisitionTableV2,
+    writer: &mut aos_sandbox::MountBarrierIdleReplacementJournalAuthorityV4<'_>,
+    mut initial: Option<aos_sandbox::Kind2ProtectedReadbackV4>,
+) -> Result<()> {
+    *table = SourceAcquisitionTableV2::from_state(writer.current_source_state()?);
+    loop {
+        let current = writer.current_source_state()?;
+        require_kind2_installed_table(table, &current)?;
+        let readback = match initial.take() {
+            Some(readback) => Some(readback),
+            None => writer.pending_local_readbacks()?.into_iter().next(),
+        };
+        let Some(readback) = readback else {
+            return Ok(());
+        };
+        writer.settle_kind2_local_readback(readback)?;
+        // Other tokens were captured at the previous sequence. Rejoin afresh
+        // after each DELETE; no pre-append evidence crosses a journal advance.
+    }
+}
+
+fn require_kind2_installed_table(
+    table: &SourceAcquisitionTableV2,
+    current: &MountSourceAcquisitionStateV2,
+) -> Result<()> {
+    if !table.matches_state(current) {
+        return Err(state_error(
+            "kind2 private table installation differs from protected graph",
+        ));
+    }
+    Ok(())
+}
+
 /// Borrows fixed Mount source state from the sole protected journal owner.
 ///
 /// This dormant integration cannot open another journal or retain the Mount
@@ -691,6 +727,31 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         Self::recover_with_journal(protected)
     }
 
+    /// Replays the same physical journal for the closed kind2 local coordinator.
+    ///
+    /// This dormant owner handles already-funded legacy recovery state and kind2
+    /// local floors. It does not admit original native debt or enable transport.
+    ///
+    /// # Errors
+    /// Rejects invalid fixed custody, graph/floors, startup policy or readback.
+    #[doc(hidden)]
+    pub fn borrow_existing_kind2_fixed_journal(journal: &'journal mut Journal) -> Result<Self> {
+        let mut protected =
+            aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed_root_local_recovery_v4(
+                journal,
+            )
+            .map_err(|error| crate::MountError::State(error.to_string()))?;
+        let table = {
+            let writer = protected
+                .root_local_recovery_authority_v4()
+                .map_err(|error| crate::MountError::State(error.to_string()))?;
+            SourceAcquisitionTableV2::from_state(writer.current_source_state()?)
+        };
+        let mut owner = Self::recover_with_table(protected, table)?;
+        owner.install_and_retire_kind2_v4()?;
+        Ok(owner)
+    }
+
     /// Reattaches retained move-only custody to the same protected Mount journal.
     ///
     /// On failure, the runtime is returned unchanged so its descriptors are
@@ -721,6 +782,13 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 .map_err(|error| crate::MountError::State(error.to_string()))?;
             SourceAcquisitionTableV2::recover_from_consumption_authority(&authority)?
         };
+        Self::recover_with_table(protected, table)
+    }
+
+    fn recover_with_table(
+        protected: aos_sandbox::MountManagerStartupJournalBorrowV1<'journal>,
+        table: SourceAcquisitionTableV2,
+    ) -> Result<Self> {
         let mut broker_instance_id = [0_u8; 16];
         fill_random(&mut broker_instance_id)?;
         if broker_instance_id == [0; 16] {
@@ -895,6 +963,14 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 retained_released_roots: BTreeMap::new(),
             },
         })
+    }
+
+    fn install_and_retire_kind2_v4(&mut self) -> Result<()> {
+        let mut writer = self
+            .protected
+            .root_local_recovery_authority_v4()
+            .map_err(|error| crate::MountError::State(error.to_string()))?;
+        install_and_retire_kind2_table(&mut self.runtime.table, &mut writer, None)
     }
 
     /// Runs one operation under the existing fixed consumption authority.
@@ -3402,6 +3478,24 @@ fn fill_random(output: &mut [u8]) -> Result<()> {
 }
 
 impl SourceAcquisitionTableV2 {
+    fn from_state(state: MountSourceAcquisitionStateV2) -> Self {
+        Self {
+            acquisitions: state.acquisitions,
+            holder_sequences: state.holder_sequences,
+            provider_heads: state.provider_heads,
+            provider_sessions: state.provider_sessions,
+            provider_attempts: state.provider_attempts,
+        }
+    }
+
+    fn matches_state(&self, state: &MountSourceAcquisitionStateV2) -> bool {
+        self.acquisitions == state.acquisitions
+            && self.holder_sequences == state.holder_sequences
+            && self.provider_heads == state.provider_heads
+            && self.provider_sessions == state.provider_sessions
+            && self.provider_attempts == state.provider_attempts
+    }
+
     /// Reconstructs the complete canonical `AOSMSA02` namespace-40 graph.
     ///
     /// # Errors

@@ -181,6 +181,14 @@ pub(in crate::journal) fn accounting_reservations(
         .collect()
 }
 
+/// Projects one already-selected canonical floor without producing a grant.
+pub(in crate::journal) fn accounting_reservation(
+    key: &[u8],
+    value: &[u8],
+) -> Result<DecodedCapacityReservationV1, JournalError> {
+    CanonicalCapacityFamily::decode(key, value)?.accounting()
+}
+
 /// Preserves the old whole-journal legacy claim refusal for other families.
 ///
 /// # Errors
