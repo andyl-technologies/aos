@@ -313,8 +313,9 @@ impl SingleScheduler {
     ///
     /// # Errors
     ///
-    /// Returns [`SchedulerWorldInstantiationError`] when the World network
-    /// definitions cannot be instantiated or links were already attached.
+    /// Returns [`SchedulerWorldInstantiationError`] when VM identities differ,
+    /// the immutable World owner changes, network definitions cannot be
+    /// instantiated, or links were already attached.
     pub fn attach_world_network_links(
         &mut self,
         world: &World,
@@ -324,12 +325,42 @@ impl SingleScheduler {
                 reason: String::from("World network links are already attached"),
             });
         }
+        let mut expected = world
+            .vm_nodes()
+            .iter()
+            .map(|node| SchedulerNodeId {
+                node: node.id.clone(),
+                kind: SchedulingNodeKind::Vm,
+            })
+            .collect::<Vec<_>>();
+        let mut actual = self
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        expected.sort();
+        actual.sort();
+        if actual != expected {
+            return Err(SchedulerWorldInstantiationError::VmTopologyMismatch { expected, actual });
+        }
+        if self
+            .inventory_world
+            .as_ref()
+            .is_some_and(|bound| bound.id() != world.id())
+        {
+            return Err(SchedulerWorldInstantiationError::NetworkStateMismatch {
+                reason: String::from("physical inventory is already bound to another World"),
+            });
+        }
         self.world_network_links = instantiate_world_network_links(world)?;
         self.world_network_rng_positions = self
             .world_network_links
             .keys()
             .map(|(link, _direction)| (link.clone(), 0))
             .collect();
+        // Live QEMU owns the physical queues. Retain their actual immutable
+        // World relation so complete Source-backed imports can validate owners.
+        self.inventory_world = Some(Arc::new(world.clone()));
         Ok(())
     }
 
