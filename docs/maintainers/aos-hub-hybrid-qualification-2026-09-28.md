@@ -1332,3 +1332,27 @@ This increment does not enable provider credentials or establish current combine
 runtime acceptance. Multipart staging/promotion, retained Native callers, all
 alternate writers and historical capabilities, permanent provider exclusivity,
 hosted clocks and actual provider qualification remain required before activation.
+
+## Staging infrastructure prerequisites and remaining deployment block
+
+Infrastructure PRs 1025 and 957 merged after their required checks passed. The
+new delivery authority project `andyl-iac-aos-hub-stg` (108379227229) is provisioned
+through the independent delivery-boundary prerequisite. Its encrypted state has
+lineage `57f2bd4b-9929-4368-b2bb-2463313b5747`, serial 4. Exact plan
+`20260929T084320Z-ef688b4d1d928eb8` selected eight creates and no updates,
+replacements or deletes; apply `20260929T084602Z-0d818d4d1c237d11` succeeded.
+The recovery secret container exists, but its identity payload is not published.
+This prerequisite does not deploy or qualify a serving revision.
+
+The subsequent execution-engine publication stopped before publication at its
+capacity guard. A read-only inventory found 1,904 existing Cloud Run jobs against
+the configured limit of 2,000: 96 slots are available, while the complete new
+generation requires 99. Read-only retirement inspection 36544712823 produced no
+eligible plans; generation 145 was blocked because a captured job was absent
+before its first retirement claim. No jobs were deleted and no capacity or
+retirement guard was bypassed. The hosted Worker/Native pair remains unqualified.
+
+The four direct-upload RFC sections now describe intended behavior, including
+private staging, bounded controls, stable operation identity, verified provider
+closure and concurrent metadata staging with publication barriers. Their commit
+does not enable a direct-upload endpoint or qualify the running release transfer.
