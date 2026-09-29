@@ -175,7 +175,32 @@ pub(crate) fn validate_set(
     recovered: &RecoveredProviderLedgerV1,
 ) -> Result<(), ProviderLedgerError> {
     let mut expected = BTreeSet::new();
-    for acquisition in recovered.acquisitions.values() {
+    add_expected(
+        recovered,
+        recovered.acquisitions.values(),
+        &mut expected,
+        |request| {
+            let reservation =
+                journal.recover_unique_global_capacity_reservation_v1(&binding(request))?;
+            if reservation.request() != request {
+                return Err(ProviderLedgerError::Equivocation);
+            }
+            Ok(reservation.reservation_id())
+        },
+    )?;
+    crate::native_release_capacity::add_expected(journal, recovered, &mut expected)?;
+    journal.validate_global_capacity_reservation_set_v1(&expected)?;
+    Ok(())
+}
+
+/// Accumulates unchanged legacy expectations without granting settlement custody.
+pub(crate) fn add_expected<'record>(
+    recovered: &RecoveredProviderLedgerV1,
+    acquisitions: impl Iterator<Item = &'record AcquisitionRecordV1>,
+    expected: &mut BTreeSet<[u8; 32]>,
+    mut exact: impl FnMut(GlobalCapacityReservationRequestV1) -> Result<[u8; 32], ProviderLedgerError>,
+) -> Result<(), ProviderLedgerError> {
+    for acquisition in acquisitions {
         let needs_floor = if is_native_dispatch_acquisition(acquisition) {
             !dispatch_terminal_in_validated_graph(acquisition, recovered)?
         } else {
@@ -214,13 +239,11 @@ pub(crate) fn validate_set(
         .ok_or(ProviderLedgerError::Corrupt(
             "native capacity original session",
         ))?;
-        let reservation = exact_reservation(journal, acquisition, attempt, session, native)?;
-        if !expected.insert(reservation.reservation_id()) {
+        let identifier = exact(request(acquisition, attempt, session, native)?)?;
+        if !expected.insert(identifier) {
             return Err(ProviderLedgerError::Equivocation);
         }
     }
-    crate::native_release_capacity::add_expected(journal, recovered, &mut expected)?;
-    journal.validate_global_capacity_reservation_set_v1(&expected)?;
     Ok(())
 }
 

@@ -96,9 +96,9 @@ pub use native_no_dispatch_recovery::NativeNoDispatchSettlementV1;
 pub use owner::{
     FixedMountStateMigrationRecoveryOutcomeV2, FixedProviderAcquireReopenV1,
     FixedProviderAuthenticatedSourceRequestV1, FixedProviderCatalogProgressV1,
-    FixedProviderHistoricalOutcomeV1, FixedProviderIngressProgressV1, FixedProviderOpenReportV1,
-    FixedProviderOwnerStatusV1, FixedProviderOwnerV1, FixedProviderRequestReadbackV1,
-    ProtectedProviderMountRetryAuthorityV1,
+    FixedProviderHeldReadOnlyObservationV1, FixedProviderHistoricalOutcomeV1,
+    FixedProviderIngressProgressV1, FixedProviderOpenReportV1, FixedProviderOwnerStatusV1,
+    FixedProviderOwnerV1, FixedProviderRequestReadbackV1, ProtectedProviderMountRetryAuthorityV1,
 };
 pub use recovery::{
     ProviderRecoveryObservationV1, RecoveryAcquireNotAppliedV1, RecoveryReleaseStillPresentV1,
