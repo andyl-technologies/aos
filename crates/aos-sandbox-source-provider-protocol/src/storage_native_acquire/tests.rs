@@ -234,6 +234,15 @@ fn sign_receipt(
     )
 }
 
+pub(super) fn held_completion_fixture() -> (
+    SignedStorageNativeAcquireRequestV2,
+    StorageNativeAcquireReplyV3,
+) {
+    let fixture = Fixture::new();
+    let reply = fixture.reply();
+    (fixture.request, reply)
+}
+
 #[test]
 fn native_request_requires_immutable_zfs_not_local_live_kernel_coupling() {
     let fixture = Fixture::new();
