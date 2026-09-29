@@ -164,7 +164,7 @@ async fn contract_covers_the_actual_production_initializer() {
             .values()
             .map(|table| table.columns.len())
             .sum::<usize>(),
-        2668
+        2669
     );
     assert_eq!(tables.len(), contracts.len());
 
@@ -915,3 +915,30 @@ async fn bounded_reader_page_classifies_private_cells_without_source_mutation() 
 }
 
 mod authority_plan;
+
+#[test]
+fn original_session_owner_pin_remains_excluded_as_authentication_transient_state() {
+    let classifier = SnapshotClassifier::for_supported_generation(4).unwrap();
+    let input = row(
+        "sessions",
+        &[(
+            "owner_incarnation",
+            Value::Text("01234567-89ab-4def-8123-456789abcdef".into()),
+        )],
+    );
+    assert!(matches!(
+        classifier.classify("sessions", &input).unwrap(),
+        SnapshotRowDisposition::AuthTransient
+    ));
+    assert_eq!(
+        classifier.table_disposition("sessions").unwrap(),
+        "auth_transient"
+    );
+    let historical = SnapshotClassifier::for_supported_generation(3).unwrap();
+    assert!(
+        !historical.tables["sessions"]
+            .columns
+            .iter()
+            .any(|column| column.name == "owner_incarnation")
+    );
+}

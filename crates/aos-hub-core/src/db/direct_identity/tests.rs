@@ -180,7 +180,7 @@ async fn deleted_service_account_numeric_slot_cannot_reactivate_retained_token()
 }
 
 #[tokio::test]
-async fn cookie_backfill_does_not_repair_legacy_unpinned_token_authority() {
+async fn fresh_session_mint_pins_legacy_user_without_repairing_unpinned_token_authority() {
     let db = Database::open_in_memory().await.unwrap();
     let (principal, id, secret, _) = user_authority(&db).await;
     db.backend

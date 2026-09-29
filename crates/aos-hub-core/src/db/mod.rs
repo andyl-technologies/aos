@@ -522,6 +522,7 @@ pub use delivery_identity::*;
 mod delivery_workflow;
 mod direct_delivery;
 mod direct_identity;
+mod session_identity;
 pub use delivery_workflow::*;
 mod egress_nonce;
 mod gc_topology;
@@ -1308,7 +1309,7 @@ pub struct AccessTokenMetadata {
 /// bumps `last_seen_at`.
 #[derive(Debug, Clone)]
 pub struct SessionAuth {
-    /// Immutable UUID of the genuinely authenticated current user.
+    /// Original immutable user UUID retained when this session was minted.
     pub owner_incarnation: String,
     /// SHA-256 of the validated cookie, never the cookie secret.
     pub session_id_hash: String,
@@ -21267,7 +21268,8 @@ impl Database {
 
     /// Create a session for `user_id`, returning the opaque cookie secret.
     ///
-    /// Only the SHA-256 hash of the secret is stored. `ttl_secs` is the
+    /// The original user UUID is pinned at mint; only the SHA-256 hash of the
+    /// cookie secret is stored. `ttl_secs` is the
     /// session's **absolute** lifetime: `expires_at` is stamped to
     /// `now + ttl_secs` (callers pass
     /// [`ABSOLUTE_LIFETIME_SECS`](crate::auth::session::ABSOLUTE_LIFETIME_SECS)).
@@ -21279,13 +21281,19 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// Returns an error on database failure.
+    /// Returns an error on database failure or an unavailable live canonical owner.
     pub async fn create_session(
         &self,
         user_id: i64,
         ttl_secs: i64,
         auth_level: i64,
     ) -> Result<String> {
+        // This port is reached after fresh authentication. Establish a legacy
+        // user's UUID here, never while accepting an old cookie; the insert
+        // below pins the winning UUID and refuses a changed numeric owner.
+        let owner_incarnation = self
+            .ensure_principal_incarnation(crate::domain::Principal::user(user_id))
+            .await?;
         let secret = crate::auth::session::new_session_secret();
         let hash = crate::auth::token::sha256_hex(&secret);
         let now = unix_now();
@@ -21294,10 +21302,17 @@ impl Database {
             .execute(
                 "INSERT INTO sessions
              (id_hash, user_id, created_at, last_seen_at, expires_at, auth_level,
-              last_authenticated_at)
-             SELECT ?1, u.id, ?3, ?3, ?4, ?5, ?3 FROM users u
-              WHERE u.id = ?2 AND u.deleted_at IS NULL",
-                &vals![hash, user_id, now, now + ttl_secs, auth_level],
+              last_authenticated_at, owner_incarnation)
+             SELECT ?1, u.id, ?3, ?3, ?4, ?5, ?3, u.principal_incarnation FROM users u
+              WHERE u.id = ?2 AND u.deleted_at IS NULL AND u.principal_incarnation = ?6",
+                &vals![
+                    hash,
+                    user_id,
+                    now,
+                    now + ttl_secs,
+                    auth_level,
+                    owner_incarnation
+                ],
             )
             .await?;
         if affected != 1 {
@@ -21311,7 +21326,8 @@ impl Database {
     /// Accepts the secret when its hash is known and the session is live under
     /// all three lifetime bounds, then bumps `last_seen_at` to now (sliding
     /// the idle window). Returns `Ok(None)` for an unknown session or one that
-    /// has crossed any bound:
+    /// lacks an original owner pin, no longer matches that owner, or has crossed
+    /// any bound:
     ///
     /// - **absolute deadline**: `now >= expires_at` (the
     ///   [`ABSOLUTE_LIFETIME_SECS`](crate::auth::session::ABSOLUTE_LIFETIME_SECS)
@@ -21328,7 +21344,7 @@ impl Database {
         self.validate_session_at(secret, unix_now()).await
     }
 
-    /// Validates live session state at one clock sample, preserving second-level idle expiry.
+    /// Validates the cookie's original UUID without adopting a recycled owner.
     async fn validate_session_at(&self, secret: &str, now: i64) -> Result<Option<SessionAuth>> {
         use crate::auth::session::{ABSOLUTE_LIFETIME_SECS, IDLE_TIMEOUT_SECS};
 
@@ -21337,9 +21353,11 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT s.user_id, s.auth_level, s.last_authenticated_at, s.expires_at,
-                    s.created_at, s.last_seen_at, u.principal_incarnation
+                    s.created_at, s.last_seen_at, s.owner_incarnation
              FROM sessions s JOIN users u ON u.id = s.user_id
-             WHERE s.id_hash = ?1 AND u.deleted_at IS NULL",
+             WHERE s.id_hash = ?1 AND u.deleted_at IS NULL
+               AND s.owner_incarnation IS NOT NULL
+               AND s.owner_incarnation = u.principal_incarnation",
                 &vals![hash],
             )
             .await
@@ -21348,6 +21366,15 @@ impl Database {
             return Ok(None);
         };
         let user_id: i64 = row.get(0)?;
+        let owner_incarnation: String = row.get(6)?;
+        if direct_identity::validate_actor_incarnation(
+            crate::domain::Principal::user(user_id),
+            &owner_incarnation,
+        )
+        .is_err()
+        {
+            return Ok(None);
+        }
         let created_at: i64 = row.get(4)?;
         let last_seen_at: i64 = row.get(5)?;
         let expires_at: i64 = row.get(3)?;
@@ -21356,73 +21383,22 @@ impl Database {
             || now.saturating_sub(created_at) > ABSOLUTE_LIFETIME_SECS;
         if dead {
             self.backend
-                .execute("DELETE FROM sessions WHERE id_hash = ?1", &vals![hash])
-                .await?;
-            return Ok(None);
-        }
-
-        // Only a genuine current cookie can establish a legacy user's UUID.
-        // The retained session identity and original lifetime fields fence the
-        // backfill; a different user occupying the numeric slot cannot win it.
-        let incarnation: Option<String> = row.get(6)?;
-        if incarnation.is_none() {
-            let candidate = uuid::Uuid::new_v4().to_string();
-            self.backend
                 .execute(
-                    "UPDATE users SET principal_incarnation = ?2
-                 WHERE id = ?1 AND deleted_at IS NULL AND principal_incarnation IS NULL
-                   AND EXISTS (SELECT 1 FROM sessions s WHERE s.id_hash = ?3
-                     AND s.user_id = users.id AND s.created_at = ?4
-                     AND s.expires_at = ?5 AND s.expires_at > ?6
-                     AND s.last_seen_at >= ?7)",
-                    &vals![
-                        user_id,
-                        candidate,
-                        hash,
-                        created_at,
-                        expires_at,
-                        now,
-                        now.saturating_sub(IDLE_TIMEOUT_SECS)
-                    ],
+                    "DELETE FROM sessions WHERE id_hash = ?1 AND user_id = ?2
+                       AND owner_incarnation = ?3 AND created_at = ?4 AND expires_at = ?5",
+                    &vals![hash, user_id, owner_incarnation, created_at, expires_at],
                 )
                 .await?;
-        }
-
-        // Reload the winning UUID and session after the possible CAS. A lost
-        // session or changed lifetime never yields a synthesized browser claim.
-        let Some(current) = self
-            .backend
-            .query_opt(
-                "SELECT u.principal_incarnation, s.auth_level, s.last_authenticated_at,
-                    s.last_seen_at FROM sessions s JOIN users u ON u.id = s.user_id
-             WHERE s.id_hash = ?1 AND s.user_id = ?2 AND u.deleted_at IS NULL
-               AND s.created_at = ?3 AND s.expires_at = ?4 AND s.expires_at > ?5",
-                &vals![hash, user_id, created_at, expires_at, now],
-            )
-            .await?
-        else {
-            return Ok(None);
-        };
-        let Some(owner_incarnation) = current.get::<Option<String>>(0)? else {
-            return Ok(None);
-        };
-        let principal = crate::domain::Principal::user(user_id);
-        if direct_identity::validate_actor_incarnation(principal, &owner_incarnation).is_err()
-            || now.saturating_sub(current.get::<i64>(3)?) > IDLE_TIMEOUT_SECS
-            || incarnation
-                .as_ref()
-                .is_some_and(|original| original != &owner_incarnation)
-        {
             return Ok(None);
         }
 
-        // Repeated reads within one second do not rewrite bookkeeping. This
-        // final update remains tied to the exact session and immutable owner.
+        // Same-second reads avoid a bookkeeping write. Every actual update
+        // remains tied to the original session UUID and live account UUID.
         self.backend
             .execute(
                 "UPDATE sessions SET last_seen_at = ?2
              WHERE id_hash = ?1 AND user_id = ?3 AND created_at = ?4
-               AND expires_at = ?5 AND last_seen_at != ?2
+               AND expires_at = ?5 AND owner_incarnation = ?6 AND last_seen_at != ?2
                AND EXISTS (SELECT 1 FROM users u WHERE u.id = sessions.user_id
                  AND u.deleted_at IS NULL AND u.principal_incarnation = ?6)",
                 &vals![
@@ -21435,21 +21411,26 @@ impl Database {
                 ],
             )
             .await?;
-        Ok(Some(SessionAuth {
+        let auth = SessionAuth {
             owner_incarnation,
             session_id_hash: hash,
             user_id,
-            auth_level: current.get(1)?,
-            last_authenticated_at: current.get(2)?,
+            auth_level: row.get(1)?,
+            last_authenticated_at: row.get(2)?,
             expires_at,
-        }))
+        };
+        if !self.session_auth_is_current_at(&auth, now).await? {
+            return Ok(None);
+        }
+        Ok(Some(auth))
     }
 
     /// The signed-in user's email for a session secret, without bumping
     /// `last_seen_at` (the masthead reads this on every page render).
     ///
     /// Returns `None` when the secret is unknown, the session is expired, or
-    /// the user was deleted.
+    /// the user was deleted, or its original canonical owner pin is missing,
+    /// malformed, or differs from the current user.
     ///
     /// # Errors
     ///
@@ -21457,16 +21438,32 @@ impl Database {
     pub async fn session_email(&self, secret: &str) -> Result<Option<String>> {
         let hash = crate::auth::token::sha256_hex(secret);
         let now = unix_now();
-        self.backend
+        let Some(row) = self
+            .backend
             .query_opt(
-                "SELECT u.email FROM sessions s JOIN users u ON u.id = s.user_id
-                 WHERE s.id_hash = ?1 AND s.expires_at > ?2 AND u.deleted_at IS NULL",
+                "SELECT u.email, s.user_id, s.owner_incarnation
+                 FROM sessions s JOIN users u ON u.id = s.user_id
+                 WHERE s.id_hash = ?1 AND s.expires_at > ?2 AND u.deleted_at IS NULL
+                   AND s.owner_incarnation IS NOT NULL
+                   AND s.owner_incarnation = u.principal_incarnation",
                 &vals![hash, now],
             )
             .await
             .context("loading session email")?
-            .map(|row| row.get(0))
-            .transpose()
+        else {
+            return Ok(None);
+        };
+        let user_id: i64 = row.get(1)?;
+        let owner_incarnation: String = row.get(2)?;
+        if direct_identity::validate_actor_incarnation(
+            crate::domain::Principal::user(user_id),
+            &owner_incarnation,
+        )
+        .is_err()
+        {
+            return Ok(None);
+        }
+        Ok(Some(row.get(0)?))
     }
 
     /// Revoke a single session by its cookie secret.

@@ -151,6 +151,11 @@ CREATE UNIQUE INDEX service_accounts_principal_incarnation ON service_accounts(p
 ALTER TABLE tokens ADD COLUMN owner_incarnation KEYTEXT64
     CHECK(owner_incarnation IS NULL OR LENGTH(owner_incarnation) = 36);
 
+-- Old unpinned cookies require fresh authentication. A cold session load must
+-- never infer its original owner from a later user occupying the same slot.
+ALTER TABLE sessions ADD COLUMN owner_incarnation KEYTEXT64
+    CHECK(owner_incarnation IS NULL OR LENGTH(owner_incarnation) = 36);
+
 -- Reviewed plans keep the original principal UUID across token rotation and
 -- numeric-slot recycling. Legacy unpinned plans must be replanned, not repaired.
 ALTER TABLE topology_plans ADD COLUMN actor_incarnation KEYTEXT64

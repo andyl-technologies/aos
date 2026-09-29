@@ -436,3 +436,48 @@ optimized Worker artifact, actual provider policy, capacity, throughput,
 foreground cancellation, fleet or hosted activation. Existing token-bearing
 observation encoding remains unchanged. The original semantic profile
 fingerprint is distinct from the planned full direct-upload protected pin.
+
+## Original browser-session identity after cold reload
+
+Fresh session mint atomically pins the original canonical user UUID. Cold and
+cached cookie resolution compares that retained pin with the live account,
+session hash and lifetime bounds. An old cookie without a pin requires fresh
+authentication; resolving it never assigns or repairs a UUID. Browser claims,
+email presentation and post-email identity checks retain the same provenance.
+
+Producer V2 receipt `/tmp/hub-cold-session-owner-pin-v2/qualification-v2.json`
+(`b24b026d95fa080c026b100e5c2e238d2ece9fb170daa82ee48c411f31026880`)
+records 20 focused tests, Native test-context and default Worker Wasm checks,
+and 2,970 unchanged inputs. Independent evidence review
+`029de336c1d6ac9d5e23367b3cbfb4c467e5fd6b8d586891b81654af0f9c335e`
+binds that result. The earlier malformed-UUID email-resolution source blocker
+is preserved; V2 validates the canonical UUID before returning an email.
+
+The first current run stopped on zero matching session tests despite Cargo
+exit zero. Retained failure
+`58a8a6356ad4dfd2076a7f77d8637ae2c7f0a6c674a1289a1792808cc3562f10`
+binds the old compiled test list, absent new dependency and unchanged source.
+The copied owned sources had older modification times than the warm artifact.
+Refreshing only those 14 isolated source modification times forced normal
+Cargo recompilation; no source bytes, selector or test expectation changed.
+The zero-test result is not counted as a pass.
+
+Current receipt `/tmp/hub-cold-session-current-context/qualification.json`
+(`0c242a1a90f8c08747ad5142739d017269260ab47988ea8c317c0cda7036d8d3`) records all 20 exact tests passing after that rebuild,
+with Native test-context and default Worker Wasm compilation. All 2,978
+captured inputs remain unchanged and all 14 owned postimages match exactly.
+Source input digest is
+`7fcf5d4aaf1f165fd866f9ff769db6bbf5846b21f0ba9193c514b7bc5811e42d`.
+The preparation's only unowned amendment is the committed semantic transport
+ledger; code parents match their qualified preimages. The current initializer
+and compiled/source audit assert 273 tables, 2,669 columns and 657 CHECKs.
+Unreleased migration004 digest is
+`8744c486ed5f20950bb74665cfe4e3288f1345e0d94e4224069ef1bba5e969c2`.
+
+The file database fixture drops and reopens genuine Database handles in one
+process. It does not establish an OS or VM restart, PostgreSQL/MySQL runtime,
+hosted login, snapshot import or whole-Hub deployment result. Historical
+snapshot contracts remain unchanged; the session pin is authentication state
+excluded from snapshot records. Older initialized migration004 requires an
+explicit reset or migration, and hosted staging remains generation1. This
+supersedes the earlier retained-context limitation for the tested cold paths.

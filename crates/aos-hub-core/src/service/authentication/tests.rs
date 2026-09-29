@@ -418,3 +418,142 @@ async fn cached_cookie_keeps_real_provenance_and_refuses_recycled_account_slot()
         .unwrap()
         .is_none());
 }
+
+#[tokio::test]
+async fn cached_and_cold_cookie_require_the_retained_original_pin() {
+    use crate::kv::{InMemoryKv, KvStore};
+
+    let (mut service, user) = fixture().await;
+    let kv = Arc::new(InMemoryKv::new());
+    service.kv = Some(kv.clone());
+    let cookie = service.db.create_session(user, 3600, 0).await.unwrap();
+    let original = service
+        .resolve_session_cached(&cookie)
+        .await
+        .unwrap()
+        .unwrap();
+    let key = super::super::session_cache_key(&cookie);
+    assert!(kv.get(&key).await.unwrap().is_some());
+
+    service
+        .db
+        .backend
+        .execute(
+            "UPDATE sessions SET owner_incarnation = NULL WHERE id_hash = ?1",
+            &[Value::Text(original.auth.session_id_hash.clone())],
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        service
+            .resolve_session_cached(&cookie)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    kv.delete(&key).await.unwrap();
+    assert!(
+        service
+            .resolve_session_cached(&cookie)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let stored: Option<String> = service
+        .db
+        .backend
+        .query_opt(
+            "SELECT owner_incarnation FROM sessions WHERE id_hash = ?1",
+            &[Value::Text(original.auth.session_id_hash)],
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert!(stored.is_none());
+
+    let reauthenticated = service.db.create_session(user, 3600, 0).await.unwrap();
+    assert_eq!(
+        service
+            .resolve_session_cached(&reauthenticated)
+            .await
+            .unwrap()
+            .unwrap()
+            .auth
+            .owner_incarnation,
+        original.auth.owner_incarnation
+    );
+    assert!(
+        service
+            .resolve_session_cached(&cookie)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn replacement_uuid_in_cache_cannot_override_the_original_database_session_pin() {
+    use crate::kv::{InMemoryKv, KvStore};
+
+    let (mut service, user) = fixture().await;
+    let kv = Arc::new(InMemoryKv::new());
+    service.kv = Some(kv.clone());
+    let cookie = service.db.create_session(user, 3600, 0).await.unwrap();
+    let original = service
+        .resolve_session_cached(&cookie)
+        .await
+        .unwrap()
+        .unwrap();
+    let key = super::super::session_cache_key(&cookie);
+    let replacement = uuid::Uuid::new_v4().to_string();
+    service
+        .db
+        .backend
+        .execute(
+            "UPDATE users SET principal_incarnation = ?2 WHERE id = ?1",
+            &[Value::Int(user), Value::Text(replacement.clone())],
+        )
+        .await
+        .unwrap();
+
+    // Even a well-formed cache value matching the new current user must match
+    // the UUID retained when this particular cookie was genuinely minted.
+    let mut stored: serde_json::Value =
+        serde_json::from_slice(&kv.get(&key).await.unwrap().unwrap()).unwrap();
+    stored["owner_incarnation"] = serde_json::Value::String(replacement.clone());
+    kv.put(&key, &serde_json::to_vec(&stored).unwrap(), Some(60))
+        .await
+        .unwrap();
+    assert!(
+        service
+            .resolve_session_cached(&cookie)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    kv.delete(&key).await.unwrap();
+    assert!(
+        service
+            .resolve_session_cached(&cookie)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let retained: String = service
+        .db
+        .backend
+        .query_opt(
+            "SELECT owner_incarnation FROM sessions WHERE id_hash = ?1",
+            &[Value::Text(original.auth.session_id_hash)],
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(retained, original.auth.owner_incarnation);
+    assert_ne!(retained, replacement);
+}

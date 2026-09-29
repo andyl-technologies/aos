@@ -10291,15 +10291,12 @@ impl RpcService {
     /// Resolves a session from its cookie secret, read-through cached in KV when
     /// a [`KvStore`](crate::kv::KvStore) is attached (RFC-0004 ch.14 Phase C).
     ///
-    /// On the hot path — the session lookup runs on **every** authenticated
-    /// request — this serves the resolution from KV (sub-ms, off the database session
-    /// cost) for [`HOT_TTL_SECS`](crate::cache::HOT_TTL_SECS), and additionally
-    /// avoids the `last_seen_at` write `validate_session` performs on a cache
-    /// hit. Expiry is still enforced exactly: the cached `expires_at` is
-    /// re-checked against the current clock, so an expired session is never
-    /// served from cache even within the TTL window. Revocation lag is bounded
-    /// to the TTL (≤60 s) plus any explicit [`invalidate_session_cache`] on
-    /// logout — the eventual-consistency contract this tier accepts.
+    /// A cache hit reuses presentation and sudo metadata for
+    /// [`HOT_TTL_SECS`](crate::cache::HOT_TTL_SECS) and skips the cold loader's
+    /// `last_seen_at` bookkeeping write. The authenticated cookie hash, original
+    /// session/account UUID pin and live idle/absolute bounds are checked in SQL
+    /// on every resolution. [`invalidate_session_cache`] also removes cached
+    /// presentation state on logout.
     ///
     /// With no `kv` attached this is exactly
     /// [`resolve_session`](crate::web::session::resolve_session) against the
@@ -10333,18 +10330,15 @@ impl RpcService {
         let Some(cached) = cached else {
             return Ok(None);
         };
-        // The cached row belongs to the originally validated account, never a
-        // replacement that happens to reuse the same numeric SQL slot.
-        if self
-            .db
-            .principal_incarnation(Principal::user(cached.user_id))
-            .await?
-            .as_ref()
-            != Some(&cached.owner_incarnation)
-        {
+        let Some(resolved) = cached.into_resolved(secret, now) else {
+            return Ok(None);
+        };
+        // Cached provenance must still match the retained session pin as well
+        // as its live account. An old cache cannot revive an unpinned cookie.
+        if !self.db.session_auth_is_current(&resolved.auth).await? {
             return Ok(None);
         }
-        Ok(cached.into_resolved(secret, now))
+        Ok(Some(resolved))
     }
 
     /// Invalidates the KV-cached session resolution for `secret` (delete-on-write).

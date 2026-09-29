@@ -2363,6 +2363,7 @@ sessions	auth_transient	last_seen_at	integer	no	0	retain
 sessions	auth_transient	expires_at	integer	no	0	retain
 sessions	auth_transient	auth_level	integer	no	0	retain
 sessions	auth_transient	last_authenticated_at	integer	no	0	retain
+sessions	auth_transient	owner_incarnation	text	yes	0	retain
 signing_key_generations	retain	signing_key_id	text	no	1	retain
 signing_key_generations	retain	generation	integer	no	2	retain
 signing_key_generations	retain	algorithm	text	no	0	retain

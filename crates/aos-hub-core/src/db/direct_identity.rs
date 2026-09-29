@@ -70,8 +70,8 @@ impl Database {
         Ok(incarnation)
     }
 
-    // This port is called only after authenticating a current cookie or while
-    // minting a newly authorized token. It never repairs an unpinned old token.
+    // This port is called while minting a freshly authenticated session or a
+    // newly authorized token. It never repairs an old cookie or token pin.
     pub(super) async fn ensure_principal_incarnation(
         &self,
         principal: Principal,
@@ -154,7 +154,7 @@ impl Database {
                     "SELECT s.user_id, s.created_at, s.last_seen_at, s.expires_at
                  FROM sessions s JOIN users u ON u.id = s.user_id
                  WHERE s.id_hash = ?1 AND u.deleted_at IS NULL
-                   AND u.principal_incarnation = ?2",
+                   AND s.owner_incarnation = ?2 AND u.principal_incarnation = ?2",
                     &vals![hash, incarnation],
                 )
                 .await?
