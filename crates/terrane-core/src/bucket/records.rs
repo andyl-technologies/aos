@@ -4,7 +4,7 @@
 //! CAPABILITIES = {1: 1, 2: true, 3: true, 4: true, 5: false,
 //!                 6: 1, 7: timestamp, 8: store-profile}
 //! MANIFEST = {1: generation, 2: [shard-entry], 3: timestamp, 4: cycle}
-//! Tombstone = {1: pack-id, 2: cycle, 3: timestamp, 4: removed-entries}
+//! Tombstone = {1: pack-id, 2: cycle, 3: timestamp, 4: removed-entries, 5: epoch}
 //! ```
 
 use crate::cbor::{self, Decoder};
@@ -387,6 +387,8 @@ pub struct Tombstone {
     pub tombstoned_at: u64,
     /// The number of removed index entries.
     pub removed_entries: u64,
+    /// The collector fencing epoch authorizing removal.
+    pub epoch: u64,
 }
 
 impl Tombstone {
@@ -394,12 +396,13 @@ impl Tombstone {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        cbor::write_map(&mut bytes, 4);
+        cbor::write_map(&mut bytes, 5);
         cbor::write_uint(&mut bytes, 1);
         cbor::write_bytes(&mut bytes, &self.pack_id);
         uint_field(&mut bytes, 2, self.cycle);
         uint_field(&mut bytes, 3, self.tombstoned_at);
         uint_field(&mut bytes, 4, self.removed_entries);
+        uint_field(&mut bytes, 5, self.epoch);
         bytes
     }
 
@@ -409,7 +412,7 @@ impl Tombstone {
     /// Rejects invalid pack IDs, fields, CBOR, and trailing bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, RecordError> {
         let mut decoder = Decoder::new(bytes);
-        if decoder.map(4)? != 4 {
+        if decoder.map(5)? != 5 {
             return Err(RecordError::Schema);
         }
         key(&mut decoder, 1)?;
@@ -423,6 +426,8 @@ impl Tombstone {
         let tombstoned_at = decoder.uint()?;
         key(&mut decoder, 4)?;
         let removed_entries = decoder.uint()?;
+        key(&mut decoder, 5)?;
+        let epoch = decoder.uint()?;
         decoder.finish()?;
 
         Ok(Self {
@@ -430,6 +435,7 @@ impl Tombstone {
             cycle,
             tombstoned_at,
             removed_entries,
+            epoch,
         })
     }
 }
@@ -533,6 +539,7 @@ mod tests {
             cycle: 1,
             tombstoned_at: 10,
             removed_entries: 7,
+            epoch: 3,
         };
         assert_eq!(Tombstone::decode(&tombstone.encode()).unwrap(), tombstone);
     }
