@@ -68,16 +68,8 @@ impl fmt::Display for Diagnostic {
 
 impl core::error::Error for Diagnostic {}
 
-/// Identifies the subject's authentication class (AUTH-1/8).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PrincipalKind {
-    /// An OpenID Connect human principal.
-    Human,
-    /// An issuer-bound workload principal.
-    Workload,
-    /// A mutually authenticated service principal.
-    Service,
-}
+/// Reuses the shared principal and locality models (CRATE-20).
+pub use crate::refs::{Locality, PrincipalKind};
 
 /// Names one registered authorization operation (AUTH-19/22).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -162,17 +154,6 @@ impl Grant {
     pub const fn verbs(&self) -> Verbs {
         self.verbs
     }
-}
-
-/// Carries optional locality constraints; all present fields must match.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct Locality {
-    /// Region identifier, when constrained.
-    pub region: Option<String>,
-    /// Zone identifier, when constrained.
-    pub zone: Option<String>,
-    /// Host identifier, when constrained.
-    pub host: Option<String>,
 }
 
 /// Names one closed v1 context predicate (AUTH-17/18).
@@ -410,7 +391,10 @@ impl Token {
             // A verified value cannot be reused beyond the configured key lifetime.
             effective.not_after = effective.not_after.min(retirement.saturating_sub(1));
         }
-        if now > effective.not_after || now < effective.not_before {
+        let (not_before, not_after) = effective.validity().ok_or(Diagnostic::Time)?;
+        effective.not_before = not_before;
+        effective.not_after = not_after;
+        if now > not_after || now < not_before {
             return Err(Diagnostic::Time);
         }
         Ok(VerifiedToken {
@@ -489,6 +473,22 @@ struct Effective {
     caveats: Vec<Caveat>,
 }
 
+impl Effective {
+    /// Intersects inclusive block bounds with strict time predicates.
+    fn validity(&self) -> Option<(u64, u64)> {
+        let mut earliest = self.not_before;
+        let mut latest = self.not_after;
+        for caveat in &self.caveats {
+            match caveat {
+                Caveat::Before(time) => latest = latest.min(time.checked_sub(1)?),
+                Caveat::After(time) => earliest = earliest.max(time.checked_add(1)?),
+                _ => {}
+            }
+        }
+        (earliest <= latest).then_some((earliest, latest))
+    }
+}
+
 /// Holds a cryptographically authenticated subject and effective restrictions.
 #[derive(Clone, Debug)]
 pub struct VerifiedToken {
@@ -530,7 +530,13 @@ impl VerifiedToken {
         &self.authority
     }
 
-    /// Returns the effective inclusive expiry after attenuation.
+    /// Returns the effective inclusive authorization expiry.
+    ///
+    /// This bound intersects every block's not-after time, configured issuer
+    /// retirement, and every strict `before` caveat (timestamp minus one).
+    /// Verification rejects an empty validity interval, including `before(0)`
+    /// and `after(u64::MAX)`, so callers can safely bound delegated read
+    /// lifetimes without inspecting private caveats (AUTH-14/17).
     pub const fn not_after(&self) -> u64 {
         self.effective.not_after
     }

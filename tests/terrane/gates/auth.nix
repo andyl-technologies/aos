@@ -9,6 +9,7 @@
     ${runTest "auth::tests::auth_verify_pure_rejects_unknown_retired_keys_time_and_broken_chains"}
     ${runTest "auth::tests::auth_verify_pure_rejects_unknown_noncanonical_truncated_and_oversized_fields"}
     ${runTest "auth::tests::auth_verify_pure_accepts_unbounded_schema_text_and_canonical_root_bytes"}
+    ${runTest "auth::tests::auth_verify_pure_effective_expiry_intersects_strict_time_and_retirement"}
   '';
 
   monotoneTests = ''

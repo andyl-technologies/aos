@@ -586,3 +586,75 @@ fn auth_verify_pure_accepts_unbounded_schema_text_and_canonical_root_bytes() {
         assert!(verified.authorize(&context).is_err());
     }
 }
+
+#[test]
+fn auth_verify_pure_effective_expiry_intersects_strict_time_and_retirement() {
+    let mut body = authority();
+    body.not_before = Some(10);
+    body.not_after = 100;
+    let parent = Token::issue(body, &issuer_secret(), delegate_public()).expect("valid authority");
+    let child = parent
+        .attenuate(
+            Attenuation {
+                caveats: vec![Caveat::Before(90), Caveat::Before(80), Caveat::After(20)],
+                ..Attenuation::default()
+            },
+            &delegate_secret(),
+            delegate_public(),
+        )
+        .expect("valid time attenuation");
+    let verified = child
+        .verify(&keys(), 21)
+        .expect("inside conjunctive interval");
+    assert_eq!(verified.not_after(), 79);
+    assert!(child.verify(&keys(), 20).is_err());
+    assert!(child.verify(&keys(), 80).is_err());
+    assert!(child.verify(&keys(), 79).is_ok());
+
+    let mut retired = keys();
+    retired[0].retirement = Some(70);
+    let verified = child.verify(&retired, 21).expect("active key");
+    assert_eq!(verified.not_after(), 69);
+    let locality = Locality::default();
+    let mut context = request(&locality, &[]);
+    context.now = 70;
+    assert!(verified.authorize(&context).is_err());
+
+    for caveats in [
+        vec![Caveat::Before(0)],
+        vec![Caveat::After(u64::MAX)],
+        vec![Caveat::Before(20), Caveat::After(20)],
+        vec![Caveat::Before(10)],
+        vec![Caveat::After(100)],
+    ] {
+        let empty = parent
+            .attenuate(
+                Attenuation {
+                    caveats,
+                    ..Attenuation::default()
+                },
+                &delegate_secret(),
+                delegate_public(),
+            )
+            .expect("empty authority is monotone");
+        for time in [0, 10, 20, 100, u64::MAX] {
+            assert_eq!(
+                empty
+                    .verify_diagnostic(&keys(), time)
+                    .expect_err("empty interval"),
+                Diagnostic::Time
+            );
+        }
+    }
+    let mut zero_body = authority();
+    zero_body.not_after = 0;
+    let zero =
+        Token::issue(zero_body, &issuer_secret(), delegate_public()).expect("valid zero expiry");
+    assert_eq!(
+        zero.verify(&keys(), 0)
+            .expect("inclusive zero expiry")
+            .not_after(),
+        0
+    );
+    assert!(zero.verify(&keys(), 1).is_err());
+}
