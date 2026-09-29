@@ -977,3 +977,22 @@ cause remain unresolved, and hosted behavior remains unqualified. A separate
 ordinary CLI/Native/Worker build is checking the newly integrated snapshot and
 lease source: all 60 captured source hashes match, but its terminal result is
 pending at this checkpoint.
+
+## Completed integrated runtime build
+
+The subsequent ordinary production build completed with exit 0: **4,288 CLI
+tests passed, six skipped**, followed by successful Native PostgreSQL and Worker
+artifact builds. All 60 captured source files match in each of the three actual
+production source inputs. This includes the committed source-audit, encrypted
+framing, signed-root and disabled epoch-lease foundations.
+
+The source-bound receipt is
+`/tmp/hub-snapshot-lease-integrated-runtime-qualification.json`
+(`2313d2f5ac44455b6899f849cc6d9e9c1b98e61f0bbf4b46cadc5578e7e2d0f9`).
+The resulting CLI, Native and Worker outputs are respectively
+`/nix/store/0xh6crxghaqjfdqfjp8f0iihxfcwr3jd-aos-0.1.0`,
+`/nix/store/460kzmps304zi0rfx6lasblrndk18hjc-aos-hub-0.1.0` and
+`/nix/store/lpmqbp648rrnq08pjcrh4x698wdnfznm-aos-hub-worker-dist-0.1.0`.
+This establishes the full CLI test gate and ordinary artifact compilation;
+updated fleet, ARM and hosted qualification remain pending. The recorded
+upload-batch performance miss remains unresolved.
