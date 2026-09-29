@@ -11,7 +11,7 @@
 
   store-trait-split = sourceGate "store-trait-split" ''
     cd crates
-    cargo test --frozen --offline -p terrane --lib store::tests::ref_capabilities_distinguish_authority_from_cache
+    cargo test --frozen --offline -p terrane --lib store::tests::content_only_cache_implements_no_ref_authority
     cargo test --frozen --offline -p terrane --doc
     printf 'PASS: content and ref interfaces remain distinct\n' > "$out/result"
   '';
@@ -22,6 +22,7 @@
     cargo check --frozen --offline -p terrane --lib --no-default-features --features std,send
     cargo test --frozen --offline -p terrane --lib --no-default-features --features wasm store::tests::wasm_binding_forwards_fetch_and_host_time
     cargo check --frozen --offline -p terrane --lib --features tokio
+    cargo check --frozen --offline -p terrane --lib --all-features
     cargo test --frozen --offline -p terrane --lib --features tokio store::tests::native_create_new_preserves_existing_bytes
     printf 'PASS: portable store traits and native binding compile\n' > "$out/result"
   '';

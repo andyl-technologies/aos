@@ -338,8 +338,8 @@ pub struct HttpRequest {
     pub method: String,
     /// The complete request URL.
     pub url: String,
-    /// Header names and values, preserving repeated names.
-    pub headers: Vec<(String, String)>,
+    /// Header names and raw values, preserving repeated names and bytes.
+    pub headers: Vec<(String, Vec<u8>)>,
     /// The request body.
     pub body: Vec<u8>,
 }
@@ -349,8 +349,8 @@ pub struct HttpRequest {
 pub struct HttpResponse {
     /// The numeric status.
     pub status: u16,
-    /// Header names and values, preserving repeated names.
-    pub headers: Vec<(String, String)>,
+    /// Header names and raw values, preserving repeated names and bytes.
+    pub headers: Vec<(String, Vec<u8>)>,
     /// The response body.
     pub body: Vec<u8>,
 }
@@ -505,6 +505,10 @@ impl HttpClient for TokioHttpClient {
         let mut outgoing = self.client.request(method, request.url);
 
         for (name, value) in request.headers {
+            let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                .map_err(|source| HttpError::InvalidRequest(Box::new(source)))?;
+            let value = reqwest::header::HeaderValue::from_bytes(&value)
+                .map_err(|source| HttpError::InvalidRequest(Box::new(source)))?;
             outgoing = outgoing.header(name, value);
         }
 
@@ -517,12 +521,7 @@ impl HttpClient for TokioHttpClient {
         let headers = response
             .headers()
             .iter()
-            .map(|(name, value)| {
-                (
-                    name.as_str().to_owned(),
-                    String::from_utf8_lossy(value.as_bytes()).into_owned(),
-                )
-            })
+            .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
             .collect();
         let body = response
             .bytes()
@@ -582,7 +581,6 @@ impl LocalFs for TokioLocalFs {
 mod tests {
     use super::*;
 
-    #[cfg(all(feature = "wasm", not(feature = "send")))]
     fn poll_ready<F: std::future::Future>(future: F) -> F::Output {
         use std::task::{Context, Poll, Waker};
 
@@ -591,6 +589,40 @@ mod tests {
         match future.as_mut().poll(&mut context) {
             Poll::Ready(value) => value,
             Poll::Pending => panic!("test host must complete synchronously"),
+        }
+    }
+
+    struct ContentOnlyCache {
+        capabilities: Capabilities,
+    }
+
+    impl CapabilityReport for ContentOnlyCache {
+        fn capabilities(&self) -> &Capabilities {
+            &self.capabilities
+        }
+    }
+
+    #[cfg_attr(feature = "send", async_trait::async_trait)]
+    #[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
+    impl ContentStore for ContentOnlyCache {
+        async fn put(&self, _kind: IdentityKind, _bytes: &[u8]) -> Result<Identity, StoreFailure> {
+            Err(StoreFailure::new(StoreErrorKind::ReadOnly))
+        }
+
+        async fn get(
+            &self,
+            identity: &Identity,
+            _range: Option<ByteRange>,
+        ) -> Result<Vec<u8>, StoreFailure> {
+            Err(StoreFailure::new(StoreErrorKind::Absent(identity.clone())))
+        }
+
+        async fn has(&self, identities: &[Identity]) -> Result<Vec<bool>, StoreFailure> {
+            Ok(vec![false; identities.len()])
+        }
+
+        async fn list(&self, _prefix: &IdentityPrefix) -> Result<Vec<Identity>, StoreFailure> {
+            Ok(Vec::new())
         }
     }
 
@@ -617,22 +649,23 @@ mod tests {
     }
 
     #[test]
-    fn ref_capabilities_distinguish_authority_from_cache() {
-        let cache = Capabilities {
-            refs: RefCapability::None,
-            ranges: RangeCapability::Ranges,
-            presign: false,
-            locality: Locality::default(),
-            durability: Durability::Local,
-            sealed: false,
-        };
-        let authority = Capabilities {
-            refs: RefCapability::Cas,
-            ..cache.clone()
+    fn content_only_cache_implements_no_ref_authority() {
+        fn accepts_content_store<S: ContentStore>(_: &S) {}
+
+        let cache = ContentOnlyCache {
+            capabilities: Capabilities {
+                refs: RefCapability::None,
+                ranges: RangeCapability::Ranges,
+                presign: false,
+                locality: Locality::default(),
+                durability: Durability::Local,
+                sealed: false,
+            },
         };
 
-        assert_eq!(cache.refs, RefCapability::None);
-        assert_eq!(authority.refs, RefCapability::Cas);
+        accepts_content_store(&cache);
+        assert_eq!(cache.capabilities().refs, RefCapability::None);
+        assert!(poll_ready(cache.has(&[])).unwrap().is_empty());
     }
 
     #[cfg(all(feature = "wasm", not(feature = "send")))]
@@ -666,7 +699,10 @@ mod tests {
         let response = poll_ready(binding.send(request)).unwrap();
         assert_eq!(response.status, 206);
         assert_eq!(response.body, b"payload");
-        assert_eq!(binding.now(), SystemTime::UNIX_EPOCH + Duration::from_secs(42));
+        assert_eq!(
+            binding.now(),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(42)
+        );
     }
 
     #[cfg(feature = "tokio")]
