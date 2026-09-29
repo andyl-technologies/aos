@@ -92,8 +92,8 @@ pub trait IdentityHasher: Sync {
     /// Returns the number of digest bytes.
     fn output_len(&self) -> usize;
 
-    /// Hashes a complete domain-separated preimage.
-    fn digest(&self, preimage: &[u8]) -> Vec<u8>;
+    /// Hashes a domain, one zero separator, and immutable bytes in that order.
+    fn digest(&self, domain: &str, bytes: &[u8]) -> Vec<u8>;
 }
 
 /// BLAKE3-256 for the initial identity profile.
@@ -108,8 +108,12 @@ impl IdentityHasher for Blake3Hasher {
         32
     }
 
-    fn digest(&self, preimage: &[u8]) -> Vec<u8> {
-        blake3::hash(preimage).as_bytes().to_vec()
+    fn digest(&self, domain: &str, bytes: &[u8]) -> Vec<u8> {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(domain.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(bytes);
+        hasher.finalize().as_bytes().to_vec()
     }
 }
 
@@ -252,12 +256,7 @@ impl IdentityProfile {
     /// registered hasher violates its declared output length.
     pub fn calculate(&self, kind: IdentityKind, bytes: &[u8]) -> Result<Identity, IdentityError> {
         let domain = self.domain(kind)?;
-        let mut preimage = Vec::with_capacity(domain.len() + 1 + bytes.len());
-        preimage.extend_from_slice(domain.as_bytes());
-        preimage.push(0);
-        preimage.extend_from_slice(bytes);
-
-        let digest = self.hasher.digest(&preimage);
+        let digest = self.hasher.digest(domain, bytes);
         if digest.len() != self.hasher.output_len() {
             return Err(IdentityError::InvalidDigestLength);
         }
@@ -500,18 +499,17 @@ impl core::error::Error for IdentityError {}
 mod tests {
     use super::*;
     use alloc::format;
-    use core::fmt::Write;
 
     fn hex(bytes: &[u8]) -> String {
         let mut text = String::with_capacity(bytes.len() * 2);
         for byte in bytes {
-            write!(text, "{byte:02x}").expect("String writing succeeds");
+            text.push_str(&format!("{byte:02x}"));
         }
         text
     }
 
     #[test]
-    fn chunk_identity_matches_both_golden_vectors() {
+    fn chunk_identity_matches_both_golden_vectors() -> Result<(), IdentityError> {
         let cases = [
             (
                 b"".as_slice(),
@@ -524,21 +522,18 @@ mod tests {
         ];
 
         for (plaintext, expected) in cases {
-            let identity = TERRANE_V1
-                .calculate(IdentityKind::Chunk, plaintext)
-                .expect("registered kind");
+            let identity = TERRANE_V1.calculate(IdentityKind::Chunk, plaintext)?;
             assert_eq!(hex(identity.digest()), expected);
-            TERRANE_V1.verify(&identity, plaintext).expect("same bytes");
+            TERRANE_V1.verify(&identity, plaintext)?;
         }
+        Ok(())
     }
 
     #[test]
-    fn every_immutable_kind_has_a_distinct_registered_domain() {
+    fn every_immutable_kind_has_a_distinct_registered_domain() -> Result<(), IdentityError> {
         let mut digests = Vec::new();
         for registration in TERRANE_V1.domains() {
-            let identity = TERRANE_V1
-                .calculate(registration.kind(), b"same bytes")
-                .expect("registered kind");
+            let identity = TERRANE_V1.calculate(registration.kind(), b"same bytes")?;
             assert!(!digests.contains(&identity.digest().to_vec()));
             assert_eq!(
                 TERRANE_V1.kind(registration.name()),
@@ -550,16 +545,14 @@ mod tests {
             TERRANE_V1.kind("terrane-unknown-v1"),
             Err(IdentityError::UnknownDomain)
         );
+        Ok(())
     }
 
     #[test]
-    fn descriptor_rejects_mismatched_fields_and_bytes() {
+    fn descriptor_rejects_mismatched_fields_and_bytes() -> Result<(), IdentityError> {
         let bytes = b"hello, terrane\n";
-        let identity = TERRANE_V1
-            .calculate(IdentityKind::Chunk, bytes)
-            .expect("registered kind");
-        let descriptor =
-            Descriptor::from_identity(&TERRANE_V1, &identity, bytes).expect("valid bytes");
+        let identity = TERRANE_V1.calculate(IdentityKind::Chunk, bytes)?;
+        let descriptor = Descriptor::from_identity(&TERRANE_V1, &identity, bytes)?;
 
         assert_eq!(descriptor.size(), 15);
         assert_eq!(
@@ -607,10 +600,11 @@ mod tests {
             Descriptor::from_wire(&TERRANE_V1, "blake3", descriptor.domain(), &[0; 31], 15),
             Err(IdentityError::InvalidDigestLength)
         );
+        Ok(())
     }
 
     #[test]
-    fn a_second_profile_cannot_reinterpret_initial_identities() {
+    fn a_second_profile_cannot_reinterpret_initial_identities() -> Result<(), IdentityError> {
         static FUTURE: [DomainRegistration; 11] = [
             DomainRegistration::new(IdentityKind::Chunk, "future-chunk-v2"),
             DomainRegistration::new(IdentityKind::Manifest, "future-manifest-v2"),
@@ -625,14 +619,9 @@ mod tests {
             DomainRegistration::new(IdentityKind::Memo, "future-memo-v2"),
         ];
 
-        let future =
-            IdentityProfile::register("future-v2", &BLAKE3, &FUTURE).expect("distinct profile");
-        let old = TERRANE_V1
-            .calculate(IdentityKind::Chunk, b"content")
-            .expect("registered kind");
-        let new = future
-            .calculate(IdentityKind::Chunk, b"content")
-            .expect("registered kind");
+        let future = IdentityProfile::register("future-v2", &BLAKE3, &FUTURE)?;
+        let old = TERRANE_V1.calculate(IdentityKind::Chunk, b"content")?;
+        let new = future.calculate(IdentityKind::Chunk, b"content")?;
 
         assert_ne!(old.digest(), new.digest());
         assert_eq!(
@@ -647,11 +636,12 @@ mod tests {
             Descriptor::from_wire(
                 &TERRANE_V1,
                 future.algorithm(),
-                future.domain(IdentityKind::Chunk).expect("registered kind"),
+                future.domain(IdentityKind::Chunk)?,
                 new.digest(),
                 7
             ),
             Err(IdentityError::UnknownDomain)
         );
+        Ok(())
     }
 }
