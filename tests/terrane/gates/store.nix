@@ -1,7 +1,4 @@
-{
-  sourceGate,
-  ...
-}: {
+{sourceGate, ...}: {
   store-error-taxonomy = sourceGate "store-error-taxonomy" ''
     cd crates
     cargo test --frozen --offline -p terrane --lib store::tests::error_outcomes_preserve_sources_without_changing_category
