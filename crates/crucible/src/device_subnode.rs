@@ -100,6 +100,7 @@ pub struct WorldIoRuntimeLayout {
 /// Complete instantiation-time layout derived from a logical [`World`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorldIoInstantiationLayout {
+    world: ContentHash,
     bindings: BTreeMap<NodeId, WorldIoRuntimeLayout>,
 }
 
@@ -130,7 +131,10 @@ impl WorldIoInstantiationLayout {
                 },
             );
         }
-        Ok(Self { bindings })
+        Ok(Self {
+            world: world.id(),
+            bindings,
+        })
     }
 
     /// Returns the derived physical binding for one I/O node.
@@ -143,11 +147,33 @@ impl WorldIoInstantiationLayout {
     pub fn iter(&self) -> impl Iterator<Item = (&NodeId, &WorldIoRuntimeLayout)> {
         self.bindings.iter()
     }
+
+    // Matching names or source numbers do not bind a layout to its World.
+    // Retain the actual canonical owner through cloning and validate it before
+    // constructing either concrete device. Capacity policy stays physical.
+    fn validate_world(&self, world: &World) -> Result<(), WorldIoLayoutError> {
+        let expected = world.id();
+        if self.world != expected {
+            return Err(WorldIoLayoutError::WorldMismatch {
+                expected,
+                actual: self.world,
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Error returned while deriving a physical I/O layout.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum WorldIoLayoutError {
+    /// A layout belongs to a different canonical World.
+    #[error("I/O layout World {actual:?} differs from the binding World {expected:?}")]
+    WorldMismatch {
+        /// Canonical World being instantiated.
+        expected: ContentHash,
+        /// Canonical World retained when the layout was derived.
+        actual: ContentHash,
+    },
     /// A physical ring capacity is zero or not a power of two.
     #[error("world I/O {ring} ring capacity {capacity} is not a nonzero power of two")]
     InvalidRingCapacity {
@@ -467,7 +493,8 @@ impl DeviceSchedulingSubNode {
     /// # Errors
     ///
     /// Returns the errors documented by [`DeviceSchedulingSubNode::bind_world_block`]
-    /// and rejects a layout that does not contain the selected I/O node.
+    /// and rejects a layout derived from another World or lacking the selected
+    /// I/O node, before constructing the device.
     pub fn bind_world_block_with_layout(
         world: &World,
         layout: &WorldIoInstantiationLayout,
@@ -475,6 +502,13 @@ impl DeviceSchedulingSubNode {
         base: BaseImage,
         seed: Seed,
     ) -> Result<Self, DeviceSubNodeBindingError> {
+        layout
+            .validate_world(world)
+            .map_err(|source| DeviceSubNodeBindingError::Layout {
+                node: node_id.name.clone(),
+                source,
+            })?;
+
         let node =
             world
                 .io_node(node_id)
@@ -621,7 +655,8 @@ impl DeviceSchedulingSubNode {
     /// # Errors
     ///
     /// Returns the errors documented by [`DeviceSchedulingSubNode::bind_world_ninep`]
-    /// and rejects a layout that does not contain the selected I/O node.
+    /// and rejects a layout derived from another World or lacking the selected
+    /// I/O node, before constructing the device.
     pub fn bind_world_ninep_with_layout(
         world: &World,
         layout: &WorldIoInstantiationLayout,
@@ -629,6 +664,13 @@ impl DeviceSchedulingSubNode {
         tree: FsTree,
         seed: Seed,
     ) -> Result<Self, DeviceSubNodeBindingError> {
+        layout
+            .validate_world(world)
+            .map_err(|source| DeviceSubNodeBindingError::Layout {
+                node: node_id.name.clone(),
+                source,
+            })?;
+
         let node =
             world
                 .io_node(node_id)
