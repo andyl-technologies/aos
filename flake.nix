@@ -296,38 +296,39 @@
         };
         developmentShell = name: packages: let
           binPath = builtins.concatStringsSep ":" (map (package: "${package}/bin") packages);
-        in builtins.derivation {
-          inherit name;
-          inherit system;
-          outputs = ["out"];
-          builder = "${aos.pkgs.bash}/bin/bash";
-          args = [
-            "-c"
-            "echo 'Use nix develop, not nix build' >&2; ${aos.pkgs.coreutils}/bin/mkdir -p $out"
-          ];
-          shellHook =
-            (
-              if binPath != ""
-              then ''
-                export PATH="${binPath}''${PATH:+:$PATH}"
-              ''
-              else ""
-            )
-            + ''
-              export RUST_SRC_PATH="${aos.pkgs.rust.dev}/lib/rustlib/src/rust/library"
-              export OPENSSL_DIR="${aos.pkgs.openssl}"
-              export OPENSSL_NO_VENDOR=1
-              export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
-              export PKG_CONFIG_PATH="${aos.pkgs.sqlite}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-              # OPENSSL_DIR above only lets `openssl-sys` *link* against the AOS
-              # OpenSSL and pkg-config above only let native crates link against
-              # the AOS libraries; the resulting binary still records SONAMEs.
-              # Bake both library directories into native cargo binaries so
-              # they run directly without an LD_LIBRARY_PATH that would poison
-              # the `nix` subprocesses they launch.
-              export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.sqlite}/lib"
-            '';
-        };
+        in
+          builtins.derivation {
+            inherit name;
+            inherit system;
+            outputs = ["out"];
+            builder = "${aos.pkgs.bash}/bin/bash";
+            args = [
+              "-c"
+              "echo 'Use nix develop, not nix build' >&2; ${aos.pkgs.coreutils}/bin/mkdir -p $out"
+            ];
+            shellHook =
+              (
+                if binPath != ""
+                then ''
+                  export PATH="${binPath}''${PATH:+:$PATH}"
+                ''
+                else ""
+              )
+              + ''
+                export RUST_SRC_PATH="${aos.pkgs.rust.dev}/lib/rustlib/src/rust/library"
+                export OPENSSL_DIR="${aos.pkgs.openssl}"
+                export OPENSSL_NO_VENDOR=1
+                export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+                export PKG_CONFIG_PATH="${aos.pkgs.sqlite}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+                # OPENSSL_DIR above only lets `openssl-sys` *link* against the AOS
+                # OpenSSL and pkg-config above only let native crates link against
+                # the AOS libraries; the resulting binary still records SONAMEs.
+                # Bake both library directories into native cargo binaries so
+                # they run directly without an LD_LIBRARY_PATH that would poison
+                # the `nix` subprocesses they launch.
+                export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.sqlite}/lib"
+              '';
+          };
       in {
         default = developmentShell "aos-dev" ([aosCli aosCli.apm aosCli.apr] ++ toolPackages);
         # The Terrane workspace must be buildable before repackaging the AOS

@@ -7,23 +7,23 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use aos_core::output::Printer;
 use aos_release::artifact::ArtifactRecord;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::evidence::{
-    GateResult, QualificationExecutorRequestV1, QualificationExecutorResponseV1,
-    QualificationObjectV1, QualificationReportV1, QualificationRetainedBundleV1,
-    QualificationRetainedObjectV1, QualificationTrustedKeyV1, QUALIFICATION_EXECUTOR_REQUEST_V1,
-    QUALIFICATION_EXECUTOR_REQUEST_V3, QUALIFICATION_EXECUTOR_RESPONSE_V1, QUALIFICATION_REPORT_V1,
+    GateResult, QUALIFICATION_EXECUTOR_REQUEST_V1, QUALIFICATION_EXECUTOR_REQUEST_V3,
+    QUALIFICATION_EXECUTOR_RESPONSE_V1, QUALIFICATION_REPORT_V1, QualificationExecutorRequestV1,
+    QualificationExecutorResponseV1, QualificationObjectV1, QualificationReportV1,
+    QualificationRetainedBundleV1, QualificationRetainedObjectV1, QualificationTrustedKeyV1,
 };
 use aos_release::manifest::ManifestEnvelopeV1;
 use aos_release::platform::{MatrixCell, Platform};
 use aos_release::qualification_evidence::QualificationPredecessor;
 use aos_release::receipt::{
-    verify_signed_receipt_with_key, HubEnvironment, PublicationReceiptV1, QualificationReceiptV1,
-    SignedReceiptEnvelopeV1, RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT_V1,
+    HubEnvironment, PublicationReceiptV1, QualificationReceiptV1, RECEIPT_SIGNATURE_DOMAIN,
+    SIGNED_RECEIPT_V1, SignedReceiptEnvelopeV1, verify_signed_receipt_with_key,
 };
 use aos_release::signing::{
     SignatureAlgorithm, SignerRole, SigningContext, SigningOperation, SigningRequestV1,
