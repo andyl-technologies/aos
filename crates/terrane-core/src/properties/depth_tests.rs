@@ -7,6 +7,24 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 #[test]
+fn resolution_counts_graft_edges_between_roots() {
+    let defaults = super::Defaults {
+        store: "authority",
+        private_domain: "private:depth",
+        home: "local",
+    };
+    let layer = super::RootLayer {
+        properties: &[],
+        overrides: &[],
+    };
+    let maximum_path = vec![layer; 65];
+    assert!(super::resolve(&maximum_path, defaults).is_ok());
+
+    let excessive_path = vec![layer; 66];
+    assert_eq!(super::resolve(&excessive_path, defaults), Err(Error::Limit));
+}
+
+#[test]
 fn resolution_preserves_deep_registered_generic_values() {
     let mut encoded = vec![0x81; 4096];
     encoded.push(0xf5);

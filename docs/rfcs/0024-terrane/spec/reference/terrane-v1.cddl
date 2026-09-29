@@ -266,9 +266,12 @@ IndexGenerationManifest = {
   2 => [ * shard-entry ],
   3 => timestamp,                       ; written at
   4 => cycle,                           ; collection cycle that produced it
+  ? 5 => [ * pack-inventory-entry ],    ; authoritative published containers
 }
 shard-entry = [ shard: uint, idx-hash: digest32, idx-size: uint,
                 ? (flt-hash: digest32, flt-size: uint) ]
+pack-inventory-entry = [ pack-id: bstr .size 16, pack-hash: digest32,
+                         pack-size: uint, idx-hash: digest32, idx-size: uint ]
 
 ; ---------------------------------------------------------------------------
 ; Store records (13-bucket-layout.md, 17-garbage-collection.md)

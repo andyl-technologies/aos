@@ -103,6 +103,16 @@ preserve the pointer, and a failed pointer CAS leaves an unpublished
 generation available only for recovery. A manifest entry omits both filter
 fields when no filter is published for that shard.
 
+Optional manifest key 5 inventories published pack containers. Each entry
+binds a pack id to the whole pack's identity and size and to its detached
+index's identity and size. The inventory is ordered by pack id, has no
+duplicates, and names only artifacts durably written before the manifest.
+It makes whole-pack and detached-index `ContentStore` identities resolvable
+without nesting packs or relying on `LIST`. Readers verify both artifacts
+and their matching indexes before using an inventory entry; normal content
+reads also honor the selected generation's tombstones. Container publication
+does not make content excluded by those tombstones visible again.
+
 ### `refs/heads/`
 
 One canonical CBOR ref record per branch

@@ -161,7 +161,7 @@ fn resolution_rejects_unregistered_and_invalid_values() {
             &[RootLayer {
                 properties: &[],
                 overrides: &[]
-            }; 65],
+            }; 66],
             defaults()
         ),
         Err(Error::Limit)

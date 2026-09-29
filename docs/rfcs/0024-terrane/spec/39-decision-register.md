@@ -850,6 +850,33 @@ is added rather than editing history.
     encodings when key 9 is absent and filter fields are present.
     Requirement IDs remain stable.
 
+- **[D-51] Include required hard-link rewrites in the graft delta.**
+  - **Status:** Decided
+  - **Decision:** Graft replacement accounts for removed inline entries
+    and surviving aliases whose canonical hard-link member was removed.
+    Unrelated entries remain excluded from the mutation scan.
+  - **Rationale:** TREE-11 stores the smallest member key in every alias.
+    Removing that member necessarily changes all remaining aliases, which
+    contradicts an unconditional O(log n) graft bound independent of them.
+  - **Affects:** ALG-1, ALG-2 and TREE-11. No encoding or identity changes;
+    requirement IDs remain stable.
+
+- **[D-52] Inventory published pack containers in generation manifests.**
+  - **Status:** Decided
+  - **Decision:** Optional manifest key 5 records ordered pack ids with
+    whole-pack and detached-index identities and sizes. Inventory entries
+    require both artifacts to be durable, verified and mutually consistent.
+    The content interface names all registered stored identity domains.
+  - **Rationale:** STORE-1 to STORE-3 require whole-pack content operations,
+    but packs use random-id keys and cannot be nested in pack bodies. Without
+    an authoritative mapping, lookup by pack hash would require LIST, which
+    STORE-11 prohibits. Attribute, policy and memo domains were also missing
+    from the interface's descriptive domain list despite OBJ-2 and DRV-3.
+  - **Affects:** STORE-1 to STORE-5, STORE-11, BKT-4, PACK-10, PACK-14 and
+    generation-manifest CDDL. This pre-freeze draft correction preserves
+    existing manifest bytes when key 5 is absent and every existing kind
+    assignment and bucket key. Requirement IDs remain stable.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

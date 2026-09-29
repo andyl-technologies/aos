@@ -45,7 +45,11 @@ hash that can be sealed, indexed, or exposed by every surface.
   mutation at the nodes on the path to `at`, rechunk only until boundaries
   resynchronize, and reuse unchanged subtrees. Its expected cost is
   O(log n) in the size of `parent`; adversarial boundary shifts can require
-  O(n) work. *Gate:* `gate:algebra-graft`.
+  O(n) work. Replacing an inline subtree includes the removed entries in
+  the semantic delta. If replacement removes a hard-link group's canonical
+  member, TREE-11 requires rewriting each surviving member's link-id; those
+  members are also part of the delta, rather than unrelated scan work.
+  *Gate:* `gate:algebra-graft`.
 - **[ALG-2]** If an entry already exists at `at`, `graft` MUST replace it. If
   entries exist beneath `at` in `parent` (that is, `at` is a directory with
   inline children), `graft` MUST fail with a structural error unless the

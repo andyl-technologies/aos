@@ -62,7 +62,8 @@ Store = ContentStore + RefStore
 
 `kind` names the identity domain of the content
 ([`04-content-model.md`](04-content-model.md)): data chunk, manifest, tree
-node, commit, bundle, index, filter, or pack. `id` is the content hash in
+node, commit, bundle, index, filter, pack, attribute record, policy object,
+or recipe memo. `id` is the content hash in
 that domain. `range` is a byte range within the content, used for chunk
 ranges inside packs and for partial object reads.
 

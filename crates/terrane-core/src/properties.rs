@@ -172,7 +172,7 @@ impl<'a> EffectiveProperties<'a> {
 /// registered names must keep their raw bytes outside behavioral policy.
 ///
 /// # Errors
-/// Rejects malformed properties, invalid defaults, and more than 64 roots.
+/// Rejects malformed properties, invalid defaults, and more than 64 graft edges.
 pub fn resolve<'a>(
     path: &[RootLayer<'a>],
     defaults: Defaults<'a>,
@@ -194,7 +194,7 @@ pub fn resolve_with_registry<'a>(
     defaults: Defaults<'a>,
     later_registered: &[&str],
 ) -> Result<EffectiveProperties<'a>, Error> {
-    if path.len() > MAX_GRAFT_DEPTH {
+    if path.len().saturating_sub(1) > MAX_GRAFT_DEPTH {
         return Err(Error::Limit);
     }
     let mut values = registry::defaults(defaults)?;
