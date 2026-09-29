@@ -165,14 +165,12 @@ async fn authority_operator_requires_instance_root_permission_for_plan_apply_and
             Err(RpcError::PermissionDenied(_) | RpcError::Unauthenticated(_))
         ));
     }
-    assert!(
-        service
-            .db
-            .physical_storage_authority(&conversion::authority_id(AUTHORITY).unwrap())
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(service
+        .db
+        .physical_storage_authority(&conversion::authority_id(AUTHORITY).unwrap())
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -201,14 +199,12 @@ async fn authority_operator_reauthorizes_revoked_role_before_apply_and_result_re
             .await,
         Err(RpcError::PermissionDenied(_))
     ));
-    assert!(
-        service
-            .db
-            .physical_storage_authority(&conversion::authority_id(AUTHORITY).unwrap())
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(service
+        .db
+        .physical_storage_authority(&conversion::authority_id(AUTHORITY).unwrap())
+        .await
+        .unwrap()
+        .is_none());
 
     service
         .db
@@ -405,16 +401,14 @@ async fn authority_operator_rejects_expired_unreserved_plan_and_preserves_begun_
             .await,
         Err(RpcError::FailedPrecondition(_))
     ));
-    assert!(
-        service
-            .db
-            .topology_plan(&request.plan_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .apply_idempotency_key
-            .is_none()
-    );
+    assert!(service
+        .db
+        .topology_plan(&request.plan_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .apply_idempotency_key
+        .is_none());
     // Seed the reservation retained by an attempt begun before plan expiry.
     service
         .db
@@ -647,20 +641,18 @@ async fn authority_operator_roundtrips_all_families_and_projects_desired_pending
         desired.decision.unwrap().state,
         pb::StorageAuthorityDesiredState::Admitted as i32
     );
-    assert!(
-        service
-            .db
-            .storage_authority_admission_for_remote(
-                &crate::storage_authority::StorageAuthorityRemoteWatermark {
-                    authority_id: conversion::authority_id(AUTHORITY).unwrap(),
-                    guard_namespace_id: "actual-account/configured-namespace".into(),
-                    generation: 1,
-                    digest: desired.digest
-                }
-            )
-            .await
-            .is_err()
-    );
+    assert!(service
+        .db
+        .storage_authority_admission_for_remote(
+            &crate::storage_authority::StorageAuthorityRemoteWatermark {
+                authority_id: conversion::authority_id(AUTHORITY).unwrap(),
+                guard_namespace_id: "actual-account/configured-namespace".into(),
+                generation: 1,
+                digest: desired.digest
+            }
+        )
+        .await
+        .is_err());
 }
 
 #[test]
@@ -830,14 +822,12 @@ async fn authority_operator_freezes_parent_version_across_restore_and_replay() {
             .await,
         Err(RpcError::FailedPrecondition(_))
     ));
-    assert!(
-        service
-            .db
-            .physical_storage_alias("restored-parent-alias")
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(service
+        .db
+        .physical_storage_alias("restored-parent-alias")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]

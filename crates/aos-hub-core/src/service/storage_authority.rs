@@ -7,7 +7,7 @@
 use super::*;
 use crate::db::ReviewedStorageAuthorityDecision;
 use crate::storage_authority::{
-    StorageAuthorityDecisionInput, StorageAuthorityReviewedPlanInput, canonical_digest,
+    canonical_digest, StorageAuthorityDecisionInput, StorageAuthorityReviewedPlanInput,
 };
 
 mod conversion;
