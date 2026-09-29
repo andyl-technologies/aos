@@ -74,7 +74,10 @@ impl<'a> Decoder<'a> {
     /// # Errors
     /// Returns [`Error::Malformed`] at end of input.
     pub fn peek_major(&self) -> Result<u8, Error> {
-        self.remaining().first().map(|byte| byte >> 5).ok_or(Error::Malformed)
+        self.remaining()
+            .first()
+            .map(|byte| byte >> 5)
+            .ok_or(Error::Malformed)
     }
 
     fn take(&mut self, length: usize) -> Result<&'a [u8], Error> {
@@ -93,8 +96,12 @@ impl<'a> Decoder<'a> {
         let value = match additional {
             0..=23 => u64::from(additional),
             24 => u64::from(self.take(1)?[0]),
-            25 => u64::from(u16::from_be_bytes(self.take(2)?.try_into().map_err(|_| Error::Malformed)?)),
-            26 => u64::from(u32::from_be_bytes(self.take(4)?.try_into().map_err(|_| Error::Malformed)?)),
+            25 => u64::from(u16::from_be_bytes(
+                self.take(2)?.try_into().map_err(|_| Error::Malformed)?,
+            )),
+            26 => u64::from(u32::from_be_bytes(
+                self.take(4)?.try_into().map_err(|_| Error::Malformed)?,
+            )),
             27 => u64::from_be_bytes(self.take(8)?.try_into().map_err(|_| Error::Malformed)?),
             _ => return Err(Error::Unsupported),
         };
@@ -117,6 +124,14 @@ impl<'a> Decoder<'a> {
     /// Rejects a missing, noninteger, or nonminimal item.
     pub fn uint(&mut self) -> Result<u64, Error> {
         self.argument(0)
+    }
+
+    /// Reads a negative integer's CBOR argument `n` (the value is `-1-n`).
+    ///
+    /// # Errors
+    /// Rejects a missing, noninteger, or nonminimal item.
+    pub fn negative_argument(&mut self) -> Result<u64, Error> {
+        self.argument(1)
     }
 
     /// Reads a definite byte string up to `limit` bytes.
@@ -198,9 +213,18 @@ impl<'a> Decoder<'a> {
         }
         let start = self.position;
         match self.peek_major()? {
-            0 => { self.uint()?; }
-            2 => { self.bytes(max_bytes)?; }
-            3 => { self.text(max_bytes)?; }
+            0 => {
+                self.uint()?;
+            }
+            1 => {
+                self.negative_argument()?;
+            }
+            2 => {
+                self.bytes(max_bytes)?;
+            }
+            3 => {
+                self.text(max_bytes)?;
+            }
             4 => {
                 let count = self.array(max_bytes)?;
                 for _ in 0..count {
@@ -213,9 +237,15 @@ impl<'a> Decoder<'a> {
                 for _ in 0..count {
                     let key_start = self.position;
                     match self.peek_major()? {
-                        0 => { self.uint()?; }
-                        2 => { self.bytes(max_bytes)?; }
-                        3 => { self.text(max_bytes)?; }
+                        0 => {
+                            self.uint()?;
+                        }
+                        2 => {
+                            self.bytes(max_bytes)?;
+                        }
+                        3 => {
+                            self.text(max_bytes)?;
+                        }
                         _ => return Err(Error::Unsupported),
                     }
                     let key = &self.input[key_start..self.position];
@@ -226,7 +256,9 @@ impl<'a> Decoder<'a> {
                     self.skip_nested(depth + 1, max_bytes)?;
                 }
             }
-            7 => { self.simple()?; }
+            7 => {
+                self.simple()?;
+            }
             _ => return Err(Error::Unsupported),
         }
         if self.position - start > max_bytes {
@@ -250,7 +282,11 @@ impl<'a> Decoder<'a> {
     /// # Errors
     /// Returns [`Error::TrailingData`] if bytes remain.
     pub fn finish(&self) -> Result<(), Error> {
-        if self.remaining().is_empty() { Ok(()) } else { Err(Error::TrailingData) }
+        if self.remaining().is_empty() {
+            Ok(())
+        } else {
+            Err(Error::TrailingData)
+        }
     }
 }
 
@@ -259,15 +295,34 @@ pub fn write_argument(output: &mut Vec<u8>, major: u8, argument: u64) {
     let prefix = major << 5;
     match argument {
         0..=23 => output.push(prefix | argument as u8),
-        24..=255 => { output.push(prefix | 24); output.push(argument as u8); }
-        256..=65535 => { output.push(prefix | 25); output.extend_from_slice(&(argument as u16).to_be_bytes()); }
-        65536..=4294967295 => { output.push(prefix | 26); output.extend_from_slice(&(argument as u32).to_be_bytes()); }
-        _ => { output.push(prefix | 27); output.extend_from_slice(&argument.to_be_bytes()); }
+        24..=255 => {
+            output.push(prefix | 24);
+            output.push(argument as u8);
+        }
+        256..=65535 => {
+            output.push(prefix | 25);
+            output.extend_from_slice(&(argument as u16).to_be_bytes());
+        }
+        65536..=4294967295 => {
+            output.push(prefix | 26);
+            output.extend_from_slice(&(argument as u32).to_be_bytes());
+        }
+        _ => {
+            output.push(prefix | 27);
+            output.extend_from_slice(&argument.to_be_bytes());
+        }
     }
 }
 
 /// Appends an unsigned integer in shortest form.
-pub fn write_uint(output: &mut Vec<u8>, value: u64) { write_argument(output, 0, value); }
+pub fn write_uint(output: &mut Vec<u8>, value: u64) {
+    write_argument(output, 0, value);
+}
+
+/// Appends a negative integer from its CBOR argument `n` (`-1-n`).
+pub fn write_negative_argument(output: &mut Vec<u8>, argument: u64) {
+    write_argument(output, 1, argument);
+}
 
 /// Appends a definite byte string in shortest form.
 pub fn write_bytes(output: &mut Vec<u8>, value: &[u8]) {
@@ -282,10 +337,14 @@ pub fn write_text(output: &mut Vec<u8>, value: &str) {
 }
 
 /// Appends a definite array header in shortest form.
-pub fn write_array(output: &mut Vec<u8>, count: usize) { write_argument(output, 4, count as u64); }
+pub fn write_array(output: &mut Vec<u8>, count: usize) {
+    write_argument(output, 4, count as u64);
+}
 
 /// Appends a definite map header in shortest form.
-pub fn write_map(output: &mut Vec<u8>, count: usize) { write_argument(output, 5, count as u64); }
+pub fn write_map(output: &mut Vec<u8>, count: usize) {
+    write_argument(output, 5, count as u64);
+}
 
 #[cfg(test)]
 mod tests {
@@ -294,8 +353,12 @@ mod tests {
     #[test]
     fn rejects_nonminimal_and_excluded_forms() {
         for bytes in [
-            &[0x18, 0x17][..], &[0x59, 0, 1, 0][..], &[0x9f, 0xff][..],
-            &[0xc0, 0][..], &[0xf9, 0, 0][..], &[0x61, 0xff][..],
+            &[0x18, 0x17][..],
+            &[0x59, 0, 1, 0][..],
+            &[0x9f, 0xff][..],
+            &[0xc0, 0][..],
+            &[0xf9, 0, 0][..],
+            &[0x61, 0xff][..],
         ] {
             assert!(Decoder::new(bytes).skip_value(64).is_err(), "{bytes:?}");
         }
@@ -303,8 +366,14 @@ mod tests {
 
     #[test]
     fn checks_claimed_length_before_consuming_body() {
-        assert_eq!(Decoder::new(&[0x5a, 0xff, 0xff, 0xff, 0xff]).bytes(65536), Err(Error::Limit));
-        assert_eq!(Decoder::new(&[0x9a, 0xff, 0xff, 0xff, 0xff]).array(100), Err(Error::Limit));
+        assert_eq!(
+            Decoder::new(&[0x5a, 0xff, 0xff, 0xff, 0xff]).bytes(65536),
+            Err(Error::Limit)
+        );
+        assert_eq!(
+            Decoder::new(&[0x9a, 0xff, 0xff, 0xff, 0xff]).array(100),
+            Err(Error::Limit)
+        );
     }
 
     #[test]

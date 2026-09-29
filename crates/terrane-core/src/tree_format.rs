@@ -10,7 +10,7 @@ use core::cmp::Ordering;
 use core::fmt;
 
 use crate::cbor::{self, Decoder};
-use crate::identity::Digest;
+use crate::identity::{Digest, IdentityKind, TERRANE_V1};
 
 /// Maximum encoded key length in bytes.
 pub const MAX_KEY: usize = 4096;
@@ -144,11 +144,17 @@ pub enum EntryKind<'a> {
     /// A verbatim symlink target.
     Symlink { target: &'a [u8] },
     /// A reference to another tree root with optional overriding properties.
-    Tree { root: Digest, props: Option<Vec<Property<'a>>> },
+    Tree {
+        root: Digest,
+        props: Option<Vec<Property<'a>>>,
+    },
     /// An overlay-layer deletion marker.
     Whiteout,
     /// An unresolved merge result in side order.
-    Conflict { candidates: Vec<Entry<'a>>, base: Option<Option<Box<Entry<'a>>>> },
+    Conflict {
+        candidates: Vec<Entry<'a>>,
+        base: Option<Option<Box<Entry<'a>>>>,
+    },
     /// Sorted, unique object identities in an index tree.
     Index { targets: Vec<Digest> },
 }
@@ -160,8 +166,12 @@ pub struct Entry<'a> {
     pub kind: EntryKind<'a>,
     /// Writer-supplied or derived canonical attributes.
     pub attrs: Vec<Attribute<'a>>,
+    /// Whether the optional attribute map was encoded, even when empty.
+    pub attrs_present: bool,
     /// Raw filesystem extended attributes.
     pub xattrs: Vec<ExtendedAttribute<'a>>,
+    /// Whether the optional extended-attribute map was encoded, even when empty.
+    pub xattrs_present: bool,
     /// Commit that introduced the current entry value.
     pub provenance: Option<Digest>,
 }
@@ -230,18 +240,27 @@ fn property_value(decoder: &mut Decoder<'_>, depth: usize) -> Result<(), Error> 
         return Err(Error::Limit);
     }
     match decoder.peek_major()? {
-        0 => { decoder.uint()?; }
-        3 => { decoder.text(MAX_NODE_ITEMS_BYTES)?; }
+        0 => {
+            decoder.uint()?;
+        }
+        3 => {
+            decoder.text(MAX_NODE_ITEMS_BYTES)?;
+        }
         4 => {
             let count = decoder.array(MAX_NODE_ITEMS_BYTES)?;
-            for _ in 0..count { property_value(decoder, depth + 1)?; }
+            for _ in 0..count {
+                property_value(decoder, depth + 1)?;
+            }
         }
         5 => {
             let count = decoder.map(MAX_NODE_ITEMS_BYTES)?;
             let mut previous = None;
             for _ in 0..count {
                 let key = decoder.text(MAX_COMPONENT)?;
-                if key.is_empty() || previous.is_some_and(|prior: &str| text_key_order(prior, key) != Ordering::Less) {
+                if key.is_empty()
+                    || previous
+                        .is_some_and(|prior: &str| text_key_order(prior, key) != Ordering::Less)
+                {
                     return Err(Error::Entry);
                 }
                 previous = Some(key);
@@ -249,7 +268,9 @@ fn property_value(decoder: &mut Decoder<'_>, depth: usize) -> Result<(), Error> 
             }
         }
         7 => {
-            if decoder.simple()? == 0xf6 { return Err(Error::Entry); }
+            if decoder.simple()? == 0xf6 {
+                return Err(Error::Entry);
+            }
         }
         _ => return Err(Error::Entry),
     }
@@ -257,7 +278,9 @@ fn property_value(decoder: &mut Decoder<'_>, depth: usize) -> Result<(), Error> 
 }
 
 fn text_key_order(left: &str, right: &str) -> Ordering {
-    left.len().cmp(&right.len()).then_with(|| left.as_bytes().cmp(right.as_bytes()))
+    left.len()
+        .cmp(&right.len())
+        .then_with(|| left.as_bytes().cmp(right.as_bytes()))
 }
 
 fn byte_key_order(left: &[u8], right: &[u8]) -> Ordering {
@@ -270,13 +293,18 @@ fn properties<'a>(decoder: &mut Decoder<'a>) -> Result<Vec<Property<'a>>, Error>
     let mut previous = None;
     for _ in 0..count {
         let name = decoder.text(MAX_COMPONENT)?;
-        if name.is_empty() || previous.is_some_and(|prior: &str| text_key_order(prior, name) != Ordering::Less) {
+        if name.is_empty()
+            || previous.is_some_and(|prior: &str| text_key_order(prior, name) != Ordering::Less)
+        {
             return Err(Error::Entry);
         }
         previous = Some(name);
         let start = decoder.position();
         property_value(decoder, 0)?;
-        result.push(Property { name, value: decoder.slice(start, decoder.position())? });
+        result.push(Property {
+            name,
+            value: decoder.slice(start, decoder.position())?,
+        });
     }
     Ok(result)
 }
@@ -287,7 +315,9 @@ fn attributes<'a>(decoder: &mut Decoder<'a>) -> Result<Vec<Attribute<'a>>, Error
     let mut previous = None;
     for _ in 0..count {
         let name = decoder.text(MAX_COMPONENT)?;
-        if name.is_empty() || previous.is_some_and(|prior: &str| text_key_order(prior, name) != Ordering::Less) {
+        if name.is_empty()
+            || previous.is_some_and(|prior: &str| text_key_order(prior, name) != Ordering::Less)
+        {
             return Err(Error::Entry);
         }
         previous = Some(name);
@@ -303,7 +333,9 @@ fn extended_attributes<'a>(decoder: &mut Decoder<'a>) -> Result<Vec<ExtendedAttr
     let mut previous = None;
     for _ in 0..count {
         let name = decoder.bytes(MAX_COMPONENT)?;
-        if name.is_empty() || previous.is_some_and(|prior: &[u8]| byte_key_order(prior, name) != Ordering::Less) {
+        if name.is_empty()
+            || previous.is_some_and(|prior: &[u8]| byte_key_order(prior, name) != Ordering::Less)
+        {
             return Err(Error::Entry);
         }
         previous = Some(name);
@@ -313,7 +345,11 @@ fn extended_attributes<'a>(decoder: &mut Decoder<'a>) -> Result<Vec<ExtendedAttr
     Ok(result)
 }
 
-fn decode_entry<'a>(decoder: &mut Decoder<'a>, depth: usize, min_chunk_size: u64) -> Result<Entry<'a>, Error> {
+fn decode_entry<'a>(
+    decoder: &mut Decoder<'a>,
+    depth: usize,
+    min_chunk_size: u64,
+) -> Result<Entry<'a>, Error> {
     if depth >= MAX_GRAFT_DEPTH {
         return Err(Error::Limit);
     }
@@ -347,7 +383,9 @@ fn decode_entry<'a>(decoder: &mut Decoder<'a>, depth: usize, min_chunk_size: u64
             2 => {
                 let value = decoder.uint()?;
                 mode = Some(u16::try_from(value).map_err(|_| Error::Entry)?);
-                if value > 0x0fff { return Err(Error::Entry); }
+                if value > 0x0fff {
+                    return Err(Error::Entry);
+                }
             }
             3 => size = Some(decoder.uint()?),
             4 => content = Some(content_ref(decoder)?),
@@ -364,18 +402,24 @@ fn decode_entry<'a>(decoder: &mut Decoder<'a>, depth: usize, min_chunk_size: u64
             11 => provenance = Some(digest(decoder)?),
             12 => {
                 let length = decoder.array(MAX_NODE_ITEMS_BYTES)?;
-                if length < 2 { return Err(Error::Entry); }
+                if length < 2 {
+                    return Err(Error::Entry);
+                }
                 let mut values = Vec::with_capacity(length);
                 for _ in 0..length {
                     let entry = decode_entry(decoder, depth + 1, min_chunk_size)?;
-                    if matches!(entry.kind, EntryKind::Conflict { .. }) { return Err(Error::Entry); }
+                    if matches!(&entry.kind, EntryKind::Conflict { .. }) {
+                        return Err(Error::Entry);
+                    }
                     values.push(entry);
                 }
                 candidates = Some(values);
             }
             13 => {
                 if decoder.peek_major()? == 7 {
-                    if decoder.simple()? != 0xf6 { return Err(Error::Entry); }
+                    if decoder.simple()? != 0xf6 {
+                        return Err(Error::Entry);
+                    }
                     base = Some(None);
                 } else {
                     let entry = decode_entry(decoder, depth + 1, min_chunk_size)?;
@@ -384,11 +428,15 @@ fn decode_entry<'a>(decoder: &mut Decoder<'a>, depth: usize, min_chunk_size: u64
             }
             14 => {
                 let length = decoder.array(MAX_NODE_ITEMS_BYTES)?;
-                if length == 0 { return Err(Error::Entry); }
+                if length == 0 {
+                    return Err(Error::Entry);
+                }
                 let mut values = Vec::with_capacity(length);
                 for _ in 0..length {
                     let value = digest(decoder)?;
-                    if values.last().is_some_and(|prior: &Digest| value <= *prior) { return Err(Error::Entry); }
+                    if values.last().is_some_and(|prior: &Digest| value <= *prior) {
+                        return Err(Error::Entry);
+                    }
                     values.push(value);
                 }
                 targets = Some(values);
@@ -402,21 +450,42 @@ fn decode_entry<'a>(decoder: &mut Decoder<'a>, depth: usize, min_chunk_size: u64
             let size = size.ok_or(Error::Entry)?;
             let content = content.ok_or(Error::Entry)?;
             let correct = matches!(content, ContentRef::Inline(_)) == (size <= min_chunk_size);
-            if !correct { return Err(Error::Entry); }
-            EntryKind::File { mode: mode.ok_or(Error::Entry)?, size, content, link_id }
+            if !correct {
+                return Err(Error::Entry);
+            }
+            EntryKind::File {
+                mode: mode.ok_or(Error::Entry)?,
+                size,
+                content,
+                link_id,
+            }
         }
-        2 => EntryKind::Directory { mode: mode.ok_or(Error::Entry)? },
-        3 => EntryKind::Symlink { target: target.ok_or(Error::Entry)? },
-        4 => EntryKind::Tree { root: root.ok_or(Error::Entry)?, props },
+        2 => EntryKind::Directory {
+            mode: mode.ok_or(Error::Entry)?,
+        },
+        3 => EntryKind::Symlink {
+            target: target.ok_or(Error::Entry)?,
+        },
+        4 => EntryKind::Tree {
+            root: root.ok_or(Error::Entry)?,
+            props,
+        },
         5 => EntryKind::Whiteout,
-        6 => EntryKind::Conflict { candidates: candidates.ok_or(Error::Entry)?, base },
-        7 => EntryKind::Index { targets: targets.ok_or(Error::Entry)? },
+        6 => EntryKind::Conflict {
+            candidates: candidates.ok_or(Error::Entry)?,
+            base,
+        },
+        7 => EntryKind::Index {
+            targets: targets.ok_or(Error::Entry)?,
+        },
         8..=15 => return Err(Error::ReservedType),
         _ => return Err(Error::Entry),
     };
 
     let allowed = match &kind {
-        EntryKind::File { .. } => bit(1) | bit(2) | bit(3) | bit(4) | bit(8) | bit(9) | bit(10) | bit(11),
+        EntryKind::File { .. } => {
+            bit(1) | bit(2) | bit(3) | bit(4) | bit(8) | bit(9) | bit(10) | bit(11)
+        }
         EntryKind::Directory { .. } => bit(1) | bit(2) | bit(9) | bit(10) | bit(11),
         EntryKind::Symlink { .. } => bit(1) | bit(5) | bit(9) | bit(10) | bit(11),
         EntryKind::Tree { .. } => bit(1) | bit(6) | bit(7) | bit(9) | bit(10) | bit(11),
@@ -424,14 +493,25 @@ fn decode_entry<'a>(decoder: &mut Decoder<'a>, depth: usize, min_chunk_size: u64
         EntryKind::Conflict { .. } => bit(1) | bit(9) | bit(10) | bit(11) | bit(12) | bit(13),
         EntryKind::Index { .. } => bit(1) | bit(9) | bit(10) | bit(11) | bit(14),
     };
-    if present & !allowed != 0 { return Err(Error::Entry); }
-    if matches!(kind, EntryKind::Whiteout) && (!attrs.is_empty() || !xattrs.is_empty()) {
+    if present & !allowed != 0 {
         return Err(Error::Entry);
     }
-    Ok(Entry { kind, attrs, xattrs, provenance })
+    if matches!(&kind, EntryKind::Whiteout) && (!attrs.is_empty() || !xattrs.is_empty()) {
+        return Err(Error::Entry);
+    }
+    Ok(Entry {
+        kind,
+        attrs,
+        attrs_present: present & bit(9) != 0,
+        xattrs,
+        xattrs_present: present & bit(10) != 0,
+        provenance,
+    })
 }
 
-const fn bit(field: u32) -> u16 { 1 << field }
+const fn bit(field: u32) -> u16 {
+    1 << field
+}
 
 /// Decodes one standalone entry using the configured chunk profile minimum.
 ///
@@ -439,6 +519,9 @@ const fn bit(field: u32) -> u16 { 1 << field }
 /// Rejects invalid CBOR, unknown or reserved fields/types, incompatible
 /// content references, and any entry resource limit.
 pub fn decode_entry_bytes(input: &[u8], min_chunk_size: u64) -> Result<Entry<'_>, Error> {
+    if input.len() > MAX_NODE_ITEMS_BYTES {
+        return Err(Error::Limit);
+    }
     let mut decoder = Decoder::new(input);
     let entry = decode_entry(&mut decoder, 0, min_chunk_size)?;
     decoder.finish()?;
@@ -476,13 +559,17 @@ fn write_extended_attributes(output: &mut Vec<u8>, values: &[ExtendedAttribute<'
 }
 
 fn write_entry(output: &mut Vec<u8>, entry: &Entry<'_>, depth: usize) -> Result<(), Error> {
-    if depth >= MAX_GRAFT_DEPTH { return Err(Error::Limit); }
-    let common = usize::from(!entry.attrs.is_empty())
-        + usize::from(!entry.xattrs.is_empty())
+    if depth >= MAX_GRAFT_DEPTH {
+        return Err(Error::Limit);
+    }
+    let common = usize::from(entry.attrs_present)
+        + usize::from(entry.xattrs_present)
         + usize::from(entry.provenance.is_some());
     let fields = match &entry.kind {
         EntryKind::File { link_id, .. } => 4 + usize::from(link_id.is_some()),
-        EntryKind::Directory { .. } | EntryKind::Symlink { .. } | EntryKind::Tree { props: None, .. } => 2,
+        EntryKind::Directory { .. }
+        | EntryKind::Symlink { .. }
+        | EntryKind::Tree { props: None, .. } => 2,
         EntryKind::Tree { props: Some(_), .. } => 3,
         EntryKind::Whiteout => 1,
         EntryKind::Conflict { base, .. } => 2 + usize::from(base.is_some()),
@@ -490,67 +577,104 @@ fn write_entry(output: &mut Vec<u8>, entry: &Entry<'_>, depth: usize) -> Result<
     };
     cbor::write_map(output, fields + common);
     cbor::write_uint(output, 1);
-    cbor::write_uint(output, match &entry.kind {
-        EntryKind::File { .. } => 1,
-        EntryKind::Directory { .. } => 2,
-        EntryKind::Symlink { .. } => 3,
-        EntryKind::Tree { .. } => 4,
-        EntryKind::Whiteout => 5,
-        EntryKind::Conflict { .. } => 6,
-        EntryKind::Index { .. } => 7,
-    });
+    cbor::write_uint(
+        output,
+        match &entry.kind {
+            EntryKind::File { .. } => 1,
+            EntryKind::Directory { .. } => 2,
+            EntryKind::Symlink { .. } => 3,
+            EntryKind::Tree { .. } => 4,
+            EntryKind::Whiteout => 5,
+            EntryKind::Conflict { .. } => 6,
+            EntryKind::Index { .. } => 7,
+        },
+    );
 
     match &entry.kind {
-        EntryKind::File { mode, size, content, .. } => {
-            cbor::write_uint(output, 2); cbor::write_uint(output, u64::from(*mode));
-            cbor::write_uint(output, 3); cbor::write_uint(output, *size);
-            cbor::write_uint(output, 4); cbor::write_array(output, 2);
+        EntryKind::File {
+            mode,
+            size,
+            content,
+            ..
+        } => {
+            cbor::write_uint(output, 2);
+            cbor::write_uint(output, u64::from(*mode));
+            cbor::write_uint(output, 3);
+            cbor::write_uint(output, *size);
+            cbor::write_uint(output, 4);
+            cbor::write_array(output, 2);
             match content {
-                ContentRef::Inline(hash) => { cbor::write_uint(output, 0); cbor::write_bytes(output, hash); }
-                ContentRef::Manifest(hash) => { cbor::write_uint(output, 1); cbor::write_bytes(output, hash); }
+                ContentRef::Inline(hash) => {
+                    cbor::write_uint(output, 0);
+                    cbor::write_bytes(output, hash);
+                }
+                ContentRef::Manifest(hash) => {
+                    cbor::write_uint(output, 1);
+                    cbor::write_bytes(output, hash);
+                }
             }
         }
         EntryKind::Directory { mode } => {
-            cbor::write_uint(output, 2); cbor::write_uint(output, u64::from(*mode));
+            cbor::write_uint(output, 2);
+            cbor::write_uint(output, u64::from(*mode));
         }
         EntryKind::Symlink { target } => {
-            cbor::write_uint(output, 5); cbor::write_bytes(output, target);
+            cbor::write_uint(output, 5);
+            cbor::write_bytes(output, target);
         }
         EntryKind::Tree { root, props } => {
-            cbor::write_uint(output, 6); cbor::write_bytes(output, root);
+            cbor::write_uint(output, 6);
+            cbor::write_bytes(output, root);
             if let Some(props) = props {
-                cbor::write_uint(output, 7); write_properties(output, props);
+                cbor::write_uint(output, 7);
+                write_properties(output, props);
             }
         }
         EntryKind::Whiteout | EntryKind::Conflict { .. } | EntryKind::Index { .. } => {}
     }
 
-    if let EntryKind::File { link_id: Some(key), .. } = &entry.kind {
-        cbor::write_uint(output, 8); cbor::write_bytes(output, key);
+    if let EntryKind::File {
+        link_id: Some(key), ..
+    } = &entry.kind
+    {
+        cbor::write_uint(output, 8);
+        cbor::write_bytes(output, key);
     }
-    if !entry.attrs.is_empty() {
-        cbor::write_uint(output, 9); write_attributes(output, &entry.attrs);
+    if entry.attrs_present {
+        cbor::write_uint(output, 9);
+        write_attributes(output, &entry.attrs);
     }
-    if !entry.xattrs.is_empty() {
-        cbor::write_uint(output, 10); write_extended_attributes(output, &entry.xattrs);
+    if entry.xattrs_present {
+        cbor::write_uint(output, 10);
+        write_extended_attributes(output, &entry.xattrs);
     }
     if let Some(provenance) = entry.provenance {
-        cbor::write_uint(output, 11); cbor::write_bytes(output, &provenance);
+        cbor::write_uint(output, 11);
+        cbor::write_bytes(output, &provenance);
     }
 
     match &entry.kind {
         EntryKind::Conflict { candidates, base } => {
-            cbor::write_uint(output, 12); cbor::write_array(output, candidates.len());
-            for candidate in candidates { write_entry(output, candidate, depth + 1)?; }
+            cbor::write_uint(output, 12);
+            cbor::write_array(output, candidates.len());
+            for candidate in candidates {
+                write_entry(output, candidate, depth + 1)?;
+            }
             if let Some(base) = base {
                 cbor::write_uint(output, 13);
-                if let Some(base) = base { write_entry(output, base, depth + 1)?; }
-                else { output.push(0xf6); }
+                if let Some(base) = base {
+                    write_entry(output, base, depth + 1)?;
+                } else {
+                    output.push(0xf6);
+                }
             }
         }
         EntryKind::Index { targets } => {
-            cbor::write_uint(output, 14); cbor::write_array(output, targets.len());
-            for target in targets { cbor::write_bytes(output, target); }
+            cbor::write_uint(output, 14);
+            cbor::write_array(output, targets.len());
+            for target in targets {
+                cbor::write_bytes(output, target);
+            }
         }
         _ => {}
     }
@@ -567,4 +691,574 @@ pub fn encode_entry(entry: &Entry<'_>, min_chunk_size: u64) -> Result<Vec<u8>, E
     write_entry(&mut output, entry, 0)?;
     decode_entry_bytes(&output, min_chunk_size)?;
     Ok(output)
+}
+
+fn common_prefix(left: &[u8], right: &[u8]) -> usize {
+    left.iter().zip(right).take_while(|(a, b)| a == b).count()
+}
+
+fn leaf_items<'a>(
+    decoder: &mut Decoder<'a>,
+    min_chunk_size: u64,
+) -> Result<Vec<LeafItem<'a>>, Error> {
+    let count = decoder.array(MAX_NODE_ITEMS_BYTES / 4)?;
+    let mut items = Vec::with_capacity(count);
+    let mut previous = Vec::<u8>::new();
+    let mut encoded_bytes = 0;
+    for _ in 0..count {
+        let item_start = decoder.position();
+        if decoder.array(3)? != 3 {
+            return Err(Error::Node);
+        }
+        let suffix = decoder.bytes(MAX_KEY)?;
+        let shared = usize::try_from(decoder.uint()?).map_err(|_| Error::Limit)?;
+        if shared > previous.len() || shared + suffix.len() > MAX_KEY {
+            return Err(Error::Key);
+        }
+        let mut key = Vec::with_capacity(shared + suffix.len());
+        key.extend_from_slice(&previous[..shared]);
+        key.extend_from_slice(suffix);
+        validate_key(&key)?;
+        if shared != common_prefix(&previous, &key) || (!previous.is_empty() && key <= previous) {
+            return Err(Error::Node);
+        }
+
+        let entry = decode_entry(decoder, 0, min_chunk_size)?;
+        encoded_bytes += decoder.position() - item_start;
+        if encoded_bytes > MAX_NODE_ITEMS_BYTES {
+            return Err(Error::Limit);
+        }
+        previous = key.clone();
+        items.push(LeafItem { key, entry });
+    }
+    Ok(items)
+}
+
+fn child_refs(decoder: &mut Decoder<'_>) -> Result<Vec<ChildRef>, Error> {
+    let count = decoder.array(MAX_NODE_ITEMS_BYTES / 37)?;
+    let mut items: Vec<ChildRef> = Vec::with_capacity(count);
+    let mut encoded_bytes = 0;
+    for _ in 0..count {
+        let item_start = decoder.position();
+        if decoder.array(4)? != 4 {
+            return Err(Error::Node);
+        }
+        let last_key = decoder.bytes(MAX_KEY)?.to_vec();
+        validate_key(&last_key)?;
+        if items.last().is_some_and(|prior| last_key <= prior.last_key) {
+            return Err(Error::Node);
+        }
+        let child = digest(decoder)?;
+        let count = decoder.uint()?;
+        let weight = decoder.uint()?;
+        if count == 0 || weight == 0 {
+            return Err(Error::Node);
+        }
+        encoded_bytes += decoder.position() - item_start;
+        if encoded_bytes > MAX_NODE_ITEMS_BYTES {
+            return Err(Error::Limit);
+        }
+        items.push(ChildRef {
+            last_key,
+            child,
+            count,
+            weight,
+        });
+    }
+    Ok(items)
+}
+
+/// Decodes one node with its root status and chunk profile minimum.
+///
+/// `is_root` distinguishes the sole empty leaf and root-only properties.
+/// Child references are validated locally; their `count` and `weight` must
+/// be checked against fetched children by a tree reader or builder.
+///
+/// # Errors
+/// Rejects invalid CBOR, node shape or ordering, nonminimal prefix
+/// compression, invalid entries, excessive levels, or resource limits.
+pub fn decode_node(input: &[u8], is_root: bool, min_chunk_size: u64) -> Result<Node<'_>, Error> {
+    // A node can contain at most MAX_NODE item bytes plus root properties
+    // and framing. The extra allowance is bounded before any allocation.
+    if input.len() > MAX_NODE_ITEMS_BYTES * 2 + 32 {
+        return Err(Error::Limit);
+    }
+    let mut decoder = Decoder::new(input);
+    let fields = decoder.map(3)?;
+    if !(2..=3).contains(&fields) || decoder.uint()? != 1 {
+        return Err(Error::Node);
+    }
+    let level = u8::try_from(decoder.uint()?).map_err(|_| Error::Limit)?;
+    if level > MAX_TREE_LEVEL || decoder.uint()? != 2 {
+        return Err(Error::Node);
+    }
+    let items = if level == 0 {
+        NodeItems::Leaf(leaf_items(&mut decoder, min_chunk_size)?)
+    } else {
+        NodeItems::Internal(child_refs(&mut decoder)?)
+    };
+    let props = if fields == 3 {
+        if !is_root || decoder.uint()? != 3 {
+            return Err(Error::Node);
+        }
+        Some(properties(&mut decoder)?)
+    } else {
+        None
+    };
+    decoder.finish()?;
+
+    let empty = match &items {
+        NodeItems::Leaf(values) => values.is_empty(),
+        NodeItems::Internal(values) => values.is_empty(),
+    };
+    if empty && (!is_root || level != 0) {
+        return Err(Error::Node);
+    }
+    Ok(Node {
+        level,
+        items,
+        props,
+    })
+}
+
+/// Encodes a node with shortest-form CBOR and canonical prefix compression.
+///
+/// # Errors
+/// Rejects a node the decoder would not accept, including invalid entry
+/// forms, item ordering, resource limits, and non-root properties.
+pub fn encode_node(node: &Node<'_>, is_root: bool, min_chunk_size: u64) -> Result<Vec<u8>, Error> {
+    let mut output = Vec::new();
+    cbor::write_map(&mut output, if node.props.is_some() { 3 } else { 2 });
+    cbor::write_uint(&mut output, 1);
+    cbor::write_uint(&mut output, u64::from(node.level));
+    cbor::write_uint(&mut output, 2);
+
+    match &node.items {
+        NodeItems::Leaf(items) => {
+            cbor::write_array(&mut output, items.len());
+            let mut previous = &[][..];
+            for item in items {
+                let shared = common_prefix(previous, &item.key);
+                cbor::write_array(&mut output, 3);
+                cbor::write_bytes(&mut output, &item.key[shared..]);
+                cbor::write_uint(&mut output, shared as u64);
+                write_entry(&mut output, &item.entry, 0)?;
+                previous = &item.key;
+            }
+        }
+        NodeItems::Internal(items) => {
+            cbor::write_array(&mut output, items.len());
+            for item in items {
+                cbor::write_array(&mut output, 4);
+                cbor::write_bytes(&mut output, &item.last_key);
+                cbor::write_bytes(&mut output, &item.child);
+                cbor::write_uint(&mut output, item.count);
+                cbor::write_uint(&mut output, item.weight);
+            }
+        }
+    }
+    if let Some(props) = &node.props {
+        cbor::write_uint(&mut output, 3);
+        write_properties(&mut output, props);
+    }
+    decode_node(&output, is_root, min_chunk_size)?;
+    Ok(output)
+}
+
+/// Verifies a child reference against a fetched, already decoded child node.
+///
+/// This checks the child's identity and the writer's exact count and weight
+/// claim. A reader must still descend when its answer depends on entries;
+/// these advisory fields cannot replace reading or validating a subtree.
+///
+/// # Errors
+/// Returns an error if the child level, identity, last key, count, weight,
+/// or subtree arithmetic is invalid.
+pub fn verify_child_ref(
+    parent_level: u8,
+    reference: &ChildRef,
+    child: &Node<'_>,
+    child_bytes: &[u8],
+) -> Result<(), Error> {
+    if child.level.checked_add(1) != Some(parent_level) {
+        return Err(Error::Node);
+    }
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Node, child_bytes)
+        .map_err(|_| Error::Node)?;
+    if identity.terrane_v1_digest().map_err(|_| Error::Node)? != reference.child {
+        return Err(Error::Node);
+    }
+
+    let own_weight = u64::try_from(child_bytes.len()).map_err(|_| Error::Limit)?;
+    let (last_key, count, descendants_weight) = match &child.items {
+        NodeItems::Leaf(items) => {
+            let last = items.last().ok_or(Error::Node)?;
+            (
+                &last.key,
+                u64::try_from(items.len()).map_err(|_| Error::Limit)?,
+                0,
+            )
+        }
+        NodeItems::Internal(items) => {
+            let last = items.last().ok_or(Error::Node)?;
+            let count = items.iter().try_fold(0_u64, |sum, item| {
+                sum.checked_add(item.count).ok_or(Error::Limit)
+            })?;
+            let weight = items.iter().try_fold(0_u64, |sum, item| {
+                sum.checked_add(item.weight).ok_or(Error::Limit)
+            })?;
+            (&last.last_key, count, weight)
+        }
+    };
+    let weight = own_weight
+        .checked_add(descendants_weight)
+        .ok_or(Error::Limit)?;
+    if reference.last_key.as_slice() != last_key.as_slice()
+        || reference.count != count
+        || reference.weight != weight
+    {
+        return Err(Error::Node);
+    }
+    Ok(())
+}
+
+/// The semantic context in which a complete tree is read or served.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TreeUse {
+    /// A regular tree that may hold unresolved merge entries.
+    Ordinary,
+    /// A layer that may contain whiteout entries.
+    OverlayLayer,
+    /// An index tree containing only index entries.
+    Index,
+    /// A consumer surface without conflict support.
+    Surface,
+    /// A consumer surface that declares conflict support.
+    ConflictSurface,
+}
+
+fn same_hardlink_value(left: &Entry<'_>, right: &Entry<'_>) -> bool {
+    match (&left.kind, &right.kind) {
+        (
+            EntryKind::File {
+                mode: lm,
+                size: ls,
+                content: lc,
+                ..
+            },
+            EntryKind::File {
+                mode: rm,
+                size: rs,
+                content: rc,
+                ..
+            },
+        ) => {
+            lm == rm
+                && ls == rs
+                && lc == rc
+                && left.attrs_present == right.attrs_present
+                && left.attrs == right.attrs
+                && left.xattrs_present == right.xattrs_present
+                && left.xattrs == right.xattrs
+        }
+        _ => false,
+    }
+}
+
+/// Checks the roots traversed while resolving nested `tree` entries.
+///
+/// The caller appends each root before fetching it. Repeated identities
+/// indicate a cycle; more than 64 roots exceed the graft depth bound.
+///
+/// # Errors
+/// Returns [`Error::Tree`] on a cycle or [`Error::Limit`] above 64 roots.
+pub fn validate_graft_chain(roots: &[Digest]) -> Result<(), Error> {
+    if roots.len() > MAX_GRAFT_DEPTH {
+        return Err(Error::Limit);
+    }
+    for (position, root) in roots.iter().enumerate() {
+        if roots[..position].contains(root) {
+            return Err(Error::Tree);
+        }
+    }
+    Ok(())
+}
+
+/// Checks whole-tree invariants across already decoded, sorted leaf items.
+///
+/// This verifies explicit directory ancestors, graft boundaries, hard-link
+/// identities and equal inode values, and context-specific algebra entries.
+/// Callers must supply every leaf item of a tree in key order.
+///
+/// # Errors
+/// Returns an error for missing or wrong ancestors, entries beneath grafts,
+/// inconsistent hard-link sets, invalid ordering, or forbidden entry types.
+pub fn validate_tree_entries(entries: &[LeafItem<'_>], usage: TreeUse) -> Result<(), Error> {
+    let mut previous = None;
+    let mut hardlinks: alloc::collections::BTreeMap<&[u8], (&[u8], &Entry<'_>)> =
+        alloc::collections::BTreeMap::new();
+    for item in entries {
+        validate_key(&item.key)?;
+        if previous.is_some_and(|prior: &[u8]| item.key.as_slice() <= prior) {
+            return Err(Error::Tree);
+        }
+        previous = Some(&item.key);
+        for (position, byte) in item.key.iter().enumerate() {
+            if *byte != b'/' {
+                continue;
+            }
+            let ancestor = &item.key[..position];
+            let index = entries
+                .binary_search_by(|probe| probe.key.as_slice().cmp(ancestor))
+                .map_err(|_| Error::Tree)?;
+            if !matches!(&entries[index].entry.kind, EntryKind::Directory { .. }) {
+                return Err(Error::Tree);
+            }
+        }
+
+        match (&item.entry.kind, usage) {
+            (EntryKind::Whiteout, TreeUse::OverlayLayer) => {}
+            (EntryKind::Whiteout, _) => return Err(Error::Tree),
+            (EntryKind::Index { .. }, TreeUse::Index) => {}
+            (EntryKind::Index { .. }, _) | (_, TreeUse::Index) => return Err(Error::Tree),
+            (EntryKind::Conflict { .. }, TreeUse::Surface) => return Err(Error::Tree),
+            _ => {}
+        }
+        if let EntryKind::File {
+            link_id: Some(link_id),
+            ..
+        } = &item.entry.kind
+        {
+            match hardlinks.get(link_id) {
+                Some((_, first_entry)) if !same_hardlink_value(first_entry, &item.entry) => {
+                    return Err(Error::Tree);
+                }
+                Some(_) => {}
+                None => {
+                    if *link_id != item.key.as_slice() {
+                        return Err(Error::Tree);
+                    }
+                    hardlinks.insert(*link_id, (&item.key, &item.entry));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use super::{
+        ContentRef, Entry, EntryKind, Error, LeafItem, Node, NodeItems, TreeUse,
+        decode_entry_bytes, decode_node, encode_node, validate_graft_chain, validate_key,
+        validate_tree_entries,
+    };
+
+    const MIN_CHUNK: u64 = 262_144;
+
+    fn hex_bytes(hex: &str) -> Vec<u8> {
+        hex.as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                let text = core::str::from_utf8(pair).expect("ASCII test vector");
+                u8::from_str_radix(text, 16).expect("hex test vector")
+            })
+            .collect()
+    }
+
+    fn file<'a>(link_id: Option<&'a [u8]>) -> Entry<'a> {
+        Entry {
+            kind: EntryKind::File {
+                mode: 0o644,
+                size: 15,
+                content: ContentRef::Inline([7; 32]),
+                link_id,
+            },
+            attrs: Vec::new(),
+            attrs_present: false,
+            xattrs: Vec::new(),
+            xattrs_present: false,
+            provenance: None,
+        }
+    }
+
+    fn directory() -> Entry<'static> {
+        Entry {
+            kind: EntryKind::Directory { mode: 0o755 },
+            attrs: Vec::new(),
+            attrs_present: false,
+            xattrs: Vec::new(),
+            xattrs_present: false,
+            provenance: None,
+        }
+    }
+
+    fn item<'a>(key: &[u8], entry: Entry<'a>) -> LeafItem<'a> {
+        LeafItem {
+            key: key.to_vec(),
+            entry,
+        }
+    }
+
+    #[test]
+    fn golden_leaf_round_trips_byte_exactly() {
+        let encoded = hex_bytes(concat!(
+            "a201000281834968656c6c6f2e74787400a40101021901a4030f048200582094",
+            "79e1e57491078eb09f9decc2c56c63110c372de01557d73560dbc2ba9f3ba0",
+        ));
+        let node = decode_node(&encoded, true, MIN_CHUNK).expect("golden node decodes");
+        assert_eq!(
+            encode_node(&node, true, MIN_CHUNK).expect("re-encodes"),
+            encoded
+        );
+    }
+
+    #[test]
+    fn empty_leaf_is_the_only_empty_tree_node() {
+        let empty = [0xa2, 1, 0, 2, 0x80];
+        let node = decode_node(&empty, true, MIN_CHUNK).expect("empty root");
+        assert_eq!(encode_node(&node, true, MIN_CHUNK).expect("encode"), empty);
+        assert_eq!(decode_node(&empty, false, MIN_CHUNK), Err(Error::Node));
+    }
+
+    #[test]
+    fn rejects_malformed_paths_and_missing_ancestors() {
+        for key in [
+            &b""[..],
+            b"/a",
+            b"a/",
+            b"a//b",
+            b"a/./b",
+            b"a/../b",
+            b"a\0b",
+        ] {
+            assert_eq!(validate_key(key), Err(Error::Key), "{key:?}");
+        }
+        assert_eq!(validate_key(&vec![b'a'; 256]), Err(Error::Key));
+        let entries = [item(b"a/b", file(None))];
+        assert_eq!(
+            validate_tree_entries(&entries, TreeUse::Ordinary),
+            Err(Error::Tree)
+        );
+
+        let entries = [item(b"a", directory()), item(b"a/b", file(None))];
+        validate_tree_entries(&entries, TreeUse::Ordinary).expect("explicit ancestor");
+    }
+
+    #[test]
+    fn rejects_reserved_and_unknown_entry_fields() {
+        assert_eq!(
+            decode_entry_bytes(&[0xa1, 1, 8], MIN_CHUNK),
+            Err(Error::ReservedType)
+        );
+        assert_eq!(
+            decode_entry_bytes(&[0xa2, 1, 5, 15, 0], MIN_CHUNK),
+            Err(Error::Entry)
+        );
+        assert_eq!(
+            decode_entry_bytes(&[0xa2, 1, 5, 1, 0], MIN_CHUNK),
+            Err(Error::Entry)
+        );
+    }
+
+    #[test]
+    fn file_content_form_tracks_profile_minimum() {
+        let inline = file(None);
+        let node = Node {
+            level: 0,
+            items: NodeItems::Leaf(vec![item(b"f", inline)]),
+            props: None,
+        };
+        let encoded = encode_node(&node, true, MIN_CHUNK).expect("small file inline");
+        assert!(decode_node(&encoded, true, 14).is_err());
+    }
+
+    #[test]
+    fn hardlink_set_uses_first_key_and_identical_values() {
+        let entries = [item(b"a", file(Some(b"a"))), item(b"b", file(Some(b"a")))];
+        validate_tree_entries(&entries, TreeUse::Ordinary).expect("equal hardlinks");
+
+        let wrong = [item(b"a", file(Some(b"b"))), item(b"b", file(Some(b"b")))];
+        assert_eq!(
+            validate_tree_entries(&wrong, TreeUse::Ordinary),
+            Err(Error::Tree)
+        );
+
+        let mut changed = file(Some(b"a"));
+        if let EntryKind::File { mode, .. } = &mut changed.kind {
+            *mode = 0o600;
+        }
+        let divergent = [item(b"a", file(Some(b"a"))), item(b"b", changed)];
+        assert_eq!(
+            validate_tree_entries(&divergent, TreeUse::Ordinary),
+            Err(Error::Tree)
+        );
+    }
+
+    #[test]
+    fn grafts_and_algebra_entries_are_contextual() {
+        let graft = Entry {
+            kind: EntryKind::Tree {
+                root: [3; 32],
+                props: None,
+            },
+            attrs: Vec::new(),
+            attrs_present: false,
+            xattrs: Vec::new(),
+            xattrs_present: false,
+            provenance: None,
+        };
+        let entries = [item(b"a", graft), item(b"a/b", file(None))];
+        assert_eq!(
+            validate_tree_entries(&entries, TreeUse::Ordinary),
+            Err(Error::Tree)
+        );
+
+        let whiteout = Entry {
+            kind: EntryKind::Whiteout,
+            attrs: Vec::new(),
+            attrs_present: false,
+            xattrs: Vec::new(),
+            xattrs_present: false,
+            provenance: None,
+        };
+        let entries = [item(b"a", whiteout)];
+        validate_tree_entries(&entries, TreeUse::OverlayLayer).expect("layer marker");
+        assert_eq!(
+            validate_tree_entries(&entries, TreeUse::Surface),
+            Err(Error::Tree)
+        );
+    }
+
+    #[test]
+    fn index_keys_with_separators_cannot_have_directory_ancestors() {
+        let index = || Entry {
+            kind: EntryKind::Index {
+                targets: vec![[1; 32]],
+            },
+            attrs: Vec::new(),
+            attrs_present: false,
+            xattrs: Vec::new(),
+            xattrs_present: false,
+            provenance: None,
+        };
+        let simple = [item(b"value", index())];
+        validate_tree_entries(&simple, TreeUse::Index).expect("one-component index key");
+
+        let nested = [item(b"a", index()), item(b"a/b", index())];
+        assert_eq!(
+            validate_tree_entries(&nested, TreeUse::Index),
+            Err(Error::Tree)
+        );
+    }
+
+    #[test]
+    fn graft_chain_rejects_cycles_and_excessive_depth() {
+        assert_eq!(validate_graft_chain(&[[1; 32], [1; 32]]), Err(Error::Tree));
+        assert_eq!(validate_graft_chain(&[[1; 32]; 65]), Err(Error::Limit));
+    }
 }
