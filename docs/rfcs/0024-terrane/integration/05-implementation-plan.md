@@ -147,10 +147,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 - [ ] **T-TREE-1** Deterministic CBOR encoder and decoder with limits before
   allocation; node and entry encoding; entry types including `tree`,
   `whiteout`, and `conflict`; reserved types rejected. — satisfies TREE-1
-  to TREE-20, TREE-25 to TREE-34; `checks.terrane.gates.canonical-cbor`,
+  to TREE-8, TREE-11 to TREE-13, TREE-17, TREE-18, TREE-25 to TREE-34;
+  `checks.terrane.gates.canonical-cbor`,
   `checks.terrane.gates.tree-well-formed`.
 - [ ] **T-TREE-2** Prolly-tree builder with content-defined boundaries and
-  history independence. — satisfies TREE-21 to TREE-24;
+  history independence, balanced levels, and exact child summaries. —
+  satisfies TREE-19 to TREE-24;
   `checks.terrane.gates.tree-boundaries`,
   `checks.terrane.gates.tree-history-independence`.
 - [ ] **T-ALG-1** `graft`, `split`, `flatten`, `overlay`, `diff`. — satisfies
@@ -165,8 +167,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`,
   `checks.terrane.gates.merge-native-parity`.
 - [ ] **T-PROP-1** Property resolution, types, boundary properties,
-  completeness, commit-time requirement checks. — satisfies PROP-1 to
-  PROP-28; `checks.terrane.gates.property-resolution`,
+  completeness, commit-time requirement checks, and strict attribute-name
+  validation. — satisfies TREE-14, PROP-1 to PROP-28;
+  `checks.terrane.gates.property-resolution`,
   `checks.terrane.gates.property-required-attrs`,
   `checks.terrane.gates.property-domain-reference`.
 - [ ] **T-REF-1** Commit and ref record types, merge base, ancestry, ref
@@ -215,8 +218,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.bucket-file-atomic-write`,
   `checks.terrane.gates.bucket-file-cas`.
 - [ ] **T-REF-2** Ref advance protocol (packs, indexes, log, CAS), epochs,
-  single-writer default, tags, reflog, rollback, watch. — satisfies REF-12
-  to REF-23, REF-27 to REF-31; `checks.terrane.gates.ref-advance-ordering`,
+  single-writer default, tags, reflog, rollback, watch, and commit-set entry
+  provenance. — satisfies TREE-16, REF-12 to REF-23, REF-27 to REF-31;
+  `checks.terrane.gates.ref-advance-ordering`,
   `checks.terrane.gates.ref-epoch-fencing`, `checks.terrane.gates.ref-watch`.
 - [ ] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
   sweep, singleton lease, resumability, retention values `gc`, `lease`,
@@ -273,8 +277,10 @@ Exit gates: `checks.terrane.gates.host-crash-recovery`,
   `checks.terrane.gates.shared-dir-read-only`,
   `checks.terrane.gates.dom-host-isolation`.
 - [ ] **T-SURF-1** Surface interface, exposure records, schema validation,
-  TOML configuration, status reporting, in-process registry. — satisfies
-  SURF-1 to SURF-32, CRATE-17, CRATE-28; `checks.terrane.gates.surface-interface`,
+  TOML configuration, status reporting, in-process registry, ownership and
+  timestamp presentation, and privileged xattr filtering. — satisfies
+  TREE-9, TREE-10, TREE-15, SURF-1 to SURF-32, CRATE-17, CRATE-28;
+  `checks.terrane.gates.surface-interface`,
   `checks.terrane.gates.surface-schema`,
   `checks.terrane.gates.surface-status`.
 - [ ] **T-PKG-3** `modules/terrane/` options, unit rendering for the
