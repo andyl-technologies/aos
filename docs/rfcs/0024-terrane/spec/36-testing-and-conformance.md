@@ -148,7 +148,7 @@ here is a conformance error of this document.
 | `gate:descriptor-strict` | 04 | OBJ-6 |
 | `gate:formats-no-std` | 03 | ARCH-1 |
 | `gate:gc-grace` | 01 | INV-3 |
-| `gate:identity-idempotence` | 04 | PERF-11, TEST-15 |
+| `gate:identity-idempotence` | 04 | PERF-11, TEST-15, OBJ-1, OBJ-5 |
 | `gate:index-tree-maintenance` | 10 | DRV-12 |
 | `gate:no-duplicate-tiers` | 01 | INV-4 |
 | `gate:no-privileged-mounts` | 03 | ARCH-9 |
@@ -166,7 +166,7 @@ here is a conformance error of this document.
 | `gate:role-selection` | 03 | ARCH-10 |
 | `gate:store-expression-static` | 03 | ARCH-6 |
 | `gate:store-opaque` | 03 | ARCH-2 |
-| `gate:surface-layering` | 03 | PERF-11, TEST-15 |
+| `gate:surface-layering` | 03 | PERF-11, TEST-15, ARCH-3 |
 | `gate:tree-acyclic` | 04 | OBJ-20 |
 | `gate:tree-boundaries` | 06 | TREE-21 |
 | `gate:tree-hardlinks` | 06 | TREE-11 |
@@ -192,10 +192,10 @@ here is a conformance error of this document.
 | `gate:bucket-key-registry` | 13 | BKT-1 |
 | `gate:bucket-multipart-abort` | 13 | BKT-9 |
 | `gate:bucket-mutability-classes` | 13 | BKT-2 |
-| `gate:bucket-probe` | 13 | PERF-11, TEST-15 |
+| `gate:bucket-probe` | 13 | BKT-10, MIG-25, TEST-7, EDGE-2, PERF-11, TEST-15 |
 | `gate:bucket-ref-cas` | 13 | BKT-5 |
 | `gate:bundle-verify` | 12 | PACK-24 |
-| `gate:commit-order` | 12 | PERF-11, TEST-15 |
+| `gate:commit-order` | 12 | PERF-11, TEST-15, PACK-14 |
 | `gate:gc-grace-window` | 17 | GC-10 |
 | `gate:gc-mark-reachability` | 17 | GC-5 |
 | `gate:gc-roots-complete` | 17 | GC-1 |
@@ -410,27 +410,27 @@ here is a conformance error of this document.
 | `gate:obs-trace-propagation` | 34 | OBS-1 |
 | `gate:perf-cold-closure` | 35 | PERF-11, TEST-15 |
 | `gate:perf-cold-mount` | 35 | PERF-11, TEST-15 |
-| `gate:perf-cold-span` | 35 | PERF-11, TEST-15 |
-| `gate:perf-commit-delta` | 35 | PERF-11, TEST-15 |
+| `gate:perf-cold-span` | 35 | PERF-11, TEST-15, PERF-2 |
+| `gate:perf-commit-delta` | 35 | PERF-11, TEST-15, PERF-5 |
 | `gate:perf-commit-latency` | 35 | PERF-11, TEST-15 |
 | `gate:perf-erofs-gen` | 35 | PERF-11, TEST-15 |
 | `gate:perf-fork` | 35 | PERF-11, TEST-15 |
 | `gate:perf-fsync-sync` | 35 | PERF-11, TEST-15 |
 | `gate:perf-gateway-memory` | 35 | PERF-11, TEST-15 |
 | `gate:perf-gateway-rps` | 35 | PERF-11, TEST-15 |
-| `gate:perf-gateway-zero-copy` | 35 | PERF-11, TEST-15 |
+| `gate:perf-gateway-zero-copy` | 35 | PERF-11, TEST-15, PERF-9 |
 | `gate:perf-gc-mark` | 35 | PERF-11, TEST-15 |
-| `gate:perf-hot-read` | 35 | PERF-11, TEST-15 |
+| `gate:perf-hot-read` | 35 | PERF-11, TEST-15, PERF-1 |
 | `gate:perf-index-size` | 35 | PERF-11, TEST-15 |
-| `gate:perf-inode-memory` | 35 | PERF-11, TEST-15 |
-| `gate:perf-merge-delta` | 35 | PERF-11, TEST-15 |
+| `gate:perf-inode-memory` | 35 | PERF-11, TEST-15, PERF-7 |
+| `gate:perf-merge-delta` | 35 | PERF-11, TEST-15, PERF-6, TEST-4 |
 | `gate:perf-methodology` | 35 | PERF-11 |
 | `gate:perf-negotiation` | 35 | PERF-11, TEST-15 |
 | `gate:perf-nested-zero-dup` | 35 | PERF-11, TEST-15 |
-| `gate:perf-no-bookkeeping-on-read` | 35 | PERF-11, TEST-15 |
-| `gate:perf-readdir` | 35 | PERF-11, TEST-15 |
-| `gate:perf-shared-page-cache` | 35 | PERF-11, TEST-15 |
-| `gate:perf-warm-mount` | 35 | PERF-11, TEST-15 |
+| `gate:perf-no-bookkeeping-on-read` | 35 | PERF-11, TEST-15, PERF-8 |
+| `gate:perf-readdir` | 35 | PERF-11, TEST-15, PERF-3 |
+| `gate:perf-shared-page-cache` | 35 | PERF-11, TEST-15, PERF-10 |
+| `gate:perf-warm-mount` | 35 | PERF-11, TEST-15, PERF-4 |
 | `gate:perf-warm-read` | 35 | PERF-11, TEST-15 |
 | `gate:perf-worker-rss` | 35 | PERF-11, TEST-15 |
 | `gate:registry-complete` | 36 | TEST-16 |
