@@ -107,7 +107,15 @@ pub(super) fn insert<'a>(tree: &Tree<'a>, item: LeafItem<'a>) -> Result<Mutation
     }
     let links = validate(tree, &item.key, Some(&item.entry), &mut reads)?;
     let key = item.key.clone();
+    let members = links::update_members(
+        &tree.members,
+        &key,
+        lookup(tree, &key, &mut reads),
+        Some(&item.entry),
+        &mut reads,
+    );
     let mut result = edit(tree, &key, Some(item))?;
+    result.tree.members = members;
     result.tree.links = links;
     result.work.validation_reads = reads;
     Ok(result)
@@ -121,7 +129,15 @@ pub(super) fn remove<'a>(tree: &Tree<'a>, key: &[u8]) -> Result<Mutation<'a>, Er
         return Ok(result);
     }
     let links = validate(tree, key, None, &mut reads)?;
+    let members = links::update_members(
+        &tree.members,
+        key,
+        lookup(tree, key, &mut reads),
+        None,
+        &mut reads,
+    );
     let mut result = edit(tree, key, None)?;
+    result.tree.members = members;
     result.tree.links = links;
     result.work.validation_reads = reads;
     Ok(result)

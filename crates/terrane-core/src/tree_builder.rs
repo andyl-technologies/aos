@@ -35,6 +35,7 @@ use crate::tree_format::{
 
 pub use crate::tree_format::Error;
 pub use cursor::{Cursor, Nodes};
+pub use links::HardlinkMembers;
 pub use splice::{SpliceOutcome, SubtreeReplacement};
 
 /// An immutable node with canonical bytes and exact subtree summaries.
@@ -150,6 +151,7 @@ pub struct Tree<'a> {
     min_chunk_size: u64,
     usage: TreeUse,
     links: links::Links<'a>,
+    members: links::Links<'a>,
 }
 
 impl<'a> Tree<'a> {
@@ -170,6 +172,7 @@ impl<'a> Tree<'a> {
     ) -> Result<Self, Error> {
         validate_tree_entries(&entries, usage)?;
         let links = links::build(&entries)?;
+        let members = links::build_members(&entries);
         let mut factory = Factory::new(min_chunk_size, usage);
         let mut nodes = chunk::leaves(entries, &mut factory)?;
         let mut level = 0;
@@ -186,7 +189,17 @@ impl<'a> Tree<'a> {
             min_chunk_size,
             usage,
             links,
+            members,
         })
+    }
+
+    /// Iterates a TREE-11 hard-link set's borrowed keys in ascending byte order.
+    ///
+    /// An absent identity yields an empty iterator. The auxiliary persistent
+    /// index seeks in O(log n) time and visits only the returned members, so
+    /// callers can relabel a surviving set without scanning unrelated entries.
+    pub fn hardlink_members(&self, link_id: &[u8]) -> HardlinkMembers<'_, 'a> {
+        HardlinkMembers::new(&self.members, link_id)
     }
 
     /// Returns the root identity, including the root's property map.
@@ -421,6 +434,7 @@ impl<'a> Tree<'a> {
                 min_chunk_size: self.min_chunk_size,
                 usage: self.usage,
                 links: self.links.clone(),
+                members: self.members.clone(),
             },
             emitted: factory.emitted,
             work: factory.work,

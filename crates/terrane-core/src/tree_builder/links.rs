@@ -1,4 +1,4 @@
-//! Maintains hard-link set summaries in a persistent AVL index.
+//! Maintains hard-link summaries and member keys in persistent AVL indexes.
 //!
 //! The index is auxiliary memory, never part of canonical tree identity.
 //! Point edits inspect and copy one search path instead of scanning leaves.
@@ -380,3 +380,140 @@ pub(super) fn replace_changes<'a>(
     }
     Ok(result)
 }
+
+// Path keys cannot contain NUL, so this separator orders members of one
+// canonical hard-link identity together without ambiguity.
+fn member_key(id: &[u8], key: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(id.len() + 1 + key.len());
+    result.extend_from_slice(id);
+    result.push(0);
+    result.extend_from_slice(key);
+    result
+}
+
+fn set_member<'a>(members: &Links<'a>, id: &[u8], key: &[u8], reads: &mut usize) -> Links<'a> {
+    // Reuse the balanced index without duplicating potentially large inode
+    // metadata. Membership uses only the key; this value is never inspected.
+    let value = Entry {
+        kind: EntryKind::Directory { mode: 0 },
+        attrs: Vec::new(),
+        attrs_present: false,
+        xattrs: Vec::new(),
+        xattrs_present: false,
+        provenance: None,
+    };
+    set(members, &member_key(id, key), &value, 1, reads)
+}
+
+pub(super) fn build_members<'a>(entries: &[LeafItem<'a>]) -> Links<'a> {
+    let mut members = None;
+    let mut reads = 0;
+    for item in entries {
+        if let Some(id) = link_id(&item.entry) {
+            members = set_member(&members, id, &item.key, &mut reads);
+        }
+    }
+    members
+}
+
+pub(super) fn update_members<'a>(
+    members: &Links<'a>,
+    key: &[u8],
+    old: Option<&Entry<'a>>,
+    new: Option<&Entry<'a>>,
+    reads: &mut usize,
+) -> Links<'a> {
+    let old_id = old.and_then(link_id);
+    let new_id = new.and_then(link_id);
+    if old_id == new_id {
+        return members.clone();
+    }
+    let mut result = members.clone();
+    if let Some(id) = old_id {
+        result = remove(&result, &member_key(id, key), reads);
+    }
+    if let Some(id) = new_id {
+        result = set_member(&result, id, key, reads);
+    }
+    result
+}
+
+pub(super) fn replace_members<'a>(
+    members: &Links<'a>,
+    changes: &[super::splice::Change<'a>],
+    reads: &mut usize,
+) -> Links<'a> {
+    let mut result = members.clone();
+    for change in changes {
+        result = update_members(
+            &result,
+            &change.key,
+            change.old.as_ref(),
+            change.new.as_ref(),
+            reads,
+        );
+    }
+    result
+}
+
+/// An ordered iterator over the keys belonging to one hard-link identity.
+///
+/// The iterator borrows the auxiliary index of its tree and does not fetch or
+/// clone entries. Its stack contains one AVL search path.
+pub struct HardlinkMembers<'tree, 'a> {
+    prefix: Vec<u8>,
+    stack: Vec<&'tree Link<'a>>,
+    reads: usize,
+}
+
+impl<'tree, 'a> HardlinkMembers<'tree, 'a> {
+    pub(super) fn new(members: &'tree Links<'a>, id: &[u8]) -> Self {
+        let prefix = member_key(id, &[]);
+        let mut stack = Vec::new();
+        let mut reads = 0;
+        let mut current = members.as_deref();
+        while let Some(node) = current {
+            reads += 1;
+            if node.key < prefix {
+                current = node.right.as_deref();
+            } else {
+                stack.push(node);
+                current = node.left.as_deref();
+            }
+        }
+        Self {
+            prefix,
+            stack,
+            reads,
+        }
+    }
+
+    /// Returns the auxiliary AVL nodes inspected while seeking and iterating.
+    ///
+    /// This includes construction's lower-bound search and each subsequent
+    /// descent, allowing callers to account for affected-set traversal work.
+    pub fn node_reads(&self) -> usize {
+        self.reads
+    }
+}
+
+impl<'tree, 'a> Iterator for HardlinkMembers<'tree, 'a> {
+    type Item = &'tree [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let node = self.stack.pop()?;
+        let Some(key) = node.key.strip_prefix(self.prefix.as_slice()) else {
+            self.stack.clear();
+            return None;
+        };
+        let mut current = node.right.as_deref();
+        while let Some(node) = current {
+            self.reads += 1;
+            self.stack.push(node);
+            current = node.left.as_deref();
+        }
+        Some(key)
+    }
+}
+
+impl core::iter::FusedIterator for HardlinkMembers<'_, '_> {}

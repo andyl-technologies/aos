@@ -76,6 +76,8 @@ pub(super) fn replace<'a>(
         &result.tree,
         &mut result.work.validation_reads,
     )?;
+    result.tree.members =
+        links::replace_members(&tree.members, &changes, &mut result.work.validation_reads);
     Ok(result)
 }
 

@@ -568,6 +568,13 @@ fn tree_history_independence_hardlinks_are_incremental_and_exact() {
             .map(|(number, id)| linked(alloc::format!("b-{number:08}").as_bytes(), id)),
     );
     let tree = Tree::build(entries, None, 262144, TreeUse::Ordinary).unwrap();
+    let mut members = tree.hardlink_members(&ids[1000]);
+    assert_eq!(
+        members.by_ref().collect::<Vec<_>>(),
+        vec![ids[1000].as_slice(), b"b-00001000"]
+    );
+    assert!(members.node_reads() < 40);
+
     assert!(tree.remove(&ids[1000]).is_err());
     let mut different = linked(&ids[1000], &ids[1000]);
     if let EntryKind::File { mode, .. } = &mut different.entry.kind {
@@ -677,4 +684,78 @@ fn tree_history_independence_conditional_directory_ancestors() {
         ordinary.insert(parent).unwrap().tree.root_identity(),
         tree.root_identity()
     );
+}
+
+#[test]
+fn tree_history_independence_hardlink_members_follow_persistent_edits() {
+    let tree = Tree::build(
+        vec![linked(b"a", b"a"), linked(b"b", b"b"), linked(b"c", b"a")],
+        None,
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
+
+    assert_eq!(
+        tree.hardlink_members(b"a").collect::<Vec<_>>(),
+        vec![b"a".as_slice(), b"c"]
+    );
+    assert_eq!(
+        tree.hardlink_members(b"b").collect::<Vec<_>>(),
+        vec![b"b".as_slice()]
+    );
+    assert_eq!(tree.hardlink_members(b"absent").count(), 0);
+    assert_eq!(tree.hardlink_members(b"a\0").count(), 0);
+
+    let extended = tree.insert(linked(b"d", b"a")).unwrap().tree;
+    let removed = extended.remove(b"c").unwrap().tree;
+
+    assert_eq!(
+        removed.hardlink_members(b"a").collect::<Vec<_>>(),
+        vec![b"a".as_slice(), b"d"]
+    );
+    assert_eq!(tree.hardlink_members(b"a").count(), 2);
+    assert_eq!(extended.hardlink_members(b"a").count(), 3);
+
+    let relabeled = removed
+        .replace_range(b"a", None, vec![linked(b"d", b"d")])
+        .unwrap()
+        .tree;
+
+    assert_eq!(relabeled.hardlink_members(b"a").count(), 0);
+    assert_eq!(relabeled.hardlink_members(b"b").count(), 0);
+    assert_eq!(
+        relabeled.hardlink_members(b"d").collect::<Vec<_>>(),
+        vec![b"d".as_slice()]
+    );
+}
+
+#[test]
+fn tree_history_independence_hardlink_members_follow_atomic_relabeling() {
+    let tree = Tree::build(
+        vec![linked(b"a", b"a"), linked(b"b", b"b"), linked(b"c", b"a")],
+        None,
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
+
+    let relabeled = tree
+        .edit_entries(&[
+            (b"a".to_vec(), None),
+            (b"c".to_vec(), Some(linked(b"c", b"c").entry)),
+        ])
+        .unwrap()
+        .tree;
+
+    assert_eq!(relabeled.hardlink_members(b"a").count(), 0);
+    assert_eq!(
+        relabeled.hardlink_members(b"b").collect::<Vec<_>>(),
+        vec![b"b".as_slice()]
+    );
+    assert_eq!(
+        relabeled.hardlink_members(b"c").collect::<Vec<_>>(),
+        vec![b"c".as_slice()]
+    );
+    assert_eq!(tree.hardlink_members(b"a").count(), 2);
 }

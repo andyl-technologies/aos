@@ -200,6 +200,7 @@ pub(super) fn apply_edits<'a>(
     }
     result.links =
         links::replace_changes(&tree.links, &changes, &result, &mut work.validation_reads)?;
+    result.members = links::replace_members(&tree.members, &changes, &mut work.validation_reads);
     Ok(SpliceOutcome::Applied(Mutation {
         tree: result,
         emitted,
