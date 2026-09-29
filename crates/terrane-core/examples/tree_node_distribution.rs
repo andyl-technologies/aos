@@ -1,4 +1,4 @@
-//! Measures the draft TREE-21..24 boundary rule on canonical fixture trees.
+//! Measures the TREE-21..24 boundary rule on canonical fixture trees.
 //!
 //! This T0 spike constructs leaf and child-reference bytes directly from the
 //! normative CDDL. It is deliberately separate from the future T1 tree API.
@@ -23,8 +23,7 @@ struct DistributionFailure;
 
 impl fmt::Display for DistributionFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .write_str("the draft TREE-22 distribution or node-size limit failed; see measurements")
+        formatter.write_str("the TREE-22 distribution or node-size limit failed; see measurements")
     }
 }
 
@@ -40,7 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     verify_golden_node()?;
 
     println!(
-        "family\tentries\tlevel\tnodes\tmin\tmean\tp50\tp95\tmax\tforced\toversized\tcomplete_mean\troot"
+        "family\tentries\tlevel\tnodes\tmin\tmean\tp50\tp95\tmax\tforced\toversized\tcomplete_nodes\tcomplete_mean\tis_root\troot"
     );
     let mut failed = false;
 
@@ -58,7 +57,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             for (level, report) in tree.levels.iter().enumerate() {
                 let mean = report.bytes.iter().sum::<u64>() / report.bytes.len() as u64;
-                let complete_mean = report.complete_mean();
+                let is_root = level + 1 == tree.levels.len();
+                let complete_mean = if is_root {
+                    None
+                } else {
+                    report.complete_mean()
+                };
                 let oversized = report
                     .bytes
                     .iter()
@@ -68,7 +72,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 sorted.sort_unstable();
 
                 println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     family.name(),
                     entries,
                     level,
@@ -80,7 +84,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     sorted[sorted.len() - 1],
                     report.forced,
                     oversized,
+                    report.complete_nodes(),
                     complete_mean.map_or_else(|| "-".to_owned(), |value| value.to_string()),
+                    is_root,
                     fixtures::hex(&tree.root),
                 );
 
