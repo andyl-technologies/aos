@@ -29,8 +29,8 @@
         needle = "Completed by `checks.crucible.phase4.eventLogSchema`";
       }
       {
-        label = "mandatory icount completion note";
-        needle = "`VirtualTime` plus an `Icount` stamp";
+        label = "typed tick completion note";
+        needle = "`VirtualTime` plus an exact logical tick";
       }
       {
         label = "entry schema task text";
@@ -44,7 +44,7 @@
       }
       {
         label = "event-log icount stamp";
-        needle = "pub struct EventLogIcountStamp";
+        needle = "pub struct EventLogTickStamp";
       }
       {
         label = "closed event-source enum";
@@ -67,12 +67,16 @@
         needle = "at: EventLogTime";
       }
       {
-        label = "event-log time has mandatory icount";
-        needle = "pub icount: EventLogIcountStamp";
+        label = "event-log time has mandatory logical stamp";
+        needle = "pub stamp: EventLogTickStamp";
       }
       {
-        label = "boundary icount fallback";
-        needle = "retired: virtual_time.ticks";
+        label = "boundary does not fabricate physical retirement";
+        needle = "retired: None";
+      }
+      {
+        label = "raw retirement remains an independent witness";
+        needle = "pub retired: Option<Icount>";
       }
       {
         label = "entry stores closed source";
@@ -119,6 +123,10 @@
         needle = "entry.at_tick";
       }
       {
+        label = "segment material carries optional raw retirement";
+        needle = "entry.at_raw_retired";
+      }
+      {
         label = "segment material carries source";
         needle = "entry.source";
       }
@@ -148,7 +156,7 @@
     ++ failuresFor "crates/crucible/tests/event_log_schema.rs" schemaTest [
       {
         label = "schema field test";
-        needle = "event_log_entries_carry_source_level_class_and_icount_stamp";
+        needle = "event_log_entries_carry_source_level_class_and_typed_time_stamp";
       }
       {
         label = "command correlation test";
@@ -167,14 +175,20 @@
         needle = "Icount { retired: 99 }";
       }
       {
-        label = "command boundary icount assertion";
-        needle = "Icount { retired: 12 }";
+        label = "command boundary has no raw retirement witness";
+        needle = "assert_eq!(entry.time().stamp.retired, None)";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase4 exposes event-log schema check";
         needle = "eventLogSchema = import ./phase4-event-log-schema.nix";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible/src/scheduler.rs" scheduler [
+      {
+        label = "virtual time cannot fabricate physical retirement";
+        needle = "retired: virtual_time.ticks";
       }
     ]
     ++ forbiddenFor "crates/crucible/tests/event_log_schema.rs" schemaTest [
@@ -187,8 +201,8 @@
         needle = "todo!";
       }
       {
-        label = "optional icount stamp";
-        needle = "Option<EventLogIcountStamp>";
+        label = "optional logical tick stamp";
+        needle = "Option<EventLogTickStamp>";
       }
     ];
 in
@@ -199,10 +213,12 @@ in
       pname = "crucible-phase4-event-log-schema";
       version = "0";
       src = crucibleSrc;
+      runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
         pkgs.coreutils
         pkgs.rust
+        pkgs.sqlite
         pkgs.sed
       ];
 
@@ -262,7 +278,8 @@ in
             schema_fields=seq,at,source,payload,level,class
             event_source_closed_set=true
             command_correlation_source=true
-            icount_stamp_field=true
+            logical_tick_stamp_field=true
+            physical_retirement_witness_optional=true
             RESULT
           '';
         }
