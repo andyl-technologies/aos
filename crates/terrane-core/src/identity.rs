@@ -524,6 +524,10 @@ mod tests {
         for (plaintext, expected) in cases {
             let identity = TERRANE_V1.calculate(IdentityKind::Chunk, plaintext)?;
             assert_eq!(hex(identity.digest()), expected);
+            assert_eq!(
+                TERRANE_V1.calculate(IdentityKind::Chunk, plaintext)?,
+                identity
+            );
             TERRANE_V1.verify(&identity, plaintext)?;
         }
         Ok(())
