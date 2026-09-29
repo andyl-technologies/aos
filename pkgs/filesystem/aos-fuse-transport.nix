@@ -95,10 +95,32 @@ in
         runtimeDeps = [self];
         cargoEnv.RUSTFLAGS = "-C link-arg=-Wl,-rpath,${self}/lib";
       };
+
+      # Capture the shared scripts unchanged for parser/control-flow unit
+      # fixtures. Tool output doubles do not prove real ELF or VM behavior.
+      fixtureChecks = import ../../lib/testing/integration.nix {
+        inherit lib pkgs;
+        mkVMTest = args: args.testScript;
+      };
+      fixturePackage = {
+        pname = "library-check-fixture";
+        __toString = _: "./fixture";
+      };
+      sonameFixtureScript = fixtureChecks.mkSONAMECheck {
+        pkg = fixturePackage;
+        libs = ["library.so"];
+        expectedSONAMEs."library.so" = "library.so.1";
+      };
+      symbolFixtureScript = fixtureChecks.mkSymbolCheck {
+        pkg = fixturePackage;
+        libName = "library.so";
+        symbols = ["required_symbol"];
+      };
     in {
       soname = testing.mkSONAMECheck {
         pkg = self;
         libs = ["libaos-fuse-transport.so"];
+        expectedSONAMEs."libaos-fuse-transport.so" = "libaos-fuse-transport.so.1";
       };
 
       symbols = testing.mkSymbolCheck {
@@ -111,6 +133,106 @@ in
           "aos_fuse_transport_continue_prepared_v1"
           "aos_fuse_transport_continue_prepared_v3"
           "aos_fuse_transport_destroy_prepared_v1"
+        ];
+      };
+
+      library-check-fixtures = pkgs.mkDerivation {
+        pname = "aos-fuse-transport-library-check-fixtures";
+        version = "0";
+        src = null;
+        buildDeps = [pkgs.bash pkgs.coreutils pkgs.grep pkgs.sed];
+        phases = [
+          {
+            name = "check";
+            script = ''
+              set -eu
+              cat > soname-check.bash << 'SONAME_SCRIPT'
+              ${sonameFixtureScript}
+              SONAME_SCRIPT
+              cat > symbol-check.bash << 'SYMBOL_SCRIPT'
+              ${symbolFixtureScript}
+              SYMBOL_SCRIPT
+
+              # Exported functions supply only inspection output and status;
+              # the production script still owns all checking decisions.
+              readelf() {
+                printf '%s\n' "$TOOL_OUTPUT"
+                return "$TOOL_STATUS"
+              }
+
+              nm() {
+                printf '%s\n' "$TOOL_OUTPUT"
+                return "$TOOL_STATUS"
+              }
+
+              export -f readelf nm
+              export TOOL_OUTPUT TOOL_STATUS
+              mkdir -p fixture/lib
+              CASES=0
+
+              run_fixture() {
+                LABEL="$1"
+                SCRIPT="$2"
+                EXPECTED="$3"
+                MARKER="$4"
+                TOOL_OUTPUT="$5"
+                TOOL_STATUS="$6"
+
+                if ${pkgs.bash}/bin/bash -e "$SCRIPT" > "$LABEL.log" 2>&1; then
+                  STATUS=0
+                else
+                  STATUS=$?
+                fi
+                if { [ "$EXPECTED" = pass ] && [ "$STATUS" -ne 0 ]; } ||
+                   { [ "$EXPECTED" = fail ] && [ "$STATUS" -eq 0 ]; }; then
+                  cat "$LABEL.log"
+                  echo "unexpected exit status $STATUS for $LABEL" >&2
+                  exit 1
+                fi
+                if ! ${pkgs.grep}/bin/grep -Fq "$MARKER" "$LABEL.log"; then
+                  cat "$LABEL.log"
+                  echo "missing expected diagnostic for $LABEL" >&2
+                  exit 1
+                fi
+                CASES=$((CASES + 1))
+                printf 'PASS unit fixture: %s\n' "$LABEL"
+              }
+
+              run_fixture missing-soname soname-check.bash fail 'not found' "" 0
+              run_fixture missing-symbol symbol-check.bash fail 'not found' "" 0
+              touch fixture/lib/library.so
+
+              GOOD_SONAME='0x000000000000000e (SONAME) Library soname: [library.so.1]'
+              run_fixture failed-readelf soname-check.bash fail 'readelf failed' "$GOOD_SONAME" 1
+              run_fixture absent-soname soname-check.bash fail 'has no SONAME' "" 0
+              run_fixture wrong-soname soname-check.bash fail 'expected library.so.1' \
+                '0x000000000000000e (SONAME) Library soname: [library.so.10]' 0
+              run_fixture exact-soname soname-check.bash pass 'All SONAME checks passed' "$GOOD_SONAME" 0
+
+              run_fixture failed-nm symbol-check.bash fail 'nm failed' 'required_symbol T 100 20' 1
+              run_fixture prefix-symbol symbol-check.bash fail 'missing symbol required_symbol' \
+                'required_symbol_extra T 100 20' 0
+              run_fixture non-text-symbol symbol-check.bash fail 'missing symbol required_symbol' \
+                'required_symbol D 100 20' 0
+              run_fixture undefined-symbol symbol-check.bash fail 'missing symbol required_symbol' \
+                'required_symbol U' 0
+              run_fixture exact-symbol symbol-check.bash pass 'All symbol checks passed' \
+                'required_symbol T 100 20' 0
+              run_fixture versioned-symbol symbol-check.bash pass 'All symbol checks passed' \
+                'required_symbol@VERSION_1 T 100 20' 0
+              run_fixture default-version-symbol symbol-check.bash pass 'All symbol checks passed' \
+                'required_symbol@@VERSION_1 T 100 20' 0
+              run_fixture empty-version-symbol symbol-check.bash fail 'missing symbol required_symbol' \
+                'required_symbol@@ T 100 20' 0
+              run_fixture malformed-version-symbol symbol-check.bash fail 'missing symbol required_symbol' \
+                'required_symbol@@VERSION@OTHER T 100 20' 0
+
+              test "$CASES" -eq 15
+              mkdir -p "$out"
+              cp ./*.log "$out/"
+              printf 'parser/control-flow unit fixtures: %s\n' "$CASES" > "$out/result"
+            '';
+          }
         ];
       };
 
