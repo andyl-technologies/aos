@@ -139,7 +139,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   identity profile; second-identity-profile registration hook. — satisfies
   OBJ-1 to OBJ-4, OBJ-6 to OBJ-10; `checks.terrane.gates.identity-idempotence`,
   `checks.terrane.gates.descriptor-strict`.
-- [ ] **T-CDC-1** FastCDC chunker with the seeded gear table, codec bytes,
+- [x] **T-CDC-1** FastCDC chunker with the seeded gear table, codec bytes,
   dictionary identities, canonical object manifests, and receiver-side
   validation. Content-class dictionary selection is completed jointly with
   T-DRV-1. — satisfies OBJ-11 to OBJ-18, CDC-1 to CDC-20;
