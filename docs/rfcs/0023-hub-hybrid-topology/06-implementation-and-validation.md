@@ -101,6 +101,67 @@ Native-only baselines under the same data and client region.
   shapes, authorization behavior, and storage integrity checks. Cross-mode
   contract tests run from the same fixtures and compare observable results.
 
+### External admission scale and safety
+
+Managed external execution is a separate launch gate. Metadata publication,
+Watermark, SQL acknowledgement or the fixed-ledger foundation alone cannot pass
+it. Declare the execution policy, protocol/key boundaries and each workload's
+accepted throughput/latency/error envelope before qualification.
+
+For bounded leases, record configured TTL `T` and actual renewal interval `R`,
+minimum/maximum allowed TTL, qualified clock/dispatch uncertainty, maximum active
+exact renewal cohorts `C`, cache/region/isolate cold-start fanout,
+refresh retry bounds and a measured issuer RPC/CPU/durable-commit budget with
+headroom. Steady renewal is approximately `C/R` calls per second, not a request
+per object. The ideal `C/T` model applies only to expiry-spaced renewal; early
+renewal/jitter can make `R < T`. Duplicate caches and cold starts increase calls.
+The cohort includes
+association, purpose, executor, prefix and effect restrictions. Test:
+
+- Steady traffic at the declared maximum `C`, using the shortest configured TTL;
+  renewal coalescing/jitter must fit the measured issuer budget and preserve
+  concurrent control/cutoff latency. Also test the largest TTL and attestation
+  expiry cap to establish the actual longest revocation window.
+- Simultaneous cold cohorts, regional/isolate startup and retry storms at the
+  declared fanout. Record actual renewal calls, queue time and p50/p95/p99,
+  signature CPU, bytes and commits. No assumed fleet-wide shared cache; no
+  unbounded refresh retries or issuance from a cached/unsigned epoch.
+- Many independent keys plus declared worst per-key/session bursts, tiny-object
+  writes and parallel multipart parts. Trace actual stage latency and RPCs:
+  ordinary leased effects have no global identity or per-effect issuer round
+  trip, and no gate holds streaming bodies serially. Bound each hot guard/session
+  and record backpressure/errors rather than claiming unlimited bucket scale.
+- An issuer outage through token expiry, verifier/key rotation, lagging or rolled
+  back clocks, and executor pause at the final expiry check. New dispatch fails
+  closed when time/continuation bounds or renewed tokens cannot be established.
+
+Correctness qualification injects denial before/after issuance, lost issuance
+replies, old lease use at unseen and advanced keys, same-generation forks,
+cutoff/reopen and credential rotation while an old key has unknown late provider
+I/O. The recorded cutoff must include every issued token; it never reports drain.
+Prove other eligible keys resume only after cutoff and reviewed exclusivity,
+while unknown keys, incarnations and receipts survive. Exercise duplicate part
+attempts, session freeze against in-flight parts, unknown create/abort/completion,
+receipt-persistence failure, byte-identical recreation, SQL restore and actual
+runtime restart/persistence. A provider HEAD or TTL must settle no unknown effect.
+
+Audit every Native-only, Worker-only and Hybrid producer, retained writer,
+alternate alias and presigned path at actual dispatch. Uncoordinated writers and
+already issued bypass capabilities must be excluded before managed activation.
+Prove issuer private-key isolation, verifier-only object execution, exact ordinary
+application authorization and all immutable input projections. Direct final-key
+presigned PUT and unqualified staged/part alternatives must reject. Preserve
+permanent namespace/identity/key history through partition migration; empty
+journal adoption must reject. A full drain claim additionally requires complete
+partitioned guard-directory settlement, never SQL/provider listing alone.
+
+Qualify immediate reservation separately for any strict purpose, including its
+Begin/Settle rate, unresolved accounting and generation rollover costs. Neither
+policy enables external DELETE until every visible writer, frozen stamp/grant/
+claim/receipt chain and actual provider deletion semantics are qualified. Publish
+measurements by configured policy and purpose; no successful metadata fixture
+or performance model substitutes for these runtime/provider gates.
+
 The byte budget is a launch gate, not a promise that another provider's egress
 is free. R2 and S3 have different transfer and request economics; the measured
 report must attribute each provider and each cloud boundary separately.

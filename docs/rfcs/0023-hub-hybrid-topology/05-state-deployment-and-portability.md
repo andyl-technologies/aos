@@ -7,8 +7,11 @@ All authoritative Hub rows, including identity, authorization, topology,
 publication, indexing, inventory, and job state, live in that database. The
 service may have several GCP replicas, but replicas share the same database and
 must not make an in-process lease or cache an authority. Durable Objects hold
-only reconstructable object-scoped work state and parse results. KV and edge
-caches remain projections. The Worker cannot accept a control mutation while
+reconstructable parse results separately from permanent identity reservations,
+per-authority issuance and object-effect journals. Those external correctness
+authorities retain epoch/time floors, cutoffs, pending effects, incarnations and
+terminal receipts across SQL restore. KV and edge caches remain projections.
+The Worker cannot accept a control mutation while
 Native or PostgreSQL is unavailable.
 
 The baseline hosted deployment is the Native Hub on the GCP application
@@ -43,6 +46,47 @@ parallel; Native commits its results only after checking the current binding,
 placement, publication, and job generation. The shared database is expected to
 scale these short transactions and read queries; the RFC does not promise
 unbounded write scale from a single PostgreSQL primary.
+
+## Permanent journal lifetime and partitioning
+
+The fixed metadata ledger is an implementation foundation, not proof that an
+external execution protocol or provider readiness exists. Intended scalable
+admission separates the rare identity registry, per-authority issuer and local
+object guards. Moving to that topology requires a reviewed continuity protocol
+bound to actual immutable configured resources; matching labels or a SQL
+acknowledgement is insufficient.
+
+The issuer and object-guard protocol is runtime-neutral, with intended Native
+and Workers adapters; Native-only deployment does not require Cloudflare. Its
+Native durable journal backing must be an independently retained resource whose
+identity and history remain outside Hub SQL snapshot/reset authority, preserving
+the same exclusivity, cutoff, unknown-effect and receipt invariants. Durable
+Object classes and object IDs implement the Workers adapter rather than a
+mandatory Native dependency. A Native journal adapter is not yet implemented or
+qualified; managed external execution through that adapter stays disabled until
+its actual backing and full protocol pass the same lifetime and all-writer gates.
+
+Preserve permanent alias reservations, authority IDs, namespace/executor links,
+full publication and control receipts, latest generation/digest and recorded
+issuance/cutoff/time floors. Preserve every original object guard's namespace,
+authority/full-key address, incarnation counter, unknown intent and terminal
+receipt. A new issuer address does not select new key guards or excuse missing
+history. An empty destination journal is never fresh qualification for a reused
+bucket/prefix, and restoring any of these journals backwards is unsupported.
+
+Partition installation must verify linked irreversible global reservations and
+current authoritative continuity evidence before execution activates. Rebinding
+classes/deployments, key rotation and failure recovery preserve this lifetime;
+partial migration stays closed rather than rolling ownership back. Old issuer
+keys/leases and already admitted provider work must be accounted for under the
+reviewed cutoff/settlement policy. A SQL-only restore cannot issue a lower epoch,
+clear pending work, infer drain or restart leases from cached publication.
+
+A whole-Hub snapshot preserves SQL references to these authorities, not their
+execution power. Issuer private keys stay outside general archives and Native
+metadata credentials cannot replace them. Reusing storage reconciles against
+live authoritative journals; copying into a truly fresh namespace establishes
+a separate reviewed authority. No reset silently adopts unmanaged old storage.
 
 ## Initial deployment and reset
 
@@ -101,9 +145,12 @@ every referenced immutable or mutable object, schema and format versions,
 database generation, binding and placement identities, content digests, and a
 manifest that ties the pieces to one quiescent point. It includes the state
 needed to preserve users, IAM, topology, publication generations, retention
-roots, audit evidence, and trust metadata. It excludes live sessions, in-flight
-leases, disposable projections, cached parse results, and queue delivery state;
-those are invalidated or reconstructed after import. Provider credentials and
+roots, audit evidence, and trust metadata. It excludes live authentication
+sessions, disposable projections, cached parse results and queue delivery state;
+those are invalidated or reconstructed after import. Native orchestration leases
+may be invalidated only while retaining durable operation/claim identities,
+frozen inputs and replay evidence. This never retires an external pending effect,
+issuer cutoff or guard receipt. Provider credentials and
 private signing material travel only through separately controlled secret
 backup and rebinding, never inside a general-purpose export archive.
 

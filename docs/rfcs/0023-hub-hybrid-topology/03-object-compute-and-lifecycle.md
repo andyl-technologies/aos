@@ -1,11 +1,14 @@
 # Object compute and lifecycle
 
-Storage-local compute is useful only if it reduces bytes and round trips
-without becoming another system of record. A Worker may parse, verify, filter,
-and page an object-store result. An optional Durable Object (DO) may coordinate
-and cache a *derived result for one physical store object*. Neither holds Hub
-accounts, indexes, placement authority, retention policy, or authoritative
-inventory. The Native SQL database remains authoritative for those records.
+Storage-local compute reduces bytes and round trips while Native SQL remains
+the system of record for Hub accounts, indexes, placement authority, retention
+policy and authoritative inventory. A Worker may parse, verify, filter and page
+an object-store result. An optional Durable Object (DO) may coordinate and cache
+a *derived result for one physical store object*. Permanent admission and
+object-effect journals are separate correctness authorities; they cannot be
+reconstructed from a parse cache, SQL backup or current provider HEAD. The
+optional/reconstructable cache goal applies only to derivatives; managed storage
+requires its permanent admission and effect journals.
 
 ## Physical identity and cache keys
 
@@ -104,8 +107,10 @@ version ineligible for future cache hits even if the invalidation message is
 delayed: every presence-sensitive hit checks current provider identity. A
 replacement at the same key has a different identity and therefore a
 different cache key. Placement removal or binding retirement marks its
-namespace inaccessible immediately and queues cache cleanup; TTL and alarms
-eventually reclaim unreachable derivatives. Credential rotation may change
+namespace ineligible for new cache admission and queues cleanup; TTL and alarms
+eventually reclaim unreachable derivatives. This logical binding readiness does
+not cancel issued physical execution leases, whose cutoff is enforced separately.
+Credential rotation may change
 access authority without changing content identity, so new work must still
 pass the plan's exact credential and binding fence before using old parsed
 content.
@@ -221,16 +226,136 @@ separate from an R2 provider upload version. Inventory, reviewed actions, jobs,
 claims and receipts carry that exact pair. A later HEAD cannot fill a missing
 stamp or settle an unknown provider effect.
 
-Managed Native-only, Workers-only and Hybrid writers use the same authority
-ledger or reject the operation. This includes ordinary PUT, multipart completion,
-metadata publication, replication, credential probes, recovery writes and
-presigned upload issuance. Already issued direct provider capabilities and other
+Every managed Native-only, Worker-only and Hybrid writer must use the approved
+issuer/object-guard protocol or reject the operation, including retained writers
+and alternate aliases. Required coverage includes OCI staging/final blobs and
+manifests; cache bodies, narinfo and publication PUT; Git loose objects, refs and
+registry/draft metadata; consumer transactions; replication and placement scans;
+credential/conditional-delete probes and cleanup; multipart create, parts,
+completion and abort; GC, migration and every retry/recovery path. Enforce this
+at factories and actual provider dispatch, rather than only new writer creation.
+A completion HEAD fallback cannot settle an unknown provider result.
+Already issued direct provider capabilities and other
 provider credentials must be covered by the exclusivity decision. A fresh unused
 namespace with exclusive executor access is the initial adoption path; an
 existing unmanaged namespace requires actual prior-effect settlement. Deletion
 is enabled only after every visible writer and the provider's physical deletion
 semantics are qualified. A versioned S3 delete marker alone does not prove that
 historical object bytes were reclaimed.
+
+## Scalable external execution
+
+Separate rare permanent identity decisions from upload-frequency admission.
+A global registry reserves canonical aliases, physical identities and immutable
+executor/namespace links. Each permanent physical authority has its own issuer,
+full reviewed publications/receipts, current generation and issuance cutoff.
+Each full physical key has its own persistent guard. Logical binding IDs,
+credential generations, aliases and SQL restores cannot select another journal.
+Many authorities use one class with separate object IDs; one bucket does not
+require one class. The global registry and issuer never carry bulk bodies.
+Lease renewal reads the current head and selected keyed association/purpose
+projection linked atomically to the full publication and receipt, rather than
+scanning the complete member bundle. Full publication and receipt validation
+remain on the control path.
+
+Global reservation and per-authority installation are distinct transactions.
+Install only after exact signed reservation receipts are available; partial
+failure may leave unused permanent reservations, never ownership rollback or
+execution without the required evidence. Partitioning the current fixed ledger
+requires [lifetime-preserving initialization](05-state-deployment-and-portability.md#permanent-journal-lifetime-and-partitioning),
+not adoption of an empty object for previously used physical storage.
+
+### Object-local dispatch and settlement
+
+Under the bounded lease policy, an object guard authenticates the work and
+exact application-authorized canonical key, pins its permanent authority/scope,
+replays only an exact terminal receipt, and rejects unknown or differing pending
+effects. It verifies the
+[closed lease](02-storage-work-protocol.md#managed-external-execution-admission),
+its exact cohort/purpose, absolute expiry and durable generation/digest floor.
+Same-generation forks and older generations fail closed. A verified later denial
+or admission raises the local floor; an older lease cannot follow a newer-epoch
+visible mutation at that key.
+
+Persist exact stable intent and admitted lease identity before provider I/O.
+PUT/part commitments derive from actual validated bytes, not an unchecked client
+hash. Recheck expiry in the actual dispatch adapter immediately before invoking
+the provider, with no intervening application await. Qualify runtime pause and
+continuation uncertainty around that check; this is an executor admission and
+invocation bound, not a provider-arrival/completion deadline. Only the live
+continuation can persist definite pre-invocation no-dispatch evidence. Expiry,
+restart, HEAD, matching bytes or credential revocation cannot supply it.
+
+Validate the actual provider terminal acknowledgement and persist the exact
+receipt and guard-issued visible incarnation before clearing only its matching
+intent. Network ambiguity or failed receipt persistence retains the unknown
+fence indefinitely. There is no central Begin/Settle call per leased effect;
+terminal authority remains at the permanent key guard. A lease alone never
+permits GC: the reviewed frozen action/claim, exact guard incarnation, absence
+of unknown work at that key and qualified provider condition remain required.
+An unknown effect at another key does not freeze all uploads or GC. External
+DELETE stays disabled until the complete path and provider semantics are
+actually qualified.
+
+### Denial, reopening and strict purposes
+
+Denial stops issuer renewal immediately; authentic existing leases may still
+admit new dispatch until their recorded expiry plus conservative qualified
+uncertainty. Expose issuance closure, lease admission cutoff and per-key unknown
+state separately. Never report TTL-based execution drain or discard an old
+receipt. Signed denial fanout can stop touched guards earlier, but unseen keys
+may use an old valid token within the explicitly accepted window.
+
+After confirming cutoff, root-reviewed renewed exclusivity may reopen other
+eligible keys in a new admitted generation while old unknown keys remain fenced.
+Binding/coordinate/prefix/writer/credential mutation APIs must close issuance and
+confirm the previous cutoff before new execution admission. SQL credential-head
+changes alone do not revoke tokens. The review must account for retained managed
+effects and exclude old direct writers, binaries and provider capabilities; it
+cannot claim physical quiescence. Retired authority cannot reopen. Namespace
+transfer, destruction of old guards or unqualified storage reuse still requires
+actual prior-effect settlement or a fresh never-reused physical namespace.
+
+A purpose requiring an immediate admission reservation cutoff can instead use
+per-authority atomic BeginDispatch/SettleDispatch. Denial then stops new
+reservations in that serialization order; prior reservations may invoke or
+complete later. Its durable accounting and generation rollover/drain rules must
+be qualified, and its roughly two authority RPCs per effect and hotspot cost
+are disclosed. A reusable lease must not silently weaken this policy. Neither
+policy's denial acknowledgement alone proves that all provider work stopped.
+
+Under bounded leases, authority-wide drain additionally needs an immutable
+partitioned directory of all guards, with acknowledged registration before a key's first provider I/O,
+then exact settlement from every partition/guard after cutoff. SQL inventory or
+provider listing can miss pending creation. Missing pages, guards or unknown
+effects prevent drain. Until that extra protocol is qualified, expose cutoff
+and individual key eligibility only.
+
+### Multipart and presigned paths
+
+Do not hold one final-key gate while every body part streams. A persistent
+upload-session coordinator is permanently linked to its final authority/key;
+short session/part admission sections permit independent parts to transfer
+concurrently using exact purpose leases. Each part attempt has its own immutable
+identity and unknown fence, so concurrent retries cannot overwrite one part.
+Whether parts use local records or separate part guards requires an explicit
+persistence/concurrency contract.
+
+Freeze admitted parts before completion: stop new part admission and require
+exact terminal outcomes for every earlier admitted part. Under the final-key
+guard, verify the immutable settled-part/ETag commitment and a freshly valid
+completion lease before persisting final-visible intent and invoking completion.
+Unknown parts block that session; unknown completion blocks the final key.
+Create/abort uncertainty retains provider resource accounting even without a
+visible final object. HEAD and URL/lease expiry settle none of these effects.
+
+Direct presigned final-key PUT cannot enforce this guard and fails closed for
+managed storage. Initially reject presigned part URLs too. A later staged upload
+alternative may avoid body proxying only after provider semantics prove that
+parts cannot independently publish/replace the final object, controlled guarded
+completion and unknown-session recovery work, and abandoned resources are
+accounted for. Exclude already issued bypass capabilities before enabling the
+managed authority; the lease design itself makes no bandwidth-bypass claim.
 
 ## Failure and cost controls
 
@@ -242,9 +367,16 @@ when measured storage reads or CPU saved justify its DO requests and stored
 bytes. Workers enforce concurrency and per-plan limits so one large upload or
 index walk cannot monopolize a cache object or saturate the object store.
 
-If the DO is unavailable, the executor may recompute in a stateless Worker
+If a parse-cache DO is unavailable, the executor may recompute in a stateless Worker
 when the plan's limits allow it. A provider outage or an unverifiable object
 returns an error; it does not produce a result from stale cache. Native keeps
 its last accepted index with the appropriate stale or failed state and retries
 only according to the storage-work error contract. A partial fanout never
 appears as a complete scan or index generation.
+
+An unavailable permanent guard never permits stateless mutation fallback. An
+issuer outage prevents renewal; cached leases admit only their exact scope until
+expiry under the reviewed bounded policy. Ordinary indexed queries stay close
+to Native SQL and do not consult an issuer/guard. Storage inspection can reuse
+read-purpose leases, while HEAD/inventory retains pending checks and coherent
+stamp capture. Strict read revocation selects its policy explicitly.

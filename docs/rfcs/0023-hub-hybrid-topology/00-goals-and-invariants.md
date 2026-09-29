@@ -55,8 +55,9 @@ request objects or into object-scoped caches.
    Authenticated HTML and control APIs still use Native's canonical router.
 4. **Scale object work independently of SQL and Native CPU.** Native can fan
    out typed, bounded storage operations across Workers while retaining the
-   final verification and database commit. Object-scoped Durable Objects are
-   optional, reconstructable parse caches, not the system of record.
+   final verification and database commit. Parse-cache Durable Objects are
+   optional and reconstructable. Permanent execution admission and effect
+   journals retain the separately specified correctness state.
 5. **Keep deployment modes behaviorally aligned.** Shared authorization,
    routing, wire formats, and business rules have one implementation or a
    tested common contract. Runtime adapters may differ; API semantics do not.

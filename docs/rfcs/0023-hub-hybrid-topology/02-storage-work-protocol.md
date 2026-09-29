@@ -19,8 +19,9 @@ does not authorize a request. A deployment may later run multiple storage
 executor Workers with the same protocol and storage bindings. No executor
 requires an affinity to a particular Native replica.
 
-The Native Hub owns admission, authorization, quotas, the index generation,
-anti-rollback floors, jobs, durable claims, and SQL commits. The executor owns
+The Native Hub owns reviewed desired admission, authorization, quotas, the index
+generation, anti-rollback floors, jobs, durable claims, and SQL commits.
+The executor owns
 provider I/O, byte verification, parsing of supported storage formats, and
 bounded filtering or aggregation. It cannot update Hub SQL. Each result names
 the exact plan, operation, selected placement, physical object identity,
@@ -91,11 +92,14 @@ compound read/write operation names both revisions in canonical purpose order.
 Snapshot distribution is part of topology reconciliation. Native publishes a
 new immutable snapshot before issuing plans for its revision, waits for the
 executor to acknowledge availability, and withdraws retired or revoked
-revisions from future use. A revocation or placement fence change must reach
-the executor promptly enough to reject still-unexpired plans; otherwise Native
-stops issuing work and waits out their maximum lifetime before considering the
-change complete. The executor does not infer current authority from a stale
-snapshot. External S3 storage may be far from Cloudflare compute and may
+revisions from future use. For managed external storage, coordinate, prefix,
+writer and credential changes also close execution admission under the reviewed
+policy below. A SQL head change or snapshot withdrawal alone cannot revoke a
+previously issued lease or settle provider I/O. Execution cutoff and terminal
+settlement are separate results; waiting for a plan or lease to expire establishes
+neither settlement nor safe receipt retirement. A binding snapshot alone never
+provides execution authority.
+External S3 storage may be far from Cloudflare compute and may
 charge provider egress. Such placements remain supported, but their read
 location, transfer cost, and latency must be measured; the protocol does not
 promise R2-like locality for every binding.
@@ -123,6 +127,61 @@ of executing a weakened request during a mixed-version deployment. A fresh R2
 delete requires a recorded version. An existing terminal receipt is replayed
 before that requirement is checked, so legacy completed actions remain
 recoverable without repeating provider effects.
+
+## Managed external execution admission
+
+Managed external effects use a separately negotiated, closed admission protocol.
+The execution policy is part of the reviewed authority/executor contract:
+`bounded_lease` with a maximum TTL and qualified clock/dispatch uncertainty, or
+`immediate_reservation` for an explicitly selected purpose. Missing, unknown or
+incompatible policy fails closed. Current signed publication and nonce-bound
+Watermark replies deliver metadata; they are not reusable execution permits.
+The current fixed ledger is a metadata implementation foundation and does not
+activate this intended execution protocol or qualify existing direct adapters.
+
+A bounded lease names its protocol version and issuer key, deployment audience,
+permanent physical authority and guard namespace, exact executor, admission
+generation/digest and publication digest, immutable association/address/prefix
+projection, selected purpose and credential-member identity, allowed effect
+kinds, issuance time, absolute expiry and monotonic issuance sequence. Credential
+identity includes its exact reference, generation and fingerprint, never secret
+bytes. The DTO/envelope is closed, canonically signed and byte-bounded; it admits
+no unconstrained purpose/executor privilege, arbitrary URL or Native SQL lease
+token.
+
+Only the durable per-authority issuer can sign. It checks its current admitted
+head, fresh exclusivity time and exact selected cohort, caps expiry by both the
+reviewed TTL and attestation expiry, and atomically retains the largest issued
+expiry and sequence before returning a token. Lost replies cannot hide a token
+from denial accounting. The signing key is issuer-only; object executors hold
+verifier material. Native's metadata HMAC key, a restored SQL image, cached
+publication or an offline signer cannot mint fresh execution authority. Isolate
+the issuer deployment when a shared script would expose its secret to ingress
+or object code; a DO class name alone is no key isolation boundary. Lease,
+issuance-response and denial-event signatures use separate domains. Key rotation
+preserves verifier history for retained leases/receipts without creating a new
+empty journal or extending an old token's validity.
+
+Reuse a token only within its exact association/purpose/executor/prefix/effect
+cohort. Trusted caches may coalesce issuance and serve a still-valid older token
+within the explicit bounded policy; they cannot extend expiry or turn cached
+metadata into fresh admission. Every effect still requires application-authorized
+canonical full-key selection, the retained binding/credential projection and the
+operation's own plan, ticket or reviewed delete grant. A cohort lease alone is
+not user permission for arbitrary Hub resources. Object guards independently
+validate these inputs and their permanent address. Terminal result replay precedes
+new lease admission and performs no provider I/O.
+
+Under `bounded_lease`, denial atomically stops new issuance and records the
+largest prior expiry. Previously issued valid tokens can admit local dispatch
+until the conservative recorded cutoff, including qualified clock/dispatch
+uncertainty. A signed denial event can raise an individual guard's durable floor
+earlier, but cutoff correctness cannot depend on fanout reaching every key.
+"Lease admission cutoff reached" does not mean "provider execution drained";
+an already invoked request can arrive or complete later. Lease expiry never
+clears pending effects. Without a qualified time/continuation bound, bounded
+revocation cannot be enabled. The immediate policy and object-local rules are
+specified in [object lifecycle](03-object-compute-and-lifecycle.md#scalable-external-execution).
 
 ### Retained external cleanup grants
 
@@ -168,8 +227,11 @@ idempotency rule.
 | `put_metadata` | Write a Native-authored Nix base32 narinfo of at most 128 KiB through the object-scoped storage guard after checking its exact SHA-256 | Bounded acknowledgment; Native verifies the stored object before committing its write ticket |
 | `delete_if_matches` | Use the reviewed conditional-delete capability and exact object condition | Provider acknowledgment and independently observed evidence |
 
-Client upload bodies enter through Worker upload routes or narrowly scoped
-direct-storage grants, using Native-issued tickets. They are not sent from
+Client upload bodies enter through Worker upload routes or separately qualified
+staged direct-storage grants, using Native-issued tickets. Managed direct
+presigned final-key PUT and unqualified part URLs fail closed; see
+[multipart coordination](03-object-compute-and-lifecycle.md#multipart-and-presigned-paths).
+They are not sent from
 Native in a `StorageWorkPlan`. The executor's write, multipart completion,
 abort, and final verification operations use those ticket constraints and
 return receipts to Native before any SQL publication commit. Their wire
@@ -258,8 +320,11 @@ or limit exhaustion, unsupported operation, transient provider failure,
 verified corruption, and an uncertain mutation outcome. Native may retry only
 the documented transient classes and only while the placement and object
 fences still match. A partial page or response cannot be committed as a
-complete inventory. A placement change, key rotation, credential revocation,
-or executor protocol mismatch stops affected work until a new plan is issued.
+complete inventory. A placement change, key rotation, credential revocation or
+executor protocol mismatch stops Native issuance/commit of affected work until
+a compatible new plan is issued. Previously admitted external dispatch remains
+subject to its physical lease cutoff and permanent pending fence; stopping SQL
+orchestration does not establish provider settlement.
 
 The Native and Worker deployments exchange supported protocol and parser
 versions at startup and expose them in health status. The Native Hub issues
