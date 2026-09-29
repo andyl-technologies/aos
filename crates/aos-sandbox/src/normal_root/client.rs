@@ -173,6 +173,15 @@ pub struct ProductionControllerNormalRootProfileV1 {
 }
 
 impl ProductionControllerNormalRootProfileV1 {
+    /// Returns the original selected profile path for exact delivery comparison.
+    ///
+    /// This borrowed name grants no readiness or journal authority. Consumers
+    /// retain this admitted profile and call [`Self::recheck`] around observations.
+    #[must_use]
+    pub fn profile_path(&self) -> &Path {
+        self.profile_file.path()
+    }
+
     /// Rechecks selected bytes, policy and Controller's original unit delivery.
     ///
     /// # Errors
