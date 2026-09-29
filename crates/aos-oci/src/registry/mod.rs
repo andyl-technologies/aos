@@ -6,6 +6,8 @@
 //! persists only upload locations and offsets - never credentials - and updates
 //! a mutable tag only after the entire descriptor graph is verified and durable.
 
+#[cfg(unix)]
+mod direct;
 mod publication;
 mod pull;
 mod push;
@@ -162,6 +164,8 @@ impl PushOptions {
 #[derive(Clone)]
 pub struct RegistryClient {
     inner: Arc<ClientInner>,
+    #[cfg(unix)]
+    direct_options: aos_remote::DirectUploadOptions,
 }
 
 type CredentialProvider = Arc<dyn Fn() -> BoxFuture<'static, Result<Option<String>>> + Send + Sync>;
@@ -174,6 +178,8 @@ struct ClientInner {
     credential_provider: Option<CredentialProvider>,
     deferred_token: tokio::sync::OnceCell<Option<Zeroizing<String>>>,
     scoped_tokens: Mutex<BTreeMap<String, Zeroizing<String>>>,
+    #[cfg(unix)]
+    direct_registry: Mutex<Option<String>>,
 }
 
 impl RegistryClient {
@@ -251,7 +257,11 @@ impl RegistryClient {
                 credential_provider,
                 deferred_token: tokio::sync::OnceCell::new(),
                 scoped_tokens: Mutex::new(BTreeMap::new()),
+                #[cfg(unix)]
+                direct_registry: Mutex::new(None),
             }),
+            #[cfg(unix)]
+            direct_options: aos_remote::DirectUploadOptions::default(),
         })
     }
 
@@ -470,6 +480,8 @@ impl RegistryClient {
                 || (retries == 1 && !retry_credentials)
                 || (retries == 0 && response.status() != StatusCode::UNAUTHORIZED)
             {
+                #[cfg(unix)]
+                self.observe_direct_readiness(&response)?;
                 return Ok(response);
             }
             let challenge = match response.headers().get(WWW_AUTHENTICATE) {
@@ -1217,5 +1229,18 @@ mod tests {
             )
             .is_err()
         );
+    }
+}
+
+#[cfg(unix)]
+impl RegistryClient {
+    /// Sets explicit provider network policy and private direct retry custody.
+    ///
+    /// Direct mode is selected only by authenticated readiness/discovery, never
+    /// by a registry URL shape. Unconfigured third-party Distribution is unchanged.
+    #[must_use]
+    pub fn with_direct_upload_options(mut self, options: aos_remote::DirectUploadOptions) -> Self {
+        self.direct_options = options;
+        self
     }
 }

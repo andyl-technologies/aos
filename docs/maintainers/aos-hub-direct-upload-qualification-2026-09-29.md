@@ -328,3 +328,67 @@ digest is `a400d22f8d7b4b54dad5d9e474b149074520ec7b7197ba0f0b767c2850920760`.
 Seven-method direct service routing, Worker readiness markers, signed provider
 delegation, storage-local manifest projection, connected clients, fleet and
 hosted activation remain separate gates. This increment does not enable them.
+
+## Parallel direct clients and publication barriers
+
+The CLI, selected Hub cache, APR publication and OCI callers use the shared
+direct upload engine. File and part concurrency are bounded separately; the
+default engine permits eight files, four parts per file and 32 aggregate
+provider requests. Small metadata uses one-part objects and bounded waves of
+64 intents. Private payload and metadata staging precede publication barriers;
+a failed prerequisite or refused commit leaves the other destinations' public
+pointers unchanged. Generic non-Hub stores retain their existing transport.
+
+Source custody uses retained descriptors, bounded hash catalogues and 64 KiB
+stream chunks. FIFOs are refused before Hub or provider requests. NAR spools
+have separate disk bounds. Checkpoints retain original operation, identity and
+receipt facts without tokens or signed upload URLs. Provider grants are checked
+again after waiting for concurrency capacity. Required direct mode refuses
+legacy upload fallback. The Unix source/journal machinery is qualified on
+Linux; portable selector propagation and refusal policy do not establish a
+Windows build or runtime result.
+
+Producer V5 receipt `/tmp/hub-direct-upload-client-final-v5/qualification.json`
+(`68e658c0bc11bcbbbb75b9528327a7d2722a6c43df600699db27e0f61cebee8b`)
+binds 73 exact client paths. Its 88 distinct passes combine 73 unchanged
+earlier net/remote/OCI cases with 15 current cache/APR cases; its four-package
+check passes. Independent review
+`0e4dbee3f7f211520a6f87281922af73e9a7ef218ba08a79f774660e57122aee`
+binds source and evidence. Root adapter review
+`408f57be6a9a720998641794fb588dc4047b398eb3a99f5c6cee693401ad8cfc`
+covers the cache, publication, NAR and CLI wiring. The mechanical prefix is
+committed separately; split receipt `5c0e1a01f554d6809513faeb4cdcf64ced65b97c535f789053a0946b9e2af1ee`
+reproduces all final postimages exactly.
+
+The first current integration attempt stops before compilation because the
+locked dependency graph needs updating. Immutable failure receipt
+`e7dfed2e76b9627e5249c8054f4435a79998f70202dc023701d63b2b44e42ab4`
+retains that failure and all 2,968 unchanged inputs. The correction adds only
+15 dependency edges to four client package entries, with no package, version,
+source or checksum changes; the newer console dependencies remain intact.
+Offline full resolution and subsequent locked metadata both pass. Producer
+lock receipt `cabab5178df23b460e1c022c72063e559dd1dc0d13811ef390b0da540e384a1c`
+and root review `52d2edcbad8c8a72cc0fc4e66940cffaf74aac9385a8666f297bc909c78646bf`
+bind the scoped correction.
+
+Current receipt `/tmp/hub-client-current-context-v2/qualification.json`
+(`3dea2cb365f978ed812df89f04f4b66f861cca3f3e68fc464721e73f43beea6c`)
+records all 88 exact named tests passing together on the current Hub/proto,
+Legacy, authentication, browser, OCI and schema-004 context. All four client
+packages compile and the three Linux debug binaries `aos`, `apr` and `apm`
+build. All 2,968 captured inputs remain unchanged; all 73 client postimages
+and the reviewed lock postimage match exactly. Source input digest is
+`e10eef7834fa4ac7dde9dd158106782312c2f52f9dd048cc00caf8dd3464abd6`.
+Strict synthetic ownership tests run in the authorized host user namespace.
+Three actual version probes return exit zero; smoke receipt
+`f66021c5039b7c2ec05d1b1d7b73e92dc3fe628dbab3be73fd4dea8337850ffc`
+binds startup and dynamic library loading to the linked artifact receipt.
+
+These are local HTTP, filesystem, scheduling and barrier checks. They do not
+qualify actual signed provider transfers, Native or Worker activation, OCI
+projection, browser Fetch/CORS, current packaged artifacts, foreground
+cancellation, throughput or cross-cloud byte budgets. The synthetic 12,535
+metadata case demonstrates batching and overlap; its control count is not an
+observed Native request or SQL count. The running release staging publication
+remains unchanged. Connected storage execution, fleet and hosted acceptance
+remain separate gates.

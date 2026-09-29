@@ -15,6 +15,10 @@
 //!   `nix-store --export`; [`streaming_import`] reconstructs it from a
 //!   downloaded NAR plus narinfo metadata.
 
+mod spool;
+
+pub use spool::{CompressedSpool, streaming_compress_to_file};
+
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 

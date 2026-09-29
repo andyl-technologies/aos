@@ -155,6 +155,15 @@ fn validate_target(target: Option<&str>) -> Result<()> {
 /// Convert CLI auth args to [`AuthOptions`].
 fn auth_from_args(args: &CacheAuthArgs) -> AuthOptions {
     AuthOptions {
+        hub_origin: None,
+        hub_registry: None,
+        #[cfg(unix)]
+        direct_upload: aos_remote::DirectUploadOptions {
+            journal: args.direct_upload_journal.clone(),
+            provider_policy: args.direct_provider_policy.clone(),
+            new_run: args.new_direct_upload_run,
+            ..aos_remote::DirectUploadOptions::default()
+        },
         token: args.token.clone(),
         view: args.view.clone(),
         http_user: args.http_user.clone(),

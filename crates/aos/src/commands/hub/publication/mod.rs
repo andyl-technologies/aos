@@ -17,6 +17,8 @@ use aos_net::{
     TransferObserver,
 };
 use aos_remote::{HubClient, hub_rpc as HubTopologyMethod, hub_types};
+
+mod direct_upload;
 use futures_util::stream;
 use futures_util::stream::{StreamExt as _, TryStreamExt as _};
 
@@ -177,7 +179,7 @@ async fn upload_registry_publication_with_commit(
     printer: &Printer,
     commit: bool,
 ) -> Result<hub_types::RegistryPublication> {
-    let mut pinned = match manifest {
+    let pinned = match manifest {
         Some(manifest) => {
             let request = publication_manifest_request(manifest, registry)?;
             pinned_publication_from_root(root, request)?
@@ -185,8 +187,27 @@ async fn upload_registry_publication_with_commit(
         None => publication_from_root(root, registry)?,
     };
     let client = publication_client(access).await?;
-    bind_publication_parent(&client, &mut pinned.request).await?;
-    let publication = begin_registry_publication_chunked(&client, &pinned.request).await?;
+    let options = direct_upload::options(access);
+    let discovery = aos_remote::discover_publication_transport(&client, &options).await?;
+    let mut legacy = None;
+    let prepared = if discovery.transfer_mode()
+        == hub_types::direct_upload::DirectAdvertisedTransferMode::DirectRequired
+    {
+        Some(
+            aos_remote::prepare_direct_publication(&client, &pinned.request, &options, &discovery)
+                .await?,
+        )
+    } else {
+        let mut request = pinned.request.clone();
+        bind_publication_parent(&client, &mut request).await?;
+        legacy = Some(begin_registry_publication_chunked(&client, &request).await?);
+        None
+    };
+    let publication = prepared
+        .as_ref()
+        .map(|prepared| &prepared.publication)
+        .or(legacy.as_ref())
+        .context("publication admission has no retained owner")?;
     let publication_id = publication.publication_id.clone();
     let result: Result<hub_types::RegistryPublication> = async {
         anyhow::ensure!(
@@ -197,36 +218,61 @@ async fn upload_registry_publication_with_commit(
         let pointer_start = objects.partition_point(|object| object.kind != "mutable_pointer");
         let (immutable_objects, pointer_objects) = objects.split_at(pointer_start);
 
-        upload_publication_object_class(
-            access,
-            &publication_id,
-            &pinned.root,
-            &pinned.request.objects,
-            immutable_objects,
-            printer,
-            "Uploading immutable publication objects",
-        )
-        .await?;
-        upload_publication_object_class(
-            access,
-            &publication_id,
-            &pinned.root,
-            &pinned.request.objects,
-            pointer_objects,
-            printer,
-            "Uploading publication pointers",
-        )
-        .await?;
+        let staged_direct = match &prepared {
+            Some(prepared) => {
+                direct_upload::upload_if_required(
+                    &options,
+                    &client,
+                    prepared,
+                    &pinned.root,
+                    &pinned.request.objects,
+                    &objects,
+                )
+                .await?
+            }
+            None => false,
+        };
+        if !staged_direct {
+            upload_publication_object_class(
+                access,
+                &publication_id,
+                &pinned.root,
+                &pinned.request.objects,
+                immutable_objects,
+                printer,
+                "Uploading immutable publication objects",
+            )
+            .await?;
+            upload_publication_object_class(
+                access,
+                &publication_id,
+                &pinned.root,
+                &pinned.request.objects,
+                pointer_objects,
+                printer,
+                "Uploading publication pointers",
+            )
+            .await?;
+        }
         let client = publication_client(access).await?;
         if commit {
-            client
-                .call_topology(
-                    HubTopologyMethod::CommitRegistryPublication,
-                    &hub_types::CommitRegistryPublicationRequest {
-                        publication_id: publication_id.to_string(),
-                    },
-                )
-                .await
+            match &prepared {
+                Some(prepared) => {
+                    aos_remote::commit_direct_publication(&client, prepared, &options)
+                        .await
+                        .map_err(Into::into)
+                }
+                None => {
+                    client
+                        .call_topology(
+                            HubTopologyMethod::CommitRegistryPublication,
+                            &hub_types::CommitRegistryPublicationRequest {
+                                publication_id: publication_id.clone(),
+                            },
+                        )
+                        .await
+                }
+            }
         } else {
             client
                 .call_topology(

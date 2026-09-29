@@ -42,6 +42,37 @@ const UPLOAD_CANCELLATION_INITIAL_RETRY_DELAY: Duration = Duration::from_millis(
 const UPLOAD_CANCELLATION_MAX_RETRY_DELAY: Duration = Duration::from_secs(1);
 static CHECKPOINT_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+// A positive policy marker, including an unready `0`, cannot authorize a
+// legacy body on a platform without the direct private-journal adapter.
+#[cfg(any(not(unix), test))]
+pub(super) async fn ensure_legacy_policy_on_unsupported_platform(
+    client: &RegistryClient,
+    probe: Url,
+    scope: &str,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let response = client
+        .send(
+            Method::HEAD,
+            probe,
+            scope,
+            &HeaderMap::new(),
+            None,
+            cancellation,
+        )
+        .await?;
+    check_response(
+        &response,
+        &[StatusCode::OK, StatusCode::NOT_FOUND],
+        "discovering OCI upload policy",
+    )?;
+    ensure!(
+        !response.headers().contains_key("aos-direct-upload"),
+        "OCI direct upload requires supported private-journal custody"
+    );
+    Ok(())
+}
+
 pub(super) async fn run(
     client: &RegistryClient,
     reference: &RegistryReference,
@@ -75,32 +106,66 @@ pub(super) async fn run_with_mounts(
     let scope = reference.scope("pull,push");
     let state_directory = open_private_state_directory(&options.state_directory, reference)?;
 
-    upload_blob(
+    #[cfg(not(unix))]
+    ensure_legacy_policy_on_unsupported_platform(
         client,
-        reference,
-        &verified.config,
+        client.url(&format!(
+            "v2/{}/blobs/{}",
+            repository_path(reference),
+            verified.config.digest
+        ))?,
         &scope,
-        &state_directory,
-        options,
-        mount_sources,
+        &options.cancellation,
     )
     .await?;
-    for layer in &verified.layers {
+
+    #[cfg(unix)]
+    let direct = super::direct::upload_blobs_if_required(
+        client,
+        reference,
+        &std::iter::once(verified.config.clone())
+            .chain(verified.layers.iter().cloned())
+            .collect::<Vec<_>>(),
+        &scope,
+        options,
+    )
+    .await?;
+    #[cfg(not(unix))]
+    let direct = false;
+    #[cfg(unix)]
+    let legacy = direct.is_none();
+    #[cfg(not(unix))]
+    let legacy = !direct;
+    if legacy {
         upload_blob(
             client,
             reference,
-            layer,
+            &verified.config,
             &scope,
             &state_directory,
             options,
             mount_sources,
         )
         .await?;
+        for layer in &verified.layers {
+            upload_blob(
+                client,
+                reference,
+                layer,
+                &scope,
+                &state_directory,
+                options,
+                mount_sources,
+            )
+            .await?;
+        }
     }
 
     let manifest_bytes = read_verified_blob(&options.source, &verified.manifest)?;
     put_manifest(
         client,
+        #[cfg(unix)]
+        direct.as_ref(),
         reference,
         &verified.manifest.digest.to_string(),
         verified.manifest.media_type,
@@ -112,6 +177,8 @@ pub(super) async fn run_with_mounts(
 
     put_manifest(
         client,
+        #[cfg(unix)]
+        direct.as_ref(),
         reference,
         &index_digest.to_string(),
         MediaType::OciImageIndex,
@@ -129,6 +196,8 @@ pub(super) async fn run_with_mounts(
             // last, after every blob, child manifest, and index-by-digest PUT.
             put_manifest(
                 client,
+                #[cfg(unix)]
+                direct.as_ref(),
                 reference,
                 &tag.to_string(),
                 MediaType::OciImageIndex,
@@ -172,22 +241,50 @@ pub(super) async fn run_release_graph(
     let graph = ReleaseGraph::collect(&options.source, release)?;
     let scope = reference.scope("pull,push");
     let state_directory = open_private_state_directory(&options.state_directory, reference)?;
-    for descriptor in &graph.blobs {
-        upload_blob(
+    #[cfg(not(unix))]
+    if let Some(descriptor) = graph.blobs.first() {
+        ensure_legacy_policy_on_unsupported_platform(
             client,
-            reference,
-            descriptor,
+            client.url(&format!(
+                "v2/{}/blobs/{}",
+                repository_path(reference),
+                descriptor.digest
+            ))?,
             &scope,
-            &state_directory,
-            options,
-            mount_sources,
+            &options.cancellation,
         )
         .await?;
+    }
+    #[cfg(unix)]
+    let direct =
+        super::direct::upload_blobs_if_required(client, reference, &graph.blobs, &scope, options)
+            .await?;
+    #[cfg(not(unix))]
+    let direct = false;
+    #[cfg(unix)]
+    let legacy = direct.is_none();
+    #[cfg(not(unix))]
+    let legacy = !direct;
+    if legacy {
+        for descriptor in &graph.blobs {
+            upload_blob(
+                client,
+                reference,
+                descriptor,
+                &scope,
+                &state_directory,
+                options,
+                mount_sources,
+            )
+            .await?;
+        }
     }
     for document in &graph.documents {
         ensure_not_cancelled(&options.cancellation)?;
         put_manifest(
             client,
+            #[cfg(unix)]
+            direct.as_ref(),
             reference,
             &document.descriptor.digest.to_string(),
             document.descriptor.media_type,
@@ -683,7 +780,10 @@ async fn try_mount(
     Ok(MountOutcome::Unavailable)
 }
 
-fn validate_remote_blob_head(response: &reqwest::Response, descriptor: &Descriptor) -> Result<()> {
+pub(super) fn validate_remote_blob_head(
+    response: &reqwest::Response,
+    descriptor: &Descriptor,
+) -> Result<()> {
     if let Some(length) = response.headers().get(CONTENT_LENGTH) {
         let length = length
             .to_str()
@@ -795,6 +895,7 @@ async fn query_upload(
 
 async fn put_manifest(
     client: &RegistryClient,
+    #[cfg(unix)] direct: Option<&super::direct::DirectOciAuthority>,
     reference: &RegistryReference,
     manifest_reference: &str,
     media_type: MediaType,
@@ -809,15 +910,22 @@ async fn put_manifest(
     let commit = CancellationToken::new();
     let cancellation = cancellation.unwrap_or(&commit);
     let expected_digest = Sha256Digest::digest(&bytes);
+    let bytes = Bytes::from(bytes);
+    #[cfg(unix)]
+    let response = if let Some(direct) = direct {
+        // Hybrid receives this bounded document at the Worker only. Its
+        // storage-local parser sends a signed compact projection to Native.
+        direct
+            .put_manifest(client, url, &headers, bytes, cancellation)
+            .await?
+    } else {
+        client
+            .send(Method::PUT, url, scope, &headers, Some(bytes), cancellation)
+            .await?
+    };
+    #[cfg(not(unix))]
     let response = client
-        .send(
-            Method::PUT,
-            url,
-            scope,
-            &headers,
-            Some(Bytes::from(bytes)),
-            cancellation,
-        )
+        .send(Method::PUT, url, scope, &headers, Some(bytes), cancellation)
         .await?;
     check_response(
         &response,

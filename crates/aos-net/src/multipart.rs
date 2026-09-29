@@ -535,7 +535,7 @@ fn read_descriptor_part(file: &std::fs::File, offset: u64, size: usize) -> Resul
 }
 
 #[cfg(unix)]
-fn read_descriptor_exact_at(
+pub(crate) fn read_descriptor_exact_at(
     file: &std::fs::File,
     bytes: &mut [u8],
     offset: u64,
@@ -546,7 +546,7 @@ fn read_descriptor_exact_at(
 }
 
 #[cfg(windows)]
-fn read_descriptor_exact_at(
+pub(crate) fn read_descriptor_exact_at(
     file: &std::fs::File,
     mut bytes: &mut [u8],
     mut offset: u64,
@@ -570,7 +570,7 @@ fn read_descriptor_exact_at(
 }
 
 #[cfg(not(any(unix, windows)))]
-fn read_descriptor_exact_at(
+pub(crate) fn read_descriptor_exact_at(
     _file: &std::fs::File,
     _bytes: &mut [u8],
     _offset: u64,

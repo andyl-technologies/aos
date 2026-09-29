@@ -55,6 +55,9 @@ pub(super) async fn run(args: &ReleaseStageArgs, printer: &Printer) -> Result<()
     let access = HubAccessArgs {
         hub: Some(STAGING_HUB.to_owned()),
         token: args.token.clone(),
+        direct_provider_policy: None,
+        direct_upload_journal: None,
+        new_direct_upload_run: false,
     };
     let manifest_public_path = format!(
         "releases/{}/{}/release-manifest.json",

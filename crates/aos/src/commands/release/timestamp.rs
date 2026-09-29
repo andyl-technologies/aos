@@ -100,6 +100,9 @@ async fn publish(args: &ReleaseTimestampPublishArgs, printer: &Printer) -> Resul
     let access = HubAccessArgs {
         hub: Some(PRODUCTION_HUB.into()),
         token: args.token.clone(),
+        direct_provider_policy: None,
+        direct_upload_journal: None,
+        new_direct_upload_run: false,
     };
     let publication = crate::commands::hub::prepare_registry_publication(
         &access,

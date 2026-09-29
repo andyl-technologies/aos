@@ -115,6 +115,9 @@ pub(super) async fn run(args: &ReleaseBootstrapArgs, printer: &Printer) -> Resul
     let access = HubAccessArgs {
         hub: Some(hub_url.into()),
         token: args.token.clone(),
+        direct_provider_policy: None,
+        direct_upload_journal: None,
+        new_direct_upload_run: false,
     };
     let publication = crate::commands::hub::upload_registry_publication(
         &access,
