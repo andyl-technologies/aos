@@ -27,7 +27,6 @@
 {
   system,
   bash ? null,
-  abilityInterfaceDirectory ? null,
 }: let
   trivial = import ./trivial.nix;
   lists = import ./lists.nix;
@@ -198,25 +197,7 @@
   # Declaration-derived option extension helpers.
   namespacing = import ./namespacing.nix {};
 
-  abilityCore = import ./abilities {
-    inherit types;
-    inherit (modules) mkOption;
-    evalModules = modules.evalModules;
-    interfaceDirectory = abilityInterfaceDirectory;
-  };
-  abilities =
-    abilityCore
-    // {
-      projectPackage = abilityCore.packageProjectionFor {
-        lib = finalLib;
-        inherit abilities;
-      };
-      selectBindings = abilityConfiguration:
-        import ./build/select-ability-bindings.nix {
-          lib = finalLib;
-          abilities = abilityConfiguration;
-        };
-    };
+  abilities = import ./abilities;
   qualification = import ./qualification.nix {inherit abilities;};
   packagePlatform = import ./package-platform.nix {
     inherit lists;

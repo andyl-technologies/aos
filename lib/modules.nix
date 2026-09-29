@@ -598,16 +598,6 @@
     # Exact physical roots for modules imported through a private store view.
     # Canonical configRoot values still determine package/output identity.
     packageImportRoots ? {},
-    # Resolver-selected provider modules use the same authenticated package
-    # provenance and confined import rules. Unlike a package's canonical
-    # `module.nix`, their entry path comes from the selected implementation's
-    # signed ModuleLocator and may lie anywhere below its authenticated root.
-    selectedProviderModules ? [],
-    # Static package projection evaluates declarations without a deployment
-    # selection. The complete configuration evaluator opts in once exact
-    # instances and bindings are present, exposing a package-scoped view that
-    # cannot collide with another package's local aliases.
-    enableAbilitySelection ? false,
     # Nested submodule evaluation retains resolver provenance for priority and
     # ownership, but the outer evaluation already validates the same authored
     # config at its full absolute option path. Re-checking a nested relative
@@ -732,92 +722,6 @@
                 "evalModules: package '${package}' reads undeclared package root '${root}'"))
             foreignPackageRoots);
 
-      abilitySelectionFor = package: packageConfig: let
-        selectedBindings =
-          (specialArgs.abilityResolution or {}).bindings
-          or packageConfig.aos.abilities.bindings;
-        declarationFor = collection: kind: localKey: let
-          declaration = "${package}:${localKey}";
-          value =
-            packageConfig.aos.abilities.${
-              collection
-            }.${
-              declaration
-            }
-            or (throw
-              "evalModules: package '${package}' local ${kind} '${localKey}' has no authenticated declaration '${declaration}'");
-          packageProvenanceMatches =
-            if collection == "requests"
-            then
-              value.authority
-              == {
-                kind = "package";
-                inherit package;
-              }
-            else value.package == package;
-        in
-          if !packageProvenanceMatches || value.localKey != localKey
-          then
-            throw
-            "evalModules: package '${package}' local ${kind} '${localKey}' has mismatched declaration provenance"
-          else {
-            inherit declaration localKey package value;
-          };
-        interfaceFor = declarationFor "interfaces" "interface";
-        requestFor = declarationFor "requests" "request";
-        implementationFor = declarationFor "implementations" "implementation";
-        bindingsForImplementation = localKey: let
-          implementationDeclaration = "${package}:${localKey}";
-          bindingNames =
-            builtins.filter
-            (name:
-              selectedBindings.${name}.implementation
-              == implementationDeclaration)
-            (builtins.attrNames selectedBindings);
-        in
-          builtins.map (navigationKey: let
-            implementation = implementationFor localKey;
-            binding = selectedBindings.${navigationKey};
-            providerDeclaration = binding.providerInstance;
-            requestDeclaration = binding.request;
-            requestValue =
-              packageConfig.aos.abilities.requests.${
-                requestDeclaration
-              }
-              or packageConfig.aos.abilities.compositionRequests.${
-                requestDeclaration
-              }
-              or (throw
-                "evalModules: selected binding '${navigationKey}' refers to absent request '${requestDeclaration}'");
-          in {
-            # This key locates authored Nix data only. Runtime identity comes
-            # from the checked request, implementation, instance and slot.
-            inherit navigationKey binding implementation;
-            request = {
-              declaration = requestDeclaration;
-              value = requestValue;
-            };
-            providerInstance = {
-              declaration = providerDeclaration;
-              value = packageConfig.aos.abilities.instances.${providerDeclaration};
-              identity = packageConfig.aos.abilities.instanceIdentities.${providerDeclaration};
-            };
-          })
-          bindingNames;
-      in {
-        inherit interfaceFor requestFor implementationFor bindingsForImplementation;
-        resultOfRequest = localKey: output: {
-          _type = "aos-request-output-reference";
-          # Package-local output references participate in the definition of
-          # the request graph itself, so constructing one must not force the
-          # completed request set and create a module fixed-point cycle.
-          request = "${package}:${localKey}";
-          inherit output;
-        };
-        isImplementationSelected = localKey:
-          bindingsForImplementation localKey != [];
-      };
-
       pathWithin = root: path: let
         rootString = builtins.toString root;
         pathString = builtins.toString path;
@@ -883,19 +787,10 @@
                         {
                           packageName = packageIdentity.name;
                           packageVersion = packageIdentity.version;
-                          abilitySelection =
-                            if enableAbilitySelection
-                            then abilitySelectionFor packageIdentity.name (visibleConfigFor provenance)
-                            else null;
                         }
                         // (
                           if packageIdentity ? packageArtifactFor
                           then {inherit (packageIdentity) packageArtifactFor packageFor;}
-                          else {}
-                        )
-                        // (
-                          if packageIdentity ? packageArtifactForRequest
-                          then {inherit (packageIdentity) packageArtifactForRequest;}
                           else {}
                         )
                     );
@@ -1060,43 +955,12 @@
         else record // {inherit configRoot;} // {outputs = record.outputs or null;} // {version = record.version or "0";})
       packageModules;
 
-      validatedProviderModules = builtins.map (record: let
-        keys =
-          if builtins.isAttrs record
-          then builtins.attrNames record
-          else [];
-        configRoot = record.configRoot or null;
-        root =
-          if builtins.isPath configRoot || builtins.isString configRoot
-          then builtins.toString configRoot
-          else "";
-        authenticatedRoots =
-          if validPackageOutputs (record.outputs or null)
-          then [record.outputs.self] ++ builtins.attrValues record.outputs.dependencies
-          else [];
-      in
-        if
-          !builtins.isAttrs record
-          || keys != ["configRoot" "module" "name" "outputs" "version"]
-        then throw "evalModules: selectedProviderModules entries must contain one authenticated module record"
-        else if !builtins.isString record.name || builtins.match "[a-z0-9][a-z0-9._+-]*" record.name == null
-        then throw "evalModules: invalid resolver-supplied provider package provenance name"
-        else if !validPackageOutputs record.outputs
-        then throw "evalModules: selected provider module for '${record.name}' has invalid resolver-supplied outputs"
-        else if
-          !validStoreRoot configRoot
-          || !builtins.elem root authenticatedRoots
-          || !validStoreModule configRoot record.module
-        then throw "evalModules: selected provider module for '${record.name}' escapes or is absent from its authenticated root"
-        else if !builtins.isString record.version || record.version == ""
-        then throw "evalModules: selected provider module for '${record.name}' has an invalid resolver-supplied version"
-        else record)
-      selectedProviderModules;
-
       packageOutputsForOwner = owner: let
-        matches = builtins.filter (
-          record: record.name == owner && record.outputs != null
-        ) (validatedPackageModules ++ validatedProviderModules);
+        matches =
+          builtins.filter (
+            record: record.name == owner && record.outputs != null
+          )
+          validatedPackageModules;
         selected =
           if matches == []
           then throw "evalModules: package '${owner}' has no authenticated output record"
@@ -1110,23 +974,6 @@
         if !builtins.isString owner || builtins.match "[a-z0-9][a-z0-9._+-]*" owner == null
         then throw "evalModules: artifact request has no authenticated package owner"
         else packageArtifactFor owner (packageOutputsForOwner owner) selector;
-
-      packageArtifactForRequest = providerName: requestName: selector: let
-        abilities = finalConfig.aos.abilities;
-        request =
-          abilities.requests.${requestName}
-          or abilities.compositionRequests.${requestName}
-          or (throw "evalModules: artifact request has no authenticated ability request '${requestName}'");
-        owner = moduleLib.abilities.packageForDeclarationAuthority request.authority;
-      in
-        # Base-authored requests have no package owner. Their provider-created
-        # realization selects artifacts from the authenticated provider view.
-        packageArtifactForOwner (
-          if owner == null
-          then providerName
-          else owner
-        )
-        selector;
 
       packageOwnedRoots = lists.unique (builtins.map
         (decl: builtins.head decl.path)
@@ -1159,28 +1006,12 @@
         true [record.module])
       validatedPackageModules);
 
-      evaluatedProviderModules = builtins.concatLists (builtins.map (record:
-        collectModules
-        "package:${record.name}"
-        (importRootsFor record)
-        record.outputs
-        {
-          inherit (record) name version;
-          packageArtifactFor = packageArtifactFor record.name record.outputs;
-          packageFor = packageFor record.name record.outputs;
-          packageArtifactForRequest = packageArtifactForRequest record.name;
-        }
-        true
-        [record.module])
-      validatedProviderModules);
-
       # Image modules carry `@base`; operator (host.nix) modules carry
       # `@host`. Appended last so their tier-75 defs also win any
       # `lastValue` tie at equal priority, matching "the operator overrides".
       evaluatedModules =
         collectModules "@base" null null null false ([internalModule] ++ modules)
         ++ evaluatedPackageModules
-        ++ evaluatedProviderModules
         ++ collectModules "@host" null null null false operatorModules
         ++ collectModules "@runtime" null null null false runtimeModules;
 
@@ -1223,10 +1054,7 @@
 
       definitionEntryPaths = detectNestedEnable: path: name: value:
         if isMkIf value
-        then
-          if enableAbilitySelection
-          then definitionEntryPaths detectNestedEnable path name value._value
-          else []
+        then definitionEntryPaths detectNestedEnable path name value._value
         else if isMkMerge value
         then builtins.concatLists (builtins.map (definitionEntryPaths detectNestedEnable path name) value._values)
         else if isOverride value || isOrder value
@@ -1237,10 +1065,7 @@
 
       definitionPaths = detectNestedEnable: path: value:
         if isMkIf value
-        then
-          if enableAbilitySelection
-          then definitionPaths detectNestedEnable path value._value
-          else []
+        then definitionPaths detectNestedEnable path value._value
         else if isMkMerge value
         then builtins.concatLists (builtins.map (definitionPaths detectNestedEnable path) value._values)
         else if isOverride value || isOrder value
@@ -1278,10 +1103,7 @@
           then definitionPaths detectsNestedEnable path value
           else [path]
         else if isMkIf value
-        then
-          if enableAbilitySelection
-          then configLeafPaths path value._value
-          else []
+        then configLeafPaths path value._value
         else if isMkMerge value
         then builtins.concatLists (builtins.map (configLeafPaths path) value._values)
         else if isOverride value || isOrder value
@@ -2035,10 +1857,14 @@
             );
 
             # Apply the apply function if present
+            checkedValue =
+              if optType ? _elementType || optType.check mergedValue
+              then mergedValue
+              else throw "The option '${pathStr}' does not satisfy type '${optType.description}'.";
             finalValue =
               if decl.option.apply != null
-              then decl.option.apply mergedValue
-              else mergedValue;
+              then decl.option.apply checkedValue
+              else checkedValue;
           in {
             name = key;
             value = {
@@ -2244,8 +2070,6 @@
               operatorModules
               runtimeModules
               packageModules
-              selectedProviderModules
-              enableAbilitySelection
               enforcePackageAuthorship
               enforceRuntimeDeclarations
               ;
