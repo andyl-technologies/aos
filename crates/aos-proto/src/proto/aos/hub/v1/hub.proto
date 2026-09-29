@@ -4168,6 +4168,12 @@ message WhoAmIResponse {
   repeated string access_permissions = 6;
   // Unix seconds when this access token expires.
   int64 access_expires_at = 7;
+  // Validated authenticated Hub deployment namespace; empty on a legacy server.
+  string deployment_id = 8;
+  // Opaque immutable actor commitment matching GetCapabilities; empty on legacy.
+  string principal_id = 9;
+  // Closed bulk-transfer policy: direct_required or legacy; empty on old servers.
+  string transfer_mode = 10;
 }
 
 message ListServiceAccountsRequest {

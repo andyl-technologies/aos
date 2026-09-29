@@ -29,6 +29,8 @@
 //! ```
 
 mod authentication;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod identity_continuity_tests;
 mod container;
 mod container_admin;
 mod delivery_workflow;
@@ -2543,6 +2545,8 @@ pub struct RpcService {
     pub jwt_keys: JwtKeys,
     /// Externally reachable base URL, used to build the canonical upload URL.
     pub external_url: String,
+    /// Explicit protected deployment identity; independent of direct readiness.
+    pub deployment_id: Option<String>,
     /// Public base URL exposing the instance-default storage binding directly.
     ///
     /// When configured, public registries on a reconciled complete placement
@@ -10162,6 +10166,7 @@ impl RpcService {
             container_rollout: crate::container_rollout::ContainerRollout::default(),
             ratelimit,
             surface,
+            deployment_id: None,
             hybrid_delivery: false,
             surface_write,
             lease,
@@ -10508,6 +10513,24 @@ impl RpcService {
     pub fn with_origin_fetch(mut self, origin_fetch: Arc<dyn crate::fetch::OriginFetch>) -> Self {
         self.origin_fetch = Some(origin_fetch);
         self
+    }
+
+    /// Binds an explicitly configured permanent deployment identity.
+    ///
+    /// This namespace scopes public principal commitments. It neither enables
+    /// direct upload nor proves provider, clock, or read-guard readiness.
+    ///
+    /// # Errors
+    /// Returns an error when a configured namespace is empty or noncanonical.
+    pub fn with_deployment_id(mut self, deployment_id: Option<String>) -> Result<Self, RpcError> {
+        if deployment_id
+            .as_deref()
+            .is_some_and(|value| !crate::direct_upload::valid_direct_identity(value))
+        {
+            return Err(RpcError::invalid("configured deployment identity is invalid"));
+        }
+        self.deployment_id = deployment_id;
+        Ok(self)
     }
 
     /// Enables exact R2 delivery grants on the signed hybrid Native origin.
@@ -19169,7 +19192,35 @@ impl RpcService {
             })
             .collect();
 
+        // Response data reads can await account/token changes. The continuity
+        // proof uses a final live owner resolution, never a decoded claim alone.
+        let actor = self
+            .db
+            .current_authenticated_actor(&claims)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::PermissionDenied("active principal required".into()))?;
+        let (deployment_id, principal_id) = match self.deployment_id.as_deref() {
+            Some(deployment) => (
+                deployment.to_owned(),
+                actor.principal_id(deployment).map_err(RpcError::internal)?,
+            ),
+            None => (String::new(), String::new()),
+        };
+        if self.hybrid_delivery && deployment_id.is_empty() {
+            return Err(RpcError::FailedPrecondition(
+                "direct upload identity configuration is unavailable".into(),
+            ));
+        }
+
         Ok(pb::WhoAmIResponse {
+            deployment_id,
+            principal_id,
+            transfer_mode: if self.hybrid_delivery {
+                "direct_required".into()
+            } else {
+                "legacy".into()
+            },
             principal_kind: principal.kind.as_str().to_string(),
             principal_ref,
             email,

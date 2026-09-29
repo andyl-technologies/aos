@@ -35,6 +35,16 @@ pub(super) fn validate_actor_incarnation(principal: Principal, incarnation: &str
     actor_slot(principal, incarnation.to_owned()).map(|_| ())
 }
 
+// Token IDs identify actual minted credentials, never arbitrary restored text.
+// The shared live loader applies this before SQL in every credential path.
+pub(super) fn canonical_token_id(token_id: &str) -> bool {
+    uuid::Uuid::parse_str(token_id).is_ok_and(|id| {
+        id.get_version_num() == 4
+            && id.get_variant() == uuid::Variant::RFC4122
+            && id.to_string() == token_id
+    })
+}
+
 impl Database {
     /// Loads the immutable UUID of a live account without creating one.
     ///
@@ -169,7 +179,7 @@ impl Database {
 
         // This lookup bypasses hot JWT/token caches and validates the original
         // stored token owner UUID, lifecycle and current account incarnation.
-        let Some(auth) = self.live_token_auth_by_id(&claims.sub, false).await? else {
+        let Some(auth) = self.current_token_authority(&claims.sub).await? else {
             return Ok(None);
         };
         if auth.owner != principal
@@ -251,12 +261,6 @@ impl Database {
         &self,
         token_id: &str,
     ) -> Result<Option<super::TokenAuth>> {
-        let Ok(id) = uuid::Uuid::parse_str(token_id) else {
-            return Ok(None);
-        };
-        if id.to_string() != token_id || id.get_version_num() != 4 {
-            return Ok(None);
-        }
         self.live_token_auth_by_id(token_id, false).await
     }
 }

@@ -108,3 +108,35 @@ current combined runtime and hosted gates remain pending. Canonical restored
 token-ID validation and pre-publication identity discovery have their own later
 increments; this receipt does not qualify them or globally transactional
 revocation across arbitrary concurrent changes.
+
+## Canonical credentials and pre-upload identity discovery
+
+The shared live API-token loader now rejects noncanonical credential IDs before
+SQL. A correctly signed subject or a matching stored secret cannot authorize a
+corrupt token ID. Genuine browser session provenance keeps its separate path.
+
+WhoAmI adds deployment identity, an immutable actor commitment and a closed
+transfer policy. These fields use protected configuration and a final live
+actor read after awaited response data. Hybrid mode requires a configured
+identity and advertises `direct_required` independently of provider readiness.
+An unconfigured standalone Hub returns `legacy` with empty identity fields.
+Standalone direct activation and the actual direct service remain pending.
+
+Separate producer receipts
+`/tmp/hub-canonical-token-identity/qualification-v1.json`
+(`20b68f1e43e369055b86c0dbbfe88a967069134911443afc620db92037cc3d46`)
+and `/tmp/hub-identity-continuity/qualification-v3.json`
+(`53075bddac0c6fbe053166977336b200053787b07ff805912a8a5e2a2cc7e68c`)
+record ten credential tests and four discovery tests respectively. Independent
+review `a05f3f48800d240582a836dfdebdfb49fce9007c04adff55a4302ab04a39c23d`
+verifies both sources, their captured inputs and a surgical current apply.
+
+Current-context receipt
+`/tmp/hub-principal-followups-current-context/qualification.json`
+(`5fc74d6994e4540b2564849af511badf736dfa87290d927a324edda0063bbc6f`)
+records another 14 named passing tests plus Native test, ordinary Worker Wasm
+and CLI publication test compilation. All 2,901 inputs remain unchanged.
+Seven owned outputs match their producer postimages; the Worker parent retains
+the newer staging, recovery and authentication exports. This evidence does not
+resolve the recorded full-core failures or qualify runtime, provider, browser,
+fleet, standalone direct configuration or hosted behavior.

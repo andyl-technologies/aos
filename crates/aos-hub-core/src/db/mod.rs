@@ -20905,6 +20905,9 @@ impl Database {
     }
 
     async fn live_token_auth_by_id(&self, id: &str, touch: bool) -> Result<Option<TokenAuth>> {
+        if !direct_identity::canonical_token_id(id) {
+            return Ok(None);
+        }
         let now = unix_now();
         let row = self
             .backend

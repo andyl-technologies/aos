@@ -5,6 +5,49 @@ use crate::auth::jwt::JwtKeys;
 use crate::db::TokenAuth;
 use crate::domain::{Permission, Scope};
 
+#[tokio::test]
+async fn malformed_retained_token_ids_cannot_authorize_secrets_or_signed_subjects() {
+    for malformed in [
+        "not-a-token-uuid",
+        "01234567-89AB-4def-8123-456789abcdef",
+        "01234567-89ab-1def-8123-456789abcdef",
+        "01234567-89ab-4def-0123-456789abcdef",
+        "01234567-89ab-4def-c123-456789abcdef",
+        "01234567-89ab-4def-e123-456789abcdef",
+    ] {
+        let db = Database::open_in_memory().await.unwrap();
+        let (_, original_id, secret, _) = user_authority(&db).await;
+        let mut original_auth = db.validate_token(&secret).await.unwrap().unwrap();
+        db.backend
+            .execute(
+                "UPDATE tokens SET id = ?2 WHERE id = ?1",
+                &vals![original_id, malformed],
+            )
+            .await
+            .unwrap();
+
+        // Deliberately sign the corrupt stored subject with the real test key.
+        // Cryptographic validity cannot grant a malformed credential identity.
+        original_auth.token_id = malformed.into();
+        let keys = JwtKeys::from_secret(b"test-only-canonical-token-id-key");
+        let signed = keys.mint(&original_auth, 300).unwrap();
+        let claims = keys.verify(&signed).unwrap();
+        assert_eq!(claims.sub, malformed);
+
+        assert!(db.validate_token(&secret).await.unwrap().is_none());
+        assert!(db
+            .current_token_authority(malformed)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(db
+            .current_authenticated_actor(&claims)
+            .await
+            .unwrap()
+            .is_none());
+    }
+}
+
 async fn user_authority(db: &Database) -> (Principal, String, String, Claims) {
     let user = db.create_user("owner@example.test", None).await.unwrap();
     db.grant_membership("user", user, "instance", "owner")

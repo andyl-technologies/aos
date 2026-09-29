@@ -456,6 +456,18 @@ async fn router_with_ports(
     .with_origin_fetch(Arc::new(crate::coreports::ReqwestOriginFetch::new(
         state.http.clone(),
     )));
+    rpc_service = match rpc_service.with_deployment_id(state.deployment_id.clone()) {
+        Ok(service) => service,
+        Err(_) => {
+            tracing::error!("configured deployment identity is invalid");
+            return Router::new().fallback(|| async {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "deployment identity configuration is invalid",
+                )
+            });
+        }
+    };
     if hybrid_delivery {
         rpc_service = rpc_service.with_hybrid_delivery();
     }

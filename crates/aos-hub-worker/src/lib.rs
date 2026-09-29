@@ -803,7 +803,9 @@ mod entry {
             ),
             None,
         )
-        .with_container_rollout(container_rollout(env)?);
+        .with_container_rollout(container_rollout(env)?)
+        .with_deployment_id(env.var(HUB_DEPLOYMENT_ID).ok().map(|value| value.to_string()))
+        .map_err(|_| worker::Error::RustError("configured deployment identity is invalid".into()))?;
 
         let service = Arc::new(service);
         let egress = worker_egress(env)?;
@@ -1165,6 +1167,9 @@ mod entry {
         .with_kv(Arc::new(crate::workerkv::WorkerKv::new(
             env.kv(crate::handlers::bindings::KV_SESSIONS)?,
         )));
+        service = service
+            .with_deployment_id(env.var(HUB_DEPLOYMENT_ID).ok().map(|value| value.to_string()))
+            .map_err(|_| worker::Error::RustError("configured deployment identity is invalid".into()))?;
         if let Some(authority) = release_evidence {
             service = service.with_release_evidence(authority);
         }
