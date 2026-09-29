@@ -35,8 +35,11 @@ const MAXIMUM_CURRENT_REQUEST_LIFETIME_SECONDS: i64 = 300;
 mod completion;
 #[path = "provider/native_export_fence.rs"]
 mod native_export_fence;
+#[path = "provider/native_prepared.rs"]
+mod native_prepared;
 #[path = "provider/native_release_status.rs"]
 mod native_release_status;
+pub use native_prepared::{CurrentProviderOriginalCarrierPacketV1, CurrentRootPreparedCarrierV1};
 #[path = "provider/session.rs"]
 mod session;
 #[path = "provider/storage_export.rs"]

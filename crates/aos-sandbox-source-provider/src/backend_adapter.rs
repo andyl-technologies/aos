@@ -941,6 +941,7 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
         &mut self,
         request: crate::FixedProviderAuthenticatedSourceRequestV1,
     ) -> Result<FixedProviderBackendRequestOutcomeV1, ProviderLedgerError> {
+        self.owner.require_original_ingress_idle()?;
         if self.owner.priority_mount_retry_digest.is_some()
             || self.owner.priority_mount_retry_rearm_digest.is_some()
             || (!self.owner.pending_backend_recovery.is_empty()
@@ -968,6 +969,7 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
     /// Returns unavailable when the old attempt, current manifest, signer,
     /// trust interval, or authenticated Storage readback cannot be proven.
     pub fn retry_selected_storage_recovery(&mut self) -> Result<bool, ProviderLedgerError> {
+        self.owner.require_original_ingress_idle()?;
         let Some(recovery) = self.owner.pending_backend_recovery.first() else {
             return Ok(false);
         };
@@ -1013,6 +1015,7 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
         &mut self,
         query: &RecoveryCurrentnessQueryV1,
     ) -> Result<ObjectDigest, ProviderLedgerError> {
+        self.owner.require_original_ingress_idle()?;
         let acquisition_id = query.acquisition_id();
         let Some(recovery) = self.owner.pending_backend_recovery.first() else {
             return Err(ProviderLedgerError::Unavailable);
@@ -1062,6 +1065,7 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
         &mut self,
         query: &RecoveryCurrentnessQueryV1,
     ) -> Result<NativeNoDispatchSettlementV1, ProviderLedgerError> {
+        self.owner.require_original_ingress_idle()?;
         let (provider_id, holder_id) = query.authorities();
         let settlement = self.owner.settle_native_no_dispatch_recovery(
             query.acquisition_id(),
@@ -1358,6 +1362,7 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
     pub fn receive_and_execute_request(
         &mut self,
     ) -> Result<FixedProviderReceivedRequestProgressV1, ProviderLedgerError> {
+        self.owner.require_original_ingress_idle()?;
         let priority_mount_retry = self.owner.priority_mount_retry_digest;
         if priority_mount_retry.is_none()
             && self
@@ -1686,6 +1691,7 @@ impl<Transport: SourceProviderBackendTransportV1 + ?Sized>
         &mut self,
         reopen: crate::FixedProviderAcquireReopenV1,
     ) -> Result<crate::FixedProviderHistoricalOutcomeV1, ProviderLedgerError> {
+        self.owner.require_original_ingress_idle()?;
         let crate::FixedProviderAcquireReopenV1 { replay, persisted } = reopen;
         let verifier = self.owner.backend_verifier();
         let transport = &mut *self.transport;
