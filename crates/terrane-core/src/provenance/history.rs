@@ -192,6 +192,7 @@ impl VerifiedHistory {
         }
 
         tree_format::validate_tree_entries(&entries, usage).map_err(|_| Rejected)?;
+        drop(entries);
 
         self.nodes = candidate;
         self.roots.insert(root, grafts);
