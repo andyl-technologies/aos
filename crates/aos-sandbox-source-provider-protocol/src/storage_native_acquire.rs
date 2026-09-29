@@ -197,3 +197,11 @@ impl<'a> Reader<'a> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) fn held_completion_fixture() -> (
+    SignedStorageNativeAcquireRequestV2,
+    StorageNativeAcquireReplyV3,
+) {
+    tests::held_completion_fixture()
+}

@@ -954,7 +954,25 @@ impl SourceAcquisitionTableV2 {
                     .ok_or_else(|| state_error("recovery owner row was not projected"))?;
                 row.revision = next_revision(row.revision)?;
                 match current_root.method {
-                    ProviderMethodV2::Acquire => row.acquire_lineage.tail = next_root_ref,
+                    ProviderMethodV2::Acquire => {
+                        let lineage = &mut row.acquire_lineage;
+                        if lineage.tail != barrier.root_attempt
+                            || lineage.root.id != current_root.lineage_root_attempt_id
+                            || (lineage.root.id == barrier.root_attempt.id
+                                && lineage.root != barrier.root_attempt)
+                        {
+                            return Err(state_error(
+                                "recovery Acquire does not replace its exact lineage predecessor",
+                            ));
+                        }
+
+                        // Resolving the original attempt replaces its stored
+                        // revision, not the immutable identity of its lineage.
+                        if lineage.root == barrier.root_attempt {
+                            lineage.root = next_root_ref;
+                        }
+                        lineage.tail = next_root_ref;
+                    }
                     ProviderMethodV2::Release => {
                         row.release_lineage
                             .as_mut()

@@ -37,6 +37,7 @@ pub mod held_snapshot_content;
 pub mod inventory_readback;
 pub mod model;
 pub mod native_export_fence;
+pub mod native_held_completion;
 pub mod normalized_intent;
 pub mod proof;
 pub mod recovery_currentness;

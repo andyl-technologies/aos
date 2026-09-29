@@ -580,11 +580,10 @@ pub(super) fn require_transition(
         } else {
             return Ok::<_, JournalError>(found);
         };
-        Ok(found
-            || crate::journal::decode_capacity_reservation_request_v1(capacity)?
-                .0
-                .purpose
-                == PURPOSE)
+        // Decode each row before combining matches: a preceding purpose-7
+        // match must not hide a later malformed or unknown capacity family.
+        let matches = crate::journal::capacity_record_has_legacy_purpose(capacity, PURPOSE)?;
+        Ok(found || matches)
     })?;
     if resources.is_empty() && !touches_our_capacity {
         return Ok(());

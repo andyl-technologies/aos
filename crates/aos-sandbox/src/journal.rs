@@ -44,6 +44,7 @@ pub(crate) use mount_manager_startup::{
 mod cache_policy_hold;
 pub(crate) use cache_policy_hold::{CacheMutationGateV1, HeldCacheMutationGateV1};
 mod capacity_reservation;
+pub use capacity_reservation::native_held;
 mod controller_policy_hold;
 pub(crate) mod controller_source_genesis;
 pub(crate) mod host_currentness_fence;
@@ -55,6 +56,7 @@ mod source_project_admission_challenge;
 pub(crate) mod source_tree_genesis;
 pub use cache_policy_hold::CachePolicyHoldV1;
 pub(crate) use cache_policy_hold::NAME as CACHE_POLICY_HOLD_JOURNAL;
+pub(crate) use capacity_reservation::capacity_record_has_legacy_purpose;
 pub(crate) use capacity_reservation::capacity_reservation_identity_is_exact_v1;
 pub(crate) use capacity_reservation::decode_capacity_reservation_request_v1;
 pub use capacity_reservation::{
@@ -1856,7 +1858,7 @@ impl Journal {
         if namespace == RecordNamespace::MountSourceAcquisition {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
-        capacity_reservation::validate_all_reservations(&self.state)?;
+        capacity_reservation::require_legacy_reservations(&self.state)?;
         let has_foreign_history = self.committed_namespaces.iter().any(|committed_namespace| {
             *committed_namespace != namespace
                 && *committed_namespace != RecordNamespace::GlobalCapacityReservation
@@ -1883,6 +1885,7 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
+        native_held::require_legacy_owner(&self.state, RecordNamespace::MountSourceAcquisition)?;
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace: RecordNamespace::MountSourceAcquisition,
@@ -1906,6 +1909,7 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
+        native_held::require_legacy_owner(&self.state, RecordNamespace::MountSourceAcquisition)?;
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace: RecordNamespace::MountSourceAcquisition,
@@ -1917,6 +1921,7 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
+        native_held::require_legacy_owner(&self.state, RecordNamespace::MountSourceAcquisition)?;
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace: RecordNamespace::MountSourceAcquisition,
@@ -1940,6 +1945,7 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
+        native_held::require_legacy_owner(&self.state, RecordNamespace::MountSourceAcquisition)?;
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace: RecordNamespace::MountManagerStartupAuthority,
@@ -1964,7 +1970,7 @@ impl Journal {
         purpose: GlobalCapacityReservationPurposeV1,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
-        capacity_reservation::validate_all_reservations(&self.state)?;
+        capacity_reservation::require_legacy_reservations(&self.state)?;
 
         Ok(ProtectedJournalAuthority {
             journal: self,
@@ -1986,7 +1992,7 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
-        capacity_reservation::validate_all_reservations(&self.state)?;
+        capacity_reservation::require_legacy_reservations(&self.state)?;
         let namespace = RecordNamespace::SourceProviderAuthority;
         let has_foreign_history = self.committed_namespaces.iter().any(|committed_namespace| {
             *committed_namespace != namespace
@@ -2207,6 +2213,7 @@ impl Journal {
             {
                 return Err(JournalError::ProtectedBoundary);
             }
+            let mut touches_our_capacity = false;
             for record in transaction
                 .records()
                 .iter()
@@ -2227,11 +2234,14 @@ impl Journal {
                 } else {
                     continue;
                 };
-                if decode_capacity_reservation_request_v1(capacity)?.0.purpose
-                    == GlobalCapacityReservationPurposeV1::ControllerConsumerResource
-                {
-                    return Err(JournalError::ProtectedBoundary);
-                }
+                let matches = capacity_record_has_legacy_purpose(
+                    capacity,
+                    GlobalCapacityReservationPurposeV1::ControllerConsumerResource,
+                )?;
+                touches_our_capacity |= matches;
+            }
+            if touches_our_capacity {
+                return Err(JournalError::ProtectedBoundary);
             }
             Ok(())
         }
@@ -2457,6 +2467,7 @@ impl Journal {
         mut cache_gate: CacheMutationGateV1<'_>,
     ) -> Result<CommitResult, JournalError> {
         self.ensure_healthy()?;
+        native_held::require_legacy_transaction(&self.state, transaction)?;
         self.validate_consumer_resource_transition(
             transaction,
             allow_capacity_records,
@@ -2758,6 +2769,7 @@ impl Journal {
         let mut expected_length = self.file.metadata()?.len();
 
         for (index, transaction) in transactions.iter().enumerate() {
+            native_held::require_legacy_transaction(&state, transaction)?;
             controller_source_genesis::require_no_mutation(
                 &state,
                 transaction,
@@ -3903,6 +3915,7 @@ impl ProtectedJournalAuthority<'_> {
         expected: &BTreeSet<[u8; 32]>,
     ) -> Result<(), JournalError> {
         let purpose = self.validate_capacity_authority()?;
+        capacity_reservation::require_legacy_reservations(&self.journal.state)?;
         let mut retained = BTreeSet::new();
         for (key, value) in self
             .journal
@@ -3910,17 +3923,10 @@ impl ProtectedJournalAuthority<'_> {
         {
             let (request, _admission_transaction, reservation_id) =
                 capacity_reservation::decode_reservation(value)?;
-            let reservation = self
-                .journal
-                .lookup_global_capacity_reservation_v1(reservation_id)?
-                .ok_or(JournalError::MalformedRecord(
-                    "capacity reservation disappeared during protected replay",
-                ))?;
             if key
                 != capacity_reservation::reservation_key_for_validation(reservation_id).as_slice()
                 || request.purpose != purpose
                 || request.owner_namespace != self.namespace
-                || reservation.request() != request
                 || !retained.insert(reservation_id)
             {
                 return Err(JournalError::MalformedRecord(
@@ -4508,7 +4514,16 @@ pub(super) fn encoded_transaction_record_bytes(
 }
 
 /// Measures canonical append framing without granting admission or capacity.
-pub(crate) fn encoded_transaction_append_bytes(
+///
+/// The measurement includes the begin and commit frames, every record frame,
+/// and their checksums. It does not inspect a journal, reserve space, or validate
+/// an owner's proposed transition.
+///
+/// # Errors
+///
+/// Returns an error when a record length, record count, sequence, or aggregate
+/// append length cannot be represented by the journal format.
+pub fn encoded_transaction_append_bytes(
     transaction: &JournalTransaction,
 ) -> Result<u64, JournalError> {
     encode_transaction(transaction, 0)?

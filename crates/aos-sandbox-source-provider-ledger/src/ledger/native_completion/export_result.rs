@@ -11,7 +11,6 @@ use aos_sandbox_source_provider_protocol::{
 };
 use sha2::{Digest as _, Sha256};
 
-use super::release_fence::native_release_status_capacity_binding_v1;
 use crate::ledger::LedgerFormatErrorV1;
 use crate::ledger::format::{decode_record, encode_native_completion_v2};
 use crate::ledger::model::DecodedRecordV1;
@@ -50,6 +49,7 @@ pub fn native_export_fence_subject_v1(
         sequence,
         admission_transaction_id,
         reservation_id,
+        None,
     )
 }
 
@@ -59,6 +59,7 @@ fn subject_from_decoded(
     sequence: u64,
     admission_transaction_id: [u8; 16],
     reservation_id: [u8; 32],
+    held: Option<&crate::ledger::native_held_completion::SourceNativeHeldCompletionRecordV1>,
 ) -> Result<SourceProviderNativeExportFenceV1, LedgerFormatErrorV1> {
     let attempt = decoded
         .iter()
@@ -128,7 +129,7 @@ fn subject_from_decoded(
         .ok_or(LedgerFormatErrorV1::Corrupt(
             "native fence Release session history",
         ))?;
-    native_export_fence_subject_from_join_v1(
+    subject_from_join(
         acquisition,
         native,
         original,
@@ -138,6 +139,15 @@ fn subject_from_decoded(
         sequence,
         admission_transaction_id,
         reservation_id,
+        &match held {
+            Some(held) if held.original() == native => held.to_canonical_bytes()?,
+            Some(_) => {
+                return Err(LedgerFormatErrorV1::Corrupt(
+                    "held fence original carrier mismatch",
+                ));
+            }
+            None => encode_native_completion_v2(native),
+        },
     )
 }
 
@@ -158,13 +168,40 @@ pub fn native_export_fence_subject_from_join_v1(
     admission_transaction_id: [u8; 16],
     reservation_id: [u8; 32],
 ) -> Result<SourceProviderNativeExportFenceV1, LedgerFormatErrorV1> {
-    let binding = native_release_status_capacity_binding_v1(
+    subject_from_join(
         acquisition,
         native,
         original,
         release,
         attempt,
         session,
+        sequence,
+        admission_transaction_id,
+        reservation_id,
+        &encode_native_completion_v2(native),
+    )
+}
+
+fn subject_from_join(
+    acquisition: &crate::ledger::model::AcquisitionRecordV1,
+    native: &super::NativeAcquireCompletionRecordV2,
+    original: &crate::ledger::model::AttemptRecordV1,
+    release: &crate::ledger::model::ReleaseRecordV1,
+    attempt: &crate::ledger::model::AttemptRecordV1,
+    session: &crate::ledger::model::HolderSessionHeadRecordV1,
+    sequence: u64,
+    admission_transaction_id: [u8; 16],
+    reservation_id: [u8; 32],
+    carrier: &[u8],
+) -> Result<SourceProviderNativeExportFenceV1, LedgerFormatErrorV1> {
+    let binding = super::release_fence::release_status_binding(
+        acquisition,
+        native,
+        original,
+        release,
+        attempt,
+        session,
+        carrier,
     )?;
     let accepted = native
         .accepted_reply
@@ -187,9 +224,8 @@ pub fn native_export_fence_subject_from_join_v1(
     hash.update(sequence.to_be_bytes());
     hash.update(admission_transaction_id);
     hash.update(reservation_id);
-    let carrier = encode_native_completion_v2(native);
     hash.update((carrier.len() as u32).to_be_bytes());
-    hash.update(&carrier);
+    hash.update(carrier);
     hash.update(binding.owner_id);
     hash.update(binding.owner_digest.as_bytes());
     hash.update(binding.operation_id);
@@ -258,6 +294,32 @@ pub(crate) fn validate_native_export_fence_result_decoded(
     attempt_digest: ObjectDigest,
     response: &[u8],
 ) -> Result<(), LedgerFormatErrorV1> {
+    validate_result(decoded, attempt_digest, response, None)
+}
+
+pub(crate) fn validate_native_export_fence_result_current(
+    decoded: &[DecodedRecordV1],
+    canonical: &std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
+    attempt_digest: ObjectDigest,
+    response: &[u8],
+) -> Result<(), LedgerFormatErrorV1> {
+    let held = decoded.iter().find_map(|row| match row {
+        DecodedRecordV1::Acquisition(acquisition) if acquisition.current_attempt_digest == attempt_digest => {
+            let key = super::native_completion_key_v2(acquisition.acquisition_id);
+            canonical.get(&key).filter(|bytes| crate::ledger::native_held_completion::graph::is_held(bytes)).map(|bytes|
+                crate::ledger::native_held_completion::SourceNativeHeldCompletionRecordV1::from_canonical_bytes(&key, bytes))
+        }
+        _ => None,
+    }).transpose()?;
+    validate_result(decoded, attempt_digest, response, held.as_ref())
+}
+
+fn validate_result(
+    decoded: &[DecodedRecordV1],
+    attempt_digest: ObjectDigest,
+    response: &[u8],
+    held: Option<&crate::ledger::native_held_completion::SourceNativeHeldCompletionRecordV1>,
+) -> Result<(), LedgerFormatErrorV1> {
     let profile = ReleaseSourceResponseProfileV2::from_canonical_bytes(response)
         .map_err(|_| LedgerFormatErrorV1::Corrupt("native fence response profile"))?;
     let Some(fence) = profile.native_fence() else {
@@ -270,6 +332,7 @@ pub(crate) fn validate_native_export_fence_result_decoded(
         cut.sequence,
         cut.admission_transaction_id,
         cut.reservation_id,
+        held,
     )?;
     if fence.subject() != &expected {
         return Err(LedgerFormatErrorV1::Corrupt(
