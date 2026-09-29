@@ -6,12 +6,24 @@
 //! V1 reserves one future transaction. V2 also retains an explicit bounded
 //! transaction count for an ordered owner suffix; it cannot infer extra slots
 //! from a legacy record or change the closed namespace purpose.
+//! Native V3 records use a separate DATA-only codec and bounded profile; replay
+//! accounts their floors, but no legacy protected reservation route admits them.
+//! Ordinary V4 uses the same canonical family dispatch with a distinct closed
+//! DATA codec. Its owner/profile commitments remain opaque until a separately
+//! reviewed producer derives them; all generic protected append gates stay closed.
 
 use sha2::{Digest as _, Sha256};
 
 use super::{
     CommitResult, Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace,
 };
+
+mod family;
+pub mod native_held;
+mod ordinary;
+
+pub(in crate::journal) use family::require_legacy_reservations;
+use family::{CanonicalCapacityFamily, canonical_reservations};
 
 const KEY_PREFIX: &[u8] = b"aos.journal.global-capacity-reservation.v1\0";
 const RECORD_DOMAIN: &[u8] = b"aos.sandbox.journal.global-capacity-reservation.v1\0";
@@ -290,38 +302,19 @@ impl Journal {
         &self,
     ) -> Result<Vec<[u8; 32]>, JournalError> {
         self.ensure_healthy()?;
-        self.records(RecordNamespace::GlobalCapacityReservation)
-            .filter_map(|(key, value)| {
-                let decoded = decode_reservation(value).and_then(|(request, _, identity)| {
-                    decode_capacity_record(key, value)?;
-                    Ok((request, identity))
-                });
-                match decoded {
-                    Ok((request, identity))
-                        if request.purpose
-                            == GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor =>
-                    {
-                        Some(Ok(identity))
-                    }
-                    Ok(_) => None,
-                    Err(error) => Some(Err(error)),
-                }
-            })
-            .collect()
+        legacy_capacity_ids_for_purpose(
+            &self.state,
+            GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor,
+        )
     }
 
     /// Lists only canonical Controller-history capacity identities for replay.
     pub(crate) fn controller_project_capacity_ids_v1(&self) -> Result<Vec<[u8; 32]>, JournalError> {
         self.ensure_healthy()?;
-        let mut identities = Vec::new();
-        for (key, value) in self.records(RecordNamespace::GlobalCapacityReservation) {
-            let (request, _, identifier) = decode_reservation(value)?;
-            decode_capacity_record(key, value)?;
-            if request.purpose == GlobalCapacityReservationPurposeV1::ControllerProjectAdmission {
-                identities.push(identifier);
-            }
-        }
-        Ok(identities)
+        legacy_capacity_ids_for_purpose(
+            &self.state,
+            GlobalCapacityReservationPurposeV1::ControllerProjectAdmission,
+        )
     }
 
     /// Transfers Root's two-slot intent to its exact one-slot history suffix.
@@ -563,13 +556,16 @@ impl Journal {
         expected_reservation_id: [u8; 32],
     ) -> Result<Option<GlobalCapacityReservationV1>, JournalError> {
         self.ensure_healthy()?;
+        validate_all_reservations(&self.state)?;
         let Some(value) = self.state.get(&(
             RecordNamespace::GlobalCapacityReservation,
             reservation_key(expected_reservation_id),
         )) else {
             return Ok(None);
         };
-        let (request, admission_transaction_id, decoded_id) = decode_reservation(value)?;
+        let (request, admission_transaction_id, decoded_id) =
+            CanonicalCapacityFamily::decode(&reservation_key(expected_reservation_id), value)?
+                .require_legacy()?;
         // The record's deterministic ID commits the original admission ID and
         // full request. Initial append enforces their atomic transaction; after
         // compaction this materialized self-binding is the durable provenance.
@@ -594,16 +590,21 @@ impl Journal {
         binding: &GlobalCapacityReservationRecoveryBindingV1,
     ) -> Result<GlobalCapacityReservationV1, JournalError> {
         self.ensure_healthy()?;
+        let families = canonical_reservations(&self.state)?;
         let mut matching = None;
-        for (key, value) in self.records(RecordNamespace::GlobalCapacityReservation) {
-            let (request, admission_transaction_id, decoded_id) = decode_reservation(value)?;
-            if key != reservation_key(decoded_id).as_slice()
-                || reservation_id(&request, admission_transaction_id) != decoded_id
-            {
-                return Err(JournalError::MalformedRecord(
-                    "capacity reservation provenance is invalid",
-                ));
-            }
+        for family in families {
+            let Some((request, admission_transaction_id, decoded_id)) = family.legacy() else {
+                continue;
+            };
+            let value = self
+                .state
+                .get(&(
+                    RecordNamespace::GlobalCapacityReservation,
+                    reservation_key(decoded_id),
+                ))
+                .ok_or(JournalError::MalformedRecord(
+                    "capacity reservation disappeared during selection",
+                ))?;
             let reservation = GlobalCapacityReservationV1 {
                 request,
                 admission_transaction_id,
@@ -728,23 +729,7 @@ pub(super) fn decode_capacity_record(
     key: &[u8],
     value: &[u8],
 ) -> Result<DecodedCapacityReservationV1, JournalError> {
-    let (request, admission, decoded_reservation_id) = decode_reservation(value)?;
-    if key != reservation_key(decoded_reservation_id).as_slice()
-        || reservation_id(&request, admission) != decoded_reservation_id
-        || request.owner_namespace != request.purpose.owner_namespace()
-    {
-        return Err(JournalError::MalformedRecord(
-            "capacity reservation key or digest is invalid",
-        ));
-    }
-    Ok(DecodedCapacityReservationV1 {
-        reservation_id: decoded_reservation_id,
-        maximum_records: usize::try_from(request.terminal_records.max(request.poison_records))
-            .map_err(|_| JournalError::LimitExceeded("reserved record count"))?,
-        maximum_bytes: request.terminal_bytes.max(request.poison_bytes),
-        maximum_transactions: usize::try_from(request.future_transactions)
-            .map_err(|_| JournalError::LimitExceeded("reserved transaction count"))?,
-    })
+    CanonicalCapacityFamily::decode(key, value)?.accounting()
 }
 
 pub(crate) fn decode_capacity_reservation_request_v1(
@@ -754,48 +739,58 @@ pub(crate) fn decode_capacity_reservation_request_v1(
         return Err(JournalError::ForeignAuthorityNamespace);
     }
     let value = record.value().ok_or(JournalError::InvalidTransaction)?;
-    decode_capacity_record(record.key(), value)?;
-    decode_reservation(value)
+    CanonicalCapacityFamily::decode(record.key(), value)?.require_legacy()
+}
+
+/// Validates a touched capacity row before selecting one legacy purpose.
+///
+/// # Errors
+///
+/// Rejects a foreign namespace, deletion, or malformed/unknown family. Valid
+/// native and ordinary DATA rows return false without becoming legacy grants.
+pub(crate) fn capacity_record_has_legacy_purpose(
+    record: &JournalRecord,
+    purpose: GlobalCapacityReservationPurposeV1,
+) -> Result<bool, JournalError> {
+    if record.namespace() != RecordNamespace::GlobalCapacityReservation {
+        return Err(JournalError::ForeignAuthorityNamespace);
+    }
+    let value = record.value().ok_or(JournalError::InvalidTransaction)?;
+    let family = CanonicalCapacityFamily::decode(record.key(), value)?;
+    Ok(family
+        .legacy()
+        .is_some_and(|(request, _, _)| request.purpose == purpose))
 }
 
 pub(super) fn all_reservations_owned_by(
     state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     namespace: RecordNamespace,
 ) -> Result<bool, JournalError> {
-    for ((record_namespace, key), value) in state {
-        if *record_namespace != RecordNamespace::GlobalCapacityReservation {
-            continue;
-        }
-        let (request, admission, identifier) = decode_reservation(value)?;
-        if key.as_slice() != reservation_key(identifier).as_slice()
-            || reservation_id(&request, admission) != identifier
-            || request.owner_namespace != namespace
-            || request.owner_namespace != request.purpose.owner_namespace()
-        {
-            return Ok(false);
-        }
-    }
-    Ok(true)
+    let families = canonical_reservations(state)?;
+    Ok(families
+        .iter()
+        .all(|family| family.owner_namespace() == namespace))
 }
 
 pub(super) fn validate_all_reservations(
     state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<(), JournalError> {
-    for ((record_namespace, key), value) in state {
-        if *record_namespace != RecordNamespace::GlobalCapacityReservation {
-            continue;
-        }
-        let (request, admission, identifier) = decode_reservation(value)?;
-        if key.as_slice() != reservation_key(identifier).as_slice()
-            || reservation_id(&request, admission) != identifier
-            || request.owner_namespace != request.purpose.owner_namespace()
-        {
-            return Err(JournalError::MalformedRecord(
-                "capacity reservation provenance is invalid",
-            ));
-        }
-    }
+    canonical_reservations(state)?;
     Ok(())
+}
+
+fn legacy_capacity_ids_for_purpose(
+    state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    purpose: GlobalCapacityReservationPurposeV1,
+) -> Result<Vec<[u8; 32]>, JournalError> {
+    let families = canonical_reservations(state)?;
+    Ok(families
+        .iter()
+        .filter_map(|family| {
+            let (request, _, identity) = family.legacy()?;
+            (request.purpose == purpose).then_some(identity)
+        })
+        .collect())
 }
 
 fn validate_request(
