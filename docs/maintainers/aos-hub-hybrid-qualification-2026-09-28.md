@@ -996,3 +996,26 @@ The resulting CLI, Native and Worker outputs are respectively
 This establishes the full CLI test gate and ordinary artifact compilation;
 updated fleet, ARM and hosted qualification remain pending. The recorded
 upload-batch performance miss remains unresolved.
+
+## Overlapping lease cache correction
+
+The pure per-object admission floor now permits older, still-valid tokens in
+the exact already observed admitted epoch. It retains the maximum sequence and
+its exact payload digest without regressing either. Advancing to a new epoch
+requires a sequence above that maximum; equal-maximum forks, epoch/publication
+forks, denial, retirement, expiry and clock rollback still fail closed. Cohort,
+full object key and permitted effect checks remain required.
+
+All **29 focused tests pass**, including overlapping read/write scopes,
+out-of-order renewals, restart, epoch advancement, cancellation and lost
+acknowledgements. Exact qualification is
+`/tmp/hub-lease-cache-floor-qualified.json`
+(`8e31b0a92c26aa978d618ee32a947c6bd693faf4f1ffe5650362d2c08f229378`);
+independent review is
+`/tmp/hub-lease-cache-floor-independent-review/receipt.json`
+(`7aa8f7c3ff969786c84644c6ed1a4ea869d2d5ddb2bc3184842ce258b1264991`).
+Integration verifies both exact files, seven prerequisite hashes and the actual
+test log. Bounded state cannot detect forks at forgotten lower sequences:
+irreversible live issuer CAS and exclusive signing custody remain prerequisites.
+This qualifies the cache model correction, without provider enablement or
+measured renewal amortization. The in-flight fleet predates this correction.

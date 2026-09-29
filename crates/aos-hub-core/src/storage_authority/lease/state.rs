@@ -395,7 +395,12 @@ impl PreparedEpochLease {
     }
 }
 
-/// Durable per-object observed epoch/sequence/time floor, never reset by SQL.
+/// Durable per-object epoch/time floors and maximum observed issuance witness.
+///
+/// Concurrent authentic tokens remain reusable within one admitted epoch. The
+/// sequence witness detects forks at the retained maximum, not every forgotten
+/// lower sequence. Unique irreversible issuance still requires the live issuer
+/// journal and its actual durable CAS; SQL cannot initialize or rewind it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EpochLeaseFloor {
@@ -411,9 +416,9 @@ pub struct EpochLeaseFloor {
     pub admission_digest: Option<String>,
     /// Entire-publication digest, absent only before observing an epoch.
     pub publication_digest: Option<String>,
-    /// Largest observed authority-wide lease sequence.
+    /// Largest observed authority-wide sequence, not a same-epoch token cutoff.
     pub lease_sequence: LeaseInteger,
-    /// Exact token payload digest at that sequence.
+    /// Exact payload digest at the maximum; lower-token digests are not retained.
     pub payload_digest: Option<String>,
     /// Whether a trusted live denied publication forbids this epoch.
     pub denied: bool,
@@ -583,7 +588,8 @@ impl EpochLeaseVerifier {
     ///
     /// # Errors
     /// Returns an error for malformed/untrusted envelope, snapshot/profile/key/
-    /// effect mismatch, stale/forked epoch or sequence, denial or invalid time.
+    /// effect mismatch, stale/forked epoch, a fork at the retained maximum
+    /// sequence, issuance rollback across epochs, denial or invalid time.
     pub fn validate_lease(
         &self,
         bytes: &[u8],
@@ -626,10 +632,15 @@ impl EpochLeaseVerifier {
             "epoch locally denied"
         );
         let commitment = payload.digest()?;
-        ensure!(
-            payload.lease_sequence >= floor.lease_sequence,
-            "lease sequence below local floor"
-        );
+        // Issuing another token does not revoke still-valid tokens in the same
+        // exact epoch. Across epochs, retain the observable issuer rollback
+        // check without keeping an unbounded map of cohort/token histories.
+        if expected.admission_generation > floor.generation {
+            ensure!(
+                payload.lease_sequence > floor.lease_sequence,
+                "new epoch sequence does not advance retained maximum"
+            );
+        }
         if payload.lease_sequence == floor.lease_sequence {
             ensure!(
                 floor.payload_digest.as_deref() == Some(commitment.as_str()),
@@ -642,8 +653,10 @@ impl EpochLeaseVerifier {
         next.generation = expected.admission_generation;
         next.admission_digest = Some(expected.admission_digest.clone());
         next.publication_digest = Some(expected.publication_digest.clone());
-        next.lease_sequence = payload.lease_sequence;
-        next.payload_digest = Some(commitment);
+        if payload.lease_sequence > floor.lease_sequence {
+            next.lease_sequence = payload.lease_sequence;
+            next.payload_digest = Some(commitment);
+        }
         next.denied = false;
         next.clock_floor = LeaseInteger::new(clock.observed_at)?;
         Ok(ValidatedEpochLease {

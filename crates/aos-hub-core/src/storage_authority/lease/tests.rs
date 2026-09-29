@@ -188,9 +188,18 @@ async fn issue(
     current: &RefCell<EpochLeaseIssuerJournal>,
     at: i64,
 ) -> Vec<u8> {
+    issue_cohort(publication, current, cohort(publication), at).await
+}
+
+async fn issue_cohort(
+    publication: &StorageAuthorityPublication,
+    current: &RefCell<EpochLeaseIssuerJournal>,
+    selected: LeaseCohort,
+    at: i64,
+) -> Vec<u8> {
     let prepared = current
         .borrow()
-        .prepare_issue(publication, cohort(publication), KEY_ID, 900, clock(at))
+        .prepare_issue(publication, selected, KEY_ID, 900, clock(at))
         .unwrap();
     prepared
         .commit_and_sign(
@@ -651,7 +660,7 @@ async fn final_clock_floor_is_durable_before_return_and_callback_failure_retains
 }
 
 #[tokio::test]
-async fn exact_sequence_replay_works_but_lower_or_forked_sequence_fails_after_restart() {
+async fn same_epoch_overlap_reuses_older_tokens_without_regressing_maximum_after_restart() {
     let publication = publication();
     let current = RefCell::new(journal(&publication));
     let first = issue(&publication, &current, 100).await;
@@ -660,7 +669,14 @@ async fn exact_sequence_replay_works_but_lower_or_forked_sequence_fails_after_re
     let stored = serde_json::to_vec(&validated.next_floor).unwrap();
     let restarted: EpochLeaseFloor = serde_json::from_slice(&stored).unwrap();
     assert!(validate(&second, &publication, &restarted, 103).is_ok());
-    assert!(validate(&first, &publication, &restarted, 103).is_err());
+    let older = validate(&first, &publication, &restarted, 103).unwrap();
+    assert_eq!(older.next_floor.lease_sequence, restarted.lease_sequence);
+    assert_eq!(older.next_floor.payload_digest, restarted.payload_digest);
+    assert_eq!(older.next_floor.clock_floor, integer(103));
+    let older_restarted: EpochLeaseFloor =
+        serde_json::from_slice(&serde_json::to_vec(&older.next_floor).unwrap()).unwrap();
+    assert!(validate(&first, &publication, &older_restarted, 104).is_ok());
+    assert!(validate(&second, &publication, &older_restarted, 104).is_ok());
     let mut fork = validated.payload;
     fork.not_after = integer(130);
     let fork = keys().0.sign(fork).unwrap();
@@ -668,6 +684,202 @@ async fn exact_sequence_replay_works_but_lower_or_forked_sequence_fails_after_re
         .unwrap_err()
         .to_string()
         .contains("same-sequence"));
+}
+
+#[tokio::test]
+async fn simultaneous_read_and_write_cohorts_reuse_cached_tokens_in_either_order() {
+    let publication = publication();
+    let current = RefCell::new(journal(&publication));
+    let write = cohort(&publication);
+    let read = LeaseCohort::from_publication(
+        &publication,
+        EXECUTOR,
+        "association-one",
+        LeasePurpose::Read,
+        "managed/binding/objects",
+        vec![LeaseEffect::Head, LeaseEffect::Read],
+    )
+    .unwrap();
+    let tokens = [
+        issue_cohort(&publication, &current, write.clone(), 100).await,
+        issue_cohort(&publication, &current, read.clone(), 101).await,
+    ];
+    let selected = [&write, &read];
+    let effects = [LeaseEffect::Put, LeaseEffect::Head];
+    let verifier = keys().1;
+
+    for order in [[0, 1, 0, 1], [1, 0, 1, 0]] {
+        let mut floor = fresh_floor(&publication);
+        for (step, index) in order.into_iter().enumerate() {
+            floor = verifier
+                .validate_lease(
+                    &tokens[index],
+                    selected[index],
+                    &profile(),
+                    &floor,
+                    "managed/binding/objects/blob",
+                    effects[index],
+                    clock(102 + step as i64),
+                )
+                .unwrap()
+                .next_floor;
+        }
+        assert_eq!(floor.lease_sequence, integer(2));
+        assert_eq!(
+            floor.payload_digest,
+            Some(verifier.verify(&tokens[1]).unwrap().digest().unwrap())
+        );
+    }
+
+    assert!(verifier
+        .validate_lease(
+            &tokens[0],
+            &read,
+            &profile(),
+            &fresh_floor(&publication),
+            "managed/binding/objects/blob",
+            LeaseEffect::Head,
+            clock(102),
+        )
+        .is_err());
+}
+
+#[tokio::test]
+async fn overlapping_effect_cohorts_and_out_of_order_renewals_keep_one_maximum_witness() {
+    let publication = publication();
+    let current = RefCell::new(journal(&publication));
+    let narrow = LeaseCohort::from_publication(
+        &publication,
+        EXECUTOR,
+        "association-one",
+        LeasePurpose::Write,
+        "managed/binding/objects/blob",
+        vec![LeaseEffect::Put],
+    )
+    .unwrap();
+    let broad = cohort(&publication);
+    let tokens = [
+        issue_cohort(&publication, &current, narrow.clone(), 100).await,
+        issue_cohort(&publication, &current, broad.clone(), 101).await,
+        issue_cohort(&publication, &current, narrow.clone(), 102).await,
+    ];
+    let selected = [&narrow, &broad, &narrow];
+    let verifier = keys().1;
+    let maximum_digest = verifier.verify(&tokens[2]).unwrap().digest().unwrap();
+
+    for order in [[2, 0, 1, 2, 0, 1], [0, 2, 1, 0, 1, 2], [1, 0, 2, 1, 2, 0]] {
+        let mut floor = fresh_floor(&publication);
+        let mut observed_maximum = 0;
+        for (step, index) in order.into_iter().enumerate() {
+            floor = verifier
+                .validate_lease(
+                    &tokens[index],
+                    selected[index],
+                    &profile(),
+                    &floor,
+                    "managed/binding/objects/blob",
+                    LeaseEffect::Put,
+                    clock(103 + step as i64),
+                )
+                .unwrap()
+                .next_floor;
+            observed_maximum = observed_maximum.max(index as i64 + 1);
+            assert_eq!(floor.lease_sequence, integer(observed_maximum));
+        }
+        assert_eq!(
+            floor.payload_digest.as_deref(),
+            Some(maximum_digest.as_str())
+        );
+    }
+    // Reusing issued bytes did not ask the issuer to refresh them.
+    assert_eq!(current.borrow().last_sequence, integer(3));
+}
+
+#[tokio::test]
+async fn newer_admitted_epoch_requires_strict_sequence_advance_then_allows_overlap() {
+    let publication = publication();
+    let current = RefCell::new(journal(&publication));
+    let old = issue(&publication, &current, 100).await;
+    let latest_old = issue(&publication, &current, 101).await;
+    let old_floor = validate(&latest_old, &publication, &fresh_floor(&publication), 102)
+        .unwrap()
+        .next_floor;
+    let denied = next_publication(&publication, StorageAuthorityAdmissionState::Blocked);
+    let transition = current
+        .borrow()
+        .prepare_publication(&denied, clock(103))
+        .unwrap();
+    cas(&current, &transition).unwrap();
+    let denied_floor = old_floor
+        .observe_trusted_denial(&denied, &profile(), clock(103))
+        .unwrap();
+    let renewed = next_publication(&denied, StorageAuthorityAdmissionState::Admitted);
+    let transition = current
+        .borrow()
+        .prepare_publication(&renewed, clock(133))
+        .unwrap();
+    cas(&current, &transition).unwrap();
+    let first = issue(&renewed, &current, 133).await;
+    let second = issue(&renewed, &current, 134).await;
+
+    // Correct signatures cannot hide a reset or reused issuer counter on an
+    // observed epoch advance. These payloads are not produced by the live CAS.
+    for sequence in [1, 2] {
+        let mut forged = keys().1.verify(&first).unwrap();
+        forged.lease_sequence = integer(sequence);
+        let bytes = keys().0.sign(forged).unwrap();
+        for floor in [&old_floor, &denied_floor] {
+            assert!(validate(&bytes, &renewed, floor, 135)
+                .unwrap_err()
+                .to_string()
+                .contains("does not advance"));
+        }
+    }
+
+    let first_floor = validate(&first, &renewed, &denied_floor, 135)
+        .unwrap()
+        .next_floor;
+    assert_eq!(first_floor.lease_sequence, integer(3));
+    let maximum = validate(&second, &renewed, &first_floor, 136)
+        .unwrap()
+        .next_floor;
+    let reused = validate(&first, &renewed, &maximum, 137)
+        .unwrap()
+        .next_floor;
+    assert_eq!(reused.lease_sequence, integer(4));
+    assert_eq!(reused.payload_digest, maximum.payload_digest);
+    assert!(validate(&old, &publication, &reused, 137).is_err());
+    assert!(!reused.denied);
+}
+
+#[tokio::test]
+async fn lower_sequence_reuse_preserves_expiry_clock_and_epoch_fork_checks() {
+    let publication = publication();
+    let current = RefCell::new(journal(&publication));
+    let first = issue(&publication, &current, 100).await;
+    let second = issue(&publication, &current, 101).await;
+    let maximum = validate(&second, &publication, &fresh_floor(&publication), 102)
+        .unwrap()
+        .next_floor;
+    let before = maximum.clone();
+    assert!(validate(&first, &publication, &maximum, 101).is_err());
+    assert!(validate(&first, &publication, &maximum, 128).is_err());
+    assert!(validate(&second, &publication, &maximum, 128).is_ok());
+
+    let mut forked = publication.clone();
+    forked
+        .attestation
+        .as_mut()
+        .unwrap()
+        .provider_policy_evidence_digest = "6".repeat(64);
+    let mut forged = keys().1.verify(&first).unwrap();
+    forged.cohort = cohort(&forked);
+    let bytes = keys().0.sign(forged).unwrap();
+    assert!(validate(&bytes, &forked, &maximum, 103)
+        .unwrap_err()
+        .to_string()
+        .contains("same-generation"));
+    assert_eq!(maximum, before);
 }
 
 #[tokio::test]
