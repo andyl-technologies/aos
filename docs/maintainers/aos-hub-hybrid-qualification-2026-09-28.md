@@ -745,5 +745,27 @@ and activation remain pending. Historical watermarks are evidence and do not
 grant fresh provider admission. See the
 [classification contract](../plans/hub-snapshot-classification-foundation.md).
 
+### Bounded private-cell capture
+
+The independently reviewed capture seam pairs classified metadata with exact
+private originals and reconstructs one row only after matching every declared
+table, primary key, column, type, digest, reason and payload length. Full
+reclassification rejects modified public metadata. Private wrappers have
+redacted debug output and no automatic serialization; raw callbacks and writers
+are explicit private boundaries.
+
+The frozen source passed 63 snapshot tests in 10.16 seconds: nineteen new
+capture tests, 26 classifier tests, sixteen reader tests and two canonical
+authority-envelope tests. Closed scalar decoding rejects arbitrary JSON trees,
+and reconstruction checks the cumulative row budget before cloning public
+payloads. The four capture files and all fifteen canonical prerequisite hashes
+were verified during integration. All 63 snapshot cases also passed inside the
+full packaged CLI gate above; the Native operations VM passed on that combined
+source.
+
+This establishes exact reconstruction and checksum consistency, not source
+authenticity, archive encryption, SQL import or activation. See the
+[capture contract](../plans/hub-snapshot-private-capture-foundation.md).
+
 See the [deployment procedure](aos-hub-hybrid-deployment.md) and
 [RFC acceptance gates](../rfcs/0023-hub-hybrid-topology/06-implementation-and-validation.md).

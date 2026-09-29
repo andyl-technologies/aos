@@ -1,12 +1,13 @@
 //! Current-schema row classification for a future logical Hub snapshot.
 //!
 //! This module owns an exhaustive table/column contract, lossless archive
-//! scalars, and private exact-cell dependency manifests. It never emits cells
-//! classified as secret or opaque private data. One caller-owned row is classified at a time;
-//! no database, file, provider, or import operation occurs here.
+//! scalars, and private exact-cell dependency manifests. Classified metadata
+//! excludes secret and opaque private originals; the explicit private capture
+//! seam can pair and revalidate them one bounded row at a time. No database,
+//! file, provider, or import operation occurs here.
 //!
-//! A classified database is incomplete until a private restoration mechanism
-//! supplies every dependency. This seam neither authorizes provider access nor
+//! A classified database is incomplete until private originals are matched to
+//! every dependency. This seam neither authorizes provider access nor
 //! adopts a guard namespace. Source authority rows and replay fences survive
 //! unchanged; transient authentication state is explicitly omitted. Subsequent
 //! export must authenticate the artifact and reconcile foreign keys, object
@@ -25,10 +26,17 @@ use sha2::{Digest, Sha256};
 use crate::db::{MIGRATIONS, SCHEMA_IDENTITY};
 use crate::value::{Row, Value};
 
+mod capture;
 mod json;
+
+pub use capture::{CapturedSnapshotRow, PrivateSnapshotCell, ReconstructedSnapshotRow};
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/capture.rs"]
+mod capture_tests;
 
 const CLASSIFICATION_VERSION: &str = "aos-hub.snapshot-classification/v1";
 const CONTRACT: &str = include_str!("schema-v3.tsv");
