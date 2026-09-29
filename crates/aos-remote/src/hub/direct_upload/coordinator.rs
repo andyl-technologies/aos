@@ -358,11 +358,8 @@ impl DirectUploadCoordinator {
                         return Err(DirectClientError::Invalid);
                     }
                     let request = DirectUploadRequest::CompleteBatch(batch);
-                    let response = before_deadline(
-                        deadline,
-                        execute_retry(&self.control, &request),
-                    )
-                    .await?;
+                    let response =
+                        before_deadline(deadline, execute_retry(&self.control, &request)).await?;
                     if response.sessions.len() != page.items.len() || !response.grants.is_empty() {
                         return Err(DirectClientError::Invalid);
                     }
@@ -531,12 +528,10 @@ mod deadline_tests {
         for _ in 0..2 {
             let deadline = tokio::time::Instant::now() + Duration::from_millis(20);
             let held = std::future::pending::<Result<(), DirectClientError>>();
-            let result = tokio::time::timeout(
-                Duration::from_secs(1),
-                before_deadline(deadline, held),
-            )
-            .await
-            .unwrap();
+            let result =
+                tokio::time::timeout(Duration::from_secs(1), before_deadline(deadline, held))
+                    .await
+                    .unwrap();
             assert_eq!(result, Err(DirectClientError::ControlUnavailable));
         }
     }
@@ -768,8 +763,10 @@ mod pending_restart_tests {
                         )
                         .unwrap();
                         assert_eq!(body.items, vec![original_complete.clone()]);
-                        assert!(headers
-                            .starts_with("POST /aos.hub.v1.DirectUploadService/CompleteBatch "));
+                        assert!(
+                            headers
+                                .starts_with("POST /aos.hub.v1.DirectUploadService/CompleteBatch ")
+                        );
                         assert!(!request.windows(3).any(|bytes| bytes == b"abc"));
                         captured.push(body.clone());
                         let response = DirectUploadResponse {

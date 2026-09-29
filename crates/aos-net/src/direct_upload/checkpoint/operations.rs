@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
 
-use super::{SqliteDirectCheckpoints, sqlite, DirectRetainedCompletion};
+use super::{DirectRetainedCompletion, SqliteDirectCheckpoints, sqlite};
 use crate::direct_upload::{
     DirectCheckpointStore, DirectClientError, DirectGrantAttempt, DirectObservedPart,
     DirectPartReceipt,

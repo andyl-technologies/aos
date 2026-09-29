@@ -499,10 +499,12 @@ async fn retained_completion_lookup_preserves_original_identity_after_restart() 
     let mut changed = second.clone();
     changed.expected_sha256 = "aa".repeat(32);
     assert!(store.retained_completions(&[changed]).await.is_err());
-    assert!(store
-        .retained_completions(&[second.clone(), second])
-        .await
-        .is_err());
+    assert!(
+        store
+            .retained_completions(&[second.clone(), second])
+            .await
+            .is_err()
+    );
 }
 
 #[test]

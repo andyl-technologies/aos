@@ -174,7 +174,13 @@ impl DirectCheckpointStore for Store {
         &self,
         session: &DirectSessionRef,
     ) -> Result<Option<DirectCompleteRequest>, DirectClientError> {
-        Ok(self.0.lock().unwrap().complete.get(&session.session_id).cloned())
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .complete
+            .get(&session.session_id)
+            .cloned())
     }
 }
 
@@ -837,17 +843,21 @@ async fn pending_verification_replays_original_complete_without_part_or_owner_re
     let pending = upload_direct_batch(&control, &store, &provider, source.clone())
         .await
         .unwrap();
-    assert!(pending
-        .iter()
-        .all(|item| item.state == DirectSessionState::CompletingStaging));
+    assert!(
+        pending
+            .iter()
+            .all(|item| item.state == DirectSessionState::CompletingStaging)
+    );
     let attempts = provider.attempts.load(Ordering::SeqCst);
 
     let verified = upload_direct_batch(&control, &store, &provider, source)
         .await
         .unwrap();
-    assert!(verified
-        .iter()
-        .all(|item| item.state == DirectSessionState::StagedVerified));
+    assert!(
+        verified
+            .iter()
+            .all(|item| item.state == DirectSessionState::StagedVerified)
+    );
     assert_eq!(provider.attempts.load(Ordering::SeqCst), attempts);
     let state = control.state.lock().unwrap();
     let requests: Vec<_> = state
@@ -860,10 +870,12 @@ async fn pending_verification_replays_original_complete_without_part_or_owner_re
         .collect();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0], requests[1]);
-    assert!(requests[1]
-        .items
-        .iter()
-        .all(|item| item.expected_resource_version.get() == 1));
+    assert!(
+        requests[1]
+            .items
+            .iter()
+            .all(|item| item.expected_resource_version.get() == 1)
+    );
     assert_eq!(state.sessions.len(), 2);
 }
 
@@ -900,13 +912,15 @@ async fn pending_server_state_without_original_completion_refuses_before_provide
     );
     assert_eq!(provider.attempts.load(Ordering::SeqCst), 0);
     assert_eq!(store.0.lock().unwrap().complete.len(), 0);
-    assert!(control
-        .state
-        .lock()
-        .unwrap()
-        .controls
-        .iter()
-        .all(|request| matches!(request, DirectUploadRequest::BeginBatch(_))));
+    assert!(
+        control
+            .state
+            .lock()
+            .unwrap()
+            .controls
+            .iter()
+            .all(|request| matches!(request, DirectUploadRequest::BeginBatch(_)))
+    );
 }
 
 #[tokio::test]
