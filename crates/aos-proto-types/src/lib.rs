@@ -14,6 +14,9 @@
 
 #![allow(clippy::all)]
 
+/// Portable direct-upload models, bounds and canonical commitments.
+pub mod direct_upload;
+
 include!(concat!(env!("OUT_DIR"), "/connect_paths.rs"));
 
 /// Canonical header identifying the Connect unary protocol version.

@@ -35,6 +35,11 @@
 //!   unsigned `GET` of the public origin URL; writes are refused (there is
 //!   nothing to sign with).
 
+mod direct_multipart;
+mod direct_requests;
+mod direct_xml;
+pub use direct_multipart::*;
+
 use crate::db::BindingRecord;
 use crate::storage_work::StorageBindingSnapshot;
 

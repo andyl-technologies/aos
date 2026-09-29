@@ -35,7 +35,7 @@ use zeroize::Zeroizing;
 type HmacSha256 = Hmac<Sha256>;
 
 /// Credentials and target coordinates for presigning one request.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PresignParams<'a> {
     /// The access key id (e.g. an AWS/R2 access key).
     pub access_key: &'a str,
@@ -62,6 +62,20 @@ pub struct PresignParams<'a> {
     /// signer is `wasm`-clean.
     pub amz_date: &'a str,
 }
+
+impl std::fmt::Debug for PresignParams<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PresignParams")
+            .field("credentials", &"[REDACTED]")
+            .field("coordinates", &"[REDACTED]")
+            .field("expires_secs", &self.expires_secs)
+            .finish_non_exhaustive()
+    }
+}
+
+mod direct;
+pub use direct::*;
 
 /// Format a Unix timestamp (seconds) as SigV4's ISO-8601 *basic* UTC
 /// `YYYYMMDDTHHMMSSZ`.
@@ -294,6 +308,19 @@ fn presign_url(
     extra: &[(&str, String)],
     content_length: Option<u64>,
 ) -> Result<String> {
+    let headers = content_length
+        .map(|length| ("content-length", length.to_string()))
+        .into_iter()
+        .collect::<Vec<_>>();
+    presign_url_with_headers(method, p, extra, &headers)
+}
+
+fn presign_url_with_headers(
+    method: &str,
+    p: &PresignParams<'_>,
+    extra: &[(&str, String)],
+    additional_headers: &[(&str, String)],
+) -> Result<String> {
     validate_amz_date(p.amz_date)?;
     validate_host(p.host)?;
     // `amz_date` is `YYYYMMDDTHHMMSSZ` (validated above); the credential-scope
@@ -305,11 +332,18 @@ fn presign_url(
     // Canonical query string: the X-Amz-* params, each key+value URI-encoded
     // (values encode `/`), sorted by encoded key. `X-Amz-Signature` is appended
     // *after* signing and is not part of the canonical request.
-    let signed_headers = if content_length.is_some() {
-        "content-length;host"
-    } else {
-        "host"
-    };
+    let mut headers = additional_headers.to_vec();
+    headers.push(("host", p.host.to_string()));
+    headers.sort_by(|a, b| a.0.cmp(b.0));
+    anyhow::ensure!(
+        headers.windows(2).all(|pair| pair[0].0 != pair[1].0),
+        "duplicate signing header"
+    );
+    let signed_headers = headers
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(";");
     let params = [
         ("X-Amz-Algorithm", "AWS4-HMAC-SHA256".to_string()),
         ("X-Amz-Credential", credential.clone()),
@@ -338,10 +372,10 @@ fn presign_url(
         .join("&");
 
     let canonical_uri = uri_encode(p.path, false);
-    let canonical_headers = content_length.map_or_else(
-        || format!("host:{}\n", p.host),
-        |length| format!("content-length:{length}\nhost:{}\n", p.host),
-    );
+    let canonical_headers = headers
+        .iter()
+        .map(|(name, value)| format!("{name}:{value}\n"))
+        .collect::<String>();
     let canonical_request = format!(
         "{method}\n{canonical_uri}\n{canonical_query}\n{canonical_headers}\n{signed_headers}\nUNSIGNED-PAYLOAD"
     );

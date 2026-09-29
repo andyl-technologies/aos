@@ -41,6 +41,10 @@ fn main() -> BuildResult<()> {
     let descriptor_path = out_dir()?.join("aos.hub.v1.descriptor.bin");
 
     prost_build::Config::new()
+        .skip_debug([
+            ".aos.hub.v1.DirectPartGrant",
+            ".aos.hub.v1.DirectRequiredHeader",
+        ])
         .file_descriptor_set_path(&descriptor_path)
         .compile_protos(&[&proto], &[proto_root])?;
 

@@ -5668,3 +5668,272 @@ message StorageAuthorityProjection {
   // Digest of immutable creation facts, used by alias and attestation plans.
   string resource_version = 4;
 }
+
+// Authenticated bounded direct staging controls. Upload bodies bypass Hub APIs.
+// Closed strings are validated by the shared direct_upload protocol; uint64
+// counters use exact ProtoJSON decimal strings. No client controls completion.
+service DirectUploadService {
+  rpc GetCapabilities(DirectGetCapabilities) returns (DirectUploadCapabilities);
+  rpc BeginBatch(DirectBeginBatch) returns (DirectUploadResponse);
+  rpc StatusBatch(DirectStatusBatch) returns (DirectUploadResponse);
+  rpc GrantPartsBatch(DirectGrantPartsBatch) returns (DirectUploadResponse);
+  rpc ReportPartsBatch(DirectReportPartsBatch) returns (DirectUploadResponse);
+  rpc CompleteBatch(DirectCompleteBatch) returns (DirectUploadResponse);
+  rpc Abort(DirectAbortBatch) returns (DirectUploadResponse);
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectUploadTarget {
+  string kind = 1;
+  string cache_id = 2;
+  string path = 3;
+  string publication_id = 4;
+  uint64 surface_object_id = 5;
+  string upload_id = 6;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectUploadIntent {
+  uint32 version = 1;
+  string client_operation_id = 2;
+  DirectUploadTarget target = 3;
+  string expected_sha256 = 4;
+  uint64 byte_size = 5;
+  uint64 part_size = 6;
+  string dependency_phase = 7;
+  string transfer_mode = 8;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectPartChecksum {
+  string algorithm = 1;
+  string value = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectPart {
+  uint32 part_number = 1;
+  uint64 offset = 2;
+  uint64 byte_size = 3;
+  string sha256 = 4;
+  DirectPartChecksum checksum = 5;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectManifestPart {
+  DirectPart part = 1;
+  string etag = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectPlacementRef {
+  uint64 placement_id = 1;
+  string placement_fingerprint = 2;
+  string checksum_algorithm = 3;
+  uint64 placement_resource_version = 4;
+  uint64 write_spec_version = 5;
+  uint64 binding_id = 6;
+  uint64 binding_resource_version = 7;
+  uint64 binding_write_revision = 8;
+  string profile_fingerprint = 9;
+  string private_policy_digest = 10;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectManifestCommitment {
+  DirectPlacementRef placement = 1;
+  string manifest_digest = 2;
+  uint32 part_count = 3;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectRequiredHeader {
+  string name = 1;
+  string value = 2 [debug_redact = true];
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectPartGrant {
+  string session_id = 1;
+  string logical_fingerprint = 2;
+  DirectPlacementRef placement = 3;
+  string grant_id = 4;
+  uint64 grant_revision = 5;
+  DirectPart part = 6;
+  string method = 7;
+  string url = 8 [debug_redact = true];
+  repeated DirectRequiredHeader required_headers = 9;
+  uint64 expires_at = 10;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectSessionRef {
+  string session_id = 1;
+  string logical_fingerprint = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectPartCursor {
+  DirectPlacementRef placement = 1;
+  uint32 part_number = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectPartStatus {
+  DirectPlacementRef placement = 1;
+  uint32 part_number = 2;
+  DirectManifestPart observed = 3;
+  optional string pending_operation_id = 4;
+  bool unknown = 5;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectSessionStatus {
+  DirectSessionRef session = 1;
+  uint64 resource_version = 2;
+  DirectUploadIntent intent = 3;
+  repeated DirectPlacementRef placements = 4;
+  string state = 5;
+  repeated DirectPartStatus parts = 6;
+  DirectPartCursor next_cursor = 7;
+  bool outstanding_grants = 8;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectBeginBatch {
+  string operation_id = 1;
+  repeated DirectUploadIntent items = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectStatusQuery {
+  DirectSessionRef session = 1;
+  DirectPartCursor after = 2;
+  uint32 maximum_parts = 3;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectGrantPartRequest {
+  DirectSessionRef session = 1;
+  DirectPlacementRef placement = 2;
+  string operation_id = 3;
+  DirectPart part = 4;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectPartReport {
+  DirectSessionRef session = 1;
+  DirectPlacementRef placement = 2;
+  string operation_id = 3;
+  string grant_id = 4;
+  uint64 grant_revision = 5;
+  DirectManifestPart observed = 6;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectCompleteRequest {
+  DirectSessionRef session = 1;
+  string operation_id = 2;
+  uint64 expected_resource_version = 3;
+  repeated DirectManifestCommitment manifests = 4;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectAbortRequest {
+  DirectSessionRef session = 1;
+  string operation_id = 2;
+  uint64 expected_resource_version = 3;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectItemError {
+  string item_id = 1;
+  string code = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectUploadResponse {
+  string operation_id = 1;
+  repeated DirectSessionStatus sessions = 2;
+  repeated DirectPartGrant grants = 3;
+  repeated DirectItemError errors = 4;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectGetCapabilities {
+  DirectCapabilitiesTarget target = 1;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectProviderProfile {
+  uint64 placement_id = 1;
+  uint64 placement_resource_version = 2;
+  uint64 write_spec_version = 3;
+  uint64 binding_id = 4;
+  uint64 binding_resource_version = 5;
+  uint64 binding_write_revision = 6;
+  string checksum_algorithm = 7;
+  string provider_origin = 8;
+  string profile_fingerprint = 9;
+  string private_policy_digest = 10;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectUploadCapabilities {
+  DirectCapabilitiesTarget target = 1;
+  uint32 version = 2;
+  string capability = 3;
+  string transfer_mode = 4;
+  uint32 maximum_control_bytes = 5;
+  uint32 maximum_batch_items = 6;
+  uint32 maximum_batch_parts = 7;
+  uint64 maximum_object_bytes = 8;
+  uint64 minimum_part_bytes = 9;
+  uint64 maximum_part_bytes = 10;
+  repeated DirectProviderProfile profiles = 11;
+  uint64 config_generation = 12;
+  uint64 valid_until = 13;
+  string deployment_id = 14;
+  string principal_id = 15;
+  optional string requested_delivery_url = 16;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectStatusBatch {
+  string operation_id = 1;
+  repeated DirectStatusQuery items = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectGrantPartsBatch {
+  string operation_id = 1;
+  repeated DirectGrantPartRequest items = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectReportPartsBatch {
+  string operation_id = 1;
+  repeated DirectPartReport items = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectCompleteBatch {
+  string operation_id = 1;
+  repeated DirectCompleteRequest items = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectAbortBatch {
+  string operation_id = 1;
+  repeated DirectAbortRequest items = 2;
+}
+
+// Reusable logical owner; no object/provider path selector.
+message DirectCapabilitiesTarget {
+  string kind = 1;
+  string cache_id = 2;
+  string publication_id = 3;
+  string registry = 4;
+  string repository = 5;
+  string delivery_url = 6;
+}

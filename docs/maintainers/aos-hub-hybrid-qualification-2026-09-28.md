@@ -1389,3 +1389,47 @@ binds the exact compiler input. Root integration verifies all eleven postimages
 in `/tmp/hub-native-direct-sessions/root-integration-review.json`.
 This partial boundary does not qualify OCI compact completion, direct sessions,
 migration 004, provider uploads, combined runtime acceptance or hosted throughput.
+
+## Shared direct upload protocol and signing foundation
+
+The shared protocol now declares seven bounded direct upload RPCs, authenticated
+transport discovery, exact part/checksum commitments, sparse resume pages and
+compact completion manifests. Protected controls bind the immutable actor UUID,
+numeric actor slot, deployment, original operation and placement snapshot. Fresh
+storage capability challenges use separate request/reply domains and exact nonce,
+audience, selector and deadline correlation. Reserved staging keys cannot become
+public final keys. These types do not persist actor reservations or implement
+the connected Native, broker or client workflows.
+
+Frozen receipt `/tmp/hub-direct-upload-core/frozen-v3/qualification.json`
+(`8f31caf59ab6d18c4d1eb4d2bb6e03db57bf06e072a6d948c17820982344a9f6`)
+binds 16 portable, ten core, 16 SigV4 and six multipart XML tests, core Wasm
+compilation and actual generated Connect checks. It records 2,447 compiler inputs
+and preserves all 421 existing API method/capability entries while adding seven.
+The descriptor count is now 428; the previous declared count was stale.
+
+Root review covers the actor, capability, admission, private-key, signing and XML
+boundaries. `/tmp/hub-direct-upload-core/root-integration-review.json` verifies
+all 38 non-lock postimages. The contextual lock change adds four dependencies
+already present in the workspace and preserves the current release-signer graph;
+no registry package version changes. Git patch framing was normalized separately
+without changing source bytes. Actual provider checksums, CORS, private staging,
+closure/promotion, connected callers and hosted throughput remain unqualified.
+
+## Native staging contract bootstrap
+
+Infrastructure PR 1028 replaces a bootstrap dependency on the later typed
+delivery document with reads of three existing artifact repository resources.
+The Google provider exposes the full resource path as `id` and the short name as
+`name`; both identities, format and ownership labels are verified. The first
+live plan's incorrect name assumption and a later development-shell ADC discovery
+failure remain retained. The successful retry explicitly selects the already
+authenticated host ADC file.
+
+Exact plan `20260929T100517Z-f369fcf6a97fe54d` is promotable and reviewed: 46
+foundation no-ops, zero Google resource changes and one nonsensitive contract
+output. Apply `20260929T100943Z-a43b5e368cc269b5` succeeds with existing encrypted
+state preserved. All four local gates, seven module fixtures, the complete
+OpenTofu module policy check and the required CI gate pass. PR 1028 has not been
+merged; merge approval is pending. This does not deploy a serving revision or
+resolve the separate execution-engine publication capacity block.

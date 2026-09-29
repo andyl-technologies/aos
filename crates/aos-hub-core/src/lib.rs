@@ -80,6 +80,7 @@ pub mod delivery;
 pub mod delivery_attestation;
 pub mod delivery_http;
 pub mod dialect;
+pub mod direct_upload;
 pub mod directory;
 pub mod domain;
 pub mod egress_protocol;

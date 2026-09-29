@@ -432,6 +432,59 @@
         {"method": "GetOrganizationDomain", "reason": "ListOrganizationDomains returns the complete claim and verification state rendered by the SSO workflow."}
       ],
       "methods": ["WhoAmI", "ListServiceAccounts", "GetServiceAccount", "PlanCreateServiceAccount", "CreateServiceAccount", "PlanUpdateServiceAccount", "UpdateServiceAccount", "PlanDeleteServiceAccount", "DeleteServiceAccount", "GetMembership", "PlanSetMembership", "SetMembership", "ListInvitations", "GetInvitation", "PlanCreateInvitation", "CreateInvitation", "PlanCancelInvitation", "CancelInvitation", "AcceptInvitation", "GetIdentityProvider", "PlanSetIdentityProvider", "SetIdentityProvider", "PlanRemoveIdentityProvider", "RemoveIdentityProvider", "ListOrganizationDomains", "GetOrganizationDomain", "PlanClaimOrganizationDomain", "ClaimOrganizationDomain", "PlanVerifyOrganizationDomain", "VerifyOrganizationDomain", "PlanReleaseOrganizationDomain", "ReleaseOrganizationDomain", "PlanIssueAccessToken", "IssueAccessToken", "PlanRetireAccessToken", "RetireAccessToken", "ListAccessTokens"]
+    },
+    {
+      "service": "DirectUploadService",
+      "audience": "end-user",
+      "cli_families": [
+        "cache",
+        "registry publish",
+        "container"
+      ],
+      "web_workflows": [
+        "registry-publication",
+        "cache-objects",
+        "registry-containers"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "GetCapabilities",
+          "reason": "Direct transfer capabilities and staged file control are CLI operations; browser workflows observe committed publication, cache and container state."
+        },
+        {
+          "method": "BeginBatch",
+          "reason": "Direct transfer capabilities and staged file control are CLI operations; browser workflows observe committed publication, cache and container state."
+        },
+        {
+          "method": "StatusBatch",
+          "reason": "Direct transfer capabilities and staged file control are CLI operations; browser workflows observe committed publication, cache and container state."
+        },
+        {
+          "method": "GrantPartsBatch",
+          "reason": "Direct transfer capabilities and staged file control are CLI operations; browser workflows observe committed publication, cache and container state."
+        },
+        {
+          "method": "ReportPartsBatch",
+          "reason": "Direct transfer capabilities and staged file control are CLI operations; browser workflows observe committed publication, cache and container state."
+        },
+        {
+          "method": "CompleteBatch",
+          "reason": "Direct transfer capabilities and staged file control are CLI operations; browser workflows observe committed publication, cache and container state."
+        },
+        {
+          "method": "Abort",
+          "reason": "Direct transfer capabilities and staged file control are CLI operations; browser workflows observe committed publication, cache and container state."
+        }
+      ],
+      "methods": [
+        "GetCapabilities",
+        "BeginBatch",
+        "StatusBatch",
+        "GrantPartsBatch",
+        "ReportPartsBatch",
+        "CompleteBatch",
+        "Abort"
+      ]
     }
   ]
 }
