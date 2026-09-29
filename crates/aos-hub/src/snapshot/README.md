@@ -2,7 +2,8 @@
 
 `aos-hub snapshot capture-sqlite` and `verify-capture` expose the audited
 SQLite reader and encrypted database record protocol on Linux. They capture
-and verify current database rows and exact private originals. They do not
+and verify current database rows and exact private originals, replaying retained
+SQL constraints independently in a disposable private in-memory database. They do not
 produce a complete portable Hub, import SQL, restore objects, or authorize
 serving, pending jobs, guard namespace adoption or provider mutations.
 
@@ -69,7 +70,8 @@ Capture requires an existing trusted output parent and a nonexistent final
 name. It creates a random private 0700 sibling directory and only these
 0600 files: `metadata.aosh`, `private.aosh`, `archive.json`. It closes and
 syncs both completed encrypted streams, writes/syncs the signed root last,
-then reads back and verifies actual paired records and EOFs. It syncs the
+then reads back and verifies actual paired records, EOFs and retained SQL
+constraints in memory. Rollback and connection close precede publication. It syncs the
 staging directory, checks that its retained descriptor and temporary name
 still select the same inode before and after this sync, and publishes via
 no-replace rename. The parent is synced after publication.
@@ -97,21 +99,44 @@ remain trusted for the operation. No immutable/proc-fd SQLite mode is claimed.
 stream; codec-derived frame/ciphertext bounds are applied independently to
 both streams. Source audit has a 300-second / one-million-progress-callback
 ceiling; existing source paging/cell/row and typed-record hard limits remain.
-SIGINT/SIGTERM and deadline cancellation are cooperative between reads,
-writes, pages and record callbacks. A blocked kernel I/O syscall can delay
-cancellation; there is no hard wall-clock cancellation guarantee. Dropping
-an awaiting workflow requests cancellation for its owned blocking verifier.
+Private scratch replay has separate explicit limits, admitted before I/O:
 
-The sanitized JSON report says `records_and_reconstruction` with signed
+| Option | Default | Supported range |
+| --- | --- | --- |
+| `--max-scratch-database-bytes` | 64MiB | 4096 bytes–256MiB |
+| `--max-scratch-retained-rows` | 1,000,000 | 1–10,000,000 |
+| `--max-scratch-value-bytes` | 256MiB | 1 byte–1GiB |
+| `--scratch-timeout-seconds` | 300 | 1–3600 seconds |
+| `--max-scratch-progress-callbacks` | 100,000 | 1–1,000,000 |
+
+Replay time is capped by the remaining operation deadline. The page limit
+bounds the primary SQLite database, not all process heap. Stream, original
+value, row, page and work limits are independent; a large stream allowance
+does not guarantee replay will fit its database/value limits. Limit failure
+refuses publication or a successful verification report.
+
+SIGINT/SIGTERM and deadline cancellation are cooperative between reads,
+writes, pages and SQLite progress observations. On observed cancellation,
+verification signals the actual scratch worker and awaits rollback/close.
+A blocked kernel I/O syscall can delay cancellation; there is no hard
+wall-clock cancellation guarantee. Dropping an awaiting workflow signals
+both input and SQL cancellation, but eventual worker cleanup may outlive it.
+No plaintext scratch file is created, and no perfect memory erasure is claimed.
+
+The sanitized v2 JSON report says `retained_sqlite_constraints` with signed
 root profile `framing_only`. It proves paired grammar, exact private-cell
 reconstruction/reclassification, current classifier/schema identity, all
-267 table markers/counts and authenticated framing END/EOF/root summaries.
-Source integrity/CHECK/FK/count results are authenticated exporter
-declarations, not independently repeated by `verify-capture`. No private
-rows, credentials, key bytes or input/output paths are printed.
+267 table markers/counts, authenticated framing END/EOF/root summaries and
+independent retained SQL PK/UNIQUE/CHECK/FK/integrity/count checks under the
+trusted compiled schema. `checked_retained_tables` is the independent replay
+count; `synthetic_lineage_rows` reports two derived compiled-schema markers,
+not exported historical originals. Omitted transient auth rows stay empty.
+Source audit remains an authenticated exporter declaration. No private rows,
+credentials, key bytes or input/output paths are printed. The signed root
+profile is unchanged; this local result never upgrades its archive claims.
 
-Uniqueness/global SQL replay constraints, application/object closure,
-original sealing-key custody, external credential custody, live external
-journal continuity and activation/old-writer fencing remain explicit
-pending recovery contracts. This report cannot be used as a whole-Hub
-completeness receipt or an activation grant.
+Application/object closure, original sealing-key custody, external credential
+custody, live external journal continuity and activation/old-writer fencing
+remain explicit pending recovery contracts. This report cannot be used as a
+whole-Hub completeness receipt or an activation grant. The independently
+qualified v1 records-only implementation and receipt remain historical proof.

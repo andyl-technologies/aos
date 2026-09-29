@@ -390,6 +390,7 @@ let
     "aos-agent-rpc"
     "aos-delivery"
     "aos-hub"
+    "aos-hub-authority"
     "aos-release-signer"
     "aos-test-driver"
     "chrony"

@@ -1,18 +1,9 @@
-##! aos-hub — multi-tenant AOS registry management hub (RFC-0004)
+##! aos-hub-authority — dedicated retained per-authority Native issuer
 ##!
-##! Builds the `aos-hub` and `aos-hub-egress` binaries from the shared `crates/` cargo
-##! workspace, mirroring `pkgs/tools/aos/aos.nix`. The hub is a self-contained
-##! axum server: a sqlite database (rusqlite with the AOS SQLite library) plus
-##! a `file://`/HTTP surface reader, so unlike `aos` it shells out to no external
-##! tools at runtime and needs no PATH wrapper — `$out/bin/aos-hub` is the
-##! complete artifact.
-##!
-##! Hermetic, like every package here: the toolchain is the AOS-built
-##! `pkgs.rust`, dependencies are vendored by `fetchCargoDeps`, and the only
-##! native build inputs are `pkg-config`, `openssl`, and `sqlite` (the `reqwest`
-##! rustls stack still links `openssl-sys` transitively through the workspace) and
-##! `protobuf` (the `aos-proto` build script runs `protoc` to generate the
-##! `aos.hub.v1` ConnectRPC stubs).
+##! Builds only the separate authority process using the AOS Rust/toolchain,
+##! SQLite, OpenSSL and vendored workspace dependencies. Console inputs remain
+##! genuine dependencies of the linked Hub library. Runtime credentials,
+##! installation manifests and journals are never embedded in this artifact.
 {
   lib,
   mkCargoPackage,
@@ -47,7 +38,7 @@
   repoRootString = toString repoRoot;
   src = builtins.path {
     path = repoRoot;
-    name = "aos-hub-workspace-src";
+    name = "aos-hub-authority-workspace-src";
     filter = path: _type: let
       pathString = toString path;
       base = baseNameOf path;
@@ -83,32 +74,32 @@
     AOS_HUB_CONSOLE_CSS = "${aos-hub-console-dist}/hub-console.css";
   };
   cargoArtifactContract = {
-    family = "aos-hub-native-postgres-release";
-    features = ["postgres"];
+    family = "aos-hub-authority-native-release";
+    targets = ["aos-hub-authority"];
+    features = [];
     nativeInputs = map toString [openssl sqlite buildPkgConfig buildProtobuf aos-hub-console-dist];
   };
   cargoArtifacts = mkCargoArtifacts {
-    pname = "aos-hub-native-postgres-artifacts";
+    pname = "aos-hub-authority-native-artifacts";
     inherit version cargoDeps cargoEnv cargoArtifactContract;
     src = mkCargoDummySource {
       srcRoot = ../../../crates;
-      name = "aos-hub-native-postgres-dummy-source";
+      name = "aos-hub-authority-native-dummy-source";
       cargoRoot = "crates";
     };
     cargoRoot = "crates";
-    cargoFlags = "-p aos-hub --features postgres --bin aos-hub --bin aos-hub-egress";
+    cargoFlags = "-p aos-hub --bin aos-hub-authority";
     buildDeps = [buildPerl buildPkgConfig openssl sqlite buildProtobuf aos-hub-console-dist];
     runtimeDeps = [openssl sqlite zlib];
   };
 in
   mkCargoPackage {
-    pname = "aos-hub";
+    pname = "aos-hub-authority";
     inherit version src;
 
-    # Build the hub package's control-plane and fixed egress binaries.
-    # PostgreSQL is the strongly-consistent shared nonce store for replicated
-    # aos-hub-egress deployments. SQLite remains available for a singleton.
-    cargoFlags = "-p aos-hub --features postgres --bin aos-hub --bin aos-hub-egress";
+    # Retained authority state belongs to this separate private process.
+    # The ordinary Hub/egress executables remain in the ordinary Hub package.
+    cargoFlags = "-p aos-hub --bin aos-hub-authority";
 
     inherit cargoDeps cargoArtifacts cargoEnv cargoArtifactContract;
     cargoRoot = "crates";
@@ -117,13 +108,12 @@ in
     # libgit2 still links zlib for compressed Git objects.
     runtimeDeps = [openssl sqlite zlib];
 
-    # The workspace test suite is exercised by the `aos` package's
-    # `cargoTestFlags = "--workspace"`; this derivation only needs to compile
-    # and install the hub binary, so it skips the (redundant) test run.
+    # Actual HTTP/persistence tests are qualified separately. Artifact creation
+    # alone establishes neither retained-volume ownership nor provider readiness.
     doCheck = false;
 
     meta = {
-      description = "aos-hub — multi-tenant AOS registry management hub";
+      description = "Dedicated Native authority issuer with private retained SQLite state";
       homepage = "https://github.com/andyl/andyl-os";
       license = "MIT";
     };

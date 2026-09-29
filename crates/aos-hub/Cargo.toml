@@ -90,3 +90,7 @@ path = "src/main.rs"
 [[bin]]
 name = "aos-hub-egress"
 path = "src/bin/aos-hub-egress.rs"
+
+[[bin]]
+name = "aos-hub-authority"
+path = "src/bin/aos-hub-authority.rs"

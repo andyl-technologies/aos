@@ -1454,6 +1454,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"
     "aos-hub"
+    "aos-hub-authority"
     "aos-hub-cloudflare"
     "aos-hub-console-dist"
     "aos-hub-dialect-tests"

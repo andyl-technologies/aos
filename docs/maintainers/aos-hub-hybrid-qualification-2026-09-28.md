@@ -1183,3 +1183,65 @@ commands follows separately. They provide no PostgreSQL/Worker reader, complete
 storage-object/application closure, import or activation. Path-based opens
 cannot defeat malicious same-owner replacement, and cooperative cancellation
 does not bound blocked I/O.
+
+## Live issuer runtimes and snapshot constraint enforcement
+
+The dedicated Worker issuer retains publication, journal and original-operation
+receipts in an addressed SQLite Durable Object. Permanent activation prevents
+erased history from becoming fresh authority. The issuer seed is absent from
+ordinary executor bindings; issuance requires an explicit operator timing profile.
+Exact isolated source passes 38 unchanged core tests, two Worker deadline tests
+and 16 persistent real Worker lifecycle groups, including lost acknowledgments,
+restart, erased history and post-signing deadline refusal. Producer receipt
+`/tmp/hub-live-authority-issuer/qualification-receipt-v2.json`
+(`222ffce5c43c46261bea81c1e4794c2964c46d8b875e8e432fcb94c017698b88`)
+and independent receipt
+`/tmp/hub-live-authority-issuer-independent-review/final-v2-receipt.json`
+(`84ab7dbcffded8b3b6b97146fd76e89cb810d22b20ba9386750773a87d67600a`)
+bind the eight exact integrated Worker/package paths and six unchanged core
+prerequisites. This is local dev-profile qualification; optimized and hosted
+acceptance remain separate. Renewals still rehash and rewrite publication chunks.
+
+The Worker package now invokes wasm-bindgen's initializer after its module cycle
+completes. The missing initializer made an ordinary JavaScript Error trap at the
+SDK boundary. An isolated reproduction and actual lifecycle regressions cover
+the repair without adding error normalization or production test hooks.
+
+The separate `aos-hub-authority` Native process exposes bounded authenticated
+HTTP operations over the schema-two retained journal. Its 12 core control,
+15 actual HTTP and 19 journal tests pass. The genuine x86_64 hermetic package
+builds, installs exactly that executable and passes packaged help. Producer
+`/tmp/aos-native-authority-server/qualification-receipt-final.json`
+(`233a931d987b4506f661f0b18582c64e0c57feecdcf2fa6a05390dfa0124fa20`)
+and independent final artifact receipt
+`/tmp/aos-native-authority-server-independent-review-corrected/final-artifact-receipt.json`
+(`56f77265cbe7c110f2582583eed684f482f4b1664165eb78bb23e4d54468d92b`)
+bind the source, build and executable inventory. All 18 integration hashes match;
+two contextual edits preserve existing SQLite hooks and snapshot exports. The
+ordinary Hub retains PostgreSQL and explicitly builds its two existing binaries.
+
+A retained unresolved Native clock session refuses another serving process before
+listener creation, including when issuance is disabled. Operator clock-session
+resolution, hosted clock/disk qualification, power-loss tests and provider
+dispatch remain pending. Schema one is not silently migrated or replaced.
+
+Snapshot capture readback and verify now require retained SQL primary key,
+uniqueness, CHECK and foreign-key constraints, typed readback and integrity checks
+in private in-memory SQLite. Rollback and close precede reporting or publication.
+The six exact integrated paths pass 22 workflow tests, three parser tests and
+20 actual binary probes. Correctly signed PK/UNIQUE/CHECK/FK violations are
+refused; valid capture/verify, limits, cleanup and privacy pass. Producer
+`/tmp/hub-snapshot-cli-scratch-qualified.json`
+(`d496c9c164bc3a2e7ccb612501bc4ab6ccdcc10b46fdfc3b8141dbf31d4aa327`)
+and independent receipt
+`/tmp/hub-snapshot-cli-scratch-independent-review/receipt.json`
+(`52606bdad864db8e2eed25f18403ad6878056b75d120238696aa98e5738512dd`)
+bind the source, evidence and ordinary dev binary. Report version two uses
+`retained_sqlite_constraints`; the signed root remains `framing_only`. Lineage
+markers are synthetic. Five recovery requirements remain: application/object
+closure, original sealing keys, external credentials, external journal continuity
+and writer fencing/activation. Five explicit limits bound admitted work;
+cancellation remains cooperative. Earlier records-only evidence is retained.
+
+These independently qualified increments do not establish combined packaged,
+full fleet, provider or hosted acceptance. Those gates remain pending.

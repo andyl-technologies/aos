@@ -1,17 +1,17 @@
-//! Offline capture and record verification over private local archive files.
+//! Offline capture and retained SQL verification over private local archive files.
 //!
-//! Reports concern records/reconstruction and authenticated signer declarations.
+//! Reports concern reconstructed records, retained SQL constraints and signer declarations.
 //! They authorize no import, runtime, provider operation, journal adoption or job.
 //! Cancellation is cooperative; one blocked kernel I/O cannot be forcibly bounded.
 //!
 //! ```json
-//! {"schema_version":"aos.hub.offline-database-capture-report/v1",
-//!  "operation":"verify_capture","verification_scope":"records_and_reconstruction",
+//! {"schema_version":"aos.hub.offline-database-capture-report/v2",
+//!  "operation":"verify_capture","verification_scope":"retained_sqlite_constraints",
 //!  "signed_root_profile":"framing_only","tables":267,"retained_rows":0,
-//!  "omitted_rows":0,"private_cells":0,
+//!  "omitted_rows":0,"private_cells":0,"checked_retained_tables":257,
+//!  "synthetic_lineage_rows":2,
 //!  "source_audit_scope":"authenticated_exporter_declaration",
-//!  "pending_recovery_requirements":["unique_keys_and_global_sql_constraints",
-//!    "application_and_object_closure","original_sealing_key_custody",
+//!  "pending_recovery_requirements":["application_and_object_closure","original_sealing_key_custody",
 //!    "external_credential_custody","live_external_journal_continuity",
 //!    "activation_and_old_writer_fencing"]}
 //! ```
@@ -26,8 +26,7 @@ use aos_hub_core::backend::sqlite_snapshot::{
     SqliteSnapshotAuditLimits, SqliteSnapshotLimits, SqliteSnapshotReader,
 };
 use aos_hub_core::snapshot::archive::records::{
-    capture_sqlite, verify_database_capture, CaptureKeyCustody, DatabaseCaptureCounts,
-    SqliteCaptureOptions,
+    capture_sqlite, CaptureKeyCustody, SqliteCaptureOptions,
 };
 use aos_hub_core::snapshot::archive::root::verify_declared_root;
 use aos_hub_core::snapshot::archive::StreamLimits;
@@ -35,6 +34,10 @@ use serde::Serialize;
 
 use super::credentials::{load_capture, load_exclusions, load_trust, load_wrapping};
 use super::filesystem::{self, Directory, PublishError, SourceAdmission, Stage};
+use super::scratch::{
+    verify_capture_in_scratch, ScratchCancellation, ScratchVerificationError,
+    ScratchVerificationInputs, ScratchVerificationLimits, VerifiedRetainedSqliteCapture,
+};
 use super::{CaptureCredentials, VerifyCredentials};
 
 /// Value-free failure stage, including the irreversible publication boundary.
@@ -55,8 +58,8 @@ pub enum SnapshotError {
     /// Private staging or publication failed before rename committed.
     #[error("snapshot output failed before publication")]
     Output,
-    /// Actual paired record verification failed.
-    #[error("snapshot record verification failed")]
+    /// Actual paired records or retained SQL constraint verification failed.
+    #[error("snapshot retained SQL verification failed")]
     Verification,
     /// Cancellation/deadline was observed before a completed operation.
     #[error("snapshot operation cancelled before completion")]
@@ -66,6 +69,51 @@ pub enum SnapshotError {
     PublishedDurabilityUnconfirmed,
 }
 
+/// Explicit private replay limits, independent of encrypted stream byte limits.
+///
+/// The database cap bounds primary SQLite pages, not total process memory.
+#[derive(Debug, Clone, Copy)]
+pub struct SnapshotScratchLimits {
+    /// Maximum primary in-memory SQLite page bytes (4096 through 256 MiB).
+    pub max_database_bytes: u64,
+    /// Maximum retained rows (one through ten million).
+    pub max_retained_rows: u64,
+    /// Maximum cumulative original typed-cell payload (one byte through 1 GiB).
+    pub max_value_bytes: u64,
+    /// Replay duration (nonzero through one hour), capped by operation remainder.
+    pub max_duration: Duration,
+    /// Maximum approximately thousand-instruction SQLite progress callbacks.
+    pub max_progress_callbacks: u64,
+}
+
+impl Default for SnapshotScratchLimits {
+    fn default() -> Self {
+        let limits = ScratchVerificationLimits::default();
+        Self {
+            max_database_bytes: limits.max_database_bytes,
+            max_retained_rows: limits.max_retained_rows,
+            max_value_bytes: limits.max_value_bytes,
+            max_duration: limits.max_duration,
+            max_progress_callbacks: limits.max_progress_callbacks,
+        }
+    }
+}
+
+impl SnapshotScratchLimits {
+    fn validate(self) -> Result<(), SnapshotError> {
+        if !(4096..=256 * 1024 * 1024).contains(&self.max_database_bytes)
+            || !(1..=10_000_000).contains(&self.max_retained_rows)
+            || !(1..=1024 * 1024 * 1024).contains(&self.max_value_bytes)
+            || self.max_duration.is_zero()
+            || self.max_duration > Duration::from_secs(3600)
+            || !(1..=1_000_000).contains(&self.max_progress_callbacks)
+        {
+            return Err(SnapshotError::Limits);
+        }
+        Ok(())
+    }
+}
+
 /// Cooperative cancellation and deadline shared with synchronous file operations.
 #[derive(Clone)]
 pub struct SnapshotBudget {
@@ -73,6 +121,10 @@ pub struct SnapshotBudget {
     notified: Arc<tokio::sync::Notify>,
     deadline: Instant,
     streams: StreamLimits,
+    scratch: SnapshotScratchLimits,
+    scratch_cancellation: ScratchCancellation,
+    #[cfg(test)]
+    scratch_read_gate: Option<Arc<ScratchReadGate>>,
 }
 
 impl SnapshotBudget {
@@ -104,6 +156,10 @@ impl SnapshotBudget {
             cancelled: Arc::new(AtomicBool::new(false)),
             notified: Arc::new(tokio::sync::Notify::new()),
             deadline,
+            scratch: SnapshotScratchLimits::default(),
+            scratch_cancellation: ScratchCancellation::default(),
+            #[cfg(test)]
+            scratch_read_gate: None,
             streams: StreamLimits {
                 max_data_frames: frames,
                 max_plaintext_bytes: plaintext_bytes,
@@ -112,9 +168,40 @@ impl SnapshotBudget {
         })
     }
 
+    /// Admits explicit private replay limits before any source or credential I/O.
+    ///
+    /// # Errors
+    ///
+    /// Rejects limits outside the independent scratch verifier's supported bounds.
+    pub fn with_scratch_limits(
+        mut self,
+        limits: SnapshotScratchLimits,
+    ) -> Result<Self, SnapshotError> {
+        limits.validate()?;
+        self.scratch = limits;
+        Ok(self)
+    }
+
+    fn scratch_limits(&self) -> Result<ScratchVerificationLimits, SnapshotError> {
+        self.check()?;
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(SnapshotError::Cancelled);
+        }
+        Ok(ScratchVerificationLimits {
+            max_database_bytes: self.scratch.max_database_bytes,
+            max_retained_rows: self.scratch.max_retained_rows,
+            max_value_bytes: self.scratch.max_value_bytes,
+            max_duration: self.scratch.max_duration.min(remaining),
+            max_progress_callbacks: self.scratch.max_progress_callbacks,
+            streams: self.streams,
+        })
+    }
+
     /// Requests cooperative cancellation without touching source or files.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
+        self.scratch_cancellation.cancel();
         self.notified.notify_one();
     }
 
@@ -153,8 +240,36 @@ struct BudgetIo<T> {
     budget: SnapshotBudget,
 }
 
+// Test-only observation pauses an actual scratch reader after schema creation.
+// It exposes no production instrumentation or private row values.
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct ScratchReadGate {
+    pub(super) entered: AtomicBool,
+    pub(super) released: AtomicBool,
+}
+
+#[cfg(test)]
+impl SnapshotBudget {
+    pub(super) fn is_cancelled_for_test(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub(super) fn with_read_gate(mut self, gate: Arc<ScratchReadGate>) -> Self {
+        self.scratch_read_gate = Some(gate);
+        self
+    }
+}
+
 impl<T: Read> Read for BudgetIo<T> {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        #[cfg(test)]
+        if let Some(gate) = &self.budget.scratch_read_gate {
+            gate.entered.store(true, Ordering::Release);
+            while !gate.released.load(Ordering::Acquire) && self.budget.check().is_ok() {
+                std::thread::yield_now();
+            }
+        }
         self.budget
             .check()
             .map_err(|_| std::io::Error::other("snapshot cancelled"))?;
@@ -178,14 +293,14 @@ impl<T: Write> Write for BudgetIo<T> {
     }
 }
 
-/// A sanitized record-only report, without private values, paths or key material.
+/// A sanitized retained-SQL report, without private values, paths or key material.
 #[derive(Debug, Serialize)]
 pub struct SnapshotReport {
-    /// Exact report format for offline local records, never a restore grant.
+    /// Exact report format for offline local constraints, never a restore grant.
     pub schema_version: &'static str,
     /// The executed operation: capture_sqlite or verify_capture.
     pub operation: &'static str,
-    /// Grammar, reconstruction and count verification scope.
+    /// Reconstructed records and independently replayed retained SQL constraints.
     pub verification_scope: &'static str,
     /// Existing signed-root scope remains framing_only.
     pub signed_root_profile: &'static str,
@@ -197,25 +312,31 @@ pub struct SnapshotReport {
     pub omitted_rows: u64,
     /// Exact matched private-cell dependencies.
     pub private_cells: u64,
+    /// Retained tables independently checked using the compiled SQLite schema.
+    pub checked_retained_tables: usize,
+    /// Two derived compiled-lineage rows, never exported historical originals.
+    pub synthetic_lineage_rows: usize,
     /// Source audit provenance is an authenticated exporter declaration.
     pub source_audit_scope: &'static str,
     /// Separately required contracts before any stronger recovery acceptance.
-    pub pending_recovery_requirements: [&'static str; 6],
+    pub pending_recovery_requirements: [&'static str; 5],
 }
 
-fn report(operation: &'static str, counts: &DatabaseCaptureCounts) -> SnapshotReport {
+fn report(operation: &'static str, verified: &VerifiedRetainedSqliteCapture) -> SnapshotReport {
+    let counts = verified.records().counts();
     SnapshotReport {
-        schema_version: "aos.hub.offline-database-capture-report/v1",
+        schema_version: "aos.hub.offline-database-capture-report/v2",
         operation,
-        verification_scope: "records_and_reconstruction",
+        verification_scope: "retained_sqlite_constraints",
         signed_root_profile: "framing_only",
         tables: counts.tables,
         retained_rows: counts.retained_rows,
         omitted_rows: counts.omitted_rows,
         private_cells: counts.private_cells,
+        checked_retained_tables: verified.checked_tables(),
+        synthetic_lineage_rows: verified.synthetic_lineage_rows(),
         source_audit_scope: "authenticated_exporter_declaration",
         pending_recovery_requirements: [
-            "unique_keys_and_global_sql_constraints",
             "application_and_object_closure",
             "original_sealing_key_custody",
             "external_credential_custody",
@@ -225,15 +346,15 @@ fn report(operation: &'static str, counts: &DatabaseCaptureCounts) -> SnapshotRe
     }
 }
 
-fn verify_directory(
+async fn verify_directory(
     directory: Directory,
     root: Vec<u8>,
     trust: aos_hub_core::snapshot::archive::root::ArchiveSignerTrust,
     wrapping: aos_hub_core::snapshot::archive::root::ArchiveWrappingKeys,
     exclusions: Vec<aos_hub_core::snapshot::archive::root::ExcludedArchiveKey>,
     budget: SnapshotBudget,
-) -> Result<DatabaseCaptureCounts, SnapshotError> {
-    budget.check()?;
+) -> Result<VerifiedRetainedSqliteCapture, SnapshotError> {
+    let limits = budget.scratch_limits()?;
     let metadata = BudgetIo {
         inner: directory
             .file("metadata.aosh")
@@ -246,20 +367,37 @@ fn verify_directory(
             .map_err(|_| SnapshotError::Verification)?,
         budget: budget.clone(),
     };
-    let verified = verify_database_capture(
-        &root,
-        &trust,
-        &wrapping,
-        &exclusions,
-        metadata,
-        private,
-        budget.streams,
-        |_, _, _| budget.check().map_err(anyhow::Error::from),
+    let worker = verify_capture_in_scratch(
+        ScratchVerificationInputs {
+            root,
+            trust,
+            wrapping,
+            exclusions,
+            metadata,
+            private,
+        },
+        limits,
+        budget.scratch_cancellation.clone(),
     );
+    tokio::pin!(worker);
+    let result = tokio::select! {
+        result = &mut worker => result,
+        _ = budget.stopped() => {
+            // Signal SQL progress as well as later input reads, then await the
+            // worker's rollback/close. Blocking I/O may delay this observation.
+            budget.cancel();
+            let _ = worker.await;
+            return Err(SnapshotError::Cancelled);
+        }
+    };
     budget.check()?;
-    verified
-        .map(|verified| verified.counts().clone())
-        .map_err(|_| SnapshotError::Verification)
+    result.map_err(|error| match error {
+        ScratchVerificationError::InvalidLimits | ScratchVerificationError::Limits => {
+            SnapshotError::Limits
+        }
+        ScratchVerificationError::Cancelled => SnapshotError::Cancelled,
+        _ => SnapshotError::Verification,
+    })
 }
 
 /// Captures an existing SQLite file and atomically publishes a private directory.
@@ -347,20 +485,16 @@ pub async fn capture(
         fd: rustix::io::dup(&stage.directory().fd).map_err(|_| SnapshotError::Verification)?,
     };
     let root = filesystem::root(stage.directory()).map_err(|_| SnapshotError::Verification)?;
-    let readback_budget = budget.clone();
-    let observed = tokio::task::spawn_blocking(move || {
-        verify_directory(
-            directory,
-            root,
-            custody.trust,
-            custody.wrapping,
-            custody.exclusions,
-            readback_budget,
-        )
-    })
-    .await
-    .map_err(|_| SnapshotError::Verification)??;
-    if observed != output.counts {
+    let observed = verify_directory(
+        directory,
+        root,
+        custody.trust,
+        custody.wrapping,
+        custody.exclusions,
+        budget.clone(),
+    )
+    .await?;
+    if observed.records().counts() != &output.counts {
         return Err(SnapshotError::Verification);
     }
     budget.check()?;
@@ -373,9 +507,10 @@ pub async fn capture(
 
 /// Verifies a private archive's actual paired streams using external signer trust.
 ///
-/// Private callbacks only discard reconstructed rows. No SQL, scratch replay,
-/// output directory, import or activation operation occurs. Both complete EOFs
-/// are mandatory; source audit facts remain authenticated declarations.
+/// Provisional rows replay only in private memory under the compiled schema.
+/// Complete EOFs, SQL constraints, rollback and close precede the report. No
+/// output directory, import or activation operation occurs; source audit facts
+/// remain authenticated declarations.
 ///
 /// # Errors
 ///
@@ -396,11 +531,6 @@ pub async fn verify(
     let wrapping = load_wrapping(&credentials.wrapping).map_err(|_| SnapshotError::Credentials)?;
     let exclusions =
         load_exclusions(&credentials.exclusion_files).map_err(|_| SnapshotError::Credentials)?;
-    let cancellation = budget.clone();
-    let worker = tokio::task::spawn_blocking(move || {
-        verify_directory(directory, root, trust, wrapping, exclusions, budget)
-    });
-    let counts = worker.await.map_err(|_| SnapshotError::Verification)??;
-    cancellation.check()?;
-    Ok(report("verify_capture", &counts))
+    let verified = verify_directory(directory, root, trust, wrapping, exclusions, budget).await?;
+    Ok(report("verify_capture", &verified))
 }

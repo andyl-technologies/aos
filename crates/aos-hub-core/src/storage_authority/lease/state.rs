@@ -25,7 +25,11 @@ pub struct LeaseClock {
 }
 
 impl LeaseClock {
-    fn bounds(self, profile: &LeaseTimingProfile, floor: LeaseInteger) -> Result<(i64, i64)> {
+    pub(super) fn bounds(
+        self,
+        profile: &LeaseTimingProfile,
+        floor: LeaseInteger,
+    ) -> Result<(i64, i64)> {
         profile.validate()?;
         ensure!(
             self.observed_at >= floor.get()
@@ -728,7 +732,7 @@ impl EpochLeaseVerifier {
     }
 }
 
-fn validate_time(
+pub(super) fn validate_time(
     payload: &EpochLeasePayload,
     floor: LeaseInteger,
     clock: LeaseClock,

@@ -14,7 +14,9 @@ use aos_hub_core::storage_authority::{
 use rusqlite::{params, Connection, OpenFlags, TransactionBehavior};
 use serde::{de::DeserializeOwned, Serialize};
 
+use super::control_replay::RetainedControl;
 use super::{AuthorityJournal, IssuerInstallation, IssuerLiveState, IssuerPublicationReceipt};
+use aos_hub_core::storage_authority::lease::control::{IssuerOperation, MAX_ISSUER_CONTROL_BYTES};
 
 const APPLICATION_ID: i32 = 0x414f534a;
 const MARKER_LIMIT: usize = 4096;
@@ -23,10 +25,12 @@ const RECEIPT_LIMIT: usize = 1024;
 
 const SCHEMA: &[(&str, &str, &str)] = &[
     ("table", "installation_marker", "CREATE TABLE installation_marker (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), marker BLOB NOT NULL)"),
+    ("table", "authority_clock", "CREATE TABLE authority_clock (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), floor TEXT NOT NULL, session TEXT)"),
     ("table", "authority_state", "CREATE TABLE authority_state (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), publication BLOB NOT NULL, journal BLOB NOT NULL)"),
-    ("table", "publication_receipts", "CREATE TABLE publication_receipts (generation TEXT PRIMARY KEY, publication BLOB NOT NULL, receipt BLOB NOT NULL) WITHOUT ROWID"),
+    ("table", "publication_receipts", "CREATE TABLE publication_receipts (generation TEXT PRIMARY KEY, publication BLOB NOT NULL, receipt BLOB NOT NULL, operation BLOB NOT NULL) WITHOUT ROWID"),
     // REPLACE may bypass delete triggers; insertion guards preserve immutable
     // marker/history even for that SQLite conflict-resolution form.
+    ("trigger", "clock_session_no_change", "CREATE TRIGGER clock_session_no_change BEFORE UPDATE OF session ON authority_clock WHEN OLD.session IS NOT NULL AND NEW.session IS NOT OLD.session BEGIN SELECT RAISE(ABORT, 'unresolved clock session'); END"),
     ("trigger", "marker_no_reinsert", "CREATE TRIGGER marker_no_reinsert BEFORE INSERT ON installation_marker WHEN EXISTS (SELECT 1 FROM installation_marker) BEGIN SELECT RAISE(ABORT, 'immutable installation marker'); END"),
     ("trigger", "receipts_no_replace", "CREATE TRIGGER receipts_no_replace BEFORE INSERT ON publication_receipts WHEN EXISTS (SELECT 1 FROM publication_receipts WHERE generation = NEW.generation) BEGIN SELECT RAISE(ABORT, 'immutable publication receipt'); END"),
     ("trigger", "marker_no_update", "CREATE TRIGGER marker_no_update BEFORE UPDATE ON installation_marker BEGIN SELECT RAISE(ABORT, 'immutable installation marker'); END"),
@@ -39,7 +43,7 @@ pub(super) fn initialize(adapter: &AuthorityJournal, snapshot: &IssuerLiveState)
     let mut connection = connection(adapter)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
-    transaction.pragma_update(None, "user_version", 1)?;
+    transaction.pragma_update(None, "user_version", 2)?;
     for (_, _, statement) in SCHEMA {
         transaction.execute_batch(statement)?;
     }
@@ -54,7 +58,18 @@ pub(super) fn initialize(adapter: &AuthorityJournal, snapshot: &IssuerLiveState)
             encode(&snapshot.journal, JOURNAL_LIMIT)?
         ],
     )?;
-    insert_receipt(&transaction, &snapshot.publication)?;
+    transaction.execute(
+        "INSERT INTO authority_clock VALUES (1, ?1, NULL)",
+        [snapshot.journal.clock_floor.get().to_string()],
+    )?;
+    insert_receipt(
+        &transaction,
+        &snapshot.publication,
+        &RetainedControl::new(
+            &adapter.marker,
+            IssuerOperation::Install(snapshot.publication.clone()),
+        )?,
+    )?;
     transaction
         .commit()
         .context("committing initial issuer installation")?;
@@ -106,6 +121,7 @@ pub(super) fn commit_lease(
         "UPDATE authority_state SET journal = ?1 WHERE singleton = 1",
         [encode(&next.journal, JOURNAL_LIMIT)?],
     )?;
+    retain_clock_floor(&transaction, next.journal.clock_floor)?;
     before_commit();
     transaction
         .commit()
@@ -164,6 +180,11 @@ fn commit_control(
         current.journal == transition.expected,
         "issuer journal CAS conflict"
     );
+    let operation = match &change {
+        PublicationChange::Advance(publication) => IssuerOperation::Publish(publication.clone()),
+        PublicationChange::Deny(denial) => IssuerOperation::Deny(denial.clone()),
+    };
+    let retained = RetainedControl::new(&adapter.marker, operation)?;
     let (publication, prepared) = match change {
         PublicationChange::Advance(publication) => {
             let prepared = current.journal.prepare_publication(&publication, clock)?;
@@ -191,7 +212,8 @@ fn commit_control(
             encode(&next.journal, JOURNAL_LIMIT)?
         ],
     )?;
-    let receipt = insert_receipt(&transaction, &next.publication)?;
+    let receipt = insert_receipt(&transaction, &next.publication, &retained)?;
+    retain_clock_floor(&transaction, next.journal.clock_floor)?;
     before_commit()?;
     transaction
         .commit()
@@ -264,7 +286,7 @@ fn load_transaction(
         transaction.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let version: i32 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
     ensure!(
-        application == APPLICATION_ID && version == 1,
+        application == APPLICATION_ID && version == 2,
         "issuer journal schema identity changed"
     );
     let mut statement = transaction.prepare(
@@ -317,6 +339,11 @@ fn load_transaction(
         journal,
     };
     snapshot.validate()?;
+    read_clock_session(transaction)?;
+    ensure!(
+        read_clock_floor(transaction)? >= snapshot.journal.clock_floor,
+        "retained clock floor is behind journal"
+    );
     let receipt = read_receipt(transaction, &marker, snapshot.journal.generation)?
         .context("issuer head has no historical receipt")?;
     ensure!(
@@ -329,14 +356,20 @@ fn load_transaction(
 fn insert_receipt(
     transaction: &rusqlite::Transaction<'_>,
     publication: &StorageAuthorityPublication,
+    retained: &RetainedControl,
 ) -> Result<IssuerPublicationReceipt> {
+    ensure!(
+        retained.publication()? == publication,
+        "retained control publication differs"
+    );
     let receipt = IssuerPublicationReceipt::from_publication(publication)?;
     transaction.execute(
-        "INSERT INTO publication_receipts VALUES (?1, ?2, ?3)",
+        "INSERT INTO publication_receipts VALUES (?1, ?2, ?3, ?4)",
         params![
             receipt.generation.get().to_string(),
             encode(publication, MAX_AUTHORITY_PUBLICATION_BYTES)?,
-            encode(&receipt, RECEIPT_LIMIT)?
+            encode(&receipt, RECEIPT_LIMIT)?,
+            encode(retained, MAX_ISSUER_CONTROL_BYTES)?
         ],
     )?;
     Ok(receipt)
@@ -363,6 +396,11 @@ fn read_receipt(
     )?;
     let receipt: IssuerPublicationReceipt = decode(&bytes, RECEIPT_LIMIT)?;
     let publication: StorageAuthorityPublication = decode(&bounded_blob(transaction, "SELECT length(publication), publication FROM publication_receipts WHERE generation = ?1", [generation.get().to_string()], MAX_AUTHORITY_PUBLICATION_BYTES)?, MAX_AUTHORITY_PUBLICATION_BYTES)?;
+    let retained = read_control(transaction, marker, generation)?;
+    ensure!(
+        retained.publication()? == &publication,
+        "retained control differs from receipt history"
+    );
     publication.validate(
         &marker.authority.guard_namespace_id,
         &marker.executor_identity,
@@ -374,6 +412,173 @@ fn read_receipt(
         "issuer receipt history is corrupt or belongs to another installation"
     );
     Ok(Some(receipt))
+}
+
+pub(super) fn receipt_for_operation(
+    adapter: &AuthorityJournal,
+    operation: IssuerOperation,
+) -> Result<Option<IssuerPublicationReceipt>> {
+    let expected = RetainedControl::new(&adapter.marker, operation)?;
+    let generation = LeaseInteger::new(expected.publication()?.generation)?;
+    let mut connection = connection(adapter)?;
+    let transaction = connection.transaction()?;
+    load_transaction(&transaction, adapter)?;
+    let receipt = read_receipt(&transaction, &adapter.marker, generation)?;
+    if receipt.is_some() {
+        ensure!(
+            read_control(&transaction, &adapter.marker, generation)? == expected,
+            "control replay differs from original intent"
+        );
+    }
+    transaction.commit()?;
+    adapter.file.validate_current()?;
+    Ok(receipt)
+}
+
+fn read_control(
+    transaction: &rusqlite::Transaction<'_>,
+    marker: &IssuerInstallation,
+    generation: LeaseInteger,
+) -> Result<RetainedControl> {
+    let retained: RetainedControl = decode(
+        &bounded_blob(
+            transaction,
+            "SELECT length(operation), operation FROM publication_receipts WHERE generation = ?1",
+            [generation.get().to_string()],
+            MAX_ISSUER_CONTROL_BYTES,
+        )?,
+        MAX_ISSUER_CONTROL_BYTES,
+    )?;
+    retained.validate(marker)?;
+    ensure!(
+        retained.publication()?.generation == generation.get(),
+        "retained control generation differs"
+    );
+    Ok(retained)
+}
+
+pub(super) fn begin_clock_session(adapter: &AuthorityJournal, session: &str) -> Result<()> {
+    let mut connection = connection(adapter)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    load_transaction(&transaction, adapter)?;
+    ensure!(
+        read_clock_session(&transaction)?.is_none(),
+        "unresolved clock session requires explicit reviewed operator resolution"
+    );
+    let rows = transaction.execute(
+        "UPDATE authority_clock SET session = ?1 WHERE singleton = 1",
+        [session],
+    )?;
+    ensure!(rows == 1, "clock session row disappeared");
+    transaction
+        .commit()
+        .context("claiming unresolved clock session; outcome may be indeterminate")?;
+    adapter.file.validate_current()?;
+    Ok(())
+}
+
+fn read_clock_session(transaction: &rusqlite::Transaction<'_>) -> Result<Option<String>> {
+    let session = transaction.query_row(
+        "SELECT length(session), session FROM authority_clock WHERE singleton = 1",
+        [],
+        |row| {
+            let length: Option<i64> = row.get(0)?;
+            match length {
+                None => Ok(None),
+                Some(64) => row.get::<_, String>(1).map(Some),
+                _ => Err(rusqlite::Error::InvalidQuery),
+            }
+        },
+    )?;
+    if let Some(session) = &session {
+        ensure!(
+            session.len() == 64
+                && session
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "clock session identity is corrupt"
+        );
+    }
+    Ok(session)
+}
+
+pub(super) fn observe_clock(
+    adapter: &AuthorityJournal,
+    session: &str,
+    clock: LeaseClock,
+) -> Result<LeaseClock> {
+    let mut connection = connection(adapter)?;
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let current = load_transaction(&transaction, adapter)?;
+    ensure!(
+        read_clock_session(&transaction)?.as_deref() == Some(session),
+        "clock session differs"
+    );
+    ensure!(
+        clock.uncertainty >= 0
+            && clock.uncertainty
+                <= current
+                    .journal
+                    .policy
+                    .timing_profile
+                    .maximum_clock_uncertainty
+                    .get(),
+        "unqualified clock uncertainty"
+    );
+    ensure!(
+        clock.observed_at >= clock.uncertainty
+            && clock.observed_at >= read_clock_floor(&transaction)?.get(),
+        "clock rolled backwards or has an indeterminate bound"
+    );
+    clock
+        .observed_at
+        .checked_add(clock.uncertainty)
+        .context("clock uncertainty overflow")?;
+    retain_clock_floor(&transaction, LeaseInteger::new(clock.observed_at)?)?;
+    transaction
+        .commit()
+        .context("retaining clock observation; outcome may be indeterminate")?;
+    adapter.file.validate_current()?;
+    Ok(clock)
+}
+
+fn read_clock_floor(transaction: &rusqlite::Transaction<'_>) -> Result<LeaseInteger> {
+    let (length, floor): (i64, String) = transaction.query_row(
+        "SELECT length(floor), floor FROM authority_clock WHERE singleton = 1",
+        [],
+        |row| {
+            let length: i64 = row.get(0)?;
+            if !(1..=19).contains(&length) {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            Ok((length, row.get(1)?))
+        },
+    )?;
+    ensure!(
+        length as usize == floor.len(),
+        "noncanonical clock floor encoding"
+    );
+    let value: i64 = floor.parse()?;
+    ensure!(
+        value.to_string() == floor,
+        "noncanonical clock floor encoding"
+    );
+    LeaseInteger::new(value)
+}
+
+fn retain_clock_floor(
+    transaction: &rusqlite::Transaction<'_>,
+    observed: LeaseInteger,
+) -> Result<()> {
+    let retained = read_clock_floor(transaction)?;
+    if observed > retained {
+        let rows = transaction.execute(
+            "UPDATE authority_clock SET floor = ?1 WHERE singleton = 1",
+            [observed.get().to_string()],
+        )?;
+        ensure!(rows == 1, "clock floor disappeared");
+    }
+    Ok(())
 }
 
 fn bounded_blob(

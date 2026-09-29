@@ -29,12 +29,14 @@ use aos_hub_core::storage_authority::{
         LeaseInteger,
     },
 };
+use rand::TryRngCore as _;
 
+mod control_replay;
 mod filesystem;
 mod sqlite;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use aos_hub_core::storage_authority::lease::control::{
     IssuerInstallation, IssuerLiveState, IssuerPublicationReceipt,
@@ -130,6 +132,31 @@ impl AuthorityJournal {
         sqlite::load(self)
     }
 
+    /// Irreversibly claims this process's unresolved clock observation session.
+    ///
+    /// The actual session marker is committed before any clock sample. It remains
+    /// retained for the entire process lifetime, including crashes and successful
+    /// observations. Serving cannot clear it; restart requires a later explicit
+    /// reviewed operator resolution, which this increment does not implement.
+    /// State and historical receipts remain independently readable.
+    ///
+    /// # Errors
+    /// Returns an error for an existing unresolved session, corruption, changed
+    /// installation or indeterminate commit. A possibly committed claim is never
+    /// retried by substituting cached success or implicitly authorizing restart.
+    pub fn begin_clock_observation_session(&self) -> Result<AuthorityClockSession> {
+        let mut random = [0_u8; 32];
+        rand::rngs::OsRng
+            .try_fill_bytes(&mut random)
+            .map_err(|_| anyhow::anyhow!("clock session entropy unavailable"))?;
+        let session = hex::encode(random);
+        sqlite::begin_clock_session(self, &session)?;
+        Ok(AuthorityClockSession {
+            journal: self.clone(),
+            session,
+        })
+    }
+
     /// Retrieves an exact retained historical publication receipt.
     ///
     /// A receipt acknowledges history, not current admission or provider drain.
@@ -138,6 +165,23 @@ impl AuthorityJournal {
     /// Returns an error for corruption or a changed installation/file.
     pub fn receipt(&self, generation: LeaseInteger) -> Result<Option<IssuerPublicationReceipt>> {
         sqlite::receipt(self, generation)
+    }
+
+    /// Retrieves a receipt only for the exact originally retained control operation.
+    ///
+    /// Nonce and request times are absent from the immutable semantic intent.
+    /// A changed operation kind, denial CAS or installation is rejected even
+    /// when the resulting publication has the same digest. A historical receipt
+    /// does not assert current admission or provider settlement.
+    ///
+    /// # Errors
+    /// Returns an error for a changed intent, invalid operation, corrupt history
+    /// or changed installation/file. Returns `None` for an uncommitted generation.
+    pub fn receipt_for_operation(
+        &self,
+        operation: aos_hub_core::storage_authority::lease::control::IssuerOperation,
+    ) -> Result<Option<IssuerPublicationReceipt>> {
+        sqlite::receipt_for_operation(self, operation)
     }
 
     /// Durably commits an issuance or time-floor transition under the live gate.
@@ -214,5 +258,31 @@ impl AuthorityJournal {
             sqlite::commit_denial(&adapter, transition, denial, clock)
         })
         .await?
+    }
+}
+
+/// Durable unresolved observation session owned by one separately running issuer.
+///
+/// Only an acknowledged actual journal claim constructs this value. It cannot
+/// authorize another process after restart; no close/clear/resolution API exists.
+pub struct AuthorityClockSession {
+    journal: AuthorityJournal,
+    session: String,
+}
+
+impl AuthorityClockSession {
+    /// Commits a conservatively bounded clock ceiling under this exact live session.
+    ///
+    /// Acknowledgment follows the same-file EXTRA commit. The clock adapter must
+    /// then obtain a fresh post-commit observation and validate the independent
+    /// uncertainty/latency/rounding bounds before exposing a qualified value.
+    /// Retaining a ceiling alone proves no clock qualification or usable time.
+    ///
+    /// # Errors
+    /// Returns an error for rollback, uncertainty/session mismatch, corruption,
+    /// changed installation or indeterminate I/O. No failed outcome clears the
+    /// permanently retained unresolved-session marker.
+    pub fn retain_ceiling(&self, clock: LeaseClock) -> Result<LeaseClock> {
+        sqlite::observe_clock(&self.journal, &self.session, clock)
     }
 }

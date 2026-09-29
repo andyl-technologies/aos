@@ -25,17 +25,17 @@ fn canonical_digest(value: &impl serde::Serialize) -> Result<String> {
 
 const EXECUTOR: &str = "qualified-executor";
 
-fn integer(value: i64) -> LeaseInteger {
+pub(crate) fn integer(value: i64) -> LeaseInteger {
     LeaseInteger::new(value).unwrap()
 }
-fn clock(value: i64) -> LeaseClock {
+pub(crate) fn clock(value: i64) -> LeaseClock {
     LeaseClock {
         observed_at: value,
         uncertainty: 2,
     }
 }
 
-fn profile() -> LeaseTimingProfile {
+pub(crate) fn profile() -> LeaseTimingProfile {
     // Fixture-only example; these values are not a qualified deployment default.
     LeaseTimingProfile {
         profile_id: "fixture-reviewed-clock".into(),
@@ -45,7 +45,7 @@ fn profile() -> LeaseTimingProfile {
     }
 }
 
-fn publication() -> StorageAuthorityPublication {
+pub(crate) fn publication() -> StorageAuthorityPublication {
     let authority_id =
         PhysicalStorageAuthorityId::parse("00000000-0000-4000-8000-000000000001").unwrap();
     let authority = CreatePhysicalStorageAuthority {
@@ -120,7 +120,7 @@ fn publication() -> StorageAuthorityPublication {
     publication
 }
 
-fn next_publication(
+pub(crate) fn next_publication(
     previous: &StorageAuthorityPublication,
     state: StorageAuthorityAdmissionState,
 ) -> StorageAuthorityPublication {
@@ -142,7 +142,7 @@ fn next_publication(
     next
 }
 
-fn cohort(publication: &StorageAuthorityPublication) -> LeaseCohort {
+pub(crate) fn cohort(publication: &StorageAuthorityPublication) -> LeaseCohort {
     LeaseCohort::from_publication(
         publication,
         EXECUTOR,
@@ -154,15 +154,15 @@ fn cohort(publication: &StorageAuthorityPublication) -> LeaseCohort {
     .unwrap()
 }
 
-struct Fixture {
+pub(crate) struct Fixture {
     _directory: tempfile::TempDir,
-    path: PathBuf,
-    boundary: HubDataBoundary,
-    marker: IssuerInstallation,
+    pub(crate) path: PathBuf,
+    pub(crate) boundary: HubDataBoundary,
+    pub(crate) marker: IssuerInstallation,
 }
 
 impl Fixture {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let issuer = directory.path().join("issuer");
@@ -187,7 +187,7 @@ impl Fixture {
         }
     }
 
-    fn initialize(&self) -> AuthorityJournal {
+    pub(crate) fn initialize(&self) -> AuthorityJournal {
         AuthorityJournal::initialize_fresh(
             &self.path,
             &self.boundary,
@@ -201,7 +201,7 @@ impl Fixture {
         .unwrap()
     }
 
-    fn reopen(&self) -> Result<AuthorityJournal> {
+    pub(crate) fn reopen(&self) -> Result<AuthorityJournal> {
         AuthorityJournal::open_existing(&self.path, &self.boundary, self.marker.clone())
     }
 }
@@ -486,7 +486,7 @@ fn malformed_marker_schema_state_and_header_fail_closed() {
                     connection.execute_batch("DROP TRIGGER marker_no_update; UPDATE installation_marker SET marker = '{}' ").unwrap();
                 }
                 1 => {
-                    connection.execute_batch("PRAGMA user_version = 2").unwrap();
+                    connection.execute_batch("PRAGMA user_version = 3").unwrap();
                 }
                 _ => {
                     connection

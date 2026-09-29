@@ -326,3 +326,63 @@ fn denied_reply_has_separate_domain_and_does_not_erase_issuance_history() {
     );
     assert!(verify_issuer_reply(&verifier, &r, &serde_json::to_vec(&envelope).unwrap()).is_err());
 }
+
+#[test]
+fn live_reply_time_check_uses_conservative_request_deadline_and_qualified_floor() {
+    let p = publication();
+    let r = request(&p, IssuerOperation::Current);
+    let signer = EpochLeaseSigningKey::from_bytes(KEY_ID.into(), &[7; 32]).unwrap();
+    let verifier = EpochLeaseVerifier::from_bytes(KEY_ID.into(),
+        &SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes()).unwrap();
+    let bytes = sign_issuer_reply(&signer, &r, reply(&r, current(&p))).unwrap();
+    verify_issuer_reply_at_time(&verifier, &r, &bytes, || Ok(clock(127))).unwrap();
+    assert!(verify_issuer_reply_at_time(&verifier, &r, &bytes, || Ok(clock(128))).is_err());
+    assert!(verify_issuer_reply_at_time(&verifier, &r, &bytes, || Ok(clock(99))).is_err());
+    assert!(verify_issuer_reply_at_time(&verifier, &r, &bytes, || Ok(LeaseClock {
+        observed_at: 110, uncertainty: 3,
+    })).is_err());
+}
+
+#[tokio::test]
+async fn live_reply_time_check_rejects_inner_expiry_after_ordinary_signature_success() {
+    let p = publication();
+    let r = request(&p, IssuerOperation::Issue {
+        cohort: cohort(&p), requested_not_after: integer(120),
+    });
+    let signer = EpochLeaseSigningKey::from_bytes(KEY_ID.into(), &[7; 32]).unwrap();
+    let verifier = EpochLeaseVerifier::from_bytes(KEY_ID.into(),
+        &SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes()).unwrap();
+    let mut state = current(&p);
+    let prepared = state.journal.prepare_issue(&p, cohort(&p), KEY_ID, 120, clock(100)).unwrap();
+    let modeled = RefCell::new(state.journal.clone());
+    let token = prepared.commit_and_sign(&signer, |transition| {
+        modeled.replace(transition.next);
+        async { Ok(()) }
+    }, || Ok(clock(101))).await.unwrap();
+    state.journal = modeled.into_inner();
+    let mut acknowledged = reply(&r, state);
+    acknowledged.lease = Some(String::from_utf8(token).unwrap());
+    let bytes = sign_issuer_reply(&signer, &r, acknowledged).unwrap();
+    verify_issuer_reply(&verifier, &r, &bytes).unwrap();
+    verify_issuer_reply_at_time(&verifier, &r, &bytes, || Ok(clock(117))).unwrap();
+    assert!(verify_issuer_reply_at_time(&verifier, &r, &bytes, || Ok(clock(118))).is_err());
+}
+
+#[test]
+fn live_reply_verifies_all_wire_before_invoking_the_final_observer() {
+    let p = publication();
+    let r = request(&p, IssuerOperation::Current);
+    let signer = EpochLeaseSigningKey::from_bytes(KEY_ID.into(), &[7; 32]).unwrap();
+    let verifier = EpochLeaseVerifier::from_bytes(KEY_ID.into(),
+        &SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes()).unwrap();
+    let bytes = sign_issuer_reply(&signer, &r, reply(&r, current(&p))).unwrap();
+    let mut envelope: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    envelope["signature"] = serde_json::json!("0".repeat(128));
+    let observed = std::cell::Cell::new(false);
+    assert!(verify_issuer_reply_at_time(&verifier, &r,
+        &serde_json::to_vec(&envelope).unwrap(), || {
+            observed.set(true);
+            Ok(clock(110))
+        }).is_err());
+    assert!(!observed.get());
+}

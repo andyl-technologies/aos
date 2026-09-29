@@ -121,11 +121,19 @@ async fn actual_capture_publishes_private_files_and_verifies_without_source_muta
     assert_eq!(captured.retained_rows, verified.retained_rows);
     assert!(captured.private_cells > 0);
     assert!(captured.omitted_rows > 0);
-    assert_eq!(captured.verification_scope, "records_and_reconstruction");
+    assert_eq!(captured.verification_scope, "retained_sqlite_constraints");
+    assert_eq!(
+        captured.schema_version,
+        "aos.hub.offline-database-capture-report/v2"
+    );
+    assert_eq!(captured.checked_retained_tables, 257);
+    assert_eq!(captured.synthetic_lineage_rows, 2);
+    assert_eq!(verified.checked_retained_tables, 257);
     assert_eq!(captured.signed_root_profile, "framing_only");
-    assert!(captured
+    assert!(!captured
         .pending_recovery_requirements
         .contains(&"unique_keys_and_global_sql_constraints"));
+    assert_eq!(captured.pending_recovery_requirements.len(), 5);
     assert_eq!(Sha256::digest(fs::read(&source).unwrap()), before);
     assert!(!f.directory.path().join("sealing.key").exists());
     assert_eq!(
@@ -152,6 +160,18 @@ async fn actual_capture_publishes_private_files_and_verifies_without_source_muta
     assert!(!printed.contains("NEVER-PRINT"));
     assert!(!printed.contains(&f.directory.path().display().to_string()));
     assert!(!format!("{captured:?}").contains("NEVER-PRINT"));
+    if let Some(output) = std::env::var_os("AOS_SNAPSHOT_TEST_FIXTURE_DIR") {
+        let output = Path::new(&output);
+        private_file(output, "valid-source.db", &fs::read(&source).unwrap());
+        private_file(output, "capture-signer.seed", &[91; 32]);
+        private_file(
+            output,
+            "capture-pins.json",
+            &fs::read(&f.credentials.signer_trust_file).unwrap(),
+        );
+        private_file(output, "capture-metadata.key", &[92; 32]);
+        private_file(output, "capture-private.key", &[93; 32]);
+    }
 }
 
 #[tokio::test]
@@ -659,3 +679,6 @@ fn archive_key_refuses_systemd_group_exception_without_changing_runtime_loader()
         String::from_utf8_lossy(&child.stderr)
     );
 }
+
+#[path = "tests/constraints.rs"]
+mod constraints;

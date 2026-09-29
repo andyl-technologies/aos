@@ -33,7 +33,7 @@ enum SnapshotCommand {
         #[command(flatten)]
         custody: CustodyArgs,
     },
-    /// Verify actual paired records without importing SQL or activating a Hub.
+    /// Verify records and retained SQL constraints without importing or activating.
     VerifyCapture {
         /// Read this existing private archive directory.
         #[arg(long)]
@@ -69,6 +69,21 @@ struct CustodyArgs {
     /// Bound plaintext bytes per encrypted stream (maximum 64GiB).
     #[arg(long, default_value_t = 1024 * 1024 * 1024)]
     max_stream_plaintext_bytes: u64,
+    /// Bound primary in-memory SQLite pages (4096 through 256MiB).
+    #[arg(long, default_value_t = 64 * 1024 * 1024)]
+    max_scratch_database_bytes: u64,
+    /// Bound retained rows in private replay (maximum ten million).
+    #[arg(long, default_value_t = 1_000_000)]
+    max_scratch_retained_rows: u64,
+    /// Bound original typed-cell payload in replay (maximum 1GiB).
+    #[arg(long, default_value_t = 256 * 1024 * 1024)]
+    max_scratch_value_bytes: u64,
+    /// Bound replay seconds within the remaining operation time (maximum 3600).
+    #[arg(long, default_value_t = 300)]
+    scratch_timeout_seconds: u64,
+    /// Bound approximate thousand-instruction SQLite progress callbacks.
+    #[arg(long, default_value_t = 100_000)]
+    max_scratch_progress_callbacks: u64,
 }
 
 /// Rejects runtime configuration before reading any credential or creating state.
@@ -102,11 +117,18 @@ impl CustodyArgs {
         Ok(aos_hub::snapshot::workflow::SnapshotBudget::new(
             std::time::Duration::from_secs(self.timeout_seconds),
             self.max_stream_plaintext_bytes,
-        )?)
+        )?
+        .with_scratch_limits(aos_hub::snapshot::workflow::SnapshotScratchLimits {
+            max_database_bytes: self.max_scratch_database_bytes,
+            max_retained_rows: self.max_scratch_retained_rows,
+            max_value_bytes: self.max_scratch_value_bytes,
+            max_duration: std::time::Duration::from_secs(self.scratch_timeout_seconds),
+            max_progress_callbacks: self.max_scratch_progress_callbacks,
+        })?)
     }
 }
 
-/// Runs a record-only operation with cooperative SIGINT/SIGTERM cancellation.
+/// Runs private constraint verification with cooperative SIGINT/SIGTERM cancellation.
 ///
 /// # Errors
 ///
@@ -220,6 +242,39 @@ mod tests {
         assert!(!root.exists());
         assert!(!missing.exists());
         validate_runtime_inputs(None, None, None, "local").unwrap();
+    }
+
+    #[test]
+    fn scratch_cli_limits_fail_before_missing_keys_or_archive_are_read() {
+        let args = [
+            "test",
+            "verify-capture",
+            "--archive",
+            "uncreated",
+            "--signer-trust-file",
+            "missing-pins",
+            "--metadata-wrapping-id",
+            "m",
+            "--metadata-wrapping-key-file",
+            "missing-m",
+            "--private-wrapping-id",
+            "p",
+            "--private-wrapping-key-file",
+            "missing-p",
+        ];
+        for (flag, value) in [
+            ("--max-scratch-database-bytes", "4095"),
+            ("--max-scratch-retained-rows", "0"),
+            ("--max-scratch-value-bytes", "0"),
+            ("--scratch-timeout-seconds", "0"),
+            ("--max-scratch-progress-callbacks", "0"),
+        ] {
+            let parsed = TestCli::try_parse_from(args.into_iter().chain([flag, value])).unwrap();
+            let SnapshotCommand::VerifyCapture { custody, .. } = parsed.snapshot.command else {
+                panic!("wrong command");
+            };
+            assert!(custody.budget().is_err());
+        }
     }
 
     #[test]

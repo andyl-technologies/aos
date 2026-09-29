@@ -395,6 +395,43 @@ pub fn verify_issuer_reply(
     Ok(envelope.payload)
 }
 
+/// Verifies a correlated reply, then checks its deadline and token at fresh time.
+///
+/// The observer runs after all authenticated reply and token parsing/verification.
+/// It must return an independently qualified conservative interval with durable
+/// rollback continuity; configuration or cached time establishes no provenance.
+/// Request deadlines and inner token expiry use the interval's upper bound. No
+/// asynchronous operation follows that observation in this helper. This proves
+/// neither object admission nor provider readiness; dispatch retains its exact
+/// snapshot, cohort, permanent floor and pending-effect requirements.
+///
+/// # Errors
+/// Returns an error for any ordinary reply/signature failure, failed or rolled-back
+/// observation, excessive uncertainty, expired request or expired inner token.
+pub fn verify_issuer_reply_at_time(
+    verifier: &EpochLeaseVerifier,
+    request: &IssuerRequest,
+    bytes: &[u8],
+    observe_clock: impl FnOnce() -> Result<super::LeaseClock>,
+) -> Result<IssuerReply> {
+    let reply = verify_issuer_reply(verifier, request, bytes)?;
+    let payload = reply
+        .lease
+        .as_ref()
+        .map(|lease| verifier.verify(lease.as_bytes()))
+        .transpose()?;
+    let clock = observe_clock()?;
+    let (_, latest) = clock.bounds(
+        &reply.current.journal.policy.timing_profile,
+        reply.current.journal.clock_floor,
+    )?;
+    request.validate(&reply.installation, latest)?;
+    if let Some(payload) = payload {
+        super::state::validate_time(&payload, reply.current.journal.clock_floor, clock)?;
+    }
+    Ok(reply)
+}
+
 /// Authenticates exact bounded request bytes in the dedicated request domain.
 ///
 /// # Errors

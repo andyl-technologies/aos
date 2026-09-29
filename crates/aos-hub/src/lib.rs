@@ -76,6 +76,7 @@ compile_error!("the aos-hub test-support feature must never be enabled in a rele
 
 pub mod auth;
 pub mod authority_journal;
+pub mod authority_server;
 pub mod cloudflare;
 /// Config change-set staging/revert, re-exported from
 /// [`aos_hub_core::config`] (RFC-0004 Phase 5); keeps `crate::config::…` stable.

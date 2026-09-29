@@ -131,6 +131,8 @@ pub mod keymap;
 mod bridge_dispatch;
 
 #[cfg(target_arch = "wasm32")]
+mod authority_issuer_storage;
+#[cfg(target_arch = "wasm32")]
 pub mod bridge;
 #[cfg(target_arch = "wasm32")]
 pub mod consoleports;
@@ -148,6 +150,10 @@ pub mod handlers;
 mod hybrid;
 #[cfg(target_arch = "wasm32")]
 pub mod hybrid_authority;
+#[cfg(target_arch = "wasm32")]
+pub mod hybrid_authority_issuer;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod hybrid_authority_issuer_deadline;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod hybrid_authority_state;
 #[cfg(target_arch = "wasm32")]
@@ -1206,6 +1212,27 @@ mod entry {
         // errors land in Workers Logs (idempotent; see `crate::tracinglog`).
         crate::tracinglog::init();
 
+        match env
+            .var("HUB_RUNTIME_ROLE")
+            .ok()
+            .map(|role| role.to_string())
+            .as_deref()
+        {
+            Some("authority_issuer") => {
+                return crate::hybrid_authority_issuer::fetch(req, &env).await
+            }
+            None | Some("hub_executor") => {}
+            Some(_) => return Response::error("unknown runtime role", 503),
+        }
+        if env.secret("HUB_AUTHORITY_ISSUER_SEED").is_ok()
+            || env.secret("HUB_AUTHORITY_PUBLISHER_KEY").is_ok()
+        {
+            return Response::error("ordinary executor contains issuer capability", 503);
+        }
+        if req.url()?.path() == aos_hub_core::storage_authority::lease::control::ISSUER_CONTROL_PATH
+        {
+            return crate::hybrid_authority_issuer::forward(req, &env).await;
+        }
         let hybrid = hybrid_mode(&env)?;
         if hybrid && req.url()?.path() == DEPLOYMENT_ID_PATH {
             if !matches!(req.method(), Method::Get | Method::Head) {
