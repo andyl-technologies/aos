@@ -85,9 +85,9 @@ fn step(machine: &[Atom], state: &[usize], byte: u8) -> Vec<usize> {
 
 pub(super) fn matches(pattern: &str, bytes: &[u8]) -> bool {
     let machine = atoms(pattern);
-    let state = bytes.iter().fold(start(&machine), |state, &byte| {
-        step(&machine, &state, byte)
-    });
+    let state = bytes
+        .iter()
+        .fold(start(&machine), |state, &byte| step(&machine, &state, byte));
     state.contains(&machine.len())
 }
 
@@ -118,13 +118,19 @@ pub(super) fn contained(child: &Grant, parents: &[Grant], verb: u8) -> Result<bo
 
     let initial = (
         start(&child_machine),
-        parent_machines.iter().map(|machine| start(machine)).collect::<Vec<_>>(),
+        parent_machines
+            .iter()
+            .map(|machine| start(machine))
+            .collect::<Vec<_>>(),
     );
     let mut seen = BTreeSet::from([initial.clone()]);
     let mut pending = vec![initial];
     while let Some((child_state, parent_states)) = pending.pop() {
         if child_state.contains(&child_machine.len())
-            && !parent_machines.iter().zip(&parent_states).any(|(machine, state)| state.contains(&machine.len()))
+            && !parent_machines
+                .iter()
+                .zip(&parent_states)
+                .any(|(machine, state)| state.contains(&machine.len()))
         {
             return Ok(false);
         }
@@ -133,8 +139,11 @@ pub(super) fn contained(child: &Grant, parents: &[Grant], verb: u8) -> Result<bo
             if next_child.is_empty() {
                 continue;
             }
-            let next_parents = parent_machines.iter().zip(&parent_states)
-                .map(|(machine, state)| step(machine, state, byte)).collect();
+            let next_parents = parent_machines
+                .iter()
+                .zip(&parent_states)
+                .map(|(machine, state)| step(machine, state, byte))
+                .collect();
             let next = (next_child, next_parents);
             if seen.insert(next.clone()) {
                 if seen.len() > MAX_STATES {
@@ -152,18 +161,30 @@ pub(super) fn canonical_reference(bytes: &[u8]) -> bool {
 }
 
 pub(super) fn canonical_root(bytes: &[u8]) -> bool {
-    bytes == b"/" || bytes.strip_prefix(b"/").is_some_and(|path| canonical_components(path, false))
+    bytes == b"/"
+        || bytes
+            .strip_prefix(b"/")
+            .is_some_and(|path| canonical_components(path, false))
 }
 
 fn canonical_components(bytes: &[u8], pattern: bool) -> bool {
-    !bytes.is_empty() && bytes.len() <= 4096 && bytes.split(|byte| *byte == b'/').all(|component| {
-        !component.is_empty() && component.len() <= 255 && component != b"." && component != b".."
-            && component.iter().all(|byte| *byte != 0 && *byte != b':' && (pattern || *byte != b'*'))
-    })
+    !bytes.is_empty()
+        && bytes.split(|byte| *byte == b'/').all(|component| {
+            !component.is_empty()
+                && component != b"."
+                && component != b".."
+                && component
+                    .iter()
+                    .all(|byte| *byte != 0 && *byte != b':' && (pattern || *byte != b'*'))
+        })
 }
 
 pub(super) fn valid_grant(pattern: &str) -> bool {
     let (reference, root) = pattern.split_once(':').unwrap_or((pattern, "/"));
-    reference.starts_with("refs/") && canonical_components(reference.as_bytes(), true)
-        && (root == "/" || root.strip_prefix('/').is_some_and(|path| canonical_components(path.as_bytes(), true)))
+    reference.starts_with("refs/")
+        && canonical_components(reference.as_bytes(), true)
+        && (root == "/"
+            || root
+                .strip_prefix('/')
+                .is_some_and(|path| canonical_components(path.as_bytes(), true)))
 }

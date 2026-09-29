@@ -47,9 +47,26 @@ pub enum Diagnostic {
     Signature,
     /// The validity interval excludes the supplied current time.
     Time,
-    /// A block widens authority or exceeds the containment proof budget.
+    /// A block widens its parent authority.
     Widening,
+    /// Exact language containment exceeded the local 16,384-state proof budget.
+    ResourceLimit,
 }
+
+impl fmt::Display for Diagnostic {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Encoding => "invalid token encoding",
+            Self::Issuer => "unknown or retired issuer key",
+            Self::Signature => "invalid token signature chain",
+            Self::Time => "token outside validity interval",
+            Self::Widening => "attenuation widens authority",
+            Self::ResourceLimit => "attenuation containment proof budget exceeded",
+        })
+    }
+}
+
+impl core::error::Error for Diagnostic {}
 
 /// Identifies the subject's authentication class (AUTH-1/8).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -128,7 +145,7 @@ impl Grant {
     /// normalization or percent decoding is performed.
     ///
     /// # Errors
-    /// Returns [`Unauthorized`] for a malformed or oversized pattern.
+    /// Returns [`Unauthorized`] for a malformed pattern.
     pub fn new(pattern: String, verbs: Verbs) -> Result<Self, Unauthorized> {
         if !pattern::valid_grant(&pattern) {
             return Err(Unauthorized);
@@ -268,15 +285,24 @@ impl Token {
     ///
     /// # Errors
     /// Returns [`Unauthorized`] for invalid authority fields or limits.
-    pub fn issue(authority: Authority, issuer_secret: &[u8; 32], next_key: [u8; 32]) -> Result<Self, Unauthorized> {
+    pub fn issue(
+        authority: Authority,
+        issuer_secret: &[u8; 32],
+        next_key: [u8; 32],
+    ) -> Result<Self, Unauthorized> {
         let mut token = Self {
-            authority: Signed { body: authority, next_key, signature: [0; 64] },
+            authority: Signed {
+                body: authority,
+                next_key,
+                signature: [0; 64],
+            },
             blocks: Vec::new(),
         };
         // Decode the generated wire object to share schema validation with readers.
         token = Self::decode(&token.encode())?;
         token.authority.signature = SigningKey::from_bytes(issuer_secret)
-            .sign(&format::authority_preimage(&token.authority)).to_bytes();
+            .sign(&format::authority_preimage(&token.authority))
+            .to_bytes();
         Ok(token)
     }
 
@@ -289,15 +315,30 @@ impl Token {
     /// # Errors
     /// Returns [`Unauthorized`] for the wrong delegation key, schema/size
     /// violations, or restrictions that widen the parent authority.
-    pub fn attenuate(&self, restriction: Attenuation, delegation_secret: &[u8; 32], next_key: [u8; 32]) -> Result<Self, Unauthorized> {
-        let previous = self.blocks.last().map_or(&self.authority.next_key, |block| &block.next_key);
+    pub fn attenuate(
+        &self,
+        restriction: Attenuation,
+        delegation_secret: &[u8; 32],
+        next_key: [u8; 32],
+    ) -> Result<Self, Unauthorized> {
+        let previous = self
+            .blocks
+            .last()
+            .map_or(&self.authority.next_key, |block| &block.next_key);
         let signing_key = SigningKey::from_bytes(delegation_secret);
         if signing_key.verifying_key().to_bytes() != *previous {
             return Err(Unauthorized);
         }
         let mut token = self.clone();
-        let signature = token.blocks.last().map_or(token.authority.signature, |block| block.signature);
-        let mut block = Signed { body: restriction, next_key, signature: [0; 64] };
+        let signature = token
+            .blocks
+            .last()
+            .map_or(token.authority.signature, |block| block.signature);
+        let mut block = Signed {
+            body: restriction,
+            next_key,
+            signature: [0; 64],
+        };
         let mut preimage = signature.to_vec();
         preimage.extend(format::attenuation_preimage(&block));
         block.signature = signing_key.sign(&preimage).to_bytes();
@@ -321,28 +362,46 @@ impl Token {
     /// # Errors
     /// Returns a privileged [`Diagnostic`] for invalid issuer keys, signatures,
     /// time bounds, or widening. Never expose this result to an untrusted caller.
-    pub fn verify_diagnostic(&self, keys: &[IssuerKey], now: u64) -> Result<VerifiedToken, Diagnostic> {
+    pub fn verify_diagnostic(
+        &self,
+        keys: &[IssuerKey],
+        now: u64,
+    ) -> Result<VerifiedToken, Diagnostic> {
         let authority = &self.authority.body;
-        let keys: Vec<_> = keys.iter().filter(|key| key.issuer == authority.issuer && key.key_id == authority.key_id
-            && key.retirement.is_none_or(|retirement| now < retirement)).collect();
+        let keys: Vec<_> = keys
+            .iter()
+            .filter(|key| {
+                key.issuer == authority.issuer
+                    && key.key_id == authority.key_id
+                    && key.retirement.is_none_or(|retirement| now < retirement)
+            })
+            .collect();
         if keys.len() != 1 {
             return Err(Diagnostic::Issuer);
         }
-        let mut key = VerifyingKey::from_bytes(&keys[0].public_key).map_err(|_| Diagnostic::Signature)?;
-        key.verify_strict(&format::authority_preimage(&self.authority), &Signature::from_bytes(&self.authority.signature))
-            .map_err(|_| Diagnostic::Signature)?;
+        let mut key =
+            VerifyingKey::from_bytes(&keys[0].public_key).map_err(|_| Diagnostic::Signature)?;
+        key.verify_strict(
+            &format::authority_preimage(&self.authority),
+            &Signature::from_bytes(&self.authority.signature),
+        )
+        .map_err(|_| Diagnostic::Signature)?;
         let mut previous_signature = self.authority.signature;
         let mut previous_key = self.authority.next_key;
         for block in &self.blocks {
             key = VerifyingKey::from_bytes(&previous_key).map_err(|_| Diagnostic::Signature)?;
             let mut preimage = previous_signature.to_vec();
             preimage.extend(format::attenuation_preimage(block));
-            key.verify_strict(&preimage, &Signature::from_bytes(&block.signature)).map_err(|_| Diagnostic::Signature)?;
+            key.verify_strict(&preimage, &Signature::from_bytes(&block.signature))
+                .map_err(|_| Diagnostic::Signature)?;
             previous_key = block.next_key;
             previous_signature = block.signature;
         }
         // Even an unused terminal key must be a real, non-weak Ed25519 key.
-        if VerifyingKey::from_bytes(&previous_key).map_err(|_| Diagnostic::Signature)?.is_weak() {
+        if VerifyingKey::from_bytes(&previous_key)
+            .map_err(|_| Diagnostic::Signature)?
+            .is_weak()
+        {
             return Err(Diagnostic::Signature);
         }
 
@@ -350,7 +409,10 @@ impl Token {
         if now > effective.not_after || now < effective.not_before {
             return Err(Diagnostic::Time);
         }
-        Ok(VerifiedToken { authority: authority.clone(), effective })
+        Ok(VerifiedToken {
+            authority: authority.clone(),
+            effective,
+        })
     }
 
     fn effective(&self) -> Result<Effective, Diagnostic> {
@@ -362,19 +424,26 @@ impl Token {
         };
         for block in &self.blocks {
             if let Some(expiry) = block.body.not_after {
-                if expiry > effective.not_after { return Err(Diagnostic::Widening); }
+                if expiry > effective.not_after {
+                    return Err(Diagnostic::Widening);
+                }
                 effective.not_after = expiry;
             }
             if let Some(start) = block.body.not_before {
-                if start < effective.not_before { return Err(Diagnostic::Widening); }
+                if start < effective.not_before {
+                    return Err(Diagnostic::Widening);
+                }
                 effective.not_before = start;
             }
             if let Some(grants) = &block.body.grants {
                 for grant in grants {
                     for verb in [1, 2, 4, 8, 16] {
                         if grant.verbs.effective() & verb != 0
-                            && !pattern::contained(grant, &effective.grants, verb).map_err(|_| Diagnostic::Widening)?
-                        { return Err(Diagnostic::Widening); }
+                            && !pattern::contained(grant, &effective.grants, verb)
+                                .map_err(|_| Diagnostic::ResourceLimit)?
+                        {
+                            return Err(Diagnostic::Widening);
+                        }
                     }
                 }
                 effective.grants = grants.clone();
@@ -398,8 +467,14 @@ pub fn verify(bytes: &[u8], keys: &[IssuerKey], now: u64) -> Result<VerifiedToke
 /// # Errors
 /// Returns a privileged [`Diagnostic`]; callers must keep it out of public
 /// responses and use [`verify`] at an untrusted boundary (AUTH-12).
-pub fn verify_diagnostic(bytes: &[u8], keys: &[IssuerKey], now: u64) -> Result<VerifiedToken, Diagnostic> {
-    format::decode(bytes).map_err(|_| Diagnostic::Encoding)?.verify_diagnostic(keys, now)
+pub fn verify_diagnostic(
+    bytes: &[u8],
+    keys: &[IssuerKey],
+    now: u64,
+) -> Result<VerifiedToken, Diagnostic> {
+    format::decode(bytes)
+        .map_err(|_| Diagnostic::Encoding)?
+        .verify_diagnostic(keys, now)
 }
 
 #[derive(Clone, Debug)]
@@ -466,23 +541,49 @@ impl VerifiedToken {
     /// grants, mismatched caveats, or missing/ambiguous epoch context.
     pub fn authorize(&self, request: &Request<'_>) -> Result<(), Unauthorized> {
         if !pattern::canonical_reference(request.reference)
-            || request.now > self.effective.not_after || request.now < self.effective.not_before
-            || request.roots.iter().any(|root| !pattern::canonical_root(root.path))
-        { return Err(Unauthorized); }
+            || request.now > self.effective.not_after
+            || request.now < self.effective.not_before
+            || request
+                .roots
+                .iter()
+                .any(|root| !pattern::canonical_root(root.path))
+        {
+            return Err(Unauthorized);
+        }
         let grants = &self.effective.grants;
-        let permits = |root| grants.iter().any(|grant| grant.verbs.contains(request.verb)
-            && pattern::grant_matches(&grant.pattern, request.reference, root));
-        if (request.roots.is_empty() && !permits(b"/"))
+        let permits = |root| {
+            grants.iter().any(|grant| {
+                grant.verbs.contains(request.verb)
+                    && pattern::grant_matches(&grant.pattern, request.reference, root)
+            })
+        };
+        if (request.roots.is_empty()
+            && !grants.iter().any(|grant| {
+                !grant.pattern.contains(':')
+                    && grant.verbs.contains(request.verb)
+                    && pattern::matches(&grant.pattern, request.reference)
+            }))
             || request.roots.iter().any(|root| !permits(root.path))
-        { return Err(Unauthorized); }
+        {
+            return Err(Unauthorized);
+        }
         for caveat in &self.effective.caveats {
             let satisfied = match caveat {
                 Caveat::Before(time) => request.now < *time,
                 Caveat::After(time) => request.now > *time,
                 Caveat::Ref(pattern) => pattern::matches(pattern, request.reference),
-                Caveat::Root(pattern) => !request.roots.is_empty() && request.roots.iter().all(|root| pattern::matches(pattern, root.path)),
+                Caveat::Root(pattern) => {
+                    !request.roots.is_empty()
+                        && request
+                            .roots
+                            .iter()
+                            .all(|root| pattern::matches(pattern, root.path))
+                }
                 Caveat::Verb(verbs) => verbs.bits() & request.verb as u8 != 0,
-                Caveat::Domain(domain) => !request.roots.is_empty() && request.roots.iter().all(|root| root.domain == domain),
+                Caveat::Domain(domain) => {
+                    !request.roots.is_empty()
+                        && request.roots.iter().all(|root| root.domain == domain)
+                }
                 Caveat::Surface(surface) => request.surface == surface,
                 Caveat::Locality(label) => locality_matches(label, request.locality),
                 Caveat::Epoch(reference, epoch) => {
@@ -491,13 +592,20 @@ impl VerifiedToken {
                     first.is_some_and(|(_, actual)| actual <= epoch) && values.next().is_none()
                 }
             };
-            if !satisfied { return Err(Unauthorized); }
+            if !satisfied {
+                return Err(Unauthorized);
+            }
         }
         Ok(())
     }
 }
 
 fn locality_matches(expected: &Locality, actual: &Locality) -> bool {
-    [(&expected.region, &actual.region), (&expected.zone, &actual.zone), (&expected.host, &actual.host)]
-        .iter().all(|(expected, actual)| expected.is_none() || expected == actual)
+    [
+        (&expected.region, &actual.region),
+        (&expected.zone, &actual.zone),
+        (&expected.host, &actual.host),
+    ]
+    .iter()
+    .all(|(expected, actual)| expected.is_none() || expected == actual)
 }
