@@ -3,6 +3,7 @@
 //! The required map keys and optional map keys match the `commit` CDDL map.
 //! Unknown fields fail decoding so new wire fields require an explicit version.
 
+use super::token_shape::validate_token;
 use super::{Locality, RecordError, read_bool, read_digest, read_key, write_bool};
 use crate::cbor::{self, Decoder};
 use crate::identity::Digest;
@@ -690,21 +691,6 @@ fn require_key(
     } else {
         Err(RecordError::Schema)
     }
-}
-
-fn validate_token(bytes: &[u8]) -> Result<(), RecordError> {
-    let mut decoder = Decoder::new(bytes);
-    // Token semantics and signatures belong to the provenance verifier. Here
-    // the record layer enforces the canonical array envelope before hashing.
-    let count = decoder.array(MAX_COMMIT_BYTES)?;
-    if count == 0 {
-        return Err(RecordError::Schema);
-    }
-    for _ in 0..count {
-        decoder.raw_value(MAX_COMMIT_BYTES)?;
-    }
-    decoder.finish()?;
-    Ok(())
 }
 
 #[cfg(test)]

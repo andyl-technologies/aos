@@ -14,6 +14,7 @@ use crate::identity::Digest;
 
 mod codec;
 mod record_codec;
+mod token_shape;
 
 pub use codec::{
     Commit, CommitIdentityError, CommitSource, Lease, PackLocation, PrincipalKind, ProfilePair,
