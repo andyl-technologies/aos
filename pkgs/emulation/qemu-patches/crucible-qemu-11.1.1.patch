@@ -1,4 +1,4 @@
-From 2dc9a8cab4f56d0994d47b805fccd1ab2c8d6221 Mon Sep 17 00:00:00 2001
+From 23a4e278aa6ddcdd6b858a2204854c75dd51125d Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -121,6 +121,10 @@ Preserve wide MIPS GIC timer deadlines in exact TCG migration.
 Keep the current counter arithmetic and legacy non-TCG wire state, adding
 a checked optional exact deadline subsection and refusing missing or wrong
 clock-mode state before timer effects. Exercise literal timers and QEMUFile.
+
+Validate asynchronous block job pause and resume progress.
+Retain actual QMP progress invariants without comparing racy pause offset
+samples to a fixed zero delta; keep test coverage and skip policy unchanged.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -130384,6 +130388,351 @@ index 2370e1a138b1583af1842904eaeaec0b31a6f533..d6f974824c84bf5006d45f273c7501aa
  
  if __name__ == '__main__':
      iotests.main(supported_fmts=['raw'],
+diff --git a/tests/qemu-iotests/219 b/tests/qemu-iotests/219
+index d1757e9e6fcfda42e56e4c0673769db779d7e96d..a19158486ff13d6dca841e2500f89150884e7f01 100755
+--- a/tests/qemu-iotests/219
++++ b/tests/qemu-iotests/219
+@@ -34,8 +34,36 @@ def pause_wait(vm, job_id):
+                 if job['id'] == job_id and job['status'] in ['paused', 'standby']:
+                     return job
+ 
+-# Test that block-job-pause/resume and job-pause/resume can be mixed
+-def test_pause_resume(vm):
++
++def query_progress(vm, job_type, status):
++    result = vm.qmp('query-jobs')
++    assert len(result['return']) == 1, result
++    job = result['return'][0]
++    assert job['id'] == 'job0', job
++    assert job['type'] == job_type, job
++    assert job['status'] == status, job
++    assert job['total-progress'] == img_size, job
++    progress = job['current-progress']
++    assert type(progress) is int and 0 <= progress <= img_size, job
++    return result
++
++
++def log_progress(result, ready):
++    # Wall-clock throttling does not synchronize QMP with individual chunks.
++    # Validate the control/progress relation before hiding only that count.
++    if not ready:
++        job = result['return'][0].copy()
++        job['current-progress'] = 'FILTERED'
++        result = {'return': [job]}
++    iotests.log(result)
++
++
++# Test that block-job-pause/resume and job-pause/resume can be mixed.
++def test_pause_resume(vm, job_type, ready=False):
++    paused_status = 'standby' if ready else 'paused'
++    resumed_status = 'ready' if ready else 'running'
++    previous_progress = 0
++
+     for pause_cmd, pause_arg in [('block-job-pause', 'device'),
+                                  ('job-pause', 'id')]:
+         for resume_cmd, resume_arg in [('block-job-resume', 'device'),
+@@ -43,26 +71,32 @@ def test_pause_resume(vm):
+             iotests.log('=== Testing %s/%s ===' % (pause_cmd, resume_cmd))
+ 
+             iotests.log(vm.qmp(pause_cmd, **{pause_arg: 'job0'}))
+-            pause_wait(vm, 'job0')
++            paused_job = pause_wait(vm, 'job0')
+             iotests.log(iotests.filter_qmp_event(vm.event_wait('JOB_STATUS_CHANGE')))
+-            result = vm.qmp('query-jobs')
+-            iotests.log(result)
+-
++            result = query_progress(vm, job_type, paused_status)
+             old_progress = result['return'][0]['current-progress']
+-            total_progress = result['return'][0]['total-progress']
++            assert paused_job == result['return'][0], (paused_job, result)
++            assert old_progress >= previous_progress, result
++            # A second acknowledged query must still observe the same pause.
++            assert query_progress(vm, job_type, paused_status) == result
++            log_progress(result, ready)
+ 
+             iotests.log(vm.qmp(resume_cmd, **{resume_arg: 'job0'}))
+             iotests.log(iotests.filter_qmp_event(vm.event_wait('JOB_STATUS_CHANGE')))
+-            if old_progress < total_progress:
+-                # Wait for the job to advance
+-                while result['return'][0]['current-progress'] == old_progress:
+-                    result = vm.qmp('query-jobs')
+-                iotests.log(result)
++            result = query_progress(vm, job_type, resumed_status)
++            if ready:
++                assert old_progress == img_size, old_progress
++                assert result['return'][0]['current-progress'] == old_progress
+             else:
+-                # Already reached the end, so the job cannot advance
+-                # any further; therefore, the query-jobs result can be
+-                # logged immediately
+-                iotests.log(vm.qmp('query-jobs'))
++                assert old_progress < img_size, old_progress
++                with iotests.Timeout(3, "Timeout waiting for resumed progress"):
++                    while result['return'][0]['current-progress'] == old_progress:
++                        result = query_progress(vm, job_type, resumed_status)
++                assert result['return'][0]['current-progress'] > old_progress
++
++            previous_progress = result['return'][0]['current-progress']
++            log_progress(result, ready)
++
+ 
+ def test_job_lifecycle(vm, job, job_args, has_ready=False, is_mirror=False):
+     global img_size
+@@ -77,8 +111,8 @@ def test_job_lifecycle(vm, job, job_args, has_ready=False, is_mirror=False):
+ 
+     # Depending on the storage, the first request may or may not have completed
+     # yet (and the total progress may not have been fully determined yet), so
+-    # filter out the progress. Later query-job calls don't need the filtering
+-    # because the progress is made deterministic by the block job speed
++    # filter out the progress. The pause/resume checks below separately verify
++    # stable paused progress and advancement after resume.
+     result = vm.qmp('query-jobs')
+     for j in result['return']:
+         j['current-progress'] = 'FILTERED'
+@@ -97,7 +131,7 @@ def test_job_lifecycle(vm, job, job_args, has_ready=False, is_mirror=False):
+     # pause/resume should work, complete/finalize/dismiss should error out
+     iotests.log('')
+     iotests.log('Pause/resume in RUNNING')
+-    test_pause_resume(vm)
++    test_pause_resume(vm, 'mirror' if has_ready else 'backup')
+ 
+     iotests.log(vm.qmp('job-complete', id='job0'))
+     iotests.log(vm.qmp('job-finalize', id='job0'))
+@@ -120,7 +154,7 @@ def test_job_lifecycle(vm, job, job_args, has_ready=False, is_mirror=False):
+         # pause/resume/complete should work, finalize/dismiss should error out
+         iotests.log('')
+         iotests.log('Pause/resume in READY')
+-        test_pause_resume(vm)
++        test_pause_resume(vm, 'mirror', ready=True)
+ 
+         iotests.log(vm.qmp('job-finalize', id='job0'))
+         iotests.log(vm.qmp('job-dismiss', id='job0'))
+@@ -200,17 +234,10 @@ with iotests.FilePath('disk.img') as disk_path, \
+     }))
+     vm.launch()
+ 
+-    # In order to keep things deterministic (especially progress in query-job,
+-    # but related to this also automatic state transitions like job
+-    # completion), but still get pause points often enough to avoid making this
+-    # test very slow, it's important to have the right ratio between speed and
+-    # copy-chunk-size.
+-    #
+-    # Chose 64k copy-chunk-size both for mirror (by buf_size) and backup (by
+-    # x-max-chunk). The slice time, i.e. the granularity of the rate limiting
+-    # is 100ms. With a speed of 256k per second, we can get four pause points
+-    # per second. This gives us 250ms per iteration, which should be enough to
+-    # stay deterministic.
++    # Keep jobs running long enough to exercise all four pause/resume pairs.
++    # The 64k chunks at 256k per second provide frequent pause opportunities,
++    # but host scheduling can delay a QMP query across more than one chunk.
++    # Check paused equality and resumed advancement instead of that timing.
+ 
+     test_job_lifecycle(vm, 'drive-mirror', has_ready=True, job_args={
+         'device': 'drive0-node',
+diff --git a/tests/qemu-iotests/219.out b/tests/qemu-iotests/219.out
+index 0ea5d0b9d57cc43d68ddc36cd25aa882fe65cabc..5b27a12f797ce114fabecb5edd3d8e9b98949b56 100644
+--- a/tests/qemu-iotests/219.out
++++ b/tests/qemu-iotests/219.out
+@@ -11,31 +11,31 @@ Pause/resume in RUNNING
+ === Testing block-job-pause/block-job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 65536, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "mirror"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "mirror"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 131072, "id": "job0", "status": "running", "total-progress": 4194304, "type": "mirror"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "mirror"}]}
+ === Testing block-job-pause/job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 131072, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "mirror"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "mirror"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 196608, "id": "job0", "status": "running", "total-progress": 4194304, "type": "mirror"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "mirror"}]}
+ === Testing job-pause/block-job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 196608, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "mirror"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "mirror"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 262144, "id": "job0", "status": "running", "total-progress": 4194304, "type": "mirror"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "mirror"}]}
+ === Testing job-pause/job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 262144, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "mirror"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "mirror"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 327680, "id": "job0", "status": "running", "total-progress": 4194304, "type": "mirror"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "mirror"}]}
+ {"error": {"class": "GenericError", "desc": "Job 'job0' in state 'running' cannot accept command verb 'complete'"}}
+ {"error": {"class": "GenericError", "desc": "Job 'job0' in state 'running' cannot accept command verb 'finalize'"}}
+ {"error": {"class": "GenericError", "desc": "Job 'job0' in state 'running' cannot accept command verb 'dismiss'"}}
+@@ -101,31 +101,31 @@ Pause/resume in RUNNING
+ === Testing block-job-pause/block-job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 65536, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 131072, "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
+ === Testing block-job-pause/job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 131072, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 196608, "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
+ === Testing job-pause/block-job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 196608, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 262144, "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
+ === Testing job-pause/job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 262144, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 327680, "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
+ {"error": {"class": "GenericError", "desc": "Job 'job0' in state 'running' cannot accept command verb 'complete'"}}
+ {"error": {"class": "GenericError", "desc": "Job 'job0' in state 'running' cannot accept command verb 'finalize'"}}
+ {"error": {"class": "GenericError", "desc": "Job 'job0' in state 'running' cannot accept command verb 'dismiss'"}}
+@@ -154,31 +154,31 @@ Pause/resume in RUNNING
+ === Testing block-job-pause/block-job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 65536, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 131072, "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
+ === Testing block-job-pause/job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 131072, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 196608, "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
+ === Testing job-pause/block-job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 196608, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 262144, "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
+ === Testing job-pause/job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 262144, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 327680, "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
+ {"error": {"class": "GenericError", "desc": "Job 'job0' in state 'running' cannot accept command verb 'complete'"}}
+ {"error": {"class": "GenericError", "desc": "Job 'job0' in state 'running' cannot accept command verb 'finalize'"}}
+ {"error": {"class": "GenericError", "desc": "Job 'job0' in state 'running' cannot accept command verb 'dismiss'"}}
+@@ -215,31 +215,31 @@ Pause/resume in RUNNING
+ === Testing block-job-pause/block-job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 65536, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 131072, "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
+ === Testing block-job-pause/job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 131072, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 196608, "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
+ === Testing job-pause/block-job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 196608, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 262144, "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
+ === Testing job-pause/job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 262144, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 327680, "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
+ {"error": {"class": "GenericError", "desc": "Job 'job0' in state 'running' cannot accept command verb 'complete'"}}
+ {"error": {"class": "GenericError", "desc": "Job 'job0' in state 'running' cannot accept command verb 'finalize'"}}
+ {"error": {"class": "GenericError", "desc": "Job 'job0' in state 'running' cannot accept command verb 'dismiss'"}}
+@@ -276,31 +276,31 @@ Pause/resume in RUNNING
+ === Testing block-job-pause/block-job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 65536, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 131072, "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
+ === Testing block-job-pause/job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 131072, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 196608, "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
+ === Testing job-pause/block-job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 196608, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 262144, "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
+ === Testing job-pause/job-resume ===
+ {"return": {}}
+ {"data": {"id": "job0", "status": "paused"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 262144, "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "paused", "total-progress": 4194304, "type": "backup"}]}
+ {"return": {}}
+ {"data": {"id": "job0", "status": "running"}, "event": "JOB_STATUS_CHANGE", "timestamp": {"microseconds": "USECS", "seconds": "SECS"}}
+-{"return": [{"current-progress": 327680, "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
++{"return": [{"current-progress": "FILTERED", "id": "job0", "status": "running", "total-progress": 4194304, "type": "backup"}]}
+ {"error": {"class": "GenericError", "desc": "Job 'job0' in state 'running' cannot accept command verb 'complete'"}}
+ {"error": {"class": "GenericError", "desc": "Job 'job0' in state 'running' cannot accept command verb 'finalize'"}}
+ {"error": {"class": "GenericError", "desc": "Job 'job0' in state 'running' cannot accept command verb 'dismiss'"}}
 diff --git a/tests/qtest/crucible-exact-tb-exit.py b/tests/qtest/crucible-exact-tb-exit.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..74f76ce9c42cee9ebd27167bc4ee13b493f3b2a9

@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "c4c7a74425a8a3ab48b83f91865018e51c30421551144a962d40d3043c8be8a8";
+  sha256 = "3255e809b9a6501745563c5b9382ddcdf52a34888efea404718b004972ca33e1";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -127,9 +127,13 @@
     "Keep the current counter arithmetic and legacy non-TCG wire state, adding"
     "a checked optional exact deadline subsection and refusing missing or wrong"
     "clock-mode state before timer effects. Exercise literal timers and QEMUFile."
+    ""
+    "Validate asynchronous block job pause and resume progress."
+    "Retain actual QMP progress invariants without comparing racy pause offset"
+    "samples to a fixed zero delta; keep test coverage and skip policy unchanged."
   ];
-  commit = "2dc9a8cab4f56d0994d47b805fccd1ab2c8d6221";
-  tree = "ec05876d76b2f707a2a1a8f335a566870916e297";
+  commit = "23a4e278aa6ddcdd6b858a2204854c75dd51125d";
+  tree = "e9cbfed5742afca61b2f3dec230d1269c09b28e1";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -138,7 +142,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "a7754c489852725ce27d1a2389e4a46283559ad2aede81283f0535f155479de1";
+  bundleSha256 = "a6516381a089997a44c82a6a807b157cac3d8854600da2362dac92286a84ae8a";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
