@@ -1455,6 +1455,7 @@ in
               build/tests/unit/test-crucible-riscv-cpc-clock --tap
               build/tests/unit/test-crucible-mips-gic-migration --tap
               build/tests/unit/test-crucible-ptimer-wide-clock --tap
+              build/tests/unit/test-crucible-openrisc-wide-clock --tap
               # A nested poll must retain the active BH until callback accounting ends.
               build/tests/unit/test-aio --tap -p /aio/bh/callback-delete/nested
               build/tests/unit/test-aio --tap -p /aio/bh/callback-delete/nested-oneshot

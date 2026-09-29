@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "a9086140499c599f372454715dc28de426e7419aa5a4279126b7008480f147f9";
+  sha256 = "df2de83f346cf8c59227b7ebb4e8b5f8bde920e3bde1f032b9c97cc5bed0f47d";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -139,9 +139,12 @@
     ""
     "Reject migrated active ptimer countdowns without a period before arming."
     "Preserve valid disabled zero-period state in exact and ordinary modes."
+    ""
+    "Preserve full-range OpenRISC timer origins and exact pending deadlines."
+    "Retain genuine signed negative expiry through the versioned timer state."
   ];
-  commit = "466e51167a99d290558816a7646ad0f2c6329466";
-  tree = "5b5b4c406864f5cdff928364382fd5fe5132e025";
+  commit = "267e4ed93fee233d7d8158386d430d2b76ef37da";
+  tree = "c5bea28f86f68ffc52915e49fb99375ead4a1e82";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -150,7 +153,7 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "9a60f5f35f535ab73c7e99abeda7b27ba6c5468277e38cfdbda28529f348c265";
+  bundleSha256 = "9b8d590f5ba87c3e3755b7fe953cef7cc3f3b4486e21f8c70f7dc3f3c6f6783a";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

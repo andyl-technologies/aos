@@ -1,4 +1,4 @@
-From 466e51167a99d290558816a7646ad0f2c6329466 Mon Sep 17 00:00:00 2001
+From 267e4ed93fee233d7d8158386d430d2b76ef37da Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -134,13 +134,24 @@ the ordinary nanosecond wire format and countdown policy tests.
 Reject migrated active ptimer countdowns without a period before arming.
 Preserve valid disabled zero-period state in exact and ordinary modes.
 
+Preserve full-range OpenRISC timer origins and exact pending deadlines.
+Retain genuine signed negative expiry through the versioned timer state.
+
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
 diff --git a/MAINTAINERS b/MAINTAINERS
-index 902db77218eacc2461b54fe675c9816b3d98aec6..524ad6ebefc65a8a39d0010582ebb286058b5b4f 100644
+index 902db77218eacc2461b54fe675c9816b3d98aec6..e5f3ab3321517d039134f6b7b9d2be7445004944 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -3012,6 +3012,7 @@ F: hw/intc/mips_gic.c
+@@ -328,6 +328,7 @@ F: hw/or1k/
+ F: include/hw/or1k/
+ F: tests/functional/or1k/meson.build
+ F: tests/tcg/or1k/
++F: tests/unit/test-crucible-openrisc-wide-clock.c
+ 
+ PowerPC TCG CPUs
+ M: Nicholas Piggin <npiggin@gmail.com>
+@@ -3012,6 +3013,7 @@ F: hw/intc/mips_gic.c
  F: hw/timer/mips_gictimer.c
  F: include/hw/intc/mips_gic.h
  F: include/hw/timer/mips_gictimer.h
@@ -148,7 +159,7 @@ index 902db77218eacc2461b54fe675c9816b3d98aec6..524ad6ebefc65a8a39d0010582ebb286
  
  S390 3270 device
  M: Halil Pasic <pasic@linux.ibm.com>
-@@ -3472,6 +3473,7 @@ Main loop
+@@ -3472,6 +3474,7 @@ Main loop
  M: Paolo Bonzini <pbonzini@redhat.com>
  S: Maintained
  F: include/qemu/main-loop.h
@@ -156,7 +167,7 @@ index 902db77218eacc2461b54fe675c9816b3d98aec6..524ad6ebefc65a8a39d0010582ebb286
  F: include/system/runstate.h
  F: include/system/runstate-action.h
  F: util/main-loop.c
-@@ -4201,11 +4203,24 @@ R: Alexandre Iooss <erdnaxe@crans.org>
+@@ -4201,11 +4204,24 @@ R: Alexandre Iooss <erdnaxe@crans.org>
  S: Maintained
  F: docs/devel/tcg-plugins.rst
  F: plugins/
@@ -35474,10 +35485,10 @@ index b057d870c004110fdfbe4b34da55719acbf69c7a..5cd7745c4d5f3ff16f54cbe3ab1b7e2d
  
  type_init(fw_cfg_register_types)
 diff --git a/hw/or1k/cputimer.c b/hw/or1k/cputimer.c
-index b35411aa1e1d3798451507bf7c31ff822ad4c32e..eadff4b9e7b889e7dcb60cafa12d41ed786b7746 100644
+index b35411aa1e1d3798451507bf7c31ff822ad4c32e..254ed944addaf5f58d417457b3bb79d464a5ae4e 100644
 --- a/hw/or1k/cputimer.c
 +++ b/hw/or1k/cputimer.c
-@@ -19,27 +19,52 @@
+@@ -19,27 +19,74 @@
   */
  
  #include "qemu/osdep.h"
@@ -35496,25 +35507,47 @@ index b35411aa1e1d3798451507bf7c31ff822ad4c32e..eadff4b9e7b889e7dcb60cafa12d41ed
      uint32_t ttcr_offset;
 -    uint64_t clk_offset;
 +    int64_t clk_offset;
-+    uint16_t clk_offset_phase_ps;
-+    uint8_t ps_clock_unit;
++    int64_t clk_offset_ps_hi;
++    uint64_t clk_offset_ps_lo;
++    uint8_t wide_clock_mode;
++    bool exact_state_loaded;
  } OR1KTimerState;
  
  static OR1KTimerState *or1k_timer;
  
 +static __int128 or1k_timer_clk_offset_ps(void)
 +{
-+    __int128 offset_ps;
++    return (__int128)or1k_timer->clk_offset_ps_hi * ((__int128)1 << 64) +
++           or1k_timer->clk_offset_ps_lo;
++}
 +
-+    g_assert(qemu_time_join_ps(or1k_timer->clk_offset,
-+                               or1k_timer->clk_offset_phase_ps, &offset_ps));
-+    return offset_ps;
++static int64_t or1k_timer_ns_shadow(__int128 time_ps)
++{
++    __int128 ns = time_ps / PICOSECONDS_PER_NANOSECOND;
++
++    if (time_ps % PICOSECONDS_PER_NANOSECOND < 0) {
++        ns--;
++    }
++    if (ns < INT64_MIN) {
++        return INT64_MIN;
++    }
++    if (ns > INT64_MAX) {
++        return INT64_MAX;
++    }
++    return ns;
 +}
 +
 +static void or1k_timer_set_clk_offset_ps(__int128 offset_ps)
 +{
-+    g_assert(qemu_time_split_ps(offset_ps, &or1k_timer->clk_offset,
-+                                &or1k_timer->clk_offset_phase_ps));
++    uint64_t lo = offset_ps;
++
++    or1k_timer->clk_offset_ps_hi = offset_ps / ((__int128)1 << 64);
++    if (offset_ps % ((__int128)1 << 64) < 0) {
++        or1k_timer->clk_offset_ps_hi--;
++    }
++    or1k_timer->clk_offset_ps_lo = lo;
++    /* The ordinary parent field is a wire projection, not TCG authority. */
++    or1k_timer->clk_offset = or1k_timer_ns_shadow(offset_ps);
 +}
 +
  void cpu_openrisc_count_set(OpenRISCCPU *cpu, uint32_t val)
@@ -35527,12 +35560,12 @@ index b35411aa1e1d3798451507bf7c31ff822ad4c32e..eadff4b9e7b889e7dcb60cafa12d41ed
 +            qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL));
 +    } else {
 +        or1k_timer->clk_offset = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-+        or1k_timer->clk_offset_phase_ps = 0;
++        or1k_timer->exact_state_loaded = false;
 +    }
  }
  
  uint32_t cpu_openrisc_count_get(OpenRISCCPU *cpu)
-@@ -50,28 +75,36 @@ uint32_t cpu_openrisc_count_get(OpenRISCCPU *cpu)
+@@ -50,28 +97,41 @@ uint32_t cpu_openrisc_count_get(OpenRISCCPU *cpu)
  /* Add elapsed ticks to ttcr */
  void cpu_openrisc_count_update(OpenRISCCPU *cpu)
  {
@@ -35545,14 +35578,19 @@ index b35411aa1e1d3798451507bf7c31ff822ad4c32e..eadff4b9e7b889e7dcb60cafa12d41ed
 -    or1k_timer->ttcr = or1k_timer->ttcr_offset +
 -        DIV_ROUND_UP(now - or1k_timer->clk_offset, TIMER_PERIOD);
 +    if (qemu_timer_tcg_ps_enabled()) {
-+        __int128 elapsed_ps = qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL) -
-+                              or1k_timer_clk_offset_ps();
++        __int128 now_ps = qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL);
++        __int128 offset_ps = or1k_timer_clk_offset_ps();
++        __uint128_t elapsed_ps;
++        __uint128_t ticks;
 +
-+        if (elapsed_ps < 0) {
++        if (now_ps < offset_ps) {
 +            g_error("OpenRISC timer reference exceeds virtual clock");
 +        }
-+        or1k_timer->ttcr = or1k_timer->ttcr_offset +
-+            (elapsed_ps + TIMER_PERIOD_PS - 1) / TIMER_PERIOD_PS;
++        elapsed_ps = (__uint128_t)now_ps - (__uint128_t)offset_ps;
++        ticks = elapsed_ps / TIMER_PERIOD_PS +
++                (elapsed_ps % TIMER_PERIOD_PS != 0);
++        /* Architectural TTCR wraps only after the exact tick conversion. */
++        or1k_timer->ttcr = or1k_timer->ttcr_offset + (uint32_t)ticks;
 +    } else {
 +        int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 +
@@ -35576,16 +35614,21 @@ index b35411aa1e1d3798451507bf7c31ff822ad4c32e..eadff4b9e7b889e7dcb60cafa12d41ed
  
      if ((cpu->env.ttmr & TTMR_TP) <= (or1k_timer->ttcr & TTMR_TP)) {
          wait = TTMR_TP - (or1k_timer->ttcr & TTMR_TP) + 1;
-@@ -79,8 +112,15 @@ void cpu_openrisc_timer_update(OpenRISCCPU *cpu)
+@@ -79,8 +139,20 @@ void cpu_openrisc_timer_update(OpenRISCCPU *cpu)
      } else {
          wait = (cpu->env.ttmr & TTMR_TP) - (or1k_timer->ttcr & TTMR_TP);
      }
 -    next = now + (uint64_t)wait * TIMER_PERIOD;
 -    timer_mod(cpu->env.timer, next);
 +    if (qemu_timer_tcg_ps_enabled()) {
-+        timer_mod_ps_wide(cpu->env.timer,
-+                          qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL) +
-+                          (__int128)wait * TIMER_PERIOD_PS);
++        __int128 deadline_ps;
++
++        if (__builtin_add_overflow(qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL),
++                                    (__int128)wait * TIMER_PERIOD_PS,
++                                    &deadline_ps)) {
++            g_error("OpenRISC timer deadline exceeds virtual clock range");
++        }
++        timer_mod_ps_wide(cpu->env.timer, deadline_ps);
 +    } else {
 +        timer_mod(cpu->env.timer,
 +                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
@@ -35594,7 +35637,7 @@ index b35411aa1e1d3798451507bf7c31ff822ad4c32e..eadff4b9e7b889e7dcb60cafa12d41ed
  }
  
  void cpu_openrisc_count_start(OpenRISCCPU *cpu)
-@@ -99,9 +139,17 @@ void cpu_openrisc_count_stop(OpenRISCCPU *cpu)
+@@ -99,9 +171,17 @@ void cpu_openrisc_count_stop(OpenRISCCPU *cpu)
  static void openrisc_timer_cb(void *opaque)
  {
      OpenRISCCPU *cpu = opaque;
@@ -35614,7 +35657,7 @@ index b35411aa1e1d3798451507bf7c31ff822ad4c32e..eadff4b9e7b889e7dcb60cafa12d41ed
          CPUState *cs = CPU(cpu);
  
          cpu->env.ttmr |= TTMR_IP;
-@@ -144,16 +192,81 @@ static void openrisc_timer_reset(void *opaque)
+@@ -144,16 +224,111 @@ static void openrisc_timer_reset(void *opaque)
      cpu_openrisc_count_set(cpu, 0);
  }
  
@@ -35622,8 +35665,8 @@ index b35411aa1e1d3798451507bf7c31ff822ad4c32e..eadff4b9e7b889e7dcb60cafa12d41ed
 +{
 +    OR1KTimerState *timer = opaque;
 +
-+    timer->clk_offset_phase_ps = 0;
-+    timer->ps_clock_unit = 0;
++    timer->wide_clock_mode = 0;
++    timer->exact_state_loaded = false;
 +    return 0;
 +}
 +
@@ -35632,25 +35675,38 @@ index b35411aa1e1d3798451507bf7c31ff822ad4c32e..eadff4b9e7b889e7dcb60cafa12d41ed
 +    OR1KTimerState *timer = opaque;
 +
 +    if (qemu_timer_tcg_ps_enabled()) {
-+        timer->ps_clock_unit = 1;
++        timer->wide_clock_mode = 1;
 +    }
 +    return 0;
 +}
 +
-+static bool or1k_timer_ps_clock_needed(void *opaque)
++static bool or1k_timer_wide_clock_needed(void *opaque)
 +{
 +    (void)opaque;
 +    return qemu_timer_tcg_ps_enabled();
 +}
 +
-+static const VMStateDescription vmstate_or1k_timer_ps_clock = {
-+    .name = "or1k_timer/ps-clock",
++static int or1k_timer_exact_post_load(void *opaque, int version_id)
++{
++    OR1KTimerState *timer = opaque;
++
++    if (timer->exact_state_loaded) {
++        return -EINVAL;
++    }
++    timer->exact_state_loaded = true;
++    return 0;
++}
++
++static const VMStateDescription vmstate_or1k_timer_wide_clock = {
++    .name = "or1k_timer/clock-wide",
 +    .version_id = 1,
 +    .minimum_version_id = 1,
-+    .needed = or1k_timer_ps_clock_needed,
++    .needed = or1k_timer_wide_clock_needed,
++    .post_load = or1k_timer_exact_post_load,
 +    .fields = (const VMStateField[]) {
-+        VMSTATE_UINT16(clk_offset_phase_ps, OR1KTimerState),
-+        VMSTATE_UINT8(ps_clock_unit, OR1KTimerState),
++        VMSTATE_INT64(clk_offset_ps_hi, OR1KTimerState),
++        VMSTATE_UINT64(clk_offset_ps_lo, OR1KTimerState),
++        VMSTATE_UINT8(wide_clock_mode, OR1KTimerState),
 +        VMSTATE_END_OF_LIST(),
 +    },
 +};
@@ -35658,20 +35714,37 @@ index b35411aa1e1d3798451507bf7c31ff822ad4c32e..eadff4b9e7b889e7dcb60cafa12d41ed
 +static int or1k_timer_post_load(void *opaque, int version_id)
 +{
 +    OR1KTimerState *timer = opaque;
++    __int128 offset_ps;
++    int64_t ns;
++    uint16_t phase;
 +
 +    (void)version_id;
-+    if (timer->ps_clock_unit > 1 ||
-+        (icount_crucible_sim_mode() && qemu_timer_tcg_ps_enabled() &&
-+         !timer->ps_clock_unit) ||
-+        timer->clk_offset_phase_ps >= PICOSECONDS_PER_NANOSECOND) {
++    if (qemu_timer_tcg_ps_enabled() && !timer->exact_state_loaded) {
++        return -EINVAL;
++    }
++    if (!timer->exact_state_loaded) {
++        offset_ps = (__int128)timer->clk_offset * PICOSECONDS_PER_NANOSECOND;
++        timer->clk_offset_ps_hi = offset_ps / ((__int128)1 << 64);
++        if (offset_ps % ((__int128)1 << 64) < 0) {
++            timer->clk_offset_ps_hi--;
++        }
++        timer->clk_offset_ps_lo = offset_ps;
++        return 0;
++    }
++
++    offset_ps = (__int128)timer->clk_offset_ps_hi * ((__int128)1 << 64) +
++                timer->clk_offset_ps_lo;
++    if (timer->wide_clock_mode != 1 ||
++        timer->clk_offset != or1k_timer_ns_shadow(offset_ps)) {
 +        return -EINVAL;
 +    }
 +    if (!qemu_timer_tcg_ps_enabled()) {
-+        if (timer->clk_offset_phase_ps && timer->clk_offset == INT64_MAX) {
++        /* Ordinary mode projects only at its final nanosecond boundary. */
++        if (!qemu_time_split_ps(offset_ps, &ns, &phase) ||
++            (phase && ns == INT64_MAX)) {
 +            return -EINVAL;
 +        }
-+        timer->clk_offset += !!timer->clk_offset_phase_ps;
-+        timer->clk_offset_phase_ps = 0;
++        timer->clk_offset = ns + !!phase;
 +    }
 +    return 0;
 +}
@@ -35692,7 +35765,7 @@ index b35411aa1e1d3798451507bf7c31ff822ad4c32e..eadff4b9e7b889e7dcb60cafa12d41ed
 -    }
 +    },
 +    .subsections = (const VMStateDescription * const []) {
-+        &vmstate_or1k_timer_ps_clock,
++        &vmstate_or1k_timer_wide_clock,
 +        NULL,
 +    },
  };
@@ -128713,20 +128786,24 @@ index bd1e4002cfde895ceeb984647561ef129bf80855..4d6375ae0c0a9ebae170948a7784c703
  
  static bool mips_octeon_needed(void *opaque)
 diff --git a/target/or1k/cpu.h b/target/or1k/cpu.h
-index fc4387ce7ae54ea100c94fa6ac7113a15a9fe6eb..2381d0327cba0e6a8647d47b9d96666bdfc8da4a 100644
+index fc4387ce7ae54ea100c94fa6ac7113a15a9fe6eb..28a6681e3f1a9d0094271a19d1e1f82c98646144 100644
 --- a/target/or1k/cpu.h
 +++ b/target/or1k/cpu.h
-@@ -267,6 +267,8 @@ typedef struct CPUArchState {
+@@ -267,6 +267,12 @@ typedef struct CPUArchState {
  
  #ifndef CONFIG_USER_ONLY
      QEMUTimer *timer;
-+    uint16_t timer_phase_ps;
-+    uint8_t timer_ps_clock_unit;
++    int64_t timer_deadline_ns;
++    int64_t timer_deadline_ps_hi;
++    uint64_t timer_deadline_ps_lo;
++    uint8_t timer_active;
++    uint8_t timer_wide_clock_mode;
++    bool timer_exact_loaded;
      uint32_t ttmr;          /* Timer tick mode register */
      int is_counting;
  
 diff --git a/target/or1k/machine.c b/target/or1k/machine.c
-index 2d5ca16c51164e3f06a1b237013be14e93530916..f43c6c30e1eb7240678783971a7baa0e4229ab62 100644
+index 2d5ca16c51164e3f06a1b237013be14e93530916..4bb43954251569efab3f7b54ae41aa483bb00b59 100644
 --- a/target/or1k/machine.c
 +++ b/target/or1k/machine.c
 @@ -18,9 +18,11 @@
@@ -128741,51 +128818,99 @@ index 2d5ca16c51164e3f06a1b237013be14e93530916..f43c6c30e1eb7240678783971a7baa0e
  
  static const VMStateDescription vmstate_tlb_entry = {
      .name = "tlb_entry",
-@@ -68,10 +70,86 @@ static const VMStateInfo vmstate_sr = {
+@@ -68,10 +70,150 @@ static const VMStateInfo vmstate_sr = {
      .put = put_sr,
  };
  
++static __int128 openrisc_timer_deadline_ps(const CPUOpenRISCState *env)
++{
++    return (__int128)env->timer_deadline_ps_hi * ((__int128)1 << 64) +
++           env->timer_deadline_ps_lo;
++}
++
++static int64_t openrisc_timer_ns_shadow(__int128 time_ps)
++{
++    __int128 ns = time_ps / PICOSECONDS_PER_NANOSECOND;
++
++    if (time_ps % PICOSECONDS_PER_NANOSECOND < 0) {
++        ns--;
++    }
++    if (ns < INT64_MIN) {
++        return INT64_MIN;
++    }
++    if (ns > INT64_MAX) {
++        return INT64_MAX;
++    }
++    return ns;
++}
++
 +static int openrisc_timer_pre_save(void *opaque)
 +{
 +    CPUOpenRISCState *env = opaque;
-+    int64_t deadline_ns;
-+    int status;
++    __int128 deadline_ps;
++    uint64_t lo;
 +
++    env->timer_deadline_ns = -1;
++    env->timer_active = timer_pending(env->timer);
 +    if (!qemu_timer_tcg_ps_enabled()) {
++        if (env->timer_active) {
++            env->timer_deadline_ns = timer_expire_time_ns(env->timer);
++        }
 +        return 0;
 +    }
-+    env->timer_ps_clock_unit = 1;
-+    status = timer_expire_time_ns_phase(env->timer, &deadline_ns,
-+                                        &env->timer_phase_ps);
-+    if (status <= 0) {
-+        env->timer_phase_ps = 0;
++
++    env->timer_wide_clock_mode = 1;
++    deadline_ps = env->timer_active ?
++                  timer_expire_time_ps_wide(env->timer) : 0;
++    lo = deadline_ps;
++    env->timer_deadline_ps_hi = deadline_ps / ((__int128)1 << 64);
++    if (deadline_ps % ((__int128)1 << 64) < 0) {
++        env->timer_deadline_ps_hi--;
 +    }
-+    return status < 0 ? status : 0;
++    env->timer_deadline_ps_lo = lo;
++    if (env->timer_active) {
++        env->timer_deadline_ns = openrisc_timer_ns_shadow(deadline_ps);
++    }
++    return 0;
 +}
 +
 +static int openrisc_timer_pre_load(void *opaque)
 +{
 +    CPUOpenRISCState *env = opaque;
 +
-+    env->timer_phase_ps = 0;
-+    env->timer_ps_clock_unit = 0;
++    env->timer_wide_clock_mode = 0;
++    env->timer_exact_loaded = false;
 +    return 0;
 +}
 +
-+static bool openrisc_timer_ps_clock_needed(void *opaque)
++static bool openrisc_timer_wide_clock_needed(void *opaque)
 +{
 +    (void)opaque;
 +    return qemu_timer_tcg_ps_enabled();
 +}
 +
-+static const VMStateDescription vmstate_openrisc_timer_ps_clock = {
-+    .name = "env/ps-clock",
++static int openrisc_timer_exact_post_load(void *opaque, int version_id)
++{
++    CPUOpenRISCState *env = opaque;
++
++    if (env->timer_exact_loaded) {
++        return -EINVAL;
++    }
++    env->timer_exact_loaded = true;
++    return 0;
++}
++
++static const VMStateDescription vmstate_openrisc_timer_wide_clock = {
++    .name = "env/timer-wide",
 +    .version_id = 1,
 +    .minimum_version_id = 1,
-+    .needed = openrisc_timer_ps_clock_needed,
++    .needed = openrisc_timer_wide_clock_needed,
++    .post_load = openrisc_timer_exact_post_load,
 +    .fields = (const VMStateField[]) {
-+        VMSTATE_UINT16(timer_phase_ps, CPUOpenRISCState),
-+        VMSTATE_UINT8(timer_ps_clock_unit, CPUOpenRISCState),
++        VMSTATE_UINT8(timer_wide_clock_mode, CPUOpenRISCState),
++        VMSTATE_UINT8(timer_active, CPUOpenRISCState),
++        VMSTATE_INT64(timer_deadline_ps_hi, CPUOpenRISCState),
++        VMSTATE_UINT64(timer_deadline_ps_lo, CPUOpenRISCState),
 +        VMSTATE_END_OF_LIST(),
 +    },
 +};
@@ -128793,27 +128918,43 @@ index 2d5ca16c51164e3f06a1b237013be14e93530916..f43c6c30e1eb7240678783971a7baa0e
 +static int openrisc_timer_post_load(void *opaque, int version_id)
 +{
 +    CPUOpenRISCState *env = opaque;
-+    int64_t deadline_ns;
-+    uint16_t loaded_phase;
-+    int status;
++    __int128 deadline_ps;
++    int64_t projected_ns;
++    uint16_t phase;
++    bool active;
 +
 +    (void)version_id;
-+    if (env->timer_ps_clock_unit > 1 ||
-+        (icount_crucible_sim_mode() && qemu_timer_tcg_ps_enabled() &&
-+         !env->timer_ps_clock_unit) ||
-+        env->timer_phase_ps >= PICOSECONDS_PER_NANOSECOND) {
++    if (qemu_timer_tcg_ps_enabled() && !env->timer_exact_loaded) {
 +        return -EINVAL;
 +    }
-+    status = timer_expire_time_ns_phase(env->timer, &deadline_ns,
-+                                        &loaded_phase);
-+    if (status < 0 || loaded_phase ||
-+        (!status && env->timer_phase_ps) ||
-+        (status && !timer_mod_ns_phase(env->timer, deadline_ns,
-+                                       env->timer_phase_ps))) {
-+        return -EINVAL;
++    if (!env->timer_exact_loaded) {
++        active = env->timer_deadline_ns != -1;
++    } else {
++        deadline_ps = openrisc_timer_deadline_ps(env);
++        if (env->timer_wide_clock_mode != 1 || env->timer_active > 1 ||
++            (!env->timer_active &&
++             (deadline_ps || env->timer_deadline_ns != -1)) ||
++            (env->timer_active &&
++             env->timer_deadline_ns != openrisc_timer_ns_shadow(deadline_ps))) {
++            return -EINVAL;
++        }
++        active = env->timer_active;
++        if (!qemu_timer_tcg_ps_enabled() && active) {
++            if (!qemu_time_split_ps(deadline_ps, &projected_ns, &phase) ||
++                (phase && projected_ns == INT64_MAX)) {
++                return -EINVAL;
++            }
++            env->timer_deadline_ns = projected_ns + !!phase;
++        }
 +    }
-+    if (!qemu_timer_tcg_ps_enabled()) {
-+        env->timer_phase_ps = 0;
++
++    /* The parent wire field never arms a timer before exact validation. */
++    if (!active) {
++        timer_del(env->timer);
++    } else if (qemu_timer_tcg_ps_enabled()) {
++        timer_mod_ps_wide(env->timer, openrisc_timer_deadline_ps(env));
++    } else {
++        timer_mod_ns(env->timer, env->timer_deadline_ns);
 +    }
 +    return 0;
 +}
@@ -128828,12 +128969,12 @@ index 2d5ca16c51164e3f06a1b237013be14e93530916..f43c6c30e1eb7240678783971a7baa0e
      .fields = (const VMStateField[]) {
          VMSTATE_UINT32_2DARRAY(shadow_gpr, CPUOpenRISCState, 16, 32),
          VMSTATE_UINT32(pc, CPUOpenRISCState),
-@@ -111,14 +189,18 @@ static const VMStateDescription vmstate_env = {
+@@ -111,14 +253,18 @@ static const VMStateDescription vmstate_env = {
          VMSTATE_STRUCT(tlb, CPUOpenRISCState, 1,
                         vmstate_cpu_tlb, CPUOpenRISCTLBContext),
  
 -        VMSTATE_TIMER_PTR(timer, CPUOpenRISCState),
-+        VMSTATE_TIMER_NS_FLOOR_PTR(timer, CPUOpenRISCState),
++        VMSTATE_INT64(timer_deadline_ns, CPUOpenRISCState),
          VMSTATE_UINT32(ttmr, CPUOpenRISCState),
  
          VMSTATE_UINT32(picmr, CPUOpenRISCState),
@@ -128843,7 +128984,7 @@ index 2d5ca16c51164e3f06a1b237013be14e93530916..f43c6c30e1eb7240678783971a7baa0e
 -    }
 +    },
 +    .subsections = (const VMStateDescription * const []) {
-+        &vmstate_openrisc_timer_ps_clock,
++        &vmstate_openrisc_timer_wide_clock,
 +        NULL,
 +    },
  };
@@ -141979,7 +142120,7 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
      return g_test_run();
  }
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..590577c23f27e3fc0e6c8853838c9e7288b15560 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..91e45d1186a0ac0cc32fe2a2a2c46434bbd2f2e0 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -147,6 +147,37 @@ if have_system
@@ -142020,7 +142161,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..590577c23f27e3fc0e6c8853838c9e72
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +238,281 @@ foreach test_name, extra: tests
+@@ -207,3 +238,302 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -142295,6 +142436,27 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..590577c23f27e3fc0e6c8853838c9e72
 +  test(
 +    'test-crucible-ptimer-wide-clock',
 +    ptimer_wide_clock_test,
++    env: test_env,
++    args: ['--tap', '-k'],
++    protocol: 'tap',
++    timeout: 30,
++    suite: ['unit'],
++  )
++endif
++
++# The OpenRISC timer fixture uses literal target state without realizing a CPU.
++if have_system
++  openrisc_wide_clock_test = executable(
++    'test-crucible-openrisc-wide-clock',
++    'test-crucible-openrisc-wide-clock.c',
++    genh,
++    dependencies: [qemuutil, qom, migration, io],
++    c_args: ['-DCOMPILING_SYSTEM_VS_USER', '-ffunction-sections', '-fdata-sections'],
++    link_args: ['-Wl,--gc-sections'],
++  )
++  test(
++    'test-crucible-openrisc-wide-clock',
++    openrisc_wide_clock_test,
 +    env: test_env,
 +    args: ['--tap', '-k'],
 +    protocol: 'tap',
@@ -153255,6 +153417,624 @@ index 0000000000000000000000000000000000000000..bb46211d9641f0d43e0ff04304d92725
 +                    test_legacy_phase_default);
 +    g_test_add_func("/nvme/migration/invalid-phase",
 +                    test_invalid_migration_phase);
++    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-openrisc-wide-clock.c b/tests/unit/test-crucible-openrisc-wide-clock.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..264f9d2aaf8a9692551cb3ee9ffd4f559af93f50
+--- /dev/null
++++ b/tests/unit/test-crucible-openrisc-wide-clock.c
+@@ -0,0 +1,612 @@
++/*
++ * Literal OpenRISC timer execution and migration with a controlled clock.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/main-loop.h"
++#include "system/cpu-timers.h"
++#include "io/channel-buffer.h"
++#include "../../migration/qemu-file.h"
++#include "migration/savevm.h"
++#include "../../hw/or1k/cputimer.c"
++#include "../../target/or1k/machine.c"
++
++static __int128 observed_ps;
++static unsigned nanosecond_reads;
++static unsigned interrupts;
++static unsigned kicks;
++static const char *program_path;
++
++/* Diagnostic clock and interrupt consumers, without a realized guest CPU. */
++int64_t cpu_get_clock(void)
++{
++    __int128 ns = observed_ps / PICOSECONDS_PER_NANOSECOND;
++
++    nanosecond_reads++;
++    g_assert_true(ns >= 0 && ns <= INT64_MAX);
++    return ns;
++}
++
++bool icount_crucible_sim_mode(void)
++{
++    return false;
++}
++
++void cpu_set_interrupt(CPUState *cpu, int mask)
++{
++    interrupts++;
++    cpu->interrupt_request |= mask;
++}
++
++void qemu_cpu_kick(CPUState *cpu)
++{
++    kicks++;
++}
++
++static __int128 observed_clock_ps(void)
++{
++    return observed_ps;
++}
++
++static void initialize_clock(bool exact)
++{
++    Error *error = NULL;
++    /* Only the CPU identity cast is needed by the actual timer callback. */
++    const TypeInfo diagnostic_cpu = {
++        .name = TYPE_CPU,
++        .parent = TYPE_OBJECT,
++        .instance_size = sizeof(CPUState),
++        .class_size = sizeof(CPUClass),
++    };
++
++    module_call_init(MODULE_INIT_QOM);
++    g_assert_null(object_class_by_name(TYPE_CPU));
++    type_register_static(&diagnostic_cpu);
++    qemu_init_main_loop(&error);
++    g_assert_null(error);
++    if (exact) {
++        qemu_timer_enable_tcg_ps_clock(NULL, observed_clock_ps);
++    }
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++    nanosecond_reads = 0;
++}
++
++static void initialize_cpu(OpenRISCCPU *cpu)
++{
++    object_initialize(cpu, sizeof(*cpu), TYPE_CPU);
++    cpu->env.timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, openrisc_timer_cb, cpu);
++    cpu->env.is_counting = true;
++}
++
++static GByteArray *save_state(const VMStateDescription *description,
++                             void *state)
++{
++    QIOChannelBuffer *output = qio_channel_buffer_new(4096);
++    QEMUFile *file = qemu_file_new_output(QIO_CHANNEL(output));
++    GByteArray *bytes = g_byte_array_new();
++    Error *error = NULL;
++
++    g_assert_cmpint(vmstate_save_state(file, description, state, NULL,
++                                      &error), ==, 0);
++    g_assert_null(error);
++    qemu_put_byte(file, QEMU_VM_EOF);
++    g_assert_cmpint(qemu_fflush(file), ==, 0);
++    g_byte_array_append(bytes, output->data, output->usage);
++    g_assert_cmpint(qemu_fclose(file), ==, 0);
++    object_unref(OBJECT(output));
++    return bytes;
++}
++
++static int load_state(const VMStateDescription *description, void *state,
++                      GByteArray *bytes)
++{
++    QIOChannelBuffer *input = qio_channel_buffer_new(bytes->len);
++    QEMUFile *file;
++    int status;
++
++    memcpy(input->data, bytes->data, bytes->len);
++    input->usage = bytes->len;
++    file = qemu_file_new_input(QIO_CHANNEL(input));
++    status = vmstate_load_state(file, description, state,
++                                description->version_id, NULL);
++    qemu_fclose(file);
++    object_unref(OBJECT(input));
++    return status;
++}
++
++static void test_origin(gconstpointer data)
++{
++    unsigned kind = GPOINTER_TO_UINT(data);
++    OpenRISCCPU cpu = { 0 };
++    OR1KTimerState state = { 0 };
++    __int128 origin;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    origin = kind == 0 ? ((__int128)INT64_MAX + 1) * 1000 + 357 :
++             kind == 1 ? ((__int128)1 << 120) + 357 :
++             (__int128)(((__uint128_t)-1) >> 1) - 100000;
++    observed_ps = origin;
++    or1k_timer = &state;
++    cpu.env.is_counting = true;
++    cpu_openrisc_count_set(&cpu, 123);
++    g_assert_true(or1k_timer_clk_offset_ps() == origin);
++    observed_ps += TIMER_PERIOD_PS - 1;
++    cpu_openrisc_count_update(&cpu);
++    g_assert_cmpuint(cpu_openrisc_count_get(&cpu), ==, 124);
++    observed_ps++;
++    cpu_openrisc_count_update(&cpu);
++    g_assert_cmpuint(cpu_openrisc_count_get(&cpu), ==, 124);
++    observed_ps++;
++    cpu_openrisc_count_update(&cpu);
++    g_assert_cmpuint(cpu_openrisc_count_get(&cpu), ==, 125);
++    g_assert_cmpuint(nanosecond_reads, ==, 0);
++}
++
++static void test_wide_migration(void)
++{
++    OpenRISCCPU cpu = { 0 };
++    OpenRISCCPU restored = { 0 };
++    OR1KTimerState state = { 0 };
++    OR1KTimerState restored_state = { 0 };
++    GByteArray *global;
++    GByteArray *environment;
++    __int128 origin = ((__int128)1 << 120) + 357;
++    __int128 deadline;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    initialize_cpu(&cpu);
++    initialize_cpu(&restored);
++    or1k_timer = &state;
++    observed_ps = origin;
++    cpu_openrisc_count_set(&cpu, 0);
++    cpu.env.ttmr = TIMER_SHOT | TTMR_IE | 3;
++    cpu_openrisc_timer_update(&cpu);
++    deadline = timer_expire_time_ps_wide(cpu.env.timer);
++    g_assert_true(deadline == origin + 3 * TIMER_PERIOD_PS);
++    global = save_state(&vmstate_or1k_timer, &state);
++    environment = save_state(&vmstate_env, &cpu.env);
++    g_assert_cmpint(load_state(&vmstate_or1k_timer, &restored_state, global),
++                    ==, 0);
++    g_assert_cmpint(load_state(&vmstate_env, &restored.env, environment),
++                    ==, 0);
++    g_assert_true(timer_expire_time_ps_wide(restored.env.timer) == deadline);
++    timer_del(cpu.env.timer);
++    or1k_timer = &restored_state;
++    observed_ps = deadline - 1;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(interrupts, ==, 0);
++    observed_ps++;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(interrupts, ==, 1);
++    g_assert_cmpuint(kicks, ==, 1);
++    g_assert_false(timer_pending(restored.env.timer));
++    g_assert_cmpuint(restored.parent_obj.interrupt_request &
++                     CPU_INTERRUPT_TIMER,
++                     ==, CPU_INTERRUPT_TIMER);
++    g_assert_cmpuint(nanosecond_reads, ==, 0);
++    g_byte_array_unref(global);
++    g_byte_array_unref(environment);
++    timer_free(cpu.env.timer);
++    timer_free(restored.env.timer);
++    object_unref(OBJECT(&cpu));
++    object_unref(OBJECT(&restored));
++}
++
++static void test_negative_expiry(void)
++{
++    OpenRISCCPU cpu = { 0 };
++    OpenRISCCPU restored = { 0 };
++    GByteArray *environment;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    initialize_cpu(&cpu);
++    initialize_cpu(&restored);
++    /* An active wide deadline of -1 is distinct from an inactive timer. */
++    timer_mod_ps_wide(cpu.env.timer, -1);
++    g_assert_true(timer_pending(cpu.env.timer));
++    g_assert_true(timer_expire_time_ps_wide(cpu.env.timer) == -1);
++    environment = save_state(&vmstate_env, &cpu.env);
++    timer_mod_ps_wide(restored.env.timer, 42);
++    g_assert_cmpint(load_state(&vmstate_env, &restored.env, environment),
++                    ==, 0);
++    g_assert_true(timer_pending(restored.env.timer));
++    g_assert_true(timer_expire_time_ps_wide(restored.env.timer) == -1);
++    g_byte_array_unref(environment);
++    timer_free(cpu.env.timer);
++    timer_free(restored.env.timer);
++    object_unref(OBJECT(&cpu));
++    object_unref(OBJECT(&restored));
++}
++
++static size_t subsection_payload(const GByteArray *bytes, const char *name)
++{
++    size_t length = strlen(name);
++
++    for (size_t position = 2; position + length + 4 < bytes->len; position++) {
++        if (bytes->data[position - 2] == QEMU_VM_SUBSECTION &&
++            bytes->data[position - 1] == length &&
++            !memcmp(bytes->data + position, name, length)) {
++            return position + length + 4;
++        }
++    }
++    g_assert_not_reached();
++}
++
++static void remove_subsection(GByteArray *bytes, const char *name)
++{
++    size_t start = subsection_payload(bytes, name) - strlen(name) - 6;
++
++    g_byte_array_set_size(bytes, start);
++    g_byte_array_append(bytes, (const uint8_t[]) { QEMU_VM_EOF }, 1);
++}
++
++static void duplicate_subsection(GByteArray *bytes, const char *name)
++{
++    size_t start = subsection_payload(bytes, name) - strlen(name) - 6;
++    size_t length = bytes->len - start - 1;
++    uint8_t *copy = g_memdup2(bytes->data + start, length);
++
++    g_byte_array_set_size(bytes, bytes->len - 1);
++    g_byte_array_append(bytes, copy, length);
++    g_byte_array_append(bytes, (const uint8_t[]) { QEMU_VM_EOF }, 1);
++    g_free(copy);
++}
++
++static void test_malformed(gconstpointer data)
++{
++    unsigned kind = GPOINTER_TO_UINT(data);
++    bool environment = kind >= 4;
++    OpenRISCCPU cpu = { 0 };
++    OR1KTimerState state = { 0 };
++    const char *name = environment ? "env/timer-wide" :
++                                    "or1k_timer/clock-wide";
++    const VMStateDescription *description = environment ? &vmstate_env :
++                                                         &vmstate_or1k_timer;
++    void *target = environment ? (void *)&cpu.env : (void *)&state;
++    GByteArray *bytes;
++    size_t payload;
++    __int128 original_deadline;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    initialize_cpu(&cpu);
++    or1k_timer = &state;
++    observed_ps = ((__int128)1 << 120) + 357;
++    cpu_openrisc_count_set(&cpu, 0);
++    cpu.env.ttmr = TIMER_SHOT | TTMR_IE | 3;
++    cpu_openrisc_timer_update(&cpu);
++    bytes = save_state(description, target);
++    payload = subsection_payload(bytes, name);
++
++    switch (kind) {
++    case 0:
++    case 4:
++        remove_subsection(bytes, name);
++        break;
++    case 1:
++        bytes->data[payload + 16] = 2;
++        break;
++    case 2:
++        bytes->data[15] ^= 1;
++        break;
++    case 3:
++    case 8:
++        duplicate_subsection(bytes, name);
++        break;
++    case 5:
++        bytes->data[payload] = 2;
++        break;
++    case 6:
++        bytes->data[payload + 1] = 2;
++        break;
++    case 7:
++        bytes->data[payload + 1] = 0;
++        break;
++    case 9:
++        /* The parent ends with deadline64, TTMR32, PICMR32, PICSR32. */
++        bytes->data[payload - strlen(name) - 6 - 13] ^= 1;
++        break;
++    case 10:
++        g_byte_array_set_size(bytes, bytes->len - 3);
++        break;
++    default:
++        g_assert_not_reached();
++    }
++
++    timer_mod_ps_wide(cpu.env.timer, observed_ps + 123456);
++    original_deadline = timer_expire_time_ps_wide(cpu.env.timer);
++    g_assert_cmpint(load_state(description, target, bytes), <, 0);
++    g_assert_true(timer_pending(cpu.env.timer));
++    g_assert_true(timer_expire_time_ps_wide(cpu.env.timer) ==
++                  original_deadline);
++    g_assert_cmpuint(interrupts, ==, 0);
++    g_assert_cmpuint(kicks, ==, 0);
++    g_byte_array_unref(bytes);
++    timer_free(cpu.env.timer);
++    object_unref(OBJECT(&cpu));
++}
++
++static void test_ordinary(void)
++{
++    OpenRISCCPU cpu = { 0 };
++    OpenRISCCPU restored = { 0 };
++    OR1KTimerState state = { 0 };
++    OR1KTimerState restored_state = { 0 };
++    GByteArray *global;
++    GByteArray *environment;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(false);
++    initialize_cpu(&cpu);
++    initialize_cpu(&restored);
++    observed_ps = 1000000;
++    or1k_timer = &state;
++    cpu_openrisc_count_set(&cpu, 0);
++    cpu.env.ttmr = TIMER_SHOT | TTMR_IE | 3;
++    cpu_openrisc_timer_update(&cpu);
++    g_assert_cmpint(timer_expire_time_ns(cpu.env.timer), ==, 1150);
++    global = save_state(&vmstate_or1k_timer, &state);
++    environment = save_state(&vmstate_env, &cpu.env);
++    g_assert_cmpuint(global->len, ==, 17);
++    g_assert_cmpint(load_state(&vmstate_or1k_timer, &restored_state, global),
++                    ==, 0);
++    g_assert_cmpint(load_state(&vmstate_env, &restored.env, environment),
++                    ==, 0);
++    g_assert_cmpint(timer_expire_time_ns(restored.env.timer), ==, 1150);
++    timer_del(cpu.env.timer);
++    or1k_timer = &restored_state;
++    observed_ps = 1149999;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(interrupts, ==, 0);
++    observed_ps = 1150000;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(interrupts, ==, 1);
++    g_assert_cmpuint(kicks, ==, 1);
++    g_assert_false(timer_pending(restored.env.timer));
++    g_assert_cmpuint(nanosecond_reads, >, 0);
++    g_byte_array_unref(global);
++    g_byte_array_unref(environment);
++    timer_free(cpu.env.timer);
++    timer_free(restored.env.timer);
++    object_unref(OBJECT(&cpu));
++    object_unref(OBJECT(&restored));
++}
++
++static void test_signed_origin(void)
++{
++    OpenRISCCPU cpu = { 0 };
++    OR1KTimerState state = { 0 };
++    OR1KTimerState restored_state = { 0 };
++    GByteArray *bytes;
++    __int128 minimum = -(__int128)(((__uint128_t)-1) >> 1) - 1;
++    __uint128_t ticks;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    or1k_timer = &state;
++    observed_ps = minimum + 357;
++    cpu.env.is_counting = true;
++    cpu_openrisc_count_set(&cpu, 0);
++    g_assert_true(or1k_timer_clk_offset_ps() == observed_ps);
++    bytes = save_state(&vmstate_or1k_timer, &state);
++    g_assert_cmpint(load_state(&vmstate_or1k_timer, &restored_state, bytes),
++                    ==, 0);
++    or1k_timer = &restored_state;
++    g_assert_true(or1k_timer_clk_offset_ps() == observed_ps);
++    observed_ps = (__int128)(((__uint128_t)-1) >> 1);
++    cpu_openrisc_count_update(&cpu);
++    ticks = ((__uint128_t)-1 - 357) / TIMER_PERIOD_PS +
++            (((__uint128_t)-1 - 357) % TIMER_PERIOD_PS != 0);
++    g_assert_cmpuint(cpu_openrisc_count_get(&cpu), ==, (uint32_t)ticks);
++    g_byte_array_unref(bytes);
++}
++
++static int import_ordinary(const char *global_path,
++                           const char *environment_path,
++                           bool wide, bool inactive)
++{
++    OpenRISCCPU cpu = { 0 };
++    OR1KTimerState state = { 0 };
++    GByteArray *global = g_byte_array_new();
++    GByteArray *environment = g_byte_array_new();
++    char *contents;
++    size_t length;
++
++    initialize_clock(false);
++    initialize_cpu(&cpu);
++    or1k_timer = &state;
++    g_assert_true(g_file_get_contents(global_path, &contents, &length, NULL));
++    g_byte_array_append(global, (uint8_t *)contents, length);
++    g_free(contents);
++    g_assert_true(g_file_get_contents(environment_path, &contents, &length,
++                                     NULL));
++    g_byte_array_append(environment, (uint8_t *)contents, length);
++    g_free(contents);
++    timer_mod_ns(cpu.env.timer, 42);
++
++    if (wide) {
++        g_assert_cmpint(load_state(&vmstate_or1k_timer, &state, global), <, 0);
++        g_assert_cmpint(load_state(&vmstate_env, &cpu.env, environment), <, 0);
++        g_assert_cmpint(timer_expire_time_ns(cpu.env.timer), ==, 42);
++    } else {
++        g_assert_cmpint(load_state(&vmstate_or1k_timer, &state, global), ==, 0);
++        g_assert_cmpint(state.clk_offset, ==, 1000001);
++        g_assert_cmpint(load_state(&vmstate_env, &cpu.env, environment), ==, 0);
++        if (inactive) {
++            g_assert_false(timer_pending(cpu.env.timer));
++        } else {
++            g_assert_cmpint(timer_expire_time_ns(cpu.env.timer), ==, 1000151);
++        }
++    }
++    g_byte_array_unref(global);
++    g_byte_array_unref(environment);
++    timer_free(cpu.env.timer);
++    object_unref(OBJECT(&cpu));
++    return 0;
++}
++
++static void test_cross_mode(gconstpointer data)
++{
++    unsigned kind = GPOINTER_TO_UINT(data);
++    OpenRISCCPU cpu = { 0 };
++    OR1KTimerState state = { 0 };
++    GByteArray *global;
++    GByteArray *environment;
++    g_autofree char *directory = NULL;
++    g_autofree char *global_path = NULL;
++    g_autofree char *environment_path = NULL;
++    g_autofree char *output = NULL;
++    g_autofree char *errors = NULL;
++    int status;
++    char *arguments[7];
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    initialize_clock(true);
++    initialize_cpu(&cpu);
++    or1k_timer = &state;
++    observed_ps = kind == 1 ? ((__int128)1 << 120) + 357 : 1000000357;
++    cpu_openrisc_count_set(&cpu, 0);
++    cpu.env.ttmr = TIMER_SHOT | TTMR_IE | 3;
++    cpu_openrisc_timer_update(&cpu);
++    if (kind == 2) {
++        timer_del(cpu.env.timer);
++    }
++    global = save_state(&vmstate_or1k_timer, &state);
++    environment = save_state(&vmstate_env, &cpu.env);
++    directory = g_dir_make_tmp("openrisc-clock-XXXXXX", NULL);
++    g_assert_nonnull(directory);
++    global_path = g_build_filename(directory, "global", NULL);
++    environment_path = g_build_filename(directory, "environment", NULL);
++    g_assert_true(g_file_set_contents(global_path, (char *)global->data,
++                                     global->len, NULL));
++    g_assert_true(g_file_set_contents(environment_path,
++                                     (char *)environment->data,
++                                     environment->len, NULL));
++    arguments[0] = (char *)program_path;
++    arguments[1] = (char *)"--import-ordinary";
++    arguments[2] = global_path;
++    arguments[3] = environment_path;
++    arguments[4] = (char *)(kind == 1 ? "wide" : "representable");
++    arguments[5] = (char *)(kind == 2 ? "inactive" : "active");
++    arguments[6] = NULL;
++    g_assert_true(g_spawn_sync(NULL, arguments, NULL, 0, NULL, NULL,
++                              &output, &errors, &status, NULL));
++    if (status) {
++        g_test_message("ordinary import: %s", errors);
++    }
++    g_assert_true(WIFEXITED(status));
++    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++    g_assert_cmpint(unlink(global_path), ==, 0);
++    g_assert_cmpint(unlink(environment_path), ==, 0);
++    g_assert_cmpint(rmdir(directory), ==, 0);
++    g_byte_array_unref(global);
++    g_byte_array_unref(environment);
++    timer_free(cpu.env.timer);
++    object_unref(OBJECT(&cpu));
++}
++
++static void test_deadline_overflow(void)
++{
++    OpenRISCCPU cpu = { 0 };
++    OR1KTimerState state = { 0 };
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_failed();
++        g_test_trap_assert_stderr("*deadline exceeds virtual clock range*");
++        return;
++    }
++
++    initialize_clock(true);
++    initialize_cpu(&cpu);
++    observed_ps = (__int128)(((__uint128_t)-1) >> 1) - 10;
++    or1k_timer = &state;
++    cpu_openrisc_count_set(&cpu, 0);
++    cpu.env.ttmr = TIMER_SHOT | 1;
++    cpu_openrisc_timer_update(&cpu);
++}
++
++int main(int argc, char **argv)
++{
++    const char *malformed_names[] = {
++        "global-missing", "global-mode", "global-projection",
++        "global-duplicate",
++        "environment-missing", "environment-mode", "environment-active",
++        "environment-inactive-payload", "environment-duplicate",
++        "environment-projection", "environment-truncated",
++    };
++
++    program_path = argv[0];
++    if (argc == 6 && !strcmp(argv[1], "--import-ordinary")) {
++        return import_ordinary(argv[2], argv[3], !strcmp(argv[4], "wide"),
++                               !strcmp(argv[5], "inactive"));
++    }
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_data_func("/openrisc/origin/ns-horizon", GUINT_TO_POINTER(0),
++                         test_origin);
++    g_test_add_data_func("/openrisc/origin/wide", GUINT_TO_POINTER(1),
++                         test_origin);
++    g_test_add_data_func("/openrisc/origin/full-horizon", GUINT_TO_POINTER(2),
++                         test_origin);
++    g_test_add_func("/openrisc/wide-migration", test_wide_migration);
++    g_test_add_func("/openrisc/ordinary", test_ordinary);
++    g_test_add_func("/openrisc/negative-expiry", test_negative_expiry);
++    g_test_add_func("/openrisc/signed-origin", test_signed_origin);
++
++    g_test_add_func("/openrisc/deadline-overflow", test_deadline_overflow);
++    g_test_add_data_func("/openrisc/cross-mode/representable",
++                         GUINT_TO_POINTER(0),
++                         test_cross_mode);
++    g_test_add_data_func("/openrisc/cross-mode/wide-refused",
++                         GUINT_TO_POINTER(1),
++                         test_cross_mode);
++    g_test_add_data_func("/openrisc/cross-mode/inactive", GUINT_TO_POINTER(2),
++                         test_cross_mode);
++    for (unsigned kind = 0; kind < G_N_ELEMENTS(malformed_names); kind++) {
++        g_autofree char *name = g_strdup_printf("/openrisc/malformed/%s",
++                                               malformed_names[kind]);
++
++        g_test_add_data_func(name, GUINT_TO_POINTER(kind), test_malformed);
++    }
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-parallel-fingerprint.c b/tests/unit/test-crucible-parallel-fingerprint.c
