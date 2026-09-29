@@ -29,6 +29,8 @@ use crate::ledger::{
 pub enum SourceNativeHeldLifecycleV1 {
     /// Adds only the original cleanup marker; actual owner custody remains required.
     OriginalCustodyMarked,
+    /// Marks an unleased cold terminal original without retiring Storage interest.
+    ColdTerminalCleanupMarked,
     /// Reserves a fresh Release through either exact native predecessor shape.
     ReleaseAdmitted,
     /// Completes only descriptor-free Pending or Unavailable Release status.
@@ -152,6 +154,18 @@ pub fn propose_native_held_lifecycle_v1<'before, 'after>(
                 || old.original.advance(Outer::CleanupRequired)? != new.original
             {
                 return Err(corrupt("held exact custody marker"));
+            }
+            transition::exact_mutations(&before, &after, &BTreeSet::from([key.clone()]))?;
+            custody = Some(old_bytes.clone());
+        }
+        SourceNativeHeldLifecycleV1::ColdTerminalCleanupMarked => {
+            graph::TerminalHeldArchive::read(&old)?;
+            if !matches!(old.original.state, Outer::Requested | Outer::Prepared)
+                || graph::cold_unleased_original(&old, &rows)?.is_none()
+                || old.suffix != new.suffix
+                || old.original.advance(Outer::CleanupRequired)? != new.original
+            {
+                return Err(corrupt("held exact cold terminal cleanup marker"));
             }
             transition::exact_mutations(&before, &after, &BTreeSet::from([key.clone()]))?;
             custody = Some(old_bytes.clone());
