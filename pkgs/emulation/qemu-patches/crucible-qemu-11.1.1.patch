@@ -1,4 +1,4 @@
-From b03c28668de69e3916ce8a127579574648ab8424 Mon Sep 17 00:00:00 2001
+From 5baeed9522afc63e4d9a753291f3af40f7b9d791 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
 Subject: [PATCH] crucible: integrate deterministic QEMU execution
@@ -104,6 +104,13 @@ and exercise literal device timers, pin IRQs and full migration streams.
 
 Remove unreachable TCG migration reconstruction after exact-state admission.
 Retain the existing non-TCG comparator and nanosecond history reconstruction.
+
+Preserve the configured RC4030 timer frequency until final picosecond arming.
+Keep exact wide TCG origins and reject malformed nine-bit reload migration
+state before timer or IRQ effects; leave generic non-TCG timing unchanged.
+Exercise literal device callbacks and full serialized timer state.
+
+Remove unused serial transmit timestamp storage and its dead clock reads.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -17649,7 +17656,7 @@ index eaa4e843c028b94248cb4a2a65268dbbd5dbcbe2..de295b2b583e3d3d373b0230434d3115
          VMSTATE_STRUCT(state, ISASerialState, 0, vmstate_serial, SerialState),
          VMSTATE_END_OF_LIST()
 diff --git a/hw/char/serial.c b/hw/char/serial.c
-index 4339562ab003a71fc227931a76daa66fa0c7c142..cb4be0df165d0d9a3d1149122d5a742bcd4014bf 100644
+index 4339562ab003a71fc227931a76daa66fa0c7c142..652e9f9cf1fe1118cfc41ad4446b9894e9b4fc2d 100644
 --- a/hw/char/serial.c
 +++ b/hw/char/serial.c
 @@ -25,9 +25,11 @@
@@ -17677,7 +17684,15 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..cb4be0df165d0d9a3d1149122d5a742b
      }
  }
  
-@@ -454,7 +458,10 @@ static void serial_ioport_write(void *opaque, hwaddr addr, uint64_t val,
+@@ -282,7 +286,6 @@ static void serial_xmit(SerialState *s)
+            possible when FIFO is enabled and not empty. */
+     } while (!(s->lsr & UART_LSR_THRE));
+ 
+-    s->last_xmit_ts = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+     s->lsr |= UART_LSR_TEMT;
+ }
+ 
+@@ -454,7 +457,10 @@ static void serial_ioport_write(void *opaque, hwaddr addr, uint64_t val,
                  serial_update_tiocm(s);
                  /* Update the modem status after a one-character-send wait-time, since there may be a response
                     from the device/computer at the other end of the serial line */
@@ -17689,7 +17704,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..cb4be0df165d0d9a3d1149122d5a742b
              }
          }
          break;
-@@ -486,7 +493,10 @@ static uint64_t serial_ioport_read(void *opaque, hwaddr addr, unsigned size)
+@@ -486,7 +492,10 @@ static uint64_t serial_ioport_read(void *opaque, hwaddr addr, unsigned size)
                  if (fifo8_is_empty(&s->recv_fifo)) {
                      s->lsr &= ~(UART_LSR_DR | UART_LSR_BI);
                  } else {
@@ -17701,7 +17716,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..cb4be0df165d0d9a3d1149122d5a742b
                  }
                  s->timeout_ipending = 0;
              } else {
-@@ -613,7 +623,10 @@ static void serial_receive1(void *opaque, const uint8_t *buf, int size)
+@@ -613,7 +622,10 @@ static void serial_receive1(void *opaque, const uint8_t *buf, int size)
          }
          s->lsr |= UART_LSR_DR;
          /* call the timeout receive callback in 4 char transmit time */
@@ -17713,7 +17728,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..cb4be0df165d0d9a3d1149122d5a742b
      } else {
          if (s->lsr & UART_LSR_DR)
              s->lsr |= UART_LSR_OE;
-@@ -630,10 +643,20 @@ static void serial_event(void *opaque, QEMUChrEvent event)
+@@ -630,10 +642,20 @@ static void serial_event(void *opaque, QEMUChrEvent event)
          serial_receive_break(s);
  }
  
@@ -17734,7 +17749,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..cb4be0df165d0d9a3d1149122d5a742b
  
      return 0;
  }
-@@ -643,6 +666,9 @@ static int serial_pre_load(void *opaque)
+@@ -643,6 +665,9 @@ static int serial_pre_load(void *opaque)
      SerialState *s = opaque;
      s->thr_ipending = -1;
      s->poll_msl = -1;
@@ -17744,7 +17759,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..cb4be0df165d0d9a3d1149122d5a742b
      return 0;
  }
  
-@@ -685,9 +711,44 @@ static int serial_post_load(void *opaque, int version_id)
+@@ -685,9 +710,44 @@ static int serial_post_load(void *opaque, int version_id)
      /* Initialize fcr via setter to perform essential side-effects */
      serial_write_fcr(s, s->fcr_vmstate);
      serial_update_parameters(s);
@@ -17756,9 +17771,9 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..cb4be0df165d0d9a3d1149122d5a742b
 +    if (s->timing_exact_loaded) {
 +        s->char_transmit_time = s->char_transmit_time_vmstate;
 +    }
-     return 0;
- }
- 
++    return 0;
++}
++
 +static int serial_timing_exact_post_load(void *opaque, int version_id)
 +{
 +    SerialState *s = opaque;
@@ -17769,9 +17784,9 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..cb4be0df165d0d9a3d1149122d5a742b
 +        return -EINVAL;
 +    }
 +    s->timing_exact_loaded = true;
-+    return 0;
-+}
-+
+     return 0;
+ }
+ 
 +static const VMStateDescription vmstate_serial_timing_exact = {
 +    .name = "serial/timing-ps",
 +    .version_id = 1,
@@ -17789,7 +17804,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..cb4be0df165d0d9a3d1149122d5a742b
  static bool serial_thr_ipending_needed(void *opaque)
  {
      SerialState *s = opaque;
-@@ -781,7 +842,7 @@ static const VMStateDescription vmstate_serial_fifo_timeout_timer = {
+@@ -781,7 +841,7 @@ static const VMStateDescription vmstate_serial_fifo_timeout_timer = {
      .minimum_version_id = 1,
      .needed = serial_fifo_timeout_timer_needed,
      .fields = (const VMStateField[]) {
@@ -17798,7 +17813,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..cb4be0df165d0d9a3d1149122d5a742b
          VMSTATE_END_OF_LIST()
      }
  };
-@@ -816,11 +877,103 @@ static const VMStateDescription vmstate_serial_poll = {
+@@ -816,11 +876,103 @@ static const VMStateDescription vmstate_serial_poll = {
      .minimum_version_id = 1,
      .fields = (const VMStateField[]) {
          VMSTATE_INT32(poll_msl, SerialState),
@@ -17903,7 +17918,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..cb4be0df165d0d9a3d1149122d5a742b
  const VMStateDescription vmstate_serial = {
      .name = "serial",
      .version_id = 3,
-@@ -828,6 +981,7 @@ const VMStateDescription vmstate_serial = {
+@@ -828,6 +980,7 @@ const VMStateDescription vmstate_serial = {
      .pre_save = serial_pre_save,
      .pre_load = serial_pre_load,
      .post_load = serial_post_load,
@@ -17911,7 +17926,7 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..cb4be0df165d0d9a3d1149122d5a742b
      .fields = (const VMStateField[]) {
          VMSTATE_UINT16_V(divider, SerialState, 2),
          VMSTATE_UINT8(rbr, SerialState),
-@@ -849,6 +1003,7 @@ const VMStateDescription vmstate_serial = {
+@@ -849,6 +1002,7 @@ const VMStateDescription vmstate_serial = {
          &vmstate_serial_fifo_timeout_timer,
          &vmstate_serial_timeout_ipending,
          &vmstate_serial_poll,
@@ -17919,6 +17934,15 @@ index 4339562ab003a71fc227931a76daa66fa0c7c142..cb4be0df165d0d9a3d1149122d5a742b
          NULL
      }
  };
+@@ -879,8 +1033,6 @@ static void serial_reset(void *opaque)
+     fifo8_reset(&s->recv_fifo);
+     fifo8_reset(&s->xmit_fifo);
+ 
+-    s->last_xmit_ts = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+-
+     s->thr_ipending = 0;
+     s->last_break_enable = 0;
+     qemu_irq_lower(s->irq);
 diff --git a/hw/char/sh_serial.c b/hw/char/sh_serial.c
 index 10f96e3a44bc1e762865d1ea7c3423f0ecf6ba04..e2a18f12db9368b7736ef3663b046fd40927a21e 100644
 --- a/hw/char/sh_serial.c
@@ -20916,10 +20940,10 @@ index 5a8df39d8f51c85af3a47ccdb8e4ffba2bbb18ea..ff151483ca662ad042c0d7693b98d0ee
  }
  
 diff --git a/hw/dma/rc4030.c b/hw/dma/rc4030.c
-index 546ff67908aa624d3870d68798ef4e4df0662c04..bc16db35e74a47cb4c3b9aaa9b89908d51549d0c 100644
+index 546ff67908aa624d3870d68798ef4e4df0662c04..c12a8298976d58efd5c2619923d6f660f9b94363 100644
 --- a/hw/dma/rc4030.c
 +++ b/hw/dma/rc4030.c
-@@ -108,12 +108,21 @@ struct rc4030State {
+@@ -108,12 +108,28 @@ struct rc4030State {
  static void set_next_tick(rc4030State *s)
  {
      uint32_t tm_hz;
@@ -20928,21 +20952,39 @@ index 546ff67908aa624d3870d68798ef4e4df0662c04..bc16db35e74a47cb4c3b9aaa9b89908d
      qemu_irq_lower(s->timer_irq);
  
      tm_hz = 1000 / (s->itr + 1);
-+    delay_ns = NANOSECONDS_PER_SECOND / tm_hz;
  
 -    timer_mod(s->periodic_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
 -                   NANOSECONDS_PER_SECOND / tm_hz);
 +    if (qemu_timer_tcg_ps_enabled()) {
-+        if (!timer_mod_after_ns(s->periodic_timer, delay_ns)) {
++        /* Keep the configured frequency's period until the final ps ceiling. */
++        __int128 delay_ps = (PICOSECONDS_PER_SECOND + tm_hz - 1) / tm_hz;
++        __int128 deadline_ps;
++
++        if (__builtin_add_overflow(
++                qemu_clock_get_ps_wide(QEMU_CLOCK_VIRTUAL), delay_ps,
++                &deadline_ps)) {
 +            g_error("RC4030 timer deadline exceeds virtual clock range");
 +        }
++        timer_mod_ps_wide(s->periodic_timer, deadline_ps);
 +    } else {
++        delay_ns = NANOSECONDS_PER_SECOND / tm_hz;
 +        timer_mod(s->periodic_timer,
 +                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delay_ns);
 +    }
  }
  
  /* called for accesses to rc4030 */
+@@ -560,6 +576,10 @@ static int rc4030_post_load(void *opaque, int version_id)
+ {
+     rc4030State *s = opaque;
+ 
++    /* Guest writes expose only nine reload bits; reject corrupt cold state. */
++    if (s->itr > 0x01ff) {
++        return -EINVAL;
++    }
+     set_next_tick(s);
+     update_jazz_irq(s);
+ 
 diff --git a/hw/dma/soc_dma.c b/hw/dma/soc_dma.c
 index 4feb22e6ea33e87597fc65388bb8e0463bb9ae4f..9ee7efcb7b93d6affcce4bf20fa2f2211ba51398 100644
 --- a/hw/dma/soc_dma.c
@@ -53089,10 +53131,19 @@ index 372e788be4cf6b29090bffc5fd676118c2223eb8..1e2cc1ba7dfab38dbc5b071d70a16413
  };
  
 diff --git a/include/hw/char/serial.h b/include/hw/char/serial.h
-index ea82ffac47608c78e8e774ddc99357eb9184ff43..aa1b67e55480bb43aeb2f59836dfc24be7eddb88 100644
+index ea82ffac47608c78e8e774ddc99357eb9184ff43..1d8a621200408344684dfcdf2919a184519bc84d 100644
 --- a/include/hw/char/serial.h
 +++ b/include/hw/char/serial.h
-@@ -73,6 +73,8 @@ struct SerialState {
+@@ -62,8 +62,6 @@ struct SerialState {
+     guint watch_tag;
+     bool wakeup;
+ 
+-    /* Time when the last byte was successfully sent out of the tsr */
+-    uint64_t last_xmit_ts;
+     Fifo8 recv_fifo;
+     Fifo8 xmit_fifo;
+     /* Interrupt trigger level for recv_fifo */
+@@ -73,6 +71,8 @@ struct SerialState {
      int timeout_ipending;           /* timeout interrupt pending state */
  
      uint64_t char_transmit_time;    /* time to transmit a char in ticks */
@@ -141337,7 +141388,7 @@ index 656a47524708e2a0e524cd1ff25d7ae0fd06e659..21a5585d8f96f329c6cd08a7cd2bb561
      return g_test_run();
  }
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..547ec35f742741fbbf7259d12cf29a037ae1def1 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..63734a4d708ceb5b1d906387b442b0d94b69afde 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -147,6 +147,37 @@ if have_system
@@ -141378,7 +141429,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..547ec35f742741fbbf7259d12cf29a03
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +238,196 @@ foreach test_name, extra: tests
+@@ -207,3 +238,218 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -141568,6 +141619,28 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..547ec35f742741fbbf7259d12cf29a03
 +  test(
 +    'test-crucible-hpet-phase',
 +    hpet_phase_test,
++    env: test_env,
++    args: ['--tap', '-k'],
++    protocol: 'tap',
++    timeout: 30,
++    suite: ['unit'],
++  )
++endif
++
++# This literal timer fixture does not require a realized MIPS board.
++if have_system
++  rc4030_period_test = executable(
++    'test-crucible-rc4030-period',
++    'test-crucible-rc4030-period.c',
++    '../../hw/core/irq.c',
++    genh,
++    dependencies: [qemuutil, qom, migration, io],
++    c_args: ['-ffunction-sections', '-fdata-sections'],
++    link_args: ['-Wl,--gc-sections'],
++  )
++  test(
++    'test-crucible-rc4030-period',
++    rc4030_period_test,
 +    env: test_env,
 +    args: ['--tap', '-k'],
 +    protocol: 'tap',
@@ -152073,6 +152146,290 @@ index 0000000000000000000000000000000000000000..1ba2a64a8846c9d33c82b340038f0e8f
 +    g_test_init(&argc, &argv, NULL);
 +    g_test_add_func("/crucible/parallel/mutable-state",
 +                    test_parallel_mutable_state);
++    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-rc4030-period.c b/tests/unit/test-crucible-rc4030-period.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..06f28b20984bed4d5ecd308bcaa3d0ffe8822877
+--- /dev/null
++++ b/tests/unit/test-crucible-rc4030-period.c
+@@ -0,0 +1,278 @@
++/*
++ * Actual RC4030 frequency-derived interval and migration tests.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/main-loop.h"
++#include "system/cpu-timers.h"
++#include "exec/icount.h"
++#include "io/channel-buffer.h"
++#include "../../migration/qemu-file.h"
++
++/* Retain the actual timer callbacks and VMState without realizing a board. */
++#undef type_init
++#define type_init(function) \
++    static void (*const fixture_##function)(void) G_GNUC_UNUSED = function;
++#include "../../hw/dma/rc4030.c"
++
++static __int128 observed_ps;
++
++typedef struct IRQObservation {
++    unsigned raised;
++    unsigned lowered;
++    int level;
++} IRQObservation;
++
++int64_t cpu_get_clock(void)
++{
++    return observed_ps / PICOSECONDS_PER_NANOSECOND;
++}
++
++bool icount_crucible_sim_mode(void)
++{
++    return false;
++}
++
++static __int128 observed_clock_ps(void)
++{
++    return observed_ps;
++}
++
++static void initialize_clock(bool exact)
++{
++    Error *error = NULL;
++
++    module_call_init(MODULE_INIT_QOM);
++    qemu_init_main_loop(&error);
++    g_assert_null(error);
++    if (exact) {
++        qemu_timer_enable_tcg_ps_clock(NULL, observed_clock_ps);
++    }
++    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
++}
++
++/* IRQ endpoints observe the literal callback, without a physical chipset. */
++static void observe_irq(void *opaque, int number, int level)
++{
++    IRQObservation *observation = opaque;
++
++    observation->level = level;
++    if (level) {
++        observation->raised++;
++    } else {
++        observation->lowered++;
++    }
++}
++
++static void initialize_chipset(rc4030State *chipset, IRQObservation *timer_irq,
++                                IRQObservation *bus_irq)
++{
++    memset(chipset, 0, sizeof(*chipset));
++    chipset->timer_irq = qemu_allocate_irq(observe_irq, timer_irq, 0);
++    chipset->jazz_bus_irq = qemu_allocate_irq(observe_irq, bus_irq, 1);
++    chipset->periodic_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
++                                          rc4030_periodic_timer, chipset);
++}
++
++static void destroy_chipset(rc4030State *chipset)
++{
++    timer_free(chipset->periodic_timer);
++    qemu_free_irq(chipset->timer_irq);
++    qemu_free_irq(chipset->jazz_bus_irq);
++}
++
++static __int128 interval_ps(uint32_t reload)
++{
++    uint32_t frequency = 1000 / (reload + 1);
++
++    return (PICOSECONDS_PER_SECOND + frequency - 1) / frequency;
++}
++
++static void assert_deadline(rc4030State *chipset, __int128 expected)
++{
++    g_assert_true(timer_pending(chipset->periodic_timer));
++    g_assert_true(timer_expire_time_ps_wide(chipset->periodic_timer) ==
++                  expected);
++}
++
++static void test_all_reload_values(void)
++{
++    rc4030State chipset;
++    IRQObservation timer_irq = { 0 };
++    IRQObservation bus_irq = { 0 };
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = 999;
++    initialize_clock(true);
++    initialize_chipset(&chipset, &timer_irq, &bus_irq);
++    for (uint32_t reload = 0; reload <= 0x1ff; reload++) {
++        chipset.itr = reload;
++        set_next_tick(&chipset);
++        assert_deadline(&chipset, observed_ps + interval_ps(reload));
++    }
++    g_assert_cmpuint(timer_irq.lowered, ==, 512);
++    g_assert_cmpuint(timer_irq.raised, ==, 0);
++    destroy_chipset(&chipset);
++}
++
++static void test_periodic_callback(void)
++{
++    rc4030State chipset;
++    IRQObservation timer_irq = { 0 };
++    IRQObservation bus_irq = { 0 };
++    const __int128 start_ps = 999;
++    const __int128 delay_ps = INT64_C(3003003004);
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = start_ps;
++    initialize_clock(true);
++    initialize_chipset(&chipset, &timer_irq, &bus_irq);
++    chipset.itr = 2;
++    set_next_tick(&chipset);
++
++    observed_ps = start_ps + delay_ps - 1;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(timer_irq.raised, ==, 0);
++    assert_deadline(&chipset, start_ps + delay_ps);
++    observed_ps++;
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    g_assert_cmpuint(timer_irq.raised, ==, 1);
++    g_assert_cmpint(timer_irq.level, ==, 1);
++    assert_deadline(&chipset, start_ps + 2 * delay_ps);
++    destroy_chipset(&chipset);
++}
++
++static void test_legacy_clock(void)
++{
++    rc4030State chipset;
++    IRQObservation timer_irq = { 0 };
++    IRQObservation bus_irq = { 0 };
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = 999;
++    initialize_clock(false);
++    initialize_chipset(&chipset, &timer_irq, &bus_irq);
++    chipset.itr = 2;
++    set_next_tick(&chipset);
++    g_assert_cmpint(timer_expire_time_ns(chipset.periodic_timer), ==,
++                    cpu_get_clock() + 3003003);
++    destroy_chipset(&chipset);
++}
++
++static void test_wide_clock(void)
++{
++    rc4030State chipset;
++    IRQObservation timer_irq = { 0 };
++    IRQObservation bus_irq = { 0 };
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = (__int128)INT64_MAX + 999;
++    initialize_clock(true);
++    initialize_chipset(&chipset, &timer_irq, &bus_irq);
++    chipset.itr = 2;
++    set_next_tick(&chipset);
++    assert_deadline(&chipset, observed_ps + interval_ps(2));
++    destroy_chipset(&chipset);
++}
++
++static QIOChannelBuffer *save_chipset(rc4030State *chipset)
++{
++    QIOChannelBuffer *output = qio_channel_buffer_new(256);
++    QIOChannelBuffer *input;
++    QEMUFile *file = qemu_file_new_output(QIO_CHANNEL(output));
++    Error *error = NULL;
++
++    g_assert_cmpint(vmstate_save_state(file, &vmstate_rc4030, chipset, NULL,
++                                      &error), ==, 0);
++    g_assert_null(error);
++    qemu_put_byte(file, 0);
++    qemu_fflush(file);
++    input = qio_channel_buffer_new(output->usage);
++    input->usage = output->usage;
++    memcpy(input->data, output->data, output->usage);
++    qemu_fclose(file);
++    object_unref(OBJECT(output));
++    return input;
++}
++
++static void test_migration(gconstpointer data)
++{
++    bool malformed = GPOINTER_TO_INT(data);
++    rc4030State original;
++    rc4030State restored;
++    IRQObservation timer_irq = { 0 };
++    IRQObservation bus_irq = { 0 };
++    QIOChannelBuffer *input;
++    QEMUFile *file;
++    Error *error = NULL;
++
++    if (!g_test_subprocess()) {
++        g_test_trap_subprocess(NULL, 0, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++
++    observed_ps = 999;
++    initialize_clock(true);
++    initialize_chipset(&original, &timer_irq, &bus_irq);
++    initialize_chipset(&restored, &timer_irq, &bus_irq);
++    original.itr = malformed ? 0x200 : 2;
++    input = save_chipset(&original);
++    file = qemu_file_new_input(QIO_CHANNEL(input));
++    timer_mod_ps_wide(restored.periodic_timer, 12345);
++
++    g_assert_cmpint(vmstate_load_state(file, &vmstate_rc4030, &restored, 3,
++                                      &error), ==, malformed ? -EINVAL : 0);
++    if (malformed) {
++        g_assert_nonnull(error);
++        assert_deadline(&restored, 12345);
++        g_assert_cmpuint(timer_irq.lowered, ==, 0);
++        g_assert_cmpuint(bus_irq.lowered, ==, 0);
++        error_free(error);
++    } else {
++        g_assert_null(error);
++        assert_deadline(&restored, observed_ps + interval_ps(2));
++        g_assert_cmpuint(timer_irq.lowered, ==, 1);
++        g_assert_cmpuint(bus_irq.lowered, ==, 1);
++    }
++    qemu_fclose(file);
++    object_unref(OBJECT(input));
++    destroy_chipset(&restored);
++    destroy_chipset(&original);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/rc4030/period/reloads", test_all_reload_values);
++    g_test_add_func("/rc4030/period/callback", test_periodic_callback);
++    g_test_add_func("/rc4030/period/legacy", test_legacy_clock);
++    g_test_add_func("/rc4030/period/wide", test_wide_clock);
++    g_test_add_data_func("/rc4030/period/migration", GINT_TO_POINTER(false),
++                         test_migration);
++    g_test_add_data_func("/rc4030/period/malformed", GINT_TO_POINTER(true),
++                         test_migration);
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-rr-halted-neighbor.py b/tests/unit/test-crucible-rr-halted-neighbor.py
