@@ -14,6 +14,8 @@ mod allocation;
 #[cfg(target_os = "linux")]
 #[path = "metadata_scale/fixture.rs"]
 mod fixture;
+#[path = "support/fixture_runner.rs"]
+mod fixture_runner;
 #[cfg(target_os = "linux")]
 #[path = "metadata_scale/measurement.rs"]
 mod measurement;
@@ -26,8 +28,10 @@ static ALLOCATOR: allocation::CountingAllocator = allocation::CountingAllocator;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+const CASE: &str = "metadata_scale_small";
+
 #[cfg(target_os = "linux")]
-fn run() -> Result<()> {
+fn run(arguments: &[String]) -> Result<()> {
     use std::io::{Read, Write};
     use std::process::{Command, Stdio};
 
@@ -78,7 +82,6 @@ fn run() -> Result<()> {
         Ok(serde_json::from_slice(&output)?)
     }
 
-    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     if matches!(
         arguments.first().map(String::as_str),
         Some("--build" | "--measure")
@@ -96,7 +99,7 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
-    let config = Config::parse(&arguments)?;
+    let config = Config::parse(arguments)?;
     report::check_helpers();
     let temporary = fixture::TemporaryFixture::create()?;
     let construction: BuildReport = child("--build", config, temporary.path())?;
@@ -157,7 +160,22 @@ fn run() -> Result<()> {
 
 fn main() -> Result<()> {
     #[cfg(target_os = "linux")]
-    return run();
+    {
+        let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+        if matches!(
+            arguments.first().map(String::as_str),
+            Some("--build" | "--measure")
+        ) || arguments.iter().any(|argument| {
+            matches!(
+                argument.as_str(),
+                "--million" | "--validation-envelope-bytes"
+            )
+        }) {
+            return run(&arguments);
+        }
+        let invocation = fixture_runner::parse(&arguments, CASE)?;
+        fixture_runner::execute(invocation, CASE, &mut std::io::stdout(), || run(&[]))
+    }
 
     #[cfg(not(target_os = "linux"))]
     Err("metadata_scale requires Linux sealed memfds and procfs".into())
