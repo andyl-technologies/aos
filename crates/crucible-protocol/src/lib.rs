@@ -47,6 +47,7 @@ pub mod app_random_transport;
 mod choice;
 mod codec_fuzz;
 pub mod debug_gateway;
+mod device_group_opportunity;
 mod doorbell_abi;
 mod doorbell_frame;
 mod doorbell_marker;
@@ -71,6 +72,10 @@ pub use choice::{
 pub use codec_fuzz::{
     CODEC_FUZZ_REGRESSION_CORPUS, ControlCodecFuzzCase, ControlCodecFuzzOutcome,
     run_control_codec_fuzz_target,
+};
+pub use device_group_opportunity::{
+    DEVICE_GROUP_OPPORTUNITY_BYTES, DEVICE_GROUP_OPPORTUNITY_MAX_MEMBERS,
+    DEVICE_GROUP_OPPORTUNITY_VERSION, DeviceGroupOpportunity, DeviceGroupOpportunityError,
 };
 pub use doorbell_abi::{
     WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HINT_BYTES,
