@@ -173,7 +173,7 @@ const Q35_BODY_BEFORE_SERIAL: &[ProjectionRow] = &[
         1,
         DEVICE,
         "ich9-lpc",
-        4
+        5
     ),
     row!("i8259", 0, "i8259", 1, VOLATILE, "x86-i8259"),
     row!("i8259", 1, "i8259", 1, VOLATILE, "x86-i8259"),
@@ -449,7 +449,7 @@ mod tests {
         assert_eq!(q35.sections, 40);
         assert_eq!(
             q35.digest,
-            "b5382c165959c147054ae246a4e7385aef87e5aa49665e08795611454f03899a"
+            "3a9543b78a836778a513700fb5703bed862890c96d27ee440b9c18064579c082"
         );
 
         let aarch64 = expected_manifest_for_shape(base_shape(FaultCapabilityScope::Aarch64))
@@ -504,7 +504,7 @@ mod tests {
         assert_eq!(manifest.sections, 44);
         assert_eq!(
             manifest.digest,
-            "0f8578d9faa08668eb1744f45ef0c6a7705b8addbbabe0c0af67c8e50b1461dc"
+            "4997993e3c41b98a476c0c1bd892d7e11db639b861c65b34a807cdee2a621e96"
         );
         Ok(())
     }
@@ -591,7 +591,7 @@ mod tests {
         assert_eq!(manifest.sections, 48);
         assert_eq!(
             manifest.digest,
-            "38ddbd5fed7d432be4d7960bc5a78f9f90f478231d405a14b946b068e0e2483e"
+            "daaa47b86ac8b2175feace991ee77001357222dbc54e9e39295097e9c23f5dea"
         );
         Ok(())
     }
@@ -614,7 +614,7 @@ mod tests {
         assert_eq!(manifest.sections, 51);
         assert_eq!(
             manifest.digest,
-            "3187f7a38f30b9a3da32d41924703719310f872fd1c35765356135dd5d2e2e8b"
+            "7c5a1f187c4b9505f364bfc77338c8acccd98eedc84abc11569c4df000dbb686"
         );
         Ok(())
     }
@@ -652,7 +652,7 @@ mod tests {
         assert_eq!(q35.sections, 49);
         assert_eq!(
             q35.digest,
-            "c2c9ecd817b804028d8f95dcd90a8a1d3a01de27a644dd0ba1bbae25a0b4d3b9"
+            "864b67fdaba65ffb7a261f41cb4ad85625f6fdc11e638cad8561ca60bd914b7a"
         );
 
         let identities = q35
@@ -787,8 +787,8 @@ mod tests {
                 "0000:00:1f.0/ICH9LPC",
                 0,
                 1,
-                "crucible.qemu.ich9-lpc.v4",
-                4,
+                "crucible.qemu.ich9-lpc.v5",
+                5,
             );
             assert_projection_row(
                 manifest,
@@ -949,8 +949,8 @@ mod tests {
             .iter()
             .position(|row| row.id == "0000:00:1f.0/ICH9LPC")
             .ok_or("missing ICH9 LPC projection row")?;
-        stale_acpi_rows[acpi_index].projection_schema = "crucible.qemu.ich9-lpc.v3".to_owned();
-        stale_acpi_rows[acpi_index].projection_version = 3;
+        stale_acpi_rows[acpi_index].projection_schema = "crucible.qemu.ich9-lpc.v4".to_owned();
+        stale_acpi_rows[acpi_index].projection_version = 4;
         let stale_acpi = QmpFingerprintProjectionManifest::from_rows(stale_acpi_rows);
         assert!(
             expected

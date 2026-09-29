@@ -321,19 +321,33 @@ fn measurement_hash_domains_do_not_relabel_payload_versions() {
     );
 }
 
-// Added VMStateDescription declarations with an owned name or declaration
-// identify this inventory. Upstream descriptors whose existing declarations
-// are merely context do not become owned formats because a field or QOM name
-// resembles one.
+// Added production VMStateDescription declarations with an owned name or
+// declaration identify this inventory. Diagnostic test descriptors and
+// upstream declarations that are merely context remain outside it.
 fn owned_qemu_vmstate_sections(patch: &str) -> Result<BTreeMap<String, u32>, String> {
     let lines = patch.lines().collect::<Vec<_>>();
     let mut sections = BTreeMap::new();
+    // Bare declaration snippets exercise the same production rules in tests.
+    let mut production_file = true;
 
     if lines.iter().any(|line| pinned_qemu_macro_changed(line)) {
         return Err("Pinned QEMU VMState macro definition changed".to_owned());
     }
 
     for (index, line) in lines.iter().enumerate() {
+        if line.starts_with("diff --git ") {
+            production_file = true;
+        }
+        if let Some(path) = line.strip_prefix("+++ ") {
+            let path = path.trim_matches('"');
+            production_file = path
+                .strip_prefix("b/")
+                .is_some_and(|path| !path.starts_with("tests/"));
+            continue;
+        }
+        if !production_file {
+            continue;
+        }
         let Some(declaration) = line.strip_prefix('+').map(str::trim) else {
             continue;
         };
@@ -565,6 +579,24 @@ fn qemu_vmstate_discovery_excludes_qom_and_existing_upstream_formats() {
         owned_qemu_vmstate_sections(patch)
             .expect("QOM and unchanged upstream declarations are outside the inventory")
             .is_empty()
+    );
+}
+
+#[test]
+fn qemu_vmstate_discovery_excludes_diagnostic_test_descriptors() {
+    let patch = "diff --git a/tests/unit/test-clock.c b/tests/unit/test-clock.c\n\
+                 +++ b/tests/unit/test-clock.c\n\
+                 +static const VMStateDescription diagnostic_clock_wide = {\n\
+                 +    .name = \"diagnostic/clock-wide\",\n\
+                 +    .version_id = 9,\n+};\n\
+                 diff --git a/hw/timer/clock.c b/hw/timer/clock.c\n\
+                 +++ b/hw/timer/clock.c\n\
+                 +static const VMStateDescription vmstate_clock_wide = {\n\
+                 +    .name = \"device/clock-wide\",\n\
+                 +    .version_id = 2,\n+};\n";
+    assert_eq!(
+        owned_qemu_vmstate_sections(patch).expect("Production declarations remain covered"),
+        BTreeMap::from([("crucible.qemu.vmstate.device%2fclock-wide".to_owned(), 2)])
     );
 }
 

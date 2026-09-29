@@ -422,6 +422,9 @@ crucible.qemu.vmstate.i8254%2ftimer-wide	1	qemu-patch::vmstate	device-state	gate
 crucible.qemu.vmstate.i8259-crucible-interrupt	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.ich9-pm-crucible-clock	2	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.ich9_pm%2ftimer-wide	2	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.ich9_pm%2ftco-timer-wide	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.ich9_pm%2fswsmi-timer-wide	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
+crucible.qemu.vmstate.ich9_pm%2fperiodic-timer-wide	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.imx6ul-lcdif-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.intel-hda-crucible-clock	1	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
 crucible.qemu.vmstate.ioapic-crucible-service	2	qemu-patch::vmstate	device-state	gate:exact-closure-streaming
