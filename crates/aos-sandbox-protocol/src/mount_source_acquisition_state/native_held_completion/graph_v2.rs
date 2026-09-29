@@ -150,14 +150,18 @@ pub fn validate_native_root_graph_v2<'a>(
             .filter(|(key, _)| !is_sidecar_key(key) && !is_sidecar_key_v2(key))
             .map(|(key, value)| (key.as_slice(), value.as_slice())),
     )?;
-    let diagnostics = RootNativeHeldGraphV1 {
-        canonical: canonical.clone(),
-        legacy: legacy.clone(),
-        sidecars: v1_sidecars.clone(),
-    };
-    for sidecar in diagnostics.sidecars.values() {
-        super::graph::validate_sidecar(&diagnostics, sidecar)?;
+    // V2-only snapshots do not need a second complete graph for v1 diagnostics.
+    if !v1_sidecars.is_empty() {
+        let diagnostics = RootNativeHeldGraphV1 {
+            canonical: canonical.clone(),
+            legacy: legacy.clone(),
+            sidecars: v1_sidecars.clone(),
+        };
+        for sidecar in diagnostics.sidecars.values() {
+            super::graph::validate_sidecar(&diagnostics, sidecar)?;
+        }
     }
+
     let mut graph = RootNativeHeldGraphV2 {
         canonical,
         legacy,
