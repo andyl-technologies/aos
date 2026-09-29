@@ -257,3 +257,29 @@ This qualifies metadata observations and retained decoding. Mutable GET,
 Native after-await authorization, current persistent provider behavior,
 complete writer closure, optimized packages, fleet and hosted activation remain
 separate gates. An observation does not authorize a later independent body read.
+
+## Explicit standalone Legacy capabilities
+
+An unconfigured standalone Legacy Hub may advertise empty deployment and actor
+identities together with an empty provider profile list. A partially populated
+identity still fails validation. DirectRequired discovery, direct actor checks
+and placement authorization continue to require the complete authenticated pin.
+The generated ProtoJSON roundtrip preserves the explicit empty Legacy identity.
+
+Producer receipt `/tmp/hub-direct-legacy-capabilities/qualification.json`
+(`01e8108bc5475eb1a6b8f8878d57131269e8b14ae495ee8bddd952a84af411b7`)
+records 19 portable tests passing on unchanged captured inputs. The initial
+17-pass/two-failure run is retained; corrections add the two empty-string serde
+defaults required by generated ProtoJSON and fix a malformed-identity fixture.
+Independent source review
+`c48e206d99167d263d4d71a376a0b654986a6866998e92c11142a96fd84014cc`
+binds both final source paths.
+
+Current receipt `/tmp/hub-legacy-caps-current-context/qualification.json`
+(`56e21394c0e85a4401674bf62770b61329c05bc38345b48a78d7ad97a93ab904`)
+records 19 named portable tests and ordinary default Worker Wasm compilation
+passing. Both owned postimages match exactly and all 2,918 captured inputs
+remain unchanged. Source input digest is
+`770eea0410fe4645d2f9c2599b857562f2f92926b99fc43bf4a7066b9bd807dc`.
+This is compatibility validation; connected Native, client, browser, provider,
+fleet and hosted qualification remain separate gates.

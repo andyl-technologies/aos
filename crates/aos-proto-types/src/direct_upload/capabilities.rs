@@ -144,9 +144,11 @@ pub struct DirectUploadCapabilities {
     /// Exact delivery locator echo only when discovery resolved CacheDelivery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_delivery_url: Option<String>,
-    /// Independently configured authenticated Hub deployment namespace.
+    /// Authenticated deployment namespace, or empty for explicit unconfigured Legacy.
+    #[serde(default)]
     pub deployment_id: String,
-    /// Stable authenticated user or service-account identity, never a token/name.
+    /// Stable authenticated actor identity, or empty alongside the Legacy deployment.
+    #[serde(default)]
     pub principal_id: String,
     /// Closed protocol version, currently one.
     pub version: u32,
@@ -279,10 +281,18 @@ impl DirectUploadCapabilities {
                     .is_none_or(|value| valid_direct_delivery_url(value)),
             "invalid direct capability canonical owner",
         )?;
+        // An explicit standalone Legacy policy need not invent a deployment or
+        // actor namespace. Empty identities never authorize direct dispatch or
+        // satisfy validate_actor_for; partial modern identity still fails closed.
+        let valid_actor =
+            valid_direct_identity(&self.deployment_id) && valid_direct_digest(&self.principal_id);
+        let unconfigured_legacy = self.transfer_mode == DirectAdvertisedTransferMode::Legacy
+            && self.profiles.is_empty()
+            && self.deployment_id.is_empty()
+            && self.principal_id.is_empty();
         require(
             matches_target
-                && valid_direct_identity(&self.deployment_id)
-                && valid_direct_digest(&self.principal_id)
+                && (valid_actor || unconfigured_legacy)
                 && self.version == 1
                 && self.capability == DIRECT_UPLOAD_CAPABILITY
                 && (1..=i64::MAX as u64).contains(&self.config_generation.get())

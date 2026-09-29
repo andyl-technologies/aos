@@ -614,3 +614,78 @@ fn private_stage_detection_uses_resolved_key_segments_without_url_decoding() {
     }
     assert!(!valid_direct_path("binding/.aos-direct-upload/payload"));
 }
+
+#[test]
+fn explicit_unconfigured_legacy_capabilities_do_not_invent_a_direct_actor() {
+    let mut legacy = capabilities();
+    legacy.transfer_mode = DirectAdvertisedTransferMode::Legacy;
+    legacy.profiles.clear();
+    legacy.deployment_id.clear();
+    legacy.principal_id.clear();
+    legacy.validate_for(&legacy.target).unwrap();
+    legacy.validate_at_for(&legacy.target, 999).unwrap();
+    assert!(legacy
+        .validate_actor_for("deployment", &"ab".repeat(32))
+        .is_err());
+    assert!(legacy
+        .validate_placements_for(&legacy.target, &[], 999)
+        .is_err());
+    let generated = crate::hub_v1::DirectUploadCapabilities::try_from(legacy.clone()).unwrap();
+    assert_eq!(
+        DirectUploadCapabilities::try_from(generated).unwrap(),
+        legacy
+    );
+}
+
+#[test]
+fn legacy_actor_identity_is_either_fully_valid_or_fully_absent() {
+    let mut legacy = capabilities();
+    legacy.transfer_mode = DirectAdvertisedTransferMode::Legacy;
+    legacy.profiles.clear();
+    legacy.validate_for(&legacy.target).unwrap();
+    for (deployment, principal) in [
+        ("", "".to_owned()),
+        ("deployment", "".to_owned()),
+        ("", "ab".repeat(32)),
+        (" deployment", "ab".repeat(32)),
+        ("deployment", "AB".repeat(32)),
+        ("deployment", "invalid".into()),
+    ] {
+        let mut changed = legacy.clone();
+        changed.deployment_id = deployment.into();
+        changed.principal_id = principal;
+        assert_eq!(
+            changed.validate_for(&changed.target).is_ok(),
+            changed.deployment_id.is_empty() && changed.principal_id.is_empty()
+        );
+    }
+    legacy.deployment_id.clear();
+    legacy.principal_id.clear();
+    legacy.profiles = capabilities().profiles;
+    assert!(legacy.validate_for(&legacy.target).is_err());
+}
+
+#[test]
+fn required_capabilities_never_accept_absent_or_partial_actor_identity() {
+    let original = capabilities();
+    original.validate_for(&original.target).unwrap();
+
+    // ProtoJSON omits empty strings. Defaults preserve Legacy roundtrips while
+    // the validated conversion still refuses omitted Required actor identity.
+    let mut generated =
+        crate::hub_v1::DirectUploadCapabilities::try_from(original.clone()).unwrap();
+    generated.deployment_id.clear();
+    generated.principal_id.clear();
+    assert!(DirectUploadCapabilities::try_from(generated).is_err());
+
+    for field in 0..3 {
+        let mut changed = original.clone();
+        if field != 1 {
+            changed.deployment_id.clear();
+        }
+        if field != 0 {
+            changed.principal_id.clear();
+        }
+        assert!(changed.validate_for(&changed.target).is_err());
+    }
+}
