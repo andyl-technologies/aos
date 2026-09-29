@@ -79,6 +79,20 @@ pub enum BlockPoll {
         /// The still-pending request token.
         token: BlockRequestToken,
     },
+    /// Delivery or ring settlement can be retried with the original token.
+    Retry {
+        /// The still-held request token.
+        token: BlockRequestToken,
+        /// The recoverable failure.
+        source: BlockIoError,
+    },
+    /// Delivery occurred, but the original ring head was lost or changed.
+    Quarantined {
+        /// The original token retained for fail-closed handling.
+        token: BlockRequestToken,
+        /// The terminal settlement failure.
+        source: BlockIoError,
+    },
     /// A due response was delivered and the freeze token was released.
     Completed {
         /// The decoded response delivered to the guest.
@@ -165,10 +179,13 @@ impl BlockTransportEvent {
 pub trait BlockGuestCompletion {
     /// Completes one guest block request.
     ///
+    /// An error must leave guest-visible output unchanged so the same response
+    /// can be offered again with its original ring head and request token.
+    ///
     /// # Errors
     ///
-    /// Returns [`BlockGuestCompletionError`] when the QEMU-facing completion path
-    /// cannot expose the response and must fail loudly.
+    /// Returns [`BlockGuestCompletionError`] before guest-visible effects when
+    /// the QEMU-facing completion path cannot expose the response on this poll.
     fn complete_block_response(
         &mut self,
         response: &BlockResponse,

@@ -200,8 +200,6 @@ pub enum BlockIoError {
     GuestCompletion {
         /// The request id being completed.
         request_id: u32,
-        /// The request release created before attempting guest completion.
-        release: DeviceIoRequestRelease,
         /// The guest completion error.
         source: BlockGuestCompletionError,
     },

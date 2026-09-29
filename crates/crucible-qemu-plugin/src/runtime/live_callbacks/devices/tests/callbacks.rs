@@ -79,6 +79,59 @@ fn live_device_adapters_retain_tokens_and_complete_block_and_ninep() {
 }
 
 #[test]
+fn live_block_poll_retries_small_guest_buffer_with_original_token() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let mut storage = DeviceRingStorage::new();
+    let block = storage.block_pair();
+    let ninep = storage.ninep_pair();
+    let accelerator = storage.accelerator_rings();
+    let mut devices = LiveDeviceCallbackState::new(0, block, ninep, 1, accelerator)
+        .unwrap_or_else(|error| panic!("live devices should bind fixed rings: {error}"));
+
+    devices
+        .submit_block(&slot, 5, 0, 0, 0, 12, None, 4)
+        .unwrap_or_else(|error| panic!("block read should submit: {error}"));
+    let response = BlockResponse::new(BlockResponseStatus::Ok, 0, b"data".to_vec())
+        .encode()
+        .unwrap_or_else(|error| panic!("block response should encode: {error}"));
+    enqueue_response(
+        &storage.block_in_header,
+        &mut storage.block_in_entries,
+        5,
+        SLOT_BLK_IO as u32,
+        0,
+        &response,
+    );
+    let mut too_small = [0xa5; 2];
+    assert_eq!(
+        devices
+            .poll_block(&slot, 5, 0, 0, &mut too_small)
+            .unwrap_or_else(|error| panic!("small output must remain pending: {error}")),
+        QEMU_PLUGIN_BLOCK_POLL_PENDING
+    );
+    assert_eq!(too_small, [0xa5; 2]);
+    assert_eq!(storage.block_in_header.read_index(), 0);
+    assert_eq!(slot.snapshot().device_io_active, 1);
+    assert_eq!(devices.block_tokens.len(), 1);
+
+    let mut output = [0; 4];
+    assert_eq!(
+        devices
+            .poll_block(&slot, 5, 0, 0, &mut output)
+            .unwrap_or_else(|error| panic!("original token must complete: {error}")),
+        4
+    );
+    assert_eq!(&output, b"data");
+    assert_eq!(storage.block_in_header.read_index(), 1);
+    assert_eq!(slot.snapshot().device_io_active, 0);
+    assert!(devices.block_tokens.is_empty());
+}
+
+#[test]
 fn live_ninep_delivery_retry_keeps_the_original_head_and_request() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
