@@ -169,7 +169,9 @@ impl ConcurrentSimulationBackend for TwoConsumers {
         runs: Vec<crate::ConcurrentBackendRun>,
         workers: usize,
     ) -> Result<Vec<crate::ConcurrentBackendRunResult>, BackendError> {
-        if self.published != [id("a"), id("b")] {
+        if self.queues.iter().any(|queue| {
+            !self.published.contains(&queue.owner) || !queue.core.snapshot().inflight.is_empty()
+        }) {
             return Err(BackendError::Rejected {
                 message: String::from("positive dispatch preceded complete current-T publication"),
             });
@@ -337,4 +339,21 @@ fn repeated_consumer_refuses_before_second_publication_or_positive_dispatch() {
     assert_eq!(actor.backend().dispatches, 0);
     assert_eq!(actor.backend().queues[0].core.snapshot().inflight.len(), 1);
     assert!(actor.loop_impl().ceiling_publications.is_empty());
+
+    assert!(actor.retained_fixed_input_for_test().is_none());
+    assert!(!actor.loop_impl().fixed_input_in_progress);
+    assert_eq!(actor.loop_impl().fixed_input_generation, 1);
+    assert!(actor.loop_impl().checkpoint().is_ok());
+    assert!(!actor.continuation_is_poisoned());
+
+    actor.backend_mut().repeat_a = false;
+    ok(drive(&mut actor, 2));
+    assert_eq!(actor.backend().published, [id("a"), id("a"), id("b")]);
+    assert_eq!(actor.backend().owners.len(), 3);
+    assert_ne!(actor.backend().owners[0], actor.backend().owners[1]);
+    assert_ne!(
+        actor.backend().owners[0].events()[0],
+        actor.backend().owners[1].events()[0]
+    );
+    assert_eq!(actor.backend().dispatches, 1);
 }

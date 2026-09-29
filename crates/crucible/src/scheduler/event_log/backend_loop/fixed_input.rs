@@ -18,6 +18,13 @@ where
     L: std::borrow::Borrow<SingleScheduler> + std::borrow::BorrowMut<SingleScheduler>,
     B: SimulationBackend,
 {
+    #[cfg(test)]
+    pub(crate) fn retained_fixed_input_for_test(&self) -> Option<&PreparedHostFixedInput> {
+        self.pending_fixed_input
+            .as_ref()
+            .map(|retained| &retained.prepared)
+    }
+
     /// Polls the original stopped consumer without admitting guest execution.
     ///
     /// A pending result retains all due actor events and the exact same owner.
@@ -57,15 +64,10 @@ where
         }
         if self.pending_fixed_input.is_none() {
             self.import_initial_io_inventories()?;
-            let prepared = self.loop_impl.borrow_mut().prepare_current_fixed_input()?;
-            if prepared
-                .as_ref()
-                .is_some_and(|owner| published_consumers.contains(owner.node()))
-            {
-                return Err(super::super::super::fixed_input::fixed_input_error(
-                    "current-T consumer repeated before a new scheduler call",
-                ));
-            }
+            let prepared = self
+                .loop_impl
+                .borrow_mut()
+                .prepare_current_fixed_input(published_consumers)?;
             self.pending_fixed_input = prepared.map(|prepared| RetainedFixedInput {
                 prepared,
                 consumed: 0,
