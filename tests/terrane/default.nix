@@ -57,7 +57,7 @@
         > "$out/result"
     '';
 
-  implementedGates = {
+  foundationGates = {
     crate-graph = structureGate "crate-graph";
     unsafe-audit = structureGate "unsafe-audit";
     core-no-std = sourceGate "core-no-std" ''
@@ -103,6 +103,31 @@
       ];
     };
   };
+
+  gateFiles = builtins.filter (name: lib.hasSuffix ".nix" name) (builtins.attrNames (builtins.readDir ./gates));
+  taskGates =
+    builtins.foldl' (
+      accumulated: file: let
+        added = import (./gates + "/${file}") {
+          inherit pkgs lib sourceGate structureGate;
+        };
+        duplicates = builtins.filter (name: builtins.hasAttr name accumulated) (builtins.attrNames added);
+      in
+        if duplicates == []
+        then accumulated // added
+        else throw "Terrane gate files register duplicate names: ${builtins.concatStringsSep ", " duplicates}"
+    ) {}
+    gateFiles;
+
+  taskGateNames = builtins.attrNames taskGates;
+  foundationDuplicates = builtins.filter (name: builtins.hasAttr name foundationGates) taskGateNames;
+  unregisteredTaskGates = builtins.filter (name: !(builtins.elem name (map (row: row.name) registry))) taskGateNames;
+  implementedGates =
+    if foundationDuplicates != []
+    then throw "Terrane task gates duplicate foundation gates: ${builtins.concatStringsSep ", " foundationDuplicates}"
+    else if unregisteredTaskGates != []
+    then throw "Terrane task gates are absent from the specification registry: ${builtins.concatStringsSep ", " unregisteredTaskGates}"
+    else foundationGates // taskGates;
 
   registeredGates = builtins.listToAttrs (map (row: {
       name = row.name;
