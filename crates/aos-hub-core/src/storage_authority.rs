@@ -15,6 +15,9 @@ use sha2::{Digest, Sha256};
 #[path = "storage_authority/control.rs"]
 pub mod control;
 
+#[path = "storage_authority/lease/mod.rs"]
+pub mod lease;
+
 /// Permanent identity for one physical bucket and its object guard domain.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]

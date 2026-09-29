@@ -852,3 +852,31 @@ workerd's C++ TLS listener. Its Node loopback service is not a public TLS proxy.
 Local R2 emulation shares the runtime; contention is a hypothesis requiring
 resource evidence. This result does not establish hosted behavior, upload
 isolation acceptance or a production cause. Historical misses remain retained.
+
+
+## Signed storage epoch-lease foundation
+
+The independently reviewed pure lease protocol passes 25 focused tests and a
+core wasm32 compilation. Integration verified five exact source hashes, current
+base inputs, the patch and terminal logs. Author receipt
+`/tmp/hub-authority-epoch-lease/qualification-receipt.json`
+(`c65654cb2103686bebe9988ad203dc5a6c838022a929a35b58d869a7c9a438eb`)
+and independent receipt
+`/tmp/hub-authority-epoch-lease-independent-final-review.json`
+(`f4f1a9a50908996978bd8f0442e77f7483c139f500dbe194bcf72db868bb6257`)
+bind this scope.
+
+Closed Ed25519 leases bind exact admitted cohort projections and qualified time
+policy. Async journal compare-and-swap acknowledgments precede signing and
+return; a final clock check follows the last await. Cancellation or a lost reply
+can retain issuance sequence and maximum expiry conservatively without returning
+a token. Permanent physical-key floors refuse stale epochs, payload forks and
+post-retirement admission. Bounded cutoff stops lease admission only: it never
+settles provider effects or retires object receipts.
+
+This enables no live issuer or provider dispatch. Real durable serialization,
+publication provenance, issuer-only key custody, Worker/Native adapter wiring and
+clock-policy qualification remain pending. The conservative authority-wide
+sequence floor can cause one cohort to force another's early renewal at a touched
+key; scalable cache amortization is unqualified. The current full fleet capture
+predates these files and is not their qualification evidence.
