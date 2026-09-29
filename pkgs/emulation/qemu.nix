@@ -198,6 +198,12 @@
   };
   patchBranchMaterialHash = builtins.hashString "sha256" patchBranchMaterial;
   qemuNixHash = builtins.hashFile "sha256" ./qemu.nix;
+  thoroughTestInventory = ../../tests/crucible/qemu-thorough-test-inventory.txt;
+  testInventoryValidator = ../../tests/crucible/qemu-test-inventory.py;
+  thoroughTestCount = builtins.length (
+    builtins.filter (name: name != "")
+    (lib.splitString "\n" (builtins.readFile thoroughTestInventory))
+  );
   shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
   shmemGeneratedHeader = ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
   shmemHeaderInstallPath = "include/aos/crucible/crucible_shmem_abi.h";
@@ -422,6 +428,8 @@
       test_socat=${buildSocat}/bin/socat
       test_xorriso=${buildLibisoburn}/bin/xorriso
       test_zstd=${buildZstd}/bin/zstd
+      test_inventory_sha256=${builtins.hashFile "sha256" thoroughTestInventory}
+      test_inventory_validator_sha256=${builtins.hashFile "sha256" testInventoryValidator}
     ''}
   '';
   fullUpstreamTestHarnessMutationHash =
@@ -645,6 +653,18 @@ in
               test -x ${samba-smbd}/sbin/smbd
               grep -F '#define CONFIG_SMBD_COMMAND "${samba-smbd}/sbin/smbd"' \
                 build/config-host.h
+            ''}
+            ${lib.optionalString fullUpstreamTestSuiteOnly ''
+              # Check names as well as cardinality before compiling the suite.
+              # The reviewed inventory is independent of this configure run.
+              (
+                cd build
+                ./pyvenv/bin/meson test --no-rebuild --setup thorough --list
+              ) > build/qemu-thorough.inventory
+              ${buildPython}/bin/python3 ${testInventoryValidator} configured \
+                ${thoroughTestInventory} build/qemu-thorough.inventory \
+                --introspection build/meson-info/intro-tests.json
+              cp ${thoroughTestInventory} qemu-thorough-test-inventory.txt
             ''}
           '';
         }
@@ -1010,8 +1030,10 @@ in
                 cd build
                 ./pyvenv/bin/meson test --no-rebuild --setup thorough --list
               ) > full-upstream-test-suite.inventory
+              LC_ALL=C sort -o full-upstream-test-suite.inventory \
+                full-upstream-test-suite.inventory
               test -s full-upstream-test-suite.inventory
-              test "$(wc -l < full-upstream-test-suite.inventory)" -eq 1552
+              cmp qemu-thorough-test-inventory.txt full-upstream-test-suite.inventory
               # Thorough migration includes COLO cases whose cumulative run
               # time can exceed Meson's 480-second per-test limit in this VM.
               if (
@@ -1073,10 +1095,10 @@ in
                   )
 
               # Meson groups tests without TAP subcases in the common `qemu`
-              # suite. Every other suite represents one of the 1,552
+              # suite. Every other suite represents one of the reviewed
               # configured top-level test invocations, even when it contains
-              # multiple TAP subcases. Four picosecond adapter unit tests
-              # extend the previous 1,548-test inventory.
+              # multiple TAP subcases. The outer validation also joins each
+              # actual Meson JSON result to the exact configured names.
               top_level_tests = 0
               top_level_skipped = []
               for suite in suites:
@@ -1100,10 +1122,10 @@ in
               top_level_skipped.sort()
               skip_inventory = "".join(f"{name}\n" for name in top_level_skipped)
               skip_inventory_hash = hashlib.sha256(skip_inventory.encode()).hexdigest()
-              if top_level_tests != 1552:
+              if top_level_tests != ${toString thoroughTestCount}:
                   raise SystemExit(
                       "QEMU configured test count drifted: "
-                      f"expected 1552, observed {top_level_tests}"
+                      f"expected ${toString thoroughTestCount}, observed {top_level_tests}"
                   )
               if len(top_level_skipped) != 459:
                   raise SystemExit(
@@ -1154,6 +1176,8 @@ in
                 "$out/share/aos/crucible/full-upstream-test-suite.junit.xml"
               cp build/meson-logs/check-report-thorough-thorough.txt \
                 "$out/share/aos/crucible/full-upstream-test-suite.meson-log.txt"
+              cp build/meson-logs/check-report-thorough-thorough.json \
+                "$out/share/aos/crucible/full-upstream-test-suite.meson-log.json"
               cp build/meson-info/intro-tests.json \
                 "$out/share/aos/crucible/configured-tests.json"
               cp build/Makefile.mtest \
@@ -1365,7 +1389,11 @@ in
               test "$guest_test_status" = 0
               test -s "$out/result"
               grep -F -x -q PASS "$out/result"
-              grep -F -x -q 'tests=1552' "$out/result"
+              ${buildPython}/bin/python3 ${testInventoryValidator} executed \
+                ${thoroughTestInventory} \
+                "$out/share/aos/crucible/full-upstream-test-suite.meson-log.json" \
+                > "$out/executed-test-coverage"
+              grep -F -x -q 'tests=${toString thoroughTestCount}' "$out/result"
               grep -F -x -q 'failed=0' "$out/result"
               grep -F -x -q 'errors=0' "$out/result"
               grep -F -x -q 'skipped=459' "$out/result"
@@ -1392,6 +1420,7 @@ in
                   share/aos/crucible/full-upstream-test-suite.vm-serial.log \
                   share/aos/crucible/full-upstream-test-suite.vm-qemu.log \
                   share/aos/crucible/full-upstream-test-suite.outer-qemu-identity.env \
+                  executed-test-coverage \
                   > share/aos/crucible/full-upstream-test-suite.vm-envelope.sha256
                 sha256sum -c \
                   share/aos/crucible/full-upstream-test-suite.vm-envelope.sha256
