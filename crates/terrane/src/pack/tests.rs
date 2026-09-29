@@ -414,13 +414,107 @@ fn index_tombstones_block_stale_fallback_and_persist_until_confirmed_deletion()
     Ok(())
 }
 
-#[test]
-fn pack_id_secure_generator_has_no_repeated_identifiers() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn pack_id_secure_generator_has_no_repeated_identifiers() -> Result<(), Box<dyn std::error::Error>>
 {
     let mut seen = BTreeSet::new();
     for _ in 0..1024 {
-        assert!(seen.insert(PackId::generate()?));
+        assert!(seen.insert(PackId::generate(&crate::store::TokioLocalFs).await?));
     }
+    Ok(())
+}
+
+struct RandomBinding {
+    length: usize,
+    fail: bool,
+}
+
+#[async_trait::async_trait]
+impl crate::store::LocalFs for RandomBinding {
+    type Lock = ();
+
+    async fn random_bytes(&self, length: usize) -> std::io::Result<Vec<u8>> {
+        assert_eq!(length, 16);
+        if self.fail {
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "entropy unavailable"));
+        }
+        Ok(vec![0xab; self.length])
+    }
+
+    async fn lock_exclusive(&self, _path: &std::path::Path) -> std::io::Result<Self::Lock> {
+        panic!("pack identifier generation must only request entropy")
+    }
+
+    async fn read(&self, _path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+        panic!("pack identifier generation must only request entropy")
+    }
+
+    async fn read_range(
+        &self,
+        _path: &std::path::Path,
+        _range: crate::store::ByteRange,
+    ) -> std::io::Result<Vec<u8>> {
+        panic!("pack identifier generation must only request entropy")
+    }
+
+    async fn write_new(&self, _path: &std::path::Path, _bytes: &[u8]) -> std::io::Result<()> {
+        panic!("pack identifier generation must only request entropy")
+    }
+
+    async fn create_dir_all(&self, _path: &std::path::Path) -> std::io::Result<()> {
+        panic!("pack identifier generation must only request entropy")
+    }
+
+    async fn read_dir(&self, _path: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+        panic!("pack identifier generation must only request entropy")
+    }
+
+    async fn metadata(&self, _path: &std::path::Path) -> std::io::Result<std::fs::Metadata> {
+        panic!("pack identifier generation must only request entropy")
+    }
+
+    async fn symlink_metadata(&self, _path: &std::path::Path) -> std::io::Result<std::fs::Metadata> {
+        panic!("pack identifier generation must only request entropy")
+    }
+
+    async fn remove_file(&self, _path: &std::path::Path) -> std::io::Result<()> {
+        panic!("pack identifier generation must only request entropy")
+    }
+
+    async fn rename(&self, _from: &std::path::Path, _to: &std::path::Path) -> std::io::Result<()> {
+        panic!("pack identifier generation must only request entropy")
+    }
+
+    async fn rename_no_replace(
+        &self,
+        _from: &std::path::Path,
+        _to: &std::path::Path,
+    ) -> std::io::Result<()> {
+        panic!("pack identifier generation must only request entropy")
+    }
+
+    async fn sync_file(&self, _path: &std::path::Path) -> std::io::Result<()> {
+        panic!("pack identifier generation must only request entropy")
+    }
+
+    async fn sync_directory(&self, _path: &std::path::Path) -> std::io::Result<()> {
+        panic!("pack identifier generation must only request entropy")
+    }
+
+}
+
+#[tokio::test]
+async fn pack_id_secure_generator_validates_binding_results() -> std::io::Result<()> {
+    let binding = RandomBinding { length: 16, fail: false };
+    assert_eq!(PackId::generate(&binding).await?.as_bytes(), &[0xab; 16]);
+
+    for length in [0, 15, 17] {
+        let binding = RandomBinding { length, fail: false };
+        assert_eq!(PackId::generate(&binding).await.expect_err("wrong entropy width").kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    let binding = RandomBinding { length: 16, fail: true };
+    assert_eq!(PackId::generate(&binding).await.expect_err("unavailable entropy").kind(), std::io::ErrorKind::PermissionDenied);
     Ok(())
 }
 

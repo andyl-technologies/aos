@@ -55,20 +55,22 @@ pub const DATA_PACK_LIMIT: usize = 32 * 1024 * 1024;
 pub struct PackId([u8; 16]);
 
 impl PackId {
-    /// Generates all 128 identifier bits from the operating system random source.
+    /// Generates all 128 identifier bits through the configured runtime binding.
     ///
-    /// This native Unix entry point fails if the secure random source is
-    /// unavailable; other runtimes supply secure bytes with
-    /// [`Self::from_random_bytes`]. No content is acknowledged before generation.
+    /// No content is acknowledged before the binding supplies secure entropy.
     ///
     /// # Errors
-    /// Returns the original I/O error if the system random source cannot be
-    /// opened or does not provide all sixteen bytes.
-    pub fn generate() -> std::io::Result<Self> {
-        use std::io::Read;
+    /// Returns the binding's I/O error if secure randomness is unavailable, or
+    /// [`std::io::ErrorKind::InvalidData`] if it returns a length other than 16.
+    pub async fn generate(filesystem: &impl crate::store::LocalFs) -> std::io::Result<Self> {
+        let bytes = filesystem.random_bytes(16).await?;
+        let bytes = bytes.try_into().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "secure random binding did not return sixteen bytes",
+            )
+        })?;
 
-        let mut bytes = [0; 16];
-        std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
         Ok(Self(bytes))
     }
 
