@@ -131,3 +131,13 @@ SQLite, and Native PostgreSQL. It is not a raw SQL dump translated between
 dialects. The first implementation can use an offline CLI and manual object
 copy; a resumable UI wizard and online snapshot coordination are optional
 improvements once the format and restore checks are established.
+
+Native SQLite input opens an existing file read-only without invoking the Hub's
+migrating initializer or changing journal mode. One read transaction spans
+lineage validation, exact compiled-schema comparison and every bounded row
+page. Unknown or incomplete schema rejects; integers, bytes, text, finite reals
+and null retain their original value classes. Cell and page limits are checked
+before variable payloads are loaded. Normal SQLite WAL lock coordination is
+allowed; the reader does not write database or WAL contents. This database
+input contract alone does not classify secrets, close object references or
+authorize a restored deployment.

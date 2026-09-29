@@ -635,5 +635,21 @@ Frozen external S3 physical GC, safe retirement of obsolete object coordination
 state, and whole-Hub snapshot/restore also remain to be implemented. This successful fleet
 run is one acceptance checkpoint; it does not complete RFC-0023.
 
+## Native SQLite snapshot input
+
+The read-only input reader passed sixteen focused tests against the integrated
+source. It validates the complete current catalogue without initializing or
+migrating the source and pins one transaction across all bounded pages. Actual
+SQLite tests cover concurrent WAL changes, unchanged database/WAL bytes, exact
+value classes, oversized lineage markers, schema drift, page/cell bounds and
+lock release on drop or task cancellation. The integrated test run took 9.71
+seconds, with no failed or skipped reader tests.
+
+This qualifies only Native SQLite database input. Secret classification,
+authenticated export, import, provider object closure, restored activation,
+Worker and PostgreSQL snapshot readers remain pending. Normal SQLite WAL lock
+and shared-memory coordination is allowed; no zero-filesystem-write claim is
+made.
+
 See the [deployment procedure](aos-hub-hybrid-deployment.md) and
 [RFC acceptance gates](../rfcs/0023-hub-hybrid-topology/06-implementation-and-validation.md).
